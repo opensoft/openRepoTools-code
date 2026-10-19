@@ -1977,9 +1977,19 @@ def test_agents_md_is_short_enough_to_be_read():
     at offsets seven lines further on. The re-cut that makes the assembly's
     file again sets its cap, and `tests/test_test_roots.py` holds 347 until
     then.
+
+    330 HERE AND 347 -> 354 AT AN ASSEMBLY ROOT, on 2026-10-19 (#186, T009):
+    the re-cut again sets its cap, as the entry above says it does.
+    `assembly-0001`, re-cut against the AGENTS.md #228's series leaves, keeps
+    the twenty-four lines the 316 entry names — the shape's first-line pointer
+    and the triad map — and adds none: each hunk that had stopped applying
+    makes its own path repair on the text that moved under it, one line for
+    one. So the assembly's file is this one's 330 plus those twenty-four, 354,
+    measured with the re-cut applied by `git am --3way` to a root built from
+    the split's root files, and `tests/test_test_roots.py` holds 354.
     """
     lines = doc("AGENTS.md").read_text().splitlines()
-    cap = 330 if ROOTS.assembly is None else 347
+    cap = 330 if ROOTS.assembly is None else 354
     assert len(lines) <= cap, f"AGENTS.md is {len(lines)} lines; the cap is {cap}"
 
 
@@ -2512,9 +2522,21 @@ def test_readme_is_short_enough_to_be_read():
     makes the assembly's file again sets its cap, as the 2026-10-18 AGENTS.md
     entry above says for its 347, and `tests/test_test_roots.py` holds 510
     until then.
+
+    505 HERE AND 510 -> 529 AT AN ASSEMBLY ROOT, on 2026-10-19 (#186, T009):
+    the re-cut again sets its cap, as the entry above says it does.
+    `assembly-0001`, re-cut against this README, keeps the twenty-four lines
+    the 2026-10-08 entry names and adds none: the three-repository section
+    with the lockstep invariant, nineteen; the assembly's install sentence,
+    four, still straight after the two install lines and so now above T024's
+    one-route paragraph; and the `cd code` of the pin-bump block, one. The
+    three hunks the entry above names keep their own lines, one for one. So
+    the assembly's README is this one's 505 plus twenty-four, 529, measured on
+    the re-cut as the AGENTS.md entry of this day measures 354, and
+    `tests/test_test_roots.py` holds 529.
     """
     lines = doc("README.md").read_text().splitlines()
-    cap = 505 if ROOTS.assembly is None else 510
+    cap = 505 if ROOTS.assembly is None else 529
     assert len(lines) <= cap, f"README.md is {len(lines)} lines; the cap is {cap}"
 
 
