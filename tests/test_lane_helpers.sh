@@ -180,6 +180,7 @@ The exit trap's \`rm -rf\` of the suite's sandbox **FAILED after $1 s** (whole s
 SANDBOX="$(mktemp -d)"
 # Set before the traps below, so `cleanup` never reads an inherited value.
 A11T_ROOT=""
+A15_PROOT=""
 REAL_HOME="$HOME"
 
 # THE GUARDS AT THE FOOT OF THIS FILE, re-pointed (Amendment 9, act 3
@@ -238,6 +239,8 @@ cleanup() {
   # #180's short checkout root for the clause (c) TAIL case, which is outside
   # `$SANDBOX` wherever the run root is long.
   [ -n "${A11T_ROOT:-}" ] && [ -d "$A11T_ROOT" ] && { rm -rf -- "$A11T_ROOT" || cl_ok=0; }
+  # #304's, for the Amendment 15 cases that read a checkout in the row's tail.
+  [ -n "${A15_PROOT:-}" ] && [ -d "$A15_PROOT" ] && { rm -rf -- "$A15_PROOT" || cl_ok=0; }
   if [ -n "${SANDBOX:-}" ] && [ -d "$SANDBOX" ]; then
     rm -rf -- "$SANDBOX" || cl_ok=0
     if [ -z "${TEARDOWN_SAID:-}" ]; then
@@ -1269,7 +1272,23 @@ has  "a free lane appends a status, not a row" "$(git -C "$WIP" log --oneline -1
 # `--no-launch` run still ends `no launch` and never claims to have launched
 # anything.
 has  "the appended status says what it did — and a --no-launch run never says it launched (F-B5)" "$(grep '^| `repoA-1`' "$LANES")" ", no launch"
-has  "…with clause (c)'s directory and window in the tail, for the person reading the row" "$(grep '^| `repoA-1`' "$LANES")" "; dir $HOME/projects/repoA; window "
+# THE TAIL'S VALUES ARE NOT READ ON THIS ROW (opensoft/openRepoTools#304, the
+# case #215 left when it closed #180). `cut_to_line` keeps 230 characters and
+# gives up `window`, then `dir`, first, by design, and this checkout is
+# `$HOME/projects/repoA`, whose length is the run root's: from a TMPDIR of 57
+# characters under C.UTF-8 (55 under C) the cut starts taking the window's
+# value, and from 70 (68) the `; window ` this check read before #304. The row
+# is held here to what no root reaches, the launch clause and then clause (c)'s
+# `dir` key, and this act's own log line carries the directory in full. The
+# row's tail with both values is read on checkouts no root lengthens: a RESUMED
+# stamp's, which this one is, on `repoCase-1` and `repoMIX-1` in the Amendment
+# 15 section, and a STARTED stamp's on #215's `repoA11t-1`, whose second start
+# mints a session and so cannot stand in for this one. `repoA-1` keeps its
+# checkout, under which the cases after this one resume it and find its
+# transcripts and forks.
+has  "…with the launch clause and then clause (c)'s dir key in the tail, for the person reading the row" "$(grep '^| `repoA-1`' "$LANES")" "window renamed, no launch; dir "
+has  "…and this act's own log line carries the lane's directory in full, wherever the run root is" \
+     "$(grep '^RESUMED' "$WIP/lanes/log/repoA-1.md" | tail -n1)" "; dir $HOME/projects/repoA;"
 hasnt "…so the stamp of a run that launched nothing claims no launch" "$(grep '^| `repoA-1`' "$LANES")" "no launch, launching"
 
 run "$START" repoA 2 --no-launch
@@ -8434,10 +8453,40 @@ git -C "$WIP" commit -q -m "commit the sandbox's pending edits before the Amendm
 # THE FIXTURE IS THE INCIDENT'S OWN SHAPE: a MIXED-CASE row, a checkout whose
 # directory is spelled that way too, and a log file already written under the
 # LOWERCASE name — which is the state `openXfactory-2` was actually in.
-mkdir -p "$HOME/projects/repoCase"
-git init -q -b main "$HOME/projects/repoCase"
-git -C "$HOME/projects/repoCase" remote add origin "https://github.com/opensoft/repoCase.git"
-casedir="$HOME/.claude/projects/$(sanitize "$HOME/projects/repoCase")"
+#
+# ITS TWO CHECKOUTS ARE UNDER A SHORT PROJECTS ROOT (opensoft/openRepoTools#304,
+# the cases #215 left when it closed #180, read the way #215 reads its TAIL
+# case). The `repoCase-1` and `repoMIX-1` cases read the checkout in the row
+# stamp's tail, which `cut_to_line` gives up first under its 230 characters;
+# under `$HOME/projects` that tail was the run root's length, and from a TMPDIR
+# of 71 characters under C.UTF-8 (69 under C; `repoMIX-1` from 73 and 71) the
+# path was dropped whole. So both checkouts go in a root that `mktemp` makes as
+# #215 makes its own, in this sandbox's own `$TMPDIR` where that is at most 40
+# characters and in `/tmp` where it is not, so the root is never over 55
+# characters and neither stamp over about 210; and the two `lane-start` runs
+# below are given it as `PROJECTS_ROOT`, so `<repo>` still resolves by the
+# checkout's real directory name, which is what both cases are about. Their
+# two rows are also where a RESUMED stamp's `dir` and `window` are read at
+# every root length, which `repoA-1`'s row in `== lane-start ==` no longer is.
+# `cleanup` removes it; only a SIGKILLed run under a long root leaves one in
+# `/tmp`. THE FALLBACK IS NOT #215's: where `mktemp` fails, the first check
+# below says so and `A15_PROOT` itself becomes `$SANDBOX/a15-no-short-root`;
+# #215 keeps `A11T_ROOT` empty there and puts its fallback in `A11T_DIR` alone.
+# AND THE TWO LANES' LIFECYCLE FILES MOVE WITH THEIR CHECKOUTS: rung 2 of
+# `lane_control_root` is the parent of the recorded `dir`, so they sit in
+# `$A15_PROOT/.lane-state/`, outside Amendment 14's snapshot and the
+# managed-owner checksum. That is harmless while neither touches these two
+# lanes.
+a15_base="$TMPDIR"
+[ "${#a15_base}" -le 40 ] || a15_base=/tmp
+A15_PROOT="$(mktemp -d "$a15_base/ort-a15.XXXXXX" 2>/dev/null || :)"
+is   "the Amendment 15 checkouts have a projects root of at most 55 characters, wherever the run root is" \
+     "$( [ -n "$A15_PROOT" ] && [ -d "$A15_PROOT" ] && [ "${#A15_PROOT}" -le 55 ] && echo yes || echo no )" "yes"
+A15_PROOT="${A15_PROOT:-$SANDBOX/a15-no-short-root}"
+mkdir -p "$A15_PROOT/repoCase"
+git init -q -b main "$A15_PROOT/repoCase"
+git -C "$A15_PROOT/repoCase" remote add origin "https://github.com/opensoft/repoCase.git"
+casedir="$HOME/.claude/projects/$(sanitize "$A15_PROOT/repoCase")"
 mkdir -p "$casedir"
 printf '{"type":"custom-title","customTitle":"repoCase-1","sessionId":"%s"}\n' "$DEAD_ID" > "$casedir/$DEAD_ID.jsonl"
 add_seed_row "| \`repoCase-1\` | harness \`$DEAD_ID\` | Eagle / test / brett | 2026-09-11T00:00Z | none | handoffs/repoCase/x.md | ACTIVE |"
@@ -8461,10 +8510,10 @@ add_seed_row "| \`repoHold-1\` | harness \`$DEAD_ID\` | Eagle / test / brett | 2
 # is the checkout on disk and `repoMIX-1` is the register's row: the `<repo>`
 # half resolves to the directory (15(a)) and the LANE resolves to the row, and
 # a run that took one answer for both would get one of the two wrong.
-mkdir -p "$HOME/projects/repoMix"
-git init -q -b main "$HOME/projects/repoMix"
-git -C "$HOME/projects/repoMix" remote add origin "https://github.com/opensoft/repoMix.git"
-mixdir="$HOME/.claude/projects/$(sanitize "$HOME/projects/repoMix")"
+mkdir -p "$A15_PROOT/repoMix"
+git init -q -b main "$A15_PROOT/repoMix"
+git -C "$A15_PROOT/repoMix" remote add origin "https://github.com/opensoft/repoMix.git"
+mixdir="$HOME/.claude/projects/$(sanitize "$A15_PROOT/repoMix")"
 mkdir -p "$mixdir"
 printf '{"type":"custom-title","customTitle":"repoMIX-1","sessionId":"%s"}\n' "$DEAD_ID" > "$mixdir/$DEAD_ID.jsonl"
 add_seed_row "| \`repoMIX-1\` | harness \`$DEAD_ID\` | Eagle / test / brett | 2026-09-11T00:00Z | none | handoffs/repoMix/x.md | ACTIVE |"
@@ -8526,7 +8575,7 @@ git -C "$WIP" push -q origin main
 
 : > "$FAKE_TMUX_LOG"
 run env FAKE_TMUX_WINDOW_NAME=claude FAKE_TMUX_WINDOW="testsess:@1" FAKE_TMUX_WINDOW_INDEX=0 \
-    "$START" repocase 1 --no-launch
+    PROJECTS_ROOT="$A15_PROOT" "$START" repocase 1 --no-launch
 is    "a lowercase <repo> <n> resolves to the mixed-case row and exits 0" "$rc" 0
 is    "…resuming the row's recorded session, --name'd with the ROW's spelling" \
       "$(launch_of "$out")" "claude --name repoCase-1 --resume $DEAD_ID"
@@ -8549,7 +8598,7 @@ has   "…it APPENDED a status rather than adding a row" \
 has   "…and the stamp it appended carries the canonical spelling" \
       "$(grep '^| `repoCase-1`' "$LANES")" "(lane repoCase-1)"
 has   "…having found the checkout by its real directory name, not the typed one" \
-      "$(grep '^| `repoCase-1`' "$LANES")" "dir $HOME/projects/repoCase;"
+      "$(grep '^| `repoCase-1`' "$LANES")" "dir $A15_PROOT/repoCase; window testsess:0 @1"
 
 # THE LOG FILE IS THE ROW'S SPELLING, AND THE RENAME IS PART OF THE WRITE.
 is    "the lane's log is now named for the row" \
@@ -8631,7 +8680,7 @@ is    "…leaving the checkout clean, so the next write is not refused for it" \
 # the two answers differ, so neither can be standing in for the other.
 : > "$FAKE_TMUX_LOG"
 run env FAKE_TMUX_WINDOW_NAME=claude FAKE_TMUX_WINDOW="testsess:@1" FAKE_TMUX_WINDOW_INDEX=0 \
-    "$START" repomix 1 --no-launch
+    PROJECTS_ROOT="$A15_PROOT" "$START" repomix 1 --no-launch
 is    "a lane whose row is spelled unlike its checkout exits 0" "$rc" 0
 has   "…the repo half answering from the directory" "$err" "repo repomix → repoMix"
 has   "…and the LANE half answering from the register row, over it" "$err" "lane repoMix-1 → repoMIX-1"
@@ -8642,7 +8691,7 @@ hasnt "…never to the spelling the directory would give" "$(cat "$FAKE_TMUX_LOG
 is    "…with no second row added under either spelling" \
       "$(grep -c '^| `repoMix-1`' "$LANES")" 0
 has   "…and the lane's directory is still the CHECKOUT's own spelling, which the row does not carry" \
-      "$(grep '^| `repoMIX-1`' "$LANES")" "dir $HOME/projects/repoMix"
+      "$(grep '^| `repoMIX-1`' "$LANES")" "dir $A15_PROOT/repoMix; window testsess:0 @1"
 
 # A TRANSCRIPT TITLED IN THE OTHER CASE IS STILL THIS LANE'S, AND IS RESUMED.
 # The row's id has no transcript here, so this is the TITLE fallback — the
