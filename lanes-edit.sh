@@ -4290,6 +4290,67 @@ lower_into() {   # <string>
   return 0
 }
 
+# COLUMN 7 OF THE LANE LISTING, ESCAPED AND DECODED (#301). `lanes_rows` prints
+# a lane's `dir` into a row whose columns are TAB-separated, one row a line, and
+# every reader of that row splits it with a tab-IFS `read` and takes each column
+# by its place: a TAB inside the dir was one separator more, every column after
+# it arrived one place early, and the lane left `worktrees --all` and the
+# inventory index in silence. So column 7 is written the way `lane-worktrees`'
+# porcelain `pesc` writes a field - a backslash as `\\`, a TAB as `\t`, a
+# newline as `\n` and a carriage return as `\r` - and every reader that shows it
+# or takes it for a path decodes it: `worktree_rows` here, `lane`'s `split_row`
+# and the `lanes` renderer, each with its own copy of `row_field_unescape_into`
+# (the three are installed one by one, so none can source another), and
+# `tests/test_subfield_misreads_301.py` runs all three. A dir holding none of
+# the four is printed as it always was.
+#
+# THE ENCODER IS AN `awk` LOOP OVER THE VALUE'S BYTES, read through the
+# ENVIRONMENT: `awk -v` processes escapes in the value it is handed, which is
+# the very misread `payload_subfield` had, and a `gsub` in Apple's awk missed
+# bytes outside ASCII where a `substr` loop under `LC_ALL=C` round-tripped every
+# one (lane 3's review of #301, 504: 821 strings on mawk, gawk and Apple's awk).
+row_field_escape() {   # <value> ; prints it with `pesc`'s four escapes
+  RFE_IN="${1-}" LC_ALL=C awk 'BEGIN {
+    v = ENVIRON["RFE_IN"]; n = length(v); out = ""
+    for (i = 1; i <= n; i++) {
+      c = substr(v, i, 1)
+      if (c == "\\") c = "\\\\"
+      else if (c == "\t") c = "\\t"
+      else if (c == "\n") c = "\\n"
+      else if (c == "\r") c = "\\r"
+      out = out c
+    }
+    printf "%s", out
+  }'
+}
+
+# AND DECODED LEFT TO RIGHT, IN THE SHELL. `\\`, `\t`, `\n` and `\r` are the
+# four escapes; a backslash before anything else, which the encoder never
+# writes, is kept as it stands, so text no encoder wrote reads back as itself.
+# It ASSIGNS `ROW_FIELD_OUT` and returns, for `lower_into`'s reason - and a
+# decoded value read through `$( … )` would lose a trailing newline besides.
+ROW_FIELD_OUT=""
+row_field_unescape_into() {   # <field> ; sets ROW_FIELD_OUT
+  ROW_FIELD_OUT=""; rfu_in="${1-}"; rfu_bs='\'
+  while : ; do
+    case "$rfu_in" in
+      *"$rfu_bs"*) : ;;
+      *) ROW_FIELD_OUT="$ROW_FIELD_OUT$rfu_in"; return 0 ;;
+    esac
+    rfu_pre=${rfu_in%%"$rfu_bs"*}
+    rfu_in=${rfu_in#*"$rfu_bs"}
+    ROW_FIELD_OUT="$ROW_FIELD_OUT$rfu_pre"
+    case "$rfu_in" in
+      t*) ROW_FIELD_OUT="$ROW_FIELD_OUT"$'\t' ;;
+      n*) ROW_FIELD_OUT="$ROW_FIELD_OUT"$'\n' ;;
+      r*) ROW_FIELD_OUT="$ROW_FIELD_OUT"$'\r' ;;
+      "$rfu_bs"*) ROW_FIELD_OUT="$ROW_FIELD_OUT$rfu_bs" ;;
+      *) ROW_FIELD_OUT="$ROW_FIELD_OUT$rfu_bs"; continue ;;
+    esac
+    rfu_in=${rfu_in#?}
+  done
+}
+
 older_than_minutes() {   # <utc> <minutes>
   om_t="$(epoch_of "$1")"; [ -n "$om_t" ] || return 1
   [ "$(( $(date -u +%s) - om_t ))" -gt "$(( $2 * 60 ))" ]
@@ -6732,9 +6793,19 @@ lane_of_session() {
 #              quoted value. `dir` and `profile` are read this way.
 #   all        EVERY REF — the whole sub-field, which is what `window` is:
 #              two refs that a caller splits itself.
+#
+# THE PAYLOAD GOES IN THROUGH THE ENVIRONMENT, NEVER `-v` (#301). `awk -v`
+# processes escapes in the value it is handed, so a stored `dir` holding
+# `back\tslash` read back holding a TAB, `\\` as one backslash, `\n` as a
+# newline that cut the answer in two and `\101` as `A` — and `lane-dir`, both
+# control roots and the writers' own checks of what they write all took that
+# answer. `lane_sidecar_schema_ok` reads its id through `ENVIRON` for the same
+# reason. `want` and `mode` stay on `-v`: they are the callers' own words, and
+# none of them holds a backslash.
 payload_subfield() {   # <payload> <name> [all]
-  awk -v pay="$1" -v want="$2" -v mode="${3-}" '
+  PSF_PAY="${1-}" awk -v want="$2" -v mode="${3-}" '
     BEGIN {
+      pay = ENVIRON["PSF_PAY"]
       want = want " "
       n = split(pay, sf, "; ")
       for (i = 1; i <= n; i++) {
@@ -7894,8 +7965,17 @@ dhp_resume_value() {   # <flattened argv, lowercased> — sets dhp_rv
 # rendering: `restart` and `lanes` lay them out, and a third caller that wants
 # a different shape does not need a fourth read.
 #
-#   <lane> <state> <workstation> <profile> <window> <last uuid> <dir>
+#   <lane> <state> <workstation> <profile> <window> <last uuid> <dir, escaped>
 #   <objects> <age> <restart line> <home> <forks>
+#
+# `<dir>` IS COLUMN 7 AND IT IS ESCAPED, NOT PLAIN (#301): the lane's recorded
+# dir is written the way `lane-worktrees`' porcelain `pesc` writes a field - a
+# backslash as `\\`, a TAB as `\t`, a newline as `\n` and a carriage return as
+# `\r` - so a dir holding a TAB is still one column and the row still seventeen
+# (see `row_field_escape`). A dir holding none of the four is printed as it is.
+# A caller that shows the dir or takes it for a path DECODES it first with
+# `row_field_unescape_into`, as `worktree_rows`, `lane`'s `split_row` and the
+# `lanes` renderer do; the `--dir` filter compares the dir as stored.
 #
 # THE FIRST TEN ARE CLAUSE (j)'s TEN, IN CLAUSE (j)'s ORDER (A11 Addendum 4
 # ruling 7): *"`lanes` and `restart` each render the subset of clause (j)'s ten
@@ -8717,7 +8797,24 @@ EOF2
     # every field after it to the one before. A row with no standing binding
     # says `none` there, which `lane_groups` files exactly as it filed empty —
     # only `elsewhere` changes the group.
-    lr_out="${lr_out}${lr_utc:-0000}${US}${lr_l}	${lr_state}	${lr_w:-unknown}	${lr_pf:-none}	${lr_win:-none}	${lr_sid:-none}	${lr_d:-none}	${lr_obj:-none}	${lr_age}	${lr_restart}	${lr_home:-none}	${lr_fk}	${lr_local:-none}	${lr_class:-none}	${lr_start:-unknown}	${lr_was:-none}	${lr_flags:-none}
+    #
+    # AND COLUMN 7 IS THE DIR ESCAPED AS `pesc` ESCAPES A FIELD (#301; see
+    # `row_field_escape`), so a TAB in it is not a separator. Escaped HERE, at
+    # the print and nowhere earlier, because the `--dir` filter above compares
+    # the dir as stored; and only where it holds one of the four bytes, so an
+    # ordinary dir costs no process and prints as it always did. An escape that
+    # printed nothing would leave the column empty, which no reader can split
+    # (see above), so it says `none` and says why.
+    lr_dcol="${lr_d:-none}"
+    case "$lr_d" in
+      *'\'* | *$'\t'* | *$'\n'* | *$'\r'*)
+        lr_dcol="$(row_field_escape "$lr_d")"
+        if [ -z "$lr_dcol" ]; then
+          lr_dcol=none
+          note "lane $lr_l's recorded dir could not be escaped for the listing, so its directory column says none."
+        fi ;;
+    esac
+    lr_out="${lr_out}${lr_utc:-0000}${US}${lr_l}	${lr_state}	${lr_w:-unknown}	${lr_pf:-none}	${lr_win:-none}	${lr_sid:-none}	${lr_dcol}	${lr_obj:-none}	${lr_age}	${lr_restart}	${lr_home:-none}	${lr_fk}	${lr_local:-none}	${lr_class:-none}	${lr_start:-unknown}	${lr_was:-none}	${lr_flags:-none}
 "
   done <<EOF
 $lr_names
@@ -14952,6 +15049,13 @@ worktree_rows() {   # [<canonical lane>]
     # third rung, where no `trees` is, and a lane whose trees this loop had
     # just found read as a lane with none. The listing's `dir` is now the root
     # of all three, so the read that could fail is not made.
+    # COLUMN 7 COMES ESCAPED (#301): `lanes_rows` writes a backslash, a TAB, a
+    # newline and a carriage return in the dir as `pesc` does, which keeps the
+    # row at its seventeen columns, and it is decoded here, before anything
+    # below takes it for a path. A dir with no backslash was printed as it is.
+    case "${wr_dir:-}" in
+      *'\'*) row_field_unescape_into "$wr_dir"; wr_dir="$ROW_FIELD_OUT" ;;
+    esac
     # AND IT GOES BACK QUOTED WHERE IT HOLDS A SPACE (#295), by the rule
     # `lane-start`'s `quote_subfield` writes it with. Column 7 is the `dir` with
     # its quotes already taken off, and `payload_subfield` reads a bare value
@@ -17161,6 +17265,46 @@ EOF
     # instead of it.
     if [ "$rh_here" = here ] && binding_is_this_window "$rh_win"; then
       die "lane $lane's binding IS this window ($rh_win) on this host and in this container: a handoff request is what a SECOND place makes of the first, and there is nothing here to ask. Nothing was written." 2
+    fi
+
+    # ---- THE ASKING HOST IS ONE REF OF AMENDMENT 7(b)'S GRAMMAR, OR IT IS NOT
+    # WRITTEN (#301, ruling 2, R). Both paths below write it into the lane's
+    # append-only log: the request as `by host <h>`, which the bound session's
+    # guard reads back with `payload_subfield` — one ref, up to its first space —
+    # and types into that session's pane in `/handoff --exit requested by …`,
+    # and a forced release as `forced by <uuid>@<h>/<container>`. Nothing
+    # between here and `write_event` checks it: `binding_subfields_check` reads
+    # the sub-fields NAMED `host`, `os` and `container`, and neither of these
+    # is one. So `my host` was written whole and read back as `my`, and a `;`, a
+    # `"` or a control byte would be typed into a pane. The fence is the one
+    # `binding_subfields_add` holds the binding's own three values to, and it
+    # REFUSES here where that one drops: a host that fails it is a setting that
+    # can be put right at once, and neither path — `--force` included, and
+    # either one's `--dry-run`, which plans the same line — writes it.
+    if ! lanes_binding_value_ok "$LANES_HOST_NAME"; then
+      case "$LANES_HOST_SOURCE" in
+        seam)        rh_hsrc="it is the value of LANES_HOST" ;;
+        workstation) rh_hsrc="it is this workstation's name, which a container writes as its host; LANES_HOST overrides it" ;;
+        *)           rh_hsrc="it is this machine's \`hostname -s\`; LANES_HOST overrides it" ;;
+      esac
+      die "request-handoff writes this host's name into lane $lane's append-only log — \`by host <h>\` in a request, \`forced by <uuid>@<h>/<container>\` in a forced release — and '$LANES_HOST_NAME' is not one ref of Amendment 7(b)'s grammar (letters, digits, '.', '_', '-', ':'): $rh_hsrc. A space there is a second ref and a ';' a second sub-field, and the request's host is typed into the bound session's pane. Nothing was written. Set LANES_HOST to this host's name in that alphabet and ask again." 2
+    fi
+
+    # ---- AND THE CONTAINER IS HELD TO THE SAME FENCE (#301, lane 3's review,
+    # 781). The forced release writes it beside the host, `forced by
+    # <uuid>@<h>/<container>`, and nothing fenced it there: `LANES_CONTAINER='a
+    # b'` was written whole and `--force` exited 0. The request's `container
+    # <c>` is a sub-field NAMED `container`, so `binding_subfields_check` refused
+    # it, but only at the write: a `--dry-run` planned it, and the refusal named
+    # no setting. One rule holds for every value this tool writes (ruling 2's
+    # answer 1), so the container is refused here too, before either path plans
+    # or writes anything, and the refusal names where the value came from.
+    if ! lanes_binding_value_ok "$LANES_CONTAINER_NAME"; then
+      case "$LANES_CONTAINER_SOURCE" in
+        seam) rh_csrc="it is the value of LANES_CONTAINER" ;;
+        *)    rh_csrc="it is this container's own \`hostname\`, which a container with no LANES_CONTAINER writes; LANES_CONTAINER overrides it" ;;
+      esac
+      die "request-handoff writes this container's name into lane $lane's append-only log — \`container <c>\` in a request, \`forced by <uuid>@<h>/<container>\` in a forced release — and '$LANES_CONTAINER_NAME' is not one ref of Amendment 7(b)'s grammar (letters, digits, '.', '_', '-', ':'): $rh_csrc. A space there is a second ref and a ';' a second sub-field. Nothing was written. Set LANES_CONTAINER to this container's name in that alphabet and ask again." 2
     fi
 
     # ---- CLAUSE (e): `--force`, THE SECOND INVOCATION.
