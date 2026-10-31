@@ -45,7 +45,7 @@ longer names leaves in the same sync. Its
 provenance moves only forward PER LANE: a sync that reads a lane's lifecycle
 generation below the one its rows were written at writes nothing for that lane
 (`reconcile` takes the lane as it now stands, and says so); a lane whose
-inventory is there and could not be read keeps its rows and gets one marker
+inventory could not be read keeps its rows and gets one marker
 row, with no path and a branch no git ref can be (#173), which `export
 --worktrees` writes back as the source's own `UNREAD` line; a read whose LANE
 LISTING was not whole - the helper's `PARTIAL` line: its register, its archive,
@@ -1849,7 +1849,7 @@ def tree_line(row: dict, provenance) -> str:
 
 #: THE BRANCH OF A LANE'S UNREAD MARKER (opensoft/openRepoTools#173): a
 #: `worktrees` row with no path and a branch `unreadable inventory (<why>)`,
-#: saying the lane's inventory was there and could not be read at the last
+#: saying the lane's inventory could not be read at the last
 #: sync, and why. A MARKER IS ITS KEY, `unread_key(<lane>)` - `<lane>:` and a
 #: US - and nothing else decides it (the review of #219 and its delta check):
 #: no tree's key can carry a US after the colon but its own `<US><n>`, while a
@@ -1896,7 +1896,7 @@ def inventory_digest(record: dict) -> str:
 def lane_generation(lane: str) -> tuple:
     """`(generation, None)` of a lane's lifecycle snapshot, asked of `lanes-edit.sh
     lane-state` - 0 where the lane has no snapshot or no control root here - or
-    `(None, why)` where the snapshot is there and could not be read."""
+    `(None, why)` where the snapshot could not be read."""
     proc = _helper_run(["lane-state", lane], 120, f"lane {lane}'s lifecycle snapshot")
     if proc.returncode in (1, 8):
         return 0, None
@@ -1912,7 +1912,7 @@ def lane_generation(lane: str) -> tuple:
 def collect_inventory() -> tuple[dict, dict]:
     """Every tree the inventory names, keyed `<lane>:<path>` (a second tree of
     one lane with the same path `<lane>:<path><US><n>`), and every lane whose
-    inventory is there and could not be read - whose rows are KEPT, never taken
+    inventory could not be read - whose rows are KEPT, never taken
     for a lane with no trees (Amendment 7(d)).
 
     A READ WHOSE LANE LISTING WAS NOT WHOLE IS NO ANSWER AT ALL
@@ -2064,7 +2064,7 @@ def run_inventory(mode: str, requested: str | None, dry_run: bool) -> int:
     # know - #173 item c1.)
     held: dict = {}
     for lane, why in unread.items():
-        held[lane] = f"its inventory is there and could not be read ({why})"
+        held[lane] = f"its inventory could not be read ({why})"
     read_gen: dict = {}
     for rec in trees.values():
         read_gen[rec["lane"]] = max(read_gen.get(rec["lane"], 0), rec["generation"] or 0)
