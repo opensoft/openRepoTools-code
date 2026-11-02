@@ -2567,6 +2567,57 @@ run env LANES_LANE=repoU-3 "$E" claim "opensoft/repoU#40" --no-github
 is   "…so a third lane is REFUSED, which is the whole of Rule 1" "$rc" 2
 has  "…naming the lane that holds it" "$err" "lane repoU-1 holds opensoft/repoU#40"
 
+# ------------- opensoft/openRepoTools#346: THE TAKEOVER'S GITHUB COMMENT OPENS
+# `TAKEOVER — lane <the taker>, …`, not the dispossessed lane's name run into the verb
+#
+# `claim`'s comment took its first word from `${takeover_from:+TAKEOVER}${takeover_from:-CLAIMED}`,
+# and the second expansion is the VALUE of `takeover_from` when it is set, not
+# nothing: the line read `TAKEOVERrepoTc-1 — lane repoTc-2, …`. Every case above
+# passes `--no-github`, which returns before `gh_comment`, so the comment was
+# never read by anything. This one runs a takeover with `LANES_NO_GITHUB=0`
+# against the fake `gh` the head of this file puts first on `$PATH` — it answers
+# `gh issue comment` and logs the body, and REFUSES every other call loudly, which
+# `gh_reads` and `gh_stale_claim_url` tolerate by design (`|| :`), so the payload
+# falls back to `lane:<x>` and the comment is the only thing under test. Rule 1's
+# own text is `TAKEOVER — lane <name>, session <id>, <UTC time>.` and
+# `gh_reads` greps `TAKEOVER —` in the object's comments to find one, so the
+# first line is the verb, ` — lane `, and the TAKER; the lane taken over from is
+# named by the comment's `Logged in …` line. `gh_reads` also runs a real
+# `git ls-remote git@github.com:…`, which `GIT_SSH_COMMAND=false` stops at the
+# transport, so nothing leaves this sandbox.
+for l in repoTc-1 repoTc-2; do
+  "$E" add-row "| \`$l\` | harness \`$DEAD_ID\` | Eagle / test / brett | 2026-09-11T00:00Z | none | handoffs/repoTc/$l.md | ACTIVE |" >/dev/null 2>&1
+done
+: > "$FAKE_GH_LOG"
+run env LANES_LANE=repoTc-1 LANES_NO_GITHUB=0 GIT_SSH_COMMAND=false "$E" claim "opensoft/repoTc#7"
+is   "a plain claim with GitHub ON exits 0" "$rc" 0
+is   "…posting ONE comment, on the object" \
+     "$(command grep -c '^=== issue comment opensoft/repoTc 7$' "$FAKE_GH_LOG" || :)" 1
+has  "…and reporting its URL" "$err" "comment posted: https://github.com/opensoft/repoTc/issues/7#issuecomment-"
+tc_first="$(sed -n 2p "$FAKE_GH_LOG")"
+is   "…whose first line still opens CLAIMED — lane <the claimer>" "${tc_first%%, session *}" "CLAIMED — lane repoTc-1"
+has  "…and goes on to the session, as it always did" "$tc_first" ", session $DEAD_ID@$WS_S, "
+has  "…and ends on the object" "$tc_first" ", for opensoft/repoTc#7"
+hasnt "…never naming TAKEOVER" "$tc_first" "TAKEOVER"
+
+: > "$FAKE_GH_LOG"
+run env LANES_LANE=repoTc-2 LANES_NO_GITHUB=0 GIT_SSH_COMMAND=false LANES_STALE_HOURS=-1 "$E" claim "opensoft/repoTc#7" --force
+is   "a takeover with GitHub ON exits 0" "$rc" 0
+is   "…posting ONE comment, on the object" \
+     "$(command grep -c '^=== issue comment opensoft/repoTc 7$' "$FAKE_GH_LOG" || :)" 1
+tc_first="$(sed -n 2p "$FAKE_GH_LOG")"
+is   "…whose first line opens TAKEOVER — lane <the taker>" "${tc_first%%, session *}" "TAKEOVER — lane repoTc-2"
+hasnt "…not the dispossessed lane's name run into the verb" "$tc_first" "TAKEOVERrepoTc-1"
+hasnt "…and not CLAIMED, which is the other kind of comment" "$tc_first" "CLAIMED"
+has  "…going on to the session, as a claim's does" "$tc_first" ", session $DEAD_ID@$WS_S, "
+has  "…and ending on the object" "$tc_first" ", for opensoft/repoTc#7"
+has  "…while the lane taken over from is named on the comment's own Logged-in line" \
+     "$(cat "$FAKE_GH_LOG")" "(takeover of the stale claim held by lane repoTc-1)"
+has  "…and the log line, written by another path, still names it as the payload" \
+     "$(cat "$LOGD/repoTc-2.md")" "opensoft/repoTc#7 ← lane:repoTc-1"
+run env LANES_LANE=repoTc-2 "$E" release "opensoft/repoTc#7" "finished with it" --no-github
+run env LANES_LANE=repoTc-1 "$E" release "opensoft/repoTc#7" "taken over by repoTc-2" --no-github
+
 # ------------------------- R19: the ROW is read from origin/main, like the logs
 #
 # `who`'s register-derived half — the session cell, the handoff path, the

@@ -16689,8 +16689,14 @@ EOF
     # 6. the comment, AFTER the push, citing the commit that carries the line.
     sha="$(git -C "$LANES_REPO" rev-parse HEAD 2>/dev/null || printf '')"
     if [ "$NO_GITHUB" != 1 ]; then
+      # The comment opens with its own verb, as Rule 1 spells it: `TAKEOVER —
+      # lane <name>, …` for a takeover and `CLAIMED — lane <name>, …` for a
+      # claim. The lane taken over from is `takeover_from`, and it is named by
+      # the `Logged in` line below, never by the first word
+      # (opensoft/openRepoTools#346).
+      if [ -n "$takeover_from" ]; then comment_verb=TAKEOVER; else comment_verb=CLAIMED; fi
       body="$(printf '%s — lane %s, session %s@%s, %s, for %s\n\nLogged in `%s` at `%s`%s.\n\nThe three reads (lane-collision-protocol Rule 1):\n\n```text\n%s\n```\n' \
-               "${takeover_from:+TAKEOVER}${takeover_from:-CLAIMED}" "$lane" "$uuid" "$WS" "$utc" "$obj" \
+               "$comment_verb" "$lane" "$uuid" "$WS" "$utc" "$obj" \
                "$(log_path_for "$lane")" "${sha:-unknown}" "$takeover_reason_phrase" "$reads")"
       url="$(gh_comment "$obj" "$body" 2>/dev/null || :)"
       if [ -n "$url" ]; then
