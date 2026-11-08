@@ -38,6 +38,7 @@
 #                                        # commit (Amendment 19(c))
 #   lane-end --sweep-checkouts [--yes]   # the register checkouts under
 #                                        # <W>-lanes/ that CLOSED lanes left,
+#                                        # and the register clones beside W;
 #                                        # dry run by default; --yes removes
 #                                        # those nothing holds (Amendment 23 S6.2)
 #   lane-end [options] <repo> <n>        # the split form works too
@@ -276,8 +277,8 @@
 #      checkout; a runner lane
 #      the register does not know, or one with no transcript uuid for the
 #      session field of its NOTED line
-#   3  `--sweep-checkouts`, the dry run: something under `<W>-lanes/` is
-#      removable (0 is nothing to remove)
+#   3  `--sweep-checkouts`, the dry run: something under `<W>-lanes/`, or a
+#      register clone beside W, is removable (0 is nothing to remove)
 #   8  nothing there. `--retire-dormant`: no lane of that repository is
 #      recorded, or none of its rows is DORMANT. `--retire <pid|uuid>`: nothing
 #      of any kind is live for the lane
@@ -978,7 +979,7 @@ if [ "$sweep_checkouts" = 1 ]; then
   [ -z "$home_override" ] || die "--home is for a pre-cutover lane's own log line; the sweep of register checkouts writes no home into anything. Nothing was removed." 2
   [ -z "$sweep_reason" ] || die "--reason belongs to --retire-dormant: the sweep of register checkouts writes its own NOTED line, naming what it removed. Nothing was removed." 2
   if [ "${#positional[@]}" -gt 0 ]; then
-    die "--sweep-checkouts takes no lane and no repository ('${positional[0]}'): it looks at every register checkout under <W>-lanes/, and the lane that RUNS it is named in LANES_LANE. Nothing was removed." 2
+    die "--sweep-checkouts takes no lane and no repository ('${positional[0]}'): it looks at every register checkout under <W>-lanes/ and every register clone beside W, and the lane that RUNS it is named in LANES_LANE. Nothing was removed." 2
   fi
   [ "$dry_run" = 0 ] || sweep_yes=0
   # `--yes` IS A WRITE, AND ITS WRITER IS A LANE. The NOTED line that records

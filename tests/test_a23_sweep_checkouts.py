@@ -333,6 +333,11 @@ def test_the_sweep_takes_no_lane_and_no_other_act(sweep, extra):
     result, _ = sweep(*extra)
     assert result.returncode == 2, (extra, result.stdout, result.stderr)
     assert box.everything() == before
+    if extra == (RUNNER,):
+        # D37 sweeps the clones beside W too, and the words say so (rv4b's NIT I).
+        assert ("it looks at every register checkout under <W>-lanes/ and every register "
+                "clone beside W, and the lane that RUNS it is named in LANES_LANE") \
+            in result.stderr, result.stderr
 
 
 # ------------------------------------------------------- never a candidate
