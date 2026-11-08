@@ -2039,8 +2039,8 @@ lane_from_text() {
 #     part-way left a half register behind a refusal that called it UNCHANGED,
 #     and one that came out short and said nothing was a half register
 #     committed. Even an uncommitted half register is one write from being
-#     published: the next writer in this checkout commits a dirty register as a
-#     peer's pre-existing edit (`handle_preexisting`).
+#     published: the next `commit` in this checkout carries a dirty register as
+#     its hand edit (Amendment 23 S3 refuses every other writer over it).
 #
 # So the copy is compared with the register and the result with what was built.
 # Where the result is not what was built, the copy's bytes are put back and
@@ -2052,11 +2052,13 @@ lane_from_text() {
 # write their logs, their archive and their earlier rows before a row's
 # rewrite, so a refusal that said "Nothing was written" was false there: `git
 # status` showed those files, and a re-run read them back. What holds is that
-# THIS ACT has committed nothing — not "nothing has been committed": a peer's
-# uncommitted register edit found first is captured as a commit of its own
-# (`handle_preexisting`) before the act's edit, and the one caller that HAS
-# committed when it rewrites (add-row's after-rebase take-back) says so through
-# `REG_COMMITTED_HERE` (the delta review of #263). Each sweep names its local
+# THIS ACT has committed nothing. (#263 wrote "this act", not "nothing has been
+# committed", beside the capture of a peer's edit as a commit of its own, and
+# let add-row's after-rebase take-back, which HAD committed, say so through
+# `REG_COMMITTED_HERE` and `DL_SAYS_*`. Amendment 23 removed both, #198 slice
+# 1b: S3 refuses a write over a peer's edit and captures nothing, and S4's
+# replay drops a refused add-row's commit, so no caller sets those hooks now
+# and every refusal says the default.) Each sweep names its local
 # writes with `reg_wrote`, which the refusals list. AND WHERE THE REGISTER MAY
 # BE TRUNCATED the copy is KEPT (S2's NIT 6): it is the only exact copy of the
 # register as it was, uncommitted edits included, and the exit trap removes
@@ -2115,7 +2117,7 @@ register_rewrite() {   # <the copy> <what the register becomes> <what else the r
   else
     rgw_copy="Its bytes from before this edit could not be kept either: \`git -C $LANES_REPO diff -- $LANES_PATH\` shows what it lost, and \`git -C $LANES_REPO checkout -- $LANES_PATH\` brings back its last commit, dropping any uncommitted edit it held."
   fi
-  die "could not write the rewritten register $LANES_FILE, and the bytes it had before this edit could not be put back either: IT MAY NOW BE TRUNCATED. Restore it before any other write in $LANES_REPO, because the next one would commit it as a pre-existing edit. $rgw_copy $3$(reg_written_here)" 5
+  die "could not write the rewritten register $LANES_FILE, and the bytes it had before this edit could not be put back either: IT MAY NOW BE TRUNCATED. Restore it before any other write in $LANES_REPO, because the next \`commit\` there would publish it as its hand edit. $rgw_copy $3$(reg_written_here)" 5
 }
 
 # Replace line N with $2, leaving every other byte untouched. Verified with
@@ -2199,8 +2201,9 @@ delete_lines() {   # <line numbers, one per line, any order>
   dl_pre="$TMPD/pre"; dl_out="$TMPD/out"
   # WHAT A REFUSAL HERE SAYS ABOUT THE ROWS IS THE CALLER'S (the delta review of
   # #263, NIT). archive-rows' sentences are the default: its rows are already in
-  # the archive. add-row's take-back passes its own, because there the row is
-  # add-row's committed one and no archive is involved.
+  # the archive. add-row's take-back passed its own (the row was add-row's
+  # committed one, and no archive was involved); it went with the pull in
+  # #198 slice 1b, so no caller passes one now.
   dl_unchanged="${DL_SAYS_UNCHANGED:-no row was removed, the rows are in $LANES_ARCH_PATH, and the register is whole}"
   dl_after_write="${DL_SAYS_AFTER_WRITE:-The archive may have been appended locally, but $(reg_committed); resolve that partial move before retrying.}"
   register_copy "$dl_pre" "$dl_unchanged"
@@ -4814,8 +4817,9 @@ register_published() {   # [<path relative to LANES_REPO>]
 # that is the ordinary case rather than an error.
 #
 # It is NOT cached the way `register_text` is: this file is the small one (the
-# rows nobody reads day to day), and a write that rescans it after its rebase
-# (`add-row`'s `retired_identity_hits`) must read it as it now stands, which a
+# rows nobody reads day to day), and a write that reads it again on its replay
+# (`add-row`'s `retired_identity_hits`, run again on origin's new tip after a
+# refused push, Amendment 23 S4) must read it as it now stands, which a
 # cache kept for the process would not. ONE LISTING PINS IT, and only for its
 # own reads: `worktree_rows` reads the archive once, and where that read
 # succeeded, `PIN_ARCHIVE` hands its text to every read of the listing it then

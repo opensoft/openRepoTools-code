@@ -156,24 +156,24 @@ def test_120_item_1_a_rewrite_cut_short_leaves_the_register_whole(reg, act, cut)
         assert "UNCHANGED" not in result.stderr
 
 
-@PROC_FD
-def test_120_item_1_a_refusal_after_a_captured_peer_edit_says_this_act_committed_nothing(reg):
-    """The delta review of #263: a peer's uncommitted register edit found
-    before the act is captured as a commit of its own (`handle_preexisting`),
-    so a refusal after it that said "nothing has been committed" was false. It
-    says what holds: this act has committed nothing."""
+def test_120_item_1_a_peer_edit_is_refused_before_the_copy_and_never_captured(reg):
+    """The delta review of #263 pinned the words of a refusal made after a
+    peer's uncommitted register edit was captured as a commit of its own
+    (`handle_preexisting`). Amendment 23 S3 step 4 withdraws the capture
+    (ratified choice 9, #198 slice 1b): the write refuses (2) over the peer's
+    edit before its copy is made, commits nothing, and leaves the edit as it
+    was, for `commit` to commit as its own act. The copy's cut never runs."""
     before = reg.head()
     reg.write("lanes/LANES.md", reg.read("lanes/LANES.md").replace(
         "another repository's row 30 |", "another repository's row 30, edited by a peer |"))
     edited = reg.read("lanes/LANES.md")
     reg.cut_cat("copy fails")
     result = reg.run(*ACTS["replace_line"], LANES_LANE="repoX-1")
-    assert result.returncode == 5, (result.stdout, result.stderr)
-    assert "captured pre-existing edit" in result.stderr
-    assert reg.git("log", "--format=%s", f"{before}..HEAD").startswith("LANES(pre-existing@")
-    assert reg.git("rev-list", "--count", f"{before}..HEAD").strip() == "1"
-    assert "this act has committed nothing" in result.stderr
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert "captured pre-existing edit" not in result.stderr
     assert "nothing has been committed" not in result.stderr
+    assert "MAY NOW BE TRUNCATED" not in result.stderr
+    assert reg.head() == before
     assert reg.read("lanes/LANES.md") == edited
 
 
@@ -230,6 +230,14 @@ def test_120_item_1_a_sweep_refused_part_way_names_what_it_wrote_and_is_not_call
 
 # ------------------------------- #120 item 2: the sweep's published-path scan
 
+#: Amendment 23 S3's refusal of an unpushed commit, in its own words
+#: (`cs_refuse`). Under #198 slice 1b it comes before any scan of a sweep: a
+#: commit made here and not pushed is refused (2) as soon as the write starts.
+S3_LACKS = "this checkout holds 1 commit(s) origin/main lacks by content:"
+S3_WORDS = ("would push them under its own name or strand itself behind them "
+            "(Amendment 23 S3). Nothing was written.")
+
+
 def case_sensitive(path: Path) -> bool:
     probe = path / "case-probe"
     probe.write_text("")
@@ -246,8 +254,11 @@ def test_120_item_2_a_rename_whose_commit_never_landed_refuses_in_the_scan(reg):
     its commit is not pushed — the row's spelling here, committed; the old
     spelling still on origin; a checkout merely AHEAD — passed the scan, and
     `ensure_log` refused it inside the write loop, after the lane before it had
-    had its log created and appended. The scan refuses it now, with
-    `ensure_log`'s own words, and nothing is written."""
+    had its log created and appended. #263's scan refused it with `ensure_log`'s
+    own words. Under Amendment 23 S3 (#198 slice 1b) the rename's commit is an
+    unpushed commit, and S3 refuses it (2) before the scan, naming it: the
+    scan's words are reached only where origin moves after this write's
+    fast-forward under its lock. Nothing is written either way."""
     if not case_sensitive(reg.tmp):
         pytest.skip("two log names that differ only by case need a case-sensitive filesystem")
     reg.write("lanes/log/repox-3.md", log_text("repox-3", lane_line(
@@ -258,8 +269,10 @@ def test_120_item_2_a_rename_whose_commit_never_landed_refuses_in_the_scan(reg):
     before = reg.head()
     result = reg.sweep("repoX-2", "repoX-3")
     assert result.returncode == 2, (result.stdout, result.stderr)
-    assert "published as lanes/log/repox-3.md" in result.stderr
-    assert "a case-only rename whose commit never landed" in result.stderr
+    assert S3_LACKS in result.stderr
+    assert "repoX-3's log takes the row's spelling (not pushed)" in result.stderr
+    assert S3_WORDS in result.stderr
+    assert "published as lanes/log/repox-3.md" not in result.stderr
     assert reg.head() == before
     assert not (reg.wip / "lanes/log/repoX-2.md").exists()
     assert reg.dirty() == ""
@@ -298,9 +311,12 @@ def test_120_item_3_a_lane_whose_log_closes_it_is_told_it_is_closed(reg, last):
 @pytest.mark.parametrize("last", ["ENDED", "RETIRED"])
 def test_120_item_3_a_closing_line_only_this_checkout_has_is_not_called_closed(reg, last):
     """The review of #263, S2, from a commit rather than a cut sweep: a closing
-    line committed here and never pushed is refused as this checkout's alone,
-    never called CLOSED, and with its article right: "an ENDED line" (the
-    delta review's NIT)."""
+    line committed here and never pushed is refused, and never called CLOSED.
+    #263's scan refused it as this checkout's alone, with its article right:
+    "an ENDED line" (the delta review's NIT). Under Amendment 23 S3 (#198
+    slice 1b) the commit is an unpushed commit, and S3 refuses it (2) before
+    the scan, naming it: the scan's words are reached only where origin moves
+    after this write's fast-forward under its lock. Nothing is written."""
     started = lane_line("STARTED", "repoX-2", OLD_ID, "2026-09-11T00:00:00Z")
     reg.write("lanes/log/repoX-2.md", log_text("repoX-2", started))
     reg.publish("repoX-2 started")
@@ -310,11 +326,14 @@ def test_120_item_3_a_closing_line_only_this_checkout_has_is_not_called_closed(r
     before = reg.head()
     result = reg.sweep("repoX-2")
     assert result.returncode == 2, (result.stdout, result.stderr)
-    article = "an" if last == "ENDED" else "a"
-    assert (f"in THIS CHECKOUT ends on {article} {last} line, and origin/main's copy does not"
-            in result.stderr)
+    assert S3_LACKS in result.stderr
+    assert f"repoX-2 {last.lower()}, not pushed" in result.stderr
+    assert S3_WORDS in result.stderr
+    assert "in THIS CHECKOUT ends on" not in result.stderr
     assert "already CLOSED" not in result.stderr
     assert reg.head() == before
+    assert reg.dirty() == ""
+    assert "RETIRED" not in reg.published("lanes/LANES.md").split("`repoX-2`")[1].splitlines()[0]
 
 
 def test_120_item_3_a_lane_whose_log_says_it_is_parked_is_sent_to_lane_end(reg):
@@ -354,21 +373,22 @@ def add_repo_x_4(reg: Register) -> subprocess.CompletedProcess:
     return reg.run("add-row", NEW_ROW.rstrip("\n"), LANES_LANE="repoX-4")
 
 
-def peer_pushes_during_pull(reg: Register, tmp_path: Path, changes: dict[str, str], *,
-                            diff_log: Path | None = None, diff_context: int | None = None,
-                            extra_shell: str = "") -> Path:
+def peer_pushes_before_its_push(reg: Register, tmp_path: Path, changes: dict[str, str], *,
+                                diff_log: Path | None = None, diff_context: int | None = None,
+                                extra_shell: str = "") -> Path:
     """The shell suite's `repo19race` shape. A peer clone commits `changes`
     (a path and its whole new text each, one commit each, in order) now, and a
     `git` first on PATH pushes them the moment the writer's own checkout runs
-    its first `pull`: after add-row has committed its row, before it pushes.
-    Returns the mark the shim leaves; the caller removes the shim.
+    its first `push`: after add-row has committed its row, so its push is
+    refused. (#263 raced the `pull --rebase`; Amendment 23 S4 removed the pull,
+    #198 slice 1b, and replays a refused push on origin's new tip.) Returns the
+    mark the shim leaves; the caller removes the shim.
 
-    The same shim sees add-row's take-back diff (the register's `-U0` diff
-    against origin's). `diff_log` records how each was called, the
-    `GIT_DIFF_OPTS` it saw and its arguments; `diff_context` runs it with that
-    much context instead, as any source of context the take-back cannot turn
-    off would. `extra_shell` runs in the shim before it hands each call to the
-    real `git`, with `@MARK@` standing for the mark's path."""
+    The same shim would see add-row's take-back diff (the register's `-U0`
+    diff against origin's), which went with the pull: `diff_log` records each
+    such call, so a case can assert there is none; `diff_context` would run it
+    with context. `extra_shell` runs in the shim before it hands each call to
+    the real `git`, with `@MARK@` standing for the mark's path."""
     peer = tmp_path / "peer"
     reg.raw_git("clone", "-q", str(reg.origin), str(peer))
     for rel, text in changes.items():
@@ -391,7 +411,7 @@ def peer_pushes_during_pull(reg: Register, tmp_path: Path, changes: dict[str, st
     if extra_shell:
         take_back += extra_shell.replace("@MARK@", str(mark)) + "\n"
     shim.write_text(f"""#!/usr/bin/env bash
-if [ "${{1-}}" = -C ] && [ "${{3-}}" = pull ] && [ ! -e '{mark}' ]; then
+if [ "${{1-}}" = -C ] && [ "${{3-}}" = push ] && [ ! -e '{mark}' ]; then
   case "${{2-}}" in */wip)
     : > '{mark}'
     '{real}' -C '{peer}' push -q origin main || exit 1 ;;
@@ -472,21 +492,25 @@ def test_122_a_line_number_says_which_copy_it_is_in(reg):
     assert f"line 12 (this checkout): {mangled}" in result.stderr
 
 
-def test_122_a_refusal_after_the_rebase_takes_its_row_back(reg, tmp_path):
+def test_122_a_refusal_on_the_replay_leaves_no_row_to_publish(reg, tmp_path):
     """The review of #263, M1, the shell suite's `repo19race` shape: a peer
-    publishes an archive line this scan cannot take apart while add-row is in
-    its `pull --rebase`. The after-rebase rescan refused (1), but only the
+    publishes an archive line this scan cannot take apart while add-row is
+    publishing. Under #263 the after-rebase rescan refused (1) and only its
     retired-match branch took the committed row back, so the next unrelated
-    write from this checkout published the row add-row had refused. Every
-    refusal there now removes it in a compensating local commit."""
+    write published the row add-row had refused. Under Amendment 23 S4 (#198
+    slice 1b) the push is refused, the replay drops add-row's commit and runs
+    its checks again on origin's new tip, and they refuse (1) with nothing
+    left at HEAD: no compensating commit is needed, and none is made."""
     archive = a_good_archive(reg)
-    mark = peer_pushes_during_pull(reg, tmp_path, {
+    mark = peer_pushes_before_its_push(reg, tmp_path, {
         ARCHIVE: archive + MANGLED["the lane lost its backticks"] + "\n"})
     result = add_repo_x_4(reg)
     (reg.fakebin / "git").unlink()
-    assert mark.exists(), "the peer never raced the pull"
+    assert mark.exists(), "the peer never raced the push"
     assert result.returncode == 1, (result.stdout, result.stderr)
-    assert "removed in a compensating LOCAL commit" in result.stderr
+    assert "carries a line this scan cannot take apart (above)" in result.stderr
+    assert "compensating LOCAL commit" not in result.stderr
+    assert reg.git("log", "--oneline", "origin/main..HEAD") == "", "nothing of add-row's is left to publish"
     assert "`repoX-4`" not in reg.read("lanes/LANES.md")
     assert "`repoX-4`" not in reg.git("diff", "origin/main", "HEAD", "--", "lanes/LANES.md")
     assert "`repoX-4`" not in reg.published("lanes/LANES.md")
@@ -509,55 +533,54 @@ RESCAN_REFUSALS = {
 @pytest.mark.parametrize("why", sorted(RESCAN_REFUSALS))
 def test_122_a_refusal_after_the_rebase_leaves_a_peers_identical_row_alone(reg, tmp_path, why):
     """The delta review of #263, D1: a peer publishes the byte-identical
-    repoX-4 row while add-row is in its `pull --rebase`, so the rebase drops
-    add-row's commit as already upstream and the one copy left is the PEER's.
-    The take-back found it by its exact text and deleted it in a local commit,
-    and the next write published that deletion: the peer's row gone from
-    origin. Only a copy this checkout adds over origin's is taken back now, so
-    here none is, for either refusal of the rescan."""
+    repoX-4 row while add-row is publishing. Under #263 the rebase dropped
+    add-row's commit as already upstream, and the take-back deleted the
+    PEER's copy in a local commit that the next write published. Under
+    Amendment 23 S4 (#198 slice 1b) the push is refused and the replay drops
+    add-row's own commit, by what it is, and its checks refuse on origin's new
+    tip, for either refusal: nothing is taken back, nothing of add-row's is
+    left, and the next write leaves the peer's row as it is."""
     archive = a_good_archive(reg)
     refusal, code = RESCAN_REFUSALS[why]
-    mark = peer_pushes_during_pull(reg, tmp_path, {
+    mark = peer_pushes_before_its_push(reg, tmp_path, {
         "lanes/LANES.md": reg.read("lanes/LANES.md") + NEW_ROW, ARCHIVE: archive + refusal})
     result = add_repo_x_4(reg)
     (reg.fakebin / "git").unlink()
-    assert mark.exists(), "the peer never raced the pull"
+    assert mark.exists(), "the peer never raced the push"
     assert result.returncode == code, (result.stdout, result.stderr)
     ahead = reg.git("log", "--oneline", "origin/main..HEAD")
-    diff = reg.git("diff", "origin/main", "HEAD")
     after = reg.run("set-row-state", "repoX-2", "PAUSED · the next unrelated write", LANES_LANE="repoX-1")
     assert after.returncode == 0, (after.stdout, after.stderr)
     assert reg.published("lanes/LANES.md").count("`repoX-4`") == 1, (ahead, result.stderr)
-    assert ahead == "" and diff == ""
-    assert "origin/main already carries this exact row" in result.stderr
+    assert ahead == ""
     assert "compensating LOCAL commit" not in result.stderr
 
 
 def test_122_a_refusal_after_the_rebase_takes_back_its_own_row_beside_a_peers_copy(reg, tmp_path):
     """…and the other direction. Where the peer put the identical row in
-    another place, the rebase KEEPS add-row's commit and the register holds
-    two copies. The one this checkout adds is taken back: not the peer's, and
-    not neither. "origin already has the row" would have kept add-row's
-    commit, and the next write would have published a second copy."""
+    another place, #263's rebase KEPT add-row's commit and the register held
+    two copies, and the take-back removed this checkout's. Under Amendment 23
+    S4 (#198 slice 1b) the replay drops add-row's commit whole before its
+    checks refuse, so the register holds the peer's copy alone once the next
+    write brings it to origin's tip, and that write publishes no second one."""
     archive = a_good_archive(reg)
     seeded = row("repoX-3", OLD_ID, "more old words")
     peer_register = reg.read("lanes/LANES.md").replace(seeded, seeded + NEW_ROW)
     assert peer_register != reg.read("lanes/LANES.md")
-    mark = peer_pushes_during_pull(reg, tmp_path, {
+    mark = peer_pushes_before_its_push(reg, tmp_path, {
         "lanes/LANES.md": peer_register,
         ARCHIVE: archive + RESCAN_REFUSALS["a line the scan cannot take apart"][0]})
     result = add_repo_x_4(reg)
     (reg.fakebin / "git").unlink()
-    assert mark.exists(), "the peer never raced the pull"
+    assert mark.exists(), "the peer never raced the push"
     assert result.returncode == 1, (result.stdout, result.stderr)
-    register = reg.read("lanes/LANES.md")
-    diff = reg.git("diff", "origin/main", "HEAD", "--", "lanes/LANES.md")
+    ahead = reg.git("log", "--oneline", "origin/main..HEAD")
     after = reg.run("set-row-state", "repoX-2", "PAUSED · the next unrelated write", LANES_LANE="repoX-1")
     assert after.returncode == 0, (after.stdout, after.stderr)
     assert reg.published("lanes/LANES.md").count("`repoX-4`") == 1, result.stderr
-    assert register == peer_register
-    assert diff == ""
-    assert "removed in a compensating LOCAL commit" in result.stderr
+    assert reg.read("lanes/LANES.md").count("`repoX-4`") == 1
+    assert ahead == ""
+    assert "compensating LOCAL commit" not in result.stderr
 
 
 #: The ways the take-back cannot remove its row once it has found it: its copy
@@ -571,17 +594,16 @@ TAKE_BACK_CUTS = [pytest.param("copy", marks=PROC_FD), pytest.param("write", mar
 
 @pytest.mark.parametrize("cut", TAKE_BACK_CUTS)
 def test_122_a_take_back_that_cannot_rewrite_says_add_row_has_committed(reg, tmp_path, cut):
-    """The delta review of #263, on the wording: where the take-back itself
-    cannot rewrite the register, add-row HAS committed its row (locally, not
-    pushed), and the refusal says so and how to remove it, never that this
-    act has committed nothing. And in add-row's own words (delta review 3's
-    NIT): `delete_lines`' sentences are archive-rows' ("the rows are in" the
-    archive, "the archive may have been appended"), and false here. And on
-    every refusal `delete_lines` makes after its copy (delta review 4, N1 and
-    S4's N2): the pass, the line count and `numstat` named no row and no
-    commit, so "the removal added or rewrote lines" was all add-row said."""
+    """The delta review of #263, on the wording, and delta review 4's N1 and
+    S4's N2: where #263's take-back could not rewrite the register (its copy
+    or its write cut short, its pass, its line count or its `numstat` proof
+    refused), add-row HAD committed its row, and the refusal had to say so in
+    add-row's own words. Under Amendment 23 S4 (#198 slice 1b) there is no
+    take-back: the replay drops add-row's commit and its checks refuse (1)
+    with nothing of add-row's left, so the same cuts change nothing. The
+    refusal says nothing of a committed row, because there is none."""
     archive = a_good_archive(reg)
-    mark = peer_pushes_during_pull(reg, tmp_path, {
+    mark = peer_pushes_before_its_push(reg, tmp_path, {
         ARCHIVE: archive + RESCAN_REFUSALS["a line the scan cannot take apart"][0]})
     real_awk = shutil.which("awk", path=os.environ.get("PATH"))
     if cut == "awk pass":
@@ -608,24 +630,14 @@ def test_122_a_take_back_that_cannot_rewrite_says_add_row_has_committed(reg, tmp
     for shim in ("git", "cat", "awk"):
         if (reg.fakebin / shim).exists():
             (reg.fakebin / shim).unlink()
-    assert mark.exists(), "the peer never raced the pull"
-    assert result.returncode == 5, (result.stdout, result.stderr)
-    if cut == "write":
-        assert "have been put back and proved" in result.stderr
-        assert "Its row for lane repoX-4 was not taken back, and this act HAS committed it" in result.stderr
-    else:
-        assert ("The register is as it was and this act HAS committed its row for lane repoX-4, locally and "
-                "unpushed: no row was removed, so that row is still in it and in that commit.") in result.stderr
-        assert {"copy": "could not be copied whole",
-                "awk pass": "the pass that removes 1 row(s)",
-                "line count": "removing 1 row(s) changed the line count by 2; refusing. The register",
-                "numstat": "the removal added or rewrote lines (numstat: -\t-); refusing. The register",
-                }[cut] in result.stderr
-    assert "from lanes/LANES.md and commit that before any other write in " in result.stderr
+    assert mark.exists(), "the peer never raced the push"
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "carries a line this scan cannot take apart (above)" in result.stderr
+    assert "HAS committed" not in result.stderr
     for archive_rows_words in ("the rows are in", "The archive may have been appended", "resolve that partial move"):
         assert archive_rows_words not in result.stderr
-    assert "this act has committed nothing" not in result.stderr
-    assert "add row" in reg.git("log", "--format=%s", "origin/main..HEAD")
+    assert "compensating LOCAL commit" not in result.stderr
+    assert reg.git("log", "--format=%s", "origin/main..HEAD") == "", "nothing of add-row's is left to publish"
     assert "`repoX-4`" not in reg.published("lanes/LANES.md")
 
 
@@ -642,15 +654,15 @@ CONTEXT_CASES = [
 
 @pytest.mark.parametrize("case", CONTEXT_CASES)
 def test_122_a_take_back_finds_its_row_whatever_context_the_diff_carries(reg, tmp_path, case):
-    """The delta review of #263, S3: `-U0` alone does not keep context out of
-    the take-back's diff. A `GIT_DIFF_OPTS=-u3` overrides it, and a user's
-    `diff.interHunkContext` fuses a nearby change's hunk with the row's, the
-    lines between them as context. The parse counted only `+` lines, so the
-    row was put at the wrong line, the line check refused, nothing was taken
-    back, and the next ordinary write published the row add-row had refused (M1
-    again). The diff now runs with neither, and the parse counts every line of
-    a hunk but a removed one, so context that arrives anyway (a shim, here) is
-    counted where it stands, and so is a second added row in the same hunk."""
+    """The delta review of #263, S3: `-U0` alone did not keep context out of
+    #263's take-back diff (a `GIT_DIFF_OPTS=-u3`, a user's
+    `diff.interHunkContext`, a second row in the same hunk), the row was put
+    at the wrong line, and the next ordinary write published the row add-row
+    had refused. Under Amendment 23 S4 (#198 slice 1b) no such diff is asked
+    for: the replay drops add-row's commit by what it is and its checks refuse
+    (1), whatever context a diff would carry. The nearby edit and the other
+    lane's row are published first, since S3 refuses a write over an unpushed
+    commit."""
     archive = a_good_archive(reg)
     extra = {"LANES_LANE": "repoX-4"}
     diff_log = tmp_path / "take-back-diff"
@@ -659,8 +671,8 @@ def test_122_a_take_back_finds_its_row_whatever_context_the_diff_carries(reg, tm
         extra["GIT_DIFF_OPTS"] = "-u3"
     elif case.startswith("another lane"):
         reg.write("lanes/LANES.md", reg.read("lanes/LANES.md")
-                  + row("repoX-5", OLD_ID, "another lane's row, not pushed", "2026-10-19"))
-        reg.commit("another lane's row, not pushed")
+                  + row("repoX-5", OLD_ID, "another lane's row, published", "2026-10-19"))
+        reg.publish("another lane's row, just above")
     else:
         if case.startswith("diff.interHunkContext"):
             (reg.home / ".gitconfig").write_text("[diff]\n\tinterHunkContext = 3\n", encoding="utf-8")
@@ -668,25 +680,19 @@ def test_122_a_take_back_finds_its_row_whatever_context_the_diff_carries(reg, tm
             context = 3
         reg.write("lanes/LANES.md", reg.read("lanes/LANES.md").replace(
             "another repository's row 29 |", "another repository's row 29, edited here |"))
-        reg.commit("an edit one row above the end, not pushed")
-    mark = peer_pushes_during_pull(reg, tmp_path, {
+        reg.publish("an edit one row above the end")
+    mark = peer_pushes_before_its_push(reg, tmp_path, {
         ARCHIVE: archive + RESCAN_REFUSALS["a line the scan cannot take apart"][0]},
         diff_log=diff_log, diff_context=context)
     result = reg.run("add-row", NEW_ROW.rstrip("\n"), **extra)
     (reg.fakebin / "git").unlink()
-    assert mark.exists(), "the peer never raced the pull"
+    assert mark.exists(), "the peer never raced the push"
     assert result.returncode == 1, (result.stdout, result.stderr)
     after = reg.run("set-row-state", "repoX-2", "PAUSED · the next unrelated write", LANES_LANE="repoX-1")
     assert after.returncode == 0, (after.stdout, after.stderr)
     assert reg.published("lanes/LANES.md").count("`repoX-4`") == 0, result.stderr
-    assert "removed in a compensating LOCAL commit" in result.stderr
-    # How the one take-back diff was asked for: with no GIT_DIFF_OPTS and no
-    # inter-hunk context, whatever add-row's environment and config held.
-    calls = diff_log.read_text(encoding="utf-8").splitlines()
-    assert len(calls) == 1, calls
-    seen_opts, args = calls[0].split("\t", 1)
-    assert seen_opts == "<unset>", calls
-    assert " -c diff.interHunkContext=0 diff " in f" {args} ", calls
+    assert "compensating LOCAL commit" not in result.stderr
+    assert not diff_log.exists(), "no take-back diff is asked for"
 
 
 #: The ways git classes the register as binary (delta review 4 of #263, S4),
@@ -700,14 +706,14 @@ BINARY_CASES = [
 
 @pytest.mark.parametrize("case", BINARY_CASES)
 def test_122_a_take_back_reads_its_diff_as_text_whatever_classes_the_register_binary(reg, tmp_path, case):
-    """Delta review 4 of #263, S4: where git classes the register as binary,
-    the take-back's diff is the one line "Binary files … differ", with no hunk
-    to read. add-row said this checkout added no copy of the row, kept its
-    commit, and the next write published the row add-row had refused (M1
-    again). The diff is now read as text, and under a `core.bigFileThreshold`
-    the removal's `numstat` proof counts lines as well, so each takes its row
-    back. The next write is an `append-line`: a `set-row-state` refuses under
-    such a threshold on its own `numstat` proof, as it does on main."""
+    """Delta review 4 of #263, S4: where git classed the register as binary,
+    #263's take-back diff had no hunk to read, add-row kept its commit, and
+    the next write published the row add-row had refused (M1 again). Under
+    Amendment 23 S4 (#198 slice 1b) the replay drops add-row's commit by what
+    it is, with no diff of the register to read, and its checks refuse (1)
+    whatever classes the register binary. The next write is an `append-line`:
+    a `set-row-state` refuses under such a threshold on its own `numstat`
+    proof, as it does on main."""
     archive = a_good_archive(reg)
     if case.startswith("`lanes/LANES.md -diff`"):
         (reg.wip / ".git" / "info").mkdir(parents=True, exist_ok=True)
@@ -718,16 +724,17 @@ def test_122_a_take_back_reads_its_diff_as_text_whatever_classes_the_register_bi
     else:
         (reg.home / ".gitconfig").write_text("[core]\n\tbigFileThreshold = 200\n", encoding="utf-8")
         assert (reg.wip / "lanes/LANES.md").stat().st_size > 200
-    mark = peer_pushes_during_pull(reg, tmp_path, {
+    mark = peer_pushes_before_its_push(reg, tmp_path, {
         ARCHIVE: archive + RESCAN_REFUSALS["a line the scan cannot take apart"][0]})
     result = add_repo_x_4(reg)
     (reg.fakebin / "git").unlink()
-    assert mark.exists(), "the peer never raced the pull"
+    assert mark.exists(), "the peer never raced the push"
     assert result.returncode == 1, (result.stdout, result.stderr)
+    assert reg.git("log", "--oneline", "origin/main..HEAD") == "", "nothing of add-row's is left to publish"
     after = reg.run("append-line", "a plain line, the next unrelated write", LANES_LANE="repoX-1")
     assert after.returncode == 0, (after.stdout, after.stderr)
     assert reg.published("lanes/LANES.md").count("`repoX-4`") == 0, result.stderr
-    assert "removed in a compensating LOCAL commit" in result.stderr
+    assert "compensating LOCAL commit" not in result.stderr
 
 
 #: Where the take-back's removal is written but cannot be committed (delta
@@ -746,33 +753,27 @@ COMPENSATION_FAILS = {
 
 @pytest.mark.parametrize("step", sorted(COMPENSATION_FAILS))
 def test_122_a_removal_that_cannot_be_committed_says_so(reg, tmp_path, step):
-    """Delta review 4 of #263, N3: where the take-back's `git add` or `git
-    commit` failed, add-row returned with nothing of its own said. The removal
-    was left in the working tree or staged under add-row's commit, and the next
-    write's commit carried it under that write's caption. It now says what is
-    staged, that add-row's commit still holds the row, and the command that
-    commits the removal, which is run here: then the next write publishes no
-    repoX-4, and origin's history has the removal under its own caption."""
+    """Delta review 4 of #263, N3: where #263's take-back could not stage or
+    commit its removal, the removal was left in the working tree or staged
+    under add-row's commit, and the next write's commit carried it under that
+    write's caption. Under Amendment 23 S4 (#198 slice 1b) there is no
+    removal to commit: the replay drops add-row's commit and its checks refuse
+    (1), so the same `add` and `commit` failures leave the checkout clean,
+    nothing of add-row's to publish, and no cancelling commit anywhere."""
     archive = a_good_archive(reg)
     shell, status, said = COMPENSATION_FAILS[step]
-    mark = peer_pushes_during_pull(reg, tmp_path, {
+    mark = peer_pushes_before_its_push(reg, tmp_path, {
         ARCHIVE: archive + RESCAN_REFUSALS["a line the scan cannot take apart"][0]}, extra_shell=shell)
     result = add_repo_x_4(reg)
     (reg.fakebin / "git").unlink()
-    assert mark.exists(), "the peer never raced the pull"
+    assert mark.exists(), "the peer never raced the push"
     assert result.returncode == 1, (result.stdout, result.stderr)
-    assert reg.dirty().splitlines() == [status]
-    assert "add row" in reg.git("log", "--format=%s", "origin/main..HEAD")
-    assert said in result.stderr
-    caption = "LANES(repoX-4@Eagle): cancel add-row whose retirement could not be checked after rebase"
-    fix = re.search(r"Commit the removal before any other write in (\S+), so that write does not carry it "
-                    r"under its own caption: `(git -C (\S+) commit -m '([^']+)' -- lanes/LANES\.md)`", result.stderr)
-    assert fix, result.stderr
-    assert fix.group(1) == fix.group(3) and os.path.samefile(fix.group(1), reg.wip), fix.group(0)
-    assert fix.group(4) == caption, fix.group(0)
-    done = subprocess.run(["bash", "-c", fix.group(2)], env=reg.env, text=True, capture_output=True, check=False)
-    assert done.returncode == 0, (done.stdout, done.stderr)
+    assert reg.dirty() == "", (status, reg.dirty())
+    assert reg.git("log", "--format=%s", "origin/main..HEAD") == "", "nothing of add-row's is left to publish"
+    assert said not in result.stderr
+    caption = "LANES(repoX-4@Eagle): cancel add-row"
+    assert "Commit the removal" not in result.stderr
     after = reg.run("set-row-state", "repoX-2", "PAUSED · the next unrelated write", LANES_LANE="repoX-1")
     assert after.returncode == 0, (after.stdout, after.stderr)
     assert reg.published("lanes/LANES.md").count("`repoX-4`") == 0
-    assert caption in reg.raw_git("-C", str(reg.origin), "log", "--format=%s", "main")
+    assert caption not in reg.raw_git("-C", str(reg.origin), "log", "--format=%s", "main")
