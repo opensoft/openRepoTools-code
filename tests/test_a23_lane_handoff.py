@@ -28,6 +28,8 @@ handoff there and its unlocked commit in W is what each case sees at the base.
 
 from __future__ import annotations
 
+import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -324,6 +326,119 @@ def test_exit_6_names_the_publish_act_only_where_the_helper_offers_it(tmp_path, 
     assert "Where they offer the publish act, it is " in note, note
     assert f'LANES_LANE={LANE} ' in note and 'commit "<what it is>", the publish act' in note, note
     assert "where origin moved they say it refuses (2) and give S6.3's archive instead" in note, note
+
+
+def _printed_call(stderr: str) -> list[str]:
+    """The `write-handoff --prepend` call a kept block's note prints, as the
+    words a shell reads from it: `LANES_LANE=<lane>`, the helper, the verb, the
+    lane, `--prepend`, the block's file, `--subject`, the subject."""
+    found = [line for line in stderr.splitlines() if line.startswith("lane-handoff:   LANES_LANE=")]
+    assert len(found) == 1, stderr
+    return shlex.split(found[0][len("lane-handoff:   "):])
+
+
+def _run_printed_call(box: Sandbox, words: list[str], helper: Path | None = None) -> subprocess.CompletedProcess:
+    """Run the printed call as a shell would, from the caller's environment;
+    `helper` stands in for the helper a test wrapped."""
+    name, _eq, lane = words[0].partition("=")
+    env = {k: v for k, v in box.env.items() if not k.startswith("WORKBENCHES_")}
+    env[name] = lane
+    return subprocess.run([str(helper or words[1]), *words[2:]], env=env, capture_output=True, text=True,
+                          timeout=180, check=False)
+
+
+def _no_temp_file(box: Sandbox) -> dict:
+    """A `mktemp` first on PATH whose `-d` makes the directory with a
+    directory in the place of the block's file, so the block cannot be put in
+    it, as a full or broken temporary directory would."""
+    real = subprocess.run(["bash", "-c", "command -v mktemp"], env=box.env, capture_output=True,
+                          text=True, check=True).stdout.strip()
+    shim = box.root / "mktempshim"
+    shim.mkdir()
+    (shim / "mktemp").write_text(f"""#!/usr/bin/env bash
+if [ "${{1-}}" = -d ]; then d="$('{real}' "$@")" && mkdir "$d/block" && printf '%s\\n' "$d"; exit; fi
+exec '{real}' "$@"
+""", encoding="utf-8")
+    (shim / "mktemp").chmod(0o755)
+    return {"PATH": f"{shim}{os.pathsep}{box.env['PATH']}"}
+
+
+@pytest.mark.parametrize("kind", ["path-failed", "row-names-none", "wrote-nothing", "no-temp-file"])
+def test_a_kept_block_goes_in_by_the_one_printed_call_never_by_hand(tmp_path, short_root, kind):
+    """NIT 3 of lane openRepoTools-3's review of opensoft/openRepoTools-code#20
+    at 4031100 (its finding 983 on #311, for the skill): the notes where this
+    command could not write the top block (the handoff not found, the block
+    not put in a temporary file, `write-handoff` writing nothing) told the
+    reader to put it at the head of the handoff "by hand". They print the one
+    `write-handoff --prepend` call instead, filled in, as slice 3's block 2
+    does, and keep the block in a file the call names. Run as printed, once the
+    cause is answered, the call puts the block at the head of the handoff and
+    publishes it; where no file could be made, the call says `<block file>`."""
+    box, _checkout, cell, _before = _ready(tmp_path, short_root)
+    real = box.bin / "lanes-edit.sh"
+    env: dict = {}
+    helper = None
+    if kind == "path-failed":
+        wrapper = box.root / "no-path-lanes-edit.sh"
+        wrapper.write_text(f"""#!/usr/bin/env bash
+if [ "${{1-}}" = handoff-path ]; then echo "handoff-path: the register could not be read" >&2; exit 1; fi
+exec '{real}' "$@"
+""", encoding="utf-8")
+        wrapper.chmod(0o755)
+        env = {"LANES_EDIT": str(wrapper)}
+    elif kind == "row-names-none":
+        _peer_push(box, {"lanes/LANES.md": _with_cell(box, "")}, "the lane's row names no handoff")
+    elif kind == "wrote-nothing":
+        env = {"LANES_EDIT": str(_forcing(box, 1, False))}
+        helper = real
+    else:
+        env = _no_temp_file(box)
+    handoff = _published(box, cell)
+
+    result = _handoff(box, env=env)
+    err = result.stderr
+    assert "## RESUME PROMPT — PAUSED " in err, "the block is printed"
+    assert "by hand:" not in err, err
+    assert "never by a hand edit of the handoff:" in err, err
+    words = _printed_call(err)
+    assert words[2:5] == ["write-handoff", LANE, "--prepend"], words
+    assert words[6:] == ["--subject", SUBJECT], words
+    if kind == "wrote-nothing":
+        assert _published(box, cell) == handoff, "the handoff took no block"
+    if kind == "no-temp-file":
+        assert words[5] == "<block file>", words
+        assert "no file could be made to keep it in" in err, err
+        return
+
+    kept = Path(words[5])
+    assert kept.read_text(encoding="utf-8").startswith(f"Lane: {LANE} (test-profile, session "), "the block is kept"
+    assert kept.read_text(encoding="utf-8") in err, "and is the one printed"
+    if kind == "row-names-none":
+        assert _published(box, cell) == handoff
+        _peer_push(box, {"lanes/LANES.md": _with_cell(box, cell)}, "the row names the handoff again")
+    answered = _run_printed_call(box, words, helper)
+    assert answered.returncode == 0, answered.stderr
+    published = _published(box, cell)
+    assert published == kept.read_text(encoding="utf-8") + "---\n\n" + handoff, published
+    assert _origin(box, "log", "-1", "--format=%s", "main", "--", cell).strip() == SUBJECT
+
+
+def test_the_printed_call_round_trips_a_quote_in_the_why(tmp_path, short_root):
+    r"""The printed call runs as printed under bash and zsh alike: each word is
+    single-quoted, a quote in it spelled '\'' (the skill's `hf_quote`), so a
+    why with a quote and a space reads back as the subject the write would
+    have used."""
+    box, _checkout, _cell_, _before = _ready(tmp_path, short_root)
+    wrapper = box.root / "no-path-lanes-edit.sh"
+    wrapper.write_text(f"""#!/usr/bin/env bash
+if [ "${{1-}}" = handoff-path ]; then exit 1; fi
+exec '{box.bin / "lanes-edit.sh"}' "$@"
+""", encoding="utf-8")
+    wrapper.chmod(0o755)
+
+    result = _handoff(box, env={"LANES_EDIT": str(wrapper)}, why="it's a 'quoted' test")
+    words = _printed_call(result.stderr)
+    assert words[7] == f"handoff({LANE}@Eagle): PAUSED, it's a 'quoted' test", words
 
 
 def test_an_8d_cell_takes_the_block_committed_and_pushed_in_its_own_repository(tmp_path, short_root):
