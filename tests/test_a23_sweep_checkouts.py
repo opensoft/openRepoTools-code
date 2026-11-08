@@ -881,7 +881,7 @@ def _lanes_edit_dir(box: Sweep) -> tuple:
 
 LOOK_ALIKES = ["apply.err.bak", "fetch.errx", "xff.err", "reset.err~", "Reset.err",
                "removed.bak", "removed2", "xremoved", "hand-edit-1.reset.err",
-               ".hidden-diff", "hand edit.diff", "-hand-edit.diff"]
+               ".hidden-diff", "hand edit.diff", "-hand-edit.diff", "xclaim-reads-1.txt"]
 
 
 @pytest.mark.parametrize("name", LOOK_ALIKES)
@@ -962,6 +962,7 @@ NOT_SCRATCH_BY_KIND = [
     pytest.param(_a_file("fetch.err\nff.err"), id="fetch.err, a newline, ff.err"),
     pytest.param(_a_folder("removed"), id="a folder named removed"),
     pytest.param(_a_folder("fetch.err"), id="a folder named fetch.err"),
+    pytest.param(_a_folder("claim-reads-1.txt"), id="a folder named claim-reads-1.txt"),
 ]
 
 
@@ -969,7 +970,7 @@ NOT_SCRATCH_BY_KIND = [
 def test_only_a_plain_file_with_a_scratch_name_is_scratch(sweep, make):
     """`find` DECIDES WHAT IS SCRATCH, AND NO TEXT IS PARSED (lane
     openRepoTools-3's NIT 392): only a plain file named exactly as one of
-    the five is the writer's. A name of blanks or with a newline in it, and
+    the five, or starting `claim-reads-` (D49), is the writer's. A name of blanks or with a newline in it, and
     a folder that only carries a scratch name, are a person's, and hold the
     checkout, in the dry run and under `--yes`; what they keep stays."""
     box = sweep.box
@@ -1002,7 +1003,7 @@ def test_the_names_lanes_edit_writes_there_are_found():
 @pytest.mark.parametrize("name", _names_lanes_edit_writes_there())
 def test_every_other_name_lanes_edit_writes_there_holds_nothing(sweep, name):
     """THE TWO LISTS MUST NOT DRIFT (SHOULD 391). The sweep exempts five
-    names by hand; a slice that makes `lanes-edit.sh` write a sixth
+    names and one prefix (`claim-reads-`, D49) by hand; a slice that makes `lanes-edit.sh` write a sixth
     (`pull.err`, say) would hold every checkout that ever wrote, for good.
     The cases are made from the script's own text, so a sixth name fails
     here until `lane-end` knows it."""
@@ -1012,6 +1013,26 @@ def test_every_other_name_lanes_edit_writes_there_holds_nothing(sweep, name):
     (d / name).write_text("git's own words\n", encoding="utf-8")
     _, rows = sweep()
     assert rows[str(c)][0] == "remove", (name, rows[str(c)])
+
+
+def test_a_claims_whole_reads_alone_hold_nothing(sweep):
+    """A CLAIM'S WHOLE RULE 1 READS ARE THE WRITER'S SCRATCH TOO (D49). Slice
+    1b's 706 keeps them in `.git/lanes-edit/claim-reads-<UTC>-<pid>.txt` for
+    a claim's re-run, and the claim's last run removes the file; only a
+    killed one leaves it. It is a copy of what GitHub keeps, so alone it
+    holds nothing: the checkout is removed. The drift guard above found the
+    name when slice 1b's branch was merged; this case writes it as
+    `lanes-edit.sh` names it."""
+    box = sweep.box
+    c, d = _lanes_edit_dir(box)
+    d.mkdir()
+    (d / "claim-reads-20261108T170000Z-4242.txt").write_text("Rule 1's reads\n", encoding="utf-8")
+    _, rows = sweep()
+    assert rows[str(c)][0] == "remove", rows[str(c)]
+    result, rows = sweep("--yes", LANES_LANE=RUNNER)
+    assert rows[str(c)][0] == "removed", rows[str(c)]
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert not os.path.lexists(c)
 
 
 def test_a_live_cwd_holds(sweep):
