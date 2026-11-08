@@ -31,20 +31,15 @@ import os
 import subprocess
 from pathlib import Path
 
-from test_a23_lane_start_read import _no_clone_git, default_resolution, rows
+from test_a23_lane_start_read import (W_reflog, _no_clone_git, assert_W_moved_only_by_fast_forward,
+                                      default_resolution, no_auto_gc, rows)
 from test_lane_start_row_stamp import LANE, Sandbox, _checkout_of_length, pytestmark, short_root  # noqa: F401
 
 HANDOFF = "Lane: repoZ-1 — single-use resume prompt\n\n# state\n\nthe lane's own words\n"
-FF = "merge origin/main: Fast-forward"
 PEER_SID = "bbbb0001-2222-4000-8000-bbbb00012222"
 
 
 # ------------------------------------------------------------------ helpers
-
-def _quiet(box: Sandbox, repo: Path) -> None:
-    for key, value in (("gc.auto", "0"), ("maintenance.auto", "false")):
-        box.git("-C", str(repo), "config", key, value)
-
 
 def _origin(box: Sandbox, *args: str) -> str:
     return box.git("--git-dir", str(box.root / "origin.git"), *args)
@@ -70,7 +65,7 @@ def _peer(box: Sandbox) -> Path:
     p = box.root / "peer"
     if not p.exists():
         box.git("clone", "-q", str(box.root / "origin.git"), str(p))
-        _quiet(box, p)
+        no_auto_gc(box, "-C", str(p))
     box.git("-C", str(p), "fetch", "-q", "origin", "main")
     box.git("-C", str(p), "merge", "-q", "--ff-only", "origin/main")
     return p
@@ -91,17 +86,12 @@ def _edit(box: Sandbox, *args: str, env: dict | None = None) -> subprocess.Compl
                           capture_output=True, text=True, timeout=180, check=False)
 
 
-def _reflog(box: Sandbox) -> list[str]:
-    return box.git("-C", str(box.wip), "reflog", "--format=%gs", "HEAD").splitlines()
-
-
 def _boxed(tmp_path: Path, short_root: Path) -> tuple[Sandbox, Path, Path]:
     """The sandbox with the default resolution and the opt-in, W kept from gc."""
     box = Sandbox(tmp_path)
     checkout = default_resolution(box)
-    _quiet(box, box.wip)
-    for key, value in (("gc.auto", "0"), ("maintenance.auto", "false")):
-        _origin(box, "config", key, value)
+    no_auto_gc(box, "-C", str(box.wip))
+    no_auto_gc(box, "--git-dir", str(box.root / "origin.git"))
     lane_dir = _checkout_of_length(short_root, None)
     box.checkout(lane_dir)
     return box, checkout, lane_dir
@@ -110,19 +100,11 @@ def _boxed(tmp_path: Path, short_root: Path) -> tuple[Sandbox, Path, Path]:
 def _started(tmp_path: Path, short_root: Path) -> tuple[Sandbox, Path, Path, list[str]]:
     """A new lane's first start, with W's reflog as it stood before it."""
     box, checkout, lane_dir = _boxed(tmp_path, short_root)
-    before = _reflog(box)
+    before = W_reflog(box)
     first = box.start("--dir", str(lane_dir), window_name="claude")
     assert first.returncode == 0, first.stderr
     assert (checkout / ".git").is_dir(), "the first start made the lane's checkout"
     return box, checkout, lane_dir, before
-
-
-def _assert_W_only_fast_forwarded(box: Sandbox, before: list[str]) -> None:
-    after = _reflog(box)
-    assert after[len(after) - len(before):] == before, (before, after)
-    new = after[:len(after) - len(before)]
-    assert all(entry == FF for entry in new), new
-    assert box.git("-C", str(box.wip), "status", "--porcelain") == "", "W is clean"
 
 
 def _assert_nothing_unpublished(box: Sandbox, checkout: Path) -> None:
@@ -143,14 +125,16 @@ def test_launch_creates_checkout_and_writes_only_there(tmp_path, short_root):
     register = _published(box, "lanes/LANES.md")
     assert sum(1 for r in register.splitlines() if r.startswith(f"| `{LANE}`")) == 1
     row = [r for r in register.splitlines() if r.startswith(f"| `{LANE}`")][0]
-    assert "LIVE · " in row and "RESUMED by " in row, row
+    assert "LIVE · " in row, row
+    assert "RESUMED by " in row, row
     assert f"RESUMED — lane {LANE}, session " in _published(box, f"lanes/log/{LANE}.md")
     stamped = _published(box, cell)
-    assert f"(lane {LANE}) at " in stamped and stamped.splitlines()[2].startswith("RESUMED by "), stamped
+    assert f"(lane {LANE}) at " in stamped, stamped
+    assert stamped.splitlines()[2].startswith("RESUMED by "), stamped
     assert _origin(box, "log", "-1", "--format=%s%n%b", "main").startswith(f"handoff({LANE}@Eagle): RESUMED by ")
     assert f"Lane: {LANE}" in _origin(box, "log", "-1", "--format=%b", "main")
 
-    _assert_W_only_fast_forwarded(box, before)
+    assert_W_moved_only_by_fast_forward(box, before)
     assert box.git("-C", str(box.wip), "rev-parse", "HEAD").strip() == _tip(box), "W ends on origin's tip"
     _assert_nothing_unpublished(box, checkout)
 
@@ -159,7 +143,7 @@ def test_launch_fast_forwards_W_before_and_after(tmp_path, short_root):
     box, checkout, lane_dir = _boxed(tmp_path, short_root)
     made = _edit(box, "lane-checkout", LANE, "--create")
     assert made.returncode == 0, made.stderr
-    before = _reflog(box)
+    before = W_reflog(box)
     # Another workstation's start of this lane: its row, and its handoff.
     register = _published(box, "lanes/LANES.md")
     row = (f"| `{LANE}` | harness `{PEER_SID}` (minted by lane-start, 2026-10-22T00:00:00Z) | "
@@ -174,7 +158,7 @@ def test_launch_fast_forwards_W_before_and_after(tmp_path, short_root):
     assert len(rows(box.wip / "lanes" / "LANES.md")) == 1, "W was brought up to the peer's row first"
     assert box.git("-C", str(box.wip), "rev-parse", "HEAD").strip() == _tip(box), "and to the stamp after"
     assert _origin(box, "log", "-1", "--format=%s", "main").startswith(f"handoff({LANE}@Eagle): RESUMED by ")
-    _assert_W_only_fast_forwarded(box, before)
+    assert_W_moved_only_by_fast_forward(box, before)
     _assert_nothing_unpublished(box, checkout)
 
 
@@ -223,7 +207,8 @@ def test_the_1312Z_shape_all_three_writes_pushed(tmp_path, short_root):
     assert start.returncode == 0, start.stderr
     published = _published(box, "lanes/LANES.md")
     row = [r for r in published.splitlines() if r.startswith(f"| `{LANE}`")]
-    assert len(row) == 1 and "RESUMED by " in row[0], row
+    assert len(row) == 1, row
+    assert "RESUMED by " in row[0], row
     assert changed in published, "the peer's change to the row beside it is kept"
     assert f"RESUMED — lane {LANE}, session " in _published(box, f"lanes/log/{LANE}.md")
     assert _published(box, cell).splitlines()[2].startswith("RESUMED by "), _published(box, cell)
@@ -240,7 +225,8 @@ def test_first_prompt_reads_the_checkout_copy(tmp_path, short_root):
 
     start = box.start("--fresh", window_name=LANE)
     assert start.returncode == 0, start.stderr
-    assert "RESUMED by " in start.stdout and f"(lane {LANE}) at " in start.stdout, start.stdout
+    assert "RESUMED by " in start.stdout, start.stdout
+    assert f"(lane {LANE}) at " in start.stdout, start.stdout
     assert "STRAY-W-EDIT" not in start.stdout, start.stdout
     assert "STRAY-W-EDIT" not in _published(box, cell), "W's stray never reaches origin"
     assert "STRAY-W-EDIT" in stray.read_text(encoding="utf-8"), "and W's stray is a person's to settle"
@@ -264,13 +250,14 @@ def test_dry_run_creates_nothing_and_leaves_W(tmp_path, short_root):
     box.env["LANES_ROUTE_WRITES"] = "1"
     _peer_push(box, {_cell(box): HANDOFF}, "the lane's handoff, written elsewhere")
     head = box.git("-C", str(box.wip), "rev-parse", "HEAD")
-    before = _reflog(box)
+    before = W_reflog(box)
 
     plan = box.start("--fresh", "--dry-run", window_name=LANE)
     assert plan.returncode == 0, plan.stderr
-    assert not checkout.exists() and not checkout.parent.exists(), "a dry run makes no lane checkout"
+    assert not checkout.exists(), "a dry run makes no lane checkout"
+    assert not checkout.parent.exists(), "and no folder for one"
     assert box.git("-C", str(box.wip), "rev-parse", "HEAD") == head, "W did not move"
-    assert _reflog(box) == before
+    assert W_reflog(box) == before
     for planned in ("refresh-workspace", f"lane-checkout {LANE} --create", f"write-handoff {LANE} --stamp"):
         assert any("PLAN" in line and planned in line for line in plan.stderr.splitlines()), (planned, plan.stderr)
 
@@ -295,7 +282,8 @@ exec '{box.bin / "lanes-edit.sh"}' "$@"
                            capture_output=True, text=True, timeout=180, check=False)
     assert start.returncode == 0, start.stderr
     assert "test: write-handoff refused" in start.stderr, start.stderr
-    assert "RESUMED by " in start.stderr and "write-handoff" in start.stderr
+    assert "RESUMED by " in start.stderr
+    assert "write-handoff" in start.stderr
     assert "Nothing was launched" not in start.stderr
     assert "RESUMED by " not in _published(box, cell)
     assert os.path.exists(box.wip / cell)
@@ -319,7 +307,7 @@ def test_no_lane_copy_launches_with_no_first_prompt_never_W_copy(tmp_path, short
     the writes, never through W)."""
     box = Sandbox(tmp_path)
     checkout = default_resolution(box, route=False)
-    _quiet(box, box.wip)
+    no_auto_gc(box, "-C", str(box.wip))
     lane_dir = _checkout_of_length(short_root, None)
     box.checkout(lane_dir)
     first = box.start("--dir", str(lane_dir), window_name="claude")
@@ -485,3 +473,42 @@ exec '{real}' "$@"
     assert "its words above say whether a commit was made, where it is kept" in said[0], said
     assert f"LANES_LANE={LANE} " in said[0], said
     assert "the publish act" in said[0], said
+
+
+def test_first_prompt_follows_a_handoff_a_peer_moved_during_the_stamp(tmp_path, short_root):
+    """rv2b's NIT 1 on #316: a peer moves the lane's handoff, and the row's
+    cell with it, while this launch stamps it. The write's replay follows the
+    cell and stamps the moved file, and 5d reads THAT file, not the path
+    `handoff-path` named before the write, which is gone from the checkout."""
+    box, checkout, _lane_dir, _before = _started(tmp_path, short_root)
+    cell = _cell(box)
+    _peer_push(box, {cell: HANDOFF}, "the lane's handoff, written elsewhere")
+    moved = cell[:-len(".md")] + "-moved.md"
+    peer = _peer(box)
+    real = box.bin / "lanes-edit.sh"
+    mark = box.root / "moved.mark"
+    wrapper = box.root / "moving-lanes-edit.sh"
+    wrapper.write_text(f"""#!/usr/bin/env bash
+if [ "${{1-}}" = write-handoff ] && [ ! -e '{mark}' ]; then
+  : > '{mark}'
+  git -C '{peer}' fetch -q origin main && git -C '{peer}' merge -q --ff-only origin/main &&
+    git -C '{peer}' mv -- '{cell}' '{moved}' &&
+    sed -i 's#{cell}#{moved}#' '{peer}/lanes/LANES.md' &&
+    git -C '{peer}' commit -q -am 'a peer moves the handoff' &&
+    git -C '{peer}' push -q origin HEAD:main || exit 99
+fi
+exec '{real}' "$@"
+""", encoding="utf-8")
+    wrapper.chmod(0o755)
+
+    start = subprocess.run([str(box.bin / "lane-start"), "repoZ", "1", "--no-launch", "--fresh"],
+                           env=dict(box.env, LANES_EDIT=str(wrapper), FAKE_TMUX_WINDOW_NAME=LANE),
+                           capture_output=True, text=True, timeout=180, check=False)
+    assert start.returncode == 0, start.stderr
+    assert mark.exists(), "the peer moved the handoff during the stamp"
+    assert _cell(box) == moved
+    assert "RESUMED by " in _published(box, moved)
+    assert f"{checkout}/{moved}" in start.stderr, start.stderr
+    assert "launched with no first prompt" not in start.stderr, start.stderr
+    assert "RESUMED by " in start.stdout, (start.stdout, start.stderr)
+    assert "own words" in start.stdout, start.stdout

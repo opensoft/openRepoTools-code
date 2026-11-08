@@ -35,8 +35,9 @@ from pathlib import Path
 import pytest
 
 from conftest import REPO
-from test_a23_lane_start import (HANDOFF, _assert_nothing_unpublished, _assert_W_only_fast_forwarded,
+from test_a23_lane_start import (HANDOFF, _assert_nothing_unpublished,
                                  _cell, _edit, _origin, _peer_push, _published, _started, _tip)
+from test_a23_lane_start_read import assert_W_moved_only_by_fast_forward
 from test_lane_start_row_stamp import LANE, Sandbox, pytestmark, short_root  # noqa: F401
 
 WHY = "a test handoff"
@@ -78,9 +79,11 @@ def test_handoff_written_and_pushed_from_checkout(tmp_path, short_root):
 
     published = _published(box, cell)
     block, sep, rest = published.partition("\n---\n\n")
-    assert sep and rest == HANDOFF, published
+    assert sep, published
+    assert rest == HANDOFF, published
     assert block.startswith(f"Lane: {LANE} (test-profile, session "), block
-    assert "## RESUME PROMPT — PAUSED " in block and f"({WHY})" in block, block
+    assert "## RESUME PROMPT — PAUSED " in block, block
+    assert f"({WHY})" in block, block
     assert _origin(box, "log", "-1", "--format=%s", "main", "--", cell).strip() == SUBJECT
     assert f"Lane: {LANE}" in _origin(box, "log", "-1", "--format=%b", "main", "--", cell)
     assert f"handoff refreshed: {checkout}/{cell} " in result.stderr, result.stderr
@@ -88,7 +91,7 @@ def test_handoff_written_and_pushed_from_checkout(tmp_path, short_root):
 
     # THE ONE WRITE IN W IS GONE: W moved only by fast-forward, and its copy of
     # the handoff took no byte from this act.
-    _assert_W_only_fast_forwarded(box, before)
+    assert_W_moved_only_by_fast_forward(box, before)
     assert (box.wip / cell).read_text(encoding="utf-8") in (HANDOFF, published)
     assert (checkout / cell).read_text(encoding="utf-8") == published
     _assert_nothing_unpublished(box, checkout)
@@ -125,9 +128,10 @@ def test_S3_refusal_writes_file_no_commit_prints_git_words(tmp_path, short_root)
     assert "handoffs/repoQ/foreign.md" in result.stderr
     assert "the handoff is WRITTEN and NOT committed" in result.stderr
     assert f"commit -m \"{SUBJECT}\"" in result.stderr, result.stderr
-    assert "NOT committed" in result.stderr and "write-handoff` exited 2" in result.stderr, result.stderr
+    assert "NOT committed" in result.stderr, result.stderr
+    assert "write-handoff` exited 2" in result.stderr, result.stderr
 
-    _assert_W_only_fast_forwarded(box, before)
+    assert_W_moved_only_by_fast_forward(box, before)
     assert (box.wip / cell).read_text(encoding="utf-8") == HANDOFF, "W's copy took no byte"
 
 
@@ -149,8 +153,8 @@ exec '{box.bin / "lanes-edit.sh"}' "$@"
         made = [line for line in recorded if line.startswith(verb + " ")]
         assert made == [f"{verb} LANES_LANE={LANE}"], (verb, recorded)
     register = _published(box, "lanes/LANES.md")
-    assert f"PAUSED — lane {LANE}, session " in register and f", {WHY} kind unknown; handoff refreshed" in register, \
-        register
+    assert f"PAUSED — lane {LANE}, session " in register, register
+    assert f", {WHY} kind unknown; handoff refreshed" in register, register
     assert _published(box, cell).endswith("\n---\n\n" + HANDOFF)
     _assert_nothing_unpublished(box, checkout)
 

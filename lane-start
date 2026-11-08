@@ -4433,6 +4433,10 @@ if [ "$lane_verb" = RESUMED ] && [ "$row_count" = 1 ] && (( stamp_ok )); then
     hs_line="$(printf '%s\n' "$hs_out" | awk -F'\t' 'NF >= 2 && $1 != "" { l = $0 } END { print l }')"
     if [ -n "$hs_line" ]; then
       hs_written="${hs_line%%	*}"
+      # 5d READS THE FILE THIS CALL WROTE (rv2b's NIT 1 on #316): a peer that
+      # moved the handoff and its cell on origin is followed by the write's
+      # replay, and the path `handoff-path` named before it may be gone.
+      if [ -f "$hs_written" ]; then HS_PATH="$hs_written"; fi
       # THE DIGEST THE RESTART NOW EXPECTS is the stamped file's, which the
       # helper reserved in the intent before the bytes: 5d reads that file.
       if [ "$ri_active" = 1 ]; then ri_expected_digest="${hs_line##*	}"; fi

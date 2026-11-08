@@ -49,7 +49,7 @@ VERSION = "2.1.284"
 #: The environment a case must not inherit from the host that runs it: every
 #: seam `lane-start`, `lanes-edit.sh` and `claude-current` read.
 SCRUBBED_PREFIXES = ("LANES_", "LANE_START_", "CLAUDE_", "OPENREPOTOOLS_",
-                     "FAKE_", "GIT_", "NPM_CONFIG_", "npm_config_", "TMUX")
+                     "FAKE_", "GIT_", "NPM_CONFIG_", "npm_config_", "TMUX", "WORKBENCHES_")
 SCRUBBED = {"AGENT_PROTOCOL_ROOT", "PROJECTS_ROOT", "XDG_CONFIG_HOME",
             "XDG_CACHE_HOME", "PCLAUDE"}
 

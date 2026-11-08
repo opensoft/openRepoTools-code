@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from test_lane_start_claude_current import Sandbox, LANE, _write, pytestmark
-from test_a23_lane_start_read import W_reflog, assert_W_moved_only_by_fast_forward, default_resolution
+from test_a23_lane_start_read import W_reflog, assert_W_moved_only_by_fast_forward, default_resolution, no_auto_gc
 from conftest import REPO
 
 
@@ -193,9 +193,8 @@ def routed_restart_box(restart_box: Sandbox) -> Sandbox:
     box = restart_box
     default_resolution(box)
     box.env["CLAUDE_PROFILE_NAME"] = "test-profile"
-    for where in (("-C", str(box.wip)), ("--git-dir", str(box.origin))):
-        box.git(*where, "config", "gc.auto", "0")
-        box.git(*where, "config", "maintenance.auto", "false")
+    no_auto_gc(box, "-C", str(box.wip))
+    no_auto_gc(box, "--git-dir", str(box.origin))
     return box
 
 
@@ -536,13 +535,15 @@ def test_ctx_round_trip_through_lane_checkout(routed_restart_box):
     result = supervisor(box, "--restart", "--lane", LANE, "--dir", str(box.lane_dir), "clear")
     assert result.returncode == 0, (result.stdout, result.stderr)
     respawn = box.tmux_log.read_text()
-    assert "respawn-pane" in respawn and "LANES_ROUTE_WRITES=1 " in respawn, respawn
+    assert "respawn-pane" in respawn, respawn
+    assert "LANES_ROUTE_WRITES=1 " in respawn, respawn
     paused = source.read_bytes()
     assert b"## RESUME PROMPT \xe2\x80\x94 PAUSED " in paused, paused
     assert paused.endswith(b"\n---\n\n# restart handoff\n\nPreserved task.\n---\nHistory.\n"), paused
     assert published(box, rel) == paused, "the PAUSED block was committed and pushed from the checkout"
     record = intent_record(box)
-    assert record["state"] == "pending" and record["handoff"] == str(source), record
+    assert record["state"] == "pending", record
+    assert record["handoff"] == str(source), record
     assert record["digest"] == hashlib.sha256(paused).hexdigest(), record
     operation = record["operation"]
     assert operation != "op-test"
@@ -555,18 +556,21 @@ def test_ctx_round_trip_through_lane_checkout(routed_restart_box):
                              capture_output=True, text=True, timeout=120, check=False)
     assert refused.returncode == 2, (refused.stdout, refused.stderr)
     assert "different handoffs" in refused.stderr or "row names is missing" in refused.stderr, refused.stderr
-    assert intent_path(box).read_bytes() == pending and source.read_bytes() == paused
+    assert intent_path(box).read_bytes() == pending
+    assert source.read_bytes() == paused
     assert box.claude_runs() == ""
 
     launched = box.start("--fresh", "--operation", operation)
     assert launched.returncode == 0, (launched.stdout, launched.stderr)
     assert "RESUME PROMPT — PAUSED " in box.claude_runs()
     stamped = source.read_bytes()
-    assert stamped.count(b"RESUMED by") == 1 and b"## RESUME PROMPT \xe2\x80\x94 PAUSED " in stamped, stamped
+    assert stamped.count(b"RESUMED by") == 1, stamped
+    assert b"## RESUME PROMPT \xe2\x80\x94 PAUSED " in stamped, stamped
     assert stamped.endswith(b"\n---\n\n# restart handoff\n\nPreserved task.\n---\nHistory.\n"), stamped
     assert published(box, rel) == stamped, "the stamp was committed and pushed from the checkout"
     record = intent_record(box)
-    assert record["state"] == "starting" and record["handoff"] == str(source), record
+    assert record["state"] == "starting", record
+    assert record["handoff"] == str(source), record
     assert record["digest"] == hashlib.sha256(stamped).hexdigest(), record
     assert_W_moved_only_by_fast_forward(box, w_before)
 

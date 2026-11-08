@@ -52,6 +52,14 @@ def rows(register: Path) -> list[str]:
             if r.startswith(f"| `{LANE}`")]
 
 
+def no_auto_gc(box: Sandbox, *where: str) -> None:
+    """No automatic gc or maintenance in the repository `where` names
+    (`-C <path>` or `--git-dir <path>`), so a case's reflog and objects stay
+    what its own acts made."""
+    for key, value in (("gc.auto", "0"), ("maintenance.auto", "false")):
+        box.git(*where, "config", key, value)
+
+
 def W_reflog(box: Sandbox) -> list[str]:
     return box.git("-C", str(box.wip), "reflog", "--format=%gs", "HEAD").splitlines()
 
