@@ -4443,11 +4443,16 @@ if [ "$lane_verb" = RESUMED ] && [ "$row_count" = 1 ] && (( stamp_ok )); then
       case "$hs_rc" in
         # THE WORDS SAY WHAT WAS DONE (lane openRepoTools-3's review of #316,
         # 721 and its question 4): under the harness's LANES_NO_GIT=1 the
-        # helper writes the file and commits nothing, and exits 0.
+        # helper writes the file and commits nothing, and exits 0. And since
+        # slice 2a's 604 a 0 is not always a commit in this lane's checkout:
+        # an Amendment 8(d) handoff is committed and pushed in its own
+        # repository, and one in no work tree, or in a clone of the register
+        # not beside W, is committed nowhere. The helper's note says which
+        # (722; slice 3's F24 words the skill's 0 the same way).
         0) if [ "${LANES_NO_GIT:-0}" = 1 ]; then
              note "Rule 3's stamp is written in $hs_written and NOT committed: LANES_NO_GIT=1 commits and pushes nothing (\`write-handoff\` exited 0): $hs_stamp"
            else
-             step "handoff stamped, committed and pushed: $hs_written: $hs_stamp"
+             step "handoff stamped through \`write-handoff\`, which exited 0: $hs_written: $hs_stamp (its words above say what it committed and pushed, or that nothing was committed)"
            fi ;;
         3) note "Rule 3's stamp is written in $hs_written and its commit pushed, and origin did not confirm it (\`write-handoff\` exited 3; its words above name the commit): look before writing it again, because a stamp written twice is two resumes in the one document this protocol never rewrites." ;;
         # 6 IS NOT ONE STATE (lane openRepoTools-3's review of #311, 982):

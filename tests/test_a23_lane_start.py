@@ -709,3 +709,75 @@ def test_a_cell_in_a_sibling_lanes_checkout_is_neither_stamped_nor_delivered(tmp
     assert SIBLING_WORDS not in start.stdout, start.stdout
     assert "in another checkout of the register beside W" in start.stderr, start.stderr
     assert "launched with no first prompt" in start.stderr, start.stderr
+
+
+
+def _other_repository(box: Sandbox, *, origin: bool = True) -> Path:
+    """Another repository, not the register (Amendment 8(d)): its handoff
+    committed on `main`, and (with `origin`) a bare origin `main` tracks."""
+    other = box.root / "other"
+    box.git("init", "-q", "-b", "main", str(other))
+    no_auto_gc(box, "-C", str(other))
+    (other / "handoff.md").write_text(HANDOFF, encoding="utf-8")
+    box.git("-C", str(other), "add", "--", "handoff.md")
+    box.git("-C", str(other), "commit", "-q", "-m", "another repository's handoff")
+    if origin:
+        bare = box.root / "other.git"
+        box.git("init", "-q", "--bare", "-b", "main", str(bare))
+        box.git("-C", str(other), "remote", "add", "origin", str(bare))
+        box.git("-C", str(other), "push", "-q", "-u", "origin", "main")
+    return other
+
+
+def test_an_8d_cell_is_stamped_committed_and_pushed_in_its_own_repository(tmp_path, short_root):
+    """722 of lane openRepoTools-3's review of #316, at lane-start's stamp:
+    slice 2a's 604 (A57) commits and pushes an Amendment 8(d) handoff in its
+    own repository, as e2037b9 did. The stamp is there, committed and pushed
+    to that repository's origin and its tree clean; the register's origin
+    takes no stamp commit; the first prompt is that file's top block; and the
+    exit-0 words point at the helper's, which say where it was committed (a
+    0 may also commit nothing, slice 3's F24)."""
+    box, _checkout, _lane_dir, _before = _started(tmp_path, short_root)
+    other = _other_repository(box)
+    _peer_push(box, {"lanes/LANES.md": _with_cell(box, str(other / "handoff.md"))},
+               "the lane's cell names another repository's handoff")
+    before = box.git("-C", str(other), "rev-parse", "HEAD").strip()
+
+    start = box.start("--fresh", window_name=LANE)
+    assert start.returncode == 0, start.stderr
+    stamped = (other / "handoff.md").read_text(encoding="utf-8")
+    assert stamped.splitlines()[2].startswith("RESUMED by "), stamped
+    o = ["-C", str(other)]
+    assert box.git(*o, "status", "--porcelain") == "", "its tree is clean"
+    assert box.git(*o, "rev-parse", "HEAD~1").strip() == before
+    assert box.git(*o, "log", "-1", "--format=%s").startswith(f"handoff({LANE}@Eagle): RESUMED by ")
+    assert (box.git("--git-dir", str(box.root / "other.git"), "rev-parse", "main").strip()
+            == box.git(*o, "rev-parse", "HEAD").strip()), "and its origin holds the commit"
+    assert not [s for s in _origin(box, "log", "--format=%s", "main").splitlines()
+                if s.startswith(f"handoff({LANE}@Eagle): RESUMED by ")], "the register took no stamp commit"
+    assert "committed there and pushed to origin/main" in start.stderr, start.stderr
+    assert "handoff stamped through `write-handoff`, which exited 0: " in start.stderr, start.stderr
+    assert "or that nothing was committed" in start.stderr, start.stderr
+    assert "own words" in start.stdout, start.stdout
+
+
+def test_an_8d_stamp_whose_push_fails_there_says_what_the_helper_said(tmp_path, short_root):
+    """982 of lane openRepoTools-3's review of #311 (2b's words share it), its
+    8(d) case: another repository with no origin, so slice 2a's 604 commits
+    the stamp there and cannot push it, and `write-handoff` exits 6. The
+    launch goes on, and lane-start's note points at the helper's words, which
+    say where the commit is kept, never at HEAD of the lane's checkout."""
+    box, _checkout, _lane_dir, _before = _started(tmp_path, short_root)
+    other = _other_repository(box, origin=False)
+    _peer_push(box, {"lanes/LANES.md": _with_cell(box, str(other / "handoff.md"))},
+               "the lane's cell names another repository's handoff")
+    before = box.git("-C", str(other), "rev-parse", "HEAD").strip()
+
+    start = box.start("--fresh", window_name=LANE)
+    assert start.returncode == 0, start.stderr
+    assert box.git("-C", str(other), "rev-parse", "HEAD~1").strip() == before, "committed there"
+    assert "and committed there, on main" in start.stderr, start.stderr
+    said = [line for line in start.stderr.splitlines() if "`write-handoff` exited 6" in line]
+    assert len(said) == 1, start.stderr
+    assert "its words above say whether a commit was made, where it is kept" in said[0], said
+    assert "KEPT on HEAD" not in start.stderr, start.stderr

@@ -2703,12 +2703,16 @@ else
 			# THE WORDS SAY WHAT WAS DONE (lane openRepoTools-3's review of
 			# #316, 728 and its question 4): under the harness's
 			# LANES_NO_GIT=1 the helper writes the file, commits nothing and
-			# exits 0.
+			# exits 0. And since slice 2a's 604 a 0 may commit elsewhere or
+			# nowhere: an Amendment 8(d) handoff is committed and pushed in its
+			# own repository, and one in no work tree, or in a clone of the
+			# register not beside W, is committed nowhere; the helper's note says
+			# which (722; slice 3's F24).
 			0) handoff_record="handoff refreshed"
 			   if [ "${LANES_NO_GIT:-0}" = 1 ]; then
 				step "handoff written through \`write-handoff\`, which exited 0 under LANES_NO_GIT=1: the block is written in $handoff_file and nothing is committed or pushed"
 			   else
-				step "handoff written through \`write-handoff\`, which exited 0: its words above say what it committed and pushed"
+				step "handoff written through \`write-handoff\`, which exited 0: its words above say what it committed and pushed, or that nothing was committed"
 			   fi ;;
 			2) handoff_record="handoff written, NOT published (write-handoff exited 2)"
 			   note "the handoff is written in $handoff_file and NOT committed (\`write-handoff\` exited 2: the checkout refused, and its words above say why and give the commit to make once that is answered). Never re-run this handoff to commit it: a second run puts a second block on top." ;;

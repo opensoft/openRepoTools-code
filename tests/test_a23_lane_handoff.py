@@ -35,7 +35,8 @@ from pathlib import Path
 import pytest
 
 from conftest import REPO
-from test_a23_lane_start import (HANDOFF, SIBLING_WORDS, _assert_nothing_unpublished, _sibling_handoff, _with_cell,
+from test_a23_lane_start import (HANDOFF, SIBLING_WORDS, _assert_nothing_unpublished, _other_repository,
+                                 _sibling_handoff, _with_cell,
                                  _cell, _edit, _origin, _peer_push, _published, _started, _tip)
 from test_a23_lane_start_read import assert_W_moved_only_by_fast_forward
 from test_lane_start_row_stamp import LANE, Sandbox, pytestmark, short_root  # noqa: F401
@@ -287,3 +288,36 @@ def test_a_cell_in_a_sibling_lanes_checkout_takes_no_block_and_the_block_is_prin
               if f"PAUSED — lane {LANE}, session " in line]
     assert len(paused) == 1, (paused, result.stderr)
     assert paused[0].endswith("; handoff NOT refreshed (handoff-path exited 2)"), paused
+
+
+
+def test_an_8d_cell_takes_the_block_committed_and_pushed_in_its_own_repository(tmp_path, short_root):
+    """722 of lane openRepoTools-3's review of #316, at lane-handoff's write:
+    slice 2a's 604 (A57) commits and pushes an Amendment 8(d) handoff in its
+    own repository. The block is on top, committed by pathspec under the
+    PAUSED subject and pushed to that repository's origin, its tree clean;
+    the register's PAUSED line records `handoff refreshed`; and the exit-0
+    words point at the helper's (a 0 may also commit nothing, F24)."""
+    box, _checkout, _cell_, _before = _ready(tmp_path, short_root)
+    other = _other_repository(box)
+    _peer_push(box, {"lanes/LANES.md": _with_cell(box, str(other / "handoff.md"))},
+               "the lane's cell names another repository's handoff")
+    before = box.git("-C", str(other), "rev-parse", "HEAD").strip()
+
+    result = _handoff(box)
+    assert result.returncode == 0, result.stderr
+    written = (other / "handoff.md").read_text(encoding="utf-8")
+    assert written.startswith(f"Lane: {LANE} (test-profile, session "), written
+    assert written.endswith("\n---\n\n" + HANDOFF), written
+    o = ["-C", str(other)]
+    assert box.git(*o, "status", "--porcelain") == "", "its tree is clean"
+    assert box.git(*o, "rev-parse", "HEAD~1").strip() == before
+    assert box.git(*o, "log", "-1", "--format=%s").strip() == SUBJECT
+    assert (box.git("--git-dir", str(box.root / "other.git"), "rev-parse", "main").strip()
+            == box.git(*o, "rev-parse", "HEAD").strip()), "and its origin holds the commit"
+    assert "committed there and pushed to origin/main" in result.stderr, result.stderr
+    assert "what it committed and pushed, or that nothing was committed" in result.stderr, result.stderr
+    paused = [line for line in _published(box, "lanes/LANES.md").splitlines()
+              if f"PAUSED — lane {LANE}, session " in line]
+    assert len(paused) == 1, (paused, result.stderr)
+    assert paused[0].endswith("; handoff refreshed"), paused

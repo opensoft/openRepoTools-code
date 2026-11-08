@@ -142,7 +142,7 @@ lane-handoff: writers polled: 2 under <HOME>/projects/repoS
 lanes-edit: committed: handoff(repoS-1@Eagle): PAUSED, t018 handoff
 lanes-edit: pushed origin/main (attempt 1)
 lane-handoff: handoff refreshed: <HOME>/projects/wip/handoffs/repoS-1.md (+15 lines at the head)
-lane-handoff: handoff written through `write-handoff`, which exited 0: its words above say what it committed and pushed
+lane-handoff: handoff written through `write-handoff`, which exited 0: its words above say what it committed and pushed, or that nothing was committed
 lanes-edit: 1 line appended to <HOME>/projects/wip/lanes/log/repoS-1.md
 lanes-edit: committed: LOG(repoS-1@Eagle): PAUSED lane:repoS-1
 lanes-edit: pushed origin/main (attempt 1)

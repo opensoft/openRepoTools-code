@@ -3819,7 +3819,7 @@ has  "…the stamp written and committed here" "$(git -C "$WIP" log --format=%s 
 is   "…and PUSHED: there is no pull for it to need" "$(git -C "$WIP" fetch -q origin && git -C "$WIP" rev-list --count refs/remotes/origin/main..HEAD)" 0
 hasnt "…no pull run or printed" "$err" "pull --rebase"
 hasnt "…and none of the old branch's words" "$err" "the pull before the push"
-has  "…the run saying where it went" "$err" "handoff stamped, committed and pushed: "
+has  "…the run saying where it went" "$err" "handoff stamped through \`write-handoff\`, which exited 0: "
 
 # ------------------------------------------------- lane-start --confirm / --yes
 #
