@@ -424,7 +424,10 @@ def _says(estate: Estate) -> dict:
     return {
         # rv3's NIT 2: the 0 arm claims no push of its own; the verb's note says what it
         # committed and where (an Amendment 8(d) handoff in its own top level, S2).
-        "pushed": (0, True, [f"handoff written: {path} (", "says what was committed and where it was pushed"],
+        # INFO 990 of lane openRepoTools-3's review of #311: a 0 may commit nothing (LANES_NO_GIT=1, an
+        # 8(d) handoff in no work tree, a clone of the register not beside W), and the verb's note says so.
+        "pushed": (0, True, [f"handoff written: {path} (", "says what was committed and where it was pushed",
+                             "or that nothing was committed"],
                    ["HANDOFF NOT", "pushed from the lane checkout", "never committed"]),
         "refused-after-writing": (2, True, [
             "HANDOFF NOT COMMITTED", f"written at {path}, uncommitted", "Nothing was pushed",
@@ -815,11 +818,11 @@ def _register_line(estate: Estate) -> str:
     ({"STUB_WH_RC": "2"}, False, True,
      "; handoff NOT refreshed (write-handoff exited 2 and wrote nothing)"),
     ({"STUB_WH_RC": "2"}, True, True,
-     "; handoff written, its publication NOT confirmed (write-handoff exited 2)"),
+     "; handoff written, NOT published (write-handoff exited 2)"),
     ({"STUB_WH_RC": "3"}, True, True,
      "; handoff written, its publication NOT confirmed (write-handoff exited 3)"),
     ({"STUB_WH_RC": "6"}, True, True,
-     "; handoff written, its publication NOT confirmed (write-handoff exited 6)"),
+     "; handoff written, NOT published (write-handoff exited 6)"),
     ({"STUB_WH_RC": "1"}, True, True,
      "; handoff written, its publication NOT confirmed (write-handoff exited 1)"),
     ({"STUB_HP_RC": "8", "STUB_HP_OUT": ""}, False, True,
@@ -919,6 +922,23 @@ def test_block_1_block_2_and_step_4_each_in_its_own_shell_carry_what_step_2_did(
     line = _register_line(estate)
     assert line.endswith(f"; {ends}"), line
     assert "step 2 left no outcome" not in line, line
+
+
+def test_the_record_phrases_are_lane_3s_refined_set():
+    """Lane openRepoTools-3's answer 6 on #311: the skill and 2b's
+    `lane-handoff` record one act's outcome in one set of phrases, "refined on
+    both sides": "written, NOT published (exited n)" for a 2 or a 6 that wrote
+    the file, and "publication NOT confirmed" for a 3, and for any other exit
+    that wrote the file, where the verb said nothing of what it published."""
+    held = [p for p in _prose("## 2. Refresh the handoff")
+            if p.startswith("**WHAT THIS STEP DID IS CARRIED TO STEP 4")]
+    assert len(held) == 1, held
+    for words in ("`handoff refreshed` only where the call exited 0",
+                  "`handoff written, NOT published (write-handoff exited <n>)` where the verb wrote the file "
+                  "and exited 2 or 6",
+                  "`handoff written, its publication NOT confirmed (write-handoff exited <n>)` where it wrote "
+                  "the file and exited 3, or otherwise"):
+        assert words in held[0], f"the paragraph no longer says {words!r}:\n{held[0]}"
 
 
 def test_the_prose_says_what_to_set_before_block_2_and_before_step_4():

@@ -545,7 +545,10 @@ if [[ -n "$handoff_file" && -s "${block_file:-}" ]]; then
   hf_wrote="nothing was written"; [[ -z "$hf_out" ]] || hf_wrote="the file is written at $hf_path"
   hf_kept="The new top block is kept at $block_file: name that path in the report. Where it is still to go into the handoff once this is answered, it goes by this one call, never by a hand edit:"
   case "$hf_rc" in
-    0) printf 'handoff written: %s (the note above, from write-handoff, says what was committed and where it was pushed)\n' "$hf_path" ;;
+    # A 0 MAY COMMIT NOTHING (lane openRepoTools-3's INFO 990 on #311; 2b's 721 and 728): LANES_NO_GIT=1, an
+    # Amendment 8(d) handoff in no git work tree, or one in a clone of the register not beside W is written and
+    # NOT committed, and the verb's note says so. So the words defer to that note and claim no commit.
+    0) printf 'handoff written: %s (the note above, from write-handoff, says what was committed and where it was pushed, or that nothing was committed)\n' "$hf_path" ;;
     2) if [[ -n "$hf_out" ]]; then
          printf 'HANDOFF NOT COMMITTED: write-handoff refused the commit (exit 2; its words are above) and the file is written at %s, uncommitted. Nothing was pushed. Do not call it again: the new top block is at the head of the file now, and a second call would put a second copy of it on top. Answer the refusal, then commit and publish the file as the note above says.\n' "$hf_path"
        else
@@ -565,10 +568,15 @@ if [[ -n "$handoff_file" && -s "${block_file:-}" ]]; then
     64) printf 'HANDOFF NOT WRITTEN: write-handoff refused the call (exit 64; its words are above) and wrote nothing. Where they say the block does not end with a newline, end it with one (echo >> %s) and run this block once more, once.\n' "$block_file" ;;
     *) printf 'HANDOFF NOT PUBLISHED: write-handoff exited %s (its words are above); %s.\n' "$hf_rc" "$hf_wrote" ;;
   esac
-  # WHAT THIS CALL DID, CARRIED TO STEP 4'S REGISTER LINE (rv3's SHOULD 3 on #311): refreshed only on a 0, written
-  # but not confirmed published where the verb wrote the file (its stdout) and exited otherwise, else NOT refreshed.
+  # WHAT THIS CALL DID, CARRIED TO STEP 4'S REGISTER LINE (rv3's SHOULD 3 on #311), in the phrases lane
+  # openRepoTools-3's answer 6 has the skill and 2b's `lane-handoff` share: refreshed only on a 0; written, NOT
+  # published where the verb wrote the file (its stdout) and refused the commit (2) or kept it unpushed (6);
+  # written, its publication NOT confirmed where it wrote the file and exited 3, or otherwise; else NOT refreshed.
   hf_record="handoff NOT refreshed (write-handoff exited $hf_rc and wrote nothing)"
   [[ -z "$hf_out" ]] || hf_record="handoff written, its publication NOT confirmed (write-handoff exited $hf_rc)"
+  case "$hf_rc:${hf_out:+written}" in
+    2:written|6:written) hf_record="handoff written, NOT published (write-handoff exited $hf_rc)" ;;
+  esac
   [[ "$hf_rc" != 0 ]] || hf_record="handoff refreshed"
   # WHERE NOTHING WAS WRITTEN, THE NEW TOP BLOCK IS NOT LOST WITH THE SWAP: its temporary file is named for the report.
   [[ -n "$hf_out" ]] || printf '%s\n%s\n' "$hf_kept" "$hf_call"
@@ -594,10 +602,12 @@ do, and the report carries that line. Never force, never
 `git add -A`, and never commit staged entries you did not make.
 
 **WHAT THIS STEP DID IS CARRIED TO STEP 4 in `$hf_record`,** so that the register's PAUSED line says it and
-never claims it: `handoff refreshed` only where the call exited 0; `handoff written, its publication NOT
-confirmed (write-handoff exited <n>)` where the verb wrote the file and exited otherwise; and `handoff NOT
+never claims it: `handoff refreshed` only where the call exited 0; `handoff written, NOT published
+(write-handoff exited <n>)` where the verb wrote the file and exited 2 or 6; `handoff written, its publication
+NOT confirmed (write-handoff exited <n>)` where it wrote the file and exited 3, or otherwise; and `handoff NOT
 refreshed (<why>)` wherever nothing was written: the handoff was not found, its read failed, the call was not
-made, or the verb wrote nothing. EVERY BASH CALL IS A NEW SHELL, so nothing one block sets reaches the next
+made, or the verb wrote nothing. These are the phrases lane openRepoTools-3's answer 6 on #311 has 2b's
+`lane-handoff` take too, through its fit (c), so the two writers of one act record its outcome alike. EVERY BASH CALL IS A NEW SHELL, so nothing one block sets reaches the next
 by itself, and step 3 comes between step 2 and step 4 (lane openRepoTools-3's finding 984 on #311). Before
 block 2, set `L`, `lane`, `ws` and `why` as step 1 has them, and each `name=value` line block 1 printed
 (`handoff_file`, `block_file` and `hf_record`, those it printed), quoted. Before step 4, set `hf_record` from
