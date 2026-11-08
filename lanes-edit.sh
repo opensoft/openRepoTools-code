@@ -14155,14 +14155,17 @@ $(session_ids_local_of_lane "$rr_l" 2>/dev/null || :)"
     # commit had had their logs created and appended. It is asked here as
     # `ensure_log` asks it, in its words, because it is the same refusal; the
     # refusal of a local file of another case above means `rr_from`, where
-    # there is one, is the row's own spelling.
+    # there is one, is the row's own spelling. Under Amendment 23 S3 (#198 slice
+    # 1b) a rename whose commit is not pushed is refused before this scan, so the
+    # scan meets this only where origin moves after S3's fast-forward: a reader's
+    # fetch brings a respelled log into origin/main under this checkout.
     rr_pub="$rr_pubp"
     rr_from=""
     [ "$rr_ln2" = 1 ] && rr_from="$rr_loc"
     if [ "$rr_pub" != "$(log_path_for "$rr_l")" ] && [ "${rr_from##*/}" != "${rr_pub##*/}" ]; then
       rr_here="and this checkout does not have it"
       [ -n "$rr_from" ] && rr_here="while this checkout has ${LANES_LOG_PREFIX}${rr_from##*/} instead — a case-only rename whose commit never landed"
-      die "lane ${rr_l}'s object log is published as $rr_pub $rr_here: the row spells the lane $rr_l, so the log is $(log_path_for "$rr_l") (Amendment 15), and writing one here now would leave TWO files for one lane. Origin moved after this write's fast-forward under its lock (Amendment 23 S3): re-run it, and it starts from origin's new tip. Nothing was written." 2
+      die "lane ${rr_l}'s object log is published as $rr_pub $rr_here: the row spells the lane $rr_l, so the log is $(log_path_for "$rr_l") (Amendment 15), and writing one here now would leave TWO files for one lane. Re-run the write: it fast-forwards this checkout to origin's tip under its lock first (Amendment 23 S3), and the rename then happens once, inside its own commit. Nothing was written." 2
     fi
 
     # THE LINE AND THE CELL, BOTH BUILT AND BOTH CHECKED BEFORE ANYTHING IS
