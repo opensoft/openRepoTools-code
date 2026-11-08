@@ -1,5 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
-"""`.github/workflows/tests.yml`: its triggers, its four jobs and the `package` job (#228).
+"""`.github/workflows/tests.yml`: its triggers, its four jobs, their shards and the `package` job (#228).
+
+THE SHARDS. `tests` and `tests-no-submodule` are gates over a matrix of shard
+jobs (`tests-shard`, `tests-no-submodule-shard`): the four gate names stay, so
+the release gate and the leg's rulesets read what they always read, and what
+runs in which shard is `.github/ci/ci_shards.py`'s plan. What is held here is
+that the gates wait on their shards and fail closed, that each matrix is the
+plan's shard list, and that the shard jobs keep today's runner, checkout,
+Python and setup steps. The count the shards add up to is
+`ci_shards.py verify`'s, held by `tests/test_ci_shards.py`.
 
 OFFLINE, LIKE THE REST OF THIS SUITE. What these tests hold is
 contracts/workflows.md's "Held by `tests/test_tests_workflow.py`" list, with
@@ -77,6 +86,20 @@ PINNED_READER = UPSTREAM / "scripts" / "repo_shape.py"
 #: a gate that finds nothing.
 JOB_IDS = ("guard-launch-mode", "tests", "tests-no-submodule", "package")
 
+#: THE SHARD JOB BEHIND EACH GATE THAT HAS ONE, and the commands the workflow
+#: runs. A shard job's name in a run is `<id> (<matrix value>)`, which is none
+#: of the four gate names, so the release gate never reads a shard.
+SHARD_JOBS = {"tests": "tests-shard",
+              "tests-no-submodule": "tests-no-submodule-shard"}
+ALWAYS = "${{ always() }}"
+SHARD_RUN = {gate: ("python3 .github/ci/ci_shards.py run --variant " + gate +
+                    ' --shard "$SHARD" --out "$RUNNER_TEMP/shard"')
+             for gate in SHARD_JOBS}
+VERIFY_RUN = {gate: ("python3 .github/ci/ci_shards.py verify --variant " + gate +
+                     ' --results "$RUNNER_TEMP/shards" --needs-result "$SHARDS_RESULT"')
+              for gate in SHARD_JOBS}
+HELPER = REPO / ".github" / "ci" / "ci_shards.py"
+
 #: The two commits every job pins (contracts/workflows.md).
 CHECKOUT = "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
 SETUP_PYTHON = "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065"
@@ -86,8 +109,10 @@ PULL_REQUEST = {"types": ["opened", "synchronize", "reopened", "labeled"]}
 PUSH = {"branches": ["main", "release/v*"]}
 SCHEDULE = [{"cron": "17 4 * * *"}]
 
-#: THE THREE EXISTING JOBS AS TODAY'S FILE HOLDS THEM, written out here and
-#: never read from history: CI checks out one commit at `fetch-depth: 1`.
+#: THE JOBS THAT RUN THE SUITE AS TODAY'S FILE HOLDS THEM, written out here and
+#: never read from history: CI checks out one commit at `fetch-depth: 1`. The
+#: two shard jobs carry what `tests` and `tests-no-submodule` carried, with the
+#: pytest command replaced by the shard's.
 #: Each is its runner, its checkout's options, its Python and its `run:`
 #: commands in order. The pull request's diff review answers for the rest
 #: of "byte for byte".
@@ -101,7 +126,7 @@ EXISTING_JOBS = {
             "bash tests/run.sh -k 'guard_launch_mode or repo_hygiene'",
         ],
     },
-    "tests": {
+    "tests-shard": {
         "checkout": {"submodules": True, "fetch-depth": 1},
         "python": "3.x",
         "runs": [
@@ -112,10 +137,10 @@ EXISTING_JOBS = {
             '  echo "GIT_COMMITTER_NAME=openRepoTools CI"\n'
             '  echo "GIT_COMMITTER_EMAIL=ci@openrepotools.invalid"\n'
             '} >> "$GITHUB_ENV"\n',
-            "python3 -m pytest tests -q",
+            SHARD_RUN["tests"],
         ],
     },
-    "tests-no-submodule": {
+    "tests-no-submodule-shard": {
         "checkout": {"submodules": False, "fetch-depth": 1},
         "python": "3.x",
         "runs": [
@@ -125,7 +150,7 @@ EXISTING_JOBS = {
             '  echo "the submodule IS checked out; this job proves nothing" >&2\n'
             "  exit 1\n"
             "fi\n",
-            "python3 -m pytest tests -q -rs",
+            SHARD_RUN["tests-no-submodule"],
         ],
     },
 }
@@ -833,24 +858,33 @@ def test_tests_yml_its_other_triggers_are_unchanged(workflow):
 
 
 @NEEDS_UPSTREAM
-def test_tests_yml_has_exactly_the_four_gate_jobs(workflow):
-    """The release gate's four ids (FR-046) and no fifth. None has a
-    `name:`, so each check run is named by its id, and none has an `if:`,
-    so every trigger runs all four."""
+def test_tests_yml_has_the_four_gate_jobs_and_the_two_shard_jobs_and_no_other(workflow):
+    """The release gate's four ids (FR-046), the two shard jobs behind
+    `tests` and `tests-no-submodule`, and no other. None of the four has a
+    `name:`, so each check run is named by its id; none of the six but the two
+    gates over shards has an `if:`, and each of those two has `always()` and
+    nothing else, so every trigger runs all four and a failed shard is a red
+    gate, not a skipped one."""
     jobs = jobs_of(workflow)
-    assert sorted(jobs) == sorted(JOB_IDS), (
-        f"the jobs are {list(jobs)}, not {list(JOB_IDS)}")
-    for job_id in JOB_IDS:
+    want = sorted(JOB_IDS + tuple(SHARD_JOBS.values()))
+    assert sorted(jobs) == want, f"the jobs are {list(jobs)}, not {want}"
+    for job_id in JOB_IDS + tuple(SHARD_JOBS.values()):
         assert "name" not in jobs[job_id], f"`{job_id}` has a `name:`"
-        assert "if" not in jobs[job_id], f"`{job_id}` has an `if:`"
+    for job_id in want:
+        if job_id in SHARD_JOBS:
+            assert jobs[job_id].get("if") == ALWAYS, jobs[job_id].get("if")
+        else:
+            assert "if" not in jobs[job_id], f"`{job_id}` has an `if:`"
 
 
 @NEEDS_UPSTREAM
 @pytest.mark.parametrize("job_id", sorted(EXISTING_JOBS))
 def test_tests_yml_existing_job_keeps_todays_runner_checkout_python_and_runs(
         workflow, job_id):
-    """The three jobs the contract leaves byte for byte keep today's
-    runner, checkout options, Python and `run:` commands."""
+    """The job the contract leaves byte for byte, and the two shard jobs
+    that carry what `tests` and `tests-no-submodule` carried, keep today's
+    runner, checkout options, Python and `run:` commands, the shards' pytest
+    command being the shard's."""
     job = jobs_of(workflow).get(job_id)
     assert isinstance(job, dict), f"tests.yml has no `{job_id}` job"
     want = EXISTING_JOBS[job_id]
@@ -864,6 +898,55 @@ def test_tests_yml_existing_job_keeps_todays_runner_checkout_python_and_runs(
         steps[1].get("with")
     runs = [step["run"] for step in steps if "run" in step]
     assert runs == want["runs"], f"`{job_id}`'s `run:` commands moved: {runs}"
+
+
+@NEEDS_UPSTREAM
+@pytest.mark.parametrize("gate", sorted(SHARD_JOBS))
+def test_tests_yml_the_gate_waits_on_its_shards_and_fails_closed(workflow, gate):
+    """`tests` and `tests-no-submodule` keep the release gate's names and are
+    gates over their shard jobs: `needs:` them, `if: always()` so they RUN
+    when a shard fails or is cancelled (a skipped job passes a required check),
+    and one last step, the count check, that always runs, reads the shards'
+    combined result and is not allowed to continue past its own failure."""
+    job = jobs_of(workflow)[gate]
+    assert job.get("needs") == SHARD_JOBS[gate], job.get("needs")
+    assert job.get("if") == ALWAYS, job.get("if")
+    assert "strategy" not in job and "continue-on-error" not in job
+    last = job["steps"][-1]
+    assert last.get("if") == ALWAYS and "continue-on-error" not in last, last
+    assert as_text(last.get("run")) == VERIFY_RUN[gate], last.get("run")
+    assert (last.get("env") or {}).get("SHARDS_RESULT") == (
+        "${{ needs." + SHARD_JOBS[gate] + ".result }}"), last.get("env")
+    verifying = [step for step in job["steps"]
+                 if "ci_shards.py verify" in as_text(step.get("run"))]
+    assert verifying == [last], "the count check is not the gate's one last step"
+
+
+@NEEDS_UPSTREAM
+@pytest.mark.parametrize("gate", sorted(SHARD_JOBS))
+def test_tests_yml_the_matrix_is_the_plans_shards_and_their_reports_are_kept(
+        workflow, gate):
+    """Each shard job's matrix is the shard list `ci_shards.py` plans for its
+    gate, in the plan's order, so a shard added to one and not the other is
+    red here and not a silent gap; no shard cancels the others; and each
+    keeps its report whether it passed or not."""
+    spec = importlib.util.spec_from_file_location("_ci_shards_workflow_test",
+                                                  str(HELPER))
+    helper = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = helper
+    spec.loader.exec_module(helper)
+    job = jobs_of(workflow)[SHARD_JOBS[gate]]
+    strategy = job.get("strategy") or {}
+    assert strategy.get("fail-fast") is False, strategy
+    assert list(strategy.get("matrix") or {}) == ["shard"], strategy
+    assert strategy["matrix"]["shard"] == helper.shard_ids(gate), (
+        f"{SHARD_JOBS[gate]}'s matrix is {strategy['matrix']['shard']}, and "
+        f"the plan's shards are {helper.shard_ids(gate)}")
+    uploads = [step for step in job["steps"]
+               if str(step.get("uses", "")).startswith("actions/upload-artifact@")]
+    assert len(uploads) == 1 and uploads[0].get("if") == ALWAYS, uploads
+    assert uploads[0]["with"]["name"].endswith(
+        "-${{ matrix.shard }}-a${{ github.run_attempt }}"), uploads[0]["with"]
 
 
 def test_tests_yml_header_comment_names_both_push_branches_and_four_jobs():
