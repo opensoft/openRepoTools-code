@@ -3321,3 +3321,34 @@ def test_a_git_file_written_after_the_last_read_moves_it_back(sweep):
     assert (c / ".git").is_dir()
     _no_aside(box)
     assert box.git("-C", str(sharer), "rev-parse", "--absolute-git-dir").strip() == f"{c}/.git"
+
+
+def test_a_directory_made_at_its_path_as_it_is_moved_back_is_said(sweep):
+    """THE MOVE BACK IS ASKED AGAIN (rv4b's NIT G): a directory made at the
+    old path between the test and the `mv` would take the aside inside it,
+    as `mv` moves into a directory, and the report said "moved back" over a
+    checkout hidden in that one. An `mv` first on PATH writes another
+    holder's pid line into the lock just before the move aside, so the
+    checkout is held and moved back, and makes a directory at the old path
+    just before the move back. The row says where the checkout went."""
+    box = sweep.box
+    c = box.checkout(CLOSED)
+    pid = box.lock_of(c) / "pid"
+    real = shutil.which("mv")
+    assert real, "no mv on the test's own PATH"
+    shim = box.fakebin / "mv"
+    shim.write_text("#!/usr/bin/env bash\n"
+                    f'case "$*" in "-- {c} "*"/.{CLOSED}.removing-"*) printf "1 other-container otherhost\\n" > {pid} ;;\n'
+                    f'  "-- "*"/.{CLOSED}.removing-"*" {c}") mkdir -- {c} ;; esac\n'
+                    f'exec {real} "$@"\n', encoding="utf-8")
+    shim.chmod(0o755)
+    result, rows = sweep("--yes", LANES_LANE=RUNNER)
+    inside = [entry for entry in c.iterdir() if entry.name.startswith(f".{CLOSED}.removing-")]
+    assert len(inside) == 1, list(c.iterdir())
+    assert rows[str(c)][0] == "hold", rows[str(c)]
+    assert ("it could not be moved back: a directory came to stand at its path as it was, and "
+            f"the checkout is inside that one, at {inside[0]}, which no later run names (move it "
+            "out by hand)") in rows[str(c)][1], rows[str(c)]
+    assert "it was moved back" not in rows[str(c)][1], rows[str(c)]
+    assert (inside[0] / ".git").is_dir()
+    assert result.returncode == 0, (result.stdout, result.stderr)

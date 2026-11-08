@@ -2498,9 +2498,18 @@ SLU
         if [ -n "$sc_x" ]; then sc_post="${sc_post:+$sc_post; }a file system came to be mounted at or under it as it was moved aside: $(sc_first "$sc_x")"; fi ;;
     esac
     if [ -n "$sc_post" ]; then
+      # NOT INTO A DIRECTORY THAT CAME MEANWHILE (rv4b's NIT G): one made at
+      # the old path between the test and the `mv` takes the aside inside
+      # it, as `mv` moves into a directory. BSD `mv` has no `-T`, so where
+      # the aside went is asked after the move.
       if [ ! -e "$sc_c" ] && [ ! -L "$sc_c" ] && ( trap '' INT TERM; exec mv -- "$sc_aside" "$sc_c" ) 2>/dev/null; then
-        if [ "$sc_moved_line" = "$$ $sc_ident" ]; then SC_LOCK="$sc_c/lanes/.lanes-edit.lock"; sc_lock_drop; fi
-        sc_say_held "$sc_c" "$sc_why" "$sc_post; it was moved back"
+        sc_in="$sc_c/${sc_aside##*/}"
+        if [ -e "$sc_in" ] || [ -L "$sc_in" ]; then
+          sc_say_held "$sc_c" "$sc_why" "$sc_post; it could not be moved back: a directory came to stand at its path as it was, and the checkout is inside that one, at $sc_in, which no later run names (move it out by hand)"
+        else
+          if [ "$sc_moved_line" = "$$ $sc_ident" ]; then SC_LOCK="$sc_c/lanes/.lanes-edit.lock"; sc_lock_drop; fi
+          sc_say_held "$sc_c" "$sc_why" "$sc_post; it was moved back"
+        fi
       else
         sc_say_held "$sc_c" "$sc_why" "$sc_post; it could not be moved back, and is at $sc_aside, which every later run names"
       fi
