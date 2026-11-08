@@ -305,6 +305,8 @@ def test_bound_keeps_the_commit_on_head_exit_6_and_next_write_refuses(box: Box):
     sha = box.head(c)
     assert f"could not push origin/main after six attempts; the commit is local and kept on HEAD: {sha}" in err
     assert f"git -C {c} show {sha}" in err
+    assert f"git -C {c} reset --keep refs/remotes/origin/main" in err, err   # 703
+    _recovery_is_s63s_archive(err, c, "it is")   # 705
     assert box.pushes() == 6
     assert _set("LIVE · six times beaten") in (c / REGISTER).read_text(encoding="utf-8")
     assert _set("LIVE · six times beaten") not in box.origin_register()
@@ -374,6 +376,8 @@ def test_a_push_refused_with_origin_unmoved_names_a_commit_on_top_exit_6(box: Bo
     assert box.pushes() == 1
     assert box.origin_head() == tip
     assert len(box.unpublished(c)) == 2, "both kept on HEAD, for the publish act"
+    assert 'commit "<what they are>", the publish act' in err and "# the archive, on origin" not in err, \
+        "origin is unmoved: the publish act is offered, not S6.3's archive (705)"
     _settled(box, c)
 
 
@@ -447,6 +451,7 @@ def test_unconfirmed_push_exits_3(box: Box):
     sha = box.head(c)
     assert f"pushed, not confirmed: {sha}" in result.stderr
     assert "the read-back fetch of origin main failed" in result.stderr
+    assert f"git -C {c} cherry -v refs/remotes/origin/main HEAD" in result.stderr, result.stderr   # 703
     assert "pushed origin/main (attempt" not in result.stderr, "never the success line"
     assert box.origin_head() == sha, "it did land: exit 3 never says it did not"
     del box.env["FAKE_NET_HOOK"]
@@ -748,14 +753,35 @@ def test_commit_replay_keeps_the_hand_edit(box: Box):
     _settled(box, c)
 
 
-def test_a_lost_races_two_copies_of_the_hand_edit_are_both_removed_once_origin_has_it(box: Box):
+def _one_second_for_the_copies(box: Box) -> None:
+    """704: a `date` first on PATH that answers the copies' own format with
+    one fixed second, and hands every other call to the real `date`."""
+    real = shutil.which("date", path=box.env["PATH"].split(os.pathsep, 1)[1])
+    assert real, "a real date"
+    shim = box.fakebin / "date"
+    shim.write_text("#!/usr/bin/env bash\n"
+                    '[ "$*" = "-u +%Y%m%dT%H%M%SZ" ] && { echo 20261023T120000Z; exit 0; }\n'
+                    f'exec {shlex.quote(real)} "$@"\n', encoding="utf-8")
+    shim.chmod(0o755)
+
+
+@pytest.mark.parametrize("clock", ["unforced", "same-second"])
+def test_a_lost_races_two_copies_of_the_hand_edit_are_both_removed_once_origin_has_it(box: Box, clock: str):
     """393 of lane openRepoTools-3 (#307): a `commit` that loses one push race
     replays its carry under the same pid, and the replay saves the hand edit
-    again under a new name, so one run leaves two copies while
-    `CS_CARRY_DIFF` names only the last. Every copy the run wrote is
-    recorded, the record crosses the replay's `exec`, and both go once the
-    read-back finds the edit on origin."""
+    again, so one run leaves two copies while `CS_CARRY_DIFF` names only the
+    last. Every copy the run wrote is recorded, the record crosses the
+    replay's `exec`, and both go once the read-back finds the edit on origin.
+
+    704 of lane 3's re-check of round 2: a copy's name carries the time to
+    the second, so a replay in the same second gives both copies one name:
+    one file, written twice and removed once origin has the edit, which is
+    right. The test asserted two distinct names; it asserts on the removal
+    notes now, and [same-second] gives both runs one second with a `date`
+    shim, which the replay's three-second pause hides unforced."""
     c = box.seam()
+    if clock == "same-second":
+        _one_second_for_the_copies(box)
     box.peer_prepares(REGISTER, _row(NEIGHBOUR, uuid=UUID2),
                       _row(NEIGHBOUR, uuid=UUID2, state="LIVE · landed mid-push"),
                       "a peer's row lands first")
@@ -765,13 +791,43 @@ def test_a_lost_races_two_copies_of_the_hand_edit_are_both_removed_once_origin_h
     assert result.returncode == 0, result.stderr
     assert "push refused (attempt 1 of 6)" in result.stderr, "the race was lost once"
     copies = _copies_named(result.stderr)
-    assert len(copies) == 2, result.stderr
-    assert len(set(copies)) == 2, "attempt 1 and its replay each saved a copy of its own"
+    assert len(copies) == 2, ("attempt 1 and its replay each saved a copy", result.stderr)
+    if clock == "same-second":
+        assert len(set(copies)) == 1, ("the shim gave both one second", copies)
+    removed = re.findall(r"its copy is removed: (\S+\.diff)", result.stderr)
+    assert sorted(removed) == sorted(copies), ("one removal note per copy recorded", removed, copies)
     for copy in copies:
-        assert f"its copy is removed: {copy}" in result.stderr, copy
         assert not Path(copy).exists(), copy
     assert list((c / ".git" / "lanes-edit").glob("hand-edit-*.diff")) == []
     assert "LIVE · a hand edit" in box.origin_register()
+    _settled(box, c)
+
+
+def test_a_lost_races_refused_re_run_carry_names_every_copy_it_keeps(box: Box):
+    """707 of lane openRepoTools-3's re-check of #307's round 2, the small
+    follow-up the body disclosed: a `commit` that loses a push race replays
+    its carry, which saves the hand edit again; where the peer that won
+    changed the same row, the re-run's carry no longer applies, and the
+    refusal (2) kept both copies and named only the last. It names each copy
+    once now, by the names the carry notes printed, so it holds for one name
+    or two (704: a replay in the same second reuses the name)."""
+    c = box.seam()
+    box.peer_prepares(REGISTER, _row(LANE), _row(LANE, state="LIVE · the peer's own edit of this row"),
+                      "a peer edits the same row and lands first")
+    box.race(prepared=True)
+    box.hand_edit(c)
+    result = box.helper("commit", "the hand edit", LANES_LANE=LANE)
+    err = result.stderr
+    assert result.returncode == 2, err
+    assert "push refused (attempt 1 of 6)" in err, "the race was lost once"
+    refusal = [l for l in err.splitlines() if "no longer applies" in l]
+    assert len(refusal) == 1, err
+    copies = set(_copies_named(err)) | {str(p) for p in (c / ".git" / "lanes-edit").glob("hand-edit-*.diff")}
+    assert copies, err
+    for copy in copies:
+        assert Path(copy).is_file(), ("every copy is kept", copy)
+        assert refusal[0].count(copy) == 1, ("the refusal names each copy once", copy, refusal[0])
+    assert "LIVE · a hand edit" not in box.origin_register(), "nothing of the hand edit was pushed"
     _settled(box, c)
 
 
@@ -989,6 +1045,7 @@ def test_a_publish_act_push_refused_with_origin_unmoved_reads_head_exit_6(box: B
     assert box.origin_head() == tip
     if state == "head-is-the-tip":
         assert "they are kept on HEAD, and nothing of them reached origin by this push" in err
+        assert f"Look: git -C {c} cherry -v refs/remotes/origin/main HEAD" in err, err   # 703
         assert "is no longer HEAD" not in err and "rewrote" not in err
         assert box.head(c) == shas[-1]
         assert len(box.unpublished(c)) == 2
@@ -1137,6 +1194,7 @@ def test_a_commit_made_on_top_before_the_replay_is_kept_exit_6(box: Box):
     assert result.returncode == 6, result.stderr
     assert "is no longer HEAD, so it is not replayed" in result.stderr
     assert "in this checkout before or while its push was in flight" in result.stderr, "the HEAD check fired, not the drop's"
+    _recovery_is_s63s_archive(result.stderr, c, "they are")   # 705
     assert "push refused (attempt 1 of 6)" not in result.stderr, "no reset was made"
     assert box.subject(c) == "handoff(repoS4-2@Eagle): a stamp from an unlocked writer"
     assert box.subject(c, "HEAD~1").startswith(f"LANES({LANE}@"), "this write's commit is under it"
@@ -1428,21 +1486,25 @@ def test_an_add_row_whose_retirement_a_reader_fetched_in_after_S3s_compare_refus
 # Rule 1's network reads, none bounded by `git_net`.
 
 CLAIM_URL = "https://github.com/opensoft/repoS4/issues/1#issuecomment-284"
+POSTED_URL = "https://github.com/opensoft/repoS4/issues/1#issuecomment-706"
 
 
-def _network_reads_logged(box: Box, c: Path, bulk: int = 0) -> tuple:
+def _network_reads_logged(box: Box, c: Path, bulk: int = 0, posted: Path | None = None) -> tuple:
     """`gh`, and `git ls-remote` of a GitHub URL, each logged with whether
     `c`'s lock is held at that moment; `gh issue view ... --json comments`
     answers a claim comment's URL, and with `bulk`, `gh issue view
     --comments` answers that many `CLAIMED —` lines of about 100 bytes each.
-    Nothing reaches the network. Returns the log and the env that puts both
-    first and lets the claim ask GitHub."""
+    With `posted`, `gh issue comment` keeps the body it is given there and
+    answers a comment's URL. Nothing reaches the network. Returns the log and
+    the env that puts both first and lets the claim ask GitHub."""
     lock = shlex.quote(str(box.lock_of(c)))
     log = shlex.quote(str(box.root / "net-reads.log"))
     held = f'if [ -d {lock} ]; then s="LOCK HELD"; else s="no lock"; fi'
     many = (f'*"issue view"*"--comments"*) i=0; while [ "$i" -lt {bulk} ]; do i=$((i + 1)); '
             f'printf "CLAIMED — lane bulk-%05d, session {UUID2}@Eagle, 2026-10-01T00:00:00Z, {OBJ}\\n" "$i"; '
             f'done ;; ') if bulk else ""
+    if posted is not None:
+        many += f'*"issue comment"*) cat > {shlex.quote(str(posted))}; echo "{POSTED_URL}" ;; '
     gh = box.fakebin / "gh"
     gh.write_text("#!/usr/bin/env bash" + "\n" + held + "\n" +
                   f'printf "gh %s :: %s\\n" "$*" "$s" >> {log}' + "\n" +
@@ -1602,7 +1664,8 @@ def test_a_commit_another_writer_rewrote_is_named_as_rewritten_exit_6(box: Box):
     assert result.returncode == 6, result.stderr
     assert "rewrote this write's commit" in result.stderr
     assert "kept on HEAD" not in result.stderr, "nothing of this write's is on HEAD under its own sha"
-    assert "cherry -v origin/main HEAD" in result.stderr
+    assert "cherry -v refs/remotes/origin/main HEAD" in result.stderr   # 703
+    assert "log --oneline -5 refs/remotes/origin/main" in result.stderr
     named = re.search(r"so it is not replayed: ([0-9a-f]{40}) ", result.stderr)
     assert named, result.stderr
     on_head = subprocess.run(["git", "-C", str(c), "merge-base", "--is-ancestor", named.group(1), "HEAD"],
@@ -1692,6 +1755,7 @@ def test_a_commit_landing_before_the_replays_drop_is_never_dropped_exit_6(box: B
     assert result.returncode == 6, result.stderr
     assert "between the replay's HEAD check and its drop" in result.stderr
     assert "is no longer HEAD, so it is not replayed" in result.stderr
+    _recovery_is_s63s_archive(result.stderr, c, "they are")   # 705
     assert "push refused (attempt 1 of 6)" not in result.stderr, "nothing is replayed"
     assert box.subject(c) == "handoff(repoS4-2@Eagle): a stamp from an unlocked writer"
     assert box.subject(c, "HEAD~1").startswith(f"LANES({LANE}@"), "this write's commit is under it"
@@ -1728,6 +1792,7 @@ def test_a_drop_refused_for_another_reason_names_git_and_no_commit_on_top_exit_6
     assert "it and the commit on top of it" not in err
     assert f"not this write's commit {sha}" not in err
     assert f"HEAD is still this write's commit {sha}" in err
+    _recovery_is_s63s_archive(err, c, "it is")   # 705
     assert f"git could not move the branch off this write's commit to drop it, so nothing was moved and it is kept on HEAD: {sha}" in err
     assert "push refused (attempt 1 of 6)" not in err, "nothing is replayed"
     assert len(box.unpublished(c)) == 1, "the one commit is kept, for the publish act"
@@ -1812,6 +1877,7 @@ def test_a_commit_landing_just_after_this_writes_commit_is_never_taken_for_it_ex
     assert box.subject(c, "HEAD~1").startswith(f"LANES({LANE}@"), "this write's commit is under the stamp"
     assert f"Commit {stamp} is dropped" not in err, "the stamp was taken for this write's commit"
     assert f"HEAD is {stamp}, not this write's commit {mine}" in err, err
+    _recovery_is_s63s_archive(err, c, "they are")   # 705
     # 343's smaller half: the stamp came after this write's commit and BEFORE
     # its push, so "while its push was in flight" alone was not true here.
     assert "in this checkout before or while its push was in flight" in err, err
@@ -1833,6 +1899,23 @@ def _archive_comes_after_the_list_and_the_stop_line(err: str, base: str, mine: s
     drop = err.find("reset --keep refs/remotes/origin/main", archive)
     assert 0 <= listed < stop < archive < drop, err
     assert 'commit "<what they are>", the publish act' not in err, "the publish act refuses here"
+
+
+def _recovery_is_s63s_archive(err: str, c: Path, kept: str) -> None:
+    """705 of lane openRepoTools-3's re-check of #307's round 2, 343's fix
+    carried to four sibling notes: where origin moved (`cp_replay`'s bound
+    and keep-if-gone notes, `cp_not_head`'s HEAD-still and on-top notes), the
+    publish act refuses ("moved past", 2), and they offered it first. Now
+    each says what is kept must be archived, then gives S6.3's recovery: the
+    list, the STOP line, the archive and the drop, in that order."""
+    lead = err.find(f"until {kept} archived and dropped here")
+    rec = err.find("RECOVERY (S6.3), in this order:", max(lead, 0))
+    listed = err.find(f"list them: git -C {c} cherry -v refs/remotes/origin/main HEAD", max(rec, 0))
+    stop = err.find("STOP and take it to the lane its subject names", max(listed, 0))
+    archive = err.find("# the archive, on origin", max(stop, 0))
+    drop = err.find(f"git -C {c} reset --keep refs/remotes/origin/main", max(archive, 0))
+    assert 0 <= lead < rec < listed < stop < archive < drop, err
+    assert '", the publish act' not in err, ("the publish act refuses here", err)
 
 
 def test_a_commit_landing_just_before_this_writes_commit_is_never_dropped_with_it_exit_6(box: Box):
@@ -2170,6 +2253,8 @@ def test_a_file_the_write_edits_in_place_deleted_on_origin_keeps_the_commit_exit
         sha = box.head(c)
         assert f"origin's copy of {log} was deleted while this write's push was in flight" in err, err
         assert f"kept on HEAD: {sha}" in err
+        assert f"git -C {c} reset --keep refs/remotes/origin/main" in err, err   # 703
+        _recovery_is_s63s_archive(err, c, "it is")   # 705
         assert "push refused (attempt" not in err, "nothing is dropped or replayed"
         assert "the in-place write" in (c / log).read_text(encoding="utf-8"), "the write is in this checkout"
         assert log not in box.git("--git-dir", str(box.origin), "ls-tree", "-r", "--name-only", "main").split(), \
@@ -2182,3 +2267,108 @@ def test_a_file_the_write_edits_in_place_deleted_on_origin_keeps_the_commit_exit
         assert "the in-place write" in box.origin_file(log)
         assert box.unpublished(c) == []
     _settled(box, c)
+
+
+# ------------------------------------------------------------ #307's round 3
+
+ARCHIVE_LINE = r"(git -C \S+ push origin HEAD:refs/heads/archive/\S+)\s+# the archive, on origin"
+DROP_LINE = r"(git -C \S+ reset --keep \S+)\s+# then drop them here"
+
+
+def _run_as_printed(box: Box, err: str, pattern: str) -> subprocess.CompletedProcess:
+    """The command `pattern` finds in `err`, run by a shell exactly as printed."""
+    found = re.search(pattern, err)
+    assert found, err
+    return subprocess.run(["bash", "-c", found.group(1)], env=box.env, cwd=str(box.root),
+                          capture_output=True, text=True, timeout=60, check=False)
+
+
+@pytest.mark.parametrize("named", ["by-argument", "by-nobody"])
+def test_s63s_archive_and_drop_run_as_printed(tmp_path: Path, named: str):
+    """702 of lane openRepoTools-3's re-check of #307's round 2:
+    `cp_archive_steps` printed `archive/${LANES_LANE:-<lane>}-stranded-…`.
+    Where the lane is named by the write's argument alone (LANES_LANE
+    unset, `cp_under`'s case), the branch read `archive/<lane>-stranded-…`:
+    git made a branch of that name, and a shell reads `<lane>` as a
+    redirection. It now names the lane the write was given; where no lane
+    is named at all (`commit` with no LANES_LANE, the publish act's
+    refusal; without the opt-in, since under it a write names its lane, S2),
+    the archive carries no lane. Run by a shell as printed, the archive lands
+    the stack on origin and the drop puts HEAD at origin's tip."""
+    box = Box(tmp_path, route=named != "by-nobody")
+    c = box.seam()
+    if named == "by-argument":
+        box.race()
+        env = _git_shim(box, COMMIT_CALL, before=_stamp(c))
+        result = box.helper("set-row-state", LANE, STATE, **env)
+        assert result.returncode == 6, result.stderr
+        branch = f"refs/heads/archive/{LANE}-stranded-"
+    else:
+        box.use_net()
+        _queue(box, c)
+        box.peer_pushes("handoffs/repoS4/elsewhere.md", "a peer's file" + "\n")
+        result = box.helper("commit", "publish the queue")
+        assert result.returncode == 2, result.stderr
+        branch = "refs/heads/archive/stranded-"
+    err = result.stderr
+    assert "archive/<lane>" not in err, err
+    stack = box.head(c)
+    archived = _run_as_printed(box, err, ARCHIVE_LINE)
+    assert archived.returncode == 0, (archived.stdout, archived.stderr)
+    refs = box.git("--git-dir", str(box.origin), "for-each-ref",
+                   "--format=%(objectname) %(refname)", "refs/heads/archive/").splitlines()
+    assert len(refs) == 1 and refs[0].startswith(f"{stack} {branch}"), (refs, err)
+    dropped = _run_as_printed(box, err, DROP_LINE)
+    assert dropped.returncode == 0, (dropped.stdout, dropped.stderr)
+    assert box.head(c) == box.origin_head(), "the drop reached origin's tip"
+
+
+def test_a_claims_re_run_posts_the_whole_reads_not_the_capped_copy(box: Box):
+    """706 of lane openRepoTools-3's re-check of #307's round 2: 334's cap
+    reached what a re-run POSTS. The claim comment's "three reads" block was
+    the 32,768-byte copy that crossed the `exec`, so with 1,800 comments the
+    posted comment held about 260 lines and the truncation marker. Attempt 1
+    now keeps the reads whole in a file under the checkout's git directory,
+    whose name crosses the `exec`, and the re-run's comment cites them from
+    it; the environment string keeps 334's cap, and the file goes with the
+    claim's last run."""
+    c = box.seam()
+    posted = box.root / "posted.md"
+    log, env = _network_reads_logged(box, c, bulk=1800, posted=posted)
+    _origin_moves_once_at_s3s_fetch(box)
+    result = box.helper("claim", OBJ, *HOME_FLAG, LANES_LANE=LANE, LANES_SESSION=UUID, **env)
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert "moved while this write's checks ran" in result.stderr, "the claim ran again from the top"
+    assert "(truncated at 32768 bytes" in result.stdout, "the re-run still prints the capped copy (334)"
+    assert f"comment posted: {POSTED_URL}" in result.stderr, result.stderr[-2000:]
+    body = posted.read_text(encoding="utf-8")
+    assert "The three reads (lane-collision-protocol Rule 1)" in body, body[:500]
+    assert "lane bulk-00001," in body and "lane bulk-01800," in body, "the comment cites every read"
+    assert "(truncated at 32768 bytes" not in body, "never the capped copy"
+    assert [r for r in log.read_text(encoding="utf-8").splitlines() if "LOCK HELD" in r] == []
+    assert list((c / ".git" / "lanes-edit").glob("claim-reads-*")) == [], "the whole reads' file goes with the run"
+    _settled(box, c)
+
+
+def test_an_unconfirmed_pushs_look_line_reads_origin_past_a_local_branch_named_origin_main(box: Box):
+    """703 of lane openRepoTools-3's re-check of #307's round 2: the class of
+    333 and 342 was open in six more printed commands (`cherry -v
+    origin/<b> HEAD`, `reset --keep origin/<b>`), and a local branch named
+    `origin/main` wins the short name over the tracking ref. They name
+    `refs/remotes/origin/<b>` now. Here the push landed and its read-back
+    failed (3): the LOOK line, run by a shell as printed past such a branch,
+    finds the commit on origin, where the short name listed it as missing."""
+    c = box.seam()
+    mark = shlex.quote(str(box.root / "pushed"))
+    box.use_net(f'[ "$1" = push ] && {{ touch {mark}; exit 0; }}\n'
+                f'[ "$1" = fetch ] && [ -e {mark} ] && {{ echo "fatal: the read-back cannot reach origin" >&2; exit 128; }}\n'
+                "exit 0\n")
+    result = box.helper("set-row-state", LANE, "LIVE · sent and not confirmed")
+    assert result.returncode == 3, result.stderr
+    sha = box.head(c)
+    assert box.origin_head() == sha, "it landed"
+    box.git("-C", str(c), "branch", "origin/main", "HEAD~1")   # the shadow, behind origin
+    look = _run_as_printed(box, result.stderr,
+                           r"LOOK, by content: (git -C \S+ fetch origin main && git -C \S+ cherry -v \S+ HEAD)")
+    assert look.returncode == 0, look.stderr
+    assert f"+ {sha}" not in look.stdout, ("it is on origin, and the printed LOOK says so", look.stdout)
