@@ -555,6 +555,30 @@ exec '{real}' "$@"
     assert box.claude_runs() == ""
 
 
+def test_a_stamp_refused_as_lost_ownership_launches_nothing(routed_restart_box):
+    """733 (M1, the battery's LS46) of lane openRepoTools-3's review of #316:
+    under a restart, a stamp `write-handoff` refuses with 7 and no written
+    line, the bound file unchanged, is this attempt's lost ownership, and the
+    launch dies (2) saying so: nothing launched, the file as it was."""
+    box = routed_restart_box
+    source = prepare_restart_routed(box)
+    before = source.read_bytes()
+    real = box.bin / "lanes-edit.sh"
+    wrapper = box.root / "seven-lanes-edit.sh"
+    wrapper.write_text(f"""#!/usr/bin/env bash
+if [ "${{1-}}" = write-handoff ]; then echo "write-handoff: this attempt no longer owns the restart" >&2; exit 7; fi
+exec '{real}' "$@"
+""", encoding="utf-8")
+    wrapper.chmod(0o755)
+    box.env["LANES_EDIT"] = str(wrapper)
+
+    result = box.start("--fresh", "--operation", "op-test")
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert "lost ownership of its handoff before the resume stamp" in result.stderr, result.stderr
+    assert box.claude_runs() == ""
+    assert source.read_bytes() == before
+
+
 def test_ctx_round_trip_through_lane_checkout(routed_restart_box):
     """`/ctx` under the opt-in, both halves: `lane-handoff --restart` writes
     the PAUSED top block through the lane's checkout and binds THAT file in
@@ -610,6 +634,49 @@ def test_ctx_round_trip_through_lane_checkout(routed_restart_box):
     assert record["handoff"] == str(source), record
     assert record["digest"] == hashlib.sha256(stamped).hexdigest(), record
     assert_W_moved_only_by_fast_forward(box, w_before)
+
+
+def test_ctx_round_trip_with_W_behind_and_its_refresh_blocked(routed_restart_box):
+    """733's first case of lane openRepoTools-3's review of #316, and slice
+    2a's Q2 caveat (bind the path and the digest through `handoff-path`,
+    with W behind): W holds a commit of its own and a peer has pushed since,
+    so no refresh can fast-forward W. `lane-handoff --restart` still writes
+    and binds the lane's checkout's file, path and digest; the `lane-start`
+    the respawn runs says W was not fast-forwarded, delivers that block and
+    stamps it there; and W's HEAD does not move."""
+    box = routed_restart_box
+    source = prepare_restart_routed(box)
+    checkout = lane_checkout(box)
+    rel = str(source.relative_to(checkout))
+    assert helper(box, "set-restart-intent", LANE, "ready", "--expect", "pending").returncode == 0
+    (box.wip / "local-note.md").write_text("a commit only W has\n", encoding="utf-8")
+    box.git("-C", str(box.wip), "add", "--", "local-note.md")
+    box.git("-C", str(box.wip), "commit", "-qm", "a commit only W has")
+    peer = box.root / "peer"
+    box.git("clone", "-q", str(box.origin), str(peer))
+    (peer / "peer-note.md").write_text("a peer's commit\n", encoding="utf-8")
+    box.git("-C", str(peer), "add", "--", "peer-note.md")
+    box.git("-C", str(peer), "commit", "-qm", "a peer's commit")
+    box.git("-C", str(peer), "push", "-q", "origin", "HEAD:main")
+    w_head = box.git("-C", str(box.wip), "rev-parse", "HEAD")
+
+    result = supervisor(box, "--restart", "--lane", LANE, "--dir", str(box.lane_dir), "clear")
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    paused = source.read_bytes()
+    assert b"## RESUME PROMPT \xe2\x80\x94 PAUSED " in paused, paused
+    assert published(box, rel) == paused, "the PAUSED block was committed and pushed from the checkout"
+    record = intent_record(box)
+    assert record["handoff"] == str(source), record
+    assert record["digest"] == hashlib.sha256(paused).hexdigest(), record
+
+    launched = box.start("--fresh", "--operation", record["operation"])
+    assert launched.returncode == 0, (launched.stdout, launched.stderr)
+    assert "W was not fast-forwarded" in launched.stderr, launched.stderr
+    assert "RESUME PROMPT — PAUSED " in box.claude_runs()
+    stamped = source.read_bytes()
+    assert stamped.count(b"RESUMED by") == 1, stamped
+    assert published(box, rel) == stamped, "the stamp was committed and pushed from the checkout"
+    assert box.git("-C", str(box.wip), "rev-parse", "HEAD") == w_head, "W's HEAD stayed put"
 
 
 def test_restart_historical_ready_intent_does_not_control_ordinary_resume(restart_box):

@@ -45,7 +45,7 @@ WHY = "a test handoff"
 SUBJECT = f"handoff({LANE}@Eagle): PAUSED, {WHY}"
 
 
-def _handoff(box: Sandbox, *args: str, env: dict | None = None) -> subprocess.CompletedProcess:
+def _handoff(box: Sandbox, *args: str, env: dict | None = None, why: str = WHY) -> subprocess.CompletedProcess:
     """`lane-handoff --lane repoZ-1 … <why>`, from a shell with no tmux."""
     if not (box.bin / "lane-handoff").exists():
         shutil.copy2(REPO / "lane-handoff", box.bin / "lane-handoff")
@@ -55,7 +55,7 @@ def _handoff(box: Sandbox, *args: str, env: dict | None = None) -> subprocess.Co
     full = {k: v for k, v in box.env.items() if not k.startswith("WORKBENCHES_")}
     full.update(LANE_HANDOFF_NO_TMUX="1", CLAUDE_PROFILE_NAME="test-profile")
     full.update(env or {})
-    return subprocess.run([str(box.bin / "lane-handoff"), "--lane", LANE, *args, WHY],
+    return subprocess.run([str(box.bin / "lane-handoff"), "--lane", LANE, *args, why],
                           env=full, capture_output=True, text=True, timeout=180, check=False)
 
 
@@ -321,3 +321,18 @@ def test_an_8d_cell_takes_the_block_committed_and_pushed_in_its_own_repository(t
               if f"PAUSED — lane {LANE}, session " in line]
     assert len(paused) == 1, (paused, result.stderr)
     assert paused[0].endswith("; handoff refreshed"), paused
+
+
+
+def test_a_why_with_a_tab_is_a_space_in_the_subject(tmp_path, short_root):
+    """733 (M4, the battery's LH04) of lane openRepoTools-3's review of #316:
+    `write-handoff` refuses a subject that carries a control character, so
+    `subject_text` spells each one as a space, and a why with a tab still
+    refreshes the handoff, as the old `git commit -m` did (decision 19)."""
+    box, _checkout, cell, _before = _ready(tmp_path, short_root)
+
+    result = _handoff(box, why="a test\thandoff")
+    assert result.returncode == 0, result.stderr
+    published = _published(box, cell)
+    assert published.endswith("\n---\n\n" + HANDOFF), published
+    assert _origin(box, "log", "-1", "--format=%s", "main", "--", cell).strip() == SUBJECT
