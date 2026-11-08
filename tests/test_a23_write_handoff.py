@@ -2045,7 +2045,8 @@ def test_a_moved_handoff_the_replay_cannot_follow_is_kept_on_HEAD_exit_6(box: Bo
     assert f"kept on HEAD: {kept}" in err
     assert "push refused (attempt" not in err, "nothing is dropped or replayed"
     assert f.read_text(encoding="utf-8") == stamped(HANDOFF)
-    assert _origin_has(box, MOVED_REL) and not _origin_has(box, HANDOFF_REL)
+    assert _origin_has(box, MOVED_REL), "origin has the moved file"
+    assert not _origin_has(box, HANDOFF_REL), "origin no longer has the old name"
     assert [line.split()[1] for line in box.unpublished(c)] == [kept]
     assert result.stdout == _line(f)
     _released(box, c)
@@ -2777,7 +2778,8 @@ def test_a_cell_a_peer_pads_otherwise_is_the_same_cell_and_the_write_is_kept_on_
     assert "push refused (attempt" not in err, "nothing is dropped or replayed"
     assert f.read_text(encoding="utf-8") == stamped(HANDOFF), "the write is in this checkout"
     names = box.git("--git-dir", str(box.origin), "ls-tree", "-r", "--name-only", "main").splitlines()
-    assert HANDOFF_REL not in names and odd in names
+    assert HANDOFF_REL not in names, "origin no longer has the old name"
+    assert odd in names, "origin has the blank-ended name"
     assert not (c / odd).exists(), "nothing was written into the blank-ended name"
     assert [line.split()[1] for line in box.unpublished(c)] == [kept], "one commit unpublished, this write's"
     assert result.stdout == _line(f)

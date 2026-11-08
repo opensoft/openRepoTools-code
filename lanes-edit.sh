@@ -591,12 +591,13 @@
 #      nothing to write into (one moved with its row's cell, to a file under
 #      `handoffs/` that origin has, is replayed into the moved file), or an
 #      Amendment 8(d) handoff `write-handoff` wrote whose commit or push in its
-#      own repository failed (604; the command that finishes it is said). Or another
-#      writer in the checkout REWROTE this write's commit (a `pull --rebase`
-#      with no lock): it is not on HEAD at all, and what reached origin is
-#      read by content. Or, where the drop's tree step was refused and
-#      another writer committed on the branch in between, the commit is
-#      named OFF HEAD, with `reflog -5`. Every later write from that
+#      own repository failed (604; the command that finishes it is said)
+#      (that commit is in that repository; no write here refuses over it). Or
+#      another writer in the checkout REWROTE this write's commit (a
+#      `pull --rebase` with no lock): it is not on HEAD at all, and what
+#      reached origin is read by content. Or, where the drop's tree step was
+#      refused and another writer committed on the branch in between, the
+#      commit is named OFF HEAD, with `reflog -5`. Every later write from that
 #      checkout refuses under S3 until the lane publishes or archives it
 #   7  ANOTHER ACT GOT THERE FIRST, and this one wrote nothing. `claim`:
 #      CLAIM-LOST, another lane's claim landed on main first.
@@ -21085,7 +21086,7 @@ EOF
       case "$whf_rexp" in *[!0-9a-fA-F]*) die "--expected-digest takes a SHA-256, or none" 64 ;; esac
     fi
     # A FENCED `--prepend` TAKES `--expected-digest none` ONLY (lane
-    # openRepoTools-3's review of #312, 605; A58). Fenced on a digest, a push
+    # openRepoTools-3's review of #312, 605; A59). Fenced on a digest, a push
     # that lost its race to a peer's change of the handoff was replayed onto a
     # pre-image that was no longer the bound one, the re-run refused, and the
     # block was left in the dropped commit, in the reflog only. `lane-handoff`
