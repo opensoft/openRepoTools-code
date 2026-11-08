@@ -654,3 +654,58 @@ def test_a_row_only_in_W_is_named_a_stray_there(tmp_path, short_root):
         start.stderr
     assert "RECOVERY — that row is a stray in W" in start.stderr, start.stderr
     assert "publish the register from here" not in start.stderr, start.stderr
+
+
+# ------------------------------------------------- part 2: on slice 2a's round (723)
+
+SIBLING_WORDS = "not this lane's words"
+
+
+def _sibling_handoff(box: Sandbox) -> Path:
+    """Lane repoZ-2's own clone of the register beside W, its handoff
+    committed there (lane openRepoTools-3's 723 scenario)."""
+    sib = Path(os.path.realpath(box.wip) + "-lanes") / "repoZ-2"
+    box.git("clone", "-q", str(box.root / "origin.git"), str(sib))
+    no_auto_gc(box, "-C", str(sib))
+    f = sib / "handoffs" / "repoZ" / "two.md"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(f"Lane: repoZ-2 — single-use resume prompt\n\n# state\n\n{SIBLING_WORDS}\n", encoding="utf-8")
+    box.git("-C", str(sib), "add", "--", "handoffs/repoZ/two.md")
+    box.git("-C", str(sib), "commit", "-q", "-m", "repoZ-2's handoff")
+    return f
+
+
+def _with_cell(box: Sandbox, cell: str) -> str:
+    """The published register with the lane's row naming `cell` as its handoff."""
+    out = []
+    for line in _published(box, "lanes/LANES.md").splitlines(keepends=True):
+        if line.startswith(f"| `{LANE}`"):
+            cells = line.split("|")
+            cells[6] = f" {cell} "
+            line = "|".join(cells)
+        out.append(line)
+    return "".join(out)
+
+
+def test_a_cell_in_a_sibling_lanes_checkout_is_neither_stamped_nor_delivered(tmp_path, short_root):
+    """723 of lane openRepoTools-3's review of #316, at lane-start's two call
+    sites: the lane's row cell names lane repoZ-2's handoff, in repoZ-2's own
+    clone of the register beside W. Since slice 2a's 601 (A54) `handoff-path`
+    and `write-handoff` refuse a handoff in another checkout of the register,
+    so the stamp writes nothing there, and 5d, which reads only the file
+    `handoff-path` names (727), delivers none of repoZ-2's block: the launch
+    goes on with no first prompt, and says why."""
+    box, _checkout, _lane_dir, _before = _started(tmp_path, short_root)
+    f = _sibling_handoff(box)
+    sib = f.parents[2]
+    _peer_push(box, {"lanes/LANES.md": _with_cell(box, str(f))}, "the lane's cell names repoZ-2's handoff")
+    text, head = f.read_text(encoding="utf-8"), box.git("-C", str(sib), "rev-parse", "HEAD")
+
+    start = box.start("--fresh", window_name=LANE)
+    assert start.returncode == 0, start.stderr
+    assert f.read_text(encoding="utf-8") == text, "nothing was written in the sibling's handoff"
+    assert box.git("-C", str(sib), "status", "--porcelain") == "", "the sibling's checkout is clean"
+    assert box.git("-C", str(sib), "rev-parse", "HEAD") == head, "and took no commit"
+    assert SIBLING_WORDS not in start.stdout, start.stdout
+    assert "in another checkout of the register beside W" in start.stderr, start.stderr
+    assert "launched with no first prompt" in start.stderr, start.stderr

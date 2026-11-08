@@ -35,7 +35,7 @@ from pathlib import Path
 import pytest
 
 from conftest import REPO
-from test_a23_lane_start import (HANDOFF, _assert_nothing_unpublished,
+from test_a23_lane_start import (HANDOFF, SIBLING_WORDS, _assert_nothing_unpublished, _sibling_handoff, _with_cell,
                                  _cell, _edit, _origin, _peer_push, _published, _started, _tip)
 from test_a23_lane_start_read import assert_W_moved_only_by_fast_forward
 from test_lane_start_row_stamp import LANE, Sandbox, pytestmark, short_root  # noqa: F401
@@ -262,3 +262,28 @@ exec '{real}' "$@"
               if f"PAUSED — lane {LANE}, session " in line]
     assert len(paused) == 1, (paused, result.stderr)
     assert paused[0].endswith("; handoff NOT refreshed (handoff-path exited 1)"), paused
+
+
+def test_a_cell_in_a_sibling_lanes_checkout_takes_no_block_and_the_block_is_printed(tmp_path, short_root):
+    """723 of lane openRepoTools-3's review of #316, at lane-handoff's call
+    site: the lane's row cell names lane repoZ-2's handoff in repoZ-2's own
+    clone of the register beside W. `handoff-path` refuses it (slice 2a's
+    601), so nothing is written there, the block is printed for the hand, and
+    the register's PAUSED line says the handoff was NOT refreshed."""
+    box, _checkout, _cell_, _before = _ready(tmp_path, short_root)
+    f = _sibling_handoff(box)
+    sib = f.parents[2]
+    _peer_push(box, {"lanes/LANES.md": _with_cell(box, str(f))}, "the lane's cell names repoZ-2's handoff")
+    text, head = f.read_text(encoding="utf-8"), box.git("-C", str(sib), "rev-parse", "HEAD")
+
+    result = _handoff(box)
+    assert f.read_text(encoding="utf-8") == text, "nothing was written in the sibling's handoff"
+    assert SIBLING_WORDS in text
+    assert box.git("-C", str(sib), "status", "--porcelain") == "", "the sibling's checkout is clean"
+    assert box.git("-C", str(sib), "rev-parse", "HEAD") == head, "and took no commit"
+    assert "in another checkout of the register beside W" in result.stderr, result.stderr
+    assert "## RESUME PROMPT — PAUSED " in result.stderr, result.stderr
+    paused = [line for line in _published(box, "lanes/LANES.md").splitlines()
+              if f"PAUSED — lane {LANE}, session " in line]
+    assert len(paused) == 1, (paused, result.stderr)
+    assert paused[0].endswith("; handoff NOT refreshed (handoff-path exited 2)"), paused
