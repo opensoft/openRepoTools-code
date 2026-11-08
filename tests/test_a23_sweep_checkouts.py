@@ -424,7 +424,8 @@ def test_a_former_name_of_the_runners_own_lane_is_kept_for_its_own_reason(sweep,
         "keep", f"lane {NEW} runs this sweep: its checkout is the one its NOTED line goes through"), rows[str(new)]
     assert result.returncode == (0 if yes else 3), (result.stdout, result.stderr)
     assert _tagged(rows, "removed" if yes else "remove") == {str(box.checkout(CLOSED))}, rows
-    assert old.is_dir() and new.is_dir()
+    assert old.is_dir()
+    assert new.is_dir()
 
 
 def test_a_closed_lanes_checkout_named_by_LANES_REPO_is_kept(sweep):
@@ -1514,7 +1515,8 @@ def test_a_lanes_folder_swapped_for_a_link_under_the_lock_holds(sweep):
                     f'exec {git} "$@"\n', encoding="utf-8")
     shim.chmod(0o755)
     result, rows = sweep("--yes", LANES_LANE=RUNNER)
-    assert marker.exists() and box.lanes_root.is_symlink(), "the shim swapped <W>-lanes/ for a link"
+    assert marker.exists(), "the shim ran"
+    assert box.lanes_root.is_symlink(), "the shim swapped <W>-lanes/ for a link"
     assert rows[str(c)][0] == "hold", rows[str(c)]
     assert f"it could not be moved aside to {box.lanes_root}/.{CLOSED}.removing-" in rows[str(c)][1], rows[str(c)]
     assert result.returncode == 0, (result.stdout, result.stderr)
@@ -2347,7 +2349,8 @@ def test_a_dependents_scan_that_fails_holds_every_candidate(sweep):
             assert rows[str(path)][0] == "hold", rows[str(path)]
             assert (f"what leans on it cannot be told: find over {box.w.parent} failed: "
                     "find: FAKE: the scan broke") in rows[str(path)][1], rows[str(path)]
-    assert c.is_dir() and other.is_dir()
+    assert c.is_dir()
+    assert other.is_dir()
 
 
 @pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0,
@@ -2572,7 +2575,8 @@ def test_clones_beside_W_are_removed_leaves_first(sweep, tmp_path):
     for c in gone:
         assert not os.path.lexists(c), c
     box.git("-C", str(box.w), "fsck", "--connectivity-only")   # W, which c1 borrowed from, is whole
-    assert box.w.is_dir() and box.lanes_root.is_dir()
+    assert box.w.is_dir()
+    assert box.lanes_root.is_dir()
     assert box.everything()[str(box.w.parent / "otherrepo")] == other
     assert not list(box.w.parent.glob(".*.removing-*")), "no aside is left beside W"
     noted = _noted_on_origin(box)
@@ -2602,7 +2606,8 @@ def test_a_held_clone_beside_W_keeps_what_it_borrows_from(sweep):
         assert rows[str(c1)][0] == "hold", rows[str(c1)]
         assert f"leaned on by {c2} " in rows[str(c1)][1], rows[str(c1)]
     assert not os.path.lexists(c3)
-    assert c2.is_dir() and c1.is_dir()
+    assert c2.is_dir()
+    assert c1.is_dir()
 
 
 def _kept_edit(box: Sweep, c: Path) -> None:
