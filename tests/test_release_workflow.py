@@ -141,8 +141,10 @@ PYPROJECT = REPO / "pyproject.toml"
 PIN = REPO / "contracts" / "openreposhape-pin.yaml"
 STAMP = layout.STAMP_SOURCE
 
-#: THE MODEL: openRepoShape v1.1.0's own workflow, in the pinned submodule
-#: (`190133d`). Its artifact actions' pins are this workflow's.
+#: THE MODEL: openRepoShape's own release.yml, in the pinned submodule, at
+#: whatever commit `contracts/openreposhape-pin.yaml` names (`5017830`, v1.1.1,
+#: when the pin moved to it from `190133d`, v1.1.0; the two workflows differ in
+#: comment lines only). Its artifact actions' pins are this workflow's.
 MODEL = UPSTREAM / ".github" / "workflows" / "release.yml"
 STANDARD_SCRIPTS = UPSTREAM / "scripts"
 
