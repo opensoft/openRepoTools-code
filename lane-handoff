@@ -2651,12 +2651,14 @@ subject_text() {   # <text>
 handoff_written=0
 # WHAT THIS ACT DID, AS THE REGISTER'S FILE-LEVEL PAUSED LINE SAYS IT (4(b)
 # below; #303's fit (c) in lane openRepoTools-3's review of #316, and its
-# question 6 on #311). `handoff refreshed` only where `write-handoff` wrote the
-# block and exited 0 with git allowed. Otherwise the skill's phrases, so the
-# two writers of the one act (Amendment 17(a)) say the same thing: written
-# and NOT published (2, 6, any other code that wrote, and LANES_NO_GIT=1),
-# written and its publication NOT confirmed (3 only), or NOT refreshed and
-# why. No reader parses it; it never claims what was not done.
+# question 6 on #311). The skill's phrases, word for word (slice 3's F23 and
+# F24), so the two writers of the one act (Amendment 17(a)) say the same
+# thing: `handoff refreshed` where `write-handoff` wrote the block and exited
+# 0, which claims no commit (under LANES_NO_GIT=1 the step line says nothing
+# was committed); written and NOT published (2, 6); written and its
+# publication NOT confirmed (3, and any other exit after a write, which
+# claims nothing either way); or NOT refreshed and why. No reader parses it;
+# it never claims what was not done.
 handoff_record="handoff NOT refreshed (write-handoff was not called)"
 if [ -z "$handoff_file" ]; then
 	handoff_record="handoff NOT refreshed (no handoff found)"
@@ -2695,29 +2697,29 @@ else
 			# its read-back name this path, as the helper resolved it.
 			handoff_file="${hs_line%%	*}"
 			handoff_written=1
-			handoff_record="handoff written, NOT published (write-handoff exited $hs_rc)"
+			handoff_record="handoff written, its publication NOT confirmed (write-handoff exited $hs_rc)"
 			step "handoff refreshed: $handoff_file (+$hs_added lines at the head)"
 			case "$hs_rc" in
 			# THE WORDS SAY WHAT WAS DONE (lane openRepoTools-3's review of
 			# #316, 728 and its question 4): under the harness's
 			# LANES_NO_GIT=1 the helper writes the file, commits nothing and
 			# exits 0.
-			0) if [ "${LANES_NO_GIT:-0}" = 1 ]; then
-				handoff_record="handoff written, NOT published (LANES_NO_GIT=1)"
+			0) handoff_record="handoff refreshed"
+			   if [ "${LANES_NO_GIT:-0}" = 1 ]; then
 				step "handoff written through \`write-handoff\`, which exited 0 under LANES_NO_GIT=1: the block is written in $handoff_file and nothing is committed or pushed"
 			   else
-				handoff_record="handoff refreshed"
 				step "handoff written through \`write-handoff\`, which exited 0: its words above say what it committed and pushed"
 			   fi ;;
-			2) note "the handoff is written in $handoff_file and NOT committed (\`write-handoff\` exited 2: the checkout refused, and its words above say why and give the commit to make once that is answered). Never re-run this handoff to commit it: a second run puts a second block on top." ;;
-			3) handoff_record="handoff written, its publication NOT confirmed (write-handoff exited 3)"
-			   note "the handoff is written in $handoff_file and its commit pushed, and origin did not confirm it (\`write-handoff\` exited 3; its words above name the commit): look before writing it again, because a second block on top is a second handoff in the one document this protocol never rewrites." ;;
+			2) handoff_record="handoff written, NOT published (write-handoff exited 2)"
+			   note "the handoff is written in $handoff_file and NOT committed (\`write-handoff\` exited 2: the checkout refused, and its words above say why and give the commit to make once that is answered). Never re-run this handoff to commit it: a second run puts a second block on top." ;;
+			3) note "the handoff is written in $handoff_file and its commit pushed, and origin did not confirm it (\`write-handoff\` exited 3; its words above name the commit): look before writing it again, because a second block on top is a second handoff in the one document this protocol never rewrites." ;;
 			# 6 IS NOT ONE STATE (lane openRepoTools-3's review of #311, 982,
 			# which names this line): `git add` or `commit` failed and nothing is
 			# committed, or the commit is kept on HEAD and named; and with slice
 			# 2a's 604, an 8(d) handoff's commit or push in its own repository
 			# failed. The helper's words say which, so these do not guess.
-			6) note "the handoff is written in $handoff_file and NOT published (\`write-handoff\` exited 6; its words above say whether a commit was made, where it is kept, and the command that finishes it). A commit kept unpushed in this lane's register checkout is published by no later write, and each write there refuses until it is (Amendment 23 S3): once those words are answered, LANES_LANE=$lane $LANES_EDIT commit \"<what it is>\", the publish act." ;;
+			6) handoff_record="handoff written, NOT published (write-handoff exited 6)"
+			   note "the handoff is written in $handoff_file and NOT published (\`write-handoff\` exited 6; its words above say whether a commit was made, where it is kept, and the command that finishes it). A commit kept unpushed in this lane's register checkout is published by no later write, and each write there refuses until it is (Amendment 23 S3): once those words are answered, LANES_LANE=$lane $LANES_EDIT commit \"<what it is>\", the publish act." ;;
 			*) note "the handoff is written in $handoff_file and was NOT published (\`write-handoff\` exited $hs_rc; its words above say what is left)." ;;
 			esac
 		else

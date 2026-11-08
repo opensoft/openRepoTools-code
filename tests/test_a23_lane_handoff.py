@@ -181,11 +181,13 @@ def test_no_git_handoff_says_written_and_nothing_committed(tmp_path, short_root)
     said = [line for line in result.stderr.splitlines()
             if "LANES_NO_GIT=1" in line and "nothing is committed" in line]
     assert len(said) == 1, result.stderr
-    # 990 of the review of #311, on 2b: the register's PAUSED line says so too.
+    # 990 of the review of #311, as slice 3's F24 answers it for both writers
+    # of the act: a 0 records `handoff refreshed`, which claims no commit, and
+    # the step line above is what says that nothing was committed.
     register = (checkout / "lanes" / "LANES.md").read_text(encoding="utf-8")
     paused = [line for line in register.splitlines() if f"PAUSED — lane {LANE}, session " in line]
     assert len(paused) == 1, register
-    assert paused[0].endswith("; handoff written, NOT published (LANES_NO_GIT=1)"), paused
+    assert paused[0].endswith("; handoff refreshed"), paused
 
 
 def _forcing(box: Sandbox, rc: int, write: bool) -> Path:
@@ -207,14 +209,17 @@ exec '{real}' "$@"
     (2, True, "handoff written, NOT published (write-handoff exited 2)"),
     (3, True, "handoff written, its publication NOT confirmed (write-handoff exited 3)"),
     (6, True, "handoff written, NOT published (write-handoff exited 6)"),
+    (5, True, "handoff written, its publication NOT confirmed (write-handoff exited 5)"),
     (1, False, "handoff NOT refreshed (write-handoff exited 1 and wrote nothing)"),
 ])
 def test_register_paused_line_says_what_the_write_did(tmp_path, short_root, rc, write, record):
     """#303's fit (c) in lane openRepoTools-3's review of #316, and its
     question 6 on #311: the register's file-level PAUSED line says
     `handoff refreshed` only where `write-handoff` wrote the block and exited
-    0. Otherwise it uses the skill's phrases: written and NOT published (2,
-    6), its publication NOT confirmed (3 only), or NOT refreshed and why. And
+    0. Otherwise it uses the skill's phrases (slice 3's F23): written and NOT
+    published (2, 6), its publication NOT confirmed (3, and any other exit
+    after a write, which claims nothing either way), or NOT refreshed and
+    why. And
     982: exit 6's words no longer say the commit is kept on HEAD of the lane's
     checkout, since a 6 may have made no commit, or (2a's 604) made it in an
     8(d) handoff's own repository."""
