@@ -171,6 +171,7 @@ def test_120_item_1_a_peer_edit_is_refused_before_the_copy_and_never_captured(re
     reg.cut_cat("copy fails")
     result = reg.run(*ACTS["replace_line"], LANES_LANE="repoX-1")
     assert result.returncode == 2, (result.stdout, result.stderr)
+    assert "holds an uncommitted edit, which may be a peer's" in result.stderr
     assert "captured pre-existing edit" not in result.stderr
     assert "nothing has been committed" not in result.stderr
     assert "MAY NOW BE TRUNCATED" not in result.stderr
@@ -605,7 +606,7 @@ RESCAN_REFUSALS = {
 
 
 @pytest.mark.parametrize("why", sorted(RESCAN_REFUSALS))
-def test_122_a_refusal_after_the_rebase_leaves_a_peers_identical_row_alone(reg, tmp_path, why):
+def test_122_a_refusal_on_the_replay_leaves_a_peers_identical_row_alone(reg, tmp_path, why):
     """The delta review of #263, D1: a peer publishes the byte-identical
     repoX-4 row while add-row is publishing. Under #263 the rebase dropped
     add-row's commit as already upstream, and the take-back deleted the
@@ -622,6 +623,8 @@ def test_122_a_refusal_after_the_rebase_leaves_a_peers_identical_row_alone(reg, 
     (reg.fakebin / "git").unlink()
     assert mark.exists(), "the peer never raced the push"
     assert result.returncode == code, (result.stdout, result.stderr)
+    assert "origin/main already carries this exact row" not in result.stderr, \
+        "#263's rebase dropped add-row's commit as upstream and said so; the replay does neither"
     ahead = reg.git("log", "--oneline", "origin/main..HEAD")
     after = reg.run("set-row-state", "repoX-2", "PAUSED · the next unrelated write", LANES_LANE="repoX-1")
     assert after.returncode == 0, (after.stdout, after.stderr)
@@ -630,7 +633,7 @@ def test_122_a_refusal_after_the_rebase_leaves_a_peers_identical_row_alone(reg, 
     assert "compensating LOCAL commit" not in result.stderr
 
 
-def test_122_a_refusal_after_the_rebase_takes_back_its_own_row_beside_a_peers_copy(reg, tmp_path):
+def test_122_a_refusal_on_the_replay_drops_its_own_row_beside_a_peers_copy_in_another_place(reg, tmp_path):
     """…and the other direction. Where the peer put the identical row in
     another place, #263's rebase KEPT add-row's commit and the register held
     two copies, and the take-back removed this checkout's. Under Amendment 23
@@ -667,7 +670,7 @@ TAKE_BACK_CUTS = [pytest.param("copy", marks=PROC_FD), pytest.param("write", mar
 
 
 @pytest.mark.parametrize("cut", TAKE_BACK_CUTS)
-def test_122_a_take_back_that_cannot_rewrite_says_add_row_has_committed(reg, tmp_path, cut):
+def test_122_a_refusal_on_the_replay_says_nothing_of_a_committed_row_whatever_is_cut(reg, tmp_path, cut):
     """The delta review of #263, on the wording, and delta review 4's N1 and
     S4's N2: where #263's take-back could not rewrite the register (its copy
     or its write cut short, its pass, its line count or its `numstat` proof
@@ -826,7 +829,7 @@ COMPENSATION_FAILS = {
 
 
 @pytest.mark.parametrize("step", sorted(COMPENSATION_FAILS))
-def test_122_a_removal_that_cannot_be_committed_says_so(reg, tmp_path, step):
+def test_122_the_replay_makes_no_removal_for_a_refused_add_or_commit_to_strand(reg, tmp_path, step):
     """Delta review 4 of #263, N3: where #263's take-back could not stage or
     commit its removal, the removal was left in the working tree or staged
     under add-row's commit, and the next write's commit carried it under that
