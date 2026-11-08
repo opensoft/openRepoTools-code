@@ -1702,6 +1702,37 @@ if [ "$row_count" -gt 1 ]; then
     # is the rule this repository already learned once.
     rfl_why="spelled ${rfl_names}— a lane name is ONE name under any case (Amendment 15), so those are two rows for ONE lane, and lanes-edit.sh can edit neither"
   fi
+  # UNDER THE OPT-IN A ROW IS NEVER MERGED IN W (lane openRepoTools-3's review
+  # of #316, 730). `$LANES_FILE` is W here, the readers' copy, where no tool
+  # writes (Amendment 23 S5), and the publish act commits in the lane's own
+  # checkout, not in W. So where origin/<branch>, as W last fetched it, carries
+  # fewer than two such rows, the duplicate is only in W's working tree: a
+  # stray there, which a person takes out. Where origin carries it, the merge
+  # is a hand edit of the lane's own checkout's register, published from there.
+  # (With this helper a published duplicate is refused before this point:
+  # `canon-lane` above and the managed-ledger fence read the published register.
+  # So the stray is the case met here, and the second arm is the right words
+  # for a path that reaches it anyway.)
+  if [ "$LS_ROUTED" = 1 ]; then
+    rfl_br="${LANES_BRANCH:-main}"
+    rfl_pub="$row_count"
+    if [ "$LS_ROWS_FROM" != ref ]; then
+      rfl_pub=""
+      if rfl_text="$(git -C "$LANES_REPO" show "refs/remotes/origin/$rfl_br:lanes/LANES.md" 2>/dev/null)"; then
+        rfl_pub="$(LS_ROWS_FROM=ref; LS_ROWS_TEXT="$rfl_text"; rows_for_lane "$LANE" | grep -c . || :)"
+      fi
+    fi
+    if [ -n "$rfl_pub" ] && [ "$rfl_pub" -lt 2 ]; then
+      die "W's working tree has $row_count rows for lane $LANE, and origin/$rfl_br, as W last fetched it, has $rfl_pub, so the duplicate is a stray in W ($LANES_FILE), the readers' copy, where no tool writes (Amendment 23 S5; \`$LANES_EDIT refresh-workspace\` names it). Taking it out of W is a person's act; then re-run. Nothing was launched, renamed or written." 2
+    fi
+    rfl_co="$("$LANES_EDIT" lane-checkout "$LANE" 2>/dev/null || :)"
+    if [ -n "$rfl_co" ]; then
+      rfl_where="the lane's own checkout's register, $rfl_co/lanes/LANES.md,"
+    else
+      rfl_where="the lane's own checkout's register, lanes/LANES.md in the checkout that LANES_ROUTE_WRITES=1 $LANES_EDIT lane-checkout $LANE --create makes and names,"
+    fi
+    die "the register has $row_count rows for lane $LANE, $rfl_why. Merge them into one row by hand in $rfl_where never in W ($LANES_FILE), the readers' copy, where no tool writes (Amendment 23 S5) — Amendment 15(d): append the newer row's session id(s) to the older row's session cell, in order, and remove the newer row in the SAME commit, whose message names both spellings — then publish it from there with 'LANES_LANE=$LANE LANES_ROUTE_WRITES=1 lanes-edit.sh commit \"merged duplicate rows\"' and re-run" 2
+  fi
   die "the register has $row_count rows for lane $LANE, $rfl_why. Merge them into one row by hand in $LANES_FILE (one line each) — Amendment 15(d): append the newer row's session id(s) to the older row's session cell, in order, and remove the newer row in the SAME commit, whose message names both spellings — then commit with 'LANES_LANE=$LANE lanes-edit.sh commit \"merged duplicate rows\"' and re-run" 2
 fi
 

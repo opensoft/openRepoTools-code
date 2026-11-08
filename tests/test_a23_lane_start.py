@@ -399,3 +399,57 @@ def test_refused_stamp_names_a_checkout_copy_behind_origin(tmp_path, short_root)
     assert f"git -C {checkout} merge --ff-only origin/main" in said[0], said
     assert "own words" in start.stdout, "the first prompt is the checkout's copy, as said"
     assert "NEWER BLOCK" not in start.stdout
+
+
+def _duplicate_row(register: str) -> str:
+    """The register with the lane's row written twice, one line each."""
+    lines = register.splitlines(keepends=True)
+    found = [i for i, r in enumerate(lines) if r.startswith(f"| `{LANE}`")]
+    assert len(found) == 1, found
+    return "".join(lines[:found[0] + 1] + [lines[found[0]]] + lines[found[0] + 1:])
+
+
+def _duplicate_refusal(stderr: str) -> str:
+    said = [line for line in stderr.splitlines() if f"rows for lane {LANE}" in line]
+    assert len(said) == 1, stderr
+    return said[0]
+
+
+def test_duplicate_row_only_in_W_is_named_a_stray_there(tmp_path, short_root):
+    """730 of lane openRepoTools-3's review of #316: under the opt-in, a
+    duplicate row that only W's working tree shows is a stray in W, the
+    readers' copy, where no tool writes (Amendment 23 S5). The refusal says
+    so, and never sends a merge, or a commit, to W."""
+    box, _checkout, _lane_dir, _before = _started(tmp_path, short_root)
+    register = box.wip / "lanes" / "LANES.md"
+    register.write_text(_duplicate_row(register.read_text(encoding="utf-8")), encoding="utf-8")
+    tip = _tip(box)
+
+    start = box.start("--fresh", window_name=LANE)
+    assert start.returncode == 2, start.stderr
+    said = _duplicate_refusal(start.stderr)
+    assert "is a stray in W" in said, said
+    assert "origin/main, as W last fetched it, has 1" in said, said
+    assert "Merge them into one row" not in said, said
+    assert "lanes-edit.sh commit" not in said, said
+    assert _tip(box) == tip, "nothing was written"
+
+
+def test_published_duplicate_row_is_refused_before_W_is_named(tmp_path, short_root):
+    """730: under the opt-in, a duplicate row that origin carries never reaches
+    the words that send a merge to W. `canon-lane` reads the published
+    register after W is fast-forwarded and refuses the two rows first
+    (Amendment 15(d)), naming the merge and the push; nothing is written. (A
+    pin, green at the parent too: it is why the duplicate-row refusal under
+    the opt-in only ever meets a stray in W.)"""
+    box, _checkout, _lane_dir, _before = _started(tmp_path, short_root)
+    _peer_push(box, {"lanes/LANES.md": _duplicate_row(_published(box, "lanes/LANES.md"))},
+               "a duplicate row for the lane, from another workstation")
+    tip = _tip(box)
+
+    start = box.start("--fresh", window_name=LANE)
+    assert start.returncode == 2, start.stderr
+    assert f"the PUBLISHED register spells lane {LANE} two ways" in start.stderr, start.stderr
+    assert "Merge them into one row by hand in" not in start.stderr, start.stderr
+    assert not [line for line in start.stderr.splitlines() if f"rows for lane {LANE}" in line], start.stderr
+    assert _tip(box) == tip, "nothing was written"
