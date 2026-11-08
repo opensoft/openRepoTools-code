@@ -4446,7 +4446,12 @@ if [ "$lane_verb" = RESUMED ] && [ "$row_count" = 1 ] && (( stamp_ok )); then
              step "handoff stamped, committed and pushed: $hs_written: $hs_stamp"
            fi ;;
         3) note "Rule 3's stamp is written in $hs_written and its commit pushed, and origin did not confirm it (\`write-handoff\` exited 3; its words above name the commit): look before writing it again, because a stamp written twice is two resumes in the one document this protocol never rewrites." ;;
-        6) note "Rule 3's stamp is written in $hs_written and committed, and the commit is KEPT on HEAD of that checkout, not pushed (\`write-handoff\` exited 6; its words above name it). No later write publishes it, and each one refuses until it is published (Amendment 23 S3): once those words are answered, LANES_LANE=$LANE $LANES_EDIT commit \"<what it is>\", the publish act." ;;
+        # 6 IS NOT ONE STATE (lane openRepoTools-3's review of #311, 982):
+        # `git add` or `commit` failed and nothing is committed, or the commit
+        # is kept on HEAD and named; and with slice 2a's 604, an 8(d)
+        # handoff's commit or push in its own repository failed. The helper's
+        # words say which, so these do not guess.
+        6) note "Rule 3's stamp is written in $hs_written and NOT published (\`write-handoff\` exited 6; its words above say whether a commit was made, where it is kept, and the command that finishes it). A commit kept unpushed in this lane's register checkout is published by no later write, and each write there refuses until it is (Amendment 23 S3): once those words are answered, LANES_LANE=$LANE $LANES_EDIT commit \"<what it is>\", the publish act." ;;
         *) note "Rule 3's stamp is written in $hs_written and was NOT published (\`write-handoff\` exited $hs_rc; its words above say what is left). The launch is not refused for it." ;;
       esac
     elif [ "$ri_active" = 1 ] && [ "$hs_rc" = 7 ]; then

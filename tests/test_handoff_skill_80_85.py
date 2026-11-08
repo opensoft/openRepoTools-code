@@ -224,7 +224,7 @@ def _lane_handoff_writes(box: Sandbox, why: str,
     workstation and instant the skill is run with."""
     script = ('why="$STUB_WHY"; handoff_kind="$STUB_KIND"\n' +
               lane_handoff_why_text() +
-              f'lane={LANE}; uuid={UUID}; ws={WS}; UTC={NOW}\n'
+              f'lane={LANE}; uuid={UUID}; ws={WS}; UTC={NOW}; handoff_record="handoff refreshed"\n'
         f'printf \'%s\\0%s\\0\' "$why_text" {lane_handoff_register_line()}\n')
     proc = box.run("bash", script, _why_env(why, kind or "unknown"))
     assert proc.returncode == 0, (proc.returncode, proc.stderr)

@@ -453,3 +453,35 @@ def test_published_duplicate_row_is_refused_before_W_is_named(tmp_path, short_ro
     assert "Merge them into one row by hand in" not in start.stderr, start.stderr
     assert not [line for line in start.stderr.splitlines() if f"rows for lane {LANE}" in line], start.stderr
     assert _tip(box) == tip, "nothing was written"
+
+
+def test_stamp_exit_6_says_what_the_helper_said_not_kept_on_HEAD(tmp_path, short_root):
+    """982 of lane openRepoTools-3's review of #311, which 2b's words share:
+    `write-handoff`'s 6 is not one state. `git add` or `commit` failed and
+    nothing is committed, or the commit is kept on HEAD and named; and with
+    2a's 604, an 8(d) handoff's commit or push in its own repository failed.
+    So lane-start's note points at the helper's words, and names the publish
+    act only for a commit kept in this lane's register checkout. (It also
+    pins the battery's survivor LS45: the 6 arm falling to the generic note.)"""
+    box, _checkout, _lane_dir, _before = _started(tmp_path, short_root)
+    cell = _cell(box)
+    _peer_push(box, {cell: HANDOFF}, "the lane's handoff, written elsewhere")
+    real = box.bin / "lanes-edit.sh"
+    wrapper = box.root / "six-lanes-edit.sh"
+    wrapper.write_text(f"""#!/usr/bin/env bash
+if [ "${{1-}}" = write-handoff ]; then '{real}' "$@"; exit 6; fi
+exec '{real}' "$@"
+""", encoding="utf-8")
+    wrapper.chmod(0o755)
+
+    start = subprocess.run([str(box.bin / "lane-start"), "repoZ", "1", "--no-launch", "--fresh"],
+                           env=dict(box.env, LANES_EDIT=str(wrapper), FAKE_TMUX_WINDOW_NAME=LANE),
+                           capture_output=True, text=True, timeout=180, check=False)
+    assert start.returncode == 0, start.stderr
+    said = [line for line in start.stderr.splitlines() if "`write-handoff` exited 6" in line]
+    assert len(said) == 1, start.stderr
+    assert "KEPT on HEAD" not in said[0], said
+    assert "and NOT published" in said[0], said
+    assert "its words above say whether a commit was made, where it is kept" in said[0], said
+    assert f"LANES_LANE={LANE} " in said[0], said
+    assert "the publish act" in said[0], said

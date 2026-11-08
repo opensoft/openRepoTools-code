@@ -32,6 +32,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from conftest import REPO
 from test_a23_lane_start import (HANDOFF, _assert_nothing_unpublished, _assert_W_only_fast_forwarded,
                                  _cell, _edit, _origin, _peer_push, _published, _started, _tip)
@@ -175,3 +177,50 @@ def test_no_git_handoff_says_written_and_nothing_committed(tmp_path, short_root)
     said = [line for line in result.stderr.splitlines()
             if "LANES_NO_GIT=1" in line and "nothing is committed" in line]
     assert len(said) == 1, result.stderr
+    # 990 of the review of #311, on 2b: the register's PAUSED line says so too.
+    register = (checkout / "lanes" / "LANES.md").read_text(encoding="utf-8")
+    paused = [line for line in register.splitlines() if f"PAUSED — lane {LANE}, session " in line]
+    assert len(paused) == 1, register
+    assert paused[0].endswith("; handoff written, NOT published (LANES_NO_GIT=1)"), paused
+
+
+def _forcing(box: Sandbox, rc: int, write: bool) -> Path:
+    """A `LANES_EDIT` whose `write-handoff` exits `rc`: after the real verb has
+    written, committed and pushed (`write`), or at once, having written
+    nothing. Every other verb is the real helper's."""
+    real = box.bin / "lanes-edit.sh"
+    wrapper = box.root / f"forcing-lanes-edit-{rc}.sh"
+    first = f"'{real}' \"$@\"; " if write else ""
+    wrapper.write_text(f"""#!/usr/bin/env bash
+if [ "${{1-}}" = write-handoff ]; then {first}exit {rc}; fi
+exec '{real}' "$@"
+""", encoding="utf-8")
+    wrapper.chmod(0o755)
+    return wrapper
+
+
+@pytest.mark.parametrize(("rc", "write", "record"), [
+    (2, True, "handoff written, NOT published (write-handoff exited 2)"),
+    (3, True, "handoff written, its publication NOT confirmed (write-handoff exited 3)"),
+    (6, True, "handoff written, NOT published (write-handoff exited 6)"),
+    (1, False, "handoff NOT refreshed (write-handoff exited 1 and wrote nothing)"),
+])
+def test_register_paused_line_says_what_the_write_did(tmp_path, short_root, rc, write, record):
+    """#303's fit (c) in lane openRepoTools-3's review of #316, and its
+    question 6 on #311: the register's file-level PAUSED line says
+    `handoff refreshed` only where `write-handoff` wrote the block and exited
+    0. Otherwise it uses the skill's phrases: written and NOT published (2,
+    6), its publication NOT confirmed (3 only), or NOT refreshed and why. And
+    982: exit 6's words no longer say the commit is kept on HEAD of the lane's
+    checkout, since a 6 may have made no commit, or (2a's 604) made it in an
+    8(d) handoff's own repository."""
+    box, _checkout, _cell_, _before = _ready(tmp_path, short_root)
+
+    result = _handoff(box, env={"LANES_EDIT": str(_forcing(box, rc, write))})
+    register = _published(box, "lanes/LANES.md")
+    paused = [line for line in register.splitlines() if f"PAUSED — lane {LANE}, session " in line]
+    assert len(paused) == 1, (register, result.stderr)
+    assert paused[0].endswith(f"; {record}"), (paused, result.stderr)
+    if rc == 6:
+        assert "KEPT on HEAD" not in result.stderr, result.stderr
+        assert "its words above say whether a commit was made, where it is kept" in result.stderr, result.stderr
