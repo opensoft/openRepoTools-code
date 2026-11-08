@@ -3289,7 +3289,11 @@ EOF
           note "under it are $cpw_un commit(s) that origin/$LANES_BRANCH lacks and this write did not make; list them: git -C $LANES_REPO log --oneline refs/remotes/origin/$LANES_BRANCH..HEAD; if any is not your own write, STOP and take it to the lane its subject names — never reset, stash or overwrite a peer's work"
         fi
         note "look at it: git -C $LANES_REPO show $cp_sha; and at origin's: git -C $LANES_REPO log -1 -p refs/remotes/origin/$LANES_BRANCH -- $CP_WHOLE_REL"
-        note "every later write from this checkout refuses (S3's unpushed row) until it is published — LANES_LANE=<lane> $SELF commit \"<what it is>\", the publish act — or archived (S6.3) and \`git -C $LANES_REPO reset --keep origin/$LANES_BRANCH\` run."
+        # THE PUBLISH ACT REFUSES HERE ("moved past", 2): origin moved, so the
+        # recovery is S6.3's archive, as 1b's 705 made every other
+        # origin-moved note say (lane openRepoTools-3's review of #18 at
+        # 2b1a232, SHOULD 2; A62).
+        cp_recovery_steps "it is"
         die "the push was refused because origin/$LANES_BRANCH moved, and origin's copy of $CP_WHOLE_REL is no longer the one this whole-file write started from, so it does not replay over that change (Amendment 23 S4.4); the commit is local and kept on HEAD: $cp_sha $msg" 6
       fi
       if [ -z "$cpw_head" ] || ! git -C "$LANES_REPO" merge-base --is-ancestor "$cp_sha" "$cpw_head" 2>/dev/null; then
@@ -3297,7 +3301,7 @@ EOF
       fi
       note "HEAD is $cpw_head, not this write's commit $cp_sha: another commit was made on top of it in this checkout before or while its push was in flight (609, 1b's 343). Nothing is reset, so both are kept."
       note "look at both: git -C $LANES_REPO log --oneline $cp_sha^..HEAD; and at origin's: git -C $LANES_REPO log -1 -p refs/remotes/origin/$LANES_BRANCH -- $CP_WHOLE_REL"
-      note "every later write from this checkout refuses (S3's unpushed row) until they are published — LANES_LANE=<lane> $SELF commit \"<what they are>\", the publish act — or archived (S6.3)."
+      cp_recovery_steps "they are"
       die "the push was refused because origin/$LANES_BRANCH moved, and origin's copy of $CP_WHOLE_REL is no longer the one this whole-file write started from, so it does not replay over that change (Amendment 23 S4.4); this write's commit and the one on top of it are local and kept, with HEAD at $cpw_head: $cp_sha $msg" 6
     fi
   fi

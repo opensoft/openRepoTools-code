@@ -38,7 +38,8 @@ import pytest
 
 from a23_box import ME, REGISTER
 from conftest import WINDOWS_SKIP
-from test_a23_publish_replay import LANE, NEIGHBOUR, Box as ReplayBox, _git_shim, _stamp
+from test_a23_publish_replay import (LANE, NEIGHBOUR, Box as ReplayBox, _git_shim,
+                                    _recovery_is_s63s_archive, _stamp)
 
 pytestmark = [pytest.mark.skipif(shutil.which("bash") is None,
                                  reason="lanes-edit.sh is a bash script"),
@@ -1744,11 +1745,11 @@ def test_handoff_path_over_an_unreadable_register_is_1_never_8(box: Box):
     assert result.stdout == ""
 
 
-def test_whole_refusal_names_HEAD_when_a_commit_landed_on_top(box: Box):
-    """S4.4's refusal where another writer's commit landed on top of this
-    write's while its push was in flight: HEAD is that commit, so the words
-    name it and say both are kept — never "kept on HEAD" for this write's.
-    Nothing is reset (6), and both commits wait for the publish act."""
+def _whole_write_a_stamp_lands_on_top_of(box: Box) -> tuple:
+    """The setup S4.4's on-top cases share: a peer edits the handoff and lands
+    it at this write's push, and an unlocked writer's stamp lands on top of
+    this write's commit in the same moment. Returns the checkout and the
+    handoff in it."""
     c = box.seam()
     f = c / HANDOFF_REL
     box.peer_prepares(HANDOFF_REL, "Preserved task.\n", "Preserved task, and a peer's line.\n",
@@ -1764,6 +1765,15 @@ def test_whole_refusal_names_HEAD_when_a_commit_landed_on_top(box: Box):
                 f"git -C {cq} add -- handoffs/stamp.md\n"
                 f"git -C {cq} commit -q -m 'a stamp from an unlocked writer' -- handoffs/stamp.md\n"
                 "exit 0\n")
+    return c, f
+
+
+def test_whole_refusal_names_HEAD_when_a_commit_landed_on_top(box: Box):
+    """S4.4's refusal where another writer's commit landed on top of this
+    write's while its push was in flight: HEAD is that commit, so the words
+    name it and say both are kept — never "kept on HEAD" for this write's.
+    Nothing is reset (6), and both commits wait for S6.3's archive."""
+    c, f = _whole_write_a_stamp_lands_on_top_of(box)
     result = box.write_handoff("--whole", str(_prepared(box)), "--expect-digest", sha(f),
                                "--subject", "handoff: PAUSED")
     assert result.returncode == 6, result.stderr
@@ -1777,7 +1787,44 @@ def test_whole_refusal_names_HEAD_when_a_commit_landed_on_top(box: Box):
     assert f"kept, with HEAD at {top}: {mine} handoff: PAUSED" in result.stderr
     assert f"kept on HEAD: {mine}" not in result.stderr
     assert "push refused (attempt" not in result.stderr, "no reset, no replay"
-    assert len(box.unpublished(c)) == 2, "both kept, for the publish act"
+    assert len(box.unpublished(c)) == 2, "both kept, for the archive"
+    assert result.stdout == _line(f)
+    _released(box, c)
+
+
+@pytest.mark.parametrize("how", ["head-is-this-write", "stamp-on-top"])
+def test_whole_kept_by_S4_4_offers_the_archive_not_the_publish_act_that_refuses(box: Box, how: str):
+    """lane openRepoTools-3's review of #18 at 2b1a232, SHOULD 2 (A62): S4.4's
+    two notes (this write's commit is HEAD, or another commit is on top of it)
+    run only after a push origin's move refused, and they offered the publish
+    act, with a short `reset --keep origin/main`. The publish act refuses
+    there ("moved past", 2), as 1b's 705 made every other origin-moved note
+    say. Now each says what is kept must be archived and dropped, then gives
+    S6.3's recovery: the list, the STOP line, the archive and the drop with
+    the tracking ref in full, never the publish act. The act is run after the
+    refusal, as the old note offered it: it refuses (2) and pushes nothing."""
+    if how == "stamp-on-top":
+        c, f = _whole_write_a_stamp_lands_on_top_of(box)
+    else:
+        c = box.seam()
+        f = c / HANDOFF_REL
+        box.peer_prepares(HANDOFF_REL, "Preserved task.\n", "Preserved task, and a peer's line.\n",
+                          "a peer edits the handoff")
+        box.race(prepared=True)
+    result = box.write_handoff("--whole", str(_prepared(box)), "--expect-digest", sha(f),
+                               "--subject", "handoff: PAUSED")
+    assert result.returncode == 6, result.stderr
+    err = result.stderr
+    assert "is no longer the one this whole-file write started from" in err
+    _recovery_is_s63s_archive(err, c, "it is" if how == "head-is-this-write" else "they are")
+    assert "reset --keep origin/main" not in err, "the tracking ref is named in full"
+    tip, mine = box.origin_head(), box.head(c)
+    offered = box.helper("commit", "what it is", LANES_LANE=LANE)
+    assert offered.returncode == 2, offered.stderr
+    assert "origin/main has moved past the local commits" in offered.stderr
+    assert "Nothing was pushed." in offered.stderr
+    assert box.origin_head() == tip
+    assert box.head(c) == mine
     assert result.stdout == _line(f)
     _released(box, c)
 
@@ -1813,7 +1860,7 @@ def test_whole_refusal_names_a_rewritten_commit_as_rewritten(box: Box):
     assert "local and kept, with HEAD at" not in result.stderr, "no commit was made on top"
     assert "push refused (attempt" not in result.stderr, "no reset, no replay"
     assert box.subject(c) == "handoff: PAUSED, reworded by an unlocked writer"
-    assert len(box.unpublished(c)) == 1, "the rewritten copy waits for the publish act"
+    assert len(box.unpublished(c)) == 1, "the rewritten copy waits for the archive"
     assert result.stdout == _line(f)
     _released(box, c)
 
@@ -2452,7 +2499,7 @@ def test_whole_kept_by_S4_4_names_the_commits_under_it(box: Box):
     whole-file write's commit sits under it, and the `reset --keep` S4.4's
     note offers would take it, so they are counted and the STOP line said.
     Origin's copy moved, so nothing is replayed: kept on HEAD (6), both
-    commits there for the publish act."""
+    commits there for the archive."""
     c = box.seam()
     f = c / HANDOFF_REL
     box.peer_prepares(HANDOFF_REL, "Preserved task.\n", "Preserved task, and a peer's line.\n",
