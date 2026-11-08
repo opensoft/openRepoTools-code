@@ -824,6 +824,9 @@ def _register_line(estate: Estate) -> str:
      "; handoff written, its publication NOT confirmed (write-handoff exited 1)"),
     ({"STUB_HP_RC": "8", "STUB_HP_OUT": ""}, False, True,
      "; handoff NOT refreshed (no handoff found)"),
+    # NIT 987: a 0 that names no file is "no handoff found" too, never "the read failed, exit 0".
+    ({"STUB_HP_OUT": "/nowhere/at/all.md"}, False, True,
+     "; handoff NOT refreshed (no handoff found)"),
     ({"STUB_HP_RC": "4", "STUB_HP_OUT": ""}, False, True,
      "; handoff NOT refreshed (the handoff read failed, exit 4)"),
     ({"STUB_HP_RC": "2", "STUB_HP_OUT": "", "STUB_HP_ERR": OLDER_HELPER}, False, True,
@@ -831,8 +834,8 @@ def _register_line(estate: Estate) -> str:
     ({}, False, False, "; handoff NOT refreshed (write-handoff was not called)"),
 ], ids=["pushed", "owned-by-a-restart", "block-with-no-final-newline", "refused-before-writing",
         "refused-after-writing",
-        "pushed-not-confirmed", "kept-on-head", "written-then-failed", "not-found", "read-failed",
-        "older-helper", "never-prepared"])
+        "pushed-not-confirmed", "kept-on-head", "written-then-failed", "not-found", "zero-with-no-file",
+        "read-failed", "older-helper", "never-prepared"])
 def test_step4_register_line_says_what_step_2_did(estate, shell, extra, written, prepare, ends):
     """rv3's SHOULD 3 on #311 at `b599ed9`: the register's PAUSED line ended
     `; handoff refreshed` whatever step 2 printed. Step 2 now carries its
@@ -931,6 +934,20 @@ def test_the_prose_says_what_to_set_before_block_2_and_before_step_4():
                   "`handoff_file`, `block_file` and `hf_record`", "Before step 4",
                   "block 2's last line, `hf_record=", "quoted"):
         assert words in paragraph, f"the paragraph no longer says {words!r}:\n{paragraph}"
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_a_step_4_after_block_1_alone_never_claims_a_refresh(estate, shell):
+    """NIT 987: block 1 found the handoff and set `hf_record` empty, and block
+    2 never ran. Step 4 in the same shell says the handoff was NOT refreshed:
+    an empty `$hf_record` is no outcome, as an unset one is."""
+    script = "\n".join([f"L={shlex.quote(str(estate.helper))}", f"lane={LANE}", _block(B1),
+                        estate.step4()])
+    proc = estate.run(shell, script)
+    assert proc.returncode == 0, proc.stderr
+    assert "write-handoff" not in estate.verbs(), estate.calls()
+    line = _register_line(estate)
+    assert line.endswith("; handoff NOT refreshed (step 2 left no outcome)"), line
 
 
 # --- the real helper: the handoff is pushed from C, and W is untouched --------
