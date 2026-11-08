@@ -1339,10 +1339,38 @@ def test_a_handoff_in_another_checkout_of_the_register_beside_W_is_refused(box: 
     _released(box, c)
 
 
+def _git_says(env: dict, *args: str, cwd: Path) -> str:
+    got = subprocess.run(["git", *args], env=env, cwd=str(cwd), capture_output=True, text=True, check=False)
+    return (got.stdout + got.stderr).strip() or "nothing"
+
+
+def _skip_other_owner(box: Box, env: dict) -> None:
+    """Skip, saying why: git read a clone it was told to take for another
+    owner's. Either this git ignores `GIT_TEST_ASSUME_DIFFERENT_OWNER`, or a
+    `safe.directory = *` reaches it through the global config; the version
+    and every `safe.directory` it reports in this environment (each value
+    with the file it comes from) name which."""
+    version = _git_says(env, "--version", cwd=box.root)
+    safe = _git_says(env, "config", "--show-origin", "--get-all", "safe.directory", cwd=box.root)
+    star = any(line.split("\t")[-1].strip() == "*" for line in safe.splitlines())
+    cause = ("a `safe.directory = *` in the global config" if star
+             else "a git that ignores GIT_TEST_ASSUME_DIFFERENT_OWNER")
+    pytest.skip(f"{version}: with GIT_TEST_ASSUME_DIFFERENT_OWNER=1 and GIT_CONFIG_NOSYSTEM=1, git still reads "
+                f"a clone of another owner, which fits {cause}; safe.directory as git reports it in this "
+                f"environment: {safe.replace(chr(10), '; ')}")
+
+
 def _unreadable(box: Box, d: Path, how: str, c: Path) -> dict:
     """Make the clone at `d` one git cannot read: a broken line in its
     config, or another owner (git's `dubious ownership`, with this box's own
-    repositories named safe). Returns the environment the write runs with."""
+    repositories named safe). Returns the environment the write runs with.
+    Another owner is git's test hook with `GIT_CONFIG_NOSYSTEM=1`, so that a
+    `safe.directory = *` in the machine's system config cannot name the clone
+    safe (on CI's git 2.56.0 the probe read the clone, and this case failed
+    there, with the box's `.gitconfig` as the global config): the box's
+    `.gitconfig` is the only config that names a directory safe, and the
+    write runs in the environment the probe ran in. Where git still reads the
+    clone, the case is skipped with the cause, never passed."""
     extra = {}
     if how == "bad-config":
         with open(d / ".git" / "config", "a", encoding="utf-8") as fh:
@@ -1351,9 +1379,11 @@ def _unreadable(box: Box, d: Path, how: str, c: Path) -> dict:
         safe = (c, box.w, box.origin, box.seed, box.peer)
         (box.home / ".gitconfig").write_text(
             "[safe]\n" + "".join(f"\tdirectory = {x}\n" for x in safe), encoding="utf-8")
-        extra = {"GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"}
+        extra = {"GIT_TEST_ASSUME_DIFFERENT_OWNER": "1", "GIT_CONFIG_NOSYSTEM": "1"}
     probe = subprocess.run(["git", "-C", str(d), "rev-parse", "--show-toplevel"],
                            env=dict(box.env, **extra), capture_output=True, text=True, check=False)
+    if how == "other-owner" and probe.returncode == 0:
+        _skip_other_owner(box, dict(box.env, **extra))
     assert probe.returncode != 0, ("git can still read the clone", probe.stdout)
     mine = subprocess.run(["git", "-C", str(c), "rev-parse", "--show-toplevel"],
                           env=dict(box.env, **extra), capture_output=True, text=True, check=False)
