@@ -406,7 +406,9 @@ else
   hf_record="handoff NOT refreshed (the handoff read failed, exit $hf_rc)"
   [[ "$hf_rc" != 0 && "$hf_rc" != 8 ]] || hf_record="handoff NOT refreshed (no handoff found)"
   handoff_file=""
-  printf 'block_file=%s\n' "${block_file:-<none>}"
+  # EVERY BASH CALL IS A NEW SHELL (lane openRepoTools-3's finding 984 on #311): what block 2 needs from here is
+  # printed, to be set, quoted, in the shell that runs it.
+  printf 'block_file=%s\nhf_record=%s\n' "${block_file:-<none>}" "$hf_record"
 fi
 ```
 
@@ -570,6 +572,9 @@ else
   # Block 1's reason where it gave one: a handoff not found, or a read that failed.
   hf_record="${hf_record:-handoff NOT refreshed (write-handoff was not called)}"
 fi
+# WHAT THIS STEP DID, PRINTED LAST, because step 4 runs in another Bash call, a new shell (984): set
+# `hf_record` there, quoted, from this line.
+printf 'hf_record=%s\n' "$hf_record"
 ```
 
 A refusal, a conflict or a rejected push does not stop the swap (`R-A11-11`, *a swap is never left
@@ -586,8 +591,12 @@ do, and the report carries that line. Never force, never
 never claims it: `handoff refreshed` only where the call exited 0; `handoff written, its publication NOT
 confirmed (write-handoff exited <n>)` where the verb wrote the file and exited otherwise; and `handoff NOT
 refreshed (<why>)` wherever nothing was written: the handoff was not found, its read failed, the call was not
-made, or the verb wrote nothing. Keep it in the shell that runs step 4, as `$uuid_missing` is kept. A step 4
-that it never reached says `handoff NOT refreshed (step 2 left no outcome)`.
+made, or the verb wrote nothing. EVERY BASH CALL IS A NEW SHELL, so nothing one block sets reaches the next
+by itself, and step 3 comes between step 2 and step 4 (lane openRepoTools-3's finding 984 on #311). Before
+block 2, set `L`, `lane`, `ws` and `why` as step 1 has them, and each `name=value` line block 1 printed
+(`handoff_file`, `block_file` and `hf_record`, those it printed), quoted. Before step 4, set `hf_record` from
+block 2's last line, `hf_record=<what this step did>`, quoted, beside step 4's other values. A step 4 that it
+never reached says `handoff NOT refreshed (step 2 left no outcome)`.
 
 ## 3. Subagents and worktrees — the one question, and the sweep that fills WRITERS
 

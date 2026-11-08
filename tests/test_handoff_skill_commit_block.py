@@ -241,10 +241,14 @@ class Estate:
         path.write_text(script, encoding="utf-8")
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
-    def step4(self, *, ws_missing: str = "", uuid_missing: str = "") -> str:
+    def step4(self, *, ws_missing: str = "", uuid_missing: str = "",
+              hf_record: str | None = None) -> str:
+        """Step 4's block. `hf_record`, where given, is set as a session sets
+        block 2's last printed line in the shell that runs step 4 (984)."""
+        carried = [] if hf_record is None else [f"hf_record={shlex.quote(hf_record)}"]
         return "\n".join([f"L={shlex.quote(str(self.helper))}", f"lane={LANE}", "ws=Eagle",
                           'why="a usage reset"', f'uuid="{UUID}"', f'ws_missing="{ws_missing}"',
-                          f'uuid_missing="{uuid_missing}"', _block(STEP4),
+                          f'uuid_missing="{uuid_missing}"', *carried, _block(STEP4),
                           'printf "row_write_refused=[%s]\\n" "$row_write_refused"'])
 
 
@@ -799,6 +803,76 @@ def test_a_step_4_that_step_2_never_reached_never_claims_a_refresh(estate, shell
     assert proc.returncode == 0, proc.stderr
     line = _register_line(estate)
     assert line.endswith("; handoff NOT refreshed (step 2 left no outcome)"), line
+
+
+#: The names block 1 prints for a session to carry to block 2, and block 2 to step 4.
+CARRIED = ("handoff_file", "block_file", "hf_record")
+
+
+def _printed(proc: subprocess.CompletedProcess) -> dict:
+    """Every `name=value` line a block printed, of the names that cross from
+    one Bash call to the next; the last of each name wins."""
+    return {m.group(1): m.group(2) for m in
+            re.finditer(r"(?m)^(" + "|".join(CARRIED) + r")=(.*)$", proc.stdout)}
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("extra, written, ends", [
+    ({}, True, "handoff refreshed"),
+    ({"STUB_WH_RC": "7"}, False, "handoff NOT refreshed (write-handoff exited 7 and wrote nothing)"),
+    ({"STUB_WH_RC": "3"}, True, "handoff written, its publication NOT confirmed (write-handoff exited 3)"),
+    ({"STUB_HP_RC": "8", "STUB_HP_OUT": ""}, False, "handoff NOT refreshed (no handoff found)"),
+    ({"STUB_HP_RC": "4", "STUB_HP_OUT": ""}, False,
+     "handoff NOT refreshed (the handoff read failed, exit 4)"),
+], ids=["pushed", "owned-by-a-restart", "pushed-not-confirmed", "not-found", "read-failed"])
+def test_block_1_block_2_and_step_4_each_in_its_own_shell_carry_what_step_2_did(
+        estate, shell, extra, written, ends):
+    """984 of lane openRepoTools-3's review of #311: every Bash call is a new
+    shell, so step 4 learnt step 2's outcome only from `$hf_record` in the
+    same shell, and a step 4 in its own call wrote "; handoff NOT refreshed
+    (step 2 left no outcome)" after a 0, a false line in append-only
+    LANES.md; block 2 in a new shell said "there is no handoff located".
+    Here each runs in its own shell as a session runs them: block 1, the
+    session's write of its block, block 2 with step 1's values and every
+    `name=value` line block 1 printed set, and step 4 with the `hf_record=`
+    line block 2 ends by printing."""
+    env = dict(extra)
+    if written:
+        env["STUB_WH_OUT"] = f"{estate.handoff}\tdeadbeef"
+    step1 = [f"L={shlex.quote(str(estate.helper))}", f"lane={LANE}", "ws=Eagle", "why='a usage reset'"]
+    first = estate.run(shell, "\n".join(step1[:2] + [_block(B1)]), **env)
+    assert first.returncode == 0, first.stderr
+    carried = _printed(first)
+    block_file = carried.get("block_file", "")
+    assert block_file and block_file != "<none>", first.stdout
+    Path(block_file).write_text(TOP, encoding="utf-8")
+    second = estate.run(shell, "\n".join(step1 + [f"{k}={shlex.quote(v)}" for k, v in carried.items()]
+                                         + [_block(B2)]), **env)
+    assert second.returncode == 0, second.stderr
+    if "handoff_file" in carried:
+        assert "there is no handoff located" not in second.stdout, second.stdout
+    last = second.stdout.splitlines()[-1]
+    assert last == f"hf_record={ends}", second.stdout
+    third = estate.run(shell, estate.step4(hf_record=_printed(second)["hf_record"]))
+    assert third.returncode == 0, third.stderr
+    line = _register_line(estate)
+    assert line.endswith(f"; {ends}"), line
+    assert "step 2 left no outcome" not in line, line
+
+
+def test_the_prose_says_what_to_set_before_block_2_and_before_step_4():
+    """984: the paragraph that carries step 2's outcome to step 4 says every
+    Bash call is a new shell, what to set before block 2 (step 1's values
+    and block 1's printed lines) and that `hf_record` from block 2's last line
+    is set before step 4."""
+    held = [p for p in _prose("## 2. Refresh the handoff")
+            if p.startswith("**WHAT THIS STEP DID IS CARRIED TO STEP 4")]
+    assert len(held) == 1, held
+    paragraph = held[0]
+    for words in ("EVERY BASH CALL IS A NEW SHELL", "Before block 2", "`L`, `lane`, `ws` and `why`",
+                  "`handoff_file`, `block_file` and `hf_record`", "Before step 4",
+                  "block 2's last line, `hf_record=", "quoted"):
+        assert words in paragraph, f"the paragraph no longer says {words!r}:\n{paragraph}"
 
 
 # --- the real helper: the handoff is pushed from C, and W is untouched --------
