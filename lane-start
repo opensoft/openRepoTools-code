@@ -4458,10 +4458,14 @@ if [ "$lane_verb" = RESUMED ] && [ "$row_count" = 1 ] && (( stamp_ok )); then
         6) note "Rule 3's stamp is written in $hs_written and NOT published (\`write-handoff\` exited 6; its words above say whether a commit was made, where it is kept, and the command that finishes it). A commit kept unpushed in this lane's register checkout is published by no later write, and each write there refuses until it is (Amendment 23 S3): once those words are answered, LANES_LANE=$LANE $LANES_EDIT commit \"<what it is>\", the publish act." ;;
         *) note "Rule 3's stamp is written in $hs_written and was NOT published (\`write-handoff\` exited $hs_rc; its words above say what is left). The launch is not refused for it." ;;
       esac
-    elif [ "$ri_active" = 1 ] && [ "$hs_rc" = 7 ]; then
-      die "this restart attempt lost ownership of its handoff before the resume stamp (\`write-handoff\` exited 7; its words are above). Nothing was launched." 2
+    # THE BOUND FILE IS ASKED FIRST (lane openRepoTools-3's review of #316,
+    # 724): since slice 2a's 603 the restart fences' 2s are 7, so a pre-image
+    # a peer changed after binding comes back as 7 as well, and is not lost
+    # ownership. Both exit 2; S3's 2 stays a note (below).
     elif [ "$ri_active" = 1 ] && ! hs_bound_unchanged; then
       die "the restart handoff changed before its owned resume stamp. Nothing was launched." 2
+    elif [ "$ri_active" = 1 ] && [ "$hs_rc" = 7 ]; then
+      die "this restart attempt lost ownership of its handoff before the resume stamp (\`write-handoff\` exited 7; its words are above). Nothing was launched." 2
     else
       hs_none=1
       note "Rule 3's stamp was NOT written (\`write-handoff\` exited $hs_rc; its words are above), and the launch is not refused for it: the stamp is the record of this resume, not its licence."

@@ -518,6 +518,43 @@ def test_refused_stamp_with_restart_intent_still_launches(routed_restart_box):
     assert record["digest"] == hashlib.sha256(before).hexdigest(), record
 
 
+def test_a_bound_handoff_changed_before_the_stamp_is_named_so(routed_restart_box):
+    """724 of lane openRepoTools-3's review of #316: once slice 2a answers
+    the restart fences' 2s with 7 (603), a bound handoff a peer changed after
+    binding (here a peer's push, which S3 fast-forwards in) comes back from
+    the stamp as 7 too. lane-start asks the bound file
+    first, so the refusal says the handoff changed before the stamp, not that
+    the attempt lost ownership. Both exit 2, and nothing is launched."""
+    box = routed_restart_box
+    source = prepare_restart_routed(box)
+    rel = str(source.relative_to(lane_checkout(box)))
+    peer = box.root / "peer"
+    box.git("clone", "-q", str(box.origin), str(peer))
+    real = box.bin / "lanes-edit.sh"
+    mark = box.root / "peer-pushed.mark"
+    wrapper = box.root / "peer-edits-lanes-edit.sh"
+    wrapper.write_text(f"""#!/usr/bin/env bash
+if [ "${{1-}}" = write-handoff ] && [ ! -e '{mark}' ]; then
+  : > '{mark}'
+  git -C '{peer}' fetch -q origin main && git -C '{peer}' merge -q --ff-only origin/main &&
+    printf 'a peer changed this after binding\\n' >> '{peer}/{rel}' &&
+    git -C '{peer}' commit -q -am 'a peer changes the bound handoff' &&
+    git -C '{peer}' push -q origin HEAD:main || exit 99
+fi
+exec '{real}' "$@"
+""", encoding="utf-8")
+    wrapper.chmod(0o755)
+    box.env["LANES_EDIT"] = str(wrapper)
+
+    result = box.start("--fresh", "--operation", "op-test")
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    # lane-start's own line: the helper's refusal says the same words of its write.
+    assert "lane-start: the restart handoff changed before its owned resume stamp. Nothing was launched."         in result.stderr, result.stderr
+    assert "lost ownership of its handoff" not in result.stderr, result.stderr
+    assert mark.exists(), "the peer changed the bound handoff during the stamp"
+    assert box.claude_runs() == ""
+
+
 def test_ctx_round_trip_through_lane_checkout(routed_restart_box):
     """`/ctx` under the opt-in, both halves: `lane-handoff --restart` writes
     the PAUSED top block through the lane's checkout and binds THAT file in
