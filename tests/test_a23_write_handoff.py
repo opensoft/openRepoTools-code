@@ -650,35 +650,46 @@ def test_an_8d_handoff_whose_origin_moved_is_fast_forwarded_first_then_committed
     _released(box, c)
 
 
-def test_a_handoff_in_another_clone_of_the_register_elsewhere_is_written_never_committed(box: Box):
-    """A57, because of 604: the 8(d) branch now commits and pushes in the
-    handoff's own top level, but never in one that carries the register
-    (A44's test). A file under `handoffs/` of another clone of the register
-    that is NOT beside W (601 refuses one beside W) is that clone's lane's,
-    not Amendment 8(d)'s "not the register's", and a commit and push there
-    would publish to the register's origin outside S3 and S4, from a clone
-    this lane does not hold. So it is written there and NOT committed, as
-    before 604 (0), and said: that clone's HEAD, this checkout and the
-    register's origin are as they were. Whether it should be refused
-    instead is put to lane openRepoTools-3 (the body's Q4)."""
+@pytest.mark.parametrize("how", ["stamp-target", "stamp-cell", "prepend-target", "whole-target"])
+def test_a_handoff_in_another_clone_of_the_register_elsewhere_is_refused(box: Box, how: str):
+    """Question 4 of #18, answered by lane openRepoTools-3 (REFUSE, 2; A63).
+    A file under `handoffs/` of another clone of the register that is NOT
+    beside W (601 refuses one beside W) is that clone's lane's, not Amendment
+    8(d)'s "not the register's". A57 kept 604's commit and push out of it and
+    wrote it there, uncommitted, exit 0: the change then wedged that lane's
+    next write at S3 step 4, which is 601's harm. A44's test of the top level
+    is there already, so the file is refused (2) before a byte, by `--target`
+    or by an absolute cell, in each of the three modes: that clone, this
+    checkout and the register's origin are as they were, the stamp line is
+    said, nothing is on stdout."""
+    d = box.root / "elsewhere-clone"
+    if how == "stamp-cell":
+        box.cell_is(str(d / HANDOFF_REL))
     c = box.seam()
-    d = box.clone(box.root / "elsewhere-clone")
+    box.clone(d)
     f = d / HANDOFF_REL
-    text = f.read_text(encoding="utf-8")
+    if how == "prepend-target":
+        args = ("--prepend", str(_block(box)), "--target", str(f))
+    elif how == "whole-target":
+        args = ("--whole", str(_prepared(box)), "--expect-digest", sha(f), "--target", str(f))
+    else:
+        args = ("--stamp", STAMP) + (("--target", str(f)) if how == "stamp-target" else ())
+    text, theirs, mine = f.read_bytes(), box.snapshot(d), box.snapshot(c)
     d_head = box.git("-C", str(d), "rev-parse", "HEAD").strip()
-    mine, tip = box.snapshot(c), box.origin_head()
-    result = box.write_handoff("--stamp", STAMP, "--subject", SUBJECT, "--target", str(f))
-    assert result.returncode == 0, result.stderr
-    assert (f"{f} is in {d}, another clone of the register (its top level carries {REGISTER} too), "
-            f"not this write's checkout {c}, so it is not Amendment 8(d)'s: it is written there and "
-            "NOT committed") in result.stderr
+    result = box.write_handoff(*args, "--subject", SUBJECT)
+    assert result.returncode == 2, result.stderr
+    assert (f"is {HANDOFF_REL} in {d}, another clone of the register (its top level carries {REGISTER} too), "
+            f"not this write's checkout {c}, so it is not Amendment 8(d)'s") in result.stderr
+    assert "Nothing was written." in result.stderr
     assert "committed there" not in result.stderr
-    assert f.read_text(encoding="utf-8") == stamped(text)
+    if how.startswith("stamp"):
+        assert f"the stamp line it would have written under the handoff's header block: {STAMP}" in result.stderr
+    assert f.read_bytes() == text
     assert box.git("-C", str(d), "rev-parse", "HEAD").strip() == d_head
-    assert box.git("-C", str(d), "status", "--porcelain").split() == ["M", HANDOFF_REL]
-    assert box.origin_head() == tip
+    assert box.git("-C", str(d), "status", "--porcelain") == "", "nothing pending in that clone for its S3"
+    assert box.snapshot(d) == theirs
     assert box.snapshot(c) == mine
-    assert result.stdout == _line(f)
+    assert result.stdout == ""
     _released(box, c)
 
 

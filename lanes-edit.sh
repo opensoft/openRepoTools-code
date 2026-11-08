@@ -497,7 +497,10 @@
 #      checkout of the register beside it (`<W>-lanes/<lane>/`, `<W>-<name>/`;
 #      a lane's handoff is written in its own checkout only, and
 #      `handoff-path` and `set-restart-intent --handoff` refuse the same
-#      handoff by the same check, 601), a relative cell or `--target` whose
+#      handoff by the same check, 601), a file under `handoffs/` of any other
+#      clone of the register (A63: lane openRepoTools-3's answer to question
+#      4 of #18; an uncommitted write there wedged that lane's next write at
+#      S3 step 4), a relative cell or `--target` whose
 #      `.` or `..` components climb out of the checkout (S2, 602; `handoff-path`
 #      refuses that cell too), a handoff whose path holds a glob character
 #      (607; `handoff-path` and `set-restart-intent --handoff` refuse it
@@ -20971,15 +20974,19 @@ EOF
   #      never the register or `lanes/`), and one inside a git directory —
   #      another clone's `.git/`, a bare clone — and any path in W or in a
   #      checkout beside it (`<W>-lanes/<lane>/`, `<W>-<name>/`): a lane's
-  #      handoff is written in its own checkout only (601). A relative cell
+  #      handoff is written in its own checkout only (601). So is a file
+  #      under `handoffs/` of any other clone of the register, not beside W
+  #      too (A63: lane openRepoTools-3's answer to question 4 of #18; an
+  #      uncommitted write there wedged that lane's next write at S3 step 4).
+  #      A relative cell
   #      or `--target` whose `.` or `..` components climb out of the checkout
   #      is refused first, for its spelling, wherever it lands (602, A55).
   #      Where git cannot read a repository on the way up from the target, it
   #      refuses (1, R22).
   #      One in ANOTHER REPOSITORY (Amendment 8(d)) is written there, then
   #      committed and pushed in its own top level (604), and S3's refusal of
-  #      this checkout does not stop it; one in another clone of the
-  #      register not beside W is written and never committed (A57).
+  #      this checkout does not stop it; no clone of the register is one (A57,
+  #      A63).
   #   3. S3 step 4 for the handoff's own path (`cs_own_pending`), and for a
   #      handoff git does not track yet, which a commit would add and a lost
   #      race's replay would drop.
@@ -21193,8 +21200,12 @@ EOF
       fi
       whf_otop="$(git -C "$whf_gd" rev-parse --show-toplevel 2>/dev/null || :)"
       whf_otop="$( [ -n "$whf_otop" ] && cd -P -- "$whf_otop" 2>/dev/null && pwd -P || :)"
+      whf_oreg=0
       if [ -n "$whf_otop" ] && { [ -e "$whf_otop/$LANES_PATH" ] || [ -L "$whf_otop/$LANES_PATH" ]; } &&
-         path_under "$whf_phys" "$whf_otop" && ! whf_in_scope "${whf_phys#"$whf_otop"/}"; then
+         path_under "$whf_phys" "$whf_otop"; then
+        whf_oreg=1
+      fi
+      if [ "$whf_oreg" = 1 ] && ! whf_in_scope "${whf_phys#"$whf_otop"/}"; then
         whf_stamp_said
         die "lane $lane's handoff target $whf_path is ${whf_phys#"$whf_otop"/} in $whf_otop, another checkout of the register (its top level carries $LANES_PATH too), which is not a file under handoffs/: write-handoff writes a lane's handoff and nothing else, never a register or anything under lanes/, in this checkout or in another clone of it (Amendment 23 S2). Nothing was written." 2
       fi
@@ -21207,6 +21218,18 @@ EOF
       if handoff_beside_w "$whf_c" "$whf_path"; then
         whf_stamp_said
         die "lane $lane's handoff target $whf_path is $HBW_WHY. Nothing was written." 2
+      fi
+      # AND A FILE UNDER handoffs/ OF ANOTHER CLONE OF THE REGISTER THAT IS NOT
+      # BESIDE W IS REFUSED TOO (lane openRepoTools-3's answer to question 4 of
+      # #18, REFUSE; A63). It is that clone's lane's file, not Amendment 8(d)'s
+      # "not the register's": 604's commit and push stay out of it (A57), and
+      # written there, uncommitted, it left a change its lane's next write
+      # refused over at S3 step 4, 601's harm. Per-lane `LANES_REPO` clones
+      # exist outside W's siblings, and A44's test of the top level is there
+      # already. After 601's check, so a clone beside W keeps 601's words.
+      if [ "$whf_oreg" = 1 ]; then
+        whf_stamp_said
+        die "lane $lane's handoff target $whf_path is ${whf_phys#"$whf_otop"/} in $whf_otop, another clone of the register (its top level carries $LANES_PATH too), not this write's checkout $whf_c, so it is not Amendment 8(d)'s \"not the register's\": a lane's handoff is written in its own checkout only. A write there would leave a change that clone's lane refuses over at its next write (Amendment 23 S3 step 4), and a commit and push there would publish to the register outside S3 and S4. Nothing was written." 2
       fi
       # A READ THAT FAILED IS NEVER "NO REPOSITORY" (601's second half, R22).
       # Where git gave no top level, the target is in no work tree only if no
@@ -21359,8 +21382,11 @@ EOF
     # too (A44's test) is another lane's clone, not 8(d)'s "not the
     # register's", and a commit and push there would publish to the
     # register's origin outside S3 and S4, from a clone this lane does not
-    # hold; beside W, 601 refused it above, and elsewhere it is written and
-    # NOT committed, as before 604 (0, said; its lane commits it). A step
+    # hold. Beside W, 601 refused it above, and elsewhere so did A63's
+    # (lane openRepoTools-3's answer to question 4 of #18), before a byte, so
+    # the branch below is a BACKSTOP for a top level that came to carry the
+    # register after those checks: the handoff is then written and NOT
+    # committed (0, said; its lane commits it). A step
     # that fails there leaves the handoff WRITTEN, says what is left with the
     # command that finishes it, and is 6 (`git add` or `commit` failed, or the
     # commit is kept on HEAD and named); a file in no git work tree is written
