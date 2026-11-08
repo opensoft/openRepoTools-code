@@ -2322,10 +2322,15 @@ def test_a_dependent_anywhere_in_the_scope_holds(sweep, where):
 
 def test_the_dry_run_names_the_dependents_scope(sweep):
     """THE SCOPE IS SAID (SHOULD 352), so a person knows where a dependent
-    would not be seen."""
+    would not be seen; and so are the processes read, those of the container
+    it runs in, by its name and its host's (rv4b's NIT J, from Q2's answer),
+    so a person knows that another container's windows are not seen."""
     box = sweep.box
     result, _ = sweep()
     assert result.returncode == 3, (result.stdout, result.stderr)
+    assert ("  processes      : those container bench-a on host hosta shows; another "
+            "container's processes, their working directories and their windows' LANES_REPO, "
+            "are not seen") in result.stdout, result.stdout
     assert (f"  dependents     : every repository under {box.w.parent}/ to depth 6, hidden "
             f"ones too, under {box.env['TMPDIR']}/ to depth 8, for the clones in a Claude "
             f"Code scratchpad, and under {box.home}/ to depth 4; read again under each "

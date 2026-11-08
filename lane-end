@@ -1076,17 +1076,15 @@ if [ "$sweep_checkouts" = 1 ]; then
   # host `unknown` where empty, and either `unknown` where it holds anything
   # else. A writer compares the line with its own `lock_ident`; cleaned
   # another way, it read as another container's, and a killed sweep's lock
-  # was waited out for ten minutes instead of taken back.
-  sc_ident="none unknown"
-  if [ "$sweep_yes" = 1 ]; then
-    sc_wsl="$("$LANES_EDIT" workstation 2>/dev/null || :)"
-    sc_host="$(printf '%s\n' "$sc_wsl" | cut -f3)" || sc_host=""
-    sc_cont="$(printf '%s\n' "$sc_wsl" | cut -f7)" || sc_cont=""
-    sc_host="${sc_host:-unknown}"; sc_cont="${sc_cont:-none}"
-    case "$sc_host" in *[!A-Za-z0-9._:-]*) sc_host=unknown ;; esac
-    case "$sc_cont" in *[!A-Za-z0-9._:-]*) sc_cont=unknown ;; esac
-    sc_ident="$sc_cont $sc_host"
-  fi
+  # was waited out for ten minutes instead of taken back. The dry run reads
+  # them too, for the header's `processes` line (rv4b's NIT J).
+  sc_wsl="$("$LANES_EDIT" workstation 2>/dev/null || :)"
+  sc_host="$(printf '%s\n' "$sc_wsl" | cut -f3)" || sc_host=""
+  sc_cont="$(printf '%s\n' "$sc_wsl" | cut -f7)" || sc_cont=""
+  sc_host="${sc_host:-unknown}"; sc_cont="${sc_cont:-none}"
+  case "$sc_host" in *[!A-Za-z0-9._:-]*) sc_host=unknown ;; esac
+  case "$sc_cont" in *[!A-Za-z0-9._:-]*) sc_cont=unknown ;; esac
+  sc_ident="$sc_cont $sc_host"
 
   # ONE `--yes` AT A TIME (lane openRepoTools-3's NIT 375). Two at once
   # removed nothing twice, but each one's NOTED line called the other's
@@ -2188,6 +2186,11 @@ SS_ROW
   fi
   printf '  dependents     : every repository under %s/ to depth %s, hidden ones too, under %s/ to depth %s, for the clones in a Claude Code scratchpad, and under %s/ to depth %s; read again under each lock\n' \
     "${sc_dep_named[0]}" "${sc_dep_to[0]}" "${sc_dep_named[1]}" "${sc_dep_to[1]}" "${sc_dep_named[2]}" "${sc_dep_to[2]}"
+  # THE PROCESSES ARE THIS CONTAINER'S (rv4b's NIT J, from Q2's answer):
+  # `/proc` (or `lsof`) shows the processes of the container it runs in, so
+  # a process in another container on the same host, its working directory
+  # and its window's `LANES_REPO`, is not seen. The header says which one.
+  printf '  processes      : those container %s on host %s shows; another container'"'"'s processes, their working directories and their windows'"'"' LANES_REPO, are not seen\n' "$sc_cont" "$sc_host"
   sc_cwd_scan; sc_mount_scan; sc_repo_scan
   if [ "$sc_cwd_unread" -gt 0 ]; then
     printf '  (%s process(es) whose working directory could not be read - another user'"'"'s, or ended while read - do not hold anything)\n' "$sc_cwd_unread"
