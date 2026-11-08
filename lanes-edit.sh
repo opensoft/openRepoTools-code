@@ -542,7 +542,14 @@
 #      item 4e). And `lane-state` spends it for a snapshot of this schema that
 #      opens and is not a WHOLE record — cut short, or a key missing or out of
 #      shape (#115): nothing can be read out of it as a snapshot, so it is
-#      the same answer, and the message says which of the two it is.
+#      the same answer, and the message says which of the two it is. And it
+#      spends it where no `LANES_LANE_STATE_ROOT` names the control root and
+#      the lane's object log could not be read (#290): the log's `dir` places
+#      the snapshot, so where it is kept is not known, which is not none. Both
+#      spend it, too, where the record could not even be LOOKED FOR (#291): a
+#      control root, or a directory above it, that this process cannot search
+#      — or a link on the way it cannot follow — leaves stat as silent as a
+#      name that is gone, and the message says so rather than "is there".
 #
 # --no-sweep (DEFAULT, added 2026-09-09 after 0d84d34/a1f2438 swept another
 #   lane's uncommitted hand edit into an unrelated commit): every mutating
@@ -3380,6 +3387,15 @@ log_files() {
   done
 }
 
+# ONE PARSER RUN PER FILE, AND A FILE THAT WILL NOT OPEN IS SAID
+# (opensoft/openRepoTools#290). With no `origin` the logs are this checkout's
+# files, and they were ONE `awk` run: a file it could not open left no line
+# naming it - the listing took its lane for one with no log, and the
+# inventory's read for whole - and `mawk` (Debian's and Ubuntu's `awk`) ends at
+# the first file it cannot open, so every log after it was gone too. Each file
+# is its own run now, as each published log is its own `git show`, and one
+# that fails is said with the prefix `remote_log_events` says a published one
+# with, which the listing and the inventory read back out of the warnings.
 log_events() {
   le_files=()
   if [ "$#" -gt 0 ]; then
@@ -3390,7 +3406,13 @@ $(log_files)
 EOF
   fi
   [ "${#le_files[@]}" -gt 0 ] || return 0
-  awk -v FN="" "$LOG_AWK" "${le_files[@]}"
+  le_rc=0
+  for le_f in "${le_files[@]}"; do
+    awk -v FN="" "$LOG_AWK" "$le_f" && continue
+    le_rc=$?
+    note "unreadable log: $LANES_LOG_PREFIX${le_f##*/} — the file could not be read, so none of its lines are in this read"
+  done
+  return "$le_rc"
 }
 
 # Is there an `origin/<branch>` to read from at all? Outside a repository, and
@@ -3518,7 +3540,21 @@ state_events_flush() {
 # ambiguous and refuses. One resolver now answers both, and its 2 is carried:
 # `lane_log_exists` spends it rather than 1, so "there are two logs" is never
 # read as "there is no log".
-lane_log_events() {
+#
+# `checked` MAKES THE READ SAY WHETHER IT HAPPENED (opensoft/openRepoTools#290).
+# Without it, the published branch's status is the parser's: a `git show` that
+# failed is an empty stream and 0, exactly a lane with no log, and a named read
+# took that for a lane whose log records no `dir` - its root fell to the third
+# rung and its trees read as none. With it, a log `origin`'s tree names and git
+# could not show is 1, and so is a tree that could not be listed to ask; a path
+# the tree does not name is still no log and 0. With no `origin`, a log
+# directory that is there and cannot be searched is 1, and so is a file that is
+# there and will not open. The callers that read this status without asking
+# for it are left as they are: making it the default changes what `lane-dir`,
+# `lane-profile`, `lane-agent`, `lane-transcript`, `history`, `lane-last` and the
+# binding reads answer over a log git cannot read, which #290 lists for a
+# ruling rather than changing beside a named read.
+lane_log_events() {   # <lane> [checked]
   ll_rel="$(log_path_ci "$1")" || return 2
   if [ -n "$LANES_IDX_DIR" ]; then
     # A LOG THE INDEX DOES NOT HOLD IS A LOG `origin` DID NOT HOLD at the
@@ -3536,10 +3572,25 @@ lane_log_events() {
     return 0
   elif have_remote_ref; then
     git -C "$LANES_REPO" show "origin/$LANES_BRANCH:$ll_rel" 2>/dev/null | parse_log_stream "$ll_rel"
+    ll_st=("${PIPESTATUS[@]}")
+    [ "${2-}" = checked ] || return "${ll_st[1]}"
+    [ "${ll_st[0]}" != 0 ] || return "${ll_st[1]}"
+    ll_in=""
+    ll_in="$(git -C "$LANES_REPO" ls-tree --name-only "origin/$LANES_BRANCH" -- "$ll_rel" 2>/dev/null)" || return 1
+    [ -z "$ll_in" ] || return 1
+    return 0
   else
     ll_f="$LANES_LOG_DIR/${ll_rel##*/}"
-    [ -f "$ll_f" ] || return 0
-    log_events "$ll_f"
+    if [ ! -f "$ll_f" ]; then
+      [ "${2-}" = checked ] || return 0
+      [ ! -e "$ll_f" ] && [ ! -L "$ll_f" ] || return 1
+      if [ -e "$LANES_LOG_DIR" ] || [ -L "$LANES_LOG_DIR" ]; then
+        [ -d "$LANES_LOG_DIR" ] && [ -x "$LANES_LOG_DIR" ] || return 1
+      fi
+      return 0
+    fi
+    [ "${2-}" = checked ] || { log_events "$ll_f"; return; }
+    log_events "$ll_f" || return 1
   fi
 }
 lane_log_exists() {
@@ -4199,6 +4250,16 @@ home_of_lane() {
 # `ls-tree` that could fail after it (the review of #289, SHOULD-1(b)).
 PIN_LOGS=0
 PIN_LOGS_TEXT=""
+# `PIN_LANE_LOG` IS A NAMED READ'S ONE READ OF ITS LANE'S LOG, and its status
+# (opensoft/openRepoTools#290): `worktree_rows <lane>` reads it once and the
+# listing it asks for its row takes it from here, as the whole listing takes
+# `PIN_LOGS`.
+PIN_LANE_LOG=0
+PIN_LANE_LOG_TEXT=""
+PIN_LANE_LOG_RC=0
+# 0 · 1 the published list of the logs could not be made, which lists nothing
+# and is NOT a list with no logs in it (opensoft/openRepoTools#290): `lanes_rows`
+# says that the lanes it would have named are missing.
 known_lanes() {
   if [ -n "$LANES_IDX_DIR" ]; then
     while IFS= read -r kl_f; do
@@ -4210,16 +4271,20 @@ known_lanes() {
     return 0
   fi
   if [ "$PIN_LOGS" = 1 ] || have_remote_ref; then
-    { if [ "$PIN_LOGS" = 1 ]; then printf '%s' "$PIN_LOGS_TEXT"
-      else git -C "$LANES_REPO" ls-tree --name-only "origin/$LANES_BRANCH" -- "$LANES_LOG_PREFIX" 2>/dev/null
-      fi; } \
+    kl_list=""; kl_rc=0
+    if [ "$PIN_LOGS" = 1 ]; then kl_list="$PIN_LOGS_TEXT"
+    else
+      kl_list="$(git -C "$LANES_REPO" ls-tree --name-only "origin/$LANES_BRANCH" -- "$LANES_LOG_PREFIX" 2>/dev/null && printf x)" || kl_rc=1
+      kl_list="${kl_list%x}"
+    fi
+    printf '%s' "$kl_list" \
     | while IFS= read -r kl_f; do
         [ -n "$kl_f" ] || continue
         kl_n="${kl_f##*/}"
         case "$kl_n" in README.md) continue ;; esac
         printf '%s\n' "${kl_n%.md}"
       done
-    return 0
+    return "$kl_rc"
   fi
   while IFS= read -r kl_f; do
     [ -n "$kl_f" ] || continue
@@ -4288,6 +4353,67 @@ lower_into() {   # <string>
   LOWER_OUT="${LOWER_OUT//V/v}"; LOWER_OUT="${LOWER_OUT//W/w}"; LOWER_OUT="${LOWER_OUT//X/x}"
   LOWER_OUT="${LOWER_OUT//Y/y}"; LOWER_OUT="${LOWER_OUT//Z/z}"
   return 0
+}
+
+# COLUMN 7 OF THE LANE LISTING, ESCAPED AND DECODED (#301). `lanes_rows` prints
+# a lane's `dir` into a row whose columns are TAB-separated, one row a line, and
+# every reader of that row splits it with a tab-IFS `read` and takes each column
+# by its place: a TAB inside the dir was one separator more, every column after
+# it arrived one place early, and the lane left `worktrees --all` and the
+# inventory index in silence. So column 7 is written the way `lane-worktrees`'
+# porcelain `pesc` writes a field - a backslash as `\\`, a TAB as `\t`, a
+# newline as `\n` and a carriage return as `\r` - and every reader that shows it
+# or takes it for a path decodes it: `worktree_rows` here, `lane`'s `split_row`
+# and the `lanes` renderer, each with its own copy of `row_field_unescape_into`
+# (the three are installed one by one, so none can source another), and
+# `tests/test_subfield_misreads_301.py` runs all three. A dir holding none of
+# the four is printed as it always was.
+#
+# THE ENCODER IS AN `awk` LOOP OVER THE VALUE'S BYTES, read through the
+# ENVIRONMENT: `awk -v` processes escapes in the value it is handed, which is
+# the very misread `payload_subfield` had, and a `gsub` in Apple's awk missed
+# bytes outside ASCII where a `substr` loop under `LC_ALL=C` round-tripped every
+# one (lane 3's review of #301, 504: 821 strings on mawk, gawk and Apple's awk).
+row_field_escape() {   # <value> ; prints it with `pesc`'s four escapes
+  RFE_IN="${1-}" LC_ALL=C awk 'BEGIN {
+    v = ENVIRON["RFE_IN"]; n = length(v); out = ""
+    for (i = 1; i <= n; i++) {
+      c = substr(v, i, 1)
+      if (c == "\\") c = "\\\\"
+      else if (c == "\t") c = "\\t"
+      else if (c == "\n") c = "\\n"
+      else if (c == "\r") c = "\\r"
+      out = out c
+    }
+    printf "%s", out
+  }'
+}
+
+# AND DECODED LEFT TO RIGHT, IN THE SHELL. `\\`, `\t`, `\n` and `\r` are the
+# four escapes; a backslash before anything else, which the encoder never
+# writes, is kept as it stands, so text no encoder wrote reads back as itself.
+# It ASSIGNS `ROW_FIELD_OUT` and returns, for `lower_into`'s reason - and a
+# decoded value read through `$( … )` would lose a trailing newline besides.
+ROW_FIELD_OUT=""
+row_field_unescape_into() {   # <field> ; sets ROW_FIELD_OUT
+  ROW_FIELD_OUT=""; rfu_in="${1-}"; rfu_bs='\'
+  while : ; do
+    case "$rfu_in" in
+      *"$rfu_bs"*) : ;;
+      *) ROW_FIELD_OUT="$ROW_FIELD_OUT$rfu_in"; return 0 ;;
+    esac
+    rfu_pre=${rfu_in%%"$rfu_bs"*}
+    rfu_in=${rfu_in#*"$rfu_bs"}
+    ROW_FIELD_OUT="$ROW_FIELD_OUT$rfu_pre"
+    case "$rfu_in" in
+      t*) ROW_FIELD_OUT="$ROW_FIELD_OUT"$'\t' ;;
+      n*) ROW_FIELD_OUT="$ROW_FIELD_OUT"$'\n' ;;
+      r*) ROW_FIELD_OUT="$ROW_FIELD_OUT"$'\r' ;;
+      "$rfu_bs"*) ROW_FIELD_OUT="$ROW_FIELD_OUT$rfu_bs" ;;
+      *) ROW_FIELD_OUT="$ROW_FIELD_OUT$rfu_bs"; continue ;;
+    esac
+    rfu_in=${rfu_in#?}
+  done
 }
 
 older_than_minutes() {   # <utc> <minutes>
@@ -6732,9 +6858,19 @@ lane_of_session() {
 #              quoted value. `dir` and `profile` are read this way.
 #   all        EVERY REF — the whole sub-field, which is what `window` is:
 #              two refs that a caller splits itself.
+#
+# THE PAYLOAD GOES IN THROUGH THE ENVIRONMENT, NEVER `-v` (#301). `awk -v`
+# processes escapes in the value it is handed, so a stored `dir` holding
+# `back\tslash` read back holding a TAB, `\\` as one backslash, `\n` as a
+# newline that cut the answer in two and `\101` as `A` — and `lane-dir`, both
+# control roots and the writers' own checks of what they write all took that
+# answer. `lane_sidecar_schema_ok` reads its id through `ENVIRON` for the same
+# reason. `want` and `mode` stay on `-v`: they are the callers' own words, and
+# none of them holds a backslash.
 payload_subfield() {   # <payload> <name> [all]
-  awk -v pay="$1" -v want="$2" -v mode="${3-}" '
+  PSF_PAY="${1-}" awk -v want="$2" -v mode="${3-}" '
     BEGIN {
+      pay = ENVIRON["PSF_PAY"]
       want = want " "
       n = split(pay, sf, "; ")
       for (i = 1; i <= n; i++) {
@@ -7118,9 +7254,11 @@ lane_row_facts() {   # events on stdin, ONE LINE PER LANE
 # under Amendment 11 yet"* — the pre-cutover answer that sends `restart`,
 # `lane-start` and both skills to the rungs beneath a record they never
 # established was readable. The read is its own step now and its status decides.
-lane_payload_field() {   # <lane> <name> [all]
+# `checked` IS `lane_log_events`' (#290): without it the published read's
+# status is still the parser's, so a log git could not show is still the 8.
+lane_payload_field() {   # <lane> <name> [all] [checked]
   lpf_lines=""; lpf_rc=0
-  lpf_lines="$(lane_log_events "$1")" || lpf_rc=$?
+  lpf_lines="$(lane_log_events "$1" "${4-}")" || lpf_rc=$?
   [ "$lpf_rc" = 0 ] || return 1
   # The scan is over EVERY lane-kind payload, newest last, and the answer is
   # the last one that actually carries the sub-field.
@@ -7894,8 +8032,17 @@ dhp_resume_value() {   # <flattened argv, lowercased> — sets dhp_rv
 # rendering: `restart` and `lanes` lay them out, and a third caller that wants
 # a different shape does not need a fourth read.
 #
-#   <lane> <state> <workstation> <profile> <window> <last uuid> <dir>
+#   <lane> <state> <workstation> <profile> <window> <last uuid> <dir, escaped>
 #   <objects> <age> <restart line> <home> <forks>
+#
+# `<dir>` IS COLUMN 7 AND IT IS ESCAPED, NOT PLAIN (#301): the lane's recorded
+# dir is written the way `lane-worktrees`' porcelain `pesc` writes a field - a
+# backslash as `\\`, a TAB as `\t`, a newline as `\n` and a carriage return as
+# `\r` - so a dir holding a TAB is still one column and the row still seventeen
+# (see `row_field_escape`). A dir holding none of the four is printed as it is.
+# A caller that shows the dir or takes it for a path DECODES it first with
+# `row_field_unescape_into`, as `worktree_rows`, `lane`'s `split_row` and the
+# `lanes` renderer do; the `--dir` filter compares the dir as stored.
 #
 # THE FIRST TEN ARE CLAUSE (j)'s TEN, IN CLAUSE (j)'s ORDER (A11 Addendum 4
 # ruling 7): *"`lanes` and `restart` each render the subset of clause (j)'s ten
@@ -8169,6 +8316,7 @@ lanes_rows() {
   # EACH NAME CARRIES ITS OWN LOWER-CASED KEY, emitted by the pass that already
   # computes it for the de-duplication: the three lookups below join on that key
   # and `lc` is two processes (ruling 12).
+  lr_klrc=0
   if [ -n "$lr_one" ]; then
     lr_names="$(printf '%s\n' "$lr_one" | awk -v sep="$US" 'NF { print tolower($0) sep $0 }')"
     lr_here=0; lr_repo=""; lr_dir=""; lr_prefix=""
@@ -8180,9 +8328,16 @@ lanes_rows() {
     # canonical one. Read the other way round, a lane whose log file predates
     # its row's spelling was listed under the file name, and column 10's
     # line that binds the lane offered that spelling back to the reader.
-    lr_names="$( { register_lanes 2>/dev/null || :; known_lanes 2>/dev/null || :; } | awk -v sep="$US" 'NF && !seen[tolower($0)]++ { print tolower($0) sep $0 }')"
+    # AND THE LIST OF THE LOGS SAYS WHETHER IT WAS MADE (opensoft/openRepoTools#290).
+    # It is what names a lane that has a log and no row, and a list that failed
+    # named none of them: they were missing from the listing, and nothing said
+    # so. It is said below. An empty listing is decided there too, after every
+    # read it rests on has been asked, because one over reads that failed is
+    # not "no lane".
+    lr_kl=""
+    lr_kl="$(known_lanes 2>/dev/null)" || lr_klrc=$?
+    lr_names="$( { register_lanes 2>/dev/null || :; printf '%s\n' "$lr_kl"; } | awk -v sep="$US" 'NF && !seen[tolower($0)]++ { print tolower($0) sep $0 }')"
   fi
-  [ -n "$lr_names" ] || return 8
   # ONE PASS OVER EVERY LANE'S EVENTS, NOT ONE READ PER LANE PER FIELD.
   # `lanes` asks about every lane the register and the logs know, and this loop
   # used to make a `git show` of each lane's log — and then a fork per sub-field
@@ -8196,8 +8351,21 @@ lanes_rows() {
   # lane's profile and nothing else, and `state_events` is a `git show` per log
   # file — nine seconds on the live register. The same parser over the same
   # grammar either way, so the two answers cannot differ.
+  # AND THAT ONE LOG IS READ ONCE, WITH ITS STATUS (opensoft/openRepoTools#290).
+  # Piped straight into the facts, a `git show` that failed was a lane whose
+  # log carries no lane-kind line: no `dir`, no binding, and a class of
+  # DORMANT. The read is its own step now. A named `worktrees` read has made it
+  # already and hands it here (`PIN_LANE_LOG`), so the row it lists and the
+  # root its trees are found under come out of one read and not two.
+  lr_evrc=0
   if [ -n "$lr_one" ]; then
-    lr_facts="$(lane_log_events "$lr_one" 2>/dev/null | lane_row_facts)"
+    lr_ev=""
+    if [ "$PIN_LANE_LOG" = 1 ]; then
+      lr_ev="$PIN_LANE_LOG_TEXT"; lr_evrc="$PIN_LANE_LOG_RC"
+    else
+      lr_ev="$(lane_log_events "$lr_one" checked 2>/dev/null)" || lr_evrc=$?
+    fi
+    lr_facts="$(printf '%s\n' "$lr_ev" | lane_row_facts)"
   else
     lr_facts="$(state_events 2>/dev/null | lane_row_facts)"
   fi
@@ -8207,19 +8375,34 @@ lanes_rows() {
   # and those lanes are fenced out of the class here. Without the warnings file
   # (no temporary file could be made) no read can be told from a failed one, so
   # no row is classed dormant at all.
-  lr_unread=" "; lr_unread_ok=1; lr_unread_paths=""
+  # AND THE EVENTS' OWN LIST OF THE LOGS IS ASKED THE SAME WAY (#290): where it
+  # could not be made, no lane's lines are in the facts, and every row with no
+  # log of its own here read as one with no object log - DORMANT, hidden, and
+  # offered to the sweep.
+  lr_unread=" "; lr_unread_ok=1; lr_unread_paths=""; lr_unlisted=""
   if [ -z "$lr_one" ] && [ -z "$LANES_IDX_DIR" ]; then
     if [ -n "$SE_WARN_FILE" ]; then
-      lr_unread_paths="$(sed -n -e 's/^lanes-edit: unreadable log: \(.*\) — git could not read it.*$/\1/p' "$SE_WARN_FILE" 2>/dev/null)"
+      lr_unread_paths="$(sed -n -e 's/^lanes-edit: unreadable log: \(.*\) — git could not read it.*$/\1/p' -e 's/^lanes-edit: unreadable log: \(.*\) — the file could not be read.*$/\1/p' "$SE_WARN_FILE" 2>/dev/null)"
       lr_unread=" $(printf '%s\n' "$lr_unread_paths" | awk 'NF { n = $0; sub(/^.*\//, "", n); sub(/\.md$/, "", n); print tolower(n) }' | tr '\n' ' ')"
+      lr_unlisted="$(sed -n -e '/^lanes-edit: unlisted logs: /p' "$SE_WARN_FILE" 2>/dev/null)"
     else
       lr_unread_ok=0
     fi
+  fi
+  # THE NAMED LANE'S ONE READ IS FENCED THE SAME WAY (#290): a log this listing
+  # could not read is not one that carries no lane-kind line.
+  if [ -n "$lr_one" ] && [ "$lr_evrc" != 0 ]; then
+    lr_unread_paths="$(log_path_ci "$lr_one" 2>/dev/null || log_path_for "$lr_one")"
+    lower_into "$lr_one"; lr_unread=" $LOWER_OUT "
   fi
   [ -z "$lr_unread_paths" ] ||
     note "these published logs could not be read, so no lane of theirs is classed DORMANT: $(printf '%s\n' "$lr_unread_paths" | tr '\n' ' ')"
   [ "$lr_unread_ok" = 1 ] ||
     note "no temporary file could be made for the read's warnings, so whether any published log failed to read is not known, and no row is classed DORMANT here."
+  [ -z "$lr_unlisted" ] ||
+    note "the object logs under origin/$LANES_BRANCH:$LANES_LOG_PREFIX could not be listed for their lines, so no lane's log is read in this listing, and no row is classed DORMANT here."
+  [ "$lr_klrc" = 0 ] ||
+    note "the object logs under origin/$LANES_BRANCH:$LANES_LOG_PREFIX could not be listed, so a lane with a log and no row in the register or the archive is missing from this listing."
   # AND A REGISTER THAT COULD NOT BE READ IS SAID, ONCE (the re-review of #230).
   # Every row above came out of `register_text`, which drops the status
   # `register_text_checked` keeps (#67), and a published register git cannot
@@ -8246,8 +8429,18 @@ lanes_rows() {
   # front of a launch), so it says it, exactly as it says a session-record read
   # that failed; the POSITION is the half that must not guess, and
   # `lane_next_free` refuses there rather than offering one over a partial read.
+  lr_arch_ok=1
   if ! archive_text >/dev/null 2>&1; then
+    lr_arch_ok=0
     note "$LANES_ARCH_PATH exists and could not be read, so the RETIRED rows it holds are not in this listing — and \`next-free\` will refuse a position rather than offer one over a partial read."
+  fi
+  # AN EMPTY LISTING OVER READS THAT FAILED IS NOT "NO LANE" (#290). It was
+  # 8 before any of the notes above, so `lanes` printed "no lane is recorded"
+  # over a register, an archive and a list of the logs it could not read. It
+  # is 1, the listing could not be read, after each read that failed is said.
+  if [ -z "$lr_names" ]; then
+    [ "$lr_reg_ok" = 1 ] && [ "$lr_arch_ok" = 1 ] && [ "$lr_klrc" = 0 ] || return 1
+    return 8
   fi
   lr_index="$GS$(lanes_register_index 2>/dev/null | tr '\n' "$GS" || :)"
   # THE CELLS ARE BUILT ON FIRST USE AND NOT BEFORE (see `lanes_register_index
@@ -8522,7 +8715,7 @@ EOF2
         # row stays listed and the sweep is never offered it.
         if [ -n "$lr_row" ] && [ "$lr_lanekind" = 0 ] && [ "$lr_live_rc" = 0 ] &&
            [ "$lr_cellrow" = 1 ] && [ "$lr_logs_rc" = 0 ] && [ "$lr_unread_ok" = 1 ] &&
-           [ "$lr_reg_ok" = 1 ]; then
+           [ "$lr_reg_ok" = 1 ] && [ -z "$lr_unlisted" ]; then
           lr_class=dormant
           # A LOG THIS CHECKOUT HAS AND `origin` HAS NOT IS STILL AN OBJECT LOG,
           # AND SO IS ONE `origin` HAS AND GIT COULD NOT READ (item 11).
@@ -8717,7 +8910,24 @@ EOF2
     # every field after it to the one before. A row with no standing binding
     # says `none` there, which `lane_groups` files exactly as it filed empty —
     # only `elsewhere` changes the group.
-    lr_out="${lr_out}${lr_utc:-0000}${US}${lr_l}	${lr_state}	${lr_w:-unknown}	${lr_pf:-none}	${lr_win:-none}	${lr_sid:-none}	${lr_d:-none}	${lr_obj:-none}	${lr_age}	${lr_restart}	${lr_home:-none}	${lr_fk}	${lr_local:-none}	${lr_class:-none}	${lr_start:-unknown}	${lr_was:-none}	${lr_flags:-none}
+    #
+    # AND COLUMN 7 IS THE DIR ESCAPED AS `pesc` ESCAPES A FIELD (#301; see
+    # `row_field_escape`), so a TAB in it is not a separator. Escaped HERE, at
+    # the print and nowhere earlier, because the `--dir` filter above compares
+    # the dir as stored; and only where it holds one of the four bytes, so an
+    # ordinary dir costs no process and prints as it always did. An escape that
+    # printed nothing would leave the column empty, which no reader can split
+    # (see above), so it says `none` and says why.
+    lr_dcol="${lr_d:-none}"
+    case "$lr_d" in
+      *'\'* | *$'\t'* | *$'\n'* | *$'\r'*)
+        lr_dcol="$(row_field_escape "$lr_d")"
+        if [ -z "$lr_dcol" ]; then
+          lr_dcol=none
+          note "lane $lr_l's recorded dir could not be escaped for the listing, so its directory column says none."
+        fi ;;
+    esac
+    lr_out="${lr_out}${lr_utc:-0000}${US}${lr_l}	${lr_state}	${lr_w:-unknown}	${lr_pf:-none}	${lr_win:-none}	${lr_sid:-none}	${lr_dcol}	${lr_obj:-none}	${lr_age}	${lr_restart}	${lr_home:-none}	${lr_fk}	${lr_local:-none}	${lr_class:-none}	${lr_start:-unknown}	${lr_was:-none}	${lr_flags:-none}
 "
   done <<EOF
 $lr_names
@@ -13482,8 +13692,66 @@ lane_state_word_ok() {   # <word>
   return 1
 }
 
+# A NAME THAT IS NOT THERE IS ABSENT ONLY WHERE THE LOOKUP THAT SAYS SO COULD
+# BE MADE (opensoft/openRepoTools#291, the review of #289's SHOULD-4). `[ -d ]`,
+# `[ -e ]`, `[ -r ]` and `[ -L ]` are all false for a path under a directory
+# this process may not SEARCH: stat fails there with EACCES exactly as it fails
+# with ENOENT for a name that is gone, and none of the shell's tests tells the
+# two apart. So a lane whose `.lane-state` was mode 000 read as a lane with no
+# trees and no snapshot — `lane-trees` and `lane-state` answered 8, the listing
+# left the lane out, and `lanes-index sync` removed its rows — and a recorded
+# `dir` whose parent could not be looked for fell to the next rung's root. The
+# read that failed was taken for the answer (R22, Amendment 7(d)).
+#
+# So the walk goes up from the path to the deepest name that IS there. A
+# directory this process can search has answered for the name below it, and a
+# name that is not a directory has no name below it: the absence is
+# established, 1. A directory that cannot be searched has not answered (0), and
+# nor has a link that cannot be followed (0): its target is gone or is under a
+# directory that cannot be searched, and stat cannot tell those two apart
+# either. `-x` and not `-r`, because a lookup needs search permission alone.
+# It is `lane_restart_root_ok`'s rule (unknown ancestry is never absent), asked
+# of the one ancestor a lookup stops at. Where the answer is 0,
+# `LOOKUP_BLOCKED_WHY` says where, in the words every reader below prints; call
+# this directly, never inside `$( )`, or that is lost.
+#
+# ITS LIMIT (#291's review, NIT-4): the rule reads MODE BITS. A denial they do
+# not show — macOS TCC's EPERM under a protected folder such as `~/Documents`,
+# a Linux security module, a FUSE mount without `allow_other` — leaves the
+# deepest name that is there looking searchable, so the name below it still
+# reads as absent (1): #291's failure by another route. Telling the two apart
+# needs the errno of the stat that failed, and none of the shell's tests
+# reports one.
+LOOKUP_BLOCKED_WHY=""
+lookup_blocked() {   # <a path the caller found not there>
+  lkb_x="${1-}"; LOOKUP_BLOCKED_WHY=""
+  [ -n "$lkb_x" ] || return 1
+  while :; do
+    if [ -e "$lkb_x" ]; then
+      if [ -d "$lkb_x" ] && [ ! -x "$lkb_x" ]; then
+        LOOKUP_BLOCKED_WHY="the directory $lkb_x cannot be searched"
+        return 0
+      fi
+      return 1
+    fi
+    if [ -L "$lkb_x" ]; then
+      LOOKUP_BLOCKED_WHY="$lkb_x is a symbolic link that cannot be followed"
+      return 0
+    fi
+    case "$lkb_x" in
+      /|.) return 1 ;;
+      */*) lkb_x="${lkb_x%/*}"; [ -n "$lkb_x" ] || lkb_x=/ ;;
+      *)   lkb_x=. ;;
+    esac
+  done
+}
+
 # THE CONTROL ROOT — the three rungs above, in order. 0 with the path (which
-# need not exist yet), 8 where no rung answers.
+# need not exist yet), 8 where no rung answers. A rung is passed over only where
+# its directory is established absent (#291): where whether it is there could
+# not be looked for, ITS root is the answer — every read under it then meets the
+# same directory nobody can search and says so, and every write fails there —
+# and never the next rung's, a different root where nothing of this lane's is.
 lane_control_root() {   # <lane> [<a payload that may carry `dir`>]
   lcr_lane="${1-}"; lcr_pay="${2-}"; lcr_dir=""; lcr_par=""
   [ -n "$lcr_lane" ] || return 8
@@ -13499,13 +13767,17 @@ lane_control_root() {   # <lane> [<a payload that may carry `dir`>]
     /*) lcr_par="${lcr_dir%/*}" ;;
     *)  lcr_par="" ;;
   esac
-  if [ -n "$lcr_par" ] && [ -d "$lcr_par" ]; then
-    printf '%s/.lane-state/%s\n' "$lcr_par" "$lcr_lane"
-    return 0
+  if [ -n "$lcr_par" ]; then
+    if [ -d "$lcr_par" ] || lookup_blocked "$lcr_par"; then
+      printf '%s/.lane-state/%s\n' "$lcr_par" "$lcr_lane"
+      return 0
+    fi
   fi
-  if [ -n "${PROJECTS_ROOT:-}" ] && [ -d "$PROJECTS_ROOT" ]; then
-    printf '%s/.lane-state/%s\n' "${PROJECTS_ROOT%/}" "$lcr_lane"
-    return 0
+  if [ -n "${PROJECTS_ROOT:-}" ]; then
+    if [ -d "$PROJECTS_ROOT" ] || lookup_blocked "$PROJECTS_ROOT"; then
+      printf '%s/.lane-state/%s\n' "${PROJECTS_ROOT%/}" "$lcr_lane"
+      return 0
+    fi
   fi
   return 8
 }
@@ -13683,7 +13955,8 @@ lane_op_id() {
 # here parses with one `awk`. 0 with the fields, 8 where the lane has no
 # snapshot at all (the pre-cutover lane, and not a failure), 10 where a snapshot
 # IS there and could not be read — or is of this schema and not a whole record
-# (#115) — 1 where the control root could not be derived.
+# (#115), or could not even be looked for (#291, `lookup_blocked`) — 1 where
+# the control root could not be derived.
 #
 # THE 10 IS THE POINT OF THIS ROUND (Copilot round 6 on openRepoTools#97, where
 # it was 9 — main's #61 has since spent 9 on `claim`, so this one moved). A bare
@@ -13711,6 +13984,9 @@ lane_state_read() {   # <lane> [<a payload that may carry `dir`>]
   lsr_f="$lsr_root/lane-state.yaml"
   if [ ! -r "$lsr_f" ]; then
     if [ -e "$lsr_f" ] || [ -L "$lsr_f" ]; then return 10; fi
+    # AND ONE NOBODY COULD LOOK FOR IS NOT AN ABSENT ONE (#291): its control
+    # root, or a directory above it, cannot be searched.
+    if lookup_blocked "$lsr_f"; then return 10; fi
     return 8
   fi
   # AN UNKNOWN SCHEMA FAILS CLOSED (design decision: "conservative fail-closed
@@ -13990,7 +14266,9 @@ lane_tree_put() {   # <root> <lane> <path> <checkout> <branch> <head> <upstream>
 # EVERY RECORDED TREE, ONE PER LINE, US-separated:
 #   <id><US><path><US><branch><US><head><US><upstream><US><dirty><US><unpushed><US><writer><US><observed><US><checkout><US><generation><US><operation><US><schema>
 # 0 with rows, 8 with none, 1 where no control root could be derived, 10 where
-# the `trees` directory is there and cannot be listed.
+# the `trees` directory is there and cannot be listed — or could not even be
+# looked for, its control root or a directory above it being one this process
+# cannot search (#291).
 #
 # THAT 10 IS NOT AN 8 (#157 item 4e). A directory this process may not read or
 # search yields an empty glob, which read as a lane that recorded no tree — the
@@ -14022,7 +14300,10 @@ lane_trees_list() {   # <lane> [<a payload that may carry `dir`>]
   ltl_root=""; ltl_rc=0; ltl_n=0
   ltl_root="$(lane_control_root "${1-}" "${2-}")" || ltl_rc=$?
   [ "$ltl_rc" = 0 ] || return 1
-  [ -d "$ltl_root/trees" ] || return 8
+  if [ ! -d "$ltl_root/trees" ]; then
+    if lookup_blocked "$ltl_root/trees"; then return 10; fi
+    return 8
+  fi
   [ -r "$ltl_root/trees" ] && [ -x "$ltl_root/trees" ] || return 10
   for ltl_f in "$ltl_root"/trees/*.yaml; do
     [ -e "$ltl_f" ] || [ -L "$ltl_f" ] || continue
@@ -14259,7 +14540,7 @@ lane_reconcile() {   # <lane>
   fi
 
   # 1. THE SNAPSHOT.
-  lrc_state=""; lrc_gen=""; lrc_op=""; lrc_owner=""; lrc_upd=""
+  lrc_state=""; lrc_gen=""; lrc_op=""; lrc_owner=""; lrc_upd=""; lrc_sblk=""
   lrc_snap=""; lrc_srrc=0
   lrc_snap="$(lane_state_read "$lrc_lane")" || lrc_srrc=$?
   if [ "$lrc_srrc" = 0 ]; then
@@ -14287,6 +14568,11 @@ lane_reconcile() {   # <lane>
     if [ "$lrc_srrc" = 10 ] && [ -r "$lrc_root/lane-state.yaml" ] \
        && ! lane_sidecar_schema_ok "$lrc_root/lane-state.yaml"; then
       lrc_state=MALFORMED; lrc_swhy="$LSS_WHY"
+    fi
+    # AND ONE NOBODY COULD LOOK FOR (#291) is never said to be there.
+    if [ "$lrc_srrc" = 10 ] && [ ! -e "$lrc_root/lane-state.yaml" ] \
+       && [ ! -L "$lrc_root/lane-state.yaml" ] && lookup_blocked "$lrc_root/lane-state.yaml"; then
+      lrc_sblk="$LOOKUP_BLOCKED_WHY"
     fi
   fi
   printf 'ROOT%s%s\n' "$US" "$lrc_root"
@@ -14377,15 +14663,24 @@ LRC_BIND
   lrc_seen=""; lrc_n=0; lrc_recover=0; lrc_dirty=0
   # AN INVENTORY NOBODY COULD LIST IS NOT AN EMPTY ONE (#113, the unreadable
   # sidecar's rule one level up). `lane_trees_list` answers 10 for a `trees`
-  # directory that is there and cannot be listed (#157 item 4e), and this read
-  # ended in `|| :`, so every tree the lane recorded vanished from the report and
-  # its verdict could still be `resumable`. `lrc_unread` gathers what the
-  # inventory and the sweeps below could not read, and the verdict says so.
+  # directory that is there and cannot be listed (#157 item 4e), and for one
+  # that could not even be looked for (#291), and this read ended in `|| :`, so
+  # every tree the lane recorded vanished from the report and its verdict could
+  # still be `resumable`. `lrc_unread` gathers what the inventory and the sweeps
+  # below could not read, and the verdict says so. Which of the two 10s it was
+  # is asked again here, as `lane-trees` asks it, because the reason
+  # `lookup_blocked` gives is lost in the `$( )` the list is read in: a `trees`
+  # nobody could look for is never said to be there.
   lrc_unread=""; lrc_tl=""; lrc_tlrc=0
   lrc_tl="$(lane_trees_list "$lrc_lane" 2>/dev/null)" || lrc_tlrc=$?
   case "$lrc_tlrc" in
     0|8) : ;;
-    10) lrc_unread="its worktree inventory directory $lrc_root/trees is there and could not be listed" ;;
+    10)
+      if [ ! -d "$lrc_root/trees" ] && lookup_blocked "$lrc_root/trees"; then
+        lrc_unread="whether its worktree inventory directory $lrc_root/trees is there could not be read: $LOOKUP_BLOCKED_WHY"
+      else
+        lrc_unread="its worktree inventory directory $lrc_root/trees is there and could not be listed"
+      fi ;;
     *)  lrc_unread="its worktree inventory could not be read (exit $lrc_tlrc)" ;;
   esac
   while IFS="$US" read -r lrc_id lrc_p lrc_b lrc_h lrc_u lrc_d lrc_np lrc_w lrc_ob lrc_co lrc_tg lrc_to lrc_sch; do
@@ -14723,7 +15018,8 @@ LRC_PAIRED
       SWAPPED0)   lrc_v=inconsistent;    lrc_why="the lane is recorded SWAPPED and a holder is LIVE: a swapped lane has no holder, so one of the two is wrong and neither is overwritten here" ;;
       CLOSED8)    lrc_v=closed;          lrc_why="the lane is closed" ;;
       CLOSED0)    lrc_v=inconsistent;    lrc_why="the lane is recorded CLOSED and a holder is LIVE" ;;
-      UNREADABLE*) lrc_v=indeterminate;  lrc_why="this lane's lifecycle snapshot at $lrc_root/lane-state.yaml IS THERE and could not be read, so where its session stopped is NOT established — which is not the same as a lane that has none, and is no clearance to relaunch anything (R22, Amendment 7(d): a read that failed is never an answer). Read that file by hand; if you know what wrote it, move it aside and this lane's next transition writes a fresh one" ;;
+      UNREADABLE*) lrc_v=indeterminate;  lrc_why="this lane's lifecycle snapshot at $lrc_root/lane-state.yaml IS THERE and could not be read, so where its session stopped is NOT established — which is not the same as a lane that has none, and is no clearance to relaunch anything (R22, Amendment 7(d): a read that failed is never an answer). Read that file by hand; if you know what wrote it, move it aside and this lane's next transition writes a fresh one"
+        [ -z "$lrc_sblk" ] || lrc_why="whether this lane has a lifecycle snapshot at $lrc_root/lane-state.yaml could not be read: $lrc_sblk, so where its session stopped is NOT established — which is not the same as a lane that has none, and is no clearance to relaunch anything (R22, Amendment 7(d): a read that failed is never an answer). Its worktree inventory is under the same control root and could not be read either (#291). Read it by hand" ;;
       MALFORMED*) lrc_v=indeterminate;   lrc_why="this lane's lifecycle snapshot at $lrc_root/lane-state.yaml is of this schema and ${lrc_swhy:-is not a whole record} — truncated, or edited by hand — so where its session stopped is NOT established, and no writer replaces it, exactly as none replaces a schema it does not write (#115). Read that file by hand; if you know what wrote it, move it aside and this lane's next transition writes a fresh one" ;;
       NONE*)      lrc_v=no-state;        lrc_why="this lane has no lifecycle snapshot: it has not started or handed off under this capability, so its crash kind cannot be told from its record (Amendment 7(i)'s cutover rule — nothing is backfilled)" ;;
       *)          lrc_v=unknown-state;   lrc_why="the snapshot holds the state word '$lrc_state', which this reader does not know; nothing is assumed about it" ;;
@@ -14822,8 +15118,30 @@ LRC_PAIRED
 # that is not whole `malformed sidecar` (#115). Each keeps the path the record
 # names where it names one, else the record's id (its file name) stands
 # there. A kept path is the record's own word, so it may be relative or
-# not a tree at all; only a whole record's path is known absolute. A count that is
+# not a tree at all; only a whole record's path is known absolute, and a record
+# that names none is the lane's `UNREAD` line, below (#302). A count that is
 # `unknown` is empty — an INTEGER column has no word for it.
+#
+# A LANE THE LISTING NAMED AND COULD NOT READ IS ITS OWN `UNREAD` LINE, whose
+# rows the indexer keeps: one whose `trees` directory is there and cannot be
+# listed, one whose `trees` could not even be looked for - its control root, or
+# a directory above it, cannot be searched - and one with a record that could
+# not be read, beside that record's own row (#291).
+#
+# SO IS A LANE WITH A RECORD THAT WAS READ AND NAMES NO ABSOLUTE PATH (#302): one
+# of this schema that is not whole, or of another schema, with no `path:` line,
+# an empty one, or one that is relative. The row such a record makes is keyed
+# by its id (or by its relative text), which is not the tree's key, so a sync
+# that took the row for the whole truth REMOVED the row the record last gave
+# under the tree's real path - the loss #291 closed for a record that could not
+# be read. The row stays in the listing for a person to read, beside the lane's
+# `UNREAD` line. A record that is not whole or of another schema but names an
+# ABSOLUTE path keeps its own key, and its row is rewritten in place: it holds
+# nothing. THE COST IS THE LANE'S: one such record holds every row of its lane,
+# the tree's own and any a later sync would write, until the record is put
+# right. A lane is ONE `UNREAD` line however many records it has, because the
+# indexer keeps one reason per lane: a lane with a record of each kind says
+# both in it.
 #
 # AND THE LISTING ITSELF IS SAID TO BE WHOLE OR NOT (opensoft/openRepoTools#173
 # item c1, Copilot's fourth review of #171). Its lanes are the names three
@@ -14856,19 +15174,41 @@ LRC_PAIRED
 # says what that leaves. An empty listing over a failed read is that line
 # alone, and never 8.
 #
+# AND A NAMED READ IS NEVER "NONE" OVER A READ THAT FAILED
+# (opensoft/openRepoTools#290, the review of #289's SHOULD-3). Its lane's trees
+# are found under the root its log's `dir` places, and the listing's one read of
+# that log threw a failed `git show` away: no `dir`, the third rung, no `trees`,
+# and 8 - "no worktree is inventoried". The log is read here ONCE, with its
+# status, and handed to the listing (`PIN_LANE_LOG`); where it could not be read
+# and no override names the root, the lane is ONE `UNREAD` line naming the log.
+# A lane's name is the register's spelling, and the caller says whether the
+# register read it was resolved by was made (`register-unread`): where it was
+# not, a name typed in another case named a root no lane has, so a read that
+# finds no tree there is an `UNREAD` line naming the register.
+#
+# AND NO WRITER IS PRONOUNCED `0` OVER A READ NOBODY MADE (#290). `0` is "no
+# live record here names one of the lane's ids, and its binding is here or
+# nowhere": where the register's ids were not read, or the lane's log - its
+# binding - was not, that is not established, and the field is EMPTY, unknown,
+# as it is for a lane bound elsewhere. A live record that names one of the ids
+# that WERE read is still `1`.
+#
 # The rows are sorted bytewise, which is the order the index's copy is written
 # in too: the two reads of one inventory are the same bytes.
 #   0 rows, with a PARTIAL line where the listing was not whole · 8 none ·
 #   1 the lane listing could not be read
-worktree_rows() {   # [<canonical lane>]
+worktree_rows() {   # [<canonical lane> [register-unread]]
   wr_one="${1-}"; wr_out=""
   wr_live_ok=1
   live_session_ids >/dev/null 2>&1 || wr_live_ok=0
   wr_partial=""
   wr_unlisted="the object logs under origin/$LANES_BRANCH:$LANES_LOG_PREFIX could not be listed"
+  wr_reg_ok=1; wr_evrc=0; wr_lp=""; wr_unread_lanes=" "; wr_binding_unread=0
   if [ -z "$wr_one" ]; then
-    register_text_checked >/dev/null 2>&1 ||
+    if ! register_text_checked >/dev/null 2>&1; then
       wr_partial="the register $LANES_PATH could not be read"
+      wr_reg_ok=0
+    fi
     # THE ARCHIVE AND THE LOG LIST ARE PINNED, NOT ONLY ASKED (SHOULD-1(b)):
     # each read that succeeds here is the text every read of the listing below
     # is handed, as the register's is its cache. `x` keeps the text's last
@@ -14879,8 +15219,11 @@ worktree_rows() {   # [<canonical lane>]
     else
       wr_partial="${wr_partial:+$wr_partial; }the archive $LANES_ARCH_PATH could not be read"
     fi
-    # `known_lanes`' OWN TWO READS, which print what they could and answer 0
-    # either way, because the listing unions them with the register. WITH NO
+    # `known_lanes`' OWN TWO READS, which print what they could, because the
+    # listing unions them with the register. The published list answers 1
+    # where it could not be made (#290) - the listing says so and lists the
+    # rest - and the directory's, with no `origin`, answers 0 either way: so
+    # whether each was made is asked here, for the `PARTIAL` line. WITH NO
     # `origin`, A DIRECTORY THAT IS THERE IS ASKED AS THE TREES' IS BELOW: `ls`
     # lists an `r--` one, whose files no glob can then open (N1 of the review).
     if have_remote_ref; then
@@ -14895,6 +15238,12 @@ worktree_rows() {   # [<canonical lane>]
         wr_partial="${wr_partial:+$wr_partial; }the log directory $LANES_LOG_DIR is there and could not be listed"
       fi
     fi
+  else
+    [ "${2-}" != register-unread ] || wr_reg_ok=0
+    wr_ev=""
+    wr_ev="$(lane_log_events "$wr_one" checked 2>/dev/null)" || wr_evrc=$?
+    PIN_LANE_LOG_TEXT="$wr_ev"; PIN_LANE_LOG_RC="$wr_evrc"; PIN_LANE_LOG=1
+    [ "$wr_evrc" = 0 ] || wr_lp="$(log_path_ci "$wr_one" 2>/dev/null || log_path_for "$wr_one")"
   fi
   wr_lanes=""; wr_lrc=0
   if [ -n "$wr_one" ]; then
@@ -14903,21 +15252,29 @@ worktree_rows() {   # [<canonical lane>]
     wr_lanes="$(lanes_rows --all --closed)" || wr_lrc=$?
   fi
   PIN_ARCHIVE=0; PIN_ARCHIVE_TEXT=""; PIN_LOGS=0; PIN_LOGS_TEXT=""
+  PIN_LANE_LOG=0; PIN_LANE_LOG_TEXT=""; PIN_LANE_LOG_RC=0
+  # 1 IS ALSO A LISTING THAT READS THAT FAILED LEFT EMPTY (#290), which the
+  # PARTIAL line below says where this read found those reads failed too.
   case "$wr_lrc" in
     0) : ;;
-    8) [ -n "$wr_partial" ] || return 8 ;;
+    8|1) [ -n "$wr_partial" ] || return "$wr_lrc" ;;
     *) return 1 ;;
   esac
   if [ -z "$wr_one" ] && [ "$wr_lrc" = 0 ]; then
     wr_ulogs=""; wr_urc=0; wr_ulist=""
     if [ -n "$SE_WARN_FILE" ] && [ -f "$SE_WARN_FILE" ]; then
-      wr_ulogs="$(sed -n -e 's/^lanes-edit: unreadable log: \(.*\) — git could not read it.*$/\1/p' "$SE_WARN_FILE" 2>/dev/null)" || wr_urc=1
+      wr_ulogs="$(sed -n -e 's/^lanes-edit: unreadable log: \(.*\) — git could not read it.*$/\1/p' -e 's/^lanes-edit: unreadable log: \(.*\) — the file could not be read.*$/\1/p' "$SE_WARN_FILE" 2>/dev/null)" || wr_urc=1
       # THE EVENTS' OWN LIST OF THE LOGS (SHOULD-1(a)): where it failed, no
       # lane has the `dir` its trees are found under.
       wr_ulist="$(sed -n -e '/^lanes-edit: unlisted logs: /p' "$SE_WARN_FILE" 2>/dev/null)" || wr_urc=1
     else
       wr_urc=1
     fi
+    # A LANE WHOSE LOG WAS NOT READ HAS NO BINDING ANYBODY READ (#290), and
+    # where the list of the logs or the warnings of their read could not be
+    # had, no lane has one: liveness is pronounced for none of them below.
+    wr_unread_lanes=" $(printf '%s\n' "$wr_ulogs" | awk 'NF { n = $0; sub(/^.*\//, "", n); sub(/\.md$/, "", n); print tolower(n) }' | tr '\n' ' ')"
+    [ "$wr_urc" = 0 ] && [ -z "$wr_ulist" ] || wr_binding_unread=1
     if [ "$wr_urc" != 0 ]; then
       wr_partial="${wr_partial:+$wr_partial; }whether every object log could be read is not known, because the warnings of their read could not be kept"
     else
@@ -14952,11 +15309,50 @@ worktree_rows() {   # [<canonical lane>]
     # third rung, where no `trees` is, and a lane whose trees this loop had
     # just found read as a lane with none. The listing's `dir` is now the root
     # of all three, so the read that could fail is not made.
-    wr_pay="dir ${wr_dir:-none}"
+    # COLUMN 7 COMES ESCAPED (#301): `lanes_rows` writes a backslash, a TAB, a
+    # newline and a carriage return in the dir as `pesc` does, which keeps the
+    # row at its seventeen columns, and it is decoded here, before anything
+    # below takes it for a path. A dir with no backslash was printed as it is.
+    case "${wr_dir:-}" in
+      *'\'*) row_field_unescape_into "$wr_dir"; wr_dir="$ROW_FIELD_OUT" ;;
+    esac
+    # AND IT GOES BACK QUOTED WHERE IT HOLDS A SPACE (#295), by the rule
+    # `lane-start`'s `quote_subfield` writes it with. Column 7 is the `dir` with
+    # its quotes already taken off, and `payload_subfield` reads a bare value
+    # only up to its first space: `<root>/My Projects/x` handed on bare came
+    # back as `<root>/My`, whose parent is a directory, so the lane's root was a
+    # `.lane-state` with no `trees` in it and the lane left this listing and
+    # the index in silence. NOT QUOTED WHERE IT HOLDS NONE, because a quoted
+    # value ends at its first `"`: a bare `dir` carrying one (which `lane-start`
+    # refuses to write, and a hand-written line can hold) is read whole bare
+    # and would be cut short quoted. Column 7 is read by `payload_subfield`'s
+    # own rule, so it never holds both, and this hands back every value it can.
+    case "${wr_dir:-none}" in
+      *' '*) wr_pay="dir \"$wr_dir\"" ;;
+      *)     wr_pay="dir ${wr_dir:-none}" ;;
+    esac
+    if [ -n "$wr_one" ] && [ "$wr_evrc" != 0 ] && [ -z "${LANES_LANE_STATE_ROOT:-}" ]; then
+      wr_out="${wr_out}UNREAD$US$WS$US$wr_l${US}its object log $wr_lp could not be read, so the directory its trees are recorded under is not known
+"
+      continue
+    fi
     wr_root=""; wr_rrc=0
     wr_root="$(lane_control_root "$wr_l" "$wr_pay" 2>/dev/null)" || wr_rrc=$?
     [ "$wr_rrc" = 0 ] || continue
-    [ -d "$wr_root/trees" ] || continue
+    # AND ONE NOBODY COULD LOOK FOR IS NOT AN ABSENT ONE (#291, the review of
+    # #289's SHOULD-4). Where the control root, or a directory above it, cannot
+    # be searched, `-d` is false over trees that may well be there, and this
+    # `continue` made a lane with no trees of it: the sync removed its rows.
+    # The listing NAMED the lane, so it is the lane's own `UNREAD`, whose rows
+    # the indexer holds, and not the listing's `PARTIAL`, which is for a lane a
+    # read could not name.
+    if [ ! -d "$wr_root/trees" ]; then
+      if lookup_blocked "$wr_root/trees"; then
+        wr_out="${wr_out}UNREAD$US$WS$US$wr_l${US}whether its trees directory $wr_root/trees is there could not be read: $LOOKUP_BLOCKED_WHY
+"
+      fi
+      continue
+    fi
     # A DIRECTORY THAT IS THERE AND CANNOT BE LISTED IS NOT AN EMPTY ONE, and
     # the trees it holds are not trees this lane no longer has (R22).
     if [ ! -r "$wr_root/trees" ] || [ ! -x "$wr_root/trees" ]; then
@@ -14987,6 +15383,10 @@ worktree_rows() {   # [<canonical lane>]
     # binding elsewhere has now.
     wr_live=0
     [ "$wr_st" = LIVE ] && wr_live=1
+    [ "$wr_live" = 1 ] || [ "$wr_reg_ok" = 1 ] || wr_live=""
+    [ "$wr_evrc" = 0 ] && [ "$wr_binding_unread" = 0 ] || wr_live=""
+    lower_into "$wr_l"
+    case "$wr_unread_lanes" in *" $LOWER_OUT "*) wr_live="" ;; esac
     [ "${wr_loc:-none}" = elsewhere ] && wr_live=""
     [ "$wr_live_ok" = 1 ] || wr_live=""
     wr_own=""; wr_orc=0
@@ -15010,17 +15410,30 @@ worktree_rows() {   # [<canonical lane>]
       fi
     fi
     [ "$wr_owner" = legacy ] || wr_life=INDETERMINATE
+    wr_unrec=""; wr_nopath=""
     while IFS="$US" read -r t_id t_p t_b t_h t_u t_d t_n t_w t_ob t_co t_g t_o t_s; do
       [ -n "${t_id:-}" ] || continue
       t_base=""; t_last=""
       if [ "${t_s:-}" = "<unreadable>" ]; then
         t_branch="unreadable sidecar"; [ -n "${t_p:-}" ] || t_p="$t_id"
         t_d=""; t_n=""; t_g=""; t_ob=""
+        wr_unrec="${wr_unrec:+$wr_unrec }$t_id"
       elif [ "${t_s:-}" = "<malformed>" ]; then
-        t_branch="malformed sidecar"; [ -n "${t_p:-}" ] || t_p="$t_id"
+        t_branch="malformed sidecar"
+        # THE RECORD'S OWN PATH IS ASKED BEFORE THE ID STANDS IN FOR IT (#302).
+        case "${t_p:-}" in /*) : ;; *) wr_nopath="${wr_nopath:+$wr_nopath }$t_id" ;; esac
+        [ -n "${t_p:-}" ] || t_p="$t_id"
         t_d=""; t_n=""; t_g=""; t_ob=""
       elif [ "${t_s:-}" != "$LANE_STATE_SCHEMA" ]; then
-        t_branch="unknown schema ${t_s:-<none>}"; [ -n "${t_p:-}" ] || t_p="$t_id"
+        t_branch="unknown schema ${t_s:-<none>}"
+        # The same, and asked BEFORE the fallback for a reason that is this
+        # arm's: `lane_trees_list` gives a record of another schema the id it
+        # CLAIMS where it claims one, so a claim that is absolute (say
+        # `tree: /x/y`) would pass an ask made after the fallback as a path
+        # the record named. What the line then names is that claim, not the
+        # record's file name.
+        case "${t_p:-}" in /*) : ;; *) wr_nopath="${wr_nopath:+$wr_nopath }$t_id" ;; esac
+        [ -n "${t_p:-}" ] || t_p="$t_id"
         t_d=""; t_n=""; t_g=""; t_ob=""
       else
         if [ "$t_b" = detached ]; then t_branch="detached $t_h"; else t_branch="$t_b"; fi
@@ -15053,9 +15466,30 @@ worktree_rows() {   # [<canonical lane>]
     done <<WR_TREES
 $wr_trees
 WR_TREES
+    # A RECORD THAT COULD NOT BE READ IS A READ THAT DID NOT HAPPEN (#291), and
+    # not a tree with no path. Its row is keyed by its id where the path would
+    # be, so a sync took it for a new tree and REMOVED the row the record last
+    # gave - its path, branch and counts - as a tree the lane no longer had.
+    # The row stays, for a person to read, and the lane is `UNREAD` beside it:
+    # the indexer holds the lane's rows until the record can be read again.
+    # AND SO IS A RECORD THAT WAS READ AND NAMES NO ABSOLUTE PATH (#302): its
+    # row is keyed by its id, or by its relative text, and is no more the
+    # tree's own. `wr_nopath` is the ids of those, as the two arms above asked
+    # them. THE LANE'S ONE LINE SAYS BOTH, because the indexer keeps one
+    # reason per lane (`unread[lane] = why`) and a second line would replace
+    # the first: the clause for the unreadable records, `; `, then this one.
+    wr_why=""
+    [ -z "$wr_unrec" ] || wr_why="these records under $wr_root/trees could not be read: $wr_unrec"
+    [ -z "$wr_nopath" ] || wr_why="${wr_why:+$wr_why; }these records under $wr_root/trees name no absolute path, so which tree each records is not known: $wr_nopath"
+    [ -z "$wr_why" ] || wr_out="${wr_out}UNREAD$US$WS$US$wr_l$US$wr_why
+"
   done <<WR_LANES
 $wr_lanes
 WR_LANES
+  if [ -n "$wr_one" ] && [ "$wr_reg_ok" = 0 ] && [ -z "$wr_out" ]; then
+    wr_out="UNREAD$US$WS$US$wr_one${US}the register $LANES_PATH could not be read, so how lane $wr_one is spelled, and the root its trees are recorded under, is not established
+"
+  fi
   [ -z "$wr_partial" ] || wr_out="${wr_out}PARTIAL$US$WS$US$wr_partial
 "
   [ -n "$wr_out" ] || return 8
@@ -17149,6 +17583,46 @@ EOF
       die "lane $lane's binding IS this window ($rh_win) on this host and in this container: a handoff request is what a SECOND place makes of the first, and there is nothing here to ask. Nothing was written." 2
     fi
 
+    # ---- THE ASKING HOST IS ONE REF OF AMENDMENT 7(b)'S GRAMMAR, OR IT IS NOT
+    # WRITTEN (#301, ruling 2, R). Both paths below write it into the lane's
+    # append-only log: the request as `by host <h>`, which the bound session's
+    # guard reads back with `payload_subfield` — one ref, up to its first space —
+    # and types into that session's pane in `/handoff --exit requested by …`,
+    # and a forced release as `forced by <uuid>@<h>/<container>`. Nothing
+    # between here and `write_event` checks it: `binding_subfields_check` reads
+    # the sub-fields NAMED `host`, `os` and `container`, and neither of these
+    # is one. So `my host` was written whole and read back as `my`, and a `;`, a
+    # `"` or a control byte would be typed into a pane. The fence is the one
+    # `binding_subfields_add` holds the binding's own three values to, and it
+    # REFUSES here where that one drops: a host that fails it is a setting that
+    # can be put right at once, and neither path — `--force` included, and
+    # either one's `--dry-run`, which plans the same line — writes it.
+    if ! lanes_binding_value_ok "$LANES_HOST_NAME"; then
+      case "$LANES_HOST_SOURCE" in
+        seam)        rh_hsrc="it is the value of LANES_HOST" ;;
+        workstation) rh_hsrc="it is this workstation's name, which a container writes as its host; LANES_HOST overrides it" ;;
+        *)           rh_hsrc="it is this machine's \`hostname -s\`; LANES_HOST overrides it" ;;
+      esac
+      die "request-handoff writes this host's name into lane $lane's append-only log — \`by host <h>\` in a request, \`forced by <uuid>@<h>/<container>\` in a forced release — and '$LANES_HOST_NAME' is not one ref of Amendment 7(b)'s grammar (letters, digits, '.', '_', '-', ':'): $rh_hsrc. A space there is a second ref and a ';' a second sub-field, and the request's host is typed into the bound session's pane. Nothing was written. Set LANES_HOST to this host's name in that alphabet and ask again." 2
+    fi
+
+    # ---- AND THE CONTAINER IS HELD TO THE SAME FENCE (#301, lane 3's review,
+    # 781). The forced release writes it beside the host, `forced by
+    # <uuid>@<h>/<container>`, and nothing fenced it there: `LANES_CONTAINER='a
+    # b'` was written whole and `--force` exited 0. The request's `container
+    # <c>` is a sub-field NAMED `container`, so `binding_subfields_check` refused
+    # it, but only at the write: a `--dry-run` planned it, and the refusal named
+    # no setting. One rule holds for every value this tool writes (ruling 2's
+    # answer 1), so the container is refused here too, before either path plans
+    # or writes anything, and the refusal names where the value came from.
+    if ! lanes_binding_value_ok "$LANES_CONTAINER_NAME"; then
+      case "$LANES_CONTAINER_SOURCE" in
+        seam) rh_csrc="it is the value of LANES_CONTAINER" ;;
+        *)    rh_csrc="it is this container's own \`hostname\`, which a container with no LANES_CONTAINER writes; LANES_CONTAINER overrides it" ;;
+      esac
+      die "request-handoff writes this container's name into lane $lane's append-only log — \`container <c>\` in a request, \`forced by <uuid>@<h>/<container>\` in a forced release — and '$LANES_CONTAINER_NAME' is not one ref of Amendment 7(b)'s grammar (letters, digits, '.', '_', '-', ':'): $rh_csrc. A space there is a second ref and a ';' a second sub-field. Nothing was written. Set LANES_CONTAINER to this container's name in that alphabet and ask again." 2
+    fi
+
     # ---- CLAUSE (e): `--force`, THE SECOND INVOCATION.
     if [ "$rh_force" = 1 ]; then
       [ -n "$rh_why" ] || die "--force takes a WHY, and it is not decoration: it is written into the lane's append-only log and it is the sentence the bound session reads at its next prompt, when it refuses every prompt from then on and names who forced it (Amendment 18(e)). Say what happened:
@@ -17761,7 +18235,9 @@ EOF
   # DECISIONS 6 AND 7 — THE LANE LISTING, as data. `lanes` renders the
   # estate-wide one and `restart` the per-repo one from these same rows, which
   # is why the filter is an argument rather than three implementations.
-  # 0 with rows, 8 with none, 64 a usage error of its own.
+  # 0 with rows, 8 with none, 1 a listing that could not be read - an empty one
+  # over reads that failed among them, which is never none (#290) - and 64 a
+  # usage error of its own.
   lanes)
     lns_args=(); lns_fetch=0; lns_index=0
     while [ $# -gt 0 ]; do
@@ -18509,7 +18985,14 @@ EOF
   #       on*; 10 tells it *this lane may be mid-crash and nobody could look*.
   #       (It was 9 until main's #61 spent 9 on `claim`'s abandoned takeover.)
   #       A snapshot of this schema that is not a whole record is 10 as well
-  #       (#115): nothing can be read out of it as a snapshot.
+  #       (#115): nothing can be read out of it as a snapshot. And `lane-state`
+  #       is 10 where the lane's object log could not be read, so the
+  #       directory its snapshot is kept beside is not known (#290): where
+  #       nobody could look is not where there is nothing. And so is a
+  #       record that could not even be LOOKED FOR (#291): a control root, or a
+  #       directory above it, that this process cannot search — or a link on
+  #       the way it cannot follow — leaves stat as silent as a name that is
+  #       gone, and the message says so rather than "is there".
   #  64   a usage error of this subcommand's own — for `set-lane-tree`, a
   #       partial observation, a `--dirty`/`--unpushed` that is not a count
   #       (`unknown` is one for `--unpushed`), or a field that is only blanks
@@ -18520,15 +19003,48 @@ EOF
     check_lane_name "$lane"
     log_sync
     lane="$(canon_lane "$lane")" || exit 2          # Amendment 15
+    # THE LANE'S `dir` IS READ ONCE, AND THE READ SAYS WHETHER IT HAPPENED
+    # (#290, review r3 of #289's NIT-A). The root was worked out from the log
+    # with a failed `git show` thrown away, so a log that could not be read
+    # placed the root at the third rung, where no snapshot is: 8, which
+    # `lanes-index` read as generation 0 and held a lane for "reading 0".
+    # Read here with its status, it is handed on as the payload the root is
+    # found by, and a log that could not be read is the 10 below, never the 8
+    # of none. IT GOES ON QUOTED ONLY WHERE IT HOLDS A SPACE, the rule
+    # `lane-start`'s `quote_subfield` writes it by, as Brett Heap's ruling of
+    # 2026-10-21 for #295 has it ("quote only where a space is"). Bare, a
+    # space would end it; quoted, a `"` does. A bare `dir` holding one (which
+    # `lane-start` refuses to write and a hand-written line can hold) was cut
+    # there when every value was quoted, the root it placed held no snapshot,
+    # and this said 8 where main reads one. The value is `payload_subfield`'s
+    # own read, which never holds both a space and a `"`.
+    lst_pay=""
+    if [ -z "${LANES_LANE_STATE_ROOT:-}" ]; then
+      lst_dir=""; lst_drc=0
+      lst_dir="$(lane_payload_field "$lane" dir "" checked 2>/dev/null)" || lst_drc=$?
+      case "$lst_drc" in
+        0)
+          case "$lst_dir" in
+            *' '*) lst_pay="dir \"$lst_dir\"" ;;
+            *)     lst_pay="dir $lst_dir" ;;
+          esac ;;
+        8) lst_pay="dir none" ;;
+        *) die "lane $lane's object log could not be read, so the directory its lifecycle snapshot is kept beside is NOT established. That is NOT 'this lane has no snapshot' — 8 says that, and a launcher answers an 8 by going on, over a snapshot nobody could look for (R22, Amendment 7(d)). Re-run once git can read the log." 10 ;;
+      esac
+    fi
     lst_out=""; lst_rc=0
-    lst_out="$(lane_state_read "$lane")" || lst_rc=$?
+    lst_out="$(lane_state_read "$lane" "$lst_pay")" || lst_rc=$?
     case "$lst_rc" in
       0) : ;;
       8) exit 8 ;;
       10)
-        # WHICH OF THE TWO 10s (#115): a record that opens and is not a whole
-        # one of this schema is said as that, for the person who reads it.
-        lst_f="$(lane_control_root "$lane" 2>/dev/null || printf '<no control root>')/lane-state.yaml"
+        # WHICH OF THE 10s (#115): a record that opens and is not a whole
+        # one of this schema is said as that, for the person who reads it —
+        # and one nobody could look for (#291) is never said to be there.
+        lst_f="$(lane_control_root "$lane" "$lst_pay" 2>/dev/null || printf '<no control root>')/lane-state.yaml"
+        if [ ! -e "$lst_f" ] && [ ! -L "$lst_f" ] && lookup_blocked "$lst_f"; then
+          die "whether lane $lane has a lifecycle snapshot could not be read: $lst_f could not be looked for, because $LOOKUP_BLOCKED_WHY. That is NOT 'this lane has no snapshot' — 8 says that, and a launcher answers an 8 by going on, which here would be a launch made in ignorance of a crash nobody could look at (R22, Amendment 7(d)). Read it by hand." 10
+        fi
         lst_what="it could not be read"
         if [ -r "$lst_f" ] && ! lane_sidecar_schema_ok "$lst_f"; then lst_what="it is of this schema and $LSS_WHY, so nothing can be read out of it as a snapshot"; fi
         die "lane $lane HAS a lifecycle snapshot at its control root and $lst_what. That is NOT 'this lane has no snapshot' — 8 says that, and a launcher answers an 8 by going on, which over an unreadable record would be a launch made in ignorance of a crash nobody could look at (R22, Amendment 7(d)). Read it by hand: $lst_f" 10 ;;
@@ -18652,7 +19168,14 @@ EOF
     case "$ltr_rc" in
       0) : ;;
       8) exit 8 ;;
-      10) die "lane $lane's worktree inventory directory $(lane_control_root "$lane" 2>/dev/null || printf '<no control root>')/trees is there and could not be listed. That is NOT 'this lane recorded no tree' — 8 says that, and a reader that goes on over it relaunches writers onto trees nobody looked at (R22, Amendment 7(d)). Read it by hand." 10 ;;
+      10)
+        # WHICH OF THE TWO 10s (#291): a `trees` directory nobody could look
+        # for is never said to be there.
+        ltr_root="$(lane_control_root "$lane" 2>/dev/null || printf '<no control root>')"
+        if [ ! -d "$ltr_root/trees" ] && lookup_blocked "$ltr_root/trees"; then
+          die "whether lane $lane has a worktree inventory could not be read: $ltr_root/trees could not be looked for, because $LOOKUP_BLOCKED_WHY. That is NOT 'this lane recorded no tree' — 8 says that, and a reader that goes on over it relaunches writers onto trees nobody looked at (R22, Amendment 7(d)). Read it by hand." 10
+        fi
+        die "lane $lane's worktree inventory directory $ltr_root/trees is there and could not be listed. That is NOT 'this lane recorded no tree' — 8 says that, and a reader that goes on over it relaunches writers onto trees nobody looked at (R22, Amendment 7(d)). Read it by hand." 10 ;;
       *) die "lane $lane has no lifecycle control root, so its worktree inventory could not be read. That is NOT 'this lane owns no worktree' (Amendment 7(d))." 1 ;;
     esac
     printf '%s\n' "$ltr_out"
@@ -18910,8 +19433,10 @@ EOF
   #
   # Local by default, as `lanes` is: `--fetch` refreshes the register first.
   #   0 rows (`--all`: with one PARTIAL line where the lane listing they were
-  #   read through was not whole, #173) · 8 none · 2 a lane name refused
-  #   (Amendment 15) · 64 usage · 1 a read failed
+  #   read through was not whole, #173; a named lane: one UNREAD line where its
+  #   object log, or the register its name is resolved by, could not be read,
+  #   #290) · 8 none · 2 a lane name refused (Amendment 15) · 64 usage · 1 a
+  #   read failed
   worktrees)
     wt_lane=""; wt_all=0; wt_index=0; wt_fetch=0
     wt_usage="worktrees [<lane> | --all] [--index] [--fetch]"
@@ -18929,7 +19454,13 @@ EOF
     [ -z "$wt_lane" ] || check_lane_name "$wt_lane"
     [ "$wt_fetch" = 1 ] || LANES_NO_FETCH=1
     log_sync
+    # THE REGISTER IS ASKED BEFORE THE NAME IS RESOLVED BY IT (#290). A read
+    # that succeeds is the one `canon_lane` and the listing then take, out of
+    # its cache; one that fails is not kept, and the name it could not resolve
+    # is read as not established - never as a lane with no trees.
+    wt_reg=""
     if [ -n "$wt_lane" ]; then
+      register_text_checked >/dev/null 2>&1 || wt_reg=register-unread
       wt_lane="$(canon_lane "$wt_lane")" || exit 2          # Amendment 15
     fi
     if [ "$wt_index" = 1 ] && index_open worktrees; then
@@ -18938,7 +19469,7 @@ EOF
       printf '%s\n' "$wt_out"
     else
       wt_out=""; wt_rc=0
-      wt_out="$(worktree_rows "$wt_lane")" || wt_rc=$?
+      wt_out="$(worktree_rows "$wt_lane" "$wt_reg")" || wt_rc=$?
       case "$wt_rc" in
         0) : ;;
         8) exit 8 ;;
