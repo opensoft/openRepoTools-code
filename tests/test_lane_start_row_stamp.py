@@ -57,7 +57,7 @@ WINDOW = "testsess:0 @1"
 RUN_SH_HOME = 91
 
 SCRUBBED_PREFIXES = ("LANES_", "LANE_START_", "CLAUDE_", "OPENREPOTOOLS_",
-                     "FAKE_", "GIT_", "TMUX")
+                     "FAKE_", "GIT_", "TMUX", "WORKBENCHES_")
 SCRUBBED = {"AGENT_PROTOCOL_ROOT", "PROJECTS_ROOT", "XDG_CONFIG_HOME",
             "XDG_CACHE_HOME"}
 

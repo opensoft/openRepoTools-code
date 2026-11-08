@@ -1,0 +1,338 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Amendment 23, act 2's slice 2b: `lane-handoff` writes the PAUSED handoff
+only through the lane's own register checkout.
+
+Until this slice `lane-handoff` resolved the row's handoff cell against
+`LANES_REPO` and then W (`workspace-root`), published the new top block there
+under W's lock, and then added, committed, pulled and pushed it in W with no
+lock at all, its output and git's words sent to `/dev/null` (lane
+openRepoTools-3's finding 282, its second writer). Under the default
+resolution every other write of the lane already went through
+`<W>-lanes/<lane>/` (slice 1a), so the handoff was the one write left in W.
+
+Now:
+  * the file is the one `lanes-edit.sh handoff-path <lane> --create` names,
+    in the checkout the lane's writes go through;
+  * the top block is ONE `write-handoff --prepend` call, under that
+    checkout's lock and S3/S4: written, committed by pathspec with the
+    `Lane:` trailer and pushed, and where S3 refuses, written and NOT
+    committed, with git's and S3's words printed rather than discarded;
+  * the register's file-level PAUSED line is appended with `LANES_LANE`.
+
+Each case drives a real `lane-handoff` in `test_lane_start_row_stamp`'s
+sandbox with the default resolution (no `LANES_REPO`, no `LANES_FILE`) and the
+opt-in `LANES_ROUTE_WRITES=1`, after a real `lane-start` made the lane's row
+and checkout. W is brought up to origin first, so the old code finds the
+handoff there and its unlocked commit in W is what each case sees at the base.
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from conftest import REPO
+from test_a23_lane_start import (HANDOFF, SIBLING_WORDS, _assert_nothing_unpublished, _other_repository,
+                                 _sibling_handoff, _with_cell,
+                                 _cell, _edit, _origin, _peer_push, _published, _started, _tip)
+from test_a23_lane_start_read import assert_W_moved_only_by_fast_forward
+from test_lane_start_row_stamp import LANE, Sandbox, pytestmark, short_root  # noqa: F401
+
+WHY = "a test handoff"
+SUBJECT = f"handoff({LANE}@Eagle): PAUSED, {WHY}"
+
+
+def _handoff(box: Sandbox, *args: str, env: dict | None = None, why: str = WHY) -> subprocess.CompletedProcess:
+    """`lane-handoff --lane repoZ-1 … <why>`, from a shell with no tmux."""
+    if not (box.bin / "lane-handoff").exists():
+        shutil.copy2(REPO / "lane-handoff", box.bin / "lane-handoff")
+        (box.bin / "lane-handoff").chmod(0o755)
+    # A LANE WINDOW'S OWN SEAMS STAY OUT: `WORKBENCHES_CLAUDE_*` names the
+    # caller's window and checkout, which `lane-handoff` reads where tmux is off.
+    full = {k: v for k, v in box.env.items() if not k.startswith("WORKBENCHES_")}
+    full.update(LANE_HANDOFF_NO_TMUX="1", CLAUDE_PROFILE_NAME="test-profile")
+    full.update(env or {})
+    return subprocess.run([str(box.bin / "lane-handoff"), "--lane", LANE, *args, why],
+                          env=full, capture_output=True, text=True, timeout=180, check=False)
+
+
+def _ready(tmp_path: Path, short_root: Path) -> tuple[Sandbox, Path, str, list[str]]:
+    """A started lane whose handoff a peer wrote, with W brought up to origin
+    (so W has it too, as `lane-start`'s refreshes leave it)."""
+    box, checkout, _lane_dir, before = _started(tmp_path, short_root)
+    cell = _cell(box)
+    _peer_push(box, {cell: HANDOFF}, "the lane's handoff, written elsewhere")
+    assert _edit(box, "refresh-workspace").returncode == 0
+    assert (box.wip / cell).read_text(encoding="utf-8") == HANDOFF
+    return box, checkout, cell, before
+
+
+# -------------------------------------------------------------------- cases
+
+def test_handoff_written_and_pushed_from_checkout(tmp_path, short_root):
+    box, checkout, cell, before = _ready(tmp_path, short_root)
+
+    result = _handoff(box)
+    assert result.returncode == 0, result.stderr
+
+    published = _published(box, cell)
+    block, sep, rest = published.partition("\n---\n\n")
+    assert sep, published
+    assert rest == HANDOFF, published
+    assert block.startswith(f"Lane: {LANE} (test-profile, session "), block
+    assert "## RESUME PROMPT — PAUSED " in block, block
+    assert f"({WHY})" in block, block
+    assert _origin(box, "log", "-1", "--format=%s", "main", "--", cell).strip() == SUBJECT
+    assert f"Lane: {LANE}" in _origin(box, "log", "-1", "--format=%b", "main", "--", cell)
+    assert f"handoff refreshed: {checkout}/{cell} " in result.stderr, result.stderr
+    assert f"committed: {SUBJECT}" in result.stderr, "write-handoff's own words are printed"
+    assert "which exited 0: its words above say what it committed and pushed" in result.stderr, result.stderr
+
+    # THE ONE WRITE IN W IS GONE: W moved only by fast-forward, and its copy of
+    # the handoff took no byte from this act.
+    assert_W_moved_only_by_fast_forward(box, before)
+    assert (box.wip / cell).read_text(encoding="utf-8") in (HANDOFF, published)
+    assert (checkout / cell).read_text(encoding="utf-8") == published
+    _assert_nothing_unpublished(box, checkout)
+
+
+def test_S3_refusal_writes_file_no_commit_prints_git_words(tmp_path, short_root):
+    box, checkout, cell, before = _ready(tmp_path, short_root)
+    # THE CHECKOUT IS CURRENT FIRST: S3 refuses a foreign staged entry before it
+    # fast-forwards, so a checkout still behind the peer's handoff commit has no
+    # file to write into (`write-handoff`'s 8), which is another case.
+    box.git("-C", str(checkout), "fetch", "-q", "origin", "main")
+    box.git("-C", str(checkout), "merge", "-q", "--ff-only", "origin/main")
+    assert (checkout / cell).read_text(encoding="utf-8") == HANDOFF
+    foreign = checkout / "handoffs" / "repoQ" / "foreign.md"
+    foreign.parent.mkdir(parents=True, exist_ok=True)
+    foreign.write_text("a person's file, staged and never committed\n", encoding="utf-8")
+    box.git("-C", str(checkout), "add", "--", "handoffs/repoQ/foreign.md")
+    tip = _tip(box)
+
+    result = _handoff(box)
+    assert result.returncode == 0, result.stderr
+
+    # WRITTEN (R-A11-11: a swap is never left unwritten) and NOT committed.
+    written = (checkout / cell).read_text(encoding="utf-8")
+    assert written.startswith(f"Lane: {LANE} (test-profile, session "), written
+    assert written.endswith("\n---\n\n" + HANDOFF), written
+    assert box.git("-C", str(checkout), "status", "--porcelain", "--", cell).startswith(" M "), \
+        "the handoff is modified in the checkout and not committed"
+    assert "handoffs/repoQ/foreign.md" in box.git("-C", str(checkout), "diff", "--cached", "--name-only")
+    assert _tip(box) == tip, "nothing was published, from the lane's checkout or from W"
+    # THE WORDS ARE PRINTED, NOT SENT TO /dev/null: S3's refusal naming the
+    # entry, the helper's note, and lane-handoff's own.
+    assert "the index holds staged entries this write did not make" in result.stderr, result.stderr
+    assert "handoffs/repoQ/foreign.md" in result.stderr
+    assert "the handoff is WRITTEN and NOT committed" in result.stderr
+    assert f"commit -m \"{SUBJECT}\"" in result.stderr, result.stderr
+    assert "NOT committed" in result.stderr, result.stderr
+    assert "write-handoff` exited 2" in result.stderr, result.stderr
+    assert "Never re-run this handoff" in result.stderr, result.stderr
+
+    assert_W_moved_only_by_fast_forward(box, before)
+    assert (box.wip / cell).read_text(encoding="utf-8") == HANDOFF, "W's copy took no byte"
+
+
+def test_append_line_carries_LANES_LANE(tmp_path, short_root):
+    box, checkout, cell, _before = _ready(tmp_path, short_root)
+    calls = box.root / "lanes-edit-calls.log"
+    wrapper = box.root / "recording-lanes-edit.sh"
+    wrapper.write_text(f"""#!/usr/bin/env bash
+printf '%s LANES_LANE=%s\\n' "${{1-}}" "${{LANES_LANE-<unset>}}" >> '{calls}'
+exec '{box.bin / "lanes-edit.sh"}' "$@"
+""", encoding="utf-8")
+    wrapper.chmod(0o755)
+
+    result = _handoff(box, env={"LANES_EDIT": str(wrapper)})
+    assert result.returncode == 0, result.stderr
+
+    recorded = calls.read_text(encoding="utf-8").splitlines()
+    for verb in ("append-line", "write-handoff"):
+        made = [line for line in recorded if line.startswith(verb + " ")]
+        assert made == [f"{verb} LANES_LANE={LANE}"], (verb, recorded)
+    register = _published(box, "lanes/LANES.md")
+    assert f"PAUSED — lane {LANE}, session " in register, register
+    assert f", {WHY} kind unknown; handoff refreshed" in register, register
+    assert _published(box, cell).endswith("\n---\n\n" + HANDOFF)
+    _assert_nothing_unpublished(box, checkout)
+
+
+def test_no_git_handoff_says_written_and_nothing_committed(tmp_path, short_root):
+    """728, and question 4 of the review of #316: under `LANES_NO_GIT=1` the
+    block is written in the lane's checkout and nothing is committed, and the
+    exit-0 words say so rather than point at a commit and a push."""
+    box, checkout, cell, _before = _ready(tmp_path, short_root)
+    # NOTHING IS FETCHED UNDER LANES_NO_GIT, so the checkout is current first.
+    box.git("-C", str(checkout), "fetch", "-q", "origin", "main")
+    box.git("-C", str(checkout), "merge", "-q", "--ff-only", "origin/main")
+    head = box.git("-C", str(checkout), "rev-parse", "HEAD")
+    tip = _tip(box)
+
+    result = _handoff(box, env={"LANES_NO_GIT": "1"})
+    assert result.returncode == 0, result.stderr
+    written = (checkout / cell).read_text(encoding="utf-8")
+    assert written.startswith(f"Lane: {LANE} (test-profile, session "), written
+    assert written.endswith("\n---\n\n" + HANDOFF), written
+    assert box.git("-C", str(checkout), "rev-parse", "HEAD") == head, "nothing is committed"
+    assert _tip(box) == tip, "or pushed"
+    assert "what it committed and pushed" not in result.stderr, result.stderr
+    said = [line for line in result.stderr.splitlines()
+            if "LANES_NO_GIT=1" in line and "nothing is committed" in line]
+    assert len(said) == 1, result.stderr
+    # 990 of the review of #311, as slice 3's F24 answers it for both writers
+    # of the act: a 0 records `handoff refreshed`, which claims no commit, and
+    # the step line above is what says that nothing was committed.
+    register = (checkout / "lanes" / "LANES.md").read_text(encoding="utf-8")
+    paused = [line for line in register.splitlines() if f"PAUSED — lane {LANE}, session " in line]
+    assert len(paused) == 1, register
+    assert paused[0].endswith("; handoff refreshed"), paused
+
+
+def _forcing(box: Sandbox, rc: int, write: bool) -> Path:
+    """A `LANES_EDIT` whose `write-handoff` exits `rc`: after the real verb has
+    written, committed and pushed (`write`), or at once, having written
+    nothing. Every other verb is the real helper's."""
+    real = box.bin / "lanes-edit.sh"
+    wrapper = box.root / f"forcing-lanes-edit-{rc}.sh"
+    first = f"'{real}' \"$@\"; " if write else ""
+    wrapper.write_text(f"""#!/usr/bin/env bash
+if [ "${{1-}}" = write-handoff ]; then {first}exit {rc}; fi
+exec '{real}' "$@"
+""", encoding="utf-8")
+    wrapper.chmod(0o755)
+    return wrapper
+
+
+@pytest.mark.parametrize(("rc", "write", "record"), [
+    (2, True, "handoff written, NOT published (write-handoff exited 2)"),
+    (3, True, "handoff written, its publication NOT confirmed (write-handoff exited 3)"),
+    (6, True, "handoff written, NOT published (write-handoff exited 6)"),
+    (5, True, "handoff written, its publication NOT confirmed (write-handoff exited 5)"),
+    (1, False, "handoff NOT refreshed (write-handoff exited 1 and wrote nothing)"),
+])
+def test_register_paused_line_says_what_the_write_did(tmp_path, short_root, rc, write, record):
+    """#303's fit (c) in lane openRepoTools-3's review of #316, and its
+    question 6 on #311: the register's file-level PAUSED line says
+    `handoff refreshed` only where `write-handoff` wrote the block and exited
+    0. Otherwise it uses the skill's phrases (slice 3's F23): written and NOT
+    published (2, 6), its publication NOT confirmed (3, and any other exit
+    after a write, which claims nothing either way), or NOT refreshed and
+    why. And
+    982: exit 6's words no longer say the commit is kept on HEAD of the lane's
+    checkout, since a 6 may have made no commit, or (2a's 604) made it in an
+    8(d) handoff's own repository."""
+    box, _checkout, _cell_, _before = _ready(tmp_path, short_root)
+
+    result = _handoff(box, env={"LANES_EDIT": str(_forcing(box, rc, write))})
+    register = _published(box, "lanes/LANES.md")
+    paused = [line for line in register.splitlines() if f"PAUSED — lane {LANE}, session " in line]
+    assert len(paused) == 1, (register, result.stderr)
+    assert paused[0].endswith(f"; {record}"), (paused, result.stderr)
+    if not write:
+        assert "## RESUME PROMPT — PAUSED " in result.stderr, result.stderr
+    if rc == 6:
+        assert "KEPT on HEAD" not in result.stderr, result.stderr
+        assert "its words above say whether a commit was made, where it is kept" in result.stderr, result.stderr
+
+
+def test_a_handoff_path_that_failed_is_said_and_the_block_printed(tmp_path, short_root):
+    """Battery survivor LH03 (decision 11): where `handoff-path` fails,
+    lane-handoff says it could not read where the handoff is written, prints
+    the block for the hand, and the register's PAUSED line says the handoff
+    was NOT refreshed and why (fit (c))."""
+    box, _checkout, cell, _before = _ready(tmp_path, short_root)
+    real = box.bin / "lanes-edit.sh"
+    wrapper = box.root / "no-path-lanes-edit.sh"
+    wrapper.write_text(f"""#!/usr/bin/env bash
+if [ "${{1-}}" = handoff-path ]; then echo "handoff-path: the register could not be read" >&2; exit 1; fi
+exec '{real}' "$@"
+""", encoding="utf-8")
+    wrapper.chmod(0o755)
+    handoff = _published(box, cell)
+
+    result = _handoff(box, env={"LANES_EDIT": str(wrapper)})
+    assert f"where lane {LANE}'s handoff is written could not be read" in result.stderr, result.stderr
+    assert "## RESUME PROMPT — PAUSED " in result.stderr, result.stderr
+    assert _published(box, cell) == handoff, "the handoff took no block"
+    paused = [line for line in _published(box, "lanes/LANES.md").splitlines()
+              if f"PAUSED — lane {LANE}, session " in line]
+    assert len(paused) == 1, (paused, result.stderr)
+    assert paused[0].endswith("; handoff NOT refreshed (handoff-path exited 1)"), paused
+
+
+def test_a_cell_in_a_sibling_lanes_checkout_takes_no_block_and_the_block_is_printed(tmp_path, short_root):
+    """723 of lane openRepoTools-3's review of #316, at lane-handoff's call
+    site: the lane's row cell names lane repoZ-2's handoff in repoZ-2's own
+    clone of the register beside W. `handoff-path` refuses it (slice 2a's
+    601), so nothing is written there, the block is printed for the hand, and
+    the register's PAUSED line says the handoff was NOT refreshed."""
+    box, _checkout, _cell_, _before = _ready(tmp_path, short_root)
+    f = _sibling_handoff(box)
+    sib = f.parents[2]
+    _peer_push(box, {"lanes/LANES.md": _with_cell(box, str(f))}, "the lane's cell names repoZ-2's handoff")
+    text, head = f.read_text(encoding="utf-8"), box.git("-C", str(sib), "rev-parse", "HEAD")
+
+    result = _handoff(box)
+    assert f.read_text(encoding="utf-8") == text, "nothing was written in the sibling's handoff"
+    assert SIBLING_WORDS in text
+    assert box.git("-C", str(sib), "status", "--porcelain") == "", "the sibling's checkout is clean"
+    assert box.git("-C", str(sib), "rev-parse", "HEAD") == head, "and took no commit"
+    assert "in another checkout of the register beside W" in result.stderr, result.stderr
+    assert "## RESUME PROMPT — PAUSED " in result.stderr, result.stderr
+    paused = [line for line in _published(box, "lanes/LANES.md").splitlines()
+              if f"PAUSED — lane {LANE}, session " in line]
+    assert len(paused) == 1, (paused, result.stderr)
+    assert paused[0].endswith("; handoff NOT refreshed (handoff-path exited 2)"), paused
+
+
+
+def test_an_8d_cell_takes_the_block_committed_and_pushed_in_its_own_repository(tmp_path, short_root):
+    """722 of lane openRepoTools-3's review of #316, at lane-handoff's write:
+    slice 2a's 604 (A57) commits and pushes an Amendment 8(d) handoff in its
+    own repository. The block is on top, committed by pathspec under the
+    PAUSED subject and pushed to that repository's origin, its tree clean;
+    the register's PAUSED line records `handoff refreshed`; and the exit-0
+    words point at the helper's (a 0 may also commit nothing, F24)."""
+    box, _checkout, _cell_, _before = _ready(tmp_path, short_root)
+    other = _other_repository(box)
+    _peer_push(box, {"lanes/LANES.md": _with_cell(box, str(other / "handoff.md"))},
+               "the lane's cell names another repository's handoff")
+    before = box.git("-C", str(other), "rev-parse", "HEAD").strip()
+
+    result = _handoff(box)
+    assert result.returncode == 0, result.stderr
+    written = (other / "handoff.md").read_text(encoding="utf-8")
+    assert written.startswith(f"Lane: {LANE} (test-profile, session "), written
+    assert written.endswith("\n---\n\n" + HANDOFF), written
+    o = ["-C", str(other)]
+    assert box.git(*o, "status", "--porcelain") == "", "its tree is clean"
+    assert box.git(*o, "rev-parse", "HEAD~1").strip() == before
+    assert box.git(*o, "log", "-1", "--format=%s").strip() == SUBJECT
+    assert (box.git("--git-dir", str(box.root / "other.git"), "rev-parse", "main").strip()
+            == box.git(*o, "rev-parse", "HEAD").strip()), "and its origin holds the commit"
+    assert "committed there and pushed to origin/main" in result.stderr, result.stderr
+    assert "what it committed and pushed, or that nothing was committed" in result.stderr, result.stderr
+    paused = [line for line in _published(box, "lanes/LANES.md").splitlines()
+              if f"PAUSED — lane {LANE}, session " in line]
+    assert len(paused) == 1, (paused, result.stderr)
+    assert paused[0].endswith("; handoff refreshed"), paused
+
+
+
+def test_a_why_with_a_tab_is_a_space_in_the_subject(tmp_path, short_root):
+    """733 (M4, the battery's LH04) of lane openRepoTools-3's review of #316:
+    `write-handoff` refuses a subject that carries a control character, so
+    `subject_text` spells each one as a space, and a why with a tab still
+    refreshes the handoff, as the old `git commit -m` did (decision 19)."""
+    box, _checkout, cell, _before = _ready(tmp_path, short_root)
+
+    result = _handoff(box, why="a test\thandoff")
+    assert result.returncode == 0, result.stderr
+    published = _published(box, cell)
+    assert published.endswith("\n---\n\n" + HANDOFF), published
+    assert _origin(box, "log", "-1", "--format=%s", "main", "--", cell).strip() == SUBJECT
