@@ -206,6 +206,17 @@ class Estate:
         return [json.loads(line) for line in
                 self.log.read_text(encoding="utf-8").splitlines()]
 
+    def replay(self, shell: str, proc: subprocess.CompletedProcess) -> dict:
+        """Run the one call block 2 printed, as printed, and return the call
+        it made (983: a kept block goes into the handoff by that call)."""
+        line = _printed_call(proc)
+        before = len(self.calls())
+        again = self.run(shell, line)
+        assert again.returncode == 0, again.stderr
+        made = self.calls()[before:]
+        assert len(made) == 1, made
+        return made[0]
+
     def verbs(self) -> list[str]:
         return [c["argv"][0] for c in self.calls()]
 
@@ -498,6 +509,74 @@ def _block_file(proc: subprocess.CompletedProcess) -> str:
     return found[0]
 
 
+#: The one call a kept top block goes into the handoff by, in lane
+#: openRepoTools-3's words (finding 983 on #311): never a hand edit of the
+#: handoff, which step 2 forbids ("Do not edit or redirect into the canonical
+#: handoff directly"). Block 1 names it so; block 2 prints it filled in.
+KEPT_CALL = ('LANES_LANE=<lane> lanes-edit.sh write-handoff <lane> --prepend <block file> '
+             '--subject "<subject>"')
+
+
+def _printed_call(proc: subprocess.CompletedProcess) -> str:
+    """The one call block 2 printed, filled in, on a line of its own."""
+    found = re.findall(r"(?m)^LANES_LANE=.*$", proc.stdout)
+    assert len(found) == 1, proc.stdout
+    return found[0]
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("extra, prepare", [
+    ({"STUB_WH_RC": "7"}, "block"),
+    ({"STUB_WH_RC": "64"}, "block"),
+    ({"STUB_WH_RC": "2"}, "block"),
+    ({"STUB_HP_RC": "8", "STUB_HP_OUT": ""}, "block"),
+    ({"STUB_HP_RC": "2", "STUB_HP_OUT": "", "STUB_HP_ERR": "a name refused"}, "block"),
+    ({}, "none"),
+], ids=["owned-by-a-restart", "block-with-no-final-newline", "refused-before-writing", "not-found",
+        "read-failed", "never-prepared"])
+def test_a_kept_block_goes_into_the_handoff_by_the_one_call_block_2_prints(
+        estate, shell, extra, prepare):
+    """983 of lane openRepoTools-3's review of #311: every message that keeps
+    the new top block said it goes "at the head of the handoff by hand", which
+    step 2 forbids. Block 2 now prints the one call that puts it there, filled
+    in, on a line of its own, and that line, run as printed, makes exactly the
+    call the block makes: the lane, `--prepend` and the block file, and the
+    subject."""
+    proc = estate.run(shell, estate.step2(prepare=prepare), **extra)
+    assert proc.returncode == 0, proc.stderr
+    assert "by hand" not in proc.stdout.replace("by this skill or by hand", ""), proc.stdout
+    expected = ["write-handoff", LANE, "--prepend", _block_file(proc), "--subject",
+                f"handoff({LANE}@Eagle): PAUSED, a usage reset"]
+    made = estate.replay(shell, proc)
+    assert made["argv"] == expected, made
+    assert made["lane"] == LANE, made
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_the_printed_call_carries_a_why_with_quotes_and_dollars_unchanged(estate, shell):
+    """The printed call is quoted for the shell that runs it: a why that holds
+    a quote, a double quote, a `$` and a backtick reaches the verb's subject as
+    the block's own call carries it."""
+    why = "it's \"$HOME\" `id` a\\b"
+    proc = estate.run(shell, estate.step2(why=shlex.quote(why)), STUB_WH_RC="7")
+    assert proc.returncode == 0, proc.stderr
+    sent = _write_call(estate)["argv"]
+    assert sent[-1] == f"handoff({LANE}@Eagle): PAUSED, {why}", sent
+    assert estate.replay(shell, proc)["argv"] == sent
+
+
+def test_a_kept_block_is_never_said_to_go_into_the_handoff_by_hand():
+    """983: no line of the skill, prose, comment or message, says the kept
+    block is put "at the head of the handoff by hand"; the paragraph under
+    WHERE THE HANDOFF IS names the one call instead."""
+    flat = " ".join(re.sub(r"(?m)^\s*#\s?", "", _text()).split())
+    assert not re.search(r"head of the handoff by hand", flat), "the hand edit is back"
+    held = [p for p in _prose("## 2. Refresh the handoff") if "In every one of these cases" in p]
+    assert len(held) == 1, held
+    assert KEPT_CALL in held[0], held[0]
+    assert "never by a hand edit" in held[0], held[0]
+
+
 def test_refusal_text_keeps_R_A11_11():
     """`R-A11-11`, *a swap is never left unwritten*, is still the text's rule
     about a refusal, a conflict or a rejected push, and says what the verb does
@@ -532,6 +611,13 @@ def test_the_handoff_write_is_said_as_the_verbs_and_not_as_a_commit_of_the_skill
 KEEP_IN_REPORT = "put it whole in the report"
 
 
+def _block_1_line(proc: subprocess.CompletedProcess, opening: str) -> str:
+    """Block 1's one line that opens with `opening`."""
+    found = [line for line in proc.stdout.splitlines() if line.startswith(opening)]
+    assert len(found) == 1, proc.stdout
+    return found[0]
+
+
 @pytest.mark.parametrize("shell", SHELLS)
 @pytest.mark.parametrize("how, extra", [
     ("exit 8: no row, or a row that names no handoff", {"STUB_HP_RC": "8", "STUB_HP_OUT": ""}),
@@ -547,6 +633,7 @@ def test_a_handoff_that_is_not_found_is_said_and_write_handoff_is_never_called(
     assert "HANDOFF NOT WRITTEN" in proc.stdout, proc.stdout
     assert "was NOT called" in proc.stdout, proc.stdout
     assert KEEP_IN_REPORT in proc.stdout, "the new top block is kept in the report"
+    assert KEPT_CALL in _block_1_line(proc, "HANDOFF NOT FOUND"), "983: the kept block's one call"
     assert estate.verbs() == ["handoff-path"], estate.calls()
     assert proc.stdout.endswith("AFTER\n")
 
@@ -580,7 +667,9 @@ ANOTHER_REPOSITORY = (
     ("2", ANOTHER_REPOSITORY,
      ["exited 2 (its words are above)",
       "the handoff it names belongs to another repository and not to this lane: "
-      "nothing is to be written there, by this skill or by hand"],
+      "nothing is to be written there, by this skill or by hand",
+      "the new top block goes to the handoff of this lane, in its own checkout, once the handoff "
+      "cell of its row is corrected to name it"],
      ["Update lanes-edit.sh", "step 2 again"]),
     ("4", "the lock that makes the lane checkout is held",
      ["exited 4", "Run step 2 again"], ["Update lanes-edit.sh"]),
@@ -610,6 +699,7 @@ def test_a_read_that_failed_is_never_said_as_no_handoff(estate, shell, rc, err, 
         assert words not in proc.stdout, f"{words!r} must not be said\n{proc.stdout}"
     assert "was NOT called" in proc.stdout, proc.stdout
     assert KEEP_IN_REPORT in proc.stdout, "the new top block is kept in the report"
+    assert KEPT_CALL in _block_1_line(proc, "HANDOFF READ FAILED"), "983: the kept block's one call"
     assert "write-handoff" not in estate.verbs(), estate.calls()
 
 

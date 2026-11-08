@@ -352,10 +352,13 @@ makes the lane's checkout, and step 2 is run again. Any other 2 is a name refuse
 handoff the row names in W or in another checkout of the register beside it (finding 601 of lane
 openRepoTools-3's review of opensoft/openRepoTools#312, refused by the translation `handoff-path` and
 `write-handoff` share): that file belongs to another repository, and nothing is written there, by this skill
-or by hand. In every one of these cases the call under "THE WRITE IS ONE CALL" is
-not made, the new top block is still written and kept whole in the report, so that it can be put at the head
-of the handoff by hand, and the swap goes on with the gap in the report (`R-A11-11`, *a swap is never left
-unwritten*).
+or by hand; the new top block goes to the lane's own handoff once the row's cell is corrected to name it. In
+every one of these cases the call under "THE WRITE IS ONE CALL" is not made, the new top block is still
+written, to the `$block_file` the block prints, and kept whole in the report, and the swap goes on with the
+gap in the report (`R-A11-11`, *a swap is never left unwritten*). Once the gap is answered, the block goes into
+the handoff by the one call, `LANES_LANE=<lane> lanes-edit.sh write-handoff <lane> --prepend <block file>
+--subject "<subject>"`, which the block under "THE WRITE IS ONE CALL" prints filled in, and never by a hand
+edit: the handoff is the verb's to write (lane openRepoTools-3's finding 983 on #311).
 
 ```sh
 # WHERE THE HANDOFF IS: derived, never spelled. `handoff-path` only reads, and `--create` makes the lane's own
@@ -368,12 +371,14 @@ handoff_file="$("$L" handoff-path "$lane" --create)" || hf_rc=$?
 # with only its stderr kept, as `sread` asks, to tell those apart: WITHOUT `--create`, so it is a read and
 # clones nothing, and without the fetch.
 [[ "$hf_rc" != 2 ]] || hf_said="$(LANES_NO_FETCH=1 "$L" handoff-path "$lane" 2>&1 >/dev/null || :)"
-hf_keep="Write the new top block all the same and put it whole in the report: it is then the one copy, and it goes at the head of the handoff by hand once this is answered. The swap goes on (R-A11-11)."
+# THE NEW TOP BLOCK, AND ONLY IT, goes in `$block_file`, ending with a newline, WHATEVER THE READ ANSWERED.
+# `write-handoff --prepend` puts it in front of the handoff as the verb reads it under the lock (lane
+# openRepoTools-3's finding 981 on #311, option (a)); an empty `$block_file` is no block, and nothing is sent.
+# Where the read failed, the file is still made: it is where the block is kept until the one call below can
+# put it in the handoff, never a hand edit of the handoff (finding 983).
+block_file="$(mktemp "${TMPDIR:-/tmp}/handoff-block.XXXXXX")" || block_file=""
+hf_keep='Write the new top block all the same, to the block_file this block prints, and put it whole in the report: it is then the one copy, and once this is answered it goes into the handoff only by the one call LANES_LANE=<lane> lanes-edit.sh write-handoff <lane> --prepend <block file> --subject "<subject>", which the block under THE WRITE IS ONE CALL prints filled in, never by a hand edit. The swap goes on (R-A11-11).'
 if [[ "$hf_rc" == 0 && -n "$handoff_file" && -f "$handoff_file" ]]; then
-  # THE NEW TOP BLOCK, AND ONLY IT, goes in `$block_file`, ending with a newline. `write-handoff --prepend`
-  # puts it in front of the handoff as the verb reads it under the lock (lane openRepoTools-3's finding 981
-  # on #311, option (a)); an empty `$block_file` is no block, and nothing is sent.
-  block_file="$(mktemp "${TMPDIR:-/tmp}/handoff-block.XXXXXX")" || block_file=""
   printf 'handoff_file=%s\nblock_file=%s\n' "$handoff_file" "${block_file:-<none>}"
 else
   case "$hf_rc:$hf_said" in
@@ -389,8 +394,9 @@ else
     2:*)
       # 601 (lane openRepoTools-3's review of #312, and its correction 6368669583): a row whose handoff is in W
       # or in another checkout of the register beside it is refused by the translation `write-handoff` shares
-      # with `handoff-path`, 2 with no path printed. That file is not this lane's to write, by hand either.
-      printf 'HANDOFF READ FAILED: `%s handoff-path %s --create` exited 2 (its words are above): a name refused, a clone of the lane checkout that failed, or a handoff the row names in W or in another checkout of the register beside it (601). Where its words name such a file, the handoff it names belongs to another repository and not to this lane: nothing is to be written there, by this skill or by hand. The read failed, and that is not "no handoff" (Amendment 7(d)), so the call under "THE WRITE IS ONE CALL" is NOT made. %s\n' \
+      # with `handoff-path`, 2 with no path printed. That file is not this lane's to write, by hand either; the
+      # kept block goes to the lane's own handoff once the row's cell names it (983).
+      printf 'HANDOFF READ FAILED: `%s handoff-path %s --create` exited 2 (its words are above): a name refused, a clone of the lane checkout that failed, or a handoff the row names in W or in another checkout of the register beside it (601). Where its words name such a file, the handoff it names belongs to another repository and not to this lane: nothing is to be written there, by this skill or by hand, and the new top block goes to the handoff of this lane, in its own checkout, once the handoff cell of its row is corrected to name it. The read failed, and that is not "no handoff" (Amendment 7(d)), so the call under "THE WRITE IS ONE CALL" is NOT made. %s\n' \
         "$L" "$lane" "$hf_keep" ;;
     *)
       printf 'HANDOFF READ FAILED: `%s handoff-path %s --create` exited %s (its words are above). The read failed, and that is not "no handoff" (Amendment 7(d)), so the call under "THE WRITE IS ONE CALL" is NOT made. %s\n' \
@@ -400,6 +406,7 @@ else
   hf_record="handoff NOT refreshed (the handoff read failed, exit $hf_rc)"
   [[ "$hf_rc" != 0 && "$hf_rc" != 8 ]] || hf_record="handoff NOT refreshed (no handoff found)"
   handoff_file=""
+  printf 'block_file=%s\n' "${block_file:-<none>}"
 fi
 ```
 
@@ -515,6 +522,11 @@ and the why in the operator's words, `handoff` where there is none, each control
 # subject the same way (its `subject_text`, and `unknown` for a missing workstation; rv3's NIT 1 on #311).
 hf_subject="handoff($lane@${ws:-unknown}): PAUSED, ${why:-handoff}"
 hf_subject="$(printf '%s' "$hf_subject" | LC_ALL=C tr '[:cntrl:]' ' ')"
+# THE ONE CALL, PRINTED FILLED IN FOR A BLOCK THAT IS KEPT (lane openRepoTools-3's finding 983 on #311): a kept
+# block goes into the handoff by this call once the gap is answered, never by a hand edit of the handoff. Each
+# word is single-quoted, a quote in it spelled '\'', so the line runs as printed under bash and zsh alike.
+hf_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+hf_call="LANES_LANE=$(hf_quote "$lane") $(hf_quote "$L") write-handoff $(hf_quote "$lane") --prepend $(hf_quote "${block_file:-<block file>}") --subject $(hf_quote "$hf_subject")"
 hf_rc=0; hf_out=""
 # THE ONE CALL: the verb reads the handoff under the lock and puts the block in front of it (`--prepend`).
 if [[ -n "$handoff_file" && -s "${block_file:-}" ]]; then
@@ -523,7 +535,7 @@ if [[ -n "$handoff_file" && -s "${block_file:-}" ]]; then
   # ITS STDOUT IS `<file><TAB><sha256>` ONCE THE FILE IS WRITTEN, whatever the exit; its own words are on stderr.
   hf_path="${hf_out%%$'\t'*}"
   hf_wrote="nothing was written"; [[ -z "$hf_out" ]] || hf_wrote="the file is written at $hf_path"
-  hf_kept="The new top block is kept at $block_file: name that path in the report, so that the top block can be put at the head of the handoff by hand once this is answered."
+  hf_kept="The new top block is kept at $block_file: name that path in the report. Where it is still to go into the handoff once this is answered, it goes by this one call, never by a hand edit:"
   case "$hf_rc" in
     0) printf 'handoff written: %s (the note above, from write-handoff, says what was committed and where it was pushed)\n' "$hf_path" ;;
     2) if [[ -n "$hf_out" ]]; then
@@ -551,9 +563,10 @@ if [[ -n "$handoff_file" && -s "${block_file:-}" ]]; then
   [[ -z "$hf_out" ]] || hf_record="handoff written, its publication NOT confirmed (write-handoff exited $hf_rc)"
   [[ "$hf_rc" != 0 ]] || hf_record="handoff refreshed"
   # WHERE NOTHING WAS WRITTEN, THE NEW TOP BLOCK IS NOT LOST WITH THE SWAP: its temporary file is named for the report.
-  [[ -n "$hf_out" ]] || printf '%s\n' "$hf_kept"
+  [[ -n "$hf_out" ]] || printf '%s\n%s\n' "$hf_kept" "$hf_call"
 else
-  printf 'HANDOFF NOT WRITTEN: there is no handoff located, or no new top block written to its file, so write-handoff was NOT called. Write the new top block if it is not written yet, and put it whole in the report, so that it can be put at the head of the handoff by hand. The swap goes on (R-A11-11); the report carries this line.\n'
+  printf 'HANDOFF NOT WRITTEN: there is no handoff located, or no new top block written to its file, so write-handoff was NOT called. Write the new top block to %s if it is not written yet, and put it whole in the report. Once that is answered, it goes into the handoff by this one call, never by a hand edit:\n%s\nThe swap goes on (R-A11-11); the report carries this line.\n' \
+    "${block_file:-a file of its own}" "$hf_call"
   # Block 1's reason where it gave one: a handoff not found, or a read that failed.
   hf_record="${hf_record:-handoff NOT refreshed (write-handoff was not called)}"
 fi
