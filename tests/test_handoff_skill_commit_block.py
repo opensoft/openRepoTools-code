@@ -597,6 +597,23 @@ def test_refusal_text_keeps_R_A11_11():
         assert words in paragraph, f"the paragraph no longer says {words!r}:\n{paragraph}"
 
 
+def test_the_one_call_paragraph_says_what_2a_has_merged_and_not_what_it_once_would():
+    """NIT 986 of lane openRepoTools-3's review of #311: "once ... finding 601
+    ... is in" and "a restart fence's refusal is 7 too, where it is 2 today"
+    were false once 2a's round was merged here. The paragraph says the verb's
+    refusals as they are: 601, 602 and 607, each a 2 with nothing written, met
+    first by the block under WHERE THE HANDOFF IS."""
+    flat = " ".join(re.sub(r"(?m)^\s*#\s?", "", _text()).split())
+    for gone in ("is in, so is", "where it is 2 today"):
+        assert gone not in flat, f"{gone!r} is back"
+    held = [p for p in _prose("## 2. Refresh the handoff")
+            if p.startswith("**THE WRITE IS ONE CALL, AND IT COMMITS")]
+    assert len(held) == 1, held
+    for words in ("(601, ", "(602)", "(607)", "with nothing written",
+                  "the block under WHERE THE HANDOFF IS meets them first and this call is not made"):
+        assert words in held[0], f"the paragraph no longer says {words!r}:\n{held[0]}"
+
+
 def test_the_handoff_write_is_said_as_the_verbs_and_not_as_a_commit_of_the_skill():
     """rv3's NIT 3 on #311: step 1's comment, `$ws_missing`'s paragraph and
     step 4's (c) comment called step 2's write a commit "in the LANE'S OWN

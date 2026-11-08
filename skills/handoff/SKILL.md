@@ -502,10 +502,11 @@ checkout's lock, and `LANES_LANE` names the lane. (This block used to commit in 
 file, the shared workspace checkout among them, with no lock, and to rebase on a pull before its push; finding
 282 of the review of opensoft/openRepoTools#307 names it one of the three writers that did.) A STAGED ENTRY
 THIS HANDOFF DID NOT MAKE and an operation in progress are the verb's refusals now, made before anything is
-committed (2); once lane openRepoTools-3's finding 601 on opensoft/openRepoTools#312 is in, so is a
-handoff target in W or in another checkout of the register beside it, with nothing written, and since
-`handoff-path` shares that refusal, the block under WHERE THE HANDOFF IS meets it first and this call is not
-made.
+committed (2). So are, each a 2 with nothing written, a handoff target in W or in another checkout of the
+register beside it (601, lane openRepoTools-3's finding on opensoft/openRepoTools#312), a relative cell that
+climbs out of the lane's checkout (602) and a path there with a glob character (607), and since
+`handoff-path` shares those refusals, the block under WHERE THE HANDOFF IS meets them first and this call is
+not made.
 THE NEW FILE IS MADE BY THE VERB, NEVER BY HAND (rv3's SHOULD 1 and lane openRepoTools-3's finding 981 on
 #311, option (a)): `--prepend "$block_file"` reads the handoff under the lane checkout's lock, from the bytes
 S3 has just brought to origin's, puts the new top block, a `---` line and a blank line in front of it, and
