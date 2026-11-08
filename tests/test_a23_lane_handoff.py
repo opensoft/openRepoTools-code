@@ -88,6 +88,7 @@ def test_handoff_written_and_pushed_from_checkout(tmp_path, short_root):
     assert f"Lane: {LANE}" in _origin(box, "log", "-1", "--format=%b", "main", "--", cell)
     assert f"handoff refreshed: {checkout}/{cell} " in result.stderr, result.stderr
     assert f"committed: {SUBJECT}" in result.stderr, "write-handoff's own words are printed"
+    assert "which exited 0: its words above say what it committed and pushed" in result.stderr, result.stderr
 
     # THE ONE WRITE IN W IS GONE: W moved only by fast-forward, and its copy of
     # the handoff took no byte from this act.
@@ -130,6 +131,7 @@ def test_S3_refusal_writes_file_no_commit_prints_git_words(tmp_path, short_root)
     assert f"commit -m \"{SUBJECT}\"" in result.stderr, result.stderr
     assert "NOT committed" in result.stderr, result.stderr
     assert "write-handoff` exited 2" in result.stderr, result.stderr
+    assert "Never re-run this handoff" in result.stderr, result.stderr
 
     assert_W_moved_only_by_fast_forward(box, before)
     assert (box.wip / cell).read_text(encoding="utf-8") == HANDOFF, "W's copy took no byte"
@@ -230,6 +232,33 @@ def test_register_paused_line_says_what_the_write_did(tmp_path, short_root, rc, 
     paused = [line for line in register.splitlines() if f"PAUSED — lane {LANE}, session " in line]
     assert len(paused) == 1, (register, result.stderr)
     assert paused[0].endswith(f"; {record}"), (paused, result.stderr)
+    if not write:
+        assert "## RESUME PROMPT — PAUSED " in result.stderr, result.stderr
     if rc == 6:
         assert "KEPT on HEAD" not in result.stderr, result.stderr
         assert "its words above say whether a commit was made, where it is kept" in result.stderr, result.stderr
+
+
+def test_a_handoff_path_that_failed_is_said_and_the_block_printed(tmp_path, short_root):
+    """Battery survivor LH03 (decision 11): where `handoff-path` fails,
+    lane-handoff says it could not read where the handoff is written, prints
+    the block for the hand, and the register's PAUSED line says the handoff
+    was NOT refreshed and why (fit (c))."""
+    box, _checkout, cell, _before = _ready(tmp_path, short_root)
+    real = box.bin / "lanes-edit.sh"
+    wrapper = box.root / "no-path-lanes-edit.sh"
+    wrapper.write_text(f"""#!/usr/bin/env bash
+if [ "${{1-}}" = handoff-path ]; then echo "handoff-path: the register could not be read" >&2; exit 1; fi
+exec '{real}' "$@"
+""", encoding="utf-8")
+    wrapper.chmod(0o755)
+    handoff = _published(box, cell)
+
+    result = _handoff(box, env={"LANES_EDIT": str(wrapper)})
+    assert f"where lane {LANE}'s handoff is written could not be read" in result.stderr, result.stderr
+    assert "## RESUME PROMPT — PAUSED " in result.stderr, result.stderr
+    assert _published(box, cell) == handoff, "the handoff took no block"
+    paused = [line for line in _published(box, "lanes/LANES.md").splitlines()
+              if f"PAUSED — lane {LANE}, session " in line]
+    assert len(paused) == 1, (paused, result.stderr)
+    assert paused[0].endswith("; handoff NOT refreshed (handoff-path exited 1)"), paused

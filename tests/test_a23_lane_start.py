@@ -104,6 +104,7 @@ def _started(tmp_path: Path, short_root: Path) -> tuple[Sandbox, Path, Path, lis
     first = box.start("--dir", str(lane_dir), window_name="claude")
     assert first.returncode == 0, first.stderr
     assert (checkout / ".git").is_dir(), "the first start made the lane's checkout"
+    assert "own register checkout could not be made" not in first.stderr, first.stderr
     return box, checkout, lane_dir, before
 
 
@@ -121,6 +122,8 @@ def test_launch_creates_checkout_and_writes_only_there(tmp_path, short_root):
 
     second = box.start("--fresh", window_name=LANE)
     assert second.returncode == 0, second.stderr
+    assert "W was not fast-forwarded" not in second.stderr, second.stderr
+    assert "as W last fetched it" not in second.stderr, second.stderr
 
     register = _published(box, "lanes/LANES.md")
     assert sum(1 for r in register.splitlines() if r.startswith(f"| `{LANE}`")) == 1
@@ -512,3 +515,142 @@ exec '{real}' "$@"
     assert "launched with no first prompt" not in start.stderr, start.stderr
     assert "RESUMED by " in start.stdout, (start.stdout, start.stderr)
     assert "own words" in start.stdout, start.stdout
+
+
+# ------------------------------------------- the mutant battery's survivors (item 10)
+
+def _peer_start_row() -> str:
+    """Another workstation's start of this lane: its row, naming its handoff."""
+    return (f"| `{LANE}` | harness `{PEER_SID}` (minted by lane-start, 2026-10-22T00:00:00Z) | "
+            f"Eagle / default / peer | 2026-10-22T00:00Z | none | handoffs/repoZ/peer.md | "
+            f"LIVE · 2026-10-22T00:00:00Z · STARTED by {PEER_SID} (lane {LANE}) — lane-start on Eagle: row created |")
+
+
+def _recording(box: Sandbox) -> tuple[Path, Path]:
+    """A `LANES_EDIT` that records each call's verb and `LANES_LANE`, then runs
+    the real helper."""
+    calls = box.root / "lanes-edit-calls.log"
+    wrapper = box.root / "recording-lanes-edit.sh"
+    wrapper.write_text(f"""#!/usr/bin/env bash
+printf '%s LANES_LANE=%s\\n' "${{1-}}" "${{LANES_LANE-<unset>}}" >> '{calls}'
+exec '{box.bin / "lanes-edit.sh"}' "$@"
+""", encoding="utf-8")
+    wrapper.chmod(0o755)
+    return wrapper, calls
+
+
+def _verbs(calls: Path, verb: str) -> list[str]:
+    return [line for line in calls.read_text(encoding="utf-8").splitlines() if line.startswith(verb + " ")]
+
+
+def test_no_refresh_of_W_without_the_opt_in(tmp_path, short_root):
+    """Battery survivor LS03 (slice 2b's decision 2): without the opt-in W is
+    the write checkout, which every write's S3 fast-forwards under its own
+    lock, so the start asks for no `refresh-workspace`."""
+    box = Sandbox(tmp_path)
+    default_resolution(box, route=False)
+    lane_dir = _checkout_of_length(short_root, None)
+    box.checkout(lane_dir)
+    wrapper, calls = _recording(box)
+    box.env["LANES_EDIT"] = str(wrapper)
+
+    first = box.start("--dir", str(lane_dir), window_name="claude")
+    assert first.returncode == 0, first.stderr
+    assert _verbs(calls, "canon-lane"), "the recorder saw the start's calls"
+    assert _verbs(calls, "refresh-workspace") == [], calls.read_text(encoding="utf-8")
+
+
+def test_no_refresh_of_W_for_a_callers_LANES_REPO(tmp_path, short_root):
+    """Battery survivor LS02 (decision 2): a caller's explicit `LANES_REPO` and
+    `LANES_FILE` are the caller's register, not W, so even under the opt-in
+    the start asks for no `refresh-workspace`."""
+    box = Sandbox(tmp_path)                 # LANES_REPO and LANES_FILE name box.wip
+    box.env["LANES_ROUTE_WRITES"] = "1"
+    lane_dir = _checkout_of_length(short_root, None)
+    box.checkout(lane_dir)
+    wrapper, calls = _recording(box)
+    box.env["LANES_EDIT"] = str(wrapper)
+
+    first = box.start("--dir", str(lane_dir), window_name="claude")
+    assert first.returncode == 0, first.stderr
+    assert _verbs(calls, "canon-lane"), "the recorder saw the start's calls"
+    assert _verbs(calls, "refresh-workspace") == [], calls.read_text(encoding="utf-8")
+
+
+def test_a_refresh_that_could_not_fast_forward_reads_the_row_from_origin(tmp_path, short_root):
+    """Battery survivors LS07, LS10 and LS12 (decisions 2 and 3): where
+    `refresh-workspace` cannot fast-forward W, here because W holds a commit
+    of its own, the launch says so and goes on, and it reads the lane's row
+    from origin/main as W last fetched it, never from W's working tree, which
+    is behind: the row a peer pushed is found, and no second row is offered."""
+    box, _checkout, lane_dir = _boxed(tmp_path, short_root)
+    made = _edit(box, "lane-checkout", LANE, "--create")
+    assert made.returncode == 0, made.stderr
+    (box.wip / "local-note.md").write_text("a commit only W has\n", encoding="utf-8")
+    box.git("-C", str(box.wip), "add", "--", "local-note.md")
+    box.git("-C", str(box.wip), "commit", "-q", "-m", "a commit only W has")
+    _peer_push(box, {"lanes/LANES.md": _published(box, "lanes/LANES.md") + _peer_start_row() + "\n",
+                     "handoffs/repoZ/peer.md": HANDOFF}, "a peer's start of the lane")
+
+    start = box.start("--dir", str(lane_dir), "--fresh", window_name=LANE)
+    assert start.returncode == 0, start.stderr
+    assert "W was not fast-forwarded before this launch reads it" in start.stderr, start.stderr
+    assert "row is read from origin/main as W last fetched it" in start.stderr, start.stderr
+    assert "ALREADY has a row" not in start.stderr, start.stderr
+    assert rows(box.wip / "lanes" / "LANES.md") == [], "W's working tree is still behind"
+    published = [r for r in _published(box, "lanes/LANES.md").splitlines() if r.startswith(f"| `{LANE}`")]
+    assert len(published) == 1, published
+
+
+def test_the_stamp_is_written_with_LANES_LANE(tmp_path, short_root):
+    """Battery survivor LS41 (decision 5): the stamp's `write-handoff` carries
+    `LANES_LANE`, as every write of a lane does (Amendment 23 S1). The helper
+    also routes this verb by its lane argument today, so only the call shows
+    it."""
+    box, _checkout, _lane_dir, _before = _started(tmp_path, short_root)
+    cell = _cell(box)
+    _peer_push(box, {cell: HANDOFF}, "the lane's handoff, written elsewhere")
+    wrapper, calls = _recording(box)
+    box.env["LANES_EDIT"] = str(wrapper)
+
+    start = box.start("--fresh", window_name=LANE)
+    assert start.returncode == 0, start.stderr
+    assert _verbs(calls, "write-handoff") == [f"write-handoff LANES_LANE={LANE}"], calls.read_text(encoding="utf-8")
+
+
+def test_unrouted_start_behind_a_peers_row_names_refresh_workspace(tmp_path, short_root):
+    """Battery survivor LS17 (decision 9): without the opt-in, with the default
+    resolution, W is the register read and nothing refreshes it first. Where
+    a peer has published the lane's row and W is behind, the start refuses a
+    second row, and its recovery is `refresh-workspace`, the one act that
+    moves W (only ever a fast-forward), never a fetch and merge typed in W."""
+    box = Sandbox(tmp_path)
+    default_resolution(box, route=False)
+    lane_dir = _checkout_of_length(short_root, None)
+    box.checkout(lane_dir)
+    _peer_push(box, {"lanes/LANES.md": _published(box, "lanes/LANES.md") + _peer_start_row() + "\n",
+                     "handoffs/repoZ/peer.md": HANDOFF}, "a peer's start of the lane")
+    tip = _tip(box)
+
+    start = box.start("--dir", str(lane_dir), window_name="claude")
+    assert start.returncode == 2, start.stderr
+    assert "ALREADY has a row" in start.stderr, start.stderr
+    assert "refresh-workspace   # W is only ever fast-forwarded" in start.stderr, start.stderr
+    assert "merge --ff-only origin/" not in start.stderr, start.stderr
+    assert _tip(box) == tip, "nothing was written"
+
+
+def test_a_row_only_in_W_is_named_a_stray_there(tmp_path, short_root):
+    """Battery survivor LS19 (decision 9): under the opt-in, a row that W's
+    working tree carries and origin does not is a stray in W, the readers'
+    copy, where no tool writes (Amendment 23 S5). The recovery says so and
+    makes it a write of the lane's own checkout, never a publish from W."""
+    box, _checkout, lane_dir = _boxed(tmp_path, short_root)
+    register = box.wip / "lanes" / "LANES.md"
+    register.write_text(register.read_text(encoding="utf-8") + _peer_start_row() + "\n", encoding="utf-8")
+
+    start = box.start("--dir", str(lane_dir), window_name="claude")
+    assert f"this checkout has a row for {LANE} and the register on origin/main has none" in start.stderr, \
+        start.stderr
+    assert "RECOVERY — that row is a stray in W" in start.stderr, start.stderr
+    assert "publish the register from here" not in start.stderr, start.stderr
