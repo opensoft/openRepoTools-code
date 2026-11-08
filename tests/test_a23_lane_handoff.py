@@ -36,8 +36,8 @@ import pytest
 
 from conftest import REPO
 from test_a23_lane_start import (HANDOFF, SIBLING_WORDS, _assert_nothing_unpublished, _other_repository,
-                                 _sibling_handoff, _with_cell,
-                                 _cell, _edit, _origin, _peer_push, _published, _started, _tip)
+                                 _racing_git, _sibling_handoff, _with_cell,
+                                 _cell, _edit, _origin, _peer, _peer_push, _published, _started, _tip)
 from test_a23_lane_start_read import assert_W_moved_only_by_fast_forward
 from test_lane_start_row_stamp import LANE, Sandbox, pytestmark, short_root  # noqa: F401
 
@@ -289,6 +289,41 @@ def test_a_cell_in_a_sibling_lanes_checkout_takes_no_block_and_the_block_is_prin
     assert len(paused) == 1, (paused, result.stderr)
     assert paused[0].endswith("; handoff NOT refreshed (handoff-path exited 2)"), paused
 
+
+
+@pytest.mark.parametrize("how", ["moved", "unmoved"])
+def test_exit_6_names_the_publish_act_only_where_the_helper_offers_it(tmp_path, short_root, how):
+    """NIT 2 of lane openRepoTools-3's review of opensoft/openRepoTools-code#20
+    at 4031100, at lane-handoff's exit-6 note (`lane-start`'s twin is in
+    test_a23_lane_start). The note ended "once those words are answered,
+    LANES_LANE=... commit ..., the publish act" for every 6. Where the push
+    was refused because origin MOVED (A37's keep-if-gone here; the six-attempt
+    bound is the same), the helper's own words (`cp_recovery_steps`) say the
+    publish act refuses (2) and give S6.3's archive, and after the archive and
+    the drop there is nothing left to publish. Where origin did not move, they
+    offer the act. The note defers to those words and names the act only where
+    they offer it."""
+    box, _checkout, cell, _before = _ready(tmp_path, short_root)
+    shim, mark = _racing_git(box, how, _peer(box), cell)
+
+    result = _handoff(box, env={"LANES_GIT": str(shim)})
+    assert mark.exists(), "the push of the handoff's commit was refused"
+    err = result.stderr
+    said = [line for line in err.splitlines() if "`write-handoff` exited 6" in line and "NOT published" in line]
+    assert len(said) == 1, err
+    helper = err.split("`write-handoff` exited 6")[0]
+    if how == "moved":
+        assert "so the publish act refuses (2)" in helper, ("the helper's words give the archive", err)
+        assert "# the archive, on origin" in helper, err
+        assert 'commit "<what it is>"' not in helper, ("and do not offer the act", err)
+    else:
+        assert "refused with origin/main unmoved" in helper, err
+        assert 'commit "<what it is>", the publish act' in helper, ("the helper offers the act", err)
+    note = said[0]
+    assert "once those words are answered, LANES_LANE=" not in note, ("the unconditional offer", note)
+    assert "Where they offer the publish act, it is " in note, note
+    assert f'LANES_LANE={LANE} ' in note and 'commit "<what it is>", the publish act' in note, note
+    assert "where origin moved they say it refuses (2) and give S6.3's archive instead" in note, note
 
 
 def test_an_8d_cell_takes_the_block_committed_and_pushed_in_its_own_repository(tmp_path, short_root):
