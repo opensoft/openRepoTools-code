@@ -372,16 +372,6 @@ def test_the_variables_the_call_names_are_defined_in_block_1():
         "the old call is gone: write-handoff is the one act")
 
 
-def test_the_skill_never_pulls_with_rebase_outside_a_comment():
-    """Amendment 23 S3-S4 (`tests/test_repo_hygiene.py`'s no-pull rule, whose
-    file list takes this file at the merge): no line of the skill that is not a
-    comment runs, or tells a person to run, a rebasing pull."""
-    pull = re.compile(r"\bpull\b[^\n]*?(?:--rebase\b|\s-r\b)")
-    found = [n for n, line in enumerate(_text().splitlines(), 1)
-             if not line.lstrip().startswith("#") and pull.search(line)]
-    assert not found, f"{SKILL.name} line(s) {found} run or print a rebasing pull"
-
-
 def test_the_blocks_parse_under_bash(tmp_path):
     for name, marker in (("first", B1), ("second", B2)):
         script = tmp_path / f"{name}.sh"
