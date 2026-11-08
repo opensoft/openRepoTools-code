@@ -112,6 +112,9 @@
 #                             handoff's included, go through its own register
 #                             checkout `<W>-lanes/<lane>/`, and a `--restart`
 #                             respawn carries it to the supervisor
+#   $LANES_WORKSPACE_ROOT, $LANES_REPO, $LANES_FILE   the register's seams, read
+#                             by the helper; a `--restart` respawn carries
+#                             each one that is set
 #   $LANES_AGENT      this agent's name for the record (default: claude)
 #   $PCLAUDE          the launcher                 (default: lclaude, else pclaude, else claude-profile)
 #   $LANE_HANDOFF_NO_TMUX=1   never touch tmux (the identity fix, --exit, --restart)
@@ -3145,7 +3148,15 @@ if [ "$do_restart" = 1 ]; then
 	# supervisor's `lane-start` compares the row's file with it. Under the
 	# opt-in that is the lane's own `<W>-lanes/<lane>/`; a respawn without it
 	# would resolve W's copy instead and refuse the restart as two handoffs.
+	# AND THE REGISTER'S OWN SEAMS (lane openRepoTools-3's review of #316,
+	# 729), for the same reason: a caller's `LANES_WORKSPACE_ROOT`, `LANES_REPO`
+	# or `LANES_FILE` is what this command's reads and writes resolved, and
+	# this command never sets one of its own. Without them the new pane
+	# resolves the default W, and a `/ctx` with a W of its own fails closed.
 	[ -z "${LANES_ROUTE_WRITES:-}" ] || launch_line="LANES_ROUTE_WRITES=$(quoted "$LANES_ROUTE_WRITES") $launch_line"
+	[ -z "${LANES_FILE:-}" ] || launch_line="LANES_FILE=$(quoted "$LANES_FILE") $launch_line"
+	[ -z "${LANES_REPO:-}" ] || launch_line="LANES_REPO=$(quoted "$LANES_REPO") $launch_line"
+	[ -z "${LANES_WORKSPACE_ROOT:-}" ] || launch_line="LANES_WORKSPACE_ROOT=$(quoted "$LANES_WORKSPACE_ROOT") $launch_line"
 	say "  respawning $target: $launch_line"
 	if tmux respawn-pane -k -t "$target" "$launch_line" 2>/dev/null; then
 		say "  respawned into the supervisor — it launches the fresh session, confirms it came up, and stays in this pane if it did not"

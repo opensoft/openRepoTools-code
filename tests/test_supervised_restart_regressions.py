@@ -1278,6 +1278,24 @@ exit 127
             if proc.poll() is None: proc.wait(timeout=10)
 
 
+def test_ctx_respawn_carries_the_register_seams(restart_box):
+    """729 of the review of #316: the respawn line carries the caller's
+    `LANES_WORKSPACE_ROOT`, `LANES_REPO` and `LANES_FILE` beside
+    `LANES_ROUTE_WRITES`, so the supervisor and the `lane-start` it runs
+    resolve the register this `lane-handoff` wrote through, and a `/ctx`
+    with a W of its own no longer fails closed in the new pane."""
+    box = restart_box
+    prepare_restart(box)
+    assert helper(box, "set-restart-intent", LANE, "ready", "--expect", "pending").returncode == 0
+    box.env["LANES_WORKSPACE_ROOT"] = str(box.wip)
+    result = supervisor(box, "--restart", "--lane", LANE, "--dir", str(box.lane_dir), "clear")
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    respawn = box.tmux_log.read_text()
+    assert "respawn-pane" in respawn, respawn
+    for key in ("LANES_WORKSPACE_ROOT", "LANES_REPO", "LANES_FILE"):
+        assert f"{key}={box.env[key]} " in respawn, (key, respawn)
+
+
 def test_respawn_restores_configured_roots_in_new_pane(restart_box):
     box = restart_box
     protocol = box.root / "protocol with spaces"
