@@ -505,6 +505,10 @@ def test_refused_stamp_with_restart_intent_still_launches(routed_restart_box):
     assert result.returncode == 0, (result.stdout, result.stderr)
     assert "Rule 3's stamp was NOT written" in result.stderr, result.stderr
     assert "STAMP IT AS THIS SESSION'S FIRST ACT" in result.stderr
+    # 726 of the review of #316: the printed re-run carries none of the
+    # restart's fences, and while the intent is `starting` it exits 7.
+    assert f"with: LANES_LANE={LANE} " in result.stderr, result.stderr
+    assert "only once this restart is confirmed ready" in result.stderr, result.stderr
     assert "Preserved task." in box.claude_runs()
     assert source.read_bytes() == before, "the refused stamp wrote nothing"
     assert published(box, rel) == before, "and published nothing"

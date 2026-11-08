@@ -4428,6 +4428,11 @@ if [ "$lane_verb" = RESUMED ] && [ "$row_count" = 1 ] && (( stamp_ok )); then
       note "  STAMP IT AS THIS SESSION'S FIRST ACT — this line under the handoff's header block:"
       note "    $hs_stamp"
       note "  with: $hs_fix"
+      # THAT RE-RUN CARRIES NONE OF A RESTART'S FENCES (lane openRepoTools-3's
+      # review of #316, 726): run while the intent is `starting`, the helper
+      # refuses it as a write without them (7).
+      [ "$ri_active" != 1 ] ||
+        note "  and only once this restart is confirmed ready: while its intent is \`starting\` that write, which carries none of the restart's fences, exits 7."
     fi
   fi
 fi
