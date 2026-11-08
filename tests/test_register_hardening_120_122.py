@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import REPO
 from test_register_scan_hardening_138 import (  # noqa: F401  (pytestmark is this module's too)
     HEADER, OLD_ID, UNPRIVILEGED_ONLY, Register as SweepRegister, lane_line, log_text, pytestmark, row)
 
@@ -276,6 +277,79 @@ def test_120_item_2_a_rename_whose_commit_never_landed_refuses_in_the_scan(reg):
     assert reg.head() == before
     assert not (reg.wip / "lanes/log/repoX-2.md").exists()
     assert reg.dirty() == ""
+
+
+#: `ensure_log`'s own recovery sentence, which the sweep's scan repeats word for
+#: word (the comment above the scan promises "in its words"): both dies carry it.
+ENSURE_LOG_RECOVERY = ("Re-run the write: it fast-forwards this checkout to origin's tip under its lock "
+                       "first (Amendment 23 S3), and the rename then happens once, inside its own commit.")
+
+
+def test_120_item_2_a_log_respelled_on_origin_after_the_fast_forward_refuses_in_the_scan(reg, tmp_path):
+    """S4 of lane openRepoTools-3's review of the re-homed slice 1b: the scan's
+    refusal at `retire_rows`' published-log check (B73's hand-resolved die) had
+    no case, because Amendment 23 S3 refuses the state it was written for, a
+    case-only rename whose commit is not pushed, before the scan. It is reached
+    only where origin moves AFTER S3's fast-forward and after the sweep's
+    behind-check: here a peer respells repoX-3's log on origin and a reader
+    fetches it into this shared checkout, which still holds the row's spelling,
+    clean and in step with the tip S3 fast-forwarded to. The scan refuses (2) in
+    `ensure_log`'s words and recovery, before the lane ahead of it in this one
+    commit has a log made or a line appended: nothing is written."""
+    if not case_sensitive(reg.tmp):
+        pytest.skip("two log names that differ only by case need a case-sensitive filesystem")
+    original = log_text("repoX-3", lane_line("NOTED", "repoX-3", OLD_ID, "2026-09-13T00:00:00Z")
+                        + " — migrated; history kept here")
+    reg.write("lanes/log/repoX-3.md", original)
+    reg.publish("repoX-3's log, under the row's spelling")
+    peer = tmp_path / "peer"
+    reg.raw_git("clone", "-q", str(reg.origin), str(peer))
+    reg.raw_git("-C", str(peer), "mv", "lanes/log/repoX-3.md", "lanes/log/repox-3.md")
+    reg.raw_git("-C", str(peer), "commit", "-q", "-m", "a peer respells repoX-3's log")
+    register = reg.read("lanes/LANES.md")
+    before = reg.head()
+    real = shutil.which("git", path=os.environ.get("PATH"))
+    mark = tmp_path / "fetched"
+    # The sweep's behind-check is the last read of `origin/main` before its scan:
+    # the peer's push and a reader's fetch of it follow that call, in the shared
+    # checkout, and the call's own answer (0 behind) is handed back unchanged.
+    shim = reg.fakebin / "git"
+    shim.write_text(f"""#!/usr/bin/env bash
+case " $* " in
+  *" rev-list --count HEAD..refs/remotes/origin/main "*)
+    if [ ! -e '{mark}' ]; then
+      : > '{mark}'
+      out=$('{real}' "$@") || exit $?
+      '{real}' -C '{peer}' push -q origin main || exit 1
+      '{real}' -C '{reg.wip}' fetch -q origin '+refs/heads/main:refs/remotes/origin/main' || exit 1
+      printf '%s\\n' "$out"
+      exit 0
+    fi ;;
+esac
+exec '{real}' "$@"
+""")
+    shim.chmod(0o755)
+    result = reg.sweep("repoX-2", "repoX-3")
+    shim.unlink()
+    assert mark.exists(), "the peer never landed: the sweep's behind-check was never reached"
+    assert reg.published("lanes/log/repox-3.md") == original, "the peer's respelling is on origin"
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert S3_LACKS not in result.stderr, "S3 had nothing to refuse: the checkout was in step with origin"
+    assert ("lane repoX-3's object log is published as lanes/log/repox-3.md while this checkout has "
+            "lanes/log/repoX-3.md instead") in result.stderr
+    assert ("the row spells the lane repoX-3, so the log is lanes/log/repoX-3.md (Amendment 15), "
+            "and writing one here now would leave TWO files for one lane.") in result.stderr
+    assert ENSURE_LOG_RECOVERY in result.stderr
+    assert "Origin moved after" not in result.stderr
+    assert result.stderr.rstrip().endswith("Nothing was written.")
+    assert (REPO / "lanes-edit.sh").read_text(encoding="utf-8").count(ENSURE_LOG_RECOVERY) == 2, \
+        "the scan's refusal and ensure_log's say the same sentence"
+    assert reg.head() == before
+    assert reg.dirty() == ""
+    assert reg.read("lanes/LANES.md") == register
+    assert reg.read("lanes/log/repoX-3.md") == original
+    assert not (reg.wip / "lanes/log/repoX-2.md").exists()
+    assert "RETIRED" not in reg.published("lanes/LANES.md")
 
 
 # ------------------------------- #120 item 3: a log that already closes the lane
