@@ -1731,6 +1731,22 @@ SH_Y
     esac
     printf '%s' "$sfe_x"
   }
+  # A TARGET THAT DOES NOT RESOLVE (the 353 gap, D44's note) is spelled from
+  # the real path of the deepest directory on it that does, the rest
+  # appended as written: after the move, a relative
+  # `../<W>-lanes/<lane>/.git` that named the old path names it again, and
+  # an absolute one reads as it did.
+  sc_real_or_text() {   # <absolute path>
+    srt_r="$(sc_real "$1")"
+    if [ -n "$srt_r" ]; then printf '%s' "$srt_r"; return 0; fi
+    srt_p="$1"; srt_t=""
+    while [ -n "$srt_p" ]; do
+      srt_t="/${srt_p##*/}$srt_t"; srt_p="${srt_p%/*}"
+      srt_r="$(sc_real "${srt_p:-/}")"
+      if [ -n "$srt_r" ]; then break; fi
+    done
+    printf '%s%s' "${srt_r%/}" "$srt_t"
+  }
   sc_dep_root 6 "$sc_root"
   sc_dep_root 8 "${TMPDIR:-/tmp}"
   sc_dep_root 4 "${HOME:-}"
@@ -1786,10 +1802,10 @@ SDS_ERR
             fi
             sds_g="$(printf '%s\n' "$sds_g" | sed -n -e '1s/^gitdir: //p')"
             case "$sds_g" in '') continue ;; /*) : ;; *) sds_g="$sds_e/$sds_g" ;; esac
-            # A target that is gone is kept as written (NIT 353): after the
-            # move, a clone that named the old path is still matched.
-            sds_r="$(sc_real "$sds_g")"
-            sds_gl="$sds_gl${sds_r:-$sds_g}$sc_tab$sds_e
+            # A target that is gone is still matched (NIT 353, and its gap):
+            # after the move, a clone that named the old path names it.
+            sds_r="$(sc_real_or_text "$sds_g")"
+            sds_gl="$sds_gl$sds_r$sc_tab$sds_e
 " ;;
           */objects)
             sds_a="$sds_f/info/alternates"
@@ -1801,8 +1817,8 @@ SDS_ERR
             while IFS= read -r sds_l; do
               case "$sds_l" in '' | '#'*) continue ;; esac
               case "$sds_l" in /*) sds_t="$sds_l" ;; *) sds_t="$sds_f/$sds_l" ;; esac
-              sds_r="$(sc_real "$sds_t")"
-              sds_dl="$sds_dl${sds_r:-$sds_t}$sc_tab$sds_e
+              sds_r="$(sc_real_or_text "$sds_t")"
+              sds_dl="$sds_dl$sds_r$sc_tab$sds_e
 "
             done <<SDS_ALT
 $sds_x
@@ -2441,12 +2457,14 @@ SLU
     # see, between them and the move, is asked of what was moved: the pid
     # line of the lock that went with it (a writer that took the lock over
     # after it was read), the working directories (a process that came in
-    # during the git reads now works in the aside), what leans on it (a
-    # clone made meanwhile names the old path, which is gone, so it is
-    # matched as written), the windows' `LANES_REPO` (D37: a window opened
-    # meanwhile names the old path as spelled), and the mounts (one made
-    # meanwhile is in the aside, which carried it) (rv4b's SHOULD D, for
-    # the last two). Any of them moves it back, and holds it.
+    # during the git reads now works in the aside), what leans on it and
+    # what works in it (a clone made, or a `.git` file written, meanwhile
+    # names the old path, which is gone, so it is spelled from the deepest
+    # directory on it that stands: the 353 gap, D46), the windows'
+    # `LANES_REPO` (D37: a window opened meanwhile names the old path as
+    # spelled), and the mounts (one made meanwhile is in the aside, which
+    # carried it) (rv4b's SHOULD D, for the last two). Any of them moves it
+    # back, and holds it.
     sc_post=""; sc_moved_line=""
     IFS= read -r sc_moved_line < "$sc_aside/lanes/.lanes-edit.lock/pid" 2>/dev/null || :
     if [ "$sc_moved_line" != "$$ $sc_ident" ]; then
@@ -2461,6 +2479,11 @@ SLU
     sc_x="$(sc_dependents "$sc_c" "$sc_gone$sc_aside
 ")"
     if [ -n "$sc_x" ]; then sc_post="${sc_post:+$sc_post; }leaned on by $sc_x, which came as it was moved aside"; fi
+    # And a `.git` file is read after the move too (D46): the read under the
+    # lock holds what such a file names, and one written since was unseen.
+    sc_x="$(sc_dependents "$sc_c" "$sc_gone$sc_aside
+" "$sc_gitfile_lines")"
+    if [ -n "$sc_x" ]; then sc_post="${sc_post:+$sc_post; }its git directory is named by the .git file of $sc_x, which works in it and came as it was moved aside"; fi
     sc_repo_scan
     sc_x="$(sc_repo_inside "$sc_c")"
     if [ -n "$sc_x" ]; then sc_post="${sc_post:+$sc_post; }the LANES_REPO of a live process came to name it as it was moved aside (pid $sc_x)"; fi
