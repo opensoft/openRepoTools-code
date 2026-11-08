@@ -349,10 +349,12 @@ that names no handoff) there is no file to write into. Where it prints `HANDOFF 
 failed, and that is never "no handoff": every exit but 0 and 8 is one, and the line quotes it. A 2 whose words
 say "unknown subcommand" is a `lanes-edit.sh` predating `handoff-path`, to be updated; a 4 is the lock that
 makes the lane's checkout, and step 2 is run again. Any other 2 is a name refused, a clone that failed, or a
-handoff the row names in W or in another checkout of the register beside it (finding 601 of lane
-openRepoTools-3's review of opensoft/openRepoTools#312, refused by the translation `handoff-path` and
-`write-handoff` share): that file belongs to another repository, and nothing is written there, by this skill
-or by hand; the new top block goes to the lane's own handoff once the row's cell is corrected to name it. In
+handoff cell the translation `handoff-path` and `write-handoff` share refuses: a handoff the row names in W
+or in another checkout of the register beside it (finding 601 of lane openRepoTools-3's review of
+opensoft/openRepoTools#312), a relative cell whose `.` or `..` components climb out of the lane's checkout
+(602), or a path there that holds a glob character (607, which `handoff-path` refuses since 991). The file
+such a cell names is not this lane's handoff, and nothing is written there, by this skill or by hand; the new
+top block goes to the lane's own handoff once the row's cell is corrected to name it. In
 every one of these cases the call under "THE WRITE IS ONE CALL" is not made, the new top block is still
 written, to the `$block_file` the block prints, and kept whole in the report, and the swap goes on with the
 gap in the report (`R-A11-11`, *a swap is never left unwritten*). Once the gap is answered, the block goes into
@@ -366,10 +368,10 @@ edit: the handoff is the verb's to write (lane openRepoTools-3's finding 983 on 
 hf_rc=0; handoff_file=""; block_file=""; hf_said=""; hf_record=""
 handoff_file="$("$L" handoff-path "$lane" --create)" || hf_rc=$?
 # ONLY 8 IS "NO HANDOFF" (Amendment 7(d): a read that failed is no answer). 1 is a register it could not read
-# (its own "R22: never 8"), 2 a name refused or a clone that failed, 4 the lock that makes the checkout, and a
-# `lanes-edit.sh` predating `handoff-path` says 2 from its unknown-subcommand arm. A 2 is asked a second time
-# with only its stderr kept, as `sread` asks, to tell those apart: WITHOUT `--create`, so it is a read and
-# clones nothing, and without the fetch.
+# (its own "R22: never 8"), 2 a name refused, a cell refused (601, 602, 607) or a clone that failed, 4 the lock
+# that makes the checkout, and a `lanes-edit.sh` predating `handoff-path` says 2 from its unknown-subcommand
+# arm. A 2 is asked a second time with only its stderr kept, as `sread` asks, to tell those apart: WITHOUT
+# `--create`, so it is a read and clones nothing, and without the fetch.
 [[ "$hf_rc" != 2 ]] || hf_said="$(LANES_NO_FETCH=1 "$L" handoff-path "$lane" 2>&1 >/dev/null || :)"
 # THE NEW TOP BLOCK, AND ONLY IT, goes in `$block_file`, ending with a newline, WHATEVER THE READ ANSWERED.
 # `write-handoff --prepend` puts it in front of the handoff as the verb reads it under the lock (lane
@@ -393,10 +395,13 @@ else
         "$L" "$lane" "$hf_keep" ;;
     2:*)
       # 601 (lane openRepoTools-3's review of #312, and its correction 6368669583): a row whose handoff is in W
-      # or in another checkout of the register beside it is refused by the translation `write-handoff` shares
-      # with `handoff-path`, 2 with no path printed. That file is not this lane's to write, by hand either; the
-      # kept block goes to the lane's own handoff once the row's cell names it (983).
-      printf 'HANDOFF READ FAILED: `%s handoff-path %s --create` exited 2 (its words are above): a name refused, a clone of the lane checkout that failed, or a handoff the row names in W or in another checkout of the register beside it (601). Where its words name such a file, the handoff it names belongs to another repository and not to this lane: nothing is to be written there, by this skill or by hand, and the new top block goes to the handoff of this lane, in its own checkout, once the handoff cell of its row is corrected to name it. The read failed, and that is not "no handoff" (Amendment 7(d)), so the call under "THE WRITE IS ONE CALL" is NOT made. %s\n' \
+      # or in another checkout of the register beside it, a relative cell that climbs out of the lane checkout
+      # (602), and a path there with a glob character (607, `handoff-path`'s since 991) are refused by the
+      # translation `write-handoff` shares with `handoff-path`, 2 with no path printed. The helper calls the
+      # first "another checkout of the register" (985: never 8(d)'s "another repository"). That file is not this
+      # lane's to write, by hand either; the kept block goes to the lane's own handoff once the row's cell
+      # names it (983).
+      printf 'HANDOFF READ FAILED: `%s handoff-path %s --create` exited 2 (its words are above): a name refused, a clone of the lane checkout that failed, or a handoff cell that handoff-path and write-handoff both refuse: a handoff the row names in W or in another checkout of the register beside it (601), a relative cell whose . or .. components climb out of the lane checkout (602), or a path there that holds a glob character (607). Where its words name such a cell, the file it names is not the handoff of this lane: nothing is to be written there, by this skill or by hand, and the new top block goes to the handoff of this lane, in its own checkout, once the handoff cell of its row is corrected to name it. The read failed, and that is not "no handoff" (Amendment 7(d)), so the call under "THE WRITE IS ONE CALL" is NOT made. %s\n' \
         "$L" "$lane" "$hf_keep" ;;
     *)
       printf 'HANDOFF READ FAILED: `%s handoff-path %s --create` exited %s (its words are above). The read failed, and that is not "no handoff" (Amendment 7(d)), so the call under "THE WRITE IS ONE CALL" is NOT made. %s\n' \

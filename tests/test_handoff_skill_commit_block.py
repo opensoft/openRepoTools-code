@@ -650,13 +650,42 @@ OLDER_HELPER = ("lanes-edit.sh: unknown subcommand 'handoff-path' "
 #: 601's refusal, as slice 2a's `handoff-path` says it from A54 (`6d861d4`) on:
 #: the row names a handoff in another checkout of the register beside W, so the
 #: path is not printed, with exit 2 (lane openRepoTools-3's correction 6368669583).
-ANOTHER_REPOSITORY = (
+ANOTHER_CHECKOUT = (
     "lanes-edit.sh: lane repoHS-1's handoff handoffs/estate/repoHS-1.md is "
     "/w-lanes/repoHS-2/handoffs/estate/repoHS-1.md, in another checkout of the register "
     "beside W (/w), not in the checkout /w-lanes/repoHS-1 this lane's writes go through: "
     "a lane's handoff is written in its own checkout only (Amendment 23 S1, S2): "
     "`write-handoff` refuses it, so no path is printed for a restart to bind or a launch "
     "to read (601). Nothing was written.")
+
+#: 602's refusal (A55): a relative cell whose `.` or `..` components climb out
+#: of the lane's checkout, 2 with nothing printed.
+CLIMBS_OUT = (
+    "lanes-edit.sh: lane repoHS-1's handoff cell ../repoHS-2/handoffs/estate/repoHS-1.md is a "
+    "repository-relative spelling, joined to the checkout its writes go through, and its '.' or "
+    "'..' components climb out of it: a relative cell names a file of that checkout, never another "
+    "repository's (Amendment 23 S2), so write-handoff refuses it too. Nothing was printed.")
+
+#: 607's refusal, which `handoff-path` makes since 2a's A60 (991): a glob
+#: character in the handoff's path in the lane's checkout, 2 with no path.
+GLOBBED = (
+    "lanes-edit.sh: lane repoHS-1's handoff handoffs/estate/repo*.md is handoffs/estate/repo*.md "
+    "in the checkout /w-lanes/repoHS-1, with a glob character ('*', '?' or '[') in its path: "
+    "`write-handoff` refuses it (607), so no path is printed for a restart to bind or a launch to "
+    "read (991). Nothing was written. Name the handoff without one.")
+
+#: What the 2 arm says of a cell `handoff-path` and `write-handoff` both refuse,
+#: in the helper's terms (985): another checkout of the register, never 8(d)'s
+#: "another repository"; 601, 602 and 607 named; and where the kept block goes.
+CELL_REFUSED = [
+    "exited 2 (its words are above)",
+    "in W or in another checkout of the register beside it (601)",
+    "climb out of the lane checkout (602)",
+    "holds a glob character (607)",
+    "the file it names is not the handoff of this lane: "
+    "nothing is to be written there, by this skill or by hand",
+    "the new top block goes to the handoff of this lane, in its own checkout, once the handoff "
+    "cell of its row is corrected to name it"]
 
 
 @pytest.mark.parametrize("shell", SHELLS)
@@ -668,21 +697,17 @@ ANOTHER_REPOSITORY = (
     ("2", OLDER_HELPER,
      ["exited 2", "unknown subcommand", "predates handoff-path", "Update lanes-edit.sh",
       "step 2 again"], ["belongs to another repository"]),
-    ("2", ANOTHER_REPOSITORY,
-     ["exited 2 (its words are above)",
-      "the handoff it names belongs to another repository and not to this lane: "
-      "nothing is to be written there, by this skill or by hand",
-      "the new top block goes to the handoff of this lane, in its own checkout, once the handoff "
-      "cell of its row is corrected to name it"],
-     ["Update lanes-edit.sh", "step 2 again"]),
+    ("2", ANOTHER_CHECKOUT, CELL_REFUSED, ["Update lanes-edit.sh", "step 2 again", "another repository"]),
+    ("2", CLIMBS_OUT, CELL_REFUSED, ["Update lanes-edit.sh", "step 2 again", "another repository"]),
+    ("2", GLOBBED, CELL_REFUSED, ["Update lanes-edit.sh", "step 2 again", "another repository"]),
     ("4", "the lock that makes the lane checkout is held",
      ["exited 4", "Run step 2 again"], ["Update lanes-edit.sh"]),
     ("64", "usage: handoff-path <lane> [--create]",
      ["exited 64 (its words are above)"], ["Update lanes-edit.sh", "step 2 again"]),
     ("127", "lanes-edit.sh: not found",
      ["exited 127 (its words are above)"], ["Update lanes-edit.sh", "step 2 again"]),
-], ids=["unreadable", "clone-failed", "older-helper", "another-repository", "lock", "usage",
-        "no-helper"])
+], ids=["unreadable", "clone-failed", "older-helper", "another-checkout", "climbs-out", "globbed",
+        "lock", "usage", "no-helper"])
 def test_a_read_that_failed_is_never_said_as_no_handoff(estate, shell, rc, err, must, never):
     """rv3's MUST 1 on #311 at `b599ed9`: only `handoff-path`'s 8 is "no
     handoff". Any other exit is a read that FAILED (Amendment 7(d); the verb's
@@ -705,6 +730,22 @@ def test_a_read_that_failed_is_never_said_as_no_handoff(estate, shell, rc, err, 
     assert KEEP_IN_REPORT in proc.stdout, "the new top block is kept in the report"
     assert KEPT_CALL in _block_1_line(proc, "HANDOFF READ FAILED"), "983: the kept block's one call"
     assert "write-handoff" not in estate.verbs(), estate.calls()
+
+
+def test_a_cell_the_translation_refuses_is_said_in_the_helpers_terms():
+    """985 of lane openRepoTools-3's review of #311: the 2 arm and the
+    paragraph above it called a file in W or in a sibling clone "another
+    repository", which is Amendment 8(d)'s term; the helper calls it "another
+    checkout of the register". Both now say so, and name 602 (a relative cell
+    that climbs out) and 607 (a glob character, refused by `handoff-path` since
+    991) beside 601."""
+    flat = " ".join(re.sub(r"(?m)^\s*#\s?", "", _text()).split())
+    assert "belongs to another repository" not in flat, "8(d)'s term for a sibling checkout is back"
+    held = [p for p in _prose("## 2. Refresh the handoff") if "In every one of these cases" in p]
+    assert len(held) == 1, held
+    for words in ("in another checkout of the register beside it", "(602)", "glob character (607",
+                  "is not this lane's handoff"):
+        assert words in held[0], f"the paragraph no longer says {words!r}:\n{held[0]}"
 
 
 @pytest.mark.parametrize("shell", SHELLS)
