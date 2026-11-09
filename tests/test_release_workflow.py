@@ -118,6 +118,7 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -3193,10 +3194,38 @@ SERVED = (200, [(INDEX_WHEEL, VERIFIED, False)])
 NOT_YET = (404, [])
 DROPPED = (None, [])
 
+#: A READ THAT FAILS WITH A `URLError` AND NO HTTP STATUS, which a dropped
+#: connection is not (that one is a `ConnectionError`, which urllib does not
+#: wrap): the index redirects the read to a port nobody listens on, urllib
+#: follows it, and its connection is refused.
+REFUSED = (302, [])
+
+#: A READ THAT TIMES OUT: the index takes the request and answers nothing, and
+#: the client's read gives up. urllib raises that as a bare `TimeoutError`, as
+#: it does a dropped connection, not wrapped in a `URLError`, so only the
+#: `TimeoutError` member of the step's `except` catches it. The status is no
+#: HTTP status, only one the other answers do not use.
+TIMED_OUT = (0, [])
+
+#: How long the step's first read waits, in seconds, in a case with a
+#: `TIMED_OUT` answer: the step asks for 30, and the clock (`CLOCK`) cuts it to
+#: this.
+READ_TIMEOUT = 0.5
+
+#: How long the index holds a read it never answers, in seconds: far the
+#: longer, since it holds the read until the client gives up and closes the
+#: connection, and a read the index had to close itself would be a dropped
+#: connection and no timeout.
+HELD_FOR = 10
+
 #: THE CLOCK, the one other thing faked: `time.sleep` writes down what it was
-#: asked and returns at once, so 20 reads 15 seconds apart take no time. It is
-#: a `sitecustomize` on the step's PYTHONPATH, so the step's script runs as
-#: it is written.
+#: asked and returns at once, so 20 reads 15 seconds apart take no time, and
+#: the timeout of the first read, where a case names one, is cut, so that a
+#: read nobody answers gives up at once and not after the step's 30 seconds.
+#: Only the first read's, and only cut: a later read keeps the step's own
+#: timeout, and a read that asked for none is given none. It is a
+#: `sitecustomize` on the step's PYTHONPATH, so the step's script runs as it is
+#: written.
 CLOCK = '''import os, time
 
 
@@ -3206,6 +3235,20 @@ def sleep(seconds, _log=os.environ["FAKE_CLOCK_LOG"]):
 
 
 time.sleep = sleep
+
+if os.environ.get("FAKE_READ_TIMEOUT"):
+    import socket
+
+    _connect, _made = socket.create_connection, []
+
+    def create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
+                          *args, **kwargs):
+        if not _made and isinstance(timeout, (int, float)):
+            timeout = min(timeout, float(os.environ["FAKE_READ_TIMEOUT"]))
+        _made.append(address)
+        return _connect(address, timeout, *args, **kwargs)
+
+    socket.create_connection = create_connection
 '''
 
 
@@ -3214,10 +3257,18 @@ class FakeIndex:
     and every read after the last answer gets the last again. Each answer is
     `(status, files)`, a file `(filename, sha256, yanked)`; the status `None`
     closes the connection with no response at all, a connection error with
-    no HTTP status. Every read's path is written down in `reads`."""
+    no HTTP status, the status 302 (`REFUSED`) redirects the read to a port
+    nobody listens on, and the status 0 (`TIMED_OUT`) takes the read and
+    answers nothing until the client gives up. Every read's path is written
+    down in `reads`."""
 
     def __init__(self, answers: list) -> None:
         self.answers, self.reads = list(answers), []
+        # a port nobody listens on: bound, so that no one else takes it, and
+        # never listening, so that a connection to it is refused
+        self.parked = socket.socket()
+        self.parked.bind(("127.0.0.1", 0))
+        self.nobody_listens = f"http://127.0.0.1:{self.parked.getsockname()[1]}/"
         index = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -3228,6 +3279,18 @@ class FakeIndex:
                 if status is None:
                     self.close_connection = True
                     return
+                if status == TIMED_OUT[0]:
+                    # take the request and say nothing: the client closes the
+                    # connection when its read times out, which ends the
+                    # `recv` with no bytes; one that never does ends it at
+                    # `HELD_FOR`, and this index then closes the connection
+                    self.connection.settimeout(HELD_FOR)
+                    try:
+                        self.connection.recv(1)
+                    except OSError:
+                        pass
+                    self.close_connection = True
+                    return
                 body = json.dumps(
                     {"info": {"name": "openrepotools"},
                      "urls": [{"filename": name, "digests": {"sha256": digest},
@@ -3235,6 +3298,8 @@ class FakeIndex:
                               for name, digest, yanked in files]}
                     if status == 200 else {"message": f"HTTP {status}"}).encode()
                 self.send_response(status)
+                if status == REFUSED[0]:
+                    self.send_header("Location", index.nobody_listens)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -3258,13 +3323,16 @@ class FakeIndex:
         self.server.shutdown()
         self.server.server_close()
         self.thread.join()
+        self.parked.close()
 
 
 def run_index_step(tmp_path: Path, name: str, prefix: str, answers: list
                    ) -> Tuple[subprocess.CompletedProcess, List[str], List[str]]:
     """Job `name`'s step `prefix`, run under the Runner with the job's own
-    `INDEX`, the build's record and `JSON_BASE` the fake index's. Returns the
-    run, the paths read, and the sleeps asked for."""
+    `INDEX`, the build's record and `JSON_BASE` the fake index's. A case with
+    a `TIMED_OUT` answer has the step's first read give up after
+    `READ_TIMEOUT` seconds, where the step asks for 30. Returns the run, the
+    paths read, and the sleeps asked for."""
     workflow = release()
     assert (job(workflow, name).get("env") or {}).get("JSON_BASE") == JSON_BASES[name], (
         f"the {name} job reads {job(workflow, name).get('env')}")
@@ -3276,7 +3344,9 @@ def run_index_step(tmp_path: Path, name: str, prefix: str, answers: list
         values = {"VERSION": INDEX_VERSION, "WHEEL": INDEX_WHEEL,
                   "WHEEL_SHA256": VERIFIED, "JSON_BASE": index.base,
                   "no_proxy": "*", "NO_PROXY": "*", "PYTHONPATH": str(clock),
-                  "PYTHONDONTWRITEBYTECODE": "1", "FAKE_CLOCK_LOG": str(log)}
+                  "PYTHONDONTWRITEBYTECODE": "1", "FAKE_CLOCK_LOG": str(log),
+                  "FAKE_READ_TIMEOUT": (str(READ_TIMEOUT)
+                                        if TIMED_OUT in answers else "")}
         runner = Runner(tmp_path / "work", workflow, name, values)
         done = runner.run(named(workflow, name, prefix))
         reads = list(index.reads)
@@ -3328,15 +3398,18 @@ def test_release_upload_the_empty_index_check_passes_no_file_or_the_verified_whe
 
 #: AFTER THE UPLOAD: `(what the index answers, read by read, whether the step
 #: passes, how many reads it makes)`. It reads until the index serves exactly
-#: the verified wheel, through a 404, an empty listing, a server error or a
-#: connection closed with no response, up to 20 reads, and refuses the wheel
-#: yanked, any other file and a client error at once.
+#: the verified wheel, through a 404, an empty listing, a server error, a
+#: connection closed with no response, a connection refused or a read that
+#: times out, up to 20 reads, and refuses the wheel yanked, any other file and
+#: a client error at once.
 SERVED_CASES = {
     "served-at-the-first-read": ([SERVED], True, 1),
     "not-yet-then-served": ([NOT_YET, SERVED], True, 2),
     "an-empty-listing-then-served": ([(200, []), SERVED], True, 2),
     "a-server-error-then-served": ([(503, []), SERVED], True, 2),
     "a-connection-error-then-served": ([DROPPED, SERVED], True, 2),
+    "a-refused-connection-then-served": ([REFUSED, SERVED], True, 2),
+    "a-timed-out-read-then-served": ([TIMED_OUT, SERVED], True, 2),
     "served-at-the-twentieth-read": ([NOT_YET] * 19 + [SERVED], True, 20),
     "served-only-after-twenty-reads": ([NOT_YET] * 20 + [SERVED], False, 20),
     "another-file-beside-it-every-time": (
@@ -3358,10 +3431,16 @@ def test_release_upload_the_served_check_reads_until_the_verified_wheel_is_serve
         tmp_path, name, which):
     """THE SERVED-DIGEST CHECK, RUN against a fake index, in each upload job:
     it keeps reading, 15 seconds apart, up to 20 reads, through a read that
-    fails with no HTTP status, until the index serves exactly the verified
-    wheel, and passes then; it refuses an index that never does, the wheel
-    yanked, and a client error."""
+    fails with no HTTP status (a connection closed with no response, one
+    refused, which urllib raises as a `URLError` that has no status, or one
+    that times out, which it raises as a bare `TimeoutError`), until the
+    index serves exactly the verified wheel, and passes then; it refuses an
+    index that never does, the wheel yanked, and a client error."""
     answers, passes, count = SERVED_CASES[which]
+    if TIMED_OUT in answers and sys.version_info < (3, 10):
+        pytest.skip("a read that times out raises `socket.timeout` before "
+                    "Python 3.10, which is not the `TimeoutError` the step "
+                    "catches; the upload jobs run on the runner's 3.12")
     done, reads, sleeps = run_index_step(tmp_path, name, SERVED_STEP, answers)
     assert (done.returncode == 0) == passes, transcript(done)
     assert reads == [f"/pypi/openrepotools/{INDEX_VERSION}/json"] * count, (
@@ -3369,6 +3448,14 @@ def test_release_upload_the_served_check_reads_until_the_verified_wheel_is_serve
     assert set(sleeps) <= {"15"}, sleeps
     if passes:
         assert len(sleeps) == count - 1, sleeps
+    if REFUSED in answers:
+        assert "<urlopen error" in done.stdout, (
+            "a refused read is a `URLError`, which the step prints as "
+            f"`<urlopen error ...>`:\n{transcript(done)}")
+    if TIMED_OUT in answers:
+        assert "did not answer yet (timed out)" in done.stdout, (
+            "a read that times out is a bare `TimeoutError`, which the step "
+            f"prints as `(timed out)`:\n{transcript(done)}")
 
 
 # --- the install check ---------------------------------------------------------------
