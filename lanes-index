@@ -677,15 +677,60 @@ def cell_state(row: str) -> str:
     return rest
 
 
-REGISTER_KIND_RE = re.compile(r"^(HOLD RELEASED|HOLD|LANDING|LANDED)[ \t]+(—|-)[ \t]")
+#: THE ONE CLASSIFIER'S KINDS (feature 007, FR-030; design S6 and D18). A
+#: register line's kind is its own opening words, then blanks, an em dash or a
+#: hyphen, and a blank. Rule 6's `LANDING` and `LANDED` and Amendment 10's
+#: `HOLD` and `HOLD RELEASED` are today's four; Q17(B) adds `HOLD (refresh)`,
+#: `HOLD (run id)`, `HOLD WITHDRAWN`, `HOLD EXPIRED`, `QUEUED-HOLD` and
+#: `LANDING WITHDRAWN`, and F13 adds `LANDING EXPIRED`. The dash after the kind
+#: keeps `HOLD (refresh) — ` from reading as `HOLD` and `LANDING EXPIRED — `
+#: from reading as `LANDING`, and leaves `LANDING EXPIREDX — `,
+#: `HOLD REQUESTED — ` and `QUEUED-HOLD (refresh) — ` lines of no kind.
+REGISTER_KIND_RE = re.compile(
+    r"^(HOLD RELEASED|HOLD WITHDRAWN|HOLD EXPIRED|HOLD \(refresh\)|HOLD \(run id\)|HOLD"
+    r"|QUEUED-HOLD|LANDING EXPIRED|LANDING WITHDRAWN|LANDING|LANDED)[ \t]+(—|-)[ \t]")
+
+#: Q17(B), kind by kind: the `slot_role` and `slot_kind` that migration 1's
+#: `register_lines` holds for a line of each kind (design S6's table, and its
+#: note on `register_lines.slot_kind`). A take holds its repository's `main`.
+#: A close ends an open take of its own slot kind: `HOLD RELEASED`,
+#: `HOLD WITHDRAWN` and `HOLD EXPIRED` the writer's `HOLD`, `LANDED` the
+#: writer's `LANDING`, and `LANDING EXPIRED` the `LANDING` of the lane its
+#: `for_lane` names. `HOLD (refresh)` and `HOLD (run id)` continue an open
+#: `HOLD` and take nothing new; they, `QUEUED-HOLD` and `LANDING WITHDRAWN`
+#: take and close nothing. `register_lines`' CHECKs still bind each row: a
+#: slot needs a `repo_key`, and a landing slot a PR.
+REGISTER_SLOTS: dict[str, tuple[str | None, str | None]] = {
+    "HOLD": ("take", "hold"),
+    "HOLD (refresh)": (None, None),
+    "HOLD (run id)": (None, None),
+    "HOLD RELEASED": ("close", "hold"),
+    "HOLD WITHDRAWN": ("close", "hold"),
+    "HOLD EXPIRED": ("close", "hold"),
+    "QUEUED-HOLD": (None, None),
+    "LANDING": ("take", "landing"),
+    "LANDED": ("close", "landing"),
+    "LANDING EXPIRED": ("close", "landing"),
+    "LANDING WITHDRAWN": (None, None),
+}
 
 
 def parse_register_line(line: str) -> dict | None:
-    """Rule 6's `LANDING`/`LANDED` and Amendment 10's `HOLD`/`HOLD RELEASED`.
+    """The one classifier (FR-030): a register line's kind and fields, or None
+    for a line of no kind.
 
-    The kind is the line's own first word(s); every other field is read the way
-    `RULE6_AWK` reads it, best effort, because a `HOLD` is free text by
-    Amendment 10(e) and the raw line is kept beside whatever was found."""
+    The kind is the line's own first word(s), by `REGISTER_KIND_RE`; every
+    other field is read the way `RULE6_AWK` reads it, best effort, because a
+    `HOLD` is free text by Amendment 10(e) and the raw line is kept beside
+    whatever was found. Each field is its first match, so a
+    `LANDING EXPIRED`'s `lane` is its writer, whose `lane <name>` comes first.
+
+    A `LANDING EXPIRED` alone has one field more (F13), `for_lane`: the holder
+    whose `LANDING` it closes, from its first `for lane <name>`, cut as a
+    `lane <name>` is cut. Its row needs the holder, the PR and the repository
+    (`register_lines`' CHECKs), so a line in its shape that lacks any of the
+    three is a line of no kind, None: it takes and releases nothing. Every
+    other kind keeps the seven fields it had."""
     m = REGISTER_KIND_RE.match(line)
     if not m:
         return None
@@ -710,6 +755,11 @@ def parse_register_line(line: str) -> dict | None:
     tm = re.search(r"→ ([0-9a-f]{7,40})\b", line) or re.search(r" main ([0-9a-f]{7,40})\b", line)
     if tm:
         fields["tip"] = tm.group(1)
+    if fields["kind"] == "LANDING EXPIRED":
+        hm = re.search(r"for lane ([A-Za-z0-9._-]+)", line)
+        if not hm or fields["pr"] is None or fields["repo"] is None:
+            return None
+        fields["for_lane"] = hm.group(1)
     return fields
 
 
