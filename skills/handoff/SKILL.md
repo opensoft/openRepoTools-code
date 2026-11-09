@@ -61,20 +61,23 @@ L="$(command -v lanes-edit.sh || printf '%s' ~/projects/xFactory/lanes-edit.sh)"
 # EVERY READ IN STEP 1 GOES THROUGH THIS ONE FENCE, and Amendment 7(d) is the
 # whole of it: `0` an answer · `8` NO ANSWER · `2` a helper predating the read —
 # both of those fall to the next rung, save the one `2` that is a REFUSAL (the
-# last paragraph below) — and ANYTHING ELSE is a read that FAILED, which is
+# paragraph on `2` below) — and ANYTHING ELSE is a read that FAILED, which is
 # neither of them (#26, the review of `c3ebcfe`, this file's `:28` and `:72`).
+# The one code asked a second time before it is any of these is `69` (the
+# paragraph on `69` below).
 # All three of step 1's reads collapsed every code into the ordinary case, and
 # what is beneath them is not a refusal: it is THE NEXT RUNG, and the last rung
 # is the workstation's NEWEST SWAP — a different lane. A register that could
 # not be read is not "this window is not a lane", and step 4 would then write a
 # PAUSED record, a stamp and a restart command for a lane this window is not.
 #
-# IT IS `/restart`'s `lread` WITH TWO DIFFERENCES, STATED RATHER THAN LEFT TO
+# IT IS `/restart`'s `lread` WITH THREE DIFFERENCES, STATED RATHER THAN LEFT TO
 # BE FOUND. Step 4's `dir` read does NOT come through here, because this fence
 # STOPS and that read may not — `R-A11-11`, *a swap is never left unwritten*.
-# It drops the sub-field and names the read instead, where it stands. And an
-# exit 2 carrying Amendment 15(d)'s words is a REFUSAL here (the last paragraph
-# below), where `lread` still reads every 2 as no answer.
+# It drops the sub-field and names the read instead, where it stands. An exit 2
+# carrying Amendment 15(d)'s words is a REFUSAL here (the paragraph on `2`
+# below), where `lread` still reads every 2 as no answer. And a 69 is asked
+# again from the mirror (the paragraph on `69` below), where `lread` does not.
 #
 # IT SETS A VARIABLE RATHER THAN PRINTING ITS ANSWER, and that is load-bearing:
 # a refusal inside `$( )` kills only the substitution's subshell and the skill
@@ -94,12 +97,58 @@ L="$(command -v lanes-edit.sh || printf '%s' ~/projects/xFactory/lanes-edit.sh)"
 # genuinely old helper left as it was. The words come from asking the same read
 # a second time with only its stderr kept, as `lane-handoff` does: the first
 # answer's stderr is discarded, and asking a read twice changes nothing.
+#
+# AND `69` IS A THIRD ANSWER, which `*)` below used to refuse (design.md, "The
+# callers' default arms", the `sread` row; feature 007, T406): the register's
+# database could not be reached. A handoff must still be written with it down
+# (`R-A11-11`), and the reads that NAME THE LANE before the handoff file is
+# published read the mirror (YS:692), so those run with `LANES_READ_MIRROR=1`
+# — `window-lane` and `swapped` in step 1, where their calls carry it. A 69 is
+# then re-read ONCE with that variable set, whichever verb it came from. The
+# re-read is held to the same rule as any read: `0` an answer, `8` no answer,
+# and ANYTHING ELSE — a second 69, which is what a verb answers that the design
+# has `lanes-edit.sh` not read from the mirror — is a read that FAILED and
+# refuses here with the words `*)` uses, naming both codes. A 2 carrying
+# Amendment 15(d)'s words is that refusal and its exit 2, as above.
+#
+# AND THE MIRROR SAYS SO. A read that answers from the mirror prints
+# `read: mirror at <sha12>, …` on stderr, and this fence hides stderr, so it
+# keeps the file the call's stderr went to and forwards the lines that begin
+# `read: mirror at ` and nothing else (the shape `/restart`'s `lread` takes for
+# its own stream), from the first call, or from the re-read where there was
+# one. Where no file can be made the stream is hidden as before.
 sread() {                      # sread <var> "<what the failure is NOT>" <verb> [args…]
   sr_var="$1"; sr_not="$2"; shift 2
   sr_out=""; sr_rc=0
-  sr_out="$(LANES_NO_FETCH=1 "$L" "$@" 2>/dev/null)" || sr_rc=$?
+  sr_err="$(mktemp "${TMPDIR:-/tmp}/handoff-sread.XXXXXX" 2>/dev/null || printf '')"
+  sr_out="$(LANES_NO_FETCH=1 "$L" "$@" 2>"${sr_err:-/dev/null}")" || sr_rc=$?
+  if [ -n "$sr_err" ]; then
+    [ "$sr_rc" -eq 69 ] || grep -e '^read: mirror at ' -- "$sr_err" >&2 || :
+    rm -f -- "$sr_err"
+  fi
   case "$sr_rc" in
     0)   : ;;
+    69)  sr_rc=0; sr_why=""
+         sr_err="$(mktemp "${TMPDIR:-/tmp}/handoff-sread.XXXXXX" 2>/dev/null || printf '')"
+         sr_out="$(LANES_READ_MIRROR=1 LANES_NO_FETCH=1 "$L" "$@" 2>"${sr_err:-/dev/null}")" || sr_rc=$?
+         if [ -n "$sr_err" ]; then
+           grep -e '^read: mirror at ' -- "$sr_err" >&2 || :
+           sr_why="$(cat -- "$sr_err" 2>/dev/null || :)"
+           rm -f -- "$sr_err"
+         fi
+         case "$sr_rc" in
+           0) : ;;
+           8) sr_out="" ;;
+           *) case "$sr_rc:$sr_why" in
+                2:*"Amendment 15(d)"*)
+                  printf 'REFUSED: `%s %s` says the register holds two rows for this lane that differ only by case, so no read of it is unambiguous and this skill will not pick one (Amendment 15(d)). It will not bind a lane, rename the window, write a PAUSED record or print a restart command; merge the two rows by hand first. The helper said:\n%s\n' \
+                    "$L" "$1" "$sr_why" >&2
+                  exit 2 ;;
+              esac
+              printf 'REFUSED: `%s %s` failed (exit 69, then exit %s from the mirror). That is NOT %s — a read that failed is never an answer (Amendment 7(d)), and this skill will not bind a lane, write a PAUSED record or print a restart command on one. Run it by hand to see what it says.\n' \
+                "$L" "$1" "$sr_rc" "$sr_not" >&2
+              exit 1 ;;
+         esac ;;
     2)   sr_why="$(LANES_NO_FETCH=1 "$L" "$@" 2>&1 >/dev/null || :)"
          case "$sr_why" in
            *"Amendment 15(d)"*)
@@ -206,9 +255,15 @@ if [[ -z "$lane" ]]; then
   # for: a window whose name is gone but whose record names it.
   # 0 is a lane, 8 is none, and 2 is a `lanes-edit.sh` predating Amendment 11 —
   # expected and silent, and a fall to the next rung rather than a refusal.
+  #
+  # THIS NAMING READ, AND `swapped` BELOW, CARRY `LANES_READ_MIRROR=1` (the
+  # paragraph on `69` above `sread`): they name the lane before the handoff file
+  # is published, so with the database down they read the mirror and the handoff
+  # is still written (`R-A11-11`). The variable is set for the one call and
+  # nothing after it sees it.
   wl_ref="$(tmux display-message -p '#{window_id}' 2>/dev/null)"
   [[ -n "$wl_ref" ]] || wl_ref="$(tmux display-message -p '#S:#I' 2>/dev/null)"
-  sread candidate "'no lane is bound to this window'" window-lane "$ws" "$wl_ref"
+  LANES_READ_MIRROR=1 sread candidate "'no lane is bound to this window'" window-lane "$ws" "$wl_ref"
   [[ "$candidate" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]] && lane="$candidate"
 fi
 if [[ -z "$lane" ]]; then
@@ -216,7 +271,7 @@ if [[ -z "$lane" ]]; then
   # whether there is an answer at all, and the contract is the tab. A row that
   # printed before a failed read, or one with no tab, is not a record row —
   # `cut -f 1` would hand back the whole line, lane-shaped and wrong.
-  sread rows "'this workstation has no swap record'" swapped "$ws"
+  LANES_READ_MIRROR=1 sread rows "'this workstation has no swap record'" swapped "$ws"
   first="$(printf '%s\n' "$rows" | head -n 1)"
   if [[ -n "$rows" && "$first" == *$'\t'* ]]; then
     candidate="${first%%$'\t'*}"
