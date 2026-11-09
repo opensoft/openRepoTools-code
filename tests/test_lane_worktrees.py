@@ -75,6 +75,14 @@ with open(os.environ["FAKE_HELPER_LOG"], "a") as fh:
     fh.write(json.dumps({"argv": args, "lane": os.environ.get("LANES_LANE", ""),
                          "no_fetch": os.environ.get("LANES_NO_FETCH", ""),
                          "session": os.environ.get("LANES_SESSION", "")}) + "\n")
+if args[:1] == ["register-grep"] and "register-grep" not in spec:
+    # T404: THE REAL VERB, on the estate's own register, in the workspace this
+    # fake's `workspace-root` names: its exits (0, 1 no match, 2 a path outside
+    # its set, `lanes/log/README.md` included, 69 a read that failed) and its
+    # `lanes/log` pathspec are T401's own, never a second copy of them.
+    root = spec.get("workspace-root", {}).get("out", "").strip()
+    os.execvpe("bash", ["bash", os.environ["FAKE_REAL_HELPER"], *args],
+               dict(os.environ, LANES_WORKSPACE_ROOT=root))
 ans = spec.get(args[0] if args else "", {"rc": 2, "err": "unknown subcommand\n"})
 sys.stdout.write(ans.get("out", ""))
 sys.stderr.write(ans.get("err", ""))
@@ -156,6 +164,7 @@ class Estate:
             XDG_STATE_HOME=str(self.state), XDG_CONFIG_HOME=str(self.config),
             PROJECTS_ROOT=str(self.projects), LANES_EDIT=str(self.fakebin / "lanes-edit.sh"),
             FAKE_HELPER_SPEC=str(self.spec_file), FAKE_HELPER_LOG=str(self.helper_log),
+            FAKE_REAL_HELPER=str(LANES_EDIT),
             FAKE_GH_PRS=str(self.prs_file), CLAUDE_CODE_SESSION_ID=ME,
             LANE_WORKTREES_SANDBOX_ROOTS=str(self.sandboxes), LANES_WORKSTATION="Eagle",
             GIT_CONFIG_NOSYSTEM="1",

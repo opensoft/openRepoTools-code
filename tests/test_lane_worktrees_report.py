@@ -343,8 +343,8 @@ def test_a_register_grep_that_failed_is_a_finding_never_no_events(tmp_path):
     proc = report(e, env={"LANES_BRANCH": "no-such-branch"})
     assert proc.returncode == 0, proc.stderr
     unread = section(proc.stdout, "Records the report could not read")
-    assert "the register's ENDED and RETIRED lines (origin/no-such-branch) \u00b7 git grep " \
-        "exited 128" in unread, unread
+    assert "the register's ENDED and RETIRED lines (origin/no-such-branch) \u00b7 " \
+        "`lanes-edit.sh register-grep` exited 69" in unread, unread
 
 
 def _latin1_clone(e) -> Path:
