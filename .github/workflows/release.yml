@@ -4,8 +4,10 @@ name: release
 # PUBLISH THE openrepotools WHEEL (#228): TestPyPI, AN INSTALL CHECK ON THREE
 # LEGS, THEN PyPI, IN ONE DISPATCHED RUN. Adapted step for step from
 # openRepoShape v1.1.0's own release.yml (`190133d`, the commit
-# `upstream/openRepoShape` is pinned at), whose checks are taken over as they
-# are (FR-028) except where design.md Decision 10 names a difference:
+# `upstream/openRepoShape` was pinned at when this was adapted; the pin moved
+# to `5017830`, v1.1.1, whose release.yml differs from `190133d`'s in comment
+# lines only), whose checks are taken over as they are (FR-028) except where
+# design.md Decision 10 names a difference:
 #   - a pre-release `X.Y.ZrcN` is accepted, for TestPyPI alone; PyPI takes a
 #     final `X.Y.Z` and nothing else;
 #   - the repository guard (FR-048, WHERE RELEASES COME FROM below) is new
