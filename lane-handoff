@@ -1480,13 +1480,13 @@ sread() {   # sread <var> "<what the failure is NOT>" <verb> [args…]
 	sr_err="$(mktemp "${TMPDIR:-/tmp}/lane-handoff-sread.XXXXXX" 2>/dev/null || printf '')"
 	sr_out="$(LANES_NO_FETCH=1 "$LANES_EDIT" "$@" 2>"${sr_err:-/dev/null}")" || sr_rc=$?
 	if [ -n "$sr_err" ]; then
-		[ "$sr_rc" -eq 69 ] || grep -e '^read: mirror at ' -- "$sr_err" >&2 || :
+		if [ "$sr_rc" -ne 69 ] && grep -e '^read: mirror at ' -- "$sr_err" >&2; then mirror_read=1; fi
 		rm -f -- "$sr_err"
 	fi
 	case "$sr_rc" in
 	0) : ;;
 	69)
-		sr_rc=0; sr_why=""
+		sr_rc=0; sr_why=""; mirror_read=1
 		sr_err="$(mktemp "${TMPDIR:-/tmp}/lane-handoff-sread.XXXXXX" 2>/dev/null || printf '')"
 		sr_out="$(LANES_READ_MIRROR=1 LANES_NO_FETCH=1 "$LANES_EDIT" "$@" 2>"${sr_err:-/dev/null}")" || sr_rc=$?
 		if [ -n "$sr_err" ]; then
@@ -1519,6 +1519,22 @@ $sr_why" 2 ;;
 	eval "$sr_var=\$sr_out"
 }
 
+# WHETHER THIS RUN READ THE MIRROR, and the label of a read whose stderr is
+# hidden. `mirror_read` is set where `sread` forwards a `read: mirror at ` line
+# or re-reads a 69 from the mirror, and where the helper below forwards one. It
+# is what `kept_block_say` asks before it puts `LANES_READ_MIRROR=1` in the call
+# it prints: nowhere else does that word appear, so files mode prints what it
+# always printed. The helper is `sread`'s own filter for the two lifecycle calls
+# that hide their stderr (`lane-state` and `set-lane-state … SWAPPING`): they
+# send it to a file, and this prints the lines that begin `read: mirror at `
+# and nothing else, then removes the file. No file, nothing to print.
+mirror_read=""
+mirror_label_forward() {   # <the file a call's stderr went to; empty where none could be made>
+	[ -n "${1:-}" ] || return 0
+	if grep -e '^read: mirror at ' -- "$1" >&2; then mirror_read=1; fi
+	rm -f -- "$1"
+}
+
 # ---------------- the crash-consistent lifecycle (opensoft/openRepoTools#91)
 #
 # A LANE IS `RUNNING`, `SWAPPING`, `SWAPPED` OR `CLOSED`, and this command owns
@@ -1540,7 +1556,7 @@ lc_on=""; lc_gen=""; lc_op=""; lc_state=""; lc_inventory_missed=""
 
 lifecycle_begin() {
 	lc_on=""; lc_gen=""; lc_op=""; lc_state=""
-	lcb_now=""; lcb_raw=""; lcb_rc=0
+	lcb_now=""; lcb_raw=""; lcb_rc=0; lcb_err=""
 	# READ WHOLE, THEN PARSE (opensoft/openRepoTools#280). This read was
 	# `lane-state | awk '… { print $2; exit }'` under `pipefail`, and that `awk`
 	# exits at the line it wants: a `lane-state` that wrote once more after it
@@ -1551,7 +1567,9 @@ lifecycle_begin() {
 	# 39322387035). The reader had stopped listening; the read had not failed.
 	# So the status below is `lane-state`'s own, from a command nothing can end
 	# early, and the state is parsed out of what it printed afterwards.
-	lcb_raw="$(LANES_READ_MIRROR=1 LANES_NO_FETCH=1 "$LANES_EDIT" lane-state "$lane" 2>/dev/null)" || lcb_rc=$?
+	lcb_err="$(mktemp "${TMPDIR:-/tmp}/lane-handoff-lstate.XXXXXX" 2>/dev/null || printf '')"
+	lcb_raw="$(LANES_READ_MIRROR=1 LANES_NO_FETCH=1 "$LANES_EDIT" lane-state "$lane" 2>"${lcb_err:-/dev/null}")" || lcb_rc=$?
+	mirror_label_forward "$lcb_err"
 	case "$lcb_rc" in
 	0 | 8) : ;;
 	*)
@@ -1573,9 +1591,11 @@ lifecycle_begin() {
 		note "lane $lane is still recorded SWAPPING from operation ${lcb_old:-unknown}, which never finished: this handoff SUPERSEDES it with a new generation, and that is what refuses the old finalizer if it ever returns. Nothing of that operation is undone here."
 	fi
 	lcb_out=""; lcb_src=0
+	lcb_err="$(mktemp "${TMPDIR:-/tmp}/lane-handoff-lstate.XXXXXX" 2>/dev/null || printf '')"
 	lcb_out="$(LANES_READ_MIRROR=1 LANES_NO_FETCH=1 "$LANES_EDIT" set-lane-state "$lane" SWAPPING \
 		--expect "$lcb_now" --owner "${uuid:-none}" --agent "$agent" \
-		--profile "${profile_name:-none}" --kind "$handoff_kind" 2>/dev/null)" || lcb_src=$?
+		--profile "${profile_name:-none}" --kind "$handoff_kind" 2>"${lcb_err:-/dev/null}")" || lcb_src=$?
+	mirror_label_forward "$lcb_err"
 	case "$lcb_src" in
 	0)
 		lc_gen="$(printf '%s\n' "$lcb_out" | awk -F"\t" '$1 == "generation" { print $2; exit }')"
@@ -2684,7 +2704,10 @@ subject_text() {   # <text>
 # answered: the verb reads the file under the checkout's lock and proves the
 # old bytes survive, which a hand edit of the handoff does not. Each word is
 # single-quoted, a quote in it spelled '\'', so the line runs as printed under
-# bash and zsh alike.
+# bash and zsh alike. WHERE THIS RUN READ THE MIRROR (`mirror_read`, set above
+# `lifecycle_begin`: the register's database was unreachable) the call names
+# `LANES_READ_MIRROR=1` too, since run by hand it would otherwise meet the same
+# 69; everywhere else it prints exactly as it always has.
 hf_quote() {   # <word>
 	printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
@@ -2694,7 +2717,9 @@ kept_block_say() {   # <the file the block is kept in; empty where none could be
 	else
 		note "the block is printed below, and no file could be made to keep it in: put it, whole and ending with a newline, in a file of your own. Once the cause is answered it goes into the handoff by this one call, never by a hand edit of the handoff:"
 	fi
-	note "  LANES_LANE=$(hf_quote "$lane") $(hf_quote "$LANES_EDIT") write-handoff $(hf_quote "$lane") --prepend $(hf_quote "${1:-<block file>}") --subject $(hf_quote "$2")"
+	kb_mirror=""
+	[ -z "${mirror_read:-}" ] || kb_mirror="LANES_READ_MIRROR=1 "
+	note "  LANES_LANE=$(hf_quote "$lane") ${kb_mirror}$(hf_quote "$LANES_EDIT") write-handoff $(hf_quote "$lane") --prepend $(hf_quote "${1:-<block file>}") --subject $(hf_quote "$2")"
 }
 
 # ONE `lanes-edit.sh write-handoff --prepend` (Amendment 23, slice 2b). Under
