@@ -101,6 +101,8 @@
 #      recorded yet, no launcher on PATH, an answer that is not one of the
 #      choices, a recorded window that no longer resolves
 #   1  a read failed, which is never "there are no lanes" (Amendment 7(d))
+#   69, 75 or 3: the register's own code, passed on, where a read of the register
+#      failed with one of them; every other failed read is still 1
 #   64 usage — an unknown option, or a flag with no value
 #
 #   $LANES_EDIT      the register's reader (default: lanes-edit.sh beside this)
@@ -130,6 +132,13 @@ die()  { printf '\n%s: REFUSED: %s\n' "$prog" "$1" >&2; exit "${2:-2}"; }
 # read back unquoted — so `cd /p/my projects` is a line that cd's into `/p/my`.
 quoted() { printf '%q ' "$@" | sed 's/ $//'; }
 lc() { printf '%s' "${1-}" | tr 'A-Z' 'a-z'; }
+# THE REGISTER'S OWN CODES ARE PASSED ON, AND NO OTHER (feature 007, the design's
+# "callers' default arms", as lane 3's ruling (a) of 2026-11-09 narrows them):
+# where a read of the register failed with 69 (its store could not be read), 75
+# or 3, the refusal exits with that code, so that a caller can tell it from any
+# other failure. EVERY OTHER CODE KEEPS THE EXIT OF TODAY, 1. Files mode emits
+# none of the three, so what it prints and exits with does not change there.
+register_code() { case "${1-}" in 69 | 75 | 3) printf '%s' "$1" ;; *) printf '1' ;; esac; }
 
 usage() {
 	cat <<'USAGE'
@@ -173,7 +182,7 @@ stdin is not a terminal. `f` at the question opens a NEW lane at the next free
 position; `q` picks none.
 
 Exit: 0 reached, listed or declined · 8 nothing to pick · 2 refused ·
-1 a read failed · 64 usage.
+1 a read failed · 69, 75 or 3: the register's own code, passed on · 64 usage.
 
   $LANES_EDIT   the register's reader   (default: lanes-edit.sh beside this file)
   $PCLAUDE      the launcher            (default: lclaude, else pclaude, else claude-profile)
@@ -365,9 +374,10 @@ ws_notice() {
 # fail-closed family): `0` rows · `8` none · `2` A HELPER PREDATING THE READ ·
 # `64` a usage error of the read's own, or a helper too old to take `--decide` ·
 # anything else A READ THAT FAILED, which is never "there are no lanes" and
-# never a pick this word prints empty — and whose code this word EXITS WITH
-# rather than flattening it to 1 (feature 007, the design's "callers' default
-# arms": a 69, a store that could not be read, reaches the caller as a 69).
+# never a pick this word prints empty — and which exits 1, except for the
+# register's own 69, 75 and 3, which leave as they are (feature 007, the design's
+# "callers' default arms", as lane 3's ruling (a) narrows them): a 69, a store
+# that could not be read, reaches the caller as a 69.
 #
 # AND `--decide`, BECAUSE THIS WORD ACTS ON THE LISTING (feature 007, R38): it
 # launches, attaches and binds on the rows below, so where the register's store
@@ -428,7 +438,7 @@ read_rows() {   # <args for `lanes-edit.sh lanes`>
     install yet. Take it:  openRepoTools --install" 2 ;;
 	*) die "$LANES_EDIT lanes failed (exit $rr_rc). That is NOT 'there are no lanes', and
     this command will not offer a pick — or a lane — on an answer it did not get
-    (Amendment 7(d)). Run it by hand to see what it says, then re-run." "$rr_rc" ;;
+    (Amendment 7(d)). Run it by hand to see what it says, then re-run." "$(register_code "$rr_rc")" ;;
 	esac
 }
 
@@ -456,7 +466,7 @@ group_rows() {   # rows in $ROWS_OUT → `<group><TAB><row>`
     Until then the same rows are a read:  lanes" 2 ;;
 	*) die "$LANES_EDIT lane-groups failed (exit $gr_rc). That is NOT 'no lane is
     available' (Amendment 7(d)), and this command will not print a pick with a
-    group missing from it. Run it by hand to see what it says, then re-run." "$gr_rc" ;;
+    group missing from it. Run it by hand to see what it says, then re-run." "$(register_code "$gr_rc")" ;;
 	esac
 }
 
@@ -1103,7 +1113,7 @@ go_elsewhere() {
     $ge_rc. That is NOT 'it is bound nowhere' (Amendment 7(d)), and this command
     will not ask a place it cannot name for a handoff — nor bind a lane on an
     answer it did not get. Run it by hand to see what it says:
-      $LANES_EDIT binding $R_LANE" "$ge_rc" ;;
+      $LANES_EDIT binding $R_LANE" "$(register_code "$ge_rc")" ;;
 	esac
 	IFS="$TAB" read -r ge_host ge_cont ge_win ge_utc ge_sess ge_os ge_where ge_wstate <<EOF
 $ge_out
@@ -1227,7 +1237,7 @@ go_new() {   # <repo>
 		die "the next free position of $gn_repo could not be read: \`lanes-edit.sh next-free\`
     exited $gn_rc. This command will not open a lane at a position it did not
     get (Amendment 7(d)) — a number printed by a read that then failed is not an
-    answer. Read it:  lanes --prefix $gn_repo" 1
+    answer. Read it:  lanes --prefix $gn_repo" "$(register_code "$gn_rc")"
 	fi
 	case "${gn_next:-}" in
 	'' | *[!0-9]*) die "the next free position of $gn_repo could not be read, and this command will not
@@ -1362,7 +1372,7 @@ if [ -n "$name" ]; then
     this command will not bind a lane under a spelling nothing has established
     (Amendment 7(d)). Nothing was launched and nothing was attached.
       run it by hand to see what it says:  $LANES_EDIT canon-lane $name
-      what the register says now:          lanes --all" "$cl_rc"
+      what the register says now:          lanes --all" "$(register_code "$cl_rc")"
 	fi
 	if [ "$cl_rc" = 0 ] && [ -n "$cl_out" ] && [ "$cl_out" != "$name" ]; then
 		note "lane $name → $cl_out (Amendment 15: the register row's spelling is canonical)"
@@ -1534,6 +1544,14 @@ if [ -n "$here_repo" ] && [ -z "$next_free" ]; then
 	esac
 fi
 ws_notice
+# AND THE REGISTER'S OWN CODE LEAVES WITH THE NOTE (feature 007, lane 3's ruling
+# (a)): `next-free` is a reader that answers 69 where the store cannot be read
+# (the design's "Each reader with the database unreachable"), and 75 or 3 where
+# the register answers with those. The rows and the note above are already
+# printed; what is not done is the question, or a suggested act, on a position
+# this command did not get. Every other code lists, notes and carries on as it
+# did, and exits as it did.
+case "$next_free_rc" in 69 | 75 | 3) exit "$next_free_rc" ;; esac
 
 # ONE QUESTION, AND ONLY WHERE THERE IS A TERMINAL TO ASK IT ON (clause (i-3)).
 # `[ -t 0 ]` is the whole test: an agent's stdin is not a terminal, and an agent
