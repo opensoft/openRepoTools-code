@@ -1245,15 +1245,23 @@ LANES_ROUTED="${LANES__CHECKOUT_LANE:-}"   # the lane, in the re-run process onl
 # dispatcher (`reg_mode_ask`), or here, from the answer a writer carried
 # across the routing's `exec` (`lane_checkout_enter`) as `LANES__MODE`. The
 # carry is taken ONLY where `LANES__PID` is `$$`, the check the routing's own
-# markers pass above, so it is this process's answer from before its `exec`.
-# Any other value was inherited from a process that ran this file, and is
-# dropped, so a child of a routed write asks for itself. Its values: `index`
-# and `primary`, the words `lanes-index mode` prints; and `files`, where no
-# configuration exists or the question failed (`reg_mode_ask`). Empty: not
-# asked. `REG_ASK` is set by the write guard's arm at the dispatcher.
+# markers pass above, or where `LANES__REPLAY_PID` is `$$`, read here before
+# the replay's markers below are unset: S3's and S4's replay (`cs_recheck`,
+# `cp_replay`) is an `exec` too, which keeps the pid, and an unrouted write
+# has no `LANES__PID` (lane 3's ruling on T409's item 9, #165 6747281902).
+# Either way it is this process's answer from before its `exec`, and it is
+# never asked twice. Any other value was inherited from a process that ran
+# this file, and is dropped, so a child of a routed write asks for itself.
+# Its values: `index` and `primary`, the words `lanes-index mode` prints;
+# `files`, where no configuration exists or the question failed; `refused`,
+# for `lanes-index`'s 78, set just before this file exits 69 on it, so never
+# carried (`reg_mode_ask`; lane 5's answer 11, #165 6746507353). Empty: not
+# asked. Consumers test `= primary` only. Never exported: `LANES__MODE` is the
+# carry. `REG_ASK` is set by the write guard's arm at the dispatcher.
 REG_MODE=""
 REG_ASK=0
-if [ -n "${LANES__MODE:-}" ] && [ "${LANES__PID:-}" = "$$" ]; then
+if [ -n "${LANES__MODE:-}" ] &&
+   { [ "${LANES__PID:-}" = "$$" ] || [ "${LANES__REPLAY_PID:-}" = "$$" ]; }; then
   case "$LANES__MODE" in index|primary|files) REG_MODE="$LANES__MODE" ;; esac
 fi
 [ -n "$REG_MODE" ] || unset LANES__MODE
@@ -3903,10 +3911,10 @@ index_nudge() {
 # the rule `index_open` has always used. A test's stand-in goes where it looks
 # first, beside a COPY of this file that also has the `repos.tsv` and
 # `lane-start` this file reads from `$SCRIPT_DIR`, so nothing installed runs.
-# Prints the path, or nothing where there is none. `index_open` and the
-# writers' mode question resolve through it. `index_nudge` above still reads
-# PATH alone, for the reason its comment gives: moving it here is an open
-# question of T409's, since the suite holds that rule.
+# Prints the path, or nothing where there is none. It resolves every
+# `lanes-index` call on the mode and SQL paths: `index_open` and the writers'
+# mode question here. `index_nudge` above keeps PATH alone, for the reason its
+# comment gives (lane 3's ruling on T409's item 8, #165 6747281902).
 lanes_index_bin() {
   if [ -x "$SCRIPT_DIR/lanes-index" ]; then
     printf '%s\n' "$SCRIPT_DIR/lanes-index"
@@ -4006,10 +4014,14 @@ index_open() {   # [worktrees]
 #   index | primary  `lanes-index mode`'s own answer, word for word;
 #   files            no configuration, so nothing is started (D3); or a failure
 #                    of the question, said in ONE warning line, after which the
-#                    verb runs as it does with no configuration (F8).
-# A 78 is `lanes-index`'s refusal of `mode=primary` while the renderer's git
-# half is not installed (Q6(c)): exit 69 here, repeating the text it printed,
-# with nothing written and no files written instead (agreement test 14). A
+#                    verb runs as it does with no configuration (F8);
+#   refused          a 78, `lanes-index`'s refusal of `mode=primary` while the
+#                    renderer's git half is not installed (Q6(c)): exit 69
+#                    here, repeating the one line it printed, with nothing
+#                    written and no files written instead (agreement test 14).
+# The question is `lanes-index mode` with no argument and no stdin, never
+# `-h` (lane 1's T105, #165 6747929926: 0 with `index` or `primary`, 78, 2 for
+# a refused configuration, 64 for an argument or a build with no `mode`). A
 # `REG_MODE` already set is the answer carried across the routing's `exec`:
 # nothing is asked again. `LANES_INDEX=off` never skips the question;
 # `lane-worktrees` sets it on every call it makes. The answer is exported as
@@ -4084,6 +4096,7 @@ reg_mode_query() {
         *) reg_mode_files "exited 0 without answering one line, index or primary" ;;
       esac ;;
     78)
+      REG_MODE=refused
       [ -n "$rmq_said" ] || rmq_said="lanes-index printed no text"
       die "$rmq_said (\`lanes-index mode\` exited 78, EX_CONFIG: lanes-index refuses this workstation's mode=primary in this build. \`$cmd\` wrote nothing, and wrote no files instead.)" 69 ;;
     124|137)
