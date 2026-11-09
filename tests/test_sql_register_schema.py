@@ -92,8 +92,8 @@ ERROR_RE = re.compile(r"ERROR:\s+([0-9A-Z]{5}):\s+(.*)")
 #: Unicode's 25 White_Space code points (PropList.txt), U+00A0 among them.
 WHITE_SPACE = (0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x20, 0x85, 0xA0, 0x1680,
                *range(0x2000, 0x200B), 0x2028, 0x2029, 0x202F, 0x205F, 0x3000)
-EM_DASH = "—"
-NBSP = " "
+EM_DASH = "\u2014"
+NBSP = "\u00a0"
 
 
 # ------------------------------------------------------------------ the SQL side
