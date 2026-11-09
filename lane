@@ -1424,6 +1424,43 @@ read_rows ${scope_args[@]+"${scope_args[@]}"} || rows_rc=$?
 grouped_all=""
 if [ "$rows_rc" = 0 ]; then grouped_all="$(group_rows)" || exit $?; fi
 
+# AND WHEN IT CANNOT BE READ THE PICK SAYS SO (Copilot round 3 on #45,
+# `lane:960`). `|| :` collapsed every status of this read into an empty string
+# and the `f` answer then vanished from the question with nothing on screen to
+# say why — the same defect `lanes`'s footer had one file over, and the same
+# answer: `2` is an un-upgraded workstation and says so, anything else names the
+# code it got, and neither is a position of 1.
+#
+# AND IT IS READ HERE, BEFORE THE LISTING'S FIRST LINE, AND NOT AFTER THE ROWS
+# (feature 007, lane 3's ruling on T408's `next-free`, option B: opensoft/
+# openRepoTools#165, comment 6754439281, item 1). The design's reader table
+# makes `next-free` and `lane` readers whose answer, with the register's store
+# unreachable, is "69; no answer on stdout" (Y:3014, spec:599–600), and rows
+# printed before a 69 would be an answer on stdout. So where this read ends in
+# 69, 75 or 3 the command leaves with that code, prints nothing on stdout, and
+# says why on stderr. Every other code keeps the note under the rows, as it was.
+# NO READ MOVES PAST ANOTHER: the register reads stay `lanes`, then `lane-groups`,
+# then this one, and the rendering below them calls `$LANES_EDIT` nowhere.
+next_free=""; next_free_rc=0
+if [ -n "$here_repo" ]; then
+	next_free="$(printf '%s\n' "$ROWS_OUT" | "$LANES_EDIT" next-free "$here_repo" 2>/dev/null)" || next_free_rc=$?
+	case "$next_free_rc" in
+	69 | 75 | 3)
+		die "the next free position of $here_repo could not be read: \`lanes-edit.sh next-free\`
+    exited $next_free_rc, the register's own code, so this command prints no
+    listing and leaves with that code rather than list rows with a position
+    missing from them (Amendment 7(d)). Read it:  lanes --prefix $here_repo" "$next_free_rc" ;;
+	esac
+	# THE STATUS DECIDES BEFORE THE TEXT DOES (Copilot round 5 on #45,
+	# `lane:1000`). A read that printed digits AND THEN FAILED passes the shape
+	# test below on its own output, so the fail-closed arm under it was skipped
+	# and `f` was offered at a position nothing answered for — which is the very
+	# thing `go_new` stopped doing one round earlier (round 3, `lane:751`). The
+	# offer and the answer read the same status now.
+	[ "$next_free_rc" = 0 ] || next_free=""
+	case "${next_free:-}" in '' | *[!0-9]*) next_free="" ;; esac
+fi
+
 PICK_GROUP=(); PICK_ROW=()
 n=0
 # ONE HEADING PER STATE, IN CLAUSE (i-1)'s ORDER — available, live here, bound
@@ -1506,25 +1543,6 @@ fi
 render_group live "LIVE HERE — attach, never a second process"
 render_group elsewhere "BOUND ELSEWHERE — ask that workstation for the handoff"
 
-# AND WHEN IT CANNOT BE READ THE PICK SAYS SO (Copilot round 3 on #45,
-# `lane:960`). `|| :` collapsed every status of this read into an empty string
-# and the `f` answer then vanished from the question with nothing on screen to
-# say why — the same defect `lanes`'s footer had one file over, and the same
-# answer: `2` is an un-upgraded workstation and says so, anything else names the
-# code it got, and neither is a position of 1.
-next_free=""; next_free_rc=0
-if [ -n "$here_repo" ]; then
-	next_free="$(printf '%s\n' "$ROWS_OUT" | "$LANES_EDIT" next-free "$here_repo" 2>/dev/null)" || next_free_rc=$?
-	# THE STATUS DECIDES BEFORE THE TEXT DOES (Copilot round 5 on #45,
-	# `lane:1000`). A read that printed digits AND THEN FAILED passes the shape
-	# test below on its own output, so the fail-closed arm under it was skipped
-	# and `f` was offered at a position nothing answered for — which is the very
-	# thing `go_new` stopped doing one round earlier (round 3, `lane:751`). The
-	# offer and the answer read the same status now.
-	[ "$next_free_rc" = 0 ] || next_free=""
-	case "${next_free:-}" in '' | *[!0-9]*) next_free="" ;; esac
-fi
-
 if [ "$n" = 0 ]; then
 	say ""
 	say "no lane$label is available, live here or bound elsewhere."
@@ -1544,14 +1562,6 @@ if [ -n "$here_repo" ] && [ -z "$next_free" ]; then
 	esac
 fi
 ws_notice
-# AND THE REGISTER'S OWN CODE LEAVES WITH THE NOTE (feature 007, lane 3's ruling
-# (a)): `next-free` is a reader that answers 69 where the store cannot be read
-# (the design's "Each reader with the database unreachable"), and 75 or 3 where
-# the register answers with those. The rows and the note above are already
-# printed; what is not done is the question, or a suggested act, on a position
-# this command did not get. Every other code lists, notes and carries on as it
-# did, and exits as it did.
-case "$next_free_rc" in 69 | 75 | 3) exit "$next_free_rc" ;; esac
 
 # ONE QUESTION, AND ONLY WHERE THERE IS A TERMINAL TO ASK IT ON (clause (i-3)).
 # `[ -t 0 ]` is the whole test: an agent's stdin is not a terminal, and an agent
