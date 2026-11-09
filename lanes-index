@@ -763,6 +763,97 @@ def parse_register_line(line: str) -> dict | None:
     return fields
 
 
+def register_utc_epoch(utc: str | None) -> int | None:
+    """A register line's UTC as `utc_ts` takes it (feature 007; contract
+    draft 4.10, section 3.5): the stamp `parse_register_line` found,
+    `YYYY-MM-DDTHH:MM[:SS]Z`, as whole seconds since the epoch, or None where
+    there is no stamp or it cannot be a time - a month 13, a day 45 or a
+    February 30th, an hour 24 or more, a minute or a second 60 or more, a year
+    0. A take sends this, NULL for None, and never a value filled in (design
+    Y:5116): a stamp that does not parse is a take with no UTC, never a guess
+    at the nearest time."""
+    if not utc:
+        return None
+    fmt = "%Y-%m-%dT%H:%M:%SZ" if utc.count(":") == 2 else "%Y-%m-%dT%H:%MZ"
+    try:
+        stamp = _dt.datetime.strptime(utc, fmt)
+    except ValueError:
+        return None
+    return int(stamp.replace(tzinfo=_dt.timezone.utc).timestamp())
+
+
+def classify_register_line(line: str) -> tuple[str, str, str, str, str]:
+    """`register classify`'s five fields for one register line (contract
+    draft 4.10, section 3.5; lane 3's R04), each `-` where absent:
+
+    - `<kind>`, the kind `REGISTER_KIND_RE` reads: the line's SHAPE, even
+      where F13's fields are missing, so a hand-typed `LANDING EXPIRED` that
+      `parse_register_line` reads as no kind is still `LANDING EXPIRED`;
+    - `<slot_role>`, that kind's role in `REGISTER_SLOTS`, `take` or `close`,
+      whatever fields the line lacks, and `-` for a kind that takes and
+      closes nothing;
+    - `<repo_key>`, `<utc_ts>` and `<lane>`: `parse_register_line`'s
+      repository as the line writes it (no `repos.tsv`: alias resolution
+      stays the commit's), its UTC as `register_utc_epoch` reads it, and its
+      lane. Where `parse_register_line` reads no kind - a `LANDING EXPIRED`
+      lacking F13's holder, PR or repository - it reads none of the three.
+
+    Every field is ASCII with no tab: the kinds are fixed, and the
+    repository and the lane are cut by `[A-Za-z0-9/._-]` and
+    `[A-Za-z0-9._-]`."""
+    m = REGISTER_KIND_RE.match(line)
+    if not m:
+        return ("-", "-", "-", "-", "-")
+    kind = m.group(1)
+    fields = parse_register_line(line) or {}
+    epoch = register_utc_epoch(fields.get("utc"))
+    return (kind, REGISTER_SLOTS[kind][0] or "-", fields.get("repo") or "-",
+            "-" if epoch is None else str(epoch), fields.get("lane") or "-")
+
+
+def cmd_register_classify(args: list[str]) -> int:
+    """`lanes-index register classify` (contract draft 4.10, section 3.5; FR-030,
+    serving FR-032; lane 3's R04): THE ONE CLASSIFIER, for `append-line`'s
+    refusals on primary. `lanes-edit.sh` (lane 4's T424) pipes register lines
+    in, one per LF-ended line, and reads back one line each, in order:
+    `<kind>` TAB `<slot_role>` TAB `<repo_key>` TAB `<utc_ts>` TAB `<lane>`,
+    as `classify_register_line` gives them. A bash copy of the classifier
+    would be the second classifier design Y:6247-6249 warns of.
+
+    So the caller refuses, with 2 and before the lock, a line whose `<kind>`
+    is `LANDING EXPIRED`; a `take` whose `<utc_ts>` or `<repo_key>` is `-`;
+    and a `LANDING` whose `<lane>` is `-`.
+
+    stdin is read as bytes and cut at LF alone, so a CR stays inside its line
+    and the output has exactly one line per input line; a last line with no
+    LF is a line, and empty input prints nothing. An argument is usage, 64,
+    before anything is read. The configuration is loaded only so that a
+    refused one is refused, 2 (Q6(c)'s refusal of `mode=primary` included,
+    as a `Refusal`); nothing in it is used, since the contract lets this read
+    no key but `register_schema=`, and with no database call it needs none.
+    It opens no store and runs no `psql`."""
+    for arg in args:
+        if arg in ("-h", "--help"):
+            say(USAGE)
+            return 0
+        note(f"register classify takes no argument, and was given '{arg}': it reads "
+             f"register lines on stdin - see {PROG} --help")
+        return 64
+    try:
+        load_config()
+    except Refusal as exc:
+        note(f"REFUSED: {exc}")
+        return 2
+    stdin = getattr(sys.stdin, "buffer", None)
+    lines = (stdin.read() if stdin is not None else b"").split(b"\n")
+    if lines[-1] == b"":
+        lines.pop()
+    sys.stdout.write("".join("\t".join(classify_register_line(_decode(raw))) + "\n"
+                             for raw in lines))
+    sys.stdout.flush()
+    return 0
+
+
 # ======================================================== the records built
 
 TABLE_COLUMNS = {
@@ -3876,6 +3967,10 @@ def main(argv: list[str]) -> int:
         say(f"{PROG} {VERSION} (schema {SCHEMA_VERSION})")
         return 0
     verb, args = argv[0], argv[1:]
+    # 007's `register classify` (T122; contract section 3.5): its own dispatch
+    # line, ahead of #160's argument loop, to the subcommand's own parser.
+    if verb == "register" and args[:1] == ["classify"]:
+        return cmd_register_classify(args[1:])
     source = None
     dry_run = False
     worktrees = False
