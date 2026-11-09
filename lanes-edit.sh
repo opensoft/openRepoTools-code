@@ -20615,6 +20615,12 @@ EOF
         # live session records, tmux and this checkout's own files are read
         # exactly as they are without it, so the rows are the same rows.
         --index)           lns_index=1; shift ;;
+        # `--decide`, ACCEPTED AND IGNORED (feature 007, T502, `tasks.md:627`;
+        # R38, as lane 3 amended it): the listing reads exactly as it reads
+        # without the flag. T509 gives the flag its meaning. Lane 4's `--decide`
+        # callers, T408's `lane` and T403's `lane-end --retire-dormant`, land
+        # after T502 and not after T509.
+        --decide)          shift ;;
         --)                shift ;;
         *)                 die "unknown argument '$1' for lanes (usage: lanes [--repo <owner/repo>] [--dir <path>] [--prefix <repo>] [--ws <workstation>] [--here] [--all] [--closed] [--fetch] [--index])" 64 ;;
       esac
