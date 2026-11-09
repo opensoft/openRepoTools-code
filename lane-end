@@ -185,7 +185,11 @@
 #                       lane that runs it in `LANES_LANE`, it removes each that
 #                       nothing holds, leaves first, and records what it
 #                       removed in one `NOTED` line of that lane's log.
-#                       Nothing else is ever removed
+#                       What leans on each is scanned for once a run, with
+#                       a progress line per place on stderr; `--yes` reads
+#                       again only the files that scan found, so a clone
+#                       made while it runs is not seen. Nothing else is
+#                       ever removed
 #   --reason "<why>"    the words the sweep writes into each RETIRED line and
 #                       into each row's state cell. `--retire-dormant` only
 #   --yes               make the sweep the act. `--retire-dormant` and
@@ -1696,14 +1700,34 @@ SH_Y
   # the repository borrows from: `sc_dep_lines` holds `<the real object
   # directory named> TAB <the repository>`, THE TARGET FIRST (NIT 378), so a
   # TAB in the repository's own path stays in its own field, and the target
-  # is what is matched. Read afresh under each lock, so a dependent kept
-  # earlier in the run still holds what it borrows from.
+  # is what is matched.
   #
   # AND A `.git` FILE IS READ THE SAME WAY (rv4's NIT 1): a directory whose
   # `.git` file names a clone's git directory, or one inside it, works in it,
   # and removing the clone takes that away. `sc_gitfile_lines` holds `<the
   # real git directory its .git file names> TAB <the directory>`. A linked
   # worktree is one, and is also held through `.git/worktrees/`.
+  #
+  # ONE SCAN A RUN (lane openRepoTools-3's question 4 on code#21). One took
+  # about 44 minutes on Eagle (D47), and `--yes` ran one more under each
+  # candidate's lock and one after each move: up to 279 for 139 clones. Now
+  # the listing's scan is the run's only one, and it keeps each alternates
+  # and `.git` file it found, with its text and the lines it gave
+  # (`sc_df_*`). Under each lock, and after each move, those files alone are
+  # read again, by the shell, with no `find` (`sc_dep_reread`): one whose
+  # text changed gives its lines anew; one that is gone still holds by what
+  # it last said, so a dependent kept earlier in the run still holds what it
+  # borrows from (one this run removed is among the paths gone); and one
+  # that cannot be read holds every candidate, as the scan's own failure
+  # does. A line per place scanned, with its time, goes to stderr as the
+  # scan runs, where the notes go, so stdout's listing and report read as
+  # they did.
+  #
+  # THE RISK LEFT: a clone made while `--yes` runs, or a repository the scan
+  # found with no alternates file that gains one then, is not seen. It is
+  # rare: a lane's checkout borrows from W (`lanes-edit.sh` clones it with
+  # `--reference` W), and a clone someone uses as W has a `<name>-lanes/`
+  # beside it, so it is never a candidate (MUST A, D45).
   #
   # A SCAN THAT CANNOT FINISH HOLDS EVERY CANDIDATE (`sc_dep_fail`), since
   # what leans on each is then unknown: a scope that cannot be entered, a
@@ -1752,19 +1776,115 @@ SH_Y
   sc_dep_root 6 "$sc_root"
   sc_dep_root 8 "${TMPDIR:-/tmp}"
   sc_dep_root 4 "${HOME:-}"
+  # WHAT THE SCAN FOUND, ONE ENTRY PER FILE: `sc_df_kind` (`alt` or `git`),
+  # `sc_df_file` the alternates or `.git` file, `sc_df_repo` the repository
+  # or directory it is of, `sc_df_text` its text as last read, and
+  # `sc_df_alt` and `sc_df_git` the lines it gave. `sc_dep_scan_fail` is
+  # the scan's own failure, which every re-read starts from.
+  sc_df_kind=(); sc_df_file=(); sc_df_repo=(); sc_df_text=(); sc_df_alt=(); sc_df_git=()
+  sc_dep_scan_fail=""; sc_cr="$(printf '\r')"; sc_nl="$(printf '\nx')"; sc_nl="${sc_nl%x}"
+  sc_df_words() {   # <alt|git> <its repository> — SC_DF_W, its name in words
+    case "$1" in
+      git) SC_DF_W="the .git file of $2" ;;
+      *) SC_DF_W="the alternates file of $2" ;;
+    esac
+  }
+  # A FILE'S TEXT, read by the shell itself in one `read`, as the
+  # environments are: no process is started per file. 0 with it in
+  # SC_DF_T; 1 where it is no plain file, or cannot be read.
+  sc_dep_read() {   # <file>
+    SC_DF_T=""; sdr_ok=0
+    if [ -f "$1" ]; then
+      { IFS= read -r -d '' SC_DF_T; sdr_ok=1; } 2>/dev/null < "$1" || :
+    fi
+    [ "$sdr_ok" = 1 ]
+  }
+  # WHAT A FILE SAYS, from its text: `SDP_ALT` for an alternates file and
+  # `SDP_GIT` for a `.git` file, each `<the real target> TAB <its
+  # repository>`.
+  sc_dep_parse() {   # <alt|git> <file> <its repository> <its text>
+    SDP_ALT=""; SDP_GIT=""
+    if [ "$1" = git ]; then
+      # git strips a trailing CR from the line (rv4-c3's NIT c3-3); every
+      # CR goes, first, as `tr -d '\r'` took them.
+      sdp_g="${4//$sc_cr/}"; sdp_g="${sdp_g%%$sc_nl*}"
+      case "$sdp_g" in "gitdir: "*) sdp_g="${sdp_g#gitdir: }" ;; *) return 0 ;; esac
+      case "$sdp_g" in '') return 0 ;; /*) : ;; *) sdp_g="$3/$sdp_g" ;; esac
+      # A target that is gone is still matched (NIT 353, and its gap):
+      # after the move, a clone that named the old path names it.
+      SDP_GIT="$(sc_real_or_text "$sdp_g")$sc_tab$3
+"
+      return 0
+    fi
+    sdp_o="${2%/info/alternates}"
+    while IFS= read -r sdp_l; do
+      case "$sdp_l" in '' | '#'*) continue ;; esac
+      case "$sdp_l" in /*) sdp_t="$sdp_l" ;; *) sdp_t="$sdp_o/$sdp_l" ;; esac
+      SDP_ALT="$SDP_ALT$(sc_real_or_text "$sdp_t")$sc_tab$3
+"
+    done <<SDP_LINES
+$4
+SDP_LINES
+    return 0
+  }
+  # A FILE THE SCAN FOUND, read and kept with what it says. One that cannot
+  # be read holds every candidate (NIT 356), and is not kept.
+  sc_dep_found() {   # <alt|git> <file> <its repository>
+    if ! sc_dep_read "$2"; then
+      sc_df_words "$1" "$3"
+      sc_dep_fail="${sc_dep_fail:-$SC_DF_W cannot be read}"; return 0
+    fi
+    sc_dep_parse "$1" "$2" "$3" "$SC_DF_T"
+    sc_df_kind+=("$1"); sc_df_file+=("$2"); sc_df_repo+=("$3"); sc_df_text+=("$SC_DF_T")
+    sc_df_alt+=("$SDP_ALT"); sc_df_git+=("$SDP_GIT")
+  }
+  # THE LINES OF EVERY FILE KEPT, each once, in the order found.
+  sc_dep_join() {
+    sdj_a=""; sdj_g=""
+    if [ "${#sc_df_file[@]}" -gt 0 ]; then
+      printf -v sdj_a '%s' "${sc_df_alt[@]}"; printf -v sdj_g '%s' "${sc_df_git[@]}"
+    fi
+    sc_dep_lines="$(printf '%s' "$sdj_a" | awk '!seen[$0]++')" || sc_dep_lines="$sdj_a"
+    sc_gitfile_lines="$(printf '%s' "$sdj_g" | awk '!seen[$0]++')" || sc_gitfile_lines="$sdj_g"
+  }
+  # THE RE-READ, under each lock and after each move: no `find`, and no
+  # process started for a file whose text is as it was. Each file the scan
+  # found is read again: one whose text changed gives its lines anew, one
+  # that is gone still holds by what it last said, and one that cannot be
+  # read holds every candidate, as at the scan. The scan's failure stands.
+  sc_dep_reread() {
+    sc_dep_fail="$sc_dep_scan_fail"
+    for sdu_i in ${sc_df_file[@]+"${!sc_df_file[@]}"}; do
+      sdu_f="${sc_df_file[$sdu_i]}"
+      if [ ! -e "$sdu_f" ] && [ ! -L "$sdu_f" ]; then continue; fi
+      if ! sc_dep_read "$sdu_f"; then
+        sc_df_words "${sc_df_kind[$sdu_i]}" "${sc_df_repo[$sdu_i]}"
+        sc_dep_fail="${sc_dep_fail:-$SC_DF_W cannot be read}"
+      elif [ "$SC_DF_T" != "${sc_df_text[$sdu_i]}" ]; then
+        sc_dep_parse "${sc_df_kind[$sdu_i]}" "$sdu_f" "${sc_df_repo[$sdu_i]}" "$SC_DF_T"
+        sc_df_text[$sdu_i]="$SC_DF_T"; sc_df_alt[$sdu_i]="$SDP_ALT"; sc_df_git[$sdu_i]="$SDP_GIT"
+      fi
+    done
+    sc_dep_join
+  }
   sc_dep_scan() {
     sc_dep_lines=""; sc_gitfile_lines=""; sc_dep_fail=""; sc_dep_unread=0
-    sds_dl=""; sds_gl=""; sds_unread=""; sds_i=0
+    sc_df_kind=(); sc_df_file=(); sc_df_repo=(); sc_df_text=(); sc_df_alt=(); sc_df_git=()
+    sds_unread=""; sds_i=0
     while [ "$sds_i" -lt "${#sc_dep_to[@]}" ]; do
       sds_root="${sc_dep_at[$sds_i]}"; sds_depth="${sc_dep_to[$sds_i]}"
       sds_named="${sc_dep_named[$sds_i]}"; sds_i=$((sds_i + 1))
+      sds_of="dependents scan, $sds_i of ${#sc_dep_to[@]}"
       if [ -z "$sds_root" ] || [ ! -d "$sds_root" ] || [ ! -r "$sds_root" ] || [ ! -x "$sds_root" ]; then
+        note "$sds_of: $sds_named cannot be entered and listed, so what leans on each candidate is unknown"
         sc_dep_fail="${sc_dep_fail:-$sds_named cannot be entered and listed}"; continue
       fi
       LE_TMP="$(mktemp "${TMPDIR:-/tmp}/lane-end-sweep.XXXXXX" 2>/dev/null || printf '')"
       if [ -z "$LE_TMP" ]; then
         sc_dep_fail="${sc_dep_fail:-no temporary file could be made for the list of what is under $sds_root}"; continue
       fi
+      note "$sds_of: every repository under $sds_named/ to depth $sds_depth"
+      sds_t0="$SECONDS"; sds_na=0; sds_ng=0
       sds_rc=0
       sds_err="$(LC_ALL=C find "$sds_root" -maxdepth $((sds_depth + 2)) \( -type d -name objects -print0 -prune \) -o \( -type f -name .git -print0 \) 2>&1 >"$LE_TMP")" || sds_rc=$?
       sds_other=""; sds_counted=0
@@ -1796,42 +1916,19 @@ SDS_ERR
       while IFS= read -r -d '' sds_f; do
         case "$sds_f" in
           */.git)
-            sds_e="${sds_f%/.git}"
-            # git strips a trailing CR from the line (rv4-c3's NIT c3-3), and
-            # so does `tr`, first: BSD `sed` reads no `\r` in its script.
-            if ! sds_g="$(tr -d '\r' 2>/dev/null < "$sds_f")"; then
-              sc_dep_fail="${sc_dep_fail:-the .git file of $sds_e cannot be read}"; continue
-            fi
-            sds_g="$(printf '%s\n' "$sds_g" | sed -n -e '1s/^gitdir: //p')"
-            case "$sds_g" in '') continue ;; /*) : ;; *) sds_g="$sds_e/$sds_g" ;; esac
-            # A target that is gone is still matched (NIT 353, and its gap):
-            # after the move, a clone that named the old path names it.
-            sds_r="$(sc_real_or_text "$sds_g")"
-            sds_gl="$sds_gl$sds_r$sc_tab$sds_e
-" ;;
+            sds_ng=$((sds_ng + 1)); sc_dep_found git "$sds_f" "${sds_f%/.git}" ;;
           */objects)
             sds_a="$sds_f/info/alternates"
             if [ ! -e "$sds_a" ] && [ ! -L "$sds_a" ]; then continue; fi
             sds_e="${sds_f%/objects}"; sds_e="${sds_e%/.git}"
-            if ! sds_x="$(cat -- "$sds_a" 2>/dev/null)"; then
-              sc_dep_fail="${sc_dep_fail:-the alternates file of $sds_e cannot be read}"; continue
-            fi
-            while IFS= read -r sds_l; do
-              case "$sds_l" in '' | '#'*) continue ;; esac
-              case "$sds_l" in /*) sds_t="$sds_l" ;; *) sds_t="$sds_f/$sds_l" ;; esac
-              sds_r="$(sc_real_or_text "$sds_t")"
-              sds_dl="$sds_dl$sds_r$sc_tab$sds_e
-"
-            done <<SDS_ALT
-$sds_x
-SDS_ALT
-            ;;
+            sds_na=$((sds_na + 1)); sc_dep_found alt "$sds_a" "$sds_e" ;;
         esac
       done < "$LE_TMP"
       rm -f -- "$LE_TMP"; LE_TMP=""
+      note "$sds_of: under $sds_named/, read in $((SECONDS - sds_t0)) s: $sds_na alternates file(s) and $sds_ng .git file(s)"
     done
-    sc_dep_lines="$(printf '%s' "$sds_dl" | awk '!seen[$0]++')" || sc_dep_lines="$sds_dl"
-    sc_gitfile_lines="$(printf '%s' "$sds_gl" | awk '!seen[$0]++')" || sc_gitfile_lines="$sds_gl"
+    sc_dep_scan_fail="$sc_dep_fail"
+    sc_dep_join
     sc_dep_unread="$(printf '%s' "$sds_unread" | awk 'NF && !seen[$0]++ { n++ } END { print n + 0 }')" || sc_dep_unread=0
   }
   # A REPOSITORY LEANS ON A CLONE when its alternates file names an object
@@ -2202,7 +2299,7 @@ SS_ROW
   if [ "$sc_hidden" -gt 0 ]; then
     printf '  (%s hidden entr(ies) under %s/ - creation locks, partial clones, the sidecar lock - are never looked at)\n' "$sc_hidden" "$sc_home"
   fi
-  printf '  dependents     : every repository under %s/ to depth %s, hidden ones too, under %s/ to depth %s, for the clones in a Claude Code scratchpad, and under %s/ to depth %s; read again under each lock\n' \
+  printf '  dependents     : every repository under %s/ to depth %s, hidden ones too, under %s/ to depth %s, for the clones in a Claude Code scratchpad, and under %s/ to depth %s; scanned once a run, with a line per place on stderr, and under each lock and after each move only the alternates and .git files it found are read again, so a clone made while --yes runs is not seen\n' \
     "${sc_dep_named[0]}" "${sc_dep_to[0]}" "${sc_dep_named[1]}" "${sc_dep_to[1]}" "${sc_dep_named[2]}" "${sc_dep_to[2]}"
   # THE PROCESSES ARE THIS CONTAINER'S (rv4b's NIT J, from Q2's answer):
   # `/proc` (or `lsof`) shows the processes of the container it runs in, so
@@ -2229,8 +2326,9 @@ SS_ROW
   # A cycle — two clones naming each other's objects — places nothing more,
   # and what is left goes last, in its listed order, where each is held by
   # what leans on it. The order is a plan and never a decision: `--yes` reads
-  # what leans on each candidate again just before it is removed, so a
-  # dependent held earlier in the run keeps the whole chain it borrows from.
+  # the files that say what leans on each candidate again just before it is
+  # removed, so a dependent held earlier in the run keeps the whole chain it
+  # borrows from.
   sc_placed=(); sc_order=()
   sc_i=0
   while [ "$sc_i" -lt "${#sc_cands[@]}" ]; do sc_placed[$sc_i]=0; sc_i=$((sc_i + 1)); done
@@ -2417,10 +2515,10 @@ SLU
     # writer of it is in it; then its fetch, the lane's state asked again (a
     # clone beside W is no lane's: whether it is still a register clone is
     # what is asked), the working directories, the windows' `LANES_REPO`,
-    # every hold and what leans on it read again; then, and only then, it is
-    # moved aside in the directory it stands in — so its path is absent at
-    # once, and the next write of a lane there clones afresh — and the aside
-    # removed.
+    # every hold, and the files the scan found that say what leans on it,
+    # read again; then, and only then, it is moved aside in the directory it
+    # stands in — so its path is absent at once, and the next write of a
+    # lane there clones afresh — and the aside removed.
     # A CANDIDATE GONE AT ITS TURN IS SAID AS GONE (NIT 375), not held for
     # want of a `lanes/` directory: a person, or a sweep on another
     # workstation, removed or moved it after the listing. It is neither
@@ -2457,13 +2555,15 @@ SLU
       sc_act_hold="it is no longer what made it a candidate: $SC_WHY"
     else
       # The cheap holds read first, then the checkout's own state, and
-      # what leans on it last, only for a candidate nothing else holds.
+      # what leans on it last, only for a candidate nothing else holds: the
+      # files the scan found, read again (question 4), and what this run
+      # removed set aside, as the dry run sets it aside.
       sc_cwd_scan; sc_mount_scan; sc_repo_scan
       sc_holds "$sc_c" 1
       sc_judge_cheap "$sc_c"
       if [ -z "$SC_HOLD" ]; then
-        sc_dep_scan
-        sc_judge_deps "$sc_c" 1
+        sc_dep_reread
+        sc_judge_deps "$sc_c" 1 "$sc_gone"
       fi
       sc_act_hold="$SC_HOLD"; sc_act_ign="$SC_IGN"
     fi
@@ -2500,9 +2600,10 @@ SLU
     # line of the lock that went with it (a writer that took the lock over
     # after it was read), the working directories (a process that came in
     # during the git reads now works in the aside), what leans on it and
-    # what works in it (a clone made, or a `.git` file written, meanwhile
-    # names the old path, which is gone, so it is spelled from the deepest
-    # directory on it that stands: the 353 gap, D46), the windows'
+    # what works in it (an alternates or `.git` file the scan found, written
+    # meanwhile, names the old path, which is gone, so it is spelled from the
+    # deepest directory on it that stands: the 353 gap, D46; a clone made
+    # meanwhile is not seen, the risk question 4's answer leaves), the windows'
     # `LANES_REPO` (D37: a window opened meanwhile names the old path as
     # spelled), and the mounts (one made meanwhile is in the aside, which
     # carried it) (rv4b's SHOULD D, for the last two). Any of them moves it
@@ -2515,7 +2616,7 @@ SLU
     sc_cwd_scan
     sc_x="$(sc_cwd_inside "$sc_aside")"
     if [ -n "$sc_x" ]; then sc_post="${sc_post:+$sc_post; }a live process came to work in it as it was moved aside (pid $sc_x)"; fi
-    sc_dep_scan
+    sc_dep_reread
     if [ -n "$sc_dep_fail" ]; then sc_post="${sc_post:+$sc_post; }what leans on it cannot be told: $sc_dep_fail"; fi
     # What is inside the aside went with it, and leans on nothing here.
     sc_x="$(sc_dependents "$sc_c" "$sc_gone$sc_aside

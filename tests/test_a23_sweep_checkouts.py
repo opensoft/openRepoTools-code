@@ -2368,9 +2368,11 @@ def test_a_dependent_anywhere_in_the_scope_holds(sweep, where):
 
 def test_the_dry_run_names_the_dependents_scope(sweep):
     """THE SCOPE IS SAID (SHOULD 352), so a person knows where a dependent
-    would not be seen; and so are the processes read, those of the container
-    it runs in, by its name and its host's (rv4b's NIT J, from Q2's answer),
-    so a person knows that another container's windows are not seen."""
+    would not be seen, and how often it is read (lane openRepoTools-3's
+    question 4 on code#21): once a run, so a clone made while `--yes` runs
+    is not seen. So are the processes read, those of the container it runs
+    in, by its name and its host's (rv4b's NIT J, from Q2's answer), so a
+    person knows that another container's windows are not seen."""
     box = sweep.box
     result, _ = sweep()
     assert result.returncode == 3, (result.stdout, result.stderr)
@@ -2379,8 +2381,119 @@ def test_the_dry_run_names_the_dependents_scope(sweep):
             "are not seen") in result.stdout, result.stdout
     assert (f"  dependents     : every repository under {box.w.parent}/ to depth 6, hidden "
             f"ones too, under {box.env['TMPDIR']}/ to depth 8, for the clones in a Claude "
-            f"Code scratchpad, and under {box.home}/ to depth 4; read again under each "
-            "lock") in result.stdout, result.stdout
+            f"Code scratchpad, and under {box.home}/ to depth 4; scanned once a run, with a "
+            "line per place on stderr, and under each lock and after each move only the "
+            "alternates and .git files it found are read again, so a clone made while --yes "
+            "runs is not seen") in result.stdout, result.stdout
+
+
+def test_what_leans_on_the_candidates_is_scanned_once_a_run(sweep):
+    """ONE DEPENDENTS SCAN A RUN (lane openRepoTools-3's question 4 on code#21):
+    one took about 44 minutes on Eagle (D47), and `--yes` ran one at the
+    listing, one more under each candidate's lock and one after each move:
+    up to 279 for 139 clones. Now the listing's is the only one; under each
+    lock and after each move only the files it found are read again. A
+    `find` first on PATH logs the place each scan's call reads. A `--yes`
+    that removes both CLOSED lanes' checkouts and the three clones beside W
+    calls it three times, once for each place, in the scope's order."""
+    box = sweep.box
+    c, other = box.checkout(CLOSED), _closed_checkout(box)
+    _free_profile_clones(box)
+    log = box.root / "find.log"
+    real = shutil.which("find")
+    assert real, "no find on the test's own PATH"
+    shim = box.fakebin / "find"
+    shim.write_text("#!/usr/bin/env bash\n"
+                    f'case " $* " in *" -name objects "*) printf "%s\\n" "$1" >> {log} ;; esac\n'
+                    f'exec {real} "$@"\n', encoding="utf-8")
+    shim.chmod(0o755)
+    result, rows = sweep("--yes", LANES_LANE=RUNNER)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    for path in (c, other, *box.profile_clones):
+        assert rows[str(path)][0] == "removed", (path, rows[str(path)])
+    places = [os.path.realpath(p) for p in (box.w.parent, box.env["TMPDIR"], box.home)]
+    assert log.read_text(encoding="utf-8").splitlines() == places
+
+
+def test_the_dependents_scan_says_its_progress_on_stderr(sweep):
+    """THE SCAN SAYS HOW FAR IT IS AS IT RUNS (lane openRepoTools-3's question
+    4 on code#21): it ran in silence, for about 44 minutes on Eagle (D47).
+    Each place it reads gets a line before its `find` and one after its
+    files are read, with the seconds that took, on stderr, where the notes
+    go, so stdout's listing reads as it did."""
+    box = sweep.box
+    result, rows = sweep()
+    assert result.returncode == 3, (result.stdout, result.stderr)
+    assert rows[str(box.checkout(CLOSED))][0] == "remove", rows
+    said = [line for line in result.stderr.splitlines() if "dependents scan" in line]
+    want = []
+    places = ((box.w.parent, 6), (Path(box.env["TMPDIR"]), 8), (box.home, 4))
+    for k, (place, depth) in enumerate(places, 1):
+        head = f"lane-end: dependents scan, {k} of 3: "
+        want.append(re.escape(f"{head}every repository under {place}/ to depth {depth}"))
+        want.append(re.escape(f"{head}under {place}/, read in ")
+                    + r"\d+ s: \d+ alternates file\(s\) and \d+ \.git file\(s\)")
+    assert len(said) == len(want), said
+    for line, pattern in zip(said, want):
+        assert re.fullmatch(pattern, line), (line, pattern)
+    assert "dependents scan" not in result.stdout, result.stdout
+
+
+@pytest.mark.parametrize("change", [
+    "an alternates file comes to name it",
+    "a .git file comes to name it",
+    "a clone that borrows from it is moved away",
+    pytest.param("an alternates file can no longer be read", marks=pytest.mark.skipif(
+        getattr(os, "geteuid", lambda: 1)() == 0, reason="root reads a file whose mode is 000")),
+])
+def test_under_its_lock_the_files_the_scan_found_are_read_again(sweep, change):
+    """UNDER EACH LOCK THE FILES THE SCAN FOUND ARE READ AGAIN, WITH NO SECOND
+    SCAN (lane openRepoTools-3's question 4 on code#21): a change made at the
+    CLOSED lane's fetch, after the listing, is seen through what the
+    listing's scan found. An alternates or `.git` file that comes to name the
+    checkout holds it there, under its lock, and it is never moved aside. A
+    clone that borrowed from it at the listing and is moved out of the
+    scan's reach still holds it, by what its alternates file last said, and
+    stays whole. An alternates file that can no longer be read holds it, as
+    one the scan could not read would (NIT 356)."""
+    box = sweep.box
+    c = box.checkout(CLOSED)
+    rescue = Path(box.env["TMPDIR"]) / "rescue"
+    moved = None
+    if change == "an alternates file comes to name it":
+        dep = _borrower(box, rescue, box.w)
+        body = f"printf '%s\\n' {c}/.git/objects > {dep}/.git/objects/info/alternates"
+        said = f"leaned on by {dep} (its alternates file names this clone's objects)"
+    elif change == "a .git file comes to name it":
+        dep = box.w.parent / "sharer"
+        dep.mkdir()
+        (dep / ".git").write_text(f"gitdir: {box.w}/.git\n", encoding="utf-8")
+        body = f"printf 'gitdir: %s\\n' {c}/.git > {dep}/.git"
+        said = f"its git directory is named by the .git file of {dep}, which works in it"
+    elif change == "a clone that borrows from it is moved away":
+        dep = _borrower(box, rescue, c)
+        moved = box.root / "moved-away"
+        body = f"mv -- {dep} {moved}"
+        said = f"leaned on by {dep} (its alternates file names this clone's objects)"
+    else:
+        dep = _borrower(box, rescue, box.w)
+        body = f"chmod 0 {dep}/.git/objects/info/alternates"
+        said = f"what leans on it cannot be told: the alternates file of {dep} cannot be read"
+    _hook_on_fetch_of(box, c, body)
+    try:
+        result, rows = sweep("--yes", LANES_LANE=RUNNER)
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert rows[str(c)][0] == "hold", rows[str(c)]
+        assert said in rows[str(c)][1], rows[str(c)]
+        assert "moved aside" not in rows[str(c)][1], rows[str(c)]
+        assert (c / ".git").is_dir()
+        assert not os.path.lexists(box.lock_of(c)), "its lock is let go"
+        if moved:
+            box.git("-C", str(moved), "fsck", "--connectivity-only")
+    finally:
+        alternates = dep / ".git" / "objects" / "info" / "alternates"
+        if alternates.exists():
+            alternates.chmod(0o644)
 
 
 def test_a_dependents_scan_that_fails_holds_every_candidate(sweep):
