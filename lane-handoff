@@ -1795,9 +1795,21 @@ step "lane=$lane${window_ref:+ window=$window_ref} workstation=${ws:-<none>}"
 # where ownership could not be established. ANY other status — a helper that
 # predates the verb included — is UNKNOWN as well, and refused the same way:
 # a fence that opens because its read failed is no fence (Amendment 7(d)).
+#
+# THE SEAM READS THE MIRROR (feature 007, T405; DEC-27, Brett's "(i) Mirror
+# read"): with the register's database down a handoff must still be written
+# (`R-A11-11`, YS:692), and a seam that answered 1, UNKNOWN, for want of the
+# database would stop it here before a byte is written. So the read carries
+# `LANES_READ_MIRROR=1`, and its stderr goes to a file so that the one line
+# that matters, `read: mirror at <sha12>, …`, is forwarded and sets
+# `mirror_read` (`mirror_label_forward`, above `lifecycle_begin`) — nothing
+# else of it is shown, as before. Everything after the read is as it was: the
+# refusal texts, the codes, and what a files-mode run prints.
 seam_refuse() {   # <lane> <the act>
 	sr_out=""; sr_rc=0
-	sr_out="$("$LANES_EDIT" managed-projection "$1" 2>/dev/null)" || sr_rc=$?
+	sm_err="$(mktemp "${TMPDIR:-/tmp}/lane-handoff-seam.XXXXXX" 2>/dev/null || printf '')"
+	sr_out="$(LANES_READ_MIRROR=1 "$LANES_EDIT" managed-projection "$1" 2>"${sm_err:-/dev/null}")" || sr_rc=$?
+	mirror_label_forward "$sm_err"
 	case "$sr_rc" in
 	0) die "lane $1 is owned by the managed ledger (owner ${sr_out:-unnamed}), and $2 is a legacy lane act, refused here, before the window is renamed and before a byte is written: no PAUSED, no row, no handoff file, no lifecycle transition, no inventory, and no restart. Brett Heap's ruling of 2026-10-04: \"managed ledger owns enrolled lanes; #97 owns legacy\". Act on this lane through the managed ledger." 2 ;;
 	8) : ;;
