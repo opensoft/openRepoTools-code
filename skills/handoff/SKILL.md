@@ -120,13 +120,18 @@ L="$(command -v lanes-edit.sh || printf '%s' ~/projects/xFactory/lanes-edit.sh)"
 # `read: mirror at ` and nothing else (the shape `/restart`'s `lread` takes for
 # its own stream), from the first call, or from the re-read where there was
 # one. Where no file can be made the stream is hidden as before.
+#
+# AND IT REMEMBERS THAT IT SAID SO, in `mirror_read`, which it sets to `1` where
+# it forwarded a label and never clears. It is the one fact this skill has of
+# having read the mirror (lane 3's ruling on #165 6754439281, item 5), and step 1
+# prints it, for block 2's printed call to name `LANES_READ_MIRROR=1` by.
 sread() {                      # sread <var> "<what the failure is NOT>" <verb> [args…]
   sr_var="$1"; sr_not="$2"; shift 2
   sr_out=""; sr_rc=0
   sr_err="$(mktemp "${TMPDIR:-/tmp}/handoff-sread.XXXXXX" 2>/dev/null || printf '')"
   sr_out="$(LANES_NO_FETCH=1 "$L" "$@" 2>"${sr_err:-/dev/null}")" || sr_rc=$?
   if [ -n "$sr_err" ]; then
-    [ "$sr_rc" -eq 69 ] || grep -e '^read: mirror at ' -- "$sr_err" >&2 || :
+    if [ "$sr_rc" -ne 69 ] && grep -e '^read: mirror at ' -- "$sr_err" >&2; then mirror_read=1; fi
     rm -f -- "$sr_err"
   fi
   case "$sr_rc" in
@@ -135,7 +140,7 @@ sread() {                      # sread <var> "<what the failure is NOT>" <verb> 
          sr_err="$(mktemp "${TMPDIR:-/tmp}/handoff-sread.XXXXXX" 2>/dev/null || printf '')"
          sr_out="$(LANES_READ_MIRROR=1 LANES_NO_FETCH=1 "$L" "$@" 2>"${sr_err:-/dev/null}")" || sr_rc=$?
          if [ -n "$sr_err" ]; then
-           grep -e '^read: mirror at ' -- "$sr_err" >&2 || :
+           if grep -e '^read: mirror at ' -- "$sr_err" >&2; then mirror_read=1; fi
            sr_why="$(cat -- "$sr_err" 2>/dev/null || :)"
            rm -f -- "$sr_err"
          fi
@@ -196,6 +201,7 @@ esac
 claude-usage
 window="$(tmux display-message -p '#W')"                     # Amendment 8(b): the window IS the lane
 lane="$window"
+mirror_read=""
 # THIS READ CARRIES `LANES_READ_MIRROR=1` TOO (the paragraph on `69` above `sread`): it
 # names the lane, so with the database down it reads the mirror from its first call.
 LANES_READ_MIRROR=1 sread row_probe "'this window is not a lane'" register-row "$lane"
@@ -301,6 +307,8 @@ if [[ -n "$lane" ]]; then
   [[ "$lane_canon" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]] && lane="$lane_canon"
 fi
 printf 'lane=%s\n' "${lane:-<none>}"
+# Printed only where `sread` forwarded a mirror label, for block 2 to be given.
+[[ -z "$mirror_read" ]] || printf 'mirror_read=%s\n' "$mirror_read"
 ```
 
 The window name answers first, the window's own RECORD second and the workstation's newest swap third —
@@ -598,7 +606,12 @@ hf_subject="$(printf '%s' "$hf_subject" | LC_ALL=C tr '[:cntrl:]' ' ')"
 # block goes into the handoff by this call once the gap is answered, never by a hand edit of the handoff. Each
 # word is single-quoted, a quote in it spelled '\'', so the line runs as printed under bash and zsh alike.
 hf_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
-hf_call="LANES_LANE=$(hf_quote "$lane") $(hf_quote "$L") write-handoff $(hf_quote "$lane") --prepend $(hf_quote "${block_file:-<block file>}") --subject $(hf_quote "$hf_subject")"
+# IT NAMES `LANES_READ_MIRROR=1` ONLY WHERE THIS RUN'S `sread` FORWARDED A MIRROR LABEL (`$mirror_read`, step 1's
+# line; lane 3's ruling on #165 6754439281, item 5): then the store was down, and the same call by hand is a mirror
+# read too. Anywhere else the skill cannot tell, and the call is printed as it always was, so that a run by hand
+# during an outage refuses 69 and writes nothing, which is the failure that closes (item 2).
+hf_mirror=""; [[ -z "${mirror_read:-}" ]] || hf_mirror="LANES_READ_MIRROR=1 "
+hf_call="${hf_mirror}LANES_LANE=$(hf_quote "$lane") $(hf_quote "$L") write-handoff $(hf_quote "$lane") --prepend $(hf_quote "${block_file:-<block file>}") --subject $(hf_quote "$hf_subject")"
 hf_rc=0; hf_out=""
 # THE ONE CALL: the verb reads the handoff under the lock and puts the block in front of it (`--prepend`).
 if [[ -n "$handoff_file" && -s "${block_file:-}" ]]; then
@@ -674,7 +687,8 @@ made, or the verb wrote nothing. These are the phrases lane openRepoTools-3's an
 `lane-handoff` take too, through its fit (c), so the two writers of one act record its outcome alike. EVERY BASH CALL IS A NEW SHELL, so nothing one block sets reaches the next
 by itself, and step 3 comes between step 2 and step 4 (lane openRepoTools-3's finding 984 on #311). Before
 block 2, set `L`, `lane`, `ws` and `why` as step 1 has them, and each `name=value` line block 1 printed
-(`handoff_file`, `block_file` and `hf_record`, those it printed), quoted. Before step 4, set `hf_record` from
+(`handoff_file`, `block_file` and `hf_record`, those it printed), quoted. Set `mirror_read=1` too where step 1
+printed it: it is what lets the call block 2 prints name `LANES_READ_MIRROR=1`. Before step 4, set `hf_record` from
 block 2's last line, `hf_record=<what this step did>`, quoted, beside step 4's other values. A step 4 that it
 never reached says `handoff NOT refreshed (step 2 left no outcome)`.
 
