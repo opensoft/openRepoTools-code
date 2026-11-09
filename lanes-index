@@ -2411,6 +2411,661 @@ def open_store(cfg: dict, role: str):
     return SqliteStore(cfg) if cfg["store"] == "sqlite" else PostgresStore(cfg, role)
 
 
+# ===== the SQL register: the declared outage (007)
+#
+# `lanes-index outage declare` AND `outage clear` (feature 007,
+# opensoft/openRepoTools#165; D20, design Y:599-612; operations.md §2.5;
+# contracts/config.md §6; contracts/exit-codes.md §3.2; T121). A declared
+# outage is the file `register-outage` beside `lanes-index.conf`, never a row
+# in the database that is down. Each guard's client reads it offline, on
+# `mode=primary` only (SVC-12; lane 5's T507), and `status` (T117) and
+# `ready`'s check 7 (T119) report one left in place. Both sides read its form
+# from config.md §6.3, which `parse_register_outage` holds.
+#
+# ON BRETT'S WORD, `outage declare --until <UTC> --why <words>` probes the
+# database first, on D9's `outage` row as the REGISTER-WRITER: one read of the
+# switch's `mode` and `set_seq`, and of the kind of the journal entry at
+# `set_seq`. A database that answers from this host refuses it, 2: the outage
+# is then not estate-wide. Its silence is the declaration's premise, and every
+# end of the probe before its read completes counts the same (D9, Y:3535), so
+# `outage declare` never exits 69. `mirror-seq=` is then the newest
+# `Register-Seq` on `origin/<branch>`, read after a fetch, or `--mirror-seq
+# <m>` where this host cannot fetch (F11).
+#
+# FROM A ROLLBACK, `outage declare --rollback --mirror-seq <k>` is written only
+# where the probe reads the switch at `files`, the entry at its `set_seq` a
+# `rollback`, and `<k>` that entry's base, `set_seq - 1` (R2's M1). A probe
+# that cannot read the switch refuses it, 2, as does any other answer (V2's
+# S-4). It carries no expiry. Lane 3's `rollback` (T304) writes the same record
+# where its directory is writable, through `register_outage_text` and
+# `write_register_outage`.
+
+#: THE DECLARATION'S FILE (D20; config.md §6.1), beside `lanes-index.conf`.
+REGISTER_OUTAGE_FILE = "register-outage"
+
+#: The keys a well-formed declaration carries once each, whatever its kind
+#: (config.md §6.3). `until=` joins them exactly when `kind=word`, and
+#: `last-head=` where `status` recorded a head.
+REGISTER_OUTAGE_KEYS = ("format", "kind", "database", "utc", "host", "mirror-seq", "why")
+
+#: A UTC in the declaration, `utc=` and `until=`, and `--until`'s own form,
+#: whole seconds (config.md §6.3).
+_OUTAGE_UTC_FORM = "%Y-%m-%dT%H:%M:%SZ"
+_OUTAGE_UTC_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+
+#: FORM C'S PAGE (SVC-12, Y:4455-4466; the renderer's pass, Y:2840-2846): one
+#: `git log --first-parent -n 200`, never with `--grep`, whose `-n` would count
+#: matches rather than the commits walked.
+MIRROR_SEQ_PAGE = 200
+
+#: `LANES_GIT_TIMEOUT`'s default, in seconds, as `lanes-edit.sh`'s `git_net`
+#: reads it.
+MIRROR_GIT_TIMEOUT_DEFAULT = 60
+
+_OUTAGE_USAGE = f"""\
+{PROG} outage declare --until <UTC> --why <words> [--mirror-seq <m>]
+{PROG} outage declare --rollback --mirror-seq <k> [--why <words>]
+{PROG} outage clear
+
+The declared outage (D20; operations.md section 2.5): the file
+`register-outage` beside lanes-index.conf. Run each on every configured
+workstation, from the host, as `set-mode` is.
+
+  declare     On Brett's word: <UTC> is its expiry, YYYY-MM-DDTHH:MM:SSZ, and
+              <words> his words, verbatim, on one line. It probes the database
+              first, as the REGISTER-WRITER, and a database that answers from
+              this host refuses it. `mirror-seq=` is the newest Register-Seq on
+              origin/<branch> after a fetch, or --mirror-seq <m>, from
+              `status` on a host that can fetch, where this one cannot.
+  --rollback  The rollback's declaration, as `rollback` prints it: <k> is the
+              rollback's head, and the probe must read the switch at `files`
+              with a `rollback` entry at set_seq <k>+1. It has no expiry.
+  clear       Removes the declaration, and says so where none is recorded.
+
+Exit: 0 written or removed · 2 refused, with nothing written · 64 usage."""
+
+
+class _OutageUsage(Exception):
+    """An `outage` command line that is not its usage: exit 64, before
+    anything is read or sent."""
+
+
+def _outage_has_line_break(text: str) -> bool:
+    """Whether `text` holds a line break: any character `str.splitlines` ends
+    a line at (LF, CR, VT, FF, FS, GS, RS, NEL, LS and PS), so a reader that
+    splits the file, or `.outage`'s `label=`, at any of them still finds one
+    line (DEC-21; lane 5's O15)."""
+    return "".join(text.splitlines()) != text
+
+
+def _outage_utf8(text: str) -> bool:
+    """Whether `text` encodes as UTF-8: an argument or a variable that was not
+    UTF-8 reaches Python as lone surrogates, which do not."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _outage_utc_ok(text: str) -> bool:
+    """`YYYY-MM-DDTHH:MM:SSZ`, naming a real instant (config.md §6.3)."""
+    if not _OUTAGE_UTC_RE.fullmatch(text):
+        return False
+    try:
+        _dt.datetime.strptime(text, _OUTAGE_UTC_FORM)
+    except ValueError:
+        return False
+    return True
+
+
+def register_outage_path(cfg: dict) -> str:
+    """`register-outage` beside `lanes-index.conf` (D20; config.md §6.1): in
+    the directory of the configuration's path as `load_config` names it,
+    `$LANES_INDEX_CONFIG` or the default, made absolute and not resolved."""
+    return os.path.join(os.path.dirname(os.path.abspath(cfg["path"])), REGISTER_OUTAGE_FILE)
+
+
+def parse_register_outage(text: str) -> dict:
+    """A declaration's fields, from its text, where it is WELL FORMED by
+    config.md §6.3; otherwise `ValueError`, naming the first fault.
+
+    Well formed: `format=1` the first line; `key=value` lines, each split at
+    its first `=`, LF-ended, and each key at most once; every key of
+    `REGISTER_OUTAGE_KEYS` present; `kind=` `word` or `rollback`; `until=`
+    present exactly when `kind=word`; `utc=` and `until=` each
+    `YYYY-MM-DDTHH:MM:SSZ`; `mirror-seq=` a whole number; and `why=` with no
+    line break. A key this build does not know is kept and ignored, within
+    `format=1`. Whether a declaration is unexpired, and names the reading
+    host's `register_label=`, is its reader's question (SVC-12's condition 2;
+    T507), not its form's."""
+    if not text.endswith("\n"):
+        raise ValueError("its last line is not LF-ended")
+    fields: dict = {}
+    for number, line in enumerate(text[:-1].split("\n"), 1):
+        if number == 1 and line != "format=1":
+            raise ValueError("its first line is not `format=1`")
+        key, eq, value = line.partition("=")
+        if not eq or not key:
+            raise ValueError(f"its line {number} is not `key=value`")
+        if key in fields:
+            raise ValueError(f"`{key}=` is on more than one line")
+        fields[key] = value
+    for key in REGISTER_OUTAGE_KEYS:
+        if key not in fields:
+            raise ValueError(f"it carries no `{key}=`")
+    if fields["kind"] not in ("word", "rollback"):
+        raise ValueError("its `kind=` is neither `word` nor `rollback`")
+    if ("until" in fields) != (fields["kind"] == "word"):
+        raise ValueError("`until=` is present with `kind=word` only, and always with it")
+    for key in ("utc", "until"):
+        if key in fields and not _outage_utc_ok(fields[key]):
+            raise ValueError(f"its `{key}=` is not a UTC of the form YYYY-MM-DDTHH:MM:SSZ")
+    if not re.fullmatch(r"[0-9]+", fields["mirror-seq"]):
+        raise ValueError("its `mirror-seq=` is not a whole number")
+    if _outage_has_line_break(fields["why"]):
+        raise ValueError("its `why=` holds a line break")
+    return fields
+
+
+def read_register_outage(path: str) -> dict | None:
+    """The declaration at `path` (`register_outage_path`), by
+    `parse_register_outage`: None where none is recorded, and `ValueError`
+    where one is there that cannot be read as UTF-8 or is not well formed.
+    `outage clear` reports with it, and `status` (T117) can report a
+    declaration left in place with it."""
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ValueError(f"it cannot be read ({exc.strerror or exc})")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError("it is not UTF-8")
+    return parse_register_outage(text)
+
+
+def register_outage_text(*, kind: str, database: str, host: str, mirror_seq: int, why: str,
+                         until: str | None = None, utc: str | None = None,
+                         last_head: int | None = None) -> str:
+    """The declaration's bytes, in config.md §6.3's form and key order:
+    `format=1`, `kind=`, `database=`, `utc=` (now, where `utc` is None),
+    `host=`, `until=` where given, `mirror-seq=`, `why=`, and `last-head=`
+    where given. Checked by `parse_register_outage` before it is returned, so
+    the writer holds itself to the reader's rule: `ValueError` where a value
+    holds a line break, or the text would not be well formed."""
+    lines = [("format", "1"), ("kind", kind), ("database", database),
+             ("utc", utc if utc is not None else utc_now()), ("host", host)]
+    if until is not None:
+        lines.append(("until", until))
+    lines += [("mirror-seq", str(mirror_seq)), ("why", why)]
+    if last_head is not None:
+        lines.append(("last-head", str(last_head)))
+    for key, value in lines:
+        if _outage_has_line_break(value):
+            raise ValueError(f"its `{key}=` would hold a line break")
+        if not _outage_utf8(value):
+            raise ValueError(f"its `{key}=` would not be UTF-8")
+    text = "".join(f"{key}={value}\n" for key, value in lines)
+    parse_register_outage(text)
+    return text
+
+
+def write_register_outage(path: str, text: str) -> None:
+    """`text` as `path`, by a temp file in the same directory and a rename
+    (config.md §6.3), so no reader sees half a file, and a write that fails
+    leaves the file as it was, with no temp file behind. Raises `OSError`
+    where the directory cannot be written."""
+    directory = os.path.dirname(path)
+    tmp = ""
+    try:
+        for attempt in range(100):
+            candidate = os.path.join(directory, f".{os.path.basename(path)}."
+                                                f"{os.getpid()}.{attempt}.tmp")
+            try:
+                fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                continue
+            tmp = candidate
+            break
+        else:
+            raise FileExistsError(f"no free temp file name beside {path}")
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(text.encode("utf-8"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+        tmp = ""
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    # The rename itself, to disk, where the directory can be opened for it.
+    try:
+        dir_fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(dir_fd)
+
+
+def mirror_git_timeout() -> float | None:
+    """`LANES_GIT_TIMEOUT` as `lanes-edit.sh`'s `git_net` reads it: the bound,
+    in seconds, of a git call that touches the network, 60 where it is unset
+    or empty, and None, no bound, where it is 0 or not a whole number."""
+    raw = os.environ.get("LANES_GIT_TIMEOUT", "")
+    if raw == "":
+        return float(MIRROR_GIT_TIMEOUT_DEFAULT)
+    if not re.fullmatch(r"[0-9]+", raw) or int(raw) == 0:
+        return None
+    return float(raw)
+
+
+def _mirror_git_error(stderr: bytes) -> str:
+    """git's first `fatal:` or `error:` line on stderr, else its last line,
+    with any URL's user and password taken out."""
+    lines = [line for line in stderr.decode("utf-8", "replace").splitlines() if line.strip()]
+    if not lines:
+        return "no message"
+    first = next((line for line in lines if line.startswith(("fatal:", "error:"))), lines[-1])
+    return re.sub(r"(://)[^/\s@]*@", r"\1", first.strip())
+
+
+def mirror_fetch(root: str, timeout: float | None) -> None:
+    """`git fetch -q origin <branch>` in the checkout `root`, as
+    `lanes-edit.sh` fetches it, so its `origin/<branch>` is origin's own;
+    `timeout`, from `mirror_git_timeout`, bounds it. A fetch that fails or
+    runs out of time raises `StoreUnusable` of kind `unread`."""
+    what = f"`git fetch origin {branch()}` in {root}"
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    try:
+        proc = subprocess.run(["git", "-c", "gc.auto=0", "-c", "maintenance.auto=false",
+                               "-C", root, "fetch", "-q", "origin", branch()],
+                              capture_output=True, check=False, stdin=subprocess.DEVNULL,
+                              env=env, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise StoreUnusable("unread", f"{what} did not end within {timeout:g} s "
+                            f"(LANES_GIT_TIMEOUT)")
+    except OSError as exc:
+        raise StoreUnusable("unread", f"{what} could not be run: {exc}")
+    if proc.returncode != 0:
+        raise StoreUnusable("unread", f"{what} exited {proc.returncode}: "
+                            f"{_mirror_git_error(proc.stderr)}")
+
+
+def mirror_register_seq(root: str, deadline: float | None = None) -> tuple[int, str]:
+    """`m`, the newest `Register-Seq` on `origin/<branch>` in the checkout
+    `root` AS LAST FETCHED, and the commit that carries it. Nothing here
+    fetches: `mirror_fetch` does, where its caller wants the fetch.
+
+    Form C (SVC-12, Y:4455-4466), in pages as the renderer's pass finds `m`
+    (Y:2840-2846): `git log --first-parent -n 200 --skip <s>
+    --format='%H%x00%(trailers:key=Register-Seq,valueonly)'` from the tip,
+    never with `--grep`, taking the first non-empty value. `deadline`, a
+    `time.monotonic()` instant, bounds the whole walk.
+
+    Raises `StoreUnusable`: of kind `unread` where the ref is missing, git
+    fails or the deadline passes; of kind `no-seq` where no commit on that
+    first-parent line carries a `Register-Seq`, or the newest that does
+    carries one that is not a whole number. `outage declare` reads its
+    `mirror-seq=` with it after a fetch (F11), and `status` (T117) can read
+    `m` with it."""
+    tip = tip_of(root)
+    ref = f"origin/{branch()}"
+    skip = 0
+    while True:
+        left = None if deadline is None else deadline - time.monotonic()
+        out_of_time = (f"the walk of {ref}'s first-parent line for a Register-Seq ran out "
+                       f"of time after {skip} commits (LANES_GIT_TIMEOUT)")
+        if left is not None and left <= 0:
+            raise StoreUnusable("unread", out_of_time)
+        try:
+            proc = subprocess.run(
+                ["git", "-c", "log.showSignature=false", "-C", root, "log", "--first-parent",
+                 "-n", str(MIRROR_SEQ_PAGE), "--skip", str(skip),
+                 "--format=%H%x00%(trailers:key=Register-Seq,valueonly)", tip, "--"],
+                capture_output=True, check=False, stdin=subprocess.DEVNULL, timeout=left)
+        except subprocess.TimeoutExpired:
+            raise StoreUnusable("unread", out_of_time)
+        except OSError as exc:
+            raise StoreUnusable("unread", f"git could not be run in {root}: {exc}")
+        if proc.returncode != 0:
+            raise StoreUnusable("unread", f"`git log` of {ref} exited {proc.returncode} in "
+                                f"{root}: {_mirror_git_error(proc.stderr)}")
+        commits, commit = 0, ""
+        for line in proc.stdout.decode("utf-8", "replace").split("\n"):
+            if "\x00" in line:
+                commits += 1
+                commit, _, line = line.partition("\x00")
+            value = line.strip()
+            if commit and value:
+                if not re.fullmatch(r"[0-9]+", value):
+                    raise StoreUnusable("no-seq", f"commit {commit[:12]}, the newest on {ref}'s "
+                                        f"first-parent line to carry a Register-Seq, carries "
+                                        f"{value!r}, which is not a whole number")
+                return int(value), commit
+        if commits < MIRROR_SEQ_PAGE:
+            raise StoreUnusable("no-seq", f"no commit on {ref}'s first-parent line carries a "
+                                f"Register-Seq ({skip + commits} read)")
+        skip += commits
+
+
+def _outage_mirror_seq() -> tuple[int, str]:
+    """`mirror-seq=` on Brett's word with no `--mirror-seq`: `m` read after a
+    fetch (ops:497; F11), in the workspace repository's checkout as `sync`
+    finds it (`lanes-edit.sh workspace-root`; Amendment 9(a)). The fetch, and
+    then the walk, are each bounded by `mirror_git_timeout`, as the
+    renderer's are. `StoreUnusable` where this host cannot fetch or read it."""
+    root = workspace_root()
+    timeout = mirror_git_timeout()
+    mirror_fetch(root, timeout)
+    return mirror_register_seq(root, None if timeout is None else time.monotonic() + timeout)
+
+
+def _outage_probe(store) -> dict:
+    """D9'S `outage` ROW (Y:3535): ONE read as the REGISTER-WRITER, connected
+    as a writer's snapshot is, with the row's bounds and its client timer,
+    `N_a`·`c` + 6 s: the switch's `mode` and `set_seq`, and the kind of the
+    journal entry at `set_seq`, '' where there is none.
+
+    `answered` is True where `psql` ended 0: the database answered from this
+    host, and `switch` is `files` or `primary`, or None where its answer could
+    not be read. Every other end before the read completes - no answer within
+    its bounds, a refusal, a `psql` that could not be run - is `answered`
+    False. `end` says which, with nothing secret in it (contract §2.6)."""
+    schema = f'"{store.schema}"'
+    sql = (f"SELECT s.mode, s.set_seq, coalesce((SELECT j.kind FROM {schema}.journal AS j "
+           f"WHERE j.seq = s.set_seq), '') FROM {schema}.register_switch AS s WHERE s.id = 1")
+    try:
+        out = store.request([sql], "outage")
+    except PsqlFailed as exc:
+        if exc.timer_expired:
+            end = f"no answer within its client timer: {exc.detail}"
+        elif not exc.ran:
+            end = f"nothing was sent: {exc.detail}"
+        else:
+            end = f"psql exited {exc.psql_exit}: {exc.first_line or exc.detail}"
+        return {"answered": False, "end": end}
+    except StoreUnusable as exc:
+        return {"answered": False, "end": f"nothing was sent: {exc.detail}"}
+    match = re.fullmatch(r"(files|primary)\|(-?[0-9]+)\|([a-z-]*)\n?", out)
+    if not match:
+        return {"answered": True, "switch": None, "set_seq": None, "kind": "",
+                "end": "the database answered, and its answer could not be read"}
+    return {"answered": True, "switch": match.group(1), "set_seq": int(match.group(2)),
+            "kind": match.group(3),
+            "end": f"the switch reads {match.group(1)} at set_seq {match.group(2)}"}
+
+
+def _outage_refuse_unwritable(path: str, form: str, nothing: str) -> None:
+    """A configuration directory this process cannot write, as a bench's
+    read-only mount of it is (Q23(a)), refused with 2 before anything is sent:
+    declare it from the host, as `set-mode` refuses (ops:470)."""
+    directory = os.path.dirname(path)
+    if not os.access(directory, os.W_OK | os.X_OK):
+        raise Refusal(f"{form}: {directory} cannot be written from here, as on a bench's "
+                      f"read-only mount of the configuration: run it from the host, as "
+                      f"`set-mode` is (ops:470; operations.md §2.5); {nothing}")
+
+
+def _outage_host(form: str) -> str:
+    """`host=`, the workstation the declaration is made on: `$LANES_WORKSTATION`
+    where it is set, the seam `lanes-edit.sh workstation` answers with first;
+    otherwise that command. A container with no name is refused, as every
+    writer of a workstation column refuses it (R-A11-14)."""
+    name = os.environ.get("LANES_WORKSTATION", "")
+    if not name:
+        try:
+            name, how = this_workstation()
+        except StoreUnusable as exc:
+            raise Refusal(f"{form}: this workstation's name cannot be read ({exc.detail}); "
+                          f"export LANES_WORKSTATION, or run it from the host; nothing was "
+                          f"written")
+        if how == "container-unset":
+            raise Refusal(f"{form}: this is a container and LANES_WORKSTATION is not set, so "
+                          f"`host=` would be the container's own id (R-A11-14). Run it from "
+                          f"the host's shell; nothing was written")
+    if not name.strip() or _outage_has_line_break(name):
+        raise Refusal(f"{form}: this workstation's name is empty or holds a line break, and "
+                      f"`host=` is one line; nothing was written")
+    return name
+
+
+def _outage_args(args: list[str]) -> dict | None:
+    """`outage`'s command line: its verb, `declare` or `clear`, and
+    `declare`'s flags, each as `--flag <value>` or `--flag=<value>`; None for
+    `--help`. Usage is `_OutageUsage`: no verb or an unknown one, an unknown
+    argument, a flag with no value or given twice, an argument to `clear`, and
+    `--until` beside `--rollback`, whose declaration carries no expiry."""
+    if not args:
+        raise _OutageUsage("outage needs `declare` or `clear`")
+    if args[0] in ("-h", "--help"):
+        return None
+    verb, rest = args[0], args[1:]
+    if verb not in ("declare", "clear"):
+        raise _OutageUsage(f"outage: unknown verb '{verb}': it is `declare` or `clear`")
+    opts: dict = {"verb": verb, "--until": None, "--why": None, "--mirror-seq": None,
+                  "--rollback": False}
+    i = 0
+    while i < len(rest):
+        arg = rest[i]
+        if arg in ("-h", "--help"):
+            return None
+        if verb == "clear":
+            raise _OutageUsage(f"outage clear takes no argument, and was given '{arg}'")
+        name, eq, value = arg.partition("=")
+        if name in ("--until", "--why", "--mirror-seq"):
+            if not eq:
+                if i + 1 >= len(rest):
+                    raise _OutageUsage(f"outage declare: {name} needs a value")
+                i += 1
+                value = rest[i]
+            if not value:
+                raise _OutageUsage(f"outage declare: {name} needs a value")
+            if opts[name] is not None:
+                raise _OutageUsage(f"outage declare: {name} is given twice")
+            opts[name] = value
+        elif arg == "--rollback":
+            if opts["--rollback"]:
+                raise _OutageUsage("outage declare: --rollback is given twice")
+            opts["--rollback"] = True
+        else:
+            raise _OutageUsage(f"outage declare: unknown argument '{arg}'")
+        i += 1
+    if opts["--rollback"] and opts["--until"] is not None:
+        raise _OutageUsage("outage declare --rollback takes no --until: a rollback's "
+                           "declaration carries no expiry, and counts until it is cleared")
+    return opts
+
+
+def cmd_outage(args: list[str]) -> int:
+    """`lanes-index outage declare` and `outage clear` (D20; operations.md
+    §2.5; contracts/exit-codes.md §3.2): 0, the declaration written or
+    removed, or none to remove; 2, a refusal, with nothing written; 64, usage,
+    before anything is read. Never 69: on Brett's word a database that does
+    not answer is the declaration's premise, and in the `--rollback` form the
+    same silence is 2."""
+    try:
+        opts = _outage_args(args)
+    except _OutageUsage as exc:
+        note(f"{exc} - see {PROG} outage --help")
+        return EXIT_USAGE
+    if opts is None:
+        say(_OUTAGE_USAGE)
+        return EXIT_OK
+    try:
+        if opts["verb"] == "clear":
+            return _outage_clear()
+        return _outage_declare(opts)
+    except Refusal as exc:
+        note(f"REFUSED: {exc}")
+        return EXIT_REFUSED
+
+
+def _outage_declare(opts: dict) -> int:
+    """`outage declare`, in both forms (ops:496-507): each refusal is a
+    `Refusal`, 2, raised before the file is written."""
+    rollback = opts["--rollback"]
+    until, why, given = opts["--until"], opts["--why"], opts["--mirror-seq"]
+    form = "outage declare --rollback" if rollback else "outage declare"
+    nothing = "nothing was written"
+    # BEFORE ANYTHING IS READ OR SENT: ops §2.5's refusals that need no probe,
+    # in its order, then those of the declaration's form (DEC-21; config.md
+    # §6.3).
+    if not rollback and until is None:
+        raise Refusal(f"{form}: no --until <UTC>. On Brett's word the outage's expiry is "
+                      f"his to name, and every guard ignores the declaration after it (D20; "
+                      f"operations.md §2.5); {nothing}")
+    if rollback and given is None:
+        raise Refusal(f"{form}: no --mirror-seq <k>. A rollback's declaration records the "
+                      f"rollback's head k, as `rollback` prints it; without it, it would "
+                      f"record the mirror's m and reopen R2's M1 (operations.md §2.5); "
+                      f"{nothing}")
+    if not rollback and why is None:
+        raise Refusal(f"{form}: no --why <words>. On Brett's word the declaration records "
+                      f"his words, verbatim (D20); {nothing}")
+    if why is not None and _outage_has_line_break(why):
+        raise Refusal(f"{form}: --why holds a line break. The declaration carries the words "
+                      f"on one line, so the guard's `.outage` label stays on one line "
+                      f"(DEC-21; lane 5's O15); {nothing}")
+    if why is not None and not _outage_utf8(why):
+        raise Refusal(f"{form}: --why is not UTF-8 text, and the declaration is UTF-8 "
+                      f"(contracts/config.md §6.3); {nothing}")
+    if until is not None and not _outage_utc_ok(until):
+        raise Refusal(f"{form}: --until {until!r} is not a UTC of the form "
+                      f"YYYY-MM-DDTHH:MM:SSZ (contracts/config.md §6.3); {nothing}")
+    if given is not None and not re.fullmatch(r"[0-9]+", given):
+        raise Refusal(f"{form}: --mirror-seq {given!r} is not a whole number, as a "
+                      f"Register-Seq is (contracts/config.md §6.3); {nothing}")
+    # THE CONFIGURATION: one refused, Q6(c)'s refusal included, is 2
+    # (exit-codes.md §2). The declaration names the database it covers by this
+    # host's `register_label=` (config.md §6.3), and the probe connects as
+    # `register_url=`'s REGISTER-WRITER.
+    cfg = load_config()
+    label = cfg["register_label"]
+    if not label:
+        raise Refusal(f"{form}: {cfg['path']} names no `register_label=`, the label of the "
+                      f"database the declaration covers (contracts/config.md §6.3); {nothing}")
+    if not cfg["register_url"]:
+        raise Refusal(f"{form}: {cfg['path']} names no `register_url=`, the REGISTER-WRITER "
+                      f"login the probe connects as (D9, Y:3535); {nothing}")
+    store = PostgresStore(cfg, "register_writer")
+    path = register_outage_path(cfg)
+    _outage_refuse_unwritable(path, form, nothing)
+    host = _outage_host(form)
+    # THE PROBE (D9, Y:3535), and ops §2.5's refusals that read it. Where two
+    # of them describe one answer, the narrower one's text is given: Brett's
+    # word at `files` after a rollback is also a database that answers.
+    probe = _outage_probe(store)
+    switch, set_seq, kind = probe.get("switch"), probe.get("set_seq"), probe.get("kind")
+    after_rollback = probe["answered"] and switch == "files" and kind == "rollback"
+    if not rollback:
+        if after_rollback:
+            raise Refusal(f"{form}: the database answers from this host, and the switch "
+                          f"reads `files` after a rollback, its entry at set_seq {set_seq}. A "
+                          f"declaration on Brett's word would record the mirror's m, not the "
+                          f"rollback's head (R2's M1; operations.md §2.5); {nothing}. Run "
+                          f"instead:\n{PROG} outage declare --rollback --mirror-seq "
+                          f"{set_seq - 1}")
+        if probe["answered"]:
+            raise Refusal(f"{form}: the database answers from this host ({probe['end']}), so "
+                          f"the outage is not estate-wide from here (operations.md §2.5); "
+                          f"{nothing}")
+    else:
+        if probe["answered"] and switch == "primary":
+            raise Refusal(f"{form}: the database answers from this host, with the switch at "
+                          f"`primary` (set_seq {set_seq}): no rollback has set it to `files` "
+                          f"(operations.md §2.5); {nothing}")
+        if probe["answered"] and switch == "files" and not after_rollback:
+            entry = f"of kind `{kind}`" if kind else "absent"
+            raise Refusal(f"{form}: the switch reads `files`, but the journal entry at its "
+                          f"set_seq {set_seq} is {entry}, not a `rollback` (operations.md "
+                          f"§2.5); {nothing}")
+        if after_rollback and int(given) != set_seq - 1:
+            raise Refusal(f"{form} --mirror-seq {given}: the rollback's head k is "
+                          f"{set_seq - 1}, set_seq {set_seq} less one, and not {given} (R2's "
+                          f"M1; operations.md §2.5); {nothing}. Run instead:\n{PROG} outage "
+                          f"declare --rollback --mirror-seq {set_seq - 1}")
+        if not after_rollback:
+            raise Refusal(f"{form}: the probe cannot read the switch ({probe['end']}). A "
+                          f"rollback's declaration counts only where a guard's own read finds "
+                          f"the switch at `files`, so here it would gain nothing and be left "
+                          f"behind (V2's S-4; operations.md §2.5); {nothing}")
+    # `mirror-seq=` (F11): the rollback's head k, as given; on Brett's word, m
+    # as given, or else read after a fetch, and with neither, 2 (ops:497).
+    if rollback:
+        seq, whence = int(given), f"the rollback's head k, its entry at set_seq {set_seq}"
+    elif given is not None:
+        seq, whence = int(given), "as --mirror-seq gave it"
+    else:
+        try:
+            seq, commit = _outage_mirror_seq()
+        except StoreUnusable as exc:
+            raise Refusal(f"{form}: no mirror-seq: this host cannot read the mirror's "
+                          f"Register-Seq after a fetch ({exc.detail}). Run `{PROG} status` on "
+                          f"a host that can, and name its m here with --mirror-seq <m> (F11; "
+                          f"operations.md §2.5); {nothing}")
+        whence = f"origin/{branch()} at {commit[:12]}, read after a fetch"
+    try:
+        text = register_outage_text(kind="rollback" if rollback else "word", database=label,
+                                    host=host, mirror_seq=seq,
+                                    why=why if why is not None else "rollback",
+                                    until=None if rollback else until)
+    except ValueError as exc:
+        raise Refusal(f"{form}: the declaration would not be well formed ({exc}); {nothing}")
+    replaced = os.path.lexists(path)
+    try:
+        write_register_outage(path, text)
+    except OSError as exc:
+        raise Refusal(f"{form}: {path} could not be written ({exc.strerror or exc}); "
+                      f"{nothing}, and no temp file is left")
+    say(f"outage declared: {path}" + (", replacing the declaration there" if replaced else ""))
+    for line in text.splitlines():
+        say(f"  {line}")
+    say(f"the probe: {probe['end']}")
+    say(f"mirror-seq: {whence}")
+    return EXIT_OK
+
+
+def _outage_clear() -> int:
+    """`outage clear` (ops:541): removes this host's declaration, and where
+    none is recorded says so and exits 0, so a clear on every host can be
+    repeated. A configuration directory it cannot write is 2, as `outage
+    declare`'s is, with nothing removed."""
+    cfg = load_config()
+    path = register_outage_path(cfg)
+    if not os.path.lexists(path):
+        say(f"outage clear: no declared outage is recorded at {path}; nothing to clear")
+        return EXIT_OK
+    _outage_refuse_unwritable(path, "outage clear", "nothing was removed")
+    try:
+        fields = read_register_outage(path)
+        what = (f"kind={fields['kind']}, declared {fields['utc']} on {fields['host']}"
+                if fields else "")
+    except ValueError as exc:
+        what = f"not well formed: {exc}"
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        say(f"outage clear: no declared outage is recorded at {path}; nothing to clear")
+        return EXIT_OK
+    except OSError as exc:
+        raise Refusal(f"outage clear: {path} could not be removed ({exc.strerror or exc}); "
+                      f"nothing was removed")
+    say(f"outage cleared: removed {path}" + (f" ({what})" if what else ""))
+    return EXIT_OK
+
+
 # ===== the SQL register: schema, roles, bootstrap and logins (007)
 #
 # THE SQL REGISTER'S SCHEMA, WHICH THE BOOTSTRAP ALONE APPLIES (feature 007,
@@ -6489,6 +7144,8 @@ def main(argv: list[str]) -> int:
     # ahead of #160's argument loop, to the subcommand's own parser.
     if verb == "mode":
         return cmd_mode(args)
+    if verb == "outage":
+        return cmd_outage(args)
     if verb == "register" and args[:1] == ["classify"]:
         return cmd_register_classify(args[1:])
     if verb == "bootstrap":
