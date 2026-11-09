@@ -514,8 +514,12 @@ class Helper:
         """(canonical spelling, refusal) - Amendment 15's resolver, as
         `lane-end` reads it: 0 with the row's spelling; 66 the alias table
         unreadable and 2 with 15(d)'s words a published case pair, both
-        refusals; any other answer (a helper predating the subcommand) keeps
-        the typed spelling."""
+        refusals; 69, 75 and 3 refusals too (feature 007, T404; Y:5739): a
+        read that could not be made, a busy register and an answer in doubt
+        leave the row's spelling unknown, and an unknown spelling is never
+        the typed one. Files mode emits none of the three (Y:5746). Any other
+        answer (a helper predating the subcommand) keeps the typed
+        spelling."""
         proc = self.call("canon-lane", lane, fetch=True)
         out = proc.stdout.strip()
         if proc.returncode == 0 and out:
@@ -526,7 +530,28 @@ class Helper:
         if proc.returncode == 2 and "Amendment 15(d)" in (proc.stderr or ""):
             return lane, ("the published register spells this lane two ways (Amendment "
                           f"15(d)): {_first_line(proc.stderr)}")
+        if proc.returncode in (69, 75, 3):
+            return lane, (f"`lanes-edit.sh canon-lane {lane}` exited {proc.returncode}, so "
+                          "the register row's spelling is unknown and the typed one is not "
+                          f"taken for it: {_first_line(proc.stderr)}")
         return lane, ""
+
+    def register_grep(self, *args: str):
+        """FEATURE 007, T404 - THE REGISTER'S `git grep`, BEHIND A VERB
+        (FR-036; Y:4926): `lanes-edit.sh register-grep [-h] -E <ERE> --
+        <path>...`, T401's verb, where this file ran `git grep [-h] -E -e
+        <ERE> origin/<branch> -- <path>...` in the workspace root itself. In
+        files and `index` mode the verb runs that grep in `workspace-root`'s
+        answer, on `origin/$LANES_BRANCH` (an empty one read as `main`), under
+        `LC_ALL=C` and with no fetch, so its stdout is the bytes the grep
+        printed and each caller parses it as before (spec:59). Its `lanes/log`
+        is each `lanes/log/<lane>.md`, without `lanes/log/README.md`, which
+        holds no line the three greps match. Exits: 0; 1 no match; 2 usage or
+        a path outside its set; 69 a read that could not be made. Each caller
+        takes any exit but 0 and 1 as a register it could not read: the sweep
+        then takes no recorded directory and no `LANDED` line from it, and
+        the report names it unread. The bound stays the grep's own."""
+        return self.call("register-grep", *args, timeout=GIT_TIMEOUT)
 
     def lane_facts(self, lane: str) -> LaneFacts:
         facts = LaneFacts(lane)
@@ -701,15 +726,16 @@ def payload_field(payload: str, name: str) -> str:
 
 def register_lane_dirs(helper) -> tuple:
     """({lane: its recorded dir}, why-not) - every lane log's last lane-kind
-    line that carries a `dir`, read from the workspace repository's
-    `origin/<branch>` in one `git grep`. Where #97 keeps that lane's control
-    root (`<parent of dir>/.lane-state/<lane>`) follows from it."""
+    line that carries a `dir`, read from the register's lane logs in one
+    `register-grep` (T404; in files mode, the workspace repository's
+    `origin/<branch>`). Where #97 keeps that lane's control root (`<parent
+    of dir>/.lane-state/<lane>`) follows from it."""
     root = helper.workspace_root() if helper.path else ""
     if not root:
         return {}, "the workspace repository could not be found"
     branch = os.environ.get("LANES_BRANCH", "") or "main"
-    proc = git(root, "grep", "-E", "-e", r"^(STARTED|PAUSED|RESUMED|ENDED|RETIRED) — lane ",
-               f"origin/{branch}", "--", "lanes/log")
+    proc = helper.register_grep("-E", r"^(STARTED|PAUSED|RESUMED|ENDED|RETIRED) — lane ",
+                                "--", "lanes/log")
     if proc.returncode not in (0, 1):
         return {}, (f"the register's lane logs on origin/{branch} could not be read: "
                     + _first_line(proc.stderr))
@@ -998,9 +1024,8 @@ class MergeEvidence:
         if not root:
             self.register_why = "the workspace repository could not be found"
             return self._landed
-        branch = os.environ.get("LANES_BRANCH", "main")
-        proc = git(root, "grep", "-h", "-E", "-e", "^LANDED", f"origin/{branch}", "--",
-                   "lanes/LANES.md", "lanes/log")
+        proc = self.helper.register_grep("-h", "-E", "^LANDED", "--",
+                                         "lanes/LANES.md", "lanes/log")
         if proc.returncode not in (0, 1):
             self.register_why = "the register could not be read: " + _first_line(proc.stderr)
             return self._landed
@@ -5592,16 +5617,19 @@ class Report:
                     closed[lane] = "its snapshot is CLOSED"
         wroot = self.helper.workspace_root() if self.helper.path else ""
         if wroot:
-            branch = os.environ.get("LANES_BRANCH", "main")
-            proc = git(wroot, "grep", "-E", "-e",
-                       "^(STARTED|RESUMED|PAUSED|ENDED|RETIRED) — lane ",
-                       f"origin/{branch}", "--", "lanes/log")
+            # THE BRANCH `register-grep` READS (T404): an empty LANES_BRANCH is
+            # `main` to the verb, as to every other read here.
+            branch = os.environ.get("LANES_BRANCH", "") or "main"
+            proc = self.helper.register_grep(
+                "-E", "^(STARTED|RESUMED|PAUSED|ENDED|RETIRED) — lane ", "--", "lanes/log")
             if proc.returncode not in (0, 1):
                 # A GREP THAT FAILED IS NO "NO EVENTS" (#170 G3): exit 1 is no
-                # match; anything else - a ref that is not there, a repository
-                # git cannot read - leaves every log-only ENDED lane unknown.
+                # match; anything else - the verb's 69 for a ref that is not
+                # there or a repository git cannot read - leaves every log-only
+                # ENDED lane unknown.
                 self._unread(f"the register's ENDED and RETIRED lines (origin/{branch})",
-                             f"git grep exited {proc.returncode}: " + _first_line(proc.stderr))
+                             f"`lanes-edit.sh register-grep` exited {proc.returncode}: "
+                             + _first_line(proc.stderr))
             last: dict = {}
             for line in proc.stdout.splitlines():
                 _ref, _, rest = line.partition(":")
