@@ -13,7 +13,11 @@ suite, a shard or `pytest`. What is held:
 - `verify` passes the shards of a whole suite and names each way they can fail
   to be one: a shard that left no report, one that failed, one that ran fewer
   items than it chose, an item in two shards, an item in none, an item no
-  full collection has, and a gate whose shards did not all succeed.
+  full collection has, a gate whose shards did not all succeed, and a shard
+  whose report records a failure or an error though its `shard.json` says
+  exit 0 (a `pytest.exit(returncode=0)` after a failure, say);
+- the line a serial run would end on carries the failed and error counts, in
+  pytest's order and words, when they are not zero.
 """
 
 from __future__ import annotations
@@ -136,8 +140,11 @@ def test_a_shell_suite_that_can_be_cut_is_dealt_each_section_once_and_the_always
 
 # --- the count check --------------------------------------------------------------------
 
-def write_shard(results, sid, ids, exit_code=0, skipped=0, extra_cases=0, attempt=1):
-    """One shard's report folder, as the workflow uploads it."""
+def write_shard(results, sid, ids, exit_code=0, skipped=0, extra_cases=0, attempt=1,
+                failed=0, errors=0):
+    """One shard's report folder, as the workflow uploads it. The first
+    `skipped` items are skipped, the next `failed` failed, the next `errors` in
+    error, whatever `exit_code` says."""
     folder = results / f"shard-tests-{sid}-a{attempt}"
     folder.mkdir(parents=True)
     (folder / "shard.json").write_text(json.dumps(
@@ -147,7 +154,10 @@ def write_shard(results, sid, ids, exit_code=0, skipped=0, extra_cases=0, attemp
     cases = []
     for number, node in enumerate(ids):
         path, name = node.split("::", 1)
-        inner = "<skipped/>" if number < skipped else ""
+        inner = ("<skipped/>" if number < skipped
+                 else '<failure message="boom"/>' if number < skipped + failed
+                 else '<error message="boom"/>' if number < skipped + failed + errors
+                 else "")
         cases.append(f'<testcase classname="{path[:-3].replace("/", ".")}" name="{name}" '
                      f'time="0.5">{inner}</testcase>')
     cases += ['<testcase classname="tests.test_x" name="test_extra" time="0.1"/>'] * extra_cases
@@ -221,6 +231,36 @@ def test_an_item_in_none_an_item_nobody_collected_and_an_item_in_two_shards_are_
     write_shard(results, "pytest-2", A[:1] + B, attempt=2)
     problems, _ = run_verify(ci, weights, results, full)
     assert any("is in shards pytest-1 and pytest-2" in problem for problem in problems), problems
+
+
+@pytest.mark.parametrize("sid, changes, fragment", [
+    ("pytest-1", {"failed": 1}, "shard pytest-1's report records 1 failed and 0 in error"),
+    ("pytest-2", {"errors": 1}, "shard pytest-2's report records 0 failed and 1 in error"),
+    ("shell", {"failed": 1}, "shard shell's report records 1 failed and 0 in error"),
+], ids=["a-failure", "an-error", "the-shell-suite-failing"])
+def test_a_failure_or_error_in_a_shards_report_is_named_though_its_shard_json_says_exit_0(
+        ci, tmp_path, sid, changes, fragment):
+    weights, results, full = whole_suite(ci, tmp_path, **{sid: changes})
+    meta = json.loads((results / f"shard-tests-{sid}-a1" / "shard.json").read_text(encoding="utf-8"))
+    assert meta["exit_code"] == 0, meta     # the premise: the shard says it passed
+    problems, _ = run_verify(ci, weights, results, full)
+    assert any(fragment in problem for problem in problems), problems
+    assert not any("exited" in problem for problem in problems), problems
+
+
+@pytest.mark.parametrize("per_shard, line", [
+    ({"pytest-1": {"failed": 1}}, "1 failed, 3 passed, 0 skipped"),
+    ({"pytest-1": {"errors": 1}}, "3 passed, 0 skipped, 1 error"),
+    ({"pytest-1": {"errors": 2}}, "2 passed, 0 skipped, 2 errors"),
+    ({"pytest-1": {"skipped": 1, "failed": 1}, "pytest-2": {"errors": 1}},
+     "1 failed, 1 passed, 1 skipped, 1 error"),
+], ids=["a-failure", "an-error", "two-errors", "all-four"])
+def test_the_serial_runs_line_carries_failures_and_errors_as_pytest_words_them(
+        ci, tmp_path, per_shard, line):
+    weights, results, full = whole_suite(ci, tmp_path, **per_shard)
+    _, lines = run_verify(ci, weights, results, full)
+    assert [text for text in lines if "would read" in text] == [
+        "the serial run's last line would read: " + line], lines
 
 
 def test_the_newest_attempt_of_a_shard_is_the_report_that_counts(ci, tmp_path):

@@ -28,10 +28,16 @@ THE COUNT CHECK (`verify`). Each shard writes `shard.json`, `junit.xml` and
 `collected.txt` (the node ids pytest selected, written by this file's own
 `pytest_collection_finish` hook, loaded with `-p ci_shards`). The aggregator
 collects the whole suite the way a serial run does and requires: every shard
-present and exit 0; each shard executed what it collected; no node id in two
-pytest shards; and the pytest shards' ids plus the shell suite's one id equal
-the full collection, id for id. It then prints the total the serial run
-would have printed, `N passed, M skipped`.
+present and exit 0, and none with a failure or an error in its report; each
+shard executed what it collected; no node id in two pytest shards; and the
+pytest shards' ids plus the shell suite's one id equal the full collection, id
+for id. It then prints the total the serial run would have printed,
+`N passed, M skipped`, with pytest's own `K failed` before it and `L error(s)`
+after it when there are any.
+
+CI ONLY. `run` (and `verify`, which collects the whole suite) starts pytest
+itself, outside `tests/run.sh`'s lock, so it must not be used on a workstation
+where other lanes run tests; use `tests/run.sh` there.
 
 Standard library only, so it runs on any runner Python.
 """
@@ -236,6 +242,17 @@ def read_ids(path: Path) -> list:
     return [line for line in path.read_text(encoding="utf-8").splitlines() if NODE_ID.match(line)]
 
 
+def serial_line(counts: dict) -> str:
+    """The counts as a serial run's last line words them: `K failed` first,
+    then passed and skipped as before, then `L error` or `L errors`, each of
+    the two only when it is not zero, as pytest prints them."""
+    parts = ([f"{counts['failed']} failed"] if counts["failed"] else []) + [
+        f"{counts['passed']} passed", f"{counts['skipped']} skipped"]
+    if counts["error"]:
+        parts.append(f"{counts['error']} error" + ("s" if counts["error"] != 1 else ""))
+    return ", ".join(parts)
+
+
 def verify(variant: str, results: Path, needs_result: str, full_ids: list,
            files: list, weights: dict, root: Path = ROOT) -> tuple:
     """(problems, lines): what is wrong with the shards' reports, and the text
@@ -257,6 +274,14 @@ def verify(variant: str, results: Path, needs_result: str, full_ids: list,
             continue
         if meta.get("exit_code") != 0:
             problems.append(f"shard {sid} exited {meta.get('exit_code')}")
+        # The exit code is the shard's own word. The report is what ran: a
+        # `pytest.exit(returncode=0)` after a failure, or a hook that resets
+        # the exit status, leaves exit 0 beside a failure in `junit.xml`.
+        broken = {name: sum(1 for _, outcome, _ in cases if outcome == name)
+                  for name in ("failed", "error")}
+        if broken["failed"] or broken["error"]:
+            problems.append(f"shard {sid}'s report records {broken['failed']} failed "
+                            f"and {broken['error']} in error")
         if len(cases) != len(ids):
             problems.append(f"shard {sid} selected {len(ids)} items and its report holds {len(cases)}")
         if shard["kind"] == "shell":
@@ -291,7 +316,7 @@ def verify(variant: str, results: Path, needs_result: str, full_ids: list,
     lines = [f"{variant}: {len(full)} items collected, {total} reported across {len(shards)} shards: "
              f"{counts['passed']} passed, {counts['skipped']} skipped, {counts['failed']} failed, "
              f"{counts['error']} in error",
-             f"the serial run's last line would read: {counts['passed']} passed, {counts['skipped']} skipped",
+             f"the serial run's last line would read: {serial_line(counts)}",
              "| shard | items | planned s | ran s |", "|---|---:|---:|---:|", *rows]
     lines.append("measured seconds per file, for `ci_shards.py reweigh`: " + json.dumps(
         {k: v for k, v in sorted(per_file.items())}, separators=(",", ":")))
