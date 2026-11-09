@@ -2055,6 +2055,15 @@ SMI
   # lane's state keeps, is held as "cannot tell"; a lane's checkout is kept
   # by its lane's state, asked again under the lock. `LANE_END_PROC` names
   # another `/proc`: the test seam.
+  #
+  # A VALUE THAT NO LONGER RESOLVES (lane openRepoTools-3's NIT 2 on
+  # code#21) is spelled from the deepest directory on it that does, as a
+  # `.git` file's target is (D46): after the move, `../<W>-lanes/<lane>`,
+  # read from a window's working directory, names the old path again, and
+  # the checkout is moved back. A LIMIT: a value spelled through a link to
+  # the checkout cannot be matched after the move, since the link then
+  # dangles. Such a window is seen under the lock, and the one missed is a
+  # window opened with a link between the last read there and the move.
   sc_repos=""; sc_repo_mode=none; sc_repo_unread=0
   sc_repo_scan() {
     sc_repos=""; sc_repo_unread=0; sc_repo_mode=none
@@ -2080,7 +2089,7 @@ SMI
       esac
       sc_repos="$sc_repos${srs_d##*/}$sc_tab$srs_v
 "
-      srs_r="$(sc_real "$srs_v")"
+      srs_r="$(sc_real_or_text "$srs_v")"
       if [ -n "$srs_r" ] && [ "$srs_r" != "$srs_v" ]; then
         sc_repos="$sc_repos${srs_d##*/}$sc_tab$srs_r
 "

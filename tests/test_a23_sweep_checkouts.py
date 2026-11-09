@@ -3384,18 +3384,25 @@ def test_a_lock_taken_over_at_the_move_moves_it_back(sweep):
     _no_aside(box)
 
 
-def test_a_window_that_names_it_after_the_last_read_moves_it_back(sweep):
+@pytest.mark.parametrize("spelled", ["its own path", "relative to its working directory"])
+def test_a_window_that_names_it_after_the_last_read_moves_it_back(sweep, spelled):
     """THE MOVE IS THE COMMIT POINT FOR D37's HOLD TOO (rv4b's SHOULD D,
     probe P4). The windows' `LANES_REPO` was read before the git reads
     under the lock, so a window opened during them on the CLOSED lane's
     checkout was missed, and the checkout removed under it. After the move
     the environments are read again, and a window that names the old path
-    holds it: it is moved back, its lock let go."""
+    holds it: it is moved back, its lock let go. A window working in W
+    with `LANES_REPO=../<W>-lanes/<lane>` names it too (lane
+    openRepoTools-3's NIT 2 on code#21, its probe 2 made a case): after the
+    move that path no longer resolved, and stayed as text with its `..`,
+    so the checkout was removed from under the window."""
     box = sweep.box
     c = box.checkout(CLOSED)
     pidfile = box.root / "late.pid"
+    where, value = ((box.root, c) if spelled == "its own path"
+                    else (box.w, f"../{box.lanes_root.name}/{c.name}"))
     _git_after_the_last_read(box, c, (
-        f"(cd {box.root} && LANES_REPO={c} exec sleep 600) </dev/null >/dev/null 2>&1 & "
+        f"(cd {where} && LANES_REPO={value} exec sleep 600) </dev/null >/dev/null 2>&1 & "
         f"echo $! > {pidfile}"))
     try:
         result, rows = sweep("--yes", LANES_LANE=RUNNER)
