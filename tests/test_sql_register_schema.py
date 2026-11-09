@@ -80,7 +80,11 @@ LANE, WS, AUTHOR = "Lane-T221", "ws-t221", "T221 <t221@example.invalid>"
 COMMIT_C, TREE_C, MARKER_COMMIT = "c" * 40, "d" * 40, "e" * 40
 ARGS_SHA256 = "a" * 64
 NOT_AFTER = "2100-01-01T00:00:00Z"            # well past every case (lane 1's v2.3)
-STORE_LINE = "store=primary"
+STORE_LABEL = "t221"                          # the bootstrap case's `--label`; `config()` sets no label
+STORE_UTC = "2026-11-09T10:00:00Z"            # fixed, so the file's sha256 is the same every run
+# D21 (Y:613-615 at a6497d00); one field per line is a reading until T116 writes it; lane 1, #165 6754714549
+STORE_LINES = ("store=primary", f"database={STORE_LABEL}", f"import={COMMIT_C}",
+               f"lanes-tree={TREE_C}", f"utc={STORE_UTC}")
 SHA_A, SHA_B = "1" * 40, "2" * 40
 
 #: The configuration's own values, so `c=` and `n_a=` are not the defaults.
@@ -221,9 +225,10 @@ def import_entry(files: dict, **rows) -> dict:
 def cutover_entry() -> dict:
     return entry("cutover", "cutover",
                  edits=[{"ord": 1, "op": "create", "path": "lanes/STORE"},
-                        {"ord": 2, "op": "append", "path": "lanes/STORE", "new_text": STORE_LINE}],
+                        *({"ord": n, "op": "append", "path": "lanes/STORE", "new_text": line}
+                          for n, line in enumerate(STORE_LINES, start=2))],
                  files=[{"path": "lanes/STORE", "present": True,
-                         "sha256": rendered([STORE_LINE]), "final_newline": True}])
+                         "sha256": rendered(STORE_LINES), "final_newline": True}])
 
 
 def commit_call(db, base: int, body: dict, *, write_id: str = None, client: int = None,
