@@ -2369,10 +2369,13 @@ def test_a_dependent_anywhere_in_the_scope_holds(sweep, where):
 def test_the_dry_run_names_the_dependents_scope(sweep):
     """THE SCOPE IS SAID (SHOULD 352), so a person knows where a dependent
     would not be seen, and how often it is read (lane openRepoTools-3's
-    question 4 on code#21): once a run, so a clone made while `--yes` runs
-    is not seen. So are the processes read, those of the container it runs
-    in, by its name and its host's (rv4b's NIT J, from Q2's answer), so a
-    person knows that another container's windows are not seen."""
+    question 4 on code#21): once a run, so an ad-hoc `--reference` or
+    `--shared` clone made while `--yes` runs is not seen, and a
+    `<name>-lanes/` or a linked worktree made then is looked for again
+    after each move (its NIT 1). So are the processes read, those of the
+    container it runs in, by its name and its host's (rv4b's NIT J, from
+    Q2's answer), so a person knows that another container's windows are not
+    seen."""
     box = sweep.box
     result, _ = sweep()
     assert result.returncode == 3, (result.stdout, result.stderr)
@@ -2383,8 +2386,10 @@ def test_the_dry_run_names_the_dependents_scope(sweep):
             f"ones too, under {box.env['TMPDIR']}/ to depth 8, for the clones in a Claude "
             f"Code scratchpad, and under {box.home}/ to depth 4; scanned once a run, with a "
             "line per place on stderr, and under each lock and after each move only the "
-            "alternates and .git files it found are read again, so a clone made while --yes "
-            "runs is not seen") in result.stdout, result.stdout
+            "alternates and .git files it found are read again, so an ad-hoc --reference or "
+            "--shared clone made while --yes runs is not seen; a <name>-lanes/ that comes "
+            "beside a clone, or a linked worktree, is looked for again after each move") \
+        in result.stdout, result.stdout
 
 
 def test_what_leans_on_the_candidates_is_scanned_once_a_run(sweep):
@@ -3421,6 +3426,75 @@ def test_a_window_that_names_it_after_the_last_read_moves_it_back(sweep, spelled
                 os.kill(int(pidfile.read_text(encoding="utf-8")), signal.SIGKILL)
             except (ProcessLookupError, ValueError):
                 pass
+
+
+def test_a_clone_beside_W_that_becomes_a_W_after_the_last_read_moves_it_back(sweep):
+    """A CLONE BESIDE W THAT BECOMES A W IS ASKED AGAIN AFTER THE MOVE (lane
+    openRepoTools-3's NIT 1 on code#21, its probe P4 made a case). D45's
+    question, whether a `<name>-lanes/` stands beside it, is asked under its
+    lock before the git reads, and the read after the move is of the files
+    the scan found alone (question 4). So a `<name>-lanes/<lane>` made after
+    those reads, as `lanes-edit.sh` makes one for a writer routed to the
+    clone, here a lane checkout cloned with `--reference` it, went unseen:
+    the leaf c3 was removed, and the new checkout's `fsck` failed. Asked
+    again after the move, it holds c3, which is moved back, its lock let go;
+    c3 then holds the chain it borrows from, and the new checkout is whole."""
+    box = sweep.box
+    c1, c2, c3 = box.profile_clones
+    _free_profile_clones(box)
+    home = c3.parent / f"{c3.name}-lanes"
+    lc = home / RUNNER
+    git = shutil.which("git")
+    assert git, "no git on the test's own PATH"
+    _git_after_the_last_read(box, c3, (
+        f"mkdir -p {home} && {git} clone -q --no-local --reference {c3} {box.origin} {lc}"))
+    result, rows = sweep("--yes", LANES_LANE=RUNNER)
+    assert (lc / ".git").is_dir(), "the hook made the lane checkout"
+    assert rows[str(c3)][0] == "hold", rows[str(c3)]
+    assert (f"{c3.name}-lanes/ stands beside it: it is a W with lane checkouts of its own, "
+            "not a per-profile clone, and it came as it was moved aside") in rows[str(c3)][1], \
+        rows[str(c3)]
+    assert "it was moved back" in rows[str(c3)][1], rows[str(c3)]
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert (c3 / ".git").is_dir()
+    assert not os.path.lexists(box.lock_of(c3)), "its lock is let go"
+    assert not list(box.w.parent.glob(".*.removing-*")), "no half-removed aside is left"
+    for lender, borrower in ((c2, c3), (c1, c2)):
+        assert rows[str(lender)][0] == "hold", rows[str(lender)]
+        assert f"leaned on by {borrower} (" in rows[str(lender)][1], rows[str(lender)]
+    assert f"{c3}/.git/objects" in (lc / ".git" / "objects" / "info" / "alternates").read_text(
+        encoding="utf-8")
+    box.git("-C", str(lc), "fsck", "--connectivity-only")
+
+
+def test_a_linked_worktree_added_after_the_last_read_moves_it_back(sweep):
+    """A LINKED WORKTREE IS LOOKED FOR AGAIN AFTER THE MOVE (lane
+    openRepoTools-3's NIT 1 on code#21, its probe P6 made a case).
+    `.git/worktrees` is read under the lock before the last git read, and
+    the read after the move is of the files the scan found alone (question
+    4), so a `git worktree add` from the CLOSED lane's checkout after that
+    read went unseen: the checkout was removed, and the worktree was not a
+    git repository any more. Looked for again after the move, it holds the
+    checkout, which is moved back, its lock let go, and the worktree works
+    in it again."""
+    box = sweep.box
+    c = box.checkout(CLOSED)
+    linked = box.w.parent / "late-wt"
+    git = shutil.which("git")
+    assert git, "no git on the test's own PATH"
+    _git_after_the_last_read(box, c, f"{git} -C {c} worktree add -q --detach {linked}")
+    result, rows = sweep("--yes", LANES_LANE=RUNNER)
+    assert (linked / ".git").is_file(), "the hook added the worktree"
+    assert rows[str(c)][0] == "hold", rows[str(c)]
+    assert "a linked worktree of it came as it was moved aside" in rows[str(c)][1], rows[str(c)]
+    assert "it was moved back" in rows[str(c)][1], rows[str(c)]
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert (c / ".git").is_dir()
+    assert not os.path.lexists(box.lock_of(c)), "its lock is let go"
+    _no_aside(box)
+    assert box.git("-C", str(linked), "rev-parse", "--absolute-git-dir").strip() == \
+        f"{c}/.git/worktrees/{linked.name}"
+    box.git("-C", str(linked), "status", "--porcelain")
 
 
 def _mv_then(box: Sweep, c: Path, act: str) -> None:

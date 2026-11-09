@@ -187,8 +187,11 @@
 #                       removed in one `NOTED` line of that lane's log.
 #                       What leans on each is scanned for once a run, with
 #                       a progress line per place on stderr; `--yes` reads
-#                       again only the files that scan found, so a clone
-#                       made while it runs is not seen. Nothing else is
+#                       again only the files that scan found, so an ad-hoc
+#                       `--reference` or `--shared` clone made while it runs
+#                       is not seen. A `<name>-lanes/` that comes beside a
+#                       candidate then, or a linked worktree of it, is
+#                       looked for again after the move. Nothing else is
 #                       ever removed
 #   --reason "<why>"    the words the sweep writes into each RETIRED line and
 #                       into each row's state cell. `--retire-dormant` only
@@ -1723,11 +1726,16 @@ SH_Y
   # scan runs, where the notes go, so stdout's listing and report read as
   # they did.
   #
-  # THE RISK LEFT: a clone made while `--yes` runs, or a repository the scan
-  # found with no alternates file that gains one then, is not seen. It is
-  # rare: a lane's checkout borrows from W (`lanes-edit.sh` clones it with
-  # `--reference` W), and a clone someone uses as W has a `<name>-lanes/`
-  # beside it, so it is never a candidate (MUST A, D45).
+  # THE RISK LEFT: an ad-hoc `--reference` or `--shared` clone made while
+  # `--yes` runs, or a repository the scan found with no alternates file
+  # that gains one then, is not seen. It is rare: a lane's checkout borrows
+  # from W (`lanes-edit.sh` clones it with `--reference` W), and a clone
+  # someone uses as W has a `<name>-lanes/` beside it, so it is never a
+  # candidate (MUST A, D45). That directory, and a linked worktree, are
+  # looked for again after the move (lane openRepoTools-3's NIT 1 on
+  # code#21): a clone beside W that `lanes-edit.sh` makes a W while `--yes`
+  # runs, with a lane checkout that may borrow from it, holds it, and so
+  # does a `git worktree add` from a candidate then.
   #
   # A SCAN THAT CANNOT FINISH HOLDS EVERY CANDIDATE (`sc_dep_fail`), since
   # what leans on each is then unknown: a scope that cannot be entered, a
@@ -2308,7 +2316,7 @@ SS_ROW
   if [ "$sc_hidden" -gt 0 ]; then
     printf '  (%s hidden entr(ies) under %s/ - creation locks, partial clones, the sidecar lock - are never looked at)\n' "$sc_hidden" "$sc_home"
   fi
-  printf '  dependents     : every repository under %s/ to depth %s, hidden ones too, under %s/ to depth %s, for the clones in a Claude Code scratchpad, and under %s/ to depth %s; scanned once a run, with a line per place on stderr, and under each lock and after each move only the alternates and .git files it found are read again, so a clone made while --yes runs is not seen\n' \
+  printf '  dependents     : every repository under %s/ to depth %s, hidden ones too, under %s/ to depth %s, for the clones in a Claude Code scratchpad, and under %s/ to depth %s; scanned once a run, with a line per place on stderr, and under each lock and after each move only the alternates and .git files it found are read again, so an ad-hoc --reference or --shared clone made while --yes runs is not seen; a <name>-lanes/ that comes beside a clone, or a linked worktree, is looked for again after each move\n' \
     "${sc_dep_named[0]}" "${sc_dep_to[0]}" "${sc_dep_named[1]}" "${sc_dep_to[1]}" "${sc_dep_named[2]}" "${sc_dep_to[2]}"
   # THE PROCESSES ARE THIS CONTAINER'S (rv4b's NIT J, from Q2's answer):
   # `/proc` (or `lsof`) shows the processes of the container it runs in, so
@@ -2611,12 +2619,13 @@ SLU
     # during the git reads now works in the aside), what leans on it and
     # what works in it (an alternates or `.git` file the scan found, written
     # meanwhile, names the old path, which is gone, so it is spelled from the
-    # deepest directory on it that stands: the 353 gap, D46; a clone made
-    # meanwhile is not seen, the risk question 4's answer leaves), the windows'
-    # `LANES_REPO` (D37: a window opened meanwhile names the old path as
-    # spelled), and the mounts (one made meanwhile is in the aside, which
-    # carried it) (rv4b's SHOULD D, for the last two). Any of them moves it
-    # back, and holds it.
+    # deepest directory on it that stands: the 353 gap, D46; an ad-hoc clone
+    # made meanwhile is not seen, the risk question 4's answer leaves), the
+    # windows' `LANES_REPO` (D37: a window opened meanwhile names the old path
+    # as spelled), the mounts (one made meanwhile is in the aside, which
+    # carried it) (rv4b's SHOULD D, for the last two), and whether it became a
+    # W or has a linked worktree (NIT 1, below). Any of them moves it back,
+    # and holds it.
     sc_post=""; sc_moved_line=""
     IFS= read -r sc_moved_line < "$sc_aside/lanes/.lanes-edit.lock/pid" 2>/dev/null || :
     if [ "$sc_moved_line" != "$$ $sc_ident" ]; then
@@ -2649,6 +2658,16 @@ SLU
         sc_x="$(sc_mounts_inside "$sc_aside")" || sc_x="(the mount table could not be matched)"
         if [ -n "$sc_x" ]; then sc_post="${sc_post:+$sc_post; }a file system came to be mounted at or under it as it was moved aside: $(sc_first "$sc_x")"; fi ;;
     esac
+    # A W, OR A LINKED WORKTREE, THAT CAME MEANWHILE (lane openRepoTools-3's
+    # NIT 1 on code#21). `sc_is_a_w` is asked under the lock before the git
+    # reads, and `.git/worktrees` is read among them. Since the read after
+    # the move is of the files the scan found alone (question 4), a
+    # `<name>-lanes/` made beside a clone after those reads, as
+    # `lanes-edit.sh` makes `<clone>-lanes/<lane>`, and a `git worktree add`
+    # from it, went unseen, and it was removed from under them. Both are
+    # asked again here.
+    if sc_is_a_w "$sc_c"; then sc_post="${sc_post:+$sc_post; }$SC_WHY, and it came as it was moved aside"; fi
+    if [ -n "$(ls -A -- "$sc_aside/.git/worktrees" 2>/dev/null)" ]; then sc_post="${sc_post:+$sc_post; }a linked worktree of it came as it was moved aside"; fi
     if [ -n "$sc_post" ]; then
       # NOT INTO A DIRECTORY THAT CAME MEANWHILE (rv4b's NIT G): one made at
       # the old path between the test and the `mv` takes the aside inside
