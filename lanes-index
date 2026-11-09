@@ -8,6 +8,15 @@ Amendment 14, ratified by Brett Heap 2026-10-05, verbatim "ratify 48").
     lanes-index status                                 per source: store, lag, errors
     lanes-index export    --out <dir> [--source <s> | --worktrees]
                                                        the read flags' reader
+    lanes-index mode                                   index or primary, from
+                                                       the configuration alone
+
+    and the SQL register's (feature 007, opensoft/openRepoTools#165), in the
+    forms contracts/register-cli.md fixes, each landing with its own task:
+
+    lanes-index register snapshot | commit | classify | read
+    lanes-index journal | render | import | cutover | rollback | outage
+    lanes-index bootstrap | login | ready | set-mode | serve
 
 THE REGISTER'S TRUTH STAYS WHERE IT IS (clause (a)). The workspace repository's
 `lanes/LANES.md`, `lanes/log/*.md`, `lanes/aliases.tsv` and `lanes/archive/`
@@ -69,11 +78,21 @@ refused when it is group- or world-readable, inside a git work tree or under
 connect to Postgres only as `reader_url=` and are refused without it - never
 with the writer's credential.
 
+THE MODE (feature 007, D3): `mode=index`, the default, or `mode=primary`,
+where the SQL register is the register's store. `lanes-index mode` answers it
+from the configuration alone, and `lanes-edit.sh` asks it only where a
+configuration exists (FR-002). While `RENDER_GIT_HALF` is False,
+`mode=primary` is refused where the configuration is read (Q6(c), FR-003):
+`mode` and `register read` exit 78, `EX_CONFIG`, and every other subcommand
+exits 2, each with `MODE_PRIMARY_REFUSED_TEXT`.
+
 Exit codes: 0 done · 1 a read or a write failed (nothing half-written) · 2 a
 refusal (the configuration, a `--source` that is not this workstation's, an
 inventory on a workstation with no name) · 3
 `export` only: the index cannot answer (missing, unreachable, wiped, unknown
-schema - the reason is in `<out>/why`) · 64 usage.
+schema - the reason is in `<out>/why`) · 64 usage. The SQL register's
+subcommands add 69, 75 and 78, and 3 for a write in doubt, each named by an
+`EXIT_` constant once a subcommand exits with it (contracts/exit-codes.md).
 """
 
 from __future__ import annotations
@@ -100,6 +119,32 @@ VERSION = "1"
 #: way for the index to be wrong.
 SCHEMA_VERSION = 1
 
+#: Q6(c)'S REFUSAL, BUILT IN (FR-003; D3, design Y:4848 and Y:4872): False
+#: until the renderer's git half is installed, so no write can reach a
+#: register this build could not mirror. While it is False, `load_config`
+#: refuses `mode=primary`: `mode` and `register read` exit `EXIT_CONFIG` with
+#: `MODE_PRIMARY_REFUSED_TEXT`, and every other subcommand refuses it with 2
+#: and the same text. Lane 3's T328, phase 3's last pull request, is the only
+#: change that sets it True. A test that needs `primary` runs a copy of this
+#: file with it flipped, in its own temporary directory (FR-017). Never an
+#: environment variable, which any lane could set.
+RENDER_GIT_HALF = False
+
+#: Q6(c)'s fixed text (agreement test 14; design Y:4872).
+MODE_PRIMARY_REFUSED_TEXT = (
+    "mode=primary is not available in this build: the renderer's git half is not "
+    "installed, so a write could not be mirrored; nothing was written")
+
+#: THE EXIT CODES, NAMED (contracts/exit-codes.md section 1): the tests read
+#: the constant, never a literal. The task that first exits with a code names
+#: it here; `mode`'s are 0, 2, 64 and 78. #160's own exits keep their literals.
+EXIT_OK = 0
+EXIT_REFUSED = 2
+EXIT_USAGE = 64
+#: `EX_CONFIG`: Q6(c)'s refusal of `mode=primary`, from `mode` and
+#: `register read` only (D3, Y:368-382; F8, lane 4's pick).
+EXIT_CONFIG = 78
+
 US = "\x1f"
 LANES_DIR = "lanes/"
 REGISTER_PATH = "lanes/LANES.md"
@@ -118,6 +163,18 @@ INVENTORY_PREFIX = "inventory:"
 
 class Refusal(Exception):
     """A refusal: exit 2, nothing read and nothing written."""
+
+
+class PrimaryNotBuilt(Refusal):
+    """Q6(c)'s refusal of `mode=primary` while `RENDER_GIT_HALF` is False
+    (FR-003), raised by `load_config` with `MODE_PRIMARY_REFUSED_TEXT`.
+
+    It is a `Refusal`, so every subcommand that answers a refused
+    configuration with 2 answers this one with 2 too, `journal --write-id`
+    included, whose other refused configurations are 3 (contract §3.4, CO-3).
+    Only `mode` and `register read`, in all four of its forms, catch it first
+    and exit `EXIT_CONFIG` (contract §2.7): under `--for guard` it stays 78,
+    though a refused configuration is 1 there (O14)."""
 
 
 class StoreUnusable(Exception):
@@ -553,7 +610,13 @@ def load_config() -> dict:
     `register_passfile=` or `render_key=` that is not a private regular file;
     and, where `register_url=` is set, R09's TLS refusal of it and of
     `reader_url=`. A file with no `register_url=` is #160's, and loads as it
-    always has."""
+    always has.
+
+    While `RENDER_GIT_HALF` is False, `mode=primary` is refused as
+    `PrimaryNotBuilt` (Q6(c), FR-003), after the file's own checks and each
+    key's, and before the rules across keys, so `mode=primary` with
+    `store=sqlite`, with no `register_url=` or with a URL R09 would refuse is
+    Q6(c)'s refusal until the constant is set."""
     path, named = config_path()
     cfg = {"path": path, "present": False, "store": "", "url": "", "passfile": "",
            "reader_url": "", "reader_passfile": "", "sqlite": "", "schema": "lanes_index",
@@ -632,6 +695,13 @@ def load_config() -> dict:
         if cfg[key]:
             _check_private_file(cfg[key], f"the libpq password file (`{key}=`)")
     _check_register_keys(cfg, path)
+    # Q6(c)'S REFUSAL (FR-003; Y:4849, Y:4872), once the file and every key in
+    # it has passed on its own, and BEFORE the rules across keys: a `primary`
+    # this build cannot serve is refused for that, whatever else the file
+    # says. So test 14's refusing state, with `register_url=` on `db.invalid`
+    # and no TLS, is 78 from `mode` and `register read`, never R15's 2.
+    if cfg["mode"] == "primary" and not RENDER_GIT_HALF:
+        raise PrimaryNotBuilt(MODE_PRIMARY_REFUSED_TEXT)
     _check_register_connections(cfg, path, named_store, mapped)
     if store == "sqlite":
         sqlite_path = cfg["sqlite"] or os.path.join(state_dir(), "lanes-index.sqlite")
@@ -644,6 +714,37 @@ def load_config() -> dict:
                 f"(Amendment 14(c)). Name another path with `sqlite=`")
         cfg["sqlite"] = sqlite_path
     return cfg
+
+
+def cmd_mode(args: list[str]) -> int:
+    """`lanes-index mode` (contract §3.1; D3, Y:2441-2453; F8): this
+    workstation's mode, `index` or `primary`, as ONE line on stdout and nothing
+    else, exit 0. It reads only the configuration, through `load_config`, and
+    opens no database and runs no `psql` (Y:3521).
+
+    With no file at the default path, and `LANES_INDEX_CONFIG` unset or empty,
+    it answers `index`, as does a file with no `mode=`. A configuration
+    `load_config` refuses exits 2. `mode=primary` while `RENDER_GIT_HALF` is
+    False exits `EXIT_CONFIG`, 78, with `MODE_PRIMARY_REFUSED_TEXT` on stderr
+    and nothing on stdout. An argument is usage, 64, before anything is
+    read. Its caller, `lanes-edit.sh` (lane 4's T409), reads 78 as "exit 69,
+    writing nothing", and every other end as files mode with a warning."""
+    for arg in args:
+        if arg in ("-h", "--help"):
+            say(USAGE)
+            return EXIT_OK
+        note(f"mode takes no argument, and was given '{arg}' - see {PROG} --help")
+        return EXIT_USAGE
+    try:
+        cfg = load_config()
+    except PrimaryNotBuilt as exc:
+        note(str(exc))
+        return EXIT_CONFIG
+    except Refusal as exc:
+        note(f"REFUSED: {exc}")
+        return EXIT_REFUSED
+    say(cfg["mode"])
+    return EXIT_OK
 
 
 # =============================================================== the source
@@ -2949,6 +3050,41 @@ USAGE = f"""\
 {PROG} status                                 per source: store, provenance, lag, errors
 {PROG} export    --out <dir> [--source <s> | --worktrees]
                                              the `--index` read flags' reader
+{PROG} mode                                   this workstation's mode: index or primary
+
+THE SQL REGISTER (feature 007, opensoft/openRepoTools#165): its subcommands, in
+the forms contracts/register-cli.md fixes; <id> is a write's identity,
+`--write-id <uuid> --generation <uuid> --lane <lane> --verb <verb>
+--args-sha256 <hex>`, and under `--at <k>` `--generation <uuid>` alone will do:
+{PROG} register snapshot [<id> | --write-id new --lane <lane> --verb <verb>
+                              --args-sha256 <hex>] [--tree <dir> --checkout <c>] [--at <k>]
+{PROG} register snapshot (--files <set> | --all) --out <dir>
+{PROG} register commit   <id> --workstation <name> <attempt dir>
+{PROG} register classify                      register lines on stdin
+{PROG} register read     --prefetch --cache <file> (--files <set> | --all)
+{PROG} register read     --since <n> --cache <file> [--files <set>] [--log-key=<key>]
+                              (one of the two, or both)
+{PROG} register read     --for guard --prefetch --cache <file> --pid <pid> --repo <dir>
+                              [--lane=<window>]
+{PROG} register read     --for guard --at <n> --pid <pid> --cache <file> --lane=<key>
+{PROG} journal  <id> --not-after <epoch s> [--clock <epoch s> --clock-age <s>]
+{PROG} journal  --since <m>
+{PROG} journal  --last --path <log> --grep <key> [--at <n> --generation <uuid>]
+{PROG} render   --images --at <k> --out <dir>
+{PROG} render   --checkout <c>
+{PROG} import   --at <C> [--dry-run | --after-loss]
+{PROG} cutover  [--import <C>] [--after-loss | --marker-first]
+{PROG} rollback [--hold-marker]
+{PROG} outage   declare --until <UTC> --why <words> [--mirror-seq <m>]
+{PROG} outage   declare --rollback --mirror-seq <k> [--why <words>]
+{PROG} outage   clear
+{PROG} bootstrap --admin-service <service> --label <name> --repository <owner/name>
+                      --lane <name> [--roles-only] [--no-passwords]
+{PROG} login    (add | rotate) (<engineer> | --dump-job) --admin-service <service>
+{PROG} login    revoke <engineer> --admin-service <service>
+{PROG} ready    --expect index|primary --release <version> --env <name>
+{PROG} set-mode index|primary [--config <path>]
+{PROG} serve
 
 The DERIVED INDEX of the lane register (lane-collision-protocol Amendment 14).
 It is written behind the sources by this command alone, read only by tooling
@@ -2979,6 +3115,32 @@ that decides nothing, and never a gate: no lane act reads it or waits on it.
                 nudges `sync --source inventory`. The managed ledger's
                 `ledger:<Workstation>` is T058's to write.
 
+THE SQL REGISTER is the register's own store once a workstation is
+`mode=primary`, written by `lanes-edit.sh` through `register snapshot` and
+`register commit`, and read through `register read`. Its subcommands land one
+pull request at a time: one this build does not have yet exits 64, as any
+unknown subcommand does, and does nothing.
+
+  mode        Prints ONE line, `index` or `primary`, from the configuration
+              alone: it opens no database. No configuration file, or no
+              `mode=`, is `index`. A configuration it refuses is 2.
+  register    The writers' snapshot and commit, `register classify`'s one
+              classifier, and the readers' and the guard's `register read`.
+  journal     The in-doubt lookup by write id; `--since` and `--last` read.
+  render      `--images`, the render set at a seq; `--checkout`, the renderer
+              fork, which answers "git half not installed" until phase 3,
+              when `--until` and `--revert <sha>` join it.
+  import, cutover, rollback, outage
+              The operator's acts (operations.md sections 2.2 to 2.5), each
+              from the operator lane's own checkout.
+  bootstrap, login, ready, set-mode
+              The operator tools (operations.md section 2.4).
+  serve       The register service (SVC-3), on `mode=primary` only.
+
+  While this build refuses `mode=primary` (Q6(c): the renderer's git half is
+  not installed), `mode` and `register read` exit 78 with that text, and every
+  other subcommand refuses it with 2.
+
 THE STORE: SQLite at ${{XDG_STATE_HOME:-~/.local/state}}/openRepoTools/lanes-index.sqlite,
 or QA Postgres through `psql` where the configuration names a `url=`.
 THE CONFIGURATION: ${{XDG_CONFIG_HOME:-~/.config}}/openRepoTools/lanes-index.conf, or the
@@ -2994,8 +3156,25 @@ outside ~/.agents/, with no password in any URL:
   reader_passfile=<path>    its password file, where it is not the same one
   schema=<name>             the Postgres schema (default lanes_index)
 
+  The SQL register's keys (contracts/config.md):
+  mode=index|primary        default index
+  register_url=<libpq URL>  this engineer's REGISTER-WRITER login; beside it,
+                            reader_url= and reader_passfile= name this
+                            engineer's READER login. At a TCP host that is not
+                            loopback, each carries sslmode=verify-full and an
+                            sslrootcert= naming the root file, never system
+  register_passfile=<path>  its 0600 password file
+  register_label=<label>    the label of the database register_url= reaches
+  register_schema=<name>    the register's schema (default lanes_register)
+  render_key=<path>         the renderer identity's 0600 deploy-key file
+  register_addresses=<n>    N_a, the addresses the endpoint resolves to (default 1)
+  register_rtt_ms=<ms>      the p90 round trip to the register (default 0)
+
 Exit: 0 done · 1 a read or write failed, nothing half-written · 2 refused ·
-3 export: the index cannot answer (the reason is in <dir>/why) · 64 usage."""
+3 export: the index cannot answer (the reason is in <dir>/why) · 64 usage.
+The SQL register's subcommands add 3 in doubt, 69 unreachable or refused,
+75 register busy, and 78 for Q6(c)'s refusal from `mode` and `register read`;
+each subcommand's codes are contracts/exit-codes.md's."""
 
 
 def main(argv: list[str]) -> int:
@@ -3009,6 +3188,16 @@ def main(argv: list[str]) -> int:
         say(f"{PROG} {VERSION} (schema {SCHEMA_VERSION})")
         return 0
     verb, args = argv[0], argv[1:]
+    # 007'S SUBCOMMANDS (opensoft/openRepoTools#165): one dispatch line each,
+    # ahead of #160's argument loop, to the subcommand's own parser.
+    if verb == "mode":
+        return cmd_mode(args)
+    # A SUBCOMMAND THIS BUILD DOES NOT HAVE, one of 007's not built yet among
+    # them, is usage before any argument is read: it does nothing and says so,
+    # and the 64 is what F8 reads from a `lanes-index` too old to have a verb.
+    if verb not in ("sync", "reconcile", "status", "export"):
+        note(f"unknown subcommand '{verb}': this build does not have it - see {PROG} --help")
+        return EXIT_USAGE
     source = None
     dry_run = False
     worktrees = False
@@ -3070,7 +3259,7 @@ def main(argv: list[str]) -> int:
     except StoreUnusable as exc:
         note(f"{exc.kind}: {exc.detail}")
         return 1
-    note(f"unknown subcommand '{verb}' (sync|reconcile|status|export) - see {PROG} --help")
+    note(f"unknown subcommand '{verb}' - see {PROG} --help")
     return 64
 
 
