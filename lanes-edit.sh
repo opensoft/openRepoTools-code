@@ -20832,10 +20832,11 @@ EOF
   # `$LANES_ALIASES_TSV` and `$LANES_LOG_DIR/<lane>.md`. Nothing is fetched and
   # nothing is cached. The file is copied whole before a byte is printed, so a
   # read that fails prints nothing.
-  #   0   the file's bytes
+  #   0   the file's bytes; nothing at all for an absent alias table or log
   #   2   usage, or a path outside the set
-  #   69  the file could not be read: no workspace, or a file that is not there
-  #       or cannot be opened (never an empty answer)
+  #   69  the file could not be read: no workspace, a missing `lanes/LANES.md`,
+  #       or a file that is there and cannot be opened, or whose absence is not
+  #       clear-cut (below)
   # On primary it prints lane 5's `reg_image <path>` (T505; Q-L5-3), under the
   # read door's `decide` class, a row in T504's table (Q-L5-5). Neither exists
   # yet, so every mode reads the files here.
@@ -20848,6 +20849,23 @@ EOF
       aliases)  rtx_src="$LANES_ALIASES_TSV" ;;
       *)        rtx_src="$LANES_LOG_DIR/${1#lanes/log/}" ;;
     esac
+    # AN ABSENT ALIAS TABLE OR LOG IS 0, WITH NOTHING ON STDOUT, in every mode
+    # (lane 3's ruling on lane 4's Q9, (b), #165 6746035594): an estate that
+    # never renamed a lane has no table, and a lane with no log yet has none.
+    # ABSENT IS CLEAR-CUT OR IT IS 69. Nothing is at the name, not even a link
+    # (`-e` is false on a dangling one); the register's directory is there and
+    # searchable; and the name's own directory is a searchable directory, or is
+    # not there at all, which is `lane_log_events`' test of a missing log. So a
+    # dangling link, a directory in the file's place, an unsearchable directory
+    # or a register directory that is not there is a read that could not be
+    # made. `lanes/LANES.md` is never absent: a missing register stays 69.
+    if [ "$rtx_kind" != register ] && [ ! -e "$rtx_src" ] && [ ! -L "$rtx_src" ] &&
+       [ -d "$LANES_DIR" ] && [ -x "$LANES_DIR" ]; then
+      rtx_dir="$(dirname -- "$rtx_src")"
+      if { [ ! -e "$rtx_dir" ] && [ ! -L "$rtx_dir" ]; } || { [ -d "$rtx_dir" ] && [ -x "$rtx_dir" ]; }; then
+        exit 0
+      fi
+    fi
     TMPD="$(mktemp -d)" || die "$1 could not be read: no temporary directory could be made under ${TMPDIR:-/tmp} to hold it whole before printing it" 69
     cat -- "$rtx_src" > "$TMPD/text" || die "$1 could not be read at $rtx_src (above)" 69
     cat -- "$TMPD/text" || exit 69
