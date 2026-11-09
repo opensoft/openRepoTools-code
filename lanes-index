@@ -416,11 +416,151 @@ def pg_url_env(url: str, what: str = "the URL") -> dict:
     return env
 
 
+def _pg_host_stays_local(host: str) -> bool:
+    """Whether libpq reaches one of `PGHOST`'s hosts without leaving this
+    machine (R09; contract §2.5): a Unix socket - an empty host, which is
+    libpq's default socket directory, or a host that decodes to an absolute
+    path - or a loopback host, `localhost`, an address in 127.0.0.0/8, or
+    ::1. Anything else is a TCP host that is not loopback, a name included,
+    whatever it resolves to."""
+    import ipaddress  # only the TLS check at load reads addresses
+
+    if host == "" or host.startswith("/") or host.lower() == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if address.version == 4:
+        return address in ipaddress.ip_network("127.0.0.0/8")
+    return address == ipaddress.IPv6Address("::1")
+
+
+def pg_url_refuse_unverified_tls(env: dict, what: str) -> None:
+    """THE TLS REFUSAL AT LOAD (FR-011; lane 3's R09 left it to lane 1, and
+    lane 1's T104 takes it; contract §2.5). `env` is `pg_url_env`'s mapping of
+    one URL. Where any of its hosts is a TCP host that is not loopback, the URL
+    must carry `sslmode=verify-full` and an `sslrootcert=` that names an
+    existing regular file, the root of the issuer that signs the server's
+    certificate: libpq's default, `prefer`, verifies nothing (design Y:2324),
+    and `system` is never that root, since no system store holds a private
+    one (C7, Y:2324). A socket and a loopback host connect without it, so a
+    local cluster and its 127.0.0.1 stand-ins keep working.
+
+    REFUSED, as `Refusal` (2), naming `what` and everything missing, and
+    printing no URL, no host and no root file's path."""
+    hosts = env.get("PGHOST", "").split(",")
+    if all(_pg_host_stays_local(host) for host in hosts):
+        return
+    missing = []
+    if "PGSSLMODE" not in env:
+        missing.append("its query carries no `sslmode=`, and libpq's default, `prefer`, "
+                       "verifies nothing")
+    elif env["PGSSLMODE"] != "verify-full":
+        missing.append("its `sslmode=` is not `verify-full`, so the server is not verified "
+                       "against its name")
+    root = env.get("PGSSLROOTCERT", "")
+    if not root:
+        missing.append("its query carries no `sslrootcert=` naming the root file")
+    elif root == "system":
+        missing.append("its `sslrootcert=` is `system`, the system's store, which holds no "
+                       "private root (C7)")
+    else:
+        try:
+            regular = stat.S_ISREG(os.stat(root).st_mode)
+            why = "" if regular else "it is not a regular file"
+        except OSError as exc:
+            regular, why = False, exc.strerror or "it cannot be read"
+        if not regular:
+            missing.append(f"its `sslrootcert=` names no existing regular file ({why})")
+    if missing:
+        raise Refusal(
+            f"{what} names a TCP host that is not loopback, where a connection must "
+            f"verify the server (FR-011): it needs `sslmode=verify-full` and an "
+            f"`sslrootcert=` that names the root file of the issuer that signs the "
+            f"server's certificate, never `system` (design Y:2324), but "
+            f"{'; and '.join(missing)}. Only a Unix socket and a loopback host "
+            f"(`localhost`, 127.0.0.0/8 or ::1) connect without them")
+
+
+def _check_register_keys(cfg: dict, path: str) -> None:
+    """007'S KEYS, EACH ON ITS OWN (FR-001; contracts/config.md section 4, R7,
+    R11, R12 and R16), refused as `Refusal` (2). `register_addresses` and
+    `register_rtt_ms` are made whole numbers in `cfg`."""
+    # THE MODE (FR-001; Y:4849): `index` or `primary`, and absent is `index`.
+    if cfg["mode"] not in ("index", "primary"):
+        raise Refusal(f"`mode={cfg['mode']}` in {path}: the mode is `index` or `primary`")
+    if not SCHEMA_NAME_RE.fullmatch(cfg["register_schema"]):
+        raise Refusal(f"`register_schema={cfg['register_schema']}` in {path} is not a plain "
+                      f"lower-case SQL identifier")
+    # `N_a` AND THE ROUND TRIP (D9, Y:5877; SVC-6, Y:4005): each a whole number,
+    # measured when the workstation joins.
+    for key, least, what in (("register_addresses", 1, "`N_a`, the number of addresses "
+                              "the register's endpoint resolves to (D9)"),
+                             ("register_rtt_ms", 0, "the p90 of the workstation's round "
+                              "trips to the register, in whole milliseconds (SVC-6)")):
+        if not re.fullmatch(r"[0-9]+", cfg[key]) or int(cfg[key]) < least:
+            raise Refusal(f"`{key}={cfg[key]}` in {path} is not a whole number of at least "
+                          f"{least}: it is {what}")
+        cfg[key] = int(cfg[key])
+    for key, what in (("register_passfile", "the libpq password file"),
+                      ("render_key", "the renderer's deploy-key file")):
+        if cfg[key]:
+            _check_private_file(cfg[key], f"{what} (`{key}=`)")
+
+
+def _check_register_connections(cfg: dict, path: str, named_store: str, mapped: dict) -> None:
+    """007'S RULES ACROSS KEYS (FR-001, FR-011; contracts/config.md section 4,
+    R8, R9, R10 and R15), refused as `Refusal` (2). `named_store` is `store=`
+    as the file wrote it, before its default; `mapped` holds `pg_url_env`'s
+    mapping of each URL the file names."""
+    # PRIMARY NEEDS THE REGISTER'S OWN DATABASE (FR-001): the register is shared
+    # by every workstation, and SQLite is one disk.
+    if cfg["mode"] == "primary":
+        wrong = []
+        if named_store == "sqlite":
+            wrong.append("it names `store=sqlite`, and the register, which every "
+                         "workstation shares, is never on one disk")
+        if not cfg["register_url"]:
+            wrong.append("it names no `register_url=`, the REGISTER-WRITER login the "
+                         "register's writes connect as")
+        if wrong:
+            raise Refusal(f"`mode=primary` in {path} is refused: {'; and '.join(wrong)}")
+    if not cfg["register_url"]:
+        # #160'S FILE (US1): its `reader_url=` may name a TCP host with no TLS,
+        # and it loads as it always has.
+        return
+    # THE REGISTER-WRITER PAIR, by the rule `PostgresStore` applies to `url=`:
+    # a read never connects with the writer's credential.
+    if not cfg["reader_url"]:
+        raise Refusal(
+            f"`register_url=` in {path} has no `reader_url=` beside it: the register's "
+            f"reads connect only as this engineer's READER login, never with the "
+            f"writer's credential (Amendment 14(c))")
+    # THE TLS REFUSAL AT LOAD (R09; FR-011), of both URLs.
+    pg_url_refuse_unverified_tls(mapped["register_url"], f"`register_url=` in {path}")
+    pg_url_refuse_unverified_tls(mapped["reader_url"],
+                                 f"`reader_url=` in {path}, beside its `register_url=`,")
+
+
 def load_config() -> dict:
-    """The per-workstation configuration, refused on any of clause (c)'s grounds."""
+    """The per-workstation configuration, refused on any of clause (c)'s grounds,
+    and on 007's (FR-001, FR-011; contracts/config.md section 4): `mode=` that
+    is not `index` or `primary`; `mode=primary` naming `store=sqlite`, or with
+    no `register_url=`; `register_url=` with no `reader_url=`; a
+    `register_schema=` that is not a plain lower-case SQL identifier; a
+    `register_addresses=` or `register_rtt_ms=` that is not a whole number; a
+    `register_passfile=` or `render_key=` that is not a private regular file;
+    and, where `register_url=` is set, R09's TLS refusal of it and of
+    `reader_url=`. A file with no `register_url=` is #160's, and loads as it
+    always has."""
     path, named = config_path()
     cfg = {"path": path, "present": False, "store": "", "url": "", "passfile": "",
-           "reader_url": "", "reader_passfile": "", "sqlite": "", "schema": "lanes_index"}
+           "reader_url": "", "reader_passfile": "", "sqlite": "", "schema": "lanes_index",
+           # 007's keys (FR-001; Y:4849): absent `mode=` is `index`, today's behaviour.
+           "mode": "index", "register_url": "", "register_passfile": "", "register_label": "",
+           "register_schema": "lanes_register", "render_key": "", "register_addresses": "1",
+           "register_rtt_ms": "0"}
     if not os.path.lexists(path):
         if named:
             raise Refusal(f"LANES_INDEX_CONFIG names {path}, which does not exist")
@@ -448,7 +588,9 @@ def load_config() -> dict:
                 lines = handle.read().splitlines()
         except (OSError, UnicodeDecodeError) as exc:
             raise Refusal(f"the configuration {path} cannot be read: {exc}")
-        known = ("store", "url", "passfile", "reader_url", "reader_passfile", "sqlite", "schema")
+        known = ("store", "url", "passfile", "reader_url", "reader_passfile", "sqlite", "schema",
+                 "mode", "register_url", "register_passfile", "register_label",
+                 "register_schema", "render_key", "register_addresses", "register_rtt_ms")
         for number, raw in enumerate(lines, 1):
             line = raw.strip()
             if not line or line.startswith("#"):
@@ -464,17 +606,20 @@ def load_config() -> dict:
             if value.startswith("~/"):
                 value = os.path.join(_home(), value[2:])
             cfg[key] = value
-    for key in ("url", "reader_url"):
+    mapped = {}
+    for key in ("url", "reader_url", "register_url"):
         if cfg[key] and _url_has_password(cfg[key]):
             raise Refusal(
                 f"`{key}=` in {path} carries a password. The secret lives only in the "
-                f"0600 libpq password file `passfile=` names (Amendment 14(c)), never in "
-                f"a URL a command line or a log can show")
+                f"0600 libpq password file "
+                f"`{'register_passfile' if key == 'register_url' else 'passfile'}=` names "
+                f"(Amendment 14(c)), never in a URL a command line or a log can show")
         # MAPPED AT LOAD (Question 11; Y:4970, "`load_config` refuses any other
         # query parameter"): a URL SVC-2's mapping refuses is refused here, before
         # any command runs a `psql`, and never at a first connect.
         if cfg[key]:
-            pg_url_env(cfg[key], f"`{key}=` in {path}")
+            mapped[key] = pg_url_env(cfg[key], f"`{key}=` in {path}")
+    named_store = cfg["store"]
     store = cfg["store"] or ("postgres" if cfg["url"] else "sqlite")
     if store not in ("sqlite", "postgres"):
         raise Refusal(f"`store={cfg['store']}` in {path}: the store is `sqlite` or `postgres`")
@@ -486,6 +631,8 @@ def load_config() -> dict:
     for key in ("passfile", "reader_passfile"):
         if cfg[key]:
             _check_private_file(cfg[key], f"the libpq password file (`{key}=`)")
+    _check_register_keys(cfg, path)
+    _check_register_connections(cfg, path, named_store, mapped)
     if store == "sqlite":
         sqlite_path = cfg["sqlite"] or os.path.join(state_dir(), "lanes-index.sqlite")
         sqlite_path = os.path.abspath(sqlite_path)
