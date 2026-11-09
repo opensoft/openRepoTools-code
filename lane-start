@@ -1485,13 +1485,11 @@ fi
 if [ -z "$DIR" ]; then
   ls_home=""; ls_rc=0
   ls_home="$("$LANES_EDIT" resolve-home "$LANE" 2>/dev/null)" || ls_rc=$?
-  # 007 (T402; Y:5728; spec:688): busy and in doubt refuse; 69 is a note, as
-  # at the four lane-dir and lane-transcript reads (lane 3's T402 arm bullet,
-  # round B6); every other code stays silent, as it was. Rungs 5 and 6 are
-  # skipped on any failure.
+  # 007 (T402; Y:5728; spec:688): busy and in doubt refuse; every other code,
+  # 69 among them, stays silent, as it was (Y:5728; lane 3's 6752010154, R2's
+  # N8). Rungs 5 and 6 are skipped on any failure.
   case "$ls_rc" in
     75 | 3) ls_read_refuse "$LANES_EDIT resolve-home $LANE" "$ls_rc" "lane ${LANE}'s recorded home" ;;
-    69) note "$LANES_EDIT resolve-home $LANE failed (exit 69) — carrying on without the lane's recorded home, so no project.yaml leg and no checkout named for it is tried" ;;
   esac
   [ "$ls_rc" = 0 ] || ls_home=""
   case "$ls_home" in */*) : ;; *) ls_home="" ;; esac
