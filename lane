@@ -363,8 +363,17 @@ ws_notice() {
 #
 # AND THE CODE DECIDES, NOT THE EMPTINESS OF THE OUTPUT (Amendment 7(d), the
 # fail-closed family): `0` rows · `8` none · `2` A HELPER PREDATING THE READ ·
-# `64` a usage error of the read's own · anything else A READ THAT FAILED, which
-# is never "there are no lanes" and never a pick this word prints empty.
+# `64` a usage error of the read's own, or a helper too old to take `--decide` ·
+# anything else A READ THAT FAILED, which is never "there are no lanes" and
+# never a pick this word prints empty — and whose code this word EXITS WITH
+# rather than flattening it to 1 (feature 007, the design's "callers' default
+# arms": a 69, a store that could not be read, reaches the caller as a 69).
+#
+# AND `--decide`, BECAUSE THIS WORD ACTS ON THE LISTING (feature 007, R38): it
+# launches, attaches and binds on the rows below, so where the register's store
+# cannot decide them it must refuse with 69 and never act on the mirror's
+# answer. Both calls pass it. A `lanes-edit.sh` older than the arm that takes
+# the flag refuses it with 64, and the `64)` arm says so.
 ROWS_OUT=""
 # AND WHETHER THE PROOF WAS MADE AT ALL. `lanes_rows` says on STDERR — and goes
 # on answering — that this workstation's session records could not be read, in
@@ -386,7 +395,7 @@ read_rows() {   # <args for `lanes-edit.sh lanes`>
 	local rr_rc=0 rr_err_file
 	rr_err_file="$(mktemp "${TMPDIR:-/tmp}/lane-read.XXXXXX" 2>/dev/null || printf '')"
 	if [ -n "$rr_err_file" ]; then
-		ROWS_OUT="$(LANES_NO_FETCH=1 "$LANES_EDIT" lanes "$@" 2>"$rr_err_file")" || rr_rc=$?
+		ROWS_OUT="$(LANES_NO_FETCH=1 "$LANES_EDIT" lanes --decide "$@" 2>"$rr_err_file")" || rr_rc=$?
 		# The one expected sentence is dropped out of the stream rather than the
 		# stream being dropped for its sake: the helper also says HERE that this
 		# workstation's session records could not be read, which is the line
@@ -403,19 +412,23 @@ read_rows() {   # <args for `lanes-edit.sh lanes`>
 		# blindness as an answer: whether the liveness proof was made is UNKNOWN
 		# from here, and `go_available` treats unknown as unproved.
 		LIVENESS_UNREAD=2
-		ROWS_OUT="$(LANES_NO_FETCH=1 "$LANES_EDIT" lanes "$@")" || rr_rc=$?
+		ROWS_OUT="$(LANES_NO_FETCH=1 "$LANES_EDIT" lanes --decide "$@")" || rr_rc=$?
 	fi
 	case "$rr_rc" in
 	0) return 0 ;;
 	8) ROWS_OUT=""; return 8 ;;
-	64) die "bad arguments for the lane read — see $prog --help" 64 ;;
+	64) die "bad arguments for the lane read — see $prog --help — or a \`lanes-edit.sh\` too
+    old for \`lanes --decide\`, which this command passes and an older one refuses
+    with 64. The second is not a failure and nothing is wrong with the register —
+    this workstation has not taken the install yet. Take it:
+      openRepoTools --install" 64 ;;
 	2) die "the \`lanes-edit.sh\` on this workstation has no \`lanes\` subcommand, so it
     predates lane-collision-protocol Amendment 11. That is not a failure and
     nothing is wrong with the register — this workstation has not taken the
     install yet. Take it:  openRepoTools --install" 2 ;;
 	*) die "$LANES_EDIT lanes failed (exit $rr_rc). That is NOT 'there are no lanes', and
     this command will not offer a pick — or a lane — on an answer it did not get
-    (Amendment 7(d)). Run it by hand to see what it says, then re-run." 1 ;;
+    (Amendment 7(d)). Run it by hand to see what it says, then re-run." "$rr_rc" ;;
 	esac
 }
 
@@ -443,7 +456,7 @@ group_rows() {   # rows in $ROWS_OUT → `<group><TAB><row>`
     Until then the same rows are a read:  lanes" 2 ;;
 	*) die "$LANES_EDIT lane-groups failed (exit $gr_rc). That is NOT 'no lane is
     available' (Amendment 7(d)), and this command will not print a pick with a
-    group missing from it. Run it by hand to see what it says, then re-run." 1 ;;
+    group missing from it. Run it by hand to see what it says, then re-run." "$gr_rc" ;;
 	esac
 }
 
@@ -1090,7 +1103,7 @@ go_elsewhere() {
     $ge_rc. That is NOT 'it is bound nowhere' (Amendment 7(d)), and this command
     will not ask a place it cannot name for a handoff — nor bind a lane on an
     answer it did not get. Run it by hand to see what it says:
-      $LANES_EDIT binding $R_LANE" 1 ;;
+      $LANES_EDIT binding $R_LANE" "$ge_rc" ;;
 	esac
 	IFS="$TAB" read -r ge_host ge_cont ge_win ge_utc ge_sess ge_os ge_where ge_wstate <<EOF
 $ge_out
@@ -1349,7 +1362,7 @@ if [ -n "$name" ]; then
     this command will not bind a lane under a spelling nothing has established
     (Amendment 7(d)). Nothing was launched and nothing was attached.
       run it by hand to see what it says:  $LANES_EDIT canon-lane $name
-      what the register says now:          lanes --all" 1
+      what the register says now:          lanes --all" "$cl_rc"
 	fi
 	if [ "$cl_rc" = 0 ] && [ -n "$cl_out" ] && [ "$cl_out" != "$name" ]; then
 		note "lane $name → $cl_out (Amendment 15: the register row's spelling is canonical)"
