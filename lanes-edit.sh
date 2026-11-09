@@ -12278,6 +12278,14 @@ guard_run() {   # <the hook's JSON, on stdin already read>
   gr_off="$(guard_offer_file "$G_ID")"
   gr_mode=""
   [ -f "$gr_off" ] && gr_mode="$(sed -n -e 's/^mode=//p' "$gr_off" 2>/dev/null | head -n1)"
+  # FEATURE 007, T502 — ANSWER 2's BIND HAS A BRANCH OF ITS OWN, here: after
+  # 18(h)'s count, before the table, and before `guard_answer`, which is never
+  # called on these three modes (`guard_bind_site`, the contract's section 5).
+  case "$gr_mode" in
+    binding|bound|bind-failed)
+      guard_bind_site "$gr_off" "$gr_pane"
+      return 2 ;;
+  esac
   if [ -f "$gr_off" ] && [ "$gr_mode" != allow ]; then
     # 3 IS "THE OFFER WAS STALE AND HAS BEEN DROPPED", and it is the one answer
     # that does not consume the prompt: the table below judges it, which asks
@@ -12449,7 +12457,7 @@ EOF
       # own condition for it no longer applying. Leaving the file would let a
       # rename back to the allowed spelling pass silently on a decision the
       # person made about a state they have since left.
-      [ -f "$gr_off" ] && [ "$gr_mode" = allow ] && rm -f -- "$gr_off"
+      [ -f "$gr_off" ] && [ "$gr_mode" = allow ] && guard_offer_drop "$gr_off"
       # AMENDMENT 16(f): the window may still have carried a former name a
       # moment ago, in which case it has just been renamed and that is said
       # here — the one thing this guard does that is not a refusal.
@@ -12475,7 +12483,7 @@ EOF
     # AN ALLOWANCE THAT NO LONGER FITS IS DROPPED RATHER THAN CARRIED: either
     # name having changed is exactly what invalidates it, and the person is
     # asked again below.
-    [ "$gr_mode" = allow ] && rm -f -- "$gr_off"
+    [ "$gr_mode" = allow ] && guard_offer_drop "$gr_off"
     guard_offer "$gr_off" "$gr_pane"
     return 2
   fi
@@ -12589,16 +12597,20 @@ guard_refuse_start() {   # <why> <lane> [--no-launch]
 # of two disagreeing LANES a window belongs to.
 guard_offer() {   # <offer file> <pane>
   go_f="${1-}"; go_pane="${2-}"
-  mkdir -p -- "${go_f%/*}" 2>/dev/null || :
-  { printf 'mode=name-drift\n'
-    printf 'from=%s\n' "$G_LANE"
-    printf 'to=%s\n'   "$G_SES_LANE"
-    printf 'session=%s\n' "$G_NAME"
-    printf 'uuid=%s\n' "$G_ID"
-    printf 'utc=%s\n'  "$(utc_now)"
-    printf 'window=%s\n' "$G_WINREF"
-    printf 'pane=%s\n'   "$go_pane"
-  } > "$go_f" 2>/dev/null || :
+  # UNDER `umask 077` (feature 007, lane 3's ruling on the bind record, point
+  # 1): the offer is the record answer 2's bind then runs from, so it is 0600
+  # and a new `offers/` is 0700. An existing `offers/` is not `chmod`'d.
+  ( umask 077
+    mkdir -p -- "${go_f%/*}" 2>/dev/null || :
+    { printf 'mode=name-drift\n'
+      printf 'from=%s\n' "$G_LANE"
+      printf 'to=%s\n'   "$G_SES_LANE"
+      printf 'session=%s\n' "$G_NAME"
+      printf 'uuid=%s\n' "$G_ID"
+      printf 'utc=%s\n'  "$(utc_now)"
+      printf 'window=%s\n' "$G_WINREF"
+      printf 'pane=%s\n'   "$go_pane"
+    } > "$go_f" ) 2>/dev/null || :
   guard_triple
   note "WARNING: the lane and Claude session names disagree. This prompt is paused until you choose how to repair or explicitly allow this lane."
   note "1) explicitly allow this lane for this transcript (future prompts warn but do not block while both names stay unchanged)"
@@ -12702,6 +12714,271 @@ guard_bound_check() {   # <the lane moved to>
   return 1
 }
 
+# THE OFFER'S CHOICES, ASKED AGAIN IN THE WORDS THEY WERE ASKED IN — and after
+# an offer's third bind without choice 2, which is no longer offered (feature
+# 007, the contract's section 2).
+guard_offer_choices() {   # <from> <the lane choice 2 moves to> <binds spent>
+  if [ "${3:-0}" -ge 3 ] 2>/dev/null; then
+    note "1) allow this lane for this transcript   3) adjust the session to lane $1 (types \`/rename $1\`)   — 2) is no longer offered: this offer has spent its three binds to lane ${2:-none}"
+    note "Reply \`1\` or \`3\`. The answer is the NEXT prompt, it is consumed here and never reaches the model; anything else asks again."
+  else
+    note "1) allow this lane for this transcript   2) adjust the lane to session ${2:-none}   3) adjust the session to lane $1 (types \`/rename $1\`)"
+    note "Reply \`1\`, \`2\` or \`3\`. The answer is the NEXT prompt, it is consumed here and never reaches the model; anything else asks again."
+  fi
+  return 0
+}
+
+# THE STALE ROW'S SESSION TEST (Y:5505; tasks.md T502). `$detach` made the outer
+# the leader of a session of its own, and the body, `timeout` and any `git`
+# under its own `timeout` stay in that session after the outer dies; the
+# kernel hands no pid out again while a session of that number has members. So
+# while any process has the dead outer's pid as its session id, the bind is
+# still running. `pgrep -s <pid>`, as v3f's case 6 names it, else a scan of
+# field 6 of `/proc/*/stat`. A ZOMBIE IS NO MEMBER: it has exited, and an
+# outer killed with `-9` on a host whose init does not reap is a zombie for
+# ever, which `pgrep -s` alone would count as its session running for ever.
+#   0 a live process has <sid> as its session · 1 none has · 2 it cannot be told
+guard_bind_session_live() {   # <sid>
+  gbq_s="${1-}"
+  case "$gbq_s" in ''|0*|*[!0-9]*) return 2 ;; esac
+  if command -v pgrep >/dev/null 2>&1; then
+    gbq_rc=0
+    gbq_ps="$(pgrep -s "$gbq_s" 2>/dev/null)" || gbq_rc=$?
+    case "$gbq_rc" in
+      1) return 1 ;;
+      0)
+        [ -r /proc/self/stat ] || return 0
+        for gbq_p in $gbq_ps; do
+          gbq_l=""
+          read -r gbq_l < "/proc/$gbq_p/stat" 2>/dev/null || continue
+          gbq_r="${gbq_l##*) }"
+          # shellcheck disable=SC2086
+          set -- $gbq_r
+          case "${1-}" in Z|X|x) continue ;; esac
+          return 0
+        done
+        return 1 ;;
+    esac
+  fi
+  [ -r /proc/self/stat ] || return 2
+  for gbq_st in /proc/[0-9]*/stat; do
+    gbq_l=""
+    read -r gbq_l < "$gbq_st" 2>/dev/null || continue
+    gbq_r="${gbq_l##*) }"
+    # shellcheck disable=SC2086
+    set -- $gbq_r
+    [ "${4-}" = "$gbq_s" ] || continue
+    case "${1-}" in Z|X|x) continue ;; esac
+    return 0
+  done
+  return 1
+}
+
+# ---- THE OFFER SITE'S BRANCH FOR THE BIND'S MODES (feature 007, T502; the
+# contract's section 5; Y:5493–5507). A record in `binding`, `bound` or
+# `bind-failed` is answered here and never by `guard_answer`, whose identity
+# test would drop it once the window is named `<to>`. It costs one small file
+# read, `kill -0` and one `/proc` read, about 7 ms. Every case exits 2, and
+# every text goes to stderr.
+#
+#    5  after success: MOVED once, the owed notes, the record removed; the next
+#       prompt is judged by the table and, the three agreeing, passes
+#    6  after a failure below the third attempt: the why, `mode=name-drift`
+#       with `bind=k` kept, and the offer KEPT
+#    7  after the third failure: the same, and choice 2 no longer offered
+#    2  same host and container, the child live inside `deadline_epoch`:
+#       BINDING IN PROGRESS, the record unchanged ("at the latest" only where
+#       `bounded=yes`)
+#    3  the same past `deadline_epoch`: THE BIND HAS RUN PAST ITS BOUND, with
+#       the `bounded` text and what waiting and `kill` cost; or, where the outer
+#       is dead and its session still has members, the dead-outer text (lane
+#       3's ruling, point 9)
+#    9  stale, same host and container — the outer's pid reused, or dead with
+#       no process left in the session it led, or with no pid and past its
+#       deadline: no outcome, `mode=name-drift`, `rc=unknown`, `ended_utc` the
+#       guard's time, the offer KEPT
+#   10  `binding` from another host or container: unchanged until
+#       `deadline_epoch` plus 60 s, then as 9, renaming nothing
+#   11  unreadable (case 11's set, `guard_bind_readable`): dropped, with
+#       today's text
+#
+# "LIVE" (the contract's section 6): the outer's pid live with the recorded
+# start, by `pid_start_of`, whose 2 is live (R49); or dead, with a live member
+# left in the session it led, where `detach` says it led one (`setsid` or
+# `python3`, point 8). A `binding` record WITHOUT A WELL-FORMED `pid` AND
+# `pidstart` has no test: it is running until `deadline_epoch` and stale after,
+# with no session test (point 4; lane 3's ruling on the contract's point 15,
+# #165 6747528875). Such values are never passed to `kill`, `pid_start_of`,
+# `pgrep -s` or a text: `pid=0` would read the guard's own session and group as
+# the bind's, and print `pkill -s 0`.
+#
+# CASE 11 DROPS THE RECORD AND NOTHING ELSE (the same ruling, on point 13): it is
+# the one removal that can meet a live outer, so the `.bind.*` files are left for
+# the next removal to sweep, and a live outer's `.out` is never unlinked.
+
+# A WELL-FORMED `pid`: decimal digits, no leading 0, above 1 (point 15).
+guard_bind_pid_ok() {   # <pid>
+  case "${1-}" in ''|0*|*[!0-9]*) return 1 ;; esac
+  [ "${#1}" -le 10 ] && [ "$1" -gt 1 ] || return 1
+  return 0
+}
+# A WELL-FORMED `pidstart`: not empty, and on Linux all digits, the one token
+# `pid_start_of` prints there (point 15).
+guard_bind_pidstart_ok() {   # <pidstart>
+  [ -n "${1-}" ] || return 1
+  [ -r /proc/self/stat ] || return 0
+  case "$1" in *[!0-9]*) return 1 ;; esac
+  return 0
+}
+
+guard_bind_site() {   # <offer file> <pane>
+  gbt_f="${1-}"
+  if ! guard_bind_load "$gbt_f" || ! guard_bind_readable; then
+    rm -f -- "$gbt_f"
+    guard_refuse "the pending offer at $gbt_f could not be read, so it has been dropped rather than answered on a guess. Send your prompt again and the question will be asked afresh."
+    return 2
+  fi
+  gbt_now="$(date -u +%s)"
+  gbt_dl="$((10#$GBR_DEADLINE))"
+  gbt_dlu="$(utc_of_epoch "$gbt_dl")"
+  [ -n "$gbt_dlu" ] || gbt_dlu="epoch $gbt_dl"
+  gbt_k="$GBR_BIND"
+  gbt_bs="${GBR_BOUND:-its}"
+  case "$GBR_MODE" in
+    bound)
+      guard_offer_drop "$gbt_f"
+      guard_triple
+      note "MOVED: this window is lane $GBR_TO, bound to this session ($G_ID) at ${GBR_ENDED:-a time the record does not give}."
+      if [ -n "$GBR_NOTES" ]; then
+        while IFS= read -r gbt_n; do
+          [ -z "$gbt_n" ] || note "  still owed: $gbt_n"
+        done <<EOF
+$GBR_NOTES
+EOF
+      fi
+      note "This prompt was NOT sent: it is the one that hears how the bind ended. Send your work again."
+      return 2 ;;
+    bind-failed)
+      gbt_back=0
+      guard_bind_rewrite "$gbt_f" "" mode=name-drift || gbt_back=1
+      guard_triple
+      note "THE BIND TO LANE $GBR_TO FAILED (exit $GBR_RC): ${GBR_WHY:-the record gives no reason}${GBR_OUT:+ — its output is kept in $GBR_OUT}."
+      if [ "$gbt_back" = 1 ]; then
+        note "…and the offer could not be restored in $gbt_f, so this prompt's answer is the same as the last one's until it can."
+      elif [ "$gbt_k" -ge 3 ]; then
+        note "That was this offer's third bind, so choice 2 is no longer offered, and the offer is KEPT for the other two:"
+      else
+        note "Nothing of the bind is assumed: a failed bind spends the person's yes, and a \`2\` is attempt $((gbt_k + 1)) of 3. The offer is KEPT:"
+      fi
+      guard_offer_choices "$GBR_FROM" "$GBR_TO" "$gbt_k"
+      note "This prompt was NOT sent."
+      return 2 ;;
+  esac
+
+  # ---- `binding`. ANOTHER HOST OR CONTAINER FIRST: the pid is that host's.
+  if [ "$(lc "$GBR_HOST")" != "$(lc "$WS")" ] || [ "$(lc "$GBR_CONTAINER")" != "$(lc "$LANES_CONTAINER_NAME")" ]; then
+    if [ "$gbt_now" -le "$((gbt_dl + 60))" ]; then
+      guard_triple
+      gbt_rpid=""
+      guard_bind_pid_ok "$GBR_PID" && gbt_rpid=", pid $GBR_PID there"
+      note "A BIND OF THIS TRANSCRIPT IS RUNNING ON $GBR_HOST/$GBR_CONTAINER (attempt $gbt_k, started ${GBR_STARTED:-at a time the record does not give}$gbt_rpid). Its pid is that host's to judge and not this one's, so it is waited for here until 60 s past its deadline, $gbt_dlu. Your prompt was NOT sent; send it again once that bind has ended."
+      [ "$GBR_BOUNDED" != no ] || note "That host has no \`timeout\`, so the child there may still be running after that; on primary \`bind:$GBR_TO\` refuses whichever bind commits second."
+      return 2
+    fi
+    gbt_back=0
+    guard_bind_rewrite "$gbt_f" "" mode=name-drift rc=unknown "ended_utc=$(utc_now)" || gbt_back=1
+    guard_triple
+    note "THE BIND STARTED AT ${GBR_STARTED:-a time the record does not give} ON $GBR_HOST/$GBR_CONTAINER IS NO LONGER RUNNING AND LEFT NO OUTCOME by 60 s past its deadline, $gbt_dlu, so what it wrote is not known; the next \`2\` finds out first. This window is not renamed: that bind ran on another host or container."
+    if [ "$gbt_back" = 1 ]; then
+      note "…and the offer could not be restored in $gbt_f, so this prompt's answer is the same as the last one's until it can."
+    else
+      note "The offer is KEPT:"
+    fi
+    guard_offer_choices "$GBR_FROM" "$GBR_TO" "$gbt_k"
+    note "This prompt was NOT sent."
+    return 2
+  fi
+
+  # ---- THIS HOST AND CONTAINER: IS THE OUTER LIVE?
+  #   live · dead-session (its outer gone, its session not) · wait (no test can
+  #   be made, so running until the deadline) · stale (with the reason)
+  gbt_state=""; gbt_why=""; gbt_haspid=0
+  guard_bind_pid_ok "$GBR_PID" && guard_bind_pidstart_ok "$GBR_PIDSTART" && gbt_haspid=1
+  if [ "$gbt_haspid" = 0 ]; then
+    gbt_state=wait
+    gbt_why="it recorded no well-formed pid and start for its outer, and its deadline, $gbt_dlu, has passed"
+  else
+    gbt_tok=""; gbt_prc=0
+    gbt_tok="$(pid_start_of "$GBR_PID")" || gbt_prc=$?
+    case "$gbt_prc" in
+      0)
+        if [ "$gbt_tok" = "$GBR_PIDSTART" ]; then gbt_state=live
+        else gbt_state=stale; gbt_why="its outer's pid, $GBR_PID, now belongs to another process"
+        fi ;;
+      1)
+        case "$GBR_DETACH" in
+          setsid|python3)
+            gbt_src=0
+            guard_bind_session_live "$GBR_PID" || gbt_src=$?
+            case "$gbt_src" in
+              0) gbt_state=dead-session ;;
+              1) gbt_state=stale; gbt_why="its outer, pid $GBR_PID, is gone and no process is left in the session it led" ;;
+              *) gbt_state=wait; gbt_why="its outer, pid $GBR_PID, is gone, the session it led could not be read, and its deadline, $gbt_dlu, has passed" ;;
+            esac ;;
+          *)
+            gbt_state=wait
+            gbt_why="its outer, pid $GBR_PID, is gone and led no session of its own (detach=${GBR_DETACH:-none}), and its deadline, $gbt_dlu, has passed" ;;
+        esac ;;
+      *) gbt_state=live ;;
+    esac
+  fi
+  if [ "$gbt_state" = wait ]; then
+    if [ "$gbt_now" -le "$gbt_dl" ]; then gbt_state=live; else gbt_state=stale; fi
+  fi
+
+  if [ "$gbt_state" = stale ]; then
+    gbt_back=0
+    guard_bind_rewrite "$gbt_f" "" mode=name-drift rc=unknown "ended_utc=$(utc_now)" || gbt_back=1
+    guard_triple
+    note "THE BIND STARTED AT ${GBR_STARTED:-a time the record does not give} (attempt $gbt_k) IS NO LONGER RUNNING AND LEFT NO OUTCOME: $gbt_why. What it wrote is not known; the next \`2\` finds out first."
+    if [ "$gbt_back" = 1 ]; then
+      note "…and the offer could not be restored in $gbt_f, so this prompt's answer is the same as the last one's until it can."
+    else
+      note "The offer is KEPT:"
+    fi
+    guard_offer_choices "$GBR_FROM" "$GBR_TO" "$gbt_k"
+    note "This prompt was NOT sent."
+    return 2
+  fi
+
+  gbt_pidtxt="attempt $gbt_k"
+  if [ "$gbt_haspid" = 1 ]; then gbt_pidtxt="$gbt_pidtxt, pid $GBR_PID"
+  else gbt_pidtxt="$gbt_pidtxt, its outer's pid not recorded"
+  fi
+  if [ "$gbt_now" -le "$gbt_dl" ]; then
+    guard_triple
+    if [ "$GBR_BOUNDED" = no ]; then
+      note "BINDING IN PROGRESS: the bind of this window to lane $GBR_TO ($gbt_pidtxt, started ${GBR_STARTED:-at a time the record does not give}) is still running; it ends by $gbt_dlu. Your prompt was NOT sent; send it again in a few seconds."
+    else
+      note "BINDING IN PROGRESS: the bind of this window to lane $GBR_TO ($gbt_pidtxt, started ${GBR_STARTED:-at a time the record does not give}) is still running; it ends by $gbt_dlu at the latest. Your prompt was NOT sent; send it again in a few seconds."
+    fi
+    return 2
+  fi
+  guard_triple
+  if [ "$gbt_state" = dead-session ]; then
+    note "THE BIND HAS RUN PAST ITS $gbt_bs s BOUND: its outer (pid $GBR_PID, started ${GBR_STARTED:-at a time the record does not give}) has died and processes of its session are still running. Waiting costs nothing: once they have ended, the next prompt says so and the offer is restored. \`pkill -s $GBR_PID\` stops them, at a cost: a register write among them is left in doubt, and no outcome will be written, because the process that writes it is gone. Your prompt was NOT sent."
+    return 2
+  fi
+  note "THE BIND HAS RUN PAST ITS $gbt_bs s BOUND and is still running (pid $GBR_PID, started ${GBR_STARTED:-at a time the record does not give})."
+  if [ "$GBR_BOUNDED" = no ]; then
+    note "This host has no \`timeout\`, so nothing stops it; it is most likely in a \`git\` call."
+  else
+    note "Its \`timeout\` has not ended it; it is likely stuck on the disk or the network."
+  fi
+  note "Waiting costs nothing, and the next prompt reads its outcome. \`kill $GBR_PID\` stops it, at a cost. If it is inside a register write, that write is left in doubt. On primary the record keeps its write id, and the next \`2\` looks it up before it binds again. In files mode a commit it made may stay local until the next write from that checkout pushes it, a push it started may still land, and the next writer takes over its lock at once. Your prompt was NOT sent."
+  return 2
+}
+
 # The answer, and it is the whole of clause (h) rule 2's second half.
 guard_answer() {   # <offer file> <the prompt> <pane>
   ga_f="${1-}"; ga_p="${2-}"; ga_pane="${3-}"
@@ -12716,6 +12993,8 @@ guard_answer() {   # <offer file> <the prompt> <pane>
   ga_bind="$(sed -n -e 's/^bind=//p' "$ga_f" 2>/dev/null | head -n1)"
   ga_bindok=1
   grep -q '^bind=' "$ga_f" 2>/dev/null && case "$ga_bind" in 1|2|3) : ;; *) ga_bindok=0 ;; esac
+  ga_k=0
+  case "$ga_bind" in 1|2|3) ga_k="$ga_bind" ;; esac
   ga_ans="$(printf '%s' "$ga_p" | tr 'A-Z' 'a-z' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
   # THE OFFER IS READABLE WHEN IT NAMES ITS MODE AND THE LANE IT WAS MADE FOR,
   # AND `session=` IS NOT PART OF THAT TEST. A session record carrying NO `name`
@@ -12725,8 +13004,12 @@ guard_answer() {   # <offer file> <the prompt> <pane>
   # asked it again, and choice 3 — the one that would have fixed it — could
   # never be reached. An empty session name is a FACT about the session, and it
   # is printed as `none` wherever this speaks.
+  # A RECORD WITH NO READABLE `mode` IS CASE 11's TOO (feature 007), and case 11
+  # drops the record alone: a live bind's outer may still write beside it, so
+  # its `.bind.*` files are left for the next removal to sweep (lane 3's ruling,
+  # #165 6747528875).
   if [ "$ga_mode" != name-drift ] || [ -z "$ga_from" ] || [ "$ga_bindok" = 0 ]; then
-    guard_offer_drop "$ga_f"
+    rm -f -- "$ga_f"
     guard_refuse "the pending offer at $ga_f could not be read, so it has been dropped rather than answered on a guess. Send your prompt again and the question will be asked afresh."
     return 2
   fi
@@ -12743,22 +13026,30 @@ guard_answer() {   # <offer file> <the prompt> <pane>
   # mismatch still stands and refuses where the state has become one of the
   # unsafe ones. 3 is that status, and `guard_run` is its only caller.
   if [ "$ga_from" != "$G_LANE" ] || [ "$ga_session" != "$G_NAME" ]; then
-    rm -f -- "$ga_f"
+    guard_offer_drop "$ga_f"
     note "the pending question was about lane $ga_from and session '${ga_session:-none}', and this window is now lane ${G_LANE:-none} with session '${G_NAME:-none}' — so the offer has been DROPPED rather than answered on a state you were never shown. Nothing was renamed or written. This prompt is judged afresh below."
     return 3
   fi
   case "$ga_ans" in
   1)
-    if ! { printf 'mode=allow\n'
-      printf 'from=%s\n' "$ga_from"
-      printf 'to=%s\n' "$ga_to"
-      printf 'session=%s\n' "$ga_session"
-      printf 'uuid=%s\n' "$G_ID"
-      printf 'utc=%s\n' "$(utc_now)"
-    } > "$ga_f" 2>/dev/null; then
+    # A REWRITE OF THE RECORD, so by a temporary file in `offers/` and `mv -f`
+    # under `umask 077`, and the offer's `.bind.*` files go with the question
+    # it stops being (feature 007, lane 3's ruling on the bind record, points
+    # 1, 2 and 13).
+    ga_t="$(umask 077; mktemp "${ga_f%/*}/.${ga_f##*/}.XXXXXX" 2>/dev/null || printf '')"
+    if [ -z "$ga_t" ] || ! ( umask 077
+         { printf 'mode=allow\n'
+           printf 'from=%s\n' "$ga_from"
+           printf 'to=%s\n' "$ga_to"
+           printf 'session=%s\n' "$ga_session"
+           printf 'uuid=%s\n' "$G_ID"
+           printf 'utc=%s\n' "$(utc_now)"
+         } > "$ga_t" ) 2>/dev/null || ! mv -f -- "$ga_t" "$ga_f" 2>/dev/null; then
+      [ -z "$ga_t" ] || rm -f -- "$ga_t"
       guard_refuse "the explicit allow could not be recorded at $ga_f, so the mismatch remains unapproved. Nothing was renamed or written; answer 1 again after the session state is writable."
       return 2
     fi
+    rm -f -- "$ga_f".bind.* 2>/dev/null
     guard_triple
     note "ALLOWED: this lane/session name mismatch is explicitly allowed for this transcript. This answer is consumed; send your work again. Future prompts will warn without blocking while the lane remains $ga_from and the session remains '${ga_session:-none}'."
     return 2 ;;
@@ -12780,8 +13071,6 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     # *"never by itself: a failed bind spends the person's yes; each `2` is one
     # attempt, at most 3 per offer"*. After the third, choice 2 is no longer
     # offered, and a `2` typed anyway is refused with the offer kept.
-    ga_k=0
-    case "$ga_bind" in 1|2|3) ga_k="$ga_bind" ;; esac
     if [ "$ga_k" -ge 3 ]; then
       guard_refuse "choice 2 is no longer offered: this offer has already spent its three binds to lane $ga_to (each \`2\` is one attempt, at most three per offer), so NOTHING has been renamed, moved or written. The offer is KEPT: choose \`1\` or \`3\`."
       return 2
@@ -12877,19 +13166,19 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     guard_type "$ga_pane" "/rename $ga_from" || ga_trc=$?
     guard_triple
     case "$ga_trc" in
-      0) rm -f -- "$ga_f"; note "ADJUSTED SESSION TO LANE $ga_from: \`/rename $ga_from\` was typed into this pane ($ga_pane). The prompt that answered the question is consumed; send your work again." ;;
+      0) guard_offer_drop "$ga_f"; note "ADJUSTED SESSION TO LANE $ga_from: \`/rename $ga_from\` was typed into this pane ($ga_pane). The prompt that answered the question is consumed; send your work again." ;;
       *) note "the rename could NOT be typed into this pane, so the session is still named '${ga_session:-none}'. NOTHING was written; the offer is kept. Type it yourself: /rename $ga_from" ;;
     esac
     return 2 ;;
   *)
     guard_triple
     note "that is not an answer to the pending question, so it has been refused rather than acted on: this window is lane $ga_from and this session is named '${ga_session:-none}'."
-    note "1) allow this lane for this transcript   2) adjust the lane to session ${ga_to:-${ga_session:-none}}   3) adjust the session to lane $ga_from (types \`/rename $ga_from\`)"
     # THE SAME SENTENCE THE OFFER ENDS ON, because a question asked again is
     # asked in the words it was asked in: a person who is being re-asked has
     # just typed something else, and two spellings of one question is how they
-    # come to believe the second one takes different answers.
-    note "Reply \`1\`, \`2\` or \`3\`. The answer is the NEXT prompt, it is consumed here and never reaches the model; anything else asks again."
+    # come to believe the second one takes different answers. AFTER AN OFFER'S
+    # THIRD BIND, choice 2 is no longer among them (feature 007, T502).
+    guard_offer_choices "$ga_from" "${ga_to:-${ga_session:-none}}" "$ga_k"
     return 2 ;;
   esac
 }
