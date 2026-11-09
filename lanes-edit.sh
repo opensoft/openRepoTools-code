@@ -20882,7 +20882,12 @@ EOF
     rgr_ere="$2"; shift 2
     [ "${1-}" = -- ] && [ "$#" -ge 2 ] || die "$rgr_usage" 2
     shift
-    rgr_specs=()
+    # THE `--` HEADS THE PATHSPEC LIST. It is git's own line between the
+    # revision and the pathspecs, which `git grep` needs where a pathspec such as
+    # `:(glob)…` could read as a revision; it is not BSD getopt's end of options,
+    # which `git grep` never reaches. Held in the list, the call's own line pairs
+    # no `grep` word with a late `--` (`test_no_shipped_bash_ends_its_options_after_an_operand`).
+    rgr_specs=(--)
     for rgr_p in "$@"; do
       rgr_kind="$(reg_reader_kind "$rgr_p" grep)" || die "register-grep reads lanes/LANES.md, lanes/aliases.tsv, lanes/log and one lanes/log/<lane>.md, and '$rgr_p' is none of them (O21 (a))" 2
       case "$rgr_kind" in
@@ -20897,7 +20902,7 @@ EOF
     rgr_rc=0
     env -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS -u GIT_NOGLOB_PATHSPECS -u GIT_ICASE_PATHSPECS \
       LC_ALL=C GIT_OPTIONAL_LOCKS=0 \
-      git -C "$rgr_root" grep ${rgr_h:+"$rgr_h"} -E -e "$rgr_ere" "origin/$LANES_BRANCH" -- "${rgr_specs[@]}" \
+      git -C "$rgr_root" grep ${rgr_h:+"$rgr_h"} -E -e "$rgr_ere" "origin/$LANES_BRANCH" "${rgr_specs[@]}" \
       > "$TMPD/grep" || rgr_rc=$?
     case "$rgr_rc" in
       0) cat -- "$TMPD/grep" || exit 69; exit 0 ;;
