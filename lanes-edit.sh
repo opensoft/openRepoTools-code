@@ -522,6 +522,14 @@
 #      `guard` spends the one number the harness reads, and every refusal it
 #      makes — a mismatch, an unreadable read, a pending offer's question and
 #      its answer — is that 2. `guard` never exits anything else but 0.
+#      AND `guard-bind` (feature 007, T502), the internal verb answer 2 starts
+#      detached, refuses with 2 too: its usage, a uuid that is not one, or a
+#      bind record that does not say `mode=binding` or already names its
+#      outer. Its outer otherwise exits 0 once it has written the bind's
+#      outcome, whose own code is the record's `rc`, or 1 where it could not
+#      rewrite the record at its start and so ran nothing; its body,
+#      `guard-bind --body`, exits `lane-start`'s own code, which the outer
+#      reads as that `rc`.
 #  64  usage — a caller's bad arguments to one of the reads Amendment 11 added
 #      (`window-lane`, `lane-dir`, `lane-profile`, `last-session`, `forks`,
 #      `duplicate-holder` (issue #39), `workstation`, `fetch-age`, `lanes`,
@@ -12701,6 +12709,13 @@ guard_answer() {   # <offer file> <the prompt> <pane>
   ga_from="$(sed -n -e 's/^from=//p' "$ga_f" 2>/dev/null | head -n1)"
   ga_to="$(sed -n -e 's/^to=//p' "$ga_f" 2>/dev/null | head -n1)"
   ga_session="$(sed -n -e 's/^session=//p' "$ga_f" 2>/dev/null | head -n1)"
+  # FEATURE 007, T502 — THE ATTEMPTS THIS OFFER HAS SPENT ON CHOICE 2: `bind=k`,
+  # which the hook sets at each `2` and the offer keeps after a failure (the
+  # contract's section 3). No key is none spent; a key that is not 1 to 3 is an
+  # offer that cannot be read, which is case 11's word for `bind`.
+  ga_bind="$(sed -n -e 's/^bind=//p' "$ga_f" 2>/dev/null | head -n1)"
+  ga_bindok=1
+  grep -q '^bind=' "$ga_f" 2>/dev/null && case "$ga_bind" in 1|2|3) : ;; *) ga_bindok=0 ;; esac
   ga_ans="$(printf '%s' "$ga_p" | tr 'A-Z' 'a-z' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
   # THE OFFER IS READABLE WHEN IT NAMES ITS MODE AND THE LANE IT WAS MADE FOR,
   # AND `session=` IS NOT PART OF THAT TEST. A session record carrying NO `name`
@@ -12710,8 +12725,8 @@ guard_answer() {   # <offer file> <the prompt> <pane>
   # asked it again, and choice 3 — the one that would have fixed it — could
   # never be reached. An empty session name is a FACT about the session, and it
   # is printed as `none` wherever this speaks.
-  if [ "$ga_mode" != name-drift ] || [ -z "$ga_from" ]; then
-    rm -f -- "$ga_f"
+  if [ "$ga_mode" != name-drift ] || [ -z "$ga_from" ] || [ "$ga_bindok" = 0 ]; then
+    guard_offer_drop "$ga_f"
     guard_refuse "the pending offer at $ga_f could not be read, so it has been dropped rather than answered on a guess. Send your prompt again and the question will be asked afresh."
     return 2
   fi
@@ -12761,6 +12776,16 @@ guard_answer() {   # <offer file> <the prompt> <pane>
       guard_refuse "there is no \`lane-start\` beside this file or on PATH, so this window has NOT moved to $ga_to and NOTHING has been written. The offer is kept: answer \`2\` again once it is installed (\`openRepoTools --install\`)."
       return 2
     fi
+    # AT MOST THREE BINDS PER OFFER (feature 007, the contract's section 2):
+    # *"never by itself: a failed bind spends the person's yes; each `2` is one
+    # attempt, at most 3 per offer"*. After the third, choice 2 is no longer
+    # offered, and a `2` typed anyway is refused with the offer kept.
+    ga_k=0
+    case "$ga_bind" in 1|2|3) ga_k="$ga_bind" ;; esac
+    if [ "$ga_k" -ge 3 ]; then
+      guard_refuse "choice 2 is no longer offered: this offer has already spent its three binds to lane $ga_to (each \`2\` is one attempt, at most three per offer), so NOTHING has been renamed, moved or written. The offer is KEPT: choose \`1\` or \`3\`."
+      return 2
+    fi
     # THE WINDOW IS RENAMED FIRST, AND THAT ORDER IS LOAD-BEARING. Clause (h)
     # rule 2 lists the acts in it — *"window renamed, row created or this uuid
     # appended to its cell"* — and `lane-start` will not do the second while the
@@ -12777,54 +12802,74 @@ guard_answer() {   # <offer file> <the prompt> <pane>
       tmux rename-window "$ga_to" 2>/dev/null ||
         note "the window could not be renamed to $ga_to, so lane-start may refuse to take this session as that lane's (its step 3b veto 2)."
     fi
-    ga_rc=0
-    # ITS STDOUT IS THE COMMAND IT WOULD HAVE LAUNCHED, and a hook's stdout is
-    # not what a person reads: everything this act says goes to stderr, where
-    # the blocking reason is shown.
-    # UNQUOTED ON PURPOSE: `lane_start_args` prints TWO words, `<repo> <n>` —
-    # or `--dir <path> <lane>` for a lane named before the `<repo>-<n>` rule.
-    # AND IN ITS BINDING MODE (openRepoTools#70): `--bind` names THIS
-    # transcript, so the destination's cell is appended with it and the row's
-    # stamp, its log line and its handoff's Rule 3 stamp all name it — never
-    # the id that row would otherwise have resumed, which nobody is in. The
-    # flag is the guard's alone, so it is in this call and in no command this
-    # file prints for a person to type.
-    # shellcheck disable=SC2046
-    "$ga_start" --no-launch --bind "$G_ID" $(lane_start_args "$ga_to") >&2 || ga_rc=$?
-    if [ "$ga_rc" != 0 ]; then
-      guard_refuse "\`lane-start --no-launch $(lane_start_args "$ga_to")\`, run in its binding mode for this transcript, exited $ga_rc (its own words are above), so this window has NOT moved and $ga_from has NOT been marked MOVED. The offer is KEPT, so answer \`2\` again once that refusal is settled, or choose \`3\` to rename the session back to $ga_from."
+    # FEATURE 007, T502 — AND THEN THE BIND RUNS DETACHED, IN EVERY MODE (FR-038;
+    # opensoft/openRepoTools#347). It measured 10.47 s in files mode, against a
+    # hook Claude Code stops at 5 s by SIGTERM to the hook's whole process
+    # group, which took `lane-start` down part way through. So the hook makes NO
+    # register call of its own for answer 2: it rewrites the offer to
+    # `mode=binding` with the attempt's first keys, starts `guard-bind`, prints
+    # "BINDING" and exits 2, and `guard-bind`'s body does what this branch used
+    # to do — `lane-start --no-launch --bind`, the `set-row-state` on the lane
+    # the window left, and `guard_bound_check`'s read — inside one bound.
+    #
+    # THE ATTEMPT'S FIRST KEYS (lane 3's ruling on the contract, points 4, 5 and
+    # 8): `bind=k+1`, `host`, `container`, the timing keys from the one helper
+    # the outer runs at its start, `out` and `detach`. The identity, `utc`,
+    # T507's and T510's keys and `ended_utc` are kept; the attempt before's
+    # outcome, `pid`, `pidstart`, `out` and timing keys are dropped.
+    ga_k=$((ga_k + 1))
+    ga_out="$ga_f.bind.$ga_k.out"
+    ga_bs="$(guard_bind_bound_s "$ga_f")"
+    ga_bd=no
+    command -v timeout >/dev/null 2>&1 && ga_bd=yes
+    # `$detach`, AFTER `lane-start`'s OWN IDIOM (its daily report's fork), AND AS
+    # A BASH ARRAY, never a string or `eval` (point 4): `setsid` where there is
+    # one; else python3's `os.setsid`, which is on every primary workstation;
+    # else `nohup` alone, which survives a hangup and not a group kill (the one
+    # stated gap: macOS without python3).
+    ga_det=(); ga_dn=nohup
+    if command -v setsid >/dev/null 2>&1; then
+      ga_det=(setsid); ga_dn=setsid
+    elif command -v python3 >/dev/null 2>&1; then
+      ga_det=(python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])'); ga_dn=python3
+    fi
+    ga_now="$(date -u '+%s %Y-%m-%dT%H:%M:%SZ')"
+    ga_ep="${ga_now%% *}"
+    if ! guard_bind_rewrite "$ga_f" "rc why note pid pidstart out started_utc bound_s bounded deadline_epoch" \
+         mode=binding "bind=$ga_k" "started_utc=${ga_now#* }" "bound_s=$ga_bs" "bounded=$ga_bd" \
+         "deadline_epoch=$((ga_ep + ga_bs + 5))" "host=$WS" "container=$LANES_CONTAINER_NAME" \
+         "out=$ga_out" "detach=$ga_dn"; then
+      guard_refuse "the bind could not be recorded in $ga_f, so it was NOT started: NOTHING has been written to the register, and the offer is KEPT. Answer \`2\` again once that directory is writable, or choose \`1\` or \`3\`."
       return 2
     fi
-    rm -f -- "$ga_f"
+    # THE OUTER'S PID IS `$!` INSIDE THE FORK, handed back through the command
+    # substitution (point 4: lane 3's probe on Eagle found it equal to the
+    # outer's `$$` in all three forms). The child holds none of the hook's
+    # pipes — stdin `/dev/null`, stdout and stderr in the attempt's 0600 file,
+    # descriptors 3 to 9 closed as `index_nudge` closes them — so a runner that
+    # waits for EOF on them does not wait for the bind. `TMUX_PANE` is the pane
+    # this hook resolved: with no tty, tmux finds the current pane only through
+    # it.
+    ga_tp="${ga_pane:-${TMUX_PANE:-}}"
+    [ -n "$ga_tp" ] || ga_tp="$(tmux display-message -p '#{pane_id}' 2>/dev/null || :)"
+    ga_p="$( ( umask 077
+               [ -z "$ga_tp" ] || export TMUX_PANE="$ga_tp"
+               ${ga_det[@]+"${ga_det[@]}"} nohup "$RESOLVED" guard-bind "$G_ID" </dev/null >"$ga_out" 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
+               printf '%s\n' "$!" ) 2>/dev/null || : )"
+    case "$ga_p" in
+      ''|*[!0-9]*)
+        # NO CHILD, SO NO ATTEMPT: the offer goes back to the question it was.
+        ga_back=(mode=name-drift)
+        [ "$ga_k" -le 1 ] || ga_back+=("bind=$((ga_k - 1))")
+        guard_bind_rewrite "$ga_f" "bind started_utc bound_s bounded deadline_epoch host container out detach" "${ga_back[@]}" || :
+        guard_refuse "the bind's child could not be started, so this window has NOT moved to $ga_to and NOTHING has been written. The offer is KEPT: answer \`2\` again, or choose \`1\` or \`3\`."
+        return 2 ;;
+    esac
     guard_triple
-    note "MOVED: this window is now lane $ga_to — renamed, and stamped. The prompt that answered the question is consumed; send your work again."
-    guard_bound_check "$ga_to" || :
-    if [ -n "$(row_of_lane "$ga_from" 2>/dev/null || :)" ]; then
-      # AMENDMENT 13(a) — THE STATE IS SET, NOT APPENDED. This window has just
-      # moved to another lane, so the lane it LEFT is not running in it any
-      # more: `PAUSED` is where that lane now is, and the line says where it
-      # went. It used to be an `append-row-status` of `MOVED → <lane>`, which
-      # left the cell saying two things at once — whatever state it opened with,
-      # and this.
-      # THE LINE IS BOUNDED (Copilot round 5 on openRepoTools#82). A lane name is
-      # bounded in its CHARACTERS by `check_lane_name` and not in its length, and
-      # this line carried it twice: a long enough name makes `set-row-state`
-      # refuse the very write that records where the work went — after the window
-      # has already been renamed and moved. The name is said ONCE, and cut where
-      # even once does not fit, so the act always records something true.
-      ga_line="this window moved to lane $ga_to on the person's choice 2 at the guard"
-      if [ "${#ga_line}" -gt 230 ]; then
-        ga_line="${ga_line:0:230}"
-        case "$ga_line" in *' '*) ga_line="${ga_line% *}" ;; esac
-        ga_line="$ga_line ..."
-      fi
-      if "$RESOLVED" set-row-state "$ga_from" "PAUSED · $ga_line" >&2; then
-        note "…and $ga_from's row now reads PAUSED, naming the move to $ga_to."
-      else
-        note "…but $ga_from's row could NOT be marked (its writer's words are above). Run: lanes-edit.sh set-row-state $ga_from \"PAUSED · $ga_line\""
-      fi
+    if [ "$ga_bd" = yes ]; then
+      note "BINDING: this window is now named $ga_to, and its bind to lane $ga_to runs detached (pid $ga_p, bounded at $ga_bs s): \`lane-start --no-launch --bind\` for this transcript, then $ga_from's row marked PAUSED. The prompt that answered the question is consumed; send your work again in a minute or so; until it ends, each prompt is answered BINDING IN PROGRESS, and the first one after it says how it ended."
     else
-      note "…and the register has no row for $ga_from, so there is nothing to mark MOVED there."
+      note "BINDING: this window is now named $ga_to, and its bind to lane $ga_to runs detached (pid $ga_p, NOT bounded: this host has no \`timeout\`, so a prompt after $ga_bs s says it has run past its bound): \`lane-start --no-launch --bind\` for this transcript, then $ga_from's row marked PAUSED. The prompt that answered the question is consumed; send your work again in a minute or so; until it ends, each prompt is answered BINDING IN PROGRESS, and the first one after it says how it ended."
     fi
     return 2 ;;
   3)
@@ -12847,6 +12892,314 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     note "Reply \`1\`, \`2\` or \`3\`. The answer is the NEXT prompt, it is consumed here and never reaches the model; anything else asks again."
     return 2 ;;
   esac
+}
+
+# ------------------------------- `guard-bind`: ANSWER 2's DETACHED BIND (T502)
+#
+# THE OUTER, `guard-bind <uuid>`, IS THE PID OF RECORD (Y:5396). The hook started
+# it detached, so it outlives the hook whether the hook exits or Claude Code
+# stops it; it refuses unless the record says `mode=binding`, rewrites the
+# record with its own `$$` and start (bash 3.2 has no `BASHPID`, so no forked
+# subshell could), runs the body under ONE bound, waits for it, and writes the
+# outcome. It is outside the bound, so the record gets an outcome even when the
+# bound or a signal stops the body. It is not a register writer — the body's
+# children are — so it is in neither of the dispatcher's writer lists, and its
+# read-door class is `none` (T504): before `lane-start` it reads the offer
+# file and nothing else.
+#
+# `timeout -k 10 "$(( bound_s - 10 ))"` SIGNALS THE BODY'S WHOLE PROCESS GROUP,
+# so `lane-start`, `lanes-edit.sh`, `lanes-index` and `psql` stop with it. Where
+# `timeout` is missing (macOS without coreutils) the body runs unbounded,
+# `bounded=no`, started under `set -m` so that it leads a group of its own as
+# `timeout` would have given it, and the outer stays outside that group: its
+# trap signals `-<body pid>`, never its own group, which in probe P3 signalled
+# the outer too and ran the trap 5,882 times in under 10 s.
+#
+# THE SWEEP (R47; lane 5's answer to v3f's point 39(a), confirmed by lane 4 in
+# #165 6726296119): GNU `timeout` returns once its own child has died and then
+# sends no `KILL`, so a grandchild that ignored `TERM` outlives it. After
+# `timeout` returns 124 or 137, or after the outer's trap fired, the outer sends
+# `TERM` to the group `timeout` led, `KILL` 10 s later if any member is left, and
+# only then writes the outcome. It never sweeps after the body's own exit, 0 or
+# not: that group may hold a child meant to outlive it, `index_nudge`'s
+# detached `lanes-index sync` among them.
+#
+# Exits: 0 once the outcome is written (its own code is the record's `rc`);
+# 1 where the record could not be rewritten at the start, and nothing ran; 2
+# where it refuses.
+GBO_CPID=""; GBO_BD=yes; GBO_TRAPS=0
+
+# THE OUTER'S `TERM` TRAP: a person's `kill <p>`, forwarded — to `timeout`,
+# which passes it to the body's group and sends `KILL` 10 s later (probe P2),
+# or, with no `timeout`, to the body's own group.
+guard_bind_forward() {
+  [ -n "$GBO_CPID" ] || return 0
+  if [ "$GBO_BD" = yes ]; then
+    kill -TERM "$GBO_CPID" 2>/dev/null || :
+  else
+    kill -TERM -- "-$GBO_CPID" 2>/dev/null || :
+  fi
+  return 0
+}
+
+# `TERM` TO A PROCESS GROUP, THEN `KILL` 10 s LATER IF ANY MEMBER IS LEFT. The
+# group is the body's own, `timeout`'s or the one `set -m` gave it, and never the
+# outer's.
+guard_bind_sweep() {   # <group id>
+  gbz_g="${1-}"
+  case "$gbz_g" in ''|0*|*[!0-9]*) return 0 ;; esac
+  kill -0 -- "-$gbz_g" 2>/dev/null || return 0
+  kill -TERM -- "-$gbz_g" 2>/dev/null || :
+  gbz_i=0
+  while [ "$gbz_i" -lt 10 ] && kill -0 -- "-$gbz_g" 2>/dev/null; do
+    sleep 1
+    gbz_i=$((gbz_i + 1))
+  done
+  if kill -0 -- "-$gbz_g" 2>/dev/null; then
+    kill -KILL -- "-$gbz_g" 2>/dev/null || :
+    note "guard-bind: the body's process group $gbz_g was still there 10 s after TERM, and has been sent KILL."
+  fi
+  return 0
+}
+
+# A SESSION UUID AS A FILE NAME: it names `<offers>/<uuid>`, so a value that
+# could climb out of `offers/` is refused before anything is read.
+guard_bind_uuid_ok() {   # <uuid>
+  case "${1-}" in ''|.*|*[!0-9A-Za-z_.-]*) return 1 ;; esac
+  return 0
+}
+
+guard_bind_outer() {   # <session uuid>
+  gbo_u="${1-}"
+  if ! guard_bind_uuid_ok "$gbo_u"; then
+    note "guard-bind: '$gbo_u' is not a session uuid, so no bind record is read for it."
+    return 2
+  fi
+  G_ID="$gbo_u"
+  gbo_f="$(guard_offer_file "$gbo_u")"
+  if ! guard_bind_load "$gbo_f"; then
+    note "guard-bind: there is no bind record to run at $gbo_f, so nothing was run (the name guard's answer 2 writes it before it starts this)."
+    return 2
+  fi
+  if [ "$GBR_MODE" != binding ]; then
+    note "guard-bind: the record at $gbo_f says mode=${GBR_MODE:-nothing}, not mode=binding, so nothing was run: only an answer 2 that is still binding is run (Y:5396)."
+    return 2
+  fi
+  if [ "$GBR_HAS_PID" = 1 ]; then
+    note "guard-bind: the record at $gbo_f already names its outer, pid ${GBR_PID:-none}, so this second one runs nothing: one outer per attempt."
+    return 2
+  fi
+  gbo_k="$GBR_BIND"
+  # THE SEAM, KEPT FOR THE OUTER AND UNSET IN THE BODY (R48; contract section
+  # 8): where `LANES_BIND_BODY` is set, the outer runs it, with the uuid, in
+  # place of `"$RESOLVED" guard-bind --body`.
+  gbo_body="${LANES_BIND_BODY:-}"
+  unset LANES_BIND_BODY
+  # ITS OWN START, WHICH IS WHAT MAKES ITS PID A LIVENESS TEST. Where it cannot
+  # be read it is left EMPTY, never a word: an empty `pidstart` is one the guard
+  # cannot compare, and so reads as live while the pid is (R49), where a word
+  # would read as another process's and so as a reused pid.
+  gbo_ps="$(pid_start_of "$$" 2>/dev/null || :)"
+  gbo_bs="$(guard_bind_bound_s "$gbo_f")"
+  GBO_BD=no
+  command -v timeout >/dev/null 2>&1 && GBO_BD=yes
+  gbo_now="$(date -u '+%s %Y-%m-%dT%H:%M:%SZ')"
+  gbo_ep="${gbo_now%% *}"
+  if ! guard_bind_rewrite "$gbo_f" "pid pidstart" "started_utc=${gbo_now#* }" "bound_s=$gbo_bs" \
+       "bounded=$GBO_BD" "deadline_epoch=$((gbo_ep + gbo_bs + 5))" "pid=$$" "pidstart=$gbo_ps"; then
+    note "guard-bind: the record at $gbo_f could not be rewritten with this outer's pid, so the bind was NOT run. The guard reads a binding record with no pid as running until its deadline, and then restores the offer."
+    return 1
+  fi
+  note "guard-bind: attempt $gbo_k for transcript $gbo_u, pid $$, bound ${gbo_bs} s (bounded=$GBO_BD), started ${gbo_now#* }."
+
+  gbo_cmd=("$RESOLVED" guard-bind --body "$gbo_u")
+  [ -z "$gbo_body" ] || gbo_cmd=("$gbo_body" "$gbo_u")
+  GBO_TRAPS=0; GBO_CPID=""
+  trap 'GBO_TRAPS=$((GBO_TRAPS + 1)); guard_bind_forward' TERM
+  if [ "$GBO_BD" = yes ]; then
+    timeout -k 10 "$((gbo_bs - 10))" "${gbo_cmd[@]}" &
+    GBO_CPID=$!
+  else
+    set -m
+    "${gbo_cmd[@]}" &
+    GBO_CPID=$!
+    set +m
+  fi
+  [ "$GBO_TRAPS" = 0 ] || guard_bind_forward
+  # `wait`, AND AGAIN AFTER A TRAPPED SIGNAL: a trapped signal cuts `wait` short
+  # with 128 + its number, so a `wait` the trap interrupted is asked again for
+  # the child's own status. With no `timeout`, the trap's `TERM` is followed by
+  # the sweep's `KILL` here, since nothing else would send one.
+  gbo_st=0; gbo_prev=""; gbo_swept=0
+  while :; do
+    gbo_tb="$GBO_TRAPS"
+    if [ "$GBO_BD" = no ] && [ "$GBO_TRAPS" -gt 0 ] && [ "$gbo_swept" = 0 ]; then
+      gbo_swept=1
+      guard_bind_sweep "$GBO_CPID"
+    fi
+    gbo_st=0
+    wait "$GBO_CPID" 2>/dev/null || gbo_st=$?
+    if [ "$gbo_st" = 127 ] && [ -n "$gbo_prev" ]; then gbo_st="$gbo_prev"; break; fi
+    [ "$GBO_TRAPS" != "$gbo_tb" ] || break
+    gbo_prev="$gbo_st"
+  done
+  gbo_rc="$gbo_st"
+  gbo_how=self
+  if [ "$GBO_TRAPS" -gt 0 ]; then gbo_how=signal
+  elif [ "$GBO_BD" = yes ] && { [ "$gbo_rc" = 124 ] || [ "$gbo_rc" = 137 ]; }; then gbo_how=bound
+  fi
+  if [ "$gbo_how" != self ] && [ "$gbo_swept" = 0 ]; then
+    gbo_swept=1
+    guard_bind_sweep "$GBO_CPID"
+  fi
+
+  # THE OUTCOME (Y:5486–5488; lane 3's ruling, points 3, 6 and 11). Where the
+  # body ended on its own, its facts file gives `why` and the `note=` lines;
+  # where the bound or a signal stopped it, the `why` is Y:5488's and the facts,
+  # if any, are not read: what it wrote is not known.
+  gbo_facts="$gbo_f.bind.$gbo_k.facts"
+  gbo_fwhy=""; gbo_fnotes=()
+  if [ "$gbo_how" = self ] && [ -f "$gbo_facts" ]; then
+    gbo_seenwhy=0
+    while IFS= read -r gbo_l || [ -n "$gbo_l" ]; do
+      case "$gbo_l" in
+        why=*)  [ "$gbo_seenwhy" = 1 ] || { gbo_fwhy="${gbo_l#why=}"; gbo_seenwhy=1; } ;;
+        note=*) gbo_fnotes+=("note=$(guard_bind_oneline "${gbo_l#note=}")") ;;
+      esac
+    done < "$gbo_facts"
+  fi
+  gbo_out=()
+  case "$gbo_how" in
+    signal) gbo_out=(mode=bind-failed "rc=$gbo_rc" "why=stopped by a signal; what it wrote is not known") ;;
+    bound)  gbo_out=(mode=bind-failed "rc=$gbo_rc" "why=stopped by its bound; what it wrote is not known") ;;
+    *)
+      if [ "$gbo_rc" = 0 ]; then
+        gbo_out=(mode=bound rc=0 ${gbo_fnotes[@]+"${gbo_fnotes[@]}"})
+      else
+        # OPEN POINT 16, READ FAIL-CLOSED: a body that ended on its own and
+        # gave no `why` (one that crashed, or a seam's stub) is not taken to
+        # have written nothing. Its output is in the attempt's file.
+        [ -n "$gbo_fwhy" ] || gbo_fwhy="the bind's body exited $gbo_rc and left no account of what it did, so what it wrote is not known; its output is in ${GBR_OUT:-the output file of this attempt}"
+        gbo_out=(mode=bind-failed "rc=$gbo_rc" "why=$(guard_bind_oneline "$gbo_fwhy")")
+      fi ;;
+  esac
+  gbo_out+=("ended_utc=$(utc_now)")
+  # WRITTEN ONLY OVER ITS OWN RECORD: one that no longer says `binding` with this
+  # pid has been answered by the guard since (its stale row) or removed, and an
+  # outcome written over it would contradict what the person was told.
+  if ! guard_bind_load "$gbo_f" || [ "$GBR_MODE" != binding ] || [ "$GBR_PID" != "$$" ]; then
+    note "guard-bind: the record at $gbo_f no longer says this bind is running (mode=${GBR_MODE:-none}, pid ${GBR_PID:-none}), so its outcome is not written over it: ${gbo_out[*]}"
+    rm -f -- "$gbo_facts"
+    return 0
+  fi
+  if ! guard_bind_rewrite "$gbo_f" "mode rc why note ended_utc" "${gbo_out[@]}"; then
+    note "guard-bind: the outcome could not be written to $gbo_f: ${gbo_out[*]}"
+    return 1
+  fi
+  rm -f -- "$gbo_facts"
+  note "guard-bind: the bind ended: ${gbo_out[*]}"
+  return 0
+}
+
+# THE BODY'S FACTS, which the outer folds into the record (lane 3's ruling,
+# point 6): `why=` and `note=` lines, written once, at 0600.
+guard_bind_facts() {   # <facts file> [<line> …]
+  gbf_f="${1-}"; shift || :
+  [ -n "$gbf_f" ] || return 1
+  ( umask 077; { for gbf_l in "$@"; do printf '%s\n' "$gbf_l"; done; } > "$gbf_f" ) 2>/dev/null || return 1
+  return 0
+}
+
+# THE BODY, `guard-bind --body <uuid>`, IS WHAT THE GUARD'S CHOICE 2 USED TO DO
+# INSIDE THE HOOK, in the same order (Y:5397–5398): `lane-start --no-launch
+# --bind`, then, after a 0, the `set-row-state` on the lane the window left,
+# then `guard_bound_check`'s read. It writes no key of the record; it hands
+# the outer its `why` and the acts still owed in its facts file. It exits
+# `lane-start`'s own code.
+guard_bind_body() {   # <session uuid>
+  gbb_u="${1-}"
+  if ! guard_bind_uuid_ok "$gbb_u"; then
+    note "guard-bind --body: '$gbb_u' is not a session uuid."
+    return 2
+  fi
+  G_ID="$gbb_u"
+  gbb_f="$(guard_offer_file "$gbb_u")"
+  if ! guard_bind_load "$gbb_f" || [ "$GBR_MODE" != binding ]; then
+    note "guard-bind --body: the record at $gbb_f does not say mode=binding (it says ${GBR_MODE:-nothing}), so nothing was run."
+    return 2
+  fi
+  gbb_from="$GBR_FROM"; gbb_to="$GBR_TO"; gbb_out="$GBR_OUT"
+  gbb_facts="$gbb_f.bind.$GBR_BIND.facts"
+  gbb_start="$(guard_lane_start)"
+  [ -n "$gbb_start" ] || gbb_start=lane-start
+  # WHERE `lane-start`'s OWN WORDS BEGIN in the attempt's output file, so that
+  # its last line, which is its refusal, can be read back as the `why`.
+  gbb_size=0
+  if [ -n "$gbb_out" ] && [ -f "$gbb_out" ]; then
+    gbb_size="$(wc -c < "$gbb_out" 2>/dev/null | tr -d ' ' || :)"
+    case "$gbb_size" in ''|*[!0-9]*) gbb_size=0 ;; esac
+  fi
+  gbb_rc=0
+  # ITS STDOUT IS THE COMMAND IT WOULD HAVE LAUNCHED, so it goes to stderr with
+  # the rest. UNQUOTED ON PURPOSE: `lane_start_args` prints TWO words, `<repo>
+  # <n>` — or `--dir <path> <lane>` for a lane named before the `<repo>-<n>`
+  # rule. AND IN ITS BINDING MODE (openRepoTools#70): `--bind` names THIS
+  # transcript, so the destination's cell is appended with it and the row's
+  # stamp, its log line and its handoff's Rule 3 stamp all name it — never the
+  # id that row would otherwise have resumed, which nobody is in.
+  # shellcheck disable=SC2046
+  "$gbb_start" --no-launch --bind "$G_ID" $(lane_start_args "$gbb_to") >&2 || gbb_rc=$?
+  gbb_said=""
+  if [ -n "$gbb_out" ] && [ -f "$gbb_out" ]; then
+    gbb_said="$(tail -c +"$((gbb_size + 1))" "$gbb_out" 2>/dev/null || :)"
+  fi
+  if [ "$gbb_rc" != 0 ]; then
+    gbb_why="$(printf '%s\n' "$gbb_said" | grep -v '^[[:space:]]*$' | tail -n 1 || :)"
+    [ -n "$gbb_why" ] || gbb_why="lane-start exited $gbb_rc, and its words could not be read back from ${gbb_out:-the output file of this attempt}"
+    guard_bind_facts "$gbb_facts" "why=$(guard_bind_oneline "$gbb_why")" || :
+    note "the bind to lane $gbb_to FAILED: lane-start exited $gbb_rc (its own words are above), so the window has NOT moved and $gbb_from has NOT been marked."
+    return "$gbb_rc"
+  fi
+  gbb_notes=()
+  # THE STAMP NOT WRITTEN OR NOT PUBLISHED (Y:5486): `lane-start` says so itself,
+  # and goes on; the bind is not undone for it.
+  gbb_st="$(printf '%s\n' "$gbb_said" | grep -F "Rule 3's stamp" | grep -F 'NOT' | tail -n 1 || :)"
+  [ -z "$gbb_st" ] || gbb_notes+=("note=lane $gbb_to's Rule 3 stamp is owed: $(guard_bind_oneline "$gbb_st")")
+  if [ -n "$(row_of_lane "$gbb_from" 2>/dev/null || :)" ]; then
+    # AMENDMENT 13(a) — THE STATE IS SET, NOT APPENDED. This window has just
+    # moved to another lane, so the lane it LEFT is not running in it any
+    # more: `PAUSED` is where that lane now is, and the line says where it
+    # went. It used to be an `append-row-status` of `MOVED → <lane>`, which
+    # left the cell saying two things at once — whatever state it opened with,
+    # and this.
+    # THE LINE IS BOUNDED (Copilot round 5 on openRepoTools#82). A lane name is
+    # bounded in its CHARACTERS by `check_lane_name` and not in its length, and
+    # this line carried it twice: a long enough name makes `set-row-state`
+    # refuse the very write that records where the work went — after the window
+    # has already been renamed and moved. The name is said ONCE, and cut where
+    # even once does not fit, so the act always records something true.
+    gbb_line="this window moved to lane $gbb_to on the person's choice 2 at the guard"
+    if [ "${#gbb_line}" -gt 230 ]; then
+      gbb_line="${gbb_line:0:230}"
+      case "$gbb_line" in *' '*) gbb_line="${gbb_line% *}" ;; esac
+      gbb_line="$gbb_line ..."
+    fi
+    # THROUGH `LANES_EDIT` WHERE IT IS SET, else this file (R48): the copy
+    # `lane-start`'s own writes already use.
+    if "${LANES_EDIT:-$RESOLVED}" set-row-state "$gbb_from" "PAUSED · $gbb_line" >&2; then
+      note "…and $gbb_from's row now reads PAUSED, naming the move to $gbb_to."
+    else
+      note "…but $gbb_from's row could NOT be marked (its writer's words are above). Run: lanes-edit.sh set-row-state $gbb_from \"PAUSED · $gbb_line\""
+      gbb_notes+=("note=lane $gbb_from's row was not marked PAUSED: run LANES_LANE=$gbb_from lanes-edit.sh set-row-state $gbb_from \"PAUSED · $gbb_line\"")
+    fi
+  else
+    note "…and the register has no row for $gbb_from, so there is nothing to mark MOVED there."
+  fi
+  if ! guard_bound_check "$gbb_to"; then
+    gbb_notes+=("note=lane $gbb_to's session cell does not end on $G_ID: run LANES_LANE=$gbb_to lanes-edit.sh append-session-id $gbb_to \"<the session cell's last id>\" \"→ harness $G_ID (transcript uuid)\"")
+  fi
+  guard_bind_facts "$gbb_facts" ${gbb_notes[@]+"${gbb_notes[@]}"} || :
+  return 0
 }
 
 
@@ -18136,7 +18489,10 @@ case "$cmd" in
   # AND `project-legs` (T018) READS ONE `project.yaml` and nothing of the
   # workspace, so `lane-worktrees`' daily report can ask it on a
   # workstation where no register is configured.
-  session-start|guard|lane-groups|next-free|append-row-status|project-legs) : ;;
+  # AND `guard-bind` (feature 007, T502): its outer writes the bind's outcome
+  # into the offer file whatever else fails, and a `die … 1` here would leave
+  # a record with no outcome, held at BINDING IN PROGRESS until its deadline.
+  session-start|guard|guard-bind|lane-groups|next-free|append-row-status|project-legs) : ;;
   *)
     # AND W ITSELF UNDER THE OPT-IN, an explicit `LANES_REPO` or not
     # (Amendment 23): S5 refuses a write whose checkout is W, and the sidecar
@@ -19942,6 +20298,29 @@ EOF
       *) note "THE NAME GUARD ITSELF FAILED (exit $g_rc), so the three names were not verified — and a triple that cannot be verified is not a triple that agrees (Amendment 12(d)). This prompt is refused rather than let through, because only a 2 blocks one and a guard that fails open is the silence this amendment exists to end. $(guard_bypass)"
          exit 2 ;;
     esac
+    ;;
+
+  # FEATURE 007, T502 — ANSWER 2's DETACHED BIND: INTERNAL, AND NOT A HOOK. The
+  # guard's choice 2 starts `guard-bind <uuid>`, the outer, detached; the outer
+  # runs `guard-bind --body <uuid>` under its bound (`guard_bind_outer`,
+  # `guard_bind_body`). Not a register writer, so it is in neither writer list
+  # above, and its read-door class is `none` (T504). It is exempt from the
+  # workspace refusal above, as `guard` is, because the outer must be able to
+  # write the bind's outcome into the record whatever else fails: a bind that
+  # wrote none would hold every prompt of the session at BINDING IN PROGRESS
+  # until its deadline. The body's own writes go through `lane-start` and
+  # `set-row-state`, which refuse for themselves.
+  guard-bind)
+    if [ "${1-}" = --body ]; then
+      [ "$#" -eq 2 ] || die "usage: guard-bind --body <session uuid>   (internal: the bind's body, which guard-bind runs under its bound)" 2
+      gbd_rc=0
+      guard_bind_body "$2" || gbd_rc=$?
+      exit "$gbd_rc"
+    fi
+    [ "$#" -eq 1 ] || die "usage: guard-bind <session uuid>   (internal: answer 2's detached bind, which the name guard starts)" 2
+    gbd_rc=0
+    guard_bind_outer "$1" || gbd_rc=$?
+    exit "$gbd_rc"
     ;;
 
   # --- internal reads, for lane-start and lane-end -------------------------
@@ -22793,6 +23172,6 @@ EOF
     ;;
 
   *)
-    die "unknown subcommand '$cmd' (verify-row|set-row-state|append-row-status|replace-in-row|append-session-id|append-line|add-row|retire-rows|archive-rows|migrate-state-cells|commit|rename-lane|log|claim|release|who|history|swapped|session-start|guard|idle-holders|live-holder|window-session|transcript-holders|binding|request-handoff|session-lane|window-lane|lane-dir|lane-profile|lane-agent|lane-transcript|lane-last|workspace-root|last-session|forks|duplicate-holder|workstation|fetch-age|lanes|lane-groups|next-free|sibling-filter|resolve-repo|lane-objects|register-row|register-row-local|retired-identity|canon-lane|resolve-home|managed-projection|lane-state|set-lane-state|lane-trees|set-lane-tree|lane-tree-now|project-legs|lane-reconcile|lane-holders|legacy-restart-check|publish-handoff|restart-intent|set-restart-intent|worktrees|pathspec-check|lane-checkout|refresh-workspace|write-handoff|handoff-path)" 2
+    die "unknown subcommand '$cmd' (verify-row|set-row-state|append-row-status|replace-in-row|append-session-id|append-line|add-row|retire-rows|archive-rows|migrate-state-cells|commit|rename-lane|log|claim|release|who|history|swapped|session-start|guard|guard-bind|idle-holders|live-holder|window-session|transcript-holders|binding|request-handoff|session-lane|window-lane|lane-dir|lane-profile|lane-agent|lane-transcript|lane-last|workspace-root|last-session|forks|duplicate-holder|workstation|fetch-age|lanes|lane-groups|next-free|sibling-filter|resolve-repo|lane-objects|register-row|register-row-local|retired-identity|canon-lane|resolve-home|managed-projection|lane-state|set-lane-state|lane-trees|set-lane-tree|lane-tree-now|project-legs|lane-reconcile|lane-holders|legacy-restart-check|publish-handoff|restart-intent|set-restart-intent|worktrees|pathspec-check|lane-checkout|refresh-workspace|write-handoff|handoff-path)" 2
     ;;
 esac
