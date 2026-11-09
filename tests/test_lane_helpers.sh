@@ -3775,7 +3775,7 @@ has  "…the stamp really written and committed all the same" "$(cat "$WIP/hando
 has  "…in its own commit, which is the one nothing pushed" "$(git -C "$WIP" log --format=%s -n1)" "handoff(repoCN-1@"
 has  "…the helper saying why nothing was replayed, and that the commit is kept" "$err" "refused with origin/main unmoved, so this is no lost race and a replay would meet the same refusal; the commit is local and kept on HEAD"
 has  "…and lane-start pointing at those words, which say where the commit is kept" "$err" "its words above say whether a commit was made, where it is kept, and the command that finishes it"
-has  "…and naming the publish act, once those words are answered" "$err" "commit \"<what it is>\", the publish act"
+has  "…and naming the publish act where those words offer it, as they do with origin unmoved" "$err" "commit \"<what it is>\", the publish act"
 hasnt "…never promising that a later write carries it: S3 refuses every one" "$err" "carries this commit with it"
 # The fixture publishes it, as its owner would, and the sections below start
 # from a checkout with nothing unpublished (S3).
