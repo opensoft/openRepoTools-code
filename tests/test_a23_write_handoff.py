@@ -38,7 +38,8 @@ import pytest
 
 from a23_box import ME, REGISTER
 from conftest import WINDOWS_SKIP
-from test_a23_publish_replay import LANE, NEIGHBOUR, Box as ReplayBox, _git_shim, _stamp
+from test_a23_publish_replay import (LANE, NEIGHBOUR, Box as ReplayBox, _git_shim,
+                                    _recovery_is_s63s_archive, _stamp)
 
 pytestmark = [pytest.mark.skipif(shutil.which("bash") is None,
                                  reason="lanes-edit.sh is a bash script"),
@@ -649,35 +650,46 @@ def test_an_8d_handoff_whose_origin_moved_is_fast_forwarded_first_then_committed
     _released(box, c)
 
 
-def test_a_handoff_in_another_clone_of_the_register_elsewhere_is_written_never_committed(box: Box):
-    """A57, because of 604: the 8(d) branch now commits and pushes in the
-    handoff's own top level, but never in one that carries the register
-    (A44's test). A file under `handoffs/` of another clone of the register
-    that is NOT beside W (601 refuses one beside W) is that clone's lane's,
-    not Amendment 8(d)'s "not the register's", and a commit and push there
-    would publish to the register's origin outside S3 and S4, from a clone
-    this lane does not hold. So it is written there and NOT committed, as
-    before 604 (0), and said: that clone's HEAD, this checkout and the
-    register's origin are as they were. Whether it should be refused
-    instead is put to lane openRepoTools-3 (the body's Q4)."""
+@pytest.mark.parametrize("how", ["stamp-target", "stamp-cell", "prepend-target", "whole-target"])
+def test_a_handoff_in_another_clone_of_the_register_elsewhere_is_refused(box: Box, how: str):
+    """Question 4 of #18, answered by lane openRepoTools-3 (REFUSE, 2; A63).
+    A file under `handoffs/` of another clone of the register that is NOT
+    beside W (601 refuses one beside W) is that clone's lane's, not Amendment
+    8(d)'s "not the register's". A57 kept 604's commit and push out of it and
+    wrote it there, uncommitted, exit 0: the change then wedged that lane's
+    next write at S3 step 4, which is 601's harm. A44's test of the top level
+    is there already, so the file is refused (2) before a byte, by `--target`
+    or by an absolute cell, in each of the three modes: that clone, this
+    checkout and the register's origin are as they were, the stamp line is
+    said, nothing is on stdout."""
+    d = box.root / "elsewhere-clone"
+    if how == "stamp-cell":
+        box.cell_is(str(d / HANDOFF_REL))
     c = box.seam()
-    d = box.clone(box.root / "elsewhere-clone")
+    box.clone(d)
     f = d / HANDOFF_REL
-    text = f.read_text(encoding="utf-8")
+    if how == "prepend-target":
+        args = ("--prepend", str(_block(box)), "--target", str(f))
+    elif how == "whole-target":
+        args = ("--whole", str(_prepared(box)), "--expect-digest", sha(f), "--target", str(f))
+    else:
+        args = ("--stamp", STAMP) + (("--target", str(f)) if how == "stamp-target" else ())
+    text, theirs, mine = f.read_bytes(), box.snapshot(d), box.snapshot(c)
     d_head = box.git("-C", str(d), "rev-parse", "HEAD").strip()
-    mine, tip = box.snapshot(c), box.origin_head()
-    result = box.write_handoff("--stamp", STAMP, "--subject", SUBJECT, "--target", str(f))
-    assert result.returncode == 0, result.stderr
-    assert (f"{f} is in {d}, another clone of the register (its top level carries {REGISTER} too), "
-            f"not this write's checkout {c}, so it is not Amendment 8(d)'s: it is written there and "
-            "NOT committed") in result.stderr
+    result = box.write_handoff(*args, "--subject", SUBJECT)
+    assert result.returncode == 2, result.stderr
+    assert (f"is {HANDOFF_REL} in {d}, another clone of the register (its top level carries {REGISTER} too), "
+            f"not this write's checkout {c}, so it is not Amendment 8(d)'s") in result.stderr
+    assert "Nothing was written." in result.stderr
     assert "committed there" not in result.stderr
-    assert f.read_text(encoding="utf-8") == stamped(text)
+    if how.startswith("stamp"):
+        assert f"the stamp line it would have written under the handoff's header block: {STAMP}" in result.stderr
+    assert f.read_bytes() == text
     assert box.git("-C", str(d), "rev-parse", "HEAD").strip() == d_head
-    assert box.git("-C", str(d), "status", "--porcelain").split() == ["M", HANDOFF_REL]
-    assert box.origin_head() == tip
+    assert box.git("-C", str(d), "status", "--porcelain") == "", "nothing pending in that clone for its S3"
+    assert box.snapshot(d) == theirs
     assert box.snapshot(c) == mine
-    assert result.stdout == _line(f)
+    assert result.stdout == ""
     _released(box, c)
 
 
@@ -1744,11 +1756,11 @@ def test_handoff_path_over_an_unreadable_register_is_1_never_8(box: Box):
     assert result.stdout == ""
 
 
-def test_whole_refusal_names_HEAD_when_a_commit_landed_on_top(box: Box):
-    """S4.4's refusal where another writer's commit landed on top of this
-    write's while its push was in flight: HEAD is that commit, so the words
-    name it and say both are kept — never "kept on HEAD" for this write's.
-    Nothing is reset (6), and both commits wait for the publish act."""
+def _whole_write_a_stamp_lands_on_top_of(box: Box) -> tuple:
+    """The setup S4.4's on-top cases share: a peer edits the handoff and lands
+    it at this write's push, and an unlocked writer's stamp lands on top of
+    this write's commit in the same moment. Returns the checkout and the
+    handoff in it."""
     c = box.seam()
     f = c / HANDOFF_REL
     box.peer_prepares(HANDOFF_REL, "Preserved task.\n", "Preserved task, and a peer's line.\n",
@@ -1764,6 +1776,15 @@ def test_whole_refusal_names_HEAD_when_a_commit_landed_on_top(box: Box):
                 f"git -C {cq} add -- handoffs/stamp.md\n"
                 f"git -C {cq} commit -q -m 'a stamp from an unlocked writer' -- handoffs/stamp.md\n"
                 "exit 0\n")
+    return c, f
+
+
+def test_whole_refusal_names_HEAD_when_a_commit_landed_on_top(box: Box):
+    """S4.4's refusal where another writer's commit landed on top of this
+    write's while its push was in flight: HEAD is that commit, so the words
+    name it and say both are kept — never "kept on HEAD" for this write's.
+    Nothing is reset (6), and both commits wait for S6.3's archive."""
+    c, f = _whole_write_a_stamp_lands_on_top_of(box)
     result = box.write_handoff("--whole", str(_prepared(box)), "--expect-digest", sha(f),
                                "--subject", "handoff: PAUSED")
     assert result.returncode == 6, result.stderr
@@ -1777,7 +1798,44 @@ def test_whole_refusal_names_HEAD_when_a_commit_landed_on_top(box: Box):
     assert f"kept, with HEAD at {top}: {mine} handoff: PAUSED" in result.stderr
     assert f"kept on HEAD: {mine}" not in result.stderr
     assert "push refused (attempt" not in result.stderr, "no reset, no replay"
-    assert len(box.unpublished(c)) == 2, "both kept, for the publish act"
+    assert len(box.unpublished(c)) == 2, "both kept, for the archive"
+    assert result.stdout == _line(f)
+    _released(box, c)
+
+
+@pytest.mark.parametrize("how", ["head-is-this-write", "stamp-on-top"])
+def test_whole_kept_by_S4_4_offers_the_archive_not_the_publish_act_that_refuses(box: Box, how: str):
+    """lane openRepoTools-3's review of #18 at 2b1a232, SHOULD 2 (A62): S4.4's
+    two notes (this write's commit is HEAD, or another commit is on top of it)
+    run only after a push origin's move refused, and they offered the publish
+    act, with a short `reset --keep origin/main`. The publish act refuses
+    there ("moved past", 2), as 1b's 705 made every other origin-moved note
+    say. Now each says what is kept must be archived and dropped, then gives
+    S6.3's recovery: the list, the STOP line, the archive and the drop with
+    the tracking ref in full, never the publish act. The act is run after the
+    refusal, as the old note offered it: it refuses (2) and pushes nothing."""
+    if how == "stamp-on-top":
+        c, f = _whole_write_a_stamp_lands_on_top_of(box)
+    else:
+        c = box.seam()
+        f = c / HANDOFF_REL
+        box.peer_prepares(HANDOFF_REL, "Preserved task.\n", "Preserved task, and a peer's line.\n",
+                          "a peer edits the handoff")
+        box.race(prepared=True)
+    result = box.write_handoff("--whole", str(_prepared(box)), "--expect-digest", sha(f),
+                               "--subject", "handoff: PAUSED")
+    assert result.returncode == 6, result.stderr
+    err = result.stderr
+    assert "is no longer the one this whole-file write started from" in err
+    _recovery_is_s63s_archive(err, c, "it is" if how == "head-is-this-write" else "they are")
+    assert "reset --keep origin/main" not in err, "the tracking ref is named in full"
+    tip, mine = box.origin_head(), box.head(c)
+    offered = box.helper("commit", "what it is", LANES_LANE=LANE)
+    assert offered.returncode == 2, offered.stderr
+    assert "origin/main has moved past the local commits" in offered.stderr
+    assert "Nothing was pushed." in offered.stderr
+    assert box.origin_head() == tip
+    assert box.head(c) == mine
     assert result.stdout == _line(f)
     _released(box, c)
 
@@ -1813,7 +1871,7 @@ def test_whole_refusal_names_a_rewritten_commit_as_rewritten(box: Box):
     assert "local and kept, with HEAD at" not in result.stderr, "no commit was made on top"
     assert "push refused (attempt" not in result.stderr, "no reset, no replay"
     assert box.subject(c) == "handoff: PAUSED, reworded by an unlocked writer"
-    assert len(box.unpublished(c)) == 1, "the rewritten copy waits for the publish act"
+    assert len(box.unpublished(c)) == 1, "the rewritten copy waits for the archive"
     assert result.stdout == _line(f)
     _released(box, c)
 
@@ -1987,7 +2045,8 @@ def test_a_moved_handoff_the_replay_cannot_follow_is_kept_on_HEAD_exit_6(box: Bo
     assert f"kept on HEAD: {kept}" in err
     assert "push refused (attempt" not in err, "nothing is dropped or replayed"
     assert f.read_text(encoding="utf-8") == stamped(HANDOFF)
-    assert _origin_has(box, MOVED_REL) and not _origin_has(box, HANDOFF_REL)
+    assert _origin_has(box, MOVED_REL), "origin has the moved file"
+    assert not _origin_has(box, HANDOFF_REL), "origin no longer has the old name"
     assert [line.split()[1] for line in box.unpublished(c)] == [kept]
     assert result.stdout == _line(f)
     _released(box, c)
@@ -2452,7 +2511,7 @@ def test_whole_kept_by_S4_4_names_the_commits_under_it(box: Box):
     whole-file write's commit sits under it, and the `reset --keep` S4.4's
     note offers would take it, so they are counted and the STOP line said.
     Origin's copy moved, so nothing is replayed: kept on HEAD (6), both
-    commits there for the publish act."""
+    commits there for the archive."""
     c = box.seam()
     f = c / HANDOFF_REL
     box.peer_prepares(HANDOFF_REL, "Preserved task.\n", "Preserved task, and a peer's line.\n",
@@ -2719,7 +2778,8 @@ def test_a_cell_a_peer_pads_otherwise_is_the_same_cell_and_the_write_is_kept_on_
     assert "push refused (attempt" not in err, "nothing is dropped or replayed"
     assert f.read_text(encoding="utf-8") == stamped(HANDOFF), "the write is in this checkout"
     names = box.git("--git-dir", str(box.origin), "ls-tree", "-r", "--name-only", "main").splitlines()
-    assert HANDOFF_REL not in names and odd in names
+    assert HANDOFF_REL not in names, "origin no longer has the old name"
+    assert odd in names, "origin has the blank-ended name"
     assert not (c / odd).exists(), "nothing was written into the blank-ended name"
     assert [line.split()[1] for line in box.unpublished(c)] == [kept], "one commit unpublished, this write's"
     assert result.stdout == _line(f)

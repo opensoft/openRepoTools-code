@@ -497,7 +497,10 @@
 #      checkout of the register beside it (`<W>-lanes/<lane>/`, `<W>-<name>/`;
 #      a lane's handoff is written in its own checkout only, and
 #      `handoff-path` and `set-restart-intent --handoff` refuse the same
-#      handoff by the same check, 601), a relative cell or `--target` whose
+#      handoff by the same check, 601), a file under `handoffs/` of any other
+#      clone of the register (A63: lane openRepoTools-3's answer to question
+#      4 of #18; an uncommitted write there wedged that lane's next write at
+#      S3 step 4), a relative cell or `--target` whose
 #      `.` or `..` components climb out of the checkout (S2, 602; `handoff-path`
 #      refuses that cell too), a handoff whose path holds a glob character
 #      (607; `handoff-path` and `set-restart-intent --handoff` refuse it
@@ -588,12 +591,13 @@
 #      nothing to write into (one moved with its row's cell, to a file under
 #      `handoffs/` that origin has, is replayed into the moved file), or an
 #      Amendment 8(d) handoff `write-handoff` wrote whose commit or push in its
-#      own repository failed (604; the command that finishes it is said). Or another
-#      writer in the checkout REWROTE this write's commit (a `pull --rebase`
-#      with no lock): it is not on HEAD at all, and what reached origin is
-#      read by content. Or, where the drop's tree step was refused and
-#      another writer committed on the branch in between, the commit is
-#      named OFF HEAD, with `reflog -5`. Every later write from that
+#      own repository failed (604; the command that finishes it is said)
+#      (that commit is in that repository; no write here refuses over it). Or
+#      another writer in the checkout REWROTE this write's commit (a
+#      `pull --rebase` with no lock): it is not on HEAD at all, and what
+#      reached origin is read by content. Or, where the drop's tree step was
+#      refused and another writer committed on the branch in between, the
+#      commit is named OFF HEAD, with `reflog -5`. Every later write from that
 #      checkout refuses under S3 until the lane publishes or archives it
 #   7  ANOTHER ACT GOT THERE FIRST, and this one wrote nothing. `claim`:
 #      CLAIM-LOST, another lane's claim landed on main first.
@@ -3289,7 +3293,11 @@ EOF
           note "under it are $cpw_un commit(s) that origin/$LANES_BRANCH lacks and this write did not make; list them: git -C $LANES_REPO log --oneline refs/remotes/origin/$LANES_BRANCH..HEAD; if any is not your own write, STOP and take it to the lane its subject names — never reset, stash or overwrite a peer's work"
         fi
         note "look at it: git -C $LANES_REPO show $cp_sha; and at origin's: git -C $LANES_REPO log -1 -p refs/remotes/origin/$LANES_BRANCH -- $CP_WHOLE_REL"
-        note "every later write from this checkout refuses (S3's unpushed row) until it is published — LANES_LANE=<lane> $SELF commit \"<what it is>\", the publish act — or archived (S6.3) and \`git -C $LANES_REPO reset --keep origin/$LANES_BRANCH\` run."
+        # THE PUBLISH ACT REFUSES HERE ("moved past", 2): origin moved, so the
+        # recovery is S6.3's archive, as 1b's 705 made every other
+        # origin-moved note say (lane openRepoTools-3's review of #18 at
+        # 2b1a232, SHOULD 2; A62).
+        cp_recovery_steps "it is"
         die "the push was refused because origin/$LANES_BRANCH moved, and origin's copy of $CP_WHOLE_REL is no longer the one this whole-file write started from, so it does not replay over that change (Amendment 23 S4.4); the commit is local and kept on HEAD: $cp_sha $msg" 6
       fi
       if [ -z "$cpw_head" ] || ! git -C "$LANES_REPO" merge-base --is-ancestor "$cp_sha" "$cpw_head" 2>/dev/null; then
@@ -3297,7 +3305,7 @@ EOF
       fi
       note "HEAD is $cpw_head, not this write's commit $cp_sha: another commit was made on top of it in this checkout before or while its push was in flight (609, 1b's 343). Nothing is reset, so both are kept."
       note "look at both: git -C $LANES_REPO log --oneline $cp_sha^..HEAD; and at origin's: git -C $LANES_REPO log -1 -p refs/remotes/origin/$LANES_BRANCH -- $CP_WHOLE_REL"
-      note "every later write from this checkout refuses (S3's unpushed row) until they are published — LANES_LANE=<lane> $SELF commit \"<what they are>\", the publish act — or archived (S6.3)."
+      cp_recovery_steps "they are"
       die "the push was refused because origin/$LANES_BRANCH moved, and origin's copy of $CP_WHOLE_REL is no longer the one this whole-file write started from, so it does not replay over that change (Amendment 23 S4.4); this write's commit and the one on top of it are local and kept, with HEAD at $cpw_head: $cp_sha $msg" 6
     fi
   fi
@@ -14428,14 +14436,17 @@ $(session_ids_local_of_lane "$rr_l" 2>/dev/null || :)"
     # commit had had their logs created and appended. It is asked here as
     # `ensure_log` asks it, in its words, because it is the same refusal; the
     # refusal of a local file of another case above means `rr_from`, where
-    # there is one, is the row's own spelling.
+    # there is one, is the row's own spelling. Under Amendment 23 S3 (#198 slice
+    # 1b) a rename whose commit is not pushed is refused before this scan, so the
+    # scan meets this only where origin moves after S3's fast-forward: a reader's
+    # fetch brings a respelled log into origin/main under this checkout.
     rr_pub="$rr_pubp"
     rr_from=""
     [ "$rr_ln2" = 1 ] && rr_from="$rr_loc"
     if [ "$rr_pub" != "$(log_path_for "$rr_l")" ] && [ "${rr_from##*/}" != "${rr_pub##*/}" ]; then
       rr_here="and this checkout does not have it"
       [ -n "$rr_from" ] && rr_here="while this checkout has ${LANES_LOG_PREFIX}${rr_from##*/} instead — a case-only rename whose commit never landed"
-      die "lane ${rr_l}'s object log is published as $rr_pub $rr_here: the row spells the lane $rr_l, so the log is $(log_path_for "$rr_l") (Amendment 15), and writing one here now would leave TWO files for one lane. Origin moved after this write's fast-forward under its lock (Amendment 23 S3): re-run it, and it starts from origin's new tip. Nothing was written." 2
+      die "lane ${rr_l}'s object log is published as $rr_pub $rr_here: the row spells the lane $rr_l, so the log is $(log_path_for "$rr_l") (Amendment 15), and writing one here now would leave TWO files for one lane. Re-run the write: it fast-forwards this checkout to origin's tip under its lock first (Amendment 23 S3), and the rename then happens once, inside its own commit. Nothing was written." 2
     fi
 
     # THE LINE AND THE CELL, BOTH BUILT AND BOTH CHECKED BEFORE ANYTHING IS
@@ -20967,15 +20978,19 @@ EOF
   #      never the register or `lanes/`), and one inside a git directory —
   #      another clone's `.git/`, a bare clone — and any path in W or in a
   #      checkout beside it (`<W>-lanes/<lane>/`, `<W>-<name>/`): a lane's
-  #      handoff is written in its own checkout only (601). A relative cell
+  #      handoff is written in its own checkout only (601). So is a file
+  #      under `handoffs/` of any other clone of the register, not beside W
+  #      too (A63: lane openRepoTools-3's answer to question 4 of #18; an
+  #      uncommitted write there wedged that lane's next write at S3 step 4).
+  #      A relative cell
   #      or `--target` whose `.` or `..` components climb out of the checkout
   #      is refused first, for its spelling, wherever it lands (602, A55).
   #      Where git cannot read a repository on the way up from the target, it
   #      refuses (1, R22).
   #      One in ANOTHER REPOSITORY (Amendment 8(d)) is written there, then
   #      committed and pushed in its own top level (604), and S3's refusal of
-  #      this checkout does not stop it; one in another clone of the
-  #      register not beside W is written and never committed (A57).
+  #      this checkout does not stop it; no clone of the register is one (A57,
+  #      A63).
   #   3. S3 step 4 for the handoff's own path (`cs_own_pending`), and for a
   #      handoff git does not track yet, which a commit would add and a lost
   #      race's replay would drop.
@@ -21074,7 +21089,7 @@ EOF
       case "$whf_rexp" in *[!0-9a-fA-F]*) die "--expected-digest takes a SHA-256, or none" 64 ;; esac
     fi
     # A FENCED `--prepend` TAKES `--expected-digest none` ONLY (lane
-    # openRepoTools-3's review of #312, 605; A58). Fenced on a digest, a push
+    # openRepoTools-3's review of #312, 605; A59). Fenced on a digest, a push
     # that lost its race to a peer's change of the handoff was replayed onto a
     # pre-image that was no longer the bound one, the re-run refused, and the
     # block was left in the dropped commit, in the reflog only. `lane-handoff`
@@ -21189,8 +21204,12 @@ EOF
       fi
       whf_otop="$(git -C "$whf_gd" rev-parse --show-toplevel 2>/dev/null || :)"
       whf_otop="$( [ -n "$whf_otop" ] && cd -P -- "$whf_otop" 2>/dev/null && pwd -P || :)"
+      whf_oreg=0
       if [ -n "$whf_otop" ] && { [ -e "$whf_otop/$LANES_PATH" ] || [ -L "$whf_otop/$LANES_PATH" ]; } &&
-         path_under "$whf_phys" "$whf_otop" && ! whf_in_scope "${whf_phys#"$whf_otop"/}"; then
+         path_under "$whf_phys" "$whf_otop"; then
+        whf_oreg=1
+      fi
+      if [ "$whf_oreg" = 1 ] && ! whf_in_scope "${whf_phys#"$whf_otop"/}"; then
         whf_stamp_said
         die "lane $lane's handoff target $whf_path is ${whf_phys#"$whf_otop"/} in $whf_otop, another checkout of the register (its top level carries $LANES_PATH too), which is not a file under handoffs/: write-handoff writes a lane's handoff and nothing else, never a register or anything under lanes/, in this checkout or in another clone of it (Amendment 23 S2). Nothing was written." 2
       fi
@@ -21203,6 +21222,18 @@ EOF
       if handoff_beside_w "$whf_c" "$whf_path"; then
         whf_stamp_said
         die "lane $lane's handoff target $whf_path is $HBW_WHY. Nothing was written." 2
+      fi
+      # AND A FILE UNDER handoffs/ OF ANOTHER CLONE OF THE REGISTER THAT IS NOT
+      # BESIDE W IS REFUSED TOO (lane openRepoTools-3's answer to question 4 of
+      # #18, REFUSE; A63). It is that clone's lane's file, not Amendment 8(d)'s
+      # "not the register's": 604's commit and push stay out of it (A57), and
+      # written there, uncommitted, it left a change its lane's next write
+      # refused over at S3 step 4, 601's harm. Per-lane `LANES_REPO` clones
+      # exist outside W's siblings, and A44's test of the top level is there
+      # already. After 601's check, so a clone beside W keeps 601's words.
+      if [ "$whf_oreg" = 1 ]; then
+        whf_stamp_said
+        die "lane $lane's handoff target $whf_path is ${whf_phys#"$whf_otop"/} in $whf_otop, another clone of the register (its top level carries $LANES_PATH too), not this write's checkout $whf_c, so it is not Amendment 8(d)'s \"not the register's\": a lane's handoff is written in its own checkout only. A write there would leave a change that clone's lane refuses over at its next write (Amendment 23 S3 step 4), and a commit and push there would publish to the register outside S3 and S4. Nothing was written." 2
       fi
       # A READ THAT FAILED IS NEVER "NO REPOSITORY" (601's second half, R22).
       # Where git gave no top level, the target is in no work tree only if no
@@ -21355,8 +21386,11 @@ EOF
     # too (A44's test) is another lane's clone, not 8(d)'s "not the
     # register's", and a commit and push there would publish to the
     # register's origin outside S3 and S4, from a clone this lane does not
-    # hold; beside W, 601 refused it above, and elsewhere it is written and
-    # NOT committed, as before 604 (0, said; its lane commits it). A step
+    # hold. Beside W, 601 refused it above, and elsewhere so did A63's
+    # (lane openRepoTools-3's answer to question 4 of #18), before a byte, so
+    # the branch below is a BACKSTOP for a top level that came to carry the
+    # register after those checks: the handoff is then written and NOT
+    # committed (0, said; its lane commits it). A step
     # that fails there leaves the handoff WRITTEN, says what is left with the
     # command that finishes it, and is 6 (`git add` or `commit` failed, or the
     # commit is kept on HEAD and named); a file in no git work tree is written
