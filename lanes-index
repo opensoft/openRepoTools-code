@@ -1101,15 +1101,60 @@ def cell_state(row: str) -> str:
     return rest
 
 
-REGISTER_KIND_RE = re.compile(r"^(HOLD RELEASED|HOLD|LANDING|LANDED)[ \t]+(—|-)[ \t]")
+#: THE ONE CLASSIFIER'S KINDS (feature 007, FR-030; design S6 and D18). A
+#: register line's kind is its own opening words, then blanks, an em dash or a
+#: hyphen, and a blank. Rule 6's `LANDING` and `LANDED` and Amendment 10's
+#: `HOLD` and `HOLD RELEASED` are today's four; Q17(B) adds `HOLD (refresh)`,
+#: `HOLD (run id)`, `HOLD WITHDRAWN`, `HOLD EXPIRED`, `QUEUED-HOLD` and
+#: `LANDING WITHDRAWN`, and F13 adds `LANDING EXPIRED`. The dash after the kind
+#: keeps `HOLD (refresh) — ` from reading as `HOLD` and `LANDING EXPIRED — `
+#: from reading as `LANDING`, and leaves `LANDING EXPIREDX — `,
+#: `HOLD REQUESTED — ` and `QUEUED-HOLD (refresh) — ` lines of no kind.
+REGISTER_KIND_RE = re.compile(
+    r"^(HOLD RELEASED|HOLD WITHDRAWN|HOLD EXPIRED|HOLD \(refresh\)|HOLD \(run id\)|HOLD"
+    r"|QUEUED-HOLD|LANDING EXPIRED|LANDING WITHDRAWN|LANDING|LANDED)[ \t]+(—|-)[ \t]")
+
+#: Q17(B), kind by kind: the `slot_role` and `slot_kind` that migration 1's
+#: `register_lines` holds for a line of each kind (design S6's table, and its
+#: note on `register_lines.slot_kind`). A take holds its repository's `main`.
+#: A close ends an open take of its own slot kind: `HOLD RELEASED`,
+#: `HOLD WITHDRAWN` and `HOLD EXPIRED` the writer's `HOLD`, `LANDED` the
+#: writer's `LANDING`, and `LANDING EXPIRED` the `LANDING` of the lane its
+#: `for_lane` names. `HOLD (refresh)` and `HOLD (run id)` continue an open
+#: `HOLD` and take nothing new; they, `QUEUED-HOLD` and `LANDING WITHDRAWN`
+#: take and close nothing. `register_lines`' CHECKs still bind each row: a
+#: slot needs a `repo_key`, and a landing slot a PR.
+REGISTER_SLOTS: dict[str, tuple[str | None, str | None]] = {
+    "HOLD": ("take", "hold"),
+    "HOLD (refresh)": (None, None),
+    "HOLD (run id)": (None, None),
+    "HOLD RELEASED": ("close", "hold"),
+    "HOLD WITHDRAWN": ("close", "hold"),
+    "HOLD EXPIRED": ("close", "hold"),
+    "QUEUED-HOLD": (None, None),
+    "LANDING": ("take", "landing"),
+    "LANDED": ("close", "landing"),
+    "LANDING EXPIRED": ("close", "landing"),
+    "LANDING WITHDRAWN": (None, None),
+}
 
 
 def parse_register_line(line: str) -> dict | None:
-    """Rule 6's `LANDING`/`LANDED` and Amendment 10's `HOLD`/`HOLD RELEASED`.
+    """The one classifier (FR-030): a register line's kind and fields, or None
+    for a line of no kind.
 
-    The kind is the line's own first word(s); every other field is read the way
-    `RULE6_AWK` reads it, best effort, because a `HOLD` is free text by
-    Amendment 10(e) and the raw line is kept beside whatever was found."""
+    The kind is the line's own first word(s), by `REGISTER_KIND_RE`; every
+    other field is read the way `RULE6_AWK` reads it, best effort, because a
+    `HOLD` is free text by Amendment 10(e) and the raw line is kept beside
+    whatever was found. Each field is its first match, so a
+    `LANDING EXPIRED`'s `lane` is its writer, whose `lane <name>` comes first.
+
+    A `LANDING EXPIRED` alone has one field more (F13), `for_lane`: the holder
+    whose `LANDING` it closes, from its first `for lane <name>`, cut as a
+    `lane <name>` is cut. Its row needs the holder, the PR and the repository
+    (`register_lines`' CHECKs), so a line in its shape that lacks any of the
+    three is a line of no kind, None: it takes and releases nothing. Every
+    other kind keeps the seven fields it had."""
     m = REGISTER_KIND_RE.match(line)
     if not m:
         return None
@@ -1134,7 +1179,103 @@ def parse_register_line(line: str) -> dict | None:
     tm = re.search(r"→ ([0-9a-f]{7,40})\b", line) or re.search(r" main ([0-9a-f]{7,40})\b", line)
     if tm:
         fields["tip"] = tm.group(1)
+    if fields["kind"] == "LANDING EXPIRED":
+        hm = re.search(r"for lane ([A-Za-z0-9._-]+)", line)
+        if not hm or fields["pr"] is None or fields["repo"] is None:
+            return None
+        fields["for_lane"] = hm.group(1)
     return fields
+
+
+def register_utc_epoch(utc: str | None) -> int | None:
+    """A register line's UTC as `utc_ts` takes it (feature 007; contract
+    draft 4.10, section 3.5): the stamp `parse_register_line` found,
+    `YYYY-MM-DDTHH:MM[:SS]Z`, as whole seconds since the epoch, or None where
+    there is no stamp or it cannot be a time - a month 13, a day 45 or a
+    February 30th, an hour 24 or more, a minute or a second 60 or more, a year
+    0. A take sends this, NULL for None, and never a value filled in (design
+    Y:5116): a stamp that does not parse is a take with no UTC, never a guess
+    at the nearest time."""
+    if not utc:
+        return None
+    fmt = "%Y-%m-%dT%H:%M:%SZ" if utc.count(":") == 2 else "%Y-%m-%dT%H:%MZ"
+    try:
+        stamp = _dt.datetime.strptime(utc, fmt)
+    except ValueError:
+        return None
+    return int(stamp.replace(tzinfo=_dt.timezone.utc).timestamp())
+
+
+def classify_register_line(line: str) -> tuple[str, str, str, str, str]:
+    """`register classify`'s five fields for one register line (contract
+    draft 4.10, section 3.5; lane 3's R04), each `-` where absent:
+
+    - `<kind>`, the kind `REGISTER_KIND_RE` reads: the line's SHAPE, even
+      where F13's fields are missing, so a hand-typed `LANDING EXPIRED` that
+      `parse_register_line` reads as no kind is still `LANDING EXPIRED`;
+    - `<slot_role>`, that kind's role in `REGISTER_SLOTS`, `take` or `close`,
+      whatever fields the line lacks, and `-` for a kind that takes and
+      closes nothing;
+    - `<repo_key>`, `<utc_ts>` and `<lane>`: `parse_register_line`'s
+      repository as the line writes it (no `repos.tsv`: alias resolution
+      stays the commit's), its UTC as `register_utc_epoch` reads it, and its
+      lane. Where `parse_register_line` reads no kind - a `LANDING EXPIRED`
+      lacking F13's holder, PR or repository - it reads none of the three.
+
+    Every field is ASCII with no tab: the kinds are fixed, and the
+    repository and the lane are cut by `[A-Za-z0-9/._-]` and
+    `[A-Za-z0-9._-]`."""
+    m = REGISTER_KIND_RE.match(line)
+    if not m:
+        return ("-", "-", "-", "-", "-")
+    kind = m.group(1)
+    fields = parse_register_line(line) or {}
+    epoch = register_utc_epoch(fields.get("utc"))
+    return (kind, REGISTER_SLOTS[kind][0] or "-", fields.get("repo") or "-",
+            "-" if epoch is None else str(epoch), fields.get("lane") or "-")
+
+
+def cmd_register_classify(args: list[str]) -> int:
+    """`lanes-index register classify` (contract draft 4.10, section 3.5; FR-030,
+    serving FR-032; lane 3's R04): THE ONE CLASSIFIER, for `append-line`'s
+    refusals on primary. `lanes-edit.sh` (lane 4's T424) pipes register lines
+    in, one per LF-ended line, and reads back one line each, in order:
+    `<kind>` TAB `<slot_role>` TAB `<repo_key>` TAB `<utc_ts>` TAB `<lane>`,
+    as `classify_register_line` gives them. A bash copy of the classifier
+    would be the second classifier design Y:6247-6249 warns of.
+
+    So the caller refuses, with 2 and before the lock, a line whose `<kind>`
+    is `LANDING EXPIRED`; a `take` whose `<utc_ts>` or `<repo_key>` is `-`;
+    and a `LANDING` whose `<lane>` is `-`.
+
+    stdin is read as bytes and cut at LF alone, so a CR stays inside its line
+    and the output has exactly one line per input line; a last line with no
+    LF is a line, and empty input prints nothing. An argument is usage, 64,
+    before anything is read. The configuration is loaded only so that a
+    refused one is refused, 2 (Q6(c)'s refusal of `mode=primary` included,
+    as a `Refusal`); nothing in it is used, since the contract lets this read
+    no key but `register_schema=`, and with no database call it needs none.
+    It opens no store and runs no `psql`."""
+    for arg in args:
+        if arg in ("-h", "--help"):
+            say(USAGE)
+            return 0
+        note(f"register classify takes no argument, and was given '{arg}': it reads "
+             f"register lines on stdin - see {PROG} --help")
+        return 64
+    try:
+        load_config()
+    except Refusal as exc:
+        note(f"REFUSED: {exc}")
+        return 2
+    stdin = getattr(sys.stdin, "buffer", None)
+    lines = (stdin.read() if stdin is not None else b"").split(b"\n")
+    if lines[-1] == b"":
+        lines.pop()
+    sys.stdout.write("".join("\t".join(classify_register_line(_decode(raw))) + "\n"
+                             for raw in lines))
+    sys.stdout.flush()
+    return 0
 
 
 # ======================================================== the records built
@@ -2268,6 +2409,1182 @@ def _no_password_file() -> str:
 
 def open_store(cfg: dict, role: str):
     return SqliteStore(cfg) if cfg["store"] == "sqlite" else PostgresStore(cfg, role)
+
+
+# ===== the SQL register: schema, roles, bootstrap and logins (007)
+#
+# THE SQL REGISTER'S SCHEMA, WHICH THE BOOTSTRAP ALONE APPLIES (feature 007,
+# opensoft/openRepoTools#165; design.md §1.2, §1.3.1 and §1.5). Nothing here is
+# a subcommand. `lanes-index bootstrap` calls `apply_register_migrations`
+# through Brett's admin connection, after §1.4's CREATE ROLEs and the admin's
+# GRANT and before §1.4's other statements. No client role owns anything in
+# `lanes_register`, so no writer can apply a migration (§1.5: "Only the
+# bootstrap applies them").
+#
+# FORWARD ONLY (§1.5). Migrations are numbered scripts, each one transaction,
+# applied in order from the schema's `version` up to `REGISTER_SCHEMA_VERSION`.
+# There is no down-migration: a bad one is followed by a forward fix. Each
+# `migrations` row records `script_sha256`, the digest of its script as shipped.
+#
+# Migration 1 creates the schema. Its `CREATE SCHEMA` fails on a schema that
+# already exists, so it never runs twice. Every later script follows §1.5's
+# step 3, in one transaction:
+#   - `SET LOCAL lock_timeout = '2000ms'`;
+#   - `UPDATE register_head SET seq = seq WHERE id = 1`, so every older
+#     writer snapshot gets 40001;
+#   - a check that `version` is one below its own, else LR003;
+#   - its DDL and GRANTs, then the new `version` and floors;
+#   - its `migrations` row.
+# A 55P03 is retried, never queued.
+
+#: THE REGISTER'S SCHEMA THIS BUILD KNOWS (§1.5), apart from #160's
+#: `SCHEMA_VERSION` above. Every copy in a release is one number (lane 2's
+#: hygiene test, L2-N6), so it is assigned here and nowhere else.
+REGISTER_SCHEMA_VERSION = 1
+
+#: The floors the newest migration sets (§1.5, "The floors"): the oldest client
+#: version that may write, and the oldest that may read. By default a migration
+#: sets both to its own number, R3a's exact match. One that leaves older
+#: clients correct may keep them, and says so in its header.
+REGISTER_WRITERS_FROM = 1
+REGISTER_READERS_FROM = 1
+
+#: Migration 1, part one: design.md §1.2's SQL block, verbatim. It holds the
+#: tables, views and indexes in `lanes_register`, and `render_file`,
+#: `line_scopes`, `doc_line_scopes`, `entry_new_keys`, `scope_fault` and
+#: `scope_checked`. It opens the one transaction (BEGIN), and part two ends it.
+_REGISTER_M1_TABLES = r"""BEGIN;                                         -- one transaction (§1.5): SET LOCAL needs one
+CREATE SCHEMA lanes_register AUTHORIZATION lanes_register_owner;
+SET LOCAL ROLE lanes_register_owner;           -- so the owner owns every table and function
+SET LOCAL search_path TO lanes_register, pg_catalog;
+
+CREATE TABLE schema_version (                  -- §1.5: every client checks it first
+  id           smallint    PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  version      integer     NOT NULL CHECK (version >= 1),
+  writers_from integer     NOT NULL,           -- oldest client version that may write
+  readers_from integer     NOT NULL,           -- oldest client version that may read
+  applied_utc  timestamptz NOT NULL,
+  CHECK (1 <= readers_from AND readers_from <= writers_from AND writers_from <= version));
+
+CREATE TABLE migrations (                      -- forward only: one row per script applied
+  version       integer     PRIMARY KEY CHECK (version >= 1),
+  script_sha256 text        NOT NULL CHECK (script_sha256 ~ '^[0-9a-f]{64}$'),
+  applied_utc   timestamptz NOT NULL DEFAULT date_trunc('second', clock_timestamp()),
+  by_lane       text        NOT NULL,
+  by_ws         text        NOT NULL CHECK (by_ws <> ''));
+
+CREATE TABLE register_switch (                 -- S1: the database half; lanes/STORE mirrors it (D24)
+  id             smallint    PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  mode           text        NOT NULL CHECK (mode IN ('files', 'primary')),
+  marker_state   text        NOT NULL CHECK (marker_state IN ('absent', 'adding', 'present', 'removing')),
+                                               -- F1, F2, F12: the marker as SQL knows it; adding and
+                                               -- removing wait for S4's read-back (record_marker)
+  marker_seq     bigint,                       -- the operator entry that last changed the marker
+  marker_commit  text        CHECK (marker_commit ~ '^[0-9a-f]{40}$'),  -- the commit the read-back confirmed
+  generation     uuid        NOT NULL,         -- F10, F18: the bootstrap's, or an after-loss cutover's
+  repository     text        NOT NULL,                       -- owner/name
+  database_label text        NOT NULL CHECK (strpos(database_label, '@') = 0), -- never a credential
+  import_commit  text        CHECK (import_commit ~ '^[0-9a-f]{40}$'),
+  import_tree    text        CHECK (import_tree ~ '^[0-9a-f]{40}$'),           -- C's lanes tree id
+  import_seq     bigint,
+  set_utc        timestamptz NOT NULL,
+  set_seq        bigint      NOT NULL CHECK (set_seq >= -1),  -- the seq of the last change: an operator
+                              -- entry's own (a cutover's 1, m+1 or b+1, a rollback's k+1), or an abort's base
+  set_by_lane    text        NOT NULL,
+  set_by_ws      text        NOT NULL CHECK (set_by_ws <> ''),
+  restore_prior  jsonb,                        -- the restore form's cutover: the switch row and
+                                               -- lanes/STORE's rows it replaced, for its abort
+  CHECK (mode = 'files' OR (import_commit IS NOT NULL AND import_tree IS NOT NULL
+                            AND import_seq IS NOT NULL)),
+  CHECK ((mode = 'primary') = (marker_state IN ('adding', 'present'))),
+  CHECK (marker_state = 'absent' OR marker_seq IS NOT NULL),
+  CHECK (marker_state <> 'present' OR marker_commit IS NOT NULL),
+  CHECK (restore_prior IS NULL OR marker_state = 'adding'));   -- cleared once confirmed
+
+CREATE TABLE register_head (                   -- S1, S2, S6: its row lock orders every write.
+  id  smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),   -- Never a SEQUENCE or IDENTITY:
+  seq bigint   NOT NULL CHECK (seq >= -1));            -- gaps, and not commit order. -1: empty
+
+CREATE TABLE mirror_state (                    -- D16: what the renderer reports; it never gates alone
+  id             smallint    PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  diverged_sha   text        CHECK (diverged_sha ~ '^[0-9a-f]{40}$'),   -- a stray commit stopped the renderer,
+                                               -- or a last Register-Seq above the head (N6); a rollback
+                                               -- entry is refused while it is set (S5, LR012)
+  found_utc      timestamptz,
+  found_by_ws    text        CHECK (found_by_ws <> ''),
+  last_error     text,                         -- the last failed pass, for status
+  last_error_utc timestamptz,
+  CHECK ((diverged_sha IS NULL) = (found_utc IS NULL)),
+  CHECK ((last_error IS NULL) = (last_error_utc IS NULL)));
+
+CREATE TABLE journal (                         -- S2: one entry per write, gapless, commit order
+  seq         bigint      PRIMARY KEY CHECK (seq >= 0),         -- = Register-Seq
+  base_seq    bigint      UNIQUE REFERENCES journal (seq),      -- one chain, no gap
+  write_id    uuid        NOT NULL CONSTRAINT journal_write_id_key UNIQUE,  -- ADV-C3
+  utc         timestamptz NOT NULL DEFAULT date_trunc('second', clock_timestamp()), -- S6
+  kind        text        NOT NULL CHECK (kind IN ('import', 'cutover', 'write',
+                                         'stray-import', 'stray-revert', 'rollback')),
+  operator    boolean     GENERATED ALWAYS AS (kind IN ('cutover', 'rollback')) STORED,
+                                               -- D24, F2: touches lanes/STORE alone; never rendered;
+                                               -- the command that writes it pushes it
+  verb        text        NOT NULL,
+  lane        text        NOT NULL,            -- 'unknown' where today's subject says it
+  workstation text        NOT NULL CHECK (workstation <> ''),   -- Rule 10
+  author      text        NOT NULL CHECK (author ~ '^[^<>]+ <[^<>]*>$'
+                                          AND strpos(author, E'\n') = 0),
+  message     text        NOT NULL CHECK (message <> '' AND strpos(message, E'\r') = 0),
+  git_commit  text        CHECK (git_commit ~ '^[0-9a-f]{40}$'),
+  git_tree    text        CHECK (git_tree ~ '^[0-9a-f]{40}$'),
+  repos_blob  text        CHECK (repos_blob ~ '^[0-9a-f]{40}$'),
+  args_sha256 text        CHECK (args_sha256 ~ '^[0-9a-f]{64}$'),  -- F10: the lane, verb and arguments,
+                                                                   -- as the pending record's digest
+  act_id      text        CHECK (act_id ~ '^[^@[:space:]]+$'),     -- D5, F5: the id of the act that made
+                                                                   -- a write (LANES_ACT); NULL: no act
+  CHECK (kind <> 'write' OR args_sha256 IS NOT NULL),
+  CONSTRAINT journal_act_id_write CHECK (kind = 'write' OR act_id IS NULL),  -- none on another kind
+  CHECK (base_seq IS NULL OR base_seq = seq - 1),   -- the one root (journal_one_root) may sit at any seq
+  CHECK (utc = date_trunc('second', utc)),     -- whole seconds, as utc_now writes them
+  CHECK (kind <> 'import' OR (git_commit IS NOT NULL AND git_tree IS NOT NULL)),
+  CHECK (kind NOT IN ('stray-import', 'stray-revert') OR git_commit IS NOT NULL));
+CREATE UNIQUE INDEX journal_one_root ON journal ((base_seq IS NULL)) WHERE base_seq IS NULL;  -- one chain, one root
+
+CREATE TABLE journal_edits (                   -- Rule 9(d): a known, finite set of line edits
+  seq        bigint  NOT NULL REFERENCES journal (seq),
+  ord        integer NOT NULL CHECK (ord >= 1),   -- applied in this order
+  op         text    NOT NULL CHECK (op IN ('create', 'append', 'replace', 'delete',
+                                            'rename', 'remove')),
+  path       text    COLLATE "C" NOT NULL,
+  line_no    integer CHECK (line_no >= 1),        -- in the image the earlier edits left
+  old_sha256 text    CHECK (old_sha256 ~ '^[0-9a-f]{64}$'),
+  new_text   text    CHECK (strpos(new_text, E'\n') = 0 AND strpos(new_text, E'\r') = 0),
+  to_path    text    COLLATE "C" CHECK (to_path ~ '^lanes/(archive|log)/[^/]+\.md$'
+                                        AND to_path <> 'lanes/log/README.md'),
+  PRIMARY KEY (seq, ord),
+  CHECK (path ~ '^lanes/(LANES\.md|STORE|aliases\.tsv|archive/[^/]+\.md|log/[^/]+\.md)$'
+         AND path <> 'lanes/log/README.md'),      -- Q18 (A): the rendered paths, and lanes/STORE for the operator entries
+  CHECK ((op IN ('replace', 'delete')) = (line_no IS NOT NULL AND old_sha256 IS NOT NULL)),
+  CHECK ((op IN ('append', 'replace')) = (new_text IS NOT NULL)),
+  CHECK ((op = 'rename') = (to_path IS NOT NULL)));
+
+CREATE TABLE journal_files (                   -- S2: each touched file's bytes after the write
+  seq     bigint  NOT NULL REFERENCES journal (seq),
+  path    text    COLLATE "C" NOT NULL,
+  present boolean NOT NULL,                    -- false: removed or renamed away
+  sha256  text    CHECK (sha256 ~ '^[0-9a-f]{64}$'),
+  final_newline boolean,                       -- files.final_newline after the write
+  PRIMARY KEY (seq, path),
+  CHECK (present = (sha256 IS NOT NULL) AND present = (final_newline IS NOT NULL)));
+
+CREATE TABLE journal_scopes (                  -- D5, F5: each entry's touched keys (lane 4's scopes),
+  seq   bigint NOT NULL REFERENCES journal (seq) ON DELETE CASCADE,  -- derived by steps 5a and 8a,
+  scope text   COLLATE "C" NOT NULL                                   -- never sent by a client
+        CHECK (scope = lower(scope) AND (scope = '*'                  -- '*': every scope
+               OR scope ~ '^(row|bind|objects|alias|archive):[^[:space:]]+$'
+               OR scope ~ '^sid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')),
+  PRIMARY KEY (scope, seq));                   -- step 3b: one index range per listed scope
+
+CREATE TABLE files (                           -- the rendered files as they stand
+  path          text    COLLATE "C" PRIMARY KEY
+                CHECK (path ~ '^lanes/(LANES\.md|STORE|aliases\.tsv|archive/[^/]+\.md|log/[^/]+\.md)$'
+                       AND path <> 'lanes/log/README.md'),
+  final_newline boolean NOT NULL,
+  sha256        text    NOT NULL CHECK (sha256 ~ '^[0-9a-f]{64}$'),
+  last_seq      bigint  NOT NULL REFERENCES journal (seq));
+
+CREATE TABLE doc_lines (                       -- the truth: a file is its lines in line_no order
+  line_id      bigint  GENERATED ALWAYS AS IDENTITY PRIMARY KEY, -- stable; writes are serial under
+                                                                  -- the head lock: ascending = append order
+  path         text    COLLATE "C" NOT NULL REFERENCES files (path) ON UPDATE CASCADE,
+  line_no      integer NOT NULL CHECK (line_no >= 1),
+  text         text    NOT NULL CHECK (strpos(text, E'\n') = 0 AND strpos(text, E'\r') = 0),
+  written_seq  bigint  NOT NULL REFERENCES journal (seq),
+  written_mode text    NOT NULL CHECK (written_mode IN ('files', 'primary')), -- S1: mode last written
+  written_ws   text,
+  CONSTRAINT doc_lines_pos UNIQUE (path, line_no) DEFERRABLE INITIALLY IMMEDIATE, -- a delete shifts lines
+  CHECK (written_mode = 'files' OR coalesce(written_ws, '') <> ''));          -- Rule 10, new writes
+
+-- The structured layer: today's parsers' rows, filled in the same transaction. A constraint
+-- that history breaks binds only mode = 'primary' (r3a/REPORT.md:348).
+CREATE TABLE lanes (                           -- one row per lane, LANES.md and archive/ together
+  lane_key    text    COLLATE "C" PRIMARY KEY,
+  lane        text    COLLATE "C" NOT NULL CHECK (lower(lane) = lane_key),   -- Amendment 15
+  row_line_id bigint  UNIQUE REFERENCES doc_lines (line_id) DEFERRABLE INITIALLY DEFERRED,
+  aliases jsonb, home text, workstation text, started_utc text, handoff_path text,
+  state_phrase text, objects_cell text, session_ids jsonb, last_session text,
+  archived    boolean NOT NULL,
+  owner       text,                            -- a copy; S4 answers from the row's own text
+  last_seq    bigint  NOT NULL REFERENCES journal (seq),
+  last_mode   text    NOT NULL CHECK (last_mode IN ('files', 'primary')));
+CREATE INDEX lanes_by_last_session ON lanes (last_session);    -- binding; the guard's triple
+
+CREATE TABLE log_lines (                       -- every log line; unreadable ones kept (7(b))
+  line_id        bigint  PRIMARY KEY REFERENCES doc_lines (line_id) ON DELETE CASCADE
+                         DEFERRABLE INITIALLY DEFERRED,
+  file           text    COLLATE "C" NOT NULL,
+  ordinal        integer NOT NULL,
+  lane           text    NOT NULL,
+  verb text, session text, workstation text, utc text, utc_ts timestamptz, object text,
+  ref text, payload text, payload_fields jsonb, free_text text, written_lane text,
+  unreadable     boolean NOT NULL,
+  unreadable_why text,
+  raw            text    NOT NULL,
+  seq            bigint  NOT NULL REFERENCES journal (seq),
+  mode           text    NOT NULL CHECK (mode IN ('files', 'primary')),
+  CONSTRAINT log_lines_pos UNIQUE (file, ordinal) DEFERRABLE INITIALLY IMMEDIATE, -- shifts too
+  CHECK (unreadable = (unreadable_why IS NOT NULL)),
+  CHECK (mode = 'files' OR (NOT unreadable AND coalesce(workstation, '') <> ''   -- no CHECK on
+         AND utc ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'     -- verb: WORD
+         AND utc_ts IS NOT NULL)));                                             -- (S6, 7(b))
+CREATE INDEX log_lines_by_object ON log_lines (object) WHERE NOT unreadable;
+
+CREATE TABLE object_holds (                    -- each lane's LAST line per object, file order
+  object        text    NOT NULL,
+  lane_key      text    COLLATE "C" NOT NULL,
+  lane          text    NOT NULL,
+  verb          text    NOT NULL,
+  utc_ts        timestamptz,
+  file          text    COLLATE "C" NOT NULL,
+  ordinal       integer NOT NULL,
+  superseded_by text,                          -- another lane whose last line on it is TAKEOVER
+  spellings     text[],                        -- D19, a live claim's: as typed, canonical key, the writer's aliases
+  exempt        boolean NOT NULL DEFAULT false, -- set only by an import, on a pair already at C
+  seq           bigint  NOT NULL REFERENCES journal (seq),
+  mode          text    NOT NULL CHECK (mode IN ('files', 'primary')),
+  PRIMARY KEY (object, lane_key),
+  CHECK (NOT exempt OR mode = 'files'));
+CREATE UNIQUE INDEX one_live_claim ON object_holds (object)   -- Rule 1's net under claim's own check
+  WHERE NOT exempt AND superseded_by IS NULL AND verb IN ('CLAIMED', 'TAKEOVER');
+
+CREATE VIEW holds AS                           -- holders_of (code/lanes-index:1013-1036)
+  SELECT object, lane_key, lane, verb, utc_ts, file, ordinal, seq, mode FROM object_holds
+  WHERE superseded_by IS NULL AND object NOT LIKE 'lane:%'   -- lane-kind objects hold nothing
+    AND verb IN ('CLAIMED', 'TAKEOVER', 'OPENED', 'LANDING', 'WITHDRAWN');
+
+CREATE VIEW stale_claims AS                    -- claim_is_stale (code/lanes-edit.sh:4318) on the DB clock
+  SELECT h.* FROM object_holds h
+  WHERE h.verb = 'CLAIMED' AND h.superseded_by IS NULL
+    AND clock_timestamp() - h.utc_ts > interval '4 hours'
+    AND NOT EXISTS (SELECT 1 FROM log_lines o WHERE o.object = h.object AND o.verb = 'OPENED')
+    AND NOT EXISTS (SELECT 1 FROM log_lines o WHERE lower(o.lane) = h.lane_key
+                    AND o.file = h.file AND o.ordinal > h.ordinal AND o.verb = 'OPENED'
+                    AND h.object = ANY (string_to_array(o.payload, ' ')));
+
+CREATE TABLE register_lines (                  -- every non-row LANES.md line, parsed best effort
+  line_id     bigint  PRIMARY KEY REFERENCES doc_lines (line_id) ON DELETE CASCADE
+                      DEFERRABLE INITIALLY DEFERRED,
+  kind        text,
+  slot_role   text    CHECK (slot_role IN ('take', 'close')),  -- NULL decides nothing
+  slot_kind   text    CHECK (slot_kind IN ('hold', 'landing')),
+  lane text, repo text, repo_key text, pr integer, tip text, utc text, utc_ts timestamptz,
+  session text,
+  for_lane    text,                            -- F13: the lane whose LANDING a LANDING EXPIRED closes
+  raw         text    NOT NULL,
+  seq         bigint  NOT NULL REFERENCES journal (seq),
+  mode        text    NOT NULL CHECK (mode IN ('files', 'primary')),
+  workstation text,
+  repo_spellings text[],                       -- D18, a slot line's: as typed, canonical key, the writer's aliases
+  CHECK ((slot_role IS NULL) = (slot_kind IS NULL)),
+  CHECK (slot_role IS NULL OR repo_key IS NOT NULL),
+  CHECK (slot_kind IS DISTINCT FROM 'landing' OR pr IS NOT NULL),   -- RULE6_AWK pairs by PR
+  CHECK ((for_lane IS NOT NULL) = (kind IS NOT DISTINCT FROM 'LANDING EXPIRED')),
+  CHECK (for_lane IS NULL OR (slot_role = 'close' AND slot_kind = 'landing')),
+  CHECK (mode = 'files' OR coalesce(workstation, '') <> ''));
+CREATE INDEX register_lines_slots ON register_lines (repo_key, line_id) WHERE slot_role IS NOT NULL;
+CREATE INDEX files_last_seq ON files (last_seq);                 -- the seven columns that reference
+CREATE INDEX doc_lines_written_seq ON doc_lines (written_seq);   -- journal (seq) and lead no index,
+CREATE INDEX lanes_last_seq ON lanes (last_seq);                 -- so an import's deletes do not
+CREATE INDEX log_lines_seq ON log_lines (seq);                   -- scan a table per journal row
+CREATE INDEX object_holds_seq ON object_holds (seq);
+CREATE INDEX register_lines_seq ON register_lines (seq);
+CREATE INDEX journal_scopes_seq ON journal_scopes (seq);
+
+CREATE VIEW main_slots AS                      -- A10, Rule 6: the earliest open take wins
+  SELECT t.repo_key, t.line_id, t.kind, t.slot_kind, t.lane, t.pr, t.tip, t.utc_ts, t.raw,
+         CASE WHEN t.slot_kind = 'landing'
+              THEN clock_timestamp() - t.utc_ts > interval '30 minutes' END AS stale,
+         rank() OVER (PARTITION BY t.repo_key ORDER BY t.line_id) AS place,
+         t.repo_spellings                      -- D18: one repository, however spelled
+  FROM register_lines t
+  WHERE t.slot_role = 'take'
+    AND NOT EXISTS (SELECT 1 FROM register_lines c
+                    WHERE c.slot_role = 'close' AND c.slot_kind = t.slot_kind
+                      AND (c.repo_key = t.repo_key OR c.repo_spellings && t.repo_spellings)
+                      AND lower(coalesce(c.for_lane, c.lane)) = lower(t.lane)
+                      AND c.line_id > t.line_id AND (t.slot_kind = 'hold' OR c.pr = t.pr));
+
+CREATE FUNCTION render_file(p_path text) RETURNS bytea LANGUAGE sql STABLE
+  SET search_path = lanes_register, pg_catalog, pg_temp AS $f$
+  SELECT convert_to(coalesce(string_agg(d.text, E'\n' ORDER BY d.line_no), '')
+           || CASE WHEN f.final_newline AND count(d.line_id) > 0 THEN E'\n' ELSE '' END, 'UTF8')
+  FROM files f LEFT JOIN doc_lines d ON d.path = f.path
+  WHERE f.path = p_path GROUP BY f.final_newline $f$;
+
+CREATE FUNCTION line_scopes(p_path text, p_text text) RETURNS SETOF text LANGUAGE sql IMMUTABLE
+  SET search_path = lanes_register, pg_catalog, pg_temp AS $f$
+  -- D5, F5: the scopes a line names by its text, by build_records' rules (code/lanes-index:765):
+  -- a row by ROW_AWK's (row_name, :648-660), in LANES.md (:831-837) or the archive (:843-847); a
+  -- lane-kind line by its verb (parse_log_line, :538-546) in the log that file_lane names
+  -- (:530-532); an alias line by its first two tab fields (:849-865); a uuid by UUID_RE (:110).
+  -- S3: an archived row also names its normalized key, where that differs from its own, by
+  -- RETIRED_ROWS_AWK's key() (code/lanes-edit.sh:3743-3760): the name before its last '-',
+  -- lower-cased, '-', and the digits after it, less one trailing letter, without leading zeros.
+  WITH l AS (SELECT substring(p_text FROM '^\|[^`]*`([^`]*)`') AS rown,
+               p_path ~ '^lanes/log/' AND p_text ~
+                 '^[ \t]*(STARTED|RESUMED|PAUSED|ENDED|RETIRED|RENAMED)[ \t]* — ' AS lane_kind,
+               lower(regexp_replace(regexp_replace(p_path, '^.*/', ''), '\.[Mm][Dd]$', '')) AS flane),
+       a AS (SELECT lower(m[1]) || '-' || coalesce(nullif(ltrim(m[2], '0'), ''), '0') AS akey
+             FROM l, regexp_match(rown, '^(.*)-([0-9]+)[A-Za-z]?$') AS m)   -- NULL: no key
+  SELECT 'row:' || lower(rown) FROM l WHERE p_path = 'lanes/LANES.md' AND rown <> ''
+  UNION SELECT 'archive:' || lower(rown) FROM l WHERE p_path ~ '^lanes/archive/' AND rown <> ''
+  UNION SELECT 'archive:' || akey FROM l, a WHERE p_path ~ '^lanes/archive/' AND akey <> lower(rown)
+  UNION SELECT 'bind:' || flane FROM l WHERE lane_kind
+  UNION SELECT 'sid:' || u.m[1] FROM l, regexp_matches(lower(p_text),
+          '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', 'g') AS u(m)
+        WHERE lane_kind OR (rown <> '' AND p_path ~ '^lanes/(LANES\.md|archive/)')
+  UNION SELECT 'alias:' || lower(a) FROM l, unnest(ARRAY[btrim(split_part(p_text, E'\t', 1), E' \t'),
+          btrim(split_part(p_text, E'\t', 2), E' \t')]) AS a
+        WHERE p_path = 'lanes/aliases.tsv' AND p_text !~ '^[ \t]*#' AND a <> '' $f$;
+
+CREATE FUNCTION doc_line_scopes(p_line_id bigint, p_path text) RETURNS SETOF text LANGUAGE sql STABLE
+  SET search_path = lanes_register, pg_catalog, pg_temp AS $f$
+  -- A stored line's scopes, read at p_path: its text's, and objects: from its structured row: a
+  -- readable log line on an object that is not lane-kind (parse_log, :618-645), and a slot
+  -- line's lane and a LANDING EXPIRED's for_lane (parse_register_line, :683-713; D18, F13).
+  SELECT line_scopes(p_path, d.text) FROM doc_lines d WHERE d.line_id = p_line_id
+  UNION SELECT 'objects:' || lower(g.lane) FROM log_lines g
+    WHERE g.line_id = p_line_id AND NOT g.unreadable AND g.object NOT LIKE 'lane:%'
+  UNION SELECT 'objects:' || lower(x) FROM register_lines r, unnest(ARRAY[r.lane, r.for_lane]) AS x
+    WHERE r.line_id = p_line_id AND r.slot_role IS NOT NULL AND x IS NOT NULL $f$;
+
+CREATE FUNCTION entry_new_keys(p_seq bigint) RETURNS TABLE (path text, line_no integer, scope text)
+  LANGUAGE sql STABLE SET search_path = lanes_register, pg_catalog, pg_temp AS $f$
+  -- Step 8a's new side, each key with the line it came from (N2): every line entry p_seq appended
+  -- or replaced, every line a rename moved, read at its new path, and objects: for every lane
+  -- holding an object it wrote a hold for, at that lane's last line on the object.
+  SELECT d.path, d.line_no, k.scope FROM doc_lines d, doc_line_scopes(d.line_id, d.path) AS k(scope)
+    WHERE d.written_seq = p_seq
+  UNION SELECT d.path, d.line_no, k.scope FROM journal_edits j JOIN doc_lines d ON d.path = j.to_path,
+      doc_line_scopes(d.line_id, d.path) AS k(scope)
+    WHERE j.seq = p_seq AND j.op = 'rename'
+  UNION SELECT h.file, h.ordinal, 'objects:' || lower(h.lane_key)   -- N1: lower(), as doc_line_scopes;
+    FROM object_holds n JOIN object_holds h ON h.object = n.object  -- lane_key is lower case by construction
+    WHERE n.seq = p_seq AND n.object NOT LIKE 'lane:%' $f$;
+
+CREATE FUNCTION scope_fault(p_scope text) RETURNS text LANGUAGE sql IMMUTABLE
+  SET search_path = lanes_register, pg_catalog, pg_temp AS $f$
+  -- N2: NULL where a derived key has a scope's form, journal_scopes' CHECK read with Unicode's
+  -- White_Space (the no-break space included; the CHECK's [:space:] under "C" is ASCII's alone);
+  -- else the key, each white-space character shown as [U+hhhh].
+  SELECT CASE WHEN p_scope ~ '^sid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                OR (p_scope ~ '^(row|bind|objects|alias|archive):.' AND p_scope !~ w.re
+                    AND p_scope = lower(p_scope COLLATE "C")) THEN NULL
+         ELSE (SELECT string_agg(CASE WHEN c ~ w.re THEN '[U+' || lpad(upper(to_hex(ascii(c))), 4, '0')
+                                      || ']' ELSE c END, '' ORDER BY n)
+               FROM regexp_split_to_table(p_scope, '') WITH ORDINALITY AS t(c, n)) END
+  FROM (VALUES ('[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]')) AS w(re) $f$;
+
+CREATE FUNCTION scope_checked(p_path text, p_line integer, p_scope text) RETURNS text
+  LANGUAGE plpgsql IMMUTABLE SET search_path = lanes_register, pg_catalog, pg_temp AS $f$
+-- N2: a derived key, returned as it is, or LR010 naming the line it came from.
+DECLARE
+  v_shown text := scope_fault(p_scope);
+BEGIN
+  IF v_shown IS NOT NULL THEN
+    RAISE EXCEPTION 'key: % line % derives %, which is not a scope (a scope''s name is lower case, not empty, and holds no white space)',
+      p_path, p_line, v_shown USING ERRCODE = 'LR010'; END IF;
+  RETURN p_scope;
+END $f$;
+-- commit_write, switch_to_files, record_marker, find_write and record_mirror_state follow in §1.3.1, in this transaction;
+-- its block ends migration 1: schema_version (1, 1, 1), register_head (-1), an empty
+-- mirror_state row, the switch at 'files' (set_seq -1), the migrations row, then COMMIT.
+"""
+
+#: Migration 1, part two: design.md §1.3.1's SQL block, verbatim. It holds
+#: `commit_write` in full, then `switch_to_files`, `record_marker`,
+#: `find_write` and `record_mirror_state`, then migration 1's rows: the version
+#: (1, 1, 1), the head at -1, an empty `mirror_state`, the switch at `files`
+#: with the marker `absent` and `set_seq` -1, and the `migrations` row. Then
+#: COMMIT. Its psql variables are the bootstrap's inputs: `repo`, `label`,
+#: `lane`, `ws` and `script_sha256`.
+_REGISTER_M1_FUNCTIONS = r"""CREATE FUNCTION commit_write(p_base bigint, p_write_id uuid, p_client integer, p_generation uuid,
+                             p_entry jsonb)
+  RETURNS bigint LANGUAGE plpgsql SECURITY DEFINER
+  SET search_path = lanes_register, pg_catalog, pg_temp AS $f$
+-- The entry is one jsonb object; an absent key is an empty list.
+--   journal        {kind, verb, lane, workstation, author, message, git_commit, git_tree,
+--                   repos_blob, args_sha256}: step 5's columns; args_sha256 (F10) is the
+--                   pending record's digest of the lane, verb and arguments
+--   root_seq       an import's root on an empty journal (--after-loss's m); else absent
+--   switch         {after_loss, database_label}: a cutover's after-loss form (F18)
+--   not_after      required: the call's bound (F3), the snapshot's database clock plus the
+--                  call's client timer plus 2 s; an attempt that ends past it is LR008
+--   act            a write's, made inside one of lane 4's acts (D5, F5); else absent:
+--                  {id, base, generation, expect}: LANES_ACT's id (journal.act_id) and base
+--                  seq, the generation its base was read in, and LANES_EXPECT's scopes, a
+--                  list that may be empty (step 3b). Files mode ignores both variables.
+--   edits          [{ord, op, path, line_no, old_sha256, new_text, to_path}], journal_edits'
+--                  columns; old_sha256 is the sha256 of the line's UTF-8 text, without its LF
+--   files          [{path, present, sha256, final_newline}]: every path an edit touches, as
+--                  it stands after the write (a rename's old path is present = false)
+--   lanes          [{path, line_no, raw, lane_key, lane, aliases, home, workstation,
+--                    started_utc, handoff_path, state_phrase, objects_cell, session_ids,
+--                    last_session, archived, owner}]
+--   log_lines      [{path, line_no, raw, lane, verb, session, workstation, utc, utc_ts,
+--                    object, ref, payload, payload_fields, free_text, written_lane,
+--                    unreadable, unreadable_why}]
+--   register_lines [{path, line_no, raw, kind, slot_role, slot_kind, lane, repo, repo_key,
+--                    repo_spellings, pr, tip, utc, utc_ts, session, for_lane, workstation}]
+--   object_holds   [{object, lane_key, lane, verb, utc_ts, file, ordinal, spellings, exempt}]:
+--                  each lane's last line per object; superseded_by is computed here
+-- A structured row names its line by path and line_no, and its raw is that line's text.
+-- Step 7 applies lanes, log_lines, register_lines, then object_holds, in that order.
+DECLARE
+  v_head  bigint;
+  v_ver   schema_version;
+  v_sw    register_switch;
+  v_old   journal;                              -- F10: a write id already in the journal
+  v_needs text;
+  v_after_loss boolean := coalesce((p_entry -> 'switch' ->> 'after_loss')::boolean, false);
+  v_seq   bigint;
+  v_kind  text := p_entry -> 'journal' ->> 'kind';
+  v_ws    text := p_entry -> 'journal' ->> 'workstation';
+  v_wmode text;                                 -- written_mode and mode of the rows written
+  v_holds jsonb := coalesce(p_entry -> 'object_holds', '[]');
+  v_imp   journal;
+  v_prior jsonb;                                -- the restore form's: what its cutover replaces
+  v_line  doc_lines;
+  ed      journal_edits;
+  r       record;
+  v_n     integer;
+  v_sha   text;
+  v_con   text;
+  v_det   text;
+  v_not_after timestamptz;                      -- F3: the call's bound (step 9)
+  v_act   jsonb := p_entry -> 'act';            -- D5, F5: the act, or NULL (step 3b)
+  v_expect text[];                              -- its scopes, lower case, as listed
+  v_hit   record;                               -- the entry that changed one (LR009)
+  v_mir   mirror_state;                         -- S5: a rollback's divergence gate (LR012)
+  v_take  register_lines;                       -- U3's take, or F13's newest take
+  v_close record;                               -- F13: the close that already closed it
+BEGIN
+  IF jsonb_typeof(p_entry -> 'journal') IS DISTINCT FROM 'object' THEN    -- the entry's shape
+    RAISE EXCEPTION 'the entry has no journal object' USING ERRCODE = 'LR004'; END IF;
+  IF EXISTS (SELECT 1 FROM jsonb_each(p_entry -> 'journal') k
+             WHERE jsonb_typeof(k.value) NOT IN ('string', 'null'))
+     OR EXISTS (SELECT 1 FROM unnest(ARRAY['edits', 'files', 'lanes', 'log_lines',
+                                           'register_lines', 'object_holds']) k
+                WHERE p_entry ? k AND jsonb_typeof(p_entry -> k) <> 'array')
+     OR jsonb_typeof(p_entry -> 'not_after') IS DISTINCT FROM 'string' THEN
+    RAISE EXCEPTION 'the entry is not well formed' USING ERRCODE = 'LR004'; END IF;
+  v_not_after := (p_entry ->> 'not_after')::timestamptz;
+  v_needs := CASE v_kind WHEN 'write' THEN 'primary' WHEN 'stray-import' THEN 'primary'
+                         WHEN 'stray-revert' THEN 'primary' WHEN 'rollback' THEN 'primary'
+                         WHEN 'import' THEN 'files' WHEN 'cutover' THEN 'files' END;
+  IF v_needs IS NULL THEN
+    RAISE EXCEPTION 'unknown kind %', v_kind USING ERRCODE = 'LR004'; END IF;
+  v_wmode := CASE WHEN v_kind IN ('write', 'cutover') THEN 'primary' ELSE 'files' END;
+  IF v_kind IN ('cutover', 'rollback') AND (      -- ruling 1: an operator entry writes lanes/STORE
+       EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(p_entry -> 'files', '[]')) f   -- alone:
+               WHERE f ->> 'path' IS DISTINCT FROM 'lanes/STORE')     -- no other files row and
+       OR EXISTS (SELECT 1 FROM unnest(ARRAY['lanes', 'log_lines', 'register_lines',  -- no row
+                                             'object_holds']) k
+                  WHERE jsonb_array_length(coalesce(p_entry -> k, '[]')) > 0)) THEN
+    RAISE EXCEPTION 'a % entry writes outside lanes/STORE (ruling 1)', v_kind
+      USING ERRCODE = 'LR004'; END IF;
+  IF v_act IS NOT NULL THEN                     -- the act's shape (D5, F5): a write's alone
+    IF v_kind <> 'write' OR jsonb_typeof(v_act) <> 'object'
+       OR jsonb_typeof(v_act -> 'id') IS DISTINCT FROM 'string'
+       OR jsonb_typeof(v_act -> 'base') IS DISTINCT FROM 'number'
+       OR jsonb_typeof(v_act -> 'generation') IS DISTINCT FROM 'string'
+       OR jsonb_typeof(coalesce(v_act -> 'expect', '[]')) <> 'array' THEN
+      RAISE EXCEPTION 'the entry''s act is not well formed' USING ERRCODE = 'LR004'; END IF;
+    IF v_act ->> 'id' !~ '^[^@[:space:]]+$' OR v_act ->> 'base' !~ '^[0-9]+$'
+       OR lower(v_act ->> 'generation')
+          !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+       OR EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(v_act -> 'expect', '[]')) x
+                  WHERE jsonb_typeof(x) <> 'string'
+                     OR lower(x #>> '{}') !~ ('^((row|bind|objects|alias|archive):[^[:space:]]+'
+                          || '|sid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$')) THEN
+      RAISE EXCEPTION 'the entry''s act is not well formed' USING ERRCODE = 'LR004'; END IF;
+    v_expect := ARRAY(SELECT lower(t.x) FROM jsonb_array_elements_text(coalesce(v_act -> 'expect',
+                        '[]')) WITH ORDINALITY AS t(x, n) ORDER BY t.n);
+  END IF;
+
+SELECT seq INTO v_head FROM register_head WHERE id = 1 FOR UPDATE;            -- 1. the lock
+SELECT * INTO v_sw FROM register_switch WHERE id = 1;                         -- the generation first,
+IF p_generation IS DISTINCT FROM v_sw.generation THEN       -- F10, F18: an id from another database,
+  RAISE EXCEPTION 'write % belongs to register generation %, not %', p_write_id, p_generation,
+    v_sw.generation USING ERRCODE = 'LR007', DETAIL = 'generation'; END IF;  -- whatever the switch reads (S-3)
+SELECT * INTO v_old FROM journal WHERE write_id = p_write_id;                 -- a write in doubt
+IF FOUND THEN                                                                 -- that committed
+  IF v_old.lane IS DISTINCT FROM p_entry -> 'journal' ->> 'lane'
+     OR v_old.verb IS DISTINCT FROM p_entry -> 'journal' ->> 'verb'
+     OR v_old.args_sha256 IS DISTINCT FROM p_entry -> 'journal' ->> 'args_sha256' THEN
+    RAISE EXCEPTION 'write % is seq %, another write''s (F10)', p_write_id, v_old.seq
+      USING ERRCODE = 'LR007', DETAIL = 'another-write'; END IF;
+  RAISE EXCEPTION 'write % is in the journal at seq %', p_write_id, v_old.seq USING ERRCODE = 'LR006'; END IF;
+IF v_head IS DISTINCT FROM p_base THEN
+  RAISE EXCEPTION 'register head is %, not %', v_head, p_base USING ERRCODE = 'LR001'; END IF;
+SELECT * INTO v_ver FROM schema_version WHERE id = 1;                         -- 2. the version
+IF p_client > v_ver.version OR p_client < v_ver.writers_from THEN
+  RAISE EXCEPTION 'register schema % (writers from %); this client is %', v_ver.version,
+    v_ver.writers_from, p_client USING ERRCODE = 'LR003'; END IF;
+IF NOT (CASE WHEN v_kind = 'cutover' AND v_after_loss AND v_sw.mode = 'primary'   -- 3. the switch
+             THEN v_sw.marker_state = 'present'             -- a restore's after-loss cutover
+             ELSE v_sw.mode = v_needs AND v_sw.marker_state =
+                    CASE v_needs WHEN 'primary' THEN 'present' ELSE 'absent' END
+        END) THEN
+  RAISE EXCEPTION 'register switch is % with the marker %', v_sw.mode, v_sw.marker_state
+    USING ERRCODE = 'LR002'; END IF;
+
+  -- 3a. The kinds table's rules that come before the seq is taken.
+  IF v_kind = 'import' THEN               -- no 'write' entry: start the journal again (head -1)
+    DELETE FROM register_lines; DELETE FROM log_lines; DELETE FROM lanes;
+    DELETE FROM object_holds; DELETE FROM doc_lines; DELETE FROM files;
+    IF NOT EXISTS (SELECT 1 FROM journal WHERE base_seq IS NOT NULL) THEN   -- only its root; after a rollback, continue
+      DELETE FROM journal_files; DELETE FROM journal_edits; DELETE FROM journal;
+      UPDATE register_head SET seq = -1 WHERE id = 1;
+      v_head := -1;
+    END IF;
+  END IF;
+  IF p_entry ? 'root_seq' AND (v_kind <> 'import' OR v_head <> -1) THEN
+    RAISE EXCEPTION 'root_seq % on a journal that is not empty', p_entry ->> 'root_seq'
+      USING ERRCODE = 'LR004'; END IF;
+  IF v_kind = 'cutover' AND v_after_loss                 -- N4: an after-loss form names its database
+     AND p_entry -> 'switch' ->> 'database_label' IS NULL THEN
+    RAISE EXCEPTION 'an after-loss cutover with no database_label (N4)' USING ERRCODE = 'LR004'; END IF;
+  IF v_kind = 'rollback' THEN             -- S5: never over a recorded divergence (F1); FOR SHARE, so
+    SELECT * INTO v_mir FROM mirror_state WHERE id = 1 FOR SHARE;   -- record_mirror_state's UPDATE
+    IF v_mir.diverged_sha IS NOT NULL THEN                          -- waits, or this read waits for it
+      RAISE EXCEPTION 'rollback refused: diverged at %, found % by %; resolve it first with import --single or render --revert (F1, S5)',
+        v_mir.diverged_sha, v_mir.found_utc, v_mir.found_by_ws USING ERRCODE = 'LR012'; END IF;
+  END IF;
+  IF v_kind = 'cutover' AND NOT (v_after_loss AND v_sw.mode = 'primary') THEN
+    SELECT * INTO v_imp FROM journal WHERE kind = 'import' ORDER BY seq DESC LIMIT 1;
+    IF v_imp.seq IS DISTINCT FROM p_base THEN
+      RAISE EXCEPTION 'cutover base %, but the latest import is %', p_base, v_imp.seq
+        USING ERRCODE = 'LR004'; END IF;
+  ELSIF v_kind = 'cutover' THEN           -- the restore form: what it replaces, for its abort
+    IF NOT (p_entry -> 'switch' ->> 'database_label' IS DISTINCT FROM v_sw.database_label) THEN
+      RAISE EXCEPTION 'after-loss cutover: database % is the switch''s own label, not a replacement''s (N4)',
+        v_sw.database_label USING ERRCODE = 'LR004'; END IF;     -- N4: the live database, by mistake
+    v_prior := jsonb_build_object('switch', to_jsonb(v_sw),
+      'file', (SELECT to_jsonb(f) FROM files f WHERE f.path = 'lanes/STORE'),
+      'lines', (SELECT jsonb_agg(to_jsonb(d) ORDER BY d.line_no) FROM doc_lines d
+                WHERE d.path = 'lanes/STORE'));
+  END IF;
+
+  -- 3b. The act's expectations (S1's step 3.2; D5, F5), under the head's lock and
+  -- before the seq is taken: refused when an entry after the act's base, made outside this act,
+  -- touched a listed scope. Each entry's scopes are its steps 5a and 8a's, stored at its commit.
+  IF cardinality(v_expect) > 0 THEN             -- no expectations: no check
+    IF lower(v_act ->> 'generation')::uuid IS DISTINCT FROM v_sw.generation THEN
+      RAISE EXCEPTION 'act % has its base in register generation %, not %', v_act ->> 'id',
+        v_act ->> 'generation', v_sw.generation USING ERRCODE = 'LR007', DETAIL = 'act-generation'; END IF;
+    IF (v_act ->> 'base')::bigint > v_head THEN
+      RAISE EXCEPTION 'act % has its base at %, past the head %', v_act ->> 'id',
+        v_act ->> 'base', v_head USING ERRCODE = 'LR004'; END IF;
+    SELECT s.scope, s.seq, j.lane, j.verb INTO v_hit    -- one indexed query, on (scope, seq)
+      FROM journal_scopes s JOIN journal j ON j.seq = s.seq
+      WHERE s.scope = ANY (v_expect || '*'::text) AND s.seq > (v_act ->> 'base')::bigint
+        AND j.act_id IS DISTINCT FROM v_act ->> 'id'      -- the act's own entries never refuse it
+      ORDER BY s.seq, s.scope LIMIT 1;
+    IF FOUND THEN
+      RAISE EXCEPTION 'expectation: % changed at seq % by %/%',
+        CASE v_hit.scope WHEN '*' THEN v_expect[1] ELSE v_hit.scope END, v_hit.seq, v_hit.lane,
+        v_hit.verb USING ERRCODE = 'LR009'; END IF;
+  END IF;
+
+UPDATE register_head SET seq = CASE WHEN v_head = -1                          -- 4. advance; the empty journal's
+    THEN coalesce((p_entry ->> 'root_seq')::bigint, 0) ELSE seq + 1 END       -- one entry is the root, at 0 or `m`
+  WHERE id = 1 RETURNING seq INTO v_seq;
+INSERT INTO journal (seq, base_seq, write_id, kind, verb, lane, workstation, author, message,
+                     git_commit, git_tree, repos_blob, args_sha256, act_id)    -- 5. the entry
+SELECT v_seq, nullif(v_head, -1), p_write_id, e.*, p_entry -> 'act' ->> 'id'  -- D5's act, or NULL
+  FROM jsonb_to_record(p_entry -> 'journal')
+  AS e(kind text, verb text, lane text, workstation text, author text, message text,
+       git_commit text, git_tree text, repos_blob text, args_sha256 text);
+
+  -- 5a. The touched keys' old side (D5, F5): what each line this entry replaces or deletes
+  -- (found by path and old_sha256), and every line of a path it removes or renames, said
+  -- before step 6 changes it.
+  IF v_kind IN ('write', 'stray-import') THEN
+    INSERT INTO journal_scopes (seq, scope)
+    SELECT DISTINCT v_seq, scope_checked(d.path, d.line_no, k.scope)   -- N2: LR010, not 23514
+    FROM jsonb_to_recordset(coalesce(p_entry -> 'edits', '[]')) AS x(op text, path text,
+         old_sha256 text)
+    JOIN doc_lines d ON d.path = x.path AND (x.op IN ('remove', 'rename')
+         OR (x.op IN ('replace', 'delete')
+             AND encode(sha256(convert_to(d.text, 'UTF8')), 'hex') = x.old_sha256))
+    CROSS JOIN LATERAL doc_line_scopes(d.line_id, d.path) AS k(scope);
+  END IF;
+
+  -- 6. The edits: journal_edits as sent, then applied in ord order.
+  INSERT INTO journal_edits (seq, ord, op, path, line_no, old_sha256, new_text, to_path)
+  SELECT v_seq, x.ord, x.op, x.path, x.line_no, x.old_sha256, x.new_text, x.to_path
+  FROM jsonb_to_recordset(coalesce(p_entry -> 'edits', '[]')) AS x(ord integer, op text,
+       path text, line_no integer, old_sha256 text, new_text text, to_path text);
+  IF v_kind IN ('cutover', 'rollback')                     -- D24, F2: an operator entry has edits
+     AND NOT EXISTS (SELECT 1 FROM journal_edits WHERE seq = v_seq) THEN
+    RAISE EXCEPTION 'a % entry with no edit', v_kind USING ERRCODE = 'LR004'; END IF;
+  FOR ed IN SELECT * FROM journal_edits WHERE seq = v_seq ORDER BY ord LOOP
+    IF (ed.path = 'lanes/STORE') <> (v_kind IN ('cutover', 'rollback')) THEN  -- and edits
+      RAISE EXCEPTION 'edit %: a % edits lanes/STORE alone, or never', ed.ord, v_kind  -- STORE alone
+        USING ERRCODE = 'LR004'; END IF;
+    IF (v_kind = 'import' AND ed.op NOT IN ('create', 'append')) OR v_kind = 'stray-revert' THEN
+      RAISE EXCEPTION 'edit %: a % may not %', ed.ord, v_kind, ed.op USING ERRCODE = 'LR004';
+    END IF;
+    IF (ed.op = 'create') = EXISTS (SELECT 1 FROM files WHERE path = ed.path) THEN
+      RAISE EXCEPTION 'edit %: % % %', ed.ord, ed.op, ed.path,
+        CASE WHEN ed.op = 'create' THEN 'exists' ELSE 'does not exist' END
+        USING ERRCODE = 'LR004'; END IF;
+    CASE ed.op
+    WHEN 'create' THEN
+      INSERT INTO files (path, final_newline, sha256, last_seq)     -- step 8 sets the last two
+      VALUES (ed.path, true, encode(sha256(''::bytea), 'hex'), v_seq);
+    WHEN 'append' THEN
+      SELECT coalesce(max(line_no), 0) + 1 INTO v_n FROM doc_lines WHERE path = ed.path;
+      IF ed.line_no IS DISTINCT FROM NULL AND ed.line_no <> v_n THEN
+        RAISE EXCEPTION 'edit %: append at %, but % has % lines', ed.ord, ed.line_no, ed.path,
+          v_n - 1 USING ERRCODE = 'LR004'; END IF;
+      INSERT INTO doc_lines (path, line_no, text, written_seq, written_mode, written_ws)
+      VALUES (ed.path, v_n, ed.new_text, v_seq, v_wmode, v_ws);
+    WHEN 'replace', 'delete' THEN
+      SELECT * INTO v_line FROM doc_lines WHERE path = ed.path AND line_no = ed.line_no;
+      IF NOT FOUND OR encode(sha256(convert_to(v_line.text, 'UTF8')), 'hex') <> ed.old_sha256 THEN
+        RAISE EXCEPTION 'edit %: % line % is not %', ed.ord, ed.path, ed.line_no, ed.old_sha256
+          USING ERRCODE = 'LR004'; END IF;
+      IF ed.op = 'replace' THEN
+        UPDATE doc_lines SET text = ed.new_text, written_seq = v_seq, written_mode = v_wmode,
+                             written_ws = v_ws
+        WHERE line_id = v_line.line_id;
+      ELSE                                      -- doc_lines_pos checks at the statement's end
+        DELETE FROM doc_lines WHERE line_id = v_line.line_id;    -- its log or register row cascades
+        UPDATE doc_lines SET line_no = line_no - 1 WHERE path = ed.path AND line_no > ed.line_no;
+        UPDATE log_lines SET ordinal = ordinal - 1 WHERE file = ed.path AND ordinal > ed.line_no;
+        UPDATE object_holds SET ordinal = ordinal - 1 WHERE file = ed.path AND ordinal > ed.line_no;
+      END IF;
+    WHEN 'rename' THEN
+      IF EXISTS (SELECT 1 FROM files WHERE path = ed.to_path) THEN
+        RAISE EXCEPTION 'edit %: % exists', ed.ord, ed.to_path USING ERRCODE = 'LR004'; END IF;
+      UPDATE files SET path = ed.to_path WHERE path = ed.path;   -- cascades to doc_lines
+      UPDATE log_lines SET file = ed.to_path WHERE file = ed.path;
+      UPDATE object_holds SET file = ed.to_path WHERE file = ed.path;
+    WHEN 'remove' THEN
+      DELETE FROM doc_lines WHERE path = ed.path;
+      DELETE FROM files WHERE path = ed.path;
+    END CASE;
+  END LOOP;
+
+  -- 7. The structured rows, upserted by key, each given its line's line_id.
+  FOR r IN
+    SELECT x.t, x.path, x.line_no, x.raw, d.line_id, d.text FROM (
+      SELECT 'lanes' AS t, path, line_no, raw FROM jsonb_to_recordset(coalesce(p_entry -> 'lanes',
+        '[]')) AS y(path text, line_no integer, raw text)
+      UNION ALL SELECT 'log_lines', path, line_no, raw FROM jsonb_to_recordset(coalesce(
+        p_entry -> 'log_lines', '[]')) AS y(path text, line_no integer, raw text)
+      UNION ALL SELECT 'register_lines', path, line_no, raw FROM jsonb_to_recordset(coalesce(
+        p_entry -> 'register_lines', '[]')) AS y(path text, line_no integer, raw text)) x
+    LEFT JOIN doc_lines d ON d.path = x.path AND d.line_no = x.line_no
+  LOOP
+    IF r.line_id IS NULL OR r.text IS DISTINCT FROM r.raw THEN
+      RAISE EXCEPTION '% row at % line %: no such line, or raw is not its text', r.t, r.path,
+        r.line_no
+        USING ERRCODE = 'LR004'; END IF;
+  END LOOP;
+  INSERT INTO lanes AS o (lane_key, lane, row_line_id, aliases, home, workstation, started_utc,
+                          handoff_path, state_phrase, objects_cell, session_ids, last_session,
+                          archived, owner, last_seq, last_mode)
+  SELECT x.lane_key, x.lane, d.line_id, x.aliases, x.home, x.workstation, x.started_utc,
+         x.handoff_path, x.state_phrase, x.objects_cell, x.session_ids, x.last_session,
+         x.archived, x.owner, v_seq, v_wmode
+  FROM jsonb_to_recordset(coalesce(p_entry -> 'lanes', '[]')) AS x(path text, line_no integer,
+       lane_key text, lane text, aliases jsonb, home text, workstation text, started_utc text,
+       handoff_path text, state_phrase text, objects_cell text, session_ids jsonb,
+       last_session text, archived boolean, owner text)
+  JOIN doc_lines d ON d.path = x.path AND d.line_no = x.line_no
+  ON CONFLICT (lane_key) DO UPDATE SET lane = EXCLUDED.lane, row_line_id = EXCLUDED.row_line_id,
+    aliases = EXCLUDED.aliases, home = EXCLUDED.home, workstation = EXCLUDED.workstation,
+    started_utc = EXCLUDED.started_utc, handoff_path = EXCLUDED.handoff_path,
+    state_phrase = EXCLUDED.state_phrase, objects_cell = EXCLUDED.objects_cell,
+    session_ids = EXCLUDED.session_ids, last_session = EXCLUDED.last_session,
+    archived = EXCLUDED.archived, owner = EXCLUDED.owner, last_seq = EXCLUDED.last_seq,
+    last_mode = EXCLUDED.last_mode;
+  INSERT INTO log_lines (line_id, file, ordinal, lane, verb, session, workstation, utc, utc_ts,
+                         object, ref, payload, payload_fields, free_text, written_lane,
+                         unreadable, unreadable_why, raw, seq, mode)
+  SELECT d.line_id, x.path, x.line_no, x.lane, x.verb, x.session, x.workstation, x.utc,
+         x.utc_ts, x.object, x.ref, x.payload, x.payload_fields, x.free_text, x.written_lane,
+         x.unreadable, x.unreadable_why, x.raw, v_seq, v_wmode
+  FROM jsonb_to_recordset(coalesce(p_entry -> 'log_lines', '[]')) AS x(path text,
+       line_no integer, raw text, lane text, verb text, session text, workstation text,
+       utc text, utc_ts timestamptz, object text, ref text, payload text, payload_fields jsonb,
+       free_text text, written_lane text, unreadable boolean, unreadable_why text)
+  JOIN doc_lines d ON d.path = x.path AND d.line_no = x.line_no
+  ON CONFLICT (line_id) DO UPDATE SET file = EXCLUDED.file, ordinal = EXCLUDED.ordinal,
+    lane = EXCLUDED.lane, verb = EXCLUDED.verb, session = EXCLUDED.session,
+    workstation = EXCLUDED.workstation, utc = EXCLUDED.utc, utc_ts = EXCLUDED.utc_ts,
+    object = EXCLUDED.object, ref = EXCLUDED.ref, payload = EXCLUDED.payload,
+    payload_fields = EXCLUDED.payload_fields, free_text = EXCLUDED.free_text,
+    written_lane = EXCLUDED.written_lane, unreadable = EXCLUDED.unreadable,
+    unreadable_why = EXCLUDED.unreadable_why, raw = EXCLUDED.raw, seq = EXCLUDED.seq,
+    mode = EXCLUDED.mode;
+  INSERT INTO register_lines (line_id, kind, slot_role, slot_kind, lane, repo, repo_key, pr, tip,
+                              utc, utc_ts, session, for_lane, raw, seq, mode, workstation,
+                              repo_spellings)
+  SELECT d.line_id, x.kind, x.slot_role, x.slot_kind, x.lane, x.repo, x.repo_key, x.pr, x.tip,
+         x.utc, x.utc_ts, x.session, x.for_lane, x.raw, v_seq, v_wmode, x.workstation,
+         x.repo_spellings
+  FROM jsonb_to_recordset(coalesce(p_entry -> 'register_lines', '[]')) AS x(path text,
+       line_no integer, raw text, kind text, slot_role text, slot_kind text, lane text,
+       repo text, repo_key text, pr integer, tip text, utc text, utc_ts timestamptz,
+       session text, for_lane text, workstation text, repo_spellings text[])
+  JOIN doc_lines d ON d.path = x.path AND d.line_no = x.line_no
+  ON CONFLICT (line_id) DO UPDATE SET kind = EXCLUDED.kind, slot_role = EXCLUDED.slot_role,
+    slot_kind = EXCLUDED.slot_kind, lane = EXCLUDED.lane, repo = EXCLUDED.repo,
+    repo_key = EXCLUDED.repo_key, pr = EXCLUDED.pr, tip = EXCLUDED.tip, utc = EXCLUDED.utc,
+    utc_ts = EXCLUDED.utc_ts, session = EXCLUDED.session, for_lane = EXCLUDED.for_lane,
+    raw = EXCLUDED.raw, seq = EXCLUDED.seq, mode = EXCLUDED.mode,
+    workstation = EXCLUDED.workstation, repo_spellings = EXCLUDED.repo_spellings;
+  -- superseded_by, #160's rule (code/lanes-index:1013-1036): a lane's state on an object is
+  -- its own last line on it, and another lane whose own last line on it is a TAKEOVER
+  -- supersedes it. The stored rows of each touched object are re-marked first, against the
+  -- incoming rows, so no transient pair of live claims trips one_live_claim.
+  BEGIN                                         -- a 23505 on one_live_claim is LR005
+  UPDATE object_holds h SET superseded_by = (
+    SELECT min(e.lane_key) FROM (
+      SELECT i.object, i.lane_key, i.verb
+      FROM jsonb_to_recordset(v_holds) AS i(object text, lane_key text, verb text)
+      UNION ALL
+      SELECT s.object, s.lane_key, s.verb FROM object_holds s
+      WHERE NOT v_holds @> jsonb_build_array(jsonb_build_object('object', s.object,
+                                                                'lane_key', s.lane_key))) e
+    WHERE e.object = h.object AND e.lane_key <> h.lane_key AND e.verb = 'TAKEOVER')
+  WHERE v_holds @> jsonb_build_array(jsonb_build_object('object', h.object));
+  INSERT INTO object_holds (object, lane_key, lane, verb, utc_ts, file, ordinal, superseded_by,
+                            spellings, exempt, seq, mode)
+  SELECT x.object, x.lane_key, x.lane, x.verb, x.utc_ts, x.file, x.ordinal,
+         (SELECT min(e.lane_key) FROM (
+            SELECT i.object, i.lane_key, i.verb
+            FROM jsonb_to_recordset(v_holds) AS i(object text, lane_key text, verb text)
+            UNION ALL
+            SELECT s.object, s.lane_key, s.verb FROM object_holds s
+            WHERE NOT v_holds @> jsonb_build_array(jsonb_build_object('object', s.object,
+                                                                      'lane_key', s.lane_key))) e
+          WHERE e.object = x.object AND e.lane_key <> x.lane_key AND e.verb = 'TAKEOVER'),
+         x.spellings, v_kind = 'import' AND coalesce(x.exempt, false), v_seq, v_wmode
+  FROM jsonb_to_recordset(v_holds) AS x(object text, lane_key text, lane text, verb text,
+       utc_ts timestamptz, file text, ordinal integer, spellings text[], exempt boolean)
+  ON CONFLICT (object, lane_key) DO UPDATE SET lane = EXCLUDED.lane, verb = EXCLUDED.verb,
+    utc_ts = EXCLUDED.utc_ts, file = EXCLUDED.file, ordinal = EXCLUDED.ordinal,
+    superseded_by = EXCLUDED.superseded_by, spellings = EXCLUDED.spellings,
+    exempt = EXCLUDED.exempt, seq = EXCLUDED.seq, mode = EXCLUDED.mode;
+  EXCEPTION WHEN unique_violation THEN
+    GET STACKED DIAGNOSTICS v_con = CONSTRAINT_NAME, v_det = PG_EXCEPTION_DETAIL;
+    IF v_con = 'one_live_claim' THEN
+      RAISE EXCEPTION 'the object is held (one_live_claim): %', v_det
+        USING ERRCODE = 'LR005', DETAIL = 'one-live-claim';
+    END IF;
+    RAISE;
+  END;
+  IF v_wmode = 'primary' THEN                   -- the register's own rules bind new writes
+    SELECT * INTO v_take FROM register_lines n    -- U3: Rule 6's 30 minutes are measured from a
+      WHERE n.seq = v_seq AND n.slot_role = 'take' AND n.utc_ts IS NULL LIMIT 1;   -- take's UTC
+    IF FOUND THEN
+      RAISE EXCEPTION 'a % take with no readable UTC (U3): %', v_take.kind, left(v_take.raw, 160)
+        USING ERRCODE = 'LR005', DETAIL = 'take-no-utc'; END IF;
+    IF EXISTS (SELECT 1 FROM object_holds n JOIN object_holds o ON o.lane_key <> n.lane_key
+               WHERE n.seq = v_seq AND n.verb IN ('CLAIMED', 'TAKEOVER')
+                 AND n.superseded_by IS NULL AND NOT n.exempt
+                 AND o.verb IN ('CLAIMED', 'TAKEOVER') AND o.superseded_by IS NULL
+                 AND n.spellings && o.spellings) THEN
+      RAISE EXCEPTION 'a claim''s spellings overlap another lane''s live claim (D19)'
+        USING ERRCODE = 'LR005', DETAIL = 'claim-spellings'; END IF;
+    IF EXISTS (SELECT 1 FROM register_lines n JOIN main_slots m      -- one repository, however
+                 ON m.repo_key = n.repo_key OR m.repo_spellings && n.repo_spellings   -- spelled
+               WHERE n.seq = v_seq AND n.slot_role = 'take' AND m.line_id < n.line_id
+                 AND lower(m.lane) <> lower(n.lane)) THEN
+      RAISE EXCEPTION 'another lane holds main for this repository first (D18)'
+        USING ERRCODE = 'LR005', DETAIL = 'main-held'; END IF;
+    FOR r IN SELECT * FROM register_lines n               -- F13: a LANDING EXPIRED closes the
+             WHERE n.seq = v_seq AND n.kind = 'LANDING EXPIRED' LOOP   -- holder's stale LANDING
+      SELECT * INTO v_take FROM register_lines t   -- C1: the holder's newest take that it closes,
+        WHERE t.slot_role = 'take' AND t.slot_kind = 'landing'          -- matched as main_slots
+          AND (t.repo_key = r.repo_key OR t.repo_spellings && r.repo_spellings)    -- matches
+          AND t.pr = r.pr AND lower(t.lane) = lower(r.for_lane) AND t.line_id < r.line_id
+        ORDER BY t.line_id DESC LIMIT 1;
+      IF NOT FOUND OR v_take.repo_key IS DISTINCT FROM r.repo_key THEN   -- point 5: repo_key alone
+        RAISE EXCEPTION 'no open LANDING by % for PR #% under repo_key % (F13): there is none, or its newest is keyed %',
+          r.for_lane, r.pr, r.repo_key, coalesce(v_take.repo_key, '-')
+          USING ERRCODE = 'LR005', DETAIL = 'expired-none'; END IF;
+      SELECT c.kind, c.lane INTO v_close FROM register_lines c    -- C2: a close, matched as
+        WHERE c.slot_role = 'close' AND c.slot_kind = 'landing'     -- main_slots matches one
+          AND (c.repo_key = v_take.repo_key OR c.repo_spellings && v_take.repo_spellings)
+          AND c.pr = v_take.pr AND c.line_id > v_take.line_id AND c.line_id <> r.line_id
+          AND lower(coalesce(c.for_lane, c.lane)) = lower(v_take.lane)
+        ORDER BY c.line_id LIMIT 1;
+      IF FOUND THEN
+        RAISE EXCEPTION '%''s LANDING for PR #% under repo_key % is already closed, by a % of % (F13)',
+          v_take.lane, v_take.pr, v_take.repo_key, v_close.kind, v_close.lane
+          USING ERRCODE = 'LR005', DETAIL = 'expired-closed'; END IF;
+      IF NOT coalesce(clock_timestamp() - v_take.utc_ts > interval '30 minutes', false) THEN
+        RAISE EXCEPTION '%''s newest LANDING for PR #% under repo_key % is too young (F13): its age by the database''s clock is %, not more than Rule 6''s 30 minutes',
+          v_take.lane, v_take.pr, v_take.repo_key,
+          coalesce(date_trunc('second', clock_timestamp() - v_take.utc_ts)::text, 'unknown, since its UTC cannot be read')
+          USING ERRCODE = 'LR005', DETAIL = 'expired-young'; END IF;
+    END LOOP;
+  END IF;
+
+  -- 8. The proof: every touched path is in the entry's files, and renders to its digest.
+  IF EXISTS (SELECT 1 FROM journal_edits j, LATERAL (VALUES (j.path), (j.to_path)) t(p)
+             WHERE j.seq = v_seq AND t.p IS NOT NULL
+               AND NOT coalesce(p_entry -> 'files', '[]') @> jsonb_build_array(
+                         jsonb_build_object('path', t.p))) THEN
+    RAISE EXCEPTION 'an edited path has no files row in the entry' USING ERRCODE = 'LR004';
+  END IF;
+  FOR r IN SELECT * FROM jsonb_to_recordset(coalesce(p_entry -> 'files', '[]'))
+             AS x(path text, present boolean, sha256 text, final_newline boolean) LOOP
+    INSERT INTO journal_files (seq, path, present, sha256, final_newline)
+    VALUES (v_seq, r.path, r.present, r.sha256, r.final_newline);
+    IF r.present THEN
+      UPDATE files SET final_newline = coalesce(r.final_newline, final_newline)
+      WHERE path = r.path;
+      v_sha := encode(sha256(render_file(r.path)), 'hex');
+      IF v_sha IS DISTINCT FROM r.sha256 THEN
+        RAISE EXCEPTION 'proof: % renders %, the entry says %', r.path, v_sha, r.sha256
+          USING ERRCODE = 'LR004'; END IF;
+      UPDATE files SET sha256 = r.sha256, last_seq = v_seq WHERE path = r.path;
+    ELSIF EXISTS (SELECT 1 FROM files WHERE path = r.path) THEN
+      RAISE EXCEPTION 'proof: % is present', r.path USING ERRCODE = 'LR004';
+    END IF;
+  END LOOP;
+
+  -- 8a. The touched keys' new side (D5, F5), from what the entry wrote, never from a list it
+  -- sends: each line it appended or replaced, each line a rename moved, read at its new path,
+  -- and objects: for every lane holding an object it wrote a hold for, since a TAKEOVER
+  -- supersedes the others and the taker's next line may restore them (entry_new_keys). An
+  -- import, a cutover and a rollback move what every read rests on: their one key is '*', which
+  -- every scope meets. N2: each key is checked before it is stored, in path and line order, and
+  -- an import checks every key its lines and holds derive, though it stores only '*'.
+  IF v_kind IN ('import', 'cutover', 'rollback') THEN
+    INSERT INTO journal_scopes (seq, scope) VALUES (v_seq, '*');
+  END IF;
+  IF v_kind = 'import' THEN
+    PERFORM count(scope_checked(k.path, k.line_no, k.scope))
+      FROM (SELECT * FROM entry_new_keys(v_seq) ORDER BY 1, 2, 3) AS k;
+  ELSIF v_kind NOT IN ('cutover', 'rollback') THEN
+    INSERT INTO journal_scopes (seq, scope)
+    SELECT v_seq, scope_checked(k.path, k.line_no, k.scope)
+      FROM (SELECT * FROM entry_new_keys(v_seq) ORDER BY 1, 2, 3) AS k
+    ON CONFLICT DO NOTHING;
+  END IF;
+
+  -- The kinds table's rules that come after: D24's two operator entries move the switch.
+  IF v_kind = 'cutover' THEN                    -- set_seq: its own seq, 1, m+1 after a re-import, or b+1 after a restore
+    UPDATE register_switch SET mode = 'primary', marker_state = 'adding', marker_seq = v_seq,
+      import_seq = coalesce(v_imp.seq, import_seq),             -- a restore's has no import entry
+      import_commit = coalesce(v_imp.git_commit, import_commit),
+      import_tree = coalesce(v_imp.git_tree, import_tree), set_seq = v_seq,
+      database_label = CASE WHEN v_after_loss THEN p_entry -> 'switch' ->> 'database_label'
+                            ELSE database_label END,
+      generation = CASE WHEN v_after_loss THEN gen_random_uuid() ELSE generation END,
+      set_utc = date_trunc('second', clock_timestamp()),
+      set_by_lane = p_entry -> 'journal' ->> 'lane', set_by_ws = v_ws,
+      restore_prior = v_prior                   -- NULL but in the restore form
+    WHERE id = 1;
+  ELSIF v_kind = 'rollback' THEN                -- set_seq: its own entry, the last seq, k+1
+    UPDATE register_switch SET mode = 'files', marker_state = 'removing', marker_seq = v_seq,
+      set_seq = v_seq, set_utc = date_trunc('second', clock_timestamp()),
+      set_by_lane = p_entry -> 'journal' ->> 'lane', set_by_ws = v_ws
+    WHERE id = 1;
+  ELSIF v_kind IN ('stray-import', 'stray-revert') THEN
+    UPDATE mirror_state SET diverged_sha = NULL, found_utc = NULL, found_by_ws = NULL
+    WHERE id = 1;
+  END IF;
+  IF NOT (clock_timestamp() < v_not_after) THEN  -- 9. the bound (F3): past it, nothing commits
+    RAISE EXCEPTION 'write % reached its end at %, past its not_after %', p_write_id,
+      clock_timestamp(), v_not_after USING ERRCODE = 'LR008'; END IF;
+  RETURN v_seq;                                 -- the deferred foreign keys check at COMMIT
+END $f$;
+
+CREATE FUNCTION switch_to_files(p_client integer, p_cutover_seq bigint, p_lane text, p_ws text)
+  RETURNS bigint LANGUAGE plpgsql SECURITY DEFINER
+  SET search_path = lanes_register, pg_catalog, pg_temp AS $f$
+-- The cutover's abort (F2): run only after a read-back proves the entry's commit absent from
+-- origin. In the restore form it puts back what restore_prior holds and sets nothing to files.
+DECLARE
+  v_head bigint;
+  v_ver  schema_version;
+  v_sw   register_switch;
+BEGIN
+  SELECT seq INTO v_head FROM register_head WHERE id = 1 FOR UPDATE;         -- the same lock
+  SELECT * INTO v_ver FROM schema_version WHERE id = 1;
+  IF p_client > v_ver.version OR p_client < v_ver.writers_from THEN
+    RAISE EXCEPTION 'register schema % (writers from %); this client is %', v_ver.version,
+      v_ver.writers_from, p_client USING ERRCODE = 'LR003'; END IF;
+  SELECT * INTO v_sw FROM register_switch WHERE id = 1;       -- an unconfirmed cutover only
+  IF v_sw.mode <> 'primary' OR v_sw.marker_state <> 'adding'
+     OR v_sw.marker_seq IS DISTINCT FROM p_cutover_seq OR v_head <> p_cutover_seq THEN
+    RAISE EXCEPTION 'no unconfirmed cutover at seq %', p_cutover_seq USING ERRCODE = 'LR002'; END IF;
+  DELETE FROM doc_lines     WHERE path = 'lanes/STORE';       -- its rows, children first
+  DELETE FROM files         WHERE path = 'lanes/STORE';
+  IF v_sw.restore_prior IS NOT NULL THEN                      -- the restore form: lanes/STORE
+    INSERT INTO files                                         -- as it was at b, line ids too
+      SELECT * FROM jsonb_populate_record(NULL::files, v_sw.restore_prior -> 'file');
+    INSERT INTO doc_lines OVERRIDING SYSTEM VALUE
+      SELECT * FROM jsonb_populate_recordset(NULL::doc_lines, v_sw.restore_prior -> 'lines');
+  END IF;
+  DELETE FROM journal_files WHERE seq = p_cutover_seq;
+  DELETE FROM journal_edits WHERE seq = p_cutover_seq;
+  DELETE FROM journal       WHERE seq = p_cutover_seq;
+  UPDATE register_head SET seq = p_cutover_seq - 1 WHERE id = 1;   -- a new row version: every
+                                                                    -- older writer snapshot gets 40001
+  IF v_sw.restore_prior IS NOT NULL THEN                      -- and the switch row as it was:
+    DELETE FROM register_switch WHERE id = 1;                 -- primary, present, its label and
+    INSERT INTO register_switch                               -- generation; no seq after b
+      SELECT * FROM jsonb_populate_record(NULL::register_switch, v_sw.restore_prior -> 'switch');
+    RETURN p_cutover_seq - 1;
+  END IF;
+  UPDATE register_switch SET mode = 'files', marker_state = 'absent', marker_seq = NULL,
+    set_seq = p_cutover_seq - 1,
+    set_utc = date_trunc('second', clock_timestamp()), set_by_lane = p_lane, set_by_ws = p_ws
+  WHERE id = 1;
+  RETURN p_cutover_seq - 1;
+END $f$;
+
+CREATE FUNCTION record_marker(p_client integer, p_seq bigint, p_commit text, p_ws text)
+  RETURNS text LANGUAGE plpgsql SECURITY DEFINER
+  SET search_path = lanes_register, pg_catalog, pg_temp AS $f$
+-- S4's read-back of an operator entry's push, recorded (F12).
+DECLARE
+  v_ver schema_version;
+  v_sw  register_switch;
+  v_new text;
+BEGIN
+  PERFORM 1 FROM register_head WHERE id = 1 FOR UPDATE;      -- serialises with the abort
+  SELECT * INTO v_ver FROM schema_version WHERE id = 1;
+  IF p_client > v_ver.version OR p_client < v_ver.writers_from THEN
+    RAISE EXCEPTION 'register schema % (writers from %); this client is %', v_ver.version,
+      v_ver.writers_from, p_client USING ERRCODE = 'LR003'; END IF;
+  SELECT * INTO v_sw FROM register_switch WHERE id = 1;
+  IF v_sw.marker_state NOT IN ('adding', 'removing') OR v_sw.marker_seq IS DISTINCT FROM p_seq THEN
+    RAISE EXCEPTION 'no unconfirmed operator entry at seq %', p_seq USING ERRCODE = 'LR002'; END IF;
+  v_new := CASE v_sw.marker_state WHEN 'adding' THEN 'present' ELSE 'absent' END;
+  UPDATE register_switch SET marker_state = v_new, marker_commit = p_commit,
+    set_utc = date_trunc('second', clock_timestamp()), set_by_ws = p_ws,
+    restore_prior = NULL                       -- confirmed: nothing left to put back
+  WHERE id = 1;
+  RETURN v_new;
+END $f$;
+
+CREATE FUNCTION find_write(p_write_id uuid, p_not_after timestamptz, p_generation uuid,
+                           p_lane text, p_verb text, p_args_sha256 text)
+  RETURNS bigint LANGUAGE plpgsql SECURITY DEFINER
+  SET search_path = lanes_register, pg_catalog, pg_temp AS $f$
+-- F3's one lookup (S2; D8, S1), at READ COMMITTED in a transaction the caller rolls back.
+-- p_not_after is the largest not_after the write's commit calls carried, and p_generation,
+-- p_lane, p_verb and p_args_sha256 are what those calls sent (NIT 1). It waits, holding no
+-- lock, until the server's clock has passed p_not_after, at most 3 s (the call's statement_timeout
+-- less its lock_timeout and 1 s); then it takes the head row's lock under the caller's
+-- lock_timeout (55P03 while a transaction of the write may still be open), checks the clock again
+-- under it, the exact complement of commit_write's step 9, then checks as commit_write does, in
+-- its order (S-3): another generation is LR007, and so is an entry of this id for another lane,
+-- verb or arguments. It returns the write's seq, or NULL if it is absent. The writer has no
+-- UPDATE, so it cannot take that lock itself.
+DECLARE
+  v_wait interval := p_not_after - clock_timestamp();
+  v_gen  uuid;                                  -- the switch's generation, under the lock
+  v_old  journal;                               -- the entry of this id, if any
+BEGIN
+  IF p_not_after IS NULL THEN
+    RAISE EXCEPTION 'lookup of write %: no not_after', p_write_id USING ERRCODE = 'LR011'; END IF;
+  IF v_wait > interval '3 seconds' THEN                 -- LR011: further ahead than the wait's bound
+    RAISE EXCEPTION 'lookup of write %: not_after % is % ahead of the database clock, past the 3 s wait',
+      p_write_id, p_not_after, v_wait USING ERRCODE = 'LR011'; END IF;
+  IF v_wait > interval '0' THEN                         -- the wait, on the server's clock, before the lock
+    PERFORM pg_sleep(extract(epoch FROM v_wait) + 0.001); END IF;
+  PERFORM 1 FROM register_head WHERE id = 1 FOR UPDATE;
+  IF clock_timestamp() < p_not_after THEN               -- step 9 commits only while this holds
+    RAISE EXCEPTION 'lookup of write %: the database clock % has not passed not_after % under the head row''s lock',
+      p_write_id, clock_timestamp(), p_not_after USING ERRCODE = 'LR011'; END IF;
+  SELECT generation INTO v_gen FROM register_switch WHERE id = 1;
+  IF p_generation IS DISTINCT FROM v_gen THEN          -- commit_write's order: the generation first
+    RAISE EXCEPTION 'write % belongs to register generation %, not %', p_write_id, p_generation,
+      v_gen USING ERRCODE = 'LR007', DETAIL = 'generation'; END IF;
+  SELECT * INTO v_old FROM journal WHERE write_id = p_write_id;
+  IF NOT FOUND THEN RETURN NULL; END IF;               -- absent
+  IF v_old.lane IS DISTINCT FROM p_lane OR v_old.verb IS DISTINCT FROM p_verb
+     OR v_old.args_sha256 IS DISTINCT FROM p_args_sha256 THEN   -- then another write's entry
+    RAISE EXCEPTION 'write % is seq %, another write''s (F10)', p_write_id, v_old.seq
+      USING ERRCODE = 'LR007', DETAIL = 'another-write'; END IF;
+  RETURN v_old.seq;                                    -- found: this write's own entry
+END $f$;
+
+CREATE FUNCTION record_mirror_state(p_ws text, p_diverged_sha text, p_error text)
+  RETURNS void LANGUAGE plpgsql SECURITY DEFINER
+  SET search_path = lanes_register, pg_catalog, pg_temp AS $f$
+-- S5: its UPDATE takes the row's FOR NO KEY UPDATE lock, which conflicts with a rollback's FOR
+-- SHARE, so it waits for that rollback to end, and a rollback that reaches the row after it waits
+-- for it. It reads nothing before it writes and takes no other lock, so no explicit lock is needed.
+BEGIN
+  UPDATE mirror_state SET                      -- each right-hand side reads the old row
+    found_utc   = CASE WHEN diverged_sha IS NOT NULL OR p_diverged_sha IS NULL THEN found_utc
+                       ELSE date_trunc('second', clock_timestamp()) END,
+    found_by_ws = CASE WHEN diverged_sha IS NOT NULL OR p_diverged_sha IS NULL THEN found_by_ws
+                       ELSE p_ws END,
+    diverged_sha = coalesce(diverged_sha, p_diverged_sha),   -- D16: the first finder's; only a
+                                                             -- stray entry clears it
+    last_error = p_error,
+    last_error_utc = CASE WHEN p_error IS NULL THEN NULL
+                          ELSE date_trunc('second', clock_timestamp()) END
+  WHERE id = 1;
+END $f$;
+
+-- Migration 1's rows, from operations.md §2.4's bootstrap inputs (psql -v repo=… label=… lane=… ws=… script_sha256=…).
+INSERT INTO schema_version (version, writers_from, readers_from, applied_utc)
+  VALUES (1, 1, 1, date_trunc('second', clock_timestamp()));
+INSERT INTO register_head (seq) VALUES (-1);
+INSERT INTO mirror_state DEFAULT VALUES;
+INSERT INTO register_switch (mode, marker_state, generation, repository, database_label, set_utc,
+                             set_seq, set_by_lane, set_by_ws)
+  VALUES ('files', 'absent', gen_random_uuid(), :'repo', :'label',
+          date_trunc('second', clock_timestamp()), -1, :'lane', :'ws');
+INSERT INTO migrations (version, script_sha256, by_lane, by_ws)
+  VALUES (1, :'script_sha256', :'lane', :'ws');
+COMMIT;                                        -- then 1.4's statements after its CREATE ROLEs
+"""
+
+#: Every migration this build ships, by number. Each script is one transaction,
+#: sent whole as one `psql` call.
+REGISTER_MIGRATIONS = {
+    1: _REGISTER_M1_TABLES + "\n" + _REGISTER_M1_FUNCTIONS,
+}
+
+#: The `schema_version` row a script leaves: migration 1's INSERT, or a later
+#: script's UPDATE.
+_REGISTER_VERSION_ROW_RE = re.compile(
+    r"INSERT INTO schema_version \(version, writers_from, readers_from, applied_utc\)\s+"
+    r"VALUES \((\d+), (\d+), (\d+),"
+    r"|UPDATE schema_version SET version = (\d+), writers_from = (\d+), readers_from = (\d+)")
+
+
+def _register_migrations_consistent() -> None:
+    """THE ONE-NUMBER RULE INSIDE THIS FILE, checked before anything is sent.
+    The scripts are numbered 1 to `REGISTER_SCHEMA_VERSION` with no gap. The
+    floors keep `schema_version`'s CHECK. The newest script leaves the version
+    and floors the constants name. A build that breaks this is a defect, so
+    the error is not a refusal."""
+    if sorted(REGISTER_MIGRATIONS) != list(range(1, REGISTER_SCHEMA_VERSION + 1)):
+        raise RuntimeError(f"register migrations {sorted(REGISTER_MIGRATIONS)} are not 1 to "
+                           f"REGISTER_SCHEMA_VERSION {REGISTER_SCHEMA_VERSION}")
+    if not 1 <= REGISTER_READERS_FROM <= REGISTER_WRITERS_FROM <= REGISTER_SCHEMA_VERSION:
+        raise RuntimeError(f"register floors: readers from {REGISTER_READERS_FROM}, writers from "
+                           f"{REGISTER_WRITERS_FROM}, version {REGISTER_SCHEMA_VERSION}")
+    rows = [tuple(int(n) for n in m.groups() if n is not None)
+            for m in _REGISTER_VERSION_ROW_RE.finditer(REGISTER_MIGRATIONS[REGISTER_SCHEMA_VERSION])]
+    want = (REGISTER_SCHEMA_VERSION, REGISTER_WRITERS_FROM, REGISTER_READERS_FROM)
+    if rows != [want]:
+        raise RuntimeError(f"register migration {REGISTER_SCHEMA_VERSION} leaves schema_version "
+                           f"{rows}, not {want}")
+
+
+def register_migration_sha256(version: int) -> str:
+    """The `script_sha256` that migration `version`'s `migrations` row records:
+    the sha256 of the script's UTF-8 bytes as shipped, with its psql variables
+    unexpanded. Every build that ships the same script records the same digest."""
+    return hashlib.sha256(REGISTER_MIGRATIONS[version].encode("utf-8")).hexdigest()
+
+
+def register_migration_plan(current: int | None) -> list[int]:
+    """The migrations that take a schema at `current` to
+    `REGISTER_SCHEMA_VERSION`, in order. `current` is the `schema_version`
+    row's `version`, or None where the schema `lanes_register` does not exist.
+    An empty list means `unchanged`. A schema newer than this build is refused
+    (operations.md §2.4: 2), and is never migrated down."""
+    _register_migrations_consistent()
+    if current is None:
+        return list(range(1, REGISTER_SCHEMA_VERSION + 1))
+    if not isinstance(current, int) or isinstance(current, bool) or current < 1:
+        raise ValueError(f"a register schema version is a number of at least 1, not {current!r}")
+    if current > REGISTER_SCHEMA_VERSION:
+        raise Refusal(f"the register's schema is at version {current}, newer than this "
+                      f"{PROG}'s {REGISTER_SCHEMA_VERSION}: upgrade the tools. A schema is "
+                      f"migrated forward, never down")
+    return list(range(current + 1, REGISTER_SCHEMA_VERSION + 1))
+
+
+def _register_migration_variables(repository: str, label: str, lane: str,
+                                  workstation: str) -> dict[str, str]:
+    """The bootstrap's inputs, as the scripts' psql variables. Each is checked
+    here against the CHECKs of design.md §1.2 that it meets, so that a bad
+    input is refused with 2 before anything is sent, rather than failing as a
+    23514 inside the transaction."""
+    values = {"repository": ("repo", repository), "label": ("label", label),
+              "lane": ("lane", lane), "workstation": ("ws", workstation)}
+    for what, (_name, value) in values.items():
+        if not isinstance(value, str) or not value.strip():
+            raise Refusal(f"bootstrap: the {what} is empty")
+        if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+            raise Refusal(f"bootstrap: the {what} holds a control character")
+    if "@" in label:
+        raise Refusal("bootstrap: a database label holds no '@', so it is never a credential "
+                      "(design.md §1.2, register_switch.database_label)")
+    return {name: value for name, value in values.values()}
+
+
+def apply_register_migrations(run, current: int | None, *, repository: str, label: str,
+                              lane: str, workstation: str) -> list[tuple[int, str]]:
+    """MIGRATE THE REGISTER FORWARD TO `REGISTER_SCHEMA_VERSION` (§1.5). This
+    is the bootstrap's step and nobody else's: `lanes-index bootstrap` calls
+    it, and no subcommand does.
+
+    `current` is as `register_migration_plan` takes it. The other inputs are
+    the bootstrap's own (operations.md §2.4): `--repository`, `--label` and
+    `--lane`, and the host's workstation name. They fill the switch's `repository`,
+    `database_label`, `set_by_lane` and `set_by_ws`, and the `migrations` row's
+    `by_lane` and `by_ws`.
+
+    `run(script, variables)` sends one script through Brett's admin
+    connection as ONE `psql` call:
+      - the script on stdin, with `-X` and `-v ON_ERROR_STOP=1`;
+      - one `-v <name>=<value>` per variable;
+      - `PGCLIENTENCODING=UTF8`, since `line_scopes`' pattern holds an em dash;
+      - no `--single-transaction`, since each script has its own BEGIN and
+        COMMIT.
+    It raises on any end but 0. The script's transaction has then rolled back,
+    so the schema stands at the version before it.
+
+    Returns `(version, script_sha256)` for each migration applied, in order.
+    An empty list means `unchanged`. Bad inputs, and a schema newer than this
+    build, are refused before anything is sent."""
+    plan = register_migration_plan(current)
+    variables = _register_migration_variables(repository, label, lane, workstation)
+    applied = []
+    for version in plan:
+        digest = register_migration_sha256(version)
+        run(REGISTER_MIGRATIONS[version], dict(variables, script_sha256=digest))
+        applied.append((version, digest))
+    return applied
+
+
+def register_version_refusal(version: int, writers_from: int, readers_from: int, *,
+                             write: bool) -> str | None:
+    """§1.5'S WINDOW, as a client checks it before it reads or writes. A
+    writer goes on only where `writers_from` <= `REGISTER_SCHEMA_VERSION` <=
+    `version`. A reader goes on only where `readers_from` <=
+    `REGISTER_SCHEMA_VERSION` <= `version`.
+
+    Returns None inside the window. Outside it, the returned refusal names
+    both numbers and the remedy, in the shape of `commit_write`'s LR003. The
+    exit code is the caller's own: 69 for writers, S3's readers and the
+    register commands; 2 for the guard; 1 for `managed-projection`."""
+    floor, who = (writers_from, "writers") if write else (readers_from, "readers")
+    head = f"register schema {version} ({who} from {floor}); this client is {REGISTER_SCHEMA_VERSION}"
+    if REGISTER_SCHEMA_VERSION > version:
+        return f"{head}: the database is behind: run the bootstrap"
+    if REGISTER_SCHEMA_VERSION < floor:
+        return f"{head}: upgrade the tools"
+    return None
 
 
 # ============================================================ local status
@@ -3499,6 +4816,8 @@ def main(argv: list[str]) -> int:
     # ahead of #160's argument loop, to the subcommand's own parser.
     if verb == "mode":
         return cmd_mode(args)
+    if verb == "register" and args[:1] == ["classify"]:
+        return cmd_register_classify(args[1:])
     # A SUBCOMMAND THIS BUILD DOES NOT HAVE, one of 007's not built yet among
     # them, is usage before any argument is read: it does nothing and says so,
     # and the 64 is what F8 reads from a `lanes-index` too old to have a verb.
