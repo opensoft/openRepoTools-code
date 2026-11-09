@@ -462,8 +462,10 @@
 #      `handoff-path` and `write-handoff`, a register that could not be read
 #      (R22: never 8), and `write-handoff`'s target under a repository that
 #      git could not read (R22: never "no repository"); and, feature 007's
-#      pending record (F10, `wr_begin`), a host with neither `sha256sum` nor
-#      `shasum` to make a write's digest, with nothing sent
+#      pending record (F10), each with nothing sent: a host with neither
+#      `sha256sum` nor `shasum` to make a write's digest (`wr_begin`), and a
+#      `register-pending/` directory that cannot be made, or a claim in it
+#      that cannot be written whole (`wr_claim_take`, ERR-42)
 #   2  refusal: bad arguments, the object is held, an unknown alias, —
 #      Amendment 15 — a register holding
 #      two rows whose lane names differ only by case, which every writer and
@@ -4173,7 +4175,8 @@ WR_HERE_HOST=""; WR_HERE_CONTAINER=""
 WR_HIGHEST_K=-1; WR_HIGHEST_FILE=""
 WR_C_PID=""; WR_C_START=""; WR_C_HOST=""; WR_C_CONTAINER=""; WR_C_UTC=""
 WR_OWNER_FILE=""; WR_OWNER_PID=""; WR_OWNER_START=""; WR_OWNER_HOST=""
-WR_OWNER_CONTAINER=""; WR_OWNER_UTC=""
+WR_OWNER_CONTAINER=""; WR_OWNER_UTC=""; WR_OWNER_WHY=""; WR_OWNER_TAKE_AFTER=""
+WR_LIVE_WHY=""; WR_LIVE_UNTIL=""
 WR_REC_FORMAT=""; WR_REC_WRITE_ID=""; WR_REC_GENERATION=""; WR_REC_DATABASE=""
 WR_REC_LANE=""; WR_REC_SESSION=""; WR_REC_VERB=""; WR_REC_ARGS_SHA256=""
 WR_REC_CMDLINE=""; WR_REC_CREATED_UTC=""; WR_REC_UPDATED_UTC=""; WR_REC_PID=""
@@ -4352,8 +4355,9 @@ wr_pending_dir() {
 
 # A CLAIM, `<d>.take.<k>` (Y:5184): five `key=value` lines, `pid`, `pid_start`,
 # `host`, `container` and `utc`. Its values go into WR_C_*. 0 when it names a
-# pid; 1 when it cannot be read or names none, as a claim whose maker has made
-# the file and not yet written it.
+# pid; 1 when it cannot be read or names none. Since ERR-42 a claim is made
+# whole, so a run never sees its maker's half-written body; a claim with no pid
+# is a crash's, a failed disk's or another tool's (DEC-25).
 wr_claim_read() {   # <claim file>
   local cr_l=""
   WR_C_PID=""; WR_C_START=""; WR_C_HOST=""; WR_C_CONTAINER=""; WR_C_UTC=""
@@ -4402,59 +4406,133 @@ wr_record_updated_epoch() {   # <record file>
   epoch_of "$ru_u"
 }
 
-# IS THE CLAIM'S OWNER LIVE? 0 live, 1 dead or its pid reused (Y:5185, Y:5220).
+# A file's mtime, in epoch seconds, as `fetch-age` reads `FETCH_HEAD`'s: GNU
+# `stat -c %Y`, else BSD `stat -f %m`. Empty where neither answers.
+wr_file_mtime() {   # <file>
+  local fm_t
+  fm_t="$(stat -c %Y -- "$1" 2>/dev/null || stat -f %m -- "$1" 2>/dev/null || :)"
+  wr_is_count "$fm_t" || fm_t=""
+  printf '%s' "$fm_t"
+}
+
+# Epoch seconds as this file's UTC stamp: GNU `date -d @<s>`, else BSD
+# `date -j -r <s>`. Empty where neither answers.
+wr_utc_of_epoch() {   # <epoch seconds>
+  wr_is_count "${1-}" || return 0
+  date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null ||
+    date -u -j -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || :
+}
+
+# A CLAIM WHOSE OWNER CANNOT BE TESTED HERE is live for the seam's cap, 120 s
+# (`wr_seam_cap_s`), and dead after it: Y:5220 for a claim from another host or
+# container, "since its pid cannot be tested here", and DEC-25 for the two of
+# this host that cannot be tested either. The cap runs from the later of
+# `<from>`, the claim's own time, and the record's `updated_utc`; where neither
+# can be read, from the claim file's mtime; where even that cannot be read, the
+# claim is live. WR_LIVE_WHY is `<why>`, and WR_LIVE_UNTIL the epoch second from
+# which a run may take the claim. 0 live, 1 dead.
+wr_claim_capped() {   # <why> <from, epoch seconds, or empty> <record file> <claim file>
+  local cp_from cp_b
+  WR_LIVE_WHY="${1-}"; WR_LIVE_UNTIL=""
+  cp_from="${2-}"
+  cp_b="$(wr_record_updated_epoch "$3")"
+  if [ -n "$cp_b" ] && { [ -z "$cp_from" ] || [ "$cp_b" -gt "$cp_from" ]; }; then cp_from="$cp_b"; fi
+  [ -n "$cp_from" ] || cp_from="$(wr_file_mtime "$4")"
+  [ -n "$cp_from" ] || return 0
+  WR_LIVE_UNTIL=$(( cp_from + $(wr_seam_cap_s) ))
+  [ "$(date -u +%s)" -lt "$WR_LIVE_UNTIL" ]
+}
+
+# IS THE CLAIM'S OWNER LIVE? 0 live, 1 dead or its pid reused (Y:5185, Y:5220;
+# DEC-25; contract §4.3). WR_LIVE_WHY says why it is live, for T417's 3:
 #
-#   - A claim that names no pid is being written: live.
-#   - From another host or container, or where either side's host or container
-#     is not known: live for the seam's cap from the later of the claim's own
-#     UTC and the record's `updated_utc`, since its pid cannot be tested here.
-#     Where neither stamp can be read, live.
-#   - Here: lane 5's `pid_start_of <pid>` (T502; Q-L5-6). Exit 0 is live where
-#     its start token equals the claim's, compared as a string, and dead where
-#     it differs, since the pid was reused; where the claim recorded no token
-#     there is nothing to compare, and it is live. Exit 1 is dead. Exit 2, a
-#     start that cannot be read, is live (R49), and so is any other answer, the
-#     127 of a host where `pid_start_of` is not yet defined among them: a wrong
-#     "dead" would let a claim be stolen.
-#   - A claim naming this run's own pid, which this run did not make, is a dead
-#     run's: the pid is this run's now.
+#   pid           here: `pid_start_of` answered 0 with the claim's own token
+#   start-unread  here: `pid_start_of` answered 2, a start that cannot be read,
+#                 which is live with no bound (R49)
+#   untested      here: any other answer, the 127 of a host where
+#                 `pid_start_of` is not yet defined among them, also unbounded
+#   other-host    from another host or container, or where either side's host
+#                 or container is not known (Y:5220)
+#   no-pid        it names no pid, or cannot be read (DEC-25)
+#   no-start      here: its pid lives, and the claim recorded no start token, so
+#                 a reused pid cannot be told (DEC-25)
+#
+# The last three are live only for the seam's cap (`wr_claim_capped`), with
+# WR_LIVE_UNTIL set; `other-host` and `no-start` from the later of the claim's
+# `utc` and the record's `updated_utc`, and `no-pid` from the later of the
+# claim file's mtime and `updated_utc`. Exit 1 of `pid_start_of`, and another
+# token than the claim's, are dead. A claim that has gone is dead, since only
+# its owner removes it; and one naming this run's own pid, which this run did
+# not make, is a dead run's, since the pid is this run's now.
 wr_claim_live() {   # <claim file>
-  local cl_rec cl_a cl_b cl_from cl_tok cl_rc
-  wr_claim_read "$1" || return 0
+  local cl_rec cl_a cl_tok cl_rc
+  WR_LIVE_WHY=""; WR_LIVE_UNTIL=""
+  cl_rec="${1%.take.*}"
+  if ! wr_claim_read "$1"; then
+    [ -e "$1" ] || [ -L "$1" ] || return 1
+    wr_claim_capped no-pid "$(wr_file_mtime "$1")" "$cl_rec" "$1"
+    return $?
+  fi
+  cl_a=""
+  wr_is_utc "$WR_C_UTC" && cl_a="$(epoch_of "$WR_C_UTC")"
   wr_here
   if [ -z "$WR_C_HOST" ] || [ -z "$WR_C_CONTAINER" ] || [ -z "$WR_HERE_HOST" ] || [ -z "$WR_HERE_CONTAINER" ] ||
      [ "$WR_C_HOST" != "$WR_HERE_HOST" ] || [ "$WR_C_CONTAINER" != "$WR_HERE_CONTAINER" ]; then
-    cl_rec="${1%.take.*}"
-    cl_a=""
-    wr_is_utc "$WR_C_UTC" && cl_a="$(epoch_of "$WR_C_UTC")"
-    cl_b="$(wr_record_updated_epoch "$cl_rec")"
-    cl_from="$cl_a"
-    if [ -n "$cl_b" ] && { [ -z "$cl_from" ] || [ "$cl_b" -gt "$cl_from" ]; }; then cl_from="$cl_b"; fi
-    [ -n "$cl_from" ] || return 0
-    [ "$(date -u +%s)" -lt "$(( cl_from + $(wr_seam_cap_s) ))" ] && return 0
-    return 1
+    wr_claim_capped other-host "$cl_a" "$cl_rec" "$1"
+    return $?
   fi
   [ "$WR_C_PID" = "$$" ] && [ "$1" != "$WR_CLAIM" ] && return 1
   cl_tok="$(pid_start_of "$WR_C_PID" 2>/dev/null)"; cl_rc=$?
   case "$cl_rc" in
     0)
-      [ -z "$WR_C_START" ] && return 0
-      [ "$cl_tok" = "$WR_C_START" ] && return 0
-      return 1
+      if [ -z "$WR_C_START" ]; then
+        wr_claim_capped no-start "$cl_a" "$cl_rec" "$1"
+        return $?
+      fi
+      [ "$cl_tok" = "$WR_C_START" ] || return 1
+      WR_LIVE_WHY=pid
+      return 0
       ;;
     1) return 1 ;;
+    2) WR_LIVE_WHY=start-unread; return 0 ;;
   esac
+  WR_LIVE_WHY=untested
   return 0
 }
 
-# A CLAIM MADE, with noclobber, so only one run's create of a name succeeds
-# (Y:5184, Y:5188). 0600, as the record is. 1 where the name is taken or the
-# file cannot be made.
+# A CLAIM MADE WHOLE (Y:5184, as ERR-42 reads it). Its body is written to a
+# temporary file beside it, `.<d>.claim.XXXXXX`, and read back, and the file is
+# then linked to `<d>.take.<k>` with `ln`. The link fails where the name exists,
+# as noclobber's create does, so only one run's create of a name succeeds
+# (Y:5188), and no run ever meets the name with less than the whole body. The
+# temporary file is removed whether the link succeeds or fails. Its name begins
+# with a dot, so no reader takes it for a record or a claim: a record is read by
+# its exact name, `<d>`, and a claim only as `<d>.take.<k>`. 0600, as the record
+# is.
+#
+# 0 made; 1 the name is taken; 2 the body could not be written whole, or the
+# link failed with the name still free, for which the caller exits 1 (ERR-42),
+# never waiting on a claim of its own.
 wr_claim_create() {   # <path>
-  local cc_body
-  cc_body="$(printf 'pid=%s\npid_start=%s\nhost=%s\ncontainer=%s\nutc=%s\n' \
-    "$WR_CLAIM_PID" "$WR_CLAIM_START" "$WR_CLAIM_HOST" "$WR_CLAIM_CONTAINER" "$WR_CLAIM_UTC")"
-  ( umask 077 && set -C && printf '%s\n' "$cc_body" > "$1" ) 2>/dev/null
+  local cc_tmp cc_rc
+  cc_tmp="$(mktemp "${1%/*}/.$WR_D.claim.XXXXXX" 2>/dev/null)" || cc_tmp=""
+  [ -n "$cc_tmp" ] || return 2
+  if ! printf 'pid=%s\npid_start=%s\nhost=%s\ncontainer=%s\nutc=%s\n' \
+         "$WR_CLAIM_PID" "$WR_CLAIM_START" "$WR_CLAIM_HOST" "$WR_CLAIM_CONTAINER" "$WR_CLAIM_UTC" \
+         > "$cc_tmp" 2>/dev/null ||
+     ! wr_claim_read "$cc_tmp" || [ "$WR_C_PID" != "$WR_CLAIM_PID" ] || [ "$WR_C_UTC" != "$WR_CLAIM_UTC" ]; then
+    rm -f -- "$cc_tmp" 2>/dev/null
+    return 2
+  fi
+  if ln -- "$cc_tmp" "$1" 2>/dev/null; then
+    cc_rc=0
+  elif [ -e "$1" ] || [ -L "$1" ]; then
+    cc_rc=1
+  else
+    cc_rc=2
+  fi
+  rm -f -- "$cc_tmp" 2>/dev/null
+  return "$cc_rc"
 }
 
 # THE CLAIM CHAIN (Y:5184-5191, Y:5219-5220), taken before the first snapshot
@@ -4464,9 +4542,10 @@ wr_claim_create() {   # <path>
 #
 #   - no claim: this run creates `<d>.take.0` (Y:5186);
 #   - the highest claim's owner live (`wr_claim_live`): this run waits, reading
-#     the claims again each second, until it ends or `<deadline>` passes;
+#     the claims again each second, until it ends, its claim's cap runs out
+#     (DEC-25), or `<deadline>` passes;
 #   - its owner dead or its pid reused: `<d>.take.<k+1>` (Y:5187);
-#   - a create that fails lists the claims again (Y:5188).
+#   - a create that finds the name taken lists the claims again (Y:5188).
 #
 # A claim with no record beside it is a record being made, and its owner is
 # waited for the same way (Y:5189). Only the run whose create succeeded owns
@@ -4475,14 +4554,20 @@ wr_claim_create() {   # <path>
 #
 # 0 with WR_CLAIM its own claim. 2 where `<deadline>`, epoch seconds on this
 # host's clock (D7's, the caller's), passed while the highest claim's owner
-# lived: WR_OWNER_* then name it for the caller's exit 3 (T417; Y:5218, and
-# open point 42's text for a claim with no record beside it). 1 where the
-# directory or the claim cannot be made.
+# lived. WR_OWNER_* then name it for the caller's exit 3 (T417; Y:5218, and
+# open point 42's text for a claim with no record beside it): its file, its
+# five values, WR_OWNER_WHY (`wr_claim_live`'s WR_LIVE_WHY) and, for a claim
+# live only for the seam's cap, WR_OWNER_TAKE_AFTER, the UTC from which a run
+# may take it; the form that names those two is T417's. Exits 1, with nothing
+# sent, where the directory cannot be made or this run's own claim cannot be
+# written whole (ERR-42).
 wr_claim_take() {   # <deadline, epoch seconds>
-  local ct_dir ct_k ct_new
-  ct_dir="$(wr_pending_dir)" || return 1
+  local ct_dir ct_k ct_new ct_rc
+  ct_dir="$(wr_pending_dir)" || die "this write's pending record cannot be kept: $WR_STATE/register-pending is not a 0700 directory of this user's, and cannot be made one. Nothing was sent" 1
   wr_here
   WR_CLAIM=""; WR_CLAIM_K=-1
+  WR_OWNER_FILE=""; WR_OWNER_PID=""; WR_OWNER_START=""; WR_OWNER_HOST=""
+  WR_OWNER_CONTAINER=""; WR_OWNER_UTC=""; WR_OWNER_WHY=""; WR_OWNER_TAKE_AFTER=""
   WR_CLAIM_PID="$$"
   WR_CLAIM_START="$(pid_start_of "$$" 2>/dev/null)" || WR_CLAIM_START=""
   wr_value_ok "$WR_CLAIM_START" || WR_CLAIM_START=""
@@ -4495,6 +4580,8 @@ wr_claim_take() {   # <deadline, epoch seconds>
           WR_OWNER_FILE="$WR_HIGHEST_FILE"; WR_OWNER_PID="$WR_C_PID"
           WR_OWNER_START="$WR_C_START"; WR_OWNER_HOST="$WR_C_HOST"
           WR_OWNER_CONTAINER="$WR_C_CONTAINER"; WR_OWNER_UTC="$WR_C_UTC"
+          WR_OWNER_WHY="$WR_LIVE_WHY"
+          [ -n "$WR_LIVE_UNTIL" ] && WR_OWNER_TAKE_AFTER="$(wr_utc_of_epoch "$WR_LIVE_UNTIL")"
           return 2
         fi
         sleep 1
@@ -4506,11 +4593,12 @@ wr_claim_take() {   # <deadline, epoch seconds>
     fi
     ct_new="$ct_dir/$WR_D.take.$ct_k"
     WR_CLAIM_UTC="$(wr_host_utc)"
-    if wr_claim_create "$ct_new"; then
-      WR_CLAIM="$ct_new"; WR_CLAIM_K="$ct_k"
-      return 0
-    fi
-    [ -e "$ct_new" ] || return 1
+    wr_claim_create "$ct_new"; ct_rc=$?
+    case "$ct_rc" in
+      0) WR_CLAIM="$ct_new"; WR_CLAIM_K="$ct_k"; return 0 ;;
+      1) continue ;;
+    esac
+    die "this run's claim on its pending record, $ct_new, could not be written whole (a full disk, a quota, or a directory that refuses links), so this run cannot own the record. Nothing was sent" 1
   done
 }
 
