@@ -534,6 +534,12 @@
 #      another register generation, at any age, until `LANES_WRITE_ID=new`; a
 #      pending record that cannot be read as one; and three cases the design
 #      leaves open, refused rather than guessed (`wr_id_plan`, `wr_id_settle`).
+#      AND FEATURE 007'S INTERNAL FLAG (T413; F22, Y:5034, Y:5078), with
+#      nothing sent: a `LANES_REGISTER_SCRATCH` that names no attempt directory
+#      this file may honour, or one with no snapshot clock to date the attempt
+#      by (`reg_scratch_take`); and, under the flag, a pathspec that differs
+#      from HEAD in the attempt's scratch tree before the verb has edited it,
+#      an internal error and never a capture (`reg_scratch_dirty`).
 #  64  usage — a caller's bad arguments to one of the reads Amendment 11 added
 #      (`window-lane`, `lane-dir`, `lane-profile`, `last-session`, `forks`,
 #      `duplicate-holder` (issue #39), `workstation`, `fetch-age`, `lanes`,
@@ -746,6 +752,14 @@
 #                      log at (default 15). The test seam, and only that
 #   LANES_IN_CONTAINER 1|0                  force the container probe (test seam)
 #   LANES_NO_GIT=1     edit only, no commit/push (used by the test harness)
+#   LANES_REGISTER_SCRATCH  INTERNAL — feature 007's attempt directory, set
+#                      only by this file's primary write path on the child it
+#                      runs for one attempt (T413). Copied, then unset, at file
+#                      scope, so nothing this process starts inherits it. It is
+#                      honoured only for a directory under
+#                      <state>/register-writes/ that this uid owns with mode
+#                      0700 and whose `parent.pid` names this process's parent;
+#                      any other value is refused (2, nothing sent). Never set it
 #   THE LOCKS (Amendment 23 S2, design decision 14). <LANES_DIR>/.lanes-edit.lock
 #                      is the CHECKOUT's — that checkout's writers. Under
 #                      LANES_ROUTE_WRITES=1, <W>-lanes/.lane-state.lock is the
@@ -1288,6 +1302,127 @@ if [ -n "${LANES__REPLAY_PID:-}" ] && [ "${LANES__REPLAY_PID:-}" = "$$" ]; then
   CP_CLAIM_READS_FILE="${LANES__CLAIM_READS_FILE:-}"
 fi
 unset LANES__REPLAY_PID LANES__ATTEMPT LANES__CLAIM_FROM LANES__CLAIM_DEAD LANES__CLAIM_READS LANES__CLAIM_URL LANES__CARRY_COPIES LANES__CLAIM_READS_FILE
+# FEATURE 007, T413 — THE INTERNAL FLAG, `LANES_REGISTER_SCRATCH=<attempt dir>`
+# (the design's F22, Y:5032–5044; lane openRepoTools-4's block, T413). The
+# primary write path (T415) runs each attempt's verb as a CHILD of this file:
+# the original command line, on the scratch tree `lanes-index register
+# snapshot --tree` built at the snapshot's seq, with this variable naming the
+# attempt's directory, `<state>/register-writes/<d>/<run>/<k>/` (contract
+# §3.3; `contracts/pending-record.md` §1). It is taken HERE, at file scope and
+# above the resolver below, because it chooses what the resolver resolves.
+#
+# COPIED, THEN UNSET, AT ONCE (Y:5034), so no `git`, `gh` or `tmux` this
+# process starts inherits it, and a stray export finds no live directory.
+# HONOURED ONLY for a directory under `<state>/register-writes/`
+# (`wr_state_dir`, above), owned by this uid, with mode 0700, whose
+# `parent.pid` names this process's parent, `$PPID`: its first line's first
+# field, so the parent may keep its start token after it there (T414's
+# liveness turns read it). ANY OTHER VALUE IS REFUSED, 2, with nothing sent.
+# The flag skips the mode question and S3, so a process that cannot show it is
+# an attempt's child must not run as one; nor may it run on as a writer of its
+# own, which would ask the mode and recurse into the primary branch (Y:5038).
+#
+# Under the flag (`REG_SCRATCH`, the directory as `pwd -P` spells it, and
+# empty without the flag):
+#   * the resolver's inputs are the scratch tree's: `LANES_REPO=<dir>/tree`,
+#     with `LANES_DIR` and `LANES_FILE` unset, so the resolver derives both
+#     (Y:5039) and `LOCK` is the scratch tree's (Y:5044);
+#   * `REG_MODE` is `primary` (Y:5121; R45), set by assignment here, so the
+#     writers' question returns on a set answer and starts no `lanes-index`,
+#     and T425's and T426's one line reads it in the child as in the parent;
+#   * ONE CLOCK (D13, Y:528–534): the snapshot's `clock=`, the database's time
+#     in whole epoch seconds, read here once from `<dir>/snapshot`, is what
+#     `now_epoch` and `utc_now` answer, so the lines the verb composes and the
+#     durations it decides by (`older_than_minutes`, `older_than_threshold`)
+#     are on one clock. A directory with no such clock is refused, 2. The host's
+#     clock stays where it decides no register state: `age_of`, the listing's
+#     partition, `fetch-age`, `request-handoff`'s wait, and the pending record's
+#     own stamps (`wr_host_utc`);
+#   * the routing re-exec, S3 (`checkout_sync`) and `log_sync`'s fetch are
+#     skipped, `gh_reads` is cached in the run's directory, and
+#     `sidecar_lock_dir` answers the path the parent wrote into `<dir>/lock`,
+#     each at its own site below.
+REG_SCRATCH=""; REG_SCRATCH_CLOCK=""; REG_SCRATCH_UTC=""; REG_SCRATCH_RUN=""
+# `die` is defined below the resolver, so the flag's refusal says it in `die`'s
+# own form here: one line on stderr, the code under `LANES_DEBUG`, exit 2.
+reg_scratch_refuse() {   # <the value> <why it is not honoured>
+  printf 'lanes-edit: %s\n' "LANES_REGISTER_SCRATCH, feature 007's internal flag, is set to $(printf '%q' "$1"), which ${2}. It is honoured only for an attempt's directory under $(wr_state_dir)/register-writes/ that this uid owns with mode 0700 and whose parent.pid names this process's parent, pid ${PPID}: lanes-edit.sh's own primary write path sets it, on the child it runs for one attempt, and nothing else should (T413; the design's F22). Nothing was sent. Unset it, and run the command again." >&2
+  [ -n "${LANES_DEBUG:-}" ] && printf 'lanes-edit: (exit %s)\n' 2 >&2
+  exit 2
+}
+# The low nine permission bits of a directory are 0700: GNU `stat -c %a`, else
+# BSD `stat -f %Lp`. A set-group-id bit, which a directory made under one keeps
+# through `chmod 700`, is not a permission and does not refuse it.
+reg_scratch_mode_700() {   # <dir>
+  local rsm_m
+  rsm_m="$(stat -c %a -- "$1" 2>/dev/null || stat -f %Lp -- "$1" 2>/dev/null || :)"
+  case "$rsm_m" in 700|[0-7]700) return 0 ;; esac
+  return 1
+}
+reg_scratch_take() {
+  local rst_v="" rst_d="" rst_w="" rst_b="" rst_l="" rst_p="" rst_c="" rst_u="" rst_r=""
+  rst_v="${LANES_REGISTER_SCRATCH-}"
+  unset LANES_REGISTER_SCRATCH
+  [ -n "$rst_v" ] || return 0
+  rst_d="$(CDPATH='' cd -P -- "$rst_v" 2>/dev/null && pwd -P)" ||
+    reg_scratch_refuse "$rst_v" "names no directory this process can enter"
+  rst_w="$(wr_state_dir)/register-writes"
+  rst_b="$(CDPATH='' cd -P -- "$rst_w" 2>/dev/null && pwd -P)" ||
+    reg_scratch_refuse "$rst_v" "cannot be under ${rst_w}/, since that is no directory here"
+  rst_b="${rst_b%/}"
+  case "$rst_d" in
+    "$rst_b"/?*) : ;;
+    *) reg_scratch_refuse "$rst_v" "is ${rst_d}, which is not under ${rst_w}/" ;;
+  esac
+  [ -O "$rst_d" ] ||
+    reg_scratch_refuse "$rst_v" "is a directory that this uid, $(id -u), does not own"
+  reg_scratch_mode_700 "$rst_d" ||
+    reg_scratch_refuse "$rst_v" "is a directory whose mode is not 0700, so another user may write in it"
+  if [ -f "$rst_d/parent.pid" ] && [ -r "$rst_d/parent.pid" ]; then
+    { IFS= read -r rst_l || :; } 2>/dev/null < "$rst_d/parent.pid"
+  fi
+  rst_p="${rst_l%%[	 ]*}"
+  if [ -z "$rst_p" ] || [ "$rst_p" != "$PPID" ]; then
+    reg_scratch_refuse "$rst_v" "holds no parent.pid naming this process's parent, pid ${PPID} (its first field reads $(printf '%q' "$rst_p"))"
+  fi
+  # THE CLOCK: the first `clock=` of the snapshot's stdout, saved verbatim by the
+  # parent (contract §3.2: "clock=<epoch s>  the database clock, in whole
+  # seconds"), as this file's UTC stamp.
+  rst_l=""
+  if [ -f "$rst_d/snapshot" ] && [ -r "$rst_d/snapshot" ]; then
+    while IFS= read -r rst_l || [ -n "$rst_l" ]; do
+      case "$rst_l" in clock=*) rst_c="${rst_l#clock=}"; break ;; esac
+      rst_l=""
+    done 2>/dev/null < "$rst_d/snapshot"
+  fi
+  case "$rst_c" in
+    ''|*[!0123456789]*) reg_scratch_refuse "$rst_v" "holds no snapshot whose clock= gives the database's time in whole seconds, the one clock this attempt's lines and durations are read on (D13)" ;;
+  esac
+  [ "${#rst_c}" -le 18 ] ||
+    reg_scratch_refuse "$rst_v" "holds a snapshot whose clock=${rst_c} is too long to be a time"
+  rst_u="$(date -u -d "@$rst_c" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null ||
+           date -u -j -r "$rst_c" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || :)"
+  case "$rst_u" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) : ;;
+    *) reg_scratch_refuse "$rst_v" "holds a snapshot whose clock=${rst_c} this host's date cannot write as a UTC" ;;
+  esac
+  # THE RUN'S DIRECTORY, `<d>/<run>/`, which every attempt of this run shares:
+  # where `gh_reads` is cached, only where it too is under `register-writes/`,
+  # this uid's and 0700. Otherwise nothing is cached there.
+  rst_r="${rst_d%/*}"
+  case "$rst_r" in
+    "$rst_b"/?*)
+      if [ -d "$rst_r" ] && [ ! -L "$rst_r" ] && [ -O "$rst_r" ] && reg_scratch_mode_700 "$rst_r"; then
+        REG_SCRATCH_RUN="$rst_r"
+      fi ;;
+  esac
+  REG_SCRATCH="$rst_d"; REG_SCRATCH_CLOCK="$rst_c"; REG_SCRATCH_UTC="$rst_u"
+  REG_MODE=primary
+  LANES_REPO="$rst_d/tree"
+  unset LANES_DIR LANES_FILE
+  return 0
+}
+reg_scratch_take
 # THE ROUTING IS OPT-IN UNTIL SLICE 1B (the review of opensoft/openRepoTools#282,
 # MUST 2). Before slice 1b a lane checkout was only as fresh as its own last
 # write, and the old push loop rebased only after a rejected push, so a
@@ -1599,7 +1734,22 @@ release_lock() {
 # WITHOUT THE OPT-IN it is the checkout's own lock, `$LOCK`, as it was before
 # Amendment 23: the sidecar verbs keep their `acquire_lock`, and the follow-up
 # takes `$LOCK` where its caller does not hold it already.
+#
+# UNDER FEATURE 007's INTERNAL FLAG (T413; F-B1, R19) `$LOCK` is the scratch
+# tree's, which serialises nothing on this host, so the tail's sidecar acts
+# take the lock the parent names in the attempt directory's `lock` file: the
+# first line, an absolute path, the workstation's sidecar lock as the parent's
+# own `sidecar_lock_dir` answered it. With no such line there is no lock to
+# take, and the answer is 1, as with no W.
 sidecar_lock_dir() {
+  if [ -n "$REG_SCRATCH" ]; then
+    sld_l=""
+    if [ -f "$REG_SCRATCH/lock" ] && [ -r "$REG_SCRATCH/lock" ]; then
+      { IFS= read -r sld_l || :; } 2>/dev/null < "$REG_SCRATCH/lock"
+    fi
+    case "$sld_l" in /?*) printf '%s\n' "$sld_l"; return 0 ;; esac
+    return 1
+  fi
   if [ "$LANES_ROUTE_ON" != 1 ]; then printf '%s\n' "$LOCK"; return 0; fi
   [ -n "$LANES_WS_REAL" ] || return 1
   printf '%s\n' "$LANES_WS_REAL-lanes/.lane-state.lock"
@@ -2538,6 +2688,21 @@ cs_refuse_register() {   # <what> <lane>
     "whoever made it commits it: LANES_LANE=${2:-<lane>} $SELF commit \"<what the edit is>\"" \
     "then re-run this write"
 }
+# FEATURE 007, T413 — UNDER THE INTERNAL FLAG A DIRTY PATHSPEC IS AN INTERNAL
+# ERROR (Y:5078). The attempt's scratch tree is built fresh at the snapshot,
+# one commit holding the register at its seq, so a path that differs from
+# HEAD before the verb has edited it is a fault of the write path, never a
+# person's hand edit: refused with 2, nothing sent, never captured or
+# committed, and no recovery is printed, since there is nothing to recover.
+reg_scratch_dirty() {   # <what> <the paths, one a line>
+  rsdy_l=""
+  while IFS= read -r rsdy_p; do
+    [ -z "$rsdy_p" ] || rsdy_l="$rsdy_l $rsdy_p"
+  done <<RSDY_EOF
+$2
+RSDY_EOF
+  die "refusing to $1 in $LANES_REPO, the attempt's scratch tree under LANES_REGISTER_SCRATCH: an internal error, since these paths differ from its HEAD before the write has edited any:${rsdy_l}. That tree is built fresh from the register at the snapshot, so this is a fault in the write path, never a hand edit to capture or commit (T413; Y:5078). Nothing was sent." 2
+}
 # S3 STEP 4 FOR THE PATHS A WRITE LEARNS ONLY IN ITS SCAN (the sweeps,
 # `rename-lane`), asked again right before the first byte; and for the paths a
 # write knows up front, from `checkout_sync` itself.
@@ -2547,6 +2712,7 @@ cs_own_pending() {   # <what> <lane> <pathspec>…
   [ "$#" -gt 0 ] || return 0
   cop_hits="$(cs_pending_of "$@")"
   [ -n "$cop_hits" ] || return 0
+  [ -z "$REG_SCRATCH" ] || reg_scratch_dirty "$cop_what" "$cop_hits"
   cop_reg=0; cop_other=""
   while IFS= read -r cop_p; do
     [ -n "$cop_p" ] || continue
@@ -2640,6 +2806,18 @@ checkout_sync() {   # <what> <lane> <write|carry|publish> [<pathspec it commits>
   CS_NO_ORIGIN_BRANCH=0; CS_CARRY_DIFF=""; CS_CARRY_BASE=""
   CS_LANE="$cs_lane"
   [ "$NO_GIT" = 1 ] && return 0
+  # FEATURE 007, T413 — S3 IS SKIPPED WHOLE UNDER THE INTERNAL FLAG (Y:5040,
+  # Y:5078; the plan's F-B4 and F-B5). The scratch tree is the register at the
+  # snapshot's seq and has no origin to fetch from, so there is no fetch, no
+  # `cs_recheck` and no step 7, and 0 is answered. One assertion stays: the
+  # register, or a path this write commits, that differs from HEAD before the
+  # edit is an internal error, 2 (`reg_scratch_dirty`).
+  if [ -n "$REG_SCRATCH" ]; then
+    cs_hits="$(cs_pending_of "$LANES_PATH" ${1+"$@"})"
+    [ -z "$cs_hits" ] || reg_scratch_dirty "$cs_what" "$cs_hits"
+    LOG_SYNC_FETCH=yes
+    return 0
+  fi
   cs_c="$LANES_REPO"
   cs_trk="refs/remotes/origin/$LANES_BRANCH"; cs_br="refs/heads/$LANES_BRANCH"
   cs_gd="$(git -C "$cs_c" rev-parse --absolute-git-dir 2>/dev/null)" ||
@@ -4133,7 +4311,19 @@ table_lookup() {   # <fenced table> <lower-cased lane>
   return 0
 }
 
-utc_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+# NOW, AS A UTC STAMP AND AS EPOCH SECONDS: the host's clock, except under
+# feature 007's internal flag, where both answer the attempt's snapshot clock,
+# read once when the flag was taken (`reg_scratch_take`): ONE CLOCK for the
+# lines a verb composes and the durations it decides by (D13, Y:528–534;
+# T413). `older_than_minutes` and `older_than_threshold` read `now_epoch`.
+utc_now() {
+  if [ -n "$REG_SCRATCH" ]; then printf '%s\n' "$REG_SCRATCH_UTC"; return 0; fi
+  date -u +%Y-%m-%dT%H:%M:%SZ
+}
+now_epoch() {
+  if [ -n "$REG_SCRATCH" ]; then printf '%s\n' "$REG_SCRATCH_CLOCK"; return 0; fi
+  date -u +%s
+}
 
 # ----------------------------------- F10: THE WRITE ID AND THE PENDING RECORD
 #
@@ -6475,14 +6665,18 @@ row_field_unescape_into() {   # <field> ; sets ROW_FIELD_OUT
   done
 }
 
+# Durations that DECIDE — Rule 6's minutes and `claim --force`'s staleness — so
+# both read `now_epoch`: the snapshot's clock under feature 007's internal
+# flag, the host's otherwise (D13; T413). `age_of` above only prints an age, and
+# keeps the host's clock.
 older_than_minutes() {   # <utc> <minutes>
   om_t="$(epoch_of "$1")"; [ -n "$om_t" ] || return 1
-  [ "$(( $(date -u +%s) - om_t ))" -gt "$(( $2 * 60 ))" ]
+  [ "$(( $(now_epoch) - om_t ))" -gt "$(( $2 * 60 ))" ]
 }
 
 older_than_threshold() {
   st_t="$(epoch_of "$1")"; [ -n "$st_t" ] || return 1
-  [ "$(( $(date -u +%s) - st_t ))" -gt "$((STALE_HOURS * 3600))" ]
+  [ "$(( $(now_epoch) - st_t ))" -gt "$((STALE_HOURS * 3600))" ]
 }
 
 # An object is treated as a PR once some lane has written OPENED on it. That
@@ -8419,6 +8613,11 @@ log_sync() {
   # dropped the other is exactly the disagreement the single commit prevents.
   lane_alias_flush
   LOG_SYNC_FETCH=""
+  # FEATURE 007, T413 — UNDER THE INTERNAL FLAG NOTHING IS FETCHED (Y:5040):
+  # the scratch tree's `origin/<branch>` is the register at the snapshot's seq,
+  # as fresh as a fetch, so no `ls-remote` and no fetch, and `yes`, under which
+  # `retire-rows`, `archive-rows` and every verb that fetches go on.
+  [ -z "$REG_SCRATCH" ] || { LOG_SYNC_FETCH=yes; return 0; }
   [ "$NO_GIT" = 1 ] && { LOG_SYNC_FETCH="LANES_NO_GIT=1 is set, so nothing in this run touches git"; return 0; }
   [ "${LANES_NO_FETCH:-0}" = 1 ] && { LOG_SYNC_FETCH="LANES_NO_FETCH=1 is set in this environment"; note "LANES_NO_FETCH=1 — not fetching; reading origin/$LANES_BRANCH as the ref already stands here"; cs_seen_mark; return 0; }
   git -C "$LANES_REPO" rev-parse --git-dir >/dev/null 2>&1 || { LOG_SYNC_FETCH="$LANES_REPO is not a git checkout"; return 0; }
@@ -13693,7 +13892,40 @@ sibling_filter() {   # <object> [pr|branch]; candidate lines on stdin
     | grep -E -- "(^|[^0-9A-Za-z])$sfl_q([^0-9A-Za-z]|\$)" || :
 }
 
-gh_reads() {
+# FEATURE 007, T413 — UNDER THE INTERNAL FLAG RULE 1'S READS ARE MADE ONCE A
+# RUN (Y:5043): cached in the run's directory, `<d>/<run>/`, which every attempt
+# of the run shares. They decide nothing (R2A §2c), and three GitHub calls an
+# attempt, 55 attempts in a burst of ten, would spend the shared REST quota.
+# Keyed by the object's sha256, written by a temporary file and `mv`, and
+# only where the reads ended 0; a cached answer is printed byte for byte.
+# Where the flag's take found no run directory this file may write in
+# (`REG_SCRATCH_RUN`), and under `--no-github`, the reads are made as they are
+# without the flag (`gh_reads_live`).
+gh_reads() {   # <object>
+  if [ -n "$REG_SCRATCH_RUN" ] && [ "$NO_GITHUB" != 1 ]; then
+    gh_reads_cached "$1"
+    return $?
+  fi
+  gh_reads_live "$1"
+}
+gh_reads_cached() {   # <object>
+  grc_k="$(printf '%s' "$1" | wr_sha256_stdin)" || grc_k=""
+  if [ -z "$grc_k" ]; then gh_reads_live "$1"; return $?; fi
+  grc_f="$REG_SCRATCH_RUN/gh-reads.$grc_k"
+  if [ -f "$grc_f" ] && [ ! -L "$grc_f" ] && [ -O "$grc_f" ]; then
+    cat -- "$grc_f"
+    return 0
+  fi
+  grc_t="$(mktemp "$REG_SCRATCH_RUN/.gh-reads.XXXXXX" 2>/dev/null)" || grc_t=""
+  if [ -z "$grc_t" ]; then gh_reads_live "$1"; return $?; fi
+  grc_rc=0
+  gh_reads_live "$1" > "$grc_t" || grc_rc=$?
+  cat -- "$grc_t"
+  if [ "$grc_rc" = 0 ] && mv -f -- "$grc_t" "$grc_f" 2>/dev/null; then return 0; fi
+  rm -f -- "$grc_t"
+  return "$grc_rc"
+}
+gh_reads_live() {   # <object>
   gr_obj="$1"; gr_repo="$(object_repo "$gr_obj")"; gr_n="$(object_number "$gr_obj")"; gr_slug="$(object_slug "$gr_obj")"
   gr_term="${gr_n:+#$gr_n}"; gr_term="${gr_term:-$gr_slug}"
   if [ "$NO_GITHUB" = 1 ]; then
@@ -18784,6 +19016,16 @@ case "$cmd" in
     ws_why="$(lanes_workstation_why "$WS_SOURCE")"
     [ -z "$ws_why" ] || die "$ws_why" 2 ;;
 esac
+# FEATURE 007, T413 — AN ATTEMPT'S CHILD ASKS NOTHING (Y:5038; review M4).
+# Under the internal flag the verb is files-mode code on the scratch tree, and
+# asking the register's mode would recurse into the primary branch. `REG_ASK`
+# is the switch of lane 4's T409, which lands before this task: the write
+# guard's arm sets it, and the writers' question below runs only where it is 1.
+# Cleared here, between the two, it skips the question and its arm in the
+# child, and `REG_MODE` is already `primary` (`reg_scratch_take`). Lane 5's
+# `reg_open` takes the same flag: it asks nothing, prefetches nothing and makes
+# no marker check under it (T504; Q-L5-1).
+[ -z "$REG_SCRATCH" ] || REG_ASK=0
 
 # `guard` JOINS THAT EXEMPTION AND REFUSES FOR ITSELF (Amendment 12(d)). It is
 # a hook too, and a blocking one: `die … 1` here would print the workspace
@@ -18830,8 +19072,10 @@ esac
 # cloned; and asked once — the process this re-runs as (`LANES_ROUTED`) is
 # already in the checkout. A read goes on in W, which is what every read verb
 # has always read. Without the opt-in nothing here runs (MUST 2 of #282's
-# review): the write goes through `LANES_REPO`, W by default.
-if [ "$LANES_ROUTE_ON" = 1 ] && [ -z "$LANES_ROUTED" ]; then
+# review): the write goes through `LANES_REPO`, W by default. NOR UNDER FEATURE
+# 007's INTERNAL FLAG (T413; Y:5039): an attempt's child writes only
+# its scratch tree, which `LANES_REPO` already names, and is never re-run.
+if [ "$LANES_ROUTE_ON" = 1 ] && [ -z "$LANES_ROUTED" ] && [ -z "$REG_SCRATCH" ]; then
   wlo_rc=0
   wlo_lane="$(write_lane_of "$cmd" ${1+"$@"})" || wlo_rc=$?
   [ "$wlo_rc" = 1 ] || lane_checkout_enter "$wlo_rc" "$wlo_lane"
