@@ -2679,6 +2679,206 @@ def register_version_refusal(version: int, writers_from: int, readers_from: int,
     return None
 
 
+# §1.4'S ROLES AND GRANTS (design.md §1.4). Brett's admin connection sends
+# §1.4's block in two parts, with migration 1 between them, as the block's own
+# comment line says. `lanes-index bootstrap` calls, in this order:
+#   1. `register_roles_query()`, read through that connection, for the names
+#      of §1.4's roles that exist already;
+#   2. `apply_register_roles(run, found)`: the CREATE ROLE of each role the
+#      query did not find, then the admin's GRANT;
+#   3. `apply_register_migrations` (above);
+#   4. `apply_register_grants(run, database=<name>)`: the rest of the block.
+# Every statement goes as the design prints it, comments and all. The GRANT
+# and the rest can run again. Nothing here is a subcommand, and nothing here
+# sets a floor on a role: each login carries its own (`lanes-index login`).
+
+#: Design.md §1.4's SQL block, verbatim: the register's roles and GRANTs.
+#: Above its comment line "-- Migration 1 (...) runs here, and commits. Then:"
+#: are the CREATE ROLEs of the owner and the two groups, none of which can log
+#: in, and of the indexer's login, then the admin's GRANT of the owner and the
+#: indexer to itself, WITH INHERIT TRUE, SET TRUE. Below it are CONNECT and
+#: USAGE, SELECT on the tables and, for `pg_dump`, on the sequences, the
+#: default privileges, EXECUTE on the five writer functions and on
+#: `render_file`, and `lanes_index`'s schema. Its one psql variable is `db`.
+_REGISTER_ROLE_BLOCK = r"""CREATE ROLE lanes_register_owner NOLOGIN;      -- owns lanes_register and its functions
+CREATE ROLE lanes_register_writer NOLOGIN;     -- REGISTER-WRITER: a group; each engineer's login joins it
+CREATE ROLE lanes_register_reader NOLOGIN;     -- READER: a group, as the writer's
+CREATE ROLE lanes_indexer LOGIN;               -- Amendment 14's indexer
+GRANT lanes_register_owner, lanes_indexer TO CURRENT_USER   -- PG16 gives a CREATEROLE admin
+  WITH INHERIT TRUE, SET TRUE;                 -- ADMIN only: SET for 1.2's AUTHORIZATION and
+                                               -- SET ROLE, INHERIT for the GRANTs below
+-- Migration 1 (§1.2, §1.3.1) runs here, and commits. Then:
+REVOKE ALL ON DATABASE :"db" FROM PUBLIC;      -- the database Q22 names (psql -v db=…)
+GRANT CONNECT ON DATABASE :"db" TO lanes_register_writer, lanes_register_reader, lanes_indexer;
+
+REVOKE ALL ON SCHEMA lanes_register FROM PUBLIC;
+GRANT USAGE ON SCHEMA lanes_register TO lanes_register_writer, lanes_register_reader;
+REVOKE ALL ON ALL TABLES IN SCHEMA lanes_register FROM PUBLIC;
+GRANT SELECT ON ALL TABLES IN SCHEMA lanes_register TO lanes_register_writer, lanes_register_reader;
+ALTER DEFAULT PRIVILEGES FOR ROLE lanes_register_owner IN SCHEMA lanes_register   -- and a later
+  GRANT SELECT ON TABLES TO lanes_register_writer, lanes_register_reader;          -- migration's
+GRANT SELECT ON ALL SEQUENCES IN SCHEMA lanes_register TO lanes_register_reader;   -- pg_dump reads
+ALTER DEFAULT PRIVILEGES FOR ROLE lanes_register_owner IN SCHEMA lanes_register   -- doc_lines'
+  GRANT SELECT ON SEQUENCES TO lanes_register_reader;                               -- identity
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA lanes_register FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE lanes_register_owner         -- global form: a per-schema REVOKE
+  REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;                      -- cannot undo PUBLIC's default
+GRANT EXECUTE ON FUNCTION lanes_register.commit_write(bigint, uuid, integer, uuid, jsonb),
+                          lanes_register.switch_to_files(integer, bigint, text, text),
+                          lanes_register.record_marker(integer, bigint, text, text),
+                          lanes_register.find_write(uuid, timestamptz, uuid, text, text, text),
+                          lanes_register.record_mirror_state(text, text, text)
+  TO lanes_register_writer;                    -- no INSERT, UPDATE, DELETE or DDL anywhere
+GRANT EXECUTE ON FUNCTION lanes_register.render_file(text)
+  TO lanes_register_writer, lanes_register_reader;
+
+-- #160's schema: the indexer owns it and its open_write fills it; the reader reads it.
+-- The register writer gets nothing in lanes_index, and the indexer nothing in lanes_register.
+CREATE SCHEMA IF NOT EXISTS lanes_index AUTHORIZATION lanes_indexer;
+REVOKE ALL ON SCHEMA lanes_index FROM PUBLIC;
+GRANT USAGE ON SCHEMA lanes_index TO lanes_register_reader;
+GRANT SELECT ON ALL TABLES IN SCHEMA lanes_index TO lanes_register_reader;   -- any already there
+ALTER DEFAULT PRIVILEGES FOR ROLE lanes_indexer IN SCHEMA lanes_index
+  GRANT SELECT ON TABLES TO lanes_register_reader;
+ALTER DEFAULT PRIVILEGES FOR ROLE lanes_indexer IN SCHEMA lanes_index   -- #160 has no sequence;
+  GRANT SELECT ON SEQUENCES TO lanes_register_reader;                   -- a later one, for pg_dump
+
+-- The floors are each login's own (the login step): a role's settings reach no member.
+"""
+
+#: The block's comment line where migration 1 runs and commits: its split.
+_REGISTER_ROLE_BLOCK_SPLIT = "-- Migration 1 (§1.2, §1.3.1) runs here, and commits. Then:\n"
+
+#: One of the block's CREATE ROLE statements: one line, its comment included.
+_REGISTER_CREATE_ROLE_RE = re.compile(
+    r"CREATE ROLE ([a-z_][a-z0-9_]*) (?:NO)?LOGIN;[ \t]*(?:--[^\n]*)?\n")
+
+
+def _register_sql_units(text: str) -> list[str]:
+    """`text` cut into units, byte for byte, by the layout of the design's SQL
+    blocks: a line that starts in column 0 starts a unit, the indented lines
+    after it belong to it, and a blank line is a unit of its own. So a
+    statement's unit holds its trailing comments, and its units sent
+    unchanged send the design's text unchanged. Text that does not cut so is
+    a defect of this build."""
+    units = re.findall(r"[^ \t\n][^\n]*\n(?:[ \t][^\n]*\n)*|\n", text)
+    if "".join(units) != text:
+        raise RuntimeError("register SQL text does not cut into units: each unit starts in "
+                           "column 0, and every line ends in a newline")
+    return units
+
+
+def _register_role_block_parts() -> tuple[list[tuple[str, str]], str, str]:
+    """§1.4'S BLOCK, CUT WHERE MIGRATION 1 RUNS. Returns `(creates, grant,
+    rest)`, each the block's own text:
+      - `creates`: `(role, statement)` for each CREATE ROLE above the split,
+        in the block's order;
+      - `grant`: the admin's GRANT, the last statement above the split, with
+        its comment lines;
+      - `rest`: everything below the split.
+    A block that does not cut so is a defect of this build, so the error is
+    not a refusal."""
+    head, split, rest = _REGISTER_ROLE_BLOCK.partition(_REGISTER_ROLE_BLOCK_SPLIT)
+    if (not split or not head.endswith("\n")
+            or _REGISTER_ROLE_BLOCK.count(_REGISTER_ROLE_BLOCK_SPLIT) != 1):
+        raise RuntimeError("the register's role block has no one line where migration 1 runs")
+    *units, grant = _register_sql_units(head)
+    creates = []
+    for unit in units:
+        match = _REGISTER_CREATE_ROLE_RE.fullmatch(unit)
+        if not match:
+            raise RuntimeError(f"the register's role block holds {unit!r} before its GRANT, "
+                               f"not a CREATE ROLE")
+        creates.append((match.group(1), unit))
+    roles = [role for role, _statement in creates]
+    if (not roles or len(set(roles)) != len(roles) or not grant.startswith("GRANT ")
+            or " TO CURRENT_USER" not in grant):
+        raise RuntimeError(f"the register's role block creates {roles}, then {grant!r}: not "
+                           f"distinct roles, then the admin's GRANT")
+    return creates, grant, rest
+
+
+def register_role_names() -> list[str]:
+    """The roles §1.4 creates, in its order: the owner, the writer and reader
+    groups, and the indexer's login."""
+    return [role for role, _statement in _register_role_block_parts()[0]]
+
+
+def register_roles_query() -> str:
+    """THE `pg_roles` CHECK that guards §1.4's CREATE ROLEs: one query, read
+    through the admin connection just before `apply_register_roles`. Its rows
+    are the names of those of §1.4's roles that exist already, one per row.
+    The names are the block's own, plain identifiers by
+    `_REGISTER_CREATE_ROLE_RE`, so each is a literal as it stands."""
+    names = ", ".join(f"'{role}'" for role in register_role_names())
+    return f"SELECT rolname FROM pg_catalog.pg_roles WHERE rolname IN ({names}) ORDER BY rolname;\n"
+
+
+def _register_role_selection(existing) -> tuple[list[str], list[str]]:
+    """The roles to create, and the statements to send, given `existing`."""
+    if isinstance(existing, (str, bytes)):
+        raise TypeError("the roles found are a collection of names, not one string")
+    found = frozenset(existing)
+    if not all(isinstance(role, str) for role in found):
+        raise TypeError(f"the roles found are names, each a str: {sorted(map(repr, found))}")
+    creates, grant, _rest = _register_role_block_parts()
+    absent = [(role, statement) for role, statement in creates if role not in found]
+    statements = [statement for _role, statement in absent] + [grant]
+    return [role for role, _statement in absent], statements
+
+
+def register_role_statements(existing) -> list[str]:
+    """§1.4'S FIRST PART, GUARDED: the statements the bootstrap sends before
+    migration 1. `existing` holds the role names `register_roles_query` found.
+    Returns the CREATE ROLE of each of §1.4's roles that `existing` lacks, in
+    the block's order, then the admin's GRANT, which goes every time since it
+    can run again. Each is the block's own text, byte for byte, comments and
+    all: none is wrapped, rewritten or put in a DO block. Where no role
+    exists, they are the block's first part whole. Nothing is sent here."""
+    return _register_role_selection(existing)[1]
+
+
+def apply_register_roles(run, existing) -> list[str]:
+    """SEND §1.4'S FIRST PART: the bootstrap's step before migration 1, which
+    `--roles-only` sends too.
+
+    `existing` is as `register_role_statements` takes it, read just before.
+    `run(script, variables)` is the runner `apply_register_migrations` takes.
+    The statements go as one script, with no psql variable and, as in §1.4,
+    no BEGIN, so each commits as it runs: the owner role and the admin's SET
+    on it then stand before migration 1's `CREATE SCHEMA ... AUTHORIZATION
+    lanes_register_owner` and its `SET LOCAL ROLE` need them. A run that
+    fails part way leaves the roles it made, and the next run's query finds
+    them.
+
+    Returns the roles it created, in the block's order; the others were
+    there already, `unchanged`. The GRANT is sent either way."""
+    created, statements = _register_role_selection(existing)
+    run("".join(statements), {})
+    return created
+
+
+def apply_register_grants(run, *, database: str) -> None:
+    """SEND §1.4'S SECOND PART: the bootstrap's step after migration 1 has
+    committed. It is the rest of the block below its split line, whole: the
+    database's CONNECT, the schemas' USAGE, SELECT and default privileges,
+    EXECUTE on the writer functions and on `render_file`, and `lanes_index`'s
+    schema.
+
+    `database` is the register's database, the one the admin connection
+    reaches and owns (operations.md §2.4). It goes as the psql variable `db`,
+    which the block reads as `:"db"`, an identifier psql quotes. It is
+    refused before anything is sent where it is empty or holds a control
+    character. Like the first part, the script carries no BEGIN, so each
+    statement commits as it runs. Each can run again, so a run that fails
+    part way is finished by the next."""
+    if not isinstance(database, str) or not database.strip():
+        raise Refusal("bootstrap: the database name is empty")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in database):
+        raise Refusal("bootstrap: the database name holds a control character")
+    run(_register_role_block_parts()[2], {"db": database})
+
+
 # ============================================================ local status
 
 def _status_path() -> str:
