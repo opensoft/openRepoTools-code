@@ -5972,6 +5972,71 @@ pid_alive() {
   [ "${20}" = "$want" ]
 }
 
+# `pid_start_of <pid>` — A LIVE PROCESS'S START TOKEN, which is the liveness
+# test of answer 2's bind record and of F10's pending record (feature 007,
+# `contracts/bind-record.md` section 6; Q-L5-6; R49): the pid is live AND its
+# start equals the one recorded, so a reused pid and a dead pid both read as
+# not live. It is NOT `lock_steal_if_dead`'s test, which is `kill -0` on the pid
+# alone, and under which a reused pid looks live until the lock's 10-minute age.
+#
+#   0  live; the token is printed: on Linux field 22 of `/proc/<pid>/stat`,
+#      counted after the LAST `)` because a comm may hold spaces and brackets
+#      (the cut `pid_alive` makes), and elsewhere `ps -o lstart= -p <pid>`. It
+#      is compared as a string, on the host and container that wrote it only.
+#   1  not live: no such process, or a zombie, which has already exited.
+#   2  its start could not be read. EVERY CALLER READS 2 AS LIVE, never as dead
+#      (R49): a wrong "dead" lets a claim or a bind be stolen, and a wrong
+#      "live" only waits. An argument that is not a pid is a 2 as well, never a
+#      1 (the contract's open point 15, read fail-closed): nothing about such a
+#      process can be read, and a 1 would call it dead.
+#
+# SELF-CONTAINED ON PURPOSE: it calls no helper of this file, so lane 4's
+# pending record and a test can take the function as it stands. `0` and a
+# leading zero are refused, because `kill -0 0` asks about a whole process
+# group and `/proc/007` names nothing.
+pid_start_of() {   # <pid>
+  pso_p="${1-}"
+  case "$pso_p" in ''|0*|*[!0-9]*) return 2 ;; esac
+  [ "${#pso_p}" -le 10 ] || return 2
+  if [ -r /proc/self/stat ]; then
+    [ -e "/proc/$pso_p" ] || return 1
+    pso_l=""
+    read -r pso_l < "/proc/$pso_p/stat" 2>/dev/null || pso_l=""
+    if [ -z "$pso_l" ]; then
+      [ -e "/proc/$pso_p" ] || return 1
+      return 2
+    fi
+    pso_r="${pso_l##*) }"
+    # shellcheck disable=SC2086
+    set -- $pso_r
+    [ "$#" -ge 20 ] || return 2
+    case "$1" in Z|X|x) return 1 ;; esac
+    case "${20}" in ''|*[!0-9]*) return 2 ;; esac
+    printf '%s\n' "${20}"
+    return 0
+  fi
+  # NO `/proc` (macOS): `ps` prints the start for a process that is there and
+  # nothing for one that is not, and exits non-zero for both a missing process
+  # and a `ps` that failed — so where it prints nothing, `kill -0` says which.
+  # A process of another user answers `kill -0` with EPERM: live, unread.
+  pso_s=""
+  command -v ps >/dev/null 2>&1 && pso_s="$(ps -o lstart= -p "$pso_p" 2>/dev/null || :)"
+  pso_s="$(printf '%s' "$pso_s" | tr -s ' ' | sed -e 's/^ //' -e 's/ $//')"
+  if [ -n "$pso_s" ]; then printf '%s\n' "$pso_s"; return 0; fi
+  kill -0 "$pso_p" 2>/dev/null && return 2
+  case "$(kill -0 "$pso_p" 2>&1 || :)" in *[Pp]ermitted*|*EPERM*) return 2 ;; esac
+  return 1
+}
+
+# `utc_of_epoch <seconds>` — the inverse of `epoch_of`, GNU first and BSD
+# second for the same reason; empty where neither can say.
+utc_of_epoch() {
+  case "${1-}" in ''|*[!0-9]*) printf ''; return 0 ;; esac
+  date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null ||
+    date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null ||
+    printf ''
+}
+
 # A session record's `name` is EVIDENCE ABOUT ANOTHER LANE only when a person
 # or a `--name` set it. The values real records carry on this estate are:
 #
@@ -11627,6 +11692,206 @@ guard_type() {   # <pane target> <the line to type>
 # belongs and is not the register.
 guard_offer_file() {   # <session uuid>
   printf '%s/lanes/offers/%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "${1-}"
+}
+
+# ---------------------------------------- THE BIND'S RECORD (feature 007, T502)
+#
+# ANSWER 2 BINDS IN A DETACHED CHILD, AND THE OFFER FILE IS ITS RECORD
+# (`contracts/bind-record.md`, draft 2; FR-038). The bind measured 10.47 s in
+# files mode against a hook that Claude Code stops at 5 s, so the person's `2`
+# rewrites the offer to `mode=binding`, starts `guard-bind` detached, and exits
+# 2 at once; the outer writes the outcome, `mode=bound` or `mode=bind-failed`,
+# and the offer site answers every prompt from the record until the guard has
+# said how it ended. The record is `key=value` lines; `note=` may repeat. Its
+# four modes are `name-drift` (today's offer, and the offer restored), `binding`,
+# `bound` and `bind-failed`.
+#
+# ITS FILES: the record, `<offers>/<uuid>`; each attempt's output,
+# `<uuid>.bind.<k>.out`; and the body's facts, `<uuid>.bind.<k>.facts`, which the
+# outer folds into the record and removes. Every write is under `umask 077`, so
+# they are 0600 and a new `offers/` is 0700 (lane 3's ruling on the contract,
+# opensoft/openRepoTools#165 6746215510, point 1), and every rewrite is a
+# temporary file in `offers/` and `mv -f` (point 2). The `.bind.*` files live as
+# long as the bind: whatever removes the record, or rewrites it to `mode=allow`,
+# removes them too (point 13).
+
+# THE RECORD AND ITS ATTEMPTS' FILES, removed together (point 13).
+guard_offer_drop() {   # <offer file>
+  [ -n "${1-}" ] || return 0
+  rm -f -- "$1" "$1".bind.* 2>/dev/null
+  return 0
+}
+
+# THE RECORD, READ ONCE, into `GBR_*`. The FIRST line of a key wins, as the
+# offer site's own `sed … | head -n1` read of `mode` has always taken it; the
+# `note=` lines are all kept, newline-separated, in their order.
+#   0 read · 1 the file could not be opened
+guard_bind_load() {   # <offer file>
+  GBR_MODE=""; GBR_FROM=""; GBR_TO=""; GBR_SESSION=""; GBR_UUID=""; GBR_WINDOW=""; GBR_PANE=""
+  GBR_BIND=""; GBR_STARTED=""; GBR_BOUND=""; GBR_BOUNDED=""; GBR_DEADLINE=""
+  GBR_PID=""; GBR_HAS_PID=0; GBR_PIDSTART=""; GBR_HOST=""; GBR_CONTAINER=""
+  GBR_OUT=""; GBR_DETACH=""; GBR_RC=""; GBR_WHY=""; GBR_ENDED=""; GBR_NOTES=""
+  [ -r "${1-}" ] && [ -f "${1-}" ] || return 1
+  gbl_seen=" "
+  while IFS= read -r gbl_line || [ -n "$gbl_line" ]; do
+    gbl_k="${gbl_line%%=*}"
+    [ "$gbl_k" != "$gbl_line" ] || continue
+    gbl_v="${gbl_line#*=}"
+    if [ "$gbl_k" = note ]; then
+      GBR_NOTES="${GBR_NOTES}${GBR_NOTES:+$'\n'}$gbl_v"
+      continue
+    fi
+    case "$gbl_seen" in *" $gbl_k "*) continue ;; esac
+    gbl_seen="$gbl_seen$gbl_k "
+    case "$gbl_k" in
+      mode)           GBR_MODE="$gbl_v" ;;
+      from)           GBR_FROM="$gbl_v" ;;
+      to)             GBR_TO="$gbl_v" ;;
+      session)        GBR_SESSION="$gbl_v" ;;
+      uuid)           GBR_UUID="$gbl_v" ;;
+      window)         GBR_WINDOW="$gbl_v" ;;
+      pane)           GBR_PANE="$gbl_v" ;;
+      bind)           GBR_BIND="$gbl_v" ;;
+      started_utc)    GBR_STARTED="$gbl_v" ;;
+      bound_s)        GBR_BOUND="$gbl_v" ;;
+      bounded)        GBR_BOUNDED="$gbl_v" ;;
+      deadline_epoch) GBR_DEADLINE="$gbl_v" ;;
+      pid)            GBR_PID="$gbl_v"; GBR_HAS_PID=1 ;;
+      pidstart)       GBR_PIDSTART="$gbl_v" ;;
+      host)           GBR_HOST="$gbl_v" ;;
+      container)      GBR_CONTAINER="$gbl_v" ;;
+      out)            GBR_OUT="$gbl_v" ;;
+      detach)         GBR_DETACH="$gbl_v" ;;
+      rc)             GBR_RC="$gbl_v" ;;
+      why)            GBR_WHY="$gbl_v" ;;
+      ended_utc)      GBR_ENDED="$gbl_v" ;;
+    esac
+  done < "$1"
+  return 0
+}
+
+# CASE 11's SET (lane 3's ruling, point 4): a record in a bind mode is
+# unreadable where it misses or malforms any of `mode`, `from`, `to`, `bind`
+# (1 to 3), `host`, `container`, `deadline_epoch` (digits), or `rc` in `bound`
+# or `bind-failed`. Read after `guard_bind_load`. Two bounds beside the ruling:
+# `deadline_epoch` at most 12 digits and `rc` at most 3, so that no value
+# overflows the shell's integers in the comparisons below; and a `bound` record's
+# `rc` is 0, since it is the record of an attempt that ended 0.
+#   0 whole · 1 case 11
+guard_bind_readable() {
+  case "$GBR_MODE" in binding|bound|bind-failed) : ;; *) return 1 ;; esac
+  [ -n "$GBR_FROM" ] && [ -n "$GBR_TO" ] || return 1
+  case "$GBR_BIND" in 1|2|3) : ;; *) return 1 ;; esac
+  [ -n "$GBR_HOST" ] && [ -n "$GBR_CONTAINER" ] || return 1
+  case "$GBR_DEADLINE" in ''|*[!0-9]*) return 1 ;; esac
+  [ "${#GBR_DEADLINE}" -le 12 ] || return 1
+  [ "$GBR_MODE" != binding ] || return 0
+  case "$GBR_RC" in ''|*[!0-9]*) return 1 ;; esac
+  [ "${#GBR_RC}" -le 3 ] || return 1
+  [ "$GBR_MODE" != bound ] || [ "$((10#$GBR_RC))" = 0 ] || return 1
+  return 0
+}
+
+# EVERY REWRITE OF THE RECORD (lane 3's ruling, points 1 and 2): a temporary
+# file in `offers/` under `umask 077`, then `mv -f`, so a reader in another
+# process sees the old record or the new one and never half of either. The
+# lines kept are the record's own, in their order, less every key named in
+# <drop> and every key written; the written keys follow, in the order given.
+# So a key this task does not write — `utc`, T507's `c`, `n_a` and `w_s_ms`,
+# T510's `act` and five copies — goes through every rewrite untouched (points
+# 5 and 12). A written `mode=` goes first, where a person reading the file
+# looks for it. A record that exists and cannot be read is not rewritten.
+#   0 written · 1 not, and the record is as it was
+guard_bind_rewrite() {   # <offer file> <keys to drop, space-separated> [<key>=<value> …]
+  gbw_f="${1-}"; gbw_drop=" ${2-} "
+  [ -n "$gbw_f" ] && [ "$#" -ge 2 ] || return 1
+  shift 2
+  for gbw_a in "$@"; do gbw_drop="$gbw_drop${gbw_a%%=*} "; done
+  gbw_t="$(umask 077; mktemp "${gbw_f%/*}/.${gbw_f##*/}.XXXXXX" 2>/dev/null || printf '')"
+  [ -n "$gbw_t" ] || return 1
+  if ! ( umask 077
+         { for gbw_a in "$@"; do
+             case "$gbw_a" in mode=*) printf '%s\n' "$gbw_a"; break ;; esac
+           done
+           if [ -e "$gbw_f" ]; then
+             while IFS= read -r gbw_l || [ -n "$gbw_l" ]; do
+               case "$gbw_drop" in *" ${gbw_l%%=*} "*) continue ;; esac
+               printf '%s\n' "$gbw_l"
+             done < "$gbw_f" || exit 1
+           fi
+           for gbw_a in "$@"; do
+             case "$gbw_a" in mode=*) : ;; *) printf '%s\n' "$gbw_a" ;; esac
+           done
+         } > "$gbw_t" ) 2>/dev/null; then
+    rm -f -- "$gbw_t"
+    return 1
+  fi
+  mv -f -- "$gbw_t" "$gbw_f" 2>/dev/null || { rm -f -- "$gbw_t"; return 1; }
+  return 0
+}
+
+# ONE LINE OF A VALUE: a record's line is one `key=value`, so a value that will
+# be one (`why=`, `note=`) has its line breaks and other control characters made
+# spaces, and is cut at 400 characters.
+guard_bind_oneline() {   # <text>
+  gb1_t="$(printf '%s' "${1-}" | tr '\000-\037\177' ' ' | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')"
+  [ "${#gb1_t}" -le 400 ] || gb1_t="${gb1_t:0:400} ..."
+  printf '%s\n' "$gb1_t"
+}
+
+# A WHOLE NUMBER, as the bound's inputs must be (point 10): digits only, its
+# leading zeros dropped, and at most <max> digits so that no input overflows
+# the sum. Prints it, or nothing (and 1) for a value that is not one.
+guard_bind_whole() {   # <value> <max digits>
+  gbn_v="${1-}"
+  case "$gbn_v" in ''|*[!0-9]*) return 1 ;; esac
+  gbn_v="${gbn_v#"${gbn_v%%[!0]*}"}"
+  [ -n "$gbn_v" ] || gbn_v=0
+  [ "${#gbn_v}" -le "${2:-9}" ] || return 1
+  printf '%s\n' "$gbn_v"
+}
+
+# THE BOUND, `bound_s`, FROM THE RECORD (contract section 4). ONE helper, run by
+# the hook for its "BINDING" text and its `mode=binding` rewrite and by the outer
+# at its start, so the two never differ (tasks.md T502; lane 3's ruling, point
+# 4). The sum is `B` plus one read's `T_r` + `w_s` to spare plus `-k`'s 10 s,
+# rounded up to 10 s, in bash 3.2's integers:
+#
+#   bound_s = (437000 + 28000·n_a·c + 19·w_s_ms + 9999) / 10000 · 10
+#
+# 500 s at the defaults, `c` = 2, `n_a` = 1 and `w_s_ms` = 0, which hold for
+# every record that lacks the keys: every bind before T507 copies them from the
+# prefetch's `.head`. A key that is not a whole number, a `c` below 2 or an
+# `n_a` below 1 counts as absent (point 10), and so does one too long for the
+# shell's integers (`c` and `n_a` over 6 digits, `w_s_ms` over 9).
+# `LANES_BIND_BOUND_S`, for tests, overrides the sum where it is a whole number
+# of at least 11; any other value is ignored and the sum kept (point 10): at 10
+# the body's `timeout -k 10 0` would run with no limit, and below 10 `timeout`
+# refuses with 125.
+guard_bind_bound_s() {   # <offer file>
+  gbs_o="$(guard_bind_whole "${LANES_BIND_BOUND_S:-}" 9 || :)"
+  if [ -n "$gbs_o" ] && [ "$gbs_o" -ge 11 ]; then printf '%s\n' "$gbs_o"; return 0; fi
+  gbs_c=""; gbs_n=""; gbs_w=""; gbs_seen=" "
+  if [ -r "${1-}" ] && [ -f "${1-}" ]; then
+    while IFS= read -r gbs_l || [ -n "$gbs_l" ]; do
+      gbs_k="${gbs_l%%=*}"
+      case "$gbs_k" in c|n_a|w_s_ms) : ;; *) continue ;; esac
+      case "$gbs_seen" in *" $gbs_k "*) continue ;; esac
+      gbs_seen="$gbs_seen$gbs_k "
+      case "$gbs_k" in
+        c)      gbs_c="${gbs_l#*=}" ;;
+        n_a)    gbs_n="${gbs_l#*=}" ;;
+        w_s_ms) gbs_w="${gbs_l#*=}" ;;
+      esac
+    done < "$1"
+  fi
+  gbs_c="$(guard_bind_whole "$gbs_c" 6 || :)"
+  { [ -n "$gbs_c" ] && [ "$gbs_c" -ge 2 ]; } || gbs_c=2
+  gbs_n="$(guard_bind_whole "$gbs_n" 6 || :)"
+  { [ -n "$gbs_n" ] && [ "$gbs_n" -ge 1 ]; } || gbs_n=1
+  gbs_w="$(guard_bind_whole "$gbs_w" 9 || :)"
+  [ -n "$gbs_w" ] || gbs_w=0
+  printf '%s\n' "$(( (437000 + 28000 * gbs_n * gbs_c + 19 * gbs_w + 9999) / 10000 * 10 ))"
 }
 
 # `lane-start`, found the way every word in this toolset finds its siblings:
