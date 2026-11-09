@@ -1452,12 +1452,33 @@ fi
 # ITS OWN WORDS — no old helper emits them from an unknown subcommand, which is
 # how `lane-start:755-767`, `lane-end` and `restart` tell the two apart — and
 # relayed, with the fall-through for a genuinely old helper left as it was.
+#
+# AND `69` IS A THIRD ANSWER, which `*)` below used to refuse (design.md, "The
+# callers' default arms", the `sread` row; feature 007, T405): the register's
+# database could not be reached. `window-lane` and `swapped`, the two reads
+# that NAME THE LANE before the handoff file is published, run with
+# `LANES_READ_MIRROR=1` (below), and a handoff must still be written with the
+# database down (`R-A11-11`), so a 69 is re-read ONCE from the mirror with that
+# variable set and the re-read's stderr left standing, which is where the
+# mirror read says `read: mirror at <sha12>, …`. The re-read is held to the same
+# rule as any read: `0` an answer, `8` no answer, and ANYTHING ELSE — a second
+# 69, which is what every other verb answers, the design having `lanes-edit.sh`
+# ignore the variable on every arm but those two, and a 2 included — is a read
+# that FAILED and refuses here with the words `*)` uses. Files mode answers no 69.
 sread() {   # sread <var> "<what the failure is NOT>" <verb> [args…]
 	sr_var="$1"; sr_not="$2"; shift 2
 	sr_out=""; sr_rc=0
 	sr_out="$(LANES_NO_FETCH=1 "$LANES_EDIT" "$@" 2>/dev/null)" || sr_rc=$?
 	case "$sr_rc" in
 	0) : ;;
+	69)
+		sr_rc=0
+		sr_out="$(LANES_READ_MIRROR=1 LANES_NO_FETCH=1 "$LANES_EDIT" "$@")" || sr_rc=$?
+		case "$sr_rc" in
+		0) : ;;
+		8) sr_out="" ;;
+		*) die "\`$LANES_EDIT $1\` failed (exit $sr_rc). That is NOT $sr_not — a read that failed is never an answer (Amendment 7(d)), and this command will not bind a lane, write a PAUSED record or print a restart command on one. Run it by hand to see what it says." 1 ;;
+		esac ;;
 	2)
 		sr_why="$(LANES_NO_FETCH=1 "$LANES_EDIT" "$@" 2>&1 >/dev/null || :)"
 		case "$sr_why" in
@@ -1659,7 +1680,11 @@ fi
 if [ -z "$lane" ]; then
 	wl_ref="${wid:-$win}"
 	if [ -n "$wl_ref" ] && [ -n "$ws" ]; then
-		sread candidate "'no lane is bound to this window'" window-lane "$ws" "$wl_ref"
+		# THE TWO NAMING READS — this and the swap record's below — are the only
+		# ones that carry `LANES_READ_MIRROR=1`: with the database down they
+		# read the mirror, so the handoff file is still written. `sread`'s `69)`
+		# arm is where it says so.
+		LANES_READ_MIRROR=1 sread candidate "'no lane is bound to this window'" window-lane "$ws" "$wl_ref"
 		case "$candidate" in
 		[A-Za-z0-9_]*) lane="$candidate" ;;
 		esac
@@ -1670,7 +1695,7 @@ if [ -z "$lane" ] && [ -n "$ws" ]; then
 	# contract. A row that printed before a failed read, or one with no tab, is
 	# not a record row — `cut -f 1` would hand back the whole line, lane-shaped
 	# and wrong.
-	sread rows "'this workstation has no swap record'" swapped "$ws"
+	LANES_READ_MIRROR=1 sread rows "'this workstation has no swap record'" swapped "$ws"
 	first="$(printf '%s\n' "$rows" | head -n 1)"
 	case "$first" in
 	*"	"*)
