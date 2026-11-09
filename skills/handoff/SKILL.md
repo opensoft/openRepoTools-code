@@ -103,8 +103,11 @@ L="$(command -v lanes-edit.sh || printf '%s' ~/projects/xFactory/lanes-edit.sh)"
 # database could not be reached. A handoff must still be written with it down
 # (`R-A11-11`), and the reads that NAME THE LANE before the handoff file is
 # published read the mirror (YS:692), so those run with `LANES_READ_MIRROR=1`
-# — `window-lane` and `swapped` in step 1, where their calls carry it. A 69 is
-# then re-read ONCE with that variable set, whichever verb it came from. The
+# — `register-row`, `window-lane`, `swapped` and `canon-lane` through this fence
+# in step 1, and `register-row`, `handoff-path` and `write-handoff` in step 2,
+# where their calls carry it. A 69 from a read through this fence is then
+# re-read ONCE with that variable set, whichever verb it came from, so a door
+# that answers 69 to the first call still has the mirror asked. The
 # re-read is held to the same rule as any read: `0` an answer, `8` no answer,
 # and ANYTHING ELSE — a second 69, which is what a verb answers that the design
 # has `lanes-edit.sh` not read from the mirror — is a read that FAILED and
@@ -193,7 +196,9 @@ esac
 claude-usage
 window="$(tmux display-message -p '#W')"                     # Amendment 8(b): the window IS the lane
 lane="$window"
-sread row_probe "'this window is not a lane'" register-row "$lane"
+# THIS READ CARRIES `LANES_READ_MIRROR=1` TOO (the paragraph on `69` above `sread`): it
+# names the lane, so with the database down it reads the mirror from its first call.
+LANES_READ_MIRROR=1 sread row_probe "'this window is not a lane'" register-row "$lane"
 [[ -n "$row_probe" ]] || lane=""
 # THE WORKSTATION COMES FROM CONFIGURATION, NEVER FROM `hostname` (Amendment 11,
 # ratified decision 8(d), from Evidence 6): a forked orchestrator wrote a bench
@@ -257,10 +262,10 @@ if [[ -z "$lane" ]]; then
   # expected and silent, and a fall to the next rung rather than a refusal.
   #
   # THIS NAMING READ, AND `swapped` BELOW, CARRY `LANES_READ_MIRROR=1` (the
-  # paragraph on `69` above `sread`): they name the lane before the handoff file
-  # is published, so with the database down they read the mirror and the handoff
-  # is still written (`R-A11-11`). The variable is set for the one call and
-  # nothing after it sees it.
+  # paragraph on `69` above `sread`), AS DO THE OTHER READS OF THIS STEP: they
+  # name the lane before the handoff file is published, so with the database
+  # down they read the mirror and the handoff is still written (`R-A11-11`). The
+  # variable is set for the one call and nothing after it sees it.
   wl_ref="$(tmux display-message -p '#{window_id}' 2>/dev/null)"
   [[ -n "$wl_ref" ]] || wl_ref="$(tmux display-message -p '#S:#I' 2>/dev/null)"
   LANES_READ_MIRROR=1 sread candidate "'no lane is bound to this window'" window-lane "$ws" "$wl_ref"
@@ -292,7 +297,7 @@ fi
 # line then carry. It is NOT a check that the lane has a row: `canon_lane`
 # answers a name no row matches with the name as typed.
 if [[ -n "$lane" ]]; then
-  sread lane_canon "'this lane has no row'" canon-lane "$lane"
+  LANES_READ_MIRROR=1 sread lane_canon "'this lane has no row'" canon-lane "$lane"
   [[ "$lane_canon" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]] && lane="$lane_canon"
 fi
 printf 'lane=%s\n' "${lane:-<none>}"
@@ -345,7 +350,9 @@ because this decides state (Amendment 7's read-after-fetch rule governs it; step
 the only no-fetch read this skill makes):
 
 ```sh
-row="$("$L" register-row "$lane" 2>/dev/null | grep '^|' | tail -n 1)"
+# THIS READ CARRIES `LANES_READ_MIRROR=1` (the paragraph on `69` above `sread`), AND IT HAS NO `sread` TO
+# FALL BACK ON: with the database down, a 69 here is no row, and the handoff below is never located.
+row="$(LANES_READ_MIRROR=1 "$L" register-row "$lane" 2>/dev/null | grep '^|' | tail -n 1)"
 # The handoff path is the row's SIXTH column: awk field 7, because $1 is the empty string before the
 # leading pipe — lanes-edit.sh's own row_cell/handoff_of_lane convention. NEVER count back from NF: this
 # lane's own row alone carries 27 fields today, every extra one of them in the state history to the RIGHT
@@ -421,7 +428,9 @@ edit: the handoff is the verb's to write (lane openRepoTools-3's finding 983 on 
 # WHERE THE HANDOFF IS: derived, never spelled. `handoff-path` only reads, and `--create` makes the lane's own
 # checkout first where this is its first use.
 hf_rc=0; handoff_file=""; block_file=""; hf_said=""; hf_record=""
-handoff_file="$("$L" handoff-path "$lane" --create)" || hf_rc=$?
+# THIS CALL CARRIES `LANES_READ_MIRROR=1` (the paragraph on `69` above `sread`): it comes before the handoff is
+# published, so with the database down it reads the mirror and the handoff is still written (`R-A11-11`).
+handoff_file="$(LANES_READ_MIRROR=1 "$L" handoff-path "$lane" --create)" || hf_rc=$?
 # ONLY 8 IS "NO HANDOFF" (Amendment 7(d): a read that failed is no answer). 1 is a register it could not read
 # (its own "R22: never 8"), 2 a name refused, a cell refused (601, 602, 607) or a clone that failed, 4 the lock
 # that makes the checkout, and a `lanes-edit.sh` predating `handoff-path` says 2 from its unknown-subcommand
@@ -593,7 +602,7 @@ hf_call="LANES_LANE=$(hf_quote "$lane") $(hf_quote "$L") write-handoff $(hf_quot
 hf_rc=0; hf_out=""
 # THE ONE CALL: the verb reads the handoff under the lock and puts the block in front of it (`--prepend`).
 if [[ -n "$handoff_file" && -s "${block_file:-}" ]]; then
-  hf_out="$(LANES_LANE="$lane" "$L" write-handoff "$lane" --prepend "$block_file" \
+  hf_out="$(LANES_READ_MIRROR=1 LANES_LANE="$lane" "$L" write-handoff "$lane" --prepend "$block_file" \
     --subject "$hf_subject")" || hf_rc=$?
   # ITS STDOUT IS `<file><TAB><sha256>` ONCE THE FILE IS WRITTEN, whatever the exit; its own words are on stderr.
   hf_path="${hf_out%%$'\t'*}"
