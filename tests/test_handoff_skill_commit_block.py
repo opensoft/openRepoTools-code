@@ -898,7 +898,8 @@ def test_block_1_block_2_and_step_4_each_in_its_own_shell_carry_what_step_2_did(
     assert first.returncode == 0, first.stderr
     carried = _printed(first)
     block_file = carried.get("block_file", "")
-    assert block_file and block_file != "<none>", first.stdout
+    assert block_file, first.stdout
+    assert block_file != "<none>", first.stdout
     Path(block_file).write_text(TOP, encoding="utf-8")
     second = estate.run(shell, "\n".join(step1 + [f"{k}={shlex.quote(v)}" for k, v in carried.items()]
                                          + [_block(B2)]), **env)
