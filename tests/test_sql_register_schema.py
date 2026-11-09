@@ -80,7 +80,7 @@ LANE, WS, AUTHOR = "Lane-T221", "ws-t221", "T221 <t221@example.invalid>"
 COMMIT_C, TREE_C, MARKER_COMMIT = "c" * 40, "d" * 40, "e" * 40
 ARGS_SHA256 = "a" * 64
 NOT_AFTER = "2100-01-01T00:00:00Z"            # well past every case (lane 1's v2.3)
-STORE_LINE = "primary"
+STORE_LINE = "store=primary"
 SHA_A, SHA_B = "1" * 40, "2" * 40
 
 #: The configuration's own values, so `c=` and `n_a=` are not the defaults.
@@ -624,19 +624,21 @@ def test_ready_fails_a_client_outside_the_version_window(pg, tmp_path):
     env = index_env(tmp_path, conf, LANES_WORKSTATION=WS)
     args = ["ready", "--expect", "index", "--release", "0.0.0", "--env", "t221"]
     win = window(pg)
-    number = win["version"] + 1
+    number = min(win["writers_from"], win["readers_from"]) - 1    # too old: "upgrade the tools"
 
     def schema_fails(proc):
-        return [line for line in proc.stdout.splitlines() if "FAIL" in line and re.search(
-            r"REGISTER_SCHEMA_VERSION|schema_version|this client is|register schema [0-9]", line)]
+        return [line for line in proc.stdout.splitlines() if line.startswith("check 9: FAIL")]
 
     inside = run_index(flipped(tmp_path), args, env)
     assert not schema_fails(inside), f"the shipped client fails check 9:\n{shown(inside)}"
     outside = run_index(window_copy(tmp_path, number), args, env)
     assert outside.returncode == 2, shown(outside)
     fails = schema_fails(outside)
-    assert fails and any(names_both(line, win["version"], number) for line in fails), (
-        f"check 9 does not fail naming {win['version']} and {number}:\n{shown(outside)}")
+    # lane 1's [P] line form for T119, #165 6754498682 item 1
+    assert fails and any("upgrade the tools" in line and names_both(line, win["version"], number)
+                         for line in fails), (
+        f"check 9 does not fail, upgrade the tools, naming {win['version']} and {number}:\n"
+        f"{shown(outside)}")
 
 
 # =================================================================== AT-LR010
@@ -673,7 +675,7 @@ LINE_SCOPES = {
     "alias-comment": [("lanes/aliases.tsv", "# X\tO\t2026-11-09T10:00:00Z", set()),
                       ("lanes/aliases.tsv", "  \t O\t2026-11-09T10:00:00Z", {"alias:o"}),
                       ("lanes/aliases.tsv", " \t \t2026-11-09T10:00:00Z", set())],
-    "store": [("lanes/STORE", "primary", set()), ("lanes/STORE", f"| `Lane-A` | {UUID_U} |", set())],
+    "store": [("lanes/STORE", "store=primary", set()), ("lanes/STORE", f"| `Lane-A` | {UUID_U} |", set())],
 }
 
 
