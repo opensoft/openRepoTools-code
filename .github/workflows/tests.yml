@@ -129,6 +129,9 @@ jobs:
   # job would count as passing for a required check.
   tests-shard:
     runs-on: ubuntu-24.04
+    # A hung pytest would otherwise hold the required check for GitHub's
+    # 360-minute default. A shard takes 10 to 26 minutes.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -237,6 +240,9 @@ jobs:
   # `tests-no-submodule` is the gate over them, as `tests` is.
   tests-no-submodule-shard:
     runs-on: ubuntu-24.04
+    # A hung pytest would otherwise hold the required check for GitHub's
+    # 360-minute default. A shard takes 10 to 26 minutes.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:

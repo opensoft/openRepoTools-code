@@ -6,9 +6,9 @@ jobs (`tests-shard`, `tests-no-submodule-shard`): the four gate names stay, so
 the release gate and the leg's rulesets read what they always read, and what
 runs in which shard is `.github/ci/ci_shards.py`'s plan. What is held here is
 that the gates wait on their shards and fail closed, that each matrix is the
-plan's shard list, and that the shard jobs keep today's runner, checkout,
-Python and setup steps. The count the shards add up to is
-`ci_shards.py verify`'s, held by `tests/test_ci_shards.py`.
+plan's shard list, that the shard jobs keep today's runner, checkout, Python
+and setup steps, and that each has a 60-minute timeout. The count the shards
+add up to is `ci_shards.py verify`'s, held by `tests/test_ci_shards.py`.
 
 OFFLINE, LIKE THE REST OF THIS SUITE. What these tests hold is
 contracts/workflows.md's "Held by `tests/test_tests_workflow.py`" list, with
@@ -92,6 +92,9 @@ JOB_IDS = ("guard-launch-mode", "tests", "tests-no-submodule", "package")
 SHARD_JOBS = {"tests": "tests-shard",
               "tests-no-submodule": "tests-no-submodule-shard"}
 ALWAYS = "${{ always() }}"
+#: A shard job's `timeout-minutes`. Shards take 10 to 26 minutes; without it a
+#: hung pytest holds a required check for GitHub's 360-minute default.
+SHARD_TIMEOUT_MINUTES = 60
 SHARD_RUN = {gate: ("python3 .github/ci/ci_shards.py run --variant " + gate +
                     ' --shard "$SHARD" --out "$RUNNER_TEMP/shard"')
              for gate in SHARD_JOBS}
@@ -947,6 +950,18 @@ def test_tests_yml_the_matrix_is_the_plans_shards_and_their_reports_are_kept(
     assert len(uploads) == 1 and uploads[0].get("if") == ALWAYS, uploads
     assert uploads[0]["with"]["name"].endswith(
         "-${{ matrix.shard }}-a${{ github.run_attempt }}"), uploads[0]["with"]
+
+
+@NEEDS_UPSTREAM
+@pytest.mark.parametrize("gate", sorted(SHARD_JOBS))
+def test_tests_yml_each_shard_job_times_out_at_60_minutes(workflow, gate):
+    """A shard takes 10 to 26 minutes. Without a `timeout-minutes:` a hung
+    pytest holds a required check (the gate waits on its shards) for GitHub's
+    360-minute default, so each of the two shard jobs carries one, 60."""
+    job = jobs_of(workflow)[SHARD_JOBS[gate]]
+    assert job.get("timeout-minutes") == SHARD_TIMEOUT_MINUTES, (
+        f"`{SHARD_JOBS[gate]}` has timeout-minutes {job.get('timeout-minutes')!r}, "
+        f"not {SHARD_TIMEOUT_MINUTES}")
 
 
 def test_tests_yml_header_comment_names_both_push_branches_and_four_jobs():
