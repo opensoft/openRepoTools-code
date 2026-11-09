@@ -3193,11 +3193,13 @@ def _register_admin_psql(service: str, script: str, variables: dict, *,
     return proc.stdout
 
 
-def _register_reads(service: str, tag: str, queries: list[str]) -> list[list[list]]:
+def _register_reads(service: str, tag: str, queries: list[str], *,
+                    command: str = "bootstrap") -> list[list[list]]:
     """Several SELECTs through the admin service in ONE `psql` call and one
     transaction, each answered as TEXT-format COPY rows, as `_query_many`
-    reads them. Nothing is written."""
-    lines = [f"-- lanes-index bootstrap: {tag}"]
+    reads them. Nothing is written. `command` names the subcommand reading,
+    `bootstrap` or `login`, in the script's first line."""
+    lines = [f"-- lanes-index {command}: {tag}"]
     for query in queries:
         lines.append(f"COPY ({query}) TO STDOUT;")
         lines.append("\\echo '\\036LANES-INDEX-NEXT'")
@@ -3213,7 +3215,7 @@ def _register_reads(service: str, tag: str, queries: list[str]) -> list[list[lis
             current.append([_pg_unescape(field) for field in line.split("\t")])
     if len(results) != len(queries):
         raise RegisterUnavailable(f"psql answered {len(results)} of the {len(queries)} reads "
-                                  f"of the bootstrap's {tag}")
+                                  f"of the {command}'s {tag}")
     return results
 
 
@@ -3530,15 +3532,16 @@ def _register_store_named_sqlite(cfg: dict) -> bool:
     return named == "sqlite"
 
 
-def _register_refuse_argument(flag: str, value: str) -> None:
+def _register_refuse_argument(flag: str, value: str, *, command: str = "bootstrap") -> None:
     """An argument that carries a connection string or a password, such as a
-    `key=value` pair or a URI, is refused (2), and never echoed."""
+    `key=value` pair or a URI, is refused (2), and never echoed. `command`
+    names the subcommand refusing, `bootstrap` or `login`."""
     if "=" in value or "://" in value or _url_has_password(value):
-        raise Refusal(f"bootstrap: {flag} carries a connection string or a password (a "
+        raise Refusal(f"{command}: {flag} carries a connection string or a password (a "
                       f"`key=value` pair or a URI). The admin connection is a service name "
                       f"in your own ~/.pg_service.conf, and no argument carries a connection")
-    if flag == "--admin-service" and not re.match(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}$", value):
-        raise Refusal("bootstrap: --admin-service is not a plain service name: letters, "
+    if flag == "--admin-service" and not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}", value):
+        raise Refusal(f"{command}: --admin-service is not a plain service name: letters, "
                       "digits, '_', '.' and '-', as a section of ~/.pg_service.conf")
 
 
@@ -3816,6 +3819,539 @@ def _bootstrap(opts: dict) -> int:
     say(f"register_label={label}")
     if schema != REGISTER_TEMPLATE_SCHEMA:
         say(f"register_schema={schema}")
+    return EXIT_OK
+
+
+# `LANES-INDEX LOGIN` (operations.md §2.4, "lanes-index login"; FR-009, FR-054;
+# T110). Brett's command for each engineer's two logins and the dump job's one
+# (design.md §1.4, "One engineer's logins"; Brett's "Two logins each
+# (Recommended)", #165 6723413756), run from his own shell after the bootstrap,
+# through the admin service as the bootstrap connects, under §2.4's four rules:
+#   - `add <engineer>` makes `lanes_w_<engineer>`, a member of REGISTER-WRITER,
+#     and `lanes_r_<engineer>`, a member of READER, each with its group's
+#     floors and a password it generates. It prints, once, their two
+#     password-file lines, then the `register_url=` and `reader_url=` lines for
+#     that engineer's file. Run again, it changes nothing but a lost
+#     membership, which it puts back;
+#   - `add --dump-job` makes `lanes_register_dump` alone, §1.4's second half
+#     with `r=lanes_register_dump`, whose password Brett stores as the Key
+#     Vault secret the dump CronJob reads;
+#   - `rotate <engineer>` sets new passwords for both logins, and `rotate
+#     --dump-job` for `lanes_register_dump` alone (lane 3's ruling,
+#     #165 6726725691), and prints the new password-file lines;
+#   - `revoke <engineer>`, for each of the two logins in turn, the writer's
+#     first, runs §1.4's revoke and prints each step's result.
+#
+# ONE TRANSACTION A STEP, AND Y'S BYTES UNCHANGED (as T108 and T109). The login
+# step is one `--single-transaction` call: Y:2288-2300, or its second half alone
+# for the dump job, less the CREATE ROLE of each login that exists already (the
+# `pg_roles` guard, which is outside Y's bytes), then one `ALTER ROLE ...
+# PASSWORD '<verifier>'` for each login it creates, so each password is set in
+# the transaction that makes its login. The revoke's three numbered steps are
+# three such calls per login, each committed before the next, so their effects
+# come in Y's order: no new session (28000), then an open session's next
+# statement refused (42501), then its sessions ended (57P01), with step 3's
+# grant to the admin never outliving that step. Joined, one login's three
+# scripts are Y:2302-2309 byte for byte. A rotation is `ALTER ROLE ... PASSWORD`
+# with a new verifier (Y:2312), both of an engineer's logins in one call.
+#
+# THE SECRET (operations.md:481; P20). `add` and `rotate` make passwords, so
+# they refuse when stdout is not a terminal, before any connection; `revoke`
+# prints none and does not. Each password is generated here, sent only as a
+# SCRAM-SHA-256 verifier in the script on psql's stdin, and printed once, as a
+# password-file line, after its step has committed.
+#
+# THE URL LINES (Y:2326; contracts/config.md §3.1). The bootstrap gives `login`
+# no endpoint, and `login` guesses none: the host and port are those psql
+# connected to, its own `:HOST` and `:PORT`, and the database is the one the
+# admin connection reached, which on the install name `<endpoint>`, as the
+# admin's own service does (Y:2324). Each line carries `sslmode=verify-full` and
+# an `sslrootcert=` that `--sslrootcert <path>` fills, or that reads `<root
+# file>` for the engineer to fill. No URL carries a password.
+
+#: Design.md §1.4's login step and revoke, verbatim (Y:2288-2309). The login
+#: step's psql variables are `w` and `r`, the revoke's `login` and `grp`.
+_REGISTER_LOGIN_BLOCK = r"""-- lanes-index login add <engineer>: psql -v w=lanes_w_<engineer> -v r=lanes_r_<engineer>.
+-- The dump job's login is the second half alone, with r=lanes_register_dump. Each CREATE ROLE
+-- is guarded by a pg_roles check, as the bootstrap's are.
+CREATE ROLE :"w" LOGIN;                         -- its password: a SCRAM verifier, set as it is made
+GRANT lanes_register_writer TO :"w";            -- again on a rerun: puts back a lost membership
+ALTER ROLE :"w" SET lock_timeout = '2000ms';    -- the writer's floors, the login's own (§1.3)
+ALTER ROLE :"w" SET statement_timeout = '5s';
+ALTER ROLE :"w" SET idle_in_transaction_session_timeout = '5s';
+CREATE ROLE :"r" LOGIN;
+GRANT lanes_register_reader TO :"r";
+ALTER ROLE :"r" SET default_transaction_read_only = on;   -- the reader's floors
+ALTER ROLE :"r" SET lock_timeout = '1000ms';
+ALTER ROLE :"r" SET statement_timeout = '1500ms';
+
+-- lanes-index login revoke <engineer>: for each of its logins, psql -v login=… -v grp=…
+ALTER ROLE :"login" NOLOGIN;                                  -- 1. no new session (28000)
+REVOKE :"grp" FROM :"login";                                  -- 2. an open session's next statement
+                                                              --    is refused (42501)
+GRANT :"login" TO CURRENT_USER WITH INHERIT TRUE, SET FALSE;  -- 3. its privileges, so the admin may
+SELECT pg_terminate_backend(pid) FROM pg_stat_activity        --    end its sessions (57P01) with no
+  WHERE usename = :'login';                                   --    pg_signal_backend
+REVOKE :"login" FROM CURRENT_USER;
+"""
+
+#: The dump job's login, a READER login alone (design.md §1.4's roles table;
+#: operations.md act 3's step 1).
+_REGISTER_DUMP_LOGIN = "lanes_register_dump"
+
+#: An engineer's name (operations.md:487), matched whole.
+_REGISTER_ENGINEER_RE = re.compile(r"[a-z][a-z0-9_]{0,40}")
+
+#: An `--sslrootcert` path: absolute, and of characters a URL's query carries
+#: as they are, so the line needs no escaping.
+_REGISTER_ROOT_FILE_RE = re.compile(r"/[A-Za-z0-9._/-]*")
+
+#: The login step's units: a login's CREATE ROLE, its group's GRANT and each of
+#: its floors, each one line with its comment.
+_REGISTER_LOGIN_CREATE_RE = re.compile(r'CREATE ROLE :"([wr])" LOGIN;[ \t]*(?:--[^\n]*)?\n')
+_REGISTER_LOGIN_GRANT_RE = re.compile(
+    r'GRANT ([a-z_][a-z0-9_]*) TO :"([wr])";[ \t]*(?:--[^\n]*)?\n')
+_REGISTER_LOGIN_FLOOR_RE = re.compile(
+    r"ALTER ROLE :\"([wr])\" SET ([a-z_]+) = '?([A-Za-z0-9]+)'?;[ \t]*(?:--[^\n]*)?\n")
+
+_LOGIN_USAGE = f"""\
+{PROG} login add <engineer> --admin-service <service> [--sslrootcert <path>]
+{PROG} login add --dump-job --admin-service <service>
+{PROG} login rotate <engineer> --admin-service <service>
+{PROG} login rotate --dump-job --admin-service <service>
+{PROG} login revoke <engineer> --admin-service <service>
+
+Makes, re-keys or revokes an engineer's two logins on the SQL register,
+lanes_w_<engineer> (REGISTER-WRITER) and lanes_r_<engineer> (READER), each with
+its group's floors, or the dump job's lanes_register_dump (READER), through the
+libpq service <service> in your own ~/.pg_service.conf, as bootstrap connects
+(operations.md §2.4). Run it from your shell, after bootstrap: add and rotate
+print each new password once, as a password-file line, only to a terminal, and
+send it to the database only as a SCRAM verifier computed here.
+
+  add          makes the logins; run again, it puts back a lost membership and
+               changes nothing else. With an engineer, it also prints the
+               register_url= and reader_url= lines for that engineer's file, at
+               the host, port and database the admin connection reached
+  rotate       a new password for each login; a session already open goes on
+  revoke       for each login, the writer's first: NOLOGIN, its membership
+               revoked, then its sessions ended, each step's result printed
+  <engineer>   [a-z][a-z0-9_]{{0,40}}
+  --dump-job   lanes_register_dump alone; store its password as the Key Vault
+               secret the dump CronJob reads
+  --sslrootcert <path>
+               the root file on the engineer's host, for add's URL lines;
+               without it they read sslrootcert=<root file>
+
+Exit: 0 done · 2 refused, nothing written · 64 usage · 69 the admin connection
+failed, or the database refused a step."""
+
+
+def _register_login_parts() -> dict:
+    """§1.4'S LOGIN BLOCK, CUT. Returns, each the block's own text:
+      - `head`: the login step's comment lines;
+      - `halves`: for `w` and `r`, that half's units in the block's order, its
+        CREATE ROLE first;
+      - `groups`: the group each half's GRANT names;
+      - `floors`: each half's `ALTER ROLE ... SET`s, as `name=value`, the form
+        `pg_roles.rolconfig` holds;
+      - `revoke`: the revoke's three steps, the first with the revoke's comment
+        line, so that joined they are the revoke whole.
+    A block that does not cut so is a defect of this build, so the error is
+    not a refusal."""
+    step, blank, revoke = _REGISTER_LOGIN_BLOCK.partition("\n\n")
+    if not blank or "\n\n" in revoke or not revoke.endswith("\n"):
+        raise RuntimeError("the register's login block is not the login step, one blank "
+                           "line, then the revoke")
+    units = _register_sql_units(step + "\n")
+    head = []
+    while units and units[0].startswith("--"):
+        head.append(units.pop(0))
+    halves: dict[str, list[str]] = {"w": [], "r": []}
+    groups: dict[str, str] = {}
+    floors: dict[str, list[str]] = {"w": [], "r": []}
+    order: list[str] = []
+    for unit in units:
+        create = _REGISTER_LOGIN_CREATE_RE.fullmatch(unit)
+        grant = _REGISTER_LOGIN_GRANT_RE.fullmatch(unit)
+        floor = _REGISTER_LOGIN_FLOOR_RE.fullmatch(unit)
+        if create:
+            half = create.group(1)
+            if halves[half]:
+                raise RuntimeError(f"the login block's half {half} does not open with its "
+                                   f"CREATE ROLE")
+        elif grant:
+            half = grant.group(2)
+            if half in groups:
+                raise RuntimeError(f"the login block's half {half} grants two groups")
+            groups[half] = grant.group(1)
+        elif floor:
+            half = floor.group(1)
+            floors[half].append(f"{floor.group(2)}={floor.group(3)}")
+        else:
+            raise RuntimeError(f"the login block holds {unit!r}, which is not a CREATE ROLE, "
+                               f"a GRANT or a floor")
+        if not halves[half] and not create:
+            raise RuntimeError(f"the login block's half {half} does not open with its "
+                               f"CREATE ROLE")
+        if not order or order[-1] != half:
+            order.append(half)
+        halves[half].append(unit)
+    roles = register_role_names()
+    if (len(head) != 3 or order != ["w", "r"] or not floors["w"] or not floors["r"]
+            or groups != {"w": roles[1], "r": roles[2]}):
+        raise RuntimeError(f"the login block is not three comment lines, the writer's half, "
+                           f"then the reader's, each granting its group: {order}, {groups}")
+    steps = _register_sql_units(revoke)
+    if (len(steps) != 6 or not steps[0].startswith("--")
+            or not steps[1].startswith('ALTER ROLE :"login" NOLOGIN;')
+            or not steps[2].startswith('REVOKE :"grp" FROM :"login";')
+            or not steps[3].startswith('GRANT :"login" TO CURRENT_USER WITH INHERIT TRUE, SET FALSE;')
+            or "pg_terminate_backend(pid)" not in steps[4]
+            or not steps[5].startswith('REVOKE :"login" FROM CURRENT_USER;')):
+        raise RuntimeError("the login block's revoke is not its comment, NOLOGIN, the "
+                           "membership revoked, then the grant, the end of its sessions and "
+                           "the grant revoked")
+    revoke_steps = ["".join(steps[:2]), steps[2], "".join(steps[3:])]
+    if "".join(revoke_steps) != revoke:
+        raise RuntimeError("the login block's revoke does not cut into three steps")
+    return {"head": "".join(head), "halves": halves, "groups": groups, "floors": floors,
+            "revoke": revoke_steps}
+
+
+def register_login_script(halves: list[str], existing, verifiers: dict) -> str:
+    """THE LOGIN STEP AS SENT, one script for one `--single-transaction` call.
+
+    `halves` is `["w", "r"]` for an engineer, or `["r"]` for the dump job, §1.4's
+    "second half alone". `existing` holds the halves whose login exists
+    already: their CREATE ROLE is left out, the `pg_roles` guard. `verifiers`
+    maps each half whose login this step creates to the SCRAM verifier of its
+    new password; each goes as one `ALTER ROLE :"<half>" PASSWORD
+    '<verifier>';` after the block's text. Every other line is the block's own
+    text, byte for byte, comments and all; for an engineer whose logins are
+    both new, the script opens with Y:2288-2300 whole."""
+    parts = _register_login_parts()
+    if halves not in (["w", "r"], ["r"]):
+        raise ValueError(f"the login step's halves are ['w', 'r'] or ['r'], not {halves!r}")
+    if set(verifiers) - (set(halves) - set(existing)):
+        raise ValueError("a verifier was given for a login this step does not create")
+    text = parts["head"] if halves == ["w", "r"] else ""
+    for half in halves:
+        units = parts["halves"][half]
+        text += "".join(units[1:] if half in existing else units)
+    for half in halves:
+        if half in verifiers:
+            text += f'ALTER ROLE :"{half}" PASSWORD {_pg_quote(verifiers[half])};\n'
+    return text
+
+
+def _register_login_query(login: str, group: str) -> str:
+    """One login's state, as one row or none: its name, whether it may log in,
+    whether it is a member of `group`, and its own settings, one per line."""
+    return ("SELECT a.rolname::text, a.rolcanlogin, EXISTS (SELECT 1 FROM "
+            "pg_catalog.pg_auth_members m JOIN pg_catalog.pg_roles g ON g.oid = m.roleid "
+            f"WHERE m.member = a.oid AND g.rolname = {_pg_quote(group)}), "
+            "coalesce(pg_catalog.array_to_string(a.rolconfig, chr(10)), '') "
+            f"FROM pg_catalog.pg_roles a WHERE a.rolname = {_pg_quote(login)}")
+
+
+def _register_login_probe(service: str, logins: list[tuple[str, str]], *, url: bool) -> dict:
+    """THE LOGIN'S FIRST READ, through the admin service, before anything is
+    written: who the admin is and what it may do, which of the two groups
+    exist, and each login's state. With `url`, also the host and port psql
+    connected to, psql's own `:HOST` and `:PORT`, which psql fills in."""
+    groups = _register_login_parts()["groups"]
+    queries = [_register_admin_query(),
+               f"SELECT rolname::text FROM pg_catalog.pg_roles WHERE rolname IN "
+               f"({_register_names_sql([groups['w'], groups['r']])})"]
+    queries += [_register_login_query(login, groups[half]) for login, half in logins]
+    if url:
+        queries.append("SELECT :'HOST', :'PORT'")
+    res = _register_reads(service, "probe", queries, command="login")
+    admin = _register_one_row(res[0], 6, "the admin")
+    states: dict[str, dict] = {}
+    for (login, _half), rows in zip(logins, res[2:2 + len(logins)]):
+        if len(rows) > 1 or (rows and len(rows[0]) != 4):
+            raise RegisterUnavailable(f"psql answered {len(rows)} rows for the login {login}")
+        if rows:
+            states[login] = {"can_login": _register_flag(rows[0][1]),
+                             "member": _register_flag(rows[0][2]),
+                             "settings": set((rows[0][3] or "").split("\n")) - {""}}
+    probe = {"user": admin[0], "database": admin[1], "create_roles": _register_flag(admin[2]),
+             "owns": _register_flag(admin[4]), "groups": {row[0] for row in res[1] if row},
+             "logins": states}
+    if url:
+        probe["host"], probe["port"] = _register_one_row(
+            res[-1], 2, "the admin connection's host and port")
+    return probe
+
+
+def register_login_url(login: str, host: str, port: str, database: str,
+                       root_file: str | None) -> str:
+    """ONE OF AN ENGINEER'S URL LINES' VALUES, in Y's form (Y:2326):
+    `postgresql://<login>@<host>:<port>/<database>?sslmode=verify-full&sslrootcert=<root>`,
+    at the host, port and database the admin connection reached. A socket
+    directory is percent-encoded whole, an IPv6 address bracketed. No
+    password: the login's line goes in its own 0600 file."""
+    from urllib.parse import quote
+    if not isinstance(port, str) or not re.fullmatch(r"[0-9]{1,5}", port):
+        raise RegisterUnavailable(f"psql answered the port {port!r}")
+    host = host or ""
+    if ":" in host and not host.startswith("/"):
+        where = "[" + quote(host, safe=":") + "]"
+    else:
+        where = quote(host, safe="")
+    return (f"postgresql://{login}@{where}:{port}/{quote(database, safe='')}"
+            f"?sslmode=verify-full&sslrootcert={root_file or '<root file>'}")
+
+
+def _register_login_args(args: list[str]) -> dict | None:
+    """`login`'s command line; None for `--help`. First, no argument may carry
+    a connection string or a password, wherever it stands (2, never echoed);
+    then its usage (64); then its values (2)."""
+    for arg in args:
+        value = arg.partition("=")[2] if arg.startswith("--") and "=" in arg else arg
+        _register_refuse_argument("an argument", value, command="login")
+    opts: dict = {"--admin-service": None, "--sslrootcert": None, "--dump-job": False}
+    words: list[str] = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("-h", "--help"):
+            return None
+        name, eq, value = arg.partition("=")
+        if name in ("--admin-service", "--sslrootcert"):
+            if not eq:
+                value = args[i + 1] if i + 1 < len(args) else ""
+                i += 1
+            if not value:
+                raise _RegisterUsage(f"login: {name} needs a value")
+            if opts[name] is not None:
+                raise _RegisterUsage(f"login: {name} is given twice")
+            opts[name] = value
+        elif arg == "--dump-job":
+            if opts["--dump-job"]:
+                raise _RegisterUsage("login: --dump-job is given twice")
+            opts["--dump-job"] = True
+        elif arg.startswith("-"):
+            raise _RegisterUsage(f"login: unknown option {name}")
+        else:
+            words.append(arg)
+        i += 1
+    if not words or words[0] not in ("add", "rotate", "revoke"):
+        raise _RegisterUsage("login needs add, rotate or revoke")
+    action, rest = words[0], words[1:]
+    if len(rest) > 1:
+        raise _RegisterUsage(f"login {action} takes one engineer")
+    engineer = rest[0] if rest else None
+    dump = opts["--dump-job"]
+    if action == "revoke" and dump:
+        raise _RegisterUsage("login revoke takes an engineer; the dump job's login is "
+                             "rotated, never revoked, by this command")
+    if action == "revoke" and engineer is None:
+        raise _RegisterUsage("login revoke needs an engineer")
+    if (engineer is None) == (not dump):
+        raise _RegisterUsage(f"login {action} needs an engineer or --dump-job, and not both")
+    if opts["--sslrootcert"] is not None and (action != "add" or dump):
+        raise _RegisterUsage("login: --sslrootcert is for the URL lines of login add "
+                             "<engineer>")
+    if opts["--admin-service"] is None:
+        raise _RegisterUsage("login needs --admin-service <service>")
+    if engineer is not None and not _REGISTER_ENGINEER_RE.fullmatch(engineer):
+        raise Refusal("login: the engineer's name is not ^[a-z][a-z0-9_]{0,40}$: a lower-case "
+                      "letter, then up to 40 lower-case letters, digits or '_'")
+    _register_refuse_argument("--admin-service", opts["--admin-service"], command="login")
+    root = opts["--sslrootcert"]
+    if root is not None and (root == "system" or not _REGISTER_ROOT_FILE_RE.fullmatch(root)):
+        raise Refusal("login: --sslrootcert is not an absolute path of letters, digits, '.', "
+                      "'_', '-' and '/'. It names the root file on the engineer's host, never "
+                      "`system`, which holds no private root (design.md §1.4, Y:2324)")
+    return {"action": action, "engineer": engineer, "dump": dump,
+            "service": opts["--admin-service"], "root": root}
+
+
+def cmd_login(args: list[str]) -> int:
+    """`lanes-index login` (operations.md §2.4): its exits, by the contract's
+    constants."""
+    try:
+        opts = _register_login_args(args)
+    except _RegisterUsage as exc:
+        note(f"{exc} - see {PROG} login --help")
+        return EXIT_USAGE
+    except Refusal as exc:
+        note(f"REFUSED: {exc}")
+        return EXIT_REFUSED
+    if opts is None:
+        say(_LOGIN_USAGE)
+        return EXIT_OK
+    try:
+        return _login(opts)
+    except Refusal as exc:
+        note(f"REFUSED: {exc}")
+        return EXIT_REFUSED
+    except RegisterUnavailable as exc:
+        hint = {"add": " A step cut at its commit may have made a login: `login add` again "
+                       "names what it finds, and `login rotate` gives such a login a password "
+                       "you hold.",
+                "rotate": " A step cut at its commit may have changed the passwords: run "
+                          "`login rotate` again.",
+                "revoke": " Each step printed above stands; run `login revoke` again to "
+                          "finish."}[opts["action"]] if opts.get("sent") else " Nothing was sent."
+        note(f"login {opts['action']}: the admin connection failed, or the database refused "
+             f"a step: {exc}.{hint}")
+        return EXIT_UNAVAILABLE
+
+
+def _login(opts: dict) -> int:
+    action, engineer, dump, service = (opts["action"], opts["engineer"], opts["dump"],
+                                       opts["service"])
+    if action in ("add", "rotate") and not sys.stdout.isatty():
+        raise Refusal(f"login {action}: stdout is not a terminal. It prints a password only "
+                      f"to a terminal, so that no transcript, log or pipe holds one: run it "
+                      f"from your shell")
+    load_config()
+    parts = _register_login_parts()
+    groups = parts["groups"]
+    if dump:
+        logins = [(_REGISTER_DUMP_LOGIN, "r")]
+    else:
+        logins = [(f"lanes_w_{engineer}", "w"), (f"lanes_r_{engineer}", "r")]
+    probe = _register_login_probe(service, logins, url=(action == "add" and not dump))
+    who, database = probe["user"], probe["database"]
+    if not probe["create_roles"]:
+        raise Refusal(f"login {action}: the admin {who} may not create or alter roles: it has "
+                      f"neither CREATEROLE nor SUPERUSER")
+    if not isinstance(database, str) or not database.strip() or any(
+            ord(ch) < 0x20 or ord(ch) == 0x7F for ch in database):
+        raise Refusal(f"login {action}: the database's name is empty or holds a control "
+                      f"character")
+    states = probe["logins"]
+    if action == "revoke":
+        return _login_revoke(service, parts, logins, probe, opts)
+    for login, _half in logins:
+        state = states.get(login)
+        if action == "rotate" and state is None:
+            raise Refusal(f"login rotate: {login} does not exist; `login add` makes it")
+        if state is not None and not state["can_login"]:
+            raise Refusal(f"login {action}: {login} exists and cannot log in: it was revoked, "
+                          f"and a revoked login's name is not reused while the server's logs "
+                          f"still name it (design.md §1.4). "
+                          + ("Give the engineer another name, or drop the role first"
+                             if action == "add" else "A revoked login takes no new password"))
+    if action == "add":
+        missing = [groups[half] for _login_name, half in logins
+                   if groups[half] not in probe["groups"]]
+        if missing:
+            raise Refusal(f"login add: {' and '.join(missing)} "
+                          f"{'do' if len(missing) > 1 else 'does'} not exist: run bootstrap, "
+                          f"or bootstrap --roles-only, first")
+    if not probe["owns"]:
+        note(f"login {action}: the admin {who} does not own the database {database}, which "
+             f"the lines below name. If it is not the register's database, run it again "
+             f"through the service that names that one")
+    import secrets
+    creating = [(login, half) for login, half in logins
+                if action == "rotate" or states.get(login) is None]
+    passwords = {login: secrets.token_urlsafe(32) for login, _half in creating}
+    verifiers = {half: register_scram_verifier(passwords[login]) for login, half in creating}
+    variables = {half: login for login, half in logins}
+    if action == "add":
+        script = register_login_script([half for _login_name, half in logins],
+                                       {half for login, half in logins if login in states},
+                                       verifiers)
+    else:
+        script = "".join(f'ALTER ROLE :"{half}" PASSWORD {_pg_quote(verifiers[half])};\n'
+                         for _login_name, half in logins)
+    opts["sent"] = True
+    _register_admin_psql(service, script, variables, single_transaction=True)
+
+    if action == "add":
+        for login, half in logins:
+            state = states.get(login)
+            _bootstrap_say(f"login {login}", state is None,
+                           "LOGIN, its password a SCRAM verifier set as it was made"
+                           if state is None else "")
+            _bootstrap_say(f"login {login}'s membership of {groups[half]}",
+                           state is None or not state["member"],
+                           "put back" if state is not None and not state["member"] else "")
+            lacking = [f for f in parts["floors"][half]
+                       if state is None or f not in state["settings"]]
+            _bootstrap_say(f"login {login}'s floors", bool(lacking),
+                           ("put back: " if state is not None and lacking else "")
+                           + ", ".join(lacking or parts["floors"][half]))
+    else:
+        for login, _half in logins:
+            say(f"login {login}'s password: changed (a new SCRAM verifier; a session already "
+                f"open goes on until it ends)")
+    for login, half in creating:
+        if dump:
+            say(f"# {login}'s password-file line, printed once: store it as the Key Vault "
+                f"secret the dump CronJob reads (its password is the line's last field)")
+        else:
+            key = "register_passfile=" if half == "w" else "reader_passfile="
+            say(f"# {login}'s password-file line, printed once: put it alone in a 0600 file "
+                f"of {engineer}'s account, and name that file in {key}")
+        say(_register_pgpass_line(database, login, passwords[login]))
+    sys.stdout.flush()
+    if action == "add" and not creating:
+        say(f"# no password line: {' and '.join(login for login, _half in logins)} existed "
+            f"already. `{PROG} login rotate {'--dump-job' if dump else engineer}` gives "
+            f"{'it a new one' if dump else 'them new ones'}")
+    if action == "rotate" and not dump:
+        say(f"# until {engineer}'s two password files hold these lines, that workstation's "
+            f"new connections fail at login (69): write them before its lanes resume")
+    if action == "add" and not dump:
+        say(f"# lanes-index.conf lines for {engineer}'s file, with no secret; sslrootcert= "
+            f"names the root file on {engineer}'s host:")
+        for login, key in ((logins[0][0], "register_url="), (logins[1][0], "reader_url=")):
+            say(key + register_login_url(login, probe["host"], probe["port"], database,
+                                         opts["root"]))
+    return EXIT_OK
+
+
+def _login_revoke(service: str, parts: dict, logins: list[tuple[str, str]],
+                  probe: dict, opts: dict) -> int:
+    """§1.4'S REVOKE (Y:2302-2309; operations.md §2.4's `revoke`), for each of
+    the engineer's logins in turn, the writer's first: its three steps, each
+    one `--single-transaction` call that commits before the next, each step's
+    result printed as it ends. A login that does not exist is said so; where
+    neither does, nothing is revoked (2)."""
+    states, groups = probe["logins"], parts["groups"]
+    present = [(login, half) for login, half in logins if login in states]
+    if not present:
+        raise Refusal(f"login revoke: neither {logins[0][0]} nor {logins[1][0]} exists, so "
+                      f"there is nothing to revoke; check the engineer's name")
+    missing = [groups[half] for _login, half in present if groups[half] not in probe["groups"]]
+    if missing:
+        raise Refusal(f"login revoke: {' and '.join(missing)} "
+                      f"{'do' if len(missing) > 1 else 'does'} not exist, so no membership of "
+                      f"{'them' if len(missing) > 1 else 'it'} can be revoked; nothing was "
+                      f"revoked")
+    nologin, revoke_group, end_sessions = parts["revoke"]
+    for login, half in logins:
+        state = states.get(login)
+        if state is None:
+            say(f"login {login}: absent, nothing to revoke")
+            continue
+        variables = {"login": login, "grp": groups[half]}
+        opts["sent"] = True
+        _register_admin_psql(service, nologin, variables, single_transaction=True)
+        say(f"login {login}, step 1, NOLOGIN: "
+            + ("done (a new session is refused: 28000)" if state["can_login"]
+               else "unchanged (it could not log in)"))
+        sys.stdout.flush()
+        _register_admin_psql(service, revoke_group, variables, single_transaction=True)
+        say(f"login {login}, step 2, its membership of {groups[half]} revoked: "
+            + ("done (an open session's next statement is refused: 42501)" if state["member"]
+               else "unchanged (it held none)"))
+        sys.stdout.flush()
+        out = _register_admin_psql(service, end_sessions, variables, single_transaction=True)
+        answers = [line.strip() for line in out.splitlines() if line.strip() in ("t", "f")]
+        ended, gone = answers.count("t"), answers.count("f")
+        say(f"login {login}, step 3, its sessions ended: {ended} ended (57P01)"
+            + (f", {gone} gone before the signal" if gone else "")
+            + f"; the admin held {login}'s privileges for this step alone")
+        sys.stdout.flush()
     return EXIT_OK
 
 
@@ -4968,6 +5504,8 @@ def main(argv: list[str]) -> int:
     verb, args = argv[0], argv[1:]
     if verb == "bootstrap":
         return cmd_bootstrap(args)
+    if verb == "login":
+        return cmd_login(args)
     source = None
     dry_run = False
     worktrees = False
