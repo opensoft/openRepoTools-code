@@ -4459,8 +4459,15 @@ if [ "$lane_verb" = RESUMED ] && [ "$row_count" = 1 ] && (( stamp_ok )); then
         # `git add` or `commit` failed and nothing is committed, or the commit
         # is kept on HEAD and named; and with slice 2a's 604, an 8(d)
         # handoff's commit or push in its own repository failed. The helper's
-        # words say which, so these do not guess.
-        6) note "Rule 3's stamp is written in $hs_written and NOT published (\`write-handoff\` exited 6; its words above say whether a commit was made, where it is kept, and the command that finishes it). A commit kept unpushed in this lane's register checkout is published by no later write, and each write there refuses until it is (Amendment 23 S3): once those words are answered, LANES_LANE=$LANE $LANES_EDIT commit \"<what it is>\", the publish act." ;;
+        # words say which, so these do not guess. THE PUBLISH ACT IS NAMED
+        # ONLY WHERE THOSE WORDS OFFER IT (lane openRepoTools-3's review of
+        # opensoft/openRepoTools-code#20 at 4031100, NIT 2; the class of slice
+        # 2a's A62): after a push that origin's move refused (A37's
+        # keep-if-gone, the six-attempt bound) the act refuses ("moved past",
+        # 2), the helper's own words (`cp_recovery_steps`) give S6.3's archive,
+        # and once it is made there is nothing left to publish. Where origin
+        # did not move they offer the act.
+        6) note "Rule 3's stamp is written in $hs_written and NOT published (\`write-handoff\` exited 6; its words above say whether a commit was made, where it is kept, and the command that finishes it). A commit kept unpushed in this lane's register checkout is published by no later write, and each write there refuses until it is (Amendment 23 S3): do what those words say. Where they offer the publish act, it is LANES_LANE=$LANE $LANES_EDIT commit \"<what it is>\", the publish act; where origin moved they say it refuses (2) and give S6.3's archive instead." ;;
         *) note "Rule 3's stamp is written in $hs_written and was NOT published (\`write-handoff\` exited $hs_rc; its words above say what is left). The launch is not refused for it." ;;
       esac
     # THE BOUND FILE IS ASKED FIRST (lane openRepoTools-3's review of #316,

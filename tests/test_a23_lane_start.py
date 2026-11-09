@@ -31,6 +31,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from test_a23_lane_start_read import (W_reflog, _no_clone_git, assert_W_moved_only_by_fast_forward,
                                       default_resolution, no_auto_gc, rows)
 from test_lane_start_row_stamp import LANE, Sandbox, _checkout_of_length, pytestmark, short_root  # noqa: F401
@@ -476,6 +478,85 @@ exec '{real}' "$@"
     assert "its words above say whether a commit was made, where it is kept" in said[0], said
     assert f"LANES_LANE={LANE} " in said[0], said
     assert "the publish act" in said[0], said
+
+
+def _racing_git(box: Sandbox, how: str, peer: Path | None = None, cell: str = "") -> tuple[Path, Path]:
+    """A `LANES_GIT` (the binary `lanes-edit.sh`'s network calls use, and only
+    those) that refuses the first push of a handoff commit, the commit whose
+    subject opens `handoff(`: `how` is `moved`, where a peer first deletes the
+    handoff `cell` on origin so the push is refused because origin moved and
+    the write's A37 keeps the commit on HEAD (6), or `unmoved`, where the push
+    fails with origin as it was. Returns the shim and the mark it leaves."""
+    real = subprocess.run(["bash", "-c", "command -v git"], env=box.env, capture_output=True,
+                          text=True, check=True).stdout.strip()
+    mark = box.root / f"racing-git-{how}.mark"
+    shim = box.root / f"racing-git-{how}.sh"
+    if how == "moved":
+        act = (f"'{real}' -C '{peer}' fetch -q origin main && '{real}' -C '{peer}' merge -q --ff-only origin/main &&\n"
+               f"        '{real}' -C '{peer}' rm -q -- '{cell}' && '{real}' -C '{peer}' commit -q -m 'a peer deletes the handoff' &&\n"
+               f"        '{real}' -C '{peer}' push -q origin HEAD:main || exit 99")
+    else:
+        act = "echo 'fake git: push refused' >&2; exit 1"
+    shim.write_text(f"""#!/usr/bin/env bash
+rj_dir="."; rj_hit=0; rj_prev=""
+for a in "$@"; do
+  [ "$rj_prev" = "-C" ] && rj_dir="$a"
+  [ "$a" = push ] && rj_hit=1
+  rj_prev="$a"
+done
+if [ "$rj_hit" = 1 ] && [ ! -e '{mark}' ]; then
+  case "$('{real}' -C "$rj_dir" log --format=%s -n1 2>/dev/null)" in
+    handoff\\(*)
+      : > '{mark}'
+      {act} ;;
+  esac
+fi
+exec '{real}' "$@"
+""", encoding="utf-8")
+    shim.chmod(0o755)
+    return shim, mark
+
+
+@pytest.mark.parametrize("how", ["moved", "unmoved"])
+def test_stamp_exit_6_names_the_publish_act_only_where_the_helper_offers_it(tmp_path, short_root, how):
+    """NIT 2 of lane openRepoTools-3's review of opensoft/openRepoTools-code#20
+    at 4031100 (the exit-6 note at `lane-start`'s 5d): the note ended "once
+    those words are answered, LANES_LANE=... commit ..., the publish act" for
+    every 6. Where the stamp's push was refused because origin MOVED (A37's
+    keep-if-gone here; the six-attempt bound is the same), the helper's own
+    words (`cp_recovery_steps`) say the publish act refuses (2) and give
+    S6.3's archive, and after the archive and the drop there is nothing left
+    to publish. Where origin did not move, the helper offers the act. The
+    note defers to those words and names the act only where they offer it;
+    the pin on `commit "<what it is>", the publish act` stays, because the
+    shell suite asserts it for the unmoved case."""
+    box, _checkout, _lane_dir, _before = _started(tmp_path, short_root)
+    cell = _cell(box)
+    _peer_push(box, {cell: HANDOFF}, "the lane's handoff, written elsewhere")
+    shim, mark = _racing_git(box, how, _peer(box), cell)
+
+    start = subprocess.run([str(box.bin / "lane-start"), "repoZ", "1", "--no-launch", "--fresh"],
+                           env=dict(box.env, LANES_GIT=str(shim), FAKE_TMUX_WINDOW_NAME=LANE),
+                           capture_output=True, text=True, timeout=180, check=False)
+    assert start.returncode == 0, start.stderr
+    assert mark.exists(), "the push of the stamp's commit was refused"
+    err = start.stderr
+    if how == "moved":
+        assert "so the publish act refuses (2)" in err, ("the helper's words give the archive", err)
+        assert "# the archive, on origin" in err, err
+        assert 'commit "<what it is>"' not in err.split("`write-handoff` exited 6")[0], \
+            ("and do not offer the act", err)
+    else:
+        assert "refused with origin/main unmoved" in err, err
+        assert 'commit "<what it is>", the publish act' in err.split("`write-handoff` exited 6")[0], \
+            ("the helper offers the act where origin did not move", err)
+    said = [line for line in err.splitlines() if "`write-handoff` exited 6" in line]
+    assert len(said) == 1, err
+    note = said[0]
+    assert "once those words are answered, LANES_LANE=" not in note, ("the unconditional offer", note)
+    assert "Where they offer the publish act, it is " in note, note
+    assert f'LANES_LANE={LANE} ' in note and 'commit "<what it is>", the publish act' in note, note
+    assert "where origin moved they say it refuses (2) and give S6.3's archive instead" in note, note
 
 
 def test_first_prompt_follows_a_handoff_a_peer_moved_during_the_stamp(tmp_path, short_root):
