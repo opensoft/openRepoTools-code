@@ -674,7 +674,7 @@ _CONTRACT_STUB = r'''#!/usr/bin/env python3
 # lanes-index.state, and a test injects an outcome with stub_outcome. It logs
 # every call to lanes-index.argv, one JSON array of arguments per line.
 # tests/sql_register_helpers.py's contract_stub is its manual.
-import calendar, fcntl, hashlib, importlib.machinery, importlib.util, json, os, re, shutil
+import datetime, fcntl, hashlib, importlib.machinery, importlib.util, json, os, re, shutil
 import subprocess, sys, time, uuid
 
 HERE = STUB_DIRECTORY
@@ -1047,20 +1047,50 @@ def journal_run(o):
                     + "".join("file=%s\n" % row for row in entry["files"]))
 
 
-def epoch(utc):
-    for form in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%MZ"):
-        try:
-            return str(calendar.timegm(time.strptime(utc or "", form)))
-        except ValueError:
-            pass
-    return "-"
+def epoch(utc, module):
+    # `<utc_ts>`: the stamp in epoch seconds, `-` where there is none or it
+    # cannot be a time, by the checkout's register_utc_epoch where it has one.
+    if not utc:
+        return "-"
+    reader = getattr(module, "register_utc_epoch", None)
+    if reader is not None:
+        value = reader(utc)
+        return "-" if value is None else str(value)
+    form = "%Y-%m-%dT%H:%M:%SZ" if utc.count(":") == 2 else "%Y-%m-%dT%H:%MZ"
+    try:
+        stamp = datetime.datetime.strptime(utc, form)
+    except ValueError:
+        return "-"
+    return str(int(stamp.replace(tzinfo=datetime.timezone.utc).timestamp()))
+
+
+def five_fields(module):
+    # The checkout's own classify_register_line where it has one (lane 1's
+    # T122); before it, the five fields as CLI4.10:636 defines them, from the
+    # checkout's own REGISTER_KIND_RE, REGISTER_SLOTS where it has them, and
+    # parse_register_line's repository, UTC and lane: never a second copy of
+    # the classifier (CLI4.5:633).
+    one = getattr(module, "classify_register_line", None)
+    if one is not None:
+        return one
+    slots = getattr(module, "REGISTER_SLOTS", {})
+
+    def fields_of(line):
+        m = module.REGISTER_KIND_RE.match(line)
+        if not m:
+            return ("-", "-", "-", "-", "-")
+        kind = m.group(1)
+        fields = module.parse_register_line(line) or {}
+        return (kind, (slots.get(kind) or (None, None))[0] or "-", fields.get("repo") or "-",
+                epoch(fields.get("utc"), module), fields.get("lane") or "-")
+    return fields_of
 
 
 def classify(args):
-    # Section 3.5: one line per input line, `<kind>` TAB `<slot_role>` TAB
-    # `<repo_key>` TAB `<utc_ts>`, each `-` where parse_register_line gives
-    # none, by the checkout's own parse_register_line (the one classifier,
-    # CLI4.5:633), loaded from its lanes-index; `<utc_ts>` in epoch seconds.
+    # Section 3.5 as contract draft 4.10 states it (CLI4.10:629-638; lane 1,
+    # #165 6752238370): one LF-ended line per LF-cut input line, `<kind>` TAB
+    # `<slot_role>` TAB `<repo_key>` TAB `<utc_ts>` TAB `<lane>`, each `-`
+    # where absent. Any argument is 64, before stdin is read.
     options(args)
 
     def run():
@@ -1068,13 +1098,13 @@ def classify(args):
         spec = importlib.util.spec_from_loader(loader.name, loader)
         module = importlib.util.module_from_spec(spec)
         loader.exec_module(module)
-        out = []
-        for line in sys.stdin.read().splitlines():
-            fields = module.parse_register_line(line) or {}
-            out.append("\t".join([fields.get("kind") or "-", fields.get("slot_role") or "-",
-                                   fields.get("repo_key") or "-",
-                                   epoch(fields.get("utc")) if fields.get("utc") else "-"]))
-        return Exit(0, "".join(line + "\n" for line in out))
+        one = five_fields(module)
+        decode = getattr(module, "_decode", None) or (
+            lambda raw: raw.decode("utf-8", "surrogateescape"))
+        lines = sys.stdin.buffer.read().split(b"\n")
+        if lines[-1] == b"":
+            lines.pop()
+        return Exit(0, "".join("\t".join(one(decode(raw))) + "\n" for raw in lines))
     return run
 
 
@@ -1415,13 +1445,17 @@ def contract_stub(directory, register=None) -> Path:
       `another-write` (2); `found <seq>` with its `file=` rows, or `absent`,
       0. It answers at once: the wait and the window are the real
       `journal`'s, and LR011 and the lookup's 3s are injected.
-    - §3.5 `register classify`: one line per input line, four TAB-separated
-      fields, `<kind>`, `<slot_role>`, `<repo_key>` and `<utc_ts>` (epoch
-      seconds), each `-` where `parse_register_line` gives none, by the
-      checkout's own `parse_register_line` (the one classifier, CLI4.5:633),
-      loaded from `LANES_INDEX`. At `a2073eae` it gives a kind and a UTC, and
-      no `slot_role` or `repo_key`; a test teaches other fields with
-      `stub_outcome`.
+    - §3.5 `register classify`, as contract draft 4.10 states it
+      (CLI4.10:629-638; lane 1, #165 6752238370), not CLI4.5:636's four
+      fields: one LF-ended line per LF-cut input line, five TAB-separated
+      fields, `<kind>`, `<slot_role>`, `<repo_key>`, `<utc_ts>` (epoch
+      seconds) and `<lane>`, each `-` where absent; any argument 64, before
+      stdin is read. The fields are the checkout's own: its
+      `classify_register_line` (lane 1's T122) where `LANES_INDEX` has one,
+      and before it CLI4.10:636's fields from its `REGISTER_KIND_RE`,
+      `REGISTER_SLOTS` (T118) where it has them, and `parse_register_line`,
+      so the stub holds no second classifier (CLI4.5:633). A test teaches
+      other fields with `stub_outcome`.
     - §3.6's four forms of `register read`, each form's argv (an empty
       `--lane=` 64 in forms 2 and 4; `--lane` and `--log-key` only in the `=`
       form): the first stdout line `mode primary`; the cache family written by
