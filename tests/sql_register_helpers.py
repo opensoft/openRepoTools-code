@@ -20,6 +20,10 @@ Test modules import it from `tests/`, as three modules import
   3.2), which extends `test_lanes_index.py`'s `FAKE_PSQL`.
 - `PSQL_SHIM`: section 3.2's shim in front of the real `psql`, armed per test
   by a control file beside it.
+- `contract_stub(directory, register=None)` and `stub_outcome(directory,
+  argv_prefix, …)`: the contract's stub `lanes-index`, as CLI4.5 §6 states
+  it, and the outcomes a test injects into it (T207). `contract_stub`'s
+  docstring is its manual.
 
 THE FAKE-`psql` HOST RULE (lane 1's L1v4.5:525; #165 6741670709 item 9): the
 fake and the shim are made for configurations whose `register_url=` names a
@@ -139,8 +143,11 @@ standard library only too.
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import time
+import uuid
 from pathlib import Path
 
 #: THE CODE ROOT: the parent of this file's `tests/`, and the `lanes-index` in
@@ -644,3 +651,848 @@ def finish(code):
 
 finish(main())
 '''
+
+
+#: THE RENDER SET'S PATHS (CLI4.5 §3.2): `lanes/LANES.md`, `lanes/aliases.tsv`,
+#: each `lanes/log/<lane>.md` and `lanes/archive/*`. `lanes/repos.tsv` and
+#: `lanes/log/README.md` come from the checkout, never from the register.
+RENDER_SET_PATH = re.compile(r"^lanes/(LANES\.md|aliases\.tsv|log/(?!README\.md$)[^/]+\.md"
+                             r"|archive/[^/]+)$")
+
+#: The contract stub's own files, beside it.
+STUB_OUTCOMES = "lanes-index.outcomes"
+STUB_RENDER_LOG = "lanes-index.render"
+
+
+#: THE CONTRACT'S STUB `lanes-index` (T207; CLI4.5 §6, "What the fakes must
+#: do", CLI4.5:881-903). Its manual is `contract_stub`'s docstring.
+_CONTRACT_STUB = r'''#!/usr/bin/env python3
+# THE CONTRACT'S STUB lanes-index (feature 007, L2-0d, T207), as CLI4.5
+# section 6 states it: sections 3.1 to 3.5 exactly, section 3.6's four forms of
+# `register read`, and section 3.7's argv record. Its register is the files
+# under lanes-index.register/<seq>/ beside it, its journal and head are in
+# lanes-index.state, and a test injects an outcome with stub_outcome. It logs
+# every call to lanes-index.argv, one JSON array of arguments per line.
+# tests/sql_register_helpers.py's contract_stub is its manual.
+import calendar, fcntl, hashlib, importlib.machinery, importlib.util, json, os, re, shutil
+import subprocess, sys, time, uuid
+
+HERE = STUB_DIRECTORY
+LANES_INDEX_SOURCE = LANES_INDEX_PATH
+ARGV_LOG = os.path.join(HERE, "lanes-index.argv")
+STATE = os.path.join(HERE, "lanes-index.state")
+OUTCOMES = os.path.join(HERE, "lanes-index.outcomes")
+RENDERS = os.path.join(HERE, "lanes-index.render")
+REGISTER = os.path.join(HERE, "lanes-index.register")
+LOCK = os.path.join(HERE, "lanes-index.lock")
+
+UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
+NUMBER = re.compile(r"^[0-9]+$")
+# check_lane_name's class: letters, digits, `.`, `_` and `-`, not opening
+# with `.` or `-`.
+LANE_CLASS = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
+RENDER_SET = re.compile(r"^lanes/(LANES\.md|aliases\.tsv|log/(?!README\.md$)[^/]+\.md"
+                        r"|archive/[^/]+)$")
+ZEROS = "0" * 40
+# Section 2.4 and 2.5 at their defaults: c = 2, N_a = 1, no service (w_s 0),
+# and the commit's timer C = N_a.c + 6 s; schema_version.version is 1.
+C, N_A, W_S_MS, SCHEMA = 2, 1, 0, 1
+C_TIMER = N_A * C + 6
+SECRET = re.compile(r"TOKEN|SECRET|PASSWORD|PASSWD|KEY", re.I)
+
+
+class Exit(Exception):
+    def __init__(self, code, out="", err=""):
+        Exception.__init__(self, code)
+        self.code, self.out, self.err = code, out, err
+
+
+def usage(what):
+    raise Exit(64, "", "lanes-index: usage: %s\n" % what)
+
+
+def refuse(code, sqlstate, message, token=None):
+    # Section 2.6: psql's ERROR line, then its DETAIL token, verbatim.
+    raise Exit(code, "", "ERROR:  %s: %s\n" % (sqlstate, message)
+               + ("DETAIL:  %s\n" % token if token else ""))
+
+
+def options(args, values=(), equals=(), flags=(), positional=0):
+    got, rest, i = {}, [], 0
+    while i < len(args):
+        arg = args[i]
+        name, eq, value = arg.partition("=")
+        if eq and name in equals:
+            if name in got:
+                usage("%s given twice" % name)
+            got[name] = value
+            i += 1
+        elif arg in equals:
+            usage("%s takes its value in the = form, %s=<key> (L1-D1)" % (arg, arg))
+        elif arg in values:
+            if arg in got:
+                usage("%s given twice" % arg)
+            if i + 1 >= len(args):
+                usage("%s needs a value" % arg)
+            got[arg] = args[i + 1]
+            i += 2
+        elif arg in flags:
+            if arg in got:
+                usage("%s given twice" % arg)
+            got[arg] = True
+            i += 1
+        elif arg.startswith("-"):
+            usage("%s is not an option of this command" % arg)
+        else:
+            rest.append(arg)
+            i += 1
+    if len(rest) != positional:
+        usage("%d operand(s), not %d" % (positional, len(rest)))
+    return got, rest
+
+
+class Locked(object):
+    def __enter__(self):
+        self.handle = open(LOCK, "a")
+        fcntl.flock(self.handle, fcntl.LOCK_EX)
+        with open(STATE, encoding="utf-8") as handle:
+            self.state = json.load(handle)
+        return self.state
+
+    def __exit__(self, *exc):
+        with open(STATE + ".tmp", "w", encoding="utf-8") as handle:
+            json.dump(self.state, handle)
+        os.replace(STATE + ".tmp", STATE)
+        self.handle.close()
+        return False
+
+
+def put(path, data):
+    # Each family file by temp file and rename, as section 3.6 has it.
+    with open(path + ".tmp.%d" % os.getpid(), "wb") as handle:
+        handle.write(data)
+    os.replace(path + ".tmp.%d" % os.getpid(), path)
+
+
+def images(seq):
+    root = os.path.join(REGISTER, str(seq))
+    found = {}
+    for top, _dirs, files in os.walk(root):
+        for name in files:
+            full = os.path.join(top, name)
+            rel = os.path.relpath(full, root).replace(os.sep, "/")
+            if RENDER_SET.match(rel):
+                with open(full, "rb") as handle:
+                    found[rel] = handle.read()
+    return found
+
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def rows(state, seq):
+    for entry in state["journal"].values():
+        if entry["seq"] == seq:
+            return entry["files"]
+    return []
+
+
+def identity(entry, lane, verb, digest):
+    return (entry["lane"], entry["verb"], entry["args_sha256"]) == (lane, verb, digest)
+
+
+def git(cwd, *args):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    return subprocess.run(["git", "-C", cwd, "-c", "user.name=lanes-index stub",
+                           "-c", "user.email=stub@lanes-index.invalid", "-c", "commit.gpgsign=false"]
+                          + list(args), capture_output=True, env=env, check=True)
+
+
+def build_tree(tree, checkout, seq, state):
+    # Section 3.2's --tree: the render set at `seq`, from this stub's register;
+    # lanes/repos.tsv and lanes/log/README.md from --checkout's origin/main
+    # (under --at, repos.tsv as that seq's commit recorded it); one commit,
+    # and refs/remotes/origin/main pointing at it.
+    if os.path.exists(tree) and (not os.path.isdir(tree) or os.listdir(tree)):
+        usage("--tree %s must not exist or must be empty" % tree)
+    os.makedirs(tree, exist_ok=True)
+    files = images(seq)
+    for name in ("lanes/repos.tsv", "lanes/log/README.md"):
+        recorded = os.path.join(REGISTER, "%d.repos.tsv" % seq)
+        if name == "lanes/repos.tsv" and seq != state["n"] and os.path.exists(recorded):
+            with open(recorded, "rb") as handle:
+                files[name] = handle.read()
+            continue
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        shown = subprocess.run(["git", "-C", checkout, "show", "origin/main:" + name],
+                               capture_output=True, env=env)
+        if shown.returncode == 0:
+            files[name] = shown.stdout
+    for rel, data in files.items():
+        full = os.path.join(tree, rel)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "wb") as handle:
+            handle.write(data)
+    git(tree, "init", "-q")
+    git(tree, "add", "-A")
+    git(tree, "commit", "-q", "--allow-empty", "-m", "register at seq %d" % seq)
+    git(tree, "update-ref", "refs/remotes/origin/main", "HEAD")
+    if "lanes/repos.tsv" not in files:
+        return ZEROS
+    return git(tree, "rev-parse", "HEAD:lanes/repos.tsv").stdout.decode().strip()
+
+
+def snapshot(args):
+    o, _ = options(args, values=("--write-id", "--generation", "--lane", "--verb", "--args-sha256",
+                                 "--tree", "--checkout", "--at"))
+    wid, gen, at = o.get("--write-id"), o.get("--generation"), o.get("--at")
+    rest = [o.get(k) for k in ("--lane", "--verb", "--args-sha256")]
+    if ("--tree" in o) != ("--checkout" in o):
+        usage("--tree and --checkout go together")
+    if at is not None and not NUMBER.match(at):
+        usage("--at takes a seq")
+    if wid is None and gen is None and rest == [None, None, None]:
+        kind = "act-begin"
+    elif wid == "new" and gen is None and None not in rest:
+        kind = "new"
+    elif wid is not None and wid != "new" and gen is None:
+        usage("--write-id <uuid> without --generation")
+    elif wid is not None and wid != "new" and None not in rest:
+        kind = "known"
+    elif wid is None and gen is not None and rest == [None, None, None] and at is not None:
+        kind = "generation"
+    else:
+        usage("the identity is all five flags, --write-id new with --lane, --verb and "
+              "--args-sha256, or none")
+    if at is not None and kind not in ("known", "generation"):
+        usage("--at without --generation")
+    if kind == "known" and not UUID.match(wid):
+        usage("--write-id is a lowercase UUID")
+    if gen is not None and not UUID.match(gen):
+        usage("--generation is a lowercase UUID")
+    if rest[2] is not None and not HEX64.match(rest[2]):
+        usage("--args-sha256 is 64 lowercase hex")
+    return lambda: snapshot_run(o, kind, wid, gen, at, rest)
+
+
+def snapshot_run(o, kind, wid, gen, at, rest):
+    with Locked() as state:
+        if gen is not None and gen != state["generation"]:
+            refuse(2, "LR007", "the write's generation is not the register's", "generation")
+        seq = state["n"]
+        lines = ["format=1", "generation=%s" % state["generation"]]
+        if at is not None:
+            seq = int(at)
+            if seq > state["n"] or seq < state["first"]:
+                raise Exit(69, "", "lanes-index: register snapshot: seq %d is not in this "
+                                   "generation's journal\n" % seq)
+        elif kind == "known" and wid in state["journal"]:
+            entry = state["journal"][wid]
+            if not identity(entry, *rest):
+                refuse(2, "LR007", "the write id belongs to another write", "another-write")
+            lines += ["write_id=%s" % wid, "found=%d" % entry["seq"]]
+            lines += ["file=%s" % row for row in entry["files"]]
+            clock = int(time.time())
+            lines += ["switch=primary", "marker=present", "n=%d" % state["n"], "clock=%d" % clock,
+                      "not_after=%d" % (clock + C_TIMER + 2), "schema=%d" % SCHEMA,
+                      "c=%d" % C, "n_a=%d" % N_A]
+            return Exit(0, "".join(line + "\n" for line in lines))
+        if kind == "new":
+            wid = str(uuid.uuid4())
+        if wid is not None:
+            lines.append("write_id=%s" % wid)
+        clock = int(time.time())
+        lines += ["switch=primary", "marker=present", "n=%d" % state["n"], "clock=%d" % clock,
+                  "not_after=%d" % (clock + C_TIMER + 2), "schema=%d" % SCHEMA]
+        if "--tree" in o:
+            lines.append("repos_blob=%s" % build_tree(o["--tree"], o["--checkout"], seq, state))
+        lines += ["c=%d" % C, "n_a=%d" % N_A]
+    return Exit(0, "".join(line + "\n" for line in lines))
+
+
+def attempt(directory, o):
+    # Section 3.3's check of the attempt directory: 2, nothing sent.
+    def bad(what):
+        raise Exit(2, "", "lanes-index: attempt directory: %s; nothing was sent\n" % what)
+
+    for name in ("snapshot", "changes.tsv", "msg", "author", "files", "not_after"):
+        if not os.path.isfile(os.path.join(directory, name)):
+            bad("%s is missing" % name)
+    if not os.path.isdir(os.path.join(directory, "tree")):
+        bad("tree/ is missing")
+    with open(os.path.join(directory, "snapshot"), encoding="utf-8") as handle:
+        snap = dict(line.partition("=")[::2] for line in handle.read().splitlines() if "=" in line)
+    if snap.get("generation") != o["--generation"] or snap.get("write_id") != o["--write-id"]:
+        bad("the flags differ from snapshot")
+    changes = {}
+    with open(os.path.join(directory, "changes.tsv"), encoding="utf-8") as handle:
+        for line in handle.read().splitlines():
+            parts = line.split("\t")
+            if (len(parts) != 4 or parts[0] not in ("A", "M", "D") or not HEX40.match(parts[2])
+                    or not HEX40.match(parts[3])):
+                bad("changes.tsv has a line that is not <status> TAB <path> TAB <blob> TAB <blob>")
+            if not RENDER_SET.match(parts[1]):
+                bad("%s is outside the render set" % parts[1])
+            changes[parts[1]] = parts[0]
+    root = os.path.join(directory, "images")
+    staged = set()
+    for top, _dirs, files in os.walk(root):
+        for name in files:
+            staged.add(os.path.relpath(os.path.join(top, name), root).replace(os.sep, "/"))
+    for path in sorted(staged):
+        if changes.get(path) not in ("A", "M"):
+            bad("images/%s has no A or M line" % path)
+    recomputed = []
+    for path, status in sorted(changes.items()):
+        if status == "D":
+            recomputed.append("%s\t0\t-" % path)
+            continue
+        if path not in staged:
+            bad("images/%s is missing" % path)
+        with open(os.path.join(root, path), "rb") as handle:
+            recomputed.append("%s\t1\t%s" % (path, sha(handle.read())))
+    with open(os.path.join(directory, "files"), encoding="utf-8") as handle:
+        listed = handle.read().splitlines()
+    if sorted(row.split("\t")[0] for row in listed) != sorted(changes):
+        bad("files and changes.tsv name different paths")
+    if listed != recomputed:
+        bad("files differs from the rows its images give")
+    with open(os.path.join(directory, "not_after"), encoding="utf-8") as handle:
+        not_after = handle.read().strip()
+    if not NUMBER.match(not_after):
+        bad("not_after is not epoch seconds")
+    return snap, changes, recomputed, int(not_after)
+
+
+def commit(args):
+    o, rest = options(args, values=("--write-id", "--generation", "--lane", "--verb",
+                                    "--args-sha256", "--workstation"), positional=1)
+    for key in ("--write-id", "--generation", "--lane", "--verb", "--args-sha256", "--workstation"):
+        if key not in o:
+            usage("register commit needs %s" % key)
+    if not UUID.match(o["--write-id"]) or not UUID.match(o["--generation"]):
+        usage("--write-id and --generation are lowercase UUIDs")
+    if not HEX64.match(o["--args-sha256"]):
+        usage("--args-sha256 is 64 lowercase hex")
+    return lambda: commit_run(o, rest[0])
+
+
+def commit_run(o, directory):
+    snap, changes, files, not_after = attempt(directory, o)
+    ident = (o["--lane"], o["--verb"], o["--args-sha256"])
+    with Locked() as state:
+        if o["--generation"] != state["generation"]:
+            refuse(2, "LR007", "the write's generation is not the register's", "generation")
+        entry = state["journal"].get(o["--write-id"])
+        if entry is not None:
+            if not identity(entry, *ident):
+                refuse(2, "LR007", "the write id belongs to another write", "another-write")
+            return Exit(0, "already %d\n" % entry["seq"]
+                        + "".join("file=%s\n" % row for row in entry["files"]))
+        if snap.get("n") != str(state["n"]):
+            refuse(75, "LR001", "the head moved since the snapshot")
+        if int(time.time()) > not_after:
+            refuse(75, "LR008", "the attempt reached its not_after")
+        seq = state["n"] + 1
+        shutil.copytree(os.path.join(REGISTER, str(state["n"])), os.path.join(REGISTER, str(seq)))
+        for path, status in changes.items():
+            target = os.path.join(REGISTER, str(seq), path)
+            if status == "D":
+                if os.path.exists(target):
+                    os.remove(target)
+                continue
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copyfile(os.path.join(directory, "images", path), target)
+        repos = os.path.join(directory, "tree", "lanes", "repos.tsv")
+        if os.path.isfile(repos):
+            shutil.copyfile(repos, os.path.join(REGISTER, "%d.repos.tsv" % seq))
+        state["journal"][o["--write-id"]] = {
+            "seq": seq, "lane": ident[0], "verb": ident[1], "args_sha256": ident[2],
+            "workstation": o["--workstation"], "generation": state["generation"], "files": files}
+        state["n"] = seq
+    return Exit(0, "committed %d\n" % seq)
+
+
+def journal(args):
+    o, _ = options(args, values=("--write-id", "--not-after", "--generation", "--lane", "--verb",
+                                 "--args-sha256", "--clock", "--clock-age"))
+    for key in ("--write-id", "--not-after", "--generation", "--lane", "--verb", "--args-sha256"):
+        if key not in o:
+            usage("journal --write-id needs %s" % key)
+    if ("--clock" in o) != ("--clock-age" in o):
+        usage("--clock and --clock-age go together")
+    if not UUID.match(o["--write-id"]) or not UUID.match(o["--generation"]):
+        usage("--write-id and --generation are lowercase UUIDs")
+    if not HEX64.match(o["--args-sha256"]):
+        usage("--args-sha256 is 64 lowercase hex")
+    for key in ("--not-after", "--clock", "--clock-age"):
+        if key in o and not NUMBER.match(o[key]):
+            usage("%s takes whole seconds" % key)
+    return lambda: journal_run(o)
+
+
+def journal_run(o):
+    with Locked() as state:
+        if o["--generation"] != state["generation"]:
+            refuse(2, "LR007", "the write's generation is not the register's", "generation")
+        entry = state["journal"].get(o["--write-id"])
+        if entry is None:
+            return Exit(0, "absent\n")
+        if not identity(entry, o["--lane"], o["--verb"], o["--args-sha256"]):
+            refuse(2, "LR007", "the write id belongs to another write", "another-write")
+        return Exit(0, "found %d\n" % entry["seq"]
+                    + "".join("file=%s\n" % row for row in entry["files"]))
+
+
+def epoch(utc):
+    for form in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%MZ"):
+        try:
+            return str(calendar.timegm(time.strptime(utc or "", form)))
+        except ValueError:
+            pass
+    return "-"
+
+
+def classify(args):
+    # Section 3.5: one line per input line, `<kind>` TAB `<slot_role>` TAB
+    # `<repo_key>` TAB `<utc_ts>`, each `-` where parse_register_line gives
+    # none, by the checkout's own parse_register_line (the one classifier,
+    # CLI4.5:633), loaded from its lanes-index; `<utc_ts>` in epoch seconds.
+    options(args)
+
+    def run():
+        loader = importlib.machinery.SourceFileLoader("lanes_index_classifier", LANES_INDEX_SOURCE)
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        out = []
+        for line in sys.stdin.read().splitlines():
+            fields = module.parse_register_line(line) or {}
+            out.append("\t".join([fields.get("kind") or "-", fields.get("slot_role") or "-",
+                                   fields.get("repo_key") or "-",
+                                   epoch(fields.get("utc")) if fields.get("utc") else "-"]))
+        return Exit(0, "".join(line + "\n" for line in out))
+    return run
+
+
+def suffix(key):
+    # Section 3.6's file name for a log key: the key, or `%<hex>` outside the
+    # class (O18).
+    return key if LANE_CLASS.match(key) else "%" + key.encode("utf-8").hex()
+
+
+def resolve(key, files):
+    want = ("lanes/log/%s.md" % key).lower()
+    hits = sorted(path for path in files if path.lower() == want)
+    return hits
+
+
+def write_members(cache, members, files, head_rows, absent):
+    for member in members:
+        if member == "register":
+            text = files.get("lanes/LANES.md", b"")
+            put(cache + ".register", text.rstrip(b"\n") + b"\n")
+            if "lanes/LANES.md" in files:
+                head_rows["lanes/LANES.md"] = sha(text)
+        elif member == "paths":
+            put(cache + ".paths", "".join(path + "\n" for path in sorted(files)).encode())
+        elif member == "archive":
+            names = sorted(path for path in files if path.startswith("lanes/archive/"))
+            put(cache + ".archive", b"".join(files[path] for path in names))
+            for path in names:
+                head_rows[path] = sha(files[path])
+        elif member == "aliases":
+            text = files.get("lanes/aliases.tsv")
+            put(cache + ".aliases", text if text else b"# no lane aliases\n")
+            if text is not None:
+                head_rows["lanes/aliases.tsv"] = sha(text)
+        else:
+            key = member[len("log:"):]
+            hits = resolve(key, files)
+            if len(hits) > 1:
+                continue
+            text = files[hits[0]] if hits else b""
+            put(cache + ".log." + suffix(key), text)
+            put(cache + ".logpath." + suffix(key), (hits[0] + "\n").encode() if hits else b"")
+            if not LANE_CLASS.match(key):
+                continue
+            if hits:
+                head_rows[hits[0]] = sha(text)
+            elif key not in absent:
+                absent.append(key)
+
+
+def write_head(cache, state, n, head_rows, absent):
+    lines = ["format=1", "n=%d" % n, "generation=%s" % state["generation"], "c=%d" % C,
+             "n_a=%d" % N_A, "w_s_ms=%d" % W_S_MS]
+    lines += ["file=%s\t1\t%s" % (path, head_rows[path]) for path in sorted(head_rows)]
+    lines += ["absent=%s" % key for key in absent]
+    put(cache + ".head", "".join(line + "\n" for line in lines).encode())
+
+
+def read_head(cache):
+    try:
+        with open(cache + ".head", encoding="utf-8") as handle:
+            text = handle.read().splitlines()
+    except OSError:
+        return None
+    head = {"rows": {}, "absent": []}
+    for line in text:
+        key, _eq, value = line.partition("=")
+        if key == "file":
+            path, _present, digest = value.split("\t")
+            head["rows"][path] = digest
+        elif key == "absent":
+            head["absent"].append(value)
+        else:
+            head[key] = value
+    return head
+
+
+def members_of(o, files):
+    if "--all" in o:
+        logs = sorted(path[len("lanes/log/"):-len(".md")] for path in files
+                      if path.startswith("lanes/log/"))
+        return ["register", "paths", "archive", "aliases"] + [
+            "log:" + name for name in logs if LANE_CLASS.match(name)]
+    members = o["--files"].split(",")
+    for member in members:
+        if member in ("register", "paths", "archive", "aliases"):
+            continue
+        if member.startswith("log:") and LANE_CLASS.match(member[len("log:"):]):
+            continue
+        usage("--files takes register, paths, archive, aliases and log:<key> for a key in "
+              "check_lane_name's class, not %s" % member)
+    return members
+
+
+def cached_members(cache):
+    directory, base = os.path.split(cache)
+    found = []
+    for name in ("register", "paths", "archive", "aliases"):
+        if os.path.exists(cache + "." + name):
+            found.append(name)
+    for name in sorted(os.listdir(directory or ".")):
+        if name.startswith(base + ".log.") and LANE_CLASS.match(name[len(base + ".log."):]):
+            found.append("log:" + name[len(base + ".log."):])
+    return found
+
+
+def read(args):
+    o, _ = options(args, values=("--for", "--cache", "--files", "--pid", "--repo", "--at",
+                                 "--since"),
+                   equals=("--lane", "--log-key"), flags=("--prefetch", "--all"))
+    has = set(o)
+    if o.get("--for") not in (None, "guard"):
+        usage("--for takes guard")
+    if "--cache" not in o:
+        usage("register read needs --cache <file>")
+    for key in ("--pid", "--at", "--since"):
+        if key in o and not NUMBER.match(o[key]):
+            usage("%s takes a whole number" % key)
+    if has <= {"--prefetch", "--cache", "--files", "--all"} and "--prefetch" in has:
+        if ("--files" in has) == ("--all" in has):
+            usage("form 1 takes --files <set> or --all")
+        form = 1
+    elif has <= {"--for", "--prefetch", "--cache", "--pid", "--repo", "--lane"} and \
+            {"--for", "--prefetch", "--pid", "--repo"} <= has:
+        form = 2
+    elif has <= {"--since", "--cache", "--files", "--log-key"} and "--since" in has and \
+            ("--files" in has or "--log-key" in has):
+        form = 3
+    elif has == {"--for", "--at", "--pid", "--cache", "--lane"}:
+        form = 4
+    else:
+        usage("not one of register read's four forms (section 3.6)")
+    if form in (2, 4) and o.get("--lane") == "":
+        usage("an empty --lane= key")
+    if o.get("--log-key") == "":
+        usage("an empty --log-key= key")
+    if "--files" in o:
+        members_of(o, {})
+    return lambda: read_run(o, form)
+
+
+def read_run(o, form):
+    cache = o["--cache"]
+    with Locked() as state:
+        n = state["n"]
+        if form == 4:
+            head = read_head(cache)
+            at = int(o["--at"])
+            if head is None or head.get("generation") != state["generation"]:
+                raise Exit(69, "mode primary\n", "lanes-index: register read: the cache's .head "
+                           "is missing or names another generation\n")
+            if at > n or at < state["first"]:
+                raise Exit(69, "mode primary\n", "lanes-index: register read: seq %d is not in "
+                           "this generation's journal\n" % at)
+            files = images(at)
+            key = o["--lane"]
+            if len(resolve(key, files)) > 1:
+                raise Exit(69, "mode primary\n", "lanes-index: register read: two logs differ "
+                           "from %s only by case\n" % key)
+            write_members(cache, ["log:" + key], files, {}, [])
+            return Exit(0, "mode primary\n")
+        files = images(n)
+        if form in (1, 2):
+            if form == 1:
+                members = members_of(o, files)
+            else:
+                members = ["register", "aliases"]
+                if o.get("--lane") and LANE_CLASS.match(o["--lane"]):
+                    members.append("log:" + o["--lane"])
+            head_rows, absent = {}, []
+            write_members(cache, members, files, head_rows, absent)
+            write_head(cache, state, n, head_rows, absent)
+            return Exit(0, "mode primary\n")
+        members = members_of(o, files) if "--files" in o else []
+        keys = [m[len("log:"):] for m in members if m.startswith("log:")]
+        if "--log-key" in o:
+            keys.append(o["--log-key"])
+        for key in keys:
+            if len(resolve(key, files)) > 1:
+                raise Exit(69, "mode primary\n", "lanes-index: register read: two logs differ "
+                           "from %s only by case\n" % key)
+        since = int(o["--since"])
+        before = images(since) if state["first"] <= since <= n else {}
+        changed = sorted({row.split("\t")[0] for entry in state["journal"].values()
+                          if since < entry["seq"] <= n for row in entry["files"]})
+        head = read_head(cache)
+        whole = (head is None or head.get("n") != str(since)
+                 or head.get("generation") != state["generation"])
+        if not whole:
+            whole = any(path in head["rows"] for path in changed)
+            if os.path.exists(cache + ".paths"):
+                whole = whole or any((path in before) != (path in files) for path in changed)
+            whole = whole or any(resolve(key, files) for key in head["absent"])
+        if whole:
+            head_rows, absent = {}, []
+            write_members(cache, cached_members(cache) + [m for m in members], files,
+                          head_rows, absent)
+        else:
+            head_rows, absent = dict(head["rows"]), list(head["absent"])
+            write_members(cache, members, files, head_rows, absent)
+        if "--log-key" in o:
+            write_members(cache, ["log:" + o["--log-key"]], files, {}, [])
+        write_head(cache, state, n, head_rows, absent)
+        out = ["mode primary", "n=%d" % n] + ["changed=%s" % path for path in changed]
+        out.append("refetched=%d" % (1 if whole else 0))
+        return Exit(0, "".join(line + "\n" for line in out))
+
+
+def render(args):
+    # Section 3.7: the record of the fork's argv and environment, and the
+    # flipped build's answer, which the detached caller never reads.
+    options(args, values=("--checkout",))
+    return lambda: render_run(args)
+
+
+def render_run(args):
+    env = {k: ("*" if SECRET.search(k) else v) for k, v in sorted(os.environ.items())}
+    with open(RENDERS, "a", encoding="utf-8") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        handle.write(json.dumps({"argv": ["render"] + args, "env": env}) + "\n")
+    return Exit(69, "", "lanes-index: render: git half not installed\n")
+
+
+def route(argv):
+    # The handler of a call this stub answers, its argv checked now (64), or
+    # None for a form it does not answer unless a test injects one.
+    words = argv[:2]
+    if argv[:1] == ["mode"]:
+        if argv[1:]:
+            usage("mode takes no argument")
+        return lambda: Exit(0, "primary\n")
+    if words == ["register", "snapshot"]:
+        if any(a in ("--files", "--all", "--out") for a in argv[2:]):
+            return None
+        return snapshot(argv[2:])
+    if words == ["register", "commit"]:
+        return commit(argv[2:])
+    if argv[:1] == ["journal"] and "--write-id" in argv[1:]:
+        return journal(argv[1:])
+    if words == ["register", "classify"]:
+        return classify(argv[2:])
+    if words == ["register", "read"]:
+        return read(argv[2:])
+    if argv[:2] == ["render", "--checkout"]:
+        return render(argv[1:])
+    return None
+
+
+def injected(argv):
+    try:
+        with open(OUTCOMES, encoding="utf-8") as handle:
+            outcomes = json.load(handle)
+    except FileNotFoundError:
+        return None
+    for outcome in reversed(outcomes):
+        if argv[:len(outcome["argv"])] == outcome["argv"]:
+            return outcome
+    return None
+
+
+def main(argv):
+    with open(ARGV_LOG, "a", encoding="utf-8") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        handle.write(json.dumps(argv) + "\n")
+    try:
+        handler = route(argv)
+        outcome = injected(argv)
+        if outcome is not None:
+            if outcome.get("committed") and handler is not None:
+                try:
+                    handler()
+                except Exit:
+                    pass
+            if outcome.get("hang"):
+                time.sleep(float(outcome["hang"]))
+            raise Exit(int(outcome.get("exit") or 0), outcome.get("stdout") or "",
+                       outcome.get("stderr") or "")
+        if handler is None:
+            usage("the contract stub does not answer %s; inject an outcome" % json.dumps(argv))
+        raise handler()
+    except Exit as end:
+        sys.stdout.write(end.out)
+        sys.stderr.write(end.err)
+        return end.code
+
+
+sys.exit(main(sys.argv[1:]))
+'''
+
+
+def contract_stub(directory, register=None) -> Path:
+    """Write `<directory>/lanes-index`, the contract's stub `lanes-index`
+    (T207; CLI4.5 §6, CLI4.5:881-903), and return its path: a Python script
+    with a `#!/usr/bin/env python3` line and the executable bit, which a test
+    runs by its path (R2's S8). `directory` is made if it is missing.
+
+    THE COPY RULE (CLI4.5 §6, CLI4.5:885; O11): a test copies `lanes-edit.sh`,
+    `repos.tsv` and `lane-start` beside the stub, where `lanes_index_bin` looks
+    first, `$SCRIPT_DIR/lanes-index`.
+
+    ITS REGISTER: the render set's files at each seq, under
+    `<directory>/lanes-index.register/<seq>/`; its head, its generation and its
+    journal in `<directory>/lanes-index.state`. Called again on one
+    directory, it starts a new register and moves the old one aside. The head starts at seq 1, the
+    generation's first, holding `register`, a mapping of render-set paths
+    (`lanes/LANES.md`, `lanes/aliases.tsv`, `lanes/log/<lane>.md`,
+    `lanes/archive/<name>`) to their text, empty by default. The generation
+    is a new UUID. Each `register commit` that commits makes the next seq.
+
+    WHAT IT ANSWERS, by CLI4.5's sections; every other end is a test's to
+    inject with `stub_outcome`:
+
+    - §3.1 `mode`: `primary`, 0; with any argument, 64.
+    - §3.2 `register snapshot`: the argv's forms, each other form 64 (an id
+      without `--generation`, `--at` without it, `--tree` without
+      `--checkout`); check 1, the generation, 2 with `ERROR:  LR007: …` and
+      `DETAIL:  generation`; check 2, the id found with its lane, verb and
+      `args_sha256`, 0 with `found=` and its `file=` rows; check 2′, the id
+      another write's, 2 with `DETAIL:  another-write`; then the `key=value`
+      lines in §3.2's order, the id minted for `--write-id new`, `not_after=`
+      the clock plus `C` plus 2 s. `--tree <dir> --checkout <c>` builds the
+      scratch tree from the stub's register at `n` (or at `--at <k>`), with
+      `lanes/repos.tsv` and `lanes/log/README.md` from `<c>`'s `origin/main`,
+      one commit and `refs/remotes/origin/main` on it, and prints
+      `repos_blob=`. Under `--at` only the generation is checked, and a seq
+      outside the generation's journal is 69. `--files`, `--all` and `--out`
+      (§3.6's image form) are not answered.
+    - §3.3 `register commit`: the argv, each flag required (64); the attempt
+      directory's check, 2 with `lanes-index: attempt directory: <what>;
+      nothing was sent` (a listed file missing, an image with no `A` or `M`
+      line, `files` and `changes.tsv` naming different paths, `files`
+      differing from the images' rows, the flags differing from `snapshot`, a
+      path outside the render set); then LR007 `generation` and
+      `another-write` (2), LR006 (0, `already <seq>` and its `file=` rows),
+      LR001 where `snapshot`'s `n=` is not the head (75), LR008 past
+      `not_after` (75), and otherwise `committed <seq>`, 0.
+    - §3.4 `journal --write-id …`: the argv (64); LR007 `generation` and
+      `another-write` (2); `found <seq>` with its `file=` rows, or `absent`,
+      0. It answers at once: the wait and the window are the real
+      `journal`'s, and LR011 and the lookup's 3s are injected.
+    - §3.5 `register classify`: one line per input line, four TAB-separated
+      fields, `<kind>`, `<slot_role>`, `<repo_key>` and `<utc_ts>` (epoch
+      seconds), each `-` where `parse_register_line` gives none, by the
+      checkout's own `parse_register_line` (the one classifier, CLI4.5:633),
+      loaded from `LANES_INDEX`. At `a2073eae` it gives a kind and a UTC, and
+      no `slot_role` or `repo_key`; a test teaches other fields with
+      `stub_outcome`.
+    - §3.6's four forms of `register read`, each form's argv (an empty
+      `--lane=` 64 in forms 2 and 4; `--lane` and `--log-key` only in the `=`
+      form): the first stdout line `mode primary`; the cache family written by
+      temp file and rename beside `--cache <file>`, `.head` last, with its
+      `file=` rows for the texts cached and an `absent=` row for a log that
+      resolves to none; a key outside `check_lane_name`'s class as
+      `.log.%<hex>`; two logs that differ only by case written by no form, and
+      69 in forms 3 and 4; form 3's `n=`, `changed=` and `refetched=` lines
+      and its refetch rules; form 4's `.head` checks (69 where it is missing,
+      names another generation, or `--at` is outside the journal), its one log
+      at `--at`, and no `.head`. `.outage`, `.direct` and the guard's "too
+      late" are injected.
+    - §3.7 `render --checkout <c>`: one JSON line per call in
+      `<directory>/lanes-index.render`, its argv and its environment (the
+      value of a variable whose name holds TOKEN, SECRET, PASSWORD, PASSWD or
+      KEY recorded as `*`), and "git half not installed" on stderr, 69.
+    - Anything else: 64, unless a test injects an outcome for it.
+
+    Every call is logged to `<directory>/lanes-index.argv`, one JSON array of
+    its arguments per line (lane 4's M9)."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    old = directory / "lanes-index.register"
+    if old.exists():
+        old.rename(directory / f"lanes-index.register.old-{time.time_ns()}")
+    seed = directory / "lanes-index.register" / "1"
+    seed.mkdir(parents=True, exist_ok=True)
+    for path, text in (register or {}).items():
+        if not RENDER_SET_PATH.match(path):
+            raise ValueError(f"contract_stub: {path} is not a render-set path")
+        target = seed / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(text.encode("utf-8") if isinstance(text, str) else text)
+    state = {"generation": str(uuid.uuid4()), "n": 1, "first": 1, "journal": {}}
+    (directory / "lanes-index.state").write_text(json.dumps(state), encoding="utf-8")
+    stub = directory / "lanes-index"
+    here = str(directory.resolve())
+    text = _CONTRACT_STUB.replace("STUB_DIRECTORY", repr(here), 1)
+    text = text.replace("LANES_INDEX_PATH", repr(str(LANES_INDEX)), 1)
+    stub.write_text(text, encoding="utf-8")
+    stub.chmod(0o755)
+    return stub
+
+
+def stub_outcome(directory, argv_prefix, exit=None, stdout=None, stderr=None, committed=False,
+                 hang=None) -> None:
+    """Inject an outcome into the contract stub in `directory`: every later
+    call whose arguments begin with `argv_prefix` (a string of words, such as
+    `"register commit"`, or a list) ends with `exit` (0 where only output is
+    given), printing `stdout` and `stderr`. The last injected outcome whose
+    prefix matches answers, after the call's argv has been checked (64 still
+    comes first).
+
+    - `committed=True`: the call first does what it would, its own answer
+      dropped, as "committed, then exit 3", agreement test 12's pair.
+    - `hang=<seconds>`: it sleeps first, a hang past the caller's timer.
+    - Each LR code is its `exit` with `stderr` in §2.6's shape, such as
+      `"ERROR:  LR005: <message>\\nDETAIL:  main-held\\n"` with 2.
+    - On `journal --write-id`, a crash (`exit=1`, a traceback on stderr) and an
+      unknown code (any other) are the caller's to read as 3 (CO-2).
+
+    Called with no outcome (no `exit`, `stdout`, `stderr` or `hang`), it
+    removes the outcomes injected for that prefix."""
+    words = argv_prefix.split() if isinstance(argv_prefix, str) else list(argv_prefix)
+    path = Path(directory) / STUB_OUTCOMES
+    outcomes = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+    if exit is None and stdout is None and stderr is None and hang is None:
+        outcomes = [o for o in outcomes if o["argv"] != words]
+    else:
+        outcomes.append({"argv": words, "exit": exit, "stdout": stdout, "stderr": stderr,
+                         "committed": bool(committed), "hang": hang})
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(outcomes), encoding="utf-8")
+    os.replace(tmp, path)
