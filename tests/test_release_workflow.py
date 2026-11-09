@@ -43,8 +43,9 @@ per part of it (plan.md, "The test layout"):
   gate on `tests.yml`'s four jobs and the digest step, each run under a
   forge, the digest step also in a copy of the checkout whose standard or
   pin names another definition; the build step run with a fake build;
-  step 13's wheel check run on synthetic wheels made from HEAD's blobs; and
-  the digest label, one literal in the installer, the pin and the standard;
+  step 13's wheel check run on synthetic wheels made from HEAD's blobs, and
+  its whole step on a rehearsal's branch and on the tag; and the digest
+  label, one literal in the installer, the pin and the standard;
 - `test_release_stamp_writer_*`: the build's own stamp writer, run on a copy
   of the committed stamp and read back by `--version` from a `package_tree`;
 - `test_release_guard_build_*` and `test_release_guard_upload_*` (FR-048):
@@ -2154,6 +2155,64 @@ def test_release_build_the_wheel_check_refuses_a_wheel_that_is_not_the_commit_s(
     new = [line for line in lines(bad, "b") if line not in known]
     assert [line for line in new if line.startswith("::error::") and names in line], (
         f"no ::error:: line of the refusal names {names}:\n{transcript(bad)}")
+
+
+#: THE WHEEL CHECK'S WHOLE STEP, ON THE RUNS A DISPATCH CAN BE: `(the
+#: dispatched ref, the version, the repository it runs in)`. A rehearsal is
+#: dispatched on a branch, in this repository, as rehearsals run today, and
+#: builds the version of the tag it rehearses, `1.1.0rc1` first; a release is
+#: dispatched on its own tag, in the code leg. Each wheel is stamped with the
+#: repository of its own run, so a `REPOSITORY` hard-coded to either name
+#: fails one of the two cases.
+WHEEL_CHECK_REFS = {
+    "a-rehearsal-branch": ("refs/heads/l3-rehearsal-v1.1.0", "1.1.0rc1",
+                           THIS_REPOSITORY),
+    "the-version-s-tag": ("refs/tags/v1.1.0", "1.1.0", CODE_LEG),
+}
+
+
+@NEEDS_UPSTREAM
+@NEEDS_BASH
+@WINDOWS_SKIP
+@pytest.mark.parametrize("which", WHEEL_CHECK_REFS)
+def test_release_build_the_wheel_check_step_as_github_runs_it_holds_the_wheel_to_v_version(
+        tmp_path, which):
+    """STEP 13, THE WHOLE STEP, RUN AS GITHUB RUNS IT: its bash line sets `TAG`,
+    `COMMIT` and `REPOSITORY` from `$VERSION`, `$GITHUB_SHA` and
+    `$GITHUB_REPOSITORY`, and hands its heredoc the wheel at
+    `$RUNNER_TEMP/dist-a/openrepotools-$VERSION-py3-none-any.whl`. With the
+    wheel as built for the release put there, stamped with the repository of
+    the run, it passes on a rehearsal's branch in this repository and on the
+    version's tag in the code leg alike. So the `TAG` it holds the stamp to
+    is `v$VERSION`, which comes from `$VERSION` and never from the ref's
+    name: a branch's name is `l3-rehearsal-v1.1.0`, and the heredoc refuses
+    a `TAG` that is not `v$VERSION`. And the `REPOSITORY` it holds the stamp
+    to is `$GITHUB_REPOSITORY`, never the code leg's by name: a rehearsal
+    runs in this repository, where the heredoc refuses a `REPOSITORY` that is
+    not the run's."""
+    ref, version, repository = WHEEL_CHECK_REFS[which]
+    release_ = dict(wheel_release(version), REPOSITORY=repository)
+    workflow = release()
+    step = named(workflow, "build", WHEEL_CHECK_STEP)
+    if "tomllib" in heredoc(run_text(step)) and sys.version_info < (3, 11):
+        pytest.skip("the step's script reads TOML with tomllib, which is "
+                    "Python 3.11's and up, as the build job's Python is")
+    values = {"VERSION": version, "GITHUB_SHA": release_["COMMIT"],
+              "GITHUB_REPOSITORY": release_["REPOSITORY"],
+              "DIGEST": release_["DIGEST"], "GITHUB_REF": ref,
+              "GITHUB_REF_NAME": ref_name(ref)}
+    fakes = python_tool(tmp_path / "fakes", "python3", AS_PYTHON)
+    runner = Runner(tmp_path / "work", workflow, "build", values, fakes)
+    members, info = wheel_members(release_)
+    write_wheel(Path(runner.env["RUNNER_TEMP"]) / "dist-a"
+                / f"openrepotools-{version}-py3-none-any.whl", members, info)
+    done = runner.run(step, cwd=REPO)
+    assert done.returncode == 0, transcript(done)
+    lines = done.stdout.splitlines()
+    assert (f"openrepotools/_release.py: the committed file, with "
+            f"{list(layout.STAMP_FIELDS)} written") in lines, transcript(done)
+    assert lines[-1] == "commands: ['openRepoTools']", (
+        f"the check did not run to its end:\n{transcript(done)}")
 
 
 # --- the stamp writer --------------------------------------------------------------
