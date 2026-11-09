@@ -1189,6 +1189,31 @@ def test_a_cwd_that_appears_after_the_listing_holds(sweep):
                 pass
 
 
+def test_under_its_lock_what_leans_on_it_is_read_last(sweep):
+    """UNDER A CANDIDATE'S LOCK, WHAT LEANS ON IT IS READ LAST, AND ONLY FOR
+    A CANDIDATE NOTHING ELSE HOLDS (lane openRepoTools-3's SHOULD 1 on
+    code#21): the working directories, the windows' `LANES_REPO` and the
+    mounts are read first, then its own state, and a hold read there lets
+    the lock go without the dependents read. The CLOSED lane's checkout
+    holds an untracked handoff, and a `--reference` clone of it in
+    `$TMPDIR` leans on it. The dry run names both holds; `--yes` holds it
+    by its own state and names that alone."""
+    box = sweep.box
+    c = box.checkout(CLOSED)
+    _untracked_handoff(box, c)
+    dep = _borrower(box, Path(box.env["TMPDIR"]) / "rescue", c)
+    _, rows = sweep()
+    assert "untracked: 1 (handoffs/repoS4/draft.md)" in rows[str(c)][1], rows[str(c)]
+    assert f"leaned on by {dep} " in rows[str(c)][1], rows[str(c)]
+    result, rows = sweep("--yes", LANES_LANE=RUNNER)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert rows[str(c)][0] == "hold", rows[str(c)]
+    assert "untracked: 1 (handoffs/repoS4/draft.md)" in rows[str(c)][1], rows[str(c)]
+    assert "leaned on by" not in rows[str(c)][1], rows[str(c)]
+    assert c.is_dir()
+    assert not os.path.lexists(box.lock_of(c)), "its lock is let go"
+
+
 def _hook_on_fetch_of(box: Sweep, target: Path, body: str) -> None:
     """A `LANES_GIT` hook that runs `body` when the sweep fetches `target`."""
     box.use_net(hook=(
@@ -2731,6 +2756,50 @@ def test_a_window_whose_LANES_REPO_names_a_clone_beside_W_holds_it(sweep, spelle
         sleeper.wait()
 
 
+def test_a_clone_a_window_writes_through_is_held_before_its_lock_is_taken(sweep):
+    """THE CHEAP HOLDS ARE READ BEFORE A CANDIDATE'S LOCK IS TAKEN (lane
+    openRepoTools-3's SHOULD 1 on code#21, its probe made a case): a live
+    window whose `LANES_REPO` names the leaf clone beside W holds it, and
+    `--yes` never takes that clone's writers' lock. It took the lock first,
+    then fetched and scanned what leans on it under the lock (about 44
+    minutes on Eagle), and read the windows' `LANES_REPO` only then, so each
+    write of that window waited on the lock and failed. A `mkdir` first on
+    PATH logs each time the clone's lock is taken, and a `find` first on
+    PATH logs each dependents-scan call with whether that lock is held. The
+    window is a `sleep` with that `LANES_REPO`, killed by its PID."""
+    box = sweep.box
+    c3 = box.profile_clones[2]
+    _free_profile_clones(box)
+    lock = box.lock_of(c3)
+    log = box.root / "calls.log"
+    for tool, logged in (
+            ("find", 'case " $* " in *" -name objects "*) '
+                     f'if [ -e {lock} ]; then w=held; else w=free; fi; '
+                     f'printf "find %s %s\\n" "$1" "$w" >> {log} ;; esac'),
+            ("mkdir", f'case " $* " in *" {lock} "*) printf "mkdir %s\\n" "$*" >> {log} ;; esac')):
+        real = shutil.which(tool)
+        assert real, f"no {tool} on the test's own PATH"
+        (box.fakebin / tool).write_text(f'#!/usr/bin/env bash\n{logged}\nexec {real} "$@"\n',
+                                        encoding="utf-8")
+        (box.fakebin / tool).chmod(0o755)
+    window = subprocess.Popen(["sleep", "600"], cwd=str(box.root),
+                              env=dict(box.env, LANES_REPO=str(c3)))
+    try:
+        result, rows = sweep("--yes", LANES_LANE=RUNNER)
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert rows[str(c3)][0] == "hold", rows[str(c3)]
+        assert (f"the LANES_REPO of a live process names it (pid {window.pid}): a window "
+                "writes the register through it") in rows[str(c3)][1], rows[str(c3)]
+        calls = log.read_text(encoding="utf-8").splitlines()
+        assert [ln for ln in calls if ln.startswith("find ")], "the dependents scan ran"
+        assert not [ln for ln in calls if ln.startswith("mkdir ")], calls
+        assert not [ln for ln in calls if ln.endswith(" held")], calls
+        assert c3.is_dir()
+    finally:
+        window.kill()
+        window.wait()
+
+
 def test_with_no_proc_whether_a_window_names_a_clone_beside_W_cannot_be_told(sweep):
     """WITH NO `/proc`, A CLONE BESIDE W IS HELD AS "CANNOT TELL" (D37): no
     lane's state keeps it, and no window's `LANES_REPO` can be read.
@@ -3100,8 +3169,12 @@ def test_a_candidate_gone_at_its_turn_is_said_as_gone(sweep):
 
 
 def _git_after_the_last_read(box: Sweep, c: Path, body: str) -> None:
-    """A `git` first on PATH that runs `body` once, right after the last read
-    of `c`'s holds under its lock (its ignored files), before the move."""
+    """A `git` first on PATH that runs `body` once, right after the last of
+    `c`'s git reads under its lock (its ignored files): after its working
+    directories, its windows' `LANES_REPO` and its mounts were last read
+    there, and before the move. What leans on it is read after this, since
+    lane openRepoTools-3's SHOULD 1 on code#21, so a file that comes to name
+    it is written as it is moved aside instead (`_mv_then`)."""
     git = shutil.which("git")
     assert git, "no git on the test's own PATH"
     marker = box.root / "after-the-last-read.marker"
@@ -3147,24 +3220,26 @@ def test_a_process_that_comes_in_after_the_last_read_moves_it_back(sweep):
                 pass
 
 
-def test_a_clone_made_after_the_last_read_moves_it_back(sweep):
-    """THE MOVE IS THE COMMIT POINT (NIT 353): a `--reference` clone of the
-    checkout made after the last read of what leans on it, in `$TMPDIR`,
-    names the old path, which the move took away, so it is matched as
-    written. It holds the checkout, which is moved back, and the clone stays
-    whole."""
+def test_an_alternates_file_rewritten_as_it_is_moved_aside_moves_it_back(sweep):
+    """THE MOVE IS THE COMMIT POINT (NIT 353): an alternates file that comes
+    to name the checkout after the last read of what leans on it names the
+    old path, which the move took away, so it is matched as written. A
+    `--reference` clone of W, with a commit of its own, stands in `$TMPDIR`
+    from the listing, and an `mv` first on PATH rewrites its alternates file
+    to name the CLOSED lane's objects just after that checkout is moved
+    aside. Read again after the move, it holds the checkout, which is moved
+    back, and the clone stays whole."""
     box = sweep.box
     c = box.checkout(CLOSED)
-    dep = Path(box.env["TMPDIR"]) / "late-borrower"
-    git = shutil.which("git")
-    _git_after_the_last_read(box, c, (
-        f"{git} clone -q --no-local --reference {c} {box.origin} {dep}"))
+    dep = _borrower(box, Path(box.env["TMPDIR"]) / "late-borrower", box.w)
+    _mv_then(box, c, f"printf '%s\\n' {c}/.git/objects > {dep}/.git/objects/info/alternates")
     result, rows = sweep("--yes", LANES_LANE=RUNNER)
-    assert (dep / ".git").is_dir(), "the shim made the clone"
     assert rows[str(c)][0] == "hold", rows[str(c)]
-    assert f"leaned on by {dep}" in rows[str(c)][1], rows[str(c)]
+    assert f"leaned on by {dep}, which came as it was moved aside" in rows[str(c)][1], rows[str(c)]
     assert "it was moved back" in rows[str(c)][1], rows[str(c)]
     assert result.returncode == 0, (result.stdout, result.stderr)
+    assert (dep / ".git" / "objects" / "info" / "alternates").read_text(
+        encoding="utf-8") == f"{c}/.git/objects\n", "the shim rewrote it"
     box.git("-C", str(dep), "fsck", "--connectivity-only")
     _no_aside(box)
 
@@ -3293,36 +3368,42 @@ def test_a_proc_gone_as_a_clone_beside_W_is_moved_aside_moves_it_back(sweep):
 
 
 @pytest.mark.parametrize("which", [".git file", "alternates file"])
-def test_a_relative_path_written_after_the_last_read_moves_it_back(sweep, which):
+def test_a_relative_path_rewritten_as_it_is_moved_aside_moves_it_back(sweep, which):
     """THE MOVE IS THE COMMIT POINT FOR A RELATIVE PATH TOO (the 353 gap, D44's
-    note, D46): a `.git` file, or an alternates file, written after the last
-    read under the lock, with a path relative to its own directory through
-    `..`, names the old path. After the move that path no longer resolved,
-    and was kept as written, with its `..`, so it named no candidate and the
-    checkout was removed under it. Now the deepest directory on it that
-    stands is resolved and the rest appended as text, so it names the old
-    path: the checkout is moved back, and what names it stays whole. (The
-    `.git` file's case also needs the read after the move to look at `.git`
-    files at all, which it did not: the next case.)"""
+    note, D46): a `.git` file, or an alternates file, that comes to name the
+    checkout after the last read under the lock, with a path relative to
+    its own directory through `..`, names the old path. After the move that
+    path no longer resolved, and was kept as written, with its `..`, so it
+    named no candidate and the checkout was removed under it. Now the
+    deepest directory on it that stands is resolved and the rest appended
+    as text, so it names the old path: the checkout is moved back, and what
+    names it stays whole. The file stands from the listing, naming W's, and
+    an `mv` first on PATH rewrites it just after the checkout is moved
+    aside. (The `.git` file's case also needs the read after the move to
+    look at `.git` files at all, which it did not: the next case.)"""
     box = sweep.box
     c = box.checkout(CLOSED)
     if which == ".git file":
         sharer = box.w.parent / "late-sharer"
+        sharer.mkdir()
+        named = sharer / ".git"
+        named.write_text(f"gitdir: {box.w}/.git\n", encoding="utf-8")
         rel = os.path.relpath(c / ".git", sharer)
-        body = f"mkdir -p {sharer} && printf 'gitdir: %s\\n' {rel} > {sharer}/.git"
+        text = f"gitdir: {rel}\n"
+        act = f"printf 'gitdir: %s\\n' {rel} > {named}"
         said = (f"its git directory is named by the .git file of {sharer}, which works in it "
                 "and came as it was moved aside")
     else:
-        sharer = Path(box.env["TMPDIR"]) / "late-borrower"
+        sharer = _borrower(box, Path(box.env["TMPDIR"]) / "late-borrower", box.w)
+        named = sharer / ".git" / "objects" / "info" / "alternates"
         rel = os.path.relpath(c / ".git" / "objects", sharer / ".git" / "objects")
-        git = shutil.which("git")
-        body = (f"{git} clone -q --no-local --reference {c} {box.origin} {sharer} && "
-                f"printf '%s\\n' {rel} > {sharer}/.git/objects/info/alternates")
+        text = f"{rel}\n"
+        act = f"printf '%s\\n' {rel} > {named}"
         said = f"leaned on by {sharer}, which came as it was moved aside"
     assert rel.startswith("../"), rel
-    _git_after_the_last_read(box, c, body)
+    _mv_then(box, c, act)
     result, rows = sweep("--yes", LANES_LANE=RUNNER)
-    assert (sharer / ".git").exists(), "the shim wrote it"
+    assert named.read_text(encoding="utf-8") == text, "the shim rewrote it"
     assert rows[str(c)][0] == "hold", rows[str(c)]
     assert said in rows[str(c)][1], rows[str(c)]
     assert "it was moved back" in rows[str(c)][1], rows[str(c)]
@@ -3335,20 +3416,25 @@ def test_a_relative_path_written_after_the_last_read_moves_it_back(sweep, which)
         box.git("-C", str(sharer), "fsck", "--connectivity-only")
 
 
-def test_a_git_file_written_after_the_last_read_moves_it_back(sweep):
+def test_a_git_file_rewritten_as_it_is_moved_aside_moves_it_back(sweep):
     """THE MOVE IS THE COMMIT POINT FOR A `.git` FILE TOO (D46): the read under
     the lock holds a checkout that a `.git` file names, but the read after
-    the move matched only the alternates files. A `.git` file written in
-    between, with an absolute path as well as a relative one, went unread
-    there, and the checkout was removed under the directory that works in
-    it. Now it is read there as an alternates line is: the checkout is
-    moved back, and the directory works in it again."""
+    the move matched only the alternates files. A `.git` file that came to
+    name it in between, with an absolute path as well as a relative one,
+    went unread there, and the checkout was removed under the directory
+    that works in it. Now it is read there as an alternates line is: the
+    checkout is moved back, and the directory works in it again. The file
+    stands from the listing, naming W's git directory, and an `mv` first on
+    PATH rewrites it just after the checkout is moved aside."""
     box = sweep.box
     c = box.checkout(CLOSED)
     sharer = box.w.parent / "late-sharer"
-    _git_after_the_last_read(box, c, f"mkdir -p {sharer} && printf 'gitdir: %s\\n' {c}/.git > {sharer}/.git")
+    sharer.mkdir()
+    (sharer / ".git").write_text(f"gitdir: {box.w}/.git\n", encoding="utf-8")
+    _mv_then(box, c, f"printf 'gitdir: %s\\n' {c}/.git > {sharer}/.git")
     result, rows = sweep("--yes", LANES_LANE=RUNNER)
-    assert (sharer / ".git").is_file(), "the shim wrote it"
+    assert (sharer / ".git").read_text(encoding="utf-8") == f"gitdir: {c}/.git\n", \
+        "the shim rewrote it"
     assert rows[str(c)][0] == "hold", rows[str(c)]
     assert (f"its git directory is named by the .git file of {sharer}, which works in it "
             "and came as it was moved aside") in rows[str(c)][1], rows[str(c)]

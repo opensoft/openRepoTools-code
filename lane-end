@@ -2006,11 +2006,26 @@ SRI
   # ALL OF THEM, for one candidate: SC_HOLD empty means nothing holds it.
   sc_judge_holds() {   # <path> <1 when this run holds its lock> [<paths gone>]
     sc_holds "$1" "$2"
+    sc_judge_deps "$@"
+    sc_judge_cheap "$1"
+    return 0
+  }
+  # WHAT LEANS ON IT, as the dependents' lines last read say, added to
+  # SC_HOLD.
+  sc_judge_deps() {   # <path> <1 when this run holds its lock> [<paths gone>]
     if [ -n "$sc_dep_fail" ]; then sc_hold "what leans on it cannot be told: $sc_dep_fail"; fi
     sjh_deps="$(sc_dependents "$1" "${3-}")"
     if [ -n "$sjh_deps" ]; then sc_hold "leaned on by $sjh_deps (its alternates file names this clone's objects)"; fi
     sjh_deps="$(sc_dependents "$1" "${3-}" "$sc_gitfile_lines")"
     if [ -n "$sjh_deps" ]; then sc_hold "its git directory is named by the .git file of $sjh_deps, which works in it"; fi
+    return 0
+  }
+  # THE CHEAP HOLDS, as `/proc` and the mount table last read say, added to
+  # SC_HOLD: a process that works in it, a window whose `LANES_REPO` names
+  # it, and a file system mounted in it. Each is one read of `/proc` or of
+  # the mount table, so `--yes` reads them before it takes a candidate's
+  # lock (lane openRepoTools-3's SHOULD 1 on code#21).
+  sc_judge_cheap() {   # <path>
     case "$sc_cwd_mode" in
       none) sc_hold "neither /proc nor lsof is here, so whether a process works in it cannot be told" ;;
       *)
@@ -2398,13 +2413,14 @@ SLU
       continue
     fi
     # THE ACT, ONE CHECKOUT AT A TIME, every decision made again under its
-    # own writers' lock after a fetch: the lock first, so no writer of it is
-    # in it; then its fetch, the lane's state asked again (a clone beside W
-    # is no lane's: whether it is still a register clone is what is asked),
-    # every hold, what leans on it, the working directories and the windows'
-    # `LANES_REPO` read again; then, and only then, it is moved aside in the
-    # directory it stands in — so its path is absent at once, and the next
-    # write of a lane there clones afresh — and the aside removed.
+    # own writers' lock after a fetch: the cheap holds, then the lock, so no
+    # writer of it is in it; then its fetch, the lane's state asked again (a
+    # clone beside W is no lane's: whether it is still a register clone is
+    # what is asked), the working directories, the windows' `LANES_REPO`,
+    # every hold and what leans on it read again; then, and only then, it is
+    # moved aside in the directory it stands in — so its path is absent at
+    # once, and the next write of a lane there clones afresh — and the aside
+    # removed.
     # A CANDIDATE GONE AT ITS TURN IS SAID AS GONE (NIT 375), not held for
     # want of a `lanes/` directory: a person, or a sweep on another
     # workstation, removed or moved it after the listing. It is neither
@@ -2413,6 +2429,18 @@ SLU
       printf '    gone       %s  %s; it is no longer there: something removed or moved it after the listing, and this run did not\n' \
         "${sc_c//[[:cntrl:]]/?}" "${sc_why//[[:cntrl:]]/?}"
       continue
+    fi
+    # THE CHEAP HOLDS FIRST, BEFORE ITS LOCK (lane openRepoTools-3's SHOULD
+    # 1 on code#21). A window whose `LANES_REPO` names it writes the
+    # register through it, and each of its writes waits on the writers'
+    # lock this sweep would take, then fails. So the working directories,
+    # the windows' `LANES_REPO` and the mounts are read afresh here, and a
+    # candidate any of them holds is held with its lock never taken. Under
+    # the lock they are read again, after the fetch, before the rest.
+    sc_cwd_scan; sc_mount_scan; sc_repo_scan
+    SC_HOLD=""; sc_judge_cheap "$sc_c"
+    if [ -n "$SC_HOLD" ]; then
+      sc_say_held "$sc_c" "$sc_why" "$SC_HOLD"; continue
     fi
     if ! sc_lock_take "$sc_c"; then
       sc_say_held "$sc_c" "$sc_why" "$SC_WHY"; continue
@@ -2428,8 +2456,15 @@ SLU
     elif sc_is_a_w "$sc_c"; then
       sc_act_hold="it is no longer what made it a candidate: $SC_WHY"
     else
-      sc_dep_scan; sc_cwd_scan; sc_mount_scan; sc_repo_scan
-      sc_judge_holds "$sc_c" 1
+      # The cheap holds read first, then the checkout's own state, and
+      # what leans on it last, only for a candidate nothing else holds.
+      sc_cwd_scan; sc_mount_scan; sc_repo_scan
+      sc_holds "$sc_c" 1
+      sc_judge_cheap "$sc_c"
+      if [ -z "$SC_HOLD" ]; then
+        sc_dep_scan
+        sc_judge_deps "$sc_c" 1
+      fi
       sc_act_hold="$SC_HOLD"; sc_act_ign="$SC_IGN"
     fi
     if [ -z "$sc_act_hold" ]; then
