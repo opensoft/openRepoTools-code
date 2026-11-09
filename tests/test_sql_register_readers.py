@@ -267,6 +267,9 @@ exec bash "$ARM_REAL" "$@"
 RERUN_WRITE_ID = "77777777-0001-4000-8000-000000007001"
 RERUN_GENERATION = "66666666-0001-4000-8000-000000006001"
 
+#: A session id only this checkout's copy of a row holds (the local unions).
+LOCAL_SID = "aaaaaaaa-0006-4000-8000-00000000a006"
+
 #: The arms' sandbox's two further lanes' sessions.
 UUID_A3 = "aaaaaaaa-0004-4000-8000-00000000a004"
 UUID_H1 = "aaaaaaaa-0005-4000-8000-00000000a005"
@@ -306,7 +309,7 @@ class Door:
         helpers.contract_stub(self.store, register)
         _write(bin_dir / "lanes-index", DOOR_WRAPPER)
         config.parent.mkdir(parents=True, exist_ok=True)
-        config.write_text("mode=primary\nregister_url=postgresql://lanes_reader@localhost:5432/lanes\n",
+        config.write_text("mode=primary\nregister_url=postgresql://lanes_register_reader@localhost:5432/lanes\n",
                           encoding="utf-8")
         config.chmod(0o600)
         self.config = config
@@ -443,7 +446,7 @@ def primary(estate):
 #: `lane`, `lane-end` and `lane-rename` are the callers' cases below; the
 #: listings are the mirror test's; the guard reads its hook JSON on stdin.
 READERS = {
-    "who": (("who", "repoA-1"), 69),
+    "who": (("who", "opensoft/repoA#7"), 69),
     "binding": (("binding", "repoA-1"), 69),
     "live-holder": (("live-holder", "repoA-1"), 69),
     "next-free": (("next-free", "repoA"), 69),
@@ -489,7 +492,7 @@ def test_each_reader_follows_the_table_when_the_store_is_unreachable(primary, re
 #: which the launcher makes before any lane is bound.
 MIRROR_READS = {
     "lanes": ("lanes",),
-    "history": ("history",),
+    "history": ("history", "--all"),
     "session-start": ("session-start",),
     "launcher-window-reads": ("swapped",),
 }
@@ -534,7 +537,7 @@ def test_a_none_class_arm_makes_no_register_call_with_the_store_unreachable(prim
     The control: in the same estate, a decide arm asks the store, so the
     silence is the class's and not an unconfigured workstation's."""
     primary.door.unreachable()
-    control = primary.edit("who", "repoA-1")
+    control = primary.edit("register-row", "repoA-1")
     assert primary.door.register_calls(), \
         ("the configuration is not live: a decide arm asked nothing", control.stderr)
     primary.door.forget_calls()
@@ -913,7 +916,8 @@ OTHER_ARMS = {
                         (75, 3, 69), "code"),
     "lane-start-2335": (Arm("lane-start", ("repoA", "1"), "lane-last", "2388"), (75, 3, 69), "code"),
     "lane-start-2444": (Arm("lane-start", ("repoA", "1"), "binding", "2497"), (75, 3, 69), "code"),
-    "lane-start-2511-2512": (Arm("lane-start", ("repoA", "3", "--dir", "{lane_dir}"),
+    "lane-start-2511-2512": (Arm("lane-start", ("repoA", "3", "--request-handoff", "--dir",
+                                                "{lane_dir}"),
                                  "request-handoff", "2564"), (75, 3, 69), "code"),
     "lane-start-2534": (Arm("lane-start", ("repoA", "1"), "lane-agent", "2587"), (75, 3, 69), "code"),
     "lane-start-2638": (Arm("lane-start", ("repoA", "1"), "binding", "2691", nth=2),
@@ -929,7 +933,8 @@ OTHER_ARMS = {
     "lane-416": (Arm("lane", ("repoA-2",), "lanes", "416"), (75, 3, 69), "code"),
     "lane-444": (Arm("lane", ("repoA-2",), "lane-groups", "444"), (75, 3, 69), "code"),
     "lane-1058": (Arm("lane", ("repoA-3",), "binding", "1088"), (75, 3, 69), "code"),
-    "lane-1144": (Arm("lane", ("repoA-3",), "request-handoff", "1174"), (75, 3, 69), "code"),
+    "lane-1144": (Arm("lane", ("--request-handoff", "repoA-3"), "request-handoff", "1174"),
+                  (75, 3, 69), "code"),
 }
 
 OTHER_ARM_CASES = [pytest.param(arm_id, code, id=f"{arm_id}-{code}")
@@ -1206,9 +1211,9 @@ def test_register_row_local_reads_the_database_on_primary_and_is_69_never_8(prim
 #: lane 4's line cites): the run that reaches each, and a glob its
 #: `register-grep` arguments match.
 WORKTREE_READS = {
-    "lifecycle-events-711": (("repoA-2",), "*STARTED*"),
-    "landed-1002": (("repoA-2",), "*LANDED*"),
-    "lifecycle-events-5596": (("--all", "--report"), "*STARTED*"),
+    "lifecycle-events-711": (("sweep", "repoA-2", "--dry-run"), "*STARTED|PAUSED*"),
+    "landed-1002": (("sweep", "repoA-2", "--dry-run"), "*LANDED*"),
+    "lifecycle-events-5596": (("sweep", "--all", "--report"), "*STARTED|RESUMED*"),
 }
 
 
@@ -1279,7 +1284,7 @@ class RealRegister:
     the render set, then a `cutover` entry, which writes `lanes/STORE` alone
     (ruling 1), then `record_marker`. Each `write(...)` is one more committed
     `write` entry, a seq more. The checkout's own `lanes-index` reads it as
-    `lanes_reader`, through a `mode=primary` configuration.
+    `lanes_register_reader`, through a `mode=primary` configuration.
 
     UNVERIFIED HERE: this bench has no engine, and the template is empty
     until T227 makes it by the bootstrap. The SQL names lane 1's functions as
@@ -1288,7 +1293,7 @@ class RealRegister:
     `register_switch.generation` and `register_head.seq`."""
 
     WRITER = "lanes_register_writer"
-    READER = "lanes_reader"
+    READER = "lanes_register_reader"
 
     def __init__(self, pg, root: Path, files: dict):
         self.pg, self.root = pg, root
@@ -1743,21 +1748,22 @@ def test_log_sync_on_primary_makes_no_fetch_and_no_flush(primary):
 
 def test_the_local_file_unions_are_skipped_on_primary(primary):
     """T506 (W:4865): on primary the local-file unions are skipped, since a
-    primary write is in SQL before it returns: a row only this checkout's
-    copy holds moves files mode's `next-free` (the control), and not
-    primary's, which answers as the register does."""
-    baseline = primary.files_edit("next-free", "repoA")
-    assert baseline.returncode == 0, (baseline.returncode, baseline.stderr)
-    with open(primary.e.wip / "lanes" / "LANES.md", "a", encoding="utf-8") as handle:
-        handle.write(f"| `repoA-3` | harness `{UUID_A3}` | Eagle / test / brett | 2026-10-06T00:00Z "
-                     "| none | handoffs/repoA-3.md | LIVE · 2026-10-06T00:00:00Z · local only |\n")
-    local = primary.files_edit("next-free", "repoA")
-    assert local.stdout != baseline.stdout, ("the control: files mode ignored the local row",
-                                             local.stdout)
-    result = primary.edit("next-free", "repoA")
+    primary write is in SQL before it returns. `row_of_lane_local` is the
+    union's source: a session id only this checkout's copy of a row holds is
+    in files mode's `register-row-local` answer (the control), and not in
+    primary's, which answers the register's row."""
+    lanes = primary.e.wip / "lanes" / "LANES.md"
+    text = lanes.read_text(encoding="utf-8")
+    row = next(line for line in text.splitlines() if line.startswith("| `repoA-2` |"))
+    lanes.write_text(text.replace(row, row.replace(f"`{UUID_A2}`", f"`{UUID_A2}` → `{LOCAL_SID}`", 1)),
+                     encoding="utf-8")                         # this checkout's copy only
+    local = primary.files_edit("register-row-local", "repoA-2")
+    assert local.returncode == 0 and LOCAL_SID in local.stdout, \
+        ("the control: files mode did not read this checkout's row", local.returncode, local.stdout)
+    result = primary.edit("register-row-local", "repoA-2")
     assert primary.door.register_calls(), ("the read never reached the store", result.stderr)
-    assert (result.returncode, result.stdout) == (baseline.returncode, baseline.stdout), \
-        (result.returncode, result.stdout, baseline.stdout)
+    assert result.returncode == 0 and UUID_A2 in result.stdout, (result.returncode, result.stdout)
+    assert LOCAL_SID not in result.stdout, ("a local row's id on primary", result.stdout)
 
 
 def test_the_lanes_footer_on_primary_names_the_register_and_claims_no_local_read(primary):
@@ -1804,7 +1810,7 @@ def test_the_read_mirror_variable_lowers_each_read_that_names_the_lane_on_primar
         result = primary.edit(*argv, env={"LANES_READ_MIRROR": "1"})
         assert MIRROR_LINE.search(result.stderr), (argv, result.stderr[-1500:])
         assert result.returncode == files.returncode, (argv, result.returncode, files.returncode)
-    other = primary.edit("who", "repoA-1", env={"LANES_READ_MIRROR": "1"})
+    other = primary.edit("register-row", "repoA-1", env={"LANES_READ_MIRROR": "1"})
     assert other.returncode == 69, (other.returncode, other.stderr[-1500:])
     assert not MIRROR_LINE.search(other.stderr), other.stderr[-1500:]
 
