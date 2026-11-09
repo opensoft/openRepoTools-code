@@ -1693,13 +1693,139 @@ def _pg_unescape(field: str):
     return "".join(out)
 
 
+#: THE SQL REGISTER'S TWO ROLES (FR-012; L1-A5; design Y:3455-3461, "Roles and
+#: credentials"), which `PostgresStore(cfg, role)` takes beside #160's `writer`
+#: and `reader`. REGISTER-WRITER connects with `register_url=` and
+#: `register_passfile=`; READER with `reader_url=` and `reader_passfile=`, never
+#: with a writer's file. Each reads `register_schema=`, and every call either
+#: makes is a register path.
+REGISTER_ROLES = ("register_writer", "register_reader")
+
+#: THE ARGV OF EVERY REGISTER CALL, exactly (contract §2.2): #160's
+#: `--no-psqlrc -X -q -v ON_ERROR_STOP=1`; `-A -t`, so a SELECT's value prints
+#: bare while COPY's rows are unchanged; and `VERBOSITY=verbose` with
+#: `SHOW_CONTEXT=never`, so `psql`'s first line on stderr is
+#: `ERROR:  <SQLSTATE>: <message>` (Y:2590). No connection string and no `-d`
+#: (Y:3491): the connection is the environment's alone.
+REGISTER_PSQL_ARGS = ("--no-psqlrc", "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1",
+                      "-v", "VERBOSITY=verbose", "-v", "SHOW_CONTEXT=never")
+
+#: D9'S ROWS (design Y:3501-3537; contract §2.4), one per kind of register call:
+#: `lock_timeout` and `statement_timeout` in ms, which ride the startup
+#: packet's `options=` as `PGOPTIONS`, `-c lock_timeout=<ms> -c
+#: statement_timeout=<ms>` (Y:1573, Y:3503); the least client timer the row
+#: gives, in s; and the role that runs it, or None where both do. A row's
+#: client timer is `N_a`·`c` + its statement bound + 1 s, never below that
+#: least figure (Y:3509-3511). The guard's has none: its caller cuts it at the
+#: parse's start line, `T0 + 3.75 s` (Y:3518). The bounds need a direct
+#: connection to the primary, never through a pooler, which drops `options`
+#: (C13, Y:1575). `import --single` and `render --revert` take the commit's
+#: row for their commit call and the writer's rows for the rest (Y:3536-3537).
+#: The mode query runs no `psql` (Y:3521); the service's child (Y:3519) and a
+#: migration (Y:3531) are not a role's calls.
+REGISTER_BOUNDS = {
+    # row: (lock_timeout ms, statement_timeout ms, least timer s, role)
+    "snapshot": (2000, 5000, 8, "register_writer"),     # `register snapshot`, `act-begin`'s: S (Y:3522)
+    "commit": (2000, 5000, 8, "register_writer"),       # `register commit`: C (Y:3523)
+    "lookup": (2000, 6000, 9, "register_writer"),       # `journal --write-id`, each try: T_L (Y:3524)
+    "read": (1000, 3000, 6, "register_reader"),         # `register read` forms 1, 3; `journal --last`: T_r (Y:3526)
+    "guard": (1000, 1500, None, "register_reader"),     # `register read --for guard`, forms 2, 4 (Y:3518)
+    "render": (1000, 10000, 15, None),                  # `journal --since`, `render`; `reconcile` (Y:3527)
+    "status": (1000, 5000, 8, "register_reader"),       # `status` (Y:3528)
+    "rollback": (5000, 10000, 15, "register_writer"),   # `rollback`, each call (Y:3529)
+    "import": (2000, 300000, 330, "register_writer"),   # `import` (Y:3530)
+    "cutover": (5000, 10000, 15, "register_writer"),    # `cutover`, `switch_to_files`, `record_marker` (Y:3532-3534)
+    "outage": (2000, 5000, 8, "register_writer"),       # `outage declare`'s database probe (Y:3535)
+}
+
+#: #160's `\echo` marker, as ONE request carries it (contract §2.3; Y:1417): a
+#: `COPY` whose one row is the marker line `\echo` printed, byte for byte, so
+#: `_query_many`'s parse reads both alike. COPY's text format escapes only
+#: backslash, newline, carriage return, tab and the other C escapes, never
+#: `\x1e`.
+REGISTER_MARKER_COPY = r"COPY (SELECT E'\x1eLANES-INDEX-NEXT') TO STDOUT"
+
+#: `psql` 15 OR LATER (FR-012; block :152; Y:5876, Y:5914): a register call
+#: sends its statements as one request joined by `\;`, and a `psql` before 15
+#: prints only that request's last result. `ready` asks for 16 (Y-ops:445).
+PSQL_MIN_MAJOR = 15
+
+#: Each `psql`'s version, read ONCE PER PROCESS by `psql --version`, keyed by
+#: the path run: (its major number, or None where none could be read; the
+#: version as it named it).
+_PSQL_VERSIONS: dict = {}
+
+
+def _psql_version_of(text: str) -> tuple:
+    """`psql --version`'s answer as (major or None, the version as named):
+    `psql (PostgreSQL) 16.15 (Ubuntu ...)` is (16, "16.15"). Anything else
+    is (None, its first line, printable and at most 60 characters)."""
+    first = (text.strip().splitlines() or [""])[0]
+    match = re.search(r"\(PostgreSQL\) ([0-9]+)([0-9A-Za-z.]*)", first)
+    if match:
+        return int(match.group(1)), match.group(1) + match.group(2)
+    return None, re.sub(r"[^\x20-\x7e]", "?", first)[:60]
+
+
+class PsqlFailed(StoreUnusable):
+    """A register call's `psql` that did not answer (FR-012): a
+    `StoreUnusable` of kind `unreachable`, as #160 reads one, with what a
+    register command maps to its own code KEPT APART for it (contract §2.2's
+    exits, §2.6, §2.7). It maps nothing itself.
+
+    `psql_exit` is `psql`'s exit - 0 only for an answer that is not UTF-8,
+    negative where a signal ended it - or None where it never ended on its
+    own. `stderr` is its whole stderr, and `first_line` that stderr's first
+    line, where §2.6 reads the code. `timer_expired` is True where the call's
+    client timer (D9) cut it. `ran` is False where no `psql` was handed the
+    request: none could be started, the timer was spent before it, or the
+    version check refused it - so the call cannot be in doubt."""
+
+    def __init__(self, kind: str, detail: str, *, psql_exit: int | None = None,
+                 stderr: str = "", first_line: str = "", timer_expired: bool = False,
+                 ran: bool = True):
+        super().__init__(kind, detail)
+        self.psql_exit = psql_exit
+        self.stderr = stderr
+        self.first_line = first_line
+        self.timer_expired = timer_expired
+        self.ran = ran
+
+
+class PsqlTooOld(PsqlFailed):
+    """`psql` older than 15, or one whose `--version` names no version this
+    build can read (FR-012; block :152): 69, naming the version, raised
+    before anything is sent, so `ran` is False (contract §2.7's 69 row: "a
+    `psql` that cannot be started or is too old"). `version` is the version
+    as `psql --version` named it."""
+
+    def __init__(self, version: str, readable: bool):
+        if readable:
+            why = (f"psql {version} is older than {PSQL_MIN_MAJOR}: a register call sends "
+                   f"its statements as ONE request joined by `\\;`, and a psql before "
+                   f"{PSQL_MIN_MAJOR} prints only its last result (FR-012)")
+        else:
+            why = (f"psql --version names no version this build can read "
+                   f"({version or 'nothing'!r}), and a register call needs psql "
+                   f"{PSQL_MIN_MAJOR} or later (FR-012)")
+        super().__init__("psql-too-old", f"{why}; nothing was sent", ran=False)
+        self.version = version
+
+
 class PostgresStore:
     """QA Postgres, reached ONLY through `psql` and ONLY where `url=` is
     configured. Nothing here imports a driver: `psql` is libpq's own client,
     and the password it needs is in the 0600 file `PGPASSFILE` names - never
     in this process's arguments and never in an environment it hands on. The
     connection itself reaches `psql` as `PG*` variables (Question 11), never
-    as `-d <url>`."""
+    as `-d <url>`.
+
+    THE SQL REGISTER'S ROLES (FR-012): `register_writer` and `register_reader`
+    connect with `register_url=` and `reader_url=`, read `register_schema=`,
+    and make register calls only: one request each (`request`, and
+    `_query_many` with a D9 `row`), with D9's bounds, the URL as the whole
+    connection and `psql` 15 or later. #160's index methods refuse on them,
+    since a register path names its own client timer."""
 
     dialect = "postgres"
     #: #160'S INDEX PATHS KEEP THEIR BOUNDS (Y:4970, "the index paths keep 5 s
@@ -1709,8 +1835,38 @@ class PostgresStore:
     INDEX_TIMER_S = 300
 
     def __init__(self, cfg: dict, role: str):
-        self.schema = cfg["schema"]
-        if role == "reader":
+        #: A REGISTER ROLE (FR-012): every call it makes is a register path,
+        #: and its `search_path` is `register_schema=`.
+        self.role = role
+        self.register = role in REGISTER_ROLES
+        self.schema = ((cfg.get("register_schema") or "lanes_register") if self.register
+                       else cfg["schema"])
+        if role == "register_writer":
+            # THE REGISTER'S WRITES: this engineer's REGISTER-WRITER login, never
+            # the indexer's `url=` (Y:3459; contract §2.5).
+            if not cfg.get("register_url"):
+                raise Refusal(
+                    "the configuration names no `register_url=`: the register's writes "
+                    "connect only as this engineer's REGISTER-WRITER login (FR-012), never "
+                    "as the indexer's `url=`")
+            self.url, self.passfile = cfg["register_url"], cfg.get("register_passfile") or ""
+            key = "register_url"
+        elif role == "register_reader":
+            # THE REGISTER'S READS: this engineer's READER login, with its own
+            # file and never a writer's - not `register_passfile=`, and not #160's
+            # `passfile=` either (Y:3460; contract §2.5). Only beside a
+            # `register_url=`: without one, `reader_url=` is #160's, and
+            # `load_config` never held it to R09's TLS check.
+            if not cfg.get("register_url") or not cfg.get("reader_url"):
+                raise Refusal(
+                    "the register's reads connect only as this engineer's READER login, "
+                    "`reader_url=`, beside the `register_url=` it pairs with (FR-012), and "
+                    "never with the writer's credential: the configuration names "
+                    + ("no `register_url=`" if not cfg.get("register_url") else
+                       "no `reader_url=`"))
+            self.url, self.passfile = cfg["reader_url"], cfg.get("reader_passfile") or ""
+            key = "reader_url"
+        elif role == "reader":
             # NEVER THE WRITER'S CREDENTIAL FOR A READ (Copilot round 1 on #164).
             # The writer is the indexer's and no session's (14(c)), and `export`
             # is run by a session typing `--index`: with no `reader_url=` the
@@ -1722,9 +1878,14 @@ class PostgresStore:
                     "never with the writer's credential (Amendment 14(c))")
             self.url, self.passfile = cfg["reader_url"], cfg.get("reader_passfile") or cfg["passfile"]
             key = "reader_url"
-        else:
+        elif role == "writer":
             self.url, self.passfile = cfg["url"], cfg["passfile"]
             key = "url"
+        else:
+            raise ValueError(f"PostgresStore has no role {role!r}: it takes "
+                             f"{', '.join(('writer', 'reader') + REGISTER_ROLES)}")
+        #: The configuration key whose URL this store connects with.
+        self.key = key
         # THE CONNECTION, MAPPED ONCE (Question 11; SVC-2): the variables every
         # `psql` this store runs connects with, refused here, before any `psql`,
         # where the URL cannot be mapped.
@@ -1732,11 +1893,14 @@ class PostgresStore:
         #: `c` (D9): the URL's `connect_timeout=`, else 2. A register path's
         #: `PGCONNECT_TIMEOUT`, and the connect bound in its client timer.
         self.connect_timeout = int(self.pg_env.get("PGCONNECT_TIMEOUT", CONNECT_TIMEOUT_DEFAULT))
+        #: `N_a` (D9): `register_addresses=`, the addresses the register's
+        #: endpoint resolves to, default 1; libpq tries `c` on each in turn.
+        self.addresses = int(cfg.get("register_addresses") or 1) if self.register else 1
         self.label = "postgres"
         self.where = re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://", "", self.url).split("?", 1)[0]
         self.psql = shutil.which("psql") or ""
 
-    def _env(self, *, register: bool = False) -> dict:
+    def _env(self, *, register: bool = False, options: str | None = None) -> dict:
         # THE CONFIGURED PASSWORD FILE OR NONE AT ALL (14(c); Copilot on #164):
         # an inherited `PGPASSWORD` or `PGPASSFILE` is dropped, and with no
         # `passfile=` libpq is handed an EMPTY 0600 file of this command's own -
@@ -1744,32 +1908,53 @@ class PostgresStore:
         # So are `PGSERVICEFILE`, `PGSYSCONFDIR` and `PGSERVICE`
         # (`PG_ENV_DROPPED`), and the URL's own parts are set over whatever was
         # inherited, as `-d <url>` set them over it.
+        if register or self.register:
+            # THE URL IS THE WHOLE CONNECTION ON A REGISTER PATH (lane 3's ruling,
+            # #165 6747611042; contract §2.2): EVERY inherited variable whose name
+            # begins `PG` is dropped first - `PGHOSTADDR`, `PGSSLMODE`, `PGOPTIONS`,
+            # `PGTARGETSESSIONATTRS` and the rest - so `psql` gets only the URL's
+            # mapping, the configured password file, `PGCONNECT_TIMEOUT` at `c`
+            # (set, not defaulted, so an inherited value can never lengthen the
+            # connect bound its client timer counts: Y:4970), the call's own
+            # bounds as `PGOPTIONS`, and `PGAPPNAME`.
+            env = {k: v for k, v in os.environ.items() if not k.startswith("PG")}
+            env.update(self.pg_env)
+            env["PGPASSFILE"] = self.passfile or _no_password_file()
+            env["PGCONNECT_TIMEOUT"] = str(self.connect_timeout)
+            if options:
+                env["PGOPTIONS"] = options
+            env["PGAPPNAME"] = PROG
+            return env
         env = {k: v for k, v in os.environ.items() if k not in PG_ENV_DROPPED}
         env.update(self.pg_env)
         env["PGPASSFILE"] = self.passfile or _no_password_file()
-        if register:
-            # SET, NOT DEFAULTED, ON A REGISTER PATH (Y:4970): an inherited value
-            # can never lengthen the connect bound its client timer counts.
-            env["PGCONNECT_TIMEOUT"] = str(self.connect_timeout)
-        else:
-            env.setdefault("PGCONNECT_TIMEOUT", self.INDEX_CONNECT_TIMEOUT)
+        env.setdefault("PGCONNECT_TIMEOUT", self.INDEX_CONNECT_TIMEOUT)
         env["PGAPPNAME"] = PROG
         return env
 
     def _run(self, script: str, *, timer: float | None = None,
-             register: bool = False) -> str:
+             register: bool = False, options: str | None = None) -> str:
         """`script` on `psql`'s stdin, its connection in the environment alone.
 
         `timer` is the call's client timer (D9), `subprocess.run`'s `timeout` on
         the whole `psql`, the connect inside it. #160's index paths keep
-        `INDEX_TIMER_S`. A `register` path names its own timer, and its
-        `PGCONNECT_TIMEOUT` is set to `c`, never inherited."""
+        `INDEX_TIMER_S`. A `register` path - every call of a register role -
+        names its own timer and its D9 bounds as `options`, and runs as
+        `_run_register` runs it."""
+        register = register or self.register
         if timer is None:
             if register:
                 raise ValueError("a register path's psql call names its own client timer (D9)")
             timer = self.INDEX_TIMER_S
+        if register and not options:
+            raise ValueError("a register path's psql call carries its D9 bounds as PGOPTIONS")
         if not self.psql:
+            if register:
+                raise PsqlFailed("unreachable", f"`{self.key}=` is configured and there is no "
+                                 f"`psql` on PATH", ran=False)
             raise StoreUnusable("unreachable", "`url=` is configured and there is no `psql` on PATH")
+        if register:
+            return self._run_register(script, timer, options)
         try:
             proc = subprocess.run(
                 [self.psql, "--no-psqlrc", "-X", "-q", "-v", "ON_ERROR_STOP=1"],
@@ -1788,11 +1973,129 @@ class PostgresStore:
             raise StoreUnusable("unreachable", err[-1])
         return proc.stdout
 
-    def _query_many(self, queries: list[str], snapshot: bool = False) -> list[list[list]]:
+    def _run_register(self, script: str, timer: float, options: str) -> str:
+        """`_run` on a register path (FR-012): `REGISTER_PSQL_ARGS`, the
+        register environment with `options` as `PGOPTIONS`, and `psql` 15 or
+        later, checked once per process inside this call's timer, so the
+        whole call stays inside its D9 client timer.
+
+        A `psql` that does not answer raises `PsqlFailed`, every kind as
+        `unreachable`, with its exit, its stderr's first line and the timer's
+        expiry kept apart; the code each means is the register command's to
+        give (contract §2.2, §2.6, §2.7)."""
+        deadline = time.monotonic() + timer
+        env = self._env(register=True, options=options)
+        self._check_psql_version(env, deadline)
+        left = deadline - time.monotonic()
+        expired = f"psql did not answer within {timer:g} s"
+        if left <= 0:
+            raise PsqlFailed("unreachable", expired, timer_expired=True, ran=False)
+        try:
+            proc = subprocess.run([self.psql, *REGISTER_PSQL_ARGS], input=script.encode("utf-8"),
+                                  capture_output=True, check=False, env=env, timeout=left)
+        except subprocess.TimeoutExpired as exc:
+            stderr = (exc.stderr or b"").decode("utf-8", "replace")
+            raise PsqlFailed("unreachable", expired, stderr=stderr,
+                             first_line=(stderr.strip().splitlines() or [""])[0],
+                             timer_expired=True)
+        except OSError as exc:
+            raise PsqlFailed("unreachable", f"psql could not be run: {exc}", ran=False)
+        stderr = proc.stderr.decode("utf-8", "replace")
+        first = (stderr.strip().splitlines() or [""])[0]
+        if proc.returncode != 0:
+            raise PsqlFailed("unreachable", first or f"psql exited {proc.returncode}",
+                             psql_exit=proc.returncode, stderr=stderr, first_line=first)
+        try:
+            return proc.stdout.decode("utf-8")
+        except UnicodeDecodeError:
+            raise PsqlFailed("unreachable", "psql exited 0 with an answer that is not UTF-8",
+                             psql_exit=0, stderr=stderr, first_line=first)
+
+    def _check_psql_version(self, env: dict, deadline: float) -> None:
+        """`psql` 15 OR LATER, checked ONCE PER PROCESS (FR-012; block :152;
+        Y:5914) by `psql --version`, in the register environment and inside
+        the call's timer. An older one, or one that names no version this
+        build can read, is `PsqlTooOld`: 69, naming the version, with nothing
+        sent. A `--version` that cannot be run or does not answer is a
+        `PsqlFailed` with nothing sent, and is asked again by the next call."""
+        known = _PSQL_VERSIONS.get(self.psql)
+        if known is None:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise PsqlFailed("unreachable", "psql --version did not answer within its "
+                                 "call's client timer", timer_expired=True, ran=False)
+            try:
+                proc = subprocess.run([self.psql, "--version"], stdin=subprocess.DEVNULL,
+                                      capture_output=True, check=False, env=env, timeout=left)
+            except subprocess.TimeoutExpired:
+                raise PsqlFailed("unreachable", "psql --version did not answer within its "
+                                 "call's client timer", timer_expired=True, ran=False)
+            except OSError as exc:
+                raise PsqlFailed("unreachable", f"psql could not be run: {exc}", ran=False)
+            known = _psql_version_of(proc.stdout.decode("utf-8", "replace")
+                                     if proc.returncode == 0 else "")
+            _PSQL_VERSIONS[self.psql] = known
+        major, version = known
+        if major is None or major < PSQL_MIN_MAJOR:
+            raise PsqlTooOld(version, major is not None)
+
+    def bounds(self, row: str, timer: float | None = None) -> tuple[str, float]:
+        """D9's `row` for one call of this register role: its `PGOPTIONS`,
+        `-c lock_timeout=<ms> -c statement_timeout=<ms>`, and its client timer
+        in s, `N_a`·`c` + the statement bound + 1 s and never below the row's
+        figure (`REGISTER_BOUNDS`). Only the guard's caller passes `timer`, its
+        cut at `T0 + 3.75 s`; every other row sets its own. A row of the other
+        role is refused: a read never connects with the writer's credential."""
+        if not self.register:
+            raise ValueError("only the register's roles carry D9's bounds; #160's index "
+                             "paths keep theirs")
+        if row not in REGISTER_BOUNDS:
+            raise ValueError(f"D9 has no register row {row!r}")
+        lock_ms, statement_ms, least_s, role = REGISTER_BOUNDS[row]
+        if role and role != self.role:
+            raise ValueError(f"D9's {row} row is run as {role}, and this store is {self.role}")
+        options = f"-c lock_timeout={lock_ms} -c statement_timeout={statement_ms}"
+        if least_s is None:
+            if timer is None:
+                raise ValueError(f"D9's {row} row is cut by its caller, at T0 + 3.75 s (Y:3518)")
+            return options, timer
+        if timer is not None:
+            raise ValueError(f"D9's {row} row sets its own client timer; only the guard's "
+                             f"caller cuts one")
+        return options, max(least_s, self.addresses * self.connect_timeout + statement_ms / 1000 + 1)
+
+    def request(self, statements: list[str], row: str, *, timer: float | None = None) -> str:
+        """ONE REQUEST PER CALL (FR-012; contract §2.3; Y:5876): `statements`
+        joined by `psql`'s `\\;` into one simple-protocol Query on stdin,
+        `A \\; B \\; C;`, so the call costs the connect and one round trip,
+        with D9's bounds for `row` and its client timer (`bounds`). Since
+        PostgreSQL 13 `statement_timeout` bounds each statement of it.
+
+        Each statement is one SQL statement with no `;` of its own outside a
+        literal, no `--` comment and no `psql` meta-command; a trailing `;` is
+        dropped. Returns `psql`'s stdout; a failure is `PsqlFailed`."""
+        if not self.register:
+            raise ValueError("only the register's roles send a register request")
+        parts = [statement.strip().rstrip(";").rstrip() for statement in statements]
+        if not parts or not all(parts):
+            raise ValueError("a register request is one or more statements, none of them empty")
+        options, timer = self.bounds(row, timer)
+        return self._run(" \\; ".join(parts) + ";\n", timer=timer, register=True,
+                         options=options)
+
+    def _query_many(self, queries: list[str], snapshot: bool = False, *,
+                    row: str | None = None, timer: float | None = None) -> list[list[list]]:
         """Several SELECTs in ONE connection, each answered as TEXT-format COPY
         rows; a marker line no COPY row can be (one field, a control
         character) separates them. With `snapshot`, in ONE read-only
-        REPEATABLE READ transaction: every SELECT reads the same snapshot."""
+        REPEATABLE READ transaction: every SELECT reads the same snapshot.
+
+        With `row`, a register role's read (FR-012; contract §2.3; Y:1417):
+        the same statements as ONE request (`request`), joined by `\\;`, with
+        the marker sent as `REGISTER_MARKER_COPY`, whose row is the line
+        `\\echo` prints, so the output is byte-identical and the parse below is
+        #160's, unchanged. `row` names D9's bounds; `timer` is the guard's
+        cut."""
         marker = "\x1eLANES-INDEX-NEXT"
         parts = [f"SET search_path TO \"{self.schema}\";"]
         if snapshot:
@@ -1802,7 +2105,11 @@ class PostgresStore:
             parts.append("\\echo '\\036LANES-INDEX-NEXT'")
         if snapshot:
             parts.append("COMMIT;")
-        out = self._run("\n".join(parts) + "\n")
+        if row is None:
+            out = self._run("\n".join(parts) + "\n")
+        else:
+            out = self.request([REGISTER_MARKER_COPY if part.startswith("\\echo") else part
+                                for part in parts], row, timer=timer)
         results, current = [], []
         for line in out.split("\n"):
             if line == marker:
