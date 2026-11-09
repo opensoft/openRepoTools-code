@@ -5532,9 +5532,14 @@ lower_into() {   # <string>
 # `id=`, `base=`, `generation=`, and one `expect=<scope>` per scope), or exits 2
 # naming the variable, with nothing sent. They are the client's checks of
 # Y:5597–5601, which the primary branch makes before its first snapshot:
-#   act_parse [--primary] <value>   1, a malformed `LANES_ACT`; and, with
+#   act_parse [--primary | --rebase] <value>
+#                                   1, a malformed `LANES_ACT`; and, with
 #                                   `--primary`, 4, a `files` base (Y:5601's
-#                                   text, word for word)
+#                                   text, word for word). `--rebase` refuses a
+#                                   `files` base too, with `act-begin
+#                                   --rebase`'s own text, since that is a read
+#                                   and no write (lane 3's ruling on T410's
+#                                   question 7, #165 6754294841)
 #   expect_parse <expect> <act>     2, a `LANES_EXPECT` with no `LANES_ACT`;
 #                                   3, a scope outside the six forms, `*` and
 #                                   `row:*` included (Y:5587's text, word for
@@ -5549,10 +5554,10 @@ ACT_NL='
 '
 ACT_ID=""; ACT_BASE=""; ACT_GEN=""; ACT_LINES=""
 
-act_parse() (   # [--primary] <LANES_ACT's value>
+act_parse() (   # [--primary | --rebase] <LANES_ACT's value>
   set -f
-  ap_primary=0
-  if [ "${1-}" = --primary ]; then ap_primary=1; shift; fi
+  ap_on=""
+  case "${1-}" in --primary|--rebase) ap_on="$1"; shift ;; esac
   ap_v="${1-}"; ap_ok=1; ap_seq=""; ap_gen=""
   ap_h='[0123456789abcdef]'
   ap_id="${ap_v%%@*}"; ap_rest="${ap_v#*@}"
@@ -5578,8 +5583,13 @@ act_parse() (   # [--primary] <LANES_ACT's value>
   fi
   [ "$ap_ok" = 1 ] ||
     die "LANES_ACT is \"${ap_v}\", which is not <act-id>@files or <act-id>@<seq>:<generation>: 32 lower-case hex digits, an @, then files, or a seq of 1 to 18 digits with no leading zero, a colon and a lower-case uuid. Nothing was sent." 2
-  if [ "$ap_primary" = 1 ] && [ "$ap_seq" = files ]; then
-    die "LANES_ACT was taken off primary (\`${ap_id}@files\`) and this write runs on primary: run the act again from its start" 2
+  if [ "$ap_seq" = files ]; then
+    case "$ap_on" in
+      --primary)
+        die "LANES_ACT was taken off primary (\`${ap_id}@files\`) and this write runs on primary: run the act again from its start" 2 ;;
+      --rebase)
+        die "\`act-begin --rebase\`: LANES_ACT was taken off primary (\`${ap_id}@files\`) and the register is now primary, so the act has no base to move: run the act again from its start. Nothing was sent." 2 ;;
+    esac
   fi
   printf 'id=%s\nbase=%s\ngeneration=%s\n' "$ap_id" "$ap_seq" "$ap_gen"
 )
@@ -5735,9 +5745,10 @@ act_snapshot() {
 # snapshot, only after the act's deliberate wait for another place's write, and
 # before the act re-reads the scopes it keeps (Y:5593–5594). It refuses with 2
 # where `LANES_ACT` is malformed (in every mode, since it has no id to keep),
-# where its base is `files` on primary (check 4's text), and where the
-# register's generation is not the base's. Off primary it prints the kept id
-# with `@files`.
+# where its base is `files` on primary (with its own text, not check 4's,
+# which speaks of a write: `act_parse --rebase`), and where the register's
+# generation is not the base's. Off primary it prints the kept id with
+# `@files`.
 # The mode is T409's answer, `REG_MODE`, and only `primary` means primary, as
 # T409 has every consumer test it.
 act_begin() {   # <1 for --rebase, else 0>
@@ -5752,16 +5763,19 @@ act_begin() {   # <1 for --rebase, else 0>
     ab_id="$(act_mint_id)" ||
       die "act-begin could not mint an act id: od gave no 16 random bytes from /dev/urandom. No base was taken." 1
   fi
+  # THE MODE NEEDS NO ARM HERE: `reg_mode_ask` returns 0 on every path. A
+  # question that cannot be answered sets `REG_MODE=files` after T409's one
+  # warning line, and a 78 exits 69 inside it, so whatever is left is files
+  # mode unless it is `primary`.
   if [ -z "${LANES_REGISTER_SCRATCH:-}" ]; then
-    reg_mode_ask ||
-      die "act-begin could not learn the register's mode (the question ended $?), so it took no base." 69
+    reg_mode_ask
   fi
   if [ "${REG_MODE-}" != primary ]; then
     printf '%s@files\n' "$ab_id"
     return 0
   fi
   if [ "$1" = 1 ]; then
-    act_parse --primary "$LANES_ACT" >/dev/null || exit $?
+    act_parse --rebase "$LANES_ACT" >/dev/null || exit $?
   fi
   act_snapshot
   if [ "$1" = 1 ] && [ "$AS_GEN" != "$ACT_GEN" ]; then
