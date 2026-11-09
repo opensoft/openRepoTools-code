@@ -10,7 +10,8 @@ engine. It loads `lanes-index` in process, as `test_lanes_index.py`'s
 this module's `--version` wrapper, sets an inherited `PGHOSTADDR`,
 `PGSSLMODE=disable`, `PGOPTIONS` and `PGTARGETSESSIONATTRS`, and makes one
 `request(statements, row)` call of two statements through
-`PostgresStore(cfg, role)`. It fails until lane 1's T106 lands: at `a2073eae`
+`PostgresStore(cfg, role)`, then one `_query_many(..., snapshot=True, row=...)`
+call on the same store. It fails until lane 1's T106 lands: at `a2073eae`
 `load_config` does not know `register_url=`, and `PostgresStore` has no
 register role. Its `[J3]` word is `sql_register_bounds and
 postgres_store_register_roles`.
@@ -152,11 +153,15 @@ def test_postgres_store_register_roles_connect_by_their_own_url_with_one_joined_
     a loopback host with no query parameter, and each configuration carries
     `register_url=`, the reader's too, since a file with none is #160's.
 
-    NOT ASSERTED HERE, PENDING LANE 2'S ANSWER: F9b's `search_path` oracle
-    (L1v4.10:150) and its `COPY` marker oracle (CLI4.10:234; L1v4.10:151).
-    T106's `request()` sends only the statements it is given; both are the
-    snapshot's statements (`_query_many` with a `row`), which F9b's NOTES
-    question 27 (a) keeps out of this case."""
+    Then, on the same store, `_query_many(..., snapshot=True, row=<the
+    role's row>)` (lane 1's choice (b), #165 comment 6754680212) makes ONE
+    request and ONE `psql` call, besides the first; that call's stdin opens
+    with `SET search_path TO <register_schema>` (L1v4.10:150), then has a
+    `BEGIN`, and carries the marker `COPY (SELECT E'\\x1eLANES-INDEX-NEXT')
+    TO STDOUT` (CLI4.10:234; L1v4.10:151). The writer's row is `snapshot`;
+    T106's `bounds()` refuses that row for the reader ("a read never
+    connects with the writer's credential"), so the reader's own row, `read`,
+    is the one it sends."""
     from sql_register_helpers import REGISTER_FAKE_PSQL
     store_role, row, url_key, pass_key, login = ROLES[role]
     bindir = tmp_path / "bin"
@@ -213,6 +218,33 @@ def test_postgres_store_register_roles_connect_by_their_own_url_with_one_joined_
     request = call["stdin"].strip()
     assert request.endswith(";") and "\n" not in request, f"one request: {call['stdin']!r}"
     assert [part.strip() for part in request[:-1].split("\\;")] == STATEMENTS
+
+    requests, send = [], store.request
+
+    def counted(statements, request_row, **kwargs):
+        requests.append(request_row)
+        return send(statements, request_row, **kwargs)
+    store.request = counted
+    error = None
+    try:
+        store._query_many(list(STATEMENTS), snapshot=True, row=row)
+    except Exception as exc:  # the code under test, not this test, failed
+        error = exc
+    assert error is None, (f"PostgresStore(cfg, {store_role!r})._query_many(<2 queries>, "
+                           f"snapshot=True, row={row!r}) raised {error!r}")
+    assert requests == [row], f"one request carries the snapshot: {requests}"
+    records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    calls = [r for r in records if r["argv"] != ["--version"]]
+    assert len(calls) == 2, f"one more psql call carries the snapshot: {len(calls) - 1}"
+    assert "refused" not in calls[1], calls[1]["refused"]
+    parts = [part.strip() for part in calls[1]["stdin"].strip().rstrip(";").split("\\;")]
+    # L1v4.10:150: the snapshot's `search_path` is `register_schema`.
+    assert parts[0].startswith("SET search_path TO ") and "lanes_register_t220" in parts[0], parts[0]
+    begin = [i for i, part in enumerate(parts) if part.startswith("BEGIN")]
+    assert begin and begin[0] > 0, f"a BEGIN follows the search_path: {parts}"
+    # CLI4.10:234 (L1v4.10:151): #160's `\echo` marker goes as a `COPY`.
+    marker = r"COPY (SELECT E'\x1eLANES-INDEX-NEXT') TO STDOUT"
+    assert marker in parts[begin[0]:], f"the COPY marker follows the BEGIN: {parts}"
     probes = bindir / "psql-version.log"
     assert not probes.exists() or len(probes.read_text().splitlines()) <= 1, \
         "psql --version is asked once per process"
@@ -443,7 +475,7 @@ class Bench:
             argv = index + ["status"]
         elif row == "outage-probe":
             argv = index + ["outage", "declare", "--until", "2999-01-01T00:00:00Z",
-                            "--reason", "D9's probe row"]
+                            "--why", "D9's probe row"]
         elif row == "mode-query":
             argv = index + ["mode"]
         else:
@@ -605,10 +637,14 @@ def test_the_outage_declare_probe_ends_inside_its_bound_and_the_declaration_foll
         else:
             session = _hold(pg, "register_switch")
             config = bench.config("localhost", pg.port, user)
-        argv = [sys.executable, str(bench.copy), "outage", "declare", "--until",
-                "2999-01-01T00:00:00Z", "--reason", "D9's probe"]
+        # D20 (Y:3073): `outage declare --until <UTC> --why "<words>"`; the rollback
+        # form is `--rollback --mirror-seq <k>`, with no `--until` (lane 1, #165
+        # comment 6754680212).
+        argv = [sys.executable, str(bench.copy), "outage", "declare"]
         if form == "rollback":
-            argv.append("--rollback")
+            argv += ["--rollback", "--mirror-seq", "1"]
+        else:
+            argv += ["--until", "2999-01-01T00:00:00Z", "--why", "D9's probe"]
         env = dict(bench.env, LANES_INDEX_CONFIG=str(config), LANES_LANE="repoA-2")
         start = time.monotonic()
         proc = subprocess.run(argv, capture_output=True, text=True, env=env, cwd=str(bench.wip),
@@ -630,11 +666,20 @@ def test_the_outage_declare_probe_ends_inside_its_bound_and_the_declaration_foll
     _record(f"outage-probe-{case}", elapsed, 8, "timing rule 2")
 
 
+#: T109's argv (lane 1, #165 comment 6754680212): the admin is a libpq service,
+#: `--admin-service <service>`, with `--label`, `--repository` and `--lane`, which
+#: its USAGE lists on one synopsis (`--lane` is required unless `--roles-only`).
+#: It refuses off a terminal unless `--no-passwords` is given, so each call here
+#: runs under `_in_pty` and passes no `--no-passwords`.
+BOOTSTRAP_FLAGS = ["--admin-service", "t220-admin", "--label", "register-test",
+                   "--repository", "opensoft/t220-register", "--lane", "repoA-2"]
+
+
 def _migration(bench: Bench, fault: str) -> None:
     """The migration's path, through `lanes-index bootstrap` under a pty
-    (T218: it refuses when stdout is not a terminal), its admin reached only
-    as `PGSERVICE` (T218). Under F1 its connect meets the silent listener
-    and it is refused, writing nothing."""
+    (T109: it refuses when stdout is not a terminal), its admin reached only
+    as the libpq service `--admin-service` names (T109). Under F1 its connect
+    meets the silent listener and it is refused, writing nothing."""
     listener = SilentListener()
     try:
         service = bench.root / "pg_service.conf"
@@ -642,8 +687,7 @@ def _migration(bench: Bench, fault: str) -> None:
                            f"dbname={bench.pg.name}\nuser=lanes_test\n", encoding="utf-8")
         env = dict(bench.env, PGSERVICEFILE=str(service))
         code, elapsed, timed_out = _in_pty([sys.executable, str(bench.copy), "bootstrap",
-                                            "--service", "t220-admin", "--label",
-                                            "register-test"], env, bench.wip)
+                                            *BOOTSTRAP_FLAGS], env, bench.wip)
     finally:
         listener.close()
     assert not timed_out and code != 0, "a migration that cannot connect is refused"
@@ -692,13 +736,17 @@ def test_a_waiting_migration_gives_up_at_its_own_lock_timeout(pg, tmp_path, requ
     service.write_text(f"[t220-admin]\nhost={pg.host}\nport={pg.port}\ndbname={pg.name}\n"
                        f"user=lanes_test\n", encoding="utf-8")
     env = dict(bench.env, PGSERVICEFILE=str(service))
-    argv = [sys.executable, str(bench.copy), "bootstrap", "--service", "t220-admin",
-            "--label", "register-test"]
+    argv = [sys.executable, str(bench.copy), "bootstrap", *BOOTSTRAP_FLAGS]
     try:
         code, elapsed, timed_out = _in_pty(argv, env, bench.wip, timeout=60)
         assert not timed_out, "the migration waited past 60 s instead of giving up"
         assert code != 0, "the waiting migration is refused"
-        _record("migration-lock", elapsed, 60, "its own lock_timeout, not given here")
+        # Y:2342 (design 1.5 step 3): each migration is one transaction that
+        # begins `SET LOCAL lock_timeout = '2000ms'`: it gives up no sooner
+        # than that, and well before 10 s.
+        assert 1.9 <= elapsed < 10, (f"the migration gave up after {elapsed:.2f} s, "
+                                     f"against its 2000 ms lock_timeout")
+        _record("migration-lock", elapsed, 2, "its own lock_timeout, 2000 ms (Y:2342)")
         start = time.monotonic()
         pg.psql(f"SELECT seq FROM {SCHEMA}.register_head;", user=reader)
         assert time.monotonic() - start < 60, "a plain read was held"
