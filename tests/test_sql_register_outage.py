@@ -35,6 +35,12 @@ flipped `lanes-index` (`flipped_copy`), the hook's JSON on stdin, a stand-in
   no ref). The mirror's answer is then today's parser's, and no session
   record has to be forged here.
 
+The hook's JSON is compact, as the harness sends it, since the guard's `jstr`
+reads `"cwd":"<dir>"` with no blank after the colon. No live session record
+is written: today's guard refuses 2 at its session-record check, clause (d),
+before any register read. So a guard case reaches T507's prefetch only where
+T507 reads before that check; lane 5 is to confirm where it reads.
+
 THE STAND-INS, each first on `PATH`:
 
 - T203's register fake `psql`, behind this module's `--version` wrapper
@@ -296,6 +302,12 @@ class Estate:
         _fast_import(self.origin, origin_messages, env)
         subprocess.run([git, "clone", "-q", str(self.origin), str(self.wip)], check=True,
                        env=env, capture_output=True)
+        # THE WORKSPACE, as `test_lanes_index.py` names it (Amendment 9(a)):
+        # `lanes-edit.sh workspace-root` answers with `path:`, the checkout
+        # `outage declare` fetches in (lane 1's reading 1).
+        (home / ".agents").mkdir()
+        (home / ".agents" / "workspace.yaml").write_text(
+            f"repository: {self.origin}\npath: {self.wip}\n", encoding="utf-8")
 
     # -------------------------------------------------------------- the estate
     def grow(self, messages: list) -> None:
@@ -359,9 +371,11 @@ class Estate:
         return env
 
     def hook_input(self) -> str:
+        """The hook's JSON, compact as the harness sends it: the guard's
+        `jstr` reads `"<key>":"<value>"` with no blank after the colon."""
         return json.dumps({"hook_event_name": "UserPromptSubmit",
                            "session_id": str(uuid.uuid4()), "cwd": str(self.wip),
-                           "prompt": "hello"})
+                           "prompt": "hello"}, separators=(",", ":"))
 
     def guard(self, config: Path, **extra) -> dict:
         """The hook, `lanes-edit.sh guard`, under its 5 s kill timer, in a
@@ -615,12 +629,13 @@ def test_the_declaration_is_read_once_at_the_prefetch(tmp_path):
     estate.reset_logs()
     env = estate.guard_env(config, PATH=os.pathsep.join([str(estate.bin), str(shimbin),
                                                          estate.env["PATH"]]))
-    proc = subprocess.Popen(["bash", str(tmp_path / "tool" / "lanes-edit.sh"), "guard"],
-                            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True, cwd=str(estate.wip), env=env,
-                            start_new_session=True)
-    proc.stdin.write(estate.hook_input())
-    proc.stdin.close()
+    hook = tmp_path / "hook.json"
+    hook.write_text(estate.hook_input(), encoding="utf-8")
+    with open(hook, "rb") as stdin:
+        proc = subprocess.Popen(["bash", str(tmp_path / "tool" / "lanes-edit.sh"), "guard"],
+                                stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, cwd=str(estate.wip), env=env,
+                                start_new_session=True)
     holder, deadline = None, time.monotonic() + GUARD_TIMEOUT
     try:
         while holder is None and time.monotonic() < deadline and proc.poll() is None:
