@@ -7154,6 +7154,10 @@ lane_alias_keys() {
 # `lane_shaped` and sends a running session to bind a row it already has. That
 # is the fail-OPEN direction on the one promise clause (e) makes, so the status
 # is propagated and each caller decides what to do with it.
+#
+# `canon_lane_walk`, below `canon_lane`, walks THIS loop again to print the
+# names it visits (`canon-lane --walk`, 007 T411): a change to one is a change
+# to both.
 rows_named_ci_alias() {   # <typed name>
   rna_hits="$(rows_named_ci "$1" 2>/dev/null || :)"
   if [ -n "$rna_hits" ]; then printf '%s\n' "$rna_hits"; return 0; fi
@@ -7260,6 +7264,48 @@ canon_lane() {   # <typed name>
     note "'$cl_want' is a FORMER name of lane $cl_out (${LANES_ALIASES_PATH:-lanes/aliases.tsv}, Amendment 16(e)) — reading and writing $cl_out."
   fi
   printf '%s' "$cl_out"
+  return 0
+}
+
+# canon_lane_walk <typed> — THE NAMES `canon_lane`'S WALK VISITS, one per line,
+# the typed name first and the last hop last: `canon-lane --walk` (007 T411,
+# FR-035; the SQL register's design, "The acts and their expectations"). An act
+# that decides on `canon-lane` lists `row:<n>` and `alias:<n>` for every name on
+# it, because the answer changes when a row or an alias line appears for ANY
+# name on the walk, not only for the answer.
+#
+# IT IS `rows_named_ci_alias`'S LOOP, STEP FOR STEP: the same row test on the
+# typed name and after every hop (a row wins at every hop), the same
+# `lane_alias_hop` (the last line for a key wins), and the same `seen` list,
+# which ends the walk BEFORE a name it has already visited. Where no name on it
+# has a row, `lane_alias_target` follows the same hops over the same map to the
+# same end, so this is `canon_lane`'s whole walk in both of its branches. A
+# CYCLE lists each name it visited once: `canon_lane` then answers the typed
+# name with its note, and a row or an alias line for any of those names would
+# change that answer. It reads through `canon_lane`'s own two reads
+# (`register_text_checked`, `lane_alias_text`), which keep what they read for
+# the life of the process where it has its cache file.
+#   0 + the names · 5 the alias table could not be read, and nothing is printed
+canon_lane_walk() {   # <typed name>
+  clwk_cur="${1-}"
+  [ -n "$clwk_cur" ] || return 0
+  clwk_out="$clwk_cur"
+  if [ -z "$(rows_named_ci "$clwk_cur" 2>/dev/null || :)" ]; then
+    clwk_seen="$US$(lc "$clwk_cur")$US"
+    while :; do
+      clwk_rc=0
+      clwk_next="$(lane_alias_hop "$clwk_cur" 2>/dev/null)" || clwk_rc=$?
+      [ "$clwk_rc" = 5 ] && return 5
+      [ "$clwk_rc" = 0 ] && [ -n "$clwk_next" ] || break
+      case "$clwk_seen" in *"$US$(lc "$clwk_next")$US"*) break ;; esac
+      clwk_seen="$clwk_seen$(lc "$clwk_next")$US"
+      clwk_out="$clwk_out
+$clwk_next"
+      [ -z "$(rows_named_ci "$clwk_next" 2>/dev/null || :)" ] || break
+      clwk_cur="$clwk_next"
+    done
+  fi
+  printf '%s\n' "$clwk_out"
   return 0
 }
 
@@ -21654,7 +21700,21 @@ EOF
   # every other read here is; the four callers fall through to the typed
   # spelling there, and each has its own refusal for a register that really does
   # hold two such rows.
+  #
+  # `--walk <lane>` (007 T411, FR-035) prints the names `canon_lane`'s walk
+  # visits in place of its answer, one per line, the typed name first and the
+  # last hop last (`canon_lane_walk`), and exits with these same codes. The walk
+  # is asked only after `canon_lane` has answered 0, so every refusal and every
+  # note is `canon-lane`'s own, and a refusal prints no walk at all: part of one
+  # would under-list an act's scopes. The form is `canon-lane --walk <lane>`
+  # alone; `canon-lane <lane> --walk` stays the usage 64 it always was.
   canon-lane)
+    cl_walk=0
+    if [ "${1-}" = --walk ]; then
+      shift; cl_walk=1
+      [ -n "${1-}" ] || die "usage: canon-lane --walk <lane>" 64
+      [ "$#" -le 1 ] || die "canon-lane --walk takes one lane: canon-lane --walk <lane>" 64
+    fi
     cl_in="${1-}"; [ -n "$cl_in" ] || die "usage: canon-lane <lane>" 64
     [ "$#" -le 1 ] || die "canon-lane takes one lane: canon-lane <lane>" 64
     check_lane_name "$cl_in"
@@ -21662,7 +21722,19 @@ EOF
     # THE CODE IS CARRIED, not flattened to 2: 66 is the alias table that could
     # not be read and its four callers tell it from 2 by that number alone.
     cl_res="$(canon_lane "$cl_in")" || exit $?
-    printf '%s\n' "$cl_res"
+    if [ "$cl_walk" = 1 ]; then
+      # 66, IN `canon_lane`'S OWN WORDS FOR ITS SECOND READER OF THE TABLE: the
+      # walk reads again the table `canon_lane` has just read (from this
+      # process's cache, where it has one), so a failure here is a read that
+      # failed the second time, and it is never an answer.
+      cl_names="$(canon_lane_walk "$cl_in")" || {
+        note "${LANES_ALIASES_PATH:-lanes/aliases.tsv} could not be read ($(lane_alias_err))."
+        exit 66
+      }
+      printf '%s\n' "$cl_names"
+    else
+      printf '%s\n' "$cl_res"
+    fi
     ;;
 
   # `--home`'s validation, WITHOUT a write — the same `resolve_home` the writers
