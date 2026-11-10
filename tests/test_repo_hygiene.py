@@ -2797,6 +2797,15 @@ _EXIT_3_CAUSES = (
         re.compile(r"\bpushed\W+(?:but\W+)?not\W+confirmed\b", re.I),
         re.compile(r"\bnot\W+confirmed\s*:\W*(?:<sha>|\$\{?[A-Za-z_0-9@]+\}?)",
                    re.I)),
+    # FEATURE 007, ON PRIMARY (T417; D8; Y:2661-2665; R22, Q-L2-3 (a)): a
+    # register write in doubt that F3's lookup could not settle. Its die is
+    # `pw_lookup_3`'s; it names the write id, which the rerun reuses.
+    _Exit3Cause(
+        "a register write in doubt that F3's lookup could not settle",
+        "pw_lookup_3", None,
+        re.compile(r"\bcannot\W+confirm\W+whether\W+register\W+write\b", re.I),
+        re.compile(r"\bregister\W+write\W+(?:<id>|\$\{?[A-Za-z_0-9@]+\}?)",
+                   re.I)),
 )
 
 #: THE CAUSES AMENDMENT 23 S3-S4 WITHDREW, each with the words a die or a row
@@ -3083,6 +3092,8 @@ EXIT_3_SOURCE = '''\
 #   3  PUSHED, NOT CONFIRMED: <sha>. The push was sent, or it timed out, and
 #      the read-back could not confirm the commit on origin. Never success;
 #      the commit stays on HEAD, so look for it by content.
+#      On primary: cannot confirm whether register write <id> committed; the
+#      pending record is kept.
 #   4  the mutex could not be taken within 60s
 #   6  the commit is kept on HEAD after six attempts
 # --no-sweep is not an exit code
@@ -3103,6 +3114,9 @@ commit_publish() {
 cp_replay() {
   [ "$CP_ATTEMPT" -ge 6 ] && die "could not push origin/main after six attempts; the commit is kept on HEAD: $1" 6
 }
+pw_lookup_3() {   # <the end's code>
+  die "cannot confirm whether register write $WR_ID committed; nothing else was written" 3
+}
 '''
 
 EXIT_3_MANUAL = '''\
@@ -3111,7 +3125,7 @@ EXIT_3_MANUAL = '''\
 | code | meaning |
 |---|---|
 | 0 | done, and for a write confirmed by a read-back |
-| 3 | **pushed, not confirmed: `<sha>`**. The push was sent, or it timed out, and the read-back could not confirm the commit on origin. Never success; the commit stays on HEAD |
+| 3 | **pushed, not confirmed: `<sha>`**. The push was sent, or it timed out, and the read-back could not confirm the commit on origin. On primary, cannot confirm whether register write `<id>` committed, and the pending record is kept. Never success; the commit stays on HEAD |
 | 4 | the mutex could not be taken within 60s |
 
 3 to 6 are the codes this helper already used; 7 and 8 were free.
