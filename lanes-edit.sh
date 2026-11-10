@@ -586,14 +586,14 @@
 #      `lanes/log/README.md` (Brett's two-file allow-list), a divergence; one
 #      that writes either of those two beside any other path; one that is
 #      neither a handoff write nor a write of those two alone; or a path with
-#      a `.`, `..` or `.git` component, refused with nothing pushed and the
+#      a `.`, `..` or `.git` component, refused before any push, and the
 #      commits kept on HEAD (`cp_publish_fence`); and,
 #      at `commit_publish`'s push, the branch-wide push: a commit it would
 #      send that changes a path outside `handoffs/`, or, other than the
 #      write's own commit, one under it that is not an added or modified
 #      regular file; a path with a `.`, `..` or `.git` component; a merge or
 #      root commit among them, a range it cannot read, or no origin branch,
-#      refused before the push with nothing pushed, the write's commit kept
+#      refused before any push is made, the write's commit kept
 #      on HEAD (`cp_primary_push_check`).
 #  64  usage — a caller's bad arguments to one of the reads Amendment 11 added
 #      (`window-lane`, `lane-dir`, `lane-profile`, `last-session`, `forks`,
