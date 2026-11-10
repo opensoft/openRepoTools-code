@@ -1937,8 +1937,10 @@ def register_image_bytes(lines: list, final_newline: bool) -> bytes:
 def register_image_lines(data: bytes) -> tuple[list[str], bool] | None:
     """`register_image_bytes`' INVERSE: one image's bytes as its lines, cut at
     LF, and whether it ends with one; None where the bytes are not UTF-8,
-    read strictly. On decoded text it is T112's `register_doc_lines`: an
-    empty image is `([], True)`, and a final LF is taken off before the cut.
+    read strictly. The decoded text is cut by T112's `register_doc_lines`
+    (lane 3's NIT, #165 6768006915): an empty image is `([], True)`, and a
+    final LF is taken off before the cut. Only the strict decode is this
+    function's own.
 
     The bytes do not fix the lines: `["a", ""]` with no final newline and
     `["a"]` with one both render `a` LF, and this gives the second. So the
@@ -1950,11 +1952,7 @@ def register_image_lines(data: bytes) -> tuple[list[str], bool] | None:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         return None
-    if text == "":
-        return [], True
-    if text.endswith("\n"):
-        return text[:-1].split("\n"), True
-    return text.split("\n"), False
+    return register_doc_lines(text)
 
 
 def register_cache_state(images: dict[str, bytes]) -> dict[str, tuple[list[str], bool]] | None:
@@ -2363,7 +2361,7 @@ def register_render_read(store, k: int, *, start=None, row: str = "render") -> t
     of its own first would cost a second round trip on every render, which
     contract §2.3's one request per call does not allow."""
     if row not in ("render", "read", "guard"):
-        raise ValueError(f"the render read takes D9's render, read or guard row, not {row!r}")
+        raise ValueError(f"the render read takes D9's render or read row, not {row!r}")
     if row == "guard":
         raise ValueError("D9's guard row is cut by its caller, at T0 + 3.75 s (Y:3518): it "
                          "needs its caller's timer, which no task has yet, so the render read "
