@@ -4994,7 +4994,11 @@ REGISTER_SCHEMA_VERSION = 1
 REGISTER_WRITERS_FROM = 1
 REGISTER_READERS_FROM = 1
 
-#: Migration 1, part one: design.md §1.2's SQL block, verbatim. It holds the
+#: Migration 1, part one: design.md §1.2's SQL block with lane 1's changes
+#: (T107, opensoft/openRepoTools#165), which design.md has yet to fold:
+#: erratum (c)'s backstop, `row_line_id`'s UNIQUE made DEFERRABLE INITIALLY
+#: IMMEDIATE (ERR-48), and idx1's index `object_holds_by_line`, for step 6
+#: (lane 3's NIT). Case 6a changes nothing here. It holds the
 #: tables, views and indexes in `lanes_register`, and `render_file`,
 #: `line_scopes`, `doc_line_scopes`, `entry_new_keys`, `scope_fault` and
 #: `scope_checked`. It opens the one transaction (BEGIN), and part two ends it.
@@ -5347,7 +5351,14 @@ END $f$;
 -- mirror_state row, the switch at 'files' (set_seq -1), the migrations row, then COMMIT.
 """
 
-#: Migration 1, part two: design.md §1.3.1's SQL block, verbatim. It holds
+#: Migration 1, part two: design.md §1.3.1's SQL block with lane 1's changes
+#: to `commit_write` (T107, opensoft/openRepoTools#165), which design.md has
+#: yet to fold: erratum (c)'s step 6, which deletes the structured rows its
+#: edits leave stale, with the entry's `object_holds` comment (ERR-48); and
+#: case 6a, where step 6 keeps the objects whose holds it deletes, step 7
+#: re-marks their stored rows and stamps no `seq` or `mode` on them, and step
+#: 5a adds `objects:` for every lane holding an object whose hold sits on a
+#: line the entry changes (lane 3's ruling, #165 6771318480). It holds
 #: `commit_write` in full, then `switch_to_files`, `record_marker`,
 #: `find_write` and `record_mirror_state`, then migration 1's rows: the version
 #: (1, 1, 1), the head at -1, an empty `mirror_state`, the switch at `files`
@@ -5402,6 +5413,7 @@ DECLARE
   v_ws    text := p_entry -> 'journal' ->> 'workstation';
   v_wmode text;                                 -- written_mode and mode of the rows written
   v_holds jsonb := coalesce(p_entry -> 'object_holds', '[]');
+  v_gone  text[] := '{}';                       -- case 6a: the objects whose holds step 6 deleted
   v_imp   journal;
   v_prior jsonb;                                -- the restore form's: what its cutover replaces
   v_line  doc_lines;
@@ -5559,7 +5571,9 @@ SELECT v_seq, nullif(v_head, -1), p_write_id, e.*, p_entry -> 'act' ->> 'id'  --
 
   -- 5a. The touched keys' old side (D5, F5): what each line this entry replaces or deletes
   -- (found by path and old_sha256), and every line of a path it removes or renames, said
-  -- before step 6 changes it.
+  -- before step 6 changes it; and objects: for every lane holding an object whose hold sits
+  -- on such a line, since step 6 deletes that hold and step 7 re-marks the object's stored
+  -- rows, so the flip is reported (case 6a; lane 3's ruling, #165 6771318480).
   IF v_kind IN ('write', 'stray-import') THEN
     INSERT INTO journal_scopes (seq, scope)
     SELECT DISTINCT v_seq, scope_checked(d.path, d.line_no, k.scope)   -- N2: LR010, not 23514
@@ -5568,7 +5582,10 @@ SELECT v_seq, nullif(v_head, -1), p_write_id, e.*, p_entry -> 'act' ->> 'id'  --
     JOIN doc_lines d ON d.path = x.path AND (x.op IN ('remove', 'rename')
          OR (x.op IN ('replace', 'delete')
              AND encode(sha256(convert_to(d.text, 'UTF8')), 'hex') = x.old_sha256))
-    CROSS JOIN LATERAL doc_line_scopes(d.line_id, d.path) AS k(scope);
+    CROSS JOIN LATERAL (SELECT doc_line_scopes(d.line_id, d.path)
+      UNION SELECT 'objects:' || lower(o.lane_key)   -- N1: lower(), as entry_new_keys
+      FROM object_holds h JOIN object_holds o ON o.object = h.object
+      WHERE h.file = d.path AND h.ordinal = d.line_no AND h.object NOT LIKE 'lane:%') AS k(scope);
   END IF;
 
   -- 6. The edits: journal_edits as sent, then applied in ord order. The structured rows an edit
@@ -5576,7 +5593,8 @@ SELECT v_seq, nullif(v_head, -1), p_write_id, e.*, p_entry -> 'act' ->> 'id'  --
   -- delete changes a line, its lanes row by row_line_id, its log_lines and register_lines rows
   -- by line_id, and its object_holds by (file, ordinal); a remove, those of every line of its
   -- path; a rename, the old path's object_holds, while its log_lines move to the new file's
-  -- lane. Step 7 then inserts what the entry sends: an entry carries no deletes.
+  -- lane. Step 7 then inserts what the entry sends: an entry carries no deletes. The objects
+  -- whose holds go are kept in v_gone, and step 7 re-marks them (case 6a, #165 6771318480).
   INSERT INTO journal_edits (seq, ord, op, path, line_no, old_sha256, new_text, to_path)
   SELECT v_seq, x.ord, x.op, x.path, x.line_no, x.old_sha256, x.new_text, x.to_path
   FROM jsonb_to_recordset(coalesce(p_entry -> 'edits', '[]')) AS x(ord integer, op text,
@@ -5617,7 +5635,9 @@ SELECT v_seq, nullif(v_head, -1), p_write_id, e.*, p_entry -> 'act' ->> 'id'  --
       DELETE FROM lanes WHERE row_line_id = v_line.line_id;
       DELETE FROM log_lines WHERE line_id = v_line.line_id;
       DELETE FROM register_lines WHERE line_id = v_line.line_id;
-      DELETE FROM object_holds WHERE file = ed.path AND ordinal = ed.line_no;
+      WITH g AS (DELETE FROM object_holds WHERE file = ed.path AND ordinal = ed.line_no
+                 RETURNING object)
+      SELECT v_gone || ARRAY(SELECT object FROM g) INTO v_gone;
       IF ed.op = 'replace' THEN
         UPDATE doc_lines SET text = ed.new_text, written_seq = v_seq, written_mode = v_wmode,
                              written_ws = v_ws
@@ -5632,7 +5652,9 @@ SELECT v_seq, nullif(v_head, -1), p_write_id, e.*, p_entry -> 'act' ->> 'id'  --
       IF EXISTS (SELECT 1 FROM files WHERE path = ed.to_path) THEN
         RAISE EXCEPTION 'edit %: % exists', ed.ord, ed.to_path USING ERRCODE = 'LR004'; END IF;
       UPDATE files SET path = ed.to_path WHERE path = ed.path;   -- cascades to doc_lines
-      DELETE FROM object_holds WHERE file = ed.path;             -- the entry sends the new path's
+      WITH g AS (DELETE FROM object_holds WHERE file = ed.path   -- the entry sends the new path's
+                 RETURNING object)
+      SELECT v_gone || ARRAY(SELECT object FROM g) INTO v_gone;
       -- The log's lines move to the new file's lane, by file_lane (code/lanes-index:530-532),
       -- and a lane-kind object names that lane, as parse_log's does (:618-645).
       UPDATE log_lines SET file = ed.to_path,
@@ -5645,7 +5667,8 @@ SELECT v_seq, nullif(v_head, -1), p_write_id, e.*, p_entry -> 'act' ->> 'id'  --
       DELETE FROM log_lines WHERE line_id IN (SELECT line_id FROM doc_lines WHERE path = ed.path);
       DELETE FROM register_lines WHERE line_id IN (SELECT line_id FROM doc_lines
                                                    WHERE path = ed.path);
-      DELETE FROM object_holds WHERE file = ed.path;
+      WITH g AS (DELETE FROM object_holds WHERE file = ed.path RETURNING object)
+      SELECT v_gone || ARRAY(SELECT object FROM g) INTO v_gone;
       DELETE FROM doc_lines WHERE path = ed.path;
       DELETE FROM files WHERE path = ed.path;
     END CASE;
@@ -5724,7 +5747,10 @@ SELECT v_seq, nullif(v_head, -1), p_write_id, e.*, p_entry -> 'act' ->> 'id'  --
   -- superseded_by, #160's rule (code/lanes-index:1013-1036): a lane's state on an object is
   -- its own last line on it, and another lane whose own last line on it is a TAKEOVER
   -- supersedes it. The stored rows of each touched object are re-marked first, against the
-  -- incoming rows, so no transient pair of live claims trips one_live_claim.
+  -- incoming rows, so no transient pair of live claims trips one_live_claim. An object whose
+  -- hold step 6 deleted is touched though the entry sends no hold on it (case 6a; lane 3's
+  -- ruling, #165 6771318480). A re-mark stamps no seq or mode, so D19 never takes such a row
+  -- for this entry's own claim, and an exempt row keeps its files mode.
   BEGIN                                         -- a 23505 on one_live_claim is LR005
   UPDATE object_holds h SET superseded_by = (
     SELECT min(e.lane_key) FROM (
@@ -5735,7 +5761,8 @@ SELECT v_seq, nullif(v_head, -1), p_write_id, e.*, p_entry -> 'act' ->> 'id'  --
       WHERE NOT v_holds @> jsonb_build_array(jsonb_build_object('object', s.object,
                                                                 'lane_key', s.lane_key))) e
     WHERE e.object = h.object AND e.lane_key <> h.lane_key AND e.verb = 'TAKEOVER')
-  WHERE v_holds @> jsonb_build_array(jsonb_build_object('object', h.object));
+  WHERE v_holds @> jsonb_build_array(jsonb_build_object('object', h.object))
+     OR h.object = ANY (v_gone);
   INSERT INTO object_holds (object, lane_key, lane, verb, utc_ts, file, ordinal, superseded_by,
                             spellings, exempt, seq, mode)
   SELECT x.object, x.lane_key, x.lane, x.verb, x.utc_ts, x.file, x.ordinal,
