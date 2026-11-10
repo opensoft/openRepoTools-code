@@ -5842,6 +5842,11 @@ pw_deadline_s() {
   fi
 }
 
+# NO LANE, NO WRITE: `write_lane_of`'s 2, a write that names no lane here.
+pw_no_lane() {
+  die "no lane, no write: \`$cmd\` names no lane here, so on primary there is no lane checkout to read its author and its pending hand edits from, and a write never falls back to the workspace checkout. Name the lane it is for — LANES_LANE=<lane> $SELF $cmd … — and run it again. Nothing was sent." 2
+}
+
 # THE LANE'S CHECKOUT, `<c>` (R17; FR-018). The lane is the one the routing
 # attributes the write to (`write_lane_of`), and `<c>` is that lane's checkout,
 # from its name alone (`lane_checkout_path`): no `lane_checkout_enter`, no clone
@@ -5849,15 +5854,40 @@ pw_deadline_s() {
 # `<c>` is read only for a pending hand edit, the author, and the `repos.tsv`
 # its `origin/main` gives the snapshot (Y:5048–5050). A checkout that is not
 # there would need a clone, which is D12's fetch, so the write refuses with 2.
-# A form that writes nothing (a dry run) has no lane and no write here: it keeps
-# T409's 69 for now.
+#
+# `write_lane_of`'s 1, on a verb that asks the mode, is one of two forms (its
+# own comment), and neither ends 69 (lane openRepoTools-3, #165 6769061039,
+# T415's question 3; review REV415, S1):
+#   - A DRY RUN: `request-handoff <lane> … --dry-run`, and `archive-rows` and
+#     `migrate-state-cells` without `--yes`. It is a read of the register at
+#     its head (Y:3002), so it runs through the loop as ONE attempt whose child
+#     ends before `ready`, with no commit call (Y:5016; PW_DRY); its lane is
+#     the one its real form takes: `request-handoff`'s first argument, the
+#     others' LANES_LANE.
+#   - A WRITING VERB MISSING ITS LANE ARGUMENT, or with an option where it
+#     goes. Its arm refuses that in files mode as its first act, with its own
+#     usage words; on primary it is refused here, before anything is read or
+#     sent, with the code that arm gives: 64 for `request-handoff`, 2 for every
+#     other verb that asks the mode.
+PW_DRY=0
 pw_checkout() {   # <the verb's arguments>
   local pc_rc=0 pc_l=""
   pc_l="$(write_lane_of "$cmd" ${1+"$@"})" || pc_rc=$?
   case "$pc_rc" in
     0) : ;;
-    2) die "no lane, no write: \`$cmd\` names no lane here, so on primary there is no lane checkout to read its author and its pending hand edits from, and a write never falls back to the workspace checkout. Name the lane it is for — LANES_LANE=<lane> $SELF $cmd … — and run it again. Nothing was sent." 2 ;;
-    *) die "\`$cmd\` as given writes nothing (a dry run), and on primary this lanes-edit.sh runs only writes, through the register's attempt loop: it has no primary path for this form yet. Nothing was written, and no files were written instead." 69 ;;
+    2) pw_no_lane ;;
+    *)
+      case "$cmd" in
+        request-handoff)
+          [ -n "${1-}" ] ||
+            die "usage: request-handoff <lane> [--wait <s>] [--session <uuid>] [--force \"<why>\"] [--dry-run]: it names no lane. Nothing was sent." 64
+          PW_DRY=1; pc_l="$1" ;;
+        archive-rows|migrate-state-cells)
+          PW_DRY=1; pc_l="${LANES_LANE:-}"
+          [ -n "$pc_l" ] || pw_no_lane ;;
+        *)
+          die "usage: \`$cmd\` as given has no lane argument, or an option where its lane argument goes, so this write names no lane; its arm refuses it with this code in files mode, and on primary it is refused before anything is read or sent. Nothing was sent. Give \`$cmd\` its arguments in full." 2 ;;
+      esac ;;
   esac
   check_lane_name "$pc_l"
   PW_LANE="$(canon_lane "$pc_l")" || exit $?
@@ -6513,6 +6543,13 @@ pw_child_end() {
   pw_end "$PW_RC" "" "$PW_DIR"
 }
 
+# A DRY RUN THAT REACHED `ready` (`pw_checkout`, PW_DRY): a dry run stages
+# nothing, so its child ends before the seam. One that reaches it is an internal
+# error: its child is abandoned, no commit call is made, and the run ends 2.
+pw_dry_ready_end() {
+  pw_end 2 "the dry run of \`$cmd\` reached the seam at attempt ${PW_K} with a change set to commit, which a dry run never makes: an internal error. No commit call was made, and nothing was written"
+}
+
 # THE PRIMARY BRANCH, once per writer process. It never returns: every path
 # ends the process with the run's code.
 pw_run() {   # <the verb's arguments>
@@ -6552,6 +6589,7 @@ pw_run() {   # <the verb's arguments>
     pw_attempt_files
     pw_child_start
     pw_child_wait || pw_child_end
+    [ "$PW_DRY" = 0 ] || pw_dry_ready_end
     pw_commit
     pw_decide
   done
