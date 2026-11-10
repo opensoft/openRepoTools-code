@@ -5873,21 +5873,24 @@ pw_checkout() {   # <the verb's arguments>
 # the write refuses with 2, naming each file and the recovery that works on
 # primary, before anything is sent. The render set is the seam's
 # (`cp_seam_render_path`); `lanes/STORE`, `repos.tsv` and the handoffs are not
-# in it.
+# in it. The recovery's two commands quote the checkout and each path with
+# `printf '%q'`, so each can be pasted as it is (review REV415, N4).
 pw_hand_edit_refuse() {
-  local ph_hits="" ph_p="" ph_l=""
+  local ph_hits="" ph_p="" ph_l="" ph_q="" ph_c=""
   ph_hits="$(LANES_REPO="$PW_C" cs_pending_of lanes/LANES.md lanes/aliases.tsv lanes/log lanes/archive)"
   while IFS= read -r ph_p; do
     [ -n "$ph_p" ] || continue
     cp_seam_render_path "$ph_p" || continue
     ph_l="$ph_l $ph_p"
+    ph_q="$ph_q $(printf '%q' "$ph_p")"
   done <<PH_EOF
 $ph_hits
 PH_EOF
   [ -n "$ph_l" ] || return 0
+  ph_c="$(printf '%q' "$PW_C")"
   note "RECOVERY, in $PW_C:"
-  note "  read it:      git -C $PW_C diff HEAD --$ph_l"
-  note "  restore it:   git -C $PW_C checkout HEAD --$ph_l"
+  note "  read it:      git -C $ph_c diff HEAD --$ph_q"
+  note "  restore it:   git -C $ph_c checkout HEAD --$ph_q"
   note "  then make the change through its verb, and run this write again"
   die "refusing to write on primary: lane ${PW_LANE}'s checkout, $PW_C, holds an uncommitted edit of$ph_l, which the register renders. On primary the register is the database and that file is its rendering, so a hand edit there is never committed, carried or swept into a write (Y:2459). Nothing was sent." 2
 }
@@ -5959,6 +5962,11 @@ pw_given_text() {
 
 # ---- (b) ONE ATTEMPT.
 #
+# THE RECORD'S `attempts` counts each attempt the write has made, across the
+# runs that took its record over (pending-record.md; Y:5172; review REV415,
+# N1); it is written with the record's next write, at the first snapshot or
+# the attempt's `call` line.
+#
 # ITS DIRECTORY, `<d>/<run>/<k>/` (T413), mode 0700, and in it, before the
 # child starts: `parent.pid`, one line, `<pid>` TAB `<start token>`, this
 # process's `$$` and its `pid_start_of` token (empty where lane 5's T502 is not
@@ -5968,6 +5976,7 @@ pw_given_text() {
 pw_attempt_dir() {
   local pd_t=""
   PW_K=$((PW_K + 1))
+  WR_ATTEMPTS=$((10#$WR_ATTEMPTS + 1))
   PW_DIR="$PW_RUN_DIR/$PW_K"
   wr_dir_0700 "$PW_DIR" ||
     pw_end 1 "attempt ${PW_K}'s directory, $PW_DIR, is not a 0700 directory of this user's and cannot be made one. Nothing was sent by it"
