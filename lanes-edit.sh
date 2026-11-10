@@ -24431,6 +24431,17 @@ EOF
     rh_last=0
     rh_pollfail="the lane's log could not be read on this poll — waiting on"
     [ -z "$REG_SCRATCH" ] || rh_pollfail="the register could not be read on this poll — waiting on"
+    # FEATURE 007, T423 — ON PRIMARY THE REQUEST IS NAMED WITH ITS REGISTER SEQ
+    # ON EVERY END OF THE WAIT (lane openRepoTools-3, #165 6774499606, T423
+    # item 1; B13 item 12), computed here, above the loop, so the BOUND AGAIN
+    # end inside it names it too (#165 6779688808, Q1). The 69 below always
+    # named it, and the empty end's 2 named the request without it.
+    # `rh_after_committed` has returned by here, so on primary `REGISTER_SEQ`
+    # is the seq this run's one write committed at. Files mode has no seq and
+    # keeps its words. The window's name is not given back here: that is
+    # `lane-start`'s (SR:690), never the verb's.
+    rh_atseq=""
+    [ -z "$REG_SCRATCH" ] || rh_atseq=", in the register at seq ${REGISTER_SEQ}"
     while : ; do
       rh_left=$(( rh_deadline - $(date -u +%s) ))
       if [ "$rh_left" -le 0 ]; then break; fi
@@ -24470,20 +24481,10 @@ EOF
         bound|requested)
           if ! binding_identity_same "$rh_host" "$rh_cont" "$rh_win" "$rh_utc" "$rh_bsess" \
                                      "$rh_host2" "$rh_cont2" "$rh_win2" "$rh_utc2" "$rh_bsess2"; then
-            die "lane $lane was released and BOUND AGAIN while this request waited — its binding is now window ${rh_win2:-none} in container ${rh_cont2:-none} on host ${rh_host2:-unknown} (session ${rh_bsess2:-unknown}, $rh_utc2). The request this run wrote is answered and the lane is somebody else's: ask again, or take it up with that place." 2
+            die "lane $lane was released and BOUND AGAIN while this request waited — its binding is now window ${rh_win2:-none} in container ${rh_cont2:-none} on host ${rh_host2:-unknown} (session ${rh_bsess2:-unknown}, $rh_utc2). The request this run wrote${rh_atseq}${rh_atseq:+,} is answered and the lane is somebody else's: ask again, or take it up with that place." 2
           fi ;;
       esac
     done
-    # FEATURE 007, T423 — ON PRIMARY THE REQUEST IS NAMED WITH ITS REGISTER SEQ
-    # ON EVERY END OF THE WAIT (lane openRepoTools-3, #165 6774499606, T423
-    # item 1; B13 item 12). The 69 below always named it, and the empty end's
-    # 2 named the request without it. `rh_after_committed` has returned by
-    # here, so on primary `REGISTER_SEQ` is the seq this run's one write
-    # committed at. Files mode has no seq and keeps its words. The window's
-    # name is not given back here: that is `lane-start`'s (SR:690), never the
-    # verb's.
-    rh_atseq=""
-    [ -z "$REG_SCRATCH" ] || rh_atseq=", in the register at seq ${REGISTER_SEQ}"
     if [ -n "$REG_SCRATCH" ] && [ "$rh_last" != 0 ]; then
       note "THE WAIT ENDED ON A POLL THAT COULD NOT READ THE REGISTER. As read before the request, $(binding_facts "$lane" "$rh_host" "$rh_cont" "$rh_win" "$rh_utc" "$rh_bsess" "$rh_wstate")"
       note "  the request: $rh_wrote → $rh_pay, as session $rh_uuid${rh_atseq}"
