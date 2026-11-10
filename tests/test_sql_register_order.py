@@ -1145,15 +1145,23 @@ def test_the_default_deadline_is_30_s_for_a_write_that_never_gets_its_turn(estat
            snapshot_spread_s=round(spread, 2), vs_30s=round(D7_S - spread, 2), attempts=len(starts))
 
 
-#: AT-4 (f), with lane 3's text for T243 (#165 6772120103, "T243 (:2232)";
-#: 6771569269): each case's lines before, the line `append-line` sends, and
-#: what it must do: refused with 2 and nothing written, or committed with 0,
-#: taking or freeing what Q17 (B) says (`main_slots` for the writer's lane).
+#: AT-4 (f), with lane 3's text for T243 (#165 6772120103, "T243 (:2232)"):
+#: each case's lines before, the line `append-line` sends, and what it must
+#: do: refused with 2 and nothing written, or committed with 0, taking or
+#: freeing what Q17 (B) says (`main_slots` for the writer's lane).
 NO_REPO = {
     "hold-no-repo": ([], "HOLD {em} lane {lane} ({ws}), {utc}: for a frozen window", 2, None),
     "landing-no-repo": ([], "LANDING {em} lane {lane}, session {sid}@{ws}, {utc}, PR #{pr}", 2, None),
     "take-no-utc": ([], "HOLD {em} lane {lane} ({ws}): {key} main for a frozen window", 2, None),
     "free-text": ([], "NOTE {em} lane {lane}: the register's free text (T243)", 0, []),
+}
+
+#: Test 4 (f)'s slot lines of another shape, which commit 0 (lane 3,
+#: 6771569269: "`append-line` writes these lines on primary ... T424 does not
+#: change"), in a function of their own, outside T424's word
+#: `hold_line_that_names_no_repository` (lane 3's batch 7, ruling 4). The same
+#: columns as `NO_REPO`'s.
+OTHER_SHAPE = {
     "landed-no-repo": (["LANDING {em} lane {lane}, session {sid}@{ws}, {utc}, PR #{pr} into {key} main"],
                        "LANDED {em} lane {lane}, session {sid}@{ws}, {utc}, PR #{pr} {arrow} abc1234", 0, []),
     "hold-released-no-repo": (["HOLD {em} lane {lane} ({ws}), {utc}: {key} main for a frozen window"],
@@ -1169,11 +1177,25 @@ def test_a_hold_line_that_names_no_repository_is_refused_with_2(estates, case):
     matching `HOLD ` or `LANDING ` from which no repository can be read exits
     2 and writes nothing, and so does a take whose UTC cannot be read (U3;
     its client half is AT-F13 (b)). A line of another shape is written as free
-    text. Lane 3's text (6771569269): a `LANDED` naming no repository commits
-    0 and frees its pair in `main_slots`; a `HOLD RELEASED` naming none and a
-    `LANDING` naming no PR commit 0 and take or free nothing."""
-    e = estates()
-    before_lines, text, code, slots = NO_REPO[case]
+    text."""
+    append_line_case(estates(), case, NO_REPO[case])
+
+
+@CLIENT
+@pytest.mark.parametrize("case", list(OTHER_SHAPE))
+def test_a_slot_line_of_another_shape_commits_0(estates, case):
+    """Test 4 (f)'s lines of another shape (lane 3, 6771569269): on primary a
+    `LANDED` naming no repository commits 0 and frees its pair in
+    `main_slots`; a `HOLD RELEASED` naming none and a `LANDING` naming no PR
+    commit 0 and take or free nothing. T424's classifier must let them
+    through (lane 3's batch 7, ruling 4)."""
+    append_line_case(estates(), case, OTHER_SHAPE[case])
+
+
+def append_line_case(e: Estate, case: str, row: tuple) -> None:
+    """One case of test 4 (f): `row`'s lines before, then its line, and its
+    exit, and what the register then holds."""
+    before_lines, text, code, slots = row
 
     def spell(form: str) -> str:
         return form.format(em=EM, arrow=ARROW, lane=LA, ws=W_WS, sid=session_of(LA), utc=e.utc(),
