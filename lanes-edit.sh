@@ -6946,20 +6946,32 @@ pw_lookup_3() {   # <the end's code>
 # Only the files a kept `call` line's directory keeps are read: its `files`
 # here, while this run's children wait at their seams (lane openRepoTools-3,
 # #165 6769061039, T415's question 5).
-PW_E_ROWS=""; PW_E_DIGEST=""; PW_LEARNED=""
+PW_E_ROWS=""; PW_E_DIGEST=""; PW_E_WS=""; PW_E_UTC=""; PW_LEARNED=""
 
 # THE ENTRY'S CHANGE SET, from a register answer in a file: the `file=` rows
 # of a snapshot's `found=`, the commit's `already <s>` or the lookup's `found
 # <s>`, in the order given (sorted by path, bytewise: §3.2), into PW_E_ROWS,
 # each LF-ended, and their sha256 into PW_E_DIGEST; both empty where there are
-# none.
+# none. WHO WROTE IT: §3.2's `found=` and §3.4's `found <s>` carry the journal
+# row's `workstation=<name>` (empty where NULL) and `utc=<epoch s>`, right
+# after the seq line (lane openRepoTools-3, #165 6770688147, T418 item 1;
+# contract draft 4.15's text, #165 6772120103, built by lane 1's T111 and
+# T114). They are read here by key, as §3.2 reads every key, into PW_E_WS and
+# PW_E_UTC: a name `lanes_binding_value_ok` refuses is empty, and so is a
+# `utc=` that is not whole seconds. §3.3's `already <s>` carries neither.
 pw_entry_rows() {   # <answer file>
   local er_l=""
-  PW_E_ROWS=""; PW_E_DIGEST=""
+  PW_E_ROWS=""; PW_E_DIGEST=""; PW_E_WS=""; PW_E_UTC=""
   while IFS= read -r er_l || [ -n "$er_l" ]; do
-    case "$er_l" in file=*) PW_E_ROWS="${PW_E_ROWS}${er_l#file=}${WR_NL}" ;; esac
+    case "$er_l" in
+      file=*) PW_E_ROWS="${PW_E_ROWS}${er_l#file=}${WR_NL}" ;;
+      workstation=*) PW_E_WS="${er_l#workstation=}" ;;
+      utc=*) PW_E_UTC="${er_l#utc=}" ;;
+    esac
     er_l=""
   done < "$1" 2>/dev/null
+  lanes_binding_value_ok "$PW_E_WS" || PW_E_WS=""
+  wr_is_count "$PW_E_UTC" || PW_E_UTC=""
   [ -n "$PW_E_ROWS" ] || return 0
   PW_E_DIGEST="$(printf '%s' "$PW_E_ROWS" | wr_sha256_stdin)" || PW_E_DIGEST=""
   return 0
@@ -7136,10 +7148,12 @@ pw_tail_dirs_done() {
 
 # A RUN THAT RUNS NONE OF THE TAIL ENDS HERE (Y:5328): the write is committed
 # either way, so it prints one WARNING and exits 0. `request-handoff`, whose
-# tail's wait decides its code, exits 2 instead, with Y:5328's words.
-pw_tail_said() {   # <seq> <what of the tail>
+# tail's wait decides its code, exits 2 instead, with Y:5328's words. The
+# WARNING joins `<what>` to "at seq <s>" with `; `, or with `<joiner>` where
+# one is given (Y:5346–5347's ", written from").
+pw_tail_said() {   # <seq> <what of the tail> [<joiner>]
   pw_tail_dirs_done
-  note "WARNING: register write $WR_ID is in the register at seq ${1}; ${2}."
+  note "WARNING: register write $WR_ID is in the register at seq ${1}${3-; }${2}."
   if [ "$WR_VERB" = request-handoff ]; then
     die "the request is written at seq ${1}; this run did not wait for the release: read lanes-edit.sh binding ${PW_LANE:-<lane>}" 2
   fi
@@ -7160,20 +7174,27 @@ pw_rec_here() {
 
 # NO RECORD HERE (Y:5344–5347): a run that finds its id with no pending record
 # of it here runs no tail, and the done mark, where there is one, has already
-# spoken (`pw_tail_found`). Y chooses its words by `journal.workstation`, this
-# host or another; no answer of the contract carries it (§3.2's stdout, §3.3's
-# `already`, §3.4's `found`), nor the entry's UTC, so this run cannot tell
-# which, and says only what holds either way: Y:5347's words, less the
-# workstation it cannot name. A record from another host or container is left
-# as it is, for a rerun there, which can take it over and replay; only this
-# run's claim goes.
+# spoken (`pw_tail_found`). Its words are chosen by the journal row's
+# `workstation=` (`pw_entry_rows`) against the name this run passes as
+# `--workstation` (`WS`; tasks:1159): equal, Y:5346's, with the row's `utc=`
+# as this file's UTC stamp; otherwise Y:5347's, naming that workstation, or
+# `<unknown>` where it is empty or not given (lane openRepoTools-3, #165
+# 6770688147, T418 item 1). A record from another host or container counts as
+# none (Y:5344) and is left as it is, for a rerun there, which can take it over
+# and replay; only this run's claim goes, and the words gain one clause naming
+# that record's host and container (T418 item 6).
 pw_no_record_end() {   # <seq>
+  local nr_u="" nr_rec=""
   pw_abandon_all
   wr_claim_release || :
   if [ "$PW_REC_OURS" = 1 ] && [ -z "$WR_UPDATED_UTC" ] && [ -n "$WR_REC_HOST" ]; then
-    pw_tail_said "$1" "its pending record here was written on ${WR_REC_HOST}/${WR_REC_CONTAINER:-<unknown>}, not this host and container, and tails are host-local, so this run runs none of its after-COMMIT steps: $(pw_owed_words). If its run there ended 3, rerun it there"
+    nr_rec=". The pending record here was written on ${WR_REC_HOST}/${WR_REC_CONTAINER:-<unknown>}, not this host and container, so it counts as none, since tails are host-local, and is left in place for a rerun there"
   fi
-  pw_tail_said "$1" "no pending record of it is here, so this run runs none of its after-COMMIT steps: $(pw_owed_words)"
+  if [ -n "$PW_E_WS" ] && [ "$PW_E_WS" = "$WS" ]; then
+    nr_u="$(wr_utc_of_epoch "$PW_E_UTC")"
+    pw_tail_said "$1" "written from this host at ${nr_u:-<unknown>}. Its after-COMMIT steps may already have run here, in the run that wrote it; this run runs none of them. If they did not run, they are: $(pw_owed_words)${nr_rec}" ", "
+  fi
+  pw_tail_said "$1" "written from ${PW_E_WS:-<unknown>}; no pending record of it is here, so this run runs none of its after-COMMIT steps: $(pw_owed_words). If its run there ended 3, rerun it there${nr_rec}" ", "
 }
 
 # THE WRITE FOUND IN THE REGISTER, by `already <s>`, a snapshot's `found=` or
@@ -7184,9 +7205,9 @@ pw_no_record_end() {   # <seq>
 pw_tail() {   # <seq> <how it was learned> <the answer, in a file>
   local pt_l="" pt_p="" pt_d="" pt_mp="" pt_md="" pt_rest="" pt_h=""
   pw_learned "$1"
+  pw_entry_rows "$3"
   pw_tail_found "$1" || :
   pw_rec_here || pw_no_record_end "$1"
-  pw_entry_rows "$3"
   if [ -n "$PW_E_DIGEST" ] && [ -n "$PW_CHILD" ]; then
     pt_h="$(pw_dir_digest "$PW_DIR")" || pt_h=""
     if [ "$pt_h" = "$PW_E_DIGEST" ]; then pt_mp="$PW_CHILD"; pt_md="$PW_DIR"; fi
