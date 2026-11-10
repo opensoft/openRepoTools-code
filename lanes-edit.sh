@@ -595,8 +595,12 @@
 #      usage, Brett's word, its place or its UTC missing, a `--word-utc` that
 #      is not a UTC, and `LANES_LANE` or `LANES_SESSION` unset or malformed;
 #      on each attempt's snapshot, no open LANDING of the holder for that PR
-#      and repository, or one with no readable UTC or 30 minutes old or less;
-#      and the commit's LR005 `expired-none`, `expired-closed` or
+#      and repository, or one with no readable UTC or 30 minutes old or less,
+#      then managed-owner vocabulary in the line it composes (Y:5115); four
+#      internal errors: Rule 6's primary program not set in a primary
+#      process, the snapshot's register unreadable to awk, an open LANDING
+#      with no repository to copy, and a seam that returns with no register
+#      seq; and the commit's LR005 `expired-none`, `expired-closed` or
 #      `expired-young`, relayed, and told apart by its token alone.
 #  64  usage — a caller's bad arguments to one of the reads Amendment 11 added
 #      (`window-lane`, `lane-dir`, `lane-profile`, `last-session`, `forks`,
@@ -2880,16 +2884,17 @@ append_line_classify_failed() {   # <why>
 # number, a `--repo` outside the characters Rule 6 reads in `into <repo>
 # main`, an unknown option, one given twice or with no value; `--word`,
 # `--word-where` or `--word-utc` missing or empty; a `--word-utc` that is not
-# a UTC; `LANES_LANE` unset or not a lane name; `LANES_SESSION` unset, or not
-# the transcript UUID a session field must be (Amendment 7(b), as
-# `write_event` holds it); and managed-owner vocabulary in the word or its
-# place, as plain `append-line` refuses it.
+# a UTC; `LANES_LANE` unset or not a lane name; and `LANES_SESSION` unset, or
+# not the transcript UUID a session field must be (Amendment 7(b), as
+# `write_event` holds it).
 #
-# REFUSED WITH 2 ON EACH ATTEMPT'S SNAPSHOT, nothing sent (Y:5114): no open
-# LANDING of the holder for that PR and repository, one with no UTC that
-# reads as a time, or one 30 minutes old or less by the snapshot's clock. A
-# LANDED committed after the snapshot fails the commit's head check (LR001),
-# and the next attempt finds no open LANDING.
+# REFUSED WITH 2 ON EACH ATTEMPT'S SNAPSHOT, before `ready`, nothing sent
+# (Y:5114): no open LANDING of the holder for that PR and repository, one
+# with no UTC that reads as a time, or one 30 minutes old or less by the
+# snapshot's clock; then managed-owner vocabulary anywhere in the line it
+# composes, as plain `append-line` refuses its whole text (Y:5115; lane 3,
+# #165 6770688147, T425 Q4). A LANDED committed after the snapshot fails the
+# commit's head check (LR001), and the next attempt finds no open LANDING.
 LE_HOLDER=""; LE_PR=""; LE_REPO=""; LE_WORD=""; LE_WHERE=""; LE_WUTC=""
 LE_L=""; LE_P=""; LE_R=""; LE_U=""; LE_M=""
 # THE FIND (Y:5112): `RULE6_AWK` as primary reads it, `RULE6_EXPIRED_AWK`
@@ -2977,9 +2982,6 @@ append_line_landing_expired() {   # <holder> --pr <n> --repo <r> --word <q> --wo
   if [ -z "${LANES_SESSION:-}" ] || ! valid_uuid "$LANES_SESSION"; then
     die "append-line --landing-expired names the session that writes it, and a session field is the transcript UUID and only that (Amendment 7(b)): LANES_SESSION is '${LANES_SESSION:-<unset>}'. Set LANES_SESSION=\"\$CLAUDE_CODE_SESSION_ID\". Nothing was written, and the lock was not taken." 2
   fi
-  if managed_projection_hint "$LE_WORD" || managed_projection_hint "$LE_WHERE"; then
-    die "append-line --landing-expired: the word or its place carries managed-owner vocabulary ('managed owner', 'managed binding', 'mode=managed' or 'managed:'), and only the managed ledger's own writer writes it into the register. Nothing was written, and the lock was not taken." 2
-  fi
   lane_tag="$(canon_lane "$LANES_LANE")" || exit 2
   check_lane_name "$lane_tag"
   acquire_lock; checkout_sync append-line "$lane_tag" write "$LANES_PATH"   # Amendment 23 S3
@@ -3041,6 +3043,14 @@ EOF
   # the LANDING's fields as copied; Brett's quote last, so nothing inside it
   # is ever a reader's first match.
   le_line="LANDING EXPIRED — lane ${lane_tag}, session ${LANES_SESSION}@${WS}, $(utc_now), for lane ${LE_L}: PR #${LE_P} into ${LE_R} main, its LANDING of ${LE_U}, ${LE_M} min past Rule 6's 30; on Brett's word (${LE_WHERE}, ${LE_WUTC}): \"${LE_WORD}\""
+  # NO MARKER BY THE BACK DOOR, as plain `append-line` tests its whole text
+  # (Y:5115; lane 3, #165 6770688147, T425 Q4; REV425 NIT-1): the composed
+  # line, whole, since the writer's name, the workspace and the fields copied
+  # from the LANDING are in it beside the word and its place. Tested before
+  # the scratch tree is written, so nothing is.
+  if managed_projection_hint "$le_line"; then
+    die "append-line --landing-expired: the line it composed carries managed-owner vocabulary ('managed owner', 'managed binding', 'mode=managed' or 'managed:') in the word, its place, a lane's name, the workspace or a field copied from the LANDING, and only the managed ledger's own writer writes it into the register. Nothing was written." 2
+  fi
   append_text_line "$le_line"
   commit_publish "LANES(${lane_tag}@$WS): append line — ${le_line:0:72}"
   # ---- AFTER THE SEAM (Y:5119): only then is the seq known, as `claim`'s
@@ -11184,10 +11194,11 @@ END { for (k in ST) printf "%s%c%s%c%s%c%s%c%s%c\n", ST[k], 31, L[k], 31, P[k], 
 # FEATURE 007, T425 — RULE 6 ON PRIMARY: A `LANDING EXPIRED` CLOSES THE LANDING
 # IT NAMES (F13; Y:5120–5138; lane 3's R45). On primary the register releases a
 # LANDING past Rule 6's thirty minutes on Brett's word, by the line
-# `append-line --landing-expired` composes (below the file's functions), and
-# the database closes that LANDING's slot. Unchanged, this program would go on
-# listing the released LANDING, marked STALE, and a script that gates on `who
-# --landing` would block where `main` is free. One flag fixes that on primary.
+# `append-line --landing-expired` composes (`append_line_landing_expired`,
+# above), and the database closes that LANDING's slot. Unchanged, this
+# program would go on listing the released LANDING, marked STALE, and a
+# script that gates on `who --landing` would block where `main` is free. One
+# flag fixes that on primary.
 #
 # THE FLAG, `RULE6_PRIMARY`: a shell variable, never exported, set empty here,
 # beside the program, so an inherited value never counts (it is unset first,
