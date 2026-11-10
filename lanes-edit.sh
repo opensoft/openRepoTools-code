@@ -64,7 +64,8 @@
 #                                          --state "<STATE> · <one line>" }
 #                                        --log lane:<lane> → "<payload>"
 #                                        (feature 007: lane-start's row, cell, state and log writes
-#                                         as ONE write, one commit and push; LANES_LANE=<lane> and
+#                                         as ONE write, one commit and push; <lane> is the row's own
+#                                         spelling, and LANES_LANE=<lane> and
 #                                         LANES_SESSION=<transcript uuid> are required)
 #   lanes-edit.sh                      commit             "<message>"         # commit a hand edit; with
 #                                         nothing staged, publish the stranded
@@ -540,10 +541,11 @@
 #      usage; every refusal of the writes it makes as one (`add-row`'s,
 #      `append-session-id`'s of the text it appends, `set-row-state`'s and
 #      `log`'s); a row or a `--log` object that names another lane than its
-#      first word; and a `LANES_LANE` that is not that word, byte for byte, or
-#      a `LANES_SESSION` that is not a transcript uuid. A cell append whose
-#      anchor does not hold is no refusal: it is left out and said, and the
-#      write goes on.
+#      first word; a `LANES_LANE` that is not that word, byte for byte; a
+#      first word that is not the row's own spelling, byte for byte, an
+#      alias's new name included; and a `LANES_SESSION` that is not a
+#      transcript uuid. A cell append whose anchor does not hold is no
+#      refusal: it is left out and said, and the write goes on.
 #  64  usage — a caller's bad arguments to one of the reads Amendment 11 added
 #      (`window-lane`, `lane-dir`, `lane-profile`, `last-session`, `forks`,
 #      `duplicate-holder` (issue #39), `workstation`, `fetch-age`, `lanes`,
@@ -17670,6 +17672,9 @@ write_lane_of() {   # <verb> <its arguments…>
     # `write-handoff`. So is a call whose LANES_LANE is not `<L>` or whose
     # LANES_SESSION is not a transcript uuid (lane 3's rulings 2 and 3, #165
     # 6755005268): it is not routed, and the arm refuses it before any clone.
+    # A first word in another spelling than the row's is routed, since this
+    # arm reads no row, and the arm refuses it in the lane's checkout, before
+    # the lock (#165 6767463594, question 6).
     start-record)
       case "${1-}" in ''|-*) return 1 ;; esac
       [ "${LANES_LANE-}" = "$1" ] && valid_uuid "${LANES_SESSION-}" || return 1
@@ -18686,11 +18691,12 @@ Nothing was written." 2
   #   confirmed · 1 environment, or a read `add-row`'s tests could not make ·
   #   2 usage; every refusal of the writes it makes as one; a row or a `--log`
   #   object that names another lane than its first word; a LANES_LANE that is
-  #   not that word, or a LANES_SESSION that is not a transcript uuid; S3's
-  #   refusals; each with nothing written · 3 pushed, not confirmed · 4 the
-  #   lock · 5 an edit's proof · 6 S4's commit, kept and named · 69 on
-  #   primary, at T409's ask (T415 and T417 give 69, 75 and 3 their primary
-  #   meanings)
+  #   not that word; a first word that is not the row's own spelling, byte for
+  #   byte, an alias's new name included (6767463594, question 6); a
+  #   LANES_SESSION that is not a transcript uuid; S3's refusals; each with
+  #   nothing written · 3 pushed, not confirmed · 4 the lock · 5 an edit's
+  #   proof · 6 S4's commit, kept and named · 69 on primary, at T409's ask
+  #   (T415 and T417 give 69, 75 and 3 their primary meanings)
   start-record)
     sr_use="usage: start-record <lane> <STARTED|RESUMED> { --add-row \"<full | row |>\" | [--append-cell \"<anchor>\" \"<text to append>\" \"<why>\"]... --state \"<STATE> · <one line>\" } --log lane:<lane> → \"<payload>\""
     sr_in="${1-}"; sr_verb="${2-}"
@@ -18742,8 +18748,10 @@ Nothing was written." 2
     esac
     # THE CALLER NAMES THE LANE AND THE SESSION, as Y:5528's call form does
     # (lane 3's rulings 2 and 3 on T427, #165 6755005268). `LANES_LANE` is
-    # `<L>` byte for byte, so T412's digest, the pending record's `lane`, T415's
-    # `--lane` and the row all name one lane. `LANES_SESSION` is a transcript
+    # `<L>` byte for byte, and `<L>` is the row's own spelling, which is asked
+    # below, where the row is known (#165 6767463594, question 6), so T412's
+    # digest, the pending record's `lane`, T415's `--lane` and the row all name
+    # one lane in one spelling. `LANES_SESSION` is a transcript
     # uuid, `valid_uuid`'s 8-4-4-4-12 hexadecimal, the test `write_event_checks`
     # makes of every event line's session (Amendment 7(b), R-A11 (e)): Y:5431's
     # guard finds the pending record by it, and a fallback to the row's last id
@@ -18782,7 +18790,9 @@ Nothing was written." 2
     # lane: one write is one lane's, so the row, the checkout it is routed
     # through and the log line agree. The row's spelling is kept, as `add-row`
     # keeps it and `log` then finds it. A row that is there is found as
-    # `set-row-state` finds it, after `log`'s fetch (R30).
+    # `set-row-state` finds it, after `log`'s fetch (R30). EITHER WAY `<L>` IS
+    # THE ROW'S OWN SPELLING, byte for byte (lane 3, #165 6767463594,
+    # question 6), and a first word in another spelling is refused, 2.
     if [ "$sr_rows" = 1 ]; then
       sr_named=""
       case "$sr_row" in *'`'*'`'*) sr_named="${sr_row#*\`}"; sr_named="${sr_named%%\`*}" ;; esac
@@ -18792,6 +18802,13 @@ Nothing was written." 2
       fi
       add_row_checks "$sr_row"
       sr_lane="$lane_new"
+      # AND THE ROW NAMES `<L>` BYTE FOR BYTE (lane 3, #165 6767463594,
+      # question 6). The test above asks only that the two name one lane, and
+      # `add_row_checks` has refused a row the lane already has under any case,
+      # so what is left here is a row and a first word in two cases.
+      if [ "$sr_lane" != "$sr_in" ]; then
+        die "the row given to --add-row spells its lane '$sr_lane' in its first cell, and start-record's first word is '$sr_in': the row names <lane> byte for byte, since LANES_LANE equals it and is the digest's lane as given (Y:5171), so the digest, the pending record, the row and the log line spell one lane alike. Spell the lane alike in the row, the first word and LANES_LANE. Nothing was written. $sr_use" 2
+      fi
       [ "$(lc "${sr_obj#lane:}")" = "$(lc "$sr_lane")" ] ||
         die "--log names $sr_obj, and this write is lane $sr_lane's: its log line is that lane's own, lane:$sr_lane. Nothing was written. $sr_use" 2
       CS_RECHECK=1   # `add-row`'s, for the same reason: its checks ran before the lock
@@ -18799,6 +18816,16 @@ Nothing was written." 2
       log_sync
       sr_lane="$(canon_lane "$sr_in")" || exit 2   # Amendment 15
       check_lane_name "$sr_lane"
+      # `<L>` IS THE ROW'S OWN SPELLING (lane 3, #165 6767463594, question 6,
+      # which corrects ruling 3 of 6755005268): where `canon_lane` answers
+      # another spelling, an alias's new name included, the call is refused
+      # here, before the lock, naming it. `LANES_LANE` equals `<L>` and is the
+      # digest's lane as given (Y:5171), which T412 and T415 keep so that a
+      # rerun finds its record, so only `<L>` in the row's spelling makes the
+      # digest, the pending record and the row spell one lane alike.
+      if [ "$sr_lane" != "$sr_in" ]; then
+        die "start-record's first word is '$sr_in', and the register resolves it to lane '$sr_lane': <lane> is the row's own spelling, byte for byte, since LANES_LANE equals it and is the digest's lane as given (Y:5171), so the digest, the pending record, the row and the log line spell one lane alike. Name the lane as its row does (LANES_LANE=$sr_lane $SELF start-record $sr_lane …). Nothing was written. $sr_use" 2
+      fi
       sr_co="$(canon_object "$sr_obj" "")" || exit 2
       if [ "$sr_co" != "lane:$sr_lane" ]; then
         sr_says="$sr_obj"; [ "$sr_co" = "$sr_obj" ] || sr_says="$sr_obj, that is $sr_co"
