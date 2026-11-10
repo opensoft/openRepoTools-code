@@ -2262,10 +2262,16 @@ class _Service:
 
 
 def _both(est: Estate) -> tuple:
-    """The guard's answer with the service up, then with it down."""
+    """The guard's answer with the service up, then with it down. The
+    service is warmed by one request first: a cold service answers
+    `unavailable` until its `psql` has connected (d8:502), and a service
+    holding no image answers its first request so (the cache miss)."""
     svc = _Service(est)
-    up = est.hook("hello")
-    svc.stop()
+    try:
+        est.hook("hello")
+        up = est.hook("hello")
+    finally:
+        svc.stop()
     down = est.hook("hello")
     return up, down
 
@@ -2394,11 +2400,48 @@ def _live_other(est: Estate):
     return other
 
 
-def test_the_guard_through_the_service_answers_byte_identical_to_the_direct_read(estate):
+#: The test plan's three states, one for each guard answer (TP:1883-1886).
+GUARD_STATES = ["ok", "refuse", "offer"]
+
+
+def _guard_state(estate, state: str) -> Estate:
+    """THE STATE, in the register the guard reads on primary (`_Register`):
+
+    - `ok`, this session's lane bound to this window: the session named
+      `FROM`, in the window `FROM`, whose row names it;
+    - `refuse`, another session holding the lane, and live: the window's row
+      names `est.other`, which `_live_other` makes live;
+    - `offer`, the module's estate: the window `FROM`, whose row names this
+      session, and the session named `TO`, a lane with a row of its own, so
+      the guard makes its offer (`Estate.make_offer`). The test plan words it
+      "an unbound window"; lane 5's bind-record contract makes the offer on
+      this name drift (lane 2's reading)."""
+    if state == "offer":
+        est = estate(mode="primary")
+    else:
+        est = estate(mode="primary", to=FROM, to_row=False)
+    if state == "refuse":
+        _live_other(est)
+        est.push_register([_row(FROM, est.other, "LIVE")])
+    _Register(est)
+    return est
+
+
+def _connected(est: Estate) -> bool:
+    """Wait until the service holds its connection: a client backend on the
+    case's database other than this read's own."""
+    sql = ("SELECT count(*) FROM pg_catalog.pg_stat_activity WHERE datname = current_database() "
+           "AND pid <> pg_backend_pid() AND backend_type = 'client backend';")
+    return bool(_until(lambda: int(est.pg.psql(sql).stdout.strip() or 0) > 0, 10, 0.1))
+
+
+@pytest.mark.parametrize("state", GUARD_STATES)
+def test_the_guard_through_the_service_answers_byte_identical_to_the_direct_read(estate, state):
     """AT-10: on one state, the service path and the direct path give equal
     stdout, equal stderr once the one fallback line is removed, and equal
-    exit codes."""
-    est = estate(mode="primary")
+    exit codes: `[ok|refuse|offer]`, one state for each guard answer
+    (TP:2009; the states at TP:1883-1886, `_guard_state`)."""
+    est = _guard_state(estate, state)
     up, down = _both(est)
     assert down.err.count(FALLBACK) == 1 and FALLBACK not in up.err, (up.err, down.err)
     err = [line for line in down.err.splitlines() if line != FALLBACK]
@@ -2499,16 +2542,42 @@ def test_the_services_idle_check_replaces_a_dropped_connection_in_the_background
     assert FALLBACK not in hook.err, hook.err
 
 
-def test_a_cache_miss_at_the_service_answers_unavailable_and_fetches_in_the_background(estate):
-    """AT-10: a request whose image the service's cache lacks is answered
-    "unavailable" at once, the guard falls back, and the service fetches it
-    in the background, so the next request is served (T302's cache)."""
+@pytest.mark.parametrize("cache", ["empty-cache", "cache-holds-n"])
+def test_a_cache_miss_at_the_service_answers_unavailable_and_fetches_in_the_background(
+        estate, cache):
+    """AT-10, "A cache miss" (TP:2023; T302's image cache), on a service
+    that holds its connection:
+
+    - `[empty-cache]`: a service holding no image yet, with the
+      per-environment image cache empty, answers its first request
+      `unavailable`; the client reads directly, the service fetches the
+      files whole in the background, and the next request is answered by
+      the service;
+    - `[cache-holds-n]`: with the cache already holding the files at `n`,
+      the first request is answered from it. A first service fills the
+      cache and is stopped, with the register still at `n`; a second
+      answers."""
     est = estate(mode="primary")
+    _Register(est)
+    if cache == "cache-holds-n":
+        svc = _Service(est)
+        try:
+            est.hook("hello")
+            filled = est.hook("hello")
+        finally:
+            svc.stop()
+        assert FALLBACK not in filled.err, f"the first service never filled the cache: {filled!r}"
     svc = _Service(est)
-    first = est.hook("hello")
-    second = est.hook("hello")
-    svc.stop()
-    assert first.err.count(FALLBACK) == 1 and FALLBACK not in second.err, (first, second)
+    try:
+        assert _connected(est), "the service held no connection in 10 s"
+        first = est.hook("hello")
+        second = est.hook("hello")
+    finally:
+        svc.stop()
+    if cache == "empty-cache":
+        assert first.err.count(FALLBACK) == 1 and FALLBACK not in second.err, (first, second)
+    else:
+        assert FALLBACK not in first.err and FALLBACK not in second.err, (first, second)
 
 
 def test_a_write_between_two_requests_is_in_the_next_answer(estate):
