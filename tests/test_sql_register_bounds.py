@@ -979,3 +979,120 @@ def test_import_and_reconcile_set_their_bounds_at_connect(tmp_path):
         for call in calls:
             assert call["connect_timeout"] == str(C), (argv[0], call["connect_timeout"])
             assert all(o in (call["options"] or "") for o in options), (argv[0], call["options"])
+
+
+# ============================================ AT-D9c and R-PG-1 (T257b), no engine
+
+#: R-PG-1's three families (lane 3, #165 comment 6747611042, 18:04Z: "one case
+#: per family, each set by the caller and each absent at `psql`").
+INHERITED_FAMILIES = {
+    "pghostaddr-sslmode-disable": {"PGHOSTADDR": "192.0.2.9", "PGSSLMODE": "disable"},
+    "pgoptions": {"PGOPTIONS": "-c search_path=inherited"},
+    "pgtargetsessionattrs": {"PGTARGETSESSIONATTRS": "read-write"},
+}
+
+
+def _register_fake(tmp_path: Path, monkeypatch, url_tail: str = "") -> Path:
+    """T203's register fake `psql` first on `PATH`, answering `psql --version`
+    itself (T203b), and a configuration whose two URLs name a loopback host,
+    each with `url_tail` after the database, and a private password file
+    each; every inherited `PG*` and fake variable cleared. Returns the fake's
+    log."""
+    from sql_register_helpers import REGISTER_FAKE_PSQL
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "psql").write_text(REGISTER_FAKE_PSQL, encoding="utf-8")
+    (bindir / "psql").chmod(0o755)
+    config = _private(tmp_path / "conf" / "lanes-index.conf", "\n".join([
+        "mode=index",
+        f"register_url=postgresql://t257_writer@127.0.0.1:55432/register_db{url_tail}",
+        f"register_passfile={_private(tmp_path / 'writer.pgpass')}",
+        f"reader_url=postgresql://t257_reader@127.0.0.1:55432/register_db{url_tail}",
+        f"reader_passfile={_private(tmp_path / 'reader.pgpass')}",
+        "register_schema=lanes_register_t257",
+        ""]))
+    log = tmp_path / "psql.log"
+    for key in list(os.environ):
+        if key.startswith("PG") or key.startswith("FAKE_PSQL"):
+            monkeypatch.delenv(key)
+    monkeypatch.setenv("LANES_INDEX_CONFIG", str(config))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("FAKE_PSQL_LOG", str(log))
+    monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ.get("PATH", os.defpath))
+    return log
+
+
+@pytest.mark.parametrize("family", list(INHERITED_FAMILIES))
+def test_a_register_path_drops_each_inherited_pg_variable_before_psql(tmp_path, monkeypatch,
+                                                                       family):
+    """R-PG-1 (lane 3, #165 comment 6747611042): on a register path `psql`
+    gets only what the configuration gives it, the URL's mapping (SVC-2),
+    the configured `PGPASSFILE` and `PGCONNECT_TIMEOUT` at `c` (Y:4970);
+    every inherited variable whose name begins `PG` is dropped first. Each
+    case sets its family in the caller's environment, sends one register
+    request, the reader's `read` row through `PostgresStore(cfg,
+    "register_reader")` in process (lane 1, #165 6752661856: "a phase N case
+    at T106 can drive only the store, in process"), through T203's register
+    fake `psql`, whose URL names a loopback host and no query parameter
+    (lane 2's reading, NOTES question 26), and asserts each variable absent
+    at every `psql` call, `--version` included. T106 sets `PGOPTIONS` itself,
+    to D9's bounds, so `[pgoptions]` asserts the inherited value absent. It
+    fails until lane 1's T106 lands (L1-A5). Its `[J3]` word is
+    `sql_register_bounds and inherited_pg_variable`, and each case's adds
+    `and <id>`."""
+    log = _register_fake(tmp_path, monkeypatch)
+    inherited = INHERITED_FAMILIES[family]
+    for key, value in inherited.items():
+        monkeypatch.setenv(key, value)
+    mod = load_indexer()
+    error = None
+    try:
+        store = mod.PostgresStore(mod.load_config(), "register_reader")
+        store.request(["SELECT 1"], "read")
+    except Exception as exc:  # the code under test, not this test, failed
+        error = exc
+    assert error is None, f"PostgresStore(cfg, 'register_reader').request(...) raised {error!r}"
+    records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    requests = [r for r in records if r.get("kind") != "version"]
+    assert len(requests) == 1, f"one psql call carries the request: {len(requests)}"
+    assert requests[0]["pg"].get("PGHOST") == "127.0.0.1", \
+        f"the URL's mapping reached psql: {requests[0]['pg']}"
+    for record in records:
+        pg = record["pg"]
+        for key, value in inherited.items():
+            if key == "PGOPTIONS":
+                assert pg.get(key) != value, f"the inherited PGOPTIONS reached {record['argv']}"
+            else:
+                assert key not in pg, f"the inherited {key} reached {record['argv']}: {pg[key]!r}"
+
+
+def test_a_connect_timeout_under_2_is_refused_at_load_config(tmp_path, monkeypatch):
+    """AT-D9c (b)'s refusal (SVC-2; the phase plan's "`c` and `N_a`, the
+    connect bound"): `connect_timeout=1` and `connect_timeout=0`, in
+    `register_url=` or in `reader_url=`, are refused at `load_config`, as
+    `Refusal` (2), naming the key and its value, before any `psql` call:
+    libpq reads 1 as 2 and 0 as no limit. `connect_timeout=2`, `c`'s floor,
+    loads. No engine. It fails until lane 1's line C (T103's `pg_url_env`,
+    which `load_config` runs on each URL by T106)."""
+    log = _register_fake(tmp_path, monkeypatch)
+    config = Path(os.environ["LANES_INDEX_CONFIG"])
+    text = config.read_text(encoding="utf-8")
+    mod = load_indexer()
+    for value in ("1", "0"):
+        for key in ("register_url", "reader_url"):
+            config.write_text("".join(
+                line + (f"?connect_timeout={value}" if line.startswith(f"{key}=") else "") + "\n"
+                for line in text.splitlines()), encoding="utf-8")
+            error = None
+            try:
+                mod.load_config()
+            except Exception as exc:  # the refusal under test, or another failure
+                error = exc
+            assert isinstance(error, mod.Refusal), \
+                f"{key}=...?connect_timeout={value} loaded: {error!r}"
+            assert f"connect_timeout={value}" in str(error) and key in str(error), str(error)
+    config.write_text("".join(
+        line + ("?connect_timeout=2" if line.startswith(("register_url=", "reader_url=")) else "")
+        + "\n" for line in text.splitlines()), encoding="utf-8")
+    assert mod.load_config()["register_url"].endswith("?connect_timeout=2")
+    assert not log.exists(), "load_config called psql"
