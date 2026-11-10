@@ -6456,7 +6456,12 @@ pw_seam_out_read() {   # <attempt dir>
 
 # THE CHILD ENDED BEFORE `ready` (Y:5015): the verb's own refusal, or a no-op
 # with an empty change set. No commit call is made, and the child's output and
-# code are the run's end. A 0 may end the run before F3's lookup (Y:5020).
+# code are the run's end, T424's 2 and 69 included. In order (Y:5016,
+# Y:5019–5022; lane openRepoTools-3, #165 6767463594, question 8): where the
+# record holds a `call` line, any code but 0 waits for F3's lookup first
+# (`pw_end`, `pw_doubt_end`); then `out.1` is replayed on stdout, then `out.2` on
+# stderr, and the run exits the child's code. A 0 ends the run with no lookup
+# (Y:5020).
 pw_child_end() {
   if [ "$PW_RC" = 0 ]; then
     pw_abandon_all
