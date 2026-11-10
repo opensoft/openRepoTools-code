@@ -247,6 +247,16 @@
 #   8  nothing there. `--retire-dormant`: no lane of that repository is
 #      recorded, or none of its rows is DORMANT. `--retire <pid|uuid>`: nothing
 #      of any kind is live for the lane
+#   69, 75, 3  a register read this command cannot do without, refused with
+#      the reading verb's own code (feature 007, T403; FR-036): 69, the
+#      register could not be read; 75, register busy; 3, in doubt. Nothing is
+#      written. The reads are the lane's row (`register-text`), `canon-lane`,
+#      `lane-objects`, `register-row`, and `--retire-dormant`'s `lanes
+#      --decide` listing. The default read arms see these codes only from a SQL
+#      register; `register-text` spends 69 in every mode where the register
+#      cannot be read, and any code it exits with is passed on, never read as
+#      an empty register. The ownership seam's read, `managed-projection`,
+#      keeps its 1, UNKNOWN (research.md ERR-46).
 #   130, 143  stopped by INT or TERM (128 plus the signal): the run ends where
 #      the signal found it and removes its temporary file, never resumes
 #
@@ -578,6 +588,29 @@ plan() { printf '%s: PLAN %s\n' "$prog" "$*" >&2; }
 die()  { printf '%s: %s\n' "$prog" "$1" >&2; exit "${2:-1}"; }
 usage() { sed -n -e '1,2d' -e '/^#/!q' -e 's/^# \{0,1\}//' -e p "$RESOLVED"; }
 
+# FEATURE 007, T403 - THE BUSY, IN-DOUBT AND UNREADABLE CODES AT A READ ARM
+# ("The callers' default arms", design Y:5720-5747; spec:663-690; FR-036). On a
+# SQL register a read verb can answer 69 (the register could not be read), 75
+# (register busy) or 3 (in doubt), and none of the three is an answer about the
+# lane. Where that table has an arm refuse one, `le_read_refuse` refuses with
+# the verb's own code ("pass the code", Y:5722), naming it, before this
+# command writes anything. Where a read's arm already died, it keeps its words
+# and exits with these three codes instead of its own (`le_read_code`); every
+# other code keeps that arm's exit (research.md ERR-36). No read verb emits any
+# of the three in files mode (Y:5746), so neither changes anything there.
+le_read_code() {   # <the verb's exit> <the arm's own exit for any other code>
+  case "$1" in 69 | 75 | 3) printf '%s\n' "$1" ;; *) printf '%s\n' "$2" ;; esac
+}
+le_read_refuse() {   # <the read, as run> <its exit> <what it would have told>
+  local lrr_why lrr_retry
+  case "$2" in
+    75) lrr_why="the register is busy"; lrr_retry="A retry in seconds is safe." ;;
+    3)  lrr_why="the register's answer is in doubt"; lrr_retry="A retry in seconds is safe." ;;
+    *)  lrr_why="the register could not be read"; lrr_retry="A retry is safe once the register can be read." ;;
+  esac
+  die "\`$1\` exited $2: ${lrr_why}, so $3 is NOT known, and that is not an answer. This command refuses rather than carry on without it. Nothing was written. ${lrr_retry}" "$2"
+}
+
 # ------------------------------------------------------------------ arguments
 
 retire=0; force=0; dry_run=0; state_was=""; home_override=""; retire_target=""
@@ -752,7 +785,12 @@ if [ -n "$retire_dormant" ]; then
   rd_errf="$LE_TMP"
   [ -n "$rd_errf" ] ||
     die "no temporary file could be made to capture the read's own notes, so whether this workstation's session records could be read was never established — and DORMANT is 'no object log AND no live session here'. The rows are not counted over a fact that was not read (Amendment 7(d)). Fix \$TMPDIR (full, gone or not writable) and re-run. Nothing was written." 1
-  rd_rows="$("$LANES_EDIT" lanes --fetch --closed --prefix "$retire_dormant" 2>"$rd_errf")" || rd_rc=$?
+  # FEATURE 007, T403 (R38; spec:633-635; Y:3022): THIS READ DECIDES. The sweep
+  # acts on its answer, so it asks `lanes` to decide, and a database nobody can
+  # reach is a 69 here and not the mirror's answer: the 69, 75 and 3 refusals
+  # below pass the code. Lane 5's T502 makes the arm accept `--decide` and
+  # ignore it, which is why this line lands after T502; T509 gives it meaning.
+  rd_rows="$("$LANES_EDIT" lanes --decide --fetch --closed --prefix "$retire_dormant" 2>"$rd_errf")" || rd_rc=$?
   # AND A CAPTURE THAT CANNOT BE READ BACK IS NOT AN EMPTY ONE: the empty note
   # is the one that never refuses.
   rd_err="$(cat -- "$rd_errf")" ||
@@ -761,19 +799,22 @@ if [ -n "$retire_dormant" ]; then
   rm -f -- "$rd_errf"
   case "$rd_err" in
     *"session records could not be read"*)
-      die "this workstation's session records could not be read (the read says so above), so whether any of $retire_dormant's rows has a LIVE session here was never established — and DORMANT is 'no object log AND no live session here'. The rows are not counted over a fact that was not read (Amendment 7(d)). Fix the read and re-run; nothing was written." 1 ;;
+      die "this workstation's session records could not be read (the read says so above), so whether any of $retire_dormant's rows has a LIVE session here was never established — and DORMANT is 'no object log AND no live session here'. The rows are not counted over a fact that was not read (Amendment 7(d)). Fix the read and re-run; nothing was written." "$(le_read_code "$rd_rc" 1)" ;;
     # AND WHERE THE READ CLASSED NO ROW AT ALL BECAUSE A READ FAILED — the log
     # directory, the published logs' warnings, or the register itself (#138
     # items 4 and 11, the reviews of #230): counting zero here was this
     # command's "there is nothing to do", exit 8, about rows nobody could class.
     *"no row is classed DORMANT here"*)
-      die "the read could not establish which of $retire_dormant's rows are dormant (it says why above), so it classed none of them DORMANT — and that is NOT 'none of them are' (Amendment 7(d)). Fix the read and re-run; nothing was written." 1 ;;
+      die "the read could not establish which of $retire_dormant's rows are dormant (it says why above), so it classed none of them DORMANT — and that is NOT 'none of them are' (Amendment 7(d)). Fix the read and re-run; nothing was written." "$(le_read_code "$rd_rc" 1)" ;;
   esac
   case "$rd_rc" in
     0) : ;;
     8) die "no lane of $retire_dormant is recorded at all, so there is no dormant row to retire. Nothing was written." 8 ;;
     2) die "the \`lanes-edit.sh\` on this workstation has no \`lanes\` subcommand, so it predates lane-collision-protocol Amendment 11 and cannot say which rows are dormant. This workstation has not taken the install yet:  openRepoTools --install" 2 ;;
-    *) die "$LANES_EDIT lanes --closed --prefix $retire_dormant exited $rd_rc, so which rows are dormant was never established — and that is NOT 'none of them are' (Amendment 7(d)). Run it by hand to see what it says. Nothing was written." 1 ;;
+    # 007 (T403; Y:5734): 69, busy and in doubt pass the code; every other code
+    # keeps 1. A `lanes-edit.sh` older than T502 refuses `--decide` with 64,
+    # which fails closed here, as a read that did not answer.
+    *) die "$LANES_EDIT lanes --decide --closed --prefix $retire_dormant exited $rd_rc, so which rows are dormant was never established — and that is NOT 'none of them are' (Amendment 7(d)). Run it by hand to see what it says. Nothing was written." "$(le_read_code "$rd_rc" 1)" ;;
   esac
 
   rd_lanes=(); rd_n=0; rd_flagged=0
@@ -942,6 +983,14 @@ if [ "$cl_pair" = 1 ]; then
   printf '%s\n' "$cl_why" >&2
   die "the PUBLISHED register spells lane $LANE two ways (above), so no read and no write under that name is unambiguous and this command will not end a lane it cannot name — Amendment 15(d): merge the newer row's session id(s) into the older row's session cell, in order, remove the newer row in the SAME commit naming both spellings, push, and re-run. The row is untouched and nothing was written." 2
 fi
+# FEATURE 007, T403 (Y:5733; spec:663-690): `canon-lane`'s 69, 75 and 3 refuse
+# here and pass the code. Any code but 66 and the 15(d) pair's 2 used to fall
+# through silently, and carrying on with the name as typed is acting on a row
+# whose spelling nobody could read: the ENDED line would be written under it.
+# Every other code keeps the old-helper fallback (the row scan below).
+case "$cl_rc" in
+  69 | 75 | 3) le_read_refuse "$LANES_EDIT canon-lane $LANE" "$cl_rc" "the register's spelling of lane $LANE" ;;
+esac
 if [ "$cl_rc" = 0 ] && [ -n "$cl_out" ] && [ "$cl_out" != "$LANE" ]; then
   note "lane $LANE → $cl_out (Amendment 15: the register row's spelling is canonical)"
   LANE="$cl_out"
@@ -1773,27 +1822,46 @@ fi
 # reads as NO ROW — and the refusal's own remedy is `add-row`, which is the
 # 23:51:56Z incident performed by the other end of the lane. (`add-row` refuses
 # it, so the register is safe either way; the message was the defect.)
+#
+# FEATURE 007, T403 - THE WORKING TREE'S REGISTER IS READ THROUGH THE VERB
+# (FR-036; design Y:4924). Both functions keep their awk, and the text it runs
+# over is `lanes-edit.sh register-text lanes/LANES.md`, asked once
+# (`le_register_load`) and held. That verb prints `$LANES_FILE` as
+# `lanes-edit.sh` resolves it from the environment, so the file this command
+# means, the lane's own checkout's where `lane_register_follow` re-pointed it,
+# is passed on the call: in files mode the text is then this file's bytes, as
+# awk read them. A non-zero answer refuses with that code, here, in this shell,
+# never inside a command substitution: it is never an empty register, which
+# would read as "no row for this lane" and send a person to `add-row`.
+LE_ROWS_TEXT=""
+le_register_load() {
+  lrl_rc=0
+  LE_ROWS_TEXT="$(LANES_FILE="$LANES_FILE" "$LANES_EDIT" register-text lanes/LANES.md)" || lrl_rc=$?
+  [ "$lrl_rc" = 0 ] ||
+    die "the register could not be read: \`LANES_FILE=$LANES_FILE $LANES_EDIT register-text lanes/LANES.md\` exited $lrl_rc (its words are above). That is NOT an empty register, and this script decides nothing about lane ${LANE}'s row on an answer it did not get: a register read as empty has no row for it. A \`lanes-edit.sh\` with no \`register-text\` exits 2; install the one beside this script. Nothing was written." "$lrl_rc"
+}
 rows_for_lane() {
-  awk -v lane="$1" '
+  printf '%s\n' "$LE_ROWS_TEXT" | awk -v lane="$1" '
     substr($0,1,1) == "|" {
       p1 = index($0, "`"); if (p1 == 0) next
       rest = substr($0, p1 + 1); p2 = index(rest, "`"); if (p2 == 0) next
       if (tolower(substr(rest, 1, p2 - 1)) == tolower(lane)) print
-    }' "$LANES_FILE"
+    }'
 }
 # The SPELLINGS those rows carry, for a refusal that can name them — two rows
 # for one lane may now be two spellings of one name, and a person sent looking
 # for a duplicate that is not there to find loses the time twice.
 row_names_for_lane() {
-  awk -v lane="$1" '
+  printf '%s\n' "$LE_ROWS_TEXT" | awk -v lane="$1" '
     substr($0,1,1) == "|" {
       p1 = index($0, "`"); if (p1 == 0) next
       rest = substr($0, p1 + 1); p2 = index(rest, "`"); if (p2 == 0) next
       t = substr(rest, 1, p2 - 1)
       if (tolower(t) == tolower(lane)) print t
-    }' "$LANES_FILE"
+    }'
 }
 
+le_register_load
 row="$(rows_for_lane "$LANE" || :)"
 row_count=0
 [ -n "$row" ] && row_count="$(printf '%s\n' "$row" | grep -c . || :)"
@@ -1857,7 +1925,9 @@ case "$lo_rc" in
   0) have_log=1 ;;
   8) have_log=0 ;;
   *) note "the helper's own output is above."
-     die "$LANES_EDIT lane-objects $LANE failed (exit $lo_rc). That is NOT 'this lane has no object log', and this script will not guess which it is while the lane may still hold something. Fix the helper (or run it by hand: $LANES_EDIT lane-objects $LANE), then re-run." 1 ;;
+     # 007 (T403; Y:5734): 69, busy and in doubt pass the code; every other
+     # code keeps 1.
+     die "$LANES_EDIT lane-objects $LANE failed (exit $lo_rc). That is NOT 'this lane has no object log', and this script will not guess which it is while the lane may still hold something. Fix the helper (or run it by hand: $LANES_EDIT lane-objects $LANE), then re-run." "$(le_read_code "$lo_rc" 1)" ;;
 esac
 
 if [ "$have_log" = 1 ]; then
@@ -2035,7 +2105,9 @@ else
         fi ;;
       8) : ;;                     # the published register has no row for it yet
       *) note "the helper's own output is above."
-         die "$LANES_EDIT register-row $LANE failed (exit $pub_rc). This lane has no object log, so its row's state cell is the ONLY thing that can say whether a merge hold is open, and this script will not end a lane on a read it did not get. Fix the helper (or run it by hand: $LANES_EDIT register-row $LANE), then re-run." 1 ;;
+         # 007 (T403; Y:5734): 69, busy and in doubt pass the code; every
+         # other code keeps 1.
+         die "$LANES_EDIT register-row $LANE failed (exit $pub_rc). This lane has no object log, so its row's state cell is the ONLY thing that can say whether a merge hold is open, and this script will not end a lane on a read it did not get. Fix the helper (or run it by hand: $LANES_EDIT register-row $LANE), then re-run." "$(le_read_code "$pub_rc" 1)" ;;
     esac
   fi
 fi
