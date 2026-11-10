@@ -3448,9 +3448,10 @@ lifecycle_finish "$lc_unfinished"
 # The handoff file is written, the PAUSED record's writes were held and the
 # note printed, and the lane stays SWAPPING: this act is refused now, before a
 # READY line, a restart intent, a respawn or an `/exit`, so the pane is left as
-# it is in every mode.
+# it is in every mode. A new `lane-handoff` supersedes the SWAPPING operation
+# (`lifecycle_begin`), so the refusal says so (#165 6779688808, Q9).
 [ -z "$act_refuse" ] ||
-	die "$act_refuse, so this act is refused with 1 (A2): the handoff file is written, none of the PAUSED record's writes was sent, and the note above names how the record is completed. Nothing else was done, and this pane is left as it is." 1
+	die "$act_refuse, so this act is refused with 1 (A2): the handoff file is written, none of the PAUSED record's writes was sent, and the note above names how the record is completed. Nothing else was done, and this pane is left as it is. Once the verb named above answers (a base from \`act-begin\`, a name from the walk), running $prog again supersedes this operation, which stays SWAPPING until then." 1
 
 # ------------------------------------------- 5. the restart line — one command
 if [ -n "$row_write_refused" ]; then
