@@ -219,6 +219,7 @@ class Clone:
                                 stderr=subprocess.PIPE, text=True, env=self.db.env(user, appname))
         proc.stdin.write(sql)
         proc.stdin.close()
+        proc.stdin = None
         return proc
 
     def commit_variables(self, entry: dict, base: Optional[int], write_id: str,
@@ -384,6 +385,7 @@ def end(proc: subprocess.Popen) -> None:
         try:
             proc.stdin.write("ROLLBACK;\n")
             proc.stdin.close()
+            proc.stdin = None
         except (BrokenPipeError, ValueError):
             pass
         try:
@@ -761,6 +763,7 @@ def test_a_retry_with_the_old_connection_still_open_writes_no_second_row(estates
             session.stdin.write("ROLLBACK;\n" if ending == "rollback" else "COMMIT;\n")
             session.stdin.flush()
         session.stdin.close()
+        session.stdin = None
         assert w.wait() == 0, w.err[-800:]
     finally:
         if session.poll() is None:
@@ -1817,6 +1820,7 @@ class HalfOpen:
         if self.session.poll() is None:
             self.end("ROLLBACK")
             self.session.stdin.close()
+            self.session.stdin = None
             self.session.communicate(timeout=30)
         return code
 
@@ -2521,6 +2525,7 @@ class Two:
         if tail:
             proc.stdin.write(tail)
         proc.stdin.close()
+        proc.stdin = None
         _, err = proc.communicate(timeout=30)
         self.outcomes.append((who, proc.returncode, err))
         return proc.returncode, err
