@@ -685,7 +685,7 @@ class Barrier:
         self.ready.mkdir()
 
     def _seen(self, suffix: str) -> int:
-        return sum(1 for p in self.ready.iterdir() if p.name.endswith(suffix) == (suffix == ".go"))
+        return sum(1 for p in self.ready.iterdir() if p.name.endswith(".go") == (suffix == ".go"))
 
     def release(self) -> float:
         deadline = time.monotonic() + 60
