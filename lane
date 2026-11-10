@@ -116,10 +116,10 @@
 # FEATURE 007 (T432). The one write this word makes is `request-handoff`, on the
 # BOUND ELSEWHERE branch: it is an act of its own. `act-begin` takes its base
 # before the `binding` read that decides it, and the write goes under that base
-# with `LANES_EXPECT="bind:<lane>"` on that one call. Its exits are passed on
-# where they are the register's own — 69 and 75 as they are, and 3 with the
-# writer's printed rerun relayed, never a hint of this word's — and `LANES_ACT`
-# is unset before any launch or attach.
+# with `LANES_EXPECT="bind:<lane>"` and `LANES_LANE="<lane>"` on that one call.
+# Its exits are passed on where they are the register's own — 69 and 75 as they
+# are, and 3 with the writer's printed rerun relayed, never a hint of this
+# word's — and `LANES_ACT` is unset before any launch or attach.
 
 set -euo pipefail
 
@@ -1237,11 +1237,15 @@ EOF
 	# (Y:5581). Y:5576 has an act export `LANES_ACT` to its own verb calls and
 	# children; this word has ONE write and a launch after it that must not
 	# inherit the base (Y:5596), so `LANES_ACT` too is a prefix on this one call,
-	# and nothing this command starts afterwards carries either. The writer's
-	# stderr is NOT redirected: a 3 prints the writer's own rerun there (D8), and
-	# the `3)` arm below relays that rather than words of its own.
+	# and nothing this command starts afterwards carries either. AND THE LANE THE
+	# WRITE BELONGS TO IS SAID, NOT DERIVED (Amendment 23 S2): `request-handoff`
+	# writes the lane's record, so `LANES_LANE` names it on this call as
+	# `lane-start` does on its own (`lane-start`:2859 at T428's `0c95d69`; lane 3,
+	# #165 6770688147, T423 Q4). The writer's stderr is NOT redirected: a 3 prints
+	# the writer's own rerun there (D8), and the `3)` arm below relays that rather
+	# than words of its own.
 	ge_rh_rc=0
-	LANES_ACT="$ge_act" LANES_EXPECT="bind:$R_LANE" "${ge_rh[@]}" || ge_rh_rc=$?
+	LANES_ACT="$ge_act" LANES_EXPECT="bind:$R_LANE" LANES_LANE="$R_LANE" "${ge_rh[@]}" || ge_rh_rc=$?
 	# THE ARM PASSES THE REGISTER'S OWN CODES AND NO OTHER (Y:5740; review M11;
 	# lane 3's ERR-33, which names this arm for `lane`). A 69 or a 75 leaves with
 	# that code, and a 3 with its own text. Every other code keeps the exit of
