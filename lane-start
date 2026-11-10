@@ -133,7 +133,9 @@
 #                    the session cell already ends on it, a rerun writes no
 #                    register line again (not the row's state, not the lane's
 #                    log line) and stamps the handoff only where it carries no
-#                    `RESUMED by <uuid> (lane <L>)` line
+#                    `RESUMED by <uuid> (lane <L>)` line. A line that is there
+#                    but not in origin's copy of the file (or whose copy cannot
+#                    be read here) is still an owed stamp, and one note says so
 #   -h, --help
 #   --               everything after it is passed through to claude
 #
@@ -4495,10 +4497,52 @@ if [ "$lane_verb" = RESUMED ] && [ "$row_count" = 1 ] && (( stamp_ok )); then
      grep -qiF -- "RESUMED by $stamp_who (lane $LANE)" "$HS_PATH" 2>/dev/null; then
     hs_have=1
   fi
+  # AND A LINE THAT IS THERE IS NOT A LINE THAT IS PUBLISHED. The file `$HS_PATH`
+  # names carries the line of a kept local commit as well as a pushed one, and
+  # the bind record ends `bound` "with a `note=` for each act still owed: the
+  # stamp not written or not pushed" (design.md, "How it ends"), which the
+  # caller builds from the one note of this command that holds both "Rule 3's
+  # stamp" and "NOT". So a rerun that writes no second stamp still says the
+  # first one is owed wherever it is not on origin: READ-ONLY, with no fetch (the
+  # remote-tracking branch is as this run's own reads last fetched it), and a
+  # copy that cannot be read is no proof of anything, so it is owed too.
+  bind_stamp_published() {   # <file> <the stamp's head> — BSP_STATE published | unpublished | unreadable; BSP_WHY
+    BSP_STATE=unreadable; BSP_WHY=""
+    bsp_dir="$(dirname -- "$1")"; bsp_base="$(basename -- "$1")"
+    bsp_br="$(git -C "$bsp_dir" symbolic-ref -q --short HEAD 2>/dev/null || :)"
+    if [ -z "$bsp_br" ]; then
+      BSP_WHY="that checkout's HEAD is on no branch, or the file is in no git work tree"
+      return 0
+    fi
+    if ! bsp_copy="$(git -C "$bsp_dir" show "refs/remotes/origin/$bsp_br:./$bsp_base" 2>/dev/null)"; then
+      BSP_WHY="there is no origin/$bsp_br there to read it from, or it holds no such file"
+      return 0
+    fi
+    # A here-string, not a pipe: under pipefail a `grep -q` that stops at its
+    # first match would fail the pipeline of a large handoff.
+    if grep -qiF -- "$2" <<<"$bsp_copy"; then BSP_STATE=published; else BSP_STATE=unpublished; fi
+    return 0
+  }
   if [ -z "$hs_cell" ]; then
     step "the row names no handoff path, so there is no Rule 3 stamp to write"
   elif (( hs_have )); then
     step "--bind: a rerun, and $HS_PATH already carries a line for RESUMED by $stamp_who (lane $LANE), so no second one is stamped"
+    if [ "${LANES_NO_GIT:-0}" = 1 ]; then
+      note "Rule 3's stamp is in $HS_PATH (written by an earlier run: RESUMED by $stamp_who (lane $LANE)) and NOT committed by this run: LANES_NO_GIT=1 commits and pushes nothing, so whether origin has it is not known here, and no second stamp is written."
+    else
+      bind_stamp_published "$HS_PATH" "RESUMED by $stamp_who (lane $LANE)"
+      case "$BSP_STATE" in
+        published)
+          step "--bind: origin's copy of $HS_PATH, as this checkout last fetched it, carries that line too, so nothing about the stamp is owed" ;;
+        *)
+          if [ "$BSP_STATE" = unpublished ]; then
+            hs_why="origin's copy of that file, as this checkout last fetched it, has no such line"
+          else
+            hs_why="origin's copy of that file could not be read ($BSP_WHY), so it is not known to be there"
+          fi
+          note "Rule 3's stamp is in $HS_PATH (written by an earlier run: RESUMED by $stamp_who (lane $LANE)) and NOT published: $hs_why, and this run writes no second stamp. A commit kept unpushed in this lane's register checkout is published by no later write, and each write there refuses until it is (Amendment 23 S3): the publish act, which pushes it and writes nothing new, is LANES_LANE=$LANE $LANES_EDIT commit \"<what it is>\"; where origin moved it refuses (2), and S6.3's archive is the way out. A handoff in another repository (Amendment 8(d)) is committed and pushed in that repository, by hand." ;;
+      esac
+    fi
   elif (( dry_run )); then
     plan "LANES_LANE=$LANE $(quoted "$LANES_EDIT" "${hs_args[@]}")"
   else
