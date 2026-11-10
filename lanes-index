@@ -98,6 +98,7 @@ subcommands add 69, 75 and 78, and 3 for a write in doubt, each named by an
 from __future__ import annotations
 
 import datetime as _dt
+import errno
 import functools
 import hashlib
 import json
@@ -1774,7 +1775,7 @@ def cmd_render(args: list[str]) -> int:
 # - `lock`: the flock that recording and collection take, in `SyncLock`'s
 #   form, but with `LOCK_NB` and no wait: a busy lock skips the record. It is
 #   opened without blocking, and a `lock` that is not a regular file counts
-#   as busy.
+#   as busy. A symlinked `lock` is not followed, and skips the record too.
 #
 # THE CACHE IS ADVISORY (design Y:2516): correctness rests on the digests the
 # database gives at `n`, and on the head check. So no error escapes the five
@@ -1970,6 +1971,12 @@ def _image_cache_lock(root: str):
     A FIFO with no reader refuses the open (lane 3's review, #165
     6755345889).
 
+    The open never follows a symlink: `O_NOFOLLOW`. A symlinked `lock` fails
+    the open with ELOOP, so its target, dangling or not, is neither changed
+    nor created, and the caller skips the call. Only the last name is
+    checked, so a symlinked `register-images/` still works (lane 3's delta
+    check, #165 6755954683).
+
     Returns the open descriptor, which holds the lock until `os.close`, or
     None where the lock is busy or missing. Raises `OSError` where the file
     cannot be opened."""
@@ -1978,7 +1985,8 @@ def _image_cache_lock(root: str):
     except ImportError:
         return None
     fd = os.open(os.path.join(root, _IMAGE_LOCK),
-                 os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NONBLOCK | os.O_CLOEXEC, 0o600)
+                 os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NONBLOCK | os.O_CLOEXEC
+                 | os.O_NOFOLLOW, 0o600)
     try:
         if stat.S_ISREG(os.fstat(fd).st_mode):
             try:
@@ -2014,8 +2022,10 @@ def _image_cache_record_locked(root: str, n: int, manifest: dict) -> None:
       missing, or holds no seq, as a crash can leave it, is written as the
       larger of `n` and the highest seq `seq/` lists, so it never moves back
       (lane 3's review, #165 6755345889). Where `seq/` cannot be listed, it
-      is left. A `head` that cannot be read is left as it is, since it may
-      name a seq above `n`.
+      is left. A symlinked `head` counts as missing: it is replaced by a
+      regular `head`, and its target is left alone (lane 3's delta check,
+      #165 6755954683). A `head` that cannot be read is left as it is, since
+      it may name a seq above `n`.
     Raises `OSError`."""
     seq_dir = os.path.join(root, _IMAGE_SEQS)
     target = os.path.join(seq_dir, str(n))
@@ -2028,7 +2038,9 @@ def _image_cache_record_locked(root: str, n: int, manifest: dict) -> None:
     head_path = os.path.join(root, _IMAGE_HEAD)
     try:
         head = _image_cache_parse_seq(_image_cache_read(head_path))
-    except FileNotFoundError:
+    except OSError as error:
+        if not isinstance(error, FileNotFoundError) and error.errno != errno.ELOOP:
+            raise
         head = None
     if head is not None and n <= head:
         return
@@ -2125,7 +2137,9 @@ def image_cache_put(data: bytes) -> str:
       That narrows the race with a collector, and does not close it: a
       `utime` that lands between the collector's `lstat` and its unlink
       loses the object, which costs a later reader one miss (lane 3's
-      review, #165 6755345889).
+      review, #165 6755345889). The `utime` does not follow a symlink
+      planted there since the read: only the link's own times are set
+      (lane 3's delta check, #165 6755954683).
     - A write that fails is skipped. The digest is returned all the same, and
       a later reader misses.
     `data` is `bytes` or a `bytearray`. Anything else raises `TypeError`
@@ -2140,7 +2154,7 @@ def image_cache_put(data: bytes) -> str:
         target = os.path.join(root, _IMAGE_OBJECTS, digest)
         if image_cache_get(digest) is not None:
             try:
-                os.utime(target)
+                os.utime(target, follow_symlinks=False)
                 return digest
             except FileNotFoundError:
                 pass
@@ -2180,8 +2194,8 @@ def image_cache_record(n: int, manifest: dict[str, str]) -> None:
       merges its paths into the first, a path in both taking the second's
       digest;
     - it moves `head` to `n` only where `n` is above it. A `head` that is
-      missing or holds no seq takes the larger of `n` and the highest seq
-      `seq/` lists. So `head` never moves back;
+      missing, a symlink, or holds no seq takes the larger of `n` and the
+      highest seq `seq/` lists. So `head` never moves back;
     - it then collects, as `image_cache_collect` does, under the same flock.
     The flock is taken with `LOCK_NB`: where another writer holds it, the
     record is skipped, never waited for. A record is skipped too where `n` is
