@@ -3367,6 +3367,17 @@ BRT_EOF
   printf 'Nothing was staged or committed. Unstage or delete those paths, then re-run.'
 }
 
+# FEATURE 007, T420 — "ON PRIMARY, OUTSIDE THE FLAG" (D10; FR-026; R16): T409's
+# mode question answered `primary` (`REG_MODE`, carried across the routing's
+# and S4's `exec`), and this process is not an attempt's child under T413's
+# honoured flag, whose writes stop at T414's seam. Where it is true, D10's
+# refusals apply: `commit`'s carry form (the dispatcher's `commit` arm), the
+# publish act's fence narrowed to `handoffs/` (`cp_publish_fence`), and the
+# backstop at `commit_publish`'s push. 0 true, 1 not.
+cp_on_primary() {
+  [ "$REG_MODE" = primary ] && [ -z "$REG_SCRATCH" ]
+}
+
 # #194, AS #214's ADVERSARIAL CHECK HARDENED IT — WHAT `commit` MAY PUBLISH
 # WITH NOTHING STAGED, read from the objects the push will send and nothing
 # else. Three ordinary checkout states got a deletion past the first fence,
@@ -3406,8 +3417,24 @@ BRT_EOF
 # it read, and the publish pushes exactly that commit (`<sha>:refs/heads/<b>`).
 # A commit another lane makes in this shared checkout between the read and the
 # push stays local.
+#
+# FEATURE 007, T420 — ON PRIMARY THE FENCE IS NARROWED TO `handoffs/` (D10;
+# FR-026; spec:169–181; lane openRepoTools-3's R16). On primary the register is
+# the database, and what origin holds under the register's directory is its
+# rendering, which only `lanes-index render` writes. So the publish act, which
+# R16 keeps, publishes only handoff writes there: an added or modified regular
+# file under `handoffs/`, by the rules above. A queued change to a path under
+# the register's directory (`lanes/`, as `$LANES_PREFIX` derives it, its log
+# directory, the register and the alias table), of any status, is a DIVERGENCE
+# from the register, never published: it refuses with 2 and its own words, and
+# S6.3's archive (Y:5820, F16: "the publish act refuses a `lanes/` commit on
+# primary"). Any other change refuses as above, in primary's words. "On
+# primary" is T409's answer, outside T413's flag (`cp_on_primary`); off it,
+# every path, text and code here is as it was.
 cp_publish_fence() {
   cpf_ref="refs/heads/$LANES_BRANCH"
+  cpf_prim=0; cpf_div=""
+  if cp_on_primary; then cpf_prim=1; fi
   cpf_head="$(git -C "$LANES_REPO" symbolic-ref -q HEAD 2>/dev/null || :)"
   [ "$cpf_head" = "$cpf_ref" ] || die "refusing to publish: HEAD is ${cpf_head:-detached}, not $cpf_ref, and the push sends $cpf_ref while every read of the queue starts at HEAD, so what would be published is not what HEAD shows, and nothing was pushed (#194). Whoever moved this shared checkout off $LANES_BRANCH puts it back; never reset or check out over their work." 2
   cpf_rc=0
@@ -3426,10 +3453,18 @@ cp_publish_fence() {
   fi
   cpf_reg="${LANES_PREFIX:+${LANES_PREFIX%/}/}"; cpf_logp="${LANES_LOG_PREFIX:+${LANES_LOG_PREFIX%/}/}"
   cpf_bad="$(printf '%s\n' "$cpf_raw" | awk -F '\t' -v want="$cpf_n" -v reg="$cpf_reg" -v logp="$cpf_logp" \
-      -v reg_path="$LANES_PATH" -v alias_path="$LANES_ALIASES_PATH" '
-    function inside(p) {
+      -v reg_path="$LANES_PATH" -v alias_path="$LANES_ALIASES_PATH" -v prim="$cpf_prim" '
+    function regp(p) {
       return (reg != "" && index(p, reg) == 1) || (logp != "" && index(p, logp) == 1) ||
-             index(p, "handoffs/") == 1 || p == reg_path || p == alias_path
+             p == reg_path || p == alias_path
+    }
+    function inside(p) {
+      return index(p, "handoffs/") == 1 || (prim != 1 && regp(p))
+    }
+    # T420: on primary, a change under the register directory, `lanes/` by
+    # name or as derived, is a divergence, and is printed with a leading `!`.
+    function diverges(p) {
+      return prim == 1 && (regp(p) || index(p, "lanes/") == 1)
     }
     function bytecode(p,   n, part, i) {
       if (p ~ /\.py[co]$/) return 1
@@ -3443,10 +3478,32 @@ cp_publish_fence() {
     NF == 0 { next }
     NF == 1 && $1 ~ /^[0-9a-f]+$/ { c = substr($1, 1, 12); seen++; next }
     { split($1, f, " "); st = f[5]; mode = f[2]
+      if (diverges($2)) { printf "!  %s %s %s %s\n", c, st, mode, $2; next }
       if (!(NF == 2 && (st == "A" || st == "M") && (mode == "100644" || mode == "100755") && inside($2) && !bytecode($2)))
         printf "  %s %s %s %s\n", c, st, mode, $2 }
     END { if (seen != want) exit 3 }')" || cpf_rc=$?
+  if [ "$cpf_prim" = 1 ]; then
+    cpf_div="$(printf '%s\n' "$cpf_bad" | sed -n -e 's/^!//p')" || cpf_rc=$?
+    cpf_bad="$(printf '%s\n' "$cpf_bad" | sed -e '/^!/d')" || cpf_rc=$?
+  fi
   [ "$cpf_rc" = 0 ] || die "git could not read, or this helper could not classify, the local commits on $cpf_ref ahead of refs/remotes/origin/$LANES_BRANCH, so whether they are \`commit\`'s to publish is unknown; nothing was pushed (#194)" 2
+  if [ -n "$cpf_div" ]; then
+    note "of the local commits on $cpf_ref ahead of origin/$LANES_BRANCH, these change a path under the register's directory, ${LANES_PREFIX:-lanes/}, which on primary is the register's rendering, written only from the database:"
+    printf '%s\n' "$cpf_div" >&2
+    if [ -n "$cpf_odd$cpf_bad" ]; then
+      note "and these are not handoff writes either (a merge or root commit, or a change that is not an added or modified regular file under handoffs/):"
+      [ -z "$cpf_odd" ] || printf '%s\n' "$cpf_odd" >&2
+      [ -z "$cpf_bad" ] || printf '%s\n' "$cpf_bad" >&2
+    fi
+    cp_recovery_steps
+    die "refusing to publish: on primary (feature 007) a local commit that changes the register's rendering is a divergence from the register, and is never published: \`commit\`'s publish act sends only handoff writes there (D10; FR-026; R16). Nothing was pushed, and the commits stay on HEAD; every write that makes a git commit from this checkout refuses over them (S3's unpushed row) until they are archived and dropped, as above." 2
+  fi
+  if [ -n "$cpf_odd$cpf_bad" ] && [ "$cpf_prim" = 1 ]; then
+    note "of the local commits on $cpf_ref ahead of origin/$LANES_BRANCH, these are not handoff writes (a merge or root commit, or a change that is not an added or modified regular file under handoffs/):"
+    [ -z "$cpf_odd" ] || printf '%s\n' "$cpf_odd" >&2
+    [ -z "$cpf_bad" ] || printf '%s\n' "$cpf_bad" >&2
+    die "refusing to publish: on primary (feature 007) \`commit\`'s publish act sends only handoff writes, each an added or modified regular file under handoffs/ (D10; FR-026; R16; #194), so nothing was pushed. Anything else, whoever queued it publishes it; never reset it away. Read them: git -C $LANES_REPO log --stat refs/remotes/origin/$LANES_BRANCH..$cpf_ref" 2
+  fi
   if [ -n "$cpf_odd$cpf_bad" ]; then
     note "of the local commits on $cpf_ref ahead of origin/$LANES_BRANCH, these are not register or handoff writes (a merge or root commit, or a change that is not an added or modified regular file under ${LANES_PREFIX:-the register directory} or handoffs/):"
     [ -z "$cpf_odd" ] || printf '%s\n' "$cpf_odd" >&2
