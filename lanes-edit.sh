@@ -21532,9 +21532,9 @@ fi
 # that `pw_run` was entered and returned or was abandoned. An attempt's child
 # runs this file afresh, so its `REG_PW` is 0. `commit` never enters the loop
 # (T420; R16; review M2), so its `REG_PW` stays 0 and it goes on to 1a's
-# routing by design, as the arm above says. T420's own `commit` test is kept
-# here by T420's merge of T415's A1, and goes in T420's next commit (A1).
-if [ "$REG_PW" = 1 ] && [ "$cmd" != commit ]; then
+# routing by design, as the arm above says. So the guard has no `commit`
+# exemption of its own: T420's `[ "$cmd" != commit ]` goes (A1).
+if [ "$REG_PW" = 1 ]; then
   die "\`lanes-index mode\` answered primary, and \`$cmd\` left the register's attempt loop without ending, which is an internal error of this lanes-edit.sh. Whether it reached the register is not known: a write already made reads as found when the command is run again. \`$cmd\` wrote no files instead." 69
 fi
 
