@@ -111,7 +111,11 @@
 #      database could not be reached, the register was busy, or it could not
 #      confirm whether the line landed — and then the line MAY NOT be written,
 #      and the rerun the helper printed settles it. Any other code from that
-#      write is still 2.
+#      write is still 2. A 69 is also what a late PAUSED that was NOT SENT exits
+#      with, where `act-begin` answered 69 or this run read the mirror: the
+#      PAUSED record's writes are held then, in every mode of this command
+#      (the handoff file is still written, and the lane stays SWAPPING), and the
+#      note names `lane-handoff --late --at <UTC>` as the act that completes it.
 #
 #   $LANES_EDIT       the register's reader/writer (default: beside this file)
 #   $LANES_ROUTE_WRITES=1     Amendment 23's opt-in: the lane's writes, the
@@ -1606,21 +1610,31 @@ lifecycle_finish() {   # <what is unfinished, empty when nothing is>
 # of this command says and does what it always did. The verb's own words are
 # kept for a failure and printed only then.
 #
-# A BASE THAT COULD NOT BE TAKEN COSTS THE CHECK AND NEVER THE SWAP. `act-begin`
-# exits 69 on primary where its snapshot fails, which is where the database is
-# unreachable, and a handoff must still be written then (`R-A11-11`; the spec's
-# "`lane-handoff` and the handoff skill with the database unreachable": the
-# handoff file is written, the PAUSED record's three writes exit 69 with a
-# note, and the lane stays SWAPPING). So a 69, or any other failure, is said
-# and the act goes on with NO base: `LANES_ACT` unset, an empty `LANES_EXPECT`
-# on every write, and each write then meets the database itself and exits as it
-# would have before this task. A 2, or a 64, is a helper that predates the verb
-# (`sread`'s rung for an old helper): it checks nothing either, and says nothing.
-# A line that is not shaped like a base is dropped the same way, since a
-# malformed `LANES_ACT` would make every write of this act exit 2, which is the
-# swap left unwritten.
-unset LANES_ACT
-act_base=""; act_rc=0
+# A BASE THAT COULD NOT BE TAKEN NEVER COSTS THE SWAP (`R-A11-11`; lane 3, #165
+# 6770733371, shared ruling G1), and what it does cost depends on the answer:
+#
+#   * 69 (75 and 3 the same, though the verb never says them). `act-begin` exits
+#     69 on primary where its snapshot fails, which is where the database is
+#     unreachable, and "every write of the act would then be refused with 69 as
+#     well" (Y:5573). So the handoff file is still written (the spec's
+#     "`lane-handoff` and the handoff skill with the database unreachable") and
+#     NONE OF THE PAUSED RECORD'S WRITES IS SENT: each takes its 69 arm below,
+#     with the note that names the late PAUSED path, and the lane stays
+#     SWAPPING. A run that has read the MIRROR (T405's `mirror_read`) holds the
+#     writes the same way, since a mirror answer is older than any base.
+#   * Any other answer, a malformed line included. The act may refuse; this one
+#     goes on, with `LANES_ACT` unset and EVERY WRITE'S `LANES_EXPECT` KEPT: "it
+#     is never dropped, since dropping a token under-checks" (Y:5587). On primary
+#     the client then refuses each write with 2 and sends nothing (Y:5599); in
+#     files mode both variables are ignored. A 2, or a 64, is a helper that
+#     predates the verb (`sread`'s rung for an old helper): it reads neither
+#     variable, so keeping the expectations is harmless there, and it says
+#     nothing.
+#
+# A stray `LANES_ACT` or `LANES_EXPECT` in this command's own environment is
+# dropped first: the act starts clean, and `act-begin` never sees one.
+unset LANES_ACT LANES_EXPECT
+act_base=""; act_rc=0; act_hold=""
 act_errf="$(mktemp "${TMPDIR:-/tmp}/lane-handoff-act.XXXXXX" 2>/dev/null || printf '')"
 act_base="$("$LANES_EDIT" act-begin 2>"${act_errf:-/dev/null}")" || act_rc=$?
 case "$act_rc" in
@@ -1638,15 +1652,20 @@ case "$act_rc" in
 			case "$act_rest" in files | [0123456789]*:*) : ;; *) act_rc=70 ;; esac
 		fi
 		if [ "$act_rc" = 70 ]; then
-			note "\`$LANES_EDIT act-begin\` exited 0 and printed no base this command can use, so this handoff's writes carry no expectations. The swap itself goes on (\`R-A11-11\`)."
+			note "\`$LANES_EDIT act-begin\` exited 0 and printed no base this command can use, so \`LANES_ACT\` stays unset and each write below still names its expectations, never dropped (Y:5587): a SQL register refuses each with 2 and sends nothing, and files mode ignores both. The swap itself goes on (\`R-A11-11\`)."
 			act_base=""
 		fi
 	fi ;;
 2 | 64) act_base="" ;;
+69 | 75 | 3)
+	act_base=""
+	[ -z "$act_errf" ] || [ ! -s "$act_errf" ] || cat -- "$act_errf" >&2
+	act_hold="\`$LANES_EDIT act-begin\` exited $act_rc"
+	note "no base was taken (\`$LANES_EDIT act-begin\` exited $act_rc): every write of this act would be refused with $act_rc as well (Y:5573), so none of the PAUSED record's writes is sent. The handoff file is still written (\`R-A11-11\`) and the lane stays SWAPPING." ;;
 *)
 	act_base=""
 	[ -z "$act_errf" ] || [ ! -s "$act_errf" ] || cat -- "$act_errf" >&2
-	note "no base was taken (\`$LANES_EDIT act-begin\` exited $act_rc), so this handoff's writes carry no expectations and each is checked by the register alone. The swap itself goes on (\`R-A11-11\`)." ;;
+	note "no base was taken (\`$LANES_EDIT act-begin\` exited $act_rc), so \`LANES_ACT\` stays unset and each write below still names its expectations, never dropped (Y:5587): a SQL register refuses each with 2 and sends nothing, and files mode ignores both. The swap itself goes on (\`R-A11-11\`)." ;;
 esac
 [ -z "$act_errf" ] || rm -f -- "$act_errf"
 [ -z "$act_base" ] || export LANES_ACT="$act_base"
@@ -1774,6 +1793,7 @@ fi
 # about to create — so a well-formed `--lane` this register has never carried
 # reaches the writes below and is named there, by the row read that cannot find
 # a handoff and by the row flip that finds no state cell to replace.
+lane_typed="$lane"   # the name as the rung gave it, for `canon-lane --walk` (T429, below)
 sread lane_canon "'this lane has no row'" canon-lane "$lane"
 if [ -n "$lane_canon" ] && [ "$lane_canon" != "$lane" ]; then
 	step "lane $lane → $lane_canon (Amendment 15: the register row's spelling is canonical)"
@@ -1782,6 +1802,36 @@ fi
 case "$lane" in
 *[!A-Za-z0-9._-]* | .* | -* | '')
 	die "'$lane' is not a lane name (letters, digits, . _ -, not opening with . or -). Nothing was renamed and nothing was written: a name the register cannot hold is one every write below would refuse anyway, and the window would already have been renamed to it." 2 ;;
+esac
+
+# FEATURE 007, T429 — THE NAMES `canon-lane` WALKED, FOR THE ACT'S KEYS (Y:5624;
+# lane 3, #165 6770733371, shared ruling G2). `canon-lane`'s answer changes when
+# a row or an alias line appears for ANY name on its walk, not only for the
+# answer, so the writes below list `row:<n>` and `alias:<n>` for every name
+# `canon-lane --walk` (T411) prints for the name the rung gave it. It is asked
+# only on a primary base, where the keys are read (files mode ignores them, and
+# an act with no base has none), and only where `canon-lane` answered. A walk
+# that fails is handled as `act-begin`'s failure of the same code is (G1): 69,
+# 75 and 3 hold the PAUSED record's writes, and any other end leaves `LANES_ACT`
+# unset with the expectations kept, which a SQL register refuses with 2.
+act_walk=""
+case "$act_base" in
+'' | *@files) : ;;
+*)
+	if [ -n "$lane_canon" ]; then
+		aw_rc=0
+		act_walk="$(LANES_NO_FETCH=1 "$LANES_EDIT" canon-lane --walk "$lane_typed" 2>/dev/null)" || aw_rc=$?
+		case "$aw_rc" in
+		0) : ;;
+		69 | 75 | 3)
+			act_walk=""; act_base=""; unset LANES_ACT
+			act_hold="\`$LANES_EDIT canon-lane --walk $lane_typed\` exited $aw_rc"
+			note "the names lane $lane was found through could not be read (\`$LANES_EDIT canon-lane --walk $lane_typed\` exited $aw_rc), so every write of this act would be refused with $aw_rc as well (Y:5573): none of the PAUSED record's writes is sent. The handoff file is still written (\`R-A11-11\`) and the lane stays SWAPPING." ;;
+		*)
+			act_walk=""; act_base=""; unset LANES_ACT
+			note "the names lane $lane was found through are NOT known (\`$LANES_EDIT canon-lane --walk $lane_typed\` exited $aw_rc), and a key left out is a change a write would not see (Y:5622): \`LANES_ACT\` is unset, and each write below still names the expectations it has, never dropped (Y:5587), so a SQL register refuses it with 2 and sends nothing. A \`lanes-edit.sh\` with no \`--walk\` exits 64 here. The swap itself goes on (\`R-A11-11\`)." ;;
+		esac
+	fi ;;
 esac
 step "lane=$lane${window_ref:+ window=$window_ref} workstation=${ws:-<none>}"
 
@@ -2955,26 +3005,39 @@ command -v lclaude >/dev/null 2>&1 && lane_profile_word=lclaude
 # alias lines that name it (`canon-lane`: `alias:`) are what the late PAUSED, W9's
 # PAUSED, W11's file-level line and W12's row flip rest on, so all four carry
 # `row:L bind:L alias:L`, `L` being the canonical name the register's own row
-# gave (`canon-lane`, above). Where the tmux window's name is not `L`, the
-# window-name reads (`register-row` of the window, `window-lane`) rest on that
-# name's row too, so `row:<window name>` is listed as well. Each is a scope
-# only where the name is shaped like a lane's: a window named `my window` would
-# put a token in the list that is no scope, and the writer refuses a list with
-# one in it, with 2 and nothing sent. A name that differs from `L` only by case
-# is the same scope once the writer lowercases it, so it is not listed twice.
-# With no base there are no expectations: an empty list sends none, where a
-# list with no base to check it against would be refused.
+# gave (`canon-lane`, above), and `row:<n> alias:<n>` for every name
+# `canon-lane --walk` printed (`alias:L` stands for those keys: Y:5624; T411).
+# Where the tmux window's name is not `L`, the window-name reads (`register-row`
+# of the window, `window-lane`) rest on that name's row too, so
+# `row:<window name>` is listed as well. Each is a scope only where the name is
+# shaped like a lane's: a window named `my window` would put a token in the list
+# that is no scope, and the writer refuses a list with one in it, with 2 and
+# nothing sent. They are listed in lower case, once each, in the order given
+# (Y:5584: "sent in lower case, in the order given").
+#
+# THEY ARE LISTED WHATEVER THE BASE: "it is never dropped, since dropping a token
+# under-checks" (Y:5587; lane 3, #165 6770733371, G1). Where there is no base,
+# `LANES_ACT` is unset and a SQL register refuses each write with 2, sending
+# nothing; files mode and a helper that predates the verb read neither.
 act_expect=""
-if [ -n "$act_base" ]; then
-	act_expect="row:$lane bind:$lane alias:$lane"
-	case "$window_name" in
-	'' | *[!A-Za-z0-9._-]* | .* | -*) : ;;
-	*)
-		act_wn_lc="$(printf '%s' "$window_name" | tr 'A-Z' 'a-z')"
-		act_ln_lc="$(printf '%s' "$lane" | tr 'A-Z' 'a-z')"
-		[ "$act_wn_lc" = "$act_ln_lc" ] || act_expect="$act_expect row:$window_name" ;;
-	esac
-fi
+act_scope_add() {   # <scope>: appended once, in lower case
+	asa_s="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+	case " $act_expect " in *" $asa_s "*) return 0 ;; esac
+	act_expect="${act_expect:+$act_expect }$asa_s"
+	return 0
+}
+act_lane_shaped() {   # <name>: 0 where `check_lane_name` would take it
+	case "${1-}" in '' | *[!A-Za-z0-9._-]* | .* | -*) return 1 ;; esac
+	return 0
+}
+act_scope_add "row:$lane"; act_scope_add "bind:$lane"; act_scope_add "alias:$lane"
+if act_lane_shaped "$window_name"; then act_scope_add "row:$window_name"; fi
+while IFS= read -r act_wn; do
+	act_lane_shaped "$act_wn" || continue
+	act_scope_add "row:$act_wn"; act_scope_add "alias:$act_wn"
+done <<ACT_WALK_NAMES
+$act_walk
+ACT_WALK_NAMES
 
 # THE WRITER'S OWN WORDS, KEPT (FR-028, F9; Y:5699). Three of the writes below
 # sent the writer's stderr to `/dev/null`, which is where D8's rerun line — the
@@ -2986,12 +3049,60 @@ relay_writer_words() {   # <what the writer printed on stderr, empty where nothi
 	return 0
 }
 
+# D8's TEXT FOR A WRITE THAT EXITED 3, in T433's form (design D8, Y:463–469;
+# FR-028; lane 3, #165 6770733371, shared ruling G3): D8's words, then the
+# clause for a files-mode 3. A 3 is neither "written" nor "NOT written": on
+# primary the commit may never have happened, and the writer prints the rerun
+# that writes it once or finds it; off primary it was committed locally and
+# origin did not confirm it. Every note, gate and lifecycle line below that
+# follows a 3 uses it, whole and byte for byte, and prints no hint of its own.
+d8_text="may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun (off primary), the commit is local and may already be on origin."
+d8_cause="${d8_text%.}"   # the same, without its last full stop, where a sentence goes on
+
+# THE PAUSED RECORD'S WRITES, HELD (lane 3, #165 6770733371, shared ruling G1).
+# After `act-begin`'s 69, or the walk's, and after any read that answered from
+# the MIRROR (T405's `mirror_read`, set where `sread` forwards a `read: mirror
+# at` line; absent on a tree without T405, where it is empty), none of the
+# PAUSED record's writes is sent: a base that could not be taken means every
+# write "would then be refused with 69 as well" (Y:5573), and a mirror answer is
+# older than the base, so no expectation would see the change. Each write then
+# takes its 69 arm, the handoff file is still written (`R-A11-11`), and the lane
+# stays SWAPPING. Asked at each write, since a read below may set the mirror's.
+PH_WHY=""
+paused_held() {
+	if [ -n "$act_hold" ]; then PH_WHY="$act_hold"; return 0; fi
+	if [ -n "${mirror_read:-}" ]; then
+		PH_WHY="this run read the mirror (the register itself did not answer), and a mirror answer is older than any base, so no expectation would see a change"
+		return 0
+	fi
+	return 1
+}
+
+# THE 69 NOTE (the spec's "`lane-handoff` and the handoff skill with the database
+# unreachable": the note "SHALL name how the `SWAPPING` lane's `PAUSED` record is
+# completed later: the late `PAUSED` path, who runs it, and when"; Y:3020; lane 3,
+# #165 6770733371, T429's question 5). Printed once, where a PAUSED write exited
+# 69 or was not sent.
+paused_69=""
+paused_69_note() {
+	note "THE PAUSED RECORD IS INCOMPLETE and lane $lane stays SWAPPING, an interrupted swap that the late PAUSED path completes. Whoever relaunches the lane runs, from a shell, once the register answers and BEFORE the relaunch:  $prog --late --at <UTC> --lane $lane   (<UTC> is the moment this session ended, spelled YYYY-MM-DDTHH:MM:SSZ; this handoff ran at $UTC)."
+}
+
 # ------------------------------------------------------------ the LATE branch
 if [ "$do_late" = 1 ]; then
 	late_payload="$payload; late $late_at"
 	late_why="$(sanitize "${why:-late; usage limit hit before the swap at $late_at}") $kind_word"
-	if LANES_LANE="$lane" LANES_SESSION="$uuid" LANES_EXPECT="$act_expect" "$LANES_EDIT" log PAUSED "lane:$lane" \
-		'→' "$late_payload" "$late_why" --utc "$late_at"; then
+	# THE LATE PAUSED IS A PAUSED WRITE, so it is held as the three are (G1): after
+	# `act-begin`'s 69 or a mirror read it is not sent, and takes its 69 arm below.
+	late_rc=0; late_held=""
+	if paused_held; then
+		late_held=1; late_rc=69
+		note "the late PAUSED was not sent: $PH_WHY."
+	else
+		LANES_LANE="$lane" LANES_SESSION="$uuid" LANES_EXPECT="$act_expect" "$LANES_EDIT" log PAUSED "lane:$lane" \
+			'→' "$late_payload" "$late_why" --utc "$late_at" || late_rc=$?
+	fi
+	if [ "$late_rc" = 0 ]; then
 		step "late PAUSED written, dated $late_at (before the relaunch, which is the only place it can go)"
 		# THE LATE RECORD'S MANDATORY SET IS TWO AND NOT THREE: the row is not
 		# flipped by this branch at all (it exits below), so requiring it would
@@ -3011,17 +3122,22 @@ if [ "$do_late" = 1 ]; then
 		# cannot confirm whether the line landed, so the text says what D8 says
 		# and sends the reader to the rerun the writer printed above, which writes
 		# it once or finds it.
-		late_rc=$?
 		late_exit=2
 		late_cause="the late PAUSED record was refused by the helper"
 		late_text="the late PAUSED was NOT written (the helper refused it — its own message is above). Nothing else was done."
 		case "$late_rc" in
-		69 | 75) late_exit="$late_rc" ;;
+		69 | 75)
+			late_exit="$late_rc"
+			if [ -n "$late_held" ]; then
+				late_cause="the late PAUSED record was not sent"
+				late_text="the late PAUSED was NOT written (it was not sent: the note above says why). Nothing else was done."
+			fi ;;
 		3)
 			late_exit=3
-			late_cause="the late PAUSED record may not have landed (the helper exited 3)"
-			late_text="the late PAUSED may not be written (the helper exited 3, so the register could not confirm whether it landed): run the printed \`LANES_WRITE_ID\` rerun above, which writes it once or finds it. Nothing else was done." ;;
+			late_cause="the late PAUSED record $d8_cause"
+			late_text="the late PAUSED $d8_text Nothing else was done." ;;
 		esac
+		[ "$late_rc" != 69 ] || paused_69_note
 		lifecycle_finish "$late_cause"
 		die "$late_text" "$late_exit"
 	fi
@@ -3076,12 +3192,24 @@ cut_to_line() {   # <line> — the row's one line, safe to hand to set-row-state
 # ------------------------------------------------- (a) the object-log PAUSED
 record_written=0
 row_write_refused=""
+record_in_doubt=""; row_in_doubt=""   # a 3: the write may or may not have landed (D8)
+w9_held=""; w12_held=""               # not sent: `paused_held` (G1)
 if [ -n "$ws_missing" ]; then
 	note "NOT WRITTEN: the PAUSED line, the LANES.md line and the row's state cell all stop where there is no configured workstation (clause (k) rule (d), \`R-A11-14\`). The handoff refreshed above names the gap, and the restart line below carries --lane, because a restart cannot resolve this lane from a row that was never set."
 	row_write_refused=1
 else
-	if LANES_LANE="$lane" LANES_SESSION="$uuid" LANES_EXPECT="$act_expect" "$LANES_EDIT" log PAUSED "lane:$lane" \
-		'→' "$payload" "$why_text"; then
+	# EACH OF THE THREE IS HELD where `act-begin` answered 69 or this run read the
+	# mirror (G1; `paused_held`, above): it is not sent, takes its 69 arm, and the
+	# note that names the late PAUSED path is printed once, after the third.
+	w9_rc=0; w9_held=""
+	if paused_held; then
+		w9_held=1; w9_rc=69
+		note "the PAUSED line was not sent: $PH_WHY."
+	else
+		LANES_LANE="$lane" LANES_SESSION="$uuid" LANES_EXPECT="$act_expect" "$LANES_EDIT" log PAUSED "lane:$lane" \
+			'→' "$payload" "$why_text" || w9_rc=$?
+	fi
+	if [ "$w9_rc" = 0 ]; then
 		record_written=1
 		step "object log: PAUSED lane:$lane → $payload"
 	else
@@ -3090,10 +3218,11 @@ else
 		# act prints none of its own — the hint below is a command line with no
 		# write id in it, and run after a 3 it could write the line a second time.
 		# `record_written` stays 0 on a 3, since nothing here knows it landed.
-		w9_rc=$?
+		[ "$w9_rc" != 69 ] || paused_69=1
 		if [ "$w9_rc" = 3 ]; then
-			note "the PAUSED line may not be written (the helper exited 3, so the register could not confirm whether it landed): run the printed \`LANES_WRITE_ID\` rerun above, which writes it once or finds it."
-		else
+			record_in_doubt=1
+			note "the PAUSED line $d8_text"
+		elif [ -z "$w9_held" ]; then
 			note "the PAUSED line was NOT written — the helper's own refusal is above. Write it before anything else:"
 			note "  LANES_LANE=$lane LANES_SESSION=$uuid $LANES_EDIT log PAUSED lane:$lane '→' \"$payload\" \"$why_text\""
 		fi
@@ -3109,13 +3238,19 @@ else
 		# THE WRITER'S STDERR IS KEPT (Y:5699): this line carries a UTC of its own
 		# inside `append-line`'s text, so no plain rerun is the same command line
 		# and only the rerun the writer prints, with its write id, can settle a 3.
-		w11_rc=0
-		w11_err="$(LANES_LANE="$lane" LANES_EXPECT="$act_expect" "$LANES_EDIT" append-line "PAUSED — lane $lane, session $uuid@$ws, $UTC, $why_text; $handoff_record" 2>&1 >/dev/null)" || w11_rc=$?
+		w11_rc=0; w11_err=""; w11_held=""
+		if paused_held; then
+			w11_held=1; w11_rc=69
+			note "the LANES.md file-level PAUSED line was not sent: $PH_WHY."
+		else
+			w11_err="$(LANES_LANE="$lane" LANES_EXPECT="$act_expect" "$LANES_EDIT" append-line "PAUSED — lane $lane, session $uuid@$ws, $UTC, $why_text; $handoff_record" 2>&1 >/dev/null)" || w11_rc=$?
+		fi
 		if [ "$w11_rc" != 0 ]; then
 			relay_writer_words "$w11_err"
+			[ "$w11_rc" != 69 ] || paused_69=1
 			if [ "$w11_rc" = 3 ]; then
-				note "the LANES.md file-level PAUSED line may not be written (the helper exited 3, so the register could not confirm whether it landed): run the printed \`LANES_WRITE_ID\` rerun above, which writes it once or finds it."
-			else
+				note "the LANES.md file-level PAUSED line $d8_text"
+			elif [ -z "$w11_held" ]; then
 				note "the LANES.md file-level PAUSED line was not appended (the register may be busy or behind); the object-log line above is the record readers take."
 			fi
 		fi
@@ -3142,17 +3277,25 @@ else
 	hs_line="$(cut_to_line "$payload")"
 	# THE WRITER'S STDERR IS KEPT HERE TOO (Y:5699), and a 3 gets D8's text and the
 	# writer's rerun in place of the hand command below, which carries no write id.
-	w12_rc=0
-	w12_err="$(LANES_LANE="$lane" LANES_EXPECT="$act_expect" "$LANES_EDIT" set-row-state "$lane" "PAUSED · $hs_line" 2>&1 >/dev/null)" || w12_rc=$?
+	w12_rc=0; w12_err=""; w12_held=""
+	if paused_held; then
+		w12_held=1; w12_rc=69
+		note "the row's state cell was not set to PAUSED: the write was not sent ($PH_WHY). The restart line below carries --lane for that reason."
+	else
+		w12_err="$(LANES_LANE="$lane" LANES_EXPECT="$act_expect" "$LANES_EDIT" set-row-state "$lane" "PAUSED · $hs_line" 2>&1 >/dev/null)" || w12_rc=$?
+	fi
 	if [ "$w12_rc" != 0 ]; then
 		row_write_refused=1
 		relay_writer_words "$w12_err"
+		[ "$w12_rc" != 69 ] || paused_69=1
 		if [ "$w12_rc" = 3 ]; then
-			note "the row's state cell may not be set to PAUSED (the helper exited 3, so the register could not confirm whether it landed): run the printed \`LANES_WRITE_ID\` rerun above, which writes it once or finds it. The restart line below carries --lane for that reason."
-		else
+			row_in_doubt=1
+			note "the row's state cell $d8_text The restart line below carries --lane for that reason."
+		elif [ -z "$w12_held" ]; then
 			note "the row's state cell was NOT set to PAUSED (the write was refused — run it by hand to see what it says: lanes-edit.sh set-row-state $lane \"PAUSED · $hs_line\"). The restart line below carries --lane for that reason."
 		fi
 	fi
+	[ -z "$paused_69" ] || paused_69_note
 fi
 
 # ------------------------- 4a. SWAPPING -> SWAPPED, the operation's commit point
@@ -3170,8 +3313,21 @@ fi
 # never left unwritten*): this changes what the lane's lifecycle SAYS, never
 # whether the act completes.
 lc_unfinished=""
-[ "$record_written" = 1 ] || lc_unfinished="the lane's PAUSED record did not land"
-[ -z "$row_write_refused" ] || lc_unfinished="${lc_unfinished:+$lc_unfinished; }the row's state cell was not flipped"
+# AFTER A 3 NEITHER LINE SAYS "did not land" OR "not flipped" (Y:5700, F9; G3):
+# the write may be there, so each says D8's words, and the lane still stays
+# SWAPPING for it. A write that was never sent says so.
+if [ "$record_written" != 1 ]; then
+	if [ -n "$record_in_doubt" ]; then lc_unfinished="the lane's PAUSED record $d8_cause"
+	elif [ -n "$w9_held" ]; then lc_unfinished="the lane's PAUSED record was not sent"
+	else lc_unfinished="the lane's PAUSED record did not land"
+	fi
+fi
+if [ -n "$row_write_refused" ]; then
+	if [ -n "$row_in_doubt" ]; then lc_unfinished="${lc_unfinished:+$lc_unfinished; }the row's state cell $d8_cause"
+	elif [ -n "$w12_held" ]; then lc_unfinished="${lc_unfinished:+$lc_unfinished; }the row's state cell was not set, since its write was not sent"
+	else lc_unfinished="${lc_unfinished:+$lc_unfinished; }the row's state cell was not flipped"
+	fi
+fi
 [ "$handoff_written" = 1 ] || lc_unfinished="${lc_unfinished:+$lc_unfinished; }the handoff file was not refreshed"
 [ -z "$lc_inventory_missed" ] || lc_unfinished="${lc_unfinished:+$lc_unfinished; }the worktree inventory was not recorded for $lc_inventory_missed"
 [ -z "$legs_unread" ] || lc_unfinished="${lc_unfinished:+$lc_unfinished; }the assembly's legs could not be read, so its paired feature trees were not polled"
@@ -3186,6 +3342,7 @@ if [ -n "$row_write_refused" ]; then
 		restart_cmd="$lane_profile_word ${profile_name:-<profile>}"
 	fi
 	restart_note=" (the row was not flipped, so the lane must be named explicitly)"
+	[ -z "$row_in_doubt" ] || restart_note=" (the row may not be flipped, so the lane must be named explicitly)"
 else
 	restart_cmd="$lane_profile_word ${profile_name:-<profile>}"
 	restart_note=""
@@ -3206,8 +3363,11 @@ fi
 # lane)"* — so both branches below test `record_written` before they touch tmux,
 # and a lane whose PAUSED line did not land keeps its pane and its session.
 if [ "$do_restart" = 1 ] || [ "$do_exit" = 1 ]; then
-	[ "$record_written" = 1 ] ||
+	if [ "$record_written" != 1 ]; then
+		[ -z "$record_in_doubt" ] ||
+			die "the lane's PAUSED record $d8_text So this pane is left exactly as it is: a pane is never respawned over an unrecorded lane, and a session is never ended without one (Amendment 17(f)). Run the printed rerun above, then re-run this." 2
 		die "the lane's PAUSED record was NOT written, so this pane is left exactly as it is: a pane is never respawned over an unrecorded lane, and a session is never ended without one (Amendment 17(f)). Fix the write above and re-run." 2
+	fi
 	# AND THE RECORD IS THREE WRITES, NOT ONE (Copilot rounds 1 and 2 on
 	# openRepoTools#47). The object-log line above is the first of them; the
 	# ROW is what every other lane and every launcher reads this lane's state
@@ -3219,8 +3379,11 @@ if [ "$do_restart" = 1 ] || [ "$do_exit" = 1 ]; then
 	# the writers of another act, the why of another act. Neither is a state
 	# this command may create and then kill the only process that could fix it,
 	# so both are gates, and each names the act that clears it.
-	[ -z "$row_write_refused" ] ||
+	if [ -n "$row_write_refused" ]; then
+		[ -z "$row_in_doubt" ] ||
+			die "the lane's PAUSED line is written and the row's state cell $d8_text So this pane is left exactly as it is: respawning it could leave the register reading RUNNING for a session that has just been replaced, and every other lane reads the row. Run the printed rerun above and re-run this, or restart by hand:  $restart_cmd" 2
 		die "the lane's PAUSED line is written and the ROW WAS NOT FLIPPED (the note above says why), so this pane is left exactly as it is: respawning it would leave the register reading RUNNING for a session that has just been replaced, and every other lane reads the row. Flip it and re-run, or restart by hand:  $restart_cmd" 2
+	fi
 	[ "$handoff_written" = 1 ] ||
 		die "the lane's PAUSED line is written and the HANDOFF WAS NOT REFRESHED (the note above says why), so this pane is left exactly as it is: the top block of that file is what the new session is started with, and respawning now would hand it the block of a handoff this act has replaced. Put the block printed above at the head of the handoff, then re-run — or restart by hand once you have:  $restart_cmd" 2
 	have_tmux ||
@@ -3380,11 +3543,14 @@ if [ "$do_restart" = 1 ]; then
 	[ -z "${LANES_FILE:-}" ] || launch_line="LANES_FILE=$(quoted "$LANES_FILE") $launch_line"
 	[ -z "${LANES_REPO:-}" ] || launch_line="LANES_REPO=$(quoted "$LANES_REPO") $launch_line"
 	[ -z "${LANES_WORKSPACE_ROOT:-}" ] || launch_line="LANES_WORKSPACE_ROOT=$(quoted "$LANES_WORKSPACE_ROOT") $launch_line"
-	# BEFORE A LAUNCH `LANES_ACT` IS UNSET (feature 007, T429; Y:5596): the base
-	# this act took is the act's, and a pane respawned with it in its environment
-	# would hand it to the session, its guard and everything they start. Every
-	# register write of this act is behind this line.
-	unset LANES_ACT
+	# BEFORE A LAUNCH `LANES_ACT` AND `LANES_EXPECT` ARE UNSET (feature 007, T429;
+	# Y:5596, Y:5581; lane 3, #165 6770733371, shared ruling G5): the base this act
+	# took is the act's, and a pane respawned with it in its environment would
+	# hand it to the session, its guard and everything they start; `LANES_EXPECT`
+	# is a prefix on each write's own call and is never exported, and an inherited
+	# one would be read by every write the session makes. Every register write of
+	# this act is behind this line.
+	unset LANES_ACT LANES_EXPECT
 	say "  respawning $target: $launch_line"
 	if tmux respawn-pane -k -t "$target" "$launch_line" 2>/dev/null; then
 		say "  respawned into the supervisor — it launches the fresh session, confirms it came up, and stays in this pane if it did not"
