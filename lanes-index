@@ -7248,13 +7248,62 @@ def render_pass(checkout: str, cfg: dict, *, store=None) -> RenderPass:
         base_m, carrier, base_set = now_m, now_carrier, None
 
 
+# F15, THE PROGRESS BOUND (feature 007's T323; FR-046; PC-3, as research.md
+# takes it): a renderer makes another pass only after a pass that moved
+# origin's last `Register-Seq` past where that pass found it, or once for
+# each rerun mark it finds after it releases. Every other end of a pass is a
+# stop condition, and ends it with nothing on any HEAD: nothing missing; an
+# operator seq next; `diverged at`; a fetch, authentication or six-rejection
+# failure (with a walk or build that failed); a failed journal read. After
+# RENDER_PASS_CAP passes it hands over: it releases the lock and re-forks
+# itself once, detached, only if its last pass made progress, so the last
+# write of a burst is rendered though no write follows, and no process lives
+# unbounded under a steady stream.
+
+#: PC-3: the passes one renderer process makes before it hands over.
+RENDER_PASS_CAP = 16
+
+
+def _render_self_argv(checkout: str) -> list:
+    """The re-fork's command: this file, by the interpreter running it, as
+    `render --checkout <c>`."""
+    return [sys.executable, os.path.realpath(__file__), "render", "--checkout", checkout]
+
+
+def render_refork(checkout: str) -> bool:
+    """THE HANDOVER'S RE-FORK, detached as the writer's fork is (contract
+    section 3.7): a session of its own, stdin, stdout and stderr on
+    /dev/null, no descriptor but those, and `render_git_env()`'s
+    environment, so no `GIT_*` and no `LANES_NO_FETCH` reaches it. It is
+    never waited for. Returns whether it started; one that cannot be started
+    is said, and the next fork renders what it would have."""
+    try:
+        subprocess.Popen(_render_self_argv(checkout), stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         env=render_git_env(), close_fds=True, start_new_session=True)
+    except OSError as exc:
+        note(f"render: the handover's re-fork could not be started ({exc}); the next render "
+             f"renders what is left")
+        return False
+    return True
+
+
 def _render_holding(lock: RenderLock, checkout: str, cfg: dict) -> int:
-    """The holder's side of the handshake. Each turn clears the rerun mark,
-    the pass's first act (S2), and runs a pass; T323 bounds the passes. Then
-    it releases, looks for a mark once more, and takes the lock back for it:
-    a mark left after the clear, by a fork that found the lock held, is
-    rendered by this process, and never left with nobody due to read it."""
+    """The holder's side of the handshake, bounded by F15 (T323). Each turn
+    clears the rerun mark, the pass's first act (S2), and runs a pass.
+
+    - A PASS THAT MADE PROGRESS is followed by another, the lock still held.
+    - ANY OTHER END is a stop: the holder releases, looks for a mark once
+      more, and takes the lock back for it, one more pass for each mark it
+      finds after a release. A mark left after the clear, by a fork that
+      found the lock held, is rendered by this process, and never left with
+      nobody due to read it.
+    - AFTER RENDER_PASS_CAP PASSES it releases and ends, re-forking itself
+      once, detached, only if its last pass made progress. A mark found
+      then is left for the re-fork, or for the next fork.
+    Returns the last pass's exit."""
     rc = 0
+    passes = 0
     while True:
         try:
             lock.clear_rerun()
@@ -7262,7 +7311,21 @@ def _render_holding(lock: RenderLock, checkout: str, cfg: dict) -> int:
             note(f"render: the rerun mark {lock.rerun} cannot be removed "
                  f"({exc.strerror or exc}); nothing rendered")
             return 1
-        rc = render_pass(checkout, cfg).rc
+        result = render_pass(checkout, cfg)
+        rc = result.rc
+        passes += 1
+        if passes >= RENDER_PASS_CAP:
+            lock.release()
+            if result.progressed:
+                started = render_refork(checkout)
+                note(f"render: {passes} passes, the cap: the lock is released and the renderer "
+                     f"{'re-forked' if started else 'not re-forked'} to go on")
+            else:
+                note(f"render: {passes} passes, the cap, the last with no progress: the lock is "
+                     f"released, and nothing is re-forked")
+            return rc
+        if result.progressed:
+            continue
         lock.release()
         # THE HANDSHAKE'S SECOND HALF: after the release, never before it.
         try:
