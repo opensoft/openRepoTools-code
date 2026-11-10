@@ -262,7 +262,8 @@
 #   `LANES_ACT` unset and every `LANES_EXPECT` kept. Everything else refuses
 #   before the first write with exit 1, naming the verb and its code:
 #   `act-begin`'s 1 or 64, an exit 0 with no line or with a malformed one, and
-#   any walk code other than 0, 69, 75 and 3.
+#   any walk code other than 0, 69, 75 and 3, or a walk's 0 that prints no
+#   name (#165 6779688808, Q10).
 #   W13 is covered by `set -e`: a refused or in-doubt write ends this command
 #   with the writer's own code. W14 does it by hand: the object-log line is the
 #   one write this command used to NOTE and carry on past, and on primary a
@@ -284,8 +285,8 @@
 #      is none of its three). And feature 007's refusals before the first
 #      write (A2): `act-begin` answered 1, 64 or another code that is no base,
 #      or exited 0 with no line or a malformed one; or `canon-lane --walk`
-#      exited with a code other than 0, 69, 75 and 3. Each names the verb and
-#      its code, and nothing was written
+#      exited with a code other than 0, 69, 75 and 3, or exited 0 and printed
+#      no name. Each names the verb and its code, and nothing was written
 #   2  refusal — bad arguments, no row (or two), something still in flight, or
 #      the close-out gate: the lane's trees, branches, scratch, caches or
 #      residue still on disk, or the sweep refusing the lane
@@ -1120,6 +1121,7 @@ fi
 # 1, naming the verb and its code, because a key left out is a change a write
 # would not see (Y:5624) and a base kept without its keys under-checks
 # (Y:5587). A `lanes-edit.sh` with no `--walk` (before T411) answers 64 here.
+# An exit 0 that prints no name refuses with 1 too (Q10, below).
 # THE WALK'S OWN WORDS ARE KEPT and relayed whenever it fails, as `act-begin`'s
 # are (REV-LSLE): in `LE_TMP`, assigned from the `mktemp` itself so that
 # `cleanup` knows it on every exit, and cleared once read, before the
@@ -1138,13 +1140,21 @@ case "${LANES_ACT:-}" in
         lw_err="$(cat -- "$LE_TMP" 2>/dev/null || :)"
         rm -f -- "$LE_TMP"; LE_TMP=""
       fi
+      # AN EXIT 0 THAT NAMES NOBODY IS NO WALK (lane 3, #165 6779688808, Q10):
+      # `--walk` prints the typed name first (Y:5624), so a 0 with no name on
+      # it is the walk's form of A2's "an exit 0 with no line", and it refuses
+      # with 1 as that does.
+      lw_named=0
+      case "$le_walk" in *[![:space:]]*) lw_named=1 ;; esac
       lw_words="(no words of the helper's could be kept: run it to see them)"
-      if [ "$lw_rc" != 0 ] && [ -n "$lw_err" ]; then
+      if { [ "$lw_rc" != 0 ] || [ "$lw_named" = 0 ]; } && [ -n "$lw_err" ]; then
         printf '%s\n' "$lw_err" >&2
         lw_words="(its words are above)"
       fi
       case "$lw_rc" in
-        0) : ;;
+        0)
+          [ "$lw_named" = 1 ] ||
+            die "\`$LANES_EDIT canon-lane --walk $le_typed\` exited 0 $lw_words and printed no name, though a walk prints the typed name first (Y:5624), so the names lane $LANE's spelling was found through are NOT known. This act refuses before its first write rather than go on without them (lane 3's A2; #165 6779688808, Q10). Nothing was written." 1 ;;
         69 | 75 | 3)
           die "\`$LANES_EDIT canon-lane --walk $le_typed\` exited $lw_rc $lw_words, so the names lane $LANE's spelling was found through could not be read, and every write of this act would be refused as well. This command refuses rather than go on without them. Nothing was written." "$lw_rc" ;;
         *)
