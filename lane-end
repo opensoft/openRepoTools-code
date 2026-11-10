@@ -246,19 +246,27 @@
 #   ENDED|RETIRED`), and the object-log line, W14 (`log ENDED|RETIRED`), each
 #   name what this act's reads rested on in `LANES_EXPECT`, a prefix on that one
 #   call and never exported: `row:<lane> bind:<lane> objects:<lane>
-#   alias:<lane>`. `--retire-dormant`'s one `retire-rows` call names
-#   `row:<each> bind:<each> objects:<each>` for every row it retires. On a SQL
-#   register the commit refuses with 2 a write one of whose scopes another act
-#   changed after the base; in files mode both variables are ignored.
-#   act-begin's own 69 (the register could not be read, so every write of the
-#   act would be refused too) ends this command before anything is written,
-#   with that code; any other failure of act-begin is said and the run goes on
-#   with no base, which a SQL register then refuses at the first write. W13 is covered by `set -e`: a refused or in-doubt write
-#   ends this command with the writer's own code. W14 does it by hand: the
-#   object-log line is the one write this command used to NOTE and carry on past,
-#   and on primary a failed write is not "written by the next push". It prints
-#   the writer's own words (the writer's rerun where the code is 3, which says
-#   that the line may not be written) and exits with the writer's code.
+#   alias:<lane>`, and `row:<n> alias:<n>` for every name `canon-lane --walk`
+#   prints for the name the act gave `canon-lane` (`alias:L` stands for those
+#   keys: Y:5624; T411; asked on a primary base only). `--retire-dormant`'s one
+#   `retire-rows` call names `row:<each> bind:<each> objects:<each>` for every
+#   row it retires. On a SQL register the commit refuses with 2 a write one of
+#   whose scopes another act changed after the base; in files mode both
+#   variables are ignored.
+#   act-begin's own 69, 75 or 3 (the register could not be read, so every write
+#   of the act would be refused too) ends this command before anything is
+#   written, with that code, and so does a walk that fails with one of them. Any
+#   other failure of act-begin is said and the run goes on with no base, which a
+#   SQL register then refuses at the first write; any other failure of the walk
+#   is said, and the run goes on with the base dropped and every expectation kept.
+#   W13 is covered by `set -e`: a refused or in-doubt write ends this command
+#   with the writer's own code. W14 does it by hand: the object-log line is the
+#   one write this command used to NOTE and carry on past, and on primary a
+#   failed write is not "written by the next push". It prints the writer's own
+#   words (the writer's rerun where the code is 3, whose note says what D8 says,
+#   in T433's form), prints the handoff fragment, and then exits with the
+#   writer's code: W13 has already committed the ending, and the fragment is read
+#   from the log, so it is right whatever W14 did.
 #
 # EXIT
 #   0  done
@@ -1014,6 +1022,7 @@ le_act_begin
 # words — no helper predating the amendment emits them from an unknown
 # subcommand — and relayed, with the old-helper fallback left as it was.
 
+le_typed="$LANE"   # the name as typed, for `canon-lane --walk` (T430, below)
 cl_out=""; cl_rc=0
 cl_out="$("$LANES_EDIT" canon-lane "$LANE" 2>/dev/null)" || cl_rc=$?
 cl_why=""; cl_pair=0
@@ -1036,6 +1045,38 @@ if [ "$cl_rc" = 0 ] && [ -n "$cl_out" ] && [ "$cl_out" != "$LANE" ]; then
   note "lane $LANE → $cl_out (Amendment 15: the register row's spelling is canonical)"
   LANE="$cl_out"
 fi
+
+# FEATURE 007, T430 - THE NAMES `canon-lane` WALKED, FOR THE ACT'S KEYS (Y:5624;
+# lane 3's G2, #165 6770733371, T430's question 1). `canon-lane`'s answer
+# changes when a row or an alias line appears for any name on its walk, not
+# only for the answer, so W13 and W14 list `row:<n>` and `alias:<n>` for every
+# name `canon-lane --walk` (T411) prints for the name this act gave
+# `canon-lane`: that is what `alias:L` stands for. It is asked only on a
+# primary base, where the keys are read (files mode ignores both variables,
+# Y:5596, and an act with no base has none), and only where `canon-lane`
+# answered: a run that carried on with the typed name decided on that name
+# alone. A walk that fails is `act-begin`'s failure of the same code is (G2,
+# G1, as `le_act_begin` does it): 69, 75 and 3 end this command with that code,
+# nothing written; any other code is said, and the run goes on with the act's
+# base dropped (`LANES_ACT` unset) and every expectation kept, never dropped
+# (Y:5587), which a SQL register refuses with 2 at the first write (Y:5599).
+le_walk=""
+case "${LANES_ACT:-}" in
+  '' | *@files) : ;;
+  *)
+    if [ "$cl_rc" = 0 ]; then
+      lw_rc=0
+      le_walk="$("$LANES_EDIT" canon-lane --walk "$le_typed" 2>/dev/null)" || lw_rc=$?
+      case "$lw_rc" in
+        0) : ;;
+        69 | 75 | 3)
+          die "\`$LANES_EDIT canon-lane --walk $le_typed\` exited $lw_rc, so the names lane $LANE's spelling was found through could not be read, and every write of this act would be refused as well. This command refuses rather than go on without them. Run it to see the helper's words. Nothing was written." "$lw_rc" ;;
+        *)
+          le_walk=""; unset LANES_ACT
+          note "\`$LANES_EDIT canon-lane --walk $le_typed\` exited $lw_rc, so the names lane $LANE's spelling was found through are NOT known, and a key left out is a change a write would not see (Y:5622): this run takes no base, and each write below still names the expectations it has. A SQL register refuses it with 2 (nothing sent); files mode and an older helper do not read them. A \`lanes-edit.sh\` with no \`--walk\` exits 64 here." ;;
+      esac
+    fi ;;
+esac
 
 # AMENDMENT 23 S1, S2 — THE REGISTER THIS COMMAND READS IS THE ONE ITS WRITES GO
 # THROUGH. Under `LANES_ROUTE_WRITES=1` (opt-in until slice 1b, the review of
@@ -2584,14 +2625,37 @@ state_line="$(cut_to_line "$state_line")"
 
 # FEATURE 007, T430 (FR-029; Y:5669): W13 AND W14 CARRY WHAT THIS ACT'S READS
 # RESTED ON, `row:L bind:L objects:L alias:L` (the row, the lane-kind lines of
-# its log, its live claims, and the alias keys), as a prefix on each call. The
-# lane is the canonical spelling `canon-lane` gave. `alias:L` is the one key a
-# lane with no alias has; the walk's keys are T411's `canon-lane --walk`, which
-# this task's line does not call (see the commit body). A refusal of W13 by its
+# its log, its live claims, and the alias keys), as a prefix on each call, and
+# `row:<n> alias:<n>` for every name `canon-lane --walk` printed (`alias:L`
+# stands for those keys: Y:5624; T411; lane 3's G2, #165 6770733371). `L` is
+# the canonical spelling `canon-lane` gave. For a lane with no alias the walk is
+# `L` alone and the list is the four keys, as before; in files mode, or where
+# the act took no base, the walk was not asked and the list is the four. They
+# are listed in lower case, once each, in the order given (Y:5584), and are
+# never dropped, since dropping a token under-checks (Y:5587): where there is no
+# base a SQL register refuses each write with 2 and sends nothing, and files
+# mode and an older helper read neither variable. A refusal of W13 by its
 # expectation (2), or a 3 or 75 or 69, ends this command through `set -e` with
 # the writer's own code; the writer's words, its rerun for a 3 among them, are on
 # stderr above it.
-le_expect="row:$LANE bind:$LANE objects:$LANE alias:$LANE"
+le_expect=""
+le_scope_add() {   # <scope>: appended once, in lower case
+  lsa_s="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case " $le_expect " in *" $lsa_s "*) return 0 ;; esac
+  le_expect="${le_expect:+$le_expect }$lsa_s"
+  return 0
+}
+le_lane_shaped() {   # <name>: 0 where `check_lane_name` would take it
+  case "${1-}" in '' | *[!A-Za-z0-9._-]* | .* | -*) return 1 ;; esac
+  return 0
+}
+le_scope_add "row:$LANE"; le_scope_add "bind:$LANE"; le_scope_add "objects:$LANE"; le_scope_add "alias:$LANE"
+while IFS= read -r le_wn; do
+  le_lane_shaped "$le_wn" || continue
+  le_scope_add "row:$le_wn"; le_scope_add "alias:$le_wn"
+done <<LE_WALK_NAMES
+$le_walk
+LE_WALK_NAMES
 
 if (( dry_run )); then
   plan "lanes-edit.sh set-row-state $LANE \"$state_word · $state_line\""
@@ -2643,30 +2707,32 @@ if [ "$inventory_only" = 1 ]; then
 fi
 
 # FEATURE 007, T430 (FR-029; Y:5735; F9, Y:5700): W14'S NOTE ARM ENDS THIS
-# COMMAND WITH THE WRITER'S CODE. It used to note and carry on, on the reading
-# that the next push would carry the line, which nothing does on primary, and
-# it read a 3 as "NOT written", which on primary it is not: a 3 is a commit that
-# may or may not have landed. So whatever the writer answered, this command
-# exits with it, after the note, and prints no handoff fragment (as W13's
-# refusal prints none). The writer's stderr is kept: where the code is 3 that is
-# the writer's own rerun line (D8, Y:468-469; T417's), which this command does
-# not repeat in a hint of its own; the note says what D8 says for a 3.
+# COMMAND WITH THE WRITER'S CODE, ONCE THE HANDOFF FRAGMENT HAS PRINTED (lane 3,
+# #165 6770733371, T430's question 3). It used to note and carry on, on the
+# reading that the next push would carry the line, which nothing does on primary,
+# and it read a 3 as "NOT written", which on primary it is not: a 3 is a commit
+# that may or may not have landed. So whatever the writer answered, this command
+# exits with it, at the end, after the note and after the fragment: W13 has
+# already committed `ENDED` or `RETIRED`, and the fragment is read from the log,
+# so it is right whatever W14 did. The writer's stderr is kept: where the code
+# is 3 that is the writer's own rerun line (D8, Y:468-469; T417's), which this
+# command does not repeat in a hint of its own; the note says what D8 says for a
+# 3, in T433's form, both sentences (lane 3's G3).
+w14_rc=0
 if (( dry_run )); then
   plan "lanes-edit.sh log $lane_verb lane:$LANE --text \"$lane_text\""
 else
-  w14_rc=0
   LANES_LANE="$LANE" LANES_EXPECT="$le_expect" "$LANES_EDIT" log "$lane_verb" "lane:$LANE" ${home_override:+--home "$home_override"} --text "$lane_text" >/dev/null || w14_rc=$?
   if [ "$w14_rc" = 0 ]; then
     step "object log: $lane_verb"
   else
     case "$w14_rc" in
       3)
-        note "the lane's object log line ($lane_verb) may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. (The writer printed it above.)" ;;
+        note "the lane's object log line ($lane_verb) may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun (off primary), the commit is local and may already be on origin." ;;
       *)
         note "the lane's object log was NOT written ($lane_verb). Write it by hand:"
         note "  LANES_LANE=$LANE $LANES_EDIT log $lane_verb lane:$LANE --text \"$lane_text\"" ;;
     esac
-    exit "$w14_rc"
   fi
 fi
 
@@ -2722,4 +2788,6 @@ fi
 [ "$have_log" = 1 ] && [ "$open_n" = 0 ] && printf -- '- nothing open\n'
 
 (( dry_run )) && step "--dry-run: nothing was written"
-exit 0
+# W14's code, once the fragment is out (T430; Y:5735): 0 where the log line was
+# written, or this was a dry run.
+exit "${w14_rc:-0}"
