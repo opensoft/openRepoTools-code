@@ -5845,10 +5845,14 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
 # still live at D7's deadline (`pw_owner_live_end`), or for a claim that
 # cannot be tested here (`pw_owner_untested_end`).
 #
-# NOT HERE: the renderer's fork after `committed` (T416); `commit` on primary,
-# which keeps T409's 69 until T420; and the tail by match or replay for a
-# write already in the register, the record's `tail` key and the done mark
-# (T418), which replaces `pw_found_end` for the lookup's `found` too.
+# HERE TOO (T418): the tail, once, for a write this run learns is in the
+# register, by `committed`, `already`, a snapshot's `found=` or the lookup's
+# `found` (`pw_tail`, `pw_tail_child`, `pw_committed`), under "THE TAIL, ONCE"
+# below; and the one site where the renderer's fork goes (`pw_learned`).
+#
+# NOT HERE: the renderer's fork itself (T416's `pw_render_fork`, which goes
+# into `pw_learned`); and `commit` on primary, which keeps T409's 69 until
+# T420.
 PW_LANE=""; PW_C=""; PW_AUTHOR=""; PW_D_S=30; PW_T0=0; PW_RUN=""; PW_RUN_DIR=""
 PW_LOCK=""; PW_REC_OURS=0
 PW_K=0; PW_DIR=""; PW_CHILD=""; PW_KEPT=""; PW_FIRST_DONE=0; PW_RELAY=""; PW_RC=0
@@ -6188,7 +6192,7 @@ pw_snapshot() {
   elif [ "$PW_S_WID" != "$WR_ID" ] || [ "$PW_S_GEN" != "$WR_GEN" ]; then
     pw_snap_end 69 "\`lanes-index register snapshot\` answered write ${PW_S_WID} of generation ${PW_S_GEN} where this write is ${WR_ID} of ${WR_GEN}, which is a failed read"
   fi
-  [ -z "$PW_S_FOUND" ] || pw_found_end "$PW_S_FOUND" "attempt ${PW_K}'s snapshot found it"
+  [ -z "$PW_S_FOUND" ] || pw_tail "$PW_S_FOUND" "attempt ${PW_K}'s snapshot found it" "$PW_DIR/snapshot"
   return 0
 }
 
@@ -6368,8 +6372,15 @@ pw_replay() {   # <attempt dir>
 # is replayed, PW_RELAY follows it on stderr, and the run exits with the end's
 # code, saying <message> where it has one.
 pw_end() {   # <code> <message, or empty> [<attempt dir whose output is replayed>]
-  pw_abandon_all
+  # THE ATTEMPT'S OWN CHILD goes first; the KEPT ones wait through F3's lookup,
+  # whose `found` hands the tail to the one whose change set is the entry's
+  # (Y:5309; T418), and get `abandon` at every other outcome.
+  if [ -n "$PW_CHILD" ]; then
+    pw_abandon_one "$PW_CHILD" "$PW_DIR"
+    PW_CHILD=""
+  fi
   [ -z "$WR_CALLS" ] || pw_doubt_end "$1" "$2" "${3-}"
+  pw_abandon_kept
   pw_record_done
   [ -z "${3-}" ] || pw_replay "$3"
   [ -z "$PW_RELAY" ] || printf '%s\n' "$PW_RELAY" >&2
@@ -6509,8 +6520,9 @@ pw_lookup() {
 
 # AN END WITH A `call` LINE HELD (Y:5017–5023): F3's lookup decides it. Its
 # outcomes (Y:5240–5245, Y:2730–2742):
-#   found          0: the write is in the register (`pw_found_end`; its tail by
-#                  match or replay, and the done mark, are T418's)
+#   found          0: the write is in the register, and its tail is the kept
+#                  child's whose change set is the entry's, or the replay's
+#                  (`pw_tail`, T418)
 #   absent         this returns, and `pw_end` goes on with the end the run
 #                  reached: the record goes, the deciding attempt's output is
 #                  replayed, and the run exits with that attempt's code (Y:5244)
@@ -6526,9 +6538,12 @@ pw_doubt_end() {   # <the end's code> <its message, or empty> [<attempt dir>]
   pw_lookup_clock
   pw_lookup
   case "$PW_LK" in
-    found) pw_found_end "$PW_LK_SEQ" "F3's lookup found it, after this run's end with exit $1" ;;
-    absent) return 0 ;;
+    found) pw_tail "$PW_LK_SEQ" "F3's lookup found it, after this run's end with exit $1" "$PW_LK_OUT" ;;
   esac
+  # THE KEPT CHILDREN waited through the lookup, since its `found` may be one
+  # of theirs (Y:5309; T418); any other outcome is an end but 0 (Y:5026).
+  pw_abandon_kept
+  [ "$PW_LK" != absent ] || return 0
   [ -z "$PW_LK_ERR" ] || [ ! -s "$PW_LK_ERR" ] || cat -- "$PW_LK_ERR" >&2
   if [ "$PW_LK" = lr007 ] && [ "$PW_LK_TOKEN" = generation ]; then
     WR_REC_WRITE_ID="$WR_ID"; WR_REC_GENERATION="$WR_GEN"; WR_REC_CREATED_UTC="$WR_CREATED_UTC"
@@ -6560,15 +6575,156 @@ pw_lookup_3() {   # <the end's code>
   die "cannot confirm whether register write $WR_ID committed; nothing else was written. A commit call of it may have committed, and F3's lookup could not settle it: ${l3_why}. On primary this write may not be written: run the printed LANES_WRITE_ID rerun, which writes it once or finds it. Its pending record, ${l3_rec}, is kept. This run's end was exit ${1}, which is not that write's answer while the call is in doubt. Look it up: ${l3_look}. Or run it again: ${l3_re}" 3
 }
 
-# A WRITE ALREADY IN THE REGISTER (a snapshot's `found=`, or the commit's
-# `already <s>`): the tail by match or by replay, the `tail` key and the done
-# mark are T418's (Y:5289–5373). Until then this run sends no second commit,
-# names the verb's after-COMMIT steps as owed, removes the record (Y:5194:
-# "after the tail is done or named as owed") and ends with 0.
-pw_found_end() {   # <seq> <how it was found>
+# ---- THE TAIL, ONCE (T418; S3, row 24; FR-023; Y:5289–5373; the contract's
+# §3.2 one digest rule, §3.3 `already`, §3.4 `found`). A write's after-COMMIT
+# tail runs in one child only: one stopped at the seam whose change set is the
+# entry's own (Y:5291). A run learns that its write is in the register in one
+# of four ways, and each comes here (Y:5302–5313):
+#   its commit answers `committed <s>`   that call's own child (`pw_committed`)
+#   its commit answers `already <s>`     whichever child matches: the current
+#     (LR006)                            one, or a kept one (`pw_decide`)
+#   a snapshot answers `found=`          the kept child of the call in doubt
+#                                        that committed (`pw_snapshot`)
+#   F3's lookup answers `found <s>`      the same (`pw_doubt_end`)
+# THE MATCH (Y:5300; the contract's §3.2 one digest rule): a child matches
+# where the sha256 of the `files` rows its seam wrote is the sha256 of the
+# `file=` rows the answer carries, each `<path>` TAB `<present>` TAB
+# `<sha256>`, LF-ended, without the `file=` prefix. An answer with no rows
+# matches no child (`already <s>` alone, where `lanes-index`'s second read
+# failed: the contract's §3.3), and so does a kept child that is gone. Every
+# child that does not take `committed <s>` gets `abandon` once the outcome is
+# known (Y:5314). With no match, the tail is the replay's (`pw_replay_tail`).
+# Only the files a kept `call` line's directory keeps are read: its `files`
+# here, while this run's children wait at their seams (lane openRepoTools-3,
+# #165 6769061039, T415's question 5).
+PW_E_ROWS=""; PW_E_DIGEST=""; PW_LEARNED=""
+
+# THE ENTRY'S CHANGE SET, from a register answer in a file: the `file=` rows
+# of a snapshot's `found=`, the commit's `already <s>` or the lookup's `found
+# <s>`, in the order given (sorted by path, bytewise: §3.2), into PW_E_ROWS,
+# each LF-ended, and their sha256 into PW_E_DIGEST; both empty where there are
+# none.
+pw_entry_rows() {   # <answer file>
+  local er_l=""
+  PW_E_ROWS=""; PW_E_DIGEST=""
+  while IFS= read -r er_l || [ -n "$er_l" ]; do
+    case "$er_l" in file=*) PW_E_ROWS="${PW_E_ROWS}${er_l#file=}${WR_NL}" ;; esac
+    er_l=""
+  done < "$1" 2>/dev/null
+  [ -n "$PW_E_ROWS" ] || return 0
+  PW_E_DIGEST="$(printf '%s' "$PW_E_ROWS" | wr_sha256_stdin)" || PW_E_DIGEST=""
+  return 0
+}
+
+# THE ENTRY'S CHANGE SET where this run's own call committed it (`committed
+# <s>`): that attempt's `files`, the rows its call sent.
+pw_entry_files() {   # <attempt dir>
+  local ef_l=""
+  PW_E_ROWS=""; PW_E_DIGEST=""
+  while IFS= read -r ef_l || [ -n "$ef_l" ]; do
+    [ -z "$ef_l" ] || PW_E_ROWS="${PW_E_ROWS}${ef_l}${WR_NL}"
+    ef_l=""
+  done < "$1/files" 2>/dev/null
+  [ -n "$PW_E_ROWS" ] || return 0
+  PW_E_DIGEST="$(printf '%s' "$PW_E_ROWS" | wr_sha256_stdin)" || PW_E_DIGEST=""
+  return 0
+}
+
+# A CHILD'S CHANGE SET: the sha256 of the `files` its seam wrote in its
+# attempt's directory, by the same rule. 1, with nothing printed, where there
+# is no such file.
+pw_dir_digest() {   # <attempt dir>
+  [ -f "$1/files" ] && [ -r "$1/files" ] || return 1
+  wr_sha256_stdin < "$1/files"
+}
+
+# `seam.out` HOLDING EXACTLY `tail` (lane openRepoTools-3, #165 6767463594,
+# question 4): its bytes are `tail` and at most one line feed. An absent, empty
+# or other one is `none`: the child never read `committed` (Y:5342), and the
+# run goes to the replay.
+pw_seam_out_tail() {   # <attempt dir>
+  local so_b=""
+  [ -f "$1/seam.out" ] || return 1
+  so_b="$(cat -v -- "$1/seam.out" 2>/dev/null; printf .)"
+  so_b="${so_b%.}"
+  [ "$so_b" = tail ] || [ "$so_b" = "tail$WR_NL" ]
+}
+
+# THE WRITE IS IN THE REGISTER, LEARNED (lane openRepoTools-3, #165
+# 6769061039, T416's question 1): every end 0 at which this run learns it,
+# by `committed`, `already`, a snapshot's `found=` or the lookup's `found`,
+# passes here once, before any `tail=sent`. THE RENDERER'S FORK (Y:5377) is
+# called at this ONE site, as T416's `pw_render_fork`: whichever of T416 and
+# T418 lands second puts the call here, and takes it out of `pw_committed`
+# and `pw_found_end`, which T418 replaced.
+pw_learned() {   # <seq>
+  [ -z "$PW_LEARNED" ] || return 0
+  PW_LEARNED="$1"
+  # T416's `pw_render_fork` goes HERE.
+  return 0
+}
+
+# `committed <s>` TO ONE CHILD AT ITS SEAM (Y:5009–5012): the child replays its
+# own buffered output and runs the verb's code after the seam once, after
+# COMMIT; this process reaps it and, where its `seam.out` says `tail`, removes
+# the record and exits the child's code. Where it does not, the child never
+# read `committed`, and this returns 1 for the replay (Y:5342).
+pw_tail_child() {   # <seq> <pid> <attempt dir>
+  local tc_rc=0
+  pw_learned "$1"
+  pw_send "$3" "committed $1" || :
+  wait "$2" || tc_rc=$?
+  [ "$PW_CHILD" != "$2" ] || PW_CHILD=""
+  pw_seam_out_tail "$3" || return 1
+  pw_record_done
+  exit "$tc_rc"
+}
+
+# THE WRITE FOUND IN THE REGISTER, by `already <s>`, a snapshot's `found=` or
+# F3's lookup (Y:5307–5309): the child whose change set is the entry's takes
+# `committed <s>`, the current attempt's (only at `already`, where it waits at
+# its seam) before the kept ones; every other child gets `abandon` (Y:5314);
+# and with no match the tail is the replay's. It never returns.
+pw_tail() {   # <seq> <how it was learned> <the answer, in a file>
+  local pt_l="" pt_p="" pt_d="" pt_mp="" pt_md="" pt_rest="" pt_h=""
+  pw_learned "$1"
+  pw_entry_rows "$3"
+  if [ -n "$PW_E_DIGEST" ] && [ -n "$PW_CHILD" ]; then
+    pt_h="$(pw_dir_digest "$PW_DIR")" || pt_h=""
+    if [ "$pt_h" = "$PW_E_DIGEST" ]; then pt_mp="$PW_CHILD"; pt_md="$PW_DIR"; fi
+  fi
+  while IFS= read -r pt_l; do
+    [ -n "$pt_l" ] || continue
+    pt_p="${pt_l%% *}"; pt_d="${pt_l#* }"
+    pt_h=""
+    if [ -z "$pt_mp" ] && [ -n "$PW_E_DIGEST" ]; then pt_h="$(pw_dir_digest "$pt_d")" || pt_h=""; fi
+    if [ -z "$pt_mp" ] && [ -n "$pt_h" ] && [ "$pt_h" = "$PW_E_DIGEST" ]; then
+      pt_mp="$pt_p"; pt_md="$pt_d"
+    else
+      pt_rest="${pt_rest}${pt_rest:+$WR_NL}$pt_l"
+    fi
+  done <<PT_EOF
+$PW_KEPT
+PT_EOF
+  PW_KEPT="$pt_rest"
+  pw_abandon_kept
+  if [ -n "$PW_CHILD" ] && [ "$PW_CHILD" != "$pt_mp" ]; then
+    pw_abandon_one "$PW_CHILD" "$PW_DIR"; PW_CHILD=""
+  fi
+  if [ -n "$pt_mp" ]; then
+    pw_tail_child "$1" "$pt_mp" "$pt_md" || :
+  fi
+  pw_replay_tail "$1" "$2"
+}
+
+# THE REPLAY (Y:5316–5326) is the next step's. Until it is built, a write
+# whose tail no waiting child takes names the verb's after-COMMIT steps as
+# owed, removes the record (Y:5194: "after the tail is done or named as
+# owed") and ends with 0.
+pw_replay_tail() {   # <seq> <how it was learned>
   pw_abandon_all
-  note "write $WR_ID is in the register at seq $1, committed by an earlier attempt or run ($2); this run sent no second commit of it. Its after-COMMIT steps did not run in this run, and may be owed: those of lanes-edit.sh $WR_VERB. Do by hand any that did not run."
-  wr_record_remove || wr_claim_release
+  note "write $WR_ID is in the register at seq $1 ($2), and no child of this run took its tail; this run sent no second commit of it. Its after-COMMIT steps did not run in this run, and may be owed: those of lanes-edit.sh $WR_VERB. Do by hand any that did not run."
+  pw_record_done
   exit 0
 }
 
@@ -6602,8 +6758,8 @@ pw_commit() {
 # §3.3, with §2.7). Returns 0 where the run goes on to its next attempt; every
 # other answer ends the run here.
 #   0, `committed <s>`     the write committed: `pw_committed`
-#   0, `already <s>`       an earlier attempt committed it (LR006): T418's
-#                          match, `pw_found_end` meanwhile
+#   0, `already <s>`       an earlier attempt committed it (LR006): the
+#                          tail by match, or the replay (`pw_tail`, T418)
 #   75                     a lost turn (LR001, 40001, 40P01, 55P03, LR008):
 #                          `abandon`, the call line dropped, the next attempt
 #   2                      a refusal (LR005 with its token and any `held-by=`
@@ -6631,7 +6787,7 @@ pw_decide() {
           ! wr_is_count "$pv_s" || pw_committed "$pv_s" ;;
         "already "*)
           pv_s="${pv_l#already }"
-          ! wr_is_count "$pv_s" || pw_found_end "$pv_s" "attempt ${PW_K}'s commit answered already" ;;
+          ! wr_is_count "$pv_s" || pw_tail "$pv_s" "attempt ${PW_K}'s commit answered already, LR006" "$PW_DIR/commit.out" ;;
       esac
       pw_keep
       return 0 ;;
@@ -6665,29 +6821,19 @@ pw_keep() {
 
 # `committed <s>` (Y:5009–5012). Every other kept child gets `abandon`: none of
 # their calls committed, since one that had would have made this call's answer
-# LR006 (Y:2563–2575). The renderer's fork (T416) and the record's `tail=sent`
-# (T418) come here, before the message. The child then replays its own buffered
-# output and runs the verb's tail once, after COMMIT; the parent reaps it,
-# removes the record (T418 writes the done mark first) and exits the child's
-# code. A child that did not take the message as `tail` (its `seam.out` reads
-# `none`: it stopped at its cap, or its parent's line was lost) leaves the tail
-# unrun, which T418 replays; meanwhile the run names it as owed and ends with 0,
-# since the write committed.
+# LR006 (Y:2563–2575). The child then takes `committed <s>`
+# (`pw_tail_child`, T418), after the renderer's fork (`pw_learned`) and the
+# record's `tail=sent`: it replays its own buffered output and runs the verb's
+# tail once, after COMMIT, and the run exits its code. A child whose `seam.out`
+# does not hold exactly `tail` never read the message, so the tail is the
+# replay's (Y:5342; lane openRepoTools-3, #165 6767463594, question 4), of the
+# change set this call sent.
 pw_committed() {   # <seq>
-  local pm_out=""
   pw_abandon_kept
-  pw_send "$PW_DIR" "committed $1" || :
-  PW_RC=0
-  wait "$PW_CHILD" || PW_RC=$?
+  pw_entry_files "$PW_DIR"
+  pw_tail_child "$1" "$PW_CHILD" "$PW_DIR" || :
   PW_CHILD=""
-  { IFS= read -r pm_out || :; } < "$PW_DIR/seam.out" 2>/dev/null
-  if [ "$pm_out" != tail ]; then
-    note "write $WR_ID committed at seq $1, at attempt ${PW_K}, but its child did not take the message at its seam (seam.out reads ${pm_out:-nothing}; it exited ${PW_RC}), so the verb's after-COMMIT steps did not run, and may be owed: those of lanes-edit.sh $WR_VERB. Do by hand any that did not run."
-    pw_record_done
-    exit 0
-  fi
-  pw_record_done
-  exit "$PW_RC"
+  pw_replay_tail "$1" "attempt ${PW_K}'s commit answered committed"
 }
 
 # THE CHILD ENDED BEFORE `ready` (Y:5015): the verb's own refusal, or a no-op
