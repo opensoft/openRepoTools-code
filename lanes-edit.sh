@@ -6440,8 +6440,8 @@ pw_snap_read() {   # <the snapshot's stdout, in a file>
 # on first, verbatim. Then the first snapshot settles the write's id and writes
 # its record (T412's `wr_id_settle`; Y:5192), and a later one must echo this
 # write's id and generation. A run that took over a record holding `tail`
-# goes from an answered snapshot to the done mark, whatever it answers
-# (`pw_took_tail`).
+# goes to the done mark where its first snapshot finds the write (`pw_tail`),
+# and refuses 2 where it answers 0 without `found=` (`pw_took_tail_refuse`).
 pw_snapshot() {
   local ps_bin="" ps_rc=0 ps_l="" ps_det="" ps_end=""
   local -a ps_a
@@ -6497,12 +6497,12 @@ pw_snapshot() {
       pw_end 1 "this write's pending record, $WR_STATE/register-pending/$WR_D, could not be written after its first snapshot, so no commit call can be made for it. Nothing was sent"
     fi
     PW_FIRST_DONE=1
+    [ -n "$PW_S_FOUND" ] || [ -z "$WR_TOOK_TAIL" ] || pw_took_tail_refuse
     [ -n "$PW_S_FOUND" ] || PW_REC_OURS=1
   elif [ "$PW_S_WID" != "$WR_ID" ] || [ "$PW_S_GEN" != "$WR_GEN" ]; then
     pw_snap_end 69 "\`lanes-index register snapshot\` answered write ${PW_S_WID} of generation ${PW_S_GEN} where this write is ${WR_ID} of ${WR_GEN}, which is a failed read"
   fi
   [ -z "$PW_S_FOUND" ] || pw_tail "$PW_S_FOUND" "attempt ${PW_K}'s snapshot found it" "$PW_DIR/snapshot"
-  [ -z "$WR_TOOK_TAIL" ] || pw_took_tail
   return 0
 }
 
@@ -7359,26 +7359,37 @@ pw_tail_found() {   # <seq>
   pw_tail_said "$1" "its after-COMMIT steps were named as owed at ${tf_utc}, and this run runs none of them; they are owed again: $(pw_owed_words)"
 }
 
-# A RECORD TAKEN OVER THAT HOLDS `tail` (WR_TOOK_TAIL; lane openRepoTools-3,
-# #165 6774499606, T412 (1)), whatever the snapshot answered. Y:5342: "A run
-# that reads a `sent` or `done` record writes the done mark from it, then
-# removes the record." A snapshot that found the write has already reached
-# `pw_tail_found` through `pw_tail`; one that did not goes straight to it here,
-# at the seq the record's `tail` value names, and the run sends nothing, with
-# no child started and no lookup made: a takeover rewrites nothing
-# in such a record, so no `call=` line could be added for a commit call of its
-# own (`wr_record_write`). The mark's pid, host and container are the
-# record's (`pw_tail_writer`). A value naming no seq (neither `sent <s> ...`
-# nor `done <s> ...`) is not a `tail` this file writes, and is left to the
-# attempt as before (T412 (1), Y:5342; lane 4's reading, asked of lane 3).
-pw_took_tail() {
-  local tt_s=""
-  case "$WR_TOOK_TAIL" in
-    'sent '*|'done '*) tt_s="${WR_TOOK_TAIL#* }"; tt_s="${tt_s%% *}" ;;
+# A TAKEOVER WHOSE RECORD HOLDS `tail` AND WHOSE FIRST SNAPSHOT DOES NOT FIND
+# THE WRITE (lane openRepoTools-3, #165 6779688808, Q2). A record holds `tail`
+# only once its write committed (Y:5179), so a first snapshot of the record's
+# own generation that answers 0 with no `found=` contradicts it. Y has one
+# route to that, the restore gap, where the database carries the lost
+# database's generation (Y:1518); the other is a damaged record. The done mark
+# would say "is in the register at seq <s>", which is false, and removing the
+# record would remove the only evidence left. So the run refuses 2 at that
+# snapshot: it sends nothing and runs no tail (Y:5298), and leaves the record
+# as found, as Y:5215 does for another generation; only its own claim goes
+# (`wr_refuse`). Its text names the seq the record's `tail` says (`<unknown>`
+# where that value names none), then gives Y:5211-5213's effect check, the
+# steps that may be owed (Y:5214) and `LANES_WRITE_ID=new`. With `found=` the
+# path is `pw_tail`'s, to the done mark (`pw_tail_found`), with the record's
+# pid (`pw_tail_writer`); another generation stays T412's
+# `wr_refuse_other_generation`.
+pw_took_tail_refuse() {
+  local tr_s="" tr_w="" tr_utc="" tr_owed="" tr_steps=""
+  tr_w="${WR_TOOK_TAIL%% *}"; tr_utc="${WR_TOOK_TAIL##* }"
+  case "$tr_w" in
+    sent|done) tr_s="${WR_TOOK_TAIL#* }"; tr_s="${tr_s%% *}" ;;
   esac
-  wr_is_count "$tt_s" || return 0
-  pw_tail_found "$tt_s" || :
-  return 0
+  wr_is_count "$tr_s" || tr_s="<unknown>"
+  tr_owed="$(wr_owed_text "$WR_REC_VERB")"
+  case "$tr_w" in
+    sent) tr_steps="its after-COMMIT steps may have run at ${tr_utc}: ${tr_owed}. Do by hand any that did not run." ;;
+    done) tr_steps="its after-COMMIT steps ran at ${tr_utc}." ;;
+    *) tr_steps="its after-COMMIT steps may be owed: ${tr_owed}. Do by hand any that did not run." ;;
+  esac
+  pw_run_dir_done
+  wr_refuse "the pending record of this command, $WR_STATE/register-pending/$WR_D, holds write ${WR_REC_WRITE_ID} made at ${WR_REC_CREATED_UTC} against register generation ${WR_REC_GENERATION}, and its tail, ${WR_TOOK_TAIL}, says that write committed at seq ${tr_s}; but this register does not hold it: this run's first snapshot did not find it. A register restored from a backup carries the lost database's generation until its cutover (Y:1518), and a damaged record reads the same. Nothing was sent, no after-COMMIT step was run, and the record is left as it is. Look for its effect in the register as it stands: lanes-edit.sh history ${WR_REC_LANE} --since ${WR_REC_CREATED_UTC} for a log line, or lanes-edit.sh register-row ${WR_REC_LANE} for a row. If it is there, ${tr_steps} If it is not there, run the same command with LANES_WRITE_ID=new, which mints a new id and replaces this record: $(wr_rerun_new_text)"
 }
 
 # THE STEPS THAT MAY BE OWED, in words: the verb's row of F14's table
