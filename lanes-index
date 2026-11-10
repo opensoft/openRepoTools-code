@@ -1122,8 +1122,10 @@ REGISTER_KIND_RE = re.compile(
 #: writer's `LANDING`, and `LANDING EXPIRED` the `LANDING` of the lane its
 #: `for_lane` names. `HOLD (refresh)` and `HOLD (run id)` continue an open
 #: `HOLD` and take nothing new; they, `QUEUED-HOLD` and `LANDING WITHDRAWN`
-#: take and close nothing. `register_lines`' CHECKs still bind each row: a
-#: slot needs a `repo_key`, and a landing slot a PR.
+#: take and close nothing. This is the kind's role, as `register classify`
+#: prints it; the row's own is `_register_slot_row`'s, which stores none where
+#: `RULE6_AWK` could not pair the line, as `register_lines`' CHECKs require: a
+#: slot needs a lane and a `repo_key`, and a landing slot a PR.
 REGISTER_SLOTS: dict[str, tuple[str | None, str | None]] = {
     "HOLD": ("take", "hold"),
     "HOLD (refresh)": (None, None),
@@ -5995,7 +5997,12 @@ class RegisterView:
 #     object, for an object `register_hold_object` takes, never a `lane:` one
 #     (#160's holders, `lanes-index:1594`);
 #   - `register_lines`' kinds: `_register_slot_row`, only for a line the one
-#     classifier reads as a kind, since nothing reads a row with no kind;
+#     classifier reads as a kind, since nothing reads a row with no kind, and
+#     with no slot role where `RULE6_AWK` could not pair the line; and
+#     `register_slot_rows`, THE WALK, which pairs a `LANDED` that names its
+#     lane and PR and no repository as `RULE6_AWK` pairs it (lane 3's ruling,
+#     #165 6771569269; ERR-53). The import runs it once over the file, in line
+#     order; a write runs it only for such a `LANDED`, up to its line;
 #   - the workstation: `register_line_workstation`, the line's own `session
 #     <uuid>@<ws>`, else its caller's fallback - a write's `--workstation`, and
 #     None for the import (Y:1273);
@@ -6158,12 +6165,26 @@ def _register_slot_row(line_no: int, text: str, table: tuple,
     the one classifier's kind and fields (FR-030), its slot (Q17(B)), its
     `repo_key` and, on a slot line, D18's `repo_spellings`. None for a line
     of no kind. Its workstation is `register_line_workstation`'s, with
-    `workstation` as the fallback: this write's, or None for the import."""
+    `workstation` as the fallback: this write's, or None for the import.
+
+    NO SLOT ROLE WHERE `RULE6_AWK` COULD NOT PAIR THE LINE (lane 1, #165
+    6771151979; lane 3's ruling, 6771569269; ERR-53): a slot line with no
+    lane or no repository, or a landing slot with no PR, keeps its kind and
+    fields and stores no slot, as Y:1409 has it for a `LANDING EXPIRED`, so
+    Y:1269-1270's CHECKs refuse no line the classifier reads. A NULL
+    `slot_role` decides nothing (Y:1258). A `LANDING EXPIRED` is never cut
+    here: `parse_register_line` reads it only with its holder, PR and
+    repository, and its holder's `lane <name>` gives it a lane. A `LANDED`
+    with its lane and PR and no repository gets its slot from
+    `register_slot_rows`' walk, not from this row alone."""
     fields = parse_register_line(text)
     if fields is None:
         return None
     role, kind = REGISTER_SLOTS[fields["kind"]]
     repo = fields["repo"]
+    if role and (fields["lane"] is None or repo is None
+                 or (kind == "landing" and fields["pr"] is None)):
+        role = kind = None
     return {"path": REGISTER_PATH, "line_no": line_no, "raw": text, "kind": fields["kind"],
             "slot_role": role, "slot_kind": kind, "lane": fields["lane"], "repo": repo,
             "repo_key": register_repo_key(repo, table) if repo else None,
@@ -6173,6 +6194,82 @@ def _register_slot_row(line_no: int, text: str, table: tuple,
             "utc_ts": _register_utc_ts(fields["utc"]), "session": fields["session"],
             "for_lane": fields.get("for_lane"),
             "workstation": register_line_workstation(text, workstation)}
+
+
+def _register_landed_walks(fields: dict | None) -> bool:
+    """Whether a line's row needs `register_slot_rows`' walk: a `LANDED` that
+    names its lane and its PR and no repository (lane 3's ruling, #165
+    6771569269)."""
+    return (fields is not None and fields["kind"] == "LANDED" and fields["repo"] is None
+            and fields["lane"] is not None and fields["pr"] is not None)
+
+
+def _register_landing_closes(close: dict, take: dict) -> bool:
+    """Whether a landing close ends a take of its lane and PR, as `main_slots`
+    matches them (Y:1291-1295): one repository, by `repo_key` or by any shared
+    spelling. A take that names no repository has no key, so no close ends it
+    this way."""
+    if take["repo_key"] is None:
+        return False
+    return (close["repo_key"] == take["repo_key"]
+            or bool(set(close["repo_spellings"] or ()) & set(take["repo_spellings"] or ())))
+
+
+def register_slot_rows(lines: list[str], table: tuple,
+                       workstation: str | None) -> dict[int, dict]:
+    """THE WALK (lane 3's ruling, #165 6771569269; ERR-53): the
+    `register_lines` row of every line of `lines` that is of a kind and is not
+    a row, keyed by its line number, in line order. `lines` are
+    `lanes/LANES.md`'s from its first. Each row is `_register_slot_row`'s,
+    with `workstation` its fallback, and a `LANDED` that names its lane and PR
+    and no repository is paired as `RULE6_AWK` pairs it (Y:3383;
+    `lanes-edit.sh:6983-6989` at code `12ff809`, R24).
+
+    - **Its pair** is the newest `LANDING` before it of its lane, as written,
+      and its PR, still open, in any repository. A take is open until a
+      landing close of its lane and PR matches it as `main_slots` matches one
+      (Y:1291-1295): a `LANDED` naming the repository, a `LANDING EXPIRED`
+      for its lane, or a `LANDED` this walk paired before, each by `repo_key`
+      or a shared spelling, with the lanes compared in lower case.
+    - **A `LANDING` naming no repository** counts in the walk, though it
+      stores no slot. A `LANDED` that pairs one closes every such `LANDING`
+      of its lane, as written, and PR, which `RULE6_AWK` keys as one; nothing
+      else closes them.
+    - **The `LANDED`** takes its pair's `repo_key` and `repo_spellings`, and
+      the close slot that `LANDED` holds; its `repo` stays NULL. Where its
+      pair names no repository, or none is open, it stores no slot role.
+
+    The import runs it once over the file; a write runs it, up to the line,
+    only for such a `LANDED` (`register_commit_entry`)."""
+    rows: dict = {}
+    takes: dict = {}        # (lane in lower case, PR) -> its LANDINGs still open, in line order
+    for line_no, text in enumerate(lines, 1):
+        if row_name(text) is not None:
+            continue
+        row = _register_slot_row(line_no, text, table, workstation)
+        if row is None:
+            continue
+        rows[line_no] = row
+        if row["kind"] == "LANDING":
+            if row["lane"] is not None and row["pr"] is not None:
+                takes.setdefault((row["lane"].lower(), row["pr"]), []).append(row)
+            continue
+        if _register_landed_walks(row):
+            group = takes.get((row["lane"].lower(), row["pr"]), [])
+            pair = next((t for t in reversed(group) if t["lane"] == row["lane"]), None)
+            if pair is None:
+                continue
+            if pair["repo_key"] is None:      # RULE6_AWK's one key for them all
+                group[:] = [t for t in group
+                            if t["repo_key"] is not None or t["lane"] != row["lane"]]
+                continue
+            row.update(slot_role="close", slot_kind="landing", repo_key=pair["repo_key"],
+                       repo_spellings=list(pair["repo_spellings"] or []) or None)
+        if row["slot_role"] == "close" and row["slot_kind"] == "landing":
+            group = takes.get(((row["for_lane"] or row["lane"]).lower(), row["pr"]))
+            if group:
+                group[:] = [t for t in group if not _register_landing_closes(row, t)]
+    return rows
 
 
 def _register_lane_aliases(text: str | None) -> dict:
@@ -6293,10 +6390,11 @@ def register_commit_entry(att: dict, ident: dict, view: RegisterView,
     - `files`, one row per path in `changes.tsv`;
     - `log_lines` for every log line written, a renamed log's included, and
       for no other; `register_lines` for every `lanes/LANES.md` line written
-      that is a register kind; `lanes` for every lane whose row line was
-      written, or whose row or derived fields moved; `object_holds` for every
-      lane and object that a line written, replaced or removed names, or that
-      any line of a renamed log names.
+      that is a register kind, a `LANDED` naming its lane and PR and no
+      repository paired by `register_slot_rows`' walk; `lanes` for every
+      lane whose row line was written, or whose row or derived fields
+      moved; `object_holds` for every lane and object that a line written,
+      replaced or removed names, or that any line of a renamed log names.
 
     THE ENTRY CARRIES NO DELETES, AND NOTHING RESTS ON THE ORDER ITS ROWS ARE
     SENT IN (lane 3's ruling (c), #165 6755386771; ERR-48). `commit_write`'s
@@ -6386,14 +6484,23 @@ def register_commit_entry(att: dict, ident: dict, view: RegisterView,
                 holds[(row["object"], _register_lower(file_lane(path)))] = None
 
     # register_lines: each lanes/LANES.md line written that the one classifier
-    # reads as a kind (FR-030; D18).
+    # reads as a kind (FR-030; D18). A LANDED written with its lane and PR and
+    # no repository takes its row from the walk over the file after the write,
+    # up to the last such line, and only then (lane 3's ruling, #165
+    # 6771569269; ERR-53): every other line's row is its own.
     slot_rows: list = []
     if REGISTER_PATH in written:
         lines = register_doc_lines(view.after(REGISTER_PATH) or "")[0]
-        for line_no in sorted(written[REGISTER_PATH]):
+        wrote = sorted(written[REGISTER_PATH])
+        walks = [line_no for line_no in wrote if row_name(lines[line_no - 1]) is None
+                 and _register_landed_walks(parse_register_line(lines[line_no - 1]))]
+        walked = (register_slot_rows(lines[:walks[-1]], table, ident["workstation"])
+                  if walks else {})
+        for line_no in wrote:
             text = lines[line_no - 1]
             if row_name(text) is None:
-                row = _register_slot_row(line_no, text, table, ident["workstation"])
+                row = (walked[line_no] if line_no in walked else
+                       _register_slot_row(line_no, text, table, ident["workstation"]))
                 if row is not None:
                     slot_rows.append(row)
 
@@ -6703,20 +6810,21 @@ def _register_commit_lr004(store: PostgresStore, att: dict, ident: dict, entry: 
     if differ:
         shown = sorted(differ, key=lambda p: p.encode("utf-8"))
         note(f"LR004 on write {write}: {', '.join(shown)} at seq {n}, re-read from SQL, "
-             f"differs from the scratch tree's, which the image cache gave, so the verb ran "
-             f"on a wrong base. Its images are not sent again; nothing was written")
+             f"{'differs' if len(shown) == 1 else 'differ'} from the scratch tree's, which "
+             f"the image cache gave, so the verb ran on a wrong base. Its images are not sent "
+             f"again; nothing was written")
         return EXIT_UNAVAILABLE
     edited = sorted({e["path"] for e in entry["edits"]}
                     | {e["to_path"] for e in entry["edits"] if e["to_path"]},
                     key=lambda p: p.encode("utf-8"))
     count, npaths = len(entry["edits"]), len(paths)
+    what = (f"its {count} edit{'' if count == 1 else 's'} of {', '.join(edited)} "
+            f"{'does' if count == 1 else 'do'} not apply, or its proof differs" if count
+            else "it carries no edit, so another of its checks failed")
     note(f"LR004 on write {write}: every file its entry read from tree/ ({npaths} "
          f"path{'' if npaths == 1 else 's'}) equals SQL's at seq {n}, so the image cache was "
-         f"right and the entry itself was refused - its {count} "
-         f"edit{'' if count == 1 else 's'} of {', '.join(edited)} "
-         f"{'does' if count == 1 else 'do'} not apply, or its proof differs: "
-         f"{first.message}. A resend would be the same request, so none is made; nothing "
-         f"was written")
+         f"right and the entry itself was refused - {what}: {first.message}. A resend would "
+         f"be the same request, so none is made; nothing was written")
     return EXIT_UNAVAILABLE
 
 
