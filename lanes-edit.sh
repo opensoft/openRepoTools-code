@@ -594,7 +594,8 @@
 #      at `commit_publish`'s push, the branch-wide push: a commit it would
 #      send that changes a path outside `handoffs/`, or, other than the
 #      write's own commit, one under it that is not an added or modified
-#      regular file, or is bytecode; a path with a `.`, `..` or `.git`
+#      regular file, or is bytecode; in the write's own commit, bytecode or a
+#      tool cache other than as a deletion; a path with a `.`, `..` or `.git`
 #      component; a merge or
 #      root commit among them, a range it cannot read, or no origin branch,
 #      refused before any push is made, the write's commit kept
@@ -3492,9 +3493,13 @@ CH_EOF
 # published at all is put to lane openRepoTools-3 (REV420b S2), and nothing
 # more is built for it here. Under `handoffs/`, THE WRITE'S OWN COMMIT (`$1`)
 # passes any change, a deletion, a type change, a symlink or a gitlink
-# included, since T422's move deletes there; EVERY OTHER COMMIT keeps the
-# fence's rule, each path an added or modified regular file that is not
-# bytecode or a tool cache (REV420 N1; REV420b N2). The read is `-z`, and a
+# included, since T422's move deletes there; but a bytecode or tool-cache
+# path there passes only as a deletion, #162's cleanup, which is all
+# `bytecode_in_pathspec` lets through, so this backstop never passes what #162
+# refuses (lane openRepoTools-3, #165 6778890211, T420 new 1). EVERY OTHER
+# COMMIT keeps the fence's rule, each path an added or modified regular file
+# that is not bytecode or a tool cache (REV420 N1; REV420b N2). The read is
+# `-z`, and a
 # `.`, `..` or `.git` path component refuses in any commit (`cp_primary_read`;
 # REV420 N2, N5). A merge or root commit among them, a read that fails, a
 # commit `diff-tree` skips, or no origin branch to read
@@ -3532,12 +3537,12 @@ cp_primary_push_check() {   # <this write's commit> <its subject>
   [ "$pb_rc" = 0 ] ||
     die "refusing to push on primary (feature 007): git could not read, or this helper could not classify, the commits on $pb_br that refs/remotes/origin/$LANES_BRANCH lacks, so whether each changes only paths under handoffs/ is unknown (D10; FR-026; R16 (d)). Nothing was pushed; this write's commit is local and kept on HEAD: $1 $2" 2
   if [ -n "$pb_odd$pb_bad" ]; then
-    note "of the commits this push would send to origin/$LANES_BRANCH, these are not changes it sends on primary (a merge or root commit; a path outside handoffs/, lanes/repos.tsv and lanes/log/README.md included; a path with a \`.\`, \`..\` or \`.git\` component; or, in a commit other than this write's own, a change under handoffs/ that is not an added or modified regular file, or is bytecode or a tool cache):"
+    note "of the commits this push would send to origin/$LANES_BRANCH, these are not changes it sends on primary (a merge or root commit; a path outside handoffs/, lanes/repos.tsv and lanes/log/README.md included; a path with a \`.\`, \`..\` or \`.git\` component; or, in a commit other than this write's own, a change under handoffs/ that is not an added or modified regular file, or is bytecode or a tool cache; or, in this write's own commit, bytecode or a tool cache other than as a deletion):"
     [ -z "$pb_odd" ] || printf '%s\n' "$pb_odd" >&2
     [ -z "$pb_bad" ] || printf '%s\n' "$pb_bad" >&2
     note "look at them: git -C $LANES_REPO log --stat refs/remotes/origin/$LANES_BRANCH..$pb_br"
     if [ -n "$pb_own" ]; then
-      note "this write's own commit changes these under handoffs/ other than as an added or modified regular file (a move's deletion, a type change, a symlink or a gitlink), which only this push sends: \`commit\`'s publish act refuses such a change with 2 in any queue, so it cannot send this one. Archive the queue and drop it instead:"
+      note "this write's own commit changes these under handoffs/ other than as an added or modified regular file (a deletion, a move's or bytecode's, a type change, a symlink or a gitlink), which only this push sends: \`commit\`'s publish act refuses such a change with 2 in any queue, so it cannot send this one. Archive the queue and drop it instead:"
       printf '%s\n' "$pb_own" >&2
       pb_until="archived and dropped"
     else
@@ -3545,7 +3550,7 @@ cp_primary_push_check() {   # <this write's commit> <its subject>
       pb_until="published or archived and dropped"
     fi
     cp_recovery_steps
-    die "refusing to push on primary (feature 007): this push sends only commits whose every path is under handoffs/, an added or modified regular file and no bytecode outside this write's own commit, and never lanes/repos.tsv or lanes/log/README.md, which \`commit\`'s publish act sends (D10's branch-wide push; spec:169; spec:183–185; FR-026; R16 (d); lane openRepoTools-3, #165 6770820384). Nothing was pushed; this write's commit is local and kept on HEAD, and every write that makes a git commit from this checkout refuses over it (S3's unpushed row) until it is $pb_until, as above: $1 $2" 2
+    die "refusing to push on primary (feature 007): this push sends only commits whose every path is under handoffs/, an added or modified regular file and no bytecode outside this write's own commit, and in it bytecode or a tool cache only as a deletion, #162's cleanup, and never lanes/repos.tsv or lanes/log/README.md, which \`commit\`'s publish act sends (D10's branch-wide push; spec:169; spec:183–185; FR-026; R16 (d); lane openRepoTools-3, #165 6770820384). Nothing was pushed; this write's commit is local and kept on HEAD, and every write that makes a git commit from this checkout refuses over it (S3's unpushed row) until it is $pb_until, as above: $1 $2" 2
   fi
   CP_PRIMARY_TIP="$pb_tip"
 }
@@ -3590,7 +3595,9 @@ cp_primary_push_check() {   # <this write's commit> <its subject>
 #     holding either beside any other path, every change that would pass is
 #     `mix`, and the publish act refuses it with 2.
 # THE BACKSTOP (`push`): a path under `handoffs/` passes, as any change in the
-# write's own commit (`$3`) and as an added or modified regular file that is
+# write's own commit (`$3`) but bytecode or a tool cache, which passes there
+# only as a deletion, #162's cleanup (lane openRepoTools-3, #165 6778890211,
+# T420 new 1), and as an added or modified regular file that is
 # not bytecode or a tool cache in every other, as in the fence (REV420b N2);
 # every other path, the two git files included, is `bad`. A change the
 # write's own commit alone may make, one under `handoffs/` that is not an
@@ -3625,7 +3632,8 @@ cp_primary_classify() {   # fence|push <how many commits> [<the write's own comm
         esac
         # Bytecode and tool caches (#194, #162), read before the role split so
         # the backstop holds a commit other than the write's own to the
-        # fence's test too (REV420b N2).
+        # fence's test too (REV420b N2), and the write's own to #162's: there
+        # such a path passes only as a deletion (T420 new 1).
         case "$cq_p" in *.pyc|*.pyo) cq_byte=1 ;; esac
         case "/$cq_p/" in
           */__pycache__/*|*/.pytest_cache/*|*/.mypy_cache/*|*/.ruff_cache/*|*/node_modules/*|*/.venv/*|*/venv/*|*/site-packages/*) cq_byte=1 ;;
@@ -3634,7 +3642,11 @@ cp_primary_classify() {   # fence|push <how many commits> [<the write's own comm
           case "$cq_p" in
             handoffs/*)
               if [ "$cq_c" = "$cq_own" ]; then
-                [ "$cq_am" = 1 ] || cq_k=own
+                if [ "$cq_byte" = 1 ] && [ "$cq_st" != D ]; then
+                  cq_k=bad
+                else
+                  [ "$cq_am" = 1 ] || cq_k=own
+                fi
               else
                 [ "$cq_am" = 1 ] && [ "$cq_byte" = 0 ] || cq_k=bad
               fi ;;
