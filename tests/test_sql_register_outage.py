@@ -132,10 +132,10 @@ fake = os.path.join(here, "register-fake-psql")
 os.execv(fake, [fake] + sys.argv[1:])
 '''
 
-#: The `git` wrapper: one line per call, its wall-clock start and its argv,
-#: each field ended by US (0x1f); then the real `git`.
+#: The `git` wrapper: one line per call, its wall-clock start, its working
+#: directory and its argv, each field ended by US (0x1f); then the real `git`.
 GIT_WRAPPER = r'''#!/bin/sh
-{ date +%s.%N | tr -d '\n'; printf '\037'; for a in "$@"; do printf '%s\037' "$a"; done; printf '\n'; } >> "$T215_GIT_LOG"
+{ date +%s.%N | tr -d '\n'; printf '\037%s\037' "$(pwd -P)"; for a in "$@"; do printf '%s\037' "$a"; done; printf '\n'; } >> "$T215_GIT_LOG"
 exec "$T215_REAL_GIT" "$@"
 '''
 
@@ -239,6 +239,17 @@ def _subcommand(args: list) -> str:
     return ""
 
 
+def _run_dir(cwd: str, args: list) -> str:
+    """The directory a `git` call runs in: its working directory, moved by
+    each `-C <dir>` ahead of the subcommand."""
+    here, i = cwd, 0
+    while i < len(args) and args[i].startswith("-"):
+        if args[i] == "-C" and i + 1 < len(args):
+            here = os.path.join(here, args[i + 1])
+        i += 2 if args[i] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace") else 1
+    return os.path.realpath(here)
+
+
 def _bounded(args: list) -> bool:
     """`args` is form C: `log --first-parent` limited to 200, with no
     `--grep`."""
@@ -309,6 +320,8 @@ class Estate:
         # THE WORKSPACE, as `test_lanes_index.py` names it (Amendment 9(a)):
         # `lanes-edit.sh workspace-root` answers with `path:`, the checkout
         # `outage declare` fetches in (lane 1's reading 1).
+        # The checkout is whatever `lanes-edit.sh workspace-root` answers, with
+        # `workspace.yaml` as its default (lane 1, #165 comment 6755305741, item 4).
         (home / ".agents").mkdir()
         (home / ".agents" / "workspace.yaml").write_text(
             f"repository: {self.origin}\npath: {self.wip}\n", encoding="utf-8")
@@ -426,11 +439,18 @@ class Estate:
         calls = []
         for line in self.git_log.read_text(encoding="utf-8", errors="replace").splitlines():
             fields = line.split("\x1f")
-            calls.append({"t": float(fields[0]), "args": [f for f in fields[1:] if f != ""]})
+            calls.append({"t": float(fields[0]), "cwd": fields[1],
+                          "args": [f for f in fields[2:] if f != ""]})
         return calls
 
     def mirror_calls(self) -> list:
-        return [c for c in self.git_calls() if any("origin/main" in a for a in c["args"])]
+        """Every `git` call run in the mirror checkout, `git -C <root>` or a
+        call whose working directory is it: T121's three are `fetch -q origin
+        <branch>`, `rev-parse --verify -q refs/remotes/origin/<branch>^{commit}`
+        and the paged `log` given the tip's sha (lane 1, #165 comment
+        6755305741, reading 1)."""
+        root = os.path.realpath(self.wip)
+        return [c for c in self.git_calls() if _run_dir(c["cwd"], c["args"]) == root]
 
     def log_calls(self) -> list:
         return [c for c in self.git_calls() if _subcommand(c["args"]) == "log"]
@@ -906,7 +926,7 @@ def test_the_guard_refuses_a_ref_behind_a_rollbacks_head(pg, tmp_path, request):
 def test_the_register_seq_lookup_is_timed_bounded_beside_the_unbounded_and_grep_forms(tmp_path):
     """M11 (section 5.1), recorded and never asserted: on a checkout of
     30,000 first-parent commits made by `git fast-import`, with a
-    commit-graph, the bounded lookup (form C) is timed beside the unbounded
+    commit-graph, the bounded lookup (form C, T121's own paged `log`) is timed beside the unbounded
     form and the `--grep` form, 30 warm runs and the first; the three find
     the same `Register-Seq`. The build time is recorded beside the figures.
     Then the bounded form is shown to be the one the guard runs."""
@@ -929,11 +949,31 @@ def test_the_register_seq_lookup_is_timed_bounded_beside_the_unbounded_and_grep_
     print(f"T215 M11: the checkout of {total} first-parent commits, with its commit-graph, "
           f"built in {built:.2f} s")
     fmt = "--format=%H%x00%(trailers:key=Register-Seq,valueonly)"
+    tip = estate.tip()
+
+    def log(*args: str) -> str:
+        return subprocess.run([git, "-C", str(estate.wip), "log", *args], check=True,
+                              env=estate.env, capture_output=True, text=True).stdout
+
+    def paged() -> str:
+        """T121's own lookup: `log --first-parent -n 200 --skip <s> <fmt> <tip
+        sha> --`, given the tip's sha and not the ref, a page at a time,
+        taking the first non-empty `Register-Seq` value. Returns the page that
+        holds it."""
+        skip = 0
+        while True:
+            out = log("--first-parent", "-n", str(PAGE), "--skip", str(skip), fmt, tip, "--")
+            if first_seq(out) or "\x00" not in out:
+                return out
+            skip += PAGE
+
+    # T121 never uses `--grep` (`lanes-index:2714`, lane 1, #165 comment
+    # 6755305741): the unbounded and `--grep` forms are comparisons only.
     forms = {
-        "bounded": ["log", "--first-parent", "-n", str(PAGE), fmt, "origin/main", "--"],
-        "unbounded": ["log", "--first-parent", fmt, "origin/main", "--"],
-        "grep": ["log", "--first-parent", "-n", "1", "--grep=^Register-Seq: ", fmt,
-                 "origin/main", "--"],
+        "bounded": paged,
+        "unbounded": lambda: log("--first-parent", fmt, "origin/main", "--"),
+        "grep": lambda: log("--first-parent", "-n", "1", "--grep=^Register-Seq: ", fmt,
+                            "origin/main", "--"),
     }
 
     def first_seq(out: str) -> str:
@@ -945,12 +985,11 @@ def test_the_register_seq_lookup_is_timed_bounded_beside_the_unbounded_and_grep_
                 return line.strip()
         return ""
 
-    for name, args in forms.items():
+    for name, form in forms.items():
         times, found = [], set()
         for _ in range(31):
             t = time.monotonic()
-            out = subprocess.run([git, "-C", str(estate.wip), *args], check=True, env=estate.env,
-                                 capture_output=True, text=True).stdout
+            out = form()
             times.append(time.monotonic() - t)
             found.add(first_seq(out))
         assert found == {str(m)}, f"M11 {name}: found {found}, not {m}"
