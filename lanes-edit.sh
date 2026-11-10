@@ -1606,6 +1606,23 @@ reg_scratch_take() {
   return 0
 }
 reg_scratch_take
+# FEATURE 007, T422 — `rename-lane`'s HANDOFF ACT ON PRIMARY (Q13(a); R18).
+# After COMMIT a primary run's parent runs this file again, OUTSIDE the flag,
+# in the lane's checkout `<c>`, with `LANES__RL_MOVE` naming the `rl-move`
+# file its child wrote and `LANES__RL_MOVE_PID` its own pid
+# (`pw_rl_move`). HONOURED ONLY where that pid is `$PPID`, so a process this
+# one starts never takes it, and never under the flag. They stay exported:
+# S4's replay `exec` keeps this pid and its parent, so the replay is the act
+# again. Honoured, the mode is the parent's answer, `primary`, by assignment,
+# and the dispatcher asks none (`REG_ASK`); any other value is unset.
+RL_MOVE=""
+if [ -z "$REG_SCRATCH" ] && [ -n "${LANES__RL_MOVE:-}" ] && [ -n "${LANES__RL_MOVE_PID:-}" ] &&
+   [ "$LANES__RL_MOVE_PID" = "$PPID" ]; then
+  RL_MOVE="$LANES__RL_MOVE"
+  REG_MODE=primary
+else
+  unset LANES__RL_MOVE LANES__RL_MOVE_PID
+fi
 # THE ROUTING IS OPT-IN UNTIL SLICE 1B (the review of opensoft/openRepoTools#282,
 # MUST 2). Before slice 1b a lane checkout was only as fresh as its own last
 # write, and the old push loop rebased only after a rejected push, so a
@@ -1989,6 +2006,28 @@ RL_ACTIVE=0; RL_SNAP=""; RL_HEAD_BEFORE=""
 RL_LOG_OLD=""; RL_LOG_NEW=""; RL_H_OLD=""; RL_H_NEW=""
 RL_ALIAS=""; RL_ALIAS_EXISTED=0; RL_REG=""
 RL_PATHS_FOR_UNDO=()
+# FEATURE 007, T422 — THE HANDOFF ACT'S UNDO (`rl_move_act`), armed from its
+# move to its commit, the rename's own rule in small: a commit that exists is
+# not undone; otherwise the handoff is put back where and as it was, from the
+# copy taken before the move, and both paths are reset in the index. Assigned
+# here, before the trap, so nothing inherited arms it.
+RL_MA_ARMED=0; RL_MA_HEAD=""; RL_MA_FROM=""; RL_MA_TO=""; RL_MA_PATHS=()
+rl_move_undo() {
+  [ "$RL_MA_ARMED" = 1 ] || return 0
+  RL_MA_ARMED=0
+  rmu_head="$(git -C "$LANES_REPO" rev-parse -q --verify HEAD 2>/dev/null || :)"
+  if [ -n "$RL_MA_HEAD" ] && [ -n "$rmu_head" ] && [ "$rmu_head" != "$RL_MA_HEAD" ]; then
+    note "the handoff's move and stamp are COMMITTED as $rmu_head and are not rolled back; what follows is about getting that commit to origin."
+    return 0
+  fi
+  if [ -n "$RL_MA_FROM" ] && [ "$RL_MA_FROM" != "$RL_MA_TO" ] && [ -f "$RL_MA_TO" ]; then rm -f -- "$RL_MA_TO"; fi
+  if [ -n "$RL_SNAP" ] && [ -f "$RL_SNAP/handoff" ]; then cat -- "$RL_SNAP/handoff" > "${RL_MA_FROM:-$RL_MA_TO}"; fi
+  if [ "$NO_GIT" != 1 ] && [ "${#RL_MA_PATHS[@]}" -gt 0 ]; then
+    git -C "$LANES_REPO" reset -q HEAD -- "${RL_MA_PATHS[@]}" 2>/dev/null || :
+  fi
+  note "the handoff's move and stamp were rolled back: ${RL_MA_FROM:-$RL_MA_TO} is as it was, and nothing was committed."
+  return 0
+}
 rename_undo() {
   [ "$RL_ACTIVE" = 1 ] || return 0
   RL_ACTIVE=0
@@ -2072,6 +2111,7 @@ cleanup() {
   [ -z "${pbh_tmp:-}" ] || rm -f -- "$pbh_tmp"
   [ -z "${rl_htmp:-}" ] || rm -f -- "$rl_htmp"   # rename-lane's stamp before its replace (#158)
   rename_undo
+  rl_move_undo                                     # feature 007, T422: the handoff act's
   sidecar_release                                  # Amendment 23: released before the
   create_heartbeat_stop                            # checkout lock, the reverse of its order
   [ -z "$CREATE_LOCK" ] || mutex_release "$CREATE_LOCK"
@@ -2106,7 +2146,7 @@ cleanup() {
 cleanup_for_exec() {
   [ -z "${pbh_tmp:-}" ] || rm -f -- "$pbh_tmp"
   [ -z "${rl_htmp:-}" ] || rm -f -- "$rl_htmp"
-  pbh_tmp=""; rl_htmp=""; RL_ACTIVE=0; HANDOFF_OUT=""
+  pbh_tmp=""; rl_htmp=""; RL_ACTIVE=0; RL_MA_ARMED=0; HANDOFF_OUT=""
   sidecar_release
   create_heartbeat_stop
   [ -z "$CREATE_LOCK" ] || mutex_release "$CREATE_LOCK"
@@ -6816,6 +6856,7 @@ pw_tail_child() {   # <seq> <pid> <attempt dir>
   WR_TAIL="done $1 $tc_rc $(wr_host_utc)"
   wr_record_write || :
   pw_tail_close "$1" "$WR_TAIL"
+  [ "$WR_VERB" != rename-lane ] || pw_rl_move "$1" "$3"   # T422: the handoff's move, after COMMIT (R18)
   exit "$tc_rc"
 }
 
@@ -19241,6 +19282,197 @@ rl_stamp_publish() {   # <the handoff>
   return 0
 }
 
+# THE CHILD'S STEPS AFTER ITS WRITE RUN ONLY AFTER `committed` (FR-024; F14,
+# Y:5153; Y:5011–5012). In an attempt's child the arm's `commit_publish` waits
+# at the seam (T414) and returns 0 on `committed <s>`, with `REGISTER_SEQ` set.
+# `LANES_NO_GIT=1` returns 0 above the seam with nothing sent, and the seam's
+# "nothing staged" would too, which a rename never meets; either way the
+# lifecycle directory's move, the comments and the handoff's move would speak
+# for a rename the register does not hold. So under the flag, with no seq, the
+# child stops here: 2, before `ready`, so its parent makes no commit call
+# (Y:5016). Off the flag `REG_SCRATCH` is empty and this returns at once. The
+# same rule as `claim`'s and `request-handoff`'s (T421, T423).
+rl_after_committed() {
+  [ -z "$REG_SCRATCH" ] || [ -n "$REGISTER_SEQ" ] ||
+    die "refusing to run rename-lane's steps after its write in an attempt's child under LANES_REGISTER_SCRATCH: the write took no \`committed <seq>\` from the seam (LANES_NO_GIT=1 stops it before the seam), so moving the lane's lifecycle directory, posting its comments and moving its handoff would act for a rename the register does not hold. An internal error of the write path. Nothing was sent." 2
+}
+
+# THE MOVE, HANDED TO THE PARENT (R18): `<attempt dir>/rl-move`, written after
+# `committed` by the child that took it, a kept one or the replay's (T418),
+# one `key=value` a line: `checkout` (`<c>`), `from` (the handoff's path in
+# it, empty where it is stamped where it is), `to`, `stamp` (Rule 3's line,
+# on the snapshot's clock), `old`, `new` and `seq`. Nothing where the row
+# names no handoff, or `<c>` holds none. Through a temporary file and `mv`, so
+# the parent reads it whole or not at all; one that cannot be written leaves
+# the move owed, and says so with the hand steps.
+rl_move_write() {
+  [ -n "$REG_SCRATCH" ] && [ -n "$RL_MOVE_TO" ] || return 0
+  if { printf 'checkout=%s\nfrom=%s\nto=%s\nstamp=%s\nold=%s\nnew=%s\nseq=%s\n' \
+         "$rl_hrepo" "$RL_MOVE_FROM" "$RL_MOVE_TO" "$RL_MOVE_STAMP" "$rl_old" "$rl_new" "$REGISTER_SEQ" \
+         > "$REG_SCRATCH/rl-move.tmp" && mv -f -- "$REG_SCRATCH/rl-move.tmp" "$REG_SCRATCH/rl-move"; } 2>/dev/null; then
+    return 0
+  fi
+  note "WARNING: the rename is in the register at seq ${REGISTER_SEQ}, and its handoff's move could not be handed to the parent that makes it ($REG_SCRATCH/rl-move could not be written), so it is NOT made: the row's handoff column names ${RL_MOVE_TO}, which is not there yet. Make it by hand in $rl_hrepo: $(rl_move_hand_steps "$rl_hrepo" "$RL_MOVE_FROM" "$RL_MOVE_TO" "$RL_MOVE_STAMP")"
+  return 0
+}
+
+# THE HAND STEPS FOR A MOVE NOT MADE, one sentence: `git mv`, the stamp's line
+# under the header block, and a commit and push of the two paths.
+rl_move_hand_steps() {   # <checkout> <from, or empty> <to> <stamp>
+  if [ -n "$2" ]; then
+    printf 'git -C %s mv %s %s; put the line "%s" under its header block, at its first blank line; then commit those two paths there and push them (lanes-edit.sh commit, the publish act, sends the commit)' "$1" "$2" "$3" "$4"
+  else
+    printf 'put the line "%s" under the header block of %s, at its first blank line; then commit it there and push it (lanes-edit.sh commit, the publish act, sends the commit)' "$4" "$3"
+  fi
+}
+
+# THE LIFECYCLE DIRECTORY'S MOVE, UNDER THE WORKSTATION'S SIDECAR LOCK ON
+# PRIMARY (R19; review m2). `lane_state_rename` takes no lock of its own: off
+# the flag it runs inside `rename-lane`'s held lock, as it always has; in an
+# attempt's child that lock is the scratch tree's, which serialises nothing,
+# so it runs under `sidecar_try`, the lock the parent names in `<dir>/lock`,
+# and the lock goes at once after. A lock not taken in 20 s, as
+# `lane_state_follow` waits, leaves the directory where it is, said.
+rl_state_rename() {   # <the old name's control root> <new lane>
+  if [ -z "$REG_SCRATCH" ]; then lane_state_rename "$1" "$2"; return 0; fi
+  [ -n "$1" ] && { [ -e "$1" ] || [ -L "$1" ]; } || return 0
+  if sidecar_try 20; then
+    lane_state_rename "$1" "$2"
+    sidecar_release
+    return 0
+  fi
+  note "the lane lifecycle snapshot and inventory were NOT moved from $1 to ${1%/*}/$2 (the rename itself has landed): the workstation's sidecar lock, which this move takes on primary, could not be taken in 20 s (R19). Move it by hand once that lock is free; until then \`lanes-edit.sh lane-reconcile $2\` reads no snapshot for this lane."
+  return 0
+}
+
+# THE PARENT'S MOVE AND STAMP, AFTER `committed` (R18; Y:3444–3451, Y:5092),
+# from `pw_tail_child` once the child's tail has run and its record is
+# closed: this file again, OUTSIDE the flag, in `<c>`, with `LANES_REPO`,
+# `LANES_DIR` and `LANES_FILE` at it and the act's two markers (file scope,
+# `RL_MOVE`), started from this shell so its `$PPID` is this process. Its own
+# words go to this run's stdout and stderr. It is a git commit, never a second
+# register write (F21, Y:5097). A move the child named for another checkout
+# than `PW_C`, or an act that fails, is said in one WARNING with the hand
+# steps, and the run keeps its code: the rename is committed either way, as
+# with its other steps after COMMIT (Y:5328), and the row's handoff column
+# names the file not yet moved (spec:372–376).
+pw_rl_move() {   # <seq> <the child's attempt dir>
+  local pm_f="$2/rl-move" pm_l="" pm_c="" pm_from="" pm_to="" pm_st="" pm_rc=0
+  [ -f "$pm_f" ] || return 0
+  while IFS= read -r pm_l || [ -n "$pm_l" ]; do
+    case "$pm_l" in
+      checkout=*) pm_c="${pm_l#checkout=}" ;;
+      from=*) pm_from="${pm_l#from=}" ;;
+      to=*) pm_to="${pm_l#to=}" ;;
+      stamp=*) pm_st="${pm_l#stamp=}" ;;
+    esac
+    pm_l=""
+  done < "$pm_f" 2>/dev/null
+  if [ -z "$pm_c" ] || [ "$pm_c" != "$PW_C" ]; then
+    note "WARNING: register write $WR_ID is in the register at seq ${1}; its handoff's move was named for the checkout ${pm_c:-<none>}, not lane ${PW_LANE}'s $PW_C, so it is NOT made: the row's handoff column names ${pm_to:-<unknown>}, which is not there yet. Make it by hand: $(rl_move_hand_steps "${pm_c:-$PW_C}" "$pm_from" "$pm_to" "$pm_st")."
+    return 0
+  fi
+  LANES_REPO="$PW_C" LANES_DIR="$PW_C/lanes" LANES_FILE="$PW_C/lanes/LANES.md" \
+    LANES__RL_MOVE="$pm_f" LANES__RL_MOVE_PID="$$" \
+    "${BASH:-bash}" "$RESOLVED" ${ORIG_ARGV[@]+"${ORIG_ARGV[@]}"} </dev/null || pm_rc=$?
+  [ "$pm_rc" != 0 ] || return 0
+  note "WARNING: register write $WR_ID is in the register at seq ${1}; its handoff's move and RENAMED stamp in $PW_C did not complete (exit ${pm_rc}, above), so the row's handoff column names ${pm_to}, which is not there yet. Make them by hand: $(rl_move_hand_steps "$PW_C" "$pm_from" "$pm_to" "$pm_st")."
+  return 0
+}
+
+# THE HANDOFF ACT ITSELF (R18; review M5): `rename-lane` as the parent ran it
+# again in `<c>`, outside the flag. Its input is the child's `rl-move`, read
+# whole and checked: two paths under `handoffs/`, with no `.` or `..` part and
+# no control character, `<c>` this process's own checkout, a stamp, two lane
+# names and a seq. Then it is `rename-lane`'s own commit, as Amendment 23
+# makes it: `<c>`'s lock, S3 (its fetch kept, R16 (b): D12 governs register
+# writes), the move and Rule 3's stamp by the shared helpers, and
+# `commit_publish` of the two paths, whose push carries only this commit
+# (S3's step 5 refuses a queue under it) and which T420's backstop lets
+# through, since both paths are under `handoffs/`, a D and an A under
+# `--no-renames`. A refused push replays the act by S4's `exec`. A handoff
+# already moved and stamped is 0 with nothing written. It exits.
+rl_move_act() {
+  local ma_l="" ma_c="" ma_from="" ma_to="" ma_st="" ma_old="" ma_new="" ma_seq="" ma_p="" ma_rc=0 \
+        ma_creal="" ma_real="" ma_hf="" ma_ht="" ma_msg="" ma_what=""
+  [ -f "$RL_MOVE" ] && [ -r "$RL_MOVE" ] ||
+    die "refusing rename-lane's handoff act: the move its parent named, $RL_MOVE, cannot be read, an internal error of the primary write path. Nothing was written." 2
+  while IFS= read -r ma_l || [ -n "$ma_l" ]; do
+    case "$ma_l" in
+      checkout=*) ma_c="${ma_l#checkout=}" ;;
+      from=*) ma_from="${ma_l#from=}" ;;
+      to=*) ma_to="${ma_l#to=}" ;;
+      stamp=*) ma_st="${ma_l#stamp=}" ;;
+      old=*) ma_old="${ma_l#old=}" ;;
+      new=*) ma_new="${ma_l#new=}" ;;
+      seq=*) ma_seq="${ma_l#seq=}" ;;
+    esac
+    ma_l=""
+  done < "$RL_MOVE"
+  ma_what="move lane ${ma_old:-<old>}'s handoff to lane ${ma_new:-<new>}'s name"
+  for ma_p in "$ma_to" ${ma_from:+"$ma_from"}; do
+    case "$ma_p" in handoffs/?*) : ;; *) ma_p="" ;; esac
+    case "/$ma_p/" in *"/../"*|*"/./"*|*"//"*) ma_p="" ;; esac
+    [ "${ma_p//[[:cntrl:]]/}" = "$ma_p" ] || ma_p=""
+    [ -n "$ma_p" ] ||
+      die "refusing to $ma_what: the move its parent named, $RL_MOVE, holds a path that is not a file under handoffs/ with no . or .. part and no control character, an internal error of the primary write path. Nothing was written." 2
+  done
+  case "$ma_st" in "RENAMED from "*) : ;; *) ma_st="" ;; esac
+  [ "${ma_st//[[:cntrl:]]/}" = "$ma_st" ] || ma_st=""
+  if [ -z "$ma_st" ] || ! wr_is_count "$ma_seq" ||
+     ! ( check_lane_name "$ma_old" && check_lane_name "$ma_new" ) 2>/dev/null; then
+    die "refusing to $ma_what: the move its parent named, $RL_MOVE, has no RENAMED stamp, no seq or no lane names, an internal error of the primary write path. Nothing was written." 2
+  fi
+  ma_real="$( CDPATH=''; cd -P -- "$LANES_REPO" 2>/dev/null && pwd -P )" || ma_real=""
+  ma_creal="$( CDPATH=''; cd -P -- "$ma_c" 2>/dev/null && pwd -P )" || ma_creal=""
+  [ -n "$ma_real" ] && [ "$ma_real" = "$ma_creal" ] ||
+    die "refusing to $ma_what in ${LANES_REPO:-<none>}: the move its parent named is for the checkout ${ma_c:-<none>}, an internal error of the primary write path. Nothing was written." 2
+  acquire_lock
+  checkout_sync "$ma_what" "$ma_new" write "$ma_to" ${ma_from:+"$ma_from"}
+  ma_ht="$LANES_REPO/$ma_to"; ma_hf=""
+  [ -z "$ma_from" ] || ma_hf="$LANES_REPO/$ma_from"
+  # DONE ALREADY: the handoff at its new path with its stamp, and nothing at the
+  # old one. An act's replay that finds origin holding them writes nothing.
+  if [ -f "$ma_ht" ] && [ ! -L "$ma_ht" ] && { [ -z "$ma_hf" ] || { [ ! -e "$ma_hf" ] && [ ! -L "$ma_hf" ]; }; } &&
+     grep -qxF -e "$ma_st" "$ma_ht" 2>/dev/null; then
+    note "the handoff is at $ma_to with its stamp already, so there is nothing to move or stamp: $ma_st"
+    release_lock
+    exit 0
+  fi
+  ma_p="${ma_hf:-$ma_ht}"
+  [ ! -L "$ma_p" ] ||
+    die "refusing to $ma_what in $LANES_REPO: ${ma_from:-$ma_to} is a SYMLINK, and Rule 3's stamp is never written through one (Amendment 16(d)). The rename is in the register at seq ${ma_seq}, and the row's handoff column names $ma_to. Nothing was written here." 2
+  [ -f "$ma_p" ] ||
+    die "refusing to $ma_what in $LANES_REPO: ${ma_from:-$ma_to} is not a regular file there now, at origin's tip, so there is nothing to move and stamp. The rename is in the register at seq ${ma_seq}, and the row's handoff column names $ma_to. Nothing was written here." 2
+  [ "$NO_GIT" = 1 ] || git -C "$LANES_REPO" ls-files --error-unmatch -- "${ma_from:-$ma_to}" >/dev/null 2>&1 ||
+    die "refusing to $ma_what in $LANES_REPO: ${ma_from:-$ma_to} is there and git does not track it, so its lines have never been committed by anyone, and this act would commit them under the rename's subject. Whoever wrote it commits it first. The rename is in the register at seq ${ma_seq}. Nothing was written here." 2
+  if [ -n "$ma_hf" ] && { [ -e "$ma_ht" ] || [ -L "$ma_ht" ]; }; then
+    die "refusing to $ma_what in $LANES_REPO: the handoff would move to $ma_to and something is already there, which is not this rename's to overwrite. Move it aside, then make the move and stamp by hand. The rename is in the register at seq ${ma_seq}. Nothing was written here." 2
+  fi
+  # THE COPY THAT UNDOES IT, then the move and the stamp, armed through the
+  # commit (`rl_move_undo`), as the rename's own undo is.
+  RL_SNAP="$(mktemp -d)" || die "no temporary directory could be made under ${TMPDIR:-/tmp}, and this act is not made without the copy that undoes it. Nothing was written." 1
+  cat -- "$ma_p" > "$RL_SNAP/handoff" ||
+    die "the handoff at $ma_p could not be READ, so it can be neither stamped nor rolled back. The rename is in the register at seq ${ma_seq}. Nothing was written here." 5
+  RL_MA_HEAD="$(git -C "$LANES_REPO" rev-parse -q --verify HEAD 2>/dev/null || :)"
+  RL_MA_FROM="$ma_hf"; RL_MA_TO="$ma_ht"; RL_MA_PATHS=("$ma_to")
+  [ -z "$ma_from" ] || RL_MA_PATHS+=("$ma_from")
+  RL_MA_ARMED=1
+  if [ -n "$ma_hf" ]; then
+    mv -- "$ma_hf" "$ma_ht" || die "could not rename $ma_hf to $ma_ht." 5
+    note "$ma_from → $ma_to"
+  fi
+  rl_stamp_build "$ma_ht" "$ma_st"
+  rl_stamp_publish "$ma_ht"
+  note "handoff stamped at line $((rl_hat + 1)) of $ma_to: $ma_st"
+  ma_msg="handoff($ma_new@$WS): RENAMED from $ma_old, moved and stamped after register seq $ma_seq (Amendment 16(d), Q13(a))"
+  [ -n "$ma_from" ] || ma_msg="handoff($ma_new@$WS): RENAMED from $ma_old, stamped after register seq $ma_seq (Amendment 16(d), Q13(a))"
+  commit_publish "$ma_msg" "$ma_to" ${ma_from:+"$ma_from"} || ma_rc=$?
+  RL_MA_ARMED=0
+  release_lock
+  exit "$ma_rc"
+}
+
 # ------------------------------------------------- the worktree inventory
 #
 # A TREE ID IS DERIVED FROM ITS PATH AND FROM NOTHING ELSE, so that a branch
@@ -21523,6 +21755,11 @@ esac
 # marker check, and answers the files store though `REG_MODE` is `primary`
 # (T504; Q-L5-1; Y:5041).
 [ -z "$REG_SCRATCH" ] || REG_ASK=0
+# FEATURE 007, T422 — NOR DOES `rename-lane`'s HANDOFF ACT (R18): its parent
+# asked, the answer was `primary` (`RL_MOVE`, above), and the act is a git
+# commit in the lane's checkout, which is no register write, so it never meets
+# the attempt loop.
+[ -z "$RL_MOVE" ] || REG_ASK=0
 
 # `guard` JOINS THAT EXEMPTION AND REFUSES FOR ITSELF (Amendment 12(d)). It is
 # a hook too, and a blocking one: `die … 1` here would print the workspace
@@ -22072,6 +22309,10 @@ Nothing was written." 2
     done
     [ -n "$rl_old" ] && [ -n "$rl_new" ] \
       || die "usage: rename-lane <old> <new> [\"<why>\"] [--verbatim] [--no-github]" 2
+    # FEATURE 007, T422 — THE HANDOFF ACT (R18): this process is the one a
+    # primary run's parent started after COMMIT, outside the flag, to move and
+    # stamp the handoff in the lane's checkout. It never returns.
+    [ -z "$RL_MOVE" ] || rl_move_act
     check_lane_name "$rl_old"
     check_lane_name "$rl_new"
     if managed_projection_hint "$rl_new"; then
@@ -22765,9 +23006,18 @@ EOF
     # `commit_publish` RETURNED, so either it committed or it had nothing staged;
     # every other outcome exits from inside it and is the trap's business.
     RL_ACTIVE=0
+    # FEATURE 007, T422 — ON PRIMARY, WHAT FOLLOWS RUNS ONLY AFTER `committed`
+    # (FR-024; Y:5011), and the handoff's move goes to the parent (R18): an
+    # attempt's child that returned here with no seq refuses 2, nothing sent
+    # (`rl_after_committed`); one with its seq writes the move for its parent
+    # (`rl_move_write`), and moves the lifecycle directory under the
+    # workstation's sidecar lock, since its own lock is the scratch tree's,
+    # which `release_lock` then releases (R19; review m2).
+    [ "$rl_rc" != 0 ] || rl_after_committed
     state_events_flush
     lane_alias_flush
-    [ "$rl_rc" != 0 ] || lane_state_rename "$rl_lsr_old" "$rl_new"
+    [ "$rl_rc" != 0 ] || rl_move_write
+    [ "$rl_rc" != 0 ] || rl_state_rename "$rl_lsr_old" "$rl_new"
     release_lock
     [ "$rl_rc" = 0 ] || exit "$rl_rc"
 
