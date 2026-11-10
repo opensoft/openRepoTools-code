@@ -732,7 +732,13 @@ class ArmWorld(Sandbox):
         self.arm_log = root / "arm.log"
         self.codex_log = root / "codex.log"
         _write(self.bin / "arm-edit", ARM_EDIT)
-        _write(self.fakebin / "codex", f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "{self.codex_log}"\n')
+        _write(self.fakebin / "codex", f'#!/usr/bin/env bash\nprintf "codex %s\\n" "$*" >> "{self.codex_log}"\n')
+        # `$PROJECTS_ROOT/repoA`, repoA's default directory: where a noted
+        # `lane-dir` failure carries a resume on to, so the launch goes on.
+        self.default_dir = self.home / "projects" / "repoA"
+        self.git("init", "-q", "-b", "main", str(self.default_dir))
+        self.git("-C", str(self.default_dir), "remote", "add", "origin",
+                 "https://github.com/opensoft/repoA.git")
         rows = [
             f"| `repoA-1` | harness `{UUID_A1}` → `{UUID_A1B}` | Eagle / test / brett "
             f"| 2026-10-01T00:00Z | none | handoffs/repoA-1.md "
