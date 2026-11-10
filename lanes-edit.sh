@@ -593,7 +593,11 @@
 #      Y:5140), `append-line --landing-expired`, with nothing written: before
 #      the lock, any mode but primary, a newline in any argument, the form's
 #      usage, Brett's word, its place or its UTC missing, a `--word-utc` that
-#      is not a UTC, and `LANES_LANE` or `LANES_SESSION` unset or malformed.
+#      is not a UTC, and `LANES_LANE` or `LANES_SESSION` unset or malformed;
+#      on each attempt's snapshot, no open LANDING of the holder for that PR
+#      and repository, or one with no readable UTC or 30 minutes old or less;
+#      and the commit's LR005 `expired-none`, `expired-closed` or
+#      `expired-young`, relayed, and told apart by its token alone.
 #  64  usage — a caller's bad arguments to one of the reads Amendment 11 added
 #      (`window-lane`, `lane-dir`, `lane-profile`, `last-session`, `forks`,
 #      `duplicate-holder` (issue #39), `workstation`, `fetch-age`, `lanes`,
@@ -3037,6 +3041,43 @@ EOF
   le_line="LANDING EXPIRED — lane ${lane_tag}, session ${LANES_SESSION}@${WS}, $(utc_now), for lane ${LE_L}: PR #${LE_P} into ${LE_R} main, its LANDING of ${LE_U}, ${LE_M} min past Rule 6's 30; on Brett's word (${LE_WHERE}, ${LE_WUTC}): \"${LE_WORD}\""
   append_text_line "$le_line"
   commit_publish "LANES(${lane_tag}@$WS): append line — ${le_line:0:72}"
+  # ---- AFTER THE SEAM (Y:5119): only then is the seq known, as `claim`'s
+  # `register seq <n>` is (Q19(A)), and output here streams live. The seam
+  # returns only on `committed <s>`, which sets `REGISTER_SEQ`; a return
+  # without one sent nothing.
+  [ -n "$REGISTER_SEQ" ] ||
+    die "append-line --landing-expired: the write's seam returned with no register seq, so its line was not sent: an internal error. Nothing was written." 2
+  printf "register seq %s: released lane %s's LANDING of %s (PR #%s into %s main), %s min past Rule 6's 30\n" \
+    "$REGISTER_SEQ" "$LE_L" "$LE_U" "$LE_P" "$LE_R" "$LE_M"
+}
+
+# THE COMMIT'S LR005 FOR THIS FORM, TOLD BY ITS TOKEN ALONE (Y:5119; Y:1464,
+# Y:1559; contract §2.6, "a caller that branches reads the token, never the
+# message"). On primary the register's own check (F13, lane 1's) judges the
+# line at the commit, and refuses it with LR005 and one of three tokens. The
+# parent's end relays the `ERROR:` and `DETAIL:` lines verbatim (T415,
+# `pw_decide`), and this adds which of F13's three conditions the register
+# found, read from the first `DETAIL:  ` line of the commit's stderr. Since
+# the form copied the LANDING's fields from the file at the snapshot, each is
+# also a finding for D18's agreement tests: the file and the database
+# disagree. It prints nothing for any other run or any other token, and the
+# code stays 2 whatever it prints.
+landing_expired_refusal_text() {   # <the commit's stderr file>
+  local lr_l="" lr_t=""
+  [ "$WR_VERB" = append-line ] && [ "${WR_ARGS[0]-}" = --landing-expired ] || return 0
+  [ -f "$1" ] && [ -r "$1" ] || return 0
+  while IFS= read -r lr_l || [ -n "$lr_l" ]; do
+    case "$lr_l" in 'DETAIL:  '*) lr_t="${lr_l#DETAIL:  }"; break ;; esac
+  done < "$1"
+  case "$lr_t" in
+    expired-none)
+      printf '%s' ": LR005 expired-none, the register found no open LANDING of that holder for that PR whose repo_key is the line's, though this form found one in the register's file at its snapshot and copied it: the LANDING is keyed another way, each writer by its own repos.tsv, or the file's pairing found a different newest take. That is a finding for D18's agreement tests" ;;
+    expired-closed)
+      printf '%s' ": LR005 expired-closed, the register counts a close of that LANDING, matched as main_slots matches one, that the file's pairing at the snapshot missed, such as a LANDED under an overlapping key. That is a finding for D18's agreement tests" ;;
+    expired-young)
+      printf '%s' ": LR005 expired-young, the register found that LANDING 30 minutes old or less by its clock, or could not read its UTC, though this form found it past Rule 6's 30 at the snapshot: the form and the commit dated different posts. That is a finding for D18's agreement tests" ;;
+  esac
+  return 0
 }
 
 # $2 is the file to append to, defaulting to the register. Amendment 7's
@@ -6739,7 +6780,8 @@ pw_decide() {
       wr_record_drop_call "$PW_DIR" || :
       PW_RELAY="$( { grep -E '^(ERROR|DETAIL):' -- "$PW_DIR/commit.err"; grep -E '^held-by=' -- "$PW_DIR/commit.out"; } 2>/dev/null || :)"
       if [ "$PW_RC" = 2 ]; then
-        pw_end 2 "the register refused this write at attempt ${PW_K}'s commit (\`lanes-index register commit\` exited 2, above). Nothing was written" "$PW_DIR"
+        # T425: `append-line --landing-expired`'s LR005, by its token alone.
+        pw_end 2 "the register refused this write at attempt ${PW_K}'s commit (\`lanes-index register commit\` exited 2, above)$(landing_expired_refusal_text "$PW_DIR/commit.err"). Nothing was written" "$PW_DIR"
       fi
       pw_end 69 "the register refused this write at attempt ${PW_K}'s commit (\`lanes-index register commit\` exited 69, above), a definitive refusal. Nothing was written. $(pw_rerun_line)" "$PW_DIR" ;;
     64)
