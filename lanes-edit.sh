@@ -3622,16 +3622,14 @@ EOF
 # the verb's edit and its `git add`, and hands the change set to its parent,
 # whose one `lanes-index register commit` call decides it (T415). In order:
 #
-#   1. Nothing staged is no change: 0 with no handshake, as files mode's no-op
+#   1. A second register write in one run exits 2 (Y:5097, F21): one run, one
+#      journal entry. `REGISTER_SEQ`, set on `committed`, is tested before the
+#      index is read, so any later reach, a no-op included, exits 2, whatever
+#      its edit left staged (lane openRepoTools-3, #165 6755641373, and
+#      6767463594 item 2).
+#   2. Nothing staged is no change: 0 with no handshake, as files mode's no-op
 #      (Y:5059). The index is compared with HEAD whole, so a staged path that
 #      no pathspec names is refused below, never taken for nothing.
-#   2. A second register write in one run exits 2 (Y:5097, F21): one run, one
-#      journal entry. The scratch tree is not committed after `committed`, so
-#      the first write stays staged, and any later reach, a no-op included,
-#      finds it there and exits 2 (lane openRepoTools-3, #165 6755641373).
-#      Only an edit that put every staged path back as HEAD has it would be
-#      nothing staged, and answer 0 at 1; no verb makes one on primary
-#      (Y:5095).
 #   3. Every staged path is one of this write's pathspecs or
 #      `LOG_RENAMED_FROM`, and in Q18(A)'s render set, or 2 naming it with
 #      nothing sent (Y:5060); and its status is `A`, `M` or `D`, or 2.
@@ -3731,16 +3729,17 @@ cp_seam() {
   # never made; so it exits 2, and nothing is ever pushed from a scratch tree.
   [ "$CP_PUBLISH_AHEAD" != 1 ] ||
     die "refusing \`commit\`'s publish act in an attempt's child under LANES_REGISTER_SCRATCH: on primary that act runs outside the attempt loop (ERR-06), so this is an internal error. Nothing was sent." 2
-  # ---- 1. NOTHING STAGED (Y:5059).
+  # ---- 1. ONE RUN, ONE ENTRY (Y:5097), before the index is read, so that no
+  # later reach answers "nothing staged".
+  [ -z "$REGISTER_SEQ" ] ||
+    die "a second register write in one run; the first committed at seq ${REGISTER_SEQ}; nothing more was sent." 2
+  # ---- 2. NOTHING STAGED (Y:5059).
   cs_raw="$(git -C "$LANES_REPO" -c "$CP_EXACT" -c core.quotepath=false diff --cached --no-renames --raw --no-abbrev HEAD)" ||
     die "git could not list what this write stages in the attempt's scratch tree, ${LANES_REPO}, under LANES_REGISTER_SCRATCH: an internal error. Nothing was sent." 2
   if [ -z "$cs_raw" ]; then
     note "nothing staged for ${CP_PATHS[*]} — no commit made"
     return 0
   fi
-  # ---- 2. ONE RUN, ONE ENTRY (Y:5097).
-  [ -z "$REGISTER_SEQ" ] ||
-    die "a second register write in one run; the first committed at seq ${REGISTER_SEQ}; nothing more was sent." 2
   # ---- 3. THE PATHS AND THEIR STATUS (Y:5060). `core.quotepath=false` leaves
   # a path as it is unless it holds a control character, a quote or a
   # backslash; git then quotes it, and the quoted form is in no render set.
