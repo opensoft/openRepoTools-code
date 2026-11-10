@@ -6970,7 +6970,7 @@ pw_lookup_3() {   # <the end's code>
 # Only the files a kept `call` line's directory keeps are read: its `files`
 # here, while this run's children wait at their seams (lane openRepoTools-3,
 # #165 6769061039, T415's question 5).
-PW_E_ROWS=""; PW_E_DIGEST=""; PW_E_WS=""; PW_E_UTC=""; PW_LEARNED=""
+PW_E_ROWS=""; PW_E_DIGEST=""; PW_E_WS=""; PW_E_WS_RAW=""; PW_E_UTC=""; PW_LEARNED=""
 
 # THE ENTRY'S CHANGE SET, from a register answer in a file: the `file=` rows
 # of a snapshot's `found=`, the commit's `already <s>` or the lookup's `found
@@ -6980,20 +6980,25 @@ PW_E_ROWS=""; PW_E_DIGEST=""; PW_E_WS=""; PW_E_UTC=""; PW_LEARNED=""
 # row's `workstation=<name>` (empty where NULL) and `utc=<epoch s>`, right
 # after the seq line (lane openRepoTools-3, #165 6770688147, T418 item 1;
 # contract draft 4.15's text, #165 6772120103, built by lane 1's T111 and
-# T114). They are read here by key, as §3.2 reads every key, into PW_E_WS and
-# PW_E_UTC: a name `lanes_binding_value_ok` refuses is empty, and so is a
-# `utc=` that is not whole seconds. §3.3's `already <s>` carries neither.
+# T114). They are read here by key, as §3.2 reads every key, into PW_E_WS_RAW,
+# PW_E_WS and PW_E_UTC: the value as the row has it (`PW_E_WS_RAW`, which is
+# only ever compared with this run's own `WS`, never printed); the same, empty
+# where `lanes_binding_value_ok` refuses it (`PW_E_WS`, the name that is
+# printed); and a `utc=` that is whole seconds, else empty (lane
+# openRepoTools-3, #165 6774499606, T418 item 5: REV418b NIT-4). §3.3's
+# `already <s>` carries neither.
 pw_entry_rows() {   # <answer file>
   local er_l=""
-  PW_E_ROWS=""; PW_E_DIGEST=""; PW_E_WS=""; PW_E_UTC=""
+  PW_E_ROWS=""; PW_E_DIGEST=""; PW_E_WS=""; PW_E_WS_RAW=""; PW_E_UTC=""
   while IFS= read -r er_l || [ -n "$er_l" ]; do
     case "$er_l" in
       file=*) PW_E_ROWS="${PW_E_ROWS}${er_l#file=}${WR_NL}" ;;
-      workstation=*) PW_E_WS="${er_l#workstation=}" ;;
+      workstation=*) PW_E_WS_RAW="${er_l#workstation=}" ;;
       utc=*) PW_E_UTC="${er_l#utc=}" ;;
     esac
     er_l=""
   done < "$1" 2>/dev/null
+  PW_E_WS="$PW_E_WS_RAW"
   lanes_binding_value_ok "$PW_E_WS" || PW_E_WS=""
   wr_is_count "$PW_E_UTC" || PW_E_UTC=""
   [ -n "$PW_E_ROWS" ] || return 0
@@ -7211,7 +7216,9 @@ pw_rec_here() {
 # 6770688147, T418 item 1). A record from another host or container counts as
 # none (Y:5344) and is left as it is, for a rerun there, which can take it over
 # and replay; only this run's claim goes, and the words gain one clause naming
-# that record's host and container (T418 item 6).
+# that record's host and container (T418 item 6). `<name>` is compared as the
+# row has it (`PW_E_WS_RAW`) and printed filtered (#165 6774499606, T418 item 5:
+# REV418b NIT-4).
 pw_no_record_end() {   # <seq>
   local nr_u="" nr_rec=""
   pw_abandon_all
@@ -7219,7 +7226,7 @@ pw_no_record_end() {   # <seq>
   if [ "$PW_REC_OURS" = 1 ] && [ -z "$WR_UPDATED_UTC" ] && [ -n "$WR_REC_HOST" ]; then
     nr_rec=". The pending record here was written on ${WR_REC_HOST}/${WR_REC_CONTAINER:-<unknown>}, not this host and container, so it counts as none, since tails are host-local, and is left in place for a rerun there"
   fi
-  if [ -n "$PW_E_WS" ] && [ "$PW_E_WS" = "$WS" ]; then
+  if [ -n "$PW_E_WS_RAW" ] && [ "$PW_E_WS_RAW" = "$WS" ]; then
     nr_u="$(wr_utc_of_epoch "$PW_E_UTC")"
     pw_tail_said "$1" "written from this host at ${nr_u:-<unknown>}. Its after-COMMIT steps may already have run here, in the run that wrote it; this run runs none of them. If they did not run, they are: $(pw_owed_words)${nr_rec}" ", "
   fi
