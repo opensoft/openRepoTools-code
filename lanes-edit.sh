@@ -639,6 +639,11 @@
 #      the write's rerun: by its id and generation where it has one, or the
 #      command as given, saying that nothing was sent, where its first
 #      snapshot minted none (open point 38).
+#      AND ON PRIMARY, `request-handoff`'S WAIT WHOSE LAST POLL COULD NOT READ
+#      THE REGISTER (T423; lane openRepoTools-3, #165 6770688147, T423 Q6):
+#      here the request IS written, in the register at the seq it names, and
+#      whether the lane is still bound is not known, so the wait does not end
+#      2's "still bound". Nothing on stdout. Files mode keeps its 2.
 #   3  PUSHED, NOT CONFIRMED: <sha> (Amendment 23 S4, its one cause in files
 #      mode). The write
 #      committed and pushed — or its push timed out, and a hung push often
@@ -23525,9 +23530,11 @@ EOF
   # still waits; and each poll reads the register at its head (`reg_flush`),
   # with no fetch. Its notes, the PLAN lines included, say the register, not
   # the pushed or published log (lane openRepoTools-3, #165 6770688147, T423
-  # Q5). A run that finds its request committed and runs none of this tail
-  # exits 2, not 0, naming the tail it did not run (T418's `pw_tail_said`),
-  # and the register's own 69, 75 and 3 are the primary branch's (T415, T417).
+  # Q5). A failed poll waits on, but a wait whose last poll failed ends 69,
+  # not 2's "still bound", which it cannot know (T423 Q6). A run that finds
+  # its request committed and runs none of this tail exits 2, not 0, naming
+  # the tail it did not run (T418's `pw_tail_said`), and the register's own
+  # 69, 75 and 3 are the primary branch's (T415, T417).
   request-handoff)
     lane="${1-}"; [ -n "$lane" ] || die "usage: request-handoff <lane> [--wait <s>] [--session <uuid>] [--force \"<why>\"] [--dry-run]" 64
     shift
@@ -23767,6 +23774,18 @@ EOF
     case "$rh_poll" in ''|*[!0-9]*|0) rh_poll=15 ;; esac
     rh_deadline=$(( $(date -u +%s) + rh_wait ))
     [ "$rh_wait" = 0 ] || note "waiting up to ${rh_wait}s for lane $lane to be released (polling $rh_plog every ${rh_poll}s) …"
+    # FEATURE 007, T423 — A FAILED POLL WAITS ON, AND ON PRIMARY A WAIT WHOSE
+    # LAST POLL FAILED ENDS 69 (lane openRepoTools-3, #165 6770688147, T423
+    # Q6; Y:5359, "safe; reads only; it waits again"; tasks:723, the decide
+    # class's 69, nothing on stdout). A poll that cannot read the binding is
+    # waited past, as before. But the empty end below says "still bound", and
+    # a wait whose last poll failed cannot know that: the lane may have been
+    # released after the last poll that read it. So on primary that wait ends
+    # 69, naming its request, which is in the register; files mode keeps its
+    # 2 and its words. `rh_last` is the last poll's answer, 0 where it read.
+    rh_last=0
+    rh_pollfail="the lane's log could not be read on this poll — waiting on"
+    [ -z "$REG_SCRATCH" ] || rh_pollfail="the register could not be read on this poll — waiting on"
     while : ; do
       rh_left=$(( rh_deadline - $(date -u +%s) ))
       if [ "$rh_left" -le 0 ]; then break; fi
@@ -23794,7 +23813,8 @@ EOF
       [ "$REG_MODE" != primary ] || reg_flush
       rh_out=""; rh_rc=0
       rh_out="$(lane_binding_scan "$lane")" || rh_rc=$?
-      [ "$rh_rc" = 0 ] || { note "the lane's log could not be read on this poll — waiting on"; continue; }
+      rh_last="$rh_rc"
+      [ "$rh_rc" = 0 ] || { note "$rh_pollfail"; continue; }
       IFS="$US" read -r rh_state2 rh_host2 rh_cont2 rh_win2 rh_utc2 rh_bsess2 rh_os2 rh_rest2 <<EOF
 $rh_out
 EOF
@@ -23809,6 +23829,14 @@ EOF
           fi ;;
       esac
     done
+    if [ -n "$REG_SCRATCH" ] && [ "$rh_last" != 0 ]; then
+      note "THE WAIT ENDED ON A POLL THAT COULD NOT READ THE REGISTER. As read before the request, $(binding_facts "$lane" "$rh_host" "$rh_cont" "$rh_win" "$rh_utc" "$rh_bsess" "$rh_wstate")"
+      note "  the request: $rh_wrote → $rh_pay, as session $rh_uuid, in the register at seq ${REGISTER_SEQ}"
+      note "  the pane:    ${rh_typed} (this tmux server says that window is $rh_wstate)"
+      die "the register could not be read at this wait's last poll, so whether lane $lane is still bound, or was released after the last poll that read it, is not known here, and NOTHING here has bound it. The request is in the register and is not written again. Read the lane once the register answers, and bind it if it is free; or ask again with a longer wait:
+    $SELF binding $lane
+    $SELF request-handoff $lane --wait 900" 69
+    fi
     note "THE WAIT ENDED WITH NOTHING. $(binding_facts "$lane" "$rh_host" "$rh_cont" "$rh_win" "$rh_utc" "$rh_bsess" "$rh_wstate")"
     note "  the request: $rh_wrote → $rh_pay, as session $rh_uuid"
     note "  the pane:    ${rh_typed} (this tmux server says that window is $rh_wstate)"
