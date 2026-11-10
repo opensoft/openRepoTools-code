@@ -584,6 +584,18 @@ act_69_note() {
 act_in_doubt() {   # act_in_doubt <which write>
   echo "IN DOUBT: $1 exited 3 (the writer's own code, above). On primary it may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun (off primary), the commit is local and may already be on origin."
 }
+# NO HAND COMMAND AFTER A WRITE THAT DID NOT END 0, UNDER A SEQ BASE (lane 3, #165
+# 6779688808, Q11; Y:5587, Y:5601). A hand re-run of a write that left out the act's
+# two variables writes unchecked, and one that kept them would only be refused again,
+# so the block prints none. A 3 keeps the writer's rerun (`act_in_doubt`), a 69 keeps
+# the note, and every other code keeps the writer's own stderr, above, and says to run
+# the act again from its start. Under `@files`, or with no base after `act-begin`'s 2,
+# today's hand re-run stands and this prints nothing.
+act_again_say() {   # act_again_say <which write> <its exit code>
+  case "$act_line" in ""|*@files) return 0 ;; esac
+  case "$2" in 0|3|69) return 0 ;; esac
+  echo "RUN /handoff AGAIN FROM STEP 1: $1 exited $2 under a seq base, so no hand command is printed for it. The writer's own words are above, and a new run takes a new base."
+}
 act_scope_add() {   # act_scope_add <scope>: appended to act_scopes once, in lower case
   as_s="$(printf '%s' "$1" | tr 'A-Z' 'a-z')"
   case " $act_scopes " in *" $as_s "*) return 0 ;; esac
@@ -1003,6 +1015,7 @@ LANES_ACT="$act_line" LANES_EXPECT="$act_scopes" LANES_LANE="$lane" LANES_SESSIO
   → "$payload" \
   "$why_text" || wr_rc=$?
 [[ "$wr_rc" != 3 ]] || act_in_doubt "the object log's PAUSED line"
+act_again_say "the object log's PAUSED line" "$wr_rc"
 [[ "$wr_rc" != 69 ]] || act_w69=1
 # (b) the LANES.md file-level line, the shape every prior PAUSED/RESUMED used.
 # IT IS WRITTEN WHETHER OR NOT (a) COULD BE (A8(a) step 4, `R-A11-11`): a swap
@@ -1012,6 +1025,7 @@ LANES_ACT="$act_line" LANES_EXPECT="$act_scopes" LANES_LANE="$lane" LANES_SESSIO
 wr_rc=0
 LANES_ACT="$act_line" LANES_EXPECT="$act_scopes" "$L" append-line "PAUSED — lane $lane, session $uuid@$ws, $(date -u +%Y-%m-%dT%H:%M:%SZ), $why_text; handoff refreshed" || wr_rc=$?
 [[ "$wr_rc" != 3 ]] || act_in_doubt "the register's PAUSED line"
+act_again_say "the register's PAUSED line" "$wr_rc"
 [[ "$wr_rc" != 69 ]] || act_w69=1
 fi
 fi
@@ -1062,6 +1076,7 @@ LANES_ACT="$act_line" LANES_EXPECT="$act_scopes" "$L" set-row-state "$lane" "PAU
 if [[ "$wr_rc" != 0 ]]; then
   row_write_refused=1
   [[ "$wr_rc" != 3 ]] || act_in_doubt "the row's state cell"
+  act_again_say "the row's state cell" "$wr_rc"
   [[ "$wr_rc" != 69 ]] || act_w69=1
 fi
 fi
@@ -1072,7 +1087,13 @@ fi
 [[ -z "$act_w69" ]] || act_69_note
 ```
 
-If (a) still exits 2, and its words do not open `expectation:` (the paragraph below), re-run it with the free-text argument **dropped entirely** and say so in the report:
+**Under a seq base no write that did not end 0 is re-run by hand** (lane 3, #165 6779688808, Q11). Where one exits
+anything but 0, 3 or 69, the block prints `RUN /handoff AGAIN FROM STEP 1` and no command: keep the writer's own words,
+which are above it, say in the report which write and its code, and tell the operator to run `/handoff` again from
+step 1, which takes a new base. A 3 keeps the writer's rerun and a 69 the note, below. Only where the block printed no
+such line, under `@files` or after `act-begin`'s 2, does today's hand re-run stand: if (a) still exits 2 there, and its
+words do not open `expectation:` (the paragraph below), re-run it with the free-text argument **dropped entirely** and
+say so in the report:
 the PAUSED line is what the launcher reads on restart, and step 4 is never left unwritten. If (c) is
 refused — a rebase conflict, a push race, a row the writer calls ambiguous, anything `set-row-state` itself
 reports — leave `row_write_refused` set and say so in the report; step 5 reads it, because a restart cannot
