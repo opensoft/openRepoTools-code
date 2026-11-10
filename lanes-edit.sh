@@ -5983,7 +5983,7 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
 # into `pw_learned`); and `commit` on primary, which keeps T409's 69 until
 # T420.
 PW_LANE=""; PW_C=""; PW_AUTHOR=""; PW_D_S=30; PW_T0=0; PW_RUN=""; PW_RUN_DIR=""
-PW_LOCK=""; PW_REC_OURS=0
+PW_LOCK=""; PW_REC_OURS=0; PW_PURGED=0
 PW_K=0; PW_DIR=""; PW_CHILD=""; PW_KEPT=""; PW_FIRST_DONE=0; PW_RELAY=""; PW_RC=0
 PW_S_GEN=""; PW_S_WID=""; PW_S_FOUND=""; PW_S_N=""; PW_S_CLOCK=""; PW_S_NOT_AFTER=""
 PW_L_CLOCK=""; PW_L_END=""; PW_LK_CLK=(); PW_LK=""; PW_LK_SEQ=""; PW_LK_TOKEN=""; PW_LK_N=""
@@ -6386,6 +6386,8 @@ pw_snapshot() {
   # end, not its start.
   PW_L_CLOCK="$PW_S_CLOCK"; PW_L_END="$ps_end"
   if [ "$PW_FIRST_DONE" = 0 ]; then
+    # A `found=` snapshot writes no record here, so it does not purge; the tail's
+    # `tail=sent` write does, once (`pw_tail_child`, REV418b NIT-2).
     [ -n "$PW_S_FOUND" ] || pw_runs_purge
     if ! wr_id_settle "$PW_DIR/snapshot"; then
       case "$WR_PLAN" in
@@ -6578,7 +6580,10 @@ pw_record_done() {
 # name (`pw_call_dirs_remove`). A run that writes a record first removes each
 # `<run>/` under `register-writes/` that is older than the record's maximum age
 # and that no record's `call` line names (`pw_runs_purge`), as the done marks
-# are purged (Y:5183); that also takes a run that ended by a refusal inside
+# are purged (Y:5183), once per run: at its first snapshot, or, where that
+# answered `found=` and wrote no record, before the `tail=sent` write of its
+# tail (`pw_tail_child`; lane openRepoTools-3, #165 6774499606, T418 item 3:
+# REV418b NIT-2); that also takes a run that ended by a refusal inside
 # T412's functions, before its own end could remove it. Only a 0700 directory of
 # this uid, at its place under `<state>/register-writes/`, is ever removed
 # (`pw_wdir_ok`).
@@ -6681,10 +6686,14 @@ pw_run_dir_done() {
 # for the marks): each `<d>/<run>/` older, by its mtime, than the record's
 # maximum age that no record's `call` line names, then its `<d>/` where left
 # empty. A record that cannot be read could name any of them, so then nothing
-# is purged.
+# is purged. ONCE PER RUN, behind `PW_PURGED` (REV418b NIT-2): the first
+# snapshot's call purges, and the tail's call (`pw_tail_child`) is then a no-op;
+# the run's own `<run>/` and the replay's fresh run segment are never purged.
 pw_runs_purge() {
   local pp_w="$WR_STATE/register-writes" pp_p="$WR_STATE/register-pending"
   local pp_named="$WR_NL" pp_f="" pp_l="" pp_c="" pp_r="" pp_t="" pp_now="" pp_max=""
+  [ "$PW_PURGED" = 0 ] || return 0
+  PW_PURGED=1
   [ -d "$pp_w" ] && [ ! -L "$pp_w" ] || return 0
   for pp_f in "$pp_p"/*; do
     [ -e "$pp_f" ] || continue
@@ -6700,7 +6709,7 @@ pw_runs_purge() {
   pp_now="$(date -u +%s)"; pp_max="$(wr_max_age_s)"
   wr_is_count "$pp_now" || return 0
   for pp_r in "$pp_w"/*/*; do
-    [ "$pp_r" != "$PW_RUN_DIR" ] || continue
+    [ "$pp_r" != "$PW_RUN_DIR" ] && [ "$pp_r" != "$PW_RP_RUN_DIR" ] || continue
     pw_wdir_ok "$pp_r" run || continue
     pp_t="$(wr_file_mtime "$pp_r")"
     [ -n "$pp_t" ] && [ "$(( pp_now - pp_t ))" -gt "$pp_max" ] || continue
@@ -7042,6 +7051,11 @@ pw_learned() {   # <seq>
 pw_tail_child() {   # <seq> <pid> <attempt dir>
   local tc_rc=0 tc_was="$WR_TAIL"
   pw_learned "$1"
+  # THE OLD RUNS' DIRECTORIES, before this run's `tail=sent` record write: a run
+  # that reached here from a `found=` snapshot or F3's lookup has not purged
+  # (`pw_snapshot` skips it where the snapshot found the write), and B12b's
+  # tasks:1171 purges before the first record write. A no-op where it has.
+  pw_runs_purge
   WR_TAIL="sent $1 $(wr_host_utc)"
   if ! wr_record_write; then
     WR_TAIL="$tc_was"
