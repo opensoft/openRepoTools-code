@@ -6018,6 +6018,661 @@ class SyncLock:
             self.handle = None
 
 
+# ===== the SQL register: status, reconcile and sync on primary (007)
+#
+# #160'S `status`, `reconcile` AND `sync` ON THE SQL REGISTER'S SIDE (feature
+# 007, opensoft/openRepoTools#165; T117, FR-048, L1-A15; design Y:4853 and
+# Y:4854; contracts/exit-codes.md §3.4). #160's own lines and exits stay as
+# they were: a configuration with no `register_url=` prints and exits exactly
+# as before, and so does every `reconcile` and `sync` on `mode=index`.
+#
+# STATUS, where `register_url=` is configured, in either mode, prints the
+# register's block after #160's sources (`status_register`). It makes ONE
+# request as this engineer's READER, on D9's `status` row (Y:3528), in one
+# read-only snapshot: the readers' schema window, the switch, the journal's
+# head `n` and the generation, the mirror state (D16), and the journal's answer
+# for each pending record's write id (D8, F10). The mirror's `m` is the newest
+# `Register-Seq` on `origin/<branch>` as last fetched in the workspace checkout,
+# read by T121's `mirror_register_seq`; `status` never fetches. Then the
+# pending records under `<state>/register-pending/`, and the declaration
+# `register-outage`, which it reports as left in place while the database
+# answers (ops §2.5). Each read records the head it found in
+# `<state>/register-head`, so a `status` that cannot read the register prints
+# `m` and that last head, `h`, or "unknown" (ops §2.3, the disaster path's
+# step 4), and exits 69 (Y:3528). The service's lines are lane 5's T512, after
+# these (R44).
+#
+# RECONCILE, on `mode=primary` and for the register's source, checks the mirror
+# against SQL and writes nothing (`reconcile_register`; Y:4854). It compares the
+# render set at `R`, the commit on `origin/<branch>` that carries `m`, with each
+# render-set path's latest `journal_files` digest at or below `m`. It names
+# each commit after `R` that changes the render set and carries no
+# `Register-Seq` (Y:2921-2930), and counts the seqs the mirror lacks. It makes
+# one request as READER, on D9's renderer row, which `reconcile` shares
+# (Y:3527). A mirror that differs is reported with 0 (exit-codes.md §3.4, [P]).
+# The re-render is lane 3's T325, in phase 3.
+#
+# SYNC of the register's source on `mode=primary` does nothing and says so
+# (`sync_register_on_primary`). It makes no `psql` call, takes no lock and
+# writes no file: the mirror is never indexed back into the database it came
+# from (Y:1031; Y:2976-2978). The inventory's sync is unchanged.
+
+#: THE LAST HEAD `status` READ (ops §2.3, the disaster path's step 4; ops:511;
+#: config.md §6.2), in the state directory: `format=1`, `database=`,
+#: `generation=`, `head=` and `utc=`, one per line, 0600, by temp file and
+#: rename. A `status` that cannot read the register prints it as `h`, beside
+#: the mirror's `m`. `register_outage_text(last_head=...)` can take it
+#: (T121; T304), through `read_register_last_head`.
+REGISTER_HEAD_FILE = "register-head"
+
+#: THE PENDING RECORDS (F10; Y:5171-5172): `<state>/register-pending/<d>`, where
+#: `<d>` is 64 lower hex. Claim files (`<d>.take.<k>`) and temp files are
+#: passed over.
+REGISTER_PENDING_DIR = "register-pending"
+_REGISTER_PENDING_NAME_RE = re.compile(r"[0-9a-f]{64}")
+
+#: THE RENDER SET IN A TREE (Q18(A); Y:2924-2926), as `git` takes it: the four
+#: paths, with `lanes/log/README.md` left out. `lanes/STORE`, the marker, is
+#: set aside, as the rollback's proof sets it aside (ops §2.3, step 3).
+REGISTER_RENDER_PATHSPECS = (REGISTER_PATH, ALIASES_PATH, "lanes/archive/", LOG_PREFIX)
+REGISTER_RENDER_EXCLUDED = "lanes/log/README.md"
+
+#: How many of `reconcile`'s differences it names, one per line. It counts the
+#: rest.
+RECONCILE_SHOWN = 100
+
+#: The indent of a continuation line in `status`'s blocks, under the value.
+_REGISTER_INDENT = " " * 15
+
+
+def _register_shown(value, limit: int = 200) -> str:
+    """`value` as one printable line: each C0 or C1 control character, DEL,
+    U+2028 and U+2029 as `?`, and at most `limit` characters."""
+    text = re.sub(r"[\x00-\x1f\x7f-\x9f  ]", "?", "" if value is None else str(value))
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _register_utc(column: str) -> str:
+    """A `timestamptz` column as `YYYY-MM-DDTHH:MM:SSZ`, whatever `TimeZone`
+    the session has: this build's register calls set none."""
+    return f"to_char({column} AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')"
+
+
+def _register_state_queries() -> list[str]:
+    """The four reads every register state read starts with: the readers'
+    schema window (§1.5), the switch (S1), the head `n` and the mirror state
+    (D16), each one row."""
+    return [
+        "SELECT version, writers_from, readers_from FROM schema_version WHERE id = 1",
+        f"SELECT mode, marker_state, marker_seq, marker_commit, generation, repository, "
+        f"database_label, {_register_utc('set_utc')}, set_seq, set_by_lane, set_by_ws "
+        f"FROM register_switch WHERE id = 1",
+        "SELECT seq FROM register_head WHERE id = 1",
+        f"SELECT diverged_sha, {_register_utc('found_utc')}, found_by_ws, last_error, "
+        f"{_register_utc('last_error_utc')} FROM mirror_state WHERE id = 1"]
+
+
+def _register_state_of(answers: list) -> dict:
+    """`_register_state_queries`' four answers as one dict. A missing row, or a
+    value that is not what its column holds, is `RegisterUnavailable`."""
+    version = _register_one_row(answers[0], 3, "schema_version")
+    switch = _register_one_row(answers[1], 11, "register_switch")
+    head = _register_one_row(answers[2], 1, "register_head")
+    mirror = _register_one_row(answers[3], 5, "mirror_state")
+    try:
+        return {"version": int(version[0]), "writers_from": int(version[1]),
+                "readers_from": int(version[2]),
+                "mode": switch[0] or "", "marker": switch[1] or "",
+                "marker_seq": None if switch[2] is None else int(switch[2]),
+                "marker_commit": switch[3] or "", "generation": (switch[4] or "").lower(),
+                "repository": switch[5] or "", "label": switch[6] or "",
+                "set_utc": switch[7] or "", "set_seq": int(switch[8]),
+                "set_by_lane": switch[9] or "", "set_by_ws": switch[10] or "",
+                "n": int(head[0]),
+                "diverged": mirror[0] or "", "found_utc": mirror[1] or "",
+                "found_by_ws": mirror[2] or "", "last_error": mirror[3] or "",
+                "last_error_utc": mirror[4] or ""}
+    except (TypeError, ValueError):
+        raise RegisterUnavailable("psql answered a register state this build cannot read: "
+                                  "a number that is not one")
+
+
+def _register_read_failure(exc: StoreUnusable) -> str:
+    """Why a register read did not answer, with nothing secret in it
+    (contract §2.6): its timer, nothing sent, or `psql`'s exit and its first
+    line on stderr."""
+    if isinstance(exc, PsqlFailed):
+        if exc.timer_expired:
+            return f"no answer within its client timer: {exc.detail}"
+        if not exc.ran:
+            return f"nothing was sent: {exc.detail}"
+        return f"psql exited {exc.psql_exit}: {exc.first_line or exc.detail}"
+    return f"nothing was sent: {exc.detail}"
+
+
+def register_state_read(cfg: dict, row: str, extra: list[str] | None = None) -> tuple:
+    """ONE register read as this engineer's READER (Y:2317; Y:3460), on D9's
+    `row`, in one REPEATABLE READ READ ONLY snapshot, sent as one request
+    (contract §2.3): `_register_state_queries`, then `extra`.
+
+    Returns `(state, extra's answers, "")`. Where the register cannot be read,
+    it returns `(None, [], why)`: no answer, a failed statement, a missing row,
+    or a schema outside the readers' window (§1.5; Y:2338), whose answer is
+    then not used. Each is 69 to `status` and `reconcile` (D10; Y:3527;
+    Y:3528)."""
+    queries = _register_state_queries() + list(extra or [])
+    try:
+        store = PostgresStore(cfg, "register_reader")
+        answers = store._query_many(queries, snapshot=True, row=row)
+        if len(answers) != len(queries):
+            raise RegisterUnavailable(f"psql answered {len(answers)} of the {len(queries)} "
+                                      f"reads of one snapshot")
+        state = _register_state_of(answers)
+    except StoreUnusable as exc:
+        return None, [], _register_read_failure(exc)
+    except RegisterUnavailable as exc:
+        return None, [], str(exc)
+    refusal = register_version_refusal(state["version"], state["writers_from"],
+                                       state["readers_from"], write=False)
+    if refusal:
+        return None, [], f"{refusal}; nothing it read is shown (Y:2338)"
+    return state, answers[len(_register_state_queries()):], ""
+
+
+def _register_store_name(cfg: dict) -> str:
+    """The register's database, without a credential (contract §2.6): this
+    host's `register_label=`, or else the host and database `reader_url=`
+    names."""
+    if cfg["register_label"]:
+        return f"database {_register_shown(cfg['register_label'])}"
+    env = pg_url_env(cfg["reader_url"], "`reader_url=`")
+    return (f"database {_register_shown(env.get('PGDATABASE') or '(the default)')} at "
+            f"{_register_shown(env.get('PGHOST') or '(the default host)')}")
+
+
+def _register_mirror(root: str, unread: str = "") -> dict:
+    """`m`, the newest `Register-Seq` on `origin/<branch>` as last fetched in
+    the checkout `root`, and the commit `R` carrying it, by T121's
+    `mirror_register_seq`, the walk bounded by `LANES_GIT_TIMEOUT`. Nothing is
+    fetched. `why` says why there is no `m`: `unread` where `root` itself
+    could not be found, `unread: ...` where git failed, and `no-seq: ...`
+    where no commit carries one."""
+    if not root:
+        return {"m": None, "commit": "", "why": f"unread: {unread or 'no workspace checkout'}",
+                "text": f"unread - {unread or 'no workspace checkout'}"}
+    timeout = mirror_git_timeout()
+    try:
+        m, commit = mirror_register_seq(root, None if timeout is None
+                                        else time.monotonic() + timeout)
+    except StoreUnusable as exc:
+        return {"m": None, "commit": "", "why": f"{exc.kind}: {exc.detail}",
+                "text": f"{exc.kind} - {exc.detail}"}
+    return {"m": m, "commit": commit, "why": "",
+            "text": f"Register-Seq {m} at {commit[:12]}, origin/{branch()} as last fetched in "
+                    f"{root} (not fetched here)"}
+
+
+def register_head_path() -> str:
+    """`<state>/register-head`, the last head `status` read."""
+    return os.path.join(state_dir(), REGISTER_HEAD_FILE)
+
+
+def read_register_last_head() -> dict | None:
+    """The last head `status` recorded: `format`, `database`, `generation`,
+    `head` (an int) and `utc`. None where none is recorded, or the file cannot
+    be read as one."""
+    try:
+        with open(register_head_path(), "rb") as handle:
+            text = handle.read(4096).decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    fields: dict = {}
+    for line in text.split("\n"):
+        key, eq, value = line.partition("=")
+        if eq and key not in fields:
+            fields[key] = value
+    if fields.get("format") != "1" or not re.fullmatch(r"-?[0-9]+", fields.get("head", "")):
+        return None
+    fields["head"] = int(fields["head"])
+    return fields
+
+
+def record_register_head(state: dict) -> None:
+    """Records the head `state` read, by temp file and rename in a 0700 state
+    directory (T121's `write_register_outage`, which writes any such file).
+    Raises `OSError`."""
+    text = "".join(f"{key}={_register_shown(value)}\n" for key, value in (
+        ("format", 1), ("database", state["label"]), ("generation", state["generation"]),
+        ("head", state["n"]), ("utc", utc_now())))
+    os.makedirs(state_dir(), mode=0o700, exist_ok=True)
+    write_register_outage(register_head_path(), text)
+
+
+def register_pending_records() -> tuple[str, list, str]:
+    """The pending records (F10; Y:5171-5172), each as a dict: `name`, its
+    file name, `<d>`; `fields`, its first value of each key; `calls`, how many
+    `call` lines it holds; `write_id`, lower-cased; `id_ok`, whether that is
+    a UUID; and `error`, why it could not be read, or "". Returns `(the
+    directory, the records by name, why the directory could not be listed or
+    "")`. Only lane 4's writers write them; this reads and changes nothing."""
+    directory = os.path.join(state_dir(), REGISTER_PENDING_DIR)
+    try:
+        names = sorted(os.listdir(directory))
+    except FileNotFoundError:
+        return directory, [], ""
+    except OSError as exc:
+        return directory, [], f"{directory} cannot be listed ({exc.strerror or exc})"
+    records = []
+    for name in names:
+        if not _REGISTER_PENDING_NAME_RE.fullmatch(name):
+            continue
+        rec = {"name": name, "fields": {}, "calls": 0, "write_id": "", "id_ok": False,
+               "error": ""}
+        records.append(rec)
+        path = os.path.join(directory, name)
+        try:
+            if not stat.S_ISREG(os.lstat(path).st_mode):
+                raise ValueError("it is not a regular file")
+            with open(path, "rb") as handle:
+                text = handle.read(1 << 20).decode("utf-8")
+        except FileNotFoundError:
+            rec["error"] = "it was removed while it was read"
+            continue
+        except OSError as exc:
+            rec["error"] = f"it cannot be read ({exc.strerror or exc})"
+            continue
+        except ValueError as exc:
+            rec["error"] = str(exc) if not isinstance(exc, UnicodeDecodeError) else "it is not UTF-8"
+            continue
+        for line in text.split("\n"):
+            key, eq, value = line.partition("=")
+            if not eq:
+                continue
+            if key == "call":
+                rec["calls"] += 1
+            elif key not in rec["fields"]:
+                rec["fields"][key] = value
+        rec["write_id"] = rec["fields"].get("write_id", "").lower()
+        rec["id_ok"] = bool(UUID_FULL_RE.match(rec["write_id"]))
+    return directory, records, ""
+
+
+def _register_pending_query(ids: list[str]) -> str:
+    """The journal's answer for each write id: its seq, lane, verb and
+    `args_sha256`. `ids` are UUIDs."""
+    return ("SELECT write_id, seq, lane, verb, args_sha256 FROM journal WHERE write_id IN ("
+            + ", ".join(f"{_pg_quote(i)}::uuid" for i in ids) + ") ORDER BY seq")
+
+
+def _register_pending_line(rec: dict, state: dict | None, found: dict) -> str:
+    """One pending record, and what the journal says of its write id (test
+    plan's AT-D8: `status` lists each record and reports whether its id is in
+    the journal)."""
+    shown = _register_shown
+    if rec["error"]:
+        return f"{rec['name'][:12]}: cannot be read: {shown(rec['error'])}"
+    f = rec["fields"]
+    what = (f"{rec['name'][:12]}: write {shown(f.get('write_id') or '?', 40)}, lane "
+            f"{shown(f.get('lane') or '?', 80)}, verb {shown(f.get('verb') or '?', 40)}, made "
+            f"{shown(f.get('created_utc') or '?', 40)}, {rec['calls']} call line(s)"
+            f"{' - in doubt' if rec['calls'] else ''}, tail {shown(f.get('tail') or 'none', 80)}")
+    generation = (f.get("generation") or "").lower()
+    if not rec["id_ok"]:
+        verdict = "its write_id is not a UUID, so it was not looked up"
+    elif state is None:
+        verdict = "not looked up, since the register cannot be read"
+    elif generation and generation != state["generation"]:
+        verdict = (f"of generation {shown(generation, 40)}, and this register is "
+                   f"{state['generation']}: a plain rerun refuses it; look for its effect, "
+                   f"then rerun with LANES_WRITE_ID=new (F10)")
+    elif rec["write_id"] in found:
+        row = found[rec["write_id"]]
+        if (row[2], row[3], row[4] or "") == (f.get("lane"), f.get("verb"),
+                                              f.get("args_sha256") or ""):
+            verdict = f"in the journal at seq {row[1]}"
+        else:
+            verdict = (f"its id is in the journal at seq {row[1]}, for another write (lane "
+                       f"{shown(row[2], 80)}, verb {shown(row[3], 40)})")
+    else:
+        verdict = f"not in the journal at n {state['n']}"
+    return f"{what}: {verdict}"
+
+
+def _register_outage_lines(cfg: dict, state: dict | None) -> list[str]:
+    """The declaration beside `lanes-index.conf` (D20; config.md §6), as
+    `status` reports it: none, one not well formed, or its fields and what
+    they mean here. While the database answers, one present is LEFT IN PLACE,
+    to be ended at once (ops §2.5, "How it ends")."""
+    path = register_outage_path(cfg)
+    try:
+        fields = read_register_outage(path)
+    except ValueError as exc:
+        return [f"a file that is not a well-formed declaration is at {path} ({exc}): no "
+                f"guard honours it, and `{PROG} outage clear` removes it"]
+    if fields is None:
+        return [f"none declared ({path})"]
+    shown = _register_shown
+    if fields["kind"] == "word":
+        lines = [f"declared outage on Brett's word, at {fields['utc']} on "
+                 f"{shown(fields['host'], 80)}, until {fields['until']}, for database "
+                 f"{shown(fields['database'], 80)}, mirror-seq {fields['mirror-seq']}: "
+                 f"\"{shown(fields['why'], 400)}\" ({path})"]
+    else:
+        lines = [f"declared outage from a rollback, at {fields['utc']} on "
+                 f"{shown(fields['host'], 80)}, for database {shown(fields['database'], 80)}, "
+                 f"mirror-seq {fields['mirror-seq']} (the rollback's head), with no expiry "
+                 f"({path})"]
+    if fields["database"] != cfg["register_label"]:
+        lines.append(f"it names database {shown(fields['database'], 80)}, and this host's "
+                     f"register_label= is {shown(cfg['register_label'] or '(unset)', 80)}: no "
+                     f"guard here honours it")
+    if fields["kind"] == "word" and fields["until"] <= utc_now():
+        lines.append(f"it expired at {fields['until']}, so every guard ignores it")
+    if state is None:
+        lines.append("the database cannot be read from here, so on mode=primary a guard may "
+                     "answer from the mirror under it (SVC-12)")
+    elif fields["kind"] == "rollback" and state["mode"] == "files":
+        lines.append("left in place while the database answers, with the switch at `files`: "
+                     "the rollback's step 6 ends it (operations.md §2.3)")
+    else:
+        lines.append(f"left in place while the database answers: end it with `{PROG} outage "
+                     f"clear` on each configured workstation (operations.md §2.5)")
+    return lines
+
+
+def status_register(cfg: dict, root: str, root_unread: str = "") -> int:
+    """`status`'s register block (Y:4853; exit-codes.md §3.4), printed where
+    `register_url=` is configured: the switch, `n`, the generation, the
+    mirror's last `Register-Seq` and the lag, `diverged at`, the renderer's
+    last failed pass, the pending records and a declaration left in place.
+    Returns 0, or 69 where the register cannot be read or its timer expires;
+    it then prints `m` and the last head recorded here, and the lag from them
+    where it can (Y:3528; ops §2.3, step 4)."""
+    directory, records, unlisted = register_pending_records()
+    ids = sorted({rec["write_id"] for rec in records if rec["id_ok"]})
+    state, answers, why = register_state_read(cfg, "status",
+                                              [_register_pending_query(ids)] if ids else [])
+    found = {}
+    if state is not None and ids:
+        for row in answers[0]:
+            if len(row) == 5 and row[0]:
+                found[row[0].lower()] = row
+    say(f"register: {_register_store_name(cfg)} (mode={cfg['mode']}; schema "
+        f"{cfg['register_schema']})")
+    mirror = _register_mirror(root, root_unread)
+    m = mirror["m"]
+    if state is None:
+        say(f"  read:        the register cannot be read - {_register_shown(why, 400)}")
+        say("  n:           unknown, since the register cannot be read")
+        last = read_register_last_head()
+        if last is None:
+            say(f"  last head:   unknown: no head is recorded at {register_head_path()}")
+        else:
+            say(f"  last head:   {last['head']}, recorded by status at "
+                f"{_register_shown(last.get('utc') or '?', 40)} (database "
+                f"{_register_shown(last.get('database') or '?', 80)}, generation "
+                f"{_register_shown(last.get('generation') or '?', 40)})")
+        say(f"  mirror:      {mirror['text']}")
+        if last is None or m is None:
+            lag = "unknown: it needs the mirror's m and a recorded head"
+        elif last["head"] >= m:
+            lag = (f"at least {last['head'] - m} seq(s): the last head recorded here, "
+                   f"{last['head']}, less the mirror's {m}")
+        else:
+            lag = (f"unknown: the mirror's {m} is past the last head recorded here, "
+                   f"{last['head']}")
+        say(f"  lag:         {lag}")
+    else:
+        try:
+            record_register_head(state)
+        except OSError as exc:
+            note(f"status: the head could not be recorded at {register_head_path()} "
+                 f"({exc.strerror or exc})")
+        marker = f"marker {state['marker']}"
+        if state["marker_seq"] is not None:
+            marker += f" (seq {state['marker_seq']}" + (
+                f", commit {state['marker_commit'][:12]})" if state["marker_commit"] else ")")
+        say(f"  switch:      {state['mode']}, {marker}; set at seq {state['set_seq']} on "
+            f"{state['set_utc']} by {_register_shown(state['set_by_lane'], 80)} on "
+            f"{_register_shown(state['set_by_ws'], 80)}")
+        label = (f"  database:    {_register_shown(state['label'], 80)}, repository "
+                 f"{_register_shown(state['repository'], 120)}")
+        if state["label"] != cfg["register_label"]:
+            label += (f"; this host's register_label= is "
+                      f"{_register_shown(cfg['register_label'] or '(unset)', 80)}")
+        say(label)
+        say(f"  n:           {state['n']}" + (", the journal is empty" if state["n"] < 0 else ""))
+        say(f"  generation:  {state['generation']}")
+        say(f"  mirror:      {mirror['text']}")
+        if m is None:
+            lag = "unknown, since the mirror's m cannot be read here (the mirror line says why)"
+        elif m <= state["n"]:
+            lag = f"{state['n'] - m} seq(s): n {state['n']} less the mirror's {m}"
+        else:
+            lag = (f"none, and the mirror's {m} is past n {state['n']}: at primary a divergence "
+                   f"the renderer records (R2's N6); at files, (ii')'s marker-first window")
+        say(f"  lag:         {lag}")
+        if state["diverged"]:
+            say(f"  divergence:  diverged at {state['diverged']} (found {state['found_utc']} by "
+                f"{_register_shown(state['found_by_ws'], 80)}): resolve it with `{PROG} import "
+                f"--single <sha>` or `{PROG} render --revert <sha>` (D16)")
+        else:
+            say("  divergence:  none recorded")
+        if state["last_error"]:
+            say(f"  renderer:    its last failed pass, at {state['last_error_utc']}: "
+                f"{_register_shown(state['last_error'], 400)}")
+        else:
+            say("  renderer:    no failed pass recorded")
+    if unlisted:
+        say(f"  pending:     unread - {unlisted}")
+    elif not records:
+        say(f"  pending:     none in {directory}")
+    else:
+        say(f"  pending:     {len(records)} record(s) in {directory}")
+        for rec in records:
+            say(f"    {_register_pending_line(rec, state, found)}")
+    outage = _register_outage_lines(cfg, state)
+    say(f"  outage:      {outage[0]}")
+    for line in outage[1:]:
+        say(f"{_REGISTER_INDENT}{line}")
+    return EXIT_OK if state is not None else EXIT_UNAVAILABLE
+
+
+def _register_render_set(root: str, sha: str) -> dict:
+    """The render set in the tree of commit `sha`: each path's sha256, the
+    digest `journal_files` holds (S2), or None for an entry that is not a
+    file. `StoreUnusable` where git cannot read it."""
+    proc = git(root, "ls-tree", "-r", "-z", sha, "--", *REGISTER_RENDER_PATHSPECS)
+    entries = []
+    for entry in proc.stdout.split("\0"):
+        if not entry:
+            continue
+        meta, _, path = entry.partition("\t")
+        if path == REGISTER_RENDER_EXCLUDED:
+            continue
+        parts = meta.split()
+        entries.append((path, parts[2] if len(parts) == 3 and parts[1] == "blob" else ""))
+    blobs = cat_blobs(root, [obj for _path, obj in entries if obj])
+    return {path: (hashlib.sha256(blobs[obj]).hexdigest() if obj in blobs else None)
+            for path, obj in entries}
+
+
+def _register_strays(root: str, commit: str, tip: str) -> tuple[list[str], int]:
+    """The commits after `commit` on `tip`'s first-parent line that change
+    the render set, and how many commits come after it. None of them carries
+    a `Register-Seq`, since `commit` is the newest that does, so none is a
+    render commit (Y:2921-2930)."""
+    count = git(root, "rev-list", "--first-parent", "--count", f"{commit}..{tip}")
+    proc = git(root, "-c", "log.showSignature=false", "log", "--first-parent", "--format=%H",
+               f"{commit}..{tip}", "--", *REGISTER_RENDER_PATHSPECS,
+               f":(exclude){REGISTER_RENDER_EXCLUDED}")
+    try:
+        after = int(count.stdout.strip())
+    except ValueError:
+        after = 0
+    return [line for line in proc.stdout.split("\n") if SHA_RE.match(line)], after
+
+
+def reconcile_register(cfg: dict, requested: str | None, dry_run: bool) -> int:
+    """`reconcile` on `mode=primary`, for the register's source: the mirror
+    checked against SQL, READ-ONLY (Y:4854; exit-codes.md §3.4). Nothing is
+    written, and no lock is taken, here or in the database.
+
+    Exits 0 once the check is made, whatever it found: a mirror that differs
+    is reported on stdout ([P]). 69 where the register cannot be read or its
+    timer expires (D10; Y:3527). #160's 1 where the mirror's checkout cannot
+    be read. 2 for a `--source` that is not this workstation's register."""
+    root, tip = "", ""
+    source = requested or "the register's source"
+    mirror = {"m": None, "commit": "", "why": "", "text": ""}
+    try:
+        root = workspace_root()
+        source = resolve_source(requested, root)
+        tip = tip_of(root)
+        mirror = _register_mirror(root)
+    except StoreUnusable as exc:
+        mirror.update(why=f"{exc.kind}: {exc.detail}", text=f"{exc.kind} - {exc.detail}")
+    m, commit = mirror["m"], mirror["commit"]
+    mine, strays, after = None, [], 0
+    if m is not None:
+        try:
+            mine = _register_render_set(root, commit)
+            strays, after = _register_strays(root, commit, tip)
+        except StoreUnusable as exc:
+            mirror["why"] = f"{exc.kind}: {exc.detail}"
+            mirror["text"] += f"; its render set cannot be read - {exc.kind}: {exc.detail}"
+            mine = None
+    after_m = -2 if m is None else m
+    extra = [f"SELECT min(seq), max(seq), count(*) FILTER (WHERE seq > {after_m}), "
+             f"count(*) FILTER (WHERE seq > {after_m} AND operator) FROM journal"]
+    if mine is not None:
+        extra.append(f"SELECT DISTINCT ON (path) path, present, sha256 FROM journal_files "
+                     f"WHERE seq <= {m} AND path <> 'lanes/STORE' ORDER BY path, seq DESC")
+    state, answers, why = register_state_read(cfg, "render", extra)
+    if state is not None:
+        try:
+            summary = _register_one_row(answers[0], 4, "the journal's extent")
+            first = None if summary[0] is None else int(summary[0])
+            lacks, operators = int(summary[2]), int(summary[3])
+        except (RegisterUnavailable, TypeError, ValueError) as exc:
+            state, why = None, (str(exc) if isinstance(exc, RegisterUnavailable) else
+                                "psql answered a journal extent this build cannot read")
+    say(f"{PROG} reconcile: {source} on primary - the mirror against the SQL register, "
+        f"read-only{' - DRY RUN' if dry_run else ''}")
+    say(f"  mirror:      {mirror['text']}"
+        + (f"; the tip is {tip[:12]}" if tip and commit and tip != commit else ""))
+    nothing = "nothing was written: this check is read-only"
+    if state is None:
+        say(f"  register:    cannot be read - {_register_shown(why, 400)}")
+        say(f"  result:      the check could not be made; {nothing}")
+        return EXIT_UNAVAILABLE
+    say(f"  register:    switch {state['mode']}, marker {state['marker']}; n {state['n']}; "
+        f"generation {state['generation']}")
+    if state["diverged"]:
+        recorded = (f"diverged at {state['diverged']} (found {state['found_utc']} by "
+                    f"{_register_shown(state['found_by_ws'], 80)})")
+    else:
+        recorded = "none recorded"
+    if mine is None:
+        say(f"  divergence:  {recorded}")
+        if mirror["why"].startswith("no-seq"):
+            say(f"  result:      the mirror carries no Register-Seq, so it has no seq to be "
+                f"compared at, and it is no mirror of this register; {nothing}")
+            return EXIT_OK
+        say(f"  result:      the mirror cannot be read, so it was not compared; {nothing}")
+        return 1
+    differences, rows = [], []
+    if first is None:
+        compared = f"none: the journal is empty, and the mirror is at seq {m}"
+        differences.append("the journal is empty")
+    elif m > state["n"]:
+        compared = (f"none: the mirror's {m} is past n {state['n']}, at primary a divergence "
+                    f"the renderer records (R2's N6)")
+        differences.append(f"the mirror's Register-Seq {m} is past n {state['n']}")
+    elif m < first:
+        compared = (f"none: the journal begins at seq {first}, after the mirror's {m}, so SQL "
+                    f"holds no images at {m}")
+        differences.append(f"the journal begins after seq {m}")
+    else:
+        sql = {row[0]: row[2] for row in answers[1] if len(row) == 3 and row[1] == "t"}
+        for path in sorted(set(sql) | set(mine)):
+            if path not in mine:
+                rows.append(f"missing   {_register_shown(path)}: in SQL at seq {m}, not on the "
+                            f"mirror")
+            elif path not in sql:
+                rows.append(f"extra     {_register_shown(path)}: on the mirror, not in SQL at "
+                            f"seq {m}")
+            elif mine[path] != sql[path]:
+                rows.append(f"differs   {_register_shown(path)}: the mirror's sha256 "
+                            f"{(mine[path] or 'not a file')[:12]}, SQL's {sql[path][:12]}")
+        total = len(set(sql) | set(mine))
+        if rows:
+            compared = f"{len(rows)} of {total} render-set path(s) differ:"
+            differences.append(f"{len(rows)} path(s) at seq {m}")
+        else:
+            compared = f"{total} render-set path(s), each equal on the mirror and in SQL"
+    label = f"at seq {m}:"
+    say(f"  {label}{' ' * max(1, 13 - len(label))}{compared}")
+    for line in rows[:RECONCILE_SHOWN]:
+        say(f"    {line}")
+    if len(rows) > RECONCILE_SHOWN:
+        say(f"    and {len(rows) - RECONCILE_SHOWN} more")
+    if strays:
+        say(f"  after it:    {len(strays)} of the {after} commit(s) after {commit[:12]} change "
+            f"the render set and carry no Register-Seq, so none is a render commit: "
+            + ", ".join(strays[:RECONCILE_SHOWN])
+            + (f", and {len(strays) - RECONCILE_SHOWN} more" if len(strays) > RECONCILE_SHOWN
+               else ""))
+        differences.append(f"{len(strays)} stray commit(s) after seq {m}")
+    else:
+        say(f"  after it:    {after} commit(s) after {commit[:12]}, none of them changing the "
+            f"render set")
+    if m <= state["n"]:
+        span = f" ({m + 1} to {state['n']})" if lacks else ""
+        say(f"  lag:         {lacks} seq(s) the mirror lacks{span}, {operators} of them operator "
+            f"entries")
+    say(f"  divergence:  {recorded}")
+    if differences:
+        say(f"  result:      the mirror differs from SQL ({'; '.join(differences)}); {nothing}, "
+            f"and a divergence is resolved on a person's word (D16; operations.md §2.3)")
+    elif state["diverged"]:
+        say(f"  result:      the mirror equals SQL at seq {m}, and the divergence recorded "
+            f"stands until a person resolves it (D16); {nothing}")
+    else:
+        say(f"  result:      the mirror equals SQL at seq {m}; {nothing}, and T325 re-renders "
+            f"what the mirror lacks, in phase 3")
+    return EXIT_OK
+
+
+def register_primary_config() -> dict | None:
+    """The configuration, where it loads and says `mode=primary`; None
+    otherwise. A configuration it refuses is None too, so the caller's #160
+    path refuses it where it always has, Q6(c)'s refusal included."""
+    try:
+        cfg = load_config()
+    except Refusal:
+        return None
+    return cfg if cfg["mode"] == "primary" else None
+
+
+def sync_register_on_primary(requested: str | None) -> int:
+    """`sync` of the register's source on `mode=primary`: nothing, said on
+    stdout, and 0 (exit-codes.md §3.4; Y:1031; Y:2976-2978). No `psql` call, no
+    lock and no file. A `--source` naming another workstation's register is
+    still refused, 2, as #160 refuses it; `register` alone names this one."""
+    source = "the register's source"
+    if requested and requested != "register":
+        try:
+            source = resolve_source(requested, workspace_root())
+        except StoreUnusable:
+            source = requested
+    say(f"{PROG} sync: {source} - sync does nothing on primary: under mode=primary the SQL "
+        f"register is the register's store, and its mirror is never indexed back into the "
+        f"database it came from (design Y:1031, Y:2976); nothing was read from it and nothing "
+        f"was written")
+    return EXIT_OK
+
+
 # ================================================================ the acts
 
 def resolve_source(requested: str | None, root: str) -> str:
@@ -6642,6 +7297,10 @@ def cmd_sync(requested: str | None) -> int:
         say(f"{PROG} sync: LANES_INDEX=off - nothing indexed")
         return 0
     kind = "inventory" if is_inventory(requested) else "register"
+    # ON PRIMARY, THE REGISTER'S SYNC DOES NOTHING AND SAYS SO (T117; Y:4854),
+    # before the lock: no `psql`, no lock file, no status written.
+    if kind == "register" and register_primary_config() is not None:
+        return sync_register_on_primary(requested)
     asked = {kind: requested}
     # A SOURCE IS REFUSED BEFORE THE LOCK IS ASKED FOR (opensoft/openRepoTools#173,
     # Copilot's fourth review of #171). Behind a held lock this sync only
@@ -6717,6 +7376,13 @@ def cmd_reconcile(requested: str | None, dry_run: bool) -> int:
         say(f"{PROG} reconcile: LANES_INDEX=off - nothing indexed")
         return 0
     kind = "inventory" if is_inventory(requested) else "register"
+    # ON PRIMARY, THE REGISTER'S RECONCILE IS THE MIRROR'S READ-ONLY CHECK
+    # AGAINST SQL (T117; Y:4854): no lock, and nothing written.
+    if kind == "register":
+        primary = register_primary_config()
+        if primary is not None:
+            return reconcile_register(primary, None if requested == "register" else requested,
+                                      dry_run)
     lock = SyncLock()
     if not dry_run and not lock.acquire(60):
         note(f"another sync has held {lock.path} for 60 s; nothing written")
@@ -6780,12 +7446,14 @@ def cmd_status() -> int:
     root = ""
     source = ""
     tip = ""
+    root_unread = ""
     try:
         root = workspace_root()
         source = source_of(root)
         tip = tip_of(root)
     except StoreUnusable as exc:
         say(f"workspace: {exc.detail}")
+        root_unread = exc.detail
         rc = 1
     provs: list = []
     try:
@@ -6849,6 +7517,11 @@ def cmd_status() -> int:
         say(f"  last sync:   {entry.get('last_sync_utc') or 'never, from this workstation'}"
             f"{' (' + entry['last_result'] + ')' if entry.get('last_result') else ''}")
         say(f"  last error:  {entry.get('last_error') or 'none'}")
+    # THE SQL REGISTER'S BLOCK (T117; Y:4853), where it is configured, in either
+    # mode: 69 where it cannot be read, over #160's own exit (Y:3528).
+    if cfg["register_url"]:
+        if status_register(cfg, root if tip else "", root_unread) != EXIT_OK:
+            rc = EXIT_UNAVAILABLE
     return rc
 
 
