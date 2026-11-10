@@ -1407,8 +1407,9 @@ class RealRegister:
         return int(self._one("SELECT seq FROM lanes_register.register_head;"))
 
     def _commit(self, kind: str, files: dict, base: int | None = None, verb: str = "") -> int:
-        import uuid as _uuid
-        edits, rows, order = [], [], 0
+        # `journal_edits.ord` starts at 1 (its CHECK `ord >= 1`; lane 1's own `edit()` counts
+        # `len(edits) + 1`), as T221's and T222's modules number theirs.
+        edits, rows, order = [], [], 1
         for path, text in files.items():
             if text is None:
                 edits.append({"ord": order, "op": "remove", "path": path})
@@ -1436,6 +1437,13 @@ class RealRegister:
             rows.append({"path": path, "present": True, "sha256": _sha(text.encode("utf-8")),
                          "final_newline": text.endswith("\n")})
             self.files[path] = text
+        return self._send(kind, edits, rows, verb, base)
+
+    def _send(self, kind: str, edits: list, rows: list, verb: str = "",
+              base: int | None = None) -> int:
+        """One `commit_write` call, as the writer's login: the entry's journal
+        object, `edits` and the `files` rows; the seq it made."""
+        import uuid as _uuid
         journal = {"kind": kind, "verb": verb or ("import" if kind == "import" else "log"),
                    "lane": "repoA-1", "workstation": "Eagle", "author": "T217's fixture",
                    "message": f"{kind} by T217's fixture", "args_sha256": "0" * 64}
@@ -1452,6 +1460,23 @@ class RealRegister:
     def write(self, files: dict) -> int:
         self._commit("write", files)
         return self.head()
+
+    def replace(self, path: str, line_no: int, new_text: str) -> int:
+        """One committed `write` entry whose one edit is a `replace` of line
+        `line_no` of `path`, the edit op `_commit`'s create, append and remove
+        edits never make (`commit_write`'s step 6 checks its `old_sha256`
+        against the stored line, the sha256 of its UTF-8 text without its LF);
+        the seq it made."""
+        lines = _lines(self.files[path])
+        old = lines[line_no - 1]
+        text = "\n".join(lines[:line_no - 1] + [new_text] + lines[line_no:]) + "\n"
+        edits = [{"ord": 1, "op": "replace", "path": path, "line_no": line_no,
+                  "old_sha256": _sha(old.encode("utf-8")), "new_text": new_text}]
+        rows = [{"path": path, "present": True, "sha256": _sha(text.encode("utf-8")),
+                 "final_newline": True}]
+        seq = self._send("write", edits, rows)
+        self.files[path] = text
+        return seq
 
     def env(self, extra: dict | None = None) -> dict:
         env = {k: v for k, v in os.environ.items() if not k.startswith(("LANES_", "PG", "TMUX"))}
@@ -1651,18 +1676,76 @@ def test_log_key_hex_slot_holds_a_key_outside_the_class_and_is_never_cached(pg, 
 
 
 PICKAXE = ["dot-in-name", "count-kept", "no-match", "at-bound", "at-needs-generation",
-           "past-head-or-other-generation"]
+           "past-head-or-other-generation",
+           # Five more, new since v3f (R-F11-1; T217i): lane 3's accepted readings of `--last`
+           # for T114 (lane 1, #165 6755628366 reading 5; lane 3, 6755922262 reading 5).
+           "generation-needs-at", "empty-grep", "path-empty-or-control", "at-minus-1",
+           "replay-mismatch-69"]
+
+#: The three whose 64 is `journal`'s own argument check, made "before anything
+#: is read" (lane 1's `cmd_journal`; contract section 3.6), so they need no
+#: register: they run the checkout's `lanes-index` and fail by their own
+#: assertion here, without an engine. The other eight read the register.
+PICKAXE_NO_ENGINE = ("generation-needs-at", "empty-grep", "path-empty-or-control")
+
+
+def refused_before_any_connection(tmp_path: Path, case: str) -> None:
+    """`journal --last`'s 64 for `case`, by the checkout's own `lanes-index`,
+    with no register and no engine. Each refusal is paired with a CONTROL, the
+    same argv with only the faulty part made valid, which must not end 64: so a
+    `lanes-index` too old to have `journal` at all, whose 64 is "unknown
+    subcommand" (F8), fails on the control and never passes for the refusal.
+    The control ends at the configuration, a named file that does not exist
+    (2), which is before any connection."""
+    log, key, generation = "lanes/log/repoA-1.md", "aXb", str(UUID_M1)
+    root = tmp_path / "no-register"
+    root.mkdir()
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("LANES_", "PG", "TMUX"))}
+    env.update({"HOME": str(root), "XDG_CONFIG_HOME": str(root / "config"),
+                "LANES_INDEX_CONFIG": str(root / "no-such.conf"), "LANES_WORKSTATION": "Eagle"})
+
+    def run(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, str(helpers.LANES_INDEX), "journal", "--last", *args],
+                              env=env, capture_output=True, text=True, timeout=60, check=False,
+                              stdin=subprocess.DEVNULL)
+
+    def refused(control: tuple, *variants: tuple) -> None:
+        valid = run(*control)
+        assert valid.returncode != 64, (case, "the valid form is itself a usage error", control,
+                                        valid.returncode, valid.stderr)
+        for variant in variants:
+            result = run(*variant)
+            assert result.returncode == 64, (case, variant, result.returncode, result.stdout,
+                                             result.stderr)
+            assert result.stdout == "", (case, variant, "a usage error prints nothing on stdout",
+                                         result.stdout)
+
+    if case == "generation-needs-at":
+        refused(("--path", log, "--grep", key, "--at", "5", "--generation", generation),
+                ("--path", log, "--grep", key, "--generation", generation))
+    elif case == "empty-grep":
+        refused(("--path", log, "--grep", key),
+                ("--path", log, "--grep", ""), ("--path", log, "--grep="))
+    else:
+        refused(("--path", log, "--grep", key),
+                ("--path", "", "--grep", key),
+                ("--path", "lanes/log/repoA" + chr(1) + "-1.md", "--grep", key),
+                ("--path", "lanes/log/repoA" + chr(10) + "-1.md", "--grep", key))
 
 
 @pytest.mark.parametrize("case", PICKAXE)
-def test_journal_last_pickaxe_finds_the_newest_entry_that_changes_the_keys_count(pg, tmp_path, case):
+def test_journal_last_pickaxe_finds_the_newest_entry_that_changes_the_keys_count(
+        request, tmp_path, case):
     """`journal --last --path <log> --grep <key> [--at <n> --generation <g>]`
     (lane 1's T114; L1v4.5:327-330; lane 5's C7, C8) gives `seq=` of the
     newest entry at or below `n` whose edits change how many times `<key>`
     occurs in the log, as a fixed string (git's `-S`). Real engine: it skips
-    without one (T205)."""
+    without one (T205), but for the three `PICKAXE_NO_ENGINE` cases, whose 64
+    is decided before any connection."""
+    if case in PICKAXE_NO_ENGINE:
+        return refused_before_any_connection(tmp_path, case)
     log = "lanes/log/repoA-1.md"
-    reg = RealRegister(pg, tmp_path / "real", l1_files())
+    reg = RealRegister(request.getfixturevalue("pg"), tmp_path / "real", l1_files())
     text = reg.files[log]
     seq_axb = reg.write({log: text + "NOTED — lane aXb\n"})
     text = reg.files[log]
@@ -1694,6 +1777,26 @@ def test_journal_last_pickaxe_finds_the_newest_entry_that_changes_the_keys_count
     elif case == "at-needs-generation":
         result = last("--grep", "aXb", "--at", str(seq_dot))
         assert result.returncode == 64, (result.returncode, result.stderr)
+    elif case == "at-minus-1":
+        # `--at -1` with `.head`'s generation is ACCEPTED and never 64: all this case asserts
+        # until a draft states what it means (lane 1, #165 6767591676: draft 4.13's open point 3).
+        result = last("--grep", "aXb", "--at", "-1", "--generation", reg.generation)
+        assert result.returncode != 64, (result.returncode, result.stdout, result.stderr)
+    elif case == "replay-mismatch-69":
+        # A journal whose `replace` line does not match its `old_sha256` is 69, and gives no
+        # rank. `commit_write` refuses a mismatched `old_sha256` when it is sent, so the entry
+        # is made right and its journal row is spoiled afterwards, by the cluster's superuser.
+        before = last("--grep", "aXb")
+        assert before.returncode == 0 and re.search(r"(?m)^seq=[0-9]+$", before.stdout), \
+            ("the journal does not replay before it is spoiled", before.returncode, before.stdout,
+             before.stderr)
+        line = _lines(reg.files[log])[2]
+        seq = reg.replace(log, 3, line + ", reworded twice")
+        reg.pg.psql("UPDATE lanes_register.journal_edits SET old_sha256 = repeat('0', 64) "
+                    f"WHERE seq = {seq} AND op = 'replace';")
+        spoiled = last("--grep", "aXb")
+        assert spoiled.returncode == 69, (spoiled.returncode, spoiled.stdout, spoiled.stderr)
+        assert not re.search(r"(?m)^seq=", spoiled.stdout), ("a rank was given", spoiled.stdout)
     else:
         above = last("--grep", "aXb", "--at", str(reg.head() + 1), "--generation", reg.generation)
         assert above.returncode == 69, (above.returncode, above.stderr)
