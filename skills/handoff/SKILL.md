@@ -517,7 +517,8 @@ and every write would be refused 69 as well, so none of the three is sent: the b
 there, and step 5 prints the restart command with `--lane`. **Every other answer holds the writes the same way and
 ends the block 1,** naming the verb and its code: `act-begin`'s 1 or 64, an `act-begin` that exited 0 with no line or a
 malformed one, an identity read that failed, and any walk code but 0, 69, 75 and 3, a 2 included (lane 3, #165
-6774499606, A2). **A write that exits 69, and a block that sent none, print the same note:** ONE note that says how the
+6774499606, A2). **That 1 ends the act:** after the note it prints no `READY TO SWAP` line and no restart command,
+and runs no step 5 or step 6 (REV-ACT2 S2; ruling A2: "the act exits 1"). **A write that exits 69, and a block that sent none, print the same note:** ONE note that says how the
 record is completed later (`lane-handoff --late --at <UTC> --lane <L>`, run from a shell by whoever relaunches the
 lane, once the register answers and before the relaunch), after the third write however many of the three exited 69
 (spec:692; B12b tasks:1361 and :1375). Where `act-begin` exits 2 the helper predates feature 007 and the writes go as
@@ -568,9 +569,9 @@ act_down_say() {   # act_down_say <the call that stopped the writes> <its exit c
   act_down=1; act_exit="$2"; act_line=""; act_scopes=""
   echo "NO PAUSED WRITES: \`$1\` exited $2, so the register cannot be consulted and every write below would be refused 69 as well. None of the three is sent: no PAUSED line, no register line and no state cell is written. The handoff step 2 refreshed stands, and step 5 prints the restart command with --lane. This block ends $2."
 }
-act_hold() {   # act_hold: the REFUSED line above held the writes (A2); the block ends 1
+act_hold() {   # act_hold: the REFUSED line above held the writes (A2); the block ends 1 and the act stops
   act_down=1; act_exit=1; act_line=""; act_scopes=""
-  echo "NO PAUSED WRITES: the refusal above holds them. None of the three is sent: no PAUSED line, no register line and no state cell is written. The handoff step 2 refreshed stands, and step 5 prints the restart command with --lane. This block ends 1."
+  echo "NO PAUSED WRITES: the refusal above holds them. None of the three is sent: no PAUSED line, no register line and no state cell is written. The handoff step 2 refreshed stands. This block ends 1 and the act STOPS after the note below: no restart command is printed and step 5 and step 6 are not run. Fix what the refusal names and run /handoff again."
 }
 act_69_note() {
   echo "THE PAUSED RECORD IS INCOMPLETE, and the lane stays as it is, an interrupted swap. The record is completed later with \`lane-handoff --late --at <UTC> --lane ${lane:-<L>}\`, run from a shell by whoever relaunches the lane, once the register answers and BEFORE the relaunch (step 6 says why); the UTC is the moment this session ended."
@@ -708,8 +709,24 @@ if [[ -z "$ws_missing" && -z "$act_down" ]]; then
   act_scope_add "row:$lane"; act_scope_add "bind:$lane"; act_scope_add "alias:$lane"
   case "$act_line" in
     ""|*@files) : ;;
-    *)  aw_rc=0
-        act_walk="$(env -u LANES_READ_MIRROR LANES_NO_FETCH=1 "$L" canon-lane --walk "$id_typed" 2>/dev/null)" || aw_rc=$?
+    *)  # THE WALK'S OWN WORDS ARE RELAYED WHERE IT FAILS (REV-ACT2 N4), as `lane-start` and
+        # `lane-end` relay them, with no temporary file to leave behind: one call, its
+        # stdout sent to fd 3, its stderr through `sed` to tag each line `E `, and its
+        # exit code echoed as `rc=<n>` on fd 3, all into the one substitution, then
+        # split by tag. A name has no space and no `=`, so no stdout line can be taken
+        # for a tag. A missing `rc=` line stays `unknown`, which refuses below.
+        aw_rc=unknown; act_walk=""; aw_err=""
+        aw_all="$( { { env -u LANES_READ_MIRROR LANES_NO_FETCH=1 "$L" canon-lane --walk "$id_typed" 1>&3 3>&-; echo "rc=$?" >&3; } 2>&1 | sed 's/^/E /'; } 3>&1 )"
+        while IFS= read -r aw_l; do
+          case "$aw_l" in
+            "E "*) aw_err="$aw_err${aw_l#E }"$'\n' ;;
+            "rc="*) aw_rc="${aw_l#rc=}" ;;
+            *) [[ -z "$aw_l" ]] || act_walk="$act_walk$aw_l"$'\n' ;;
+          esac
+        done <<< "$aw_all"
+        if [[ "$aw_rc" != 0 || -z "$act_walk" ]]; then
+          [[ -z "$aw_err" ]] || printf '%s' "$aw_err" >&2
+        fi
         case "$aw_rc" in
           0)  if [[ -z "$act_walk" ]]; then
                 printf 'REFUSED: `%s canon-lane --walk %s` exited 0 and printed no name, so the names lane %s was found through are NOT known, and the writes below would leave their keys out: a change to one of them would not refuse them (Y:5624). Nothing of step 4 was written.\n' "$L" "$id_typed" "$lane" >&2
@@ -733,8 +750,9 @@ fi
 # question 2). `act_down` is set only above, by `act-begin`, an identity read or the
 # walk, and nothing below builds a record that no write will carry: the note prints
 # ONCE and the block ends with `act_exit`, the 69, 75 or 3 that stopped the writes, or
-# 1 where an answer refused them. The handoff step 2 refreshed stands, and step 5 still
-# prints the restart command: say in the report which code and why, and go on to it.
+# 1 where an answer refused them. The handoff step 2 refreshed stands. After a 69, 75 or
+# 3 the swap goes on to step 5, which prints the restart command with `--lane`; after a 1
+# the act STOPS here and prints none (REV-ACT2 S2). Say in the report which code and why.
 if [[ -n "$act_down" ]]; then
   act_69_note
   exit "$act_exit"
@@ -1084,15 +1102,22 @@ prints one time whether one, two or all three writes exited 69, and the same one
 the walk stopped them. Say in the report which of the three exited 69; the writers' own stderr, above the note, names
 the refusal.
 
-**A block that ends with a code held the writes, and the swap goes on to step 5** (lane 3, #165 6774499606, A2 and
-T431's question 2). Where `act-begin`, an identity read or the walk exited 69, 75 or 3, the block sent none of the
-three writes, printed the note and ended with that code. Where an answer was not a base or a read failed any other way
-(`act-begin`'s 1 or 64, an exit 0 with no line or a malformed one, any walk code but 0, 69, 75 and 3), the block sent
-none, printed the REFUSED line that names the verb and its code and then the note, and ended 1. Either way the handoff
-step 2 refreshed stands and nothing of step 4 was written. A nonzero end from this block is therefore not a reason to
-stop: say in the report which code it ended with and which call it was, set `row_write_refused=1`, and run step 5.
+**A block that ends with a code held the writes** (lane 3, #165 6774499606, A2 and T431's question 2; REV-ACT2 S2).
+Where `act-begin`, an identity read or the walk exited 69, 75 or 3, the block sent none of the three writes, printed
+the note and ended with that code. The handoff step 2 refreshed stands and nothing of step 4 was written, so **the
+swap goes on to step 5**: say in the report which code it ended with and which call it was, set
+`row_write_refused=1`, and run step 5. Where an answer was not a base or a read failed any other way (`act-begin`'s
+1 or 64, an exit 0 with no line or a malformed one, any walk code but 0, 69, 75 and 3), the block sent none, printed
+the REFUSED line that names the verb and its code, then the note, and ended 1. **That 1 ends the act, as it does in
+`lane-handoff`, which stops before its READY line:** print no `READY TO SWAP` line and no restart command, run
+neither step 5 nor any act of step 6, say in the report the REFUSED line and the handoff step 2 refreshed, and tell
+the operator to fix what the refusal names and run `/handoff` again.
 
 ## 5. Print the restart command — one command, no menu
+
+**Run this step only where step 4's block did not end 1.** A block that ended 1 held the writes (A2) and the act
+stopped after its note: no `READY TO SWAP` line and no restart command are printed (REV-ACT2 S2). After a 69, 75 or 3
+the step stands, and its note says the row write "may not be written".
 
 ```sh
 if command -v lclaude >/dev/null 2>&1; then
