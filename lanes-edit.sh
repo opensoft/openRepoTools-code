@@ -3457,23 +3457,28 @@ CH_EOF
 # `lanes/log/README.md` refuse here as every path outside `handoffs/` does. A
 # commit of those two alone caught in this push's window refuses 2 here, and
 # `commit`'s publish act sends it afterwards, each commit then allowed on its
-# own. Under `handoffs/`, THE WRITE'S OWN COMMIT (`$1`) passes any change, a
-# deletion, a type change, a symlink or a gitlink included, since T422's move
-# deletes there; EVERY OTHER COMMIT keeps the fence's rule, each path an added
-# or modified regular file (REV420 N1). The read is `-z`, and a `.`, `..` or
-# `.git` path component refuses in any commit (`cp_primary_read`; REV420 N2,
-# N5). A merge or root commit among them, a read that fails, a commit
-# `diff-tree` skips, or no origin branch to read refuses too, since each
-# proves nothing. The write's commit is then local and kept on HEAD, and
-# named, with the publish act, which sends a queue it passes, and S6.3's
-# archive. CP_PRIMARY_TIP is the tip read here, and the push sends exactly it,
-# so a commit another writer makes on top between the read and the push stays
-# local, unread and unsent.
+# own; BUT NOT BESIDE A MOVE (REV420b S2): where this write's own commit holds
+# a D, a T, a symlink or a gitlink under `handoffs/` (T422's move, `own` in the
+# read), the publish act refuses that commit with 2, so the refusal does not
+# offer it and gives S6.3's archive instead. Whether such a move can be
+# published at all is put to lane openRepoTools-3 (REV420b S2), and nothing
+# more is built for it here. Under `handoffs/`, THE WRITE'S OWN COMMIT (`$1`)
+# passes any change, a deletion, a type change, a symlink or a gitlink
+# included, since T422's move deletes there; EVERY OTHER COMMIT keeps the
+# fence's rule, each path an added or modified regular file (REV420 N1). The
+# read is `-z`, and a `.`, `..` or `.git` path component refuses in any commit
+# (`cp_primary_read`; REV420 N2, N5). A merge or root commit among them, a
+# read that fails, a commit `diff-tree` skips, or no origin branch to read
+# refuses too, since each proves nothing. The write's commit is then local and
+# kept on HEAD, and named, with the publish act where it can send the queue,
+# and S6.3's archive. CP_PRIMARY_TIP is the tip read here, and the push sends
+# exactly it, so a commit another writer makes on top between the read and
+# the push stays local, unread and unsent.
 CP_PRIMARY_TIP=""
 cp_primary_push_check() {   # <this write's commit> <its subject>
   local pb_trk="refs/remotes/origin/$LANES_BRANCH" pb_br="refs/heads/$LANES_BRANCH" \
         pb_base="" pb_tip="" pb_revs="" pb_odd="" pb_pairs="" pb_n=0 pb_bad="" pb_rc=0 \
-        pb_lane="${LANES_LANE:-${CS_LANE:-}}"
+        pb_rows="" pb_own="" pb_until="" pb_lane="${LANES_LANE:-${CS_LANE:-}}"
   CP_PRIMARY_TIP=""
   if [ "$CS_NO_ORIGIN_BRANCH" = 1 ]; then
     die "refusing to push on primary (feature 007): origin has no branch $LANES_BRANCH, so this push would publish the whole branch, and on primary this push sends only handoff changes onto origin's tip (D10; FR-026; R16 (d)). Nothing was pushed; this write's commit is local and kept on HEAD: $1 $2" 2
@@ -3491,8 +3496,9 @@ cp_primary_push_check() {   # <this write's commit> <its subject>
   # every commit handed to it must come back as a header, as in the fence.
   if [ -n "$pb_pairs" ]; then
     pb_n="$(printf '%s\n' "$pb_pairs" | awk 'END { print NR }')" || pb_rc=$?
-    pb_bad="$(printf '%s\n' "$pb_pairs" | cp_primary_read push "$pb_n" "$1")" || pb_rc=$?
-    pb_bad="$(printf '%s\n' "$pb_bad" | sed -n -e 's/^bad//p')" || pb_rc=$?
+    pb_rows="$(printf '%s\n' "$pb_pairs" | cp_primary_read push "$pb_n" "$1")" || pb_rc=$?
+    pb_bad="$(printf '%s\n' "$pb_rows" | sed -n -e 's/^bad//p')" || pb_rc=$?
+    pb_own="$(printf '%s\n' "$pb_rows" | sed -n -e 's/^own//p')" || pb_rc=$?
   fi
   [ "$pb_rc" = 0 ] ||
     die "refusing to push on primary (feature 007): git could not read, or this helper could not classify, the commits on $pb_br that refs/remotes/origin/$LANES_BRANCH lacks, so whether each changes only paths under handoffs/ is unknown (D10; FR-026; R16 (d)). Nothing was pushed; this write's commit is local and kept on HEAD: $1 $2" 2
@@ -3501,9 +3507,16 @@ cp_primary_push_check() {   # <this write's commit> <its subject>
     [ -z "$pb_odd" ] || printf '%s\n' "$pb_odd" >&2
     [ -z "$pb_bad" ] || printf '%s\n' "$pb_bad" >&2
     note "look at them: git -C $LANES_REPO log --stat refs/remotes/origin/$LANES_BRANCH..$pb_br"
-    note "\`commit\`'s publish act sends a queue whose every commit is a handoff write or a write of lanes/repos.tsv or lanes/log/README.md alone, this write's commit with it, and refuses with 2, sending nothing, over any other queue. Run it first: ${pb_lane:+LANES_LANE=$pb_lane }$SELF commit \"publish the queue\". Where it refuses:"
+    if [ -n "$pb_own" ]; then
+      note "this write's own commit changes these under handoffs/ other than as an added or modified regular file (a move's deletion, a type change, a symlink or a gitlink), which only this push sends: \`commit\`'s publish act refuses such a change with 2 in any queue, so it cannot send this one. Archive the queue and drop it instead:"
+      printf '%s\n' "$pb_own" >&2
+      pb_until="archived and dropped"
+    else
+      note "\`commit\`'s publish act sends a queue whose every commit is a handoff write or a write of lanes/repos.tsv or lanes/log/README.md alone, this write's commit with it, and refuses with 2, sending nothing, over any other queue. Run it first: ${pb_lane:+LANES_LANE=$pb_lane }$SELF commit \"publish the queue\". Where it refuses:"
+      pb_until="published or archived and dropped"
+    fi
     cp_recovery_steps
-    die "refusing to push on primary (feature 007): this push sends only commits whose every path is under handoffs/, an added or modified regular file outside this write's own commit, and never lanes/repos.tsv or lanes/log/README.md, which \`commit\`'s publish act sends (D10's branch-wide push; spec:169; spec:183–185; FR-026; R16 (d); lane openRepoTools-3, #165 6770820384). Nothing was pushed; this write's commit is local and kept on HEAD, and every write that makes a git commit from this checkout refuses over it (S3's unpushed row) until it is published or archived and dropped, as above: $1 $2" 2
+    die "refusing to push on primary (feature 007): this push sends only commits whose every path is under handoffs/, an added or modified regular file outside this write's own commit, and never lanes/repos.tsv or lanes/log/README.md, which \`commit\`'s publish act sends (D10's branch-wide push; spec:169; spec:183–185; FR-026; R16 (d); lane openRepoTools-3, #165 6770820384). Nothing was pushed; this write's commit is local and kept on HEAD, and every write that makes a git commit from this checkout refuses over it (S3's unpushed row) until it is $pb_until, as above: $1 $2" 2
   fi
   CP_PRIMARY_TIP="$pb_tip"
 }
@@ -3520,8 +3533,10 @@ cp_primary_push_check() {   # <this write's commit> <its subject>
 # is. The fields are read in bash, `read -d ''`, since an awk's NUL record
 # separator is not portable. stdout: one line for each change that does not
 # pass, `<class>  <commit, 12> <status> <mode> <path, quoted for a shell>`,
-# class `div`, `mix` or `bad`. Non-zero where git fails, where a commit handed
-# to it never came back as a header, or where the stream does not parse.
+# class `div`, `mix` or `bad`, and in `push` an `own` line for each change
+# that passes as the write's own alone. Non-zero where git fails, where a
+# commit handed to it never came back as a header, or where the stream does
+# not parse.
 #
 # IN BOTH READS a path with a `.`, `..` or `.git` component (`.git` in any
 # case) is `bad`: git's own checkout never writes through one, and an origin
@@ -3547,7 +3562,11 @@ cp_primary_push_check() {   # <this write's commit> <its subject>
 #     `mix`, and the publish act refuses it with 2.
 # THE BACKSTOP (`push`): a path under `handoffs/` passes, as any change in the
 # write's own commit (`$3`) and as an added or modified regular file in every
-# other; every other path, the two git files included, is `bad`.
+# other; every other path, the two git files included, is `bad`. A change the
+# write's own commit alone may make, one under `handoffs/` that is not an
+# added or modified regular file (T422's move), passes as `own`, printed so
+# the backstop's refusal can tell that the publish act would refuse it
+# (REV420b S2).
 cp_primary_read() {   # fence|push <how many commits> [<the write's own commit>]
   local cpr_ps=""
   git --no-replace-objects -C "$LANES_REPO" diff-tree --stdin --always -r --no-renames --raw -z --ignore-submodules=none |
@@ -3576,7 +3595,10 @@ cp_primary_classify() {   # fence|push <how many commits> [<the write's own comm
         esac
         if [ "$cq_k" = ok ] && [ "$cq_role" = push ]; then
           case "$cq_p" in
-            handoffs/*) [ "$cq_c" = "$cq_own" ] || [ "$cq_am" = 1 ] || cq_k=bad ;;
+            handoffs/*)
+              if [ "$cq_am" = 0 ]; then
+                if [ "$cq_c" = "$cq_own" ]; then cq_k=own; else cq_k=bad; fi
+              fi ;;
             *) cq_k=bad ;;
           esac
         elif [ "$cq_k" = ok ]; then
@@ -3620,7 +3642,8 @@ cp_primary_classify() {   # fence|push <how many commits> [<the write's own comm
 }
 # One commit's lines, read from `cp_primary_classify`'s locals: what passes is
 # not printed, except as `mix` in a fence commit that holds a git file beside
-# any other path; a component is printed `bad`, with its reason.
+# any other path, and as `own` in the backstop; a component is printed `bad`,
+# with its reason.
 cp_primary_rows() {
   local cw_l="" cw_k=""
   [ -n "$cq_rows" ] || return 0
