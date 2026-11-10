@@ -465,7 +465,11 @@
 #      pending record (F10), each with nothing sent: a host with neither
 #      `sha256sum` nor `shasum` to make a write's digest (`wr_begin`), and a
 #      `register-pending/` directory that cannot be made, or a claim in it
-#      that cannot be written whole (`wr_claim_take`, ERR-42)
+#      that cannot be written whole (`wr_claim_take`, ERR-42); and its primary
+#      branch's (T415), each with nothing sent by it: an attempt's directory
+#      under `register-writes/`, or a file the parent writes there, that
+#      cannot be made, and a `call` line the pending record cannot take
+#      before its commit call (`pw_attempt_dir`, `pw_commit`)
 #   2  refusal: bad arguments, the object is held, an unknown alias, —
 #      Amendment 15 — a register holding
 #      two rows whose lane names differ only by case, which every writer and
@@ -560,6 +564,19 @@
 #      list, or lists in a form the seam cannot read; a blob id that is not
 #      40 hex digits; and a case-only rename that is not one D line and one A
 #      line.
+#      AND FEATURE 007'S PRIMARY BRANCH (T415; FR-018; Y:2459, Y:5014,
+#      Y:5603–5605; the contract's §3.2 and §3.3), the parent's, each with
+#      nothing written: a write that names no lane, or whose lane's own
+#      checkout is not there to read (`pw_checkout`; D12: no clone); a hand
+#      edit of a rendered file pending in that checkout (`pw_hand_edit_refuse`);
+#      no author identity there (`pw_author_read`); an act whose generation is
+#      not the snapshot's, or whose base is past it (`pw_act_at_snapshot`); a
+#      snapshot's refusal (LR007 `generation` or `another-write`, a refused
+#      configuration), relayed; the commit's refusal, LR005 with its token and
+#      any `held-by=` line, LR007, LR009 or LR010, relayed after the deciding
+#      attempt's output; and a 64 from either call, which this file never
+#      sends: an internal error. The verb's own refusal in an attempt's child,
+#      before `ready`, is the run's end with that child's code and output.
 #  64  usage — a caller's bad arguments to one of the reads Amendment 11 added
 #      (`window-lane`, `lane-dir`, `lane-profile`, `last-session`, `forks`,
 #      `duplicate-holder` (issue #39), `workstation`, `fetch-age`, `lanes`,
@@ -596,8 +613,10 @@
 #      exists, before any routing, clone, fetch or lock, and exit 69 on two
 #      answers: 78, `lanes-index`'s refusal of `mode=primary` while the
 #      renderer's git half is not installed, whose text they repeat (agreement
-#      test 14); and `primary` itself, for which this file has no SQL write
-#      path yet (phase 2's T415 replaces that arm). Never files mode instead.
+#      test 14); and `primary` itself for `commit`, whose primary form is
+#      T420's, and for a form that writes nothing, a dry run, which has no
+#      primary path yet; every other write runs the primary branch (T415).
+#      Never files mode instead.
 #      Every other failure of the question — a configuration `lanes-index`
 #      refuses, a `lanes-index` too old to know `mode`, none to run, a crash,
 #      no answer within 2 s — runs the verb in files mode with one warning,
@@ -610,6 +629,16 @@
 #      — and where `lanes-index mode` answered 78. Every write of the act would
 #      be refused with 69 as well, so the act stops before its first read.
 #      Nothing is printed on stdout, never a base. Off primary it is never 69.
+#      AND FEATURE 007'S PRIMARY BRANCH (T415; Y:2603, Y:2612–2614; the
+#      contract's §2.7), each with nothing written: a snapshot that fails, or
+#      that answers in a form this file cannot read (not `format=1`, a key
+#      twice or missing, not `switch=primary` with `marker=present`), and the
+#      commit's definitive refusal under `psql`'s exit 3 (LR002, LR003, LR004
+#      after its retry, any other SQLSTATE), its `ERROR:` line relayed. A
+#      connect failure at the commit is never 69: it is in doubt. Each prints
+#      the write's rerun: by its id and generation where it has one, or the
+#      command as given, saying that nothing was sent, where its first
+#      snapshot minted none (open point 38).
 #   3  PUSHED, NOT CONFIRMED: <sha> (Amendment 23 S4, its one cause). The write
 #      committed and pushed — or its push timed out, and a hung push often
 #      lands — and the read-back could not confirm the commit on origin: the
@@ -729,6 +758,16 @@
 #      parent, the primary write path (T415), acts on `seam.out`, never on
 #      this code (Y:5007): `none` sends the run to a replay, and the code is
 #      never passed on.
+#      AND FEATURE 007'S PRIMARY BRANCH (T415; D7; Y:2632–2641), the parent's:
+#      "register busy: <k> attempts in <D> s, each beaten by another write;
+#      nothing was written; a retry in seconds is safe", where every attempt
+#      lost its turn by D7's deadline, 30 s from the first attempt's start
+#      (LANES_REGISTER_DEADLINE_S sets it for tests), with the write's rerun.
+#      And, until T417's lookup and its exit 3, two ends that send nothing
+#      more and keep the pending record, so a rerun settles the write by its
+#      id: an end while the record holds a commit call that may have
+#      committed (in doubt), which prints the lookup and the rerun; and an
+#      identical write's owner still live at the deadline (Y:5218).
 #
 # --no-sweep is accepted and changes nothing. It named the default of the
 #   capture that came in on 2026-09-09 after 0d84d34/a1f2438 swept another
@@ -6415,18 +6454,28 @@ pw_run() {   # <the verb's arguments>
     env) [ "$WR_REC_WRITE_ID" != "$WR_ID" ] || PW_REC_OURS=1 ;;
   esac
   pw_run_dir
-  # ---- (b) ONE ATTEMPT, (c) ITS DECISION. STEP (c) ALONE: one attempt; the
-  # deadline's loop comes in step (e).
+  # ---- (e) THE ATTEMPTS, UNTIL D7'S DEADLINE (Y:2632–2641): 30 s from the
+  # first attempt's start, kept with `SECONDS`, whose one-second grain is
+  # enough. No attempt starts after it. Each attempt is (b) and (c): every
+  # answer but a lost turn and a call in doubt ends the run inside them, so
+  # the loop meets its deadline only where each attempt was beaten by another
+  # write, or one of them is in doubt: "register busy", 75, or F3's lookup
+  # where a `call` line is held (`pw_end`). Only the deciding attempt's output
+  # is ever replayed (F14; FR-024).
   PW_T0="$SECONDS"
-  pw_attempt_dir
-  pw_snapshot
-  pw_act_at_snapshot
-  pw_attempt_files
-  pw_child_start
-  pw_child_wait || pw_child_end
-  pw_commit
-  pw_decide
-  pw_end 75 "register busy: ${PW_K} attempts in ${PW_D_S} s, each beaten by another write; nothing was written; a retry in seconds is safe. $(pw_rerun_line)"
+  while : ; do
+    if [ "$PW_K" -ge 1 ] && [ $((SECONDS - PW_T0)) -ge "$PW_D_S" ]; then
+      pw_end 75 "register busy: ${PW_K} attempts in ${PW_D_S} s, each beaten by another write; nothing was written; a retry in seconds is safe. $(pw_rerun_line)"
+    fi
+    pw_attempt_dir
+    pw_snapshot
+    pw_act_at_snapshot
+    pw_attempt_files
+    pw_child_start
+    pw_child_wait || pw_child_end
+    pw_commit
+    pw_decide
+  done
 }
 
 # ---------------------------------------------------------------- the verbs
