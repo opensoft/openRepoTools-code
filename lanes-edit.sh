@@ -564,10 +564,13 @@
 #      list, or lists in a form the seam cannot read; a blob id that is not
 #      40 hex digits; and a case-only rename that is not one D line and one A
 #      line.
-#      AND FEATURE 007'S `claim` (T421; FR-031; Y:3349–3354), in an attempt's
-#      child under the flag, an internal error with nothing sent: CLAIM-LOST's
-#      rescan or its line reached there (`claim_lost_unreachable`), which only
-#      1b's re-run after a refused push reaches.
+#      AND FEATURE 007'S `claim` AND `release` (T421; FR-031; Y:3349–3354,
+#      Y:5146–5152), in an attempt's child under the flag, each an internal
+#      error with nothing sent: CLAIM-LOST's rescan or its line reached there
+#      (`claim_lost_unreachable`), which only 1b's re-run after a refused push
+#      reaches; and either verb's steps after its write, its GitHub comment
+#      among them, reached with no `committed <seq>` from the seam
+#      (`reg_tail_committed`).
 #      AND FEATURE 007'S PRIMARY BRANCH (T415; FR-018; Y:2459, Y:5014,
 #      Y:5603–5605; the contract's §3.2 and §3.3), the parent's, each with
 #      nothing written: a write that names no lane, or whose lane's own
@@ -16358,6 +16361,22 @@ gh_comment() {
   printf '%s\n' "$gc_url"
 }
 
+# FEATURE 007, T421 — `claim`'S AND `release`'S COMMENTS RUN ONLY IN THE TAIL
+# (F14, Y:5146–5152; Y:5066). In an attempt's child each verb's comment, and
+# `claim`'s line naming what it wrote, follow its `write_event`, whose
+# `commit_publish` waits at the seam (T414) and returns 0 on `committed <s>`
+# with `REGISTER_SEQ` set: so they run once, after COMMIT. Two ways return 0
+# with no `committed`: `LANES_NO_GIT=1`, which `commit_publish` and
+# `checkout_sync` answer before they test the flag, and the seam's "nothing
+# staged", which neither verb meets, since each appends a line. Either would
+# post a comment for a write the register does not hold. So under the flag,
+# with no seq, the verb stops here: an internal error, 2, before `ready`, so
+# nothing is sent. Files mode never stops here: `REG_SCRATCH` is empty.
+reg_tail_committed() {   # <verb>
+  [ -z "$REG_SCRATCH" ] || [ -n "$REGISTER_SEQ" ] ||
+    die "refusing to run ${1}'s steps after its write in an attempt's child under LANES_REGISTER_SCRATCH: the write took no \`committed <seq>\` from the seam (it reached the seam with nothing staged, or never reached it: LANES_NO_GIT=1 stops it before the seam), so its GitHub comment would speak for a write the register does not hold. An internal error of the write path. Nothing was sent." 2
+}
+
 # FEATURE 007, T421 — CLAIM-LOST IS UNREACHABLE ON PRIMARY (FR-031; Y:3349–3354,
 # Y:5080, Y:5089, Y:5095). Its two functions below run only on 1b's re-run,
 # the `exec` that a refused push or S3's `cs_recheck` makes (`CP_REPLAYING`),
@@ -23125,6 +23144,7 @@ EOF
     CS_RECHECK=0
     CLAIM_SKIP_DEAD=""
     [ "$wrc" = 0 ] || exit "$wrc"
+    reg_tail_committed claim   # feature 007, T421: on primary, only after `committed`
 
     # 6. the comment, AFTER the push, citing the commit that carries the line.
     sha="$(git -C "$LANES_REPO" rev-parse HEAD 2>/dev/null || printf '')"
@@ -23180,6 +23200,7 @@ EOF
     uuid="$(session_for "$lane")"
     utc="$(utc_now)"
     write_event "$lane" RELEASED "$obj" "" "" "$why" "$utc" "$uuid" || exit $?
+    reg_tail_committed release   # feature 007, T421: on primary, only after `committed`
     if [ "$NO_GITHUB" != 1 ]; then
       url="$(gh_comment "$obj" "$(printf 'RELEASED — lane %s, session %s@%s, %s, for %s%s\n' \
                "$lane" "$uuid" "$WS" "$utc" "$obj" "${why:+ — $why}")" 2>/dev/null || :)"
