@@ -98,6 +98,7 @@ subcommands add 69, 75 and 78, and 3 for a write in doubt, each named by an
 from __future__ import annotations
 
 import datetime as _dt
+import errno
 import functools
 import hashlib
 import json
@@ -2597,6 +2598,503 @@ def cmd_render(args: list[str]) -> int:
     for row in rows:
         say(f"file={row}")
     return EXIT_OK
+
+
+# ===== the SQL register: the image cache (007)
+#
+# THE IMAGE CACHE (feature 007, opensoft/openRepoTools#165; T302; design
+# Y:4963, question 13's form; PC-1; lane 3's API ruling, #165 6746004829). One
+# cache per environment, under `state_dir()/register-images/`, of the render
+# set's file images that the snapshots and the readers there fetched. Its
+# files:
+# - `objects/<digest>`: an image's bytes, named by their sha256 as 64
+#   lowercase hex, the form of the journal's `journal_files` rows. Each is
+#   content-addressed and immutable, and is written by a temp file and
+#   `os.replace` with no lock, since two writers of one digest write the
+#   same bytes;
+# - `seq/<n>`: the manifest of seq `n`, one `<path>` TAB `<digest>` line per
+#   path a writer read at `n`, sorted by path bytewise. A manifest may be
+#   partial, and a second record of one `n` merges into the first;
+# - `head`: the decimal seq of the newest manifest recorded. It moves only
+#   forward;
+# - `lock`: the flock that recording and collection take, in `SyncLock`'s
+#   form, but with `LOCK_NB` and no wait: a busy lock skips the record. It is
+#   opened without blocking, and a `lock` that is not a regular file counts
+#   as busy. A symlinked `lock` is not followed, and skips the record too.
+#
+# THE CACHE IS ADVISORY (design Y:2516): correctness rests on the digests the
+# database gives at `n`, and on the head check. So no error escapes the five
+# `image_cache_*` functions but `image_cache_put`'s `TypeError` for data that
+# is not bytes. An `OSError`, a busy lock or a corrupt file is a miss or a
+# skipped write, and the caller fetches whole.
+#
+# NOTHING IS FSYNCED. After a power loss, a renamed file can be empty or torn,
+# and each such file is a miss. An object fails its re-hash. A manifest or a
+# `head` out of form is a miss, and the next record replaces it. An empty or
+# cut-short manifest reads as a valid partial one, so its callers fetch the
+# rest whole. That is accepted for an advisory cache (lane 3's review, #165
+# 6755345889).
+#
+# Each caller:
+# - uses an object only through `image_cache_get(<the digest the database
+#   gave at n>)`, so an object is used only when its name equals that digest
+#   (D17);
+# - copies the bytes `image_cache_get` returns into its own per-invocation
+#   file, never a link into the cache;
+# - never brings forward a cache head above the database's `n`, as after a
+#   re-import: it fetches whole.
+# The callers are T111's `register snapshot --tree`, T113's `register read
+# --prefetch` and form 4, and T512's write-through.
+
+#: The cache's directory, under `state_dir()` (design Y:4963), and its parts.
+IMAGE_CACHE_DIR = "register-images"
+_IMAGE_OBJECTS = "objects"
+_IMAGE_SEQS = "seq"
+_IMAGE_HEAD = "head"
+_IMAGE_LOCK = "lock"
+
+#: N: collection keeps the objects that the last N manifests name, by seq, and
+#: removes every older manifest. Y gives only "the last few manifests"
+#: (Y:4963); N = 3 is lane 3's ruling (#165 6746004829).
+IMAGE_CACHE_KEEP = 3
+
+#: Collection's floor (PC-1): an object is removed only when its mtime is over
+#: 10 minutes old, so an object a writer has put and not yet recorded, or one
+#: a reader is copying, stays, but for the narrow race `image_cache_put`
+#: names. An abandoned temp file is removed on the same floor.
+IMAGE_CACHE_FLOOR_SECONDS = 600
+
+#: A digest: a sha256 as 64 lowercase hex, as `journal_files` holds it.
+_IMAGE_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
+#: A seq as `seq/<n>` and `head` spell it: decimal, with no leading zero, and
+#: a `bigint`'s (design §1.2's journal).
+_IMAGE_SEQ_RE = re.compile(r"0|[1-9][0-9]{0,18}")
+_IMAGE_HEAD_RE = re.compile(rb"(0|[1-9][0-9]{0,18})\n?")
+_IMAGE_SEQ_MAX = 2 ** 63 - 1
+#: The temp files `_image_cache_write` names, and no other file.
+_IMAGE_TEMP_RE = re.compile(r"\..+\.tmp-[0-9]+-[0-9a-f]{8}")
+#: A manifest's path holds no control character, so each line keeps its two
+#: fields.
+_IMAGE_PATH_BAD_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _image_cache_root() -> str:
+    return os.path.join(state_dir(), IMAGE_CACHE_DIR)
+
+
+def _image_cache_makedirs(*subs: str) -> str:
+    """The cache's root, once `state_dir()`, the root and each of `subs` under
+    it exist, each created 0700, as `SyncLock` creates `state_dir()`. Raises
+    `OSError`."""
+    root = _image_cache_root()
+    for path in (state_dir(), root, *(os.path.join(root, sub) for sub in subs)):
+        os.makedirs(path, mode=0o700, exist_ok=True)
+    return root
+
+
+def _image_cache_read(path: str) -> bytes:
+    """A cache file's bytes, read whole, from a regular file only: a FIFO or a
+    device in its place is refused before any read can block, and a symlink
+    is not followed (lane 3's review, #165 6755345889). So a symlink at an
+    object's name is a miss, which `image_cache_put` replaces. Raises
+    `OSError`."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"{path} is not a regular file")
+        chunks = []
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(chunk)
+    finally:
+        os.close(fd)
+
+
+def _image_cache_write(path: str, data: bytes) -> None:
+    """`data` written whole to `path`, 0600, by a temp file beside it and
+    `os.replace`, so a reader finds the old file or the new one, never a part
+    of either. The temp file's name is this call's own, and it is removed
+    when the write fails. Raises `OSError`."""
+    parent, name = os.path.split(path)
+    temp = os.path.join(parent, f".{name}.tmp-{os.getpid()}-{os.urandom(4).hex()}")
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view):]
+        finally:
+            os.close(fd)
+        os.replace(temp, path)
+    except BaseException:
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        raise
+
+
+def _image_cache_unlink(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _image_cache_older(path: str, now: float) -> bool:
+    """Whether `path`'s own mtime is over the floor's 10 minutes before `now`.
+    A file that cannot be dated is not old: collection keeps it."""
+    try:
+        return now - os.lstat(path).st_mtime > IMAGE_CACHE_FLOOR_SECONDS
+    except OSError:
+        return False
+
+
+def _image_cache_entry_ok(path, digest) -> bool:
+    """Whether `path` and `digest` make one manifest line: a path that is not
+    empty, holds no control character and encodes as UTF-8, and a digest."""
+    if not (isinstance(path, str) and path and _IMAGE_PATH_BAD_RE.search(path) is None
+            and isinstance(digest, str) and _IMAGE_DIGEST_RE.fullmatch(digest)):
+        return False
+    try:
+        path.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _image_cache_manifest_bytes(manifest: dict) -> bytes:
+    """A manifest's file: one `<path>` TAB `<digest>` line per path, each
+    ended by LF, sorted by path bytewise (lane 3's ruling, #165 6746004829).
+    An empty manifest is an empty file."""
+    return "".join(f"{path}\t{manifest[path]}\n"
+                   for path in sorted(manifest, key=lambda p: p.encode("utf-8"))
+                   ).encode("utf-8")
+
+
+def _image_cache_parse_manifest(data: bytes):
+    """A manifest file's paths and digests, or None where the file is not one
+    `_image_cache_manifest_bytes` writes: text that is not UTF-8, a last line
+    with no LF, a line with no TAB, a path or a digest out of form, or one
+    path twice."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    if text and not text.endswith("\n"):
+        return None
+    manifest = {}
+    for line in text.split("\n")[:-1]:
+        path, tab, digest = line.partition("\t")
+        if not tab or path in manifest or not _image_cache_entry_ok(path, digest):
+            return None
+        manifest[path] = digest
+    return manifest
+
+
+def _image_cache_parse_seq(data: bytes):
+    """`head`'s seq, or None where `data` is not one decimal seq, with at most
+    one LF after it."""
+    match = _IMAGE_HEAD_RE.fullmatch(data)
+    if match is None:
+        return None
+    seq = int(match.group(1))
+    return seq if seq <= _IMAGE_SEQ_MAX else None
+
+
+def _image_cache_lock(root: str):
+    """The cache's flock on `register-images/lock`, taken as `SyncLock` takes
+    its own (design Y:4963): the file opened for append, made 0600, and
+    `LOCK_EX | LOCK_NB`. Unlike `SyncLock`, it is tried once, with no wait
+    (lane 3's ruling, #165 6746004829), and where `fcntl` is missing there is
+    no lock, so nothing is recorded.
+
+    The open never blocks: `O_NONBLOCK`, with `O_CLOEXEC`. A `lock` that is
+    not a regular file, such as a FIFO with a reader, counts as a busy lock.
+    A FIFO with no reader refuses the open (lane 3's review, #165
+    6755345889).
+
+    The open never follows a symlink: `O_NOFOLLOW`. A symlinked `lock` fails
+    the open with ELOOP, so its target, dangling or not, is neither changed
+    nor created, and the caller skips the call. Only the last name is
+    checked, so a symlinked `register-images/` still works (lane 3's delta
+    check, #165 6755954683).
+
+    Returns the open descriptor, which holds the lock until `os.close`, or
+    None where the lock is busy or missing. Raises `OSError` where the file
+    cannot be opened."""
+    try:
+        import fcntl
+    except ImportError:
+        return None
+    fd = os.open(os.path.join(root, _IMAGE_LOCK),
+                 os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NONBLOCK | os.O_CLOEXEC
+                 | os.O_NOFOLLOW, 0o600)
+    try:
+        if stat.S_ISREG(os.fstat(fd).st_mode):
+            try:
+                os.fchmod(fd, 0o600)
+            except OSError:
+                pass
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+    except OSError:
+        pass
+    os.close(fd)
+    return None
+
+
+def _image_cache_seqs(seq_dir: str) -> list:
+    """The seqs `seq/` lists, highest first, from the names `_IMAGE_SEQ_RE`
+    matches whole; none where `seq/` is missing. Raises `OSError` where it
+    cannot be listed."""
+    try:
+        listed = os.listdir(seq_dir)
+    except FileNotFoundError:
+        return []
+    return sorted((seq for seq in (int(name) for name in listed if _IMAGE_SEQ_RE.fullmatch(name))
+                   if seq <= _IMAGE_SEQ_MAX), reverse=True)
+
+
+def _image_cache_record_locked(root: str, n: int, manifest: dict) -> None:
+    """`image_cache_record`'s two writes, under the cache's flock:
+    - `seq/<n>`, with the paths of an earlier record of `n` merged in, a path
+      in both taking this record's digest. An earlier record that cannot be
+      read, or is out of form, is replaced;
+    - `head`, moved to `n` only where `n` is above it. A `head` that is
+      missing, or holds no seq, as a crash can leave it, is written as the
+      larger of `n` and the highest seq `seq/` lists, so it never moves back
+      (lane 3's review, #165 6755345889). Where `seq/` cannot be listed, it
+      is left. A symlinked `head` counts as missing: it is replaced by a
+      regular `head`, and its target is left alone (lane 3's delta check,
+      #165 6755954683). A `head` that cannot be read is left as it is, since
+      it may name a seq above `n`.
+    Raises `OSError`."""
+    seq_dir = os.path.join(root, _IMAGE_SEQS)
+    target = os.path.join(seq_dir, str(n))
+    try:
+        merged = _image_cache_parse_manifest(_image_cache_read(target)) or {}
+    except OSError:
+        merged = {}
+    merged.update(manifest)
+    _image_cache_write(target, _image_cache_manifest_bytes(merged))
+    head_path = os.path.join(root, _IMAGE_HEAD)
+    try:
+        head = _image_cache_parse_seq(_image_cache_read(head_path))
+    except OSError as error:
+        if not isinstance(error, FileNotFoundError) and error.errno != errno.ELOOP:
+            raise
+        head = None
+    if head is not None and n <= head:
+        return
+    to = n if head is not None else max([n, *_image_cache_seqs(seq_dir)])
+    _image_cache_write(head_path, f"{to}\n".encode("ascii"))
+
+
+def _image_cache_named(seq_dir: str, seqs: list):
+    """The digests that the manifests of `seqs` name, or None where one of
+    them cannot be read or is out of form, since what it names is not
+    known."""
+    named = set()
+    for seq in seqs:
+        try:
+            manifest = _image_cache_parse_manifest(
+                _image_cache_read(os.path.join(seq_dir, str(seq))))
+        except OSError:
+            return None
+        if manifest is None:
+            return None
+        named.update(manifest.values())
+    return named
+
+
+def _image_cache_sweep(directory: str, pattern, now: float, keep=frozenset()) -> None:
+    """Removes each file in `directory` whose name `pattern` matches whole, is
+    not in `keep`, and whose mtime is over the floor's 10 minutes old. A file
+    that cannot be removed is left."""
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return
+    for name in names:
+        path = os.path.join(directory, name)
+        if pattern.fullmatch(name) and name not in keep and _image_cache_older(path, now):
+            _image_cache_unlink(path)
+
+
+def _image_cache_collect_locked(root: str) -> None:
+    """`image_cache_collect`'s removals, under the cache's flock (design
+    Y:4963; PC-1; lane 3's ruling, #165 6746004829). "The last N manifests"
+    are the `IMAGE_CACHE_KEEP` highest seqs, so the head's own manifest is
+    always among them. It removes:
+    - every object named in none of them whose mtime is over
+      `IMAGE_CACHE_FLOOR_SECONDS` old. Where `seq/` cannot be listed, or one
+      of them cannot be read or is out of form, it removes no object;
+    - every manifest older than them, by seq;
+    - every temp file `_image_cache_write` names that is over the same floor
+      old, since its writer died before its rename.
+    It removes only names this cache writes, and leaves a file it cannot
+    remove."""
+    now = time.time()
+    seq_dir = os.path.join(root, _IMAGE_SEQS)
+    objects_dir = os.path.join(root, _IMAGE_OBJECTS)
+    try:
+        seqs = _image_cache_seqs(seq_dir)
+    except OSError:
+        return
+    named = _image_cache_named(seq_dir, seqs[:IMAGE_CACHE_KEEP])
+    if named is not None:
+        _image_cache_sweep(objects_dir, _IMAGE_DIGEST_RE, now, named)
+    for seq in seqs[IMAGE_CACHE_KEEP:]:
+        _image_cache_unlink(os.path.join(seq_dir, str(seq)))
+    for directory in (root, seq_dir, objects_dir):
+        _image_cache_sweep(directory, _IMAGE_TEMP_RE, now)
+
+
+def image_cache_get(digest: str) -> bytes | None:
+    """The bytes of `objects/<digest>`, or None where the object is missing,
+    unreadable, or its bytes do not hash to `digest`: they are checked again
+    on every read (lane 3's ruling, #165 6746004829). The caller passes the
+    digest the database gave at `n`, so an object is used only when its name
+    equals it (D17). A `digest` that is not 64 lowercase hex is a miss. It
+    takes no lock, writes nothing, and raises nothing. The caller copies what
+    it returns into its own per-invocation file."""
+    if not isinstance(digest, str) or _IMAGE_DIGEST_RE.fullmatch(digest) is None:
+        return None
+    try:
+        data = _image_cache_read(os.path.join(_image_cache_root(), _IMAGE_OBJECTS, digest))
+    except (OSError, ValueError):
+        return None
+    return data if hashlib.sha256(data).hexdigest() == digest else None
+
+
+def image_cache_put(data: bytes) -> str:
+    """Returns `data`'s digest, its sha256 as 64 lowercase hex, once
+    `objects/<digest>` is written by a temp file and `os.replace` where it is
+    missing, with no lock: two writers of one digest write the same bytes
+    (design Y:4963).
+    - An object `image_cache_get` would not return, unreadable, a symlink, or
+      not hashing to its name, counts as missing, and is replaced.
+    - An object already whole is not written again. Its mtime is set to now,
+      so collection's 10-minute floor keeps it while the caller records it.
+      That narrows the race with a collector, and does not close it: a
+      `utime` that lands between the collector's `lstat` and its unlink
+      loses the object, which costs a later reader one miss (lane 3's
+      review, #165 6755345889). The `utime` does not follow a symlink
+      planted there since the read: only the link's own times are set
+      (lane 3's delta check, #165 6755954683). A link planted between the
+      read and the `utime` stays a miss until the next `put` of its digest
+      replaces it (lane 3's delta check, #165 6768006915).
+    - A write that fails is skipped. The digest is returned all the same, and
+      a later reader misses.
+    `data` is `bytes` or a `bytearray`. Anything else raises `TypeError`
+    before the cache is touched, the one error that escapes this section's
+    five functions."""
+    if not isinstance(data, (bytes, bytearray)):
+        raise TypeError(f"image_cache_put takes bytes, not {type(data).__name__}")
+    data = bytes(data)
+    digest = hashlib.sha256(data).hexdigest()
+    try:
+        root = _image_cache_makedirs(_IMAGE_OBJECTS)
+        target = os.path.join(root, _IMAGE_OBJECTS, digest)
+        if image_cache_get(digest) is not None:
+            try:
+                os.utime(target, follow_symlinks=False)
+                return digest
+            except (FileNotFoundError, NotImplementedError):
+                # NotImplementedError: this platform's utime cannot leave a
+                # link alone, so the object is written again instead.
+                pass
+        _image_cache_write(target, data)
+    except (OSError, ValueError):
+        pass
+    return digest
+
+
+def image_cache_head() -> tuple[int, dict[str, str]] | None:
+    """The cache's seq, from `head`, and its manifest `seq/<seq>`, path to
+    digest; None where there is none, or where either cannot be read or is
+    out of form. It takes no lock, writes nothing, and raises nothing.
+
+    The caller brings those images to its `n` with the journal's entries
+    since that seq, and checks each against the digest at `n` (design
+    Y:2512-2516). A manifest may be partial: it holds the paths its writers
+    read. A seq above `n`, as after a re-import, is never brought forward:
+    the caller fetches whole (lane 3's ruling, #165 6746004829)."""
+    try:
+        root = _image_cache_root()
+        seq = _image_cache_parse_seq(_image_cache_read(os.path.join(root, _IMAGE_HEAD)))
+        if seq is None:
+            return None
+        manifest = _image_cache_parse_manifest(
+            _image_cache_read(os.path.join(root, _IMAGE_SEQS, str(seq))))
+    except (OSError, ValueError):
+        return None
+    return None if manifest is None else (seq, manifest)
+
+
+def image_cache_record(n: int, manifest: dict[str, str]) -> None:
+    """Records seq `n`'s manifest, path to digest, under the cache's flock
+    (design Y:4963; lane 3's ruling, #165 6746004829):
+    - it writes `seq/<n>` by a temp file and `os.replace`. A manifest may hold
+      only the paths its writer read at `n`, and a second record of one `n`
+      merges its paths into the first, a path in both taking the second's
+      digest;
+    - it moves `head` to `n` only where `n` is above it. A `head` that is
+      missing, a symlink, or holds no seq takes the larger of `n` and the
+      highest seq `seq/` lists. So `head` never moves back;
+    - it then collects, as `image_cache_collect` does, under the same flock.
+    The flock is taken with `LOCK_NB`: where another writer holds it, the
+    record is skipped, never waited for. A record is skipped too where `n` is
+    not a whole number from 0 to 2**63 - 1, where `manifest` is not a dict of
+    paths with no control character to digests, and where it cannot be
+    written. It raises nothing."""
+    if (isinstance(n, bool) or not isinstance(n, int) or not 0 <= n <= _IMAGE_SEQ_MAX
+            or not isinstance(manifest, dict)
+            or not all(_image_cache_entry_ok(path, digest) for path, digest in manifest.items())):
+        return
+    try:
+        root = _image_cache_makedirs(_IMAGE_OBJECTS, _IMAGE_SEQS)
+        lock = _image_cache_lock(root)
+    except (OSError, ValueError):
+        return
+    if lock is None:
+        return
+    try:
+        try:
+            _image_cache_record_locked(root, n, manifest)
+        except (OSError, ValueError):
+            pass
+        _image_cache_collect_locked(root)
+    except (OSError, ValueError):
+        pass
+    finally:
+        os.close(lock)
+
+
+def image_cache_collect() -> None:
+    """Collection, under the cache's flock taken with `LOCK_NB`, and skipped
+    where the lock is busy (design Y:4963; PC-1; lane 3's ruling, #165
+    6746004829). It removes the objects named in none of the last
+    `IMAGE_CACHE_KEEP` manifests whose mtime is over
+    `IMAGE_CACHE_FLOOR_SECONDS` old, and every manifest older than those
+    (`_image_cache_collect_locked`). `image_cache_record` runs it under its
+    own flock. It creates no directory, and raises nothing."""
+    try:
+        root = _image_cache_root()
+        lock = _image_cache_lock(root) if os.path.isdir(root) else None
+    except (OSError, ValueError):
+        return
+    if lock is None:
+        return
+    try:
+        _image_cache_collect_locked(root)
+    except (OSError, ValueError):
+        pass
+    finally:
+        os.close(lock)
 
 
 # ======================================================== the records built
