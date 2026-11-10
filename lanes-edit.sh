@@ -1519,6 +1519,12 @@ unset LANES__REPLAY_PID LANES__ATTEMPT LANES__CLAIM_FROM LANES__CLAIM_DEAD LANES
 #     `sidecar_lock_dir` answers the path the parent wrote into `<dir>/lock`,
 #     each at its own site below.
 REG_SCRATCH=""; REG_SCRATCH_CLOCK=""; REG_SCRATCH_UTC=""; REG_SCRATCH_RUN=""
+# A REPLAY (T418; Y:5316–5326): 1 where the honoured directory holds the
+# `replay` mark its parent writes beside the committing call's `preimages/`.
+# The child then answers `lane_state_preimage` from those and reads none
+# afresh, and `guard_type` types into no pane. 0 otherwise, whatever the
+# environment says.
+REG_REPLAY=0
 # A FAULT UNDER AN HONOURED FLAG. `die` is defined below the resolver, so it is
 # said here in `die`'s own form: one line on stderr, the code under
 # `LANES_DEBUG`, exit 2.
@@ -1593,6 +1599,7 @@ reg_scratch_take() {
       fi ;;
   esac
   REG_SCRATCH="$rst_d"; REG_SCRATCH_CLOCK="$rst_c"; REG_SCRATCH_UTC="$rst_u"
+  [ ! -f "$rst_d/replay" ] || REG_REPLAY=1
   REG_MODE=primary
   LANES_REPO="$rst_d/tree"
   unset LANES_DIR LANES_FILE
@@ -6717,14 +6724,177 @@ PT_EOF
   pw_replay_tail "$1" "$2"
 }
 
-# THE REPLAY (Y:5316–5326) is the next step's. Until it is built, a write
-# whose tail no waiting child takes names the verb's after-COMMIT steps as
-# owed, removes the record (Y:5194: "after the tail is done or named as
-# owed") and ends with 0.
+# THE REPLAY (Y:5316–5326), where no waiting child matches, once per run:
+#   1. it takes the `call` line of the pending record whose `<files>` is the
+#      entry's change set; where none is, there is no replay (Y:5317), and so
+#      where the answer carried no rows;
+#   2. it makes a FRESH run segment, `<d>/<nonce>/1/`, never the committing
+#      run's (Y:5156, Y:5326; lane openRepoTools-3, #165 6755005268, T413's
+#      question 4), with `parent.pid`, `seam.fifo` and `lock` as any attempt's;
+#   3. `lanes-index register snapshot --tree <dir>/tree --at <s−1>` with the
+#      write's five identity flags, of which only the generation is checked
+#      under `--at` (the contract's §3.2), builds the scratch tree at the
+#      entry's base, since the commit moved the head from `s−1` to `s`;
+#   4. the attempt's `snapshot` is that answer with the COMMITTING call's
+#      `clock=`, its `call` line's `<clock>` (Y:5322; #165 6755005268, T413's
+#      question 3), so the replay's lines carry that call's UTC; and its
+#      `preimages/` is the committing call's (Y:5323), with a `replay` mark,
+#      so the child's `lane_state_preimage` answers from them and reads none
+#      afresh, and its `guard_type` types into no pane (Y:5326);
+#   5. the verb runs as a child under the flag, as any attempt's does
+#      (`pw_child_start`); it makes no commit call, so it skips the act's
+#      checks, and reads tmux, liveness and `gh_reads` again (Y:5326);
+#   6. at `ready` the change sets are compared: equal, it takes `committed
+#      <s>` (`pw_tail_child`); otherwise `abandon` (Y:5324).
+# A replay that stops before `ready`, or reaches the seam with another change
+# set, runs none of the tail (Y:5328–5331): `pw_tail_owed`. It reads only what
+# a kept `call` line keeps: the record's line, and its directory's
+# `preimages/` (lane openRepoTools-3, #165 6769061039, T415's question 5).
+PW_REPLAYED=0
 pw_replay_tail() {   # <seq> <how it was learned>
+  local rp_l="" rp_b="" rp_c="" rp_n="" rp_f="" rp_d="" rp_clock="" rp_cdir="" rp_run="" rp_dir="" \
+        rp_bin="" rp_rc=0 rp_at="" rp_h="" rp_last="" rp_p="" rp_t=""
   pw_abandon_all
-  note "write $WR_ID is in the register at seq $1 ($2), and no child of this run took its tail; this run sent no second commit of it. Its after-COMMIT steps did not run in this run, and may be owed: those of lanes-edit.sh $WR_VERB. Do by hand any that did not run."
+  if [ "$PW_REPLAYED" = 1 ]; then
+    pw_tail_owed "$1" "its replay's child, at seq $(( $1 - 1 )), did not take the message at its seam (its seam.out does not read tail)"
+  fi
+  PW_REPLAYED=1
+  if [ -n "$PW_E_DIGEST" ]; then
+    while IFS= read -r rp_l; do
+      [ -n "$rp_l" ] || continue
+      IFS=' ' read -r rp_b rp_c rp_n rp_f rp_d <<<"$rp_l"
+      if [ "$rp_f" = "$PW_E_DIGEST" ] && wr_is_count "$rp_c"; then rp_clock="$rp_c"; rp_cdir="$rp_d"; fi
+    done <<<"$WR_CALLS"
+  fi
+  if [ -z "$rp_clock" ]; then
+    if [ -z "$PW_E_DIGEST" ]; then
+      pw_tail_owed "$1" "the register's answer (${2}) carried no change set to match a child or a call against, so it cannot be replayed (Y:5317)"
+    fi
+    pw_tail_owed "$1" "no call line of its pending record sent the entry's change set, so it cannot be replayed (Y:5317)"
+  fi
+  rp_run="$(act_mint_id)" || rp_run=""
+  rp_dir="$WR_STATE/register-writes/$WR_D/$rp_run/1"
+  if [ -z "$rp_run" ] || ! wr_dir_0700 "$WR_STATE/register-writes/$WR_D/$rp_run" || ! wr_dir_0700 "$rp_dir"; then
+    pw_tail_owed "$1" "its replay's directory, $rp_dir, could not be made a 0700 directory of this user's, so it was not replayed"
+  fi
+  PW_DIR="$rp_dir"
+  rp_t="$(mktemp "$rp_dir/.parent.pid.XXXXXX" 2>/dev/null)" || rp_t=""
+  if [ -z "$rp_t" ] || ! printf '%s\t%s\n' "$$" "$WR_CLAIM_START" > "$rp_t" 2>/dev/null ||
+     ! mv -f -- "$rp_t" "$rp_dir/parent.pid" 2>/dev/null || ! mkfifo -m 600 "$rp_dir/seam.fifo" 2>/dev/null ||
+     { [ -n "$PW_LOCK" ] && ! printf '%s\n' "$PW_LOCK" > "$rp_dir/lock" 2>/dev/null; }; then
+    pw_tail_owed "$1" "its replay's parent.pid, seam.fifo or lock, in $rp_dir, could not be written, so it was not replayed"
+  fi
+  rp_bin="$(lanes_index_bin)"
+  [ -n "$rp_bin" ] ||
+    pw_tail_owed "$1" "there is no lanes-index beside $SCRIPT_DIR/lanes-edit.sh or on PATH to build its replay's tree with"
+  rp_at=$(( $1 - 1 ))
+  ( "$rp_bin" register snapshot --write-id "$WR_ID" --generation "$WR_GEN" --lane "$WR_LANE" --verb "$WR_VERB" \
+      --args-sha256 "$WR_D" --tree "$rp_dir/tree" --checkout "$PW_C" --at "$rp_at" \
+      </dev/null >"$rp_dir/snapshot.at" 2>"$rp_dir/snapshot.err"; exit "$?" ) 2>/dev/null || rp_rc=$?
+  if [ "$rp_rc" != 0 ]; then
+    [ ! -s "$rp_dir/snapshot.err" ] || cat -- "$rp_dir/snapshot.err" >&2
+    pw_tail_owed "$1" "its replay's snapshot at seq ${rp_at} (\`lanes-index register snapshot --at ${rp_at}\`) exited ${rp_rc}, above, so it was not replayed"
+  fi
+  pw_replay_snapshot "$rp_dir" "$rp_clock" ||
+    pw_tail_owed "$1" "its replay's snapshot at seq ${rp_at} answered what this lanes-edit.sh cannot read (not format=1, not this write's generation, or no clock=), so it was not replayed"
+  pw_replay_preimages "$rp_cdir" "$rp_dir" ||
+    pw_tail_owed "$1" "its replay's preimages/ and replay mark, in $rp_dir, could not be written, so it was not replayed"
+  pw_child_start
+  if ! pw_child_wait; then
+    rp_last="$(pw_last_line "$rp_dir/out.2")"
+    [ -n "$rp_last" ] || rp_last="$(pw_last_line "$rp_dir/out.1")"
+    pw_tail_owed "$1" "replayed at seq ${rp_at} it now stops before its write (exit ${PW_RC}: ${rp_last:-no output})"
+  fi
+  rp_h="$(pw_dir_digest "$rp_dir")" || rp_h=""
+  if [ "$rp_h" != "$PW_E_DIGEST" ]; then
+    rp_p="$(pw_first_diff "$rp_dir/files")"
+    pw_abandon_one "$PW_CHILD" "$rp_dir"; PW_CHILD=""
+    pw_tail_owed "$1" "replayed at seq ${rp_at} it now reaches the seam with another change set, the first path whose digest differs being ${rp_p:-unknown}"
+  fi
+  pw_tail_child "$1" "$PW_CHILD" "$rp_dir" || :
+  PW_CHILD=""
+  pw_tail_owed "$1" "its replay's child, at seq ${rp_at}, did not take the message at its seam (its seam.out does not read tail)"
+}
+
+# THE REPLAY'S `snapshot` (step 4): the `--at` answer, kept as `snapshot.at`,
+# line for line, but for its `clock=`, which is the committing call's. 1 where
+# that answer is not `format=1`, names another generation than this write's,
+# or holds no `clock=`.
+pw_replay_snapshot() {   # <replay dir> <the committing call's clock>
+  local rs_l="" rs_body="" rs_fmt="" rs_gen="" rs_clk=0
+  while IFS= read -r rs_l || [ -n "$rs_l" ]; do
+    case "$rs_l" in
+      format=*) rs_fmt="${rs_l#format=}" ;;
+      generation=*) rs_gen="${rs_l#generation=}" ;;
+      clock=*) rs_clk=$((rs_clk + 1)); rs_l="clock=$2" ;;
+    esac
+    rs_body="${rs_body}${rs_l}${WR_NL}"
+    rs_l=""
+  done < "$1/snapshot.at" 2>/dev/null
+  [ "$rs_fmt" = 1 ] && [ "$rs_gen" = "$WR_GEN" ] && [ "$rs_clk" = 1 ] || return 1
+  printf '%s' "$rs_body" > "$1/snapshot" 2>/dev/null
+}
+
+# THE REPLAY'S `preimages/` (step 4): a copy of the committing call's, each
+# lane's answer one file, and the `replay` mark beside it. An answer that call
+# did not record is not there, which the child reads as empty: "write
+# nothing" (Y:5323).
+pw_replay_preimages() {   # <the call's attempt dir> <replay dir>
+  local rpp_f=""
+  wr_dir_0700 "$2/preimages" || return 1
+  for rpp_f in "$1"/preimages/*; do
+    [ -f "$rpp_f" ] && [ ! -L "$rpp_f" ] || continue
+    cp -- "$rpp_f" "$2/preimages/" 2>/dev/null || return 1
+  done
+  printf '%s\n' "$PW_LEARNED" > "$2/replay" 2>/dev/null
+}
+
+# A FILE'S LAST LINE THAT IS NOT EMPTY, with control characters shown by
+# `cat -v`, for a WARNING's one line.
+pw_last_line() {   # <file>
+  local ll_l="" ll_last=""
+  while IFS= read -r ll_l || [ -n "$ll_l" ]; do
+    [ -z "$ll_l" ] || ll_last="$ll_l"
+    ll_l=""
+  done < <(cat -v -- "$1" 2>/dev/null)
+  ll_last="${ll_last#"${ll_last%%[![:space:]]*}"}"
+  printf '%s\n' "$ll_last"
+}
+
+# THE FIRST PATH WHOSE DIGEST DIFFERS (Y:5330), between the entry's rows
+# (PW_E_ROWS) and a replay's `files`: in path order, bytewise, the first path
+# that is in one set and not the other, or whose `<present>` and `<sha256>`
+# differ.
+pw_first_diff() {   # <the replay's files>
+  local fd_l="" fd_p="" fd_r="" fd_o="" fd_x="" fd_all="" fd_t=""
+  fd_t="$(printf '\t')"
+  fd_r="$(cat -- "$1" 2>/dev/null)"
+  while IFS= read -r fd_l; do
+    [ -n "$fd_l" ] || continue
+    fd_p="${fd_l%%"$fd_t"*}"; fd_x=0
+    while IFS= read -r fd_o; do
+      [ "$fd_o" != "$fd_l" ] || fd_x=1
+    done <<<"$fd_r"
+    [ "$fd_x" = 1 ] || fd_all="${fd_all}${fd_p}${WR_NL}"
+  done <<<"$PW_E_ROWS"
+  while IFS= read -r fd_l; do
+    [ -n "$fd_l" ] || continue
+    fd_p="${fd_l%%"$fd_t"*}"; fd_x=0
+    while IFS= read -r fd_o; do
+      [ "$fd_o" != "$fd_l" ] || fd_x=1
+    done <<<"$PW_E_ROWS"
+    [ "$fd_x" = 1 ] || fd_all="${fd_all}${fd_p}${WR_NL}"
+  done <<<"$fd_r"
+  printf '%s' "$fd_all" | LC_ALL=C sort | head -n 1
+}
+
+# A TAIL THIS RUN DID NOT RUN (Y:5328–5331): the write is committed either
+# way. Every child gets `abandon`, the record goes, the run prints one
+# WARNING, and exits 0. Until the texts' own step, `<owed>` names the verb.
+pw_tail_owed() {   # <seq> <what became of the tail>
+  pw_abandon_all
   pw_record_done
+  note "WARNING: register write $WR_ID is in the register at seq ${1}; ${2}, so its after-COMMIT steps did NOT run: those of lanes-edit.sh ${WR_VERB}. Do by hand any that did not run."
   exit 0
 }
 
@@ -14701,6 +14871,11 @@ lane_binding_utc() {   # <lane>
 guard_type() {   # <pane target> <the line to type>
   gt_pane="${1-}"; gt_text="${2-}"
   [ -n "$gt_text" ] || return 1
+  # A REPLAY TYPES INTO NO PANE (feature 007, T418; Y:5326): the pane may hold
+  # another session by then, so in a replay's child nothing is typed, and the
+  # request travels in the register, as it does where no pane is live. T423
+  # gives `request-handoff`'s own words for it.
+  [ "$REG_REPLAY" != 1 ] || return 1
   command -v tmux >/dev/null 2>&1 || return 1
   # THE RECORD'S PANE, ELSE THIS ONE — AND THIS ONE IS THE RIGHT FALLBACK
   # BECAUSE OF WHERE THIS CODE RUNS. The pane comes from the live record's
@@ -18548,11 +18723,40 @@ lane_state_put() {   # <root> <lane> <state> <gen> <op> <owner> <agent> <profile
 # a delayed act whose lane has moved on since*. A lane with no control root
 # answers the same `none/0/none` a lane with no snapshot does: nothing to
 # compare, and nothing to overwrite either.
+#
+# FEATURE 007, T418 (Y:5323): in an attempt's child, each answer is RECORDED in
+# its attempt's directory, `preimages/<lane>`, and in a replay (`REG_REPLAY`)
+# the answer is the committing call's, from that file, and none is read
+# afresh: with a fresh pre-image the follow-up's fence would pass and move the
+# lane's `generation` again (Y:5358). An answer the call did not record, or a
+# lane whose name cannot be a file's, is empty, which `lane_state_follow`
+# reads as "write nothing". A record that cannot be written is left out, so its
+# replay writes nothing too.
 lane_state_preimage() {   # <lane> <payload>
-  lsp_root=""; lsp_prc=0
+  lsp_root=""; lsp_prc=0; lsp_k=""; lsp_a=""
+  if [ -n "$REG_SCRATCH" ]; then
+    case "${1-}" in
+      ''|*[!A-Za-z0-9._-]*|.*|-*) : ;;
+      *) lsp_k="$REG_SCRATCH/preimages/$1" ;;
+    esac
+    if [ "$REG_REPLAY" = 1 ]; then
+      if [ -n "$lsp_k" ] && [ -f "$lsp_k" ]; then
+        { IFS= read -r lsp_a || :; } < "$lsp_k" 2>/dev/null
+      fi
+      printf '%s\n' "$lsp_a"
+      return 0
+    fi
+  fi
   lsp_root="$(lane_control_root "${1-}" "${2-}")" || lsp_prc=$?
-  [ "$lsp_prc" = 0 ] || { printf 'none/0/none\n'; return 0; }
-  lane_state_fingerprint "$lsp_root/lane-state.yaml"
+  if [ "$lsp_prc" = 0 ]; then
+    lsp_a="$(lane_state_fingerprint "$lsp_root/lane-state.yaml")"
+  else
+    lsp_a="none/0/none"
+  fi
+  if [ -n "$lsp_k" ]; then
+    ( umask 077 && mkdir -p -- "$REG_SCRATCH/preimages" && printf '%s\n' "$lsp_a" > "$lsp_k" ) 2>/dev/null || :
+  fi
+  printf '%s\n' "$lsp_a"
 }
 
 # THE LINE THAT WAS WRITTEN IS WHAT MOVES THE SNAPSHOT, and this is where the
