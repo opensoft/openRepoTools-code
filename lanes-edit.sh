@@ -5781,6 +5781,8 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
 # `tail` key and the done mark (T418).
 PW_LANE=""; PW_C=""; PW_AUTHOR=""; PW_D_S=30; PW_T0=0; PW_RUN=""; PW_RUN_DIR=""
 PW_LOCK=""; PW_REC_OURS=0
+PW_K=0; PW_DIR=""; PW_CHILD=""; PW_KEPT=""; PW_FIRST_DONE=0; PW_RELAY=""; PW_RC=0
+PW_S_GEN=""; PW_S_WID=""; PW_S_FOUND=""; PW_S_N=""; PW_S_CLOCK=""; PW_S_NOT_AFTER=""
 
 # D7's deadline in whole seconds: 30, or `LANES_REGISTER_DEADLINE_S` for tests
 # (Y:2632–2641).
@@ -5908,6 +5910,319 @@ pw_given_text() {
   fi
 }
 
+# ---- (b) ONE ATTEMPT.
+#
+# ITS DIRECTORY, `<d>/<run>/<k>/` (T413), mode 0700, and in it, before the
+# child starts: `parent.pid`, one line, `<pid>` TAB `<start token>`, this
+# process's `$$` and its `pid_start_of` token (empty where lane 5's T502 is not
+# here), by temporary file and `mv` (#165 6755005268, item 2); `seam.fifo`, the
+# FIFO the seam opens on fd 5 (Y:4999); and `lock`, where this process has a
+# sidecar lock. A file that cannot be written ends the run with 1, nothing sent.
+pw_attempt_dir() {
+  local pd_t=""
+  PW_K=$((PW_K + 1))
+  PW_DIR="$PW_RUN_DIR/$PW_K"
+  wr_dir_0700 "$PW_DIR" ||
+    pw_end 1 "attempt ${PW_K}'s directory, $PW_DIR, is not a 0700 directory of this user's and cannot be made one. Nothing was sent by it"
+  pd_t="$(mktemp "$PW_DIR/.parent.pid.XXXXXX" 2>/dev/null)" || pd_t=""
+  if [ -z "$pd_t" ] || ! printf '%s\t%s\n' "$$" "$WR_CLAIM_START" > "$pd_t" 2>/dev/null ||
+     ! mv -f -- "$pd_t" "$PW_DIR/parent.pid" 2>/dev/null; then
+    [ -z "$pd_t" ] || rm -f -- "$pd_t" 2>/dev/null
+    pw_end 1 "attempt ${PW_K}'s parent.pid, in $PW_DIR, could not be written. Nothing was sent by it"
+  fi
+  mkfifo -m 600 "$PW_DIR/seam.fifo" 2>/dev/null ||
+    pw_end 1 "attempt ${PW_K}'s seam.fifo, in $PW_DIR, could not be made. Nothing was sent by it"
+  if [ -n "$PW_LOCK" ]; then
+    printf '%s\n' "$PW_LOCK" > "$PW_DIR/lock" 2>/dev/null ||
+      pw_end 1 "attempt ${PW_K}'s lock file, in $PW_DIR, could not be written. Nothing was sent by it"
+  fi
+  return 0
+}
+
+# THE SNAPSHOT'S ANSWER, read by key (contract §3.2: "Group B parses by key,
+# never by position"), through `cat -v`, so a NUL or a carriage return cannot
+# vanish from a value. Readable is: `format=1` (§2.8), each key once, a
+# lower-case UUID for `generation=` and `write_id=`, whole seconds for `n=`,
+# `clock=` and `not_after=`, and `switch=primary` with `marker=present`, which
+# a snapshot that answers 0 must read (§3.2's check 4). 1 otherwise: a failed
+# read, 69.
+pw_snap_read() {   # <the snapshot's stdout, in a file>
+  local sr_out="" sr_line="" sr_key="" sr_val="" sr_seen=" " sr_fmt="" sr_sw="" sr_mk=""
+  PW_S_GEN=""; PW_S_WID=""; PW_S_FOUND=""; PW_S_N=""; PW_S_CLOCK=""; PW_S_NOT_AFTER=""
+  sr_out="$(cat -v -- "$1" 2>/dev/null; printf .)"; sr_out="${sr_out%.}"
+  while [ -n "$sr_out" ]; do
+    sr_line="${sr_out%%"$WR_NL"*}"
+    if [ "$sr_line" = "$sr_out" ]; then sr_out=""; else sr_out="${sr_out#*"$WR_NL"}"; fi
+    sr_key="${sr_line%%=*}"; sr_val="${sr_line#*=}"
+    [ "$sr_key" != "$sr_line" ] || continue
+    case "$sr_key" in
+      format|generation|write_id|found|switch|marker|n|clock|not_after)
+        case "$sr_seen" in *" $sr_key "*) return 1 ;; esac
+        sr_seen="$sr_seen$sr_key " ;;
+      *) continue ;;
+    esac
+    case "$sr_key" in
+      format) sr_fmt="$sr_val" ;;
+      generation) PW_S_GEN="$sr_val" ;;
+      write_id) PW_S_WID="$sr_val" ;;
+      found) PW_S_FOUND="$sr_val" ;;
+      switch) sr_sw="$sr_val" ;;
+      marker) sr_mk="$sr_val" ;;
+      n) PW_S_N="$sr_val" ;;
+      clock) PW_S_CLOCK="$sr_val" ;;
+      not_after) PW_S_NOT_AFTER="$sr_val" ;;
+    esac
+  done
+  [ "$sr_fmt" = 1 ] && [ "$sr_sw $sr_mk" = "primary present" ] || return 1
+  wr_is_uuid "$PW_S_GEN" && wr_is_uuid "$PW_S_WID" || return 1
+  wr_is_count "$PW_S_N" && wr_is_count "$PW_S_CLOCK" && wr_is_count "$PW_S_NOT_AFTER" || return 1
+  [ -z "$PW_S_FOUND" ] || wr_is_count "$PW_S_FOUND" || return 1
+  return 0
+}
+
+# THE SNAPSHOT (S1's step 1; contract §3.2): `lanes-index register snapshot`
+# with the write's identity, `--tree <dir>/tree` and `--checkout <c>`. The
+# first takes T412's flags (`--write-id new` on a new write, which mints its
+# id); every later one the id's five. Its stdout IS the attempt's `snapshot`
+# file, verbatim, which `register commit` reads and the child dates its lines
+# by (T413). The one call form of lane 3's 6755641373, point 2, so a signal's
+# notice never reaches this process's stderr. Its exits (§3.2, §2.7):
+#   0    read here (`pw_snap_read`); one it cannot read is a failed read, 69;
+#   2    a refusal: the run's generation (LR007 `generation`), an id that
+#        belongs to another write (LR007 `another-write`), or a refused
+#        configuration. On the first snapshot of a record taken over, LR007
+#        `generation` is that record's other generation (T412's
+#        `wr_refuse_other_generation`; Y:5209);
+#   64   usage: never sent by this file, so an internal error, 2 (CO-5);
+#   69, and any other end: the register could not be read, 69.
+# On a refusal or a failed read, what `lanes-index` said on stderr is passed
+# on first, verbatim. Then the first snapshot settles the write's id and writes
+# its record (T412's `wr_id_settle`; Y:5192), and a later one must echo this
+# write's id and generation.
+pw_snapshot() {
+  local ps_bin="" ps_rc=0 ps_l="" ps_det=""
+  local -a ps_a
+  if [ "$PW_FIRST_DONE" = 0 ]; then
+    ps_a=(${WR_SNAP_ARGS[@]+"${WR_SNAP_ARGS[@]}"})
+  else
+    ps_a=(--write-id "$WR_ID" --generation "$WR_GEN" --lane "$WR_LANE" --verb "$WR_VERB" --args-sha256 "$WR_D")
+  fi
+  ps_bin="$(lanes_index_bin)"
+  [ -n "$ps_bin" ] ||
+    pw_snap_end 69 "there is no lanes-index beside $SCRIPT_DIR/lanes-edit.sh or on PATH to read the register with"
+  ( "$ps_bin" register snapshot "${ps_a[@]}" --tree "$PW_DIR/tree" --checkout "$PW_C" \
+      </dev/null >"$PW_DIR/snapshot" 2>"$PW_DIR/snapshot.err"; exit "$?" ) 2>/dev/null || ps_rc=$?
+  if [ "$ps_rc" != 0 ]; then
+    [ ! -s "$PW_DIR/snapshot.err" ] || cat -- "$PW_DIR/snapshot.err" >&2
+    while IFS= read -r ps_l || [ -n "$ps_l" ]; do
+      case "$ps_l" in 'DETAIL:  '*) ps_det="${ps_l#DETAIL:  }"; break ;; esac
+      ps_l=""
+    done < "$PW_DIR/snapshot.err" 2>/dev/null
+  fi
+  case "$ps_rc" in
+    0)
+      pw_snap_read "$PW_DIR/snapshot" ||
+        pw_snap_end 69 "\`lanes-index register snapshot\` exited 0 with an answer this lanes-edit.sh cannot read (not format=1, a key twice or missing, or not switch=primary with marker=present), which is a failed read" ;;
+    2)
+      if [ "$PW_FIRST_DONE" = 0 ] && [ "$WR_PLAN" = reuse ] && [ "$ps_det" = generation ]; then
+        wr_refuse_other_generation
+      fi
+      pw_snap_end 2 "\`lanes-index register snapshot\` refused this write (exit 2${ps_det:+, $ps_det}), above" ;;
+    64)
+      pw_snap_end 2 "\`lanes-index register snapshot\` exited 64, a usage error this lanes-edit.sh never sends: an internal error" ;;
+    *)
+      pw_snap_end 69 "\`lanes-index register snapshot\` exited ${ps_rc}: the register could not be read" ;;
+  esac
+  if [ "$PW_FIRST_DONE" = 0 ]; then
+    if ! wr_id_settle "$PW_DIR/snapshot"; then
+      case "$WR_PLAN" in
+        reuse|env)
+          if [ "$PW_S_WID" != "$WR_ID" ] || [ "$PW_S_GEN" != "$WR_GEN" ]; then
+            pw_snap_end 69 "\`lanes-index register snapshot\` answered write ${PW_S_WID} of generation ${PW_S_GEN} where this write is ${WR_ID} of ${WR_GEN}, which is a failed read"
+          fi ;;
+      esac
+      pw_end 1 "this write's pending record, $WR_STATE/register-pending/$WR_D, could not be written after its first snapshot, so no commit call can be made for it. Nothing was sent"
+    fi
+    PW_FIRST_DONE=1
+    [ -n "$PW_S_FOUND" ] || PW_REC_OURS=1
+  elif [ "$PW_S_WID" != "$WR_ID" ] || [ "$PW_S_GEN" != "$WR_GEN" ]; then
+    pw_snap_end 69 "\`lanes-index register snapshot\` answered write ${PW_S_WID} of generation ${PW_S_GEN} where this write is ${WR_ID} of ${WR_GEN}, which is a failed read"
+  fi
+  [ -z "$PW_S_FOUND" ] || pw_found_end "$PW_S_FOUND" "attempt ${PW_K}'s snapshot found it"
+  return 0
+}
+
+# A SNAPSHOT THAT REFUSED OR FAILED ENDS THE RUN (Y:5017–5023): with its code,
+# or after F3's lookup where a `call` line is held (`pw_end`).
+pw_snap_end() {   # <2 | 69> <why>
+  if [ "$1" = 2 ]; then
+    pw_end 2 "attempt ${PW_K}'s snapshot: $2. Nothing was sent by this run"
+  fi
+  pw_end 69 "the register could not be read at attempt ${PW_K}'s snapshot: $2. Nothing was written by this run. $(pw_rerun_line)"
+}
+
+# THE RERUN A 69 OR A 75 PRINTS (spec:318; open point 38): the write's id with
+# its generation where the run has one, which settles the write with or
+# without its record (Y:5219, Y:5222); otherwise the command as it was given,
+# after saying that nothing was sent.
+pw_rerun_line() {
+  if wr_is_uuid "$WR_ID" && wr_is_uuid "$WR_GEN"; then
+    printf 'To run it again, by its write id: %s\n' "$(wr_rerun_text "$WR_ID" "$WR_GEN")"
+  else
+    printf 'No write id was minted, and nothing was sent. To run it again, as it was given: %s\n' "$(pw_given_text)"
+  fi
+}
+
+# THE ACT'S CHECKS AT EACH SNAPSHOT (Y:5603–5605), after the run's generation,
+# the write id and the switch, which the snapshot made: the act's generation is
+# the switch's, and its base is not past `n`. Each 2, nothing sent. The
+# commit's LR007 and LR004 for an act are then backstops.
+pw_act_at_snapshot() {
+  [ -n "$ACT_LINES" ] || return 0
+  if [ "$ACT_GEN" != "$PW_S_GEN" ]; then
+    pw_end 2 "LANES_ACT's base, seq ${ACT_BASE}, was read in register generation ${ACT_GEN}, and attempt ${PW_K}'s snapshot reads generation ${PW_S_GEN}: the register was re-imported or restored after the act began, so the act's reads are not this register's. Run the act again from its start. Nothing was sent"
+  fi
+  if [ "$ACT_BASE" -gt "$PW_S_N" ]; then
+    pw_end 2 "LANES_ACT's base is seq ${ACT_BASE}, and attempt ${PW_K}'s snapshot reads the head at seq ${PW_S_N}, before it: that base was not read from this register as it stands. Run the act again from its start. Nothing was sent"
+  fi
+  return 0
+}
+
+# THE FILES THE PARENT WRITES FOR `register commit` (contract §3.3), beside
+# `snapshot`: `not_after`, the snapshot's `not_after=`; `author`, `Name
+# <email>`; and, only where `LANES_ACT` is set, `act`: `LANES_ACT`'s three
+# parts verbatim and one `expect=` per `LANES_EXPECT` scope in the order given,
+# none dropped or merged (T410's `ACT_LINES`; #165 6755641373, point 4). Both
+# variables stay in the environment, unchanged, for `register commit`, which
+# checks them again (Y:5597).
+pw_attempt_files() {
+  { printf '%s\n' "$PW_S_NOT_AFTER" > "$PW_DIR/not_after" &&
+    printf '%s\n' "$PW_AUTHOR" > "$PW_DIR/author" &&
+    { [ -z "$ACT_LINES" ] || printf '%s\n' "$ACT_LINES" > "$PW_DIR/act"; }; } 2>/dev/null ||
+    pw_end 1 "attempt ${PW_K}'s not_after, author or act file, in $PW_DIR, could not be written. Nothing was sent by it"
+  return 0
+}
+
+# THE CHILD (Y:4997–4998): this file again, `"${BASH:-bash}" "$RESOLVED"`, with
+# the original command line, under the internal flag, started from THIS shell
+# with `&`: no `timeout`, `setsid`, `$( )` or subshell between, so its `$PPID`
+# is this process, the pid `parent.pid` names (#165 6755005268, item 2). Its
+# real stdout and stderr are kept on fds 3 and 4 BEFORE its own move to the
+# attempt's `out.1` and `out.2`, since redirections apply left to right (lane
+# 3, #165 6755641373, T414's question 2). An asynchronous command's stdin is
+# /dev/null.
+pw_child_start() {
+  LANES_REGISTER_SCRATCH="$PW_DIR" "${BASH:-bash}" "$RESOLVED" ${ORIG_ARGV[@]+"${ORIG_ARGV[@]}"} \
+    3>&1 4>&2 1>"$PW_DIR/out.1" 2>"$PW_DIR/out.2" &
+  PW_CHILD=$!
+}
+
+# THE CHILD REACHES `ready`, or ends first. 0 at `ready`, where it waits on fd
+# 5; 1 where it ended before it, with its code in PW_RC and PW_CHILD cleared.
+pw_child_wait() {
+  PW_RC=0
+  while [ ! -e "$PW_DIR/ready" ]; do
+    if ! kill -0 "$PW_CHILD" 2>/dev/null; then
+      [ ! -e "$PW_DIR/ready" ] || return 0
+      wait "$PW_CHILD" || PW_RC=$?
+      PW_CHILD=""
+      return 1
+    fi
+    sleep 0.05 2>/dev/null || sleep 1
+  done
+  return 0
+}
+
+# ONE MESSAGE TO A CHILD AT THE SEAM (Y:5007): the FIFO opened read-write, so
+# the open never blocks, one line shorter than PIPE_BUF, and closed. A child
+# that has ended leaves the line unread.
+pw_send() {   # <attempt dir> <message>
+  { exec 6<>"$1/seam.fifo"; } 2>/dev/null || return 1
+  printf '%s\n' "$2" >&6 2>/dev/null || :
+  exec 6>&-
+  return 0
+}
+
+# A CHILD ABANDONED (Y:5013): `abandon`, then reaped. It exits 75 without its
+# tail, and its buffered output is never replayed.
+pw_abandon_one() {   # <pid> <attempt dir>
+  pw_send "$2" abandon || :
+  wait "$1" 2>/dev/null || :
+}
+
+# EVERY KEPT CHILD, AND THE ATTEMPT'S OWN, GET `abandon` before any end but 0
+# (Y:5026).
+pw_abandon_all() {
+  local pa_l="" pa_p="" pa_d=""
+  while IFS= read -r pa_l; do
+    [ -n "$pa_l" ] || continue
+    pa_p="${pa_l%% *}"; pa_d="${pa_l#* }"
+    pw_abandon_one "$pa_p" "$pa_d"
+  done <<PA_EOF
+$PW_KEPT
+PA_EOF
+  PW_KEPT=""
+  if [ -n "$PW_CHILD" ]; then
+    pw_abandon_one "$PW_CHILD" "$PW_DIR"
+    PW_CHILD=""
+  fi
+}
+
+# THE DECIDING ATTEMPT'S OUTPUT, REPLAYED (F14; FR-024; Y:2546–2550): its
+# stdout whole to stdout, then its stderr whole to stderr.
+pw_replay() {   # <attempt dir>
+  [ ! -f "$1/out.1" ] || cat -- "$1/out.1"
+  [ ! -f "$1/out.2" ] || cat -- "$1/out.2" >&2
+}
+
+# ---- THE RUN'S END, BUT FOR 0 (Y:5016–5026). Every kept child gets `abandon`
+# first. Where the pending record holds a `call` line, no end but 0 comes
+# before F3's lookup (`pw_doubt_end`). Otherwise the record goes, with this
+# run's claims (Y:5196), or only this run's claim where the record is not this
+# write's own (a new write before its first snapshot answered, or a record of
+# another write this run did not replace); then the deciding attempt's output
+# is replayed, PW_RELAY follows it on stderr, and the run exits with the end's
+# code, saying <message> where it has one.
+pw_end() {   # <code> <message, or empty> [<attempt dir whose output is replayed>]
+  pw_abandon_all
+  [ -z "$WR_CALLS" ] || pw_doubt_end "$1" "$2" "${3-}"
+  if [ "$PW_REC_OURS" = 1 ]; then wr_record_remove || wr_claim_release; else wr_claim_release; fi
+  [ -z "${3-}" ] || pw_replay "$3"
+  [ -z "$PW_RELAY" ] || printf '%s\n' "$PW_RELAY" >&2
+  [ -n "$2" ] || exit "$1"
+  die "$2" "$1"
+}
+
+# AN END WITH A `call` LINE HELD (Y:5017–5023): F3's lookup decides it, and its
+# exit 3 and texts are T417's, which maps them in `_EXIT_3_CAUSES`. Until then
+# this run says what it could not settle and ends with 75, the busy code, with
+# the record KEPT: a rerun within its age takes the record over and settles the
+# write by its id, and never writes it twice (Y:5206).
+pw_doubt_end() {   # <the end's code> <its message, or empty> [<attempt dir>]
+  local dd_l="" dd_b="" dd_c="" dd_n="" dd_f="" dd_d="" dd_max=""
+  while IFS= read -r dd_l; do
+    [ -n "$dd_l" ] || continue
+    IFS=' ' read -r dd_b dd_c dd_n dd_f dd_d <<<"$dd_l"
+    if [ -z "$dd_max" ] || [ "$dd_n" -gt "$dd_max" ]; then dd_max="$dd_n"; fi
+  done <<<"$WR_CALLS"
+  [ -z "${3-}" ] || pw_replay "$3"
+  [ -z "$PW_RELAY" ] || printf '%s\n' "$PW_RELAY" >&2
+  [ -z "$2" ] || note "$2"
+  die "write $WR_ID of register generation $WR_GEN may be in the register: its pending record, $WR_STATE/register-pending/$WR_D, holds a commit call that may have committed, so this run's end (exit $1) is not that write's answer until the call is looked up. This lanes-edit.sh makes no such lookup yet: the record is kept, and a rerun settles the write by its id and never writes it twice. Look it up: lanes-index journal --write-id $WR_ID --not-after $dd_max --generation $WR_GEN --lane $(printf '%q' "$WR_LANE") --verb $(printf '%q' "$WR_VERB") --args-sha256 $WR_D. Or run it again: $(wr_rerun_text "$WR_ID" "$WR_GEN")" 75
+}
+
+# A WRITE ALREADY IN THE REGISTER (a snapshot's `found=`, or the commit's
+# `already <s>`): the tail by match or by replay, the `tail` key and the done
+# mark are T418's (Y:5289–5373). Until then this run sends no second commit,
+# names the verb's after-COMMIT steps as owed, removes the record (Y:5194:
+# "after the tail is done or named as owed") and ends with 0.
+pw_found_end() {   # <seq> <how it was found>
+  pw_abandon_all
+  note "write $WR_ID is in the register at seq $1, committed by an earlier attempt or run ($2); this run sent no second commit of it. Its after-COMMIT steps did not run in this run, and may be owed: those of lanes-edit.sh $WR_VERB. Do by hand any that did not run."
+  wr_record_remove || wr_claim_release
+  exit 0
+}
+
 # THE PRIMARY BRANCH, once per writer process. It never returns: every path
 # ends the process with the run's code.
 pw_run() {   # <the verb's arguments>
@@ -5927,9 +6242,17 @@ pw_run() {   # <the verb's arguments>
     env) [ "$WR_REC_WRITE_ID" != "$WR_ID" ] || PW_REC_OURS=1 ;;
   esac
   pw_run_dir
-  # STEP (a) ALONE: the attempts come in steps (b) to (e).
-  wr_claim_release
-  die "this lanes-edit.sh has no SQL write path: \`lanes-index mode\` answered primary, which only a lanes-index newer than this lanes-edit.sh answers. \`$cmd\` wrote nothing, and wrote no files instead. Install the lanes-edit.sh that ships with that lanes-index." 69
+  # ---- (b) ONE ATTEMPT. STEP (b) ALONE: the decision comes in step (c).
+  PW_T0="$SECONDS"
+  pw_attempt_dir
+  pw_snapshot
+  pw_act_at_snapshot
+  pw_attempt_files
+  pw_child_start
+  if pw_child_wait; then
+    pw_end 69 "this lanes-edit.sh has no SQL write path: \`lanes-index mode\` answered primary, which only a lanes-index newer than this lanes-edit.sh answers. \`$cmd\` wrote nothing, and wrote no files instead. Install the lanes-edit.sh that ships with that lanes-index."
+  fi
+  pw_end "$PW_RC" "" "$PW_DIR"
 }
 
 # ---------------------------------------------------------------- the verbs
