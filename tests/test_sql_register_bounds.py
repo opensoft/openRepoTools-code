@@ -1655,3 +1655,380 @@ def test_the_lookups_tries_start_inside_the_window_and_end_in_3(pg, tmp_path, re
         took = ended[0]["end"] - ended[0]["start"]
         assert LOOKUP_STATEMENT_S <= took < 2 * LOOKUP_STATEMENT_S, \
             f"lookup-F4: 57014 after {took:.2f} s"
+
+
+# ======== AT-D9's orphaned writer, and AT-D9c's engine half of (a), (c) and (d) (T257d)
+
+#: `psql`'s statement separator inside one request, `\;`, and #160's marker
+#: line as `\echo` prints it (contract section 2.3), built here so that no
+#: escape is spelled in this file.
+SEP = chr(92) + ";"
+ECHO_MARKER = chr(92) + "echo '" + chr(92) + "036LANES-INDEX-NEXT'"
+
+
+def _shim(bench: Bench, arms: list, *, timed: bool = False) -> Path:
+    """T203's shim (`PSQL_SHIM`, section 3.2) in front of the real `psql`,
+    armed with `arms`. With `timed`, `TIMING_PSQL` stays first on `PATH` and
+    hands each call to the shim, so each call's start and end are logged
+    beside the shim's own log of its script; otherwise the shim is first on
+    `PATH`. Returns the shim's directory, which holds its logs."""
+    from sql_register_helpers import PSQL_SHIM
+    where = bench.root / "shim" if timed else bench.bin
+    where.mkdir(exist_ok=True)
+    (where / "psql").write_text(PSQL_SHIM, encoding="utf-8")
+    (where / "psql").chmod(0o755)
+    _arm(where, bench, arms)
+    if timed:
+        bench.env["T220_REAL_PSQL"] = str(where / "psql")
+    return where
+
+
+def _arm(where: Path, bench: Bench, arms: list) -> None:
+    from sql_register_helpers import PSQL_SHIM_CONTROL
+    (where / PSQL_SHIM_CONTROL).write_text(json.dumps({"psql": bench.pg.psql_bin, "arms": arms}),
+                                           encoding="utf-8")
+
+
+def _shim_calls(where: Path) -> list:
+    """The shim's log: each call that carries a request, in call order."""
+    from sql_register_helpers import PSQL_SHIM_LOG
+    log = where / PSQL_SHIM_LOG
+    if not log.exists():
+        return []
+    entries = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines() if line]
+    return [entry for entry in entries if entry.get("kind") != "version"]
+
+
+def _writer(bench: Bench, config: Path, state: str, *,
+            deadline: str | None = None) -> subprocess.Popen:
+    """A writer's whole path, started: `lanes-edit.sh set-row-state` on the
+    bench's lane, T257a's rows' path, which on primary is lane 4's L4-B3
+    (T413 to T415). `deadline` is `LANES_REGISTER_DEADLINE_S`; unset, the
+    deadline is D7's 30 s, as in AT-4 (c)."""
+    env = dict(bench.env, LANES_INDEX_CONFIG=str(config), LANES_LANE="repoA-2")
+    env.pop("LANES_REGISTER_DEADLINE_S", None)
+    if deadline is not None:
+        env["LANES_REGISTER_DEADLINE_S"] = deadline
+    return subprocess.Popen(["bash", str(bench.copy.parent / "lanes-edit.sh"), "set-row-state",
+                             "repoA-2", state], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+                            cwd=str(bench.wip))
+
+
+def _activity(pg, appname: str) -> tuple:
+    """(the session's state, the seconds since that state began), or ('', 0)
+    where no session of `appname` is connected."""
+    said = pg.psql("SELECT state, extract(epoch FROM clock_timestamp() - state_change) "
+                   f"FROM pg_stat_activity WHERE application_name = '{appname}';").stdout.strip()
+    if not said:
+        return "", 0.0
+    state, _, age = said.splitlines()[0].partition("|")
+    return state, float(age or 0)
+
+
+#: The idle bound on a writer's open transaction, the group's
+#: `idle_in_transaction_session_timeout` (AT-D9, "Beside the table").
+IDLE_BOUND_S = 5
+
+
+def test_an_orphaned_writer_transaction_is_ended_by_the_idle_bound(pg, tmp_path, request):
+    """AT-D9, beside the table: a session as `lanes_register_writer` that
+    replays a commit call's script without its `COMMIT` (test 12's held
+    session) holds the head row and idles. `idle_in_transaction_session_
+    timeout` ends it no earlier than 5 s after it idles (timing rule 3) and
+    under twice that (timing rule 2), from `pg_stat_activity.state_change`,
+    after which a waiting write commits, 0.
+
+    The script is a real one: a first writer, `lanes-edit.sh set-row-state`
+    through T203's shim, whose `fail-match` on `commit_write` fails its
+    commit calls unsent; the shim's log holds the commit call's script, which
+    the held session replays as the writer's login with its last statement,
+    `COMMIT`, left off. The waiting write is a second writer under D7's 30 s,
+    started once the session idles. It fails until lane 4's L4-B3 (T414's
+    seam and T415's attempt loop; only T413 is in lane 4's share) and lane
+    1's T112 land, on T227's template and T228's logins."""
+    bench = Bench(pg, tmp_path, request)
+    user = bench.login("lanes_register_writer")
+    config = bench.config("localhost", pg.port, user)
+    where = _shim(bench, [{"mode": "fail-match", "match": "commit_write"}])
+    first = _writer(bench, config, "PAUSED - T257's orphan, unsent", deadline="3")
+    out, err = first.communicate(timeout=300)
+    scripts = [e["stdin"] for e in _shim_calls(where) if "commit_write" in e.get("stdin", "")]
+    assert scripts, f"the first writer sent no commit call: {first.returncode}: {err}"
+    parts = [part.strip() for part in scripts[0].strip().rstrip(";").split(SEP)]
+    assert parts[-1] == "COMMIT", f"the commit call's script ends with COMMIT: {parts}"
+    _arm(where, bench, [])
+    orphan = pg.session(user=user, appname="t257-orphan")
+    waiting = None
+    try:
+        orphan.stdin.write((" " + SEP + " ").join(parts[:-1]) + ";\n")
+        orphan.stdin.flush()
+        deadline = time.monotonic() + 30
+        state, age = _activity(pg, "t257-orphan")
+        while state != "idle in transaction" and time.monotonic() < deadline:
+            time.sleep(0.05)
+            state, age = _activity(pg, "t257-orphan")
+        assert state == "idle in transaction", f"the replayed commit never idled: {state!r}"
+        idled = time.monotonic() - age
+        waiting = _writer(bench, config, "PAUSED - T257's waiting write")
+        while _activity(pg, "t257-orphan")[0] and time.monotonic() - idled < 4 * IDLE_BOUND_S:
+            time.sleep(0.05)
+        ended = time.monotonic() - idled
+        assert not _activity(pg, "t257-orphan")[0], \
+            f"the orphan still holds the head row {ended:.2f} s after it idled"
+        assert IDLE_BOUND_S <= ended < 2 * IDLE_BOUND_S, \
+            f"the idle bound ended the orphan {ended:.2f} s after it idled"
+        _record("orphaned-writer", ended, IDLE_BOUND_S, "timing rules 2 and 3")
+        out, err = waiting.communicate(timeout=300)
+        assert waiting.returncode == 0, f"the waiting write did not commit: {waiting.returncode}: {err}"
+    finally:
+        if waiting is not None and waiting.poll() is None:
+            waiting.kill()
+        _end(orphan)
+
+
+#: AT-D9c (a)'s engine half: #160's reads that need no clock, so that two
+#: sends of them answer the same bytes.
+SNAPSHOT_READS = ["SELECT version, writers_from, readers_from FROM schema_version WHERE id = 1",
+                  "SELECT mode, marker_state, generation FROM register_switch WHERE id = 1",
+                  "SELECT seq FROM register_head WHERE id = 1"]
+
+
+def test_the_joined_snapshot_logs_one_statement_and_reads_byte_identical_to_the_one_by_one_form(
+        counting_cluster, tmp_path, monkeypatch):
+    """AT-D9c (a), the engine half, on section 5.6's counting cluster
+    (`log_statement=all`: one `statement:` line per Query message): each of
+    the three register calls, the snapshot, the commit and the lookup, logs
+    ONE `statement:` line; and the joined snapshot's stdout equals, byte for
+    byte, the same statements sent one by one, the marker as `\\echo` prints
+    it, so #160's parse is unchanged.
+
+    The calls are made in process as the fixture's writer login, through
+    `PostgresStore(cfg, "register_writer")` (lane 2's reading, as T257c's
+    `[commit]`): the snapshot by `_query_many(SNAPSHOT_READS, snapshot=True,
+    row="snapshot")`, whose `psql` stdout is kept; the commit by lane 1's
+    `register_commit_request`, which `commit_write` may refuse, a refusal
+    being one statement too; the lookup by `register_lookup_request`. The
+    one-by-one form is the real `psql`, with section 2.2's argv, fed the same
+    statements each with its own `;`. It fails until lane 1's T106, T112 and
+    T114 land, on T229's counting cluster."""
+    from pgcluster import FX_WRITER, Database
+    db = Database(counting_cluster, counting_cluster.new_database())
+    config = _private(tmp_path / "conf" / "lanes-index.conf", "\n".join([
+        "mode=index", f"register_url={db.url(FX_WRITER)}",
+        f"register_passfile={counting_cluster.passfile(FX_WRITER)}",
+        f"reader_url={db.url(FX_WRITER)}",
+        f"reader_passfile={counting_cluster.passfile(FX_WRITER)}",
+        "register_schema=lanes_register", ""]))
+    for key in list(os.environ):
+        if key.startswith("PG"):
+            monkeypatch.delenv(key)
+    monkeypatch.setenv("LANES_INDEX_CONFIG", str(config))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    mod = load_indexer()
+    store = mod.PostgresStore(mod.load_config(), "register_writer")
+    outs, run = [], store._run
+
+    def kept(*args, **kwargs):
+        out = run(*args, **kwargs)
+        if args and "REPEATABLE READ" in str(args[0]):  # the snapshot's request alone
+            outs.append(out)
+        return out
+    store._run = kept
+    log = counting_cluster.log()
+
+    def statements(send) -> int:
+        offset = log.stat().st_size
+        try:
+            send()
+        except Exception:  # a refusal is still one statement: counted below
+            pass
+        time.sleep(0.3)  # the logger's last line
+        text = log.read_bytes()[offset:].decode("utf-8", "replace")
+        return len(re.findall(r"statement: ", text))
+
+    not_after = int(time.time()) - 60
+    counts = {
+        "snapshot": statements(lambda: store._query_many(list(SNAPSHOT_READS), snapshot=True,
+                                                         row="snapshot")),
+        "commit": statements(lambda: store.request(
+            mod.register_commit_request(store.schema, 0, WRITE, {"t257": "commit"}), "commit")),
+        "lookup": statements(lambda: store.request(
+            mod.register_lookup_request(store.schema, WRITE, not_after), "lookup")),
+    }
+    assert counts == {"snapshot": 1, "commit": 1, "lookup": 1}, \
+        f"each call is one statement line: {counts}"
+    assert outs, "the snapshot's psql answered nothing to keep"
+    lines = [f'SET search_path TO "{store.schema}";',
+             "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;"]
+    for query in SNAPSHOT_READS:
+        lines += [f"COPY ({query}) TO STDOUT;", ECHO_MARKER]
+    lines.append("COMMIT;")
+    one_by_one = subprocess.run([db.psql_bin, *REGISTER_ARGV], input="\n".join(lines) + "\n",
+                                capture_output=True, text=True, env=db.env(FX_WRITER), timeout=60)
+    assert one_by_one.returncode == 0, one_by_one.stderr
+    assert outs[0] == one_by_one.stdout, \
+        f"the joined snapshot read {outs[0]!r}, one by one {one_by_one.stdout!r}"
+
+
+#: `C`, the commit's client timer, at `c` = 2 and `N_a` = 1 (D9).
+COMMIT_C_S = 8
+
+
+def test_the_lookups_wait_counts_from_the_snapshot_calls_end_and_gets_no_lr011(
+        pg, tmp_path, request):
+    """AT-D9c (c): T203's shim holds the snapshot call 2.5 s before it hands
+    it on (`window`), so the database reads its clock 2.5 s after the call
+    started, and the first commit call is lost as `before` loses it, under
+    `LANES_REGISTER_DEADLINE_S=1`. The lookup's first try gets no LR011, and
+    it starts no earlier than the snapshot call's end plus `C` less 1 s
+    (timing rule 3) and under twice `C` plus 1 s, 18 s, after that end
+    (timing rule 2), `C` being 8 s here (lane 4's section, "The in-doubt rule
+    (F3, D8)"). A client that counted from the call's start would call 2.5 s
+    early and meet LR011.
+
+    `TIMING_PSQL` hands each call to the shim, so each call's start and end
+    are logged beside the shim's log of its script, in the same order; no
+    call may be cut by its timer, or the two logs would not pair. It fails
+    until lane 4's L4-B3 (T414, T415) and lane 1's T111, T112 and T114 land,
+    on T227's template and T228's logins."""
+    bench = Bench(pg, tmp_path, request)
+    user = bench.login("lanes_register_writer")
+    config = bench.config("localhost", pg.port, user)
+    where = _shim(bench, [{"mode": "window", "ms": 2500, "call": 1},
+                          {"mode": "before", "match": "commit_write", "call": 1}], timed=True)
+    writer = _writer(bench, config, "PAUSED - T257's lookup wait", deadline="1")
+    out, err = writer.communicate(timeout=300)
+    scripts, times = _shim_calls(where), bench.calls()
+    assert len(times) == len(scripts), \
+        f"a call was cut by its timer: {len(scripts)} sent, {len(times)} ended: {err}"
+    snapshot = next((i for i, e in enumerate(scripts) if "commit_write" not in e["stdin"]
+                     and "find_write" not in e["stdin"]), None)
+    lookup = next((i for i, e in enumerate(scripts) if "find_write" in e["stdin"]), None)
+    assert snapshot is not None and lookup is not None, \
+        f"the writer made no snapshot and lookup: {writer.returncode}: {err}"
+    assert "LR011" not in times[lookup]["first"], f"the first try met LR011: {times[lookup]}"
+    gap = times[lookup]["start"] - times[snapshot]["end"]
+    assert COMMIT_C_S - 1 <= gap < 2 * COMMIT_C_S + 1, \
+        f"the lookup's first try started {gap:.2f} s after the snapshot call's end"
+    _record("lookup-wait", gap, COMMIT_C_S, "timing rules 2 and 3, from the snapshot call's end")
+
+
+#: AT-D9c (d)'s link: 75 ms each way, TLS on (T229's relay, R-P23), `c` = 3
+#: and one address, so `S` = `C` = 9 s, `T_L` = 10 s and a reader's 7 s.
+DELAY_S = 0.075
+LINK_TIMERS = {"snapshot": 9, "commit": 9, "lookup": 10, "read": 7}
+
+
+def _link_config(path: Path, cluster, port: int, writer: str) -> Path:
+    """A configuration for the TLS cluster through the relay at `port`:
+    lane 1's URL form (`TLSCluster.url`, `verify-full`, the root alone) with
+    the relay's port and `connect_timeout=3`, as a workstation at that round
+    trip sets `c`, and one address; `writer` and the fixture's reader, each
+    with its password file."""
+    from pgcluster import FX_READER
+
+    def url(user: str) -> str:
+        return cluster.url(user).replace(f"@127.0.0.1:{cluster.port}/",
+                                         f"@127.0.0.1:{port}/") + "&connect_timeout=3"
+    return _private(path, "\n".join([
+        "mode=primary", f"register_url={url(writer)}",
+        f"register_passfile={cluster.passfile(writer)}", f"reader_url={url(FX_READER)}",
+        f"reader_passfile={cluster.passfile(FX_READER)}",
+        f"register_label={cluster.label_of()}", "register_schema=lanes_register", ""]))
+
+
+def test_over_a_delayed_tls_link_no_healthy_call_meets_its_timer(tls_cluster, tmp_path,
+                                                                    request):
+    """AT-D9c (d), test 9's per-call runs over the delayed loopback, TLS on:
+    a writer's whole write (its snapshot and its commit), a lookup of a write
+    the database never saw, and a reader's read. No healthy call meets its
+    timer: every call that began has ended with `psql`'s own exit, in the
+    timing log, none cut by its client timer, and each call's time is
+    recorded against its timer, `S` = `C` = 9 s, `T_L` = 10 s and a reader's
+    7 s, with its margin. It fails until lane 4's L4-B3 (T414, T415) and lane
+    1's T111 to T114 land, on T229's TLS cluster and relay."""
+    from pgcluster import FX_WRITER, Database, delayed_loopback
+    bench = Bench(Database(tls_cluster, tls_cluster.database_name), tmp_path, request)
+    where = _shim(bench, [], timed=True)
+    with delayed_loopback(tls_cluster.port, DELAY_S) as relay:
+        config = _link_config(tmp_path / "conf" / "lanes-index.conf", tls_cluster, relay.port,
+                              FX_WRITER)
+        writer = _writer(bench, config, "PAUSED - T257's delayed link")
+        _, err = writer.communicate(timeout=300)
+        assert writer.returncode == 0, f"the healthy write: {writer.returncode}: {err}"
+        kinds = ["commit" if "commit_write" in e["stdin"] else "snapshot"
+                 for e in _shim_calls(where)]
+        proc, _ = bench.run("lookup", config)
+        kinds += ["lookup"] * (len(_shim_calls(where)) - len(kinds))
+        proc, _ = bench.run("reader", config)
+        kinds += ["read"] * (len(_shim_calls(where)) - len(kinds))
+    times = bench.calls()
+    assert len(times) == len(kinds), \
+        f"a healthy call was cut by its timer: {len(kinds)} began, {len(times)} ended"
+    assert {"snapshot", "commit", "lookup", "read"} <= set(kinds), f"the calls made: {kinds}"
+    for kind, call in zip(kinds, times):
+        took = call["end"] - call["start"]
+        assert took < LINK_TIMERS[kind], f"{kind}: {took:.2f} s, at its {LINK_TIMERS[kind]} s timer"
+        _record(f"link-{kind}", took, LINK_TIMERS[kind], "AT-D9c (d), recorded")
+
+
+@pytest.mark.parametrize("logins", ["one-login", "two-logins"])
+def test_a_burst_of_ten_over_a_delayed_tls_link_commits_each_once_or_exits_75_with_nothing_written(
+        tls_cluster, tmp_path, request, logins):
+    """AT-D9c (d), test 4's burst of ten over the delayed loopback, TLS on,
+    one request per call, under D7's 30 s, `LANES_REGISTER_DEADLINE_S`
+    unset as in AT-4 (c): every writer commits once, or exits 75 with nothing
+    written, its write id absent from the journal, and no writer ends any
+    other way; the new seqs have no gap and no repeat. Each writer's time
+    from the release to its exit, and the burst's snapshot calls in the
+    shim's log, are recorded, never asserted: act 3's test 4 decides D7.
+    `[two-logins]` splits the ten across two engineers' writer logins, five
+    each, the second's made by `lanes-index login add` through the admin
+    service, as the fixture's are (X, logins), since the head row serialises
+    every login's commits.
+
+    Lane 2's reading: the ten writers share the bench's one checkout, as
+    `set-row-state` on one lane, each its own state. It fails until lane 4's
+    L4-B3 (T414, T415) and lane 1's T111 to T114 land, on T229's TLS cluster
+    and relay."""
+    from pgcluster import FX_WRITER, PASSWORD_LINE, Database, delayed_loopback
+    db = Database(tls_cluster, tls_cluster.database_name)
+    bench = Bench(db, tmp_path, request)
+    where = _shim(bench, [], timed=True)
+    writers = [FX_WRITER] * 10
+    if logins == "two-logins":
+        service = tls_cluster.admin_service(tls_cluster.database_name)
+        code, out, _ = tls_cluster.lanes_index_tty(["login", "add", "fx2",
+                                                    "--admin-service", service])
+        assert code == 0, f"login add fx2 exited {code}"
+        tls_cluster.passwords.update(PASSWORD_LINE.findall(out))
+        writers = [FX_WRITER] * 5 + ["lanes_w_fx2"] * 5
+    head = int(db.psql(f"SELECT seq FROM {SCHEMA}.register_head;").stdout.strip() or 0)
+    with delayed_loopback(tls_cluster.port, DELAY_S) as relay:
+        configs = {login: _link_config(tmp_path / "conf" / login / "lanes-index.conf", tls_cluster,
+                                       relay.port, login) for login in set(writers)}
+        release = time.monotonic()
+        procs = [_writer(bench, configs[login], f"PAUSED - T257's burst {i}")
+                 for i, login in enumerate(writers)]
+        ends = []
+        for proc in procs:
+            _, err = proc.communicate(timeout=300)
+            ends.append((proc.returncode, time.monotonic() - release, err))
+    codes = [code for code, _, _ in ends]
+    assert set(codes) <= {0, 75}, f"a writer ended another way: {[(c, e[-200:]) for c, _, e in ends]}"
+    rows = db.psql(f"SELECT seq, write_id FROM {SCHEMA}.journal WHERE seq > {head} "
+                   f"ORDER BY seq;").stdout.split()
+    seqs = [int(row.split("|")[0]) for row in rows]
+    assert seqs == list(range(head + 1, head + 1 + codes.count(0))), \
+        f"one entry for each writer that committed, no gap, no repeat: {seqs}, {codes}"
+    sent = set(re.findall(r"commit_write\([0-9-]+, '([0-9a-f-]{36})'",
+                          "".join(e["stdin"] for e in _shim_calls(where))))
+    written = [row.split("|")[1] for row in rows]
+    assert len(set(written)) == len(written) and set(written) <= sent, \
+        f"each write id committed once, and only the burst's: {written}"
+    snapshots = sum(1 for e in _shim_calls(where) if "commit_write" not in e["stdin"])
+    for i, (code, took, _) in enumerate(ends):
+        print(f"D9c burst [{logins}] writer {i} ({writers[i]}): exit {code} after {took:.2f} s")
+    print(f"D9c burst [{logins}]: {codes.count(0)} committed, {codes.count(75)} out with 75, "
+          f"{snapshots} snapshot calls")
