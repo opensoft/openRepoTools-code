@@ -7183,6 +7183,16 @@ rows_named_ci_alias() {   # <typed name>
 # is row first and alias second — a name that is a lane today is that lane — and
 # the resolution SAYS SO on stderr, because every act under an old name is an
 # act on a lane the caller did not name.
+# `canon_lane`'S FORMER-NAME NOTE, AS ITS CALLER NEEDS IT (feature 007, T427;
+# lane 3, #165 6779688808, Q22; REV427c N3). Empty, today's note, "reading and
+# writing" the lane it answers. `former`: the note without that clause, for
+# `start-record`, whose `<L>` is the row's own spelling, so an answer in a
+# former name's is always refused next and nothing is read or written under
+# it. `none`: no note, for the router's first ask of a `start-record`, which
+# a second ask after one fetch of W repeats where it matters, so a routed call
+# prints the note once. Set only in the caller's `$( )`, never read from the
+# environment.
+CANON_LANE_NOTE=""
 canon_lane() {   # <typed name>
   cl_want="${1-}"
   [ -n "$cl_want" ] || return 0
@@ -7238,7 +7248,11 @@ canon_lane() {   # <typed name>
     fi
   fi
   if [ "$(lc "$cl_out")" != "$(lc "$cl_want")" ]; then
-    note "'$cl_want' is a FORMER name of lane $cl_out (${LANES_ALIASES_PATH:-lanes/aliases.tsv}, Amendment 16(e)) — reading and writing $cl_out."
+    case "${CANON_LANE_NOTE-}" in
+      none) : ;;
+      former) note "'$cl_want' is a FORMER name of lane $cl_out (${LANES_ALIASES_PATH:-lanes/aliases.tsv}, Amendment 16(e))." ;;
+      *) note "'$cl_want' is a FORMER name of lane $cl_out (${LANES_ALIASES_PATH:-lanes/aliases.tsv}, Amendment 16(e)) — reading and writing $cl_out." ;;
+    esac
   fi
   printf '%s' "$cl_out"
   return 0
@@ -18039,7 +18053,7 @@ lane_row_gate() {   # <canonical lane> <its checkout>
   # spelling, an alias's new name, gets `start-record`'s refusal naming it,
   # as `lane_checkout_enter` gives it, rather than "no row".
   if [ "$cmd" = start-record ]; then
-    lrg_c="$(canon_lane "${lcn_lane:-$1}")" || exit $?
+    lrg_c="$(CANON_LANE_NOTE=former; canon_lane "${lcn_lane:-$1}")" || exit $?
     [ "$lrg_c" = "${lcn_lane:-$1}" ] ||
       sr_spelling_die "${lcn_lane:-$1}" "$lrg_c" routed
   fi
@@ -18128,7 +18142,10 @@ lane_checkout_enter() {   # <write_lane_of's status> <its lane, or empty>
   #     N2): that too is no answer, and the no-fetch refusal below, or the arm
   #     in an existing checkout, decides.
   # Each is asked whether the lane's checkout exists or not, so a routed call
-  # gets these answers from the router, never from the checkout's copy.
+  # gets these answers from the router, never from the checkout's copy. THE
+  # FIRST ASK OF A `start-record` PRINTS NO FORMER-NAME NOTE, and every later
+  # one prints it without "reading and writing", since a refusal follows: a
+  # routed call says it once (lane 3, #165 6779688808, Q22; REV427c N3).
   lcn_add=0
   if [ "$cmd" = start-record ] && sr_argv_adds_row && [ "$SRA_ROW_GIVEN" = 1 ]; then
     lcn_add=1; lcn_lt=0
@@ -18136,13 +18153,14 @@ lane_checkout_enter() {   # <write_lane_of's status> <its lane, or empty>
     sr_row_names_lane "$SRA_ROW" "$lcn_lane"
     [ "$lcn_lt" = 1 ] || sr_log_names_lane "$SRA_LOG" "$lcn_lane"
   fi
-  lcn_c="$(canon_lane "$lcn_lane")" || exit $?
+  lcn_cn=""; [ "$cmd" != start-record ] || lcn_cn=none
+  lcn_c="$(CANON_LANE_NOTE="$lcn_cn"; canon_lane "$lcn_lane")" || exit $?
   if [ "$cmd" = start-record ] && [ "${LANES_NO_FETCH:-0}" != 1 ]; then
     if [ "$lcn_add" = 1 ]; then
       if sr_add_row_known "$lcn_lane" "$lcn_c"; then
         log_sync
         if [ "$LOG_SYNC_FETCH" = yes ]; then
-          lcn_c="$(canon_lane "$lcn_lane")" || exit $?
+          lcn_c="$(CANON_LANE_NOTE=former; canon_lane "$lcn_lane")" || exit $?
           if sr_add_row_known "$lcn_lane" "$lcn_c"; then
             sr_known_die "$lcn_lane" "$lcn_c" routed
           fi
@@ -18151,7 +18169,7 @@ lane_checkout_enter() {   # <write_lane_of's status> <its lane, or empty>
     elif [ "$lcn_c" != "$lcn_lane" ]; then
       log_sync
       if [ "$LOG_SYNC_FETCH" = yes ]; then
-        lcn_c="$(canon_lane "$lcn_lane")" || exit $?
+        lcn_c="$(CANON_LANE_NOTE=former; canon_lane "$lcn_lane")" || exit $?
         [ "$lcn_c" = "$lcn_lane" ] ||
           sr_spelling_die "$lcn_lane" "$lcn_c" routed
       fi
@@ -19085,12 +19103,12 @@ Nothing was written." 2
       # what is left here is a former name's: an alias the table resolves to
       # another lane, refused, 2, naming it. Plain `add-row` does not ask
       # this; its row for a former name is older than 007 (REV427b's R7a).
-      sr_c="$(canon_lane "$sr_lane")" || exit 2   # Amendment 15
+      sr_c="$(CANON_LANE_NOTE=former; canon_lane "$sr_lane")" || exit 2   # Amendment 15
       [ "$sr_c" = "$sr_lane" ] || sr_known_die "$sr_lane" "$sr_c"
       CS_RECHECK=1   # `add-row`'s, for the same reason: its checks ran before the lock
     else
       log_sync
-      sr_lane="$(canon_lane "$sr_in")" || exit 2   # Amendment 15
+      sr_lane="$(CANON_LANE_NOTE=former; canon_lane "$sr_in")" || exit 2   # Amendment 15
       check_lane_name "$sr_lane"
       # `<L>` IS THE ROW'S OWN SPELLING (lane 3, #165 6767463594, question 6,
       # which corrects ruling 3 of 6755005268): where `canon_lane` answers
