@@ -2,11 +2,13 @@
 """Feature 007's test 2 (AT-2; opensoft/openRepoTools#165): a register write
 exits 69 when the database is unreachable, with nothing written.
 
-THIS MODULE TODAY holds test 2's storage-layer case alone, phase N (the test
-plan's section 1.3; lane 2's T210):
-`test_the_storage_layer_entry_exits_69_when_the_database_is_unreachable`.
-Test 2's per-verb cases, its refused transactions, its partial failures and
-S1's other tests are phase W, lane 2's T241, which adds them here.
+THIS MODULE holds test 2's storage-layer case, phase N (the test plan's
+section 1.3; lane 2's T210):
+`test_the_storage_layer_entry_exits_69_when_the_database_is_unreachable`;
+and test 2's per-verb cases, its refused transactions, its partial failures
+and S1's other tests, phase W, lane 2's T241 (see "phase W: T241" below),
+with lane 3's reading 3 of T112, an image holding a CR or a NUL refused with
+2 by `register commit`.
 
 THE STORAGE-LAYER ENTRY is the managed projection writer's (design S4), driven
 by the fake writer AT-1's part N drives it with,
@@ -41,17 +43,26 @@ per-verb cases (T241) read them back by digest.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import shutil
+import subprocess
+import time
+import uuid
 from pathlib import Path
 from urllib.parse import quote
 
 import pytest
 
 from conftest import WINDOWS_SKIP
-from test_sql_register_render import (Estate, fake_calls, fake_psql_dir, flipped, index_env,
-                                      primary_config, projection_entry, _sanitized_path)
+from sql_register_helpers import PSQL_SHIM, PSQL_SHIM_CONTROL, PSQL_SHIM_LOG
+from test_sql_register_render import (AUTHOR, DOT, EM, LOGIN_READER, LOGIN_WRITER, SCHEMA, SEED,
+                                      SID_A1, SID_A2, TIP, WRITER, WS, Estate, _canonical_rows,
+                                      _sanitized_path, ensure_logins, fake_calls, fake_psql_dir,
+                                      flipped, git, import_to_primary, index_env, primary_config,
+                                      projection_entry, rows, run_index, sql, workspace)
 
 pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("git") is None,
@@ -128,3 +139,591 @@ def test_the_storage_layer_entry_exits_69_when_the_database_is_unreachable(tmp_p
     assert not tree.exists() or not any(tree.iterdir()), "a scratch tree was built"
     assert not (done["attempt"] / "snapshot").exists()
     assert estate.state() == before, "the lane checkout changed"
+
+
+# ============================================================ phase W: T241
+#
+# TEST 2'S REFUSALS AND ITS PARTIAL FAILURE (lane 2's T241; AT-2, the test
+# plan's lines 646-781; FR-018, FR-019, FR-026, FR-059). Each of S1's writes
+# runs as `lanes-edit.sh <verb>` on a `mode=primary` workstation, from the
+# flipped copy (T203's, `RENDER_GIT_HALF = True`) with `lanes-edit.sh` beside
+# it, so the verb's `lanes-index` is that copy (CLI4.5 section 6's copy rule).
+#
+# THE VERBS are S1's writes but `commit` (the test plan's line 750): the
+# fourteen arms of `lanes-edit.sh`'s write dispatch at a2073eae (`:16537`),
+# `commit` left out, whose direct write is 2 (D10). Each runs once, with the
+# argument list `WRITE_VERBS` gives it; `log` runs once, as `log NOTED`.
+#
+# NO ENGINE (FP): the database unreachable, as a fake `psql` (T203's register
+# fake, which answers T106's `--version` itself) that exits 2 with `psql`'s own
+# "connection to server ... failed" text; D10's refusals; the queued commits.
+# REAL ENGINE (RE, on `pg`, skipped without PostgreSQL 16 by T205's banner):
+# the switch not `primary`, the refused GRANTs, the late statement, the lock,
+# the pending hand edit and the service down, each over test 1's imported
+# register (`import_to_primary`, AT-LR006's route).
+#
+# They fail until lane 4's L4-B3 (T415's attempt loop), L4-B4 and L4-B11
+# (T420, D10's refusals) land, each by its own assertion here: today's
+# `lanes-edit.sh` writes the files whatever `mode=` says.
+#
+# R02 (lane 1, #165 6755590769; lane 3, 6755615338; F10-OWED items 35 and
+# 37): after LR004, `register commit` re-reads once and never resends. No case
+# here meets LR004; the refused-transaction and late-statement cases assert
+# that a refused commit call is never sent again, so a resend under any
+# refusal fails them. LR004's own cases are T221's (`lr004_on_an_edit`,
+# `lr004_reloads_once`).
+#
+# LANE 3'S READING 3 OF T112 (#165 6755386771; F10-OWED item 31): the
+# malformed-directory refusals are 2, with nothing sent. An image that holds a
+# CR or a NUL is one, so its case below expects 2 and never 69; it needs no
+# engine and no lane 4 code, and runs `register commit` directly.
+
+def _with_row(lane: str, sid: str, cell: str, log: str = None) -> dict:
+    """A prep: test 1's SEED with one more row in `LANES.md`'s table, after
+    repoA-2's, and the lane's log (its header, then `log`'s lines)."""
+    lanes = SEED["lanes/LANES.md"]
+    anchor = next(line for line in lanes.split("\n") if line.startswith("| `repoA-2` |"))
+    row = (f"| `{lane}` | harness `{sid}` | Eagle / test / brett | 2026-09-01T00:00Z | none "
+           f"| handoffs/{lane}.md | {cell} |")
+    header = f"# lane {lane} {EM} object log (lane-collision-protocol Amendment 7)\n"
+    return {"lanes/LANES.md": lanes.replace(anchor + "\n", anchor + "\n" + row + "\n", 1),
+            f"lanes/log/{lane}.md": header + (log or "")}
+
+
+#: The starting state three verbs need, or they refuse for want of work (2):
+#: `archive-rows <repo>` moves a repository's RETIRED rows; `retire-rows`
+#: takes a dormant row, whose log has no lane-kind line and whose cell is not
+#: a current state (`lanes-edit.sh:13316-13352` at a2073eae); and
+#: `migrate-state-cells` migrates a diary cell, one that is not Amendment
+#: 13(a)'s phrase. Each is committed and pushed before the case runs, and on
+#: the real engine before the import.
+PREPS = {
+    "archive-rows": _with_row(
+        "repoZ-2", "eeeeeeee-0002-4000-8000-00000000e002",
+        f"RETIRED {DOT} 2026-09-03T00:00:00Z {DOT} retired",
+        f"RETIRED {EM} lane repoZ-2, session eeeeeeee-0002-4000-8000-00000000e002@Eagle, "
+        f"2026-09-03T00:00:00Z, lane:repoZ-2 {EM} retired\n"),
+    "retire-rows": _with_row("repoA-4", "aaaaaaaa-0005-4000-8000-00000000a005",
+                             f"MIGRATED {DOT} 2026-09-01T00:00:00Z {DOT} migrated"),
+    "migrate-state-cells": _with_row("repoA-5", "aaaaaaaa-0006-4000-8000-00000000a006",
+                                     f"parked 2026-09-01 {DOT} picked up 2026-09-02"),
+}
+
+#: S1's writes but `commit`: {verb: (its arguments, the lane it writes as)}.
+#: The argument forms are `lanes-edit.sh`'s usage lines at a2073eae.
+WRITE_VERBS = {
+    "add-row": (["add-row", f"| `repoA-3` | harness `aaaaaaaa-0004-4000-8000-00000000a004` | "
+                 f"Eagle / test / brett | 2026-11-10T00:00Z | none | handoffs/repoA-3.md | "
+                 f"LIVE {DOT} 2026-11-10T00:00:00Z {DOT} test 2 |"], "repoA-2"),
+    "append-line": (["append-line", f"HOLD {EM} lane repoA-2 ({WS}), window w, "
+                     f"2026-11-10T00:00:00Z: opensoft/repoB main {TIP} for test 2"], "repoA-2"),
+    "append-session-id": (["append-session-id", "repoA-2", f"harness `{SID_A2}`",
+                           " (test 2)"], "repoA-2"),
+    "archive-rows": (["archive-rows", "repoZ", "--yes"], "repoA-2"),
+    "claim": (["claim", "opensoft/repoA#9", "--no-github"], "repoA-2"),
+    "log": (["log", "NOTED", "lane:repoA-2", "test 2's write"], "repoA-2"),
+    "migrate-state-cells": (["migrate-state-cells", "--yes"], "repoA-2"),
+    "release": (["release", "opensoft/repoA#7", "test 2", "--no-github"], "repoA-1"),
+    "rename-lane": (["rename-lane", "repoA-2", "repoA-3", "test 2", "--no-github"], "repoA-2"),
+    "replace-in-row": (["replace-in-row", "repoA-2", "parked", "parked for test 2"], "repoA-2"),
+    "request-handoff": (["request-handoff", "repoA-1", "--force", "test 2"], "repoA-2"),
+    "retire-rows": (["retire-rows", "repoA-4", "--reason", "test 2"], "repoA-2"),
+    "set-row-state": (["set-row-state", "repoA-2", f"PAUSED {DOT} test 2"], "repoA-2"),
+}
+
+#: P11's writes that change several files (the test plan's lines 653-656).
+LATE_WRITES = {
+    "LANDING": (["append-line", f"LANDING {EM} lane repoA-2, session {SID_A2}@{WS}, "
+                 f"2026-11-10T00:00:00Z, PR #8 into opensoft/repoA main"], "repoA-2"),
+    "LANDED": (["append-line", f"LANDED {EM} lane repoA-1, session {SID_A1}@{WS}, "
+                f"2026-11-10T00:00:00Z, PR #7 into opensoft/repoA main {chr(0x2192)} "
+                f"abc1234"], "repoA-1"),
+    "rename-lane": WRITE_VERBS["rename-lane"],
+    "retire-rows": WRITE_VERBS["retire-rows"],
+    "archive-rows": WRITE_VERBS["archive-rows"],
+    "migrate-state-cells": WRITE_VERBS["migrate-state-cells"],
+}
+
+#: AT-3's line, which a writer prints where the switch is not `primary`.
+NOT_PRIMARY_LINE = "this estate's register is SQL; configure `mode=primary`"
+
+
+class PrimaryWorkstation:
+    """A `mode=primary` workstation for `lanes-edit.sh`'s writes: the
+    files-mode workspace of test 1's sync case (`workspace`), at C, the
+    flipped copy with `lanes-edit.sh` beside it, and a `lanes-index.conf`
+    whose `register_url=` and `reader_url=` name `urls`, or a fresh, empty
+    socket directory, with a 0600 `register_passfile=`. `fakebin` is first on
+    `PATH`."""
+
+    def __init__(self, tmp_path: Path, urls: tuple = None, fakebin: Path = None,
+                 prep: dict = None):
+        self.fakebin = fakebin or tmp_path / "fakebin"
+        self.fakebin.mkdir(parents=True, exist_ok=True)
+        self.estate, self.env, _source = workspace(tmp_path / "ws", self.fakebin)
+        if prep:
+            self._prep(prep)
+        self.copy = flipped(tmp_path)
+        self.lanes_edit = self.copy.parent / "lanes-edit.sh"
+        conf_dir = tmp_path / "conf"
+        conf_dir.mkdir()
+        self.passfile = conf_dir / "pgpass"
+        self.passfile.write_text(f"*:*:*:{WRITER_LOGIN}:{SECRET}\n", encoding="utf-8")
+        self.passfile.chmod(0o600)
+        self.dead = tmp_path / "dead"
+        self.dead.mkdir()
+        host = quote(self.dead.as_posix(), safe="")
+        register_url, reader_url = urls or (
+            f"postgresql://{WRITER_LOGIN}@{host}:5432/lanes_t241",
+            f"postgresql://lanes_r_t241@{host}:5432/lanes_t241")
+        self.conf = primary_config(conf_dir / "lanes-index.conf", register_url, reader_url,
+                                   self.passfile)
+        self.env.update(LANES_INDEX_CONFIG=str(self.conf))
+        self.env.pop("LANES_INDEX", None)
+
+    def _prep(self, files: dict) -> None:
+        """`files` written over the checkout, committed and pushed, so the
+        case starts from them; C is that commit."""
+        estate = self.estate
+        for path, text in files.items():
+            (estate.checkout / path).parent.mkdir(parents=True, exist_ok=True)
+            (estate.checkout / path).write_bytes(text.encode("utf-8"))
+        git(estate.checkout, "add", "-A", env=estate.env)
+        git(estate.checkout, "commit", "-q", "-m", "C': the case's starting state",
+            env=estate.env)
+        git(estate.checkout, "push", "-q", "origin", "main", env=estate.env)
+        estate.files.update(files)
+        estate.c = git(estate.checkout, "rev-parse", "HEAD", env=estate.env).strip()
+        estate.lanes_tree = git(estate.checkout, "rev-parse", f"{estate.c}:lanes",
+                                env=estate.env).strip()
+
+    def run(self, argv: list, lane: str, **extra) -> subprocess.CompletedProcess:
+        env = dict(self.env, LANES_LANE=lane, **extra)
+        return subprocess.run(["bash", str(self.lanes_edit), *argv], capture_output=True,
+                              encoding="utf-8", errors="replace", env=env, timeout=120,
+                              cwd=str(self.estate.checkout), check=False,
+                              stdin=subprocess.DEVNULL)
+
+    def git_state(self) -> tuple:
+        """AT-2's git oracle: the checkout's HEAD, status, index digest and
+        `origin/main`, the files under `lanes/`, and origin's refs."""
+        lanes = self.estate.checkout / "lanes"
+        files = {p.relative_to(lanes).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+                 for p in sorted(lanes.rglob("*")) if p.is_file()}
+        refs = git(self.estate.origin, "for-each-ref", "--format=%(refname) %(objectname)",
+                   env=self.estate.env)
+        return self.estate.state(), files, refs
+
+
+def unreachable_answers(dead: Path) -> list:
+    """The fake's answer for every call that carries a request: `psql`'s own
+    exit 2 and its text for an empty socket directory (AT-2, "Unreachable
+    (FP)")."""
+    socket = dead / ".s.PGSQL.5432"
+    return [{"exit": 2, "stderr": f'psql: error: connection to server on socket "{socket}" '
+                                  f"failed: No such file or directory\n\tIs the server running "
+                                  f"locally and accepting connections on that socket?\n"}]
+
+
+def _lock_files(ws: PrimaryWorkstation) -> list:
+    """The writers' mutexes left anywhere under the workspace: the lane
+    checkout's and any scratch tree's `.lanes-edit.lock` (`lanes-edit.sh`'s
+    `LOCK`, :1212 at a2073eae; `design.md` S1, step 2), and git's
+    `index.lock`."""
+    root = ws.estate.root
+    return sorted(p.relative_to(root).as_posix() for p in root.rglob("*")
+                  if p.name in (".lanes-edit.lock", "index.lock"))
+
+
+# ------------------------------------------------------------ no engine (FP)
+
+@pytest.mark.parametrize("verb", list(WRITE_VERBS))
+def test_each_write_exits_69_when_the_database_is_unreachable(tmp_path, verb):
+    """AT-2, "Unreachable (FP)": with every `psql` call answered by `psql`'s
+    exit 2 and its "connection to server ... failed" text, `lanes-edit.sh
+    <verb>` on primary exits 69; stderr names the store and the error with
+    no credential and no URL; a read verb's stdout is empty; the fake's log
+    shows the writer connected with `register_url=`'s login and
+    `register_passfile=`, `PGPASSWORD` never set, and no call after the
+    failed one (no retry that reads as a write, no fallback); and git is as
+    it was (the checkout, the files under `lanes/`, origin's refs)."""
+    ws = PrimaryWorkstation(tmp_path, prep=PREPS.get(verb))
+    fake = fake_psql_dir(ws.fakebin, answers=unreachable_answers(ws.dead))
+    ws.env.update(fake)
+    argv, lane = WRITE_VERBS[verb]
+    before = ws.git_state()
+    proc = ws.run(argv, lane)
+    said = proc.stdout + proc.stderr
+    assert proc.returncode == 69, (
+        f"lanes-edit.sh {verb} on primary exited {proc.returncode}, not 69, with the database "
+        f"unreachable (L4-B3, T415's attempt loop): {proc.stderr[-800:]}")
+    assert "connection to server" in proc.stderr, f"stderr names no error: {proc.stderr!r}"
+    assert SECRET not in said and not re.search(r"postgres(ql)?://", said), said
+    calls = fake_calls(fake)
+    assert len(calls) == 1, (
+        f"{len(calls)} psql calls carried a request, not one: a call followed the failed one "
+        f"(a retry that reads as a write, or a fallback): {calls}")
+    for call in calls:
+        assert call["url"].startswith(f"postgresql://{WRITER_LOGIN}@"), call["url"]
+        assert call["passfile"] == str(ws.passfile) and call["pgpassword"] is False, call
+    assert ws.git_state() == before, "git changed: a write fell back to the files"
+
+
+@pytest.mark.parametrize("write", ["commit-carry", "push-beyond-handoffs"])
+def test_each_direct_write_refuses_with_2_on_primary(tmp_path, write):
+    """D10, as T420 builds it at 1b (B10 tasks:1213-1231; R16): on primary,
+    `commit`'s carry form (a hand edit under `lanes/`, staged and committed by
+    `lanes-edit.sh commit`) and a push of a commit that changes a path
+    outside `handoffs/` (T420's backstop) each exit 2 before any SQL: the
+    fake's log holds no call that carries a request, the files under `lanes/`
+    are as they were, and origin's refs are unchanged. The captures and
+    `add-row`'s compensating commit do not exist at 1b (T420: "compensat"
+    matches nothing), so they have no id."""
+    ws = PrimaryWorkstation(tmp_path)
+    fake = fake_psql_dir(ws.fakebin, answers=unreachable_answers(ws.dead))
+    ws.env.update(fake)
+    checkout = ws.estate.checkout
+    if write == "commit-carry":
+        target = checkout / "lanes" / "LANES.md"
+        target.write_bytes(target.read_bytes() + b"a hand edit\n")
+        argv = ["commit", "a hand edit, carried"]
+    else:
+        (checkout / "notes.md").write_text("outside handoffs/\n", encoding="utf-8")
+        git(checkout, "add", "notes.md", env=ws.estate.env)
+        git(checkout, "commit", "-q", "-m", "a queued commit outside handoffs/",
+            env=ws.estate.env)
+        argv = ["commit", "publish the queued commit"]
+    refs = git(ws.estate.origin, "for-each-ref", "--format=%(refname) %(objectname)",
+               env=ws.estate.env)
+    lanes_before = {p: (checkout / p).read_bytes() for p in SEED if (checkout / p).exists()}
+    proc = ws.run(argv, "repoA-1")
+    assert proc.returncode == 2, (
+        f"{write} on primary exited {proc.returncode}, not 2 (D10; L4-B11, T420): "
+        f"{proc.stderr[-800:]}")
+    assert fake_calls(fake) == [], f"a direct write reached SQL: {fake_calls(fake)}"
+    assert git(ws.estate.origin, "for-each-ref", "--format=%(refname) %(objectname)",
+               env=ws.estate.env) == refs, "origin moved"
+    if write == "push-beyond-handoffs":
+        assert {p: (checkout / p).read_bytes() for p in lanes_before} == lanes_before
+
+
+def test_a_hand_edit_commit_is_refused_on_primary(tmp_path):
+    """GB section 4.3's D10 case (R29; R16): `lanes-edit.sh commit`'s carry
+    form, over a hand edit of `lanes/LANES.md`, exits 2 on primary, says the
+    register is SQL, reaches no SQL, and leaves the file, the index, HEAD and
+    origin as they were (the test plan's line 734)."""
+    ws = PrimaryWorkstation(tmp_path)
+    fake = fake_psql_dir(ws.fakebin, answers=unreachable_answers(ws.dead))
+    ws.env.update(fake)
+    target = ws.estate.checkout / "lanes" / "LANES.md"
+    target.write_bytes(target.read_bytes() + b"a hand edit\n")
+    edited = target.read_bytes()
+    before = ws.estate.state()
+    proc = ws.run(["commit", "a hand edit"], "repoA-1")
+    assert proc.returncode == 2, (
+        f"a hand-edit commit on primary exited {proc.returncode}, not 2 (D10; T420's carry "
+        f"form): {proc.stderr[-800:]}")
+    assert fake_calls(fake) == [], f"the refusal reached SQL: {fake_calls(fake)}"
+    assert target.read_bytes() == edited, "the hand edit was changed"
+    assert ws.estate.state() == before, "HEAD, the index or origin moved"
+
+
+def _queue(ws: PrimaryWorkstation, path: str, text: str) -> str:
+    """A local commit, not pushed, that writes `path`. Returns its sha."""
+    checkout = ws.estate.checkout
+    target = checkout / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(text.encode("utf-8"))
+    git(checkout, "add", "--", path, env=ws.estate.env)
+    git(checkout, "commit", "-q", "-m", f"queued: {path}", env=ws.estate.env)
+    return git(checkout, "rev-parse", "HEAD", env=ws.estate.env).strip()
+
+
+def test_a_queued_handoff_commit_is_still_published(tmp_path):
+    """GB section 4.3's D10 case (R16): on primary, the publish act stays,
+    fenced to `handoffs/`. A queued local commit that writes only
+    `handoffs/repoA-1.md` is published by `lanes-edit.sh commit` with nothing
+    staged: it exits 0, origin's `main` is that commit, and no `psql` call is
+    made, since `commit` is exempt from the attempt loop (T420, review M2)."""
+    ws = PrimaryWorkstation(tmp_path)
+    fake = fake_psql_dir(ws.fakebin, answers=unreachable_answers(ws.dead))
+    ws.env.update(fake)
+    sha = _queue(ws, "handoffs/repoA-1.md", "# repoA-1's handoff, queued\n")
+    proc = ws.run(["commit", "publish the queued commit"], "repoA-1")
+    assert proc.returncode == 0, (
+        f"the publish act exited {proc.returncode} on primary (T420 keeps it): "
+        f"{proc.stderr[-800:]}")
+    assert git(ws.estate.origin, "rev-parse", "refs/heads/main",
+               env=ws.estate.env).strip() == sha, "the queued handoff commit was not published"
+    assert fake_calls(fake) == [], f"the publish act reached SQL: {fake_calls(fake)}"
+
+
+def test_a_queued_lanes_commit_is_refused_as_a_divergence(tmp_path):
+    """GB section 4.3's D10 case (R16): on primary, a queued local commit that
+    writes under `lanes/` is refused by the publish act as a divergence: a
+    nonzero exit that names the divergence and the commit, no push (origin's
+    refs unchanged), no SQL, and the local commit left for the operator."""
+    ws = PrimaryWorkstation(tmp_path)
+    fake = fake_psql_dir(ws.fakebin, answers=unreachable_answers(ws.dead))
+    ws.env.update(fake)
+    refs = git(ws.estate.origin, "for-each-ref", "--format=%(refname) %(objectname)",
+               env=ws.estate.env)
+    lanes = ws.estate.checkout / "lanes" / "LANES.md"
+    sha = _queue(ws, "lanes/LANES.md", lanes.read_text(encoding="utf-8") + "queued\n")
+    proc = ws.run(["commit", "publish the queued commit"], "repoA-1")
+    assert proc.returncode == 2, (
+        f"a queued lanes/ commit on primary exited {proc.returncode}, not 2 (T420's fence): "
+        f"{proc.stderr[-800:]}")
+    assert "diverge" in proc.stderr.lower() and sha[:7] in proc.stderr, proc.stderr
+    assert git(ws.estate.origin, "for-each-ref", "--format=%(refname) %(objectname)",
+               env=ws.estate.env) == refs, "origin moved"
+    assert git(ws.estate.checkout, "rev-parse", "HEAD", env=ws.estate.env).strip() == sha
+    assert fake_calls(fake) == [], f"the refusal reached SQL: {fake_calls(fake)}"
+
+
+#: An image that breaks the register's text: a line holding a CR, and one
+#: holding a NUL, each in `lanes/LANES.md`'s new image.
+BAD_IMAGES = {"image-cr": "\r", "image-nul": "\0"}
+
+
+@pytest.mark.parametrize("bad", list(BAD_IMAGES))
+def test_an_image_holding_a_cr_or_a_nul_is_refused_with_2_and_nothing_sent(tmp_path, bad):
+    """Lane 3's reading 3 of T112 (#165 6755386771; F10-OWED item 31; contract
+    section 3.3, "a listed file breaks its format ... 2"): `register commit`
+    over an attempt directory whose image of `lanes/LANES.md` holds a CR (the
+    line ends CRLF) or a NUL exits 2, never 69, before anything is sent: no
+    `psql` call at all, not even T106's `--version` probe, and the attempt
+    directory is as it was. Stderr names the image's path. No engine and no
+    lane 4 code: the directory is built by hand, in section 3.3's table."""
+    copy = flipped(tmp_path)
+    fake = fake_psql_dir(tmp_path / "fakebin", answers=[{"exit": 3, "stderr":
+                                                         "ERROR:  XX000: never sent\n"}])
+    estate = Estate(tmp_path / "estate")
+    conf_dir = tmp_path / "conf"
+    conf_dir.mkdir()
+    passfile = conf_dir / "pgpass"
+    passfile.write_text(f"*:*:*:{WRITER_LOGIN}:{SECRET}\n", encoding="utf-8")
+    passfile.chmod(0o600)
+    host = quote((tmp_path / "dead").as_posix(), safe="")
+    conf = primary_config(conf_dir / "lanes-index.conf",
+                          f"postgresql://{WRITER_LOGIN}@{host}:5432/lanes_t241",
+                          f"postgresql://lanes_r_t241@{host}:5432/lanes_t241", passfile)
+    env = index_env(tmp_path, conf, estate.home, **fake)
+    env["PATH"] = str(tmp_path / "fakebin") + os.pathsep + _sanitized_path()
+
+    write_id, generation = str(uuid.uuid4()), str(uuid.uuid4())
+    args_sha256 = hashlib.sha256(b"t241 " + bad.encode("ascii")).hexdigest()
+    not_after = str(int(time.time()) + 300)
+    attempt = tmp_path / "attempt"
+    path = "lanes/LANES.md"
+    old = SEED[path].encode("utf-8")
+    new = old + (f"HOLD {EM} lane repoA-2 ({WS}), window w, 2026-11-10T00:00:00Z: "
+                 f"opensoft/repoB main {TIP} for a check{BAD_IMAGES[bad]}").encode("utf-8")
+    new += b"\n"
+    blob = lambda data: hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()  # noqa: E731
+    (attempt / "images" / "lanes").mkdir(parents=True)
+    (attempt / "images" / path).write_bytes(new)
+    (attempt / "tree").mkdir()
+    (attempt / "snapshot").write_text(
+        f"format=1\nwrite_id={write_id}\ngeneration={generation}\nn=5\n"
+        f"not_after={not_after}\nclock={int(time.time())}\n", encoding="utf-8")
+    (attempt / "not_after").write_text(not_after + "\n", encoding="utf-8")
+    (attempt / "changes.tsv").write_text(f"M\t{path}\t{blob(old)}\t{blob(new)}\n",
+                                         encoding="utf-8")
+    (attempt / "files").write_text(_canonical_rows([("M", path, "", "")], {path: new}),
+                                   encoding="utf-8")
+    (attempt / "msg").write_text("lanes-edit.sh append-line: test 2's bad image\n",
+                                 encoding="utf-8")
+    (attempt / "author").write_text(AUTHOR + "\n", encoding="utf-8")
+    before = {p.relative_to(attempt).as_posix(): p.read_bytes()
+              for p in sorted(attempt.rglob("*")) if p.is_file()}
+
+    proc = run_index(copy, ["register", "commit", "--write-id", write_id, "--generation",
+                            generation, "--lane", "repoA-2", "--verb", "append-line",
+                            "--args-sha256", args_sha256, "--workstation", WS, attempt], env)
+    assert proc.returncode != 69, (
+        f"an image holding {bad[6:].upper()} gave 69; lane 3's reading 3 makes it 2: "
+        f"{proc.stderr}")
+    assert proc.returncode == 2, f"register commit exited {proc.returncode}: {proc.stderr}"
+    assert f"images/{path}" in proc.stderr, f"stderr names no image: {proc.stderr!r}"
+    log = Path(fake["FAKE_PSQL_LOG"])
+    assert not log.exists() or log.read_text(encoding="utf-8") == "", (
+        f"psql was called before the refusal: {log.read_text(encoding='utf-8')}")
+    assert {p.relative_to(attempt).as_posix(): p.read_bytes()
+            for p in sorted(attempt.rglob("*")) if p.is_file()} == before
+
+
+# ------------------------------------------------------------ real engine (RE)
+
+class RegisterWorkstation(PrimaryWorkstation):
+    """`PrimaryWorkstation` over the test's database: its workspace's C is
+    imported and brought to `primary` with the marker `present` (test 1's
+    `import_to_primary`), and `lanes-edit.sh` connects as this module's
+    logins, through T203's `psql` shim, first on `PATH`, which hands every
+    call to the cluster's `psql` until a case arms it."""
+
+    def __init__(self, pg, tmp_path: Path, prep: dict = None):
+        fakebin = tmp_path / "fakebin"
+        fakebin.mkdir(parents=True, exist_ok=True)
+        (fakebin / "psql").write_text(PSQL_SHIM, encoding="utf-8")
+        (fakebin / "psql").chmod(0o755)
+        (fakebin / PSQL_SHIM_CONTROL).write_text(json.dumps({"psql": pg.psql_bin}),
+                                                 encoding="utf-8")
+        ensure_logins(pg)
+        super().__init__(tmp_path, (pg.url(LOGIN_WRITER), pg.url(LOGIN_READER)), fakebin,
+                         prep)
+        self.pg = pg
+        import_to_primary(pg, self.estate)
+
+    def arm(self, arms: list) -> None:
+        (self.fakebin / PSQL_SHIM_CONTROL).write_text(
+            json.dumps({"psql": self.pg.psql_bin, "arms": arms}), encoding="utf-8")
+
+    def shim_calls(self) -> list:
+        log = self.fakebin / PSQL_SHIM_LOG
+        if not log.exists():
+            return []
+        entries = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines() if x]
+        return [e for e in entries if e.get("kind") != "version"]
+
+    def db_digest(self) -> dict:
+        """Each register table, the journal and the head row, copied out in
+        a fixed order and digested (AT-2's database oracle)."""
+        tables = [r["t"] for r in rows(self.pg, f"SELECT table_name AS t FROM "
+                                                f"information_schema.tables WHERE table_schema "
+                                                f"= '{SCHEMA}' AND table_type = 'BASE TABLE' "
+                                                f"ORDER BY 1")]
+        return {t: rows(self.pg, f"SELECT md5(coalesce(string_agg(x::text, E'\\n' ORDER BY "
+                                 f"x::text), '')) AS d FROM {t} x")[0]["d"] for t in tables}
+
+    def foreign_locks(self) -> list:
+        return rows(self.pg, "SELECT pid, locktype, mode FROM pg_locks WHERE pid <> "
+                             "pg_backend_pid() AND pid IN (SELECT pid FROM pg_stat_activity "
+                             "WHERE application_name NOT LIKE 't210%' AND backend_type = "
+                             "'client backend')")
+
+
+def _commit_calls(ws: RegisterWorkstation) -> list:
+    return [c for c in ws.shim_calls() if "commit_write(" in (c.get("stdin") or "")]
+
+
+@pytest.mark.parametrize("verb", list(WRITE_VERBS))
+def test_each_write_exits_69_when_the_switch_is_not_primary(pg, tmp_path, verb):
+    """AT-2, "Refused: the switch" (P170-171): with the switch row set to
+    `files`, `lanes-edit.sh <verb>` exits 69, stderr carries AT-3's line,
+    the register's tables and git are unchanged, and no commit call is sent
+    twice."""
+    ws = RegisterWorkstation(pg, tmp_path, PREPS.get(verb))
+    sql(pg, f"UPDATE {SCHEMA}.register_switch SET mode = 'files';")
+    before_db, before_git = ws.db_digest(), ws.git_state()
+    argv, lane = WRITE_VERBS[verb]
+    proc = ws.run(argv, lane)
+    assert proc.returncode == 69, f"{verb} exited {proc.returncode}: {proc.stderr[-800:]}"
+    assert NOT_PRIMARY_LINE in proc.stderr, proc.stderr
+    assert ws.db_digest() == before_db and ws.git_state() == before_git
+    assert len(_commit_calls(ws)) <= 1, "a refused commit call was sent again"
+
+
+@pytest.mark.parametrize("verb", list(WRITE_VERBS))
+def test_each_write_exits_69_when_the_database_refuses_the_transaction(pg, tmp_path, verb):
+    """AT-2, "Refused: a GRANT": with `EXECUTE` on `commit_write` revoked from
+    `lanes_register_writer`, the commit call fails with 42501 and the write
+    exits 69; then, with that restored and `SELECT` on `register_head`
+    revoked, the snapshot is refused and the write exits 69. Each time the
+    register's tables and git are unchanged, stderr names the store and the
+    error without credentials, and the refused commit call is never sent
+    again (R02: no resend)."""
+    ws = RegisterWorkstation(pg, tmp_path, PREPS.get(verb))
+    argv, lane = WRITE_VERBS[verb]
+    signature = f"{SCHEMA}.commit_write(bigint, uuid, integer, uuid, jsonb)"
+    for revoke, grant, code in (
+            (f"REVOKE EXECUTE ON FUNCTION {signature} FROM {WRITER};",
+             f"GRANT EXECUTE ON FUNCTION {signature} TO {WRITER};", "42501"),
+            (f"REVOKE SELECT ON {SCHEMA}.register_head FROM {WRITER};",
+             f"GRANT SELECT ON {SCHEMA}.register_head TO {WRITER};", "42501")):
+        sql(pg, revoke)
+        before_db, before_git, calls = ws.db_digest(), ws.git_state(), len(_commit_calls(ws))
+        proc = ws.run(argv, lane)
+        sql(pg, grant)
+        assert proc.returncode == 69, f"{verb} exited {proc.returncode}: {proc.stderr[-800:]}"
+        assert code in proc.stderr and "postgresql://" not in proc.stderr, proc.stderr
+        assert ws.db_digest() == before_db and ws.git_state() == before_git
+        assert len(_commit_calls(ws)) - calls <= 1, "a refused commit call was sent again"
+
+
+@pytest.mark.parametrize("write", list(LATE_WRITES))
+def test_a_failure_in_a_late_statement_leaves_journal_lines_and_head_unchanged(pg, tmp_path,
+                                                                               write):
+    """AT-2, "Partway" (P11; D6): the shim's `edit-entry` rewrites the commit
+    call's entry so that its last structured row breaks a CHECK (a `mode`
+    that is neither `files` nor `primary`), so the transaction fails with
+    23514 after the head row, the line edits and the earlier rows changed
+    inside it. The write exits 69; the journal, the line store and the head
+    row are unchanged (each table's digest); git is unchanged; the refused
+    call is never sent again."""
+    ws = RegisterWorkstation(pg, tmp_path, PREPS.get(write))
+    ws.arm([{"mode": "edit-entry", "match": "commit_write", "call": 1,
+             "field": "log_lines.-1.mode", "value": "neither"}])
+    before_db, before_git = ws.db_digest(), ws.git_state()
+    argv, lane = LATE_WRITES[write]
+    proc = ws.run(argv, lane)
+    assert proc.returncode == 69, f"{write} exited {proc.returncode}: {proc.stderr[-800:]}"
+    assert "23514" in proc.stderr, proc.stderr
+    assert ws.db_digest() == before_db and ws.git_state() == before_git
+    assert len(_commit_calls(ws)) == 1, "the failed commit call was sent again"
+
+
+@pytest.mark.parametrize("verb", list(WRITE_VERBS))
+def test_a_refused_write_leaves_no_lock(pg, tmp_path, verb):
+    """AT-2's lock oracle: a write refused with the database unreachable (the
+    shim's `fail-match` on every call) leaves no mutex, neither the scratch
+    tree's nor the lane checkout's, and no scratch tree; once the fault is
+    removed, the same write made at once exits 0; and `pg_locks` shows no
+    lock held by another client backend."""
+    ws = RegisterWorkstation(pg, tmp_path, PREPS.get(verb))
+    ws.arm([{"mode": "fail-call", "from": 1}])
+    argv, lane = WRITE_VERBS[verb]
+    proc = ws.run(argv, lane)
+    assert proc.returncode == 69, f"{verb} exited {proc.returncode}: {proc.stderr[-800:]}"
+    assert _lock_files(ws) == [], f"a mutex was left: {_lock_files(ws)}"
+    ws.arm([])
+    again = ws.run(argv, lane)
+    assert again.returncode == 0, f"the write after the fault exited {again.returncode}: " \
+                                  f"{again.stderr[-800:]}"
+    assert ws.foreign_locks() == [], ws.foreign_locks()
+
+
+def test_a_pending_hand_edit_names_the_file_and_a_recovery_that_works(pg, tmp_path):
+    """P361-365: with a hand edit of `lanes/LANES.md` pending in the writing
+    lane's checkout, a write refuses before its snapshot (the shim's log is
+    empty), naming the file and one recovery command; running that command
+    leaves `status --porcelain` empty, and the next write exits 0."""
+    ws = RegisterWorkstation(pg, tmp_path)
+    target = ws.estate.checkout / "lanes" / "LANES.md"
+    target.write_bytes(target.read_bytes() + b"a pending hand edit\n")
+    argv, lane = WRITE_VERBS["set-row-state"]
+    proc = ws.run(argv, lane)
+    assert proc.returncode != 0 and ws.shim_calls() == [], (proc.returncode, ws.shim_calls())
+    assert "lanes/LANES.md" in proc.stderr, proc.stderr
+    commands = re.findall(r"`(git [^`]+)`", proc.stderr)
+    assert len(commands) == 1, f"the refusal names {len(commands)} recovery commands: " \
+                               f"{proc.stderr!r}"
+    subprocess.run(commands[0], shell=True, cwd=str(ws.estate.checkout), env=ws.estate.env,
+                   check=True, capture_output=True)
+    assert git(ws.estate.checkout, "status", "--porcelain", env=ws.estate.env) == ""
+    assert ws.run(argv, lane).returncode == 0
+
+
+def test_a_write_goes_on_with_the_service_down(pg, tmp_path):
+    """Round 1's 4A: with no service started (no socket under the service's
+    directory), a write goes on through its own transaction (the journal
+    gains one entry) and never falls back to the files (the checkout's
+    `lanes/` unchanged)."""
+    ws = RegisterWorkstation(pg, tmp_path)
+    before = rows(pg, f"SELECT count(*) AS n FROM {SCHEMA}.journal")[0]["n"]
+    lanes_before = ws.git_state()[1]
+    argv, lane = WRITE_VERBS["log"]
+    proc = ws.run(argv, lane)
+    assert proc.returncode == 0, f"log exited {proc.returncode}: {proc.stderr[-800:]}"
+    assert rows(pg, f"SELECT count(*) AS n FROM {SCHEMA}.journal")[0]["n"] == before + 1
+    assert ws.git_state()[1] == lanes_before, "the write fell back to the files"
