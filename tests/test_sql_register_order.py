@@ -626,7 +626,7 @@ def import_files(c: "Clone", files: Dict[str, str]) -> int:
     assert (sw["mode"], sw["marker_state"], c.head()) == ("files", "absent", -1), (
         f"a clone of {W_TEMPLATE} is not at files, marker absent, with an empty journal: {sw}, head {c.head()}")
     edits, rows = [], []
-    for path in sorted(files):
+    for path in sorted(p for p in files if p != "lanes/log/README.md"):
         lines = files[path].rstrip("\n").split("\n")
         edits.append({"ord": len(edits) + 1, "op": "create", "path": path})
         edits += [{"ord": len(edits) + 1 + k, "op": "append", "path": path, "new_text": text}
