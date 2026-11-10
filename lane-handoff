@@ -3067,8 +3067,13 @@ if [ "$do_restart" = 1 ] || [ "$do_exit" = 1 ]; then
 		die "the lane's PAUSED line is written and the ROW WAS NOT FLIPPED (the note above says why), so this pane is left exactly as it is: respawning it would leave the register reading RUNNING for a session that has just been replaced, and every other lane reads the row. Flip it and re-run, or restart by hand:  $restart_cmd" 2
 	[ "$handoff_written" = 1 ] ||
 		die "the lane's PAUSED line is written and the HANDOFF WAS NOT REFRESHED (the note above says why), so this pane is left exactly as it is: the top block of that file is what the new session is started with, and respawning now would hand it the block of a handoff this act has replaced. Put the block printed above at the head of the handoff, then re-run — or restart by hand once you have:  $restart_cmd" 2
+	# THE MODE WORD NAMES THE FLAG THAT IS 1 (opensoft/openRepoTools#355). Both
+	# flags are always `0` or `1`, never empty, so a `${flag:+word}` fires for
+	# both and the message named `respawnend`, which is no mode. `--restart` and
+	# `--exit` are refused together above, so exactly one of them is 1 here.
+	if [ "$do_exit" = 1 ]; then tmux_act_word=end; else tmux_act_word=respawn; fi
 	have_tmux ||
-		die "the record is written, and there is no tmux here to ${do_restart:+respawn}${do_exit:+end} this pane with. Do it by hand — the record is the part that mattered." 2
+		die "the record is written, and there is no tmux here to $tmux_act_word this pane with. Do it by hand — the record is the part that mattered." 2
 	# THE PANE, from the LIVE RECORD's own `tmux` field — `<session>:<@id>.%<pane>`
 	# — because that is the pane the session is really in; the window ref is the
 	# fallback for a record that carries none, and tmux resolves it to that
