@@ -7308,7 +7308,8 @@ pw_replay_tail() {   # <seq> <how it was learned>
   [ -z "$rp_run" ] || PW_RP_RUN_DIR="$WR_STATE/register-writes/$WR_D/$rp_run"
   rp_dir="$WR_STATE/register-writes/$WR_D/$rp_run/1"
   if [ -z "$rp_run" ] || ! wr_dir_0700 "$WR_STATE/register-writes/$WR_D/$rp_run" || ! wr_dir_0700 "$rp_dir"; then
-    pw_tail_owed "$1" "its replay's directory, $rp_dir, could not be made a 0700 directory of this user's, so it was not replayed"
+    # `<run>` where no run nonce could be read, never `<d>//1` (REV418b's cosmetic).
+    pw_tail_owed "$1" "its replay's directory, $WR_STATE/register-writes/$WR_D/${rp_run:-<run>}/1, could not be made a 0700 directory of this user's, so it was not replayed"
   fi
   PW_DIR="$rp_dir"
   rp_t="$(mktemp "$rp_dir/.parent.pid.XXXXXX" 2>/dev/null)" || rp_t=""
