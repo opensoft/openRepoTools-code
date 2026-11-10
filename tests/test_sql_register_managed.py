@@ -123,19 +123,6 @@ WS, AUTHOR, OPERATOR = "ws-t224", "T224 Fixture <t224@example.invalid>", "operat
 MARKER_COMMIT = "c0ffee" + "4" * 34
 
 
-@pytest.fixture(scope="session")
-def pg_template_sql():
-    """AN EMPTY TEMPLATE FOR THIS MODULE'S CLUSTERS. `pg_template_sql` is the
-    fixture's overridable hook, and T227 makes its default the bootstrap,
-    with T228's logins, on every cluster. AT-LRMPG's server is a new one
-    whose only admin is CNPG's `initdb` owner, which runs the bootstrap and
-    makes the logins itself: roles a superuser made first would leave that
-    admin without ADMIN OPTION on them (PostgreSQL 16) and give `login add`
-    logins that exist already. So each `stoppable_cluster` here starts
-    empty, as the provider's does."""
-    return ""
-
-
 def _said(proc: subprocess.CompletedProcess) -> str:
     return f"exit {proc.returncode}\nstdout: {proc.stdout}\nstderr: {proc.stderr}"
 
@@ -272,8 +259,11 @@ class Managed:
     `lanes-index` runs, each with the test's own `$HOME`."""
 
     def __init__(self, request, root: Path, *, cluster=None, scram: bool = True):
-        self.cluster = cluster if cluster is not None else request.getfixturevalue(
-            "stoppable_cluster")
+        # A CLUSTER OF THE TEST'S OWN WITH AN EMPTY TEMPLATE, as the provider's
+        # new server is: T227 makes `stoppable_cluster`'s template the bootstrap,
+        # with T228's logins, which would leave this admin, no superuser,
+        # without ADMIN OPTION on roles it did not make (PostgreSQL 16).
+        self.cluster = cluster if cluster is not None else _another_cluster(request)
         import pgcluster
         self.pgcluster = pgcluster
         self.port = int(getattr(self.cluster, "port", pgcluster.PORT))
@@ -1021,7 +1011,11 @@ class TlsEnvironment:
         import inspect
         accepted = inspect.signature(self.tls.start_again).parameters
         for name in option:
-            assert name in accepted, f"T229's tls_cluster.start_again takes no {name}= option"
+            assert name in accepted, (
+                f"T229's tls_cluster.start_again takes no {name}= option"
+                + (": T229's text names no standby start, so [in-recovery] fails until lane 3 "
+                   "rules who builds it (T229, or this module's own standby)"
+                   if name == "standby" else ""))
         self.tls.stop()
         if option.get("standby"):
             (Path(self.tls.root) / "data" / "standby.signal").touch()
