@@ -124,6 +124,7 @@ import time
 import uuid
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 
@@ -694,7 +695,7 @@ class Bench:
             # deadline is D9's test value. A reading: T257's text names the
             # rows, not the verb that carries them.
             argv = ["bash", str(tool / "lanes-edit.sh"), "set-row-state", "repoA-2",
-                    "PAUSED - T257's writer row"]
+                    f"PAUSED {DOT} T257's writer row"]
             env = dict(env, LANES_REGISTER_DEADLINE_S="3", LANES_LANE="repoA-2")
         elif row == "lookup":
             # THE LOOKUP'S FORM (AT-F6 case 19; lane 1's T114, `refs/l1/T114-fu3`):
@@ -871,7 +872,7 @@ def test_each_database_path_exits_inside_its_bound(pg, tmp_path, request, case):
             config = bench.config("127.0.0.1", listener.port, user)
         else:
             session = _hold(pg, spec["table"])
-            config = bench.config("localhost", pg.port, user)
+            config = bench.config(quote(str(pg.host), safe=""), pg.port, user)
         if row == "mode-query":
             config.write_text(config.read_text().replace("mode=primary", "mode=index"))
         proc, elapsed = bench.run(row, config)
@@ -937,7 +938,7 @@ def _service_57014(bench: Bench, spec: dict, user: str) -> None:
     no earlier than 180 ms after its request was handed to it (timing rule 3)
     and under twice it (timing rule 2), and the guard exits 2. It fails until
     L5-S1 (lane 5's T511 to T513) and L5-A3 land."""
-    config = bench.config("localhost", bench.pg.port, user)
+    config = bench.config(quote(str(bench.pg.host), safe=""), bench.pg.port, user)
     statement_s = spec["statement_ms"] / 1000
     bench.stream()
     serve = bench.start_service(bench.guard_env(config))
@@ -980,7 +981,7 @@ def test_a_slow_statement_meets_57014_before_the_client_timer(pg, tmp_path, requ
         return
     statement_s = spec["statement_ms"] / 1000
     _slow_statement(pg, spec["table"], spec["group"], 4 * statement_s + 5)
-    proc, elapsed = bench.run(row, bench.config("localhost", pg.port, user))
+    proc, elapsed = bench.run(row, bench.config(quote(str(pg.host), safe=""), pg.port, user))
     ended = [c for c in bench.calls() if "57014" in c["first"]]
     assert ended, f"{row}: no call ended with 57014: {bench.calls()}"
     took = ended[0]["end"] - ended[0]["start"]
@@ -1012,7 +1013,7 @@ def test_the_outage_declare_probe_ends_inside_its_bound_and_the_declaration_foll
             config = bench.config("127.0.0.1", listener.port, user)
         else:
             session = _hold(pg, "register_switch")
-            config = bench.config("localhost", pg.port, user)
+            config = bench.config(quote(str(pg.host), safe=""), pg.port, user)
         # D20 (Y:3073): `outage declare --until <UTC> --why "<words>"`; the rollback
         # form is `--rollback --mirror-seq <k>`, with no `--until` (lane 1, #165
         # comment 6754680212).
@@ -1626,7 +1627,7 @@ def test_the_lookups_tries_start_inside_the_window_and_end_in_3(pg, tmp_path, re
                 session = _hold_head(pg)
             else:
                 _slow_lookup(pg, 4 * LOOKUP_STATEMENT_S + 5)
-            config = bench.config("localhost", pg.port, user)
+            config = bench.config(quote(str(pg.host), safe=""), pg.port, user)
         proc, _ = bench.run("lookup", config)
     finally:
         if listener is not None:
@@ -1649,6 +1650,9 @@ def test_the_lookups_tries_start_inside_the_window_and_end_in_3(pg, tmp_path, re
     bound = LOOKUP_WINDOW_S + LOOKUP_T_L
     assert elapsed < 2 * bound, f"lookup-{fault}: {elapsed:.2f} s against {bound} s"
     _record(f"lookup-tries-{fault}", elapsed, bound, f"timing rule 2, {len(tries)} tries")
+    if fault == "F3":
+        assert any("55P03" in c["first"] for c in bench.calls()), \
+            f"lookup-F3: no try ended with 55P03: {bench.calls()}"
     if fault == "F4":
         ended = [c for c in bench.calls() if "57014" in c["first"]]
         assert ended, f"lookup-F4: no try ended with 57014: {bench.calls()}"
@@ -1749,9 +1753,9 @@ def test_an_orphaned_writer_transaction_is_ended_by_the_idle_bound(pg, tmp_path,
     1's T112 land, on T227's template and T228's logins."""
     bench = Bench(pg, tmp_path, request)
     user = bench.login("lanes_register_writer")
-    config = bench.config("localhost", pg.port, user)
+    config = bench.config(quote(str(pg.host), safe=""), pg.port, user)
     where = _shim(bench, [{"mode": "fail-match", "match": "commit_write"}])
-    first = _writer(bench, config, "PAUSED - T257's orphan, unsent", deadline="3")
+    first = _writer(bench, config, f"PAUSED {DOT} T257's orphan, unsent", deadline="3")
     out, err = first.communicate(timeout=300)
     scripts = [e["stdin"] for e in _shim_calls(where) if "commit_write" in e.get("stdin", "")]
     assert scripts, f"the first writer sent no commit call: {first.returncode}: {err}"
@@ -1770,7 +1774,7 @@ def test_an_orphaned_writer_transaction_is_ended_by_the_idle_bound(pg, tmp_path,
             state, age = _activity(pg, "t257-orphan")
         assert state == "idle in transaction", f"the replayed commit never idled: {state!r}"
         idled = time.monotonic() - age
-        waiting = _writer(bench, config, "PAUSED - T257's waiting write")
+        waiting = _writer(bench, config, f"PAUSED {DOT} T257's waiting write")
         while _activity(pg, "t257-orphan")[0] and time.monotonic() - idled < 4 * IDLE_BOUND_S:
             time.sleep(0.05)
         ended = time.monotonic() - idled
@@ -1894,10 +1898,10 @@ def test_the_lookups_wait_counts_from_the_snapshot_calls_end_and_gets_no_lr011(
     on T227's template and T228's logins."""
     bench = Bench(pg, tmp_path, request)
     user = bench.login("lanes_register_writer")
-    config = bench.config("localhost", pg.port, user)
+    config = bench.config(quote(str(pg.host), safe=""), pg.port, user)
     where = _shim(bench, [{"mode": "window", "ms": 2500, "call": 1},
                           {"mode": "before", "match": "commit_write", "call": 1}], timed=True)
-    writer = _writer(bench, config, "PAUSED - T257's lookup wait", deadline="1")
+    writer = _writer(bench, config, f"PAUSED {DOT} T257's lookup wait", deadline="1")
     out, err = writer.communicate(timeout=300)
     scripts, times = _shim_calls(where), bench.calls()
     assert len(times) == len(scripts), \
@@ -1954,7 +1958,7 @@ def test_over_a_delayed_tls_link_no_healthy_call_meets_its_timer(tls_cluster, tm
     with delayed_loopback(tls_cluster.port, DELAY_S) as relay:
         config = _link_config(tmp_path / "conf" / "lanes-index.conf", tls_cluster, relay.port,
                               FX_WRITER)
-        writer = _writer(bench, config, "PAUSED - T257's delayed link")
+        writer = _writer(bench, config, f"PAUSED {DOT} T257's delayed link")
         _, err = writer.communicate(timeout=300)
         assert writer.returncode == 0, f"the healthy write: {writer.returncode}: {err}"
         kinds = ["commit" if "commit_write" in e["stdin"] else "snapshot"
@@ -2009,7 +2013,7 @@ def test_a_burst_of_ten_over_a_delayed_tls_link_commits_each_once_or_exits_75_wi
         configs = {login: _link_config(tmp_path / "conf" / login / "lanes-index.conf", tls_cluster,
                                        relay.port, login) for login in set(writers)}
         release = time.monotonic()
-        procs = [_writer(bench, configs[login], f"PAUSED - T257's burst {i}")
+        procs = [_writer(bench, configs[login], f"PAUSED {DOT} T257's burst {i}")
                  for i, login in enumerate(writers)]
         ends = []
         for proc in procs:
