@@ -5831,10 +5831,11 @@ PW_K=0; PW_DIR=""; PW_CHILD=""; PW_KEPT=""; PW_FIRST_DONE=0; PW_RELAY=""; PW_RC=
 PW_S_GEN=""; PW_S_WID=""; PW_S_FOUND=""; PW_S_N=""; PW_S_CLOCK=""; PW_S_NOT_AFTER=""
 
 # D7's deadline in whole seconds: 30, or `LANES_REGISTER_DEADLINE_S` for tests
-# (Y:2632–2641).
+# (Y:2632–2641), read in base 10, so a leading zero is neither octal nor an
+# arithmetic error: `08` is 8 s (review REV415, S2).
 pw_deadline_s() {
   if wr_is_count "${LANES_REGISTER_DEADLINE_S:-}"; then
-    printf '%s\n' "$LANES_REGISTER_DEADLINE_S"
+    printf '%s\n' "$((10#$LANES_REGISTER_DEADLINE_S))"
   else
     printf '30\n'
   fi
@@ -20695,6 +20696,15 @@ if [ "$REG_ASK" = 1 ]; then
         die "this lanes-edit.sh has no SQL write path: \`lanes-index mode\` answered primary, which only a lanes-index newer than this lanes-edit.sh answers. \`$cmd\` wrote nothing, and wrote no files instead. Install the lanes-edit.sh that ships with that lanes-index." 69
       pw_run ${1+"$@"} ;;
   esac
+fi
+# THE PRIMARY ARM NEVER FALLS THROUGH (Y:4885: primary is "never files"; review
+# REV415, S2). `pw_run` ends this process on every path. But where an expansion
+# fails inside it, an arithmetic error for one, bash abandons the whole `if`
+# above and goes on after its `fi`, into the routing and the verb's files-mode
+# arm. So a writer whose mode question answered `primary`, outside an attempt's
+# child, refuses here with 69, having written no files.
+if [ "$REG_MODE" = primary ] && [ -z "$REG_SCRATCH" ]; then
+  die "\`lanes-index mode\` answered primary, and \`$cmd\` left the register's attempt loop without ending, which is an internal error of this lanes-edit.sh. Whether it reached the register is not known: a write already made reads as found when the command is run again. \`$cmd\` wrote no files instead." 69
 fi
 
 # AMENDMENT 23 S2 — UNDER `LANES_ROUTE_WRITES=1`, EVERY WRITE GOES THROUGH ITS
