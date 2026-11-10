@@ -2005,8 +2005,13 @@ def test_register_grep_prints_what_git_grep_prints_and_1_with_no_match(estate, p
         primary.door.unreachable()
         result = runs["primary"]("register-grep", "-E", ere, "--", "lanes/log")
         assert (result.returncode, result.stdout) == (69, ""), (result.returncode, result.stderr)
+        # `register-grep` never reads `LANES_REPO` (that is `register-text`'s
+        # knob, above): it greps `origin/<branch>` in `$LANES_WS_ROOT`, the
+        # workspace root `LANES_WORKSPACE_ROOT` or `workspace.yaml`'s `path:`
+        # names, the same root `lane-worktrees` greps (T401; lane 4's INV401).
+        # So the missing checkout goes in the variable the verb reads.
         gone = estate.edit("register-grep", "-E", ere, "--", "lanes/log",
-                           env={"LANES_REPO": str(estate.root / "no-such-checkout")})
+                           env={"LANES_WORKSPACE_ROOT": str(estate.root / "no-such-checkout")})
         assert (gone.returncode, gone.stdout) == (69, ""), (gone.returncode, gone.stderr)
     elif case in OUTSIDE_PATHS:
         for mode, run in runs.items():
