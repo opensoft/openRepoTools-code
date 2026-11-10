@@ -293,7 +293,7 @@ def sql(db, script: str, role: str = None) -> str:
 def rows(db, query: str) -> list:
     """`query`'s rows as JSON objects, read in the register's schema."""
     out = sql(db, f"SET search_path TO {SCHEMA};\n"
-                  f"SELECT coalesce(json_agg(t), '[]'::json) FROM ({query}) t;")
+                  f"SELECT coalesce(jsonb_agg(q), '[]'::jsonb) FROM ({query}) q;")
     return json.loads(out.splitlines()[-1])
 
 
