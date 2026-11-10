@@ -828,7 +828,12 @@ jobs:
       # cuts a member to its declared size, so that size bounds nothing for
       # them. Each member is then hashed as it is read and dropped, and only
       # the three that are parsed, the stamp, METADATA and entry_points.txt,
-      # are kept whole.
+      # are kept whole. Then the wheel must be its members and nothing else
+      # (opensoft/openRepoTools#352, follow-up 5): each local header is its
+      # central directory entry again, each member's data is exactly the
+      # bytes it declares, the members follow one another from byte 0 with
+      # nothing between them, the central directory and the end record end
+      # the file, and no name holds a NUL byte (`unaccounted` says why).
       # `tests/test_release_workflow.py` runs this very script on synthetic
       # wheels made from the commit's blobs.
       - name: the wheel holds the commit's own files, byte for byte and mode for mode, and the stamp
@@ -837,8 +842,8 @@ jobs:
         run: |
           export TAG="v$VERSION" COMMIT="$GITHUB_SHA" REPOSITORY="$GITHUB_REPOSITORY"
           python3 -I - "$RUNNER_TEMP/dist-a/openrepotools-$VERSION-py3-none-any.whl" <<'PY'
-          import ast, configparser, email.parser, hashlib, lzma, os, re, stat, subprocess, sys
-          import tomllib, zipfile, zlib
+          import ast, configparser, email.parser, hashlib, lzma, os, re, stat, struct
+          import subprocess, sys, tomllib, zipfile, zlib
 
           names = ("VERSION", "TAG", "COMMIT", "DIGEST", "REPOSITORY")
           release = {name: os.environ.get(name, "") for name in names}
@@ -900,6 +905,145 @@ jobs:
               return {n.targets[0].id: n.value.value for n in body
                       if isinstance(n, ast.Assign) and len(n.targets) == 1
                       and isinstance(n.targets[0], ast.Name) and isinstance(n.value, ast.Constant)}
+
+
+          # EVERY BYTE OF THE WHEEL ACCOUNTED FOR (opensoft/openRepoTools#352,
+          # follow-up 5). zipfile finds a member through the central
+          # directory, cuts it at its declared size, checks the CRC of that
+          # part alone, and reads nothing of its local header but its name.
+          # So a member could carry bytes past its declared size, bytes could
+          # lie between members or after the end record, and a reader that
+          # walks the local headers, as a streaming installer does, could
+          # find other files. `unaccounted` holds the wheel to the layout
+          # zipfile writes, from byte 0: each member's local header, its
+          # central entry's fields again with no extra field, then its data,
+          # then the next member; after the last, the central directory, its
+          # entries with no extra field and no comment, then the end record,
+          # with no comment, ending the file, and zipfile must have read the
+          # directory from where that record puts it. `unlike_declared` holds
+          # a member's data to exactly its declared compressed bytes (stored,
+          # as many as it declares; deflated, one stream that ends at their
+          # last byte) giving exactly its declared size and CRC-32. A
+          # directory entry holds no data, and a name with a NUL byte, which
+          # zipfile and pip cut at the NUL, is refused. So every byte is a
+          # header field, a name, or data that gives exactly what the check
+          # hashes. What this cannot see is the value of a field nothing else
+          # checks: the version, flags, time and date the two headers agree
+          # on, and the central fields with no local twin (the version made
+          # by, the disk, the internal attributes, and the external ones past
+          # a payload file's mode), a few bytes a member; and a deflate
+          # stream's own encoding, whose padding bits no inflater reads.
+          # Neither reaches an installed file. hatchling 1.27.0's wheels,
+          # TestPyPI's 1.1.0rc1 and PyPI's 1.1.0 among them, are laid out so.
+          LOCAL_HEADER = struct.Struct("<4s5H3L2H")
+          LOCAL_FIELDS = ("signature", "version", "flags", "method", "time", "date", "CRC-32",
+                          "compressed size", "size", "name length", "extra field length")
+          END_RECORD = struct.Struct("<4s4H2LH")
+
+
+          def unlike_declared(raw, entry):
+              """Why a member's data, read from `raw` where its local header ends, is
+              not exactly its declared compressed bytes giving exactly its declared
+              size and CRC-32, or None where it is. It reads a MiB at a time, and
+              stops a MiB at most past the declared size."""
+              size, packed = entry.file_size, entry.compress_size
+              if entry.compress_type not in read_methods:
+                  return f"it is in compression method {entry.compress_type}, which is not read"
+              stored = entry.compress_type == zipfile.ZIP_STORED
+              if stored and packed != size:
+                  return f"it is stored in {packed} bytes, and declares {size}"
+              inflater = zlib.decompressobj(-zlib.MAX_WBITS)
+              left, data, made, crc = packed, b"", 0, 0
+              while made <= size and not inflater.eof:
+                  if not data and left:
+                      data = raw.read(min(left, 1 << 20))
+                      if not data:
+                          return f"the wheel ends inside its {packed} bytes of data"
+                      left -= len(data)
+                  if stored:
+                      out, data = data, b""
+                  else:
+                      try:
+                          out = inflater.decompress(data, 1 << 20)
+                      except zlib.error as error:
+                          return f"its deflate stream breaks after {made} bytes ({error})"
+                      data = inflater.unconsumed_tail
+                  if not (out or data or left):
+                      break
+                  made, crc = made + len(out), zlib.crc32(out, crc)
+              if made > size:
+                  return f"it inflates past its declared {size} bytes"
+              if not stored and not inflater.eof:
+                  return f"its deflate stream does not end within its {packed} bytes"
+              if left or data or inflater.unused_data:
+                  return f"its deflate stream ends before its {packed} bytes do"
+              if (made, crc) != (size, entry.CRC):
+                  return (f"it gives {made} bytes with CRC-32 {crc:08x}, and declares {size} "
+                          f"with {entry.CRC:08x}")
+              return None
+
+
+          def unaccounted(path, everything, start_dir):
+              """Each way the wheel at `path` is not `everything`, the members zipfile
+              found, laid out as they declare and nothing else, as a line for an
+              `::error::`."""
+              found, at, directory = [], 0, 0
+              with open(path, "rb") as raw:
+                  for entry in sorted(everything, key=lambda e: e.header_offset):
+                      name, given = entry.filename, entry.orig_filename
+                      encoded = given.encode("utf-8" if entry.flag_bits & 0x800 else "cp437")
+                      if "\0" in given:
+                          found.append(f"the wheel names a member {given!r}, with a NUL byte, "
+                                       f"which zipfile and pip read as {name!r}")
+                      if name.endswith("/") and entry.file_size:
+                          found.append(f"{name} is a directory entry in the wheel, and holds "
+                                       f"{entry.file_size} bytes")
+                      if entry.header_offset > at:
+                          found.append(f"the wheel holds {entry.header_offset - at} bytes from "
+                                       f"byte {at} that no member declares, before {name}")
+                      elif entry.header_offset < at:
+                          found.append(f"{name} begins at byte {entry.header_offset}, inside the "
+                                       f"member before it, which ends at byte {at}")
+                      raw.seek(entry.header_offset)
+                      head = raw.read(LOCAL_HEADER.size)
+                      year, month, day, hour, minute, second = entry.date_time
+                      central = (b"PK\x03\x04", entry.extract_version | entry.reserved << 8,
+                                 entry.flag_bits, entry.compress_type,
+                                 hour << 11 | minute << 5 | second // 2,
+                                 (year - 1980) << 9 | month << 5 | day, entry.CRC,
+                                 entry.compress_size, entry.file_size, len(encoded), 0)
+                      local = (LOCAL_HEADER.unpack(head) if len(head) == LOCAL_HEADER.size
+                               else (None,) * len(LOCAL_FIELDS))
+                      wrong = [field for field, ours, its in zip(LOCAL_FIELDS, local, central)
+                               if ours != its]
+                      if not wrong and raw.read(len(encoded)) != encoded:
+                          wrong.append("name")
+                      if wrong:
+                          found.append(f"{name}'s local header disagrees with its central "
+                                       f"directory entry on its {', '.join(wrong)}")
+                      else:
+                          why = unlike_declared(raw, entry)
+                          if why:
+                              found.append(f"{name}'s data in the wheel is not exactly what it "
+                                           f"declares: {why}")
+                      # zipfile reads its data past the local header's own name
+                      # and extra field, so it ends its compressed size after
+                      skip = (local[-2] + local[-1] if local[0] == b"PK\x03\x04"
+                              else len(encoded))
+                      at = entry.header_offset + LOCAL_HEADER.size + skip + entry.compress_size
+                      directory += 46 + len(encoded) + len(entry.extra) + len(entry.comment)
+                  length = raw.seek(0, os.SEEK_END)
+                  raw.seek(max(length - END_RECORD.size, 0))
+                  tail = raw.read(END_RECORD.size)
+              end = END_RECORD.unpack(tail) if len(tail) == END_RECORD.size else None
+              count = len(everything)
+              if (end != (b"PK\x05\x06", 0, 0, count, count, directory, at, 0)
+                      or length != at + directory + END_RECORD.size or start_dir != at
+                      or any(entry.extra or entry.comment for entry in everything)):
+                  found.append(f"the wheel's {length - at} bytes after its last member are not "
+                               "exactly its central directory, with no extra field and no "
+                               "comment, then its end record, with no comment")
+              return found
 
 
           problems = []
@@ -973,6 +1117,7 @@ jobs:
                   for problem in problems:
                       print(f"::error::{problem}")
                   sys.exit(1)
+              problems.extend(unaccounted(sys.argv[1], everything, wheel.start_dir))
 
 
               def read(name):
@@ -1409,26 +1554,38 @@ jobs:
       # FROM TestPyPI, BY THE RECORDED DIGEST: the file TestPyPI lists under
       # the wheel's name, fetched from its file host, and kept only if its
       # sha256 is the one the build job recorded (the step after the next).
+      # An answer that is not TestPyPI's JSON, one nested too deep for the
+      # decoder (`RecursionError`) or one without the fields read among
+      # them, and a listing that is not one file on the file host each
+      # refuse with one `::error::` line naming it, never a traceback, as
+      # the upload jobs' index checks do, and nothing is fetched
+      # (opensoft/openRepoTools#352, follow-up 6).
       - name: fetch the wheel from TestPyPI
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           mkdir -p "$RUNNER_TEMP/wheel"
+          index="https://test.pypi.org/pypi/openrepotools/$VERSION/json"
           curl --proto '=https' --tlsv1.2 -fsSL --retry 10 --retry-delay 15 --retry-all-errors \
-              -o "$RUNNER_TEMP/testpypi.json" "https://test.pypi.org/pypi/openrepotools/$VERSION/json"
-          url="$(python - "$RUNNER_TEMP/testpypi.json" <<'PY'
+              -o "$RUNNER_TEMP/testpypi.json" "$index"
+          url="$(python - "$RUNNER_TEMP/testpypi.json" "$index" <<'PY'
           import json, os, sys, urllib.parse
-          with open(sys.argv[1], encoding="utf-8") as handle:
-              files = json.load(handle)["urls"]
-          entries = [f for f in files if f["filename"] == os.environ["WHEEL"]
-                     and f["digests"]["sha256"] == os.environ["WHEEL_SHA256"]]
+          try:
+              with open(sys.argv[1], encoding="utf-8") as handle:
+                  files = json.load(handle)["urls"]
+              entries = [f for f in files if f["filename"] == os.environ["WHEEL"]
+                         and f["digests"]["sha256"] == os.environ["WHEEL_SHA256"]]
+              listed = [entry["url"] for entry in entries]
+              parts = [urllib.parse.urlsplit(url) for url in listed]
+          except (ValueError, KeyError, TypeError, AttributeError, RecursionError) as error:
+              sys.exit(f"::error::TestPyPI's answer for {sys.argv[2]} is not its JSON API's "
+                       f"({type(error).__name__}: {error}), so no wheel is fetched")
           if len(entries) != 1:
-              sys.exit(f"TestPyPI lists {len(entries)} {os.environ['WHEEL']} at the recorded "
-                       f"digest, not one: {files}")
-          entry = entries[0]
-          parts = urllib.parse.urlsplit(entry["url"])
-          if parts.scheme != "https" or parts.hostname != "test-files.pythonhosted.org":
-              sys.exit(f"TestPyPI lists the wheel at {entry['url']}, not on its own file host")
-          print(entry["url"])
+              sys.exit(f"::error::TestPyPI lists {len(entries)} {os.environ['WHEEL']} at the "
+                       f"recorded digest, not one: {files}")
+          if parts[0].scheme != "https" or parts[0].hostname != "test-files.pythonhosted.org":
+              sys.exit(f"::error::TestPyPI lists the wheel at {listed[0]}, not on its own "
+                       "file host")
+          print(listed[0])
           PY
           )"
           curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors \

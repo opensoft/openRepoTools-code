@@ -45,7 +45,8 @@ per part of it (plan.md, "The test layout"):
   forge, the digest step also in a copy of the checkout whose standard or
   pin names another definition; the build step run with a fake build;
   step 13's wheel check run on synthetic wheels made from HEAD's blobs,
-  some damaged so a member cannot be read, its whole step on a rehearsal's
+  some damaged so a member cannot be read and some laid out other than
+  they declare, its whole step on a rehearsal's
   branch and on the tag, and `tests.yml`'s own wheel check beside it on
   each mode a payload file must not have; and the digest label, one
   literal in the installer, the pin and the standard;
@@ -131,6 +132,7 @@ import subprocess
 import sys
 import threading
 import zipfile
+import zlib
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -2185,6 +2187,39 @@ NOT_THE_COMMITS = {
 }
 
 
+def rewritten(path: Path, member: str, method: int) -> None:
+    """The zip at `path` written again by `zipfile`, `member` in `method` and
+    every other member as it was."""
+    with zipfile.ZipFile(path) as wheel:
+        kept = [(entry, wheel.read(entry)) for entry in wheel.infolist()]
+    with zipfile.ZipFile(path, "w") as wheel:
+        for entry, body in kept:
+            if entry.filename == member:
+                entry.compress_type = method
+            wheel.writestr(entry, body)
+
+
+def central_records(data: bytes) -> List[int]:
+    """Where each record of the zip `data`'s central directory begins."""
+    (at,) = struct.unpack_from("<I", data, data.rindex(b"PK\x05\x06") + 16)
+    found = []
+    while data[at:at + 4] == b"PK\x01\x02":
+        found.append(at)
+        named, extra, comment = struct.unpack_from("<HHH", data, at + 28)
+        at += 46 + named + extra + comment
+    return found
+
+
+def central_record(data: bytes, member: str, wheel: str) -> int:
+    """Where `member`'s record begins in the central directory of the zip
+    `data`, the file named `wheel`."""
+    for at in central_records(data):
+        (named,) = struct.unpack_from("<H", data, at + 28)
+        if data[at + 46:at + 46 + named] == member.encode("utf-8"):
+            return at
+    raise AssertionError(f"the case is wrong: {member} is not in {wheel}")
+
+
 def damage(path: Path, member: str, how: str) -> None:
     """`member` of the zip at `path`, damaged in place as a transfer can
     damage it, its bytes and every other member left as they are: `crc`
@@ -2198,23 +2233,9 @@ def damage(path: Path, member: str, how: str) -> None:
     make its uncompressed size in the central directory, which is what
     `file_size` reads, 512 MiB and 16 MiB, its bytes and CRC as they were."""
     if how in ("lzma", "bzip2"):
-        with zipfile.ZipFile(path) as wheel:
-            kept = [(entry, wheel.read(entry)) for entry in wheel.infolist()]
-        with zipfile.ZipFile(path, "w") as wheel:
-            for entry, body in kept:
-                if entry.filename == member:
-                    entry.compress_type = (zipfile.ZIP_LZMA if how == "lzma"
-                                           else zipfile.ZIP_BZIP2)
-                wheel.writestr(entry, body)
+        rewritten(path, member, zipfile.ZIP_LZMA if how == "lzma" else zipfile.ZIP_BZIP2)
     data = bytearray(path.read_bytes())
-    (at,) = struct.unpack_from("<I", data, data.rindex(b"PK\x05\x06") + 16)
-    while data[at:at + 4] == b"PK\x01\x02":
-        named, extra, comment = struct.unpack_from("<HHH", data, at + 28)
-        if data[at + 46:at + 46 + named] == member.encode("utf-8"):
-            break
-        at += 46 + named + extra + comment
-    else:
-        raise AssertionError(f"the case is wrong: {member} is not in {path.name}")
+    at = central_record(data, member, path.name)
     if how == "crc":
         data[at + 16] ^= 0x01
     elif how == "method":
@@ -2523,6 +2544,166 @@ def test_release_build_the_wheel_check_refuses_a_member_in_another_method_unread
             and f"method {method}" in line], transcript(done)
     assert not [line for line in errors if "openrepotools/cli.py" in line], (
         f"a member was read before the methods were checked:\n{transcript(done)}")
+
+
+#: A WHEEL NOT LAID OUT AS IT DECLARES (opensoft/openRepoTools#352, follow-up
+#: 5). `zipfile` finds a member through the central directory, cuts it at its
+#: declared size, checks the CRC of that part alone, and reads nothing of its
+#: local header but the name, so it reads each of these wheels as the commit's
+#: own, and so did the check. Each case writes the wheel as built at a path,
+#: with `LAID_OUT` or the bytes around it changed, and returns the one problem
+#: the check must name. `HIDDEN` is the bytes a case adds.
+LAID_OUT = "openrepotools/cli.py"
+HIDDEN = b"# bytes in the wheel that no declared size or offset covers\n"
+#: Where a local header and a central directory record hold a field, and how.
+HEADER_FIELDS = {"method": (8, 10, "<H"), "CRC-32": (14, 16, "<I"),
+                 "size": (22, 24, "<I")}
+
+
+def headers_of(data: bytes, member: str, wheel: str) -> Tuple[int, int]:
+    """Where `member`'s local header and its central directory record begin in
+    the zip `data`, the file named `wheel`."""
+    record = central_record(data, member, wheel)
+    (local,) = struct.unpack_from("<I", data, record + 42)
+    return local, record
+
+
+def with_fields(path: Path, member: str, local: dict, central: dict) -> None:
+    """`member`'s fields in the zip at `path` set by name, `local` in its local
+    header and `central` in its central directory record."""
+    data = bytearray(path.read_bytes())
+    header, record = headers_of(data, member, path.name)
+    for field, value in local.items():
+        at, _, form = HEADER_FIELDS[field]
+        struct.pack_into(form, data, header + at, value)
+    for field, value in central.items():
+        _, at, form = HEADER_FIELDS[field]
+        struct.pack_into(form, data, record + at, value)
+    path.write_bytes(bytes(data))
+
+
+def bytes_past_its_size(method: int) -> Callable[[Path, dict, str], str]:
+    """`LAID_OUT` with `HIDDEN` after its bytes, in `method`, and its size and
+    CRC-32 in both headers made those of its own bytes alone."""
+    def relay(path: Path, members: dict, info: str) -> str:
+        data, mode = members[LAID_OUT]
+        members[LAID_OUT] = (data + HIDDEN, mode)
+        write_wheel(path, members, info)
+        if method != zipfile.ZIP_DEFLATED:
+            rewritten(path, LAID_OUT, method)
+        alone = {"CRC-32": zlib.crc32(data), "size": len(data)}
+        with_fields(path, LAID_OUT, alone, alone)
+        why = (f"it is stored in {len(data) + len(HIDDEN)} bytes, and declares {len(data)}"
+               if method == zipfile.ZIP_STORED
+               else f"it inflates past its declared {len(data)} bytes")
+        return f"{LAID_OUT}'s data in the wheel is not exactly what it declares: {why}"
+    return relay
+
+
+def a_local_field_not_its_central(field: str, value: int
+                                  ) -> Callable[[Path, dict, str], str]:
+    """`LAID_OUT`'s `field` made `value` in its local header alone."""
+    def relay(path: Path, members: dict, info: str) -> str:
+        write_wheel(path, members, info)
+        with_fields(path, LAID_OUT, {field: value}, {})
+        return (f"{LAID_OUT}'s local header disagrees with its central directory entry "
+                f"on its {field}")
+    return relay
+
+
+def a_nul_in_its_name(path: Path, members: dict, info: str) -> str:
+    """`LAID_OUT` named `LAID_OUT`, a NUL byte and `nul` in both headers:
+    written as `#nul` after its name, and the `#` made a NUL in place."""
+    members[LAID_OUT + "#nul"] = members.pop(LAID_OUT)
+    write_wheel(path, members, info)
+    data = bytearray(path.read_bytes())
+    header, record = headers_of(data, LAID_OUT + "#nul", path.name)
+    data[header + 30 + len(LAID_OUT)] = 0
+    data[record + 46 + len(LAID_OUT)] = 0
+    path.write_bytes(bytes(data))
+    named = LAID_OUT + "\0nul"
+    return (f"the wheel names a member {named!r}, with a NUL byte, which zipfile and pip "
+            f"read as {LAID_OUT!r}")
+
+
+def bytes_before_it(path: Path, members: dict, info: str) -> str:
+    """`HIDDEN` before `LAID_OUT`'s local header, and every offset past it
+    moved on by as many bytes, so each member is still where its record says."""
+    write_wheel(path, members, info)
+    data = bytearray(path.read_bytes())
+    header, _ = headers_of(data, LAID_OUT, path.name)
+    for record in central_records(data):
+        (offset,) = struct.unpack_from("<I", data, record + 42)
+        if offset >= header:
+            struct.pack_into("<I", data, record + 42, offset + len(HIDDEN))
+    end = data.rindex(b"PK\x05\x06")
+    (directory,) = struct.unpack_from("<I", data, end + 16)
+    struct.pack_into("<I", data, end + 16, directory + len(HIDDEN))
+    data[header:header] = HIDDEN
+    path.write_bytes(bytes(data))
+    return (f"the wheel holds {len(HIDDEN)} bytes from byte {header} that no member "
+            f"declares, before {LAID_OUT}")
+
+
+def bytes_after_the_end_record(path: Path, members: dict, info: str) -> str:
+    """`HIDDEN` after the end record, which `zipfile` finds by its signature
+    and reads past."""
+    write_wheel(path, members, info)
+    data = path.read_bytes()
+    (directory,) = struct.unpack_from("<I", data, data.rindex(b"PK\x05\x06") + 16)
+    path.write_bytes(data + HIDDEN)
+    return (f"the wheel's {len(data) + len(HIDDEN) - directory} bytes after its last "
+            "member are not exactly its central directory, with no extra field and no "
+            "comment, then its end record, with no comment")
+
+
+def a_directory_entry_holding_bytes(path: Path, members: dict, info: str) -> str:
+    """`openrepotools/`, a directory entry allowed above `LAID_OUT`, holding
+    `HIDDEN`."""
+    members["openrepotools/"] = (HIDDEN, stat.S_IFDIR | 0o755)
+    write_wheel(path, members, info)
+    return f"openrepotools/ is a directory entry in the wheel, and holds {len(HIDDEN)} bytes"
+
+
+LAID_OUT_WRONG = {
+    "bytes-past-a-deflated-member-s-declared-size":
+        bytes_past_its_size(zipfile.ZIP_DEFLATED),
+    "bytes-past-a-stored-member-s-declared-size": bytes_past_its_size(zipfile.ZIP_STORED),
+    "a-local-header-whose-size-is-not-the-central-directory-s":
+        a_local_field_not_its_central("size", 1),
+    "a-local-header-whose-method-is-not-the-central-directory-s":
+        a_local_field_not_its_central("method", zipfile.ZIP_STORED),
+    "a-nul-byte-in-a-member-s-name": a_nul_in_its_name,
+    "bytes-between-two-members": bytes_before_it,
+    "bytes-after-the-end-record": bytes_after_the_end_record,
+    "a-directory-entry-that-holds-bytes": a_directory_entry_holding_bytes,
+}
+
+
+@NEEDS_UPSTREAM
+@pytest.mark.parametrize("which", LAID_OUT_WRONG)
+def test_release_build_the_wheel_check_refuses_a_wheel_not_laid_out_as_it_declares(
+        tmp_path, which):
+    """STEP 13 ON A WHEEL NOT LAID OUT AS IT DECLARES (opensoft/openRepoTools#352,
+    follow-up 5): bytes past a deflated and a stored member's declared size, a
+    local header whose size or method is not its central entry's, a NUL byte
+    in a member's name, bytes between two members or after the end record,
+    and a directory entry that holds bytes. `zipfile` reads every member of
+    each at its CRC, so the refusal is the layout check's alone: the step
+    exits 1, with no traceback, and its one `::error::` line is the case's."""
+    release_ = wheel_release("1.1.0")
+    members, info = wheel_members(release_)
+    wheel = tmp_path / "dist" / "openrepotools-1.1.0-py3-none-any.whl"
+    problem = LAID_OUT_WRONG[which](wheel, members, info)
+    with zipfile.ZipFile(wheel) as zipped:
+        assert zipped.testzip() is None, f"the case is wrong: zipfile cannot read {wheel}"
+    done = run_heredoc(named(release(), "build", WHEEL_CHECK_STEP), tmp_path, [wheel],
+                       release_values(release_), cwd=REPO)
+    out = done.stdout + done.stderr
+    assert done.returncode == 1, transcript(done)
+    assert "Traceback (most recent call last)" not in out, transcript(done)
+    errors = [line for line in out.splitlines() if line.startswith("::error::")]
+    assert errors == [f"::error::{problem}"], transcript(done)
 
 
 #: A PAYLOAD FILE'S MODE, HELD TO ONE RULE BY BOTH WHEEL CHECKS (#278): the
@@ -4276,11 +4457,31 @@ else:
 '''
 
 FETCHED_WHEEL = "openrepotools-1.1.0rc1-py3-none-any.whl"
+FETCHED_JSON = "https://test.pypi.org/pypi/openrepotools/1.1.0rc1/json"
 FILE_HOST = "https://test-files.pythonhosted.org/packages/5e/1f/" + FETCHED_WHEEL
 
 
 def listed(filename: str, digest: str, url: str) -> dict:
     return {"filename": filename, "digests": {"sha256": digest}, "url": url}
+
+
+def run_fetch(tmp_path: Path, answer: bytes
+              ) -> Tuple[subprocess.CompletedProcess, List[str], Path]:
+    """THE FETCH ON A TAG, RUN with `curl` faked and TestPyPI's JSON answering
+    `answer`: the run, the URLs `curl` was asked for, and where the wheel lands
+    once fetched."""
+    index = tmp_path / "testpypi.json"
+    index.write_bytes(answer)
+    fakes = python_tool(tmp_path / "fakes", "curl", FAKE_CURL)
+    python_tool(fakes, "python", AS_PYTHON)
+    log = tmp_path / "curl.log"
+    values = {"VERSION": "1.1.0rc1", "WHEEL": FETCHED_WHEEL, "WHEEL_SHA256": VERIFIED,
+              "FAKE_CURL_LOG": str(log), "FAKE_INDEX_JSON": str(index)}
+    workflow = release()
+    runner = Runner(tmp_path / "work", workflow, "install", values, fakes)
+    done = runner.run(named(workflow, "install", FETCH_STEP))
+    urls = [line.split()[-1] for line in log.read_text(encoding="utf-8").splitlines()]
+    return done, urls, Path(runner.env["RUNNER_TEMP"]) / "wheel" / FETCHED_WHEEL
 
 
 #: THE FETCH, RUN: `(what TestPyPI's JSON lists for the version, whether the
@@ -4313,31 +4514,77 @@ def test_release_install_check_the_fetch_takes_the_recorded_wheel_from_testpypi_
     the one file listed under the wheel's name at the recorded digest, from
     test-files.pythonhosted.org over https. Another host, plain http, the
     file listed twice, another digest, another file, and nothing listed are
-    each refused before anything is fetched."""
+    each refused with one `::error::` line before anything is fetched."""
     entries, passes = FETCH_CASES[which]
-    index = tmp_path / "testpypi.json"
-    index.write_text(json.dumps({"info": {"name": "openrepotools"}, "urls": entries}),
-                     encoding="utf-8")
-    fakes = python_tool(tmp_path / "fakes", "curl", FAKE_CURL)
-    python_tool(fakes, "python", AS_PYTHON)
-    log = tmp_path / "curl.log"
-    values = {"VERSION": "1.1.0rc1", "WHEEL": FETCHED_WHEEL, "WHEEL_SHA256": VERIFIED,
-              "FAKE_CURL_LOG": str(log), "FAKE_INDEX_JSON": str(index)}
-    workflow = release()
-    runner = Runner(tmp_path / "work", workflow, "install", values, fakes)
-    done = runner.run(named(workflow, "install", FETCH_STEP))
+    done, urls, wheel = run_fetch(tmp_path, json.dumps(
+        {"info": {"name": "openrepotools"}, "urls": entries}).encode("utf-8"))
     assert (done.returncode == 0) == passes, transcript(done)
-    urls = [line.split()[-1] for line in log.read_text(encoding="utf-8").splitlines()]
-    wheel = Path(runner.env["RUNNER_TEMP"]) / "wheel" / FETCHED_WHEEL
     if passes:
-        assert urls == ["https://test.pypi.org/pypi/openrepotools/1.1.0rc1/json",
-                        FILE_HOST], urls
+        assert urls == [FETCHED_JSON, FILE_HOST], urls
         assert wheel.read_bytes() == b"the file at " + FILE_HOST.encode()
         assert done.stdout.strip() == f"fetched {FILE_HOST}", transcript(done)
     else:
-        assert urls == ["https://test.pypi.org/pypi/openrepotools/1.1.0rc1/json"], (
-            f"the step fetched after refusing: {urls}")
+        assert urls == [FETCHED_JSON], f"the step fetched after refusing: {urls}"
         assert not wheel.exists()
+        errors = [line for line in done.stderr.splitlines() if line.startswith("::error::")]
+        assert len(errors) == 1, transcript(done)
+        assert done.stderr.splitlines() == errors, transcript(done)
+
+
+#: TestPyPI ANSWERS THAT ARE NOT ITS JSON API'S (opensoft/openRepoTools#352,
+#: follow-up 6): `(the answer, the error the step's one `::error::` line
+#: names)`. The fetch read its answer with no handler, so each ended in a
+#: traceback; now each is named, as in the upload jobs' index checks, and
+#: nothing is fetched. What the step makes of `NESTED` depends on the Python
+#: that runs it (`NESTED` says why), so that case asks this one, which is the
+#: fetch's `python` (`AS_PYTHON`), and takes either form.
+FETCH_ANSWERS = {
+    "an-answer-that-is-not-json": (
+        NOT_JSON[1], "JSONDecodeError: Expecting value: line 1 column 1 (char 0)"),
+    "json-without-the-file-list": (NO_FILE_LIST[1], "KeyError: 'urls'"),
+    "an-answer-nested-too-deep-to-decode": (NESTED[1], OF_NESTED),
+}
+
+
+@functools.lru_cache(maxsize=None)
+def nested_fetch_error() -> str:
+    """`<error>: <message>` for what the fetch's `json.load(handle)["urls"]`
+    raises on `NESTED` under this Python: a `RecursionError` where the decoder
+    bounds its depth (3.12 here), and where it decodes the list (CI's 3.15),
+    the `TypeError` of indexing it by "urls"."""
+    probe = ("import json, sys\n"
+             "try:\n    json.loads(sys.stdin.buffer.read().decode('utf-8'))['urls']\n"
+             "except (RecursionError, TypeError) as error:\n"
+             "    print(f'{type(error).__name__}: {error}')\n")
+    done = subprocess.run([sys.executable, "-I", "-c", probe], input=NESTED[1],
+                          capture_output=True, check=False, timeout=STEP_TIMEOUT)
+    assert done.returncode == 0, f"{sys.executable} cannot probe NESTED: {done.stderr!r}"
+    raised = done.stdout.decode().strip()
+    assert raised.startswith(("RecursionError: ", "TypeError: ")), raised
+    return raised
+
+
+@NEEDS_UPSTREAM
+@NEEDS_BASH
+@WINDOWS_SKIP
+@pytest.mark.parametrize("which", FETCH_ANSWERS)
+def test_release_install_check_the_fetch_names_an_answer_that_is_not_testpypi_s_json(
+        tmp_path, which):
+    """THE FETCH ON A TAG, RUN with `curl` faked, on an answer that is not
+    TestPyPI's JSON (opensoft/openRepoTools#352, follow-up 6): one that is not
+    JSON, JSON without the file list, and JSON nested too deep for the
+    decoder. Each exits 1 and prints one line, the `::error::` line naming
+    the answer's URL and the error, with no traceback, and fetches nothing."""
+    answer, error = FETCH_ANSWERS[which]
+    if error == OF_NESTED:
+        error = nested_fetch_error()
+    done, urls, wheel = run_fetch(tmp_path, answer)
+    assert done.returncode == 1, transcript(done)
+    assert (done.stdout + done.stderr).splitlines() == [
+        f"::error::TestPyPI's answer for {FETCHED_JSON} is not its JSON API's ({error}), "
+        "so no wheel is fetched"], transcript(done)
+    assert urls == [FETCHED_JSON], f"the step fetched after refusing: {urls}"
+    assert not wheel.exists()
 
 
 #: `python -m pipx install ...`, faked: it writes down its arguments and
