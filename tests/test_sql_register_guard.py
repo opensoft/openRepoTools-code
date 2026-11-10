@@ -1777,7 +1777,7 @@ def test_a_database_that_does_not_answer_is_2_inside_4_5_s(estate, case):
     them). In each the hook exits 2, was not killed, and finished in under
     4.5 s, its refusal naming the store. T237 adds the `service-up` ids, where
     the service's connection meets the fault."""
-    est = estate(mode="primary")
+    est = estate(mode="primary", to=FROM, to_row=False)
     closers = []
     if case.endswith("service-up"):
         closers.append(_Service(est).stop)
@@ -1813,7 +1813,7 @@ def test_a_connect_timeout_above_the_direct_reads_share_is_cut_at_the_parse_star
     connect alone would end past the start line; against case 1's listener
     the read's own timer ends it at `T0 + 3.75 s`, the hook exits 2 in under
     4.5 s, and the direct read's call carries `PGCONNECT_TIMEOUT=3`."""
-    est = estate(mode="primary")
+    est = estate(mode="primary", to=FROM, to_row=False)
     port, close = _silent_listener()
     svc = _Service(est) if case == "service-up" else None
     try:
