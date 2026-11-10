@@ -2092,8 +2092,10 @@ def a_directory_entry(name: str) -> Callable[[dict, str], None]:
     directory at 0755), added, where `{info}` is the `.dist-info/` prefix."""
     def change(members: dict, info: str) -> None:
         entry = name.format(info=info)
-        assert entry.endswith("/") and entry not in members, (
-            f"the case is wrong: {entry} is not a new directory entry")
+        assert entry.endswith("/"), (
+            f"the case is wrong: {entry} does not end in /, so it is not a directory entry")
+        assert entry not in members, (
+            f"the case is wrong: {entry} is already in the wheel")
         members[entry] = (b"", stat.S_IFDIR | 0o755)
     return change
 
