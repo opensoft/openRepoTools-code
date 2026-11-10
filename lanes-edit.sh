@@ -4955,8 +4955,10 @@ now_epoch() {
 #   wr_record_remove              the outcome known: the record and its claims
 #
 # NOT HERE: the 3 for an owner still live at D7's deadline (Y:5218) is T417's,
-# with the exit-3 rule (review M8). The `tail` key's values, the done mark's
-# writer and the owed texts are T418's ("The tail, once", Y:5289).
+# with the exit-3 rule (review M8). The `tail` key's values and their writer
+# are T418's, in the primary branch's "THE TAIL, ONCE"; T418 also adds the
+# done mark's writer and reader (`wr_done_write`, `wr_done_read`) and the owed
+# texts (`wr_owed_text`) here ("The tail, once", Y:5289).
 WR_NL="$(printf '\nx')"; WR_NL="${WR_NL%x}"; WR_CR="$(printf '\r')"
 WR_STATE=""; WR_D=""; WR_LANE=""; WR_SESSION=""; WR_VERB=""; WR_CMDLINE=""
 WR_ARGS=()
@@ -5701,20 +5703,73 @@ wr_lookup_text() {
     "$(printf '%q' "$WR_REC_VERB")" "$WR_REC_ARGS_SHA256"
 }
 
+# THE STEPS THAT MAY BE OWED, `<owed>` (T418; Y:5331, Y:5214): the verb's row
+# of F14's table (Y:5144–5154), in words, with the command that does each step
+# by hand. The verb's arguments are this run's (`WR_ARGS`), which the record's
+# digest also took, and its lane the write's (`PW_LANE`, else `LANES_LANE`). A
+# verb whose arm has no side effect outside the register after its seam owes
+# nothing, and says so.
+wr_owed_text() {   # <verb>
+  local ow_v="${1-}" ow_l="${PW_LANE:-${WR_LANE:-<lane>}}" ow_e="" ow_o="" ow_n="" ow_ls="" ow_a="" ow_k=0 ow_skip=0 ow_to=""
+  ow_e="${WR_ARGS[0]-}"; ow_o="${WR_ARGS[0]-<object>}"
+  case "$ow_v" in
+    log)
+      case "$ow_e" in
+        STARTED|RESUMED) ow_to=RUNNING ;;
+        ENDED|RETIRED) ow_to=CLOSED ;;
+        *) printf 'none (lanes-edit.sh log %s makes none outside the register)\n' "${ow_e:-<verb>}"; return 0 ;;
+      esac
+      printf "lane %s's lifecycle snapshot, its lane-state.yaml, following the %s line to %s, which a legacy lane's write makes after its commit (lane_state_follow): read it with lanes-edit.sh lane-reconcile %s, and where it has not moved, lanes-edit.sh set-lane-state %s %s --expect <the state it reads>\n" \
+        "$ow_l" "$ow_e" "$ow_to" "$ow_l" "$ow_l" "$ow_to" ;;
+    claim|release)
+      printf "the GitHub comment that %s posts on %s, unless --no-github or LANES_NO_GITHUB=1 was given (gh_comment): post it by hand with gh issue comment <number> --repo <owner/repo>, or gh pr comment for a pull request\n" \
+        "$ow_v" "$ow_o" ;;
+    request-handoff)
+      printf "the typing of its request into lane %s's bound pane, which is never made after the fact, since that pane may hold another session by now: the request travels in the register, and is read at that session's next prompt; and the wait for the release: read lanes-edit.sh binding %s\n" \
+        "$ow_l" "$ow_l" ;;
+    rename-lane)
+      for ow_a in ${WR_ARGS[@]+"${WR_ARGS[@]}"}; do
+        if [ "$ow_skip" = 1 ]; then ow_skip=0; continue; fi
+        case "$ow_a" in
+          --why) ow_skip=1 ;;
+          --*) : ;;
+          *) ow_k=$((ow_k + 1)); [ "$ow_k" != 2 ] || ow_n="$ow_a" ;;
+        esac
+      done
+      ow_n="${ow_n:-<new>}"
+      printf "lane %s's lifecycle directory moved to its new name (lane_state_rename): read it with lanes-edit.sh lane-reconcile %s; the RENAMED comment on each object the lane holds, unless --no-github was given: gh issue comment <number> --repo <owner/repo>, or gh pr comment, on each; and its handoff's move and RENAMED stamp in its checkout\n" \
+        "$ow_n" "$ow_n" ;;
+    retire-rows)
+      for ow_a in ${WR_ARGS[@]+"${WR_ARGS[@]}"}; do
+        if [ "$ow_skip" = 1 ]; then ow_skip=0; continue; fi
+        case "$ow_a" in
+          --reason|--writer) ow_skip=1 ;;
+          --*) : ;;
+          *) ow_ls="${ow_ls}${ow_ls:+ }$ow_a" ;;
+        esac
+      done
+      printf "each retired lane's lifecycle snapshot following its RETIRED line to CLOSED (lane_state_follow), for %s: read each with lanes-edit.sh lane-reconcile <lane>, and where one has not moved, lanes-edit.sh set-lane-state <lane> CLOSED --expect <the state it reads>\n" \
+        "${ow_ls:-<lanes>}" ;;
+    set-row-state|replace-in-row|append-session-id|append-line|add-row|archive-rows|migrate-state-cells)
+      printf 'none (lanes-edit.sh %s makes none outside the register)\n' "$ow_v" ;;
+    *)
+      printf 'those of lanes-edit.sh %s\n' "${ow_v:-<verb>}" ;;
+  esac
+}
+
 # A RECORD OF ANOTHER GENERATION, REFUSED (Y:5209-5215, Y:2487-2491), with 2 and
 # nothing sent, at any age, until `LANES_WRITE_ID=new`. The record is left as it
 # is. `<g'>` is the register's generation where the run knows it, which is where
 # its first snapshot answered 0 (the over-age path, `wr_id_settle`); where the
 # refusal is that snapshot's LR007 `generation`, §3.2 prints no `generation=`,
 # and the text says "another generation". `<owed>` is the record's verb's row of
-# F14's table, T418's text; until it is given, the text names the verb's
-# after-COMMIT steps. Where the record's `tail` is `sent` or `done`, the text
-# says they may have run, or ran, at its UTC (Y:5214).
+# F14's table, T418's `wr_owed_text`. Where the record's `tail` is `sent` or
+# `done`, the text says they may have run, or ran, at its UTC (Y:5214).
 wr_text_other_generation() {   # [<g'>] [<owed>]
   local og_now og_owed og_tail og_utc og_steps
   if [ -n "${1-}" ]; then og_now="generation ${1}"; else og_now="another generation"; fi
   og_owed="${2-}"
-  [ -n "$og_owed" ] || og_owed="those of lanes-edit.sh $WR_REC_VERB"
+  [ -n "$og_owed" ] || og_owed="$(wr_owed_text "$WR_REC_VERB")"
   og_tail="${WR_REC_TAIL%% *}"; og_utc="${WR_REC_TAIL##* }"
   case "$og_tail" in
     sent) og_steps="its after-COMMIT steps may have run at ${og_utc}: ${og_owed}. Do by hand any that did not run." ;;
@@ -5908,8 +5963,12 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
 #
 # HERE TOO (T418): the tail, once, for a write this run learns is in the
 # register, by `committed`, `already`, a snapshot's `found=` or the lookup's
-# `found` (`pw_tail`, `pw_tail_child`, `pw_committed`), under "THE TAIL, ONCE"
-# below; and the one site where the renderer's fork goes (`pw_learned`).
+# `found`, under "THE TAIL, ONCE" below: the kept child by its change set
+# (`pw_tail`, `pw_tail_child`, `pw_committed`), the replay at `s−1`
+# (`pw_replay_tail`), the record's `tail` key and the done mark
+# (`pw_tail_found`, `pw_tail_close`), the owed and no-record texts
+# (`pw_tail_owed`, `pw_no_record_end`, T412's `wr_owed_text`); and the one
+# site where the renderer's fork goes (`pw_learned`).
 #
 # NOT HERE: the renderer's fork itself (T416's `pw_render_fork`, which goes
 # into `pw_learned`); and `commit` on primary, which keeps T409's 69 until
@@ -6814,20 +6873,54 @@ pw_tail_found() {   # <seq>
     sent) pw_tail_said "$1" "its after-COMMIT steps may have run at ${tf_utc} in pid ${tf_p:-<unknown>}, and are not run again: $(pw_owed_words)" ;;
     done) pw_tail_said "$1" "its after-COMMIT steps ran at ${tf_utc} in pid ${tf_p:-<unknown>}" ;;
   esac
-  pw_tail_said "$1" "its after-COMMIT steps were named as owed at ${tf_utc}, and this run runs none of them: $(pw_owed_words)"
+  pw_tail_said "$1" "its after-COMMIT steps were named as owed at ${tf_utc}, and this run runs none of them; they are owed again: $(pw_owed_words)"
 }
 
-# THE STEPS THAT MAY BE OWED, in words. Until the texts' own step it names the
-# verb.
+# THE STEPS THAT MAY BE OWED, in words: the verb's row of F14's table
+# (`wr_owed_text`).
 pw_owed_words() {
-  printf 'those of lanes-edit.sh %s. Do by hand any that did not run\n' "$WR_VERB"
+  wr_owed_text "$WR_VERB"
 }
 
 # A RUN THAT RUNS NONE OF THE TAIL ENDS HERE (Y:5328): the write is committed
-# either way, so it prints one WARNING and exits 0.
+# either way, so it prints one WARNING and exits 0. `request-handoff`, whose
+# tail's wait decides its code, exits 2 instead, with Y:5328's words.
 pw_tail_said() {   # <seq> <what of the tail>
   note "WARNING: register write $WR_ID is in the register at seq ${1}; ${2}."
+  if [ "$WR_VERB" = request-handoff ]; then
+    die "the request is written at seq ${1}; this run did not wait for the release: read lanes-edit.sh binding ${PW_LANE:-<lane>}" 2
+  fi
   exit 0
+}
+
+# THIS RUN HOLDS A RECORD OF THE WRITE HERE (Y:5344): it owns the record, and
+# the record is this run's own writing, or one taken over from this host and
+# this container. Tails are host-local (sidecars, the lane checkout's handoff,
+# tmux), so a record from another host or container counts as none.
+pw_rec_here() {
+  [ "$PW_REC_OURS" = 1 ] && wr_claim_owns || return 1
+  [ -z "$WR_UPDATED_UTC" ] || return 0
+  wr_here
+  [ -n "$WR_REC_HOST" ] && [ "$WR_REC_HOST" = "$WR_HERE_HOST" ] &&
+    [ -n "$WR_REC_CONTAINER" ] && [ "$WR_REC_CONTAINER" = "$WR_HERE_CONTAINER" ]
+}
+
+# NO RECORD HERE (Y:5344–5347): a run that finds its id with no pending record
+# of it here runs no tail, and the done mark, where there is one, has already
+# spoken (`pw_tail_found`). Y chooses its words by `journal.workstation`, this
+# host or another; no answer of the contract carries it (§3.2's stdout, §3.3's
+# `already`, §3.4's `found`), nor the entry's UTC, so this run cannot tell
+# which, and says only what holds either way: Y:5347's words, less the
+# workstation it cannot name. A record from another host or container is left
+# as it is, for a rerun there, which can take it over and replay; only this
+# run's claim goes.
+pw_no_record_end() {   # <seq>
+  pw_abandon_all
+  wr_claim_release || :
+  if [ "$PW_REC_OURS" = 1 ] && [ -z "$WR_UPDATED_UTC" ] && [ -n "$WR_REC_HOST" ]; then
+    pw_tail_said "$1" "its pending record here was written on ${WR_REC_HOST}/${WR_REC_CONTAINER:-<unknown>}, not this host and container, and tails are host-local, so this run runs none of its after-COMMIT steps: $(pw_owed_words). If its run there ended 3, rerun it there"
+  fi
+  pw_tail_said "$1" "no pending record of it is here, so this run runs none of its after-COMMIT steps: $(pw_owed_words)"
 }
 
 # THE WRITE FOUND IN THE REGISTER, by `already <s>`, a snapshot's `found=` or
@@ -6839,6 +6932,7 @@ pw_tail() {   # <seq> <how it was learned> <the answer, in a file>
   local pt_l="" pt_p="" pt_d="" pt_mp="" pt_md="" pt_rest="" pt_h=""
   pw_learned "$1"
   pw_tail_found "$1" || :
+  pw_rec_here || pw_no_record_end "$1"
   pw_entry_rows "$3"
   if [ -n "$PW_E_DIGEST" ] && [ -n "$PW_CHILD" ]; then
     pt_h="$(pw_dir_digest "$PW_DIR")" || pt_h=""
