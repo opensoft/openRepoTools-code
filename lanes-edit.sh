@@ -5736,9 +5736,13 @@ act_snapshot() {
 
 # `act-begin [--rebase]` (Y:5571–5576, Y:5593–5595), the verb's body.
 #   Off primary — `lanes-index mode` answered `index`, no configuration exists,
-#   the question failed (files mode with T409's one warning), or
-#   `LANES_REGISTER_SCRATCH` is set, under which nothing is asked (Y:5038) —
-#   it prints `<act-id>@files` and touches no database (review M10).
+#   or the question failed (files mode with T409's one warning) — it prints
+#   `<act-id>@files` and touches no database (review M10).
+#   IT TESTS NO `LANES_REGISTER_SCRATCH`. A flag honoured on its presence
+#   alone would let a stray export skip the mode ask, and `act-begin` would
+#   print `@files` on primary, against Y:5034 and YT:6869–6873 (lane 3's
+#   ruling, #165 6755005268). T413 adds the flag's own path at its landing,
+#   on the flag it has honoured.
 #   On primary it makes one snapshot and prints `<act-id>@<n>:<generation>`.
 #   `lanes-index mode`'s 78 is T409's 69, before anything else is read.
 # `--rebase` KEEPS `LANES_ACT`'s id and takes a new seq and generation from one
@@ -5767,9 +5771,7 @@ act_begin() {   # <1 for --rebase, else 0>
   # question that cannot be answered sets `REG_MODE=files` after T409's one
   # warning line, and a 78 exits 69 inside it, so whatever is left is files
   # mode unless it is `primary`.
-  if [ -z "${LANES_REGISTER_SCRATCH:-}" ]; then
-    reg_mode_ask
-  fi
+  reg_mode_ask
   if [ "${REG_MODE-}" != primary ]; then
     printf '%s@files\n' "$ab_id"
     return 0
