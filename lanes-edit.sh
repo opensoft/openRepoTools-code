@@ -7902,12 +7902,19 @@ start_record_tail() {
 # the row, in SRA_ROW with SRA_ROW_GIVEN=1, for the router's test of it (lane 3,
 # #165 6770733371, new question (a)); an `--add-row` with no word after it
 # leaves SRA_ROW_GIVEN=0, `write_lane_of` does not route that call, and the arm
-# refuses it in its usage words. AND THE `--log` OBJECT, for the router's test
-# of it (lane 3, #165 6774499606, T427's question 3): SRA_LOGS counts the
-# `--log`s, and SRA_LOG is the object of one the arm's parse takes, three words
-# with the arrow second, as the arm's parse takes them.
+# refuses it in its usage words. AND WHAT THE ROUTER'S `--log` TEST NEEDS, for
+# `sr_log_shape_routed` (lane 3, #165 6774499606, T427's question 3; #165
+# 6779688808, Q21), each as the arm's parse takes it: SRA_VERB, the second
+# word after the verb; SRA_LOGS, SRA_ADDS, SRA_STATES and SRA_CELLS, the
+# counts of the four options; SRA_LOG and SRA_PAY, the object and payload of a
+# `--log` with three words after it, the arrow second; and SRA_BAD, the first
+# word the arm's parse would refuse, in its order: `log-short` (fewer than
+# three words after `--log`), `log-arrow` (SRA_BAD_WORD is the word where the
+# arrow should be) or `other` (any other option short of its words, or a word
+# that is no option).
 sr_argv_adds_row() {
-  SRA_ROW=""; SRA_ROW_GIVEN=0; SRA_LOG=""; SRA_LOGS=0; sra_add=1
+  SRA_ROW=""; SRA_ROW_GIVEN=0; SRA_LOG=""; SRA_PAY=""; SRA_LOGS=0; SRA_VERB=""
+  SRA_ADDS=0; SRA_STATES=0; SRA_CELLS=0; SRA_BAD=""; SRA_BAD_WORD=""
   sra_i=0; sra_n=${#ORIG_ARGV[@]}
   while [ "$sra_i" -lt "$sra_n" ]; do
     case "${ORIG_ARGV[$sra_i]}" in
@@ -7915,33 +7922,88 @@ sr_argv_adds_row() {
       *) break ;;
     esac
   done
+  [ $((sra_i + 2)) -ge "$sra_n" ] || SRA_VERB="${ORIG_ARGV[$((sra_i + 2))]}"
   sra_i=$((sra_i + 3))
   while [ "$sra_i" -lt "$sra_n" ]; do
     case "${ORIG_ARGV[$sra_i]}" in
       --add-row)
-        if [ "$sra_add" = 1 ] && [ $((sra_i + 1)) -lt "$sra_n" ]; then
-          SRA_ROW="${ORIG_ARGV[$((sra_i + 1))]}"; SRA_ROW_GIVEN=1
+        SRA_ADDS=$((SRA_ADDS + 1))
+        if [ $((sra_i + 1)) -lt "$sra_n" ]; then
+          if [ "$SRA_ADDS" = 1 ]; then SRA_ROW="${ORIG_ARGV[$((sra_i + 1))]}"; SRA_ROW_GIVEN=1; fi
+        else
+          [ -n "$SRA_BAD" ] || SRA_BAD=other
         fi
-        sra_add=0; sra_i=$((sra_i + 2)) ;;
+        sra_i=$((sra_i + 2)) ;;
       --log)
         SRA_LOGS=$((SRA_LOGS + 1))
-        if [ $((sra_i + 3)) -lt "$sra_n" ]; then
+        if [ $((sra_i + 3)) -ge "$sra_n" ]; then
+          [ -n "$SRA_BAD" ] || SRA_BAD=log-short
+        else
           case "${ORIG_ARGV[$((sra_i + 2))]}" in
-            '→'|'->') SRA_LOG="${ORIG_ARGV[$((sra_i + 1))]}" ;;
+            '→'|'->') SRA_LOG="${ORIG_ARGV[$((sra_i + 1))]}"; SRA_PAY="${ORIG_ARGV[$((sra_i + 3))]}" ;;
+            *) [ -n "$SRA_BAD" ] || { SRA_BAD=log-arrow; SRA_BAD_WORD="${ORIG_ARGV[$((sra_i + 2))]}"; } ;;
           esac
         fi
         sra_i=$((sra_i + 4)) ;;
-      --append-cell) sra_i=$((sra_i + 4)) ;;
-      --state) sra_i=$((sra_i + 2)) ;;
-      *) sra_i=$((sra_i + 1)) ;;
+      --append-cell)
+        SRA_CELLS=$((SRA_CELLS + 1))
+        [ $((sra_i + 3)) -lt "$sra_n" ] || [ -n "$SRA_BAD" ] || SRA_BAD=other
+        sra_i=$((sra_i + 4)) ;;
+      --state)
+        SRA_STATES=$((SRA_STATES + 1))
+        [ $((sra_i + 1)) -lt "$sra_n" ] || [ -n "$SRA_BAD" ] || SRA_BAD=other
+        sra_i=$((sra_i + 2)) ;;
+      *) [ -n "$SRA_BAD" ] || SRA_BAD=other; sra_i=$((sra_i + 1)) ;;
     esac
   done
-  [ "$sra_add" = 0 ]
+  [ "$SRA_ADDS" -gt 0 ]
+}
+
+# THE ROUTER ASKS AN `--add-row`'S `--log` TEST WHOLE (lane 3, #165 6779688808,
+# Q21): "The `--add-row` test needs no read, so any `--log` object that is not
+# `lane:<L>` refuses before the clone, with the arm's own words and code." So
+# every refusal the arm makes of its `--log` is made here first, in the arm's
+# order and words (`sr_log_usage_die`): a `--log` short of its words or with
+# no arrow, as the arm's parse meets it; `--log` not given once; no payload;
+# an object not of the form `lane:<lane>`. 0 where the call passes all of
+# them, and the caller then asks `sr_log_names_lane` after the row's test, as
+# the arm does; 1 where the arm would refuse something else first (its second
+# word, an option short of its words, a word that is no option, or the
+# `--add-row` form's own counts), which is left to the arm, in its words. A
+# resume's `--log` test reads `canon_object`, so it stays in the arm.
+sr_log_shape_routed() {   # after sr_argv_adds_row
+  case "$SRA_VERB" in STARTED|RESUMED) : ;; *) return 1 ;; esac
+  case "$SRA_BAD" in
+    '') : ;;
+    log-short) sr_log_usage_die short ;;
+    log-arrow) sr_log_usage_die arrow "$SRA_BAD_WORD" ;;
+    *) return 1 ;;
+  esac
+  [ "$SRA_LOGS" = 1 ] || sr_log_usage_die count "$SRA_LOGS"
+  [ "$SRA_ADDS" = 1 ] && [ "$SRA_STATES" = 0 ] && [ "$SRA_CELLS" = 0 ] || return 1
+  [ -n "$SRA_PAY" ] || sr_log_usage_die payload
+  case "$SRA_LOG" in lane:?*) return 0 ;; esac
+  sr_log_usage_die form "$SRA_VERB" "$SRA_LOG"
 }
 
 # `start-record`'S USAGE, one copy for its arm and for the refusals below,
 # which the router makes too.
 SR_USE="usage: start-record <lane> <STARTED|RESUMED> { --add-row \"<full | row |>\" | [--append-cell \"<anchor>\" \"<text to append>\" \"<why>\"]... --state \"<STATE> · <one line>\" } --log lane:<lane> → \"<payload>\""
+
+# `start-record`'S `--log` REFUSALS OF ITS USAGE, one copy of the arm's words
+# for the arm and for the router, which asks an `--add-row`'s `--log` test
+# whole before anything is cloned (lane 3, #165 6779688808, Q21): three words
+# after `--log`, the arrow second, `--log` once, a payload, and an object of
+# the form `lane:<lane>`. Each is 2, with nothing written.
+sr_log_usage_die() {   # short | arrow <word> | count <n> | payload | form <verb> <object>
+  case "${1-}" in
+    short) die "--log takes three words: lane:<lane>, the arrow, and the payload. Nothing was written. $SR_USE" 2 ;;
+    arrow) die "--log's second word is the arrow that introduces the payload, '→' or '->', and '${2-}' is not it. Nothing was written. $SR_USE" 2 ;;
+    count) die "start-record writes ONE log line, so it takes --log once, and this call gives it ${2-} times. Nothing was written. $SR_USE" 2 ;;
+    payload) die "'→' needs a payload after it" 2 ;;
+    *) die "--log's object is the lane itself, lane:<lane>, since ${2-} is a lane verb, and '${3-}' is not one. Nothing was written. $SR_USE" 2 ;;
+  esac
+}
 
 # `start-record --add-row`'S ROW NAMES `<L>`, BYTE FOR BYTE (feature 007, T427;
 # lane 3, #165 6767463594, question 6). THE TEST READS NOTHING, so it is asked
@@ -7995,7 +8057,7 @@ sr_spelling_die() {   # <L> <canon_lane's answer> [routed]
 # READS NOTHING, so, like the row's, it is asked by the router before anything
 # is cloned (lane 3, #165 6774499606, T427's question 3) and by the arm before
 # `add_row_checks`, in the same words. Both callers ask it only of an object of
-# the form `lane:<lane>`; any other is the arm's usage refusal.
+# the form `lane:<lane>`, after `sr_log_usage_die`'s tests have passed it.
 sr_log_names_lane() {   # <--log's object> <L>
   [ "$(lc "${1#lane:}")" = "$(lc "${2-}")" ] ||
     die "--log names ${1-}, and this write is lane ${2-}'s: its log line is that lane's own, lane:${2-}. Nothing was written. $SR_USE" 2
@@ -18042,10 +18104,11 @@ lane_checkout_enter() {   # <write_lane_of's status> <its lane, or empty>
   # write refused anyway: the cost `lane_row_gate` exists to avoid. So the
   # router refuses first:
   #   * `--add-row`'s row is one line and names `<L>` byte for byte
-  #     (`sr_row_names_lane`), and its `--log` object, where it is one of the
-  #     form `lane:<lane>`, names `<L>` (`sr_log_names_lane`; lane 3, #165
-  #     6774499606, T427's question 3). Both tests read nothing, so they come
-  #     before `canon_lane` too.
+  #     (`sr_row_names_lane`), and its `--log` test is asked whole: every
+  #     refusal the arm makes of its `--log`, in the arm's order and words, the
+  #     shape first (`sr_log_shape_routed`) and the lane after the row's test
+  #     (`sr_log_names_lane`; lane 3, #165 6774499606, T427's question 3; #165
+  #     6779688808, Q21). They read nothing, so they come before `canon_lane`.
   #   * AN `--add-row` FOR WHICH `canon_lane` ANSWERS ANY LANE AT ALL, a row
   #     under any case or an alias's new name, is refused, 2, naming it
   #     (`sr_known_die`; the same ruling). A miss is a new lane's and goes on
@@ -18068,11 +18131,10 @@ lane_checkout_enter() {   # <write_lane_of's status> <its lane, or empty>
   # gets these answers from the router, never from the checkout's copy.
   lcn_add=0
   if [ "$cmd" = start-record ] && sr_argv_adds_row && [ "$SRA_ROW_GIVEN" = 1 ]; then
-    lcn_add=1
+    lcn_add=1; lcn_lt=0
+    sr_log_shape_routed || lcn_lt=1
     sr_row_names_lane "$SRA_ROW" "$lcn_lane"
-    if [ "$SRA_LOGS" = 1 ]; then
-      case "$SRA_LOG" in lane:?*) sr_log_names_lane "$SRA_LOG" "$lcn_lane" ;; esac
-    fi
+    [ "$lcn_lt" = 1 ] || sr_log_names_lane "$SRA_LOG" "$lcn_lane"
   fi
   lcn_c="$(canon_lane "$lcn_lane")" || exit $?
   if [ "$cmd" = start-record ] && [ "${LANES_NO_FETCH:-0}" != 1 ]; then
@@ -18921,17 +18983,16 @@ Nothing was written." 2
           [ $# -ge 2 ] || die "--state takes the phrase as ONE quoted string. Nothing was written. $sr_use" 2
           sr_phrase="$2"; sr_states=$((sr_states + 1)); shift 2 ;;
         --log)
-          [ $# -ge 4 ] || die "--log takes three words: lane:<lane>, the arrow, and the payload. Nothing was written. $sr_use" 2
+          [ $# -ge 4 ] || sr_log_usage_die short
           case "$3" in
             '→'|'->') : ;;
-            *) die "--log's second word is the arrow that introduces the payload, '→' or '->', and '$3' is not it. Nothing was written. $sr_use" 2 ;;
+            *) sr_log_usage_die arrow "$3" ;;
           esac
           sr_obj="$2"; sr_pay="$4"; sr_logs=$((sr_logs + 1)); shift 4 ;;
         *) die "start-record takes --add-row, --append-cell, --state and --log, and '$1' is none of them. Nothing was written. $sr_use" 2 ;;
       esac
     done
-    [ "$sr_logs" = 1 ] ||
-      die "start-record writes ONE log line, so it takes --log once, and this call gives it $sr_logs times. Nothing was written. $sr_use" 2
+    [ "$sr_logs" = 1 ] || sr_log_usage_die count "$sr_logs"
     [ "$sr_rows" -le 1 ] && [ "$sr_states" -le 1 ] ||
       die "start-record takes --add-row once and --state once at most; --append-cell is the one word it takes more than once. Nothing was written. $sr_use" 2
     if [ "$sr_rows" = 1 ]; then
@@ -18941,10 +19002,10 @@ Nothing was written." 2
       [ "$sr_states" = 1 ] ||
         die "start-record makes the lane's row (--add-row) or sets the state of the row that is there (--state, after any --append-cell), and this call does neither. Nothing was written. $sr_use" 2
     fi
-    [ -n "$sr_pay" ] || die "'→' needs a payload after it" 2
+    [ -n "$sr_pay" ] || sr_log_usage_die payload
     case "$sr_obj" in
       lane:?*) : ;;
-      *) die "--log's object is the lane itself, lane:<lane>, since $sr_verb is a lane verb, and '$sr_obj' is not one. Nothing was written. $sr_use" 2 ;;
+      *) sr_log_usage_die form "$sr_verb" "$sr_obj" ;;
     esac
     # THE CALLER NAMES THE LANE AND THE SESSION, as Y:5528's call form does
     # (lane 3's rulings 2 and 3 on T427, #165 6755005268). `LANES_LANE` is
