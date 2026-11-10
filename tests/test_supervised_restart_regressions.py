@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from test_lane_start_claude_current import Sandbox, LANE, _write, pytestmark
+from test_a23_lane_start_read import W_reflog, assert_W_moved_only_by_fast_forward, default_resolution, no_auto_gc
 from conftest import REPO
 
 
@@ -156,6 +157,16 @@ def test_restart_managed_storage_without_reader_refuses(restart_box):
     assert (state / "owner.json").read_text() == '{"mode":"managed"}\n'
 
 
+def bind_pending(box, source):
+    """The restart intent `pending` for operation op-test, bound to `source`."""
+    result = helper(box, "set-restart-intent", LANE, "pending", "--expect", "none",
+                    "--operation", "op-test", "--generation", "7", "--agent", "claude",
+                    "--profile", "test-profile", "--dir", str(box.lane_dir),
+                    "--pane", "testsess:@1.%1", "--handoff", str(source))
+    assert result.returncode == 0, result.stderr
+    return source
+
+
 def prepare_restart(box):
     box.resolver()
     initial = box.start("--no-launch")
@@ -167,12 +178,59 @@ def prepare_restart(box):
     box.git("-C", str(box.wip), "add", "--", str(source))
     box.git("-C", str(box.wip), "commit", "-qm", "seed handoff")
     box.git("-C", str(box.wip), "push", "-q", "origin", "main")
-    result = helper(box, "set-restart-intent", LANE, "pending", "--expect", "none",
-                    "--operation", "op-test", "--generation", "7", "--agent", "claude",
-                    "--profile", "test-profile", "--dir", str(box.lane_dir),
-                    "--pane", "testsess:@1.%1", "--handoff", str(source))
-    assert result.returncode == 0, result.stderr
-    return source
+    return bind_pending(box, source)
+
+
+# AMENDMENT 23, SLICE 2B: THE DEFAULT RESOLUTION. `restart_box` writes through
+# `box.wip` by the explicit seam (`LANES_REPO`), so the cases above read what
+# the commands wrote there. These take the seam back out: `workspace.yaml`
+# names `box.wip` as W, `LANES_ROUTE_WRITES=1` opts into the routing, and every
+# write of the lane, the handoff's top block and its Rule 3 stamp included,
+# goes through its own register checkout `<W real>-lanes/<lane>/`, while W
+# moves only by `refresh-workspace`'s fast-forward.
+@pytest.fixture
+def routed_restart_box(restart_box: Sandbox) -> Sandbox:
+    box = restart_box
+    default_resolution(box)
+    box.env["CLAUDE_PROFILE_NAME"] = "test-profile"
+    no_auto_gc(box, "-C", str(box.wip))
+    no_auto_gc(box, "--git-dir", str(box.origin))
+    return box
+
+
+def lane_checkout(box) -> Path:
+    return Path(os.path.realpath(box.wip) + "-lanes") / LANE
+
+
+def intent_record(box) -> dict:
+    return dict(line.split("\t", 1) for line in helper(box, "restart-intent", LANE).stdout.splitlines())
+
+
+def published(box, rel) -> bytes:
+    return subprocess.run(["git", "--git-dir", str(box.origin), "show", f"main:{rel}"], env=box.env,
+                          capture_output=True, check=True).stdout
+
+
+def prepare_restart_routed(box):
+    """`prepare_restart` through the lane's own checkout: the first start makes
+    it and adds the row there, the handoff is committed and pushed from it, and
+    the intent binds the checkout's copy, the file `handoff-path` names, which
+    `lane-handoff` writes and `lane-start` stamps."""
+    box.resolver()
+    initial = box.start("--no-launch")
+    assert initial.returncode == 0, initial.stderr
+    checkout = lane_checkout(box)
+    assert (checkout / ".git").is_dir(), initial.stderr
+    path = helper(box, "handoff-path", LANE)
+    assert path.returncode == 0, path.stderr
+    source = Path(path.stdout.strip())
+    rel = source.relative_to(checkout)
+    assert str(rel).startswith("handoffs/"), source
+    _write(source, "# restart handoff\n\nPreserved task.\n---\nHistory.\n", 0o600)
+    box.git("-C", str(checkout), "add", "--", str(rel))
+    box.git("-C", str(checkout), "commit", "-qm", "seed handoff")
+    box.git("-C", str(checkout), "push", "-q", "origin", "main")
+    return bind_pending(box, source)
 
 
 def test_restart_opening_prompt_cannot_switch_to_a_different_register_file(restart_box):
@@ -396,6 +454,11 @@ def test_restart_reserved_transcript_cannot_be_consumed_twice(restart_box):
 
 
 def test_restart_atomic_stamp_failure_preserves_original_for_retry(restart_box):
+    """A Rule 3 stamp that could not be published atomically no longer refuses
+    the launch (Amendment 23, slice 2b): `write-handoff` dies 1 with the bound
+    file at its bound digest and prints no line, so `lane-start` says so,
+    launches with the unstamped bound file and records its pre-image digest;
+    a retry of the same operation stamps it."""
     box = restart_box
     source = prepare_restart(box)
     before = source.read_bytes()
@@ -405,15 +468,215 @@ case "$*" in *.resume.*) exit 1 ;; esac
 exec '{real_mv}' "$@"
 ''')
     first = box.start("--operation", "op-test")
-    assert first.returncode == 2, first.stderr
+    assert first.returncode == 0, first.stderr
     assert "published atomically" in first.stderr
+    assert "Rule 3's stamp was NOT written" in first.stderr, first.stderr
     assert source.read_bytes() == before
-    assert box.claude_runs() == ""
+    assert "Preserved task." in box.claude_runs()
+    record = intent_record(box)
+    assert record["state"] == "starting", record
+    assert record["digest"] == hashlib.sha256(before).hexdigest(), record
     (box.fakebin / "mv").unlink()
     assert helper(box, "set-restart-intent", LANE, "failed", "--expect", "starting").returncode == 0
     assert helper(box, "set-restart-intent", LANE, "starting", "--expect", "failed", "--bump-attempt", "--new-transcript", "none").returncode == 0
     retry = box.start("--operation", "op-test")
     assert retry.returncode == 0, retry.stderr
+    assert source.read_text().count("RESUMED by") == 1
+
+
+def test_refused_stamp_with_restart_intent_still_launches(routed_restart_box):
+    """#198 A2: under a supervised restart, a stamp the lane's checkout refuses
+    (S3: an entry staged there that this write did not make) is written
+    nowhere, and the launch goes on with the bound file as it is. The intent
+    goes `pending` -> `starting` with the PRE-IMAGE digest, the one the first
+    prompt was read from."""
+    box = routed_restart_box
+    source = prepare_restart_routed(box)
+    checkout = lane_checkout(box)
+    rel = str(source.relative_to(checkout))
+    before = source.read_bytes()
+    assert intent_record(box)["state"] == "pending"
+    foreign = checkout / "handoffs" / "repoQ" / "foreign.md"
+    _write(foreign, "a person's file, staged and never committed\n", 0o644)
+    box.git("-C", str(checkout), "add", "--", "handoffs/repoQ/foreign.md")
+
+    result = box.start("--fresh", "--operation", "op-test")
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert "Rule 3's stamp was NOT written" in result.stderr, result.stderr
+    assert "STAMP IT AS THIS SESSION'S FIRST ACT" in result.stderr
+    # 726 of the review of #316: the printed re-run carries none of the
+    # restart's fences, and while the intent is `starting` it exits 7.
+    assert f"with: LANES_LANE={LANE} " in result.stderr, result.stderr
+    assert "only once this restart is confirmed ready" in result.stderr, result.stderr
+    assert "Preserved task." in box.claude_runs()
+    assert source.read_bytes() == before, "the refused stamp wrote nothing"
+    assert published(box, rel) == before, "and published nothing"
+    assert "handoffs/repoQ/foreign.md" in box.git("-C", str(checkout), "diff", "--cached", "--name-only")
+    record = intent_record(box)
+    assert record["state"] == "starting", record
+    assert record["handoff"] == str(source), record
+    assert record["digest"] == hashlib.sha256(before).hexdigest(), record
+
+
+def test_a_bound_handoff_changed_before_the_stamp_is_named_so(routed_restart_box):
+    """724 of lane openRepoTools-3's review of #316: once slice 2a answers
+    the restart fences' 2s with 7 (603), a bound handoff a peer changed after
+    binding (here a peer's push, which S3 fast-forwards in) comes back from
+    the stamp as 7 too. lane-start asks the bound file
+    first, so the refusal says the handoff changed before the stamp, not that
+    the attempt lost ownership. Both exit 2, and nothing is launched."""
+    box = routed_restart_box
+    source = prepare_restart_routed(box)
+    rel = str(source.relative_to(lane_checkout(box)))
+    peer = box.root / "peer"
+    box.git("clone", "-q", str(box.origin), str(peer))
+    real = box.bin / "lanes-edit.sh"
+    mark = box.root / "peer-pushed.mark"
+    wrapper = box.root / "peer-edits-lanes-edit.sh"
+    wrapper.write_text(f"""#!/usr/bin/env bash
+if [ "${{1-}}" = write-handoff ] && [ ! -e '{mark}' ]; then
+  : > '{mark}'
+  git -C '{peer}' fetch -q origin main && git -C '{peer}' merge -q --ff-only origin/main &&
+    printf 'a peer changed this after binding\\n' >> '{peer}/{rel}' &&
+    git -C '{peer}' commit -q -am 'a peer changes the bound handoff' &&
+    git -C '{peer}' push -q origin HEAD:main || exit 99
+fi
+exec '{real}' "$@"
+""", encoding="utf-8")
+    wrapper.chmod(0o755)
+    box.env["LANES_EDIT"] = str(wrapper)
+
+    result = box.start("--fresh", "--operation", "op-test")
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    # lane-start's own line: the helper's refusal says the same words of its write.
+    assert "lane-start: the restart handoff changed before its owned resume stamp. Nothing was launched."         in result.stderr, result.stderr
+    assert "lost ownership of its handoff" not in result.stderr, result.stderr
+    assert mark.exists(), "the peer changed the bound handoff during the stamp"
+    assert box.claude_runs() == ""
+
+
+def test_a_stamp_refused_as_lost_ownership_launches_nothing(routed_restart_box):
+    """733 (M1, the battery's LS46) of lane openRepoTools-3's review of #316:
+    under a restart, a stamp `write-handoff` refuses with 7 and no written
+    line, the bound file unchanged, is this attempt's lost ownership, and the
+    launch dies (2) saying so: nothing launched, the file as it was."""
+    box = routed_restart_box
+    source = prepare_restart_routed(box)
+    before = source.read_bytes()
+    real = box.bin / "lanes-edit.sh"
+    wrapper = box.root / "seven-lanes-edit.sh"
+    wrapper.write_text(f"""#!/usr/bin/env bash
+if [ "${{1-}}" = write-handoff ]; then echo "write-handoff: this attempt no longer owns the restart" >&2; exit 7; fi
+exec '{real}' "$@"
+""", encoding="utf-8")
+    wrapper.chmod(0o755)
+    box.env["LANES_EDIT"] = str(wrapper)
+
+    result = box.start("--fresh", "--operation", "op-test")
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert "lost ownership of its handoff before the resume stamp" in result.stderr, result.stderr
+    assert box.claude_runs() == ""
+    assert source.read_bytes() == before
+
+
+def test_ctx_round_trip_through_lane_checkout(routed_restart_box):
+    """`/ctx` under the opt-in, both halves: `lane-handoff --restart` writes
+    the PAUSED top block through the lane's checkout and binds THAT file in
+    the intent, and its respawn line carries `LANES_ROUTE_WRITES`, so the
+    `lane-start` it runs resolves the same file, launches with that block as
+    its first prompt and stamps it there. A `lane-start` without the opt-in
+    resolves W's copy and refuses the restart as two handoffs."""
+    box = routed_restart_box
+    source = prepare_restart_routed(box)
+    checkout = lane_checkout(box)
+    rel = str(source.relative_to(checkout))
+    assert helper(box, "set-restart-intent", LANE, "ready", "--expect", "pending").returncode == 0
+    w_before = W_reflog(box)
+
+    result = supervisor(box, "--restart", "--lane", LANE, "--dir", str(box.lane_dir), "clear")
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    respawn = box.tmux_log.read_text()
+    assert "respawn-pane" in respawn, respawn
+    assert "LANES_ROUTE_WRITES=1 " in respawn, respawn
+    paused = source.read_bytes()
+    assert b"## RESUME PROMPT \xe2\x80\x94 PAUSED " in paused, paused
+    assert paused.endswith(b"\n---\n\n# restart handoff\n\nPreserved task.\n---\nHistory.\n"), paused
+    assert published(box, rel) == paused, "the PAUSED block was committed and pushed from the checkout"
+    record = intent_record(box)
+    assert record["state"] == "pending", record
+    assert record["handoff"] == str(source), record
+    assert record["digest"] == hashlib.sha256(paused).hexdigest(), record
+    operation = record["operation"]
+    assert operation != "op-test"
+
+    unrouted = dict(box.env)
+    unrouted.pop("LANES_ROUTE_WRITES")
+    pending = intent_path(box).read_bytes()
+    refused = subprocess.run([str(box.bin / "lane-start"), "repoZ", "1", "--fresh", "--operation", operation],
+                             env=dict(unrouted, FAKE_CC_PATH=str(box.resolved)), cwd=str(box.lane_dir),
+                             capture_output=True, text=True, timeout=120, check=False)
+    assert refused.returncode == 2, (refused.stdout, refused.stderr)
+    assert "different handoffs" in refused.stderr or "row names is missing" in refused.stderr, refused.stderr
+    assert intent_path(box).read_bytes() == pending
+    assert source.read_bytes() == paused
+    assert box.claude_runs() == ""
+
+    launched = box.start("--fresh", "--operation", operation)
+    assert launched.returncode == 0, (launched.stdout, launched.stderr)
+    assert "RESUME PROMPT — PAUSED " in box.claude_runs()
+    stamped = source.read_bytes()
+    assert stamped.count(b"RESUMED by") == 1, stamped
+    assert b"## RESUME PROMPT \xe2\x80\x94 PAUSED " in stamped, stamped
+    assert stamped.endswith(b"\n---\n\n# restart handoff\n\nPreserved task.\n---\nHistory.\n"), stamped
+    assert published(box, rel) == stamped, "the stamp was committed and pushed from the checkout"
+    record = intent_record(box)
+    assert record["state"] == "starting", record
+    assert record["handoff"] == str(source), record
+    assert record["digest"] == hashlib.sha256(stamped).hexdigest(), record
+    assert_W_moved_only_by_fast_forward(box, w_before)
+
+
+def test_ctx_round_trip_with_W_behind_and_its_refresh_blocked(routed_restart_box):
+    """733's first case of lane openRepoTools-3's review of #316, and slice
+    2a's Q2 caveat (bind the path and the digest through `handoff-path`,
+    with W behind): W holds a commit of its own and a peer has pushed since,
+    so no refresh can fast-forward W. `lane-handoff --restart` still writes
+    and binds the lane's checkout's file, path and digest; the `lane-start`
+    the respawn runs says W was not fast-forwarded, delivers that block and
+    stamps it there; and W's HEAD does not move."""
+    box = routed_restart_box
+    source = prepare_restart_routed(box)
+    checkout = lane_checkout(box)
+    rel = str(source.relative_to(checkout))
+    assert helper(box, "set-restart-intent", LANE, "ready", "--expect", "pending").returncode == 0
+    (box.wip / "local-note.md").write_text("a commit only W has\n", encoding="utf-8")
+    box.git("-C", str(box.wip), "add", "--", "local-note.md")
+    box.git("-C", str(box.wip), "commit", "-qm", "a commit only W has")
+    peer = box.root / "peer"
+    box.git("clone", "-q", str(box.origin), str(peer))
+    (peer / "peer-note.md").write_text("a peer's commit\n", encoding="utf-8")
+    box.git("-C", str(peer), "add", "--", "peer-note.md")
+    box.git("-C", str(peer), "commit", "-qm", "a peer's commit")
+    box.git("-C", str(peer), "push", "-q", "origin", "HEAD:main")
+    w_head = box.git("-C", str(box.wip), "rev-parse", "HEAD")
+
+    result = supervisor(box, "--restart", "--lane", LANE, "--dir", str(box.lane_dir), "clear")
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    paused = source.read_bytes()
+    assert b"## RESUME PROMPT \xe2\x80\x94 PAUSED " in paused, paused
+    assert published(box, rel) == paused, "the PAUSED block was committed and pushed from the checkout"
+    record = intent_record(box)
+    assert record["handoff"] == str(source), record
+    assert record["digest"] == hashlib.sha256(paused).hexdigest(), record
+
+    launched = box.start("--fresh", "--operation", record["operation"])
+    assert launched.returncode == 0, (launched.stdout, launched.stderr)
+    assert "W was not fast-forwarded" in launched.stderr, launched.stderr
+    assert "RESUME PROMPT — PAUSED " in box.claude_runs()
+    stamped = source.read_bytes()
+    assert stamped.count(b"RESUMED by") == 1, stamped
+    assert published(box, rel) == stamped, "the stamp was committed and pushed from the checkout"
+    assert box.git("-C", str(box.wip), "rev-parse", "HEAD") == w_head, "W's HEAD stayed put"
 
 
 def test_restart_historical_ready_intent_does_not_control_ordinary_resume(restart_box):
@@ -744,6 +1007,65 @@ def test_restart_missing_checksum_is_not_launch_authority(restart_box):
     assert box.claude_runs() == ""
 
 
+# A RESTART-INTENT ANSWER IS READ TO ITS END (slice 2b; CI run 39806108007 at
+# f1b19e9, where the case above exited 141 on the runner and passed in the
+# next job). `lane-start` read each field of `restart-intent`'s answer with
+# `printf … | awk '… { print $2; exit }'` under `set -o pipefail`, and bash's
+# `printf` writes that answer a line at a time: an `awk` that has found its
+# line and exited closes the pipe under a writer that is not done, the
+# writer's SIGPIPE (128 + 13) becomes the pipeline's status, and `set -e` ends
+# the launch with 141 and no word said. On a small answer that is a race the
+# scheduler decides. Fields no reader asks for, padded past every pipe and
+# reader buffer (about 4.6 MB here, against a 64 KiB pipe), leave the early
+# reader certain to stop before its writer is done, so these cases are red on
+# every run of the old reads, and green on every run of reads that go to the
+# end, whatever the timing.
+PADDING_LINES = 50000
+
+
+def pad_restart_intent_answers(box):
+    real = box.bin / "lanes-edit-real.sh"
+    (box.bin / "lanes-edit.sh").rename(real)
+    _write(box.bin / "lanes-edit.sh", f'''#!/usr/bin/env bash
+if [ "${{1-}}" = restart-intent ]; then
+  rc=0
+  out="$("$(dirname -- "$0")/lanes-edit-real.sh" "$@")" || rc=$?
+  printf '%s\\n' "$out"
+  if [ "$rc" = 0 ]; then
+    awk 'BEGIN {{ for (i = 0; i < {PADDING_LINES}; i++) printf "zz_padding\\t%080d\\n", i }}'
+  fi
+  exit "$rc"
+fi
+exec "$(dirname -- "$0")/lanes-edit-real.sh" "$@"
+''')
+
+
+@pytest.mark.parametrize("kind", ["missing-checksum", "owned-launch"])
+def test_restart_intent_answer_larger_than_a_pipe_is_read_to_its_end(restart_box, kind):
+    box = restart_box
+    source = prepare_restart(box)
+    if kind == "missing-checksum":
+        assert helper(box, "set-restart-intent", LANE, "pending", "--digest", "none").returncode == 0
+    before = source.read_bytes()
+    pad_restart_intent_answers(box)
+    padded = helper(box, "restart-intent", LANE)
+    assert padded.returncode == 0, padded.stderr
+    assert len(padded.stdout) > 4 * 1024 * 1024
+    # The fields the launch reads come first, and the padding after them.
+    assert "state\tpending" in padded.stdout.splitlines()[:40]
+    if kind == "missing-checksum":
+        result = box.start("--operation", "op-test")
+        assert result.returncode == 2, (result.returncode, result.stderr[-3000:])
+        assert "no complete handoff checksum" in result.stderr
+        assert source.read_bytes() == before
+        assert box.claude_runs() == ""
+    else:
+        result = box.start("--fresh", "--operation", "op-test", TMUX_PANE="%1")
+        assert result.returncode == 0, (result.returncode, result.stderr[-3000:])
+        assert "Preserved task." in box.claude_runs()
+        assert "RESUMED by" in source.read_text()
+
+
 def test_restart_stale_supervisor_cannot_fail_or_retry_newer_operation(restart_box):
     box = restart_box
     prepare_restart(box)
@@ -1062,6 +1384,24 @@ exit 127
             try: os.killpg(proc.pid, signal.SIGTERM)
             except ProcessLookupError: pass
             if proc.poll() is None: proc.wait(timeout=10)
+
+
+def test_ctx_respawn_carries_the_register_seams(restart_box):
+    """729 of the review of #316: the respawn line carries the caller's
+    `LANES_WORKSPACE_ROOT`, `LANES_REPO` and `LANES_FILE` beside
+    `LANES_ROUTE_WRITES`, so the supervisor and the `lane-start` it runs
+    resolve the register this `lane-handoff` wrote through, and a `/ctx`
+    with a W of its own no longer fails closed in the new pane."""
+    box = restart_box
+    prepare_restart(box)
+    assert helper(box, "set-restart-intent", LANE, "ready", "--expect", "pending").returncode == 0
+    box.env["LANES_WORKSPACE_ROOT"] = str(box.wip)
+    result = supervisor(box, "--restart", "--lane", LANE, "--dir", str(box.lane_dir), "clear")
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    respawn = box.tmux_log.read_text()
+    assert "respawn-pane" in respawn, respawn
+    for key in ("LANES_WORKSPACE_ROOT", "LANES_REPO", "LANES_FILE"):
+        assert f"{key}={box.env[key]} " in respawn, (key, respawn)
 
 
 def test_respawn_restores_configured_roots_in_new_pane(restart_box):
