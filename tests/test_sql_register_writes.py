@@ -655,15 +655,20 @@ def test_each_write_exits_69_when_the_database_refuses_the_transaction(pg, tmp_p
 def test_a_failure_in_a_late_statement_leaves_journal_lines_and_head_unchanged(pg, tmp_path,
                                                                                write):
     """AT-2, "Partway" (P11; D6): the shim's `edit-entry` rewrites the commit
-    call's entry so that its last structured row breaks a CHECK (a `mode`
-    that is neither `files` nor `primary`), so the transaction fails with
+    call's entry so that its last structured row breaks a CHECK. The entry's
+    lists end with `object_holds` (lane 1's `register_commit_entry` at T112),
+    and its rows carry `exempt` but no `mode`, which the database stamps, so
+    the last hold row is made `exempt`, which `object_holds`' `CHECK (NOT
+    exempt OR mode = 'files')` refuses on primary: the transaction fails with
     23514 after the head row, the line edits and the earlier rows changed
     inside it. The write exits 69; the journal, the line store and the head
     row are unchanged (each table's digest); git is unchanged; the refused
-    call is never sent again."""
+    call is never sent again. It needs the shim's `edit-entry` to name a
+    list's last element (`object_holds.-1.exempt`), which T203's shim does
+    not do yet."""
     ws = RegisterWorkstation(pg, tmp_path, PREPS.get(write))
     ws.arm([{"mode": "edit-entry", "match": "commit_write", "call": 1,
-             "field": "log_lines.-1.mode", "value": "neither"}])
+             "field": "object_holds.-1.exempt", "value": True}])
     before_db, before_git = ws.db_digest(), ws.git_state()
     argv, lane = LATE_WRITES[write]
     proc = ws.run(argv, lane)
