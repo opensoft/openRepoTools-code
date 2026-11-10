@@ -15,7 +15,12 @@ THIS MODULE TODAY holds test 1's phase-N part, lane 2's T210:
 and the image cache's own cases, lane 2's T210e (B10 tasks:972's
 `PENDING-L2`), each named with `image_cache` so that lane 1's T302 selects
 them with `-k 'sql_register_render and image_cache'`, with no engine: see
-"the image cache (T302's API)" below.
+"the image cache (T302's API)" below;
+
+and the render read's one case with `start`, lane 2's T210f (B10 tasks:1003;
+lane 1's T301 cache-forward, #165 6767347563): with `start`,
+`register_render_read` returns the images, `{path: bytes}`, and not the rows.
+No engine, no image cache: see "the render read's `start`" below.
 
 Test 1's phase-W parts and its files-mode twin are lane 2's T240, and its
 phase-G part is later still; each adds its cases here.
@@ -1186,3 +1191,360 @@ def test_the_image_cache_follows_no_symlink_at_its_lock_or_its_head(tmp_path, mo
         "the lock's open followed a symlink and created its target (lane 3's 6755954683, "
         "doubt 1: O_NOFOLLOW on the lock)")
     assert not (cache.seq / "3").exists(), "record ran under a symlinked lock"
+
+
+# ======================================== the render read's `start` (T301's cache-forward)
+#
+# LANE 1'S CACHE-FORWARD COMMIT (T301's `e4d28a505af8`, tag `l1-007-T301-cf1`;
+# #165 6767347563; the cache signature lane 3 accepted in 6755051914, B10
+# tasks:996-1003). B10 gives T210 "one case with `start`, so that both arms are
+# covered", and lane 1's doubt 1 says what it expects: with `start`,
+# `register_render_read` returns THE IMAGES, `{path: bytes}`, and not the rows;
+# without it, still `(journal, edits, files)`. T210f (line W4b, wave 6) is this
+# case. It needs no engine: the read runs in process against a stand-in store
+# that answers each SELECT the code sends from an in-memory sqlite database, as
+# lane 1's own hand checks do ("sqlite stood in for PostgreSQL"), and fails
+# until the cache-forward commit lands, by the assertion `render_read_module`
+# makes.
+#
+# What the case reads from lane 1's code rather than from a contract, since
+# section 3.6 fixes only the CLI: `register_render_read(store, k, *, start=None,
+# row="render")`, `register_render_queries(k, *, since=None)`,
+# `register_cache_state(images)`, `register_images(journal, edits, files, *,
+# start=None)`, `RenderRefused`, and the store's one method the read calls,
+# `_query_many(queries, snapshot=True, row=...)`, whose answer is a list of
+# result sets of rows of text fields (`t`/`f` for a boolean, None for NULL).
+
+#: The paths of the journal below: the render set's files, and `lanes/STORE`,
+#: which is journaled and is never an image.
+LANES_MD, ALPHA_LOG, BETA_LOG, GAMMA_LOG = ("lanes/LANES.md", "lanes/log/alpha.md",
+                                            "lanes/log/beta.md", "lanes/log/gamma.md")
+ALIASES_TSV, ARCHIVE_MD = "lanes/aliases.tsv", "lanes/archive/old.md"
+#: The files whose row says `final_newline` false: an image with no last LF.
+NO_LAST_LF = frozenset({ALIASES_TSV})
+
+#: AT-1's journal in miniature, as `commit_write` leaves it (design section 1.3.1): an
+#: import, then writes. An entry is `(kind, edits, no_last_lf)`; an edit is
+#: `("create", path)`, `("append", path, text)`, `("replace", path, n, text)`,
+#: `("delete", path, n)` or `("remove", path)`. Seq 2 touches `lanes/STORE`;
+#: seq 3 replaces a line, seq 4 deletes one, seq 5 removes a file, and
+#: `lanes/archive/old.md` is never touched after the import.
+RENDER_JOURNAL = [
+    ("import", [("create", LANES_MD), ("append", LANES_MD, "# LANES"),
+                ("append", LANES_MD, "| alpha | held |"),
+                ("create", ALPHA_LOG), ("append", ALPHA_LOG, "alpha 1"),
+                ("append", ALPHA_LOG, f"alpha 2 {EM} two"),
+                ("create", ALIASES_TSV), ("append", ALIASES_TSV, "old\talpha"),
+                ("create", ARCHIVE_MD), ("append", ARCHIVE_MD, "archived")], NO_LAST_LF),
+    ("write", [("append", LANES_MD, "| beta | free |")], ()),
+    ("write", [("append", ALPHA_LOG, "alpha 3"), ("create", BETA_LOG),
+               ("append", BETA_LOG, "beta 1"), ("create", STORE_PATH)], ()),
+    ("write", [("replace", ALPHA_LOG, 1, "alpha 1 (edited)")], ()),
+    ("write", [("delete", ALPHA_LOG, 2), ("append", ALIASES_TSV, "new\tbeta")], NO_LAST_LF),
+    ("write", [("remove", BETA_LOG), ("append", LANES_MD, "| gamma | free |")], ()),
+]
+#: The same register after a re-import at seq 4 (before a confirmed cutover):
+#: the root is replaced, so alpha and beta are gone and the seqs 0 to 3 of the
+#: old root are history a cache may still hold.
+RENDER_REIMPORT = RENDER_JOURNAL[:4] + [
+    ("import", [("create", LANES_MD), ("append", LANES_MD, "# LANES (re-imported)"),
+                ("create", GAMMA_LOG), ("append", GAMMA_LOG, "gamma 1"),
+                ("create", ALIASES_TSV), ("append", ALIASES_TSV, "old\tgamma")], NO_LAST_LF),
+    ("write", [("append", GAMMA_LOG, "gamma 2")], ()),
+]
+
+
+def _render_image_bytes(lines: list, final_newline: bool) -> bytes:
+    """One file's bytes as `render_file` builds them (design Y:1297), spelled
+    out here so that the case's oracle is not the code's own function."""
+    return ("\n".join(lines) + ("\n" if final_newline and lines else "")).encode("utf-8")
+
+
+class RenderJournal:
+    """`entries` replayed by this test's own model, which gives what the
+    register would hold: the rows of `journal`, `journal_edits` and
+    `journal_files`, and for each seq the render set's images and its state,
+    `{path: (lines, final_newline)}`, as the cache's read-back should give."""
+
+    def __init__(self, entries: list):
+        self.rows = {"journal": [], "journal_edits": [], "journal_files": []}
+        self.images_at, self.state_at = [], []
+        state: dict = {}
+        for seq, (kind, edits, no_last_lf) in enumerate(entries):
+            self.rows["journal"].append((seq, kind))
+            if kind == "import":
+                state.clear()
+            touched = []
+            for ordinal, edit in enumerate(edits, 1):
+                op, path = edit[0], edit[1]
+                if path not in touched:
+                    touched.append(path)
+                lines = state[path][0] if path in state else None
+                row = (None, None, None)
+                if op == "create":
+                    state[path] = [[], True]
+                elif op == "append":
+                    row = (len(lines) + 1, None, edit[2])
+                    lines.append(edit[2])
+                elif op == "replace":
+                    row = (edit[2], _digest(lines[edit[2] - 1].encode("utf-8")), edit[3])
+                    lines[edit[2] - 1] = edit[3]
+                elif op == "delete":
+                    row = (edit[2], _digest(lines[edit[2] - 1].encode("utf-8")), None)
+                    del lines[edit[2] - 1]
+                else:
+                    del state[path]
+                self.rows["journal_edits"].append((seq, ordinal, op, path, *row, None))
+            for path in touched:
+                if path not in state:
+                    self.rows["journal_files"].append((seq, path, "f", None, None))
+                    continue
+                if path in no_last_lf:
+                    state[path][1] = False
+                lines, final_newline = state[path]
+                self.rows["journal_files"].append(
+                    (seq, path, "t", _digest(_render_image_bytes(lines, final_newline)),
+                     "t" if final_newline else "f"))
+            self.images_at.append({p: _render_image_bytes(*v) for p, v in state.items()
+                                   if RENDER_SET.match(p)})
+            self.state_at.append({p: (list(v[0]), v[1]) for p, v in state.items()
+                                  if RENDER_SET.match(p)})
+        self.last = len(entries) - 1
+
+
+class RenderRegister:
+    """The stand-in store: `register_render_read` calls `store._query_many(
+    queries, snapshot=True, row=...)`, and this answers each SELECT it is
+    given from an in-memory sqlite database holding `journal`'s rows. It
+    records each call in `requests`, as `(queries, snapshot, row)`. With
+    `raises` set, a call records itself and raises that, as a dead connection
+    does."""
+
+    DDL = (
+        "CREATE TABLE schema_version (id INTEGER PRIMARY KEY, version INTEGER, "
+        "writers_from INTEGER, readers_from INTEGER)",
+        "CREATE TABLE register_head (id INTEGER PRIMARY KEY, seq INTEGER)",
+        "CREATE TABLE journal (seq INTEGER PRIMARY KEY, kind TEXT)",
+        "CREATE TABLE journal_edits (seq INTEGER, ord INTEGER, op TEXT, path TEXT, "
+        "line_no INTEGER, old_sha256 TEXT, new_text TEXT, to_path TEXT)",
+        "CREATE TABLE journal_files (seq INTEGER, path TEXT, present TEXT, sha256 TEXT, "
+        "final_newline TEXT)",
+    )
+
+    def __init__(self, module, journal: RenderJournal):
+        import sqlite3
+        self.db = sqlite3.connect(":memory:")
+        for statement in self.DDL:
+            self.db.execute(statement)
+        self.db.execute("INSERT INTO schema_version VALUES (1, ?, 1, 1)",
+                        (module.REGISTER_SCHEMA_VERSION,))
+        self.db.execute("INSERT INTO register_head VALUES (1, ?)", (journal.last,))
+        for table, rows in journal.rows.items():
+            self.db.executemany(f"INSERT INTO {table} VALUES ({', '.join('?' * len(rows[0]))})",
+                                rows)
+        self.requests: list = []
+        self.raises = None
+
+    def _query_many(self, queries, snapshot=False, *, row=None, timer=None):
+        self.requests.append((list(queries), snapshot, row))
+        if self.raises is not None:
+            raise self.raises
+        return [[[None if value is None else str(value) for value in fetched]
+                 for fetched in self.db.execute(query).fetchall()] for query in queries]
+
+
+def render_read_module():
+    """`lanes-index` as a module, under its own name so nothing else in the run
+    shares it. Asserts lane 1's cache-forward commit is there: the case's red
+    until `register_render_read`, `register_images` and `register_render_queries`
+    take their `start` and `since`, and `register_cache_state` reads images
+    back (#165 6755040818, 6767347563)."""
+    from importlib.machinery import SourceFileLoader
+    import importlib.util
+    import inspect
+    loader = SourceFileLoader(f"lanes_index_render_read_{uuid.uuid4().hex}", str(LANES_INDEX))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    missing = [name for name in ("register_render_read", "register_render_queries",
+                                 "register_images", "register_cache_state", "RenderRefused",
+                                 "PsqlFailed", "REGISTER_SCHEMA_VERSION")
+               if not hasattr(module, name)]
+    assert not missing, (
+        f"{LANES_INDEX} has no render read, {missing} missing: lane 1's T301, with its "
+        f"cache-forward commit (`e4d28a505af8`, #165 6767347563), has not landed")
+    wanting = [f"{name}'s {keyword}" for name, keyword in (
+        ("register_render_read", "start"), ("register_images", "start"),
+        ("register_render_queries", "since"))
+        if keyword not in inspect.signature(getattr(module, name)).parameters]
+    assert not wanting, (
+        f"{LANES_INDEX} takes no {wanting}: lane 1's T301 cache-forward commit "
+        f"(`e4d28a505af8`, #165 6767347563) has not landed")
+    return module
+
+
+def test_the_render_read_with_start_returns_the_images_and_a_bad_start_costs_one_full_read():
+    """T210's case with `start` (B10 tasks:1003; lane 1, #165 6767347563, doubt
+    1: "**Lane 2:** T210's `start` case should expect images"). Both arms of
+    `register_render_read`, against a register built by this test's own model
+    of `commit_write`:
+
+    WITHOUT `start` it returns `(journal, edits, files)`, the rows from the
+    latest import to `k`, which `register_images` builds into the images, in
+    one request.
+
+    WITH `start=(c, state)`, `state` being `register_cache_state` of the
+    images at `c`, it returns THE IMAGES AT `k`, a `dict` of `bytes` and not
+    the rows, equal to the model's for every `c` from 0 to `k`: in ONE request,
+    which reads only the entries after `c` (`register_render_queries(k,
+    since=c)`), and `start` is left as it was.
+
+    A START IT CANNOT TRUST IS A MISS, NOT AN ERROR: a cached image of an
+    untouched path that is wrong (a cache from a reused seq), a cached image
+    that an edit does not apply on, a path the cache lacks, a `start` of
+    another form and a `c` above `k` each return the right images, by a full
+    read as the last request, and a failed proof costs exactly two requests,
+    the first read since `c` and the second the full read. An import among
+    entries `c+1` to `k` sets `start` aside, so even a wrong cache is no
+    miss there, one request. Only the full read's failure ends in
+    `RenderRefused`, after the two requests; a dead connection (`PsqlFailed`)
+    is raised as it is, after one, and is never tried twice. And
+    `register_cache_state` misses (None) on an image that is empty, is not
+    UTF-8 or is not bytes, so an estate with an empty file in its render set
+    always replays in full."""
+    pytest.importorskip("sqlite3")
+    import copy
+    m = render_read_module()
+    journal = RenderJournal(RENDER_JOURNAL)
+    register = RenderRegister(m, journal)
+    last = journal.last
+
+    def read(k, **kwargs):
+        """One call and the requests it made. A `RenderRefused` is no answer, and
+        fails the expectation that asked."""
+        before = len(register.requests)
+        try:
+            answer = m.register_render_read(register, k, **kwargs)
+        except m.RenderRefused as refusal:
+            raise AssertionError(f"read(k={k}) ended in RenderRefused: {refusal}") from None
+        return answer, register.requests[before:]
+
+    def kinds(k, sent):
+        """The requests as `full` or `since`, for a failure's message."""
+        return ["full" if queries == m.register_render_queries(k) else "since"
+                for queries, _snapshot, _row in sent]
+
+    def full(k, row="render"):
+        return (m.register_render_queries(k), True, row)
+
+    def since(k, c, row="render"):
+        return (m.register_render_queries(k, since=c), True, row)
+
+    # THE READ WITHOUT `start` GIVES THE ROWS, IN ONE REQUEST, AND THE ROWS BUILD THE IMAGES.
+    for k in range(last + 1):
+        rows, sent = read(k)
+        assert isinstance(rows, tuple) and len(rows) == 3, (
+            f"read(k={k}) without start returned {type(rows).__name__}, not "
+            f"(journal, edits, files)")
+        assert sent == [full(k)], f"read({k}) sent {kinds(k, sent)}"
+        assert rows[0][0] == (0, "import") and rows[0][-1][0] == k, rows[0]
+        assert m.register_images(*rows) == journal.images_at[k], f"the images at seq {k}"
+
+    # THE CACHE'S READ-BACK: THE STATE THE MODEL HOLDS, FOR EVERY SEQ.
+    for c in range(last + 1):
+        assert m.register_cache_state(journal.images_at[c]) == journal.state_at[c], (
+            f"register_cache_state of the images at seq {c}")
+
+    # WITH `start`: THE IMAGES AT `k`, FOR EVERY `c` UP TO `k`, IN ONE REQUEST SINCE `c`.
+    for c in range(last + 1):
+        start = (c, m.register_cache_state(journal.images_at[c]))
+        frozen = copy.deepcopy(start)
+        for k in range(c, last + 1):
+            images, sent = read(k, start=start)
+            assert isinstance(images, dict) and not isinstance(images, tuple), (
+                f"read(k={k}, start at {c}) returned {type(images).__name__}: with `start` "
+                f"it returns the images, {{path: bytes}}, and not the rows")
+            assert all(isinstance(p, str) and isinstance(b, bytes) for p, b in images.items())
+            assert images == journal.images_at[k], f"the images at seq {k} from a cache at {c}"
+            assert sent == [since(k, c)], (
+                f"read(k={k}, start at {c}) sent {kinds(k, sent)}, not one request since {c}")
+            assert start == frozen, "register_render_read changed `start`"
+
+    # A START IT CANNOT TRUST IS A MISS: THE RIGHT IMAGES, AND A FULL READ LAST.
+    k, c = last, 2
+    good = dict(journal.images_at[c])
+    wrong_untouched = {**good, ARCHIVE_MD: b"another root's archive\n"}
+    wrong_edit_base = {**good, ALPHA_LOG: b"not alpha's first line\nalpha 2\nalpha 3\n"}
+    lacks_untouched = {p: b for p, b in good.items() if p != ARCHIVE_MD}
+    for what, images in (("a wrong image of an untouched path (a cache from a reused seq)",
+                          wrong_untouched),
+                         ("an image the seq-3 replace does not apply on", wrong_edit_base),
+                         ("a cache that lacks an untouched path", lacks_untouched)):
+        state = m.register_cache_state(images)
+        assert state is not None, f"register_cache_state refused {what}"
+        answer, sent = read(k, start=(c, state))
+        assert answer == journal.images_at[k], f"the images after {what}"
+        assert sent == [since(k, c), full(k)], (
+            f"{what}: a failed proof or edit costs exactly two requests, the first since "
+            f"seq {c} and the second the full read; sent {kinds(k, sent)}")
+    ok_state = m.register_cache_state(good)
+    for what, start, at in (("a `c` above `k`", (5, m.register_cache_state(journal.images_at[5])),
+                             3),
+                            ("a `c` that is not an int", ("2", ok_state), last),
+                            ("a `c` that is a bool", (True, ok_state), last),
+                            ("a state that is not a dict", (2, "not a state"), last),
+                            ("a state of the wrong value form", (2, {LANES_MD: "text"}), last),
+                            ("a start of one item", (2,), last),
+                            ("a start that is not a pair", [], last)):
+        answer, sent = read(at, start=start)
+        assert isinstance(answer, dict) and answer == journal.images_at[at], (
+            f"the images after {what}")
+        assert 1 <= len(sent) <= 2 and sent[-1] == full(at), (
+            f"{what}: the last request must be the full read; sent {kinds(at, sent)}")
+
+    # AN IMPORT AMONG ENTRIES `c+1` TO `k` SETS `start` ASIDE: EVEN A WRONG CACHE IS NO MISS.
+    again = RenderJournal(RENDER_REIMPORT)
+    reimport = RenderRegister(m, again)
+    old_root = m.register_cache_state(journal.images_at[2])
+    for caches, cached in (("the old root's images", old_root),
+                           ("images the seq-3 replace does not apply on, which is never "
+                            "applied", m.register_cache_state(wrong_edit_base))):
+        for c, k in ((2, 5), (2, 4), (3, 5)):
+            before = len(reimport.requests)
+            answer = m.register_render_read(reimport, k, start=(c, cached))
+            assert answer == again.images_at[k], f"the images at seq {k} past the re-import"
+            assert reimport.requests[before:] == [(m.register_render_queries(k, since=c), True,
+                                                   "render")], (
+                f"a start at {c}, {caches}, was set aside by the re-import at 4, and cost "
+                f"one request")
+    # A CACHE AT OR AFTER THE IMPORT IS BROUGHT FORWARD AS ANY IS.
+    new_root = m.register_cache_state(again.images_at[4])
+    before = len(reimport.requests)
+    assert m.register_render_read(reimport, 5, start=(4, new_root)) == again.images_at[5]
+    assert reimport.requests[before:] == [(m.register_render_queries(5, since=4), True, "render")]
+
+    # ONLY THE FULL READ'S FAILURE ENDS IN `RenderRefused`: k=3 is before the latest import.
+    before = len(reimport.requests)
+    with pytest.raises(m.RenderRefused):
+        m.register_render_read(reimport, 3, start=(2, old_root))
+    assert reimport.requests[before:] == [
+        (m.register_render_queries(3, since=2), True, "render"),
+        (m.register_render_queries(3), True, "render")], (
+        "a refused k, with a start, is two requests and then the refusal")
+
+    # A DEAD CONNECTION IS RAISED AS IT IS, AFTER ONE REQUEST, AND NEVER TRIED TWICE.
+    register.raises = m.PsqlFailed("unreachable", "the database did not answer")
+    before = len(register.requests)
+    with pytest.raises(m.PsqlFailed):
+        m.register_render_read(register, last, start=(2, ok_state))
+    assert register.requests[before:] == [since(last, 2)], "a dead connection was tried twice"
+    register.raises = None
+
+    # THE CACHE'S READ-BACK MISSES ON AN IMAGE IT CANNOT READ BACK: THE ESTATE REPLAYS IN FULL.
+    images = journal.images_at[last]
+    assert m.register_cache_state(images) == journal.state_at[last]
+    for what, bad in (("an empty image", {**images, "lanes/log/empty.md": b""}),
+                      ("an image that is not UTF-8", {**images, ALPHA_LOG: b"\xff\xfe\n"}),
+                      ("an image that is not bytes", {**images, ALPHA_LOG: "alpha\n"}),
+                      ("images that are not a dict", list(images.items()))):
+        assert m.register_cache_state(bad) is None, f"register_cache_state took {what}"
