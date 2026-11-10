@@ -6381,7 +6381,7 @@ pw_decide() {
     2|69)
       pw_abandon_one "$PW_CHILD" "$PW_DIR"; PW_CHILD=""
       wr_record_drop_call "$PW_DIR" || :
-      PW_RELAY="$( { grep -E '^(ERROR|DETAIL):' -- "$PW_DIR/commit.err"; grep -E '^held-by=' -- "$PW_DIR/commit.out"; } 2>/dev/null || :)"
+      PW_RELAY="$( { grep -E -e '^(ERROR|DETAIL):' -- "$PW_DIR/commit.err"; grep -E -e '^held-by=' -- "$PW_DIR/commit.out"; } 2>/dev/null || :)"
       if [ "$PW_RC" = 2 ]; then
         pw_end 2 "the register refused this write at attempt ${PW_K}'s commit (\`lanes-index register commit\` exited 2, above). Nothing was written" "$PW_DIR"
       fi
