@@ -1303,8 +1303,39 @@ def _path_m10(reg, root: Path):
     assert proc.returncode == 0, proc.stderr
 
 
-M13_PATHS = {"m1": _path_m1, "m2": _path_m2, "m6": _path_m6, "m7": _path_m7, "m9": _path_m9,
-             "m10": _path_m10}
+def _path_m5(reg, root: Path):
+    """M13's `[m5]`, T237's (R1's M1): the guard's register read through the
+    service. `lanes-index serve` starts on the reader's configuration at the
+    one socket path lane 5's socket contract d8 fixes,
+    `${XDG_STATE_HOME}/openRepoTools/run/register.sock` (its section 2.1);
+    then form 2, the guard's prefetch, with the service up, so the counting
+    cluster logs the service's connection and its one Query per request
+    (section 5.6). Fails until L5-S1 (lane 5's T512) and T229."""
+    env = dict(reg.env, XDG_STATE_HOME=str(root / "m5" / "state"))
+    sock = root / "m5" / "state" / "openRepoTools" / "run" / "register.sock"
+    serve = subprocess.Popen([sys.executable, str(reg.copy), "serve"], env=env,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+    try:
+        end = time.monotonic() + 10
+        while not sock.exists() and time.monotonic() < end and serve.poll() is None:
+            time.sleep(0.05)
+        assert sock.exists(), f"lanes-index serve bound no socket at {sock}: {serve.poll()}"
+        proc = run_index(reg.copy, ["register", "read", "--for", "guard", "--prefetch", "--cache",
+                                    root / "m5" / "cache", "--pid", os.getpid(), "--repo",
+                                    reg.estate.checkout, "--lane=repoA-1"], env)
+        assert proc.returncode == 0, proc.stderr
+        assert "guard: direct (service unavailable)" not in proc.stderr, proc.stderr
+    finally:
+        serve.terminate()
+        try:
+            serve.wait(10)
+        except subprocess.TimeoutExpired:
+            serve.kill()
+
+
+M13_PATHS = {"m1": _path_m1, "m2": _path_m2, "m5": _path_m5, "m6": _path_m6, "m7": _path_m7,
+             "m9": _path_m9, "m10": _path_m10}
 
 
 @pytest.mark.parametrize("path", list(M13_PATHS))
