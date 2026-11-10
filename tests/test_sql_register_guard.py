@@ -2168,6 +2168,10 @@ def test_the_guards_register_parse_is_timed_on_a_real_sized_register_beside_toda
 # not from lane 5's socket contract, which this line has not read.
 
 INDEX = REPO / "lanes-index"
+#: The fallback line, printed once wherever the service was unavailable and
+#: the client then read directly (svc:104; lane 5's socket contract, draft 8,
+#: section 5.3's table and OP-11).
+FALLBACK = "guard: direct (service unavailable)"
 
 
 def _index(est: Estate, *args, env=None, timeout=60) -> subprocess.CompletedProcess:
@@ -2218,7 +2222,8 @@ def test_the_guard_through_the_service_answers_byte_identical_to_the_direct_read
     exit codes."""
     est = estate(mode="primary")
     up, down = _both(est)
-    err = [line for line in down.err.splitlines() if "service" not in line.lower()]
+    assert down.err.count(FALLBACK) == 1 and FALLBACK not in up.err, (up.err, down.err)
+    err = [line for line in down.err.splitlines() if line != FALLBACK]
     assert (up.code, up.out) == (down.code, down.out), (up, down)
     assert up.err.splitlines() == err, (up.err, down.err)
 
@@ -2228,9 +2233,8 @@ def test_with_the_service_down_the_hook_falls_back_and_says_so(estate):
     carries the fallback line exactly once."""
     est = estate(mode="primary")
     hook = est.hook("hello")
-    lines = [line for line in hook.err.splitlines() if "service" in line.lower()]
-    assert len(lines) == 1, hook.err
-    _refuses_inside_the_budget(hook) if hook.code else None
+    assert hook.err.splitlines().count(FALLBACK) == 1, hook.err
+    assert not hook.killed and hook.t_exit - hook.t0 < BUDGET, repr(hook)
 
 
 def test_a_service_that_never_answers_falls_back_inside_5_s(estate):
@@ -2302,7 +2306,7 @@ def test_the_services_idle_check_replaces_a_dropped_connection_in_the_background
     time.sleep(2.5)
     hook = est.hook("hello")
     svc.stop()
-    assert "service" not in hook.err.lower(), hook.err
+    assert FALLBACK not in hook.err, hook.err
 
 
 def test_a_cache_miss_at_the_service_answers_unavailable_and_fetches_in_the_background(estate):
@@ -2314,7 +2318,7 @@ def test_a_cache_miss_at_the_service_answers_unavailable_and_fetches_in_the_back
     first = est.hook("hello")
     second = est.hook("hello")
     svc.stop()
-    assert "service" in first.err.lower() and "service" not in second.err.lower(), (first, second)
+    assert first.err.count(FALLBACK) == 1 and FALLBACK not in second.err, (first, second)
 
 
 def test_a_write_between_two_requests_is_in_the_next_answer(estate):
@@ -2471,7 +2475,7 @@ def test_an_owner_file_from_another_namespace_or_boot_is_no_service(estate, case
     key = "pidns" if case == "namespace" else "boot"
     owners[0].write_text(re.sub(rf"{key}[^=\n]*=.*", f"{key}=other", text), encoding="utf-8")
     hook = est.hook("hello")
-    assert "service" in hook.err.lower() and not hook.killed, repr(hook)
+    assert hook.err.count(FALLBACK) == 1 and not hook.killed, repr(hook)
 
 
 @pytest.mark.parametrize("case", ["files", "index", "refusing-build"])
@@ -2508,11 +2512,17 @@ def test_a_stale_socket_is_unlinked_under_the_lock_and_rebound(estate):
     est = estate(mode="primary")
     svc = _Service(est)
     socks = list(svc.dir.glob("*.sock"))
+    assert len(socks) == 1, f"the service bound no one socket in {svc.dir}: {socks}"
+    path, inode = socks[0], os.lstat(socks[0]).st_ino
     _kill(svc.proc.pid)
-    assert socks and socks[0].exists(), socks
+    svc.proc.wait(10)
+    assert path.exists(), "a service killed with -9 left no stale socket to test"
     again = _Service(est)
-    again.stop()
-    assert socks[0].exists() or True
+    try:
+        assert path.exists() and os.lstat(path).st_ino != inode, \
+            "the stale socket was not unlinked and bound again at the same path"
+    finally:
+        again.stop()
 
 
 @pytest.mark.parametrize("case", ["stops", "floor"])
