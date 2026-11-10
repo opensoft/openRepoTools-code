@@ -621,7 +621,7 @@ def test_each_write_exits_69_when_the_switch_is_not_primary(pg, tmp_path, verb):
     the register's tables and git are unchanged, and no commit call is sent
     twice."""
     ws = RegisterWorkstation(pg, tmp_path, PREPS.get(verb))
-    sql(pg, f"UPDATE {SCHEMA}.register_switch SET mode = 'files';")
+    sql(pg, f"UPDATE {SCHEMA}.register_switch SET mode = 'files', marker_state = 'absent';")
     before_db, before_git = ws.db_digest(), ws.git_state()
     argv, lane = WRITE_VERBS[verb]
     proc = ws.run(argv, lane)
