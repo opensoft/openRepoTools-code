@@ -591,7 +591,8 @@
 #      at `commit_publish`'s push, the branch-wide push: a commit it would
 #      send that changes a path outside `handoffs/`, or, other than the
 #      write's own commit, one under it that is not an added or modified
-#      regular file; a path with a `.`, `..` or `.git` component; a merge or
+#      regular file, or is bytecode; a path with a `.`, `..` or `.git`
+#      component; a merge or
 #      root commit among them, a range it cannot read, or no origin branch,
 #      refused before any push is made, the write's commit kept
 #      on HEAD (`cp_primary_push_check`).
@@ -3465,10 +3466,11 @@ CH_EOF
 # more is built for it here. Under `handoffs/`, THE WRITE'S OWN COMMIT (`$1`)
 # passes any change, a deletion, a type change, a symlink or a gitlink
 # included, since T422's move deletes there; EVERY OTHER COMMIT keeps the
-# fence's rule, each path an added or modified regular file (REV420 N1). The
-# read is `-z`, and a `.`, `..` or `.git` path component refuses in any commit
-# (`cp_primary_read`; REV420 N2, N5). A merge or root commit among them, a
-# read that fails, a commit `diff-tree` skips, or no origin branch to read
+# fence's rule, each path an added or modified regular file that is not
+# bytecode or a tool cache (REV420 N1; REV420b N2). The read is `-z`, and a
+# `.`, `..` or `.git` path component refuses in any commit (`cp_primary_read`;
+# REV420 N2, N5). A merge or root commit among them, a read that fails, a
+# commit `diff-tree` skips, or no origin branch to read
 # refuses too, since each proves nothing. The write's commit is then local and
 # kept on HEAD, and named, with the publish act where it can send the queue,
 # and S6.3's archive. CP_PRIMARY_TIP is the tip read here, and the push sends
@@ -3503,7 +3505,7 @@ cp_primary_push_check() {   # <this write's commit> <its subject>
   [ "$pb_rc" = 0 ] ||
     die "refusing to push on primary (feature 007): git could not read, or this helper could not classify, the commits on $pb_br that refs/remotes/origin/$LANES_BRANCH lacks, so whether each changes only paths under handoffs/ is unknown (D10; FR-026; R16 (d)). Nothing was pushed; this write's commit is local and kept on HEAD: $1 $2" 2
   if [ -n "$pb_odd$pb_bad" ]; then
-    note "of the commits this push would send to origin/$LANES_BRANCH, these are not changes it sends on primary (a merge or root commit; a path outside handoffs/, lanes/repos.tsv and lanes/log/README.md included; a path with a \`.\`, \`..\` or \`.git\` component; or, in a commit other than this write's own, a change under handoffs/ that is not an added or modified regular file):"
+    note "of the commits this push would send to origin/$LANES_BRANCH, these are not changes it sends on primary (a merge or root commit; a path outside handoffs/, lanes/repos.tsv and lanes/log/README.md included; a path with a \`.\`, \`..\` or \`.git\` component; or, in a commit other than this write's own, a change under handoffs/ that is not an added or modified regular file, or is bytecode or a tool cache):"
     [ -z "$pb_odd" ] || printf '%s\n' "$pb_odd" >&2
     [ -z "$pb_bad" ] || printf '%s\n' "$pb_bad" >&2
     note "look at them: git -C $LANES_REPO log --stat refs/remotes/origin/$LANES_BRANCH..$pb_br"
@@ -3516,7 +3518,7 @@ cp_primary_push_check() {   # <this write's commit> <its subject>
       pb_until="published or archived and dropped"
     fi
     cp_recovery_steps
-    die "refusing to push on primary (feature 007): this push sends only commits whose every path is under handoffs/, an added or modified regular file outside this write's own commit, and never lanes/repos.tsv or lanes/log/README.md, which \`commit\`'s publish act sends (D10's branch-wide push; spec:169; spec:183–185; FR-026; R16 (d); lane openRepoTools-3, #165 6770820384). Nothing was pushed; this write's commit is local and kept on HEAD, and every write that makes a git commit from this checkout refuses over it (S3's unpushed row) until it is $pb_until, as above: $1 $2" 2
+    die "refusing to push on primary (feature 007): this push sends only commits whose every path is under handoffs/, an added or modified regular file and no bytecode outside this write's own commit, and never lanes/repos.tsv or lanes/log/README.md, which \`commit\`'s publish act sends (D10's branch-wide push; spec:169; spec:183–185; FR-026; R16 (d); lane openRepoTools-3, #165 6770820384). Nothing was pushed; this write's commit is local and kept on HEAD, and every write that makes a git commit from this checkout refuses over it (S3's unpushed row) until it is $pb_until, as above: $1 $2" 2
   fi
   CP_PRIMARY_TIP="$pb_tip"
 }
@@ -3561,8 +3563,9 @@ cp_primary_push_check() {   # <this write's commit> <its subject>
 #     holding either beside any other path, every change that would pass is
 #     `mix`, and the publish act refuses it with 2.
 # THE BACKSTOP (`push`): a path under `handoffs/` passes, as any change in the
-# write's own commit (`$3`) and as an added or modified regular file in every
-# other; every other path, the two git files included, is `bad`. A change the
+# write's own commit (`$3`) and as an added or modified regular file that is
+# not bytecode or a tool cache in every other, as in the fence (REV420b N2);
+# every other path, the two git files included, is `bad`. A change the
 # write's own commit alone may make, one under `handoffs/` that is not an
 # added or modified regular file (T422's move), passes as `own`, printed so
 # the backstop's refusal can tell that the publish act would refuse it
@@ -3589,29 +3592,34 @@ cp_primary_classify() {   # fence|push <how many commits> [<the write's own comm
         cq_am=0
         case "$cq_st" in A|M) case "$cq_mode" in 100644|100755) cq_am=1 ;; esac ;; esac
         if [ "$cq_p" = lanes/repos.tsv ] || [ "$cq_p" = lanes/log/README.md ]; then cq_git=1; else cq_other=1; fi
-        cq_k=ok
+        cq_k=ok; cq_byte=0
         case "/$cq_p/" in
           */./*|*/../*|*/.[gG][iI][tT]/*) cq_k=comp ;;
+        esac
+        # Bytecode and tool caches (#194, #162), read before the role split so
+        # the backstop holds a commit other than the write's own to the
+        # fence's test too (REV420b N2).
+        case "$cq_p" in *.pyc|*.pyo) cq_byte=1 ;; esac
+        case "/$cq_p/" in
+          */__pycache__/*|*/.pytest_cache/*|*/.mypy_cache/*|*/.ruff_cache/*|*/node_modules/*|*/.venv/*|*/venv/*|*/site-packages/*) cq_byte=1 ;;
         esac
         if [ "$cq_k" = ok ] && [ "$cq_role" = push ]; then
           case "$cq_p" in
             handoffs/*)
-              if [ "$cq_am" = 0 ]; then
-                if [ "$cq_c" = "$cq_own" ]; then cq_k=own; else cq_k=bad; fi
+              if [ "$cq_c" = "$cq_own" ]; then
+                [ "$cq_am" = 1 ] || cq_k=own
+              else
+                [ "$cq_am" = 1 ] && [ "$cq_byte" = 0 ] || cq_k=bad
               fi ;;
             *) cq_k=bad ;;
           esac
         elif [ "$cq_k" = ok ]; then
-          cq_lanes=0; cq_byte=0
+          cq_lanes=0
           case "$cq_p" in lanes/*) cq_lanes=1 ;; esac
           [ -z "$cq_reg" ] || case "$cq_p" in "$cq_reg"*) cq_lanes=1 ;; esac
           [ -z "$cq_logp" ] || case "$cq_p" in "$cq_logp"*) cq_lanes=1 ;; esac
           [ "$cq_p" != "${LANES_PATH:-}" ] || cq_lanes=1
           [ "$cq_p" != "${LANES_ALIASES_PATH:-}" ] || cq_lanes=1
-          case "$cq_p" in *.pyc|*.pyo) cq_byte=1 ;; esac
-          case "/$cq_p/" in
-            */__pycache__/*|*/.pytest_cache/*|*/.mypy_cache/*|*/.ruff_cache/*|*/node_modules/*|*/.venv/*|*/venv/*|*/site-packages/*) cq_byte=1 ;;
-          esac
           if [ "$cq_p" = lanes/repos.tsv ] || [ "$cq_p" = lanes/log/README.md ]; then
             [ "$cq_am" = 1 ] || cq_k=bad
           elif [ "$cq_lanes" = 1 ]; then
