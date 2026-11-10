@@ -70,6 +70,10 @@ WHAT EACH WAITS FOR (the block's Order): L4-A1, L5-A4 and L5-A5; lane 1's
 three for L1v4.5's T113 and T114; lane 5's for T504 to T506 and T509; the
 `--decide` test for T502; the read verbs' for lane 4's T401; the arms for
 lane 4's T402 to T408; `key()`'s trim, on primary only, for lane 4's T426.
+Every case on `RealRegister` (lane 1's three and `managed-projection`'s RE
+case) also fails until lane 2's T227 (`tmpl` built by the bootstrap) and
+T228 (the `lanes_w_fx` and `lanes_r_fx` logins), each by the fixture's own
+assertion (T217h).
 """
 
 from __future__ import annotations
@@ -313,7 +317,12 @@ class Door:
         helpers.contract_stub(self.store, register)
         _write(bin_dir / "lanes-index", DOOR_WRAPPER)
         config.parent.mkdir(parents=True, exist_ok=True)
-        config.write_text("mode=primary\nregister_url=postgresql://lanes_register_reader@localhost:5432/lanes\n",
+        # A configuration `load_config` would accept once the constant is flipped (T217h; lane
+        # 5's finding 1, #165 6771208498): `register_url=` the writer's login and `reader_url=`
+        # the reader's beside it. The stub answers `mode` alone and reads none of it.
+        config.write_text("mode=primary\n"
+                          f"register_url=postgresql://{RealRegister.WRITER}@localhost:5432/lanes\n"
+                          f"reader_url=postgresql://{RealRegister.READER}@localhost:5432/lanes\n",
                           encoding="utf-8")
         config.chmod(0o600)
         self.config = config
@@ -1292,44 +1301,107 @@ def _lines(text: str) -> list:
 class RealRegister:
     """A real register on the `pg` fixture's database (T205), brought to
     `primary` with the marker `present` by the documented functions, as
-    AT-LR006's fixture does (`test-plan-v3f.md:4610-4615`): as
-    `lanes_register_writer`, `commit_write` with an `import` entry holding
-    the render set, then a `cutover` entry, which writes `lanes/STORE` alone
-    (ruling 1), then `record_marker`. Each `write(...)` is one more committed
-    `write` entry, a seq more. The checkout's own `lanes-index` reads it as
-    `lanes_register_reader`, through a `mode=primary` configuration.
+    AT-LR006's fixture does (`test-plan-v3f.md:4610-4615`): as the writer's
+    login, `commit_write` with an `import` entry holding the render set, then
+    a `cutover` entry, which writes `lanes/STORE` alone (ruling 1), then
+    `record_marker`. Each `write(...)` is one more committed `write` entry, a
+    seq more. A copy of the checkout's `lanes-index` with `RENDER_GIT_HALF`
+    flipped True (T203's `flipped_copy`, PC-5) reads it as the reader's
+    login, through a `mode=primary` configuration that names both logins.
 
-    UNVERIFIED HERE: this bench has no engine, and the template is empty
-    until T227 makes it by the bootstrap. The SQL names lane 1's functions as
-    `refs/l1/T109`'s `lanes-index` creates them: `commit_write(bigint, uuid,
-    integer, uuid, jsonb)`, `record_marker(integer, bigint, text, text)`,
+    T217h, lane 5's five findings (#165 6771208498) and three of lane 2's own,
+    each checked against lane 1's code at `refs/l1/T114`:
+      1. the configuration names `reader_url=` beside `register_url=`, which
+         `load_config` requires (`_check_register_connections`), with the
+         writer's login in `register_url=` and the reader's in `reader_url=`;
+      2. `lanes-index` is the flipped copy, never `REPO/lanes-index`, whose
+         `RENDER_GIT_HALF = False` ends 78 (`register read`) or 2 (every
+         other command, `journal` included) on `mode=primary`;
+      3. the client version is the register schema's own `version`, as
+         `lanes-index` sends `REGISTER_SCHEMA_VERSION`: `commit_write` and
+         `record_marker` refuse a client above `version` or below
+         `writers_from` with LR003, and 5000 is above `version`, which
+         migration 1 sets to 1;
+      4. `[refusal-78]` keeps `mode=primary` and reads through a copy
+         flipped False (`unflipped`), Q6(c)'s 78; `mode=files` was a refused
+         configuration, 1 under `--for guard`;
+      5. the template holds no register until T227: the fixture refuses that
+         by its own assertion, as T222's module does, never by a psql error;
+      6. (lane 2's) the groups `lanes_register_writer` and
+         `lanes_register_reader` are NOLOGIN (lane 1's role block), so every
+         session logs in as T228's `lanes_w_fx` or `lanes_r_fx` (the block's
+         T228), refused by the fixture's own assertion until T228;
+      7. (lane 2's) the superuser is `pgcluster`'s, `lanes_test`: the cluster
+         has no `postgres` role, so a superuser read names no user;
+      8. (lane 2's) a render set's bytes (`render_set`) are taken as UTF-8
+         text, as `_commit` reads them.
+
+    So every case built on it FAILS UNTIL T227 and T228 land, beside the
+    waits its own docstring names. UNVERIFIED HERE: this bench has no engine.
+    The SQL names lane 1's functions as `refs/l1/T109`'s `lanes-index`
+    creates them: `commit_write(bigint, uuid, integer, uuid, jsonb)`,
+    `record_marker(integer, bigint, text, text)`, `schema_version.version`,
     `register_switch.generation` and `register_head.seq`."""
 
-    WRITER = "lanes_register_writer"
-    READER = "lanes_register_reader"
+    #: T228's fixture logins, members of the two groups (block T228).
+    WRITER = "lanes_w_fx"
+    READER = "lanes_r_fx"
+    #: Copied beside the flipped copy, as `Primary` copies them beside the door.
+    TOOLS = ("lanes-edit.sh", "lanes", "repos.tsv", "lane-start", "lane-worktrees")
 
     def __init__(self, pg, root: Path, files: dict):
         self.pg, self.root = pg, root
         root.mkdir(parents=True, exist_ok=True)
-        self.files = dict(files)
+        assert self._one("SELECT to_regclass('lanes_register.register_head') IS NOT NULL;") == "t", (
+            "the pg fixture's database holds no lanes_register schema: lane 2's T227 builds "
+            "tmpl by the bootstrap, which waits for lane 1's L1-A7 (lane 5's finding 5)")
+        logins = self._one("SELECT count(*) FROM pg_roles WHERE rolcanlogin AND rolname IN "
+                           f"('{self.WRITER}', '{self.READER}');")
+        assert logins == "2", (
+            f"no {self.WRITER} and {self.READER} logins: lane 2's T228 makes them by `lanes-index "
+            "login add fx`; the groups lanes_register_writer and lanes_register_reader are NOLOGIN")
+        source = helpers.LANES_INDEX.read_bytes()
+        assert len(helpers.RENDER_GIT_HALF_LINE.findall(source)) == 1, (
+            f"{helpers.LANES_INDEX} holds no single RENDER_GIT_HALF line to flip: lane 1's T105")
+        self.bin = root / "bin"
+        self.copy = helpers.flipped_copy(helpers.LANES_INDEX, self.bin, True)
         self.config = root / "config" / "openRepoTools" / "lanes-index.conf"
         self.config.parent.mkdir(parents=True, exist_ok=True)
-        self.config.write_text(f"mode=primary\nregister_url={pg.url(self.READER)}\n",
-                               encoding="utf-8")
+        self.config.write_text(f"mode=primary\nregister_url={pg.url(self.WRITER)}\n"
+                               f"reader_url={pg.url(self.READER)}\n", encoding="utf-8")
         self.config.chmod(0o600)
         self.cache = root / "cache" / "lanes-se"
         self.cache.parent.mkdir(parents=True, exist_ok=True)
+        self.client = int(self._one("SELECT version FROM lanes_register.schema_version;"))
         self.generation = self._one("SELECT generation FROM lanes_register.register_switch;")
-        self.first = self._commit("import", files, base=-1)
+        texts = {path: (data.decode("utf-8") if isinstance(data, bytes) else data)
+                 for path, data in files.items()}
+        self.files = dict(texts)
+        self.first = self._commit("import", texts, base=-1)
         store = "mode primary\n"
         self._commit("cutover", {"lanes/STORE": store}, verb="cutover")
         self.n = self.head()
-        self._one(f"SELECT lanes_register.record_marker(5000, {self.n}, '{'3' * 40}', 'Eagle');",
-                  user=self.WRITER)
+        marked = self._one(f"SELECT lanes_register.record_marker({self.client}, {self.n}, "
+                           f"'{'3' * 40}', 'Eagle');", user=self.WRITER)
+        assert marked == "present", ("record_marker answered", marked)
 
-    def _one(self, sql: str, user: str = "postgres") -> str:
-        out = self.pg.psql(sql, user=user).stdout.strip().splitlines()
+    def _one(self, sql: str, user: str | None = None) -> str:
+        proc = self.pg.psql(sql) if user is None else self.pg.psql(sql, user=user)
+        out = proc.stdout.strip().splitlines()
         return out[-1].strip() if out else ""
+
+    def unflipped(self) -> Path:
+        """A copy flipped False: Q6(c)'s refusal of this same `mode=primary`
+        configuration, 78 from `register read` in all four forms (contract
+        section 2.7), whatever the checkout's own constant says by then."""
+        return helpers.flipped_copy(helpers.LANES_INDEX, self.root / "bin-78", False)
+
+    def tools(self) -> Path:
+        """The checkout's `lanes-edit.sh` and its siblings copied beside the
+        flipped copy, so the copy is the `lanes-index` it runs; its path."""
+        for name in self.TOOLS:
+            shutil.copy2(REPO / name, self.bin / name)
+        return self.bin / "lanes-edit.sh"
 
     def head(self) -> int:
         return int(self._one("SELECT seq FROM lanes_register.register_head;"))
@@ -1373,7 +1445,7 @@ class RealRegister:
                  "not_after": "2999-12-31T00:00:00Z"}
         base = self.head() if base is None else base
         sql = ("BEGIN ISOLATION LEVEL SERIALIZABLE;\n"
-               f"SELECT lanes_register.commit_write({base}, '{_uuid.uuid4()}'::uuid, 5000, "
+               f"SELECT lanes_register.commit_write({base}, '{_uuid.uuid4()}'::uuid, {self.client}, "
                f"'{self.generation}'::uuid, $entry${json.dumps(entry)}$entry$::jsonb);\nCOMMIT;\n")
         return int(self.pg.psql(sql, user=self.WRITER).stdout.split()[0])
 
@@ -1388,13 +1460,16 @@ class RealRegister:
         env.update(extra or {})
         return env
 
-    def index(self, *args, env: dict | None = None) -> subprocess.CompletedProcess:
-        return subprocess.run([str(REPO / "lanes-index"), *args], env=self.env(env),
+    def index(self, *args, env: dict | None = None,
+              copy: Path | None = None) -> subprocess.CompletedProcess:
+        """`lanes-index` as the flipped copy, or as `copy` where one is named."""
+        return subprocess.run([sys.executable, str(copy or self.copy), *args], env=self.env(env),
                               capture_output=True, text=True, timeout=60, check=False,
                               stdin=subprocess.DEVNULL)
 
-    def read(self, *args, env: dict | None = None) -> subprocess.CompletedProcess:
-        return self.index("register", "read", *args, env=env)
+    def read(self, *args, env: dict | None = None,
+             copy: Path | None = None) -> subprocess.CompletedProcess:
+        return self.index("register", "read", *args, env=env, copy=copy)
 
     def family(self) -> dict:
         return {p.name[len(self.cache.name):]: p.read_bytes()
@@ -1455,7 +1530,7 @@ def test_guard_second_read_at_its_head_writes_one_log_and_fails_open(pg, tmp_pat
     assert pre.returncode == 0 and pre.stdout.startswith("mode primary"), (pre.returncode, pre.stderr)
     n, at_n = reg.head(), reg.files["lanes/log/repoA-1.md"]
     head_before = (reg.cache.parent / (reg.cache.name + ".head")).read_bytes()
-    key, at, env, expect = "repoA-1", str(n), {}, 0
+    key, at, env, expect, copy = "repoA-1", str(n), {}, 0, None
     if case == "moved-head":
         reg.write({"lanes/log/repoA-1.md": at_n + "NOTED — the head moved past n\n"})
     elif case == "case-insensitive":
@@ -1486,17 +1561,18 @@ def test_guard_second_read_at_its_head_writes_one_log_and_fails_open(pg, tmp_pat
     elif case == "dash-key":
         key = "-x"
     elif case == "refusal-78":
-        reg.config.write_text("mode=files\n", encoding="utf-8")       # Q6(c): files under the marker
-        expect = 78
+        # Q6(c)'s refusal (T217h; lane 5's finding 4): the same `mode=primary` configuration, read
+        # by a copy flipped False, is 78 in all four forms; `mode=files` is a refused one, 1 here.
+        copy, expect = reg.unflipped(), 78
     elif case == "refused-configuration-1":
-        reg.config.chmod(0o644)                                      # R09: readable by others
-        expect = 1
+        reg.config.chmod(0o644)                                      # readable by others
+        expect = 1                                                   # R09's half follows
     elif case == "empty-lane-64":
         key, expect = "", 64
     before = reg.family()
     try:
         result = reg.read("--for", "guard", "--at", at, "--pid", pid, "--cache", str(reg.cache),
-                          f"--lane={key}", env=env)
+                          f"--lane={key}", env=env, copy=copy)
     finally:
         if case == "no-mirror":
             (tmp_path / "mirror").chmod(0o755)
@@ -1516,6 +1592,24 @@ def test_guard_second_read_at_its_head_writes_one_log_and_fails_open(pg, tmp_pat
                 (case, after[f".logpath.{slot}"])
     else:
         assert not any(k.startswith(".log.") and k not in before for k in after), (case, changed)
+    if case == "refused-configuration-1":
+        # R09'S HALF (T217h; contract section 2.7's 1, "R09's included"): a configuration whose
+        # URLs name a TCP host that is not loopback, with no `sslmode=verify-full`, refused at
+        # load, before any connection.
+        reg.config.write_text("mode=primary\n"
+                              f"register_url=postgresql://{reg.WRITER}@db.invalid:5432/lanes\n"
+                              f"reader_url=postgresql://{reg.READER}@db.invalid:5432/lanes\n",
+                              encoding="utf-8")
+        reg.config.chmod(0o600)
+        before = reg.family()
+        tls = reg.read("--for", "guard", "--at", at, "--pid", pid, "--cache", str(reg.cache),
+                       f"--lane={key}")
+        after = reg.family()
+        assert tls.returncode == 1, (case, "R09", tls.returncode, tls.stdout, tls.stderr)
+        assert ".outage" not in after, (case, "R09", "an .outage was written")
+        assert after.get(".head") == head_before, (case, "R09", ".head changed")
+        assert not any(k.startswith(".log.") and k not in before for k in after), \
+            (case, "R09", sorted(after))
 
 
 @pytest.mark.parametrize("case", ["form-3", "dash-key", "forms-1-and-2"])
@@ -1616,12 +1710,16 @@ def test_managed_projection_answers_0_1_8_from_sql_as_files_mode_does(pg, estate
     answers, 0, 1 and 8, the answer and the exit on primary, read from SQL,
     equal files mode's on the same register (D10, S4). The register is the
     estate's, brought to primary on the `pg` fixture's database by AT-LR006's
-    route (`RealRegister`). Real engine: it skips without one (T205)."""
+    route (`RealRegister`). The primary run is the checkout's `lanes-edit.sh`
+    copied beside the flipped copy, so the `lanes-index` it asks is that copy
+    (T217h; lane 5's finding 2). Real engine: it skips without one (T205)."""
     files = estate.edit("managed-projection", lane)
     assert files.returncode == answer, (lane, "files mode's answer", files.returncode, files.stderr)
     reg = RealRegister(pg, tmp_path / "real", render_set(estate.wip))
-    sql = estate.edit("managed-projection", lane,
-                      env={"LANES_INDEX_CONFIG": str(reg.config), "LANES_INDEX": None})
+    edit = reg.tools()
+    sql = estate.run("bash", edit, "managed-projection", lane,
+                     env={"LANES_EDIT": str(edit), "LANES_INDEX_CONFIG": str(reg.config),
+                          "LANES_INDEX": None})
     assert (sql.returncode, sql.stdout) == (files.returncode, files.stdout), \
         (lane, sql.returncode, sql.stdout, sql.stderr, files.returncode, files.stdout)
 
