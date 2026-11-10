@@ -62,7 +62,8 @@ refused by the fixture's own assertion. Without PostgreSQL 16 each skips.
 THE MODULE ALSO HOLDS, each at its own section below: T244's test 12 (AT-12)
 and section 4.3's rival, and T245's D8 and AT-F34 (phase W, the client's
 writers on a real register, through the shim), with T245's texts for 3, which
-read the scripts and run with no engine.
+read the scripts and run with no engine; and T246's AT-F3, a write in doubt at
+the deadline (phase W, with its direct calls in phase N).
 
 PHASE W'S WORKSTATION IS T243's: `Estate`, its `estates` fixture, and the
 logging tools of T248 are imported from `test_sql_register_order`, as
@@ -1671,3 +1672,417 @@ def test_the_texts_for_3_say_may_not_be_written_and_relay_the_writers_rerun(site
         near = [m.start() for form in forms for m in re.finditer(re.escape(form), text)]
         assert not any(refused in text[max(0, k - 400):k + 400] for k in near), (
             f"{path.name} prints {refused!r} beside D8's text for 3")
+
+
+# ============================================================ PHASE W (and N): AT-F3 (T246)
+#
+# A WRITE IN DOUBT AT THE DEADLINE (AT-F3, TP:5564-5780). AT-F3's estate is
+# test 12's half-open case at `LANES_REGISTER_DEADLINE_S=1` (`HalfOpen`): the
+# first commit call lost by `before`; the test's session, as `lanes_w_fx`
+# with `idle_in_transaction_session_timeout = 0`, replaying that call's script
+# without its COMMIT, so it holds the head row with the row inserted; the
+# next snapshot held until the replay returned; and the lookup's first try
+# held on a FIFO while the case decides. `<n>` is the first call's
+# `not_after`. Its timer is D9's 9 s (open point 37).
+#
+# THE TRIES (R26, lane 4's answer to 40): each try starts at least 0.75 s
+# after the last one's start, never before the last one has ended, the k-th
+# at least k - 1.25 s after the first's, and any up to the window's 10 s
+# mark, on the monotonic clock. The 0.75 s and 1.25 s are lane 2's (NOTES
+# question 34); the exact spacing is lane 1's virtual-clock check (T114).
+# The try endings the shim cannot make (57014, an exit 1, a signal, an exit 3
+# with no SQLSTATE, an exit 0 whose answer cannot be read; ERR-50, R-F11-5)
+# come from `_ANSWER`, a stand-in put first on `PATH` that answers one
+# lookup try as taught and hands every other call on.
+#
+# TOO EARLY (R26, 36): `[too-early]` takes over a record written on another
+# host, so the run has no clock to age and calls at once: LR011's 3, the
+# record kept. On this host the takeover waits (T245's `[snapshot-fails]`).
+#
+# They FAIL UNTIL L1-A6, L1-A12 and L4-B5 land. Without PostgreSQL 16 each
+# skips; the direct calls (LR011 at once, LR008's engine half) are phase N on
+# T222's clones.
+
+DEADLINE = {"LANES_REGISTER_DEADLINE_S": "1"}
+PAST = "2000-01-01 00:00:00+00"
+ENTRY_IN_SCRIPT = re.compile(r"'((?:[^']|'')*)'::jsonb")
+_HALVES = itertools.count(1)
+
+_ANSWER = r'''#!/usr/bin/env python3
+# T246's answer stand-in: the k-th call carrying MATCH answered as taught,
+# sending nothing; every other call handed to the next psql on PATH.
+import json, os, signal, subprocess, sys
+HERE = os.path.dirname(os.path.abspath(__file__))
+rule = json.load(open(os.path.join(HERE, "answer.json"), encoding="utf-8"))
+args = sys.argv[1:]
+nxt = next(os.path.join(d, "psql") for d in os.environ["PATH"].split(os.pathsep)
+           if d and os.path.abspath(d) != HERE and os.access(os.path.join(d, "psql"), os.X_OK))
+if args == ["--version"]:
+    os.execv(nxt, [nxt] + args)
+data = sys.stdin.buffer.read()
+if rule["match"].encode() in data:
+    count = os.path.join(HERE, "answer.count")
+    seen = int(open(count).read()) + 1 if os.path.exists(count) else 1
+    open(count, "w").write(str(seen))
+    if seen == rule.get("call", 1):
+        with open(os.path.join(HERE, "answer.log"), "a", encoding="utf-8") as log:
+            log.write(json.dumps({"t": __import__("time").time(), "call": seen}) + "\n")
+        sys.stdout.write(rule.get("stdout", ""))
+        sys.stderr.write(rule.get("stderr", ""))
+        sys.stdout.flush()
+        sys.stderr.flush()
+        if rule.get("signal"):
+            os.kill(os.getpid(), getattr(signal, "SIG" + rule["signal"]))
+        sys.exit(rule.get("exit", 0))
+done = subprocess.run([nxt] + args, input=data, capture_output=True)
+sys.stdout.buffer.write(done.stdout)
+sys.stderr.buffer.write(done.stderr)
+sys.exit(done.returncode if done.returncode >= 0 else 128 - done.returncode)
+'''
+
+#: The try endings with no answer (ERR-50; lane 3, #165 6755922262; R-F11-5).
+NO_ANSWER = {
+    "57014": {"exit": 3, "stderr": "ERROR:  57014: canceling statement due to statement timeout\n"},
+    "exit-1": {"exit": 1, "stderr": "psql: error: out of memory\n"},
+    "signal": {"signal": "KILL"},
+    "exit-3-no-sqlstate": {"exit": 3, "stderr": "ERROR:  the lookup failed\n"},
+    "unreadable-exit-0": {"exit": 0, "stdout": "not an answer\n"},
+}
+
+
+def answering(e: Estate, rule: dict) -> Path:
+    where = e.root / f"answer-{next(_HALVES)}"
+    where.mkdir()
+    (where / "psql").write_text(_ANSWER, encoding="utf-8")
+    (where / "psql").chmod(0o755)
+    (where / "answer.json").write_text(json.dumps(dict(rule, match="find_write")), encoding="utf-8")
+    return where
+
+
+def another_writes_script(script: str) -> str:
+    """The call's script with the entry's `args_sha256` changed: another
+    write's entry under the same id (AT-F3's [another-write])."""
+    m = ENTRY_IN_SCRIPT.search(script, script.find("commit_write("))
+    entry = json.loads(m.group(1).replace("''", "'"))
+    entry["journal"]["args_sha256"] = sha256(b"another write, T246")
+    text = json.dumps(entry, ensure_ascii=False, separators=(",", ":")).replace("'", "''")
+    return script[:m.start()] + "'" + text + "'::jsonb" + script[m.end():]
+
+
+class HalfOpen:
+    """AT-F3's estate (see the section's head): `w`, the writer; `session`,
+    the old connection; `write_id`; `n`, the first call's `not_after`; and
+    `held`, the lookup's first try on its FIFO, where `hold_lookup`."""
+
+    def __init__(self, e: Estate, argv: Optional[Sequence[str]] = None, *, arms: Sequence[dict] = (),
+                 hold_lookup: bool = True, alter=None, first: Sequence[Path] = (), extra: Optional[dict] = None):
+        k = next(_HALVES)
+        self.e, self.first = e, list(first)
+        self.argv = list(argv or note(LA, f"F3 {k}"))
+        snap, look = fifo(e, f"f3-snapshot-{k}"), fifo(e, f"f3-lookup-{k}")
+        held = [{"mode": "hold", "match": "find_write", "call": 1, "fifo": str(look)}] if hold_lookup else []
+        self.w = e.launch(LA, self.argv, first=first, extra=dict(DEADLINE, **(extra or {})),
+                          arms=[BEFORE, {"mode": "hold", "match": SNAPSHOT_TEXT, "call": 2, "fifo": str(snap)},
+                                *held, *arms])
+        call = until_seen("the first commit call", lambda: self.w.commit_calls()[:1], self.w)[0]
+        script = LAST_COMMIT.sub("", call["stdin"], count=1)
+        self.session = e.c.db.session(WRITER_LOGIN, "t246-held")
+        self.session.stdin.write("SET idle_in_transaction_session_timeout = 0;\n"
+                                 + (alter(script) if alter else script).rstrip() + "\n")
+        self.session.stdin.flush()
+        until_seen("the replay holding the head row", lambda: e.c.value(
+            "SELECT count(*) FROM pg_stat_activity WHERE application_name = 't246-held' "
+            "AND state = 'idle in transaction';") == "1", self.w)
+        self.write_id, self.n = self.w.write_ids()[0], first_not_after(self.w)
+        hold_point(snap, self.w).close()
+        self.held = hold_point(look, self.w) if hold_lookup else None
+
+    def end(self, how: str) -> None:
+        self.session.stdin.write(f"{how};\n")
+        self.session.stdin.flush()
+
+    def release(self) -> None:
+        if self.held is not None:
+            self.held.close()
+            self.held = None
+
+    def finish(self) -> int:
+        self.release()
+        code = self.w.wait()
+        if self.session.poll() is None:
+            self.end("ROLLBACK")
+            self.session.stdin.close()
+            self.session.communicate(timeout=30)
+        return code
+
+    def tries(self) -> List[dict]:
+        """Each lookup try's start: the shim's stamps, and the tries the
+        answer stand-in answered before the shim saw them."""
+        answered = []
+        for where in self.first:
+            log = where / "answer.log"
+            if log.exists():
+                answered += [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines() if l]
+        return sorted(lookups(self.w) + answered, key=lambda t: t["t"])
+
+    def n_epoch(self) -> float:
+        return float(self.e.c.value(f"SELECT extract(epoch FROM '{self.n}'::timestamptz);"))
+
+    def tries_obey_the_window(self, least: int = 2) -> List[dict]:
+        """The tries' timing rules, on the stamps (section 4's rules 2 and 3,
+        with lane 2's tolerance), the spread recorded against 10 s."""
+        tries = self.tries()
+        assert len(tries) >= least, f"{len(tries)} lookup tries, not at least {least}"
+        for k, (last, this) in enumerate(zip(tries, tries[1:]), 2):
+            assert this["t"] - last["t"] >= GAP_S, f"try {k} began {this['t'] - last['t']:.2f} s after the last"
+            assert this["t"] - tries[0]["t"] >= k - LATE_S, f"try {k} began early on the first's start"
+        assert tries[-1]["t"] - tries[0]["t"] <= 2 * WINDOW_S, "a try began past twice the window"
+        print(f"[T246 tries] n={len(tries)} last={tries[-1]['t'] - tries[0]['t']:.2f}s against {WINDOW_S}s")
+        return tries
+
+
+def busy(w: Writer) -> bool:
+    return w.code == 75 and all(word in w.err for word in ("register busy", "nothing", "retry"))
+
+
+@CLIENT
+@pytest.mark.parametrize("case", ["found", "absent", "held", "no-answer"])
+def test_a_write_in_doubt_at_the_deadline_makes_one_lookup(estates, case):
+    """While the first try is held: [found] the session commits, exit 0, one
+    row, the record removed; [absent] it rolls back, exit 75 with the busy
+    text, no row, the record removed; [held] it stays open, every try meets
+    55P03, at least two tries by the window's rules, exit 3 naming the id,
+    never 75, the record kept, and after the rollback a plain rerun writes
+    it once; [no-answer] every try fails as a failed connect, exit 3, the
+    record kept. The first try starts no earlier than `<n>` less 3 s."""
+    e = estates()
+    arms = [{"mode": "fail-match", "match": "find_write"}] if case == "no-answer" else []
+    h = HalfOpen(e, arms=arms, hold_lookup=case != "no-answer")
+    if case in ("found", "absent"):
+        h.end("COMMIT" if case == "found" else "ROLLBACK")
+    h.release()
+    code = h.w.wait()
+    assert h.tries()[0]["t"] >= h.n_epoch() - 3, "the first try began before <n> less 2 s"
+    rows = [r["write_id"] for r in e.journal_after()].count(h.write_id)
+    if case == "found":
+        assert (code, rows, pending(e)) == (0, 1, []), h.w.err[-800:]
+    elif case == "absent":
+        assert busy(h.w) and rows == 0 and pending(e) == [], h.w.err[-800:]
+    else:
+        assert code == 3 and h.write_id in h.w.err and len(pending(e)) == 1, h.w.err[-800:]
+        h.tries_obey_the_window()
+    h.finish()
+    if case == "held":
+        again = e.run(LA, h.argv)
+        assert again.code == 0, again.err[-800:]
+        assert [r["write_id"] for r in e.journal_after()].count(h.write_id) == 1
+
+
+@CLIENT
+def test_the_deadlines_lookup_waits_past_the_largest_not_after(estates):
+    """[held]'s first try is seen in `PgSleep` until the database's clock
+    passes `<n>`, then waiting on the head row's lock (lane 1's v2.6,
+    behaviour 1); its script calls `find_write` with the write id, `<n>`,
+    and the generation, lane, verb and `args_sha256` the commit calls sent.
+    The session then rolls back, and the writer exits 75."""
+    e = estates()
+    h = HalfOpen(e, hold_lookup=False)
+    slept = until_seen("the lookup in PgSleep", lambda: e.c.value(
+        "SELECT count(*) FROM pg_stat_activity WHERE query LIKE '%find_write%' "
+        "AND wait_event = 'PgSleep' AND pid <> pg_backend_pid();") != "0", h.w)
+    assert slept and not db_past(e, h.n)
+    until_seen("the lookup waiting on a Lock", lambda: e.c.value(
+        "SELECT count(*) FROM pg_stat_activity WHERE query LIKE '%find_write%' "
+        "AND wait_event_type = 'Lock' AND pid <> pg_backend_pid();") != "0", h.w)
+    assert db_past(e, h.n)
+    script = lookups(h.w)[0]["stdin"]
+    entry = json.loads(ENTRY_IN_SCRIPT.search(h.w.commit_calls()[0]["stdin"]).group(1).replace("''", "'"))
+    for value in (h.write_id, entry["journal"]["lane"], entry["journal"]["verb"],
+                  entry["journal"]["args_sha256"]):
+        assert value in script, f"the lookup's script does not carry {value!r}"
+    h.end("ROLLBACK")
+    assert h.finish() == 75, h.w.err[-800:]
+
+
+@CLIENT
+@pytest.mark.parametrize("ending", ["timer", "55p03", "connect", *NO_ANSWER])
+def test_a_lookup_try_without_an_answer_is_made_again_inside_the_window(estates, ending):
+    """The first try ends with no answer: [timer] held past `T_L`; [55p03]
+    the session holds the head row until the shim's ends show the try's
+    55P03; [connect] a failed connect; and [57014], [exit-1], [signal],
+    [exit-3-no-sqlstate] and [unreadable-exit-0] (ERR-50; R-F11-5). The
+    session rolls back, and a second try, by the window's rules, takes the
+    lock and finds the write absent: exit 75, and the record removed."""
+    e = estates()
+    first: List[Path] = [answering(e, NO_ANSWER[ending])] if ending in NO_ANSWER else []
+    arms = [{"mode": "fail-match", "match": "find_write", "call": 1}] if ending == "connect" else []
+    h = HalfOpen(e, arms=arms, first=first, hold_lookup=ending in ("timer", "55p03"))
+    if ending == "55p03":
+        h.release()
+        until_seen("the first try's end in 55P03", lambda: lookups(h.w) and lookups(h.w)[0]["call"] in h.w.ends(), h.w)
+    elif ending != "timer":
+        until_seen("the first try", lambda: h.tries(), h.w)
+    h.end("ROLLBACK")
+    code = h.w.wait()
+    h.finish()
+    assert code == 75 and pending(e) == [], f"exit {code}: {h.w.err[-800:]}"
+    h.tries_obey_the_window(least=2)
+
+
+@CLIENT
+def test_a_lookup_refused_for_another_generation_exits_2_and_keeps_the_record(estates):
+    """[generation]: while the first try is held the switch row's generation
+    becomes a new uuid, as a re-import's bootstrap sets it, and the session
+    rolls back. One try: LR007 `generation`; exit 2 with the server's
+    message, the record kept; a plain rerun then refuses with 2 at its first
+    snapshot, sending nothing."""
+    e = estates()
+    argv = note(LA, "F3 generation")
+    h = HalfOpen(e, argv)
+    e.c.db.psql(f"UPDATE {REGISTER}.register_switch SET generation = '{uuid.uuid4()}';")
+    h.end("ROLLBACK")
+    assert h.finish() == 2 and "LR007" in h.w.err and len(pending(e)) == 1, h.w.err[-800:]
+    assert len(lookups(h.w)) == 1
+    again = e.run(LA, argv)
+    assert again.code == 2 and again.commit_calls() == [], again.err[-800:]
+
+
+@CLIENT
+def test_a_lookup_refused_for_another_write_exits_2_and_removes_the_record(estates):
+    """[another-write]: the session's replay carries another `args_sha256`
+    under the same id and commits while the first try is held. One try:
+    LR007 `another-write`; exit 2, the record removed; the journal holds
+    only the session's entry for the id."""
+    e = estates()
+    h = HalfOpen(e, alter=another_writes_script)
+    h.end("COMMIT")
+    assert h.finish() == 2 and "LR007" in h.w.err and pending(e) == [], h.w.err[-800:]
+    assert len(lookups(h.w)) == 1
+    rows = e.rows(f"SELECT args_sha256 FROM {REGISTER}.journal WHERE write_id = '{h.write_id}'")
+    assert rows == [{"args_sha256": sha256(b"another write, T246")}], rows
+
+
+@CLIENT
+def test_a_lookup_made_too_early_exits_3_and_keeps_the_record(estates):
+    """[too-early]: a write killed once its in-doubt call returned, on
+    another host, keeps its `call` line. A plain rerun here, whose snapshot
+    the shim fails, takes the record over with no clock to age and calls at
+    once: LR011, exit 3 naming the id with the server's message, the record
+    kept, one try. Once snapshots pass, a plain rerun exits 0 with one row."""
+    e = estates()
+    argv = note(LA, "F3 too early")
+    _, write_id = killed(e, LA, argv, extra={"LANES_HOST": "eagle-2"})
+    early = e.run(LA, argv, arms=[{"mode": "fail-match", "match": SNAPSHOT_TEXT, "call": 1}])
+    assert early.code == 3 and write_id in early.err and "LR011" in early.err, early.err[-800:]
+    assert len(lookups(early)) == 1 and len(pending(e)) == 1
+    again = e.run(LA, argv)
+    assert again.code == 0 and [r["write_id"] for r in e.journal_after()].count(write_id) == 1
+
+
+@pytest.mark.parametrize("case", ["missing", "ahead"])
+def test_find_write_refuses_lr011_at_once(clones, case):
+    """Phase N, direct calls: `p_not_after` NULL, or the clock plus 5 s,
+    under a 2 s `statement_timeout`, so a 3 s wait would end 57014 instead:
+    LR011 (lane 1's v2.6, behaviour 2)."""
+    c, w = at_lr011(clones)
+    sql = LOOKUP_SQL.replace("'6000ms'", "'2000ms'")
+    if case == "missing":
+        sql = sql.replace(":'not_after'::timestamptz", "nullif(:'not_after', '')::timestamptz")
+    proc = c.call(sql, appname="t246-lookup", **c.lookup_variables(
+        w["id"], "" if case == "missing" else c.clock(5), None, L1, VERB, w["args"]))
+    c.check_refused(proc, None, "LR011", None)
+
+
+@CLIENT
+def test_an_orphaned_commit_call_released_after_its_not_after_writes_nothing(estates):
+    """The shim forks the first commit call into its own session, held on a
+    FIFO before `psql`; the writer's 8 s timer kills the shim, not the call.
+    The write reaches its deadline, the lookup finds it absent and the
+    writer exits 75; then the held call is released: `commit_write` reaches
+    step 9 past `not_after`, raises LR008, and the head, the journal and the
+    lines are as before; the id stays absent."""
+    e = estates()
+    orphan = fifo(e, "orphan")
+    w = e.run(LA, note(LA, "orphan"), extra=DEADLINE,
+              arms=[{"mode": "fork", "match": "commit_write", "call": 1, "fifo": str(orphan)}])
+    assert w.code == 75, w.err[-800:]
+    write_id = w.write_ids()[0]
+    before = e.c.state()
+    hold_point(orphan, w).close()
+    until_seen("the orphan's end", lambda: e.c.value(
+        f"SELECT count(*) FROM pg_stat_activity WHERE query LIKE '%{write_id}%' "
+        "AND pid <> pg_backend_pid();") == "0")
+    assert e.c.state() == before and not e.has_write(write_id)
+
+
+@pytest.mark.parametrize("case", ["past", "within"])
+def test_a_commit_past_its_not_after_raises_lr008_and_one_within_it_commits(clones, case):
+    """LR008's engine half, by direct calls: an entry whose `not_after` is
+    the clock plus 2 s, sent 3 s later, gets LR008 and changes nothing; the
+    same with the clock plus 8 s commits."""
+    c, _ = at_lr011(clones)
+    entry = c.write_entry(seconds=2 if case == "past" else 8)
+    time.sleep(3)
+    if case == "past":
+        c.refused(entry, "LR008", None, "reached its end")
+    else:
+        assert c.committed(entry)[0] == c.head()
+
+
+@CLIENT
+def test_lr008_inside_the_deadline_is_a_lost_turn_and_the_write_exits_0(estates):
+    """LR008's client half (lane 4, 6709038351): the first commit call's
+    `not_after` is set past by the shim, so it answers LR008 inside its
+    timer. The writer drops that call's line, takes a fresh snapshot, makes
+    a new attempt under the same id, commits, exits 0 with one row, and
+    makes no lookup."""
+    e = estates()
+    w = e.run(LA, note(LA, "lr008 inside"),
+              arms=[{"mode": "edit-entry", "match": "commit_write", "call": 1, "field": "not_after", "value": PAST}])
+    assert w.code == 0, w.err[-800:]
+    assert len(w.commit_calls()) >= 2 and lookups(w) == []
+    one_entry(e, w)
+
+
+@CLIENT
+@pytest.mark.parametrize("case", ["found", "absent", "held"])
+def test_lr008_at_the_deadline_leaves_the_exit_to_find_write(estates, case):
+    """The first call in doubt (AT-F3's estate) and each later call ending
+    LR008: the writer makes F3's lookup and exits as it says: [found] 0,
+    [absent] 75, [held] 3."""
+    e = estates()
+    h = HalfOpen(e, arms=[{"mode": "edit-entry", "match": "commit_write", "from": 2, "field": "not_after",
+                           "value": PAST}])
+    if case != "held":
+        h.end("COMMIT" if case == "found" else "ROLLBACK")
+        code = h.finish()
+    else:
+        h.release()
+        code = h.w.wait()
+        h.finish()
+    assert lookups(h.w), "no lookup"
+    assert code == {"found": 0, "absent": 75, "held": 3}[case], h.w.err[-800:]
+
+
+@CLIENT
+def test_a_write_whose_every_call_ended_lr008_exits_75_with_no_lookup(estates):
+    """Every commit call answers LR008, so each dropped its `call` line and
+    the write was never in doubt: exit 75 with no lookup in the shim's log."""
+    e = estates()
+    w = e.run(LA, note(LA, "lr008 every"), extra=DEADLINE,
+              arms=[{"mode": "edit-entry", "match": "commit_write", "field": "not_after", "value": PAST}])
+    assert w.code == 75 and lookups(w) == [], w.err[-800:]
+    assert not e.has_write(w.write_ids()[0]) and pending(e) == []
+
+
+@CLIENT
+@pytest.mark.parametrize("case", ["first-call", "every-call"])
+def test_lr008_alone_never_gives_3_or_69(estates, case):
+    """LR008 on the first call only, or on every call, at a 1 s deadline:
+    the exit is decided by a later attempt or the lookup, never 3 or 69."""
+    e = estates()
+    arm = {"mode": "edit-entry", "match": "commit_write", "field": "not_after", "value": PAST}
+    if case == "first-call":
+        arm["call"] = 1
+    w = e.run(LA, note(LA, f"lr008 {case}"), extra=DEADLINE, arms=[arm])
+    assert w.code not in (3, 69), w.err[-800:]
