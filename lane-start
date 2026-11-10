@@ -1395,6 +1395,21 @@ esac
 # another command line could write it twice. Defined here, above its first
 # user, W8's arm.
 LS_D8="may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun (off primary), the commit is local and may already be on origin"
+# NO HAND COMMAND AFTER A WRITE'S 2 UNDER A SEQ BASE (lane 3's REV-ACT Q4,
+# #165 6774499606; Y:5587, Y:5601). A command run by hand without this
+# launch's `LANES_ACT` and `LANES_EXPECT` would write unchecked, and with them
+# it would only be refused again. So after a write's 2 under a base
+# `<id>@<seq>:<generation>`, the writer's words above are kept, no command is
+# printed for the write, and the launch says to run it again from its start.
+# Under `@files` today's hand commands stand (Y:5596): no write there reads
+# either variable. `act-begin`'s 2 never reaches here: `lane-start` refuses
+# it (A2). Defined here, above its first user, W8's arm.
+ls_q4() {   # <the write's exit>: 0 where no hand command is printed for it
+  [ "$1" = 2 ] || return 1
+  case "${LANES_ACT:-}" in "" | *@files) return 1 ;; esac
+  return 0
+}
+LS_Q4="No command is printed for it here, since one run by hand without this launch's \`LANES_ACT\` and \`LANES_EXPECT\` would write unchecked, and with them would only be refused again (Y:5587). Run \`$prog\` again from its start (Y:5601)"
 
 repo="${repo:-$LANE}"          # the verbatim form has no <repo> of its own
 estate="${estate:-$repo}"
@@ -2942,7 +2957,9 @@ if [ "$bind_rc" = 0 ]; then
            fi
          fi ;;
       8) bind_recheck=1; step "lane $LANE was already free by the time the request was made — binding it here" ;;
-      2) die "the handoff was not obtained (the helper's own facts and its \`--force\` line are above), so lane $LANE is still bound elsewhere and NOTHING here has been renamed, written or launched." 2 ;;
+      2) ls_q4 2 &&
+           die "\`$LANES_EDIT request-handoff $LANE\` exited 2 under this launch's base (its words are above: the holder kept the lane, or lane ${LANE}'s binding changed after this launch's base), so the handoff was not obtained, and NOTHING here has been renamed, written or launched. ${LS_Q4}." 2
+         die "the handoff was not obtained (the helper's own facts and its \`--force\` line are above), so lane $LANE is still bound elsewhere and NOTHING here has been renamed, written or launched." 2 ;;
       # A WRITE'S ARM (Y:5731), AND IT PASSES THE CODE NOW (feature 007, T428;
       # lane 3's ruling 6747281902, T402 item 2; ERR-33): 69 and the busy 75
       # say nothing was sent; the in-doubt 3 says the request may be in the
@@ -4411,6 +4428,8 @@ if [ "$row_count" = 0 ]; then
         3) die "the register row for $LANE MAY NOT have been added: \`$LANES_EDIT add-row\` exited 3, and the write ${LS_D8}. This window has been renamed and nothing has been launched: a lane whose row is in doubt is not started until that is settled." 3 ;;
         69 | 75) die "the register row for $LANE was NOT added (\`$LANES_EDIT add-row\` exited $ar_rc; its own words are above, with the rerun it prints). This window has been renamed and NOTHING else has been written — no session cell, no object log, no launch: a lane with no row is a lane no other lane's liveness read, crossing check or \`lane-start\` can see. Run the writer's printed rerun, or this command again once the register answers." "$ar_rc" ;;
       esac
+      ! ls_q4 "$ar_rc" ||
+        die "the register row for $LANE was NOT added (\`$LANES_EDIT add-row\` exited 2 under this launch's base; its own words are above). This window has been renamed and NOTHING else has been written — no session cell, no object log, no launch: a lane with no row is a lane no other lane's liveness read, crossing check or \`lane-start\` can see. ${LS_Q4}." 2
       die "the register row for $LANE was NOT added ($LANES_EDIT add-row exited $ar_rc; its own words are above). This window has been renamed and NOTHING else has been written — no session cell, no object log, no launch: a lane with no row is a lane no other lane's liveness read, crossing check or \`lane-start\` can see. Settle that refusal and re-run, or add it by hand:
     LANES_LANE=$LANE $LANES_EDIT add-row '$new_row'" "$ar_rc"
     fi
@@ -4449,6 +4468,8 @@ else
         step "session cell updated: $cell_anchor → $harness_sid (the transcript live in this window)"
       elif [ "$ls_w_rc" = 3 ]; then
         note "the session cell's extension with $harness_sid is in doubt (\`append-session-id\` exited 3): it ${LS_D8}. The launch is not refused for it."
+      elif ls_q4 "$ls_w_rc"; then
+        note "the session cell was NOT extended with $harness_sid (\`append-session-id\` exited 2 under this launch's base; its words are above). ${LS_Q4}. The launch is not refused for it."
       else
         note "the session cell was NOT extended with $harness_sid (this checkout's copy of the row does not carry $cell_anchor exactly once IN ITS SESSION CELL — it may be older than the published one). STAMP IT AS THIS SESSION'S FIRST ACT:"
         note "  $harness_hint"
@@ -4482,6 +4503,8 @@ else
         step "session cell updated: $row_sid → $restored_sid (the exact transcript from the lane's last PAUSED record)"
       elif [ "$ls_w_rc" = 3 ]; then
         note "the session cell's extension with recovered transcript $restored_sid is in doubt (\`append-session-id\` exited 3): it ${LS_D8}. The launch is not refused for it."
+      elif ls_q4 "$ls_w_rc"; then
+        note "the session cell was NOT extended with recovered transcript $restored_sid (\`append-session-id\` exited 2 under this launch's base; its words are above). ${LS_Q4}. The launch is not refused for it."
       else
         note "the session cell was NOT extended with recovered transcript $restored_sid (this checkout's copy of the row may be older than the published one). The launch is unaffected and so is the NEXT one: this recovery reads the lane's last PAUSED record and not the cell, so it finds the same transcript again and prints this same act — the row keeps naming an id no transcript answers to until somebody runs it. STAMP IT AS THIS SESSION'S FIRST ACT:"
         note "  $restored_hint"
@@ -4531,6 +4554,8 @@ else
         step "session cell updated: $row_sid → $new_sid"
       elif [ "$ls_w_rc" = 3 ]; then
         note "the session cell's stamp with $new_sid is in doubt (\`append-session-id\` exited 3): it ${LS_D8}. The launch is not refused for it."
+      elif ls_q4 "$ls_w_rc"; then
+        note "the session cell was NOT stamped with $new_sid (\`append-session-id\` exited 2 under this launch's base; its words are above). ${LS_Q4}. The launch is not refused for it."
       else
         note "the session cell was NOT stamped (this checkout's copy of the row does not carry $row_sid exactly once IN ITS SESSION CELL — it may be older than the published one). STAMP IT AS THIS SESSION'S FIRST ACT:"
         note "  $stamp_hint"
@@ -4619,6 +4644,8 @@ else
       step "row state set: LIVE · $lane_verb by ${lane_sid:-unknown}"
     elif [ "$srs_rc" = 3 ]; then
       note "the row's state cell is in doubt (\`set-row-state\` exited 3): it ${LS_D8}. The launch is not refused for it: the stamp is the record of this act, not its licence."
+    elif ls_q4 "$srs_rc"; then
+      note "the row's state cell was NOT set (\`set-row-state\` exited 2 under this launch's base; its words are above). ${LS_Q4}. The launch is not refused for it: the stamp is the record of this act, not its licence."
     else
       note "the row's state cell was NOT set (exit $srs_rc — the helper's own words are above), and the launch is not refused for it: the stamp is the record of this act, not its licence. Set it by hand:"
       note "  LANES_LANE=$LANE $LANES_EDIT set-row-state $LANE \"LIVE · $state_line\""
@@ -4663,6 +4690,8 @@ else
         step "session cell updated: $row_sid → $agent_cell"
       elif [ "$ls_w_rc" = 3 ]; then
         note "the session cell's extension with $agent_cell is in doubt (\`append-session-id\` exited 3): it ${LS_D8}. The launch is not refused for it."
+      elif ls_q4 "$ls_w_rc"; then
+        note "the session cell was NOT extended with $agent_cell (\`append-session-id\` exited 2 under this launch's base; its words are above). ${LS_Q4}. The launch is not refused for it."
       else
         note "the session cell was NOT extended with $agent_cell (this checkout's copy of the row may be older than the published one). STAMP IT AS THIS SESSION'S FIRST ACT:"
         note "  LANES_LANE=$LANE $LANES_EDIT append-session-id $LANE \"<the session cell's last id>\" \"→ $agent_cell\""
@@ -4864,7 +4893,7 @@ else
         step "object log: $lane_verb lane:$LANE, home $home_nwo"
         step "  (one register write with the row: \`start-record\`)" ;;
       2)
-        die "lane ${LANE}'s bind was REFUSED: \`$LANES_EDIT start-record\` exited 2 (its words are above), and none of ${ls_sr_what} was written. A 2 refuses the whole write: on primary a scope this launch read changed after its base, which is another place binding or changing lane $LANE, a SECOND BINDING this launch does not write over; or LR010, a key that is not a scope, or a refusal of the write's own words (spec:317; FR-029). This window has been renamed to $LANE, and nothing has been launched. Read the lane before running this again: $LANES_EDIT binding $LANE" 2 ;;
+        die "lane ${LANE}'s bind was REFUSED: \`$LANES_EDIT start-record\` exited 2 (its words are above), and none of ${ls_sr_what} was written. A 2 refuses the whole write: on primary a scope this launch read changed after its base, which is another place binding or changing lane $LANE, a SECOND BINDING this launch does not write over; or LR010, a key that is not a scope, or a refusal of the write's own words (spec:317; FR-029). This window has been renamed to $LANE, and nothing has been launched. No command is printed for the write: read the lane (\`$LANES_EDIT binding $LANE\`), then run \`$prog\` again from its start (Y:5601)." 2 ;;
       *)
         # THE TEXTS FOR 3, AND THE WRITER'S RERUN (T428; review M11; D8;
         # Y:5698-5699). On 69, 75 and 3 the writer prints the rerun that
