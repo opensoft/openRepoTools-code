@@ -1699,3 +1699,240 @@ def test_seam_out_is_written_once_before_the_child_acts(estates, decision):
         assert tool_calls(where, "gh") == [], "the abandoned attempt ran its tail"
     for path, said in seam_outs(e).items():
         assert said.strip() in ("tail", "none") and said.count("\n") <= 1, f"{path}: {said!r}"
+
+
+# ============================================================ PHASE W: AT-F5 group B, acts racing (T252)
+#
+# F5 (D5; lane 4's section, "The acts and their expectations"): an act runs
+# `act-begin`, exports `LANES_ACT=<id>@<n>:<generation>`, and each write
+# carries `LANES_EXPECT="<scope> ..."`; the commit refuses with LR009, the
+# writer with 2, `expectation: <scope> changed at seq <k> by <lane>/<verb>`,
+# when an entry of another act touched a listed scope after the base. On
+# test 4's estate (T243's `Estate`); the act's write is held at its commit
+# call by the shim while a rival from a second session commits. The writes
+# here are `append-line` of a row-shaped line (`row:<L>`) and `log`
+# (`objects:<L>`), a reading of lane 1's derived keys. The three conditions
+# and the launches are read from lane 4's tools' text (a reading: their
+# flows are T428-T432's). They FAIL UNTIL L1-A6, L4-A2 (T410), L4-B3 and
+# L4-B14 land; without PostgreSQL 16 the RE cases skip.
+
+ACT_RE = re.compile(r"^[0-9a-f]{32}@[1-9][0-9]*:" + UUID_RE + r"$|^[0-9a-f]{32}@0:" + UUID_RE + r"$")
+
+
+def act_begin(e: Estate, lane: str = LA) -> str:
+    w = e.run(lane, ["act-begin"])
+    act = w.out.strip()
+    assert w.code == 0 and ACT_RE.match(act), f"act-begin exited {w.code}, printed {w.out!r}: {w.err[-300:]}"
+    return act
+
+
+def act_write(e: Estate, scope: str, lane: str = LA, tag: str = "") -> List[str]:
+    """The act's write on `scope`, `row` or `objects`."""
+    if scope == "row":
+        return ["append-line", f"| `{lane}` | harness `{session_of(lane)}` | {W_WS} / test / brett "
+                               f"| 2026-05-01T00:00Z | none | handoffs/{lane}.md | T252 row {tag} |"]
+    return ["log", "NOTED", f"{KEY}#77", f"T252 {tag}"]
+
+
+def acted(act: str, *scopes: str) -> dict:
+    return {"LANES_ACT": act, "LANES_EXPECT": " ".join(scopes)}
+
+
+def raced(e: Estate, scope: str, rival_scope: Optional[str]) -> Tuple[Writer, Optional[Writer], str]:
+    """The act's write held at its commit call while a rival from a second
+    session (no act) commits on `rival_scope`; then released."""
+    act = act_begin(e)
+    fifo = e.root / f"hold-{len(e.writers)}.fifo"
+    os.mkfifo(str(fifo))
+    w = e.launch(LA, act_write(e, scope, tag="act"), extra=acted(act, f"{scope}:{LA.lower()}"),
+                 arms=[{"mode": "hold", "match": "commit_write", "call": 1, "fifo": str(fifo)}])
+    held = hold_point(fifo, w)
+    rival = None
+    if rival_scope:
+        rival = e.run(LA, act_write(e, rival_scope, tag="rival"),
+                      extra={"LANES_SESSION": "dddddddd-0252-4000-8000-00000000d252"})
+        assert rival.code == 0, f"the rival exited {rival.code}: {rival.err[-400:]}"
+    held.close()
+    w.wait()
+    return w, rival, act
+
+
+@CLIENT
+@pytest.mark.parametrize("scope", ["row", "objects"])
+def test_an_act_whose_scope_changed_before_its_commit_writes_nothing(estates, scope):
+    """The rival commits on the act's scope after its base: the act's commit
+    refuses, the writer exits 2 with `expectation: <scope> changed at seq
+    <k> by <lane>/<verb>`, and the journal grew only by the rival's entry."""
+    e = estates()
+    w, rival, _ = raced(e, scope, scope)
+    grew = e.journal_after(1)
+    assert w.code == 2, f"exit {w.code}: {w.err[-600:]}"
+    assert len(grew) == 1, grew
+    said = f"expectation: {scope}:{LA.lower()} changed at seq {grew[0]['seq']} by {LA}/"
+    assert said in w.err, f"{said!r} is not in {w.err!r}"
+    assert all(not e.has_write(x) for x in w.write_ids())
+
+
+@CLIENT
+@pytest.mark.parametrize("case", ["row-no-rival", "objects-no-rival", "row-rival-on-another-scope"])
+def test_an_act_whose_scopes_held_commits(estates, case):
+    """Without a rival, or with a rival that touches no listed scope, the
+    act's write commits."""
+    e = estates()
+    scope = case.split("-")[0]
+    w, _, _ = raced(e, scope, "objects" if case == "row-rival-on-another-scope" else None)
+    assert w.code == 0, f"[{case}] exit {w.code}: {w.err[-600:]}"
+
+
+@CLIENT
+def test_an_acts_own_earlier_write_never_refuses_its_later_one(estates):
+    """Two writes of one act on one scope: the second commits, since the
+    first carries the same `act_id`."""
+    e = estates()
+    act = act_begin(e)
+    for tag in ("first", "second"):
+        w = e.run(LA, act_write(e, "objects", tag=tag), extra=acted(act, f"objects:{LA.lower()}"))
+        assert w.code == 0, f"the {tag} write exited {w.code}: {w.err[-600:]}"
+    assert len(e.journal_after(1)) == 2
+
+
+@CLIENT
+def test_a_handoff_request_never_refuses_the_holders_own_handoff(estates):
+    """A `HANDOFF-REQUESTED` line is not a lane-kind line: another lane's
+    request after the holder's base does not refuse the holder's write on
+    `row:<L>` and `bind:<L>`."""
+    e = estates()
+    act = act_begin(e)
+    rival = e.run(LB, ["request-handoff", LA, "--session", session_of(LA)])
+    assert rival.code == 0, f"the request exited {rival.code}: {rival.err[-400:]}"
+    w = e.run(LA, act_write(e, "row", tag="handoff"), extra=acted(act, f"row:{LA.lower()}", f"bind:{LA.lower()}"))
+    assert w.code == 0, f"the holder's write exited {w.code}: {w.err[-600:]}"
+
+
+@CLIENT
+def test_act_variables_change_nothing_in_files_mode(estates):
+    """At `mode=files`, a write with `LANES_ACT` and `LANES_EXPECT` set
+    behaves as one without them: both commit to origin, and no `psql` call
+    is made."""
+    e = estates()
+    conf = e.root / "files.conf"
+    conf.write_text("mode=files\n", encoding="utf-8")
+    conf.chmod(0o600)
+    files = {"LANES_INDEX_CONFIG": str(conf)}
+    plain = e.run(LA, ["append-line", f"NOTE {EM} lane {LA}: files mode, plain (T252)"], extra=files)
+    act = dict(files, **acted(f"{'a' * 32}@files", f"row:{LA.lower()}"))
+    with_act = e.run(LA, ["append-line", f"NOTE {EM} lane {LA}: files mode, act set (T252)"], extra=act)
+    assert (plain.code, with_act.code) == (0, 0), [(w.code, w.err[-300:]) for w in (plain, with_act)]
+    assert plain.calls() == [] and with_act.calls() == []
+    shown = run_git(e.origin, "show", "main:lanes/LANES.md", env=e.env)
+    assert "files mode, plain" in shown and "files mode, act set" in shown
+
+
+#: The three conditions (Brett's "Accept all three", 6721583757, row 22), each
+#: read from its tool's text: the file, and what it must hold.
+CONDITIONS = {
+    "lane-start-reread": ("lane-start", ("act-begin --rebase",)),
+    "skill-step-4": ("skills/handoff/SKILL.md", ("act-begin",)),
+    "lane-end-gate": ("lane-end", ("LANES_ACT",)),
+}
+
+
+@pytest.mark.parametrize("condition", list(CONDITIONS))
+def test_each_of_the_three_conditions_holds(condition):
+    """[lane-start-reread]: `lane-start` re-bases with `act-begin --rebase`
+    before its second `binding` read; [skill-step-4]: the skill's step 4
+    opens with `act-begin` and re-derives the identity; [lane-end-gate]:
+    `lane-end`'s gate inherits `LANES_ACT`. Read from each tool's text
+    (FP): red until T428, T431 and T430 land."""
+    path, needs = CONDITIONS[condition]
+    target = REPO / path
+    assert target.exists(), f"[{condition}] no {path} in this tree"
+    text = target.read_text(encoding="utf-8", errors="replace")
+    for need in needs:
+        assert need in text, f"[{condition}] {path} does not hold {need!r}"
+
+
+#: Before a launch `LANES_ACT` is unset: the tool, and the launch's word.
+LAUNCHES = {"exec": ("lane-start", "exec"), "respawn-pane": ("lane-handoff", "respawn-pane")}
+
+
+@pytest.mark.parametrize("launch", list(LAUNCHES))
+def test_lanes_act_is_unset_before_a_launch(launch):
+    """`LANES_ACT` is unset before `exec` (`lane-start`) and before
+    `respawn-pane` (`lane-handoff`), so the session and its guard never
+    inherit it: every line carrying the launch's word unsets it, or runs
+    under `env -u LANES_ACT`, within the five lines before. Read from the
+    tool's text (FP): red until T428 and T429 land."""
+    path, word = LAUNCHES[launch]
+    lines = (REPO / path).read_text(encoding="utf-8", errors="replace").split("\n")
+    sites = [k for k, l in enumerate(lines) if re.search(rf"\b{re.escape(word)}\b", l)
+             and not l.lstrip().startswith("#")]
+    assert sites, f"[{launch}] {path} has no {word}"
+    bare = [k + 1 for k in sites
+            if not any("unset LANES_ACT" in l or "-u LANES_ACT" in l for l in lines[max(0, k - 5):k + 1])]
+    assert bare == [], f"[{launch}] {path}:{bare} launch without unsetting LANES_ACT"
+
+
+@CLIENT
+def test_an_act_that_decided_on_canon_lane_is_refused_by_a_row_added_on_its_walk(estates):
+    """`a` leads to `b` and `b` to `c`, which has a row: an act that decided
+    on `canon-lane a` lists `row:` and `alias:` for each of the three, so a
+    rival row-shaped line for `b` after the base refuses its write with 2,
+    LR009 naming `row:b`."""
+    e = estates()
+    act = act_begin(e, LC)
+    walk = [LA.lower(), LB.lower(), LC.lower()]
+    expect = [f"{kind}:{name}" for name in walk for kind in ("row", "alias")]
+    rival = e.run(LB, act_write(e, "row", lane=LB, tag="walk"))
+    assert rival.code == 0, rival.err[-400:]
+    w = e.run(LC, act_write(e, "objects", lane=LC, tag="walk"), extra=acted(act, *expect))
+    assert w.code == 2 and f"expectation: row:{LB.lower()} changed" in w.err, (w.code, w.err[-600:])
+
+
+@CLIENT
+@pytest.mark.parametrize("case", ["after-loss-cutover", "base-past-n"])
+def test_the_client_refuses_an_acts_stale_base_with_2_at_the_snapshot(estates, case):
+    """An act whose generation is not the switch's, or whose base is past
+    `n`: exit 2 at the snapshot, no commit call, nothing written."""
+    e = estates()
+    gen = e.c.switch()["generation"]
+    n = e.c.head()
+    act = (f"{'b' * 32}@{n}:{uuid.uuid4()}" if case == "after-loss-cutover"
+           else f"{'b' * 32}@{n + 5}:{gen}")
+    state = e.c.state()
+    w = e.run(LA, act_write(e, "objects", tag=case), extra=acted(act, f"objects:{LA.lower()}"))
+    assert w.code == 2, f"[{case}] exit {w.code}: {w.err[-600:]}"
+    assert w.commit_calls() == [] and e.c.state() == state
+
+
+@pytest.mark.parametrize("case", ["generation", "base-past-head"])
+def test_the_commits_act_backstops_are_lr007_act_generation_and_lr004(clones, case):
+    """The client's checks bypassed by a direct commit call (T223's
+    `Clone`): an act of another generation gets LR007 `act-generation`, a
+    base past the head LR004; nothing is written."""
+    c = primary(clones)
+    entry = c.append(L1, *hold(c, L1))
+    head, gen = c.head(), c.switch()["generation"]
+    entry["act"] = ({"id": "c" * 32, "base": head, "generation": str(uuid.uuid4())} if case == "generation"
+                    else {"id": "c" * 32, "base": head + 5, "generation": gen})
+    if case == "generation":
+        c.refused(entry, "LR007", "act-generation")
+    else:
+        c.refused(entry, "LR004", None)
+
+
+@CLIENT
+@pytest.mark.parametrize("case", ["space", "no-break-space"])
+def test_a_line_deriving_a_key_that_is_not_a_scope_exits_2_on_lr010_once(estates, case):
+    """`append-line` with a row-shaped line whose first backticked token holds
+    a space or a no-break space: the commit refuses LR010, the writer exits
+    2 naming the path, the line and the key, with one commit call, never
+    retried, and nothing written."""
+    e = estates()
+    gap = " " if case == "space" else chr(0x00A0)
+    line = f"| `x{gap}y` | T252 | a key that is not a scope |"
+    state = e.c.state()
+    w = e.run(LA, ["append-line", line])
+    assert w.code == 2, f"[{case}] exit {w.code}: {w.err[-600:]}"
+    assert "LR010" in w.err and LANES_MD in w.err and f"row:x{gap}y" in w.err, w.err
+    assert len(w.commit_calls()) == 1 and e.c.state() == state
