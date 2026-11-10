@@ -570,6 +570,47 @@ def test_on_primary_a_take_with_no_readable_utc_is_refused_before_the_lock_and_w
         f"T504, reg_open): {bench.calls()}")
 
 
+# ============================================================ C1's fourth text (T253c)
+#
+# Lane 4's question 11 (#165 6752694348; R-F11-1; lane 3's (a), 6747761107;
+# B11 tasks:608, :1267): on primary `append-line` refuses, before the lock, a
+# `LANDING` take whose lane cannot be read, which would hold `main` with
+# nothing able to close it; files mode, which has no slot table, writes it as
+# today. The line is a `LANDING` that names no lane, lane 2's reading of
+# "whose lane cannot be read" until the contract's draft after 4.9 words the
+# text (F11's NOTES question 34): it has a UTC and a repository, so neither of
+# T424's other take refusals meets it. The case asserts the 2 and that nothing
+# is written, not the wording.
+LANELESS_LANDING = f"LANDING {EM} session {SID_W}@{WS}, {ago(1)}, PR #12 into {KEY} main"
+
+
+def test_on_primary_a_landing_take_whose_lane_cannot_be_read_is_refused_before_the_lock_and_written_off_primary(
+        tmp_path):
+    """C1's fourth text: on primary, `append-line` of a `LANDING` line that
+    names no lane exits 2 before the lock, with no commit call, no `psql`
+    call and nothing written; off primary, after the mode query answered
+    files, the same line is written as today."""
+    fields = lanes_index_module().parse_register_line(LANELESS_LANDING)
+    assert fields and fields["kind"] == "LANDING" and fields["lane"] is None, fields
+    assert fields["utc"] and fields["repo"] == KEY, fields
+    bench = Bench(tmp_path / "primary", [])
+    before = bench.git_state()
+    proc = bench.run(["append-line", LANELESS_LANDING])
+    assert proc.returncode == 2, (
+        f"append-line of a LANDING whose lane cannot be read exited {proc.returncode}, not 2, "
+        f"on primary (L4-B10, lane 4's T424): {proc.stderr[-600:]}")
+    assert_nothing_sent(bench, proc, before, "laneless-landing")
+    files = Bench(tmp_path / "files", [], mode="files")
+    written = files.run(["append-line", LANELESS_LANDING])
+    assert written.returncode == 0, f"files mode refused the line: {written.stderr}"
+    assert files.calls("register", "commit") == [], "files mode sent a commit"
+    assert git(files.origin, "show", "main:lanes/LANES.md", env=files.env).rstrip("\n") \
+        .endswith(LANELESS_LANDING), "files mode did not write the line as today"
+    assert files.asked_the_mode(), (
+        f"the mode query was never asked, so this is not 'off primary' (lane 5's T504, "
+        f"reg_open): {files.calls()}")
+
+
 # ============================================================ (c) the kind typed by hand
 TYPED = {
     "em-dash": (f"LANDING EXPIRED {EM} ", True),
