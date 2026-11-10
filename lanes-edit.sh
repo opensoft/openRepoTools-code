@@ -634,9 +634,9 @@
 #      test 14); and `primary` itself for a form that writes nothing, a dry
 #      run, which has no primary path yet (`pw_checkout`); every other
 #      write runs the primary branch (T415), but `commit`, which T420
-#      exempts from it and which never exits 69 on `primary` (2 for its
-#      carry form, and its publish act outside the loop, R16). Never files
-#      mode instead.
+#      exempts from it and which never exits 69 on `primary` (2 over a hand
+#      edit of any rendered file, its carry form included, and its publish
+#      act outside the loop, R16). Never files mode instead.
 #      Every other failure of the question — a configuration `lanes-index`
 #      refuses, a `lanes-index` too old to know `mode`, none to run, a crash,
 #      no answer within 2 s — runs the verb in files mode with one warning,
