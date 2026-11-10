@@ -1470,8 +1470,10 @@ class RealRegister:
         """One `commit_write` call, as the writer's login: the entry's journal
         object, `edits` and the `files` rows; the seq it made."""
         import uuid as _uuid
+        # `journal.author` is `Name <address>` (journal_author_check, `^[^<>]+ <[^<>]*>$`).
         journal = {"kind": kind, "verb": verb or ("import" if kind == "import" else "log"),
-                   "lane": "repoA-1", "workstation": "Eagle", "author": "T217's fixture",
+                   "lane": "repoA-1", "workstation": "Eagle",
+                   "author": "T217 fixture <t217@example.invalid>",
                    "message": f"{kind} by T217's fixture", "args_sha256": "0" * 64}
         if kind == "import":
             journal.update(git_commit="1" * 40, git_tree="2" * 40)
