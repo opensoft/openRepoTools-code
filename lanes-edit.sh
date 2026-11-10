@@ -7956,11 +7956,13 @@ SR_USE="usage: start-record <lane> <STARTED|RESUMED> { --add-row \"<full | row |
 # `add_row_checks` reads `lane_new` from every line of the row, so a row with a
 # newline or a carriage return in it could name `<L>` here and another lane
 # there, and get past this test to the lock, where `ensure_log` made a log for
-# the second name before the append refused it.
+# the second name before the append refused it. The refusal says this row's
+# own harm, the second row after the break, in lane 3's words (#165
+# 6778890211, T427 new 2).
 sr_row_names_lane() {   # <the row> <L>
   srn_row="${1-}"
   if [ "${srn_row//[$'\n\r']/}" != "$srn_row" ]; then
-    die "the row given to --add-row is ONE line, and this one carries a newline or a carriage return: a newline in it would split the row in two and every row after it would be read as a lane. Nothing was written. $SR_USE" 2
+    die "the row given to --add-row is ONE line, and this one carries a newline or a carriage return: its text after the break would be read as a second row, which can name another lane than '${2-}'. Nothing was written. $SR_USE" 2
   fi
   srn_named=""
   case "${1-}" in *'`'*'`'*) srn_named="${1#*\`}"; srn_named="${srn_named%%\`*}" ;; esac
