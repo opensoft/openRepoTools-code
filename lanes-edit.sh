@@ -665,6 +665,19 @@
 #      LANES_SESSION=<the value the digest took> lanes-edit.sh <the same
 #      arguments>` (ERR-38), and the pending record is kept, so the rerun
 #      settles the write and never writes it twice.
+#      ON PRIMARY, AN IDENTICAL WRITE'S OWNER STILL LIVE AT D7's DEADLINE
+#      (Y:5216–5218; T417): this run sent nothing, that write's outcome is
+#      not known, and its record and claims are left as they are. With a
+#      pending record: "an identical write is still running in pid <p>
+#      (write <id>, started <utc>)", with its lookup and its printed rerun
+#      (ERR-38). With none yet (open point 42): "an identical write is being
+#      started in pid <p> on <host>/<container> (claimed <utc>)", with the
+#      effect check, `history <lane> --since <utc>` or `register-row <lane>`.
+#      And where that owner cannot be tested here (DEC-25: the claim names no
+#      pid or cannot be read, or its pid lives with no start time), "an
+#      identical write holds the claim
+#      <state>/register-pending/<d>.take.<k>, whose owner cannot be tested
+#      here", with the UTC after which a run may take it.
 #   4  the mutex could not be taken within 60s — or, Amendment 23 S1, a lane
 #      checkout's creation lock within the clone's budget and a minute
 #   5  an edit moved more than one line and was refused — or, Amendment 15, a
@@ -780,8 +793,6 @@
 #      (LANES_REGISTER_DEADLINE_S sets it for tests), with the write's rerun.
 #      Where a commit call of the write may have committed, that 75 comes
 #      only after F3's lookup answered "absent" with the lock held (T417).
-#      And, until T417's exit 3 for it, an identical write's owner still live
-#      at the deadline (Y:5218), which sends nothing and keeps the record.
 #
 # --no-sweep is accepted and changes nothing. It named the default of the
 #   capture that came in on 2026-09-09 after 0d84d34/a1f2438 swept another
@@ -5944,19 +5955,75 @@ pw_run_dir() {
   return 0
 }
 
-# AN IDENTICAL WRITE'S OWNER STILL LIVE AT D7's DEADLINE (Y:5218; T412's
-# `wr_claim_take` returned 2). Its exit 3 and the texts are T417's, which maps
-# them in `_EXIT_3_CAUSES`. Until then this run ends with 75, the busy code: it
-# sent nothing, and a rerun once that pid has ended takes the record over and
-# settles the write by its id.
+# AN IDENTICAL WRITE'S OWNER STILL LIVE AT D7's DEADLINE (T417; Y:5216–5218;
+# T412's `wr_claim_take` returned 2, with WR_OWNER_* naming the highest claim).
+# This run sent nothing, and that write's outcome is not known, so it exits 3
+# and leaves the record and the claims as they are. Three forms:
+#   - a claim whose owner cannot be tested here (DEC-25): `no-pid` or
+#     `no-start`, live only for the seam's cap, which D7's deadline beat:
+#     `pw_owner_untested_end`;
+#   - a pending record beside the claim: Y:5218's text, with its write id, its
+#     lookup and its printed rerun, whose `LANES_SESSION` is the value the
+#     digest took (ERR-38). A record there that cannot be read names no id,
+#     and the text says so;
+#   - no record beside it (open point 42, taken under R26; the plan's §11.4):
+#     a record being made, so no write id is known. The text names the claim
+#     and gives Y's own effect check (Y:5211–5213): a plain rerun could write
+#     anew where the other run ended 0 (Y:5182), and its done mark rests on a
+#     pid with no start time (Y:5181). A run that was itself under
+#     `LANES_WRITE_ID` prints its own id again with its generation instead of
+#     the plain command.
+# A claim from another host or container (`other-host`, Y:5220) has a pid, and
+# takes the second or third form.
 pw_owner_live_end() {
-  local po_re=""
-  if wr_is_uuid "${LANES_WRITE_ID:-}"; then
-    po_re="$(wr_rerun_text "$LANES_WRITE_ID" "${LANES_WRITE_GENERATION:-<generation>}")"
-  else
-    po_re="$(pw_given_text)"
+  local po_rec="" po_rc=0 po_p="" po_utc="" po_look="" po_re="" po_l="" po_b="" po_c="" po_n="" po_f="" po_d="" po_max="" po_last=""
+  case "$WR_OWNER_WHY" in no-pid|no-start) pw_owner_untested_end ;; esac
+  po_p="${WR_OWNER_PID:-<unknown>}"; po_utc="${WR_OWNER_UTC:-<unknown>}"
+  po_rec="$WR_STATE/register-pending/$WR_D"
+  wr_record_read "$po_rec"; po_rc=$?
+  if [ "$po_rc" = 0 ]; then
+    while IFS= read -r po_l; do
+      [ -n "$po_l" ] || continue
+      IFS=' ' read -r po_b po_c po_n po_f po_d <<<"$po_l"
+      if [ -z "$po_max" ] || [ "$po_n" -gt "$po_max" ]; then po_max="$po_n"; fi
+    done <<<"$WR_REC_CALLS"
+    po_look="lanes-index journal --write-id $WR_REC_WRITE_ID"
+    [ -z "$po_max" ] || po_look="$po_look --not-after $po_max --generation $WR_REC_GENERATION --lane $(printf '%q' "$WR_REC_LANE") --verb $(printf '%q' "$WR_REC_VERB") --args-sha256 $WR_REC_ARGS_SHA256"
+    po_re="$(wr_rerun_text "$WR_REC_WRITE_ID" "$WR_REC_GENERATION")"
+    die "an identical write is still running in pid ${po_p} (write ${WR_REC_WRITE_ID}, started ${po_utc}); this run sent nothing, and that write's outcome is not known. Once pid ${po_p} has ended, look it up (${po_look}), or run ${po_re}, which finds it or writes it once." 3
   fi
-  die "an identical write is still running in pid ${WR_OWNER_PID:-<unknown>} (its claim ${WR_OWNER_FILE}, made ${WR_OWNER_UTC:-<unknown>} on ${WR_OWNER_HOST:-<unknown>}/${WR_OWNER_CONTAINER:-<unknown>}), and this run's deadline of ${PW_D_S} s has passed; this run sent nothing, and that write's outcome is not known. Once pid ${WR_OWNER_PID:-<unknown>} has ended, run the same command again: it takes that write's pending record over, if one was left, and settles it by its id. ${po_re}" 75
+  if [ "$po_rc" = 2 ]; then
+    die "an identical write is still running in pid ${po_p} (started ${po_utc}), and its pending record, ${po_rec}, cannot be read as one, so its write id is not known here; this run sent nothing, and that write's outcome is not known. Once pid ${po_p} has ended, lanes-index status lists the pending records." 3
+  fi
+  if wr_is_uuid "${LANES_WRITE_ID:-}"; then
+    po_last="If it is not, run it again by its own write id: $(wr_rerun_text "$LANES_WRITE_ID" "${LANES_WRITE_GENERATION:-<generation>}")"
+  else
+    po_last="If it is not, run the same command again; it takes over that write's record if one was left, or writes anew."
+  fi
+  die "an identical write is being started in pid ${po_p} on ${WR_OWNER_HOST:-<unknown>}/${WR_OWNER_CONTAINER:-<unknown>} (claimed ${po_utc}); its record is not yet written, so its write id is not yet known; this run sent nothing. Once pid ${po_p} has ended, look for its effect in the register: lanes-edit.sh history ${PW_LANE} --since ${po_utc} for a log line, or lanes-edit.sh register-row ${PW_LANE} for a row. If it is there, that write was made: do not run this command again. ${po_last}" 3
+}
+
+# AN UNTESTED CLAIM AT D7's DEADLINE (T417; DEC-25, #165 6750702819): the
+# highest claim names no pid or cannot be read (`no-pid`), or its pid lives and
+# it recorded no start time, so a reused pid cannot be told (`no-start`). It
+# counts as live for the seam's cap from DEC-25's anchor, and D7's deadline
+# came first. The run exits 3 in a form of its own, naming the claim file and
+# the UTC after which a run may take it (WR_OWNER_TAKE_AFTER, the cap's end),
+# and saying that it sent nothing; the rerun is the one it would print at any
+# other end before its first snapshot.
+pw_owner_untested_end() {
+  local pu_why="" pu_re="" pu_f="$WR_OWNER_FILE"
+  if [ "$WR_OWNER_WHY" = no-start ]; then
+    pu_why="its pid, ${WR_OWNER_PID:-<unknown>}, lives, and the claim recorded no start time, so a reused pid cannot be told"
+  else
+    pu_why="it names no pid, or cannot be read"
+  fi
+  if wr_is_uuid "${LANES_WRITE_ID:-}"; then
+    pu_re="$(wr_rerun_text "$LANES_WRITE_ID" "${LANES_WRITE_GENERATION:-<generation>}")"
+  else
+    pu_re="$(pw_given_text)"
+  fi
+  die "an identical write holds the claim ${pu_f}, whose owner cannot be tested here: ${pu_why}. It counts as live for the seam's cap (DEC-25), and this run's deadline of ${PW_D_S} s passed first; this run sent nothing. A run may take that claim after ${WR_OWNER_TAKE_AFTER:-<unknown>}: run it again then. ${pu_re}" 3
 }
 
 # THE COMMAND AS IT WAS GIVEN, for a rerun where the run had no write id (open
