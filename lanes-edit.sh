@@ -5807,10 +5807,11 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
 #
 # THE PARENT'S STEPS, in order (lane openRepoTools-4's plan, §3.7; T415's line):
 #   (a) before the first attempt: the lane's checkout `<c>` (`pw_checkout`,
-#       R17), a pending hand edit in it (`pw_hand_edit_refuse`), the client's
-#       act checks 1–4 (`act_checks`, T410), the author (`pw_author_read`), the
-#       write id, the claim and the record's plan (T412's `wr_` functions), and
-#       the run's directory (`pw_run_dir`);
+#       R17), the writer's own lane (`pw_lane_given`), a pending hand edit in
+#       `<c>` (`pw_hand_edit_refuse`), the client's act checks 1–4
+#       (`act_checks`, T410), the author (`pw_author_read`), the write id, the
+#       claim and the record's plan (T412's `wr_` functions), and the run's
+#       directory (`pw_run_dir`);
 #   (b) each attempt: its directory and `parent.pid` (`pw_attempt_dir`), the
 #       snapshot (`pw_snapshot`), the act's checks at it (`pw_act_at_snapshot`),
 #       the files `register commit` reads (`pw_attempt_files`), and the child
@@ -5865,6 +5866,31 @@ pw_checkout() {   # <the verb's arguments>
   [ -d "$PW_C" ] ||
     die "lane ${PW_LANE}'s own register checkout, $PW_C/, is not here, and on primary a write makes no clone to make it, since a clone is a fetch (D12): the verb runs on a scratch tree the register builds, and reads only its author, its pending hand edits and its repos.tsv from that checkout. Make the checkout first, as lane-start does at a launch — $SELF lane-checkout $PW_LANE --create — then run \`$cmd\` again. Nothing was sent." 2
   return 0
+}
+
+# THE WRITER'S OWN LANE, `LANES_LANE` (lane openRepoTools-3, #165 6769061039,
+# T415's question 4; tasks:1145). Every register call of the write carries it as
+# `--lane`, as given, and it is the digest's lane, which keys the claim and the
+# pending record (Y:5171; contract §3.6, "the writer's own lane, which is in the
+# class"). Passing the write's lane instead would split `--lane` from the
+# digest's, which a takeover's lookup sends. So where it is unset, empty or
+# outside `check_lane_name`'s class, the run refuses 2 before its claim, naming
+# the command with it. Nothing is sent.
+pw_lane_given() {
+  local pl_w="" pl_cmd="lanes-edit.sh" pl_why=""
+  case "${LANES_LANE-}" in
+    "" | *[!A-Za-z0-9._-]* | .* | -*) : ;;
+    *) return 0 ;;
+  esac
+  for pl_w in ${ORIG_ARGV[@]+"${ORIG_ARGV[@]}"}; do pl_cmd="$pl_cmd $(printf '%q' "$pl_w")"; done
+  if [ -z "${LANES_LANE+x}" ]; then
+    pl_why="LANES_LANE is not set"
+  elif [ -z "$LANES_LANE" ]; then
+    pl_why="LANES_LANE is empty"
+  else
+    pl_why="LANES_LANE is $(printf '%q' "$LANES_LANE"), which is not a lane name (letters, digits, . _ -, not opening with . or -)"
+  fi
+  die "refusing to write on primary: ${pl_why}. Every register call of a write carries the writer's own lane, LANES_LANE as given, and it keys the write's claim and pending record (Y:5171), so a write without one is refused before its claim. Nothing was sent. Run it again with your own lane: LANES_LANE=<lane> ${pl_cmd}" 2
 }
 
 # A PENDING HAND EDIT IN `<c>` (Y:2459–2464; Amendment 23's S3 step 4). The verb
@@ -6493,6 +6519,7 @@ pw_run() {   # <the verb's arguments>
   local pr_rc=0
   # ---- (a) BEFORE THE FIRST ATTEMPT.
   pw_checkout ${1+"$@"}
+  pw_lane_given
   pw_hand_edit_refuse
   act_checks
   pw_author_read
