@@ -43,10 +43,11 @@ Every case FAILS UNTIL lane 1's T107 (L1-A6, `commit_write` and its step 7)
 and T118 (L1-A16, the kinds' slots), and lane 2's T227 (`tmpl_imported`) and
 T228 (`lanes_w_fx`) land. Without PostgreSQL 16 each skips.
 
-THE MODULE ALSO HOLDS, each at its own section below: T243's test 4, C10,
-D19 and section 4.1 (phase W, the client's writers on a real register); T232's
-AT-LR5 and AT-LR009 (phase N, `commit_write` called directly, as here); T248's
-AT-F14 (phase W); and T252's AT-F5 group B (phase W).
+THE MODULE ALSO HOLDS, each at its own section below, in this order: T243's
+test 4, C10, D19 and section 4.1 (phase W, the client's writers on a real
+register); T248's AT-F14 (phase W); T252's AT-F5 group B (phase W); and, last,
+T232's AT-LR5 and AT-LR009 (phase N, `commit_write` called directly on this
+section's `Clone`, as here), whose rollback steps fail until T304.
 """
 
 from __future__ import annotations
@@ -68,7 +69,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import pytest
 
-from pgcluster import Database
+from pgcluster import SUPERUSER, Database
 from sql_register_helpers import (LANES_INDEX, PSQL_SHIM, PSQL_SHIM_CONTROL, PSQL_SHIM_ENDS,
                                   PSQL_SHIM_LOG, REPO, flipped_copy)
 
@@ -1936,3 +1937,721 @@ def test_a_line_deriving_a_key_that_is_not_a_scope_exits_2_on_lr010_once(estates
     assert w.code == 2, f"[{case}] exit {w.code}: {w.err[-600:]}"
     assert "LR010" in w.err and LANES_MD in w.err and f"row:x{gap}y" in w.err, w.err
     assert len(w.commit_calls()) == 1 and e.c.state() == state
+
+
+# ============================================================ PHASE N: AT-LR5's other cases and AT-LR009 (T232)
+#
+# LR005'S RULES AND THE ACT'S KEY, ON `commit_write`'S SIDE (AT-LR5,
+# TP:4310-4476; AT-LR009, TP:4834-4941). The test plan puts them in phase W;
+# F13's block writes them in phase N, as T223's above, since they check the
+# same function (R1's M3; FR-059): each case is a direct `commit_write` call as
+# `lanes_w_fx`, in the commit call's own form, on a clone of `tmpl_imported`
+# that `Clone.to_primary` brings to `primary`, with the entry built here as the
+# client builds it. AT-F5 holds the client's half (T233, T252). The forms are
+# lane 1's, read at `refs/l1/T112-fu2` and `refs/l1/R-merge6`, `lanes-index`:
+#   * the entry's keys and its `act`, `{id, base, generation, expect}`, the
+#     scopes in lower case in the order given: `commit_write`'s head comment
+#     and its act checks, and `register_act_of_env`;
+#   * a log line's `log_lines` row, and a lane's `object_holds` row on its
+#     object, with D19's spellings on a claim's alone: `_register_log_row`,
+#     `_register_last_hold` and `register_object_spellings`;
+#   * a slot line's `repo_key`, canonical and lower case, and its
+#     `repo_spellings`, the spelling as typed first: `_register_slot_row`;
+#   * a row's `lanes` row: `_register_lane_row`; the cutover's abort:
+#     `switch_to_files` in one SERIALIZABLE transaction (R-merge6);
+#   * the stray entries' kinds, verbs and `git_commit`: lane 2's T221
+#     (`test_sql_register_schema.py` at line W3b's `8f645fce`).
+# THE ROLLBACK'S ENTRY IS WRITTEN NOWHERE YET: each step that needs one FAILS
+# UNTIL T304 (`lanes-index rollback`'s transaction) by its own assertion, and
+# sends nothing (`rollback_entry`).
+# Readings: the lines' texts (a row's cells, `RENAMED`'s words) are this
+# module's, in the grammar `lanes-edit.sh` and `parse_log_line` read; only the
+# keys they derive are asserted. `rename-lane` and `archive-rows` need step 6's
+# derived deletes (ERR-48), which R-merge6 has and T112-fu2 alone has not.
+# Every case FAILS UNTIL L1-A6 (T107's `commit_write`, its steps 3b, 5a, 7 and
+# 8a) and lane 2's T227 and T228 land, as T223's do; without PostgreSQL 16
+# each skips.
+
+LA5, LB5, LC5, LD5 = "L1-t232", "L2-t232", "L3-t232", "L4-t232"
+LB5_NEW = "L2b-t232"
+FOO = "foo-03"
+#: Each lane's session uuid, fixed so a case can name its `sid:` key.
+SID5 = {lane: str(uuid.uuid5(uuid.NAMESPACE_URL, f"t232/{lane}")) for lane in (LA5, LB5, LC5, LD5)}
+OBJ5, OBJ5_ALIAS, OBJ5_FREE = f"{KEY}#41", f"{ALIAS}#41", f"{OTHER_KEY}#9"
+RETIRED_MD, ALIASES_TSV = "lanes/archive/LANES-retired.md", "lanes/aliases.tsv"
+STRAY_COMMIT = "3" * 40
+ACT_ID = "act-t232"
+#: D18's and D19's spellings of a repository as a line types it, the spelling
+#: as typed first (`register_repo_spellings`), with `repos.tsv` mapping `r9`.
+REPO_SPELLINGS = {KEY: [KEY, ALIAS], ALIAS: [ALIAS, KEY], OTHER_KEY: [OTHER_KEY]}
+CLAIM_VERBS = ("CLAIMED", "TAKEOVER")
+#: Every table a refused call must leave as it was (AT-LR5's and AT-LR009's oracles).
+TABLES5 = ("register_head", "journal", "journal_edits", "journal_files", "journal_scopes", "files",
+           "doc_lines", "lanes", "log_lines", "object_holds", "register_lines", "register_switch")
+#: A call made while a session holds the head row: past its lock_timeout it would end 55P03.
+LOCKED_SQL = "SET lock_timeout = '1500ms';\n" + COMMIT_SQL
+#: The cutover's abort, as R-merge6's `cutover --abort` sends it, less its read of the switch.
+ABORT_SQL = ("BEGIN ISOLATION LEVEL SERIALIZABLE;\n"
+             f"SELECT {REGISTER}.switch_to_files(:client, :seq, :'lane', :'ws');\n"
+             "COMMIT;\n")
+_ARGS5 = itertools.count(1)
+
+
+def log_path(lane: str) -> str:
+    return f"lanes/log/{lane}.md"
+
+
+def object_spellings(obj: str) -> Optional[List[str]]:
+    """`register_object_spellings`: the object as written, then the same
+    object under each of its repository's spellings; a lane's has none."""
+    if obj.startswith("lane:"):
+        return None
+    repo, _, rest = obj.partition("#")
+    return [spelling + "#" + rest for spelling in REPO_SPELLINGS.get(repo, [repo])]
+
+
+def stamp5(c: Clone, minutes_ago: float = 0.0) -> Tuple[str, str]:
+    """A log line's UTC, to the second as `log_lines`' primary CHECK takes it,
+    and its `utc_ts`, by the database's clock less `minutes_ago`."""
+    said = c.value("SELECT to_char(t AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') || '|' || t::text "
+                   f"FROM (SELECT date_trunc('second', clock_timestamp() - make_interval(secs => {minutes_ago * 60})) "
+                   "AS t) s;")
+    utc, utc_ts = said.split("|")
+    return utc, utc_ts
+
+
+def row_text(lane: str, sid: Optional[str], state: str = "ACTIVE", note: str = "") -> str:
+    """A `lanes/LANES.md` row: the lane's backticked name first (ROW_AWK), then
+    the cells `_register_lane_row` reads: the sessions, the workstation, the
+    start, the objects, the handoff and the state."""
+    return (f"| `{lane}`{note} | {sid or '—'} | {WS} | 2026-11-10T09:00Z | — | "
+            f"lanes/handoff-{lane}.md | {state} |")
+
+
+class Draft:
+    """One entry, built against the clone's files as `register_commit_entry`
+    builds it: the edits in order, each touched path's `files` row as it
+    stands after them, and the structured rows of the lines written."""
+
+    def __init__(self, c: Clone, lane: str, verb: str, kind: str = "write", **journal) -> None:
+        self.c, self.lane, self.verb, self.kind, self.extra = c, lane, verb, kind, journal
+        self.images: Dict[str, list] = {}
+        self.touched: List[str] = []
+        self.gone: List[str] = []
+        self.edits: List[dict] = []
+        self.rows: Dict[str, list] = {"lanes": [], "log_lines": [], "register_lines": [], "object_holds": []}
+
+    def _image(self, path: str) -> list:
+        if path not in self.images:
+            final_newline, lines = self.c.file(path)
+            self.images[path] = [final_newline, list(lines)]
+        return self.images[path]
+
+    def _edit(self, **edit) -> None:
+        edit["ord"] = len(self.edits) + 1
+        self.edits.append(edit)
+        for path in (edit["path"], edit.get("to_path")):
+            if path and path not in self.touched:
+                self.touched.append(path)
+
+    def lines(self, path: str) -> List[str]:
+        return list(self._image(path)[1])
+
+    def append(self, path: str, text: str) -> int:
+        image = self._image(path)
+        if image[0] is None:
+            self._edit(op="create", path=path)
+            image[0] = True
+        image[1].append(text)
+        self._edit(op="append", path=path, new_text=text)
+        return len(image[1])
+
+    def replace(self, path: str, line_no: int, text: str) -> None:
+        image = self._image(path)
+        old = image[1][line_no - 1]
+        self._edit(op="replace", path=path, line_no=line_no, old_sha256=sha256(old.encode("utf-8")),
+                   new_text=text)
+        image[1][line_no - 1] = text
+
+    def delete(self, path: str, line_no: int) -> None:
+        image = self._image(path)
+        old = image[1].pop(line_no - 1)
+        self._edit(op="delete", path=path, line_no=line_no, old_sha256=sha256(old.encode("utf-8")))
+
+    def rename(self, path: str, to_path: str) -> None:
+        self.images[to_path] = self._image(path)
+        del self.images[path]
+        self.gone.append(path)
+        self._edit(op="rename", path=path, to_path=to_path)
+
+    def row(self, path: str, lane: str, text: str, line_no: int, *, archived: bool = False,
+            aliases: Sequence[str] = ()) -> None:
+        """The `lanes` row of a row line, as `_register_lane_row` derives it."""
+        cells = [cell.strip(" \t") for cell in text.split("|")]
+        ids = re.findall(UUID_RE, cells[2].lower())
+        self.rows["lanes"].append({
+            "path": path, "line_no": line_no, "raw": text, "lane_key": lane.lower(), "lane": lane,
+            "aliases": list(aliases), "home": None, "workstation": cells[3], "started_utc": cells[4],
+            "handoff_path": cells[6], "state_phrase": cells[7], "objects_cell": cells[5],
+            "session_ids": ids, "last_session": ids[-1] if ids else None, "archived": archived,
+            "owner": None})
+
+    def hold(self, obj: str, lane: str, verb: str, utc_ts: Optional[str], path: str, ordinal: int) -> None:
+        """A lane's `object_holds` row: its last line on the object."""
+        holds = [h for h in self.rows["object_holds"] if (h["object"], h["lane_key"]) != (obj, lane.lower())]
+        holds.append({"object": obj, "lane_key": lane.lower(), "lane": lane, "verb": verb, "utc_ts": utc_ts,
+                      "file": path, "ordinal": ordinal,
+                      "spellings": object_spellings(obj) if verb in CLAIM_VERBS else None, "exempt": False})
+        self.rows["object_holds"] = holds
+
+    def log(self, verb: str, lane: str, obj: str, minutes_ago: float = 0.0, *, sid: Optional[str] = None,
+            words: str = "") -> int:
+        """A line appended to `lane`'s log, its `log_lines` row, and its
+        lane's `object_holds` row where the object is not a lane's."""
+        path, sid = log_path(lane), sid or SID5[lane]
+        utc, utc_ts = stamp5(self.c, minutes_ago)
+        text = f"{verb} — lane {lane}, session {sid}@{WS}, {utc}, {obj}" + (f" — {words}" if words else "")
+        line_no = self.append(path, text)
+        self.rows["log_lines"].append({
+            "path": path, "line_no": line_no, "raw": text, "lane": lane, "verb": verb, "session": sid,
+            "workstation": WS, "utc": utc, "utc_ts": utc_ts, "object": obj, "ref": "", "payload": "",
+            "payload_fields": {}, "free_text": words, "written_lane": lane, "unreadable": False,
+            "unreadable_why": None})
+        if not obj.startswith("lane:"):
+            self.hold(obj, lane, verb, utc_ts, path, line_no)
+        return line_no
+
+    def entry(self, act: Optional[dict] = None) -> dict:
+        files = []
+        for path in self.touched:
+            if path in self.gone:
+                files.append({"path": path, "present": False, "sha256": None, "final_newline": None})
+            else:
+                final_newline, lines = self.images[path]
+                files.append({"path": path, "present": True, "sha256": sha256(rendered(lines, final_newline)),
+                              "final_newline": final_newline})
+        extra = dict(self.extra)
+        if self.kind == "write":
+            extra["args_sha256"] = sha256(f"{self.lane}\0{self.verb}\0{next(_ARGS5)}".encode("utf-8"))
+        entry = {"journal": self.c.journal(self.kind, self.verb, self.lane,
+                                           message=f"{self.verb} by {self.lane} (T232)", **extra),
+                 "not_after": self.c.not_after(), "edits": self.edits, "files": files, **self.rows}
+        if act is not None:
+            entry["act"] = act
+        return entry
+
+
+# ------------------------------------------------------------ the entries
+def claim5(c: Clone, lane: str, obj: str, verb: str = "CLAIMED", act: Optional[dict] = None,
+           minutes_ago: float = 0.0) -> dict:
+    """`claim` (or `release`): one log line on the object, and the lane's hold."""
+    d = Draft(c, lane, "release" if verb == "RELEASED" else "claim")
+    d.log(verb, lane, obj, minutes_ago)
+    return d.entry(act)
+
+
+def row_line(c: Clone, lane: str) -> Tuple[int, str]:
+    _, lines = c.file(LANES_MD)
+    for line_no, text in enumerate(lines, 1):
+        if text.startswith(f"| `{lane}`"):
+            return line_no, text
+    raise AssertionError(f"no row for {lane} in {LANES_MD}")
+
+
+def set_row_state(c: Clone, lane: str, state: str = "PAUSED", act: Optional[dict] = None) -> dict:
+    """`set-row-state`: the lane's row replaced, its state cell changed."""
+    d = Draft(c, lane, "set-row-state")
+    line_no, _ = row_line(c, lane)
+    text = row_text(lane, SID5[lane], state)
+    d.replace(LANES_MD, line_no, text)
+    d.row(LANES_MD, lane, text, line_no)
+    return d.entry(act)
+
+
+def rename_lane(c: Clone, old: str = LB5, new: str = LB5_NEW) -> dict:
+    """`rename-lane <old> <new>` (Amendment 16): the row's key cell
+    `` `<new>` *(ex `<old>`, renamed <UTC>)* ``, the log renamed and a
+    `RENAMED` line appended to it, and `<old>\\t<new>\\t<UTC>` appended to
+    `lanes/aliases.tsv`; with the new lane's `lanes` row and its hold on each
+    object its log names, at its last line on it."""
+    d = Draft(c, old, "rename-lane")
+    line_no, _ = row_line(c, old)
+    text = row_text(new, SID5[old], note=f" *(ex `{old}`, renamed 2026-11-10T10:00Z)*")
+    d.replace(LANES_MD, line_no, text)
+    d.row(LANES_MD, new, text, line_no, aliases=[old])
+    d.append(ALIASES_TSV, f"{old}\t{new}\t2026-11-10T10:00:00Z")
+    held = c.json(f"SELECT coalesce(json_agg(json_build_array(object, verb, utc_ts::text, ordinal) ORDER BY ordinal), "
+                  f"'[]') FROM {REGISTER}.log_lines WHERE file = '{log_path(old)}' AND NOT unreadable "
+                  "AND object NOT LIKE 'lane:%';")
+    d.rename(log_path(old), log_path(new))
+    d.log("RENAMED", new, f"lane:{new}", sid=SID5[old], words=f"renamed from {old}")
+    for obj, verb, utc_ts, ordinal in held:
+        d.hold(obj, new, verb, utc_ts, log_path(new), ordinal)
+    return d.entry()
+
+
+def archive_rows(c: Clone, lane: str = FOO) -> dict:
+    """`archive-rows`: the row moved from `lanes/LANES.md` to
+    `lanes/archive/LANES-retired.md`, and its `lanes` row archived there."""
+    d = Draft(c, LA5, "archive-rows")
+    line_no, text = row_line(c, lane)
+    d.delete(LANES_MD, line_no)
+    d.row(RETIRED_MD, lane, text, d.append(RETIRED_MD, text), archived=True)
+    return d.entry()
+
+
+def stray_import(c: Clone, lane: str = LA5, obj: str = OBJ5_FREE) -> dict:
+    """A `stray-import` (`import --single`), as T221's: a stray commit's line,
+    here a claim, taken into the register."""
+    d = Draft(c, lane, "import --single", kind="stray-import", git_commit=STRAY_COMMIT)
+    d.log("CLAIMED", lane, obj)
+    return d.entry()
+
+
+def stray_revert(c: Clone) -> dict:
+    """A `stray-revert` (`render --revert`), as T221's: no edit."""
+    return {"journal": c.journal("stray-revert", "render --revert", OPERATOR, git_commit=STRAY_COMMIT,
+                                 message="render --revert (T232)"), "not_after": c.not_after()}
+
+
+def rollback_entry(c: Clone) -> dict:
+    """The rollback's entry (S5's step 1; TP's AT-SET fixture: "`commit_write`
+    with a `rollback` entry, as REGISTER-WRITER"). No lane has written its
+    form yet, so the step FAILS UNTIL T304, `lanes-index rollback`'s
+    transaction, and sends nothing (lane 2's brief: never invent a form)."""
+    pytest.fail("FAILS UNTIL T304: no rollback entry form is written yet (lanes-index rollback's "
+                "transaction), so this step sends nothing", pytrace=False)
+
+
+def act5(c: Clone, base: int, expect, act_id: str = ACT_ID) -> dict:
+    """The entry's `act`, as `register_act_of_env` returns it."""
+    return {"id": act_id, "base": base, "generation": c.switch()["generation"], "expect": expect}
+
+
+# ------------------------------------------------------------ the reads
+def tables(c: Clone) -> Dict[str, str]:
+    """Each table's digest, row by row."""
+    parts = ", ".join(f"'{t}', (SELECT md5(coalesce(string_agg(x::text, ',' ORDER BY x::text), '')) "
+                      f"FROM {REGISTER}.{t} x)" for t in TABLES5)
+    return c.json(f"SELECT json_build_object({parts});")
+
+
+def scopes_at(c: Clone, seq: int) -> List[str]:
+    return c.json(f"SELECT coalesce(json_agg(scope ORDER BY scope), '[]') FROM {REGISTER}.journal_scopes "
+                  f"WHERE seq = {seq};")
+
+
+def act_ids(c: Clone) -> Dict[int, Optional[str]]:
+    said = c.json(f"SELECT coalesce(json_object_agg(seq, act_id), '{{}}') FROM {REGISTER}.journal;")
+    return {int(seq): act_id for seq, act_id in said.items()}
+
+
+def orphans(c: Clone) -> int:
+    """`journal_scopes` rows at a seq the journal no longer holds."""
+    return int(c.value(f"SELECT count(*) FROM {REGISTER}.journal_scopes s WHERE NOT EXISTS "
+                       f"(SELECT 1 FROM {REGISTER}.journal j WHERE j.seq = s.seq);"))
+
+
+def refused5(c: Clone, entry: dict, code: str, detail: Optional[str], first: Optional[str] = None) -> List[str]:
+    """`Clone.refused`, and every table as it was; `first`, where given, is
+    the first stderr line's message exactly."""
+    before = tables(c)
+    lines = c.refused(entry, code, detail)
+    if first is not None:
+        assert lines[0] == f"ERROR:  {code}: {first}", lines
+    after = tables(c)
+    assert after == before, f"the refused call changed {[t for t in TABLES5 if after[t] != before[t]]}"
+    return lines
+
+
+def lr5(clones) -> Clone:
+    """A clone on `primary`, with no hold on the cases' objects."""
+    c = primary(clones)
+    held = c.value(f"SELECT count(*) FROM {REGISTER}.object_holds WHERE object IN ('{OBJ5}', '{OBJ5_ALIAS}', "
+                   f"'{OBJ5_FREE}') OR spellings && ARRAY['{OBJ5}', '{OBJ5_ALIAS}', '{OBJ5_FREE}'];")
+    assert held == "0", f"{IMPORTED} holds {held} row(s) on {OBJ5} or {OBJ5_FREE}, which the cases claim"
+    return c
+
+
+def estate5(clones) -> Clone:
+    """AT-LR009's register (TP:4855-4858), on primary: L1, L2 and L3, each with
+    a row holding its session uuid and a log opened by `STARTED`; an alias
+    line; a row named `foo-03`, holding none; and an object, `opensoft/r9#41`,
+    that L2 claimed five hours before. One write, before every case's base."""
+    c = lr5(clones)
+    d = Draft(c, LA5, "append-line")
+    for lane in (LA5, LB5, LC5):
+        text = row_text(lane, SID5[lane])
+        d.row(LANES_MD, lane, text, d.append(LANES_MD, text))
+    text = row_text(FOO, None, "RETIRED")
+    d.row(LANES_MD, FOO, text, d.append(LANES_MD, text))
+    d.append(ALIASES_TSV, f"L0-t232\t{LA5}\t2026-11-10T08:00:00Z")
+    for lane in (LA5, LB5, LC5):
+        d.log("STARTED", lane, f"lane:{lane}")
+    d.log("CLAIMED", LB5, OBJ5, minutes_ago=300)
+    c.committed(d.entry())
+    return c
+
+
+@pytest.fixture()
+def head_holder(pg_cluster):
+    """A superuser session holding the head row (`SELECT … FOR UPDATE`),
+    confirmed in `pg_stat_activity`, rolled back at the test's end."""
+    started: List[subprocess.Popen] = []
+
+    def hold(c: Clone, appname: str = "t232-holder") -> subprocess.Popen:
+        proc = c.db.session(SUPERUSER, appname)
+        proc.stdin.write(f"BEGIN;\nSELECT 1 FROM {REGISTER}.register_head WHERE id = 1 FOR UPDATE;\n")
+        proc.stdin.flush()
+        started.append(proc)
+        deadline = time.monotonic() + 20
+        while c.value(f"SELECT count(*) FROM pg_stat_activity WHERE application_name = '{appname}' "
+                      "AND state = 'idle in transaction';") != "1":
+            assert time.monotonic() < deadline, "the holder never took the head row"
+            time.sleep(0.05)
+        return proc
+
+    yield hold
+    for proc in started:
+        if proc.poll() is None:
+            try:
+                proc.stdin.write("ROLLBACK;\n")
+                proc.stdin.close()
+            except (BrokenPipeError, ValueError):
+                pass
+            try:
+                proc.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+
+
+# ------------------------------------------------------------ AT-LR5: LR005's rules
+def test_lr005_refuses_a_claim_whose_spellings_meet_another_lanes_live_claim(clones):
+    """D19: L1 claims `opensoft/r9#41`; L2's claim of `r9#41`, another object
+    whose spellings meet L1's, is LR005 `claim-spellings`, and nothing is
+    written."""
+    c = lr5(clones)
+    c.committed(claim5(c, LA5, OBJ5))
+    refused5(c, claim5(c, LB5, OBJ5_ALIAS), "LR005", "claim-spellings",
+             "a claim's spellings overlap another lane's live claim (D19)")
+
+
+def test_lr005_refuses_a_hold_over_another_lanes_open_taker(clones):
+    """D18: L1's HOLD on `opensoft/r9` commits; L2's later HOLD on it is
+    LR005 `main-held`, and nothing is written."""
+    c = lr5(clones)
+    c.write(LA5, hold(c, LA5, spellings=REPO_SPELLINGS[KEY]))
+    refused5(c, c.append(LB5, *hold(c, LB5, spellings=REPO_SPELLINGS[KEY])), "LR005", "main-held",
+             "another lane holds main for this repository first (D18)")
+    assert c.open_takes(LA5, "hold") == [[KEY, None]] and c.open_takes(LB5, "hold") == []
+
+
+@pytest.mark.parametrize("case", ["hold-key-first", "landing-key-first", "hold-alias-first",
+                                  "landing-alias-first"])
+def test_two_spellings_of_one_repository_hold_one_main(clones, case):
+    """Lane 1's v2.3, in four forms: L2 takes one spelling of the repository,
+    then L4 the other (`r9` after `opensoft/r9`, or the reverse), each line's
+    `repo_key` the canonical key and its `repo_spellings` both; L4's take is
+    LR005 `main-held`, and main has one taker."""
+    c = lr5(clones)
+    kind, first = case.split("-", 1)
+    typed = [KEY, ALIAS] if first == "key-first" else [ALIAS, KEY]
+    pr = None if kind == "hold" else PR
+    slot = "HOLD" if kind == "hold" else "LANDING"
+
+    def take(lane: str, repo: str) -> Tuple[str, dict]:
+        return line(c, slot, lane, repo=repo, key=KEY, spellings=REPO_SPELLINGS[repo], pr=pr)
+
+    c.write(LB5, take(LB5, typed[0]))
+    refused5(c, c.append(LD5, *take(LD5, typed[1])), "LR005", "main-held",
+             "another lane holds main for this repository first (D18)")
+    assert c.open_takes(LB5, kind) == [[KEY, pr]] and c.open_takes(LD5, kind) == []
+
+
+def test_lr005_rolls_back_the_head_and_every_row(clones):
+    """LR005 is raised after the head moved, the journal row went in, the
+    edits applied and the structured rows went in (steps 4 to 7): the head,
+    the journal, its edits and files, `doc_lines`, `log_lines` and
+    `object_holds` all equal their values before, and the write id is absent."""
+    c = lr5(clones)
+    c.committed(claim5(c, LA5, OBJ5))
+    head, before = c.head(), tables(c)
+    proc, write_id = c.commit(claim5(c, LB5, OBJ5_ALIAS))
+    assert proc.returncode == 3 and proc.stderr.startswith("ERROR:  LR005: "), proc.stderr
+    after = tables(c)
+    for table in TABLES5:
+        assert after[table] == before[table], f"{table} changed under LR005"
+    assert c.head() == head
+    assert c.value(f"SELECT count(*) FROM {REGISTER}.journal WHERE seq > {head} OR write_id = '{write_id}';") == "0"
+    assert c.value(f"SELECT count(*) FROM {REGISTER}.doc_lines WHERE path = '{log_path(LB5)}';") == "0"
+
+
+def test_lr005_does_not_fire_on_a_released_claims_spellings(clones):
+    """L1 claims `opensoft/r9#41` and releases it; L2's claim of `r9#41` then
+    commits: a released hold carries no spellings and is no live claim."""
+    c = lr5(clones)
+    c.committed(claim5(c, LA5, OBJ5))
+    c.committed(claim5(c, LA5, OBJ5, verb="RELEASED"))
+    seq = c.committed(claim5(c, LB5, OBJ5_ALIAS))
+    said = c.json(f"SELECT json_agg(json_build_array(object, lane_key, verb, superseded_by, spellings) "
+                  f"ORDER BY object, lane_key) FROM {REGISTER}.object_holds WHERE object IN ('{OBJ5}', '{OBJ5_ALIAS}');")
+    assert said == [[OBJ5, LA5.lower(), "RELEASED", None, None],
+                    [OBJ5_ALIAS, LB5.lower(), "CLAIMED", None, [OBJ5_ALIAS, OBJ5]]], said
+    assert seq == c.head()
+
+
+@pytest.mark.parametrize("token", ["one-live-claim", "claim-spellings", "main-held"])
+def test_each_claim_and_main_rule_lr005_carries_its_detail_token(clones, token):
+    """U7: each rule's LR005 names it in its message, and its DETAIL is
+    exactly the rule's token: L2's claim of L1's object (one_live_claim's
+    23505, raised again), of its other spelling (D19), and L2's HOLD behind
+    L1's (D18)."""
+    c = lr5(clones)
+    if token == "main-held":
+        c.write(LA5, hold(c, LA5, spellings=REPO_SPELLINGS[KEY]))
+        refused5(c, c.append(LB5, *hold(c, LB5, spellings=REPO_SPELLINGS[KEY])), "LR005", token,
+                 "another lane holds main for this repository first (D18)")
+        return
+    c.committed(claim5(c, LA5, OBJ5))
+    if token == "claim-spellings":
+        refused5(c, claim5(c, LB5, OBJ5_ALIAS), "LR005", token,
+                 "a claim's spellings overlap another lane's live claim (D19)")
+    else:
+        lines = refused5(c, claim5(c, LB5, OBJ5), "LR005", token)
+        assert lines[0].startswith("ERROR:  LR005: the object is held (one_live_claim): "), lines
+
+
+# ------------------------------------------------------------ AT-LR009: the act's key
+MALFORMED_ACTS = {
+    "id-with-an-at": {"id": "act@t232"},
+    "id-with-a-space": {"id": "act t232"},
+    "id-not-a-string": {"id": 232},
+    "base-a-string": {"base": "head"},
+    "base-negative": {"base": -1},
+    "base-not-whole": {"base": 1.5},
+    "generation-not-a-uuid": {"generation": "generation-t232"},
+    "expect-not-a-list": {"expect": "row:l1-t232"},
+    "element-not-a-string": {"expect": [232]},
+    "element-a-star": {"expect": ["*"]},
+    "element-row-with-no-name": {"expect": ["row:"]},
+    "element-with-white-space": {"expect": ["row:l1 t232"]},
+    "on-an-import": None,
+}
+
+
+@pytest.mark.parametrize("case", list(MALFORMED_ACTS))
+def test_a_malformed_act_is_refused_lr004_before_the_head_lock(clones, head_holder, case):
+    """Each of the test plan's rewrites of the `act` key, and an `act` on an
+    import entry, by a direct call: LR004, `the entry's act is not well
+    formed`, while a session holds the head row throughout, so a check after
+    the lock would end 55P03 at the call's lock_timeout; nothing is written."""
+    c = lr5(clones)
+    head = c.head()
+    if case == "on-an-import":
+        edits, files, _ = c.appended(LANES_MD, ["# Lanes (T232)"], create=True)
+        entry = {"journal": c.journal("import", "import", OPERATOR, git_commit=GIT_COMMIT, git_tree=GIT_TREE),
+                 "not_after": c.not_after(), "edits": edits, "files": files,
+                 "act": act5(c, head, [f"row:{LA5.lower()}"])}
+    else:
+        act = act5(c, head, [f"row:{LA5.lower()}"])
+        act.update(MALFORMED_ACTS[case])
+        if case == "base-a-string":
+            act["base"] = str(head)
+        entry = claim5(c, LA5, OBJ5_FREE, act=act)
+    before = tables(c)
+    head_holder(c)
+    write_id = str(uuid.uuid4())
+    proc = c.call(LOCKED_SQL, base=head, wid=write_id, client=c.client(), gen=c.switch()["generation"],
+                  entry=json.dumps(entry, ensure_ascii=False))
+    lines = proc.stderr.splitlines()
+    assert proc.returncode == 3, f"exit {proc.returncode}: {proc.stderr.strip()}"
+    assert lines[:1] == ["ERROR:  LR004: the entry's act is not well formed"], lines
+    assert "55P03" not in proc.stderr, proc.stderr
+    assert tables(c) == before
+    assert c.value(f"SELECT count(*) FROM {REGISTER}.journal WHERE write_id = '{write_id}';") == "0"
+
+
+def test_act_id_is_the_acts_id_on_a_write_and_null_on_every_other_entry(clones):
+    """`journal.act_id`: a write made in an act stores the act's id as
+    given; a write outside any act, the import, the cutover, a
+    `stray-import`, a `stray-revert` and a rollback store NULL."""
+    c = estate5(clones)
+    said = c.json(f"SELECT json_object_agg(kind, seq) FROM (SELECT kind, max(seq) AS seq FROM {REGISTER}.journal "
+                  "WHERE kind IN ('import', 'cutover') GROUP BY kind) k;")
+    in_act = c.committed(claim5(c, LA5, OBJ5_FREE, act=act5(c, c.head(), [])))
+    outside = c.committed(set_row_state(c, LA5))
+    stray = c.committed(stray_import(c, LC5, f"{OTHER_KEY}#10"))
+    revert = c.committed(stray_revert(c))
+    ids = act_ids(c)
+    assert ids[in_act] == ACT_ID
+    for name, seq in (("a write outside any act", outside), ("the import", said["import"]),
+                      ("the cutover", said["cutover"]), ("a stray-import", stray), ("a stray-revert", revert)):
+        assert ids[seq] is None, f"{name}, seq {seq}, stores act_id {ids[seq]!r}"
+    rollback = c.committed(rollback_entry(c))
+    assert act_ids(c)[rollback] is None
+
+
+def test_the_act_id_checks_refuse_an_act_id_on_another_kind_and_a_malformed_one(clones):
+    """As the admin under `SET ROLE lanes_register_owner`: `act_id` set on the
+    cutover's row fails 23514 on `journal_act_id_write`, and a write's set to
+    `a@b` or `a b` fails 23514 on `journal_act_id_check`."""
+    c = estate5(clones)
+    write = c.committed(claim5(c, LA5, OBJ5_FREE, act=act5(c, c.head(), [])))
+    cases = [("kind = 'cutover'", ACT_ID, "journal_act_id_write"),
+             (f"seq = {write}", "a@b", "journal_act_id_check"),
+             (f"seq = {write}", "a b", "journal_act_id_check")]
+    for where, value, constraint in cases:
+        proc = c.db.psql("\\set VERBOSITY verbose\nSET ROLE lanes_register_owner;\n"
+                         f"UPDATE {REGISTER}.journal SET act_id = '{value}' WHERE {where};\n", check=False)
+        assert proc.returncode != 0 and "ERROR:  23514: " in proc.stderr, f"{where} = {value!r}: {proc.stderr}"
+        assert f'violates check constraint "{constraint}"' in proc.stderr, proc.stderr
+    assert act_ids(c)[write] == ACT_ID
+
+
+@pytest.mark.parametrize("case", ["set-row-state", "lane-kind-line", "claim", "takeover", "rename-lane",
+                                  "archive-rows"])
+def test_each_entry_stores_the_keys_its_lines_derive(clones, case):
+    """Steps 5a and 8a: each committed entry's `journal_scopes` holds exactly
+    the keys the scopes table's rules give its lines, step 5a's old side and
+    step 8a's new side, `objects:` for every lane holding an object it wrote
+    a hold for, and never a key the client sent."""
+    c = estate5(clones)
+    l1, l2, l3, l2b = (lane.lower() for lane in (LA5, LB5, LC5, LB5_NEW))
+    if case == "set-row-state":
+        entry, want = set_row_state(c, LA5), {f"row:{l1}", f"sid:{SID5[LA5]}"}
+    elif case == "lane-kind-line":
+        d = Draft(c, LA5, "log")
+        d.log("PAUSED", LA5, f"lane:{LA5}")
+        entry, want = d.entry(), {f"bind:{l1}", f"sid:{SID5[LA5]}"}
+    elif case == "claim":
+        entry, want = claim5(c, LA5, OBJ5_FREE), {f"objects:{l1}"}
+    elif case == "takeover":
+        d = Draft(c, LC5, "claim")
+        d.log("TAKEOVER", LC5, OBJ5)
+        entry, want = d.entry(), {f"objects:{l3}", f"objects:{l2}"}
+    elif case == "rename-lane":
+        entry = rename_lane(c)
+        want = {f"row:{l2}", f"row:{l2b}", f"sid:{SID5[LB5]}", f"bind:{l2}", f"bind:{l2b}",
+                f"objects:{l2}", f"objects:{l2b}", f"alias:{l2}", f"alias:{l2b}"}
+    else:
+        entry, want = archive_rows(c), {f"row:{FOO}", f"archive:{FOO}", "archive:foo-3"}
+    seq = c.committed(entry)
+    got = scopes_at(c, seq)
+    assert set(got) == want, f"[{case}] stores {got}, not {sorted(want)}"
+    if case == "claim":
+        assert not [k for k in got if k.startswith("bind:")], got
+
+
+def test_an_import_a_cutover_and_a_rollback_store_only_the_star_key(clones):
+    """`*` is the one key of an import, a cutover and a rollback."""
+    c = clones()
+    imported = c.head()
+    assert c.value(f"SELECT kind FROM {REGISTER}.journal WHERE seq = {imported};") == "import"
+    assert scopes_at(c, imported) == ["*"]
+    cutover = c.to_primary()
+    assert scopes_at(c, cutover) == ["*"]
+    rollback = c.committed(rollback_entry(c))
+    assert scopes_at(c, rollback) == ["*"]
+
+
+def test_a_stray_import_stores_its_keys_and_a_stray_revert_none(clones):
+    """A `stray-import` stores its lines' keys as a write does; a
+    `stray-revert` stores none."""
+    c = estate5(clones)
+    stray = c.committed(stray_import(c))
+    assert scopes_at(c, stray) == [f"objects:{LA5.lower()}"]
+    revert = c.committed(stray_revert(c))
+    assert scopes_at(c, revert) == []
+
+
+def test_an_aborted_cutover_and_a_reimport_leave_no_scopes_at_a_deleted_seq(clones):
+    """The cascade: a cutover aborted by `switch_to_files`, then an import's
+    reset before any confirmed cutover, each succeed and leave no
+    `journal_scopes` row at a seq the journal no longer holds."""
+    c = clones()
+    imported = c.head()
+    edits, files, _ = c.appended(STORE, ["primary"])
+    cutover = c.committed({"journal": c.journal("cutover", "cutover", OPERATOR), "not_after": c.not_after(),
+                           "edits": edits, "files": files})
+    assert scopes_at(c, cutover) == ["*"]
+    proc = c.call(ABORT_SQL, client=c.client(), seq=cutover, lane=OPERATOR, ws=WS)
+    assert (proc.returncode, proc.stdout.strip()) == (0, str(imported)), proc.stderr
+    assert scopes_at(c, cutover) == [] and orphans(c) == 0
+    edits, files, _ = c.appended(LANES_MD, ["# Lanes (T232's import)"], create=True)
+    seq = c.committed({"journal": c.journal("import", "import", OPERATOR, git_commit=GIT_COMMIT, git_tree=GIT_TREE),
+                       "not_after": c.not_after(), "edits": edits, "files": files})
+    assert scopes_at(c, seq) == ["*"] and orphans(c) == 0
+    assert c.value(f"SELECT count(*) FROM {REGISTER}.journal_scopes WHERE seq > {seq};") == "0"
+
+
+def test_lr009_names_the_first_changed_scope_its_seq_lane_and_verb(clones):
+    """Step 3b: with two entries outside the act after its base, at k1 < k2,
+    each touching `row:l1`, LR009 names k1, its lane and its verb; with one
+    entry touching two listed scopes, it names the first in byte order."""
+    c = estate5(clones)
+    row1, sid1 = f"row:{LA5.lower()}", f"sid:{SID5[LA5]}"
+    base = c.head()
+    k1 = c.committed(set_row_state(c, LA5, "PAUSED"))
+    k2 = c.committed(set_row_state(c, LA5, "ACTIVE"))
+    assert k1 < k2
+    refused5(c, claim5(c, LA5, OBJ5_FREE, act=act5(c, base, [row1])), "LR009", None,
+             f"expectation: {row1} changed at seq {k1} by {LA5}/set-row-state")
+    base = c.head()
+    k3 = c.committed(set_row_state(c, LA5, "PAUSED"))
+    assert {row1, sid1} <= set(scopes_at(c, k3))
+    refused5(c, claim5(c, LA5, OBJ5_FREE, act=act5(c, base, [sid1, row1])), "LR009", None,
+             f"expectation: {row1} changed at seq {k3} by {LA5}/set-row-state")
+
+
+def test_an_entry_outside_any_act_refuses_an_acts_write_lr009(clones):
+    """Step 3b: an entry after the act's base, made outside any act
+    (`act_id` NULL), that touched `row:l1` refuses the act's write with
+    LR009; an `expect` sent as `ROW:L1` is compared in lower case and refused
+    the same way."""
+    c = estate5(clones)
+    row1 = f"row:{LA5.lower()}"
+    base = c.head()
+    k = c.committed(set_row_state(c, LA5))
+    assert act_ids(c)[k] is None
+    for expect in ([row1], [row1.upper()]):
+        refused5(c, claim5(c, LA5, OBJ5_FREE, act=act5(c, base, expect)), "LR009", None,
+                 f"expectation: {row1} changed at seq {k} by {LA5}/set-row-state")
+
+
+def test_a_star_key_after_the_base_is_reported_as_the_first_listed_scope(clones):
+    """`*` after the base: an act based at the import, before the cutover's
+    `*`, is refused LR009 naming its first listed scope, not the first in
+    byte order, at the cutover's seq, by the cutover's lane and verb."""
+    c = clones()
+    base = c.head()
+    cutover = c.to_primary()
+    assert cutover == base + 1
+    expect = [f"row:{LC5.lower()}", f"row:{LA5.lower()}"]
+    refused5(c, claim5(c, LA5, OBJ5_FREE, act=act5(c, base, expect)), "LR009", None,
+             f"expectation: {expect[0]} changed at seq {cutover} by {OPERATOR}/cutover")
+
+
+def test_an_empty_expectation_records_act_id_and_checks_nothing(clones):
+    """An empty `LANES_EXPECT`, sent as `expect: []`, records the act's id and
+    checks nothing, so the write commits after an entry that touched
+    `row:l1`."""
+    c = estate5(clones)
+    base = c.head()
+    c.committed(set_row_state(c, LA5))
+    seq = c.committed(claim5(c, LA5, OBJ5_FREE, act=act5(c, base, [])))
+    assert seq == c.head() and act_ids(c)[seq] == ACT_ID
+
+
+def test_lr002_comes_before_lr009_after_a_rollback(clones):
+    """A direct call after a rollback's entry has set the switch to `files`
+    gets LR002, not LR009, though an entry after its base touched its listed
+    scope: step 3 comes before step 3b."""
+    c = estate5(clones)
+    base = c.head()
+    c.committed(set_row_state(c, LA5))
+    c.committed(rollback_entry(c))
+    sw = c.switch()
+    assert (sw["mode"], sw["marker_state"]) == ("files", "removing"), sw
+    refused5(c, claim5(c, LA5, OBJ5_FREE, act=act5(c, base, [f"row:{LA5.lower()}"])), "LR002", None,
+             "register switch is files with the marker removing")
