@@ -2669,7 +2669,7 @@ CEC_EOF
 # branch to read, it is F17's other half: `$LANES_DIR/STORE` in the working
 # tree. Where the marker is absent it prints nothing and changes nothing.
 cs_marker_refuse() {   # <what> <the tip: a revision; empty: no origin branch> <whose tip it is>
-  case "$REG_MODE" in files|index) : ;; *) return 0 ;; esac
+  case "$REG_ASK:$REG_MODE" in 1:files|1:index) : ;; *) return 0 ;; esac   # the write guard's 14 verbs only, never write-handoff (lane 3, #165 6754806910)
   csm_tip=""
   if [ "$NO_GIT" != 1 ] && [ -n "$2" ]; then
     csm_tip="$(git -C "$LANES_REPO" rev-parse -q --verify "$2^{commit}" 2>/dev/null || :)"
