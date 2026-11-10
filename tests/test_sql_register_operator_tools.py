@@ -540,13 +540,14 @@ class ReadyBench(Estate):
 
 
 class ReadyEnvironment:
-    """The RE half: AT-P8's ready environment. It needs section 5.6's TLS
-    cluster (T229), which `tests/pgcluster.py` does not give yet, so it fails
-    by its own assertion until T229 lands; with no engine, the
-    `stoppable_cluster` it asks for first skips with T205's banner."""
+    """The RE half: AT-P8's ready environment on section 5.6's TLS cluster
+    (T229's `tls_cluster`). Where `tests/pgcluster.py` has none, it fails by
+    its own assertion until T229 lands; with no engine, the `pg_engine` it
+    asks for first skips with T205's banner."""
 
     def __init__(self, request, root: Path):
-        request.getfixturevalue("stoppable_cluster")
+        # With no engine, T205's `pg_engine` skips first, with its banner.
+        request.getfixturevalue("pg_engine")
         import pgcluster
         tls = getattr(pgcluster, "tls_cluster", None)
         assert tls is not None, (
@@ -554,14 +555,21 @@ class ReadyEnvironment:
             "11 always fails on a Unix socket; tests/pgcluster.py has no tls_cluster yet")
         self.bench = ReadyBench(root)
         self.cluster = request.getfixturevalue("tls_cluster")
-        self.config = self.cluster.ready_configuration(self.bench, label=LABEL)
+        # T229's API (line FX): a database of its own, bootstrapped with
+        # `--label LABEL`, and `configuration()` naming it, its logins
+        # `lanes_w_fx` and `lanes_r_fx`, and its label as `register_label=`.
+        self.database = self.cluster.second_database(label=LABEL)
+        self.database_name = self.database.name
+        self.config = self.cluster.configuration(root / "ready-conf",
+                                                 database=self.database_name)
 
     def ready(self, *args: str) -> subprocess.CompletedProcess:
         return self.bench.ready(self.config, *args)
 
     def admin(self, sql: str) -> None:
-        """One statement through the admin connection, as the owner."""
-        self.cluster.psql(f"SET ROLE lanes_register_owner; {sql}")
+        """One statement through the admin connection, as the owner, in the
+        database the configuration names."""
+        self.database.psql(f"SET ROLE lanes_register_owner; {sql}")
 
 
 #: Each fault: the check it fails, its kind, and what it does to the
@@ -687,8 +695,10 @@ def test_the_readiness_check_10_compares_register_label_with_the_switch_label(
         text = text.replace(f"register_label={LABEL}", f"register_label={OTHER}")
     elif case == "url-only":
         second = env.cluster.second_database(label=OTHER)
-        second.admin(primary)
-        text = text.replace(env.cluster.database_name, second.name)
+        second.psql(f"SET ROLE lanes_register_owner; {primary}")
+        # Both URLs name the database as `/<name>?` (T229's `url()`).
+        assert text.count(f"/{env.database_name}?") == 2, text
+        text = text.replace(f"/{env.database_name}?", f"/{second.name}?")
     elif case == "files":
         text = text.replace(f"register_label={LABEL}", f"register_label={OTHER}")
     env.config.write_text(text, encoding="utf-8")
