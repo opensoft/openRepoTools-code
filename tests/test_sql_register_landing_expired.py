@@ -1033,7 +1033,7 @@ class Register:
 
     def rows(self, query: str) -> list:
         out = self.value(f"SET search_path TO {SCHEMA};\n"
-                         f"SELECT coalesce(json_agg(t), '[]'::json) FROM ({query}) t;")
+                         f"SELECT coalesce(jsonb_agg(q), '[]'::jsonb) FROM ({query}) q;")
         return json.loads(out.splitlines()[-1])
 
     def head(self) -> int:
