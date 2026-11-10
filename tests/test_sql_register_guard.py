@@ -1969,3 +1969,181 @@ def test_the_session_start_block_makes_no_register_call_on_primary(estate):
                           env=est.env(), cwd=str(est.wip), timeout=60)
     assert proc.returncode == 0, proc.stderr
     assert not est.shim_calls(), est.shim_calls()
+
+
+# ============================================================ T226: the guard's measured parts
+#
+# M5b and M10 (section 5.1), the guard module's half of T226; line M wrote
+# the measure module's half (T226m). Each asserts correctness only; its
+# figures go to the job's log and to `$GITHUB_STEP_SUMMARY`, never into a
+# threshold (section 5.4). Ten runs each, as section 5.1's table gives them.
+
+MEASURE_RUNS = 10
+#: The measurement's register (the test plan's AT-10 fixture): about 2.6 MB
+#: with 73 lanes, shaped as the real one is, the bound lane's log about 90 KB.
+MEASURE_LANES = 73
+MEASURE_BYTES = 2_600_000
+MEASURE_LOG = 90_000
+
+
+def _record_figure(title: str, figures: dict) -> None:
+    """A measurement's figures, printed for the job's log and appended to
+    `$GITHUB_STEP_SUMMARY` where it is set."""
+    line = f"{title}: " + ", ".join(f"{k} {v}" for k, v in figures.items())
+    print(line)
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a", encoding="utf-8") as handle:
+            handle.write(f"- {line}\n")
+
+
+def _median(values) -> float:
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def _measurement_register(est: Estate) -> tuple:
+    """The measurement's register on the estate's checkout, pushed: `FROM`'s
+    row naming the session, 72 other lanes, each with its log, `FROM`'s about
+    90 KB and the whole about 2.6 MB. Returns (its render set as a mapping of
+    paths to text, its build time in seconds)."""
+    t0 = time.monotonic()
+    lanes = [FROM] + [f"bench{i:02d}-1" for i in range(1, MEASURE_LANES)]
+    sids = {lane: (est.sid if lane == FROM else str(uuid.uuid4())) for lane in lanes}
+    rows = [_row(lane, sids[lane], "LIVE" if lane == FROM else "PAUSED") for lane in lanes]
+    rest = (MEASURE_BYTES - MEASURE_LOG) // (MEASURE_LANES - 1)
+    files = {}
+    for lane in lanes:
+        # THE LOG'S LINE FORM, as the helper suite writes it
+        # (`tests/test_lane_helpers.sh`): `<VERB> - lane <l>, session
+        # <id>@<ws>, <utc>, lane:<l>`, the dash an em dash.
+        entry = (f"RESUMED {chr(0x2014)} lane {lane}, session {sids[lane]}@{HOST}, "
+                 f"2026-10-01T00:00:00Z, lane:{lane}\n")
+        size = MEASURE_LOG if lane == FROM else rest
+        files[f"lanes/log/{lane}.md"] = f"# {lane}\n\n" + entry * (size // len(entry))
+    for path, text in files.items():
+        (est.wip / path).write_text(text, encoding="utf-8")
+    est.push_register(rows)
+    files["lanes/LANES.md"] = register_text(rows)
+    files["lanes/log/README.md"] = "logs.\n"
+    return files, time.monotonic() - t0
+
+
+def _timing_wrappers(est: Estate) -> tuple:
+    """`tmux` and `git` wrappers ahead of the stand-in on `PATH`, each logging
+    its call's wall time and arguments, then running the stand-in `tmux` or
+    the real `git`. Returns (the `PATH` to pass, the two logs)."""
+    wrap = est.root / "timing"
+    wrap.mkdir(exist_ok=True)
+    logs = (est.ctl / "tmux-times.log", est.ctl / "git-times.log")
+    for name, target, log in (("tmux", est.bin / "tmux", logs[0]),
+                              ("git", shutil.which("git"), logs[1])):
+        _script(wrap / name, "#!/bin/sh\nprintf '%s %s\\n' \"$(date +%s.%N)\" \"$*\" >> @LOG@\n"
+                "exec @TARGET@ \"$@\"\n", LOG=repr(str(log)), TARGET=repr(str(target)))
+    path = os.pathsep.join([str(wrap), str(est.bin), est.base.get("PATH", os.defpath)])
+    return path, logs
+
+
+def _times(log: Path, since: float) -> list:
+    if not log.exists():
+        return []
+    out = []
+    for line in log.read_text(encoding="utf-8").splitlines():
+        stamp, _, args = line.partition(" ")
+        if float(stamp) >= since:
+            out.append((float(stamp), args))
+    return out
+
+
+def test_todays_direct_guard_is_timed_in_its_four_parts(estate):
+    """M5b (AT-10): today's direct guard, timed in the four parts the design
+    measured (design, "What today's guard costs, in four parts"), on the
+    measurement's register: reaching the guard's arm, to its first `tmux`
+    call; the `tmux` read, to its last `tmux` call before the register's;
+    `transcript_holders` and the rest, to the first `git` read of the
+    register; and the register read with its parses, to the exit. The
+    figures are recorded, never asserted; it asserts that each run lets the
+    prompt through (the row names the session), that each part was reached,
+    and that the four parts make up the run."""
+    est = estate()
+    _, built = _measurement_register(est)
+    est.swap_window(FROM, FROM)
+    path, (tmux_log, git_log) = _timing_wrappers(est)
+    parts = {"arm": [], "tmux": [], "holders": [], "register": [], "total": []}
+    for _ in range(MEASURE_RUNS):
+        start = time.time()
+        hook = est.hook("hello", PATH=path)
+        end = time.time()
+        assert hook.code == 0 and not hook.killed, repr(hook)
+        tmux = [t for t, _ in _times(tmux_log, start)]
+        reads = [t for t, args in _times(git_log, start) if "lanes/" in args]
+        assert tmux and reads, f"a part was not reached: tmux {tmux}, register reads {reads}"
+        before = [t for t in tmux if t <= reads[0]]
+        assert before, "the register was read before the tmux read"
+        marks = [start, tmux[0], before[-1], reads[0], end]
+        assert marks == sorted(marks), marks
+        for name, (a, b) in zip(("arm", "tmux", "holders", "register"), zip(marks, marks[1:])):
+            parts[name].append(b - a)
+        parts["total"].append(end - start)
+        assert abs(sum(parts[n][-1] for n in ("arm", "tmux", "holders", "register"))
+                   - parts["total"][-1]) < 1e-6
+    _record_figure("M5b, today's direct guard in four parts (median ms)",
+                   {k: f"{_median(v) * 1000:.1f}" for k, v in parts.items()}
+                   | {"register built in": f"{built:.2f} s"})
+
+
+def test_the_guards_register_parse_is_timed_on_a_real_sized_register_beside_todays_six_reads_through_git(
+        estate, tmp_path):
+    """M10 (AT-10): on the measurement's register, written twice, as the
+    files of a git checkout and as SVC-8's cache files, the guard's register
+    read is timed both ways: today's reads through `git` on the checkout,
+    and the parse alone on the cache files, which the guard's prefetch
+    (`register read --prefetch --cache <file>`, lane 5's T507) fills from the
+    contract's stub `lanes-index` (T207) beside a copy of `lanes-edit.sh`.
+    Each is recorded with the parse's 0.5 s reserve, never asserted.
+    Correctness alongside: both ways the guard gives the same answer, and the
+    parse alone makes no `git` read of the register. Fails until L5-A3."""
+    code = tmp_path / "code"
+    for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
+        code.mkdir(exist_ok=True)
+        shutil.copy2(REPO / name, code / name)
+    est = estate(guard=code / "lanes-edit.sh")
+    files, built = _measurement_register(est)
+    est.swap_window(FROM, FROM)
+    path, (_, git_log) = _timing_wrappers(est)
+    through_git, reads = [], []
+    for _ in range(MEASURE_RUNS):
+        start = time.time()
+        files_hook = est.hook("hello", PATH=path)
+        end = time.time()
+        assert files_hook.code == 0, repr(files_hook)
+        got = [t for t, args in _times(git_log, start) if "lanes/" in args]
+        assert got, "today's guard made no git read of the register"
+        reads.append(len(got))
+        through_git.append(end - got[0])
+    t0 = time.monotonic()
+    contract_stub(code, register={k: v for k, v in files.items()
+                                  if k != "lanes/log/README.md"})
+    built += time.monotonic() - t0
+    conf = tmp_path / "lanes-index.conf"
+    conf.write_text(f"register_url=postgresql:///register?host={tmp_path}/sock\n",
+                    encoding="utf-8")
+    parse = []
+    for _ in range(MEASURE_RUNS):
+        start = time.time()
+        hook = est.hook("hello", PATH=path, LANES_INDEX_CONFIG=str(conf))
+        end = time.time()
+        calls = [json.loads(line) for line in (code / ARGV_LOG).read_text(
+            encoding="utf-8").splitlines()] if (code / ARGV_LOG).exists() else []
+        assert [c for c in calls if c[:2] == ["register", "read"] and "--prefetch" in c], \
+            f"the guard made no prefetch into the cache files: {calls}"
+        assert not [a for _, a in _times(git_log, start) if "lanes/" in a], \
+            "the parse alone still read the register through git"
+        assert (hook.code, hook.out) == (files_hook.code, files_hook.out), repr(hook)
+        parse.append(end - start)
+    _record_figure("M10, the guard's register read on a real-sized register (median ms)", {
+        "today's reads through git": f"{_median(through_git) * 1000:.1f}",
+        "git reads per run": f"{_median(reads):.0f}",
+        "the parse alone": f"{_median(parse) * 1000:.1f}",
+        "the parse's reserve": "500", "register built in": f"{built:.2f} s"})
