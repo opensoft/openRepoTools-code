@@ -7095,13 +7095,18 @@ pw_tail_child() {   # <seq> <pid> <attempt dir>
     wr_record_write || :
     return 1
   fi
+  # T422's move is part of the tail (Y:5092: "the move and the stamp run as the
+  # tail"), so it runs once the child has exited and its `seam.out` is read,
+  # and BEFORE `tail=done` is written (lane 3, #165 6778890211, T422 (1)): a
+  # run that dies during the move leaves `sent`, whose row says the steps may
+  # have run and are not run again, `<owed>` (Y:5338), where `done` would say
+  # they ran (Y:5339). And it reads `<dir>/rl-move`, as the act it starts
+  # does, so it runs before anything removes `<dir>`: `pw_tail_close`, whose
+  # record removal takes the attempt directories the `call` lines name (T415),
+  # and `pw_tail_dirs_done`, which takes this run's `<run>/` and the replay's.
+  [ "$WR_VERB" != rename-lane ] || pw_rl_move "$1" "$3"   # T422: the handoff's move, after COMMIT (R18)
   WR_TAIL="done $1 $tc_rc $(wr_host_utc)"
   wr_record_write || :
-  # T422's move reads `<dir>/rl-move`, and the act it starts reads it again, so
-  # it runs before anything removes `<dir>`: `pw_tail_close`, whose record
-  # removal takes the attempt directories the `call` lines name (T415), and
-  # `pw_tail_dirs_done`, which takes this run's `<run>/` and the replay's.
-  [ "$WR_VERB" != rename-lane ] || pw_rl_move "$1" "$3"   # T422: the handoff's move, after COMMIT (R18)
   pw_tail_close "$1" "$WR_TAIL"
   pw_tail_dirs_done
   exit "$tc_rc"
@@ -19695,9 +19700,11 @@ rl_state_rename() {   # <the old name's control root> <new lane>
 }
 
 # THE PARENT'S MOVE AND STAMP, AFTER `committed` (R18; Y:3444–3451, Y:5092),
-# from `pw_tail_child` once the child's tail has run and `tail=done` is in its
-# record, before the record is closed and the attempt directories go, since
-# `rl-move` is in one: this file again, OUTSIDE the flag, in `<c>`, with
+# from `pw_tail_child` once the child has exited and its `seam.out` is read,
+# while its record still holds `tail=sent`, before `tail=done` is written
+# (lane 3, #165 6778890211, T422 (1); Y:5338–5339), the record is closed and
+# the attempt directories go, since `rl-move` is in one: this file again,
+# OUTSIDE the flag, in `<c>`, with
 # `LANES_REPO`, `LANES_DIR` and `LANES_FILE` at it and the act's two markers
 # (file scope, `RL_MOVE`), started from this shell so its `$PPID` is this
 # process. Its own words go to this run's stdout and stderr. It is a git
