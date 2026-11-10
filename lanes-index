@@ -2707,7 +2707,9 @@ def mirror_fetch(root: str, timeout: float | None) -> None:
                             f"{_mirror_git_error(proc.stderr)}")
 
 
-def mirror_register_seq(root: str, deadline: float | None = None) -> tuple[int, str]:
+def mirror_register_seq(root: str, deadline: float | None = None, *,
+                        skip: frozenset[str] | set[str] | None = None,
+                        passed: list | None = None) -> tuple[int, str]:
     """`m`, the newest `Register-Seq` on `origin/<branch>` in the checkout
     `root` AS LAST FETCHED, and the commit that carries it. Nothing here
     fetches: `mirror_fetch` does, where its caller wants the fetch.
@@ -2718,25 +2720,37 @@ def mirror_register_seq(root: str, deadline: float | None = None) -> tuple[int, 
     never with `--grep`, taking the first non-empty value. `deadline`, a
     `time.monotonic()` instant, bounds the whole walk.
 
+    THE SKIP SET (Y:2848-2850; lane 3's ruling, opensoft/openRepoTools#165
+    6770600106, item 5): `skip` names the RESOLVED STRAYS, each commit that a
+    `stray-import` or `stray-revert` entry names in `git_commit`, whose
+    `Register-Seq`, if it carries one, does not count when `m` is found. The
+    walk passes over each of them, whatever value it carries, and takes the
+    first non-empty value of a commit `skip` does not name. Where `passed` is
+    a list, each commit passed over that carries a value is appended to it as
+    `(commit, its first value)`, newest first. With no `skip`, it returns
+    what it always has. Only a caller that has read the journal can give
+    one: `status` and `reconcile` (T117), and the renderer's pass (T322).
+
     Raises `StoreUnusable`: of kind `unread` where the ref is missing, git
     fails or the deadline passes; of kind `no-seq` where no commit on that
-    first-parent line carries a `Register-Seq`, or the newest that does
-    carries one that is not a whole number. `outage declare` reads its
-    `mirror-seq=` with it after a fetch (F11), and `status` (T117) can read
-    `m` with it."""
+    first-parent line carries a `Register-Seq` that counts, or the newest
+    that does carries one that is not a whole number. `outage declare` reads
+    its `mirror-seq=` with it after a fetch (F11), with no skip set."""
     tip = tip_of(root)
     ref = f"origin/{branch()}"
-    skip = 0
+    resolved = frozenset(skip or ())
+    over: list = []
+    walked = 0
     while True:
         left = None if deadline is None else deadline - time.monotonic()
         out_of_time = (f"the walk of {ref}'s first-parent line for a Register-Seq ran out "
-                       f"of time after {skip} commits (LANES_GIT_TIMEOUT)")
+                       f"of time after {walked} commits (LANES_GIT_TIMEOUT)")
         if left is not None and left <= 0:
             raise StoreUnusable("unread", out_of_time)
         try:
             proc = subprocess.run(
                 ["git", "-c", "log.showSignature=false", "-C", root, "log", "--first-parent",
-                 "-n", str(MIRROR_SEQ_PAGE), "--skip", str(skip),
+                 "-n", str(MIRROR_SEQ_PAGE), "--skip", str(walked),
                  "--format=%H%x00%(trailers:key=Register-Seq,valueonly)", tip, "--"],
                 capture_output=True, check=False, stdin=subprocess.DEVNULL, timeout=left)
         except subprocess.TimeoutExpired:
@@ -2753,15 +2767,26 @@ def mirror_register_seq(root: str, deadline: float | None = None) -> tuple[int, 
                 commit, _, line = line.partition("\x00")
             value = line.strip()
             if commit and value:
+                if commit in resolved:
+                    if not over or over[-1][0] != commit:
+                        over.append((commit, value))
+                        if passed is not None:
+                            passed.append((commit, value))
+                    continue
                 if not re.fullmatch(r"[0-9]+", value):
                     raise StoreUnusable("no-seq", f"commit {commit[:12]}, the newest on {ref}'s "
                                         f"first-parent line to carry a Register-Seq, carries "
                                         f"{value!r}, which is not a whole number")
                 return int(value), commit
         if commits < MIRROR_SEQ_PAGE:
+            if over:
+                raise StoreUnusable("no-seq", f"no commit on {ref}'s first-parent line carries a "
+                                    f"Register-Seq that counts: the {len(over)} that carry one "
+                                    f"are resolved strays, passed over (Y:2848-2850) "
+                                    f"({walked + commits} read)")
             raise StoreUnusable("no-seq", f"no commit on {ref}'s first-parent line carries a "
-                                f"Register-Seq ({skip + commits} read)")
-        skip += commits
+                                f"Register-Seq ({walked + commits} read)")
+        walked += commits
 
 
 def _outage_mirror_seq() -> tuple[int, str]:
@@ -6042,10 +6067,14 @@ class SyncLock:
 # register's block after #160's sources (`status_register`). It makes ONE
 # request as this engineer's READER, on D9's `status` row (Y:3528), in one
 # read-only snapshot: the readers' schema window, the switch, the journal's
-# head `n` and the generation, the mirror state (D16), and the journal's answer
-# for each pending record's write id (D8, F10). The mirror's `m` is the newest
-# `Register-Seq` on `origin/<branch>` as last fetched in the workspace checkout,
-# read by T121's `mirror_register_seq`; `status` never fetches. Then the
+# head `n` and the generation, the mirror state (D16), the resolved strays, and
+# the journal's answer for each pending record's write id (D8, F10). The
+# mirror's `m` is the newest `Register-Seq` on `origin/<branch>` as last
+# fetched in the workspace checkout, read by T121's `mirror_register_seq`;
+# `status` never fetches. Where SQL answers, the walk passes over each resolved
+# stray, a commit a `stray-import` or `stray-revert` entry names, whose
+# `Register-Seq` does not count (Y:2848-2850); where it does not, `m` is form
+# C's first value, and `status` says so (lane 3's item 5). Then the
 # pending records under `<state>/register-pending/`, and the declaration
 # `register-outage`, which it reports as left in place while the database
 # answers (ops §2.5). Each read records the head it found in
@@ -6061,8 +6090,11 @@ class SyncLock:
 # each commit after `R` that changes the render set and carries no
 # `Register-Seq` (Y:2921-2930), and counts the seqs the mirror lacks. It makes
 # one request as READER, on D9's renderer row, which `reconcile` shares
-# (Y:3527). A mirror that differs is reported with 0 (exit-codes.md §3.4, [P]).
-# The re-render is lane 3's T325, in phase 3.
+# (Y:3527). A resolved stray is passed over when `m` is found and set aside
+# after `R`, as in `status`; where the walk's first value is a resolved
+# stray's, the walk runs again past them and the request is made again, at
+# most `RECONCILE_READS` in all. A mirror that differs is reported with 0
+# (exit-codes.md §3.4, [P]). The re-render is lane 3's T325, in phase 3.
 #
 # SYNC of the register's source on `mode=primary` does nothing and says so
 # (`sync_register_on_primary`). It makes no `psql` call, takes no lock and
@@ -6101,7 +6133,7 @@ _REGISTER_INDENT = " " * 15
 def _register_shown(value, limit: int = 200) -> str:
     """`value` as one printable line: each C0 or C1 control character, DEL,
     U+2028 and U+2029 as `?`, and at most `limit` characters."""
-    text = re.sub(r"[\x00-\x1f\x7f-\x9f  ]", "?", "" if value is None else str(value))
+    text = re.sub(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]", "?", "" if value is None else str(value))
     return text if len(text) <= limit else text[:limit] + "..."
 
 
@@ -6111,10 +6143,18 @@ def _register_utc(column: str) -> str:
     return f"to_char({column} AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')"
 
 
+#: THE RESOLVED STRAYS (Y:2848-2850): the commits a `stray-import` or
+#: `stray-revert` entry names in `git_commit`. Each is resolved, and its
+#: `Register-Seq`, if it carries one, does not count when `m` is found.
+_REGISTER_RESOLVED_QUERY = ("SELECT git_commit FROM journal WHERE kind IN ('stray-import', "
+                            "'stray-revert') AND git_commit IS NOT NULL ORDER BY seq")
+
+
 def _register_state_queries() -> list[str]:
-    """The four reads every register state read starts with: the readers'
+    """The five reads every register state read starts with: the readers'
     schema window (§1.5), the switch (S1), the head `n` and the mirror state
-    (D16), each one row."""
+    (D16), each one row; and the resolved strays, a row each
+    (`_REGISTER_RESOLVED_QUERY`)."""
     return [
         "SELECT version, writers_from, readers_from FROM schema_version WHERE id = 1",
         f"SELECT mode, marker_state, marker_seq, marker_commit, generation, repository, "
@@ -6122,16 +6162,23 @@ def _register_state_queries() -> list[str]:
         f"FROM register_switch WHERE id = 1",
         "SELECT seq FROM register_head WHERE id = 1",
         f"SELECT diverged_sha, {_register_utc('found_utc')}, found_by_ws, last_error, "
-        f"{_register_utc('last_error_utc')} FROM mirror_state WHERE id = 1"]
+        f"{_register_utc('last_error_utc')} FROM mirror_state WHERE id = 1",
+        _REGISTER_RESOLVED_QUERY]
 
 
 def _register_state_of(answers: list) -> dict:
-    """`_register_state_queries`' four answers as one dict. A missing row, or a
-    value that is not what its column holds, is `RegisterUnavailable`."""
+    """`_register_state_queries`' five answers as one dict, the resolved
+    strays as `resolved`, a frozenset of commits. A missing row, or a value
+    that is not what its column holds, is `RegisterUnavailable`."""
     version = _register_one_row(answers[0], 3, "schema_version")
     switch = _register_one_row(answers[1], 11, "register_switch")
     head = _register_one_row(answers[2], 1, "register_head")
     mirror = _register_one_row(answers[3], 5, "mirror_state")
+    if not all(len(row) == 1 and isinstance(row[0], str) and SHA_RE.match(row[0])
+               for row in answers[4]):
+        raise RegisterUnavailable("psql answered a resolved stray's commit this build cannot "
+                                  "read: not 40 lower hex")
+    resolved = frozenset(row[0] for row in answers[4])
     try:
         return {"version": int(version[0]), "writers_from": int(version[1]),
                 "readers_from": int(version[2]),
@@ -6144,7 +6191,7 @@ def _register_state_of(answers: list) -> dict:
                 "n": int(head[0]),
                 "diverged": mirror[0] or "", "found_utc": mirror[1] or "",
                 "found_by_ws": mirror[2] or "", "last_error": mirror[3] or "",
-                "last_error_utc": mirror[4] or ""}
+                "last_error_utc": mirror[4] or "", "resolved": resolved}
     except (TypeError, ValueError):
         raise RegisterUnavailable("psql answered a register state this build cannot read: "
                                   "a number that is not one")
@@ -6166,7 +6213,9 @@ def _register_read_failure(exc: StoreUnusable) -> str:
 def register_state_read(cfg: dict, row: str, extra: list[str] | None = None) -> tuple:
     """ONE register read as this engineer's READER (Y:2317; Y:3460), on D9's
     `row`, in one REPEATABLE READ READ ONLY snapshot, sent as one request
-    (contract §2.3): `_register_state_queries`, then `extra`.
+    (contract §2.3): `_register_state_queries`, then `extra`. The state
+    carries the resolved strays as `resolved`, the skip set
+    `mirror_register_seq` takes (Y:2848-2850).
 
     Returns `(state, extra's answers, "")`. Where the register cannot be read,
     it returns `(None, [], why)`: no answer, a failed statement, a missing row,
@@ -6203,26 +6252,47 @@ def _register_store_name(cfg: dict) -> str:
             f"{_register_shown(env.get('PGHOST') or '(the default host)')}")
 
 
-def _register_mirror(root: str, unread: str = "") -> dict:
+def _register_mirror(root: str, unread: str = "",
+                     skip: frozenset[str] | None = None) -> dict:
     """`m`, the newest `Register-Seq` on `origin/<branch>` as last fetched in
     the checkout `root`, and the commit `R` carrying it, by T121's
     `mirror_register_seq`, the walk bounded by `LANES_GIT_TIMEOUT`. Nothing is
     fetched. `why` says why there is no `m`: `unread` where `root` itself
     could not be found, `unread: ...` where git failed, and `no-seq: ...`
-    where no commit carries one."""
+    where no commit carries one.
+
+    `skip` is the resolved strays SQL named (`state["resolved"]`), or None
+    where SQL did not answer, and `m` is then form C's first value
+    (Y:2848-2850; lane 3's item 5). `passed` lists `(commit, value)` for each
+    resolved stray the walk passed over that carries a `Register-Seq`, and
+    the text names them."""
     if not root:
         return {"m": None, "commit": "", "why": f"unread: {unread or 'no workspace checkout'}",
-                "text": f"unread - {unread or 'no workspace checkout'}"}
+                "text": f"unread - {unread or 'no workspace checkout'}", "passed": []}
     timeout = mirror_git_timeout()
+    passed: list = []
     try:
         m, commit = mirror_register_seq(root, None if timeout is None
-                                        else time.monotonic() + timeout)
+                                        else time.monotonic() + timeout,
+                                        skip=skip, passed=passed)
     except StoreUnusable as exc:
         return {"m": None, "commit": "", "why": f"{exc.kind}: {exc.detail}",
-                "text": f"{exc.kind} - {exc.detail}"}
-    return {"m": m, "commit": commit, "why": "",
-            "text": f"Register-Seq {m} at {commit[:12]}, origin/{branch()} as last fetched in "
-                    f"{root} (not fetched here)"}
+                "text": f"{exc.kind} - {exc.detail}", "passed": passed}
+    text = (f"Register-Seq {m} at {commit[:12]}, origin/{branch()} as last fetched in {root} "
+            f"(not fetched here)")
+    if passed:
+        text += (f"; {len(passed)} resolved stray commit(s) newer than it, whose Register-Seq "
+                 f"does not count (Y:2848-2850), passed over: "
+                 + _register_commits([f"{sha[:12]} (Register-Seq {_register_shown(value, 40)})"
+                                      for sha, value in passed]))
+    return {"m": m, "commit": commit, "why": "", "text": text, "passed": passed}
+
+
+def _register_commits(items: list[str]) -> str:
+    """At most `RECONCILE_SHOWN` of `items`, joined, and how many more."""
+    return (", ".join(items[:RECONCILE_SHOWN])
+            + (f", and {len(items) - RECONCILE_SHOWN} more" if len(items) > RECONCILE_SHOWN
+               else ""))
 
 
 def register_head_path() -> str:
@@ -6412,7 +6482,10 @@ def status_register(cfg: dict, root: str, root_unread: str = "") -> int:
                 found[row[0].lower()] = row
     say(f"register: {_register_store_name(cfg)} (mode={cfg['mode']}; schema "
         f"{cfg['register_schema']})")
-    mirror = _register_mirror(root, root_unread)
+    # WHERE SQL ANSWERS, the resolved strays it names are passed over when `m`
+    # is found; where it does not, `m` is form C's first value, said below
+    # (Y:2848-2850; lane 3's item 5).
+    mirror = _register_mirror(root, root_unread, None if state is None else state["resolved"])
     m = mirror["m"]
     if state is None:
         say(f"  read:        the register cannot be read - {_register_shown(why, 400)}")
@@ -6426,6 +6499,9 @@ def status_register(cfg: dict, root: str, root_unread: str = "") -> int:
                 f"{_register_shown(last.get('database') or '?', 80)}, generation "
                 f"{_register_shown(last.get('generation') or '?', 40)})")
         say(f"  mirror:      {mirror['text']}")
+        if m is not None:
+            say(f"{_REGISTER_INDENT}m is form C's first value: the register cannot be read, so "
+                f"no resolved stray's Register-Seq was passed over (Y:2848-2850)")
         if last is None or m is None:
             lag = "unknown: it needs the mirror's m and a recorded head"
         elif last["head"] >= m:
@@ -6513,8 +6589,10 @@ def _register_render_set(root: str, sha: str) -> dict:
 def _register_strays(root: str, commit: str, tip: str) -> tuple[list[str], int]:
     """The commits after `commit` on `tip`'s first-parent line that change
     the render set, and how many commits come after it. None of them carries
-    a `Register-Seq`, since `commit` is the newest that does, so none is a
-    render commit (Y:2921-2930)."""
+    a `Register-Seq` that counts, since `commit` is the newest that does, so
+    none is a render commit (Y:2921-2930). A resolved stray among them, which
+    may carry one, is its caller's to set aside (`reconcile_register`;
+    Y:2848-2850)."""
     count = git(root, "rev-list", "--first-parent", "--count", f"{commit}..{tip}")
     proc = git(root, "-c", "log.showSignature=false", "log", "--first-parent", "--format=%H",
                f"{commit}..{tip}", "--", *REGISTER_RENDER_PATHSPECS,
@@ -6526,42 +6604,97 @@ def _register_strays(root: str, commit: str, tip: str) -> tuple[list[str], int]:
     return [line for line in proc.stdout.split("\n") if SHA_RE.match(line)], after
 
 
+#: How many register reads `reconcile` makes at most (Y:2848-2850; lane 3's
+#: item 5). Each read names the resolved strays. Only where the commit
+#: carrying the walk's first value is one of them does the walk run again,
+#: past them, and the read follow again at the `m` it then finds; a third
+#: covers a stray resolved between the two. Past that the check is not made,
+#: and `reconcile` exits 69.
+RECONCILE_READS = 3
+
+
+def _reconcile_mirror(root: str, tip: str, unread: StoreUnusable | None,
+                      skip: frozenset[str] | None) -> tuple[dict, dict | None, list, int]:
+    """One pass of `reconcile`'s git half: `_register_mirror`'s `m` and `R`,
+    past the resolved strays `skip` names; the render set at `R`, or None;
+    the commits after `R` that change it; and how many commits follow `R`.
+    `unread` is why the checkout could not be found, and then nothing is
+    read."""
+    if unread is not None:
+        return ({"m": None, "commit": "", "why": f"{unread.kind}: {unread.detail}",
+                 "text": f"{unread.kind} - {unread.detail}", "passed": []}, None, [], 0)
+    mirror = _register_mirror(root, skip=skip)
+    if mirror["m"] is None:
+        return mirror, None, [], 0
+    try:
+        mine = _register_render_set(root, mirror["commit"])
+        strays, after = _register_strays(root, mirror["commit"], tip)
+    except StoreUnusable as exc:
+        mirror["why"] = f"{exc.kind}: {exc.detail}"
+        mirror["text"] += f"; its render set cannot be read - {exc.kind}: {exc.detail}"
+        return mirror, None, [], 0
+    return mirror, mine, strays, after
+
+
+def _reconcile_settled(mirror: dict, resolved: frozenset[str]) -> bool:
+    """Whether the walk that found `mirror` took the value it takes past
+    `resolved`: its `R` is not a resolved stray, and each commit it passed
+    over is one."""
+    return (mirror["commit"] not in resolved
+            and all(sha in resolved for sha, _value in mirror["passed"]))
+
+
 def reconcile_register(cfg: dict, requested: str | None, dry_run: bool) -> int:
     """`reconcile` on `mode=primary`, for the register's source: the mirror
     checked against SQL, READ-ONLY (Y:4854; exit-codes.md §3.4). Nothing is
     written, and no lock is taken, here or in the database.
 
+    THE RESOLVED STRAYS (Y:2848-2850; lane 3's item 5): the read names them,
+    the walk passes over their `Register-Seq` when it finds `m`, and the
+    commits after `R` leave them out, each named as set aside. The names come
+    with the read, which is made at `m`, so where the walk's first value is a
+    resolved stray's, the walk runs again past them and the read is made
+    again: one read in the usual case, and at most `RECONCILE_READS`.
+
     Exits 0 once the check is made, whatever it found: a mirror that differs
     is reported on stdout ([P]). 69 where the register cannot be read or its
     timer expires (D10; Y:3527). #160's 1 where the mirror's checkout cannot
-    be read. 2 for a `--source` that is not this workstation's register."""
+    be read. 2 for a `--source` that is not this workstation's register.
+    Where the workspace root is unknown, a `--source register:<...>` cannot
+    be checked against this workstation's register, and it says it went
+    unchecked (lane 3's item 2)."""
     root, tip = "", ""
     source = requested or "the register's source"
-    mirror = {"m": None, "commit": "", "why": "", "text": ""}
+    unread: StoreUnusable | None = None
+    unchecked = False
     try:
         root = workspace_root()
-        source = resolve_source(requested, root)
-        tip = tip_of(root)
-        mirror = _register_mirror(root)
     except StoreUnusable as exc:
-        mirror.update(why=f"{exc.kind}: {exc.detail}", text=f"{exc.kind} - {exc.detail}")
-    m, commit = mirror["m"], mirror["commit"]
-    mine, strays, after = None, [], 0
-    if m is not None:
+        unread, unchecked = exc, bool(requested)
+    if unread is None:
         try:
-            mine = _register_render_set(root, commit)
-            strays, after = _register_strays(root, commit, tip)
+            source = resolve_source(requested, root)
+            tip = tip_of(root)
         except StoreUnusable as exc:
-            mirror["why"] = f"{exc.kind}: {exc.detail}"
-            mirror["text"] += f"; its render set cannot be read - {exc.kind}: {exc.detail}"
-            mine = None
-    after_m = -2 if m is None else m
-    extra = [f"SELECT min(seq), max(seq), count(*) FILTER (WHERE seq > {after_m}), "
-             f"count(*) FILTER (WHERE seq > {after_m} AND operator) FROM journal"]
-    if mine is not None:
-        extra.append(f"SELECT DISTINCT ON (path) path, present, sha256 FROM journal_files "
-                     f"WHERE seq <= {m} AND path <> 'lanes/STORE' ORDER BY path, seq DESC")
-    state, answers, why = register_state_read(cfg, "render", extra)
+            unread = exc
+    skip: frozenset[str] | None = None
+    for _read in range(RECONCILE_READS):
+        mirror, mine, strays, after = _reconcile_mirror(root, tip, unread, skip)
+        m, commit = mirror["m"], mirror["commit"]
+        after_m = -2 if m is None else m
+        extra = [f"SELECT min(seq), max(seq), count(*) FILTER (WHERE seq > {after_m}), "
+                 f"count(*) FILTER (WHERE seq > {after_m} AND operator) FROM journal"]
+        if mine is not None:
+            extra.append(f"SELECT DISTINCT ON (path) path, present, sha256 FROM journal_files "
+                         f"WHERE seq <= {m} AND path <> 'lanes/STORE' ORDER BY path, seq DESC")
+        state, answers, why = register_state_read(cfg, "render", extra)
+        if state is None or _reconcile_settled(mirror, state["resolved"]):
+            break
+        skip = state["resolved"]
+    else:
+        state, why = None, (f"the resolved strays the journal names moved the mirror's m at "
+                            f"each of {RECONCILE_READS} reads, so no m was settled to compare "
+                            f"at (Y:2848-2850)")
     if state is not None:
         try:
             summary = _register_one_row(answers[0], 4, "the journal's extent")
@@ -6572,6 +6705,10 @@ def reconcile_register(cfg: dict, requested: str | None, dry_run: bool) -> int:
                                 "psql answered a journal extent this build cannot read")
     say(f"{PROG} reconcile: {source} on primary - the mirror against the SQL register, "
         f"read-only{' - DRY RUN' if dry_run else ''}")
+    if unchecked:
+        say(f"  source:      {_register_shown(requested)} went unchecked: the workspace root is "
+            f"unknown here (the mirror line says why), so whether it names this "
+            f"workstation's register was not checked")
     say(f"  mirror:      {mirror['text']}"
         + (f"; the tip is {tip[:12]}" if tip and commit and tip != commit else ""))
     nothing = "nothing was written: this check is read-only"
@@ -6588,6 +6725,11 @@ def reconcile_register(cfg: dict, requested: str | None, dry_run: bool) -> int:
         recorded = "none recorded"
     if mine is None:
         say(f"  divergence:  {recorded}")
+        if mirror["why"].startswith("no-seq") and mirror["passed"]:
+            say(f"  result:      the mirror carries no Register-Seq that counts, past the "
+                f"resolved strays it passed over (Y:2848-2850; the mirror line says why), so it "
+                f"has no seq to be compared at; {nothing}")
+            return EXIT_OK
         if mirror["why"].startswith("no-seq"):
             say(f"  result:      the mirror carries no Register-Seq, so it has no seq to be "
                 f"compared at, and it is no mirror of this register; {nothing}")
@@ -6630,13 +6772,21 @@ def reconcile_register(cfg: dict, requested: str | None, dry_run: bool) -> int:
         say(f"    {line}")
     if len(rows) > RECONCILE_SHOWN:
         say(f"    and {len(rows) - RECONCILE_SHOWN} more")
+    # A RESOLVED STRAY AFTER `R` IS SET ASIDE (Y:2848-2850; lane 3's item 5):
+    # a stray-import or stray-revert entry names it, so it is no difference.
+    set_aside = [sha for sha in strays if sha in state["resolved"]]
+    strays = [sha for sha in strays if sha not in state["resolved"]]
+    aside = (f"{len(set_aside)} resolved stray commit(s), which a stray-import or stray-revert "
+             f"entry names, set aside (Y:2848-2850): {_register_commits(set_aside)}"
+             if set_aside else "")
     if strays:
         say(f"  after it:    {len(strays)} of the {after} commit(s) after {commit[:12]} change "
             f"the render set and carry no Register-Seq, so none is a render commit: "
-            + ", ".join(strays[:RECONCILE_SHOWN])
-            + (f", and {len(strays) - RECONCILE_SHOWN} more" if len(strays) > RECONCILE_SHOWN
-               else ""))
+            + _register_commits(strays) + (f"; and {aside}" if aside else ""))
         differences.append(f"{len(strays)} stray commit(s) after seq {m}")
+    elif aside:
+        say(f"  after it:    {after} commit(s) after {commit[:12]}, none of them changing the "
+            f"render set but {aside}")
     else:
         say(f"  after it:    {after} commit(s) after {commit[:12]}, none of them changing the "
             f"render set")
@@ -6672,17 +6822,25 @@ def sync_register_on_primary(requested: str | None) -> int:
     """`sync` of the register's source on `mode=primary`: nothing, said on
     stdout, and 0 (exit-codes.md §3.4; Y:1031; Y:2976-2978). No `psql` call, no
     lock and no file. A `--source` naming another workstation's register is
-    still refused, 2, as #160 refuses it; `register` alone names this one."""
+    still refused, 2, as #160 refuses it; `register` alone names this one.
+    Where the workspace root is unknown, a `register:<...>` cannot be checked
+    against this workstation's register: it still exits 0, and says it went
+    unchecked (lane 3's item 2)."""
     source = "the register's source"
+    unchecked = ""
     if requested and requested != "register":
         try:
             source = resolve_source(requested, workspace_root())
-        except StoreUnusable:
-            source = requested
+        except StoreUnusable as exc:
+            source, unchecked = requested, exc.detail
     say(f"{PROG} sync: {source} - sync does nothing on primary: under mode=primary the SQL "
         f"register is the register's store, and its mirror is never indexed back into the "
         f"database it came from (design Y:1031, Y:2976); nothing was read from it and nothing "
         f"was written")
+    if unchecked:
+        say(f"{PROG} sync: {_register_shown(requested)} went unchecked: the workspace root is "
+            f"unknown here ({_register_shown(unchecked, 400)}), so whether it names this "
+            f"workstation's register was not checked")
     return EXIT_OK
 
 
