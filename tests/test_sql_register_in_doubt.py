@@ -13,16 +13,25 @@ waits on the server's clock, holding no lock, until it has passed
 lock under the caller's `lock_timeout`, checks the clock again, then the
 generation, then the entry, and returns the write's seq, or NULL.
 
-THE FIXTURE, AT-LR006'S, ON A CLONE OF ITS OWN: each test clones
-`tmpl_imported` (section 3.1; T227), runs §1.4's two database-level
-statements on the clone, and drops it `WITH (FORCE)` at the end:
+THE FIXTURE, AT-LR006'S, ON A CLONE OF ITS OWN: each test clones `tmpl`
+(T205 makes it, T227 builds it by the bootstrap), as T221's `[new-write]`
+does, runs §1.4's two database-level statements on the clone, and drops it
+`WITH (FORCE)` at the end. Nothing needs `tmpl_imported` (lane 3, #165
+6768050756 point 1, which lane 2 accepts; R-F11-23), so T114 need not wait for
+T115. A clone of `tmpl` is at `files` with the marker `absent` and an empty
+journal, and each test brings it where it needs by AT-LR006's route
+(TP:4610–4615), by the documented functions as `lanes_w_fx` and nothing else:
+`Clone.imported` commits an `import` entry (one file, `lanes/LANES.md`, of one
+line), which is what a clone of `tmpl_imported` held, and `Clone.to_primary`
+goes on with a `cutover` entry over that import, then `record_marker`:
 
-  * database R, between a re-import's bootstrap and its cutover: the clone as
-    it is, at `files` with the marker `absent`, whose generation is `g1`;
-    `g0`, the lost database's, is a uuid of the test's own;
+  * database R, between a re-import's bootstrap and its cutover: the clone
+    after `Clone.imported`, at `files` with the marker `absent`, whose
+    generation is `g1`; `g0`, the lost database's, is a uuid of the test's
+    own;
   * database S, a restore: the clone brought to `primary` with the marker
-    `present` by `Clone.to_primary` (a `cutover` entry over the template's
-    import, then `record_marker`: TP:4610–4615), standing in for a restored
+    `present` by `Clone.to_primary` (the import, a `cutover` entry over it,
+    then `record_marker`: TP:4610–4615), standing in for a restored
     backup. W0 and W1 commit under its generation `g0`; then its restore-form
     cutover, an after-loss `cutover` entry whose label is not the switch's,
     sets a new generation `g1`, and `record_marker` confirms it; then W2
@@ -46,8 +55,9 @@ Each refused call writes nothing: the head, the journal and the switch equal
 their values before.
 
 Every case FAILS UNTIL lane 1's T107 (L1-A6: `commit_write` and
-`find_write`) and T114 (L1-A12) land, with lane 2's T227 (`tmpl_imported`)
-and T228 (`lanes_w_fx`). Without PostgreSQL 16 each skips.
+`find_write`) and T114 (L1-A12) land, with lane 2's T227 (`tmpl` holding the
+register) and T228 (`lanes_w_fx`). A clone of `tmpl` with no register is
+refused by the fixture's own assertion. Without PostgreSQL 16 each skips.
 """
 
 from __future__ import annotations
@@ -62,16 +72,17 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import pytest
 
-from pgcluster import SUPERUSER, Database
+from pgcluster import SUPERUSER, TEMPLATE, Database
 
 REGISTER = "lanes_register"
-IMPORTED = "tmpl_imported"
 WRITER_LOGIN = "lanes_w_fx"
 CONNECT_TO = "lanes_register_writer, lanes_register_reader, lanes_indexer"
 LANES_MD, STORE = "lanes/LANES.md", "lanes/STORE"
 WS, AUTHOR = "ws-t222", "T222 Fixture <t222@example.invalid>"
 OPERATOR = "operator-t222"
 MARKER_COMMIT = "c0ffee" + "1" * 34
+IMPORT_COMMIT, IMPORT_TREE = "c" * 40, "d" * 40
+IMPORT_LINES = ["# Lanes"]
 RESTORED_LABEL = "restored-t222"
 L1, L2, VERB, OTHER_VERB = "L1-t222", "L2-t222", "append-line", "lane-end"
 
@@ -115,8 +126,8 @@ def rendered(lines: Sequence[str], final_newline: bool) -> bytes:
 
 
 class Clone:
-    """One clone of `tmpl_imported`, and the documented functions called on
-    it as REGISTER-WRITER, through `lanes_w_fx` (AT-LR006's fixture)."""
+    """One clone of `tmpl`, and the documented functions called on it as
+    REGISTER-WRITER, through `lanes_w_fx` (AT-LR006's fixture)."""
 
     def __init__(self, cluster, name: str) -> None:
         self.cluster, self.name = cluster, name
@@ -255,13 +266,31 @@ class Clone:
         sw = self.switch()
         assert (sw["mode"], sw["marker_state"]) == ("primary", "present"), sw
 
-    def to_primary(self) -> int:
-        """A `cutover` entry over the template's import, then `record_marker`."""
+    def imported(self) -> int:
+        """AT-LR006's route, its first step (TP:4610-4615): an `import` entry
+        on the clone of `tmpl`, at `files` with the marker `absent` and an
+        empty journal, as T221's `bring_to_primary` starts. It creates
+        `lanes/LANES.md` with `IMPORT_LINES`, so the clone holds what a clone
+        of `tmpl_imported` did, and the switch stays as it was."""
+        sw = self.switch()
+        assert (sw["mode"], sw["marker_state"], self.head()) == ("files", "absent", -1), (
+            f"a clone of {TEMPLATE} is not at files, marker absent, with an empty journal: {sw}, head {self.head()}")
+        edits, files = self.appended(LANES_MD, IMPORT_LINES)
+        entry = {"journal": self.journal("import", "import", OPERATOR, git_commit=IMPORT_COMMIT,
+                                         git_tree=IMPORT_TREE),
+                 "not_after": self.clock(60), "edits": edits, "files": files}
+        seq, _ = self.committed(entry)
         sw = self.switch()
         assert (sw["mode"], sw["marker_state"]) == ("files", "absent"), sw
+        return seq
+
+    def to_primary(self) -> int:
+        """AT-LR006's route (TP:4610-4615): `imported`, then a `cutover`
+        entry over that import, then `record_marker`."""
+        self.imported()
         head = self.head()
         last_import = int(self.value(f"SELECT coalesce(max(seq), -2) FROM {REGISTER}.journal WHERE kind = 'import';"))
-        assert last_import == head >= 0, f"{IMPORTED}'s head {head} is not its import ({last_import})"
+        assert last_import == head >= 0, f"the clone's head {head} is not its import ({last_import})"
         seq, _ = self.committed(self.operator_entry())
         self.mark(seq)
         return seq
@@ -287,15 +316,17 @@ class Clone:
 
 @pytest.fixture()
 def clones(pg_cluster):
-    """Clones of `tmpl_imported`, each the test's own, dropped at the end."""
+    """Clones of `tmpl`, each the test's own, dropped at the end."""
     made: List[str] = []
 
     def clone() -> Clone:
-        found = pg_cluster.psql(f"SELECT datname FROM pg_database WHERE datname = '{IMPORTED}';").stdout.split()
-        assert found == [IMPORTED], f"no {IMPORTED} on the session cluster: lane 2's T227 builds it"
         name = f"t222_{next(_NAMES)}"
-        pg_cluster.psql(f"CREATE DATABASE {name} TEMPLATE {IMPORTED};")
+        pg_cluster.psql(f"CREATE DATABASE {name} TEMPLATE {TEMPLATE};")
         made.append(name)
+        found = pg_cluster.psql(f"SELECT to_regclass('{REGISTER}.register_head') IS NOT NULL;", dbname=name)
+        assert found.stdout.strip() == "t", (
+            f"{TEMPLATE} holds no {REGISTER} schema: lane 2's T227 builds it by the bootstrap, "
+            "which waits for lane 1's L1-A7")
         pg_cluster.psql(f"REVOKE ALL ON DATABASE {name} FROM PUBLIC;\n"
                         f"GRANT CONNECT ON DATABASE {name} TO {CONNECT_TO};\n")
         return Clone(pg_cluster, name)
@@ -389,6 +420,7 @@ def test_a_write_of_another_generation_at_files_gets_lr007_not_lr002_or_lr001(cl
     """In R, at `files`: a write of `g0` is LR007 `generation`, not LR002,
     with the base current, and not LR001 with it stale."""
     c = clones()
+    c.imported()
     head = c.head()
     g0 = str(uuid.uuid4())
     c.refused(c.write_entry(), "LR007", "generation", f"belongs to register generation {g0}",
@@ -398,6 +430,7 @@ def test_a_write_of_another_generation_at_files_gets_lr007_not_lr002_or_lr001(cl
 def test_the_switchs_own_generation_at_files_still_gets_lr002(clones):
     """In R, a write of `g1`, the switch's own, with the base current: LR002."""
     c = clones()
+    c.imported()
     c.refused(c.write_entry(), "LR002", None, "register switch is files with the marker absent")
 
 
