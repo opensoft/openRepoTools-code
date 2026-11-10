@@ -273,6 +273,7 @@ LOCAL_SID = "aaaaaaaa-0006-4000-8000-00000000a006"
 #: The arms' sandbox's two further lanes' sessions.
 UUID_A3 = "aaaaaaaa-0004-4000-8000-00000000a004"
 UUID_H1 = "aaaaaaaa-0005-4000-8000-00000000a005"
+UUID_N1 = "aaaaaaaa-0007-4000-8000-00000000a007"
 
 
 def rerun_line(lane: str, argv: str) -> str:
@@ -718,7 +719,8 @@ class ArmWorld(Sandbox):
       * `repoA-2` LIVE here (an end, a handoff, a rename);
       * `repoA-3` LIVE on another workstation (`lane`'s `elsewhere` group);
       * `repoH-1` PAUSED, its log naming its home and no directory, where
-        `$PROJECTS_ROOT/repoH` does not exist (`lane-start`'s `resolve-home`)."""
+        `$PROJECTS_ROOT/repoH` does not exist (`lane-start`'s `resolve-home`);
+      * `repoN-1` LIVE, a row with no log (`lane-end`'s state-cell read)."""
 
     def __init__(self, root: Path) -> None:
         super().__init__(root)
@@ -741,6 +743,8 @@ class ArmWorld(Sandbox):
             f"| none | handoffs/repoA-3.md | LIVE · 2026-10-01T02:30:00Z · working elsewhere |",
             f"| `repoH-1` | harness `{UUID_H1}` | Eagle / test / brett | 2026-10-01T03:00Z "
             f"| none | handoffs/repoH-1.md | PAUSED · 2026-10-01T03:30:00Z · parked |",
+            f"| `repoN-1` | harness `{UUID_N1}` | Eagle / test / brett | 2026-10-01T04:00Z "
+            f"| none | handoffs/repoN-1.md | LIVE · 2026-10-01T04:00:00Z · a row with no log |",
         ]
         lanes = self.wip / "lanes"
         (lanes / "log").mkdir(exist_ok=True)
@@ -929,7 +933,7 @@ OTHER_ARMS = {
     "lane-end-955": (Arm("lane-end", ("repoA-2",), "managed-projection", "1008",
                          world="primary", env={"ARM_REAL_FAIL": "1"}), (1,), "unknown"),
     "lane-end-1806": (Arm("lane-end", ("repoA-2",), "lane-objects", "1859"), (75, 3, 69), "code"),
-    "lane-end-1984": (Arm("lane-end", ("repoA-2",), "register-row", "2037"), (75, 3, 69), "code"),
+    "lane-end-1984": (Arm("lane-end", ("repoN-1",), "register-row", "2037"), (75, 3, 69), "code"),
     "lane-416": (Arm("lane", ("repoA-2",), "lanes", "416"), (75, 3, 69), "code"),
     "lane-444": (Arm("lane", ("repoA-2",), "lane-groups", "444"), (75, 3, 69), "code"),
     "lane-1058": (Arm("lane", ("repoA-3",), "binding", "1088"), (75, 3, 69), "code"),
