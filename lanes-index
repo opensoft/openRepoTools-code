@@ -1293,6 +1293,13 @@ def cmd_register_classify(args: list[str]) -> int:
 # The image builder, `register_images`, takes the journal's rows and returns
 # the images. It is kept apart from the read, `register_render_read`, so the
 # image cache (T302) can reuse it.
+#
+# BRINGING A CACHE FORWARD (lane 1's cache signature, opensoft/openRepoTools#165
+# 6755040818, which lane 3 accepted in 6755051914): `register_cache_state`
+# reads cached images back into lines, and `start=(c, state)`, on the builder
+# and on the read, replays only the entries after the cache's seq `c`. The
+# proof is still over every image at `k`. `render --images` itself never uses
+# the cache: T111's `--tree` and T113's reads do.
 
 #: Q18(A)'s render set (design Y:258-260): `lanes/LANES.md`, every
 #: `lanes/log/<lane>.md` but `lanes/log/README.md`, `lanes/aliases.tsv` and
@@ -1338,6 +1345,57 @@ def register_image_bytes(lines: list, final_newline: bool) -> bytes:
     file has a line. A file with no line is empty either way. The text is
     UTF-8, as `render_file`'s `convert_to(..., 'UTF8')` gives it."""
     return ("\n".join(lines) + ("\n" if final_newline and lines else "")).encode("utf-8")
+
+
+def register_image_lines(data: bytes) -> tuple[list[str], bool] | None:
+    """`register_image_bytes`' INVERSE: one image's bytes as its lines, cut at
+    LF, and whether it ends with one; None where the bytes are not UTF-8,
+    read strictly. On decoded text it is T112's `register_doc_lines`: an
+    empty image is `([], True)`, and a final LF is taken off before the cut.
+
+    The bytes do not fix the lines: `["a", ""]` with no final newline and
+    `["a"]` with one both render `a` LF, and this gives the second. So the
+    lines read back are the canonical ones, which may not be the database's,
+    as an empty file's `[""]` with `final_newline` false is not `[]`. A
+    replay from them then fails an edit or the proof (`register_images`),
+    and the caller replays in full."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    if text == "":
+        return [], True
+    if text.endswith("\n"):
+        return text[:-1].split("\n"), True
+    return text.split("\n"), False
+
+
+def register_cache_state(images: dict[str, bytes]) -> dict[str, tuple[list[str], bool]] | None:
+    """THE CACHE'S IMAGES AS A START STATE (lane 1's cache signature, #165
+    6755040818, which lane 3 accepted in 6755051914): `{path: bytes}`, the
+    images at the cache's seq `c`, read back as `{path: (lines,
+    final_newline)}` by `register_image_lines`, for `start=(c, state)` on
+    `register_images` and `register_render_read`.
+
+    It returns None, A MISS, where any image is empty or is not UTF-8, and the
+    caller then replays in full. An empty image's lines are not fixed by its
+    bytes: it reads back as `([], True)`, and the database may hold `[""]`
+    with `final_newline` false, which an append tells apart. So an estate
+    with an empty file in its render set always replays in full, which costs
+    time and never correctness (lane 3's acceptance). A path that is not a
+    string, or an image that is not bytes, is a miss too. The cache's
+    manifest stays `<path>` TAB `<digest>`: nothing here is stored."""
+    if not isinstance(images, dict):
+        return None
+    state = {}
+    for path, data in images.items():
+        if not isinstance(path, str) or not isinstance(data, bytes) or not data:
+            return None
+        lines = register_image_lines(data)
+        if lines is None:
+            return None
+        state[path] = lines
+    return state
 
 
 def _register_apply_edit(state: dict, where: str, op, path, line_no, old_sha256, new_text,
@@ -1393,7 +1451,30 @@ def _register_apply_edit(state: dict, where: str, op, path, line_no, old_sha256,
         raise RenderRefused(f"{where} is {op!r}, which is no edit `journal_edits` holds")
 
 
-def register_images(journal, edits, files) -> dict:
+def _register_render_start(start) -> tuple:
+    """`start`, `(c, {path: (lines, final_newline)})`, checked and copied, as
+    `(c, {path: [lines, final_newline]})`: the replay changes the copy, and
+    the caller's lists stay as they were. A `start` of any other form raises
+    `RenderRefused`, the caller's miss."""
+    bad = RenderRefused("the start state is not (c, {path: (lines, final_newline)})")
+    if not isinstance(start, (tuple, list)) or len(start) != 2:
+        raise bad
+    c, cached = start
+    if isinstance(c, bool) or not isinstance(c, int) or not isinstance(cached, dict):
+        raise bad
+    state = {}
+    for path, value in cached.items():
+        if not isinstance(path, str) or not isinstance(value, (tuple, list)) or len(value) != 2:
+            raise bad
+        lines, final_newline = value
+        if (not isinstance(lines, (list, tuple)) or not isinstance(final_newline, bool)
+                or not all(isinstance(line, str) for line in lines)):
+            raise bad
+        state[path] = [list(lines), final_newline]
+    return c, state
+
+
+def register_images(journal, edits, files, *, start=None) -> dict:
     """THE IMAGE BUILDER (T301; contract §3.6): the render set's images after
     the last of `journal`'s entries, as `{path: bytes}`, built from the
     journal's rows alone. It reads no database, no git and no file. Each image
@@ -1435,28 +1516,85 @@ def register_images(journal, edits, files) -> dict:
     For reuse (lane 3's review, choice 6): a seq is not unique over time,
     since a re-import before a confirmed cutover replaces the root and an
     aborted cutover's seq is reused. So a caller that brings a cached image
-    forward checks every image at its `n`, not only those it touched."""
+    forward checks every image at its `n`, not only those it touched.
+
+    BROUGHT FORWARD FROM `start` (lane 1's cache signature, #165 6755040818,
+    which lane 3 accepted in 6755051914). `start` is `(c, {path: (lines,
+    final_newline)})`, the render set's state at seq `c`, as
+    `register_cache_state` reads it back from cached images. Given `start`:
+    - `journal` holds only the entries `c+1` to `k`, in seq order with no
+      gap, and none where `c` is `k`. The import-first check is dropped;
+    - `edits` holds only those entries' rows;
+    - `files` holds those entries' rows AND the rows from the latest import
+      to `c`, as `register_render_queries(k, since=c)` reads them. The rows
+      at or below `c` only SEED THE PROOF: they set no `final_newline`,
+      since `start` is the state at `c`;
+    - IF ANY OF THE ENTRIES IS AN IMPORT, `start` is set aside, and the
+      replay begins at the latest import, as it does without `start`. Every
+      row of a seq before that import is passed over.
+    THE PROOF IS THE SAME, OVER EVERY IMAGE AT `k`. After the seed and the
+    replay, `proved` holds every path's latest digest at or below `k`, so a
+    path untouched since `c` is proven by the same row as a path touched
+    since, and each of `start`'s images that no entry touched must match
+    its row too. A failed proof, an edit that does not apply on `start`, and
+    a `start` of another form each raise `RenderRefused`, which
+    `register_render_read` takes as a miss and answers with one full replay.
+    `start` itself is never changed. Without `start`, T301 is unchanged."""
     entries = [(seq, kind) for seq, kind in journal]
-    if not entries:
-        raise RenderRefused("no journal entry was read, so there is no import to render from")
-    if entries[0][1] != "import":
-        raise RenderRefused(f"seq {entries[0][0]} is a {entries[0][1]!r} entry, not an import: "
-                            f"the journal alone renders only from an import's baseline on")
+    if start is None:
+        if not entries:
+            raise RenderRefused("no journal entry was read, so there is no import to render "
+                                "from")
+        if entries[0][1] != "import":
+            raise RenderRefused(f"seq {entries[0][0]} is a {entries[0][1]!r} entry, not an "
+                                f"import: the journal alone renders only from an import's "
+                                f"baseline on")
     for (seq, _kind), (later, _later_kind) in zip(entries, entries[1:]):
         if later != seq + 1:
             raise RenderRefused(f"the journal read runs from seq {seq} to seq {later}: one "
                                 f"chain has no gap")
+    state: dict = {}    # path -> [its lines, final_newline]
+    proved: dict = {}   # path -> its latest journal_files sha256; None: recorded as absent
+    below = None        # with `start`: a row at or below this seq is no entry's to replay
+    seeding = False     # whether those rows seed the proof (`start` kept) or are passed over
+    if start is not None:
+        c, state = _register_render_start(start)
+        imports = [at for at, (_seq, kind) in enumerate(entries) if kind == "import"]
+        if imports:
+            # AN IMPORT AMONG `c+1` TO `k` sets `start` aside: the replay
+            # begins at the latest import, which clears the state anyway.
+            state = {}
+            below = entries[imports[-1]][0] - 1
+            entries = entries[imports[-1]:]
+        elif entries and entries[0][0] != c + 1:
+            raise RenderRefused(f"the start state is at seq {c}, and the journal read begins "
+                                f"at seq {entries[0][0]}, not {c + 1}")
+        else:
+            below, seeding = c, True
     seqs = {seq for seq, _kind in entries}
     edits_of: dict = {}
     files_of: dict = {}
+    seeds: list = []
     for rows, by, what in ((edits, edits_of, "journal_edits"), (files, files_of, "journal_files")):
         for row in rows:
             if row[0] not in seqs:
+                if below is not None and isinstance(row[0], int) and row[0] <= below:
+                    if not seeding:
+                        continue        # before the latest import, which clears the state
+                    if what == "journal_files":
+                        seeds.append(row)
+                        continue
                 raise RenderRefused(f"a {what} row of seq {row[0]}, which is not among the "
                                     f"entries read")
             by.setdefault(row[0], []).append(row)
-    state: dict = {}    # path -> [its lines, final_newline]
-    proved: dict = {}   # path -> its latest journal_files sha256; None: recorded as absent
+    # THE SEED: each path's latest row at or below `c`, in seq order, as the
+    # replay records a row below. The entries' own rows then supersede it.
+    for _seq, path, present, sha256, _final_newline in sorted(seeds, key=lambda row: row[0]):
+        if present:
+            if register_render_path(path):
+                proved[path] = sha256
+        else:
+            proved[path] = None
     for seq, kind in entries:
         if kind == "import":
             state.clear()
@@ -1497,7 +1635,7 @@ def register_images(journal, edits, files) -> dict:
     return images
 
 
-def register_render_queries(k: int) -> list:
+def register_render_queries(k: int, *, since=None) -> list:
     """The read's five SELECTs, for one REPEATABLE READ READ ONLY snapshot,
     in this order:
     1. `schema_version`, first, as every reader checks it (design §1.5);
@@ -1509,18 +1647,28 @@ def register_render_queries(k: int) -> list:
     `search_path`. `k` is a whole number, which this file parsed. The latest
     import is found by walking `journal`'s key backwards, `ORDER BY seq DESC
     LIMIT 1`, rather than by `max(seq)` over every import (lane 3's review,
-    NIT-2); with no import it is NULL."""
-    since = "(SELECT i.seq FROM journal i WHERE i.kind = 'import' ORDER BY i.seq DESC LIMIT 1)"
+    NIT-2); with no import it is NULL.
 
-    def span(alias: str) -> str:
-        return f"{alias}.seq >= {since} AND {alias}.seq <= {int(k)}"
+    WITH `since=c` (lane 1's cache signature, #165 6755040818, which lane 3
+    accepted in 6755051914), the third and the fourth read only the entries
+    `c+1` to `k`, for `register_images`' `start`. The digest query, the
+    fifth, is unchanged: `journal_files`' rows from the latest import to
+    `k`, so every path's latest digest at or below `k` is read, and a path
+    untouched since `c` is proven by the same row as a path touched since.
+    `c` is a whole number, which its caller checked."""
+    latest = "(SELECT i.seq FROM journal i WHERE i.kind = 'import' ORDER BY i.seq DESC LIMIT 1)"
+
+    def span(alias: str, *, entries: bool = False) -> str:
+        if entries and since is not None:
+            return f"{alias}.seq > {int(since)} AND {alias}.seq <= {int(k)}"
+        return f"{alias}.seq >= {latest} AND {alias}.seq <= {int(k)}"
 
     return [
         "SELECT version, writers_from, readers_from FROM schema_version WHERE id = 1",
-        f"SELECT h.seq, {since} FROM register_head h WHERE h.id = 1",
-        f"SELECT j.seq, j.kind FROM journal j WHERE {span('j')} ORDER BY j.seq",
+        f"SELECT h.seq, {latest} FROM register_head h WHERE h.id = 1",
+        f"SELECT j.seq, j.kind FROM journal j WHERE {span('j', entries=True)} ORDER BY j.seq",
         f"SELECT e.seq, e.ord, e.op, e.path, e.line_no, e.old_sha256, e.new_text, e.to_path "
-        f"FROM journal_edits e WHERE {span('e')} ORDER BY e.seq, e.ord",
+        f"FROM journal_edits e WHERE {span('e', entries=True)} ORDER BY e.seq, e.ord",
         f"SELECT f.seq, f.path, f.present, f.sha256, f.final_newline FROM journal_files f "
         f"WHERE {span('f')} ORDER BY f.seq, f.path",
     ]
@@ -1566,14 +1714,39 @@ def _render_rows(answer: list, table: str) -> list:
     return out
 
 
-def register_render_read(store, k: int) -> tuple:
+def register_render_read(store, k: int, *, start=None, row: str = "render") -> tuple | dict:
     """THE READ (contract §3.6; D9): `register_render_queries(k)` as ONE
     request, in one REPEATABLE READ READ ONLY snapshot, by `store`, a
     `PostgresStore(cfg, "register_writer")`, with D9's `render` row.
 
-    Returns `(journal, edits, files)`, typed for `register_images`, from the
-    latest import's seq to `k`. Raises `RenderRefused` (69) for each of
-    these:
+    `row` IS D9'S ROW for the read (lane 1's cache signature, #165
+    6755040818, which lane 3 accepted in 6755051914): `render`, as `render
+    --images` has it, or `read` or `guard`, T113's. Those two run as
+    REGISTER-READER, so their `store` is a `PostgresStore(cfg,
+    "register_reader")`: `PostgresStore.bounds` refuses a row of the other
+    role. The guard's row is cut by its caller's timer, which this
+    signature does not carry, so `bounds` refuses `guard` with `ValueError`
+    until T113 settles that. Any other `row` raises `ValueError` here.
+
+    WITH `start`, `(c, {path: (lines, final_newline)})`, the state at seq `c`
+    that `register_cache_state` read back from the cache, it returns THE
+    IMAGES AT `k`, `{path: bytes}`, each proven:
+    1. it reads `register_render_queries(k, since=c)` as one request, and
+       builds `register_images(..., start=start)`, whose proof is over
+       every image at `k`;
+    2. ANY `RenderRefused` THERE IS A MISS: a failed proof, an edit that
+       does not apply on `start`, a `start` of another form, a `c` above `k`
+       (a cache is never brought back) or a read it refuses. The call is
+       then made once more WITHOUT `start`, as a second request, and its
+       rows are replayed in full from the latest import. ONLY THAT FULL
+       REPLAY'S FAILURE raises `RenderRefused`, 69. So a cache from a
+       reused seq costs one full read, and is never trusted;
+    3. a `psql` that does not answer is no miss: `PsqlFailed` or
+       `StoreUnusable` is raised as it is, from either request.
+
+    WITHOUT `start`: returns `(journal, edits, files)`, typed for
+    `register_images`, from the latest import's seq to `k`. Raises
+    `RenderRefused` (69) for each of these:
     - a `REGISTER_SCHEMA_VERSION` outside the readers' window (design §1.5,
       "the renderer: at each run, before it renders");
     - a `k` above the head;
@@ -1590,7 +1763,27 @@ def register_render_read(store, k: int) -> tuple:
     the error is a missing table or column. Asking the version in a request
     of its own first would cost a second round trip on every render, which
     contract §2.3's one request per call does not allow."""
-    answers = store._query_many(register_render_queries(k), snapshot=True, row="render")
+    if row not in ("render", "read", "guard"):
+        raise ValueError(f"the render read takes D9's render, read or guard row, not {row!r}")
+    if start is None:
+        return _register_render_rows(store, k, None, row)
+    try:
+        c, _state = _register_render_start(start)
+        if c > k:
+            raise RenderRefused(f"the start state is at seq {c}, above seq {k}")
+        return register_images(*_register_render_rows(store, k, c, row), start=start)
+    except RenderRefused:
+        pass        # A MISS: the call is made once more without `start`, below
+    return register_images(*_register_render_rows(store, k, None, row))
+
+
+def _register_render_rows(store, k: int, since, row: str) -> tuple:
+    """`register_render_read`'s one request and its checks, with D9's `row`:
+    `(journal, edits, files)`, typed, from the latest import to `k`; or,
+    with `since=c`, the entries `c+1` to `k` and their edits, beside every
+    `journal_files` row from the latest import to `k`."""
+    answers = store._query_many(register_render_queries(k, since=since), snapshot=True,
+                                row=row)
     if len(answers) != 5:
         raise RenderRefused(f"psql answered {len(answers)} of the 5 reads of one render")
     version_rows, head_rows = answers[0], answers[1]
@@ -1604,19 +1797,24 @@ def register_render_read(store, k: int) -> tuple:
     if len(head_rows) != 1 or len(head_rows[0]) != 2:
         raise RenderRefused("the register's head row could not be read")
     head = _render_int(head_rows[0][0], "register_head.seq")
-    since = _render_int(head_rows[0][1], "the latest import's seq", null=True)
+    latest = _render_int(head_rows[0][1], "the latest import's seq", null=True)
     if k > head:
         raise RenderRefused(f"seq {k} is above the head, seq {head}" +
                             (": the journal is empty" if head < 0 else ""))
-    if since is None:
+    if latest is None:
         raise RenderRefused("the journal holds no import, so no seq can be rendered from it")
-    if k < since:
-        raise RenderRefused(f"seq {k} is before the latest import, seq {since}: the journal "
+    if k < latest:
+        raise RenderRefused(f"seq {k} is before the latest import, seq {latest}: the journal "
                             f"renders only from that import's baseline on")
     journal = _render_rows(answers[2], "journal")
-    if not journal or journal[0][0] != since or journal[-1][0] != k:
-        raise RenderRefused(f"the journal's entries from seq {since} to seq {k} were not all "
-                            f"read")
+    if since is None:
+        if not journal or journal[0][0] != latest or journal[-1][0] != k:
+            raise RenderRefused(f"the journal's entries from seq {latest} to seq {k} were not "
+                                f"all read")
+    elif (((journal[0][0], journal[-1][0]) if journal else None)
+          != ((since + 1, k) if since < k else None)):
+        raise RenderRefused(f"the journal's entries from seq {since + 1} to seq {k} were not "
+                            f"all read")
     return (journal, _render_rows(answers[3], "journal_edits"),
             _render_rows(answers[4], "journal_files"))
 
