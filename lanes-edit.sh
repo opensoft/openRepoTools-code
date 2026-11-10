@@ -534,12 +534,13 @@
 #      another register generation, at any age, until `LANES_WRITE_ID=new`; a
 #      pending record that cannot be read as one; and three cases the design
 #      leaves open, refused rather than guessed (`wr_id_plan`, `wr_id_settle`).
-#      AND FEATURE 007'S INTERNAL FLAG (T413; F22, Y:5034, Y:5078), with
-#      nothing sent: a `LANES_REGISTER_SCRATCH` that names no attempt directory
-#      this file may honour, or one with no snapshot clock to date the attempt
-#      by (`reg_scratch_take`); and, under the flag, a pathspec that differs
-#      from HEAD in the attempt's scratch tree before the verb has edited it,
-#      an internal error and never a capture (`reg_scratch_dirty`).
+#      AND FEATURE 007'S INTERNAL FLAG (T413; F22, Y:5078), with nothing
+#      sent, two faults under a flag that is honoured: an attempt directory
+#      whose `snapshot` gives no `clock=` in whole seconds to date the attempt
+#      by (`reg_scratch_fault`), and a pathspec that differs from HEAD in the
+#      attempt's scratch tree before the verb has edited it, an internal
+#      error and never a capture (`reg_scratch_dirty`). A value that is not
+#      honoured is never a 2: it is ignored.
 #  64  usage — a caller's bad arguments to one of the reads Amendment 11 added
 #      (`window-lane`, `lane-dir`, `lane-profile`, `last-session`, `forks`,
 #      `duplicate-holder` (issue #39), `workstation`, `fetch-age`, `lanes`,
@@ -759,7 +760,8 @@
 #                      honoured only for a directory under
 #                      <state>/register-writes/ that this uid owns with mode
 #                      0700 and whose `parent.pid` names this process's parent;
-#                      any other value is refused (2, nothing sent). Never set it
+#                      any other value is ignored, and the run goes on as any
+#                      write. Never set it by hand.
 #   THE LOCKS (Amendment 23 S2, design decision 14). <LANES_DIR>/.lanes-edit.lock
 #                      is the CHECKOUT's — that checkout's writers. Under
 #                      LANES_ROUTE_WRITES=1, <W>-lanes/.lane-state.lock is the
@@ -1314,13 +1316,23 @@ unset LANES__REPLAY_PID LANES__ATTEMPT LANES__CLAIM_FROM LANES__CLAIM_DEAD LANES
 # COPIED, THEN UNSET, AT ONCE (Y:5034), so no `git`, `gh` or `tmux` this
 # process starts inherits it, and a stray export finds no live directory.
 # HONOURED ONLY for a directory under `<state>/register-writes/`
-# (`wr_state_dir`, above), owned by this uid, with mode 0700, whose
-# `parent.pid` names this process's parent, `$PPID`: its first line's first
-# field, so the parent may keep its start token after it there (T414's
-# liveness turns read it). ANY OTHER VALUE IS REFUSED, 2, with nothing sent.
-# The flag skips the mode question and S3, so a process that cannot show it is
-# an attempt's child must not run as one; nor may it run on as a writer of its
-# own, which would ask the mode and recurse into the primary branch (Y:5038).
+# (`wr_state_dir`, above), owned by this uid, with mode 0700 in its permission
+# bits, whose `parent.pid` names this process's parent, `$PPID`. That file is
+# one line, `<pid>` TAB `<start token>`, the parent's `$$` and its
+# `pid_start_of` token, and field 1 is read (lane openRepoTools-3's ruling,
+# #165 6755005268, item 2).
+#
+# ANY OTHER VALUE IS NOT HONOURED, AND IS IGNORED: it is unset like any other,
+# and the run goes on as any write and asks the mode (Y:5034; YT:6869–6873;
+# the same ruling, item 1). A stray export is then nothing, and never blocks a
+# prompt through `guard`'s 2. Exit 2, nothing sent, is kept for a fault under
+# a flag that IS honoured: a `snapshot` with no whole-seconds `clock=` here
+# (item 3), and a dirty scratch tree (`reg_scratch_dirty`, Y:5078).
+#
+# FIELD 2 IS NOT COMPARED with `pid_start_of "$PPID"`, which the ruling leaves
+# optional. Lane 5's `pid_start_of` (T502) is defined far below this file
+# scope, so here it would always answer 127, which T412's `wr_claim_live`
+# counts as live ("untested"): the comparison could never refuse a reused pid.
 #
 # Under the flag (`REG_SCRATCH`, the directory as `pwd -P` spells it, and
 # empty without the flag):
@@ -1334,19 +1346,23 @@ unset LANES__REPLAY_PID LANES__ATTEMPT LANES__CLAIM_FROM LANES__CLAIM_DEAD LANES
 #     in whole epoch seconds, read here once from `<dir>/snapshot`, is what
 #     `now_epoch` and `utc_now` answer, so the lines the verb composes and the
 #     durations it decides by (`older_than_minutes`, `older_than_threshold`)
-#     are on one clock. A directory with no such clock is refused, 2. The host's
-#     clock stays where it decides no register state: `age_of`, the listing's
-#     partition, `fetch-age`, `request-handoff`'s wait, and the pending record's
-#     own stamps (`wr_host_utc`);
+#     are on one clock. An honoured directory with no such clock is 2. The host's
+#     clock stays where it decides no register state: `age_of` in a listing,
+#     the listing's partition, `fetch-age`, `request-handoff`'s wait, and the
+#     pending record's own stamps (`wr_host_utc`). Where an age is printed to
+#     explain a decision, `claim --force`'s refusal and `who`'s stale lines,
+#     `age_of` is passed `now_epoch`, so its words agree with the decision
+#     (ruling item 5);
 #   * the routing re-exec, S3 (`checkout_sync`) and `log_sync`'s fetch are
 #     skipped, `gh_reads` is cached in the run's directory, and
 #     `sidecar_lock_dir` answers the path the parent wrote into `<dir>/lock`,
 #     each at its own site below.
 REG_SCRATCH=""; REG_SCRATCH_CLOCK=""; REG_SCRATCH_UTC=""; REG_SCRATCH_RUN=""
-# `die` is defined below the resolver, so the flag's refusal says it in `die`'s
-# own form here: one line on stderr, the code under `LANES_DEBUG`, exit 2.
-reg_scratch_refuse() {   # <the value> <why it is not honoured>
-  printf 'lanes-edit: %s\n' "LANES_REGISTER_SCRATCH, feature 007's internal flag, is set to $(printf '%q' "$1"), which ${2}. It is honoured only for an attempt's directory under $(wr_state_dir)/register-writes/ that this uid owns with mode 0700 and whose parent.pid names this process's parent, pid ${PPID}: lanes-edit.sh's own primary write path sets it, on the child it runs for one attempt, and nothing else should (T413; the design's F22). Nothing was sent. Unset it, and run the command again." >&2
+# A FAULT UNDER AN HONOURED FLAG. `die` is defined below the resolver, so it is
+# said here in `die`'s own form: one line on stderr, the code under
+# `LANES_DEBUG`, exit 2.
+reg_scratch_fault() {   # <the attempt directory> <what is wrong with it>
+  printf 'lanes-edit: %s\n' "refusing to run as the child of the attempt whose directory is $(printf '%q' "$1"): its ${2}. LANES_REGISTER_SCRATCH named it, and it is this attempt's own directory, so this is an internal error of the write path, never a person's to mend (T413; D13). Nothing was sent." >&2
   [ -n "${LANES_DEBUG:-}" ] && printf 'lanes-edit: (exit %s)\n' 2 >&2
   exit 2
 }
@@ -1360,34 +1376,33 @@ reg_scratch_mode_700() {   # <dir>
   return 1
 }
 reg_scratch_take() {
-  local rst_v="" rst_d="" rst_w="" rst_b="" rst_l="" rst_p="" rst_c="" rst_u="" rst_r=""
+  local rst_v="" rst_d="" rst_b="" rst_l="" rst_p="" rst_c="" rst_u="" rst_r="" rst_t
+  rst_t=$'\t'
   rst_v="${LANES_REGISTER_SCRATCH-}"
   unset LANES_REGISTER_SCRATCH
   [ -n "$rst_v" ] || return 0
-  rst_d="$(CDPATH='' cd -P -- "$rst_v" 2>/dev/null && pwd -P)" ||
-    reg_scratch_refuse "$rst_v" "names no directory this process can enter"
-  rst_w="$(wr_state_dir)/register-writes"
-  rst_b="$(CDPATH='' cd -P -- "$rst_w" 2>/dev/null && pwd -P)" ||
-    reg_scratch_refuse "$rst_v" "cannot be under ${rst_w}/, since that is no directory here"
+  # Y:5034's four conditions, and a directory that is there at all. A value
+  # that fails one is not the flag: it is already unset, and nothing is said.
+  rst_d="$(CDPATH='' cd -P -- "$rst_v" 2>/dev/null && pwd -P)" || return 0
+  rst_b="$(CDPATH='' cd -P -- "$(wr_state_dir)/register-writes" 2>/dev/null && pwd -P)" || return 0
   rst_b="${rst_b%/}"
   case "$rst_d" in
     "$rst_b"/?*) : ;;
-    *) reg_scratch_refuse "$rst_v" "is ${rst_d}, which is not under ${rst_w}/" ;;
+    *) return 0 ;;
   esac
-  [ -O "$rst_d" ] ||
-    reg_scratch_refuse "$rst_v" "is a directory that this uid, $(id -u), does not own"
-  reg_scratch_mode_700 "$rst_d" ||
-    reg_scratch_refuse "$rst_v" "is a directory whose mode is not 0700, so another user may write in it"
+  [ -O "$rst_d" ] || return 0
+  reg_scratch_mode_700 "$rst_d" || return 0
   if [ -f "$rst_d/parent.pid" ] && [ -r "$rst_d/parent.pid" ]; then
     { IFS= read -r rst_l || :; } 2>/dev/null < "$rst_d/parent.pid"
   fi
-  rst_p="${rst_l%%[	 ]*}"
+  rst_p="${rst_l%%"$rst_t"*}"
   if [ -z "$rst_p" ] || [ "$rst_p" != "$PPID" ]; then
-    reg_scratch_refuse "$rst_v" "holds no parent.pid naming this process's parent, pid ${PPID} (its first field reads $(printf '%q' "$rst_p"))"
+    return 0
   fi
-  # THE CLOCK: the first `clock=` of the snapshot's stdout, saved verbatim by the
-  # parent (contract §3.2: "clock=<epoch s>  the database clock, in whole
-  # seconds"), as this file's UTC stamp.
+  # HONOURED FROM HERE ON. THE CLOCK: the first `clock=` of the snapshot's
+  # stdout, saved verbatim by the parent (contract §3.2: "clock=<epoch s>  the
+  # database clock, in whole seconds"), as this file's UTC stamp. None, or one
+  # that is not whole seconds, is a fault, 2 (ruling item 3).
   rst_l=""
   if [ -f "$rst_d/snapshot" ] && [ -r "$rst_d/snapshot" ]; then
     while IFS= read -r rst_l || [ -n "$rst_l" ]; do
@@ -1396,15 +1411,15 @@ reg_scratch_take() {
     done 2>/dev/null < "$rst_d/snapshot"
   fi
   case "$rst_c" in
-    ''|*[!0123456789]*) reg_scratch_refuse "$rst_v" "holds no snapshot whose clock= gives the database's time in whole seconds, the one clock this attempt's lines and durations are read on (D13)" ;;
+    ''|*[!0123456789]*) reg_scratch_fault "$rst_d" "snapshot gives no clock= in whole seconds (it reads $(printf '%q' "$rst_c")), and that clock is the one this attempt's lines and durations are read on" ;;
   esac
   [ "${#rst_c}" -le 18 ] ||
-    reg_scratch_refuse "$rst_v" "holds a snapshot whose clock=${rst_c} is too long to be a time"
+    reg_scratch_fault "$rst_d" "snapshot's clock=${rst_c} is too long to be a time"
   rst_u="$(date -u -d "@$rst_c" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null ||
            date -u -j -r "$rst_c" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || :)"
   case "$rst_u" in
     [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) : ;;
-    *) reg_scratch_refuse "$rst_v" "holds a snapshot whose clock=${rst_c} this host's date cannot write as a UTC" ;;
+    *) reg_scratch_fault "$rst_d" "snapshot's clock=${rst_c} is a time this host's date cannot write as a UTC" ;;
   esac
   # THE RUN'S DIRECTORY, `<d>/<run>/`, which every attempt of this run shares:
   # where `gh_reads` is cached, only where it too is under `register-writes/`,
@@ -6667,8 +6682,10 @@ row_field_unescape_into() {   # <field> ; sets ROW_FIELD_OUT
 
 # Durations that DECIDE — Rule 6's minutes and `claim --force`'s staleness — so
 # both read `now_epoch`: the snapshot's clock under feature 007's internal
-# flag, the host's otherwise (D13; T413). `age_of` above only prints an age, and
-# keeps the host's clock.
+# flag, the host's otherwise (D13; T413). `age_of` above keeps the host's clock
+# in a listing; where it prints the age a decision was made on (`who`'s stale
+# lines, `claim --force`'s refusal) it is passed `now_epoch` (lane
+# openRepoTools-3's ruling, #165 6755005268, item 5).
 older_than_minutes() {   # <utc> <minutes>
   om_t="$(epoch_of "$1")"; [ -n "$om_t" ] || return 1
   [ "$(( $(now_epoch) - om_t ))" -gt "$(( $2 * 60 ))" ]
@@ -8763,14 +8780,14 @@ EOF
     # abandoned", and Rule 6 governing a PR) leave a claim past the threshold
     # and NOT stale, and neither was named.
     if [ "$s_verb" = CLAIMED ] && claim_is_stale "$s_lane" "$wo_obj" "$s_utc" "$s_file" "$s_line"; then
-      printf '  stale    YES — claimed %s ago with no OPENED naming it, past the %sh threshold; a takeover is allowed (claim --force)\n' "$(age_of "$s_utc")" "$STALE_HOURS"
+      printf '  stale    YES — claimed %s ago with no OPENED naming it, past the %sh threshold; a takeover is allowed (claim --force)\n' "$(age_of "$s_utc" "$(now_epoch)")" "$STALE_HOURS"
     elif [ "$s_verb" = CLAIMED ]; then
       if ! older_than_threshold "$s_utc"; then
-        printf '  stale    no — %s old, threshold %sh\n' "$(age_of "$s_utc")" "$STALE_HOURS"
+        printf '  stale    no — %s old, threshold %sh\n' "$(age_of "$s_utc" "$(now_epoch)")" "$STALE_HOURS"
       elif object_is_pr "$wo_obj"; then
-        printf '  stale    no — %s old, past the %sh threshold, but this object is a PR: Rule 6'"'"'s thirty minutes govern it, not Rule 1'"'"'s hours\n' "$(age_of "$s_utc")" "$STALE_HOURS"
+        printf '  stale    no — %s old, past the %sh threshold, but this object is a PR: Rule 6'"'"'s thirty minutes govern it, not Rule 1'"'"'s hours\n' "$(age_of "$s_utc" "$(now_epoch)")" "$STALE_HOURS"
       else
-        printf '  stale    no — %s old, past the %sh threshold, but lane %s has since written an OPENED naming it (Rule 1: a claim followed by a PR is not abandoned)\n' "$(age_of "$s_utc")" "$STALE_HOURS" "$s_lane"
+        printf '  stale    no — %s old, past the %sh threshold, but lane %s has since written an OPENED naming it (Rule 1: a claim followed by a PR is not abandoned)\n' "$(age_of "$s_utc" "$(now_epoch)")" "$STALE_HOURS" "$s_lane"
       fi
     fi
     print_holder_detail "$s_lane" "$wo_obj"
@@ -9023,7 +9040,7 @@ who_landing() {
     [ "$(lc "$wd_c")" = "$(lc "$wd_repo")" ] || continue
     wd_stale=""
     older_than_minutes "$wd_utc" "$LANDING_MINUTES" && wd_stale="  STALE (Rule 6: >${LANDING_MINUTES} min)"
-    printf 'LANDING  %s#%s  lane %s, %s (%s ago)%s\n' "$wd_repo" "$wd_pr" "$wd_lane" "$wd_utc" "$(age_of "$wd_utc")" "$wd_stale"
+    printf 'LANDING  %s#%s  lane %s, %s (%s ago)%s\n' "$wd_repo" "$wd_pr" "$wd_lane" "$wd_utc" "$(age_of "$wd_utc" "$(now_epoch)")" "$wd_stale"
     wd_n=$((wd_n + 1))
   done <<EOF
 $wd_rows
@@ -19022,9 +19039,12 @@ esac
 # is the switch of lane 4's T409, which lands before this task: the write
 # guard's arm sets it, and the writers' question below runs only where it is 1.
 # Cleared here, between the two, it skips the question and its arm in the
-# child, and `REG_MODE` is already `primary` (`reg_scratch_take`). Lane 5's
-# `reg_open` takes the same flag: it asks nothing, prefetches nothing and makes
-# no marker check under it (T504; Q-L5-1).
+# child, and `REG_MODE` is already `primary` (`reg_scratch_take`). This is the
+# one test of the flag at the ask: T409 tests no flag itself (lane
+# openRepoTools-3's ruling, #165 6755005268, item 8). Lane 5's `reg_open` tests
+# `REG_SCRATCH` before `REG_MODE`: it asks nothing, prefetches nothing, makes no
+# marker check, and answers the files store though `REG_MODE` is `primary`
+# (T504; Q-L5-1; Y:5041).
 [ -z "$REG_SCRATCH" ] || REG_ASK=0
 
 # `guard` JOINS THAT EXEMPTION AND REFUSES FOR ITSELF (Amendment 12(d)). It is
@@ -20562,7 +20582,7 @@ EOF
           die "--force refused: lane $h_lane's own log ends $HOLDER_TERMINAL_UNKNOWN, and this workstation could not read whether a live session still backs it up. That is NOT 'no live session holds it' — refused for the same reason an unreadable read refuses the dead-lane path (issue #30), never assumed safe. Rule 1: the lane stops and reports; it does not author a successor." 2
         fi
         if ! claim_is_stale "$h_lane" "$obj" "$h_utc" "$h_file" "$h_line"; then
-          die "--force refused: lane $h_lane's claim on $obj is $(age_of "$h_utc") old (threshold ${STALE_HOURS}h), or it is a PR, or that lane has since OPENED a PR naming it. Rule 1 makes a claim takeable only when it is stale, and lane $h_lane's own log does not end on ENDED or RETIRED either (or a live session on this workstation still holds it)." 2
+          die "--force refused: lane $h_lane's claim on $obj is $(age_of "$h_utc" "$(now_epoch)") old (threshold ${STALE_HOURS}h), or it is a PR, or that lane has since OPENED a PR naming it. Rule 1 makes a claim takeable only when it is stale, and lane $h_lane's own log does not end on ENDED or RETIRED either (or a live session on this workstation still holds it)." 2
         fi
         takeover_from="$h_lane"
         takeover_note="stale claim by lane $h_lane, posted $h_utc, no PR after ${STALE_HOURS}h"
