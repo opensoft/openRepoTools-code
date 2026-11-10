@@ -31,9 +31,10 @@ and lane 2's T255 part (L2-W6, phase W):
     section 5.6's option B, which lane 3 ruled (R-P23);
 
 and T254's M9 (L2-W5, phase W):
-`test_the_bind_and_the_guards_set_row_state_are_timed_in_both_modes`, both
-modes inside one test. T254's AT-F6 guard cases are in
-`tests/test_sql_register_guard.py`, the guard line's.
+`test_the_bind_and_the_guards_set_row_state_are_timed_in_both_modes[<mode>]`,
+one case per mode, `[files]` and `[primary]` (TP:6346; F12b's T254 text,
+R-F11-2). T254's AT-F6 guard cases are in `tests/test_sql_register_guard.py`,
+the guard line's.
 
 T226's guard parts, M5b's `test_todays_direct_guard_is_timed_in_its_four_parts`
 and M10's `test_the_guards_register_parse_is_timed_on_a_real_sized_register_beside_todays_six_reads_through_git`,
@@ -1513,46 +1514,45 @@ def _bind_run(db, root: Path, mode: str) -> tuple:
     return spent[0], spent[1], grown, before
 
 
-def test_the_bind_and_the_guards_set_row_state_are_timed_in_both_modes(pg_engine, pg, tmp_path):
+@pytest.mark.parametrize("mode", list(MODES))
+def test_the_bind_and_the_guards_set_row_state_are_timed_in_both_modes(pg_engine, pg, tmp_path, mode):
     """M9 (section 5.1; AT-F6): answer 2's bind and the guard's
     `set-row-state` on the lane it leaves, exec to exit, cold once and 20
-    warm, each run on a fresh estate with a local bare origin, in files mode
-    and on primary; recorded beside `bound_s` (500 s at `c` = 2), never
-    asserted (ruling 16: the detached form applies, so M9 decides nothing).
+    warm, each run on a fresh estate with a local bare origin; recorded
+    beside `bound_s` (500 s at `c` = 2), never asserted (ruling 16: the
+    detached form applies, so M9 decides nothing). One case per mode, as
+    TP:6346 gives them and F12b's T254 text owes them (R-F11-2): `[files]`
+    and `[primary]`. Each id records its own two figures, the bind's and
+    `set-row-state`'s, and asserts no time.
 
-    The oracle: every call exits 0; on primary each run's bind is one
-    `start-record` write and `set-row-state` one more, so the journal grows
-    by exactly two and their write ids are distinct (AT-F6: one journal
-    entry for the bind, two for answer 2); in files mode the origin's
-    `main` grows by at least those two commits. The test takes no mode id:
-    T254's own AT-F6 tests take none (NOTES 327, check 17), and both modes
-    run inside it. Fails until lane 4's L4-B9 and lane 5's L5-A1 and L5-B1
-    land."""
-    lines = []
-    for mode in MODES:
-        binds, rows_set = [], []
-        for k in range(1 + N_WARM):
+    The oracle, in each id: every call exits 0; on primary each run's bind
+    is one `start-record` write and `set-row-state` one more, so the journal
+    grows by exactly two and their write ids are distinct (AT-F6: one
+    journal entry for the bind, two for answer 2); in files mode the
+    origin's `main` grows by at least those two commits. Fails until lane
+    4's L4-B9 and lane 5's L5-A1 and L5-B1 land."""
+    binds, rows_set = [], []
+    for k in range(1 + N_WARM):
+        if mode == "primary":
+            name = pg.cluster.new_database()
+            db = Database(pg.cluster, name)
+        else:
+            name, db = None, pg
+        try:
+            bind_ms, set_ms, grown, before = _bind_run(db, tmp_path / f"{mode}-{k}", mode)
             if mode == "primary":
-                name = pg.cluster.new_database()
-                db = Database(pg.cluster, name)
+                assert grown == 2, f"run {k}: the journal grew by {grown}, not 2"
+                ids = rows(db, f"SELECT count(DISTINCT write_id) AS d FROM journal WHERE seq > {before}")
+                assert ids == [{"d": 2}], ids
             else:
-                name, db = None, pg
-            try:
-                bind_ms, set_ms, grown, before = _bind_run(db, tmp_path / f"{mode}-{k}", mode)
-                if mode == "primary":
-                    assert grown == 2, f"run {k}: the journal grew by {grown}, not 2"
-                    ids = rows(db, f"SELECT count(DISTINCT write_id) AS d FROM journal WHERE seq > {before}")
-                    assert ids == [{"d": 2}], ids
-                else:
-                    assert grown >= 2, f"run {k}: the origin's main grew by {grown} commit(s)"
-            finally:
-                if name is not None:
-                    pg.cluster.drop_database(name)
-            binds.append(bind_ms)
-            rows_set.append(set_ms)
-        link = f"rtt=0, tls=none; bound_s={BOUND_S} (c=2, N_a=1)"
-        lines.append(figure("M9", f"{mode} mode, fresh estate, local bare origin",
-                            "`lane-start --no-launch --bind`, exec to exit", binds, link))
-        lines.append(figure("M9", f"{mode} mode, fresh estate, local bare origin",
-                            "the guard's `set-row-state` on the lane it leaves", rows_set, link))
-    record(lines)
+                assert grown >= 2, f"run {k}: the origin's main grew by {grown} commit(s)"
+        finally:
+            if name is not None:
+                pg.cluster.drop_database(name)
+        binds.append(bind_ms)
+        rows_set.append(set_ms)
+    link = f"rtt=0, tls=none; bound_s={BOUND_S} (c=2, N_a=1)"
+    record([figure("M9", f"{mode} mode, fresh estate, local bare origin",
+                   "`lane-start --no-launch --bind`, exec to exit", binds, link),
+            figure("M9", f"{mode} mode, fresh estate, local bare origin",
+                   "the guard's `set-row-state` on the lane it leaves", rows_set, link)])
