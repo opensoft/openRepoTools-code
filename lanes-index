@@ -1294,18 +1294,19 @@ def cmd_register_classify(args: list[str]) -> int:
 # the images. It is kept apart from the read, `register_render_read`, so the
 # image cache (T302) can reuse it.
 
-#: The marker file of D24's two operator entries (design §1.2): the cutover's
-#: and the rollback's edits touch it alone, and it is never an image.
-REGISTER_STORE_PATH = "lanes/STORE"
-
 #: Q18(A)'s render set (design Y:258-260): `lanes/LANES.md`, every
 #: `lanes/log/<lane>.md` but `lanes/log/README.md`, `lanes/aliases.tsv` and
 #: `lanes/archive/*`. This is `journal_edits`' own CHECK on a path, less
-#: `lanes/STORE`, and with no control character in a name, so each image's
-#: `file=` row stays one line of three fields. `lanes/repos.tsv` is never in
-#: the journal, and so is never an image.
-_RENDER_SET_RE = re.compile(
-    r"lanes/(?:LANES\.md|aliases\.tsv|(?:archive|log)/[^/\x00-\x1f\x7f]+\.md)")
+#: `lanes/STORE`, the marker file of D24's two operator entries, which is
+#: never an image. `lanes/repos.tsv` is never in the journal. Each name is
+#: one component that ends `.md`, so no image path leaves `<dir>`.
+_RENDER_SET_RE = re.compile(r"lanes/(?:LANES\.md|aliases\.tsv|(?:archive|log)/[^/]+\.md)")
+
+#: A control character, U+0000-U+001F or U+007F: an image whose path holds one
+#: cannot be a `file=` row of one line and three fields, and ends 69 where it
+#: would be written (lane 3's review of T301, SHOULD-2). Only an image at `k`
+#: is refused for it, never a row the replay passes over.
+_RENDER_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 #: The columns `register_images` takes, in each row's order: `journal`'s, and
 #: `journal_edits`' and `journal_files`' as T107's migration names them.
@@ -1318,11 +1319,11 @@ REGISTER_RENDER_COLUMNS = {
 
 
 class RenderRefused(Exception):
-    """A seq `render --images` cannot render, or journal rows that do not
-    replay to the bytes the journal proved. It exits `EXIT_UNAVAILABLE`, 69,
-    with nothing written, per exit-codes.md's `render --images` 69 row: a
-    failed read, or a `k` above the head or before the latest import's
-    baseline."""
+    """A seq `render --images` cannot render, journal rows that do not replay
+    to the bytes the journal proved, or images that cannot be written. It
+    exits `EXIT_UNAVAILABLE`, 69, with `<dir>` as it was, per exit-codes.md's
+    `render --images` 69 row: a failed read, or a `k` above the head or
+    before the latest import's baseline."""
 
 
 def register_render_path(path) -> bool:
@@ -1341,12 +1342,12 @@ def register_image_bytes(lines: list, final_newline: bool) -> bytes:
 
 def _register_apply_edit(state: dict, where: str, op, path, line_no, old_sha256, new_text,
                          to_path) -> None:
-    """ONE `journal_edits` row, applied to `state` ({path: [lines,
-    final_newline]}) as `commit_write`'s step 6 applies it to `files` and
-    `doc_lines` (design §1.3.1). An edit that step 6 would refuse with LR004
-    is a journal this function cannot replay, and it raises `RenderRefused`."""
-    if not register_render_path(path):
-        raise RenderRefused(f"{where} names {path!r}, which is not a render-set path")
+    """ONE `journal_edits` row of a render-set path, applied to `state`
+    ({path: [lines, final_newline]}) as `commit_write`'s step 6 applies it to
+    `files` and `doc_lines` (design §1.3.1). Its caller passes over an edit
+    of a path outside the render set. An edit that step 6 would refuse with
+    LR004 is a journal this function cannot replay, and it raises
+    `RenderRefused`."""
     if (op == "create") == (path in state):
         raise RenderRefused(f"{where} is a {op} of {path}, which "
                             f"{'exists' if op == 'create' else 'does not exist'} there")
@@ -1378,12 +1379,14 @@ def _register_apply_edit(state: dict, where: str, op, path, line_no, old_sha256,
         else:
             del lines[line_no - 1]
     elif op == "rename":
-        if not register_render_path(to_path):
-            raise RenderRefused(f"{where} renames {path} to {to_path!r}, which is not a "
-                                f"render-set path")
         if to_path in state:
             raise RenderRefused(f"{where} renames {path} to {to_path}, which exists there")
-        state[to_path] = state.pop(path)
+        moved = state.pop(path)
+        if register_render_path(to_path):
+            state[to_path] = moved
+        # A rename out of the render set takes the image out with the file.
+        # `journal_edits`' CHECK on `to_path` allows only render-set paths, so
+        # no journal holds such a rename.
     elif op == "remove":
         del state[path]
     else:
@@ -1409,19 +1412,30 @@ def register_images(journal, edits, files) -> dict:
 
     It replays `commit_write`'s steps 6 and 8 (design §1.3.1):
     - an `import` starts from no file, as its step 3a clears the data tables;
-    - each edit applies as step 6 applies it;
+    - each edit of a render-set path applies as step 6 applies it;
     - each `journal_files` row that is present sets its path's
       `final_newline`, as step 8 does.
-    Edits and rows of `lanes/STORE`, the operator entries' marker, are passed
-    over, since it is never an image. `lanes/repos.tsv` is never in the
-    journal.
+    It passes over every edit, and every present row, of a path outside the
+    render set: `lanes/STORE`, the operator entries' marker, is never an
+    image, and `lanes/repos.tsv` is never in the journal. A row that records
+    a path absent is never refused for its path's form. Whether an image's
+    path can be a `file=` row is `register_write_images`' check, at `k`
+    alone (lane 3's review, SHOULD-2).
 
     THE PROOF, AS STEP 8'S. Each image's sha256 must equal the digest that
-    its path's latest `journal_files` row recorded, which `commit_write`
-    proved against `render_file` when it committed. A path that row recorded
-    as present must have an image. Rows that are not one gapless chain from
-    an import, an edit that step 6 would refuse, and an image that fails the
-    proof each raise `RenderRefused`, and nothing is returned."""
+    its path's LATEST `journal_files` row among the rows given recorded,
+    which `commit_write` proved against `render_file` when it committed.
+    ONLY THAT LATEST ROW IS CHECKED: an earlier row of the same path, which a
+    later one supersedes, is not re-checked, since the image after the last
+    entry rests on the latest row alone. A path that row recorded as present
+    must have an image. Rows that are not one gapless chain from an import,
+    an edit that step 6 would refuse, and an image that fails the proof each
+    raise `RenderRefused`, and nothing is returned.
+
+    For reuse (lane 3's review, choice 6): a seq is not unique over time,
+    since a re-import before a confirmed cutover replaces the root and an
+    aborted cutover's seq is reused. So a caller that brings a cached image
+    forward checks every image at its `n`, not only those it touched."""
     entries = [(seq, kind) for seq, kind in journal]
     if not entries:
         raise RenderRefused("no journal entry was read, so there is no import to render from")
@@ -1449,17 +1463,15 @@ def register_images(journal, edits, files) -> dict:
             proved.clear()
         for (_seq, ordinal, op, path, line_no, old_sha256, new_text,
              to_path) in sorted(edits_of.get(seq, ()), key=lambda row: row[1]):
-            if path == REGISTER_STORE_PATH:
-                continue
+            if not register_render_path(path):
+                continue        # lanes/STORE's edits, and any path outside the render set
             _register_apply_edit(state, f"seq {seq} edit {ordinal}", op, path, line_no,
                                  old_sha256, new_text, to_path)
         for _seq, path, present, sha256, final_newline in files_of.get(seq, ()):
-            if path == REGISTER_STORE_PATH:
-                continue
             where = f"seq {seq}'s journal_files row for {path!r}"
-            if not register_render_path(path):
-                raise RenderRefused(f"{where} names no render-set path")
             if present:
+                if not register_render_path(path):
+                    continue    # lanes/STORE's row, and any path outside the render set
                 if path not in state:
                     raise RenderRefused(f"{where} records it present, and its edits leave "
                                         f"no such file")
@@ -1494,8 +1506,11 @@ def register_render_queries(k: int) -> list:
     4. `journal_edits`' rows over the same seqs;
     5. `journal_files`' rows over the same seqs.
     Each is SELECT only, and names its tables through the store's
-    `search_path`. `k` is a whole number, which this file parsed."""
-    since = "(SELECT max(i.seq) FROM journal i WHERE i.kind = 'import')"
+    `search_path`. `k` is a whole number, which this file parsed. The latest
+    import is found by walking `journal`'s key backwards, `ORDER BY seq DESC
+    LIMIT 1`, rather than by `max(seq)` over every import (lane 3's review,
+    NIT-2); with no import it is NULL."""
+    since = "(SELECT i.seq FROM journal i WHERE i.kind = 'import' ORDER BY i.seq DESC LIMIT 1)"
 
     def span(alias: str) -> str:
         return f"{alias}.seq >= {since} AND {alias}.seq <= {int(k)}"
@@ -1565,7 +1580,16 @@ def register_render_read(store, k: int) -> tuple:
     - a journal with no import;
     - a `k` before the latest import;
     - an answer it cannot read.
-    A `psql` that does not answer raises `PsqlFailed`, which is 69 too."""
+    A `psql` that does not answer raises `PsqlFailed`, which is 69 too.
+
+    THE VERSION IS CHECKED ONCE THE ONE REQUEST HAS ANSWERED (lane 3's review,
+    NIT-1). `schema_version` is the request's first SELECT, but a request
+    that fails at a later one, as against a newer schema whose column
+    changed, ends as that SQL error and never reaches Y:2338's remedy. The
+    code is 69 either way, and `cmd_render` names the likely remedy where
+    the error is a missing table or column. Asking the version in a request
+    of its own first would cost a second round trip on every render, which
+    contract §2.3's one request per call does not allow."""
     answers = store._query_many(register_render_queries(k), snapshot=True, row="render")
     if len(answers) != 5:
         raise RenderRefused(f"psql answered {len(answers)} of the 5 reads of one render")
@@ -1598,33 +1622,72 @@ def register_render_read(store, k: int) -> tuple:
 
 
 def register_write_images(out_dir: str, images: dict) -> list:
-    """Each image written whole under `<out_dir>/<path>`, by a temp file in its
-    own directory and a rename (contract §3.6). Returns the images' `file=`
-    rows, without the prefix, in §3.2's canonical form: `<path>` TAB `1` TAB
-    `<sha256>`, sorted by path, bytewise. Every path is a render-set path,
-    which `register_images` checked, so none leaves `out_dir`."""
-    os.makedirs(out_dir, exist_ok=True)
-    rows = []
-    for path in sorted(images, key=lambda p: p.encode("utf-8")):
+    """The images written under `<out_dir>/<path>` (contract §3.6), with
+    `<out_dir>` as it was on any end but a return (lane 3's review of T301,
+    MUST-1 and SHOULD-1). Returns the images' `file=` rows, without the
+    prefix, in §3.2's canonical form: `<path>` TAB `1` TAB `<sha256>`, sorted
+    by path, bytewise.
+
+    - EACH PATH IS CHECKED FIRST, before anything is written. It must be a
+      render-set path, so it cannot leave `<out_dir>`. It must hold no control
+      character, U+0000-U+001F or U+007F, so its row stays one line (SHOULD-2).
+      Either failure raises `RenderRefused`.
+    - THE TREE IS BUILT APART, in a `tempfile.mkdtemp` directory beside
+      `<out_dir>`, on its filesystem. Each image is written whole to a temp
+      file there, then `os.link`ed to its path, and the temp file is
+      unlinked. A link never replaces a file: where one is there already, as
+      two logs that differ only by case on a filesystem that folds case, the
+      link fails EEXIST and that raises `RenderRefused`. Nothing is ever
+      `os.replace`d onto an image's path (MUST-1).
+    - THE TREE IS THEN RENAMED ONTO `<out_dir>`. The rename succeeds where
+      `<out_dir>` is absent or still an empty directory, and fails where
+      anything was put in it during the read, so it never overwrites. The
+      new `<out_dir>` keeps the mode it had, or takes the umask's.
+    - ON ANY FAILURE the build directory is removed, and the `OSError` or
+      `RenderRefused` is raised again. Only a missing parent of `<out_dir>`,
+      made on the way, stays behind."""
+    import tempfile     # used here alone, so the module's imports stay as they were
+    order = sorted(images, key=lambda p: p.encode("utf-8"))
+    for path in order:
         if not register_render_path(path):
             raise RenderRefused(f"{path!r} is not a render-set path")
-        data = images[path]
-        target = os.path.join(out_dir, *path.split("/"))
-        parent = os.path.dirname(target)
-        os.makedirs(parent, exist_ok=True)
-        temp = os.path.join(parent, f".{os.path.basename(target)}.tmp-{os.getpid()}")
-        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
-        try:
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(data)
-            os.replace(temp, target)
-        except BaseException:
+        if _RENDER_CONTROL_RE.search(path):
+            raise RenderRefused(f"the image {path!r} holds a control character in its path, "
+                                f"so it cannot be a file= row")
+    target_dir = os.path.abspath(out_dir)
+    parent = os.path.dirname(target_dir)
+    os.makedirs(parent, exist_ok=True)
+    mask = os.umask(0)
+    os.umask(mask)
+    mode = (stat.S_IMODE(os.stat(target_dir).st_mode) if os.path.isdir(target_dir)
+            else 0o777 & ~mask)
+    build = tempfile.mkdtemp(prefix=f".{os.path.basename(target_dir)}.render-", dir=parent)
+    rows = []
+    try:
+        for path in order:
+            data = images[path]
+            target = os.path.join(build, *path.split("/"))
+            folder = os.path.dirname(target)
+            os.makedirs(folder, exist_ok=True)
+            temp = os.path.join(folder, f".{os.path.basename(target)}.tmp-{os.getpid()}")
+            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
             try:
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(data)
+                try:
+                    os.link(temp, target)
+                except FileExistsError:
+                    raise RenderRefused(f"{path} would overwrite a file already written "
+                                        f"beside it (EEXIST): two images that differ only by "
+                                        f"case, on a filesystem that folds case?")
+            finally:
                 os.unlink(temp)
-            except OSError:
-                pass
-            raise
-        rows.append(f"{path}\t1\t{hashlib.sha256(data).hexdigest()}")
+            rows.append(f"{path}\t1\t{hashlib.sha256(data).hexdigest()}")
+        os.chmod(build, mode)
+        os.rename(build, target_dir)
+    except BaseException:
+        shutil.rmtree(build, ignore_errors=True)
+        raise
     return rows
 
 
@@ -1652,15 +1715,18 @@ def cmd_render(args: list[str]) -> int:
     Exits:
     - 0: the images are written;
     - 64: usage, before the configuration is read and before any connection,
-      whether the argument is malformed or `<dir>` is neither absent nor
-      empty. So is any other `render` form: `--checkout` is group C's (§3.7),
-      and this build does not have it;
+      whether the argument is malformed or `<dir>` exists and is not an empty
+      directory (a symbolic link included, since the finished tree is renamed
+      onto `<dir>`). So is any other `render` form: `--checkout` is group C's
+      (§3.7), and this build does not have it;
     - 2: a refused configuration, Q6(c)'s refusal of `mode=primary`
       included;
     - 69: a failed read; a `k` above the head or before the latest import's
       baseline (exit-codes.md's [P]); a `REGISTER_SCHEMA_VERSION` outside the
-      readers' window; journal rows that do not replay; and an image that
-      could not be written, which the contract's four codes leave unnamed.
+      readers' window; journal rows that do not replay; an image whose path
+      holds a control character; and images that could not be written, which
+      the contract's four codes leave unnamed.
+    On any end but 0, `<dir>` is as it was (lane 3's review, SHOULD-1), and
     stdout is printed only once every image is in place."""
     want = f"render takes --images --at <k> --out <dir> - see {PROG} --help"
     images_flag, at, out_dir = False, None, None
@@ -1708,9 +1774,10 @@ def cmd_render(args: list[str]) -> int:
         return EXIT_USAGE
     k = int(at)
     if os.path.lexists(out_dir):
-        if not os.path.isdir(out_dir):
-            note(f"--out {out_dir} exists and is not a directory: <dir> must not exist, or "
-                 f"must be empty")
+        if os.path.islink(out_dir) or not os.path.isdir(out_dir):
+            what = "a symbolic link" if os.path.islink(out_dir) else "not a directory"
+            note(f"--out {out_dir} exists and is {what}: <dir> must not exist, or must be an "
+                 f"empty directory")
             return EXIT_USAGE
         try:
             present = os.listdir(out_dir)
@@ -1733,6 +1800,17 @@ def cmd_render(args: list[str]) -> int:
         echoed = _register_psql_lines(exc)
         note(f"render --images: the register could not be read"
              f"{'' if echoed else ': ' + exc.detail}; nothing was written")
+        # A MISSING TABLE OR COLUMN is most likely a schema of another
+        # version, which the request failed on before its version could be
+        # checked (lane 3's review, NIT-1): name Y:2338's two remedies.
+        code = next((m.group(1) for m in (re.match(r"ERROR:\s+([0-9A-Z]{5}):", line)
+                                           for line in (exc.stderr or "").splitlines()) if m),
+                    None)
+        if exc.psql_exit == 3 and code in ("42P01", "42703"):
+            note(f"render --images: a table or column this client reads is missing, so the "
+                 f"register's schema may not be this client's, {REGISTER_SCHEMA_VERSION}: if "
+                 f"it is newer, upgrade the tools; if it is older, the database is behind: "
+                 f"run the bootstrap")
         return EXIT_UNAVAILABLE
     except StoreUnusable as exc:
         note(f"render --images: the register could not be read: {exc.detail}; nothing was "
@@ -1745,7 +1823,7 @@ def cmd_render(args: list[str]) -> int:
         rows = register_write_images(out_dir, images)
     except (OSError, RenderRefused) as exc:
         note(f"render --images: the images at seq {k} could not be written under {out_dir} "
-             f"({exc}); stdout names none of them")
+             f"({exc}); <dir> is as it was")
         return EXIT_UNAVAILABLE
     say("format=1")
     say(f"n={k}")
