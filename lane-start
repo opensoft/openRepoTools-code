@@ -2627,6 +2627,9 @@ if (( confirm )); then
           step "--dry-run: nothing was renamed, written or launched"
           exit 0
         fi
+        # FEATURE 007, T428: the act's base is this run's, not the session's
+        # (Y:5596), as at section 6's launch below.
+        unset LANES_ACT
         step "exec: $(quoted "${bare[@]}")"
         exec "${bare[@]}"
         ;;
@@ -5240,6 +5243,15 @@ if [ -n "$preparation_failure_identity" ]; then
   preparation_failure_resume_check "$pfr_final"
 fi
 
+# FEATURE 007, T428 - THE ACT ENDS AT THE LAUNCH (Y:5596): "Before a launch
+# LANES_ACT is unset (exec, respawn-pane), or the session and its guard would
+# inherit it." It was exported at the act base above for this run's own verb
+# calls; the session this exec becomes is not one of them, and its guard's
+# writes take their own base. Unset here, after the last verb call this run
+# makes, and not before the --no-launch and --dry-run exits, which exec
+# nothing: --no-launch prints the command for its caller to run, in the
+# caller's own environment.
+unset LANES_ACT
 cd -- "$DIR"
 step "exec: $(quoted "${cmd[@]}")"
 exec "${cmd[@]}"
