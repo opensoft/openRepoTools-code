@@ -8620,6 +8620,1578 @@ def _login_revoke(service: str, parts: dict, logins: list[tuple[str, str]],
     return EXIT_OK
 
 
+# ===== the SQL register: register commands (007)
+#
+# THE WRITERS' COMMIT (feature 007, opensoft/openRepoTools#165; contract
+# §3.3; design.md §1.3 and §1.3.1). `register commit` is an attempt's second
+# `psql` call. It reads the attempt directory the seam left, and derives the
+# whole entry itself: the line edits from each path's base and new bytes, the
+# per-file digests, and every structured row by this file's one classifier,
+# with D18's and D19's alias sets from `tree/lanes/repos.tsv`. Group B sends
+# no structured rows (contract §3.3, lane 4's Q4). Then ONE `commit_write`
+# call at SERIALIZABLE, as one request, with D9's commit row.
+#
+# ITS EXITS ARE §3.3'S TABLE (Y:1553-1571; contract §2.7; CO-6). 2 and 69
+# come only from a refusal identified by its SQLSTATE under `psql`'s exit 3,
+# or from an error raised before anything was sent. Every other end of a call
+# that was sent is 3, in doubt. An LR004 is followed by one re-read of the
+# files the entry read from `tree/`, and never by a second commit call (R02,
+# as lane 3 reads it: #165 6755615338). The SQLSTATE reader and the commit's
+# exit mapping are named helpers, so `journal --write-id` reads errors the
+# same way.
+
+#: contracts/exit-codes.md §1's names for the two codes `register commit` is
+#: the first subcommand to exit with: a write in doubt, and a lost turn.
+EXIT_IN_DOUBT = 3
+EXIT_BUSY = 75
+
+
+class RegisterError:
+    """One refusal the database returned, as contract §2.6 reads it.
+
+    `sqlstate` and `message` come from `psql`'s `ERROR:  <SQLSTATE>: <message>`
+    line (VERBOSITY=verbose, Y:2590). `detail` is the `DETAIL:  <token>` line's
+    token, or "". `error_line` and `detail_line` are those two lines verbatim,
+    which the command writes as its own first two stderr lines."""
+
+    __slots__ = ("sqlstate", "message", "error_line", "detail", "detail_line")
+
+    def __init__(self, sqlstate: str, message: str, error_line: str, detail: str = "",
+                 detail_line: str = ""):
+        self.sqlstate = sqlstate
+        self.message = message
+        self.error_line = error_line
+        self.detail = detail
+        self.detail_line = detail_line
+
+
+_REGISTER_ERROR_LINE_RE = re.compile(r"ERROR:  ([0-9A-Z]{5}): (.*)")
+_REGISTER_DETAIL_LINE_RE = re.compile(r"DETAIL:  (.*)")
+#: The location `psql` puts before a message read from a FILE (`-f`, `\i`),
+#: `psql:<file>:<line>: `. Stdin gets none (Y:2590); it is passed over all
+#: the same, so a register call never reads a refusal as in doubt for it.
+_REGISTER_PSQL_WHERE_RE = re.compile(r"psql:.*?:[0-9]+: ")
+
+
+def register_error_of(stderr: str) -> RegisterError | None:
+    """`psql`'s stderr, read as contract §2.6 reads it: the first line opening
+    `ERROR:` is the refusal, and its SQLSTATE is the five characters after
+    `ERROR:  `. Its `DETAIL:` line is the first one after it, before any other
+    `ERROR:`, `FATAL:` or `PANIC:`. The `LOCATION:` line is never read.
+
+    A `NOTICE:` or `WARNING:` line before the error is passed over, since a
+    notice raised first would be stderr's first line (T106's report). None
+    where no `ERROR:` line is there, or where the first one names no
+    SQLSTATE."""
+    lines = stderr.splitlines()
+    bodies = [_REGISTER_PSQL_WHERE_RE.sub("", line, count=1)
+              if _REGISTER_PSQL_WHERE_RE.match(line) else line for line in lines]
+    for i, line in enumerate(lines):
+        if not bodies[i].startswith("ERROR:"):
+            continue
+        match = _REGISTER_ERROR_LINE_RE.fullmatch(bodies[i])
+        if not match:
+            return None
+        detail = detail_line = ""
+        for j in range(i + 1, len(lines)):
+            after = bodies[j]
+            if after.startswith(("ERROR:", "FATAL:", "PANIC:")):
+                break
+            found = _REGISTER_DETAIL_LINE_RE.fullmatch(after)
+            if found:
+                detail, detail_line = found.group(1).strip(), lines[j]
+                break
+        return RegisterError(match.group(1), match.group(2), line, detail, detail_line)
+    return None
+
+
+def register_definitive_error(failure: PsqlFailed) -> RegisterError | None:
+    """The refusal of a register call that ENDED DEFINITIVELY: `psql`'s exit
+    3, a statement that failed under ON_ERROR_STOP, with a SQLSTATE that can
+    be read (Y:2618, "A `psql` exit 3 is never in doubt").
+
+    None for every other end: a call never sent, exit 1 or 2, a signal, the
+    timer, an exit 0 whose answer cannot be read, or an exit 3 that names no
+    SQLSTATE. A commit call reads each of those, once sent, as in doubt
+    (contract §2.2's [D, R01]; CO-6)."""
+    if not failure.ran or failure.timer_expired or failure.psql_exit != 3:
+        return None
+    return register_error_of(failure.stderr)
+
+
+#: `register commit`'s code for each SQLSTATE under `psql`'s exit 3 (contract
+#: §3.3's table; Y:1555-1569 and Y:2601-2616). LR006 is 0, with `already
+#: <seq>`. LR004 is 69 after one re-read of the bases from SQL, and is never
+#: sent again (R02; lane 3, #165 6755615338): `_register_commit_lr004` makes
+#: it 75 instead where that re-read finds the head moved. Every SQLSTATE not
+#: named here, a 23505 or a 23514 included, is 69.
+REGISTER_COMMIT_EXITS = {
+    "LR001": EXIT_BUSY, "40001": EXIT_BUSY, "40P01": EXIT_BUSY, "55P03": EXIT_BUSY,
+    "LR008": EXIT_BUSY,
+    "LR005": EXIT_REFUSED, "LR007": EXIT_REFUSED, "LR009": EXIT_REFUSED,
+    "LR010": EXIT_REFUSED,
+    "LR006": EXIT_OK,
+    "LR002": EXIT_UNAVAILABLE, "LR003": EXIT_UNAVAILABLE, "LR004": EXIT_UNAVAILABLE,
+}
+
+
+def register_commit_exit(failure: PsqlFailed) -> tuple[int, RegisterError | None]:
+    """The code a `register commit` call that did not answer ends with, and
+    the refusal it rests on (CO-6):
+
+    - 69 and None where nothing was sent (`ran` False: no `psql`, one too old,
+      or the timer spent before it);
+    - `REGISTER_COMMIT_EXITS`' code and the refusal, under exit 3 with a
+      SQLSTATE, any other SQLSTATE being 69;
+    - 3, in doubt, and None for every other end."""
+    if not failure.ran:
+        return EXIT_UNAVAILABLE, None
+    err = register_definitive_error(failure)
+    if err is None:
+        return EXIT_IN_DOUBT, None
+    return REGISTER_COMMIT_EXITS.get(err.sqlstate, EXIT_UNAVAILABLE), err
+
+
+def register_say_error(err: RegisterError | None) -> None:
+    """Contract §2.6's first two stderr lines: the `ERROR:` line, then its
+    `DETAIL:` line where it has one, each verbatim. Every line after them is
+    the command's own, through `note`."""
+    if err is None:
+        return
+    sys.stderr.write(err.error_line + "\n")
+    if err.detail_line:
+        sys.stderr.write(err.detail_line + "\n")
+    sys.stderr.flush()
+
+
+def register_psql_end(failure: PsqlFailed) -> str:
+    """How a register call's `psql` ended, in words, for a note: never a URL
+    or a password (contract §2.6). `psql`'s own first line is kept, as it
+    names a host at most."""
+    if not failure.ran:
+        return f"was never sent ({failure.detail})"
+    if failure.timer_expired:
+        return f"was cut by its client timer ({failure.detail})"
+    if failure.psql_exit is None:
+        return "ended with no exit status"
+    if failure.psql_exit < 0:
+        return f"was ended by signal {-failure.psql_exit}"
+    if failure.psql_exit == 0:
+        return f"exited 0 with an answer {PROG} cannot read ({failure.detail})"
+    first = failure.first_line.strip()
+    return f"exited {failure.psql_exit}" + (f": {first}" if first else "")
+
+
+#: The paths a write may stage (contract §3.3; Y:5060, the seam's path check,
+#: again): the render set, as `journal_edits`' and `files`' CHECKs name it,
+#: less `lanes/STORE`, which only the two operator entries edit (D24).
+REGISTER_WRITE_PATH_RE = re.compile(
+    r"lanes/(LANES\.md|aliases\.tsv|archive/[^/]+\.md|log/[^/]+\.md)")
+#: Where a rename may move a file: `journal_edits.to_path`'s CHECK.
+REGISTER_RENAME_TO_RE = re.compile(r"lanes/(archive|log)/[^/]+\.md")
+REGISTER_LOG_README = "lanes/log/README.md"
+REGISTER_ARCHIVE_PREFIX = "lanes/archive/"
+REGISTER_REPOS_PATH = "lanes/repos.tsv"
+_REGISTER_BLOB_RE = re.compile(r"[0-9a-f]{40}")
+_REGISTER_ZERO_BLOB = "0" * 40
+_REGISTER_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+_REGISTER_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_REGISTER_WORD_RE = re.compile(r"[^\s\x00-\x1f\x7f]+")
+_REGISTER_AUTHOR_RE = re.compile(r"[^<>\n]+ <[^<>\n]*>")
+#: An act's base seq (Y:5577): 1 to 18 digits, no leading zero but `0`.
+_REGISTER_ACT_SEQ_RE = re.compile(r"0|[1-9][0-9]{0,17}")
+#: An act's id, as `journal.act_id`'s CHECK takes it: no `@` and no white space.
+_REGISTER_ACT_ID_RE = re.compile(r"[^@\s]+")
+#: One of `LANES_EXPECT`'s six forms, read in lower case (Y:5581-5587): a
+#: lane name as `check_lane_name` takes it, or a session uuid.
+_REGISTER_SCOPE_RE = re.compile(
+    r"(row|bind|objects|alias|archive):[a-z0-9_][a-z0-9._-]*"
+    r"|sid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+#: The holds that D19 compares spellings for (`commit_write`'s step 7).
+_REGISTER_CLAIM_VERBS = ("CLAIMED", "TAKEOVER")
+#: The LR005 tokens whose refusal names a holder line on stdout (contract §3.3).
+_REGISTER_HOLDER_TOKENS = ("main-held", "one-live-claim", "claim-spellings")
+#: ASCII's upper case to lower, as PostgreSQL's `lower()` under COLLATE "C"
+#: maps it, which is `lanes.lane_key`'s CHECK.
+_REGISTER_ASCII_LOWER = {code: code + 32 for code in range(65, 91)}
+
+_REGISTER_COMMIT_USAGE = (
+    f"{PROG} register commit --write-id <uuid> --generation <uuid> --lane <lane> "
+    f"--verb <verb> --args-sha256 <hex> --workstation <name> <attempt dir>")
+_REGISTER_COMMIT_FLAGS = ("--write-id", "--generation", "--lane", "--verb", "--args-sha256",
+                          "--workstation")
+
+
+class RegisterAttemptRefused(Refusal):
+    """A malformed attempt directory, or one whose files disagree among
+    themselves (contract §3.3): 2, and nothing was sent. Like the seam's own
+    (Y:5078), it is an internal error."""
+
+    def __init__(self, what: str):
+        super().__init__(f"attempt directory: {what}; nothing was sent")
+
+
+def _register_lower(text: str) -> str:
+    return text.translate(_REGISTER_ASCII_LOWER)
+
+
+def register_epoch_utc(epoch: int) -> str:
+    """Whole epoch seconds as the UTC text the entry's times take,
+    `YYYY-MM-DDTHH:MM:SSZ`, which `::timestamptz` reads."""
+    return _dt.datetime.fromtimestamp(epoch, _dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _register_utc_ts(utc: str | None) -> str | None:
+    """A line's UTC as a structured row's `utc_ts`: NULL where it cannot be a
+    time, never a value filled in (Y:5116)."""
+    epoch = register_utc_epoch(utc)
+    return None if epoch is None else register_epoch_utc(epoch)
+
+
+def register_doc_lines(text: str) -> tuple[list[str], bool]:
+    """A file's text as `doc_lines` holds it (`render_file`, §1.2): its lines,
+    cut at LF, and whether it ends with one. An empty file has no lines, and
+    renders as nothing whatever `final_newline` says."""
+    if text == "":
+        return [], True
+    if text.endswith("\n"):
+        return text[:-1].split("\n"), True
+    return text.split("\n"), False
+
+
+def register_line_edits(old: list[str], new: list[str]) -> tuple[list[tuple], list[int]]:
+    """The line edits that turn `old` into `new`, in `commit_write`'s ops
+    (step 6): `replace` and `delete` at a line number in the image the edits
+    before it left, each checked by its old text, and `append` at the end.
+
+    Lines kept are never written, so their `line_id`, their `written_seq` and
+    their structured rows stand. There is no insert: a line added before the
+    end is written by replacing each later line that then differs, and
+    appending the rest. Each op is (op, line_no, old text or None, new text or
+    None). The second value is every line number, in `new`, that an `append`
+    or a `replace` wrote."""
+    import difflib
+    ops: list[tuple] = []
+    written: list[int] = []
+    p = 0
+    while p < len(old) and p < len(new) and old[p] == new[p]:
+        p += 1
+    s = 0
+    while s < len(old) - p and s < len(new) - p and old[-1 - s] == new[-1 - s]:
+        s += 1
+    old_mid, new_mid = old[p:len(old) - s], new[p:len(new) - s]
+    pos = p + 1
+    matcher = difflib.SequenceMatcher(None, old_mid, new_mid, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            pos += i2 - i1
+            continue
+        k = min(i2 - i1, j2 - j1)
+        for t in range(k):
+            ops.append(("replace", pos, old_mid[i1 + t], new_mid[j1 + t]))
+            written.append(pos)
+            pos += 1
+        for t in range(k, i2 - i1):
+            ops.append(("delete", pos, old_mid[i1 + t], None))
+        if j2 - j1 <= k:
+            continue
+        if i2 == len(old_mid) and s == 0:
+            for text in new_mid[j1 + k:j2]:
+                ops.append(("append", pos, None, text))
+                written.append(pos)
+                pos += 1
+            continue
+        # A LINE ADDED BEFORE THE END: the rest is rewritten, line by line.
+        rest_old = old_mid[i2:] + old[len(old) - s:]
+        rest_new = new_mid[j1 + k:] + new[len(new) - s:]
+        for t in range(min(len(rest_old), len(rest_new))):
+            if rest_old[t] != rest_new[t]:
+                ops.append(("replace", pos, rest_old[t], rest_new[t]))
+                written.append(pos)
+            pos += 1
+        for t in range(len(rest_new), len(rest_old)):
+            ops.append(("delete", pos, rest_old[t], None))
+        for text in rest_new[len(rest_old):]:
+            ops.append(("append", pos, None, text))
+            written.append(pos)
+            pos += 1
+        break
+    return ops, written
+
+
+def register_act_of_env(act: str, expect: str) -> dict | None:
+    """`LANES_ACT` and `LANES_EXPECT`, checked again before `psql`, as
+    `lanes-edit.sh` checks them before the first snapshot (Y:5597-5601). Each
+    refusal is 2, names the variable, and sends nothing:
+
+    1. `LANES_ACT` is malformed: not `<act-id>@<seq>:<generation>` or
+       `<act-id>@files`;
+    2. `LANES_EXPECT` is not empty and `LANES_ACT` is unset or empty;
+    3. a scope is outside the six forms, `*` included;
+    4. the base is `files`, taken off primary.
+
+    Returns the entry's `act`, `{id, base, generation, expect}` with the
+    scopes in lower case in the order given, or None outside an act."""
+    tokens = expect.split()
+    act_id = seq = generation = ""
+    if act:
+        act_id, at, rest = act.partition("@")
+        if rest != "files":
+            seq, colon, generation = rest.partition(":")
+        if (not at or not _REGISTER_ACT_ID_RE.fullmatch(act_id)
+                or (rest != "files" and (not colon or not _REGISTER_ACT_SEQ_RE.fullmatch(seq)
+                                         or not _REGISTER_UUID_RE.fullmatch(generation)))):
+            raise Refusal(f"LANES_ACT is {act!r}, which is not <act-id>@<seq>:<generation> or "
+                          f"<act-id>@files (the act's id, its base seq, and the register "
+                          f"generation in lower case). Nothing was sent.")
+    elif tokens:
+        raise Refusal("LANES_EXPECT names scopes and LANES_ACT is unset or empty: an "
+                      "expectation is checked against an act's base, so these scopes would "
+                      "go unchecked. Run the write inside its act. Nothing was sent.")
+    for token in tokens:
+        if not _REGISTER_SCOPE_RE.fullmatch(_register_lower(token)):
+            raise Refusal(f'LANES_EXPECT carries "{token}", which is not row:, bind:, '
+                          f"objects:, alias: or archive: and a lane name, or sid: and a "
+                          f"session uuid. Nothing was sent.")
+    if not act:
+        return None
+    if not seq:
+        raise Refusal(f"LANES_ACT was taken off primary (`{act}`) and this write runs on "
+                      f"primary: run the act again from its start. Nothing was sent.")
+    return {"id": act_id, "base": int(seq), "generation": generation,
+            "expect": [_register_lower(token) for token in tokens]}
+
+
+def _register_attempt_read(directory: str, name: str, *, optional: bool = False) -> bytes | None:
+    path = os.path.join(directory, name)
+    if not os.path.isfile(path):
+        if optional and not os.path.lexists(path):
+            return None
+        raise RegisterAttemptRefused(f"{name} is missing, or is not a regular file")
+    try:
+        with open(path, "rb") as handle:
+            return handle.read()
+    except OSError as exc:
+        raise RegisterAttemptRefused(f"{name} cannot be read ({exc.strerror or exc})")
+
+
+def _register_attempt_text(directory: str, name: str, data: bytes) -> str:
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise RegisterAttemptRefused(f"{name} is not UTF-8")
+
+
+def _register_attempt_lines(text: str, name: str) -> list[str]:
+    """A file of LF-ended lines: every line, the empty last piece dropped. An
+    empty line anywhere else is malformed."""
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    for number, line in enumerate(lines, 1):
+        if line == "":
+            raise RegisterAttemptRefused(f"{name} line {number} is empty")
+    return lines
+
+
+def register_attempt_snapshot(text: str) -> dict:
+    """The `snapshot` file, contract §3.2's stdout verbatim: one `key=value`
+    per line, read by key. `file=` rows may repeat and are not read here; a
+    key it does not know is passed over (§5)."""
+    values: dict = {}
+    for number, line in enumerate(_register_attempt_lines(text, "snapshot"), 1):
+        key, eq, value = line.partition("=")
+        if not eq or not key:
+            raise RegisterAttemptRefused(f"snapshot line {number} is not key=value")
+        if key == "file":
+            continue
+        if key in values:
+            raise RegisterAttemptRefused(f"snapshot names {key}= twice")
+        values[key] = value
+    return values
+
+
+def _register_act_file(text: str) -> dict:
+    """The attempt directory's `act` file (contract §3.3): `id=`, `base=` and
+    `generation=` once each, and one `expect=<scope>` per scope, possibly
+    none. Read by `register_act_of_env`'s grammar."""
+    fields: dict = {"expect": []}
+    for number, line in enumerate(_register_attempt_lines(text, "act"), 1):
+        key, eq, value = line.partition("=")
+        if not eq or key not in ("id", "base", "generation", "expect"):
+            raise RegisterAttemptRefused(f"act line {number} is not id=, base=, generation= "
+                                         f"or expect=")
+        if key == "expect":
+            fields["expect"].append(value)
+        elif key in fields:
+            raise RegisterAttemptRefused(f"act names {key}= twice")
+        else:
+            fields[key] = value
+    for key in ("id", "base", "generation"):
+        if key not in fields:
+            raise RegisterAttemptRefused(f"act has no {key}=")
+    act_text = f"{fields['id']}@{fields['base']}"
+    if fields["base"] != "files":
+        act_text += f":{fields['generation']}"
+    try:
+        act = register_act_of_env(act_text, " ".join(fields["expect"]))
+    except Refusal as exc:
+        why = str(exc).replace(" Nothing was sent.", "")
+        raise RegisterAttemptRefused(f"act is malformed: {why}")
+    if act is None or any(len(value.split()) != 1 or value != value.strip()
+                          for value in fields["expect"]):
+        raise RegisterAttemptRefused("act is malformed: its scopes are one per expect= line")
+    return act
+
+
+def _register_blob_id(data: bytes) -> str:
+    """The git blob id of `data`, as `git hash-object` gives it (SHA-1)."""
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def register_files_rows(changes: dict, images: dict) -> bytes:
+    """The canonical rows of contract §3.2 for every path in `changes.tsv`,
+    as the write leaves it: `<path>` TAB `1` or `0` TAB the sha256 or `-`,
+    sorted bytewise, each LF-ended. The `files` file must be exactly these."""
+    rows = []
+    for path in sorted(changes, key=lambda p: p.encode("utf-8")):
+        if changes[path][0] == "D":
+            rows.append(f"{path}\t0\t-\n")
+        else:
+            rows.append(f"{path}\t1\t{hashlib.sha256(images[path]).hexdigest()}\n")
+    return "".join(rows).encode("utf-8")
+
+
+def read_attempt_dir(directory: str, ident: dict, env_act: dict | None) -> dict:
+    """The attempt directory `register commit` takes as its argument (contract
+    §3.3): only the names its table lists are read (CO-1), and each check that
+    fails is `RegisterAttemptRefused`, 2, before anything is sent.
+
+    Returns `n`, `repos_blob`, `not_after`, `message`, `author`, `act`,
+    `changes` (path to (status, base blob, new blob)), `renames` (from to to),
+    `images` (path to bytes), `tree` (the scratch tree's directory),
+    `tree_blobs` (each path under `lanes/` at its HEAD, which is `n`) and
+    `tree_bases` (each changed path's base bytes there)."""
+    if not os.path.isdir(directory):
+        raise RegisterAttemptRefused(f"{directory} is not a directory")
+    read = functools.partial(_register_attempt_read, directory)
+    text = functools.partial(_register_attempt_text, directory)
+
+    # THE SNAPSHOT, AND THE FLAGS AGAINST IT.
+    snap = register_attempt_snapshot(text("snapshot", read("snapshot")))
+    if snap.get("format") != "1":
+        raise RegisterAttemptRefused(f"snapshot is format={snap.get('format', '')}, and this "
+                                     f"build reads format=1")
+    for key, flag in (("generation", "--generation"), ("write_id", "--write-id")):
+        if _register_lower(snap.get(key, "")) != ident[key]:
+            raise RegisterAttemptRefused(
+                f"the flags differ from snapshot: {flag} is {ident[key]}, and snapshot's "
+                f"{key}= is {snap.get(key, '(absent)')}")
+    n_text = snap.get("n", "")
+    if not re.fullmatch(r"-1|0|[1-9][0-9]{0,17}", n_text):
+        raise RegisterAttemptRefused(f"snapshot's n= is {n_text!r}, not a seq")
+    repos_blob = snap.get("repos_blob")
+    if repos_blob is not None and not _REGISTER_BLOB_RE.fullmatch(repos_blob):
+        raise RegisterAttemptRefused(f"snapshot's repos_blob= is {repos_blob!r}, not 40 hex")
+    after_text = _register_attempt_lines(text("not_after", read("not_after")), "not_after")
+    if len(after_text) != 1 or not re.fullmatch(r"[0-9]{1,11}", after_text[0]):
+        raise RegisterAttemptRefused("not_after is not one line of epoch seconds")
+    if snap.get("not_after") != after_text[0]:
+        raise RegisterAttemptRefused(f"not_after is {after_text[0]}, and snapshot's "
+                                     f"not_after= is {snap.get('not_after', '(absent)')}")
+
+    # THE CHANGES, THE RENAMES AND THE IMAGES.
+    changes: dict = {}
+    for number, line in enumerate(_register_attempt_lines(text("changes.tsv",
+                                                               read("changes.tsv")),
+                                                          "changes.tsv"), 1):
+        parts = line.split("\t")
+        if len(parts) != 4:
+            raise RegisterAttemptRefused(f"changes.tsv line {number} is not four tab-separated "
+                                         f"fields")
+        status, path, base, new = parts
+        if status not in ("A", "M", "D"):
+            raise RegisterAttemptRefused(f"changes.tsv line {number}'s status is {status!r}, "
+                                         f"not A, M or D")
+        if not REGISTER_WRITE_PATH_RE.fullmatch(path) or path == REGISTER_LOG_README:
+            raise RegisterAttemptRefused(
+                f"changes.tsv stages {path!r}, which is outside the render set: lanes/LANES.md, "
+                f"lanes/aliases.tsv, lanes/archive/*.md and lanes/log/<lane>.md")
+        if path in changes:
+            raise RegisterAttemptRefused(f"changes.tsv names {path} twice")
+        if not _REGISTER_BLOB_RE.fullmatch(base) or not _REGISTER_BLOB_RE.fullmatch(new):
+            raise RegisterAttemptRefused(f"changes.tsv line {number}'s blob ids are not 40 "
+                                         f"lower-case hex each")
+        if (base == _REGISTER_ZERO_BLOB) != (status == "A") or \
+                (new == _REGISTER_ZERO_BLOB) != (status == "D"):
+            raise RegisterAttemptRefused(f"changes.tsv line {number}: an {status} line's "
+                                         f"missing side, and only it, is 40 zeros")
+        changes[path] = (status, base, new)
+    renames: dict = {}
+    raw = read("renames.tsv", optional=True)
+    if raw is not None:
+        targets: set = set()
+        for number, line in enumerate(_register_attempt_lines(text("renames.tsv", raw),
+                                                              "renames.tsv"), 1):
+            parts = line.split("\t")
+            if len(parts) != 2:
+                raise RegisterAttemptRefused(f"renames.tsv line {number} is not <from> TAB <to>")
+            frm, to = parts
+            if changes.get(frm, ("",))[0] != "D" or changes.get(to, ("",))[0] != "A":
+                raise RegisterAttemptRefused(f"renames.tsv line {number}: {frm} must be a D line "
+                                             f"and {to} an A line in changes.tsv")
+            if not REGISTER_RENAME_TO_RE.fullmatch(to):
+                raise RegisterAttemptRefused(f"renames.tsv moves {frm} to {to}, and a rename "
+                                             f"stays in lanes/archive/ or lanes/log/")
+            if frm in renames or to in targets:
+                raise RegisterAttemptRefused(f"renames.tsv names {frm if frm in renames else to} "
+                                             f"twice")
+            renames[frm] = to
+            targets.add(to)
+    images: dict = {}
+    root = os.path.join(directory, "images")
+    if os.path.lexists(root) and not os.path.isdir(root):
+        raise RegisterAttemptRefused("images is not a directory")
+    if os.path.isdir(root):
+        for here, dirs, names in os.walk(root, followlinks=False):
+            for name in dirs + names:
+                full = os.path.join(here, name)
+                rel = os.path.relpath(full, root).replace(os.sep, "/")
+                mode = os.lstat(full).st_mode
+                if stat.S_ISDIR(mode):
+                    continue
+                if not stat.S_ISREG(mode):
+                    raise RegisterAttemptRefused(f"images/{rel} is not a regular file")
+                if changes.get(rel, ("",))[0] not in ("A", "M"):
+                    raise RegisterAttemptRefused(f"images/{rel} has no A or M line in "
+                                                 f"changes.tsv")
+                images[rel] = read(os.path.join("images", rel))
+    for path, (status, _base, new) in changes.items():
+        if status == "D":
+            continue
+        if path not in images:
+            raise RegisterAttemptRefused(f"images/{path} is missing")
+        data = images[path]
+        if _register_blob_id(data) != new:
+            raise RegisterAttemptRefused(f"images/{path} is not the new blob changes.tsv names "
+                                         f"({new})")
+        try:
+            image = data.decode("utf-8")
+        except UnicodeDecodeError:
+            raise RegisterAttemptRefused(f"images/{path} is not UTF-8, and the register holds "
+                                         f"text")
+        for bad, why in (("\r", "a carriage return"), ("\0", "a NUL")):
+            if bad in image:
+                number = image[:image.index(bad)].count("\n") + 1
+                raise RegisterAttemptRefused(f"images/{path} line {number} holds {why}, which "
+                                             f"no line of the register can hold")
+
+    # THE FILES: recomputed from images/, and refused on any difference.
+    files = read("files")
+    listed: dict = {}
+    for number, line in enumerate(_register_attempt_lines(text("files", files), "files"), 1):
+        parts = line.split("\t")
+        if len(parts) != 3:
+            raise RegisterAttemptRefused(f"files line {number} is not <path> TAB <present> TAB "
+                                         f"<sha256>")
+        listed[parts[0]] = parts
+    for path in changes:
+        if path not in listed:
+            raise RegisterAttemptRefused(f"{path} is in changes.tsv and has no files row")
+    for path in listed:
+        if path not in changes:
+            raise RegisterAttemptRefused(f"files has a row for {path}, which has no changes.tsv "
+                                         f"line")
+    if files != register_files_rows(changes, images):
+        wrong = sorted(path for path in changes
+                       if "\t".join(listed[path]) + "\n" !=
+                       register_files_rows({path: changes[path]}, images).decode("utf-8"))
+        raise RegisterAttemptRefused(
+            "files differs from the rows lanes-index recomputes from images/"
+            + (f": {', '.join(wrong)}" if wrong else ", in its order or its line ends"))
+
+    # THE MESSAGE, THE AUTHOR AND THE ACT.
+    message = text("msg", read("msg"))
+    if message == "" or "\r" in message or "\0" in message:
+        raise RegisterAttemptRefused("msg is empty, or holds a carriage return or a NUL, which "
+                                     "journal.message cannot hold")
+    author = text("author", read("author"))
+    author = author[:-1] if author.endswith("\n") else author
+    if not _REGISTER_AUTHOR_RE.fullmatch(author):
+        raise RegisterAttemptRefused("author is not one line `Name <email>`")
+    raw = read("act", optional=True)
+    act = _register_act_file(text("act", raw)) if raw is not None else None
+    if env_act is not None and act != env_act:
+        raise RegisterAttemptRefused(
+            "act is missing, and LANES_ACT names an act" if act is None else
+            "act disagrees with LANES_ACT and LANES_EXPECT, checked again before psql")
+
+    # THE SCRATCH TREE AT n: each path's base, and repos.tsv's blob.
+    tree = os.path.join(directory, "tree")
+    try:
+        if not os.path.isdir(tree):
+            raise StoreUnusable("unread", "it is not a directory")
+        git(tree, "rev-parse", "--verify", "-q", "HEAD^{commit}")
+        listing = git(tree, "ls-tree", "-r", "-z", "HEAD", "--", "lanes").stdout
+    except StoreUnusable as exc:
+        raise RegisterAttemptRefused(f"tree/ is not the scratch tree --tree built ({exc.detail})")
+    tree_blobs: dict = {}
+    for item in listing.split("\0"):
+        meta, tab, path = item.partition("\t")
+        fields = meta.split()
+        if tab and len(fields) == 3 and fields[1] == "blob":
+            tree_blobs[path] = fields[2]
+    for path, (status, base, _new) in changes.items():
+        if status == "A" and path in tree_blobs:
+            raise RegisterAttemptRefused(f"changes.tsv adds {path}, which tree/ has at HEAD")
+        if status != "A" and tree_blobs.get(path) != base:
+            raise RegisterAttemptRefused(f"changes.tsv's base blob of {path}, {base}, is not "
+                                         f"tree/'s at HEAD")
+    if repos_blob != tree_blobs.get(REGISTER_REPOS_PATH):
+        raise RegisterAttemptRefused(
+            f"snapshot's repos_blob= is {repos_blob or '(absent)'}, and tree/'s "
+            f"{REGISTER_REPOS_PATH} is {tree_blobs.get(REGISTER_REPOS_PATH, '(absent)')}")
+    try:
+        blobs = cat_blobs(tree, [base for status, base, _new in changes.values() if status != "A"])
+    except StoreUnusable as exc:
+        raise RegisterAttemptRefused(f"tree/'s bases cannot be read ({exc.detail})")
+    tree_bases: dict = {}
+    for path, (status, base, _new) in changes.items():
+        if status == "A":
+            continue
+        if base not in blobs:
+            raise RegisterAttemptRefused(f"tree/ cannot give {path}'s base blob {base}")
+        try:
+            blobs[base].decode("utf-8")
+        except UnicodeDecodeError:
+            raise RegisterAttemptRefused(f"tree/'s {path} is not UTF-8")
+        tree_bases[path] = blobs[base]
+    return {"directory": directory, "n": int(n_text), "repos_blob": repos_blob,
+            "not_after": int(after_text[0]), "message": message, "author": author,
+            "act": act, "changes": changes, "renames": renames, "images": images,
+            "tree": tree, "tree_blobs": tree_blobs, "tree_bases": tree_bases}
+
+
+class RegisterView:
+    """The render set at `n` and after this write: the scratch tree at HEAD,
+    with the attempt's changes over it. `bases` holds each changed path's base
+    bytes, `tree/`'s.
+
+    It records what the entry read of `tree/`, which is what LR004's re-read
+    compares with SQL (R02; lane 3, #165 6755386771 and 6755615338): `read`,
+    every path whose text at `n` it read, or found absent; and `listed`,
+    every prefix whose paths at `n` it listed. A changed path's base is read
+    through `before` like any other."""
+
+    def __init__(self, att: dict, bases: dict):
+        self.att = att
+        self.bases = bases
+        self._texts: dict = {}
+        self._raw: dict = {}
+        self.read: set = set()
+        self.listed: set = set()
+
+    def load(self, paths) -> None:
+        """Read the tree's copies of `paths` in one `git cat-file --batch`."""
+        want = [p for p in paths if p not in self._texts and p in self.att["tree_blobs"]]
+        if not want:
+            return
+        blobs = cat_blobs(self.att["tree"], [self.att["tree_blobs"][p] for p in want])
+        for path in want:
+            self._raw[path] = blobs.get(self.att["tree_blobs"][path], b"")
+            self._texts[path] = _decode(self._raw[path])
+
+    def tree_bytes(self, path: str) -> bytes | None:
+        """`path`'s bytes in `tree/` at `n`, or None where it is absent there:
+        what LR004's re-read compares with SQL's."""
+        change = self.att["changes"].get(path)
+        if change:
+            return None if change[0] == "A" else self.bases[path]
+        if path not in self.att["tree_blobs"]:
+            return None
+        self.load([path])
+        return self._raw[path]
+
+    def before(self, path: str) -> str | None:
+        self.read.add(path)
+        change = self.att["changes"].get(path)
+        if change:
+            return None if change[0] == "A" else self.bases[path].decode("utf-8")
+        if path not in self.att["tree_blobs"]:
+            return None
+        self.load([path])
+        return self._texts[path]
+
+    def after(self, path: str) -> str | None:
+        change = self.att["changes"].get(path)
+        if change:
+            return None if change[0] == "D" else self.att["images"][path].decode("utf-8")
+        return self.before(path)
+
+    def paths(self, prefix: str, side: str) -> list[str]:
+        """The paths under `prefix` on one side, `before` or `after`, sorted
+        bytewise, as `ls-tree` and COLLATE "C" order them."""
+        self.listed.add(prefix)
+        found = {p for p in self.att["tree_blobs"] if p.startswith(prefix)}
+        if side == "after":
+            for path, (status, _b, _n) in self.att["changes"].items():
+                if path.startswith(prefix):
+                    (found.discard if status == "D" else found.add)(path)
+        return sorted(found, key=lambda p: p.encode("utf-8"))
+
+
+# ----- THE DERIVATION HELPERS: ONE SET, T112'S AND T115'S (lane 3's reading 7,
+# #165 6755386771; ERR-49). `register commit` and `import --at` derive every
+# structured row through these and through nothing else, so a line a write
+# stores and the same line an import stores give the same row. The set:
+#   - `repo_key`: `register_repo_key`, over `register_repo_table` built in Rule
+#     6's order - the shipped table (`register_shipped_repos_text`), then the
+#     per-wip one, the last row winning - as `rule6_aliases` reads them
+#     (`lanes-edit.sh:6938` at code `39839dc`);
+#   - the spellings: `register_repo_spellings`, D18's, on a slot line, and
+#     `register_object_spellings`, D19's, on a CLAIMED or TAKEOVER hold only
+#     (Y:1231), each over that same table;
+#   - the holds: `_register_last_hold`, each lane's last readable line on an
+#     object, for an object `register_hold_object` takes, never a `lane:` one
+#     (#160's holders, `lanes-index:1594`);
+#   - `register_lines`' kinds: `_register_slot_row`, only for a line the one
+#     classifier reads as a kind, since nothing reads a row with no kind;
+#   - the workstation: `register_line_workstation`, the line's own `session
+#     <uuid>@<ws>`, else its caller's fallback - a write's `--workstation`, and
+#     None for the import (Y:1273);
+#   - `owner`, sent NULL by `_register_lane_row`, as the import sends it, since
+#     S4 reads the row's own text (Y:1197);
+#   - and the rows they fill: `_register_log_row`, `_register_lane_aliases` and
+#     `_register_lane_row`.
+
+def register_shipped_repos_path() -> str:
+    """The shipped `repos.tsv`, found as `lanes-edit.sh` finds it for
+    `rule6_aliases`: `$LANES_REPOS_TSV_SHIPPED`, else the one in
+    `$OPENREPOTOOLS_BIN_DIR` where that file exists, else the one beside
+    this command, where `--install` places both."""
+    named = os.environ.get("LANES_REPOS_TSV_SHIPPED", "")
+    if named:
+        return named
+    bin_dir = os.environ.get("OPENREPOTOOLS_BIN_DIR", "")
+    if bin_dir and os.path.isfile(os.path.join(bin_dir, "repos.tsv")):
+        return os.path.join(bin_dir, "repos.tsv")
+    return os.path.join(os.path.dirname(os.path.realpath(__file__)), "repos.tsv")
+
+
+def register_shipped_repos_text() -> str | None:
+    """The shipped `repos.tsv`'s text, the first layer of Rule 6's table, or
+    None where no such file is there, which `rule6_aliases` passes over too.
+    One that is there and cannot be read is a `Refusal`, 2: a table read in
+    part would key a hold otherwise than `lanes-edit.sh` keys it."""
+    path = register_shipped_repos_path()
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "rb") as handle:
+            return _decode(handle.read())
+    except OSError as exc:
+        raise Refusal(f"the shipped alias table {path} cannot be read "
+                      f"({exc.strerror or exc}), and Rule 6's key reads it first")
+
+
+def register_repo_table(*texts: str | None) -> tuple[dict, dict]:
+    """The repository alias table, read as `rule6_aliases` reads it: the
+    `repos.tsv` texts in Rule 6's order, the shipped one and then the
+    per-wip one (`tree/lanes/repos.tsv`, whose blob is `repos_blob`), each
+    alias keyed in lower case and the LAST row naming it winning, so a
+    per-wip row replaces the shipped row for its alias. A comment line, a
+    line with no tab, and an empty alias or name are passed over.
+
+    Returns two maps: each alias's canonical `owner/repo`, by the alias in
+    lower case; and each canonical name's aliases, by that name in lower
+    case - every spelling of an alias whose winning row names it, in the
+    order the aliases were first seen."""
+    canon: dict = {}
+    spelled: dict = {}
+    for text in texts:
+        for raw in (text or "").split("\n"):
+            if re.match(r"[ \t]*#", raw):
+                continue
+            parts = raw.split("\t")
+            if len(parts) < 2:
+                continue
+            alias, target = _trim(parts[0]), _trim(parts[1])
+            if not alias or not target:
+                continue
+            canon[alias.lower()] = target
+            names = spelled.setdefault(alias.lower(), [])
+            if alias not in names:
+                names.append(alias)
+    aliases: dict = {}
+    for key, names in spelled.items():
+        listed = aliases.setdefault(canon[key].lower(), [])
+        for name in names:
+            if name not in listed:
+                listed.append(name)
+    return canon, aliases
+
+
+def register_repo_spellings(repo: str, table: tuple[dict, dict]) -> list[str]:
+    """D18's and D19's set for one repository: the spelling as written, its
+    canonical name, and every alias the table maps to that name (Y:3356).
+    The order is kept and nothing repeats."""
+    canon, aliases = table
+    named = canon.get(repo.lower(), repo)
+    out: list[str] = []
+    for spelling in [repo, named] + aliases.get(named.lower(), []):
+        if spelling not in out:
+            out.append(spelling)
+    return out
+
+
+def register_repo_key(repo: str, table: tuple[dict, dict]) -> str:
+    """A register line's `repo_key`: its repository through the alias table,
+    lower case, as `RULE6_AWK` keys a hold (`canon`, then `tolower`), so F13's
+    equality (Y:1989) meets the key `lanes-edit.sh` pairs by."""
+    return table[0].get(repo.lower(), repo).lower()
+
+
+def register_object_spellings(obj: str, table: tuple[dict, dict]) -> list[str] | None:
+    """D19's set for a claim's object: the object as written, then the same
+    object under each of its repository's spellings. An object with no
+    repository part is its own one spelling, and a lane object has none."""
+    if obj.startswith("lane:"):
+        return None
+    if ":openspec/changes/" in obj:
+        repo, rest = obj.split(":openspec/changes/", 1)
+        rest = ":openspec/changes/" + rest
+    elif "#" in obj and not obj.startswith("#"):
+        repo, rest = obj.split("#", 1)
+        rest = "#" + rest
+    else:
+        return [obj]
+    out = [obj]
+    for spelling in register_repo_spellings(repo, table):
+        if spelling + rest not in out:
+            out.append(spelling + rest)
+    return out
+
+
+def register_hold_object(obj: str | None) -> bool:
+    """Whether a log line's object can be an `object_holds` row: every
+    object but a lane's, `lane:<name>`, which holds nothing (#160's holders,
+    `lanes-index:1594`; the `holds` view, Y:1222 as amended)."""
+    return bool(obj) and not obj.startswith("lane:")
+
+
+def register_line_workstation(text: str, fallback: str | None) -> str | None:
+    """A `lanes/LANES.md` line's workstation: its own `session <uuid>@<ws>`,
+    else `fallback` - a write's `--workstation`, or None for the import,
+    which files mode allows (Y:1273)."""
+    found = re.search(r"session [^,@ ]+@([^,; \t]+)", text)
+    return found.group(1) if found else fallback
+
+
+def _register_log_row(path: str, line_no: int, text: str) -> dict | None:
+    """A `log_lines` row for one log line, by `parse_log`'s rules: None for a
+    line the grammar skips, an unreadable row kept (7(b)), else its fields."""
+    parsed = parse_log_line(text)
+    if parsed is None:
+        return None
+    lane = file_lane(path)
+    row = {"path": path, "line_no": line_no, "raw": text, "lane": lane, "verb": None,
+           "session": None, "workstation": None, "utc": None, "utc_ts": None, "object": None,
+           "ref": None, "payload": None, "payload_fields": None, "free_text": None,
+           "written_lane": None, "unreadable": "bad" in parsed, "unreadable_why": None}
+    if "bad" in parsed:
+        row["unreadable_why"] = parsed["bad"]
+        return row
+    obj = parsed["object"]
+    if lane and obj.startswith("lane:"):
+        obj = "lane:" + lane
+    row.update(verb=parsed["verb"], session=parsed["uuid"], workstation=parsed["ws"],
+               utc=parsed["utc"], utc_ts=_register_utc_ts(parsed["utc"]), object=obj,
+               ref=parsed["ref"], payload=parsed["payload"],
+               payload_fields=payload_fields(parsed["payload"]), free_text=parsed["text"],
+               written_lane=parsed["written_lane"])
+    return row
+
+
+def _register_slot_row(line_no: int, text: str, table: tuple,
+                       workstation: str | None) -> dict | None:
+    """A `register_lines` row for one `lanes/LANES.md` line that is not a row:
+    the one classifier's kind and fields (FR-030), its slot (Q17(B)), its
+    `repo_key` and, on a slot line, D18's `repo_spellings`. None for a line
+    of no kind. Its workstation is `register_line_workstation`'s, with
+    `workstation` as the fallback: this write's, or None for the import."""
+    fields = parse_register_line(text)
+    if fields is None:
+        return None
+    role, kind = REGISTER_SLOTS[fields["kind"]]
+    repo = fields["repo"]
+    return {"path": REGISTER_PATH, "line_no": line_no, "raw": text, "kind": fields["kind"],
+            "slot_role": role, "slot_kind": kind, "lane": fields["lane"], "repo": repo,
+            "repo_key": register_repo_key(repo, table) if repo else None,
+            "repo_spellings": register_repo_spellings(repo, table) if repo and role else None,
+            "pr": int(fields["pr"]) if fields["pr"] is not None else None,
+            "tip": fields["tip"], "utc": fields["utc"],
+            "utc_ts": _register_utc_ts(fields["utc"]), "session": fields["session"],
+            "for_lane": fields.get("for_lane"),
+            "workstation": register_line_workstation(text, workstation)}
+
+
+def _register_lane_aliases(text: str | None) -> dict:
+    """#160's `aliases_of` (`build_records`): each lane's old names from
+    `lanes/aliases.tsv`, by the alias chain's end, lower case."""
+    alias_map: dict = {}
+    for ordinal, line in enumerate((text or "").split("\n"), 1):
+        if line.strip() == "" or re.match(r"[ \t]*#", line):
+            continue
+        parts = line.split("\t")
+        old = _trim(parts[0]) if parts else ""
+        new = _trim(parts[1]) if len(parts) > 1 else ""
+        if old and new:
+            alias_map[old.lower()] = (old, new, ordinal)
+
+    def resolve(name: str) -> str:
+        seen: set = set()
+        cur = name
+        while cur.lower() in alias_map and cur.lower() not in seen:
+            seen.add(cur.lower())
+            cur = alias_map[cur.lower()][1]
+        return cur
+
+    out: dict = {}
+    for _key, (old, _new, _ordinal) in sorted(alias_map.items(), key=lambda kv: kv[1][2]):
+        out.setdefault(resolve(old).lower(), []).append(old)
+    return out
+
+
+def _register_lane_row(view: RegisterView, side: str, key: str, aliases: dict) -> dict | None:
+    """The `lanes` row for one lane key on one side, by `build_records`' rules:
+    its first row in `lanes/LANES.md`, else in `lanes/archive/`, with the
+    home and session its logs give. None where the lane has no row: a
+    structured row names a line (step 7)."""
+    found = None
+    for path in [REGISTER_PATH] + view.paths(REGISTER_ARCHIVE_PREFIX, side):
+        content = view.before(path) if side == "before" else view.after(path)
+        for line_no, line in enumerate(register_doc_lines(content or "")[0], 1):
+            name = row_name(line)
+            if name and _register_lower(name) == key:
+                found = (path, line_no, name, line, path != REGISTER_PATH)
+                break
+        if found:
+            break
+    if found is None:
+        return None
+    path, line_no, name, line, archived = found
+    home = sid = None
+    logs = [p for p in view.paths(LOG_PREFIX, side)
+            if p != REGISTER_LOG_README and _register_lower(file_lane(p)) == key]
+    view.load(logs)
+    for log in logs:
+        content = view.before(log) if side == "before" else view.after(log)
+        records, _warnings = parse_log(log, content or "")
+        for rec in records:
+            if rec["unreadable"]:
+                continue
+            fork = rec["payload"].startswith("fork ")
+            if rec["verb"] in ("STARTED", "RESUMED") and not fork:
+                hm = re.search(r"home [^ ;]+", rec["payload"])
+                if hm and hm.group(0)[5:] != "unknown":
+                    home = hm.group(0)[5:]
+            if rec["verb"] in ("PAUSED", "RESUMED") and UUID_FULL_RE.match(rec["session"] or ""):
+                sid = rec["session"].lower()
+    parts = line.split("|")
+    ids = UUID_RE.findall((parts[2] if len(parts) > 2 else "").lower())
+    state = cell_state(line)
+    return {"path": path, "line_no": line_no, "raw": line, "lane_key": key, "lane": name,
+            "aliases": aliases.get(name.lower(), []), "home": home,
+            "workstation": _trim(parts[3]) if len(parts) > 3 else None,
+            "started_utc": _trim(parts[4]) if len(parts) > 4 else None,
+            "handoff_path": _trim(parts[6]) if len(parts) > 6 else None,
+            "state_phrase": _trim(state) if state else None,
+            "objects_cell": _trim(parts[5]) if len(parts) > 5 else None,
+            "session_ids": ids, "last_session": ids[-1] if ids else sid,
+            # `owner` IS SENT NULL (reading 7): S4 answers from the row's own
+            # text (Y:1197), and the import sends NULL too, so the column does
+            # not change between the import and the first write.
+            "archived": archived, "owner": None}
+
+
+def _register_last_hold(view: RegisterView, obj: str, key: str, table: tuple) -> dict | None:
+    """The `object_holds` row of one lane on one object after the write: that
+    lane's LAST readable line on it, in file order - the file bytewise, then
+    the line (R14; #160's `holders_of`) - over every log whose lane is the
+    key. D19's spellings go on a claim's row alone."""
+    best = None
+    logs = [p for p in view.paths(LOG_PREFIX, "after")
+            if p != REGISTER_LOG_README and _register_lower(file_lane(p)) == key]
+    view.load(logs)
+    for log in logs:
+        for line_no, line in enumerate(register_doc_lines(view.after(log) or "")[0], 1):
+            row = _register_log_row(log, line_no, line)
+            if row and not row["unreadable"] and row["object"] == obj:
+                best = row
+    if best is None:
+        return None
+    return {"object": obj, "lane_key": key, "lane": best["lane"], "verb": best["verb"],
+            "utc_ts": best["utc_ts"], "file": best["path"], "ordinal": best["line_no"],
+            "spellings": (register_object_spellings(obj, table)
+                          if best["verb"] in _REGISTER_CLAIM_VERBS else None),
+            "exempt": False}
+
+
+def register_commit_entry(att: dict, ident: dict, view: RegisterView,
+                          shipped_repos: str | None = None) -> dict:
+    """The one `jsonb` entry `commit_write` takes (its head comment, Y:1587-1611;
+    contract §3.3), derived from the attempt directory, and from the shipped
+    `repos.tsv`'s text, `shipped_repos`, for Rule 6's table:
+
+    - `journal`: `kind` `write`, the flags' lane, verb, workstation and
+      `args_sha256`, `author`, `msg` verbatim and `repos_blob`;
+    - `not_after`, the snapshot's, as a UTC text;
+    - `act`, only inside an act;
+    - `edits`, in `ord` order: per path, bytewise, a `remove`, a `create` and
+      its `append`s, or `register_line_edits`' ops; a rename (`renames.tsv`)
+      is one `rename` and the new path's ops against the old path's lines;
+    - `files`, one row per path in `changes.tsv`;
+    - `log_lines` for every log line written, a renamed log's included, and
+      for no other; `register_lines` for every `lanes/LANES.md` line written
+      that is a register kind; `lanes` for every lane whose row line was
+      written, or whose row or derived fields moved; `object_holds` for every
+      lane and object that a line written, replaced or removed names, or that
+      any line of a renamed log names.
+
+    THE ENTRY CARRIES NO DELETES, AND NOTHING RESTS ON THE ORDER ITS ROWS ARE
+    SENT IN (lane 3's ruling (c), #165 6755386771; ERR-48). `commit_write`'s
+    step 6 derives every delete from the edits it applies: a `replace` or
+    `delete` deletes its line's structured rows, a `remove` those of every
+    line of its path, and a `rename` the old path's `object_holds`, moving its
+    `log_lines` to the new file and its lane. Step 7 then inserts what this
+    entry sends."""
+    changes, renames = att["changes"], att["renames"]
+    renamed_to = {to: frm for frm, to in renames.items()}
+    table = register_repo_table(shipped_repos, view.before(REGISTER_REPOS_PATH))
+    edits: list = []
+    written: dict = {}      # path after the write -> line numbers written there
+    gone: dict = {}         # path the lines lived at -> texts replaced, deleted or removed
+
+    def edit(op: str, path: str, line_no=None, old=None, new=None, to_path=None) -> None:
+        edits.append({"ord": len(edits) + 1, "op": op, "path": path,
+                      "line_no": line_no if op in ("replace", "delete", "append") else None,
+                      "old_sha256": (hashlib.sha256(old.encode("utf-8")).hexdigest()
+                                     if old is not None else None),
+                      "new_text": new, "to_path": to_path})
+
+    for path in sorted(changes, key=lambda p: p.encode("utf-8")):
+        status = changes[path][0]
+        if status == "A" and path in renamed_to:
+            continue
+        old_lines = register_doc_lines(view.before(path) or "")[0]
+        target = path
+        if status == "D":
+            if path not in renames:
+                edit("remove", path)
+                gone.setdefault(path, []).extend(old_lines)
+                continue
+            target = renames[path]
+            edit("rename", path, to_path=target)
+            gone.setdefault(path, []).extend(old_lines)
+        elif status == "A":
+            edit("create", path)
+        new_lines = register_doc_lines(view.after(target) or "")[0]
+        ops, wrote = register_line_edits(old_lines, new_lines)
+        for op, line_no, old, new in ops:
+            edit(op, target, line_no, old, new)
+            if old is not None and status != "D":
+                gone.setdefault(path, []).append(old)
+        written.setdefault(target, set()).update(wrote)
+
+    files = []
+    for path in sorted(changes, key=lambda p: p.encode("utf-8")):
+        if changes[path][0] == "D":
+            files.append({"path": path, "present": False, "sha256": None,
+                          "final_newline": None})
+        else:
+            data = att["images"][path]
+            files.append({"path": path, "present": True,
+                          "sha256": hashlib.sha256(data).hexdigest(),
+                          "final_newline": register_doc_lines(data.decode("utf-8"))[1]})
+
+    # log_lines: each log line written, and no other. A RENAMED LOG'S OTHER
+    # LINES KEEP THEIR ROWS, which the rename moves to the new file and its
+    # lane (step 6, (c)): sent again, each would be stamped `mode=primary`,
+    # and a line `log_lines`' primary CHECK refuses (Y:1217-1219) - a WORD
+    # line with a millisecond time, say - would end the write with 23514,
+    # 69. Its holds are still worked out from EVERY line of it, since the
+    # rename deletes the old path's.
+    log_rows: list = []
+    holds: dict = {}        # (object, lane key) -> None, filled below
+    for path in sorted(set(written) | set(renamed_to), key=lambda p: p.encode("utf-8")):
+        if not path.startswith(LOG_PREFIX) or path == REGISTER_LOG_README:
+            continue
+        lines = register_doc_lines(view.after(path) or "")[0]
+        wrote = written.get(path, set())
+        scan = range(1, len(lines) + 1) if path in renamed_to else sorted(wrote)
+        for line_no in scan:
+            row = _register_log_row(path, line_no, lines[line_no - 1])
+            if row is None:
+                continue
+            if line_no in wrote:
+                log_rows.append(row)
+            if not row["unreadable"] and register_hold_object(row["object"]):
+                holds[(row["object"], _register_lower(file_lane(path)))] = None
+    for path, texts in gone.items():
+        if not path.startswith(LOG_PREFIX):
+            continue
+        for text in texts:
+            row = _register_log_row(path, 1, text)
+            if row and not row["unreadable"] and register_hold_object(row["object"]):
+                holds[(row["object"], _register_lower(file_lane(path)))] = None
+
+    # register_lines: each lanes/LANES.md line written that the one classifier
+    # reads as a kind (FR-030; D18).
+    slot_rows: list = []
+    if REGISTER_PATH in written:
+        lines = register_doc_lines(view.after(REGISTER_PATH) or "")[0]
+        for line_no in sorted(written[REGISTER_PATH]):
+            text = lines[line_no - 1]
+            if row_name(text) is None:
+                row = _register_slot_row(line_no, text, table, ident["workstation"])
+                if row is not None:
+                    slot_rows.append(row)
+
+    # lanes: each lane whose row line was written, removed or replaced, whose
+    # log changed, or whose aliases moved; sent where its row then differs,
+    # its line included: a replace or delete of the line a lane's row stood
+    # on deletes that lane's row (step 6, (c)), so it is sent again wherever
+    # its row now stands.
+    keys: set = set()
+    for path in list(written) + list(gone):
+        if path == REGISTER_PATH or path.startswith(REGISTER_ARCHIVE_PREFIX):
+            if path in written:
+                lines = register_doc_lines(view.after(path) or "")[0]
+                keys.update(_register_lower(row_name(lines[i - 1]) or "") for i in written[path])
+            keys.update(_register_lower(row_name(text) or "") for text in gone.get(path, []))
+    for path in list(changes) + list(renamed_to):
+        if path.startswith(LOG_PREFIX):
+            keys.add(_register_lower(file_lane(path)))
+    aliases_after = _register_lane_aliases(view.after(ALIASES_PATH))
+    if ALIASES_PATH in changes:
+        aliases_before = _register_lane_aliases(view.before(ALIASES_PATH))
+        keys.update(key for key in set(aliases_before) | set(aliases_after)
+                    if aliases_before.get(key) != aliases_after.get(key))
+    keys.discard("")
+    view.load([REGISTER_PATH] + view.paths(REGISTER_ARCHIVE_PREFIX, "before"))
+    lane_rows: list = []
+    aliases_before_all = (_register_lane_aliases(view.before(ALIASES_PATH))
+                          if ALIASES_PATH in changes else aliases_after)
+    derived = ("lane", "aliases", "home", "workstation", "started_utc", "handoff_path",
+               "state_phrase", "objects_cell", "session_ids", "last_session", "archived")
+    for key in sorted(keys):
+        after = _register_lane_row(view, "after", key, aliases_after)
+        if after is None:
+            continue
+        before = _register_lane_row(view, "before", key, aliases_before_all)
+        if (after["line_no"] in written.get(after["path"], ()) or before is None
+                or ((before["path"], before["line_no"], before["raw"])
+                    != (after["path"], after["line_no"], after["raw"]))
+                or any(before[f] != after[f] for f in derived)):
+            lane_rows.append(after)
+    # Sent in key order, and nothing rests on it (ERR-48): a line one lane's
+    # row leaves was a replace or a delete, whose rows step 6 has deleted
+    # before step 7 inserts another lane's row on it.
+
+    # object_holds: each (object, lane) a line written, replaced or removed
+    # names, or any line of a renamed log, at that lane's last line on it. A
+    # pair left with no line is not sent: step 6 deleted its row with the
+    # line it stood on (c).
+    hold_rows = []
+    for obj, key in sorted(holds):
+        row = _register_last_hold(view, obj, key, table)
+        if row is not None:
+            hold_rows.append(row)
+
+    entry = {"journal": {"kind": "write", "verb": ident["verb"], "lane": ident["lane"],
+                         "workstation": ident["workstation"], "author": att["author"],
+                         "message": att["message"], "git_commit": None, "git_tree": None,
+                         "repos_blob": att["repos_blob"], "args_sha256": ident["args_sha256"]},
+             "not_after": register_epoch_utc(att["not_after"])}
+    if att["act"] is not None:
+        entry["act"] = att["act"]
+    entry.update(edits=edits, files=files, lanes=lane_rows, log_lines=log_rows,
+                 register_lines=slot_rows, object_holds=hold_rows)
+    return entry
+
+
+def register_commit_request(schema: str, n: int, ident: dict, entry: dict) -> list[str]:
+    """The commit as ONE request (contract §2.3; Y:1419): `BEGIN ISOLATION
+    LEVEL SERIALIZABLE`, the one `commit_write` call, `COMMIT`. The entry is
+    one `jsonb` literal, pure ASCII, so no client encoding can change it."""
+    literal = json.dumps(entry, ensure_ascii=True, separators=(",", ":"))
+    return ["BEGIN ISOLATION LEVEL SERIALIZABLE",
+            f"SELECT {schema}.commit_write({n}, {_pg_quote(ident['write_id'])}, "
+            f"{REGISTER_SCHEMA_VERSION}, {_pg_quote(ident['generation'])}, "
+            f"{_pg_quote(literal)}::jsonb)",
+            "COMMIT"]
+
+
+def _register_commit_call(store: PostgresStore, att: dict, ident: dict,
+                          entry: dict) -> tuple[int, int | None, RegisterError | None,
+                                                PsqlFailed | None]:
+    """One commit call: (its code, the seq committed, the refusal, the
+    failure). Its answer under `-A -t` is the seq alone, on one line; any
+    other answer of an exit 0 is one `lanes-index` cannot read: 3."""
+    try:
+        out = store.request(register_commit_request(store.schema, att["n"], ident, entry),
+                            "commit")
+    except PsqlFailed as failure:
+        code, err = register_commit_exit(failure)
+        return code, None, err, failure
+    except StoreUnusable as exc:
+        return EXIT_UNAVAILABLE, None, None, PsqlFailed(exc.kind, exc.detail, ran=False)
+    lines = [line for line in out.split("\n") if line.strip()]
+    if len(lines) == 1 and re.fullmatch(r"[0-9]+", lines[0].strip()):
+        return EXIT_OK, int(lines[0].strip()), None, None
+    shown = re.sub(r"[^\x20-\x7e]", "?", out.strip())[:80]
+    return EXIT_IN_DOUBT, None, None, PsqlFailed(
+        "unreadable", f"the answer was {shown!r}, not one seq", psql_exit=0)
+
+
+def _register_array(values) -> str:
+    if not values:
+        return "NULL::text[]"
+    return "ARRAY[" + ", ".join(_pg_quote(v) for v in values) + "]::text[]"
+
+
+def _register_holder_line(store: PostgresStore, entry: dict) -> str | None:
+    """LR005's holder, read after the refusal in a second request with the
+    snapshot's bounds (contract §3.3): the earlier taker in `main_slots` for a
+    take this entry made, or another lane's live claim on an object it
+    claimed, as `held-by=<seq>` TAB `<path>` TAB `<raw line>`. None where the
+    read fails or finds none: the line is left out.
+
+    A claim an import marked `exempt` is never the holder named: it is
+    outside `one_live_claim` and D19's check, so it refuses nothing (lane 3,
+    #165 6755386771)."""
+    queries = []
+    for row in entry["register_lines"]:
+        if row["slot_role"] == "take" and row["repo_key"]:
+            queries.append(
+                "SELECT d.written_seq, d.path, d.text FROM main_slots m JOIN doc_lines d "
+                f"ON d.line_id = m.line_id WHERE (m.repo_key = {_pg_quote(row['repo_key'])} "
+                f"OR m.repo_spellings && {_register_array(row['repo_spellings'])}) "
+                f"AND lower(m.lane) IS DISTINCT FROM lower({_pg_quote(row['lane'])}) "
+                "ORDER BY m.line_id LIMIT 1")
+    for row in entry["object_holds"]:
+        if row["verb"] in _REGISTER_CLAIM_VERBS:
+            queries.append(
+                "SELECT d.written_seq, d.path, d.text FROM object_holds o JOIN doc_lines d "
+                "ON d.path = o.file AND d.line_no = o.ordinal "
+                f"WHERE o.lane_key <> {_pg_quote(row['lane_key'])} "
+                "AND o.verb IN ('CLAIMED', 'TAKEOVER') AND o.superseded_by IS NULL "
+                "AND NOT o.exempt "
+                f"AND (o.object = {_pg_quote(row['object'])} "
+                f"OR o.spellings && {_register_array(row['spellings'])}) "
+                "ORDER BY o.seq, o.lane_key LIMIT 1")
+    if not queries:
+        return None
+    try:
+        answers = store._query_many(queries, snapshot=True, row="snapshot")
+    except StoreUnusable:
+        return None
+    for rows in answers:
+        if rows and len(rows[0]) == 3 and all(v is not None for v in rows[0]):
+            return f"held-by={rows[0][0]}\t{rows[0][1]}\t{rows[0][2]}"
+    return None
+
+
+def _register_already(store: PostgresStore, ident: dict, err: RegisterError) -> int:
+    """LR006: this write is already in the journal, by an earlier attempt. 0,
+    with `already <seq>` and that seq's `file=` rows, sorted, read in a second
+    request with the snapshot's bounds (contract §3.3). Where that read fails,
+    `already <seq>` alone, with the seq from LR006's message; where neither
+    names the seq, 3, so the caller's lookup finds it."""
+    named = re.search(r"at seq ([0-9]+)\s*$", err.message)
+    write = _pg_quote(ident["write_id"])
+    try:
+        answers = store._query_many(
+            [f"SELECT seq FROM journal WHERE write_id = {write}",
+             "SELECT path, CASE WHEN present THEN '1' ELSE '0' END, coalesce(sha256, '-') "
+             f"FROM journal_files WHERE seq = (SELECT seq FROM journal WHERE write_id = {write}) "
+             "ORDER BY path"], snapshot=True, row="snapshot")
+        seq = int(answers[0][0][0])
+        rows = answers[1]
+    except (StoreUnusable, IndexError, ValueError, TypeError):
+        seq, rows = (int(named.group(1)) if named else None), None
+    if seq is None:
+        note(f"LR006: write {ident['write_id']} is in the journal, and neither its message nor "
+             f"a read names its seq: in doubt, so look it up")
+        return EXIT_IN_DOUBT
+    note(f"LR006: write {ident['write_id']} is already in the journal at seq {seq}, committed "
+         f"by an earlier attempt" + ("" if rows is not None else
+                                     "; its file rows could not be read"))
+    say(f"already {seq}")
+    for row in rows or []:
+        say("file=" + "\t".join("" if v is None else v for v in row))
+    return EXIT_OK
+
+
+def _register_commit_end(store: PostgresStore, ident: dict, entry: dict, code: int,
+                         seq: int | None, err: RegisterError | None,
+                         failure: PsqlFailed | None) -> int:
+    """What a commit call's end prints, and its code (contract §2.6, §3.3)."""
+    write = ident["write_id"]
+    if code == EXIT_OK and seq is not None:
+        say(f"committed {seq}")
+        return EXIT_OK
+    if err is not None and err.sqlstate == "LR006":
+        return _register_already(store, ident, err)
+    if code == EXIT_IN_DOUBT:
+        note(f"in doubt: the commit call of write {write} {register_psql_end(failure)}, so "
+             f"whether it committed is not known. Look it up (journal --write-id) before "
+             f"ending with any code but 0, and rerun under the same id: "
+             f"LANES_WRITE_ID={write} LANES_WRITE_GENERATION={ident['generation']}")
+        return EXIT_IN_DOUBT
+    if err is None:
+        note(f"the commit call of write {write} {register_psql_end(failure)}; nothing was sent, "
+             f"and nothing was written")
+        return code
+    register_say_error(err)
+    if code == EXIT_BUSY:
+        note(f"register busy ({err.sqlstate}): write {write} lost its turn, and nothing was "
+             f"written; take a new attempt")
+    elif code == EXIT_REFUSED:
+        note(f"refused by the register ({err.sqlstate}"
+             + (f" {err.detail}" if err.detail else "") + f"): nothing was written")
+        if err.sqlstate == "LR005" and err.detail in _REGISTER_HOLDER_TOKENS:
+            held = _register_holder_line(store, entry)
+            if held:
+                say(held)
+    else:
+        # LR004 never reaches this map: `cmd_register_commit` ends it in
+        # `_register_commit_lr004` instead, so the map does not name it.
+        why = {"LR002": "the register's switch is not primary with the marker present, so "
+                        "no write commits",
+               "LR003": "this client is outside the register schema's window; the message "
+                        "names both numbers"}.get(
+                   err.sqlstate, "the database refused the transaction")
+        note(f"the register ({store.label}, schema {store.schema}) refused write {write} "
+             f"with {err.sqlstate}: {why}; nothing was written")
+    return code
+
+
+#: The two paths `tree/` takes from the lane checkout and not from SQL
+#: (contract §3.2's `--tree`), which LR004's re-read never compares:
+#: `repos.tsv`, whose blob `repos_blob` is checked against `tree/`'s before
+#: anything is sent, and the log directory's README.
+_REGISTER_TREE_NOT_SQL = frozenset((REGISTER_REPOS_PATH, REGISTER_LOG_README))
+
+
+def register_tree_reads(att: dict, view: RegisterView) -> tuple[list[str], list[str]]:
+    """What the entry read of `tree/`, as LR004's re-read compares it (R02;
+    lane 3, #165 6755386771 and 6755615338): every path whose text at `n` it
+    read or found absent - each path in `changes.tsv` among them, and the
+    unchanged rows and logs as well - and every prefix whose paths it
+    listed; less `_REGISTER_TREE_NOT_SQL`. Each list is sorted bytewise."""
+    paths = (view.read | set(att["changes"])) - _REGISTER_TREE_NOT_SQL
+    return (sorted(paths, key=lambda p: p.encode("utf-8")),
+            sorted(view.listed, key=lambda p: p.encode("utf-8")))
+
+
+def _register_reread_bases(store: PostgresStore, paths: list[str],
+                           prefixes: list[str]) -> tuple[int, dict, dict]:
+    """R02's ONE re-read, after an LR004: the head; each of `paths`, re-read
+    from SQL whole, past the image cache; and the paths under each of
+    `prefixes` - in one REPEATABLE READ request with the snapshot's bounds.
+    Returns (the head, path to bytes for each of `paths` SQL has, prefix to
+    the set of paths SQL has under it). `StoreUnusable` where it fails."""
+    queries = ["SELECT seq FROM register_head WHERE id = 1",
+               "SELECT path, encode(render_file(path), 'hex') FROM files "
+               f"WHERE path = ANY ({_register_array(paths) if paths else 'ARRAY[]::text[]'}) "
+               "ORDER BY path"]
+    if prefixes:
+        queries.append("SELECT path FROM files WHERE "
+                       + " OR ".join(f"starts_with(path, {_pg_quote(prefix)})"
+                                     for prefix in prefixes)
+                       + " ORDER BY path")
+    answers = store._query_many(queries, snapshot=True, row="snapshot")
+    if len(answers) != len(queries) or len(answers[0]) != 1:
+        raise StoreUnusable("unreadable", "the re-read answered no head")
+    try:
+        head = int(answers[0][0][0])
+        current = {row[0]: bytes.fromhex(row[1] or "") for row in answers[1]}
+        listing: dict = {prefix: set() for prefix in prefixes}
+        for row in (answers[2] if prefixes else []):
+            for prefix in prefixes:
+                if row[0].startswith(prefix):
+                    listing[prefix].add(row[0])
+    except (ValueError, TypeError, IndexError):
+        raise StoreUnusable("unreadable", "the re-read's answer cannot be read")
+    return head, current, listing
+
+
+def _register_commit_lr004(store: PostgresStore, att: dict, ident: dict, entry: dict,
+                           view: RegisterView, first: RegisterError) -> int:
+    """LR004 under the scratch tree: ONE re-read from SQL of every file the
+    entry read from `tree/`, and NO second commit call (R02, lane 1's form,
+    as lane 3 accepted it: #165 6755615338). The entry rests on those same
+    bases, so a resend would be the first request byte for byte, and with the
+    head still at `n` could only meet LR004 again. Three ends, each with
+    nothing written, after LR004's own `ERROR:` line:
+
+    - the head is no longer `n`: 75, a lost turn;
+    - a file the entry read differs from SQL's at `n`, or is on one side of a
+      listing only: 69, naming the image cache, which gave `tree/`;
+    - every one equal: 69, naming the entry and LR004's own message.
+
+    A re-read that fails is 69 too (reading 2, #165 6755386771)."""
+    write, n = ident["write_id"], att["n"]
+    register_say_error(first)
+    paths, prefixes = register_tree_reads(att, view)
+    try:
+        head, current, listing = _register_reread_bases(store, paths, prefixes)
+        differ = {path for path in paths if current.get(path) != view.tree_bytes(path)}
+    except StoreUnusable as exc:
+        note(f"LR004 on write {write}, and the re-read from SQL of the files its entry read "
+             f"from tree/ failed ({exc.detail}): the entry is not sent again, and nothing "
+             f"was written")
+        return EXIT_UNAVAILABLE
+    if head != n:
+        note(f"LR004 on write {write}, and the head is now {head}, not {n}: another write "
+             f"committed, so this attempt lost its turn; nothing was written")
+        return EXIT_BUSY
+    for prefix, found in listing.items():
+        mine = {p for p in att["tree_blobs"] if p.startswith(prefix)} - _REGISTER_TREE_NOT_SQL
+        differ |= mine ^ found
+    if differ:
+        shown = sorted(differ, key=lambda p: p.encode("utf-8"))
+        note(f"LR004 on write {write}: {', '.join(shown)} at seq {n}, re-read from SQL, "
+             f"differs from the scratch tree's, which the image cache gave, so the verb ran "
+             f"on a wrong base. Its images are not sent again; nothing was written")
+        return EXIT_UNAVAILABLE
+    edited = sorted({e["path"] for e in entry["edits"]}
+                    | {e["to_path"] for e in entry["edits"] if e["to_path"]},
+                    key=lambda p: p.encode("utf-8"))
+    count, npaths = len(entry["edits"]), len(paths)
+    note(f"LR004 on write {write}: every file its entry read from tree/ ({npaths} "
+         f"path{'' if npaths == 1 else 's'}) equals SQL's at seq {n}, so the image cache was "
+         f"right and the entry itself was refused - its {count} "
+         f"edit{'' if count == 1 else 's'} of {', '.join(edited)} "
+         f"{'does' if count == 1 else 'do'} not apply, or its proof differs: "
+         f"{first.message}. A resend would be the same request, so none is made; nothing "
+         f"was written")
+    return EXIT_UNAVAILABLE
+
+
+#: The variables that move where git finds a repository, dropped before
+#: `tree/` is read.
+_REGISTER_GIT_LOCATION = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                          "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE",
+                          "GIT_CEILING_DIRECTORIES")
+
+
+def _register_build_entry(att: dict, ident: dict,
+                          shipped_repos: str | None) -> tuple[dict, RegisterView]:
+    """`register_commit_entry` over `tree/`, and the view it read `tree/`
+    through, whose reads LR004's re-read compares. A failed read of `tree/` is
+    the attempt directory's fault: `RegisterAttemptRefused`, 2, nothing
+    sent."""
+    view = RegisterView(att, att["tree_bases"])
+    try:
+        return register_commit_entry(att, ident, view, shipped_repos), view
+    except StoreUnusable as exc:
+        raise RegisterAttemptRefused(f"tree/ cannot be read ({exc.detail})")
+
+
+def _register_commit_args(args: list[str]) -> tuple[dict, str] | None:
+    """`register commit`'s argv (contract §3.3): the six flags, each once, as
+    `--flag <value>` or `--flag=<value>`, and one attempt directory. None for
+    `-h`; `_RegisterUsage` for anything else that is not this form."""
+    values: dict = {}
+    positional: list = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("-h", "--help"):
+            return None
+        flag, eq, value = arg.partition("=")
+        if flag in _REGISTER_COMMIT_FLAGS:
+            if not eq:
+                if i + 1 >= len(args):
+                    raise _RegisterUsage(f"register commit: {flag} needs a value")
+                value = args[i + 1]
+            i += 1 if eq else 2
+            if flag in values:
+                raise _RegisterUsage(f"register commit: {flag} is given twice")
+            values[flag] = value
+            continue
+        if arg.startswith("-"):
+            raise _RegisterUsage(f"register commit: unknown argument '{arg}'")
+        positional.append(arg)
+        i += 1
+    missing = [flag for flag in _REGISTER_COMMIT_FLAGS if flag not in values]
+    if missing:
+        raise _RegisterUsage(f"register commit needs {', '.join(missing)}")
+    if len(positional) != 1:
+        raise _RegisterUsage("register commit takes one attempt directory")
+    for flag in ("--write-id", "--generation"):
+        if not UUID_FULL_RE.match(values[flag]):
+            raise _RegisterUsage(f"register commit: {flag} is not a uuid")
+    if not _REGISTER_SHA256_RE.fullmatch(values["--args-sha256"]):
+        raise _RegisterUsage("register commit: --args-sha256 is not 64 lower-case hex")
+    for flag in ("--lane", "--verb", "--workstation"):
+        if not _REGISTER_WORD_RE.fullmatch(values[flag]):
+            raise _RegisterUsage(f"register commit: {flag} is empty, or holds white space")
+    ident = {"write_id": _register_lower(values["--write-id"]),
+             "generation": _register_lower(values["--generation"]),
+             "lane": values["--lane"], "verb": values["--verb"],
+             "args_sha256": values["--args-sha256"], "workstation": values["--workstation"]}
+    return ident, positional[0]
+
+
+def cmd_register_commit(args: list[str]) -> int:
+    """`lanes-index register commit` (contract §3.3; FR-014; L1-A10): one
+    SERIALIZABLE `commit_write` call, as one request, of the entry derived
+    from the attempt directory, with D9's commit row.
+
+    In order: the argv (64); the configuration (2, Q6(c)'s refusal
+    included); `LANES_ACT` and `LANES_EXPECT`, checked again (2); the attempt
+    directory (2); the shipped `repos.tsv`, Rule 6's first table (2 where it
+    is there and cannot be read); the store, as this engineer's
+    REGISTER-WRITER login; then the call, made once. Exits 0 `committed
+    <seq>` or `already <seq>`, 75, 69, 2 and 3, as `_register_commit_end`
+    and, after an LR004, `_register_commit_lr004` read them."""
+    try:
+        parsed = _register_commit_args(args)
+    except _RegisterUsage as exc:
+        note(str(exc))
+        note(f"usage: {_REGISTER_COMMIT_USAGE}")
+        return EXIT_USAGE
+    if parsed is None:
+        say(USAGE)
+        return EXIT_OK
+    ident, directory = parsed
+    # THE SCRATCH TREE IS READ AS ITSELF: a repository location inherited from
+    # a caller's git (a hook's `GIT_DIR`, say) would point `git -C tree/`
+    # somewhere else. `psql` reads none of these.
+    for name in _REGISTER_GIT_LOCATION:
+        os.environ.pop(name, None)
+    try:
+        cfg = load_config()
+        env_act = register_act_of_env(os.environ.get("LANES_ACT", ""),
+                                      os.environ.get("LANES_EXPECT", ""))
+        att = read_attempt_dir(directory, ident, env_act)
+        entry, view = _register_build_entry(att, ident, register_shipped_repos_text())
+        store = PostgresStore(cfg, "register_writer")
+    except Refusal as exc:
+        note(f"REFUSED: {exc}")
+        return EXIT_REFUSED
+    except StoreUnusable as exc:
+        note(f"{exc.kind}: {exc.detail}; nothing was sent")
+        return EXIT_UNAVAILABLE
+    code, seq, err, failure = _register_commit_call(store, att, ident, entry)
+    if err is not None and err.sqlstate == "LR004":
+        return _register_commit_lr004(store, att, ident, entry, view, err)
+    return _register_commit_end(store, ident, entry, code, seq, err, failure)
+
+
 # ============================================================ local status
 
 def _status_path() -> str:
@@ -10537,6 +12109,8 @@ def main(argv: list[str]) -> int:
         return cmd_set_mode(args)
     if verb == "login":
         return cmd_login(args)
+    if verb == "register" and args[:1] == ["commit"]:
+        return cmd_register_commit(args[1:])
     # A SUBCOMMAND THIS BUILD DOES NOT HAVE, one of 007's not built yet among
     # them, is usage before any argument is read: it does nothing and says so,
     # and the 64 is what F8 reads from a `lanes-index` too old to have a verb.
