@@ -6150,9 +6150,9 @@ pw_abandon_one() {   # <pid> <attempt dir>
   wait "$1" 2>/dev/null || :
 }
 
-# EVERY KEPT CHILD, AND THE ATTEMPT'S OWN, GET `abandon` before any end but 0
-# (Y:5026).
-pw_abandon_all() {
+# THE KEPT CHILDREN, each still at its seam after a commit call in doubt
+# (Y:5014), one `<pid> <attempt dir>` a line in PW_KEPT, all abandoned.
+pw_abandon_kept() {
   local pa_l="" pa_p="" pa_d=""
   while IFS= read -r pa_l; do
     [ -n "$pa_l" ] || continue
@@ -6162,10 +6162,22 @@ pw_abandon_all() {
 $PW_KEPT
 PA_EOF
   PW_KEPT=""
+}
+
+# EVERY KEPT CHILD, AND THE ATTEMPT'S OWN, GET `abandon` before any end but 0
+# (Y:5026).
+pw_abandon_all() {
+  pw_abandon_kept
   if [ -n "$PW_CHILD" ]; then
     pw_abandon_one "$PW_CHILD" "$PW_DIR"
     PW_CHILD=""
   fi
+}
+
+# THE OUTCOME KNOWN, the record goes with this run's claims (Y:5193–5198), or
+# only this run's claim where the record is not this write's own.
+pw_record_done() {
+  if [ "$PW_REC_OURS" = 1 ]; then wr_record_remove || wr_claim_release; else wr_claim_release; fi
 }
 
 # THE DECIDING ATTEMPT'S OUTPUT, REPLAYED (F14; FR-024; Y:2546–2550): its
@@ -6186,7 +6198,7 @@ pw_replay() {   # <attempt dir>
 pw_end() {   # <code> <message, or empty> [<attempt dir whose output is replayed>]
   pw_abandon_all
   [ -z "$WR_CALLS" ] || pw_doubt_end "$1" "$2" "${3-}"
-  if [ "$PW_REC_OURS" = 1 ]; then wr_record_remove || wr_claim_release; else wr_claim_release; fi
+  pw_record_done
   [ -z "${3-}" ] || pw_replay "$3"
   [ -z "$PW_RELAY" ] || printf '%s\n' "$PW_RELAY" >&2
   [ -n "$2" ] || exit "$1"
@@ -6194,10 +6206,13 @@ pw_end() {   # <code> <message, or empty> [<attempt dir whose output is replayed
 }
 
 # AN END WITH A `call` LINE HELD (Y:5017–5023): F3's lookup decides it, and its
-# exit 3 and texts are T417's, which maps them in `_EXIT_3_CAUSES`. Until then
-# this run says what it could not settle and ends with 75, the busy code, with
-# the record KEPT: a rerun within its age takes the record over and settles the
-# write by its id, and never writes it twice (Y:5206).
+# exit 3 and texts are T417's, which maps them in `_EXIT_3_CAUSES`. Where the
+# lookup answers "absent", that end, its message and the output of the attempt
+# that decided it, is replayed then, with its code (Y:5024), so none of it is
+# shown before the lookup. Until T417 this run names the end's code, says what
+# it could not settle, and ends with 75, the busy code, with the record KEPT: a
+# rerun within its age takes the record over and settles the write by its id,
+# and never writes it twice (Y:5206).
 pw_doubt_end() {   # <the end's code> <its message, or empty> [<attempt dir>]
   local dd_l="" dd_b="" dd_c="" dd_n="" dd_f="" dd_d="" dd_max=""
   while IFS= read -r dd_l; do
@@ -6205,9 +6220,6 @@ pw_doubt_end() {   # <the end's code> <its message, or empty> [<attempt dir>]
     IFS=' ' read -r dd_b dd_c dd_n dd_f dd_d <<<"$dd_l"
     if [ -z "$dd_max" ] || [ "$dd_n" -gt "$dd_max" ]; then dd_max="$dd_n"; fi
   done <<<"$WR_CALLS"
-  [ -z "${3-}" ] || pw_replay "$3"
-  [ -z "$PW_RELAY" ] || printf '%s\n' "$PW_RELAY" >&2
-  [ -z "$2" ] || note "$2"
   die "write $WR_ID of register generation $WR_GEN may be in the register: its pending record, $WR_STATE/register-pending/$WR_D, holds a commit call that may have committed, so this run's end (exit $1) is not that write's answer until the call is looked up. This lanes-edit.sh makes no such lookup yet: the record is kept, and a rerun settles the write by its id and never writes it twice. Look it up: lanes-index journal --write-id $WR_ID --not-after $dd_max --generation $WR_GEN --lane $(printf '%q' "$WR_LANE") --verb $(printf '%q' "$WR_VERB") --args-sha256 $WR_D. Or run it again: $(wr_rerun_text "$WR_ID" "$WR_GEN")" 75
 }
 
@@ -6221,6 +6233,137 @@ pw_found_end() {   # <seq> <how it was found>
   note "write $WR_ID is in the register at seq $1, committed by an earlier attempt or run ($2); this run sent no second commit of it. Its after-COMMIT steps did not run in this run, and may be owed: those of lanes-edit.sh $WR_VERB. Do by hand any that did not run."
   wr_record_remove || wr_claim_release
   exit 0
+}
+
+# ---- (c) THE COMMIT CALL (S1's step 3; Y:2556; contract §3.3). The `call`
+# line goes into the pending record FIRST, by temporary file and `mv` (Y:5173;
+# T412's `wr_record_add_call`): the call's base `n`, the snapshot's clock, its
+# `not_after`, the sha256 of the `files` rows the seam wrote (§3.2's one digest
+# rule) and this attempt's directory; a line that cannot be written sends no
+# call, 1. Then `lanes-index register commit` with the write's identity, the
+# space form of `--lane` (contract §3.6, L1-D1), and `--workstation`, the name
+# this file stamps its lines with (`WS`: `LANES_WORKSTATION`, else its
+# fallback), in lane 3's one call form. Its answer goes to the attempt's
+# `commit.out` and `commit.err`, and its code to PW_RC.
+pw_commit() {
+  local pk_f="" pk_bin=""
+  pk_bin="$(lanes_index_bin)"
+  [ -n "$pk_bin" ] ||
+    pw_end 69 "there is no lanes-index beside $SCRIPT_DIR/lanes-edit.sh or on PATH to send attempt ${PW_K}'s commit with. Nothing was sent by it. $(pw_rerun_line)" "$PW_DIR"
+  pk_f="$(wr_sha256_stdin < "$PW_DIR/files" 2>/dev/null)" || pk_f=""
+  [ -n "$pk_f" ] ||
+    pw_end 2 "attempt ${PW_K}'s files, which its seam wrote in $PW_DIR, cannot be read to make the digest its call line needs: an internal error. Nothing was sent by it" "$PW_DIR"
+  wr_record_add_call "$PW_S_N" "$PW_S_CLOCK" "$PW_S_NOT_AFTER" "$pk_f" "$PW_DIR" ||
+    pw_end 1 "attempt ${PW_K}'s call line could not be written into this write's pending record, $WR_STATE/register-pending/$WR_D, so its commit was not sent. Nothing was sent by it" "$PW_DIR"
+  PW_RC=0
+  ( "$pk_bin" register commit --write-id "$WR_ID" --generation "$WR_GEN" --lane "$WR_LANE" \
+      --verb "$WR_VERB" --args-sha256 "$WR_D" --workstation "$WS" "$PW_DIR" \
+      </dev/null >"$PW_DIR/commit.out" 2>"$PW_DIR/commit.err"; exit "$?" ) 2>/dev/null || PW_RC=$?
+}
+
+# THE DECISION ON THE COMMIT'S ANSWER (Y:5008–5015; the contract's caller map,
+# §3.3, with §2.7). Returns 0 where the run goes on to its next attempt; every
+# other answer ends the run here.
+#   0, `committed <s>`     the write committed: `pw_committed`
+#   0, `already <s>`       an earlier attempt committed it (LR006): T418's
+#                          match, `pw_found_end` meanwhile
+#   75                     a lost turn (LR001, 40001, 40P01, 55P03, LR008):
+#                          `abandon`, the call line dropped, the next attempt
+#   2                      a refusal (LR005 with its token and any `held-by=`
+#                          line, LR007, LR009, LR010) and
+#   69                     a definitive refusal (LR002, LR003, LR004 after its
+#                          retry, another SQLSTATE): `abandon`, the call line
+#                          dropped, and the run's end, the deciding attempt's
+#                          output first, then stderr's `ERROR:` and `DETAIL:`
+#                          lines and stdout's `held-by=` lines
+#   64                     usage, which this file never sends: an internal
+#                          error with nothing sent (CO-5), 2
+#   3, any other code, a signal, or an exit 0 whose answer cannot be read
+#                          in doubt (§2.7, O8; CO-6): no message, the child
+#                          KEPT at its seam and the call line KEPT, and the
+#                          next attempt, whose snapshot looks the id up
+#                          (Y:2620–2621; review M7)
+pw_decide() {
+  local pv_l="" pv_s=""
+  case "$PW_RC" in
+    0)
+      { IFS= read -r pv_l || :; } < "$PW_DIR/commit.out" 2>/dev/null
+      case "$pv_l" in
+        "committed "*)
+          pv_s="${pv_l#committed }"
+          ! wr_is_count "$pv_s" || pw_committed "$pv_s" ;;
+        "already "*)
+          pv_s="${pv_l#already }"
+          ! wr_is_count "$pv_s" || pw_found_end "$pv_s" "attempt ${PW_K}'s commit answered already" ;;
+      esac
+      pw_keep
+      return 0 ;;
+    75)
+      pw_abandon_one "$PW_CHILD" "$PW_DIR"; PW_CHILD=""
+      wr_record_drop_call "$PW_DIR" || :
+      return 0 ;;
+    2|69)
+      pw_abandon_one "$PW_CHILD" "$PW_DIR"; PW_CHILD=""
+      wr_record_drop_call "$PW_DIR" || :
+      PW_RELAY="$( { grep -E '^(ERROR|DETAIL):' -- "$PW_DIR/commit.err"; grep -E '^held-by=' -- "$PW_DIR/commit.out"; } 2>/dev/null || :)"
+      if [ "$PW_RC" = 2 ]; then
+        pw_end 2 "the register refused this write at attempt ${PW_K}'s commit (\`lanes-index register commit\` exited 2, above). Nothing was written" "$PW_DIR"
+      fi
+      pw_end 69 "the register refused this write at attempt ${PW_K}'s commit (\`lanes-index register commit\` exited 69, above), a definitive refusal. Nothing was written. $(pw_rerun_line)" "$PW_DIR" ;;
+    64)
+      pw_abandon_one "$PW_CHILD" "$PW_DIR"; PW_CHILD=""
+      wr_record_drop_call "$PW_DIR" || :
+      pw_end 2 "\`lanes-index register commit\` exited 64 at attempt ${PW_K}, a usage error this lanes-edit.sh never sends: an internal error, and nothing was sent (CO-5)" "$PW_DIR" ;;
+  esac
+  pw_keep
+  return 0
+}
+
+# A COMMIT CALL IN DOUBT (Y:5014): nothing is sent to its child, which stays at
+# its seam, kept, and the call keeps its line in the record.
+pw_keep() {
+  PW_KEPT="${PW_KEPT}${PW_KEPT:+$WR_NL}$PW_CHILD $PW_DIR"
+  PW_CHILD=""
+}
+
+# `committed <s>` (Y:5009–5012). Every other kept child gets `abandon`: none of
+# their calls committed, since one that had would have made this call's answer
+# LR006 (Y:2563–2575). The renderer's fork (T416) and the record's `tail=sent`
+# (T418) come here, before the message. The child then replays its own buffered
+# output and runs the verb's tail once, after COMMIT; the parent reaps it,
+# removes the record (T418 writes the done mark first) and exits the child's
+# code. A child that did not take the message as `tail` (its `seam.out` reads
+# `none`: it stopped at its cap, or its parent's line was lost) leaves the tail
+# unrun, which T418 replays; meanwhile the run names it as owed and ends with 0,
+# since the write committed.
+pw_committed() {   # <seq>
+  local pm_out=""
+  pw_abandon_kept
+  pw_send "$PW_DIR" "committed $1" || :
+  PW_RC=0
+  wait "$PW_CHILD" || PW_RC=$?
+  PW_CHILD=""
+  { IFS= read -r pm_out || :; } < "$PW_DIR/seam.out" 2>/dev/null
+  if [ "$pm_out" != tail ]; then
+    note "write $WR_ID committed at seq $1, at attempt ${PW_K}, but its child did not take the message at its seam (seam.out reads ${pm_out:-nothing}; it exited ${PW_RC}), so the verb's after-COMMIT steps did not run, and may be owed: those of lanes-edit.sh $WR_VERB. Do by hand any that did not run."
+    pw_record_done
+    exit 0
+  fi
+  pw_record_done
+  exit "$PW_RC"
+}
+
+# THE CHILD ENDED BEFORE `ready` (Y:5015): the verb's own refusal, or a no-op
+# with an empty change set. No commit call is made, and the child's output and
+# code are the run's end. A 0 may end the run before F3's lookup (Y:5020).
+pw_child_end() {
+  if [ "$PW_RC" = 0 ]; then
+    pw_abandon_all
+    pw_record_done
+    pw_replay "$PW_DIR"
+    exit 0
+  fi
+  pw_end "$PW_RC" "" "$PW_DIR"
 }
 
 # THE PRIMARY BRANCH, once per writer process. It never returns: every path
@@ -6242,17 +6385,18 @@ pw_run() {   # <the verb's arguments>
     env) [ "$WR_REC_WRITE_ID" != "$WR_ID" ] || PW_REC_OURS=1 ;;
   esac
   pw_run_dir
-  # ---- (b) ONE ATTEMPT. STEP (b) ALONE: the decision comes in step (c).
+  # ---- (b) ONE ATTEMPT, (c) ITS DECISION. STEP (c) ALONE: one attempt; the
+  # deadline's loop comes in step (e).
   PW_T0="$SECONDS"
   pw_attempt_dir
   pw_snapshot
   pw_act_at_snapshot
   pw_attempt_files
   pw_child_start
-  if pw_child_wait; then
-    pw_end 69 "this lanes-edit.sh has no SQL write path: \`lanes-index mode\` answered primary, which only a lanes-index newer than this lanes-edit.sh answers. \`$cmd\` wrote nothing, and wrote no files instead. Install the lanes-edit.sh that ships with that lanes-index."
-  fi
-  pw_end "$PW_RC" "" "$PW_DIR"
+  pw_child_wait || pw_child_end
+  pw_commit
+  pw_decide
+  pw_end 75 "register busy: ${PW_K} attempts in ${PW_D_S} s, each beaten by another write; nothing was written; a retry in seconds is safe. $(pw_rerun_line)"
 }
 
 # ---------------------------------------------------------------- the verbs
