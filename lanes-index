@@ -6196,17 +6196,24 @@ def render_git_env() -> dict:
 def render_push_env(render_key: str) -> dict:
     """The push's own environment (D23; Y:5799). Without `render_key=` it is
     `render_git_env()`'s. With it, the key is named in `GIT_SSH_COMMAND` with
-    `IdentitiesOnly=yes` and `BatchMode=yes`; `SSH_AUTH_SOCK` is removed, so
-    no agent key is offered first; and `GIT_CONFIG_GLOBAL=/dev/null` with
+    `IdentitiesOnly=yes` and `BatchMode=yes`, Y:5799's form, and then
+    `-F /dev/null -o ControlMaster=no -o ControlPath=none`: no `~/.ssh/config`
+    or `/etc/ssh/ssh_config` can rename the host, add a key or a proxy, or
+    share the key's connection through a control master (MUST-2 of lane 3's
+    review of T320). `SSH_AUTH_SOCK` is removed, so no agent key is offered
+    first, and so are `SSH_ASKPASS`, `SSH_ASKPASS_REQUIRE` and
+    `SSH_SK_PROVIDER` (NIT-3); and `GIT_CONFIG_GLOBAL=/dev/null` with
     `GIT_CONFIG_NOSYSTEM=1`, so no global or system `url.*.insteadOf` turns the
     URL back into HTTPS. The dict is this one child's: the key is in no other
     environment."""
     import shlex
     env = render_git_env()
     if render_key:
-        env.pop("SSH_AUTH_SOCK", None)
+        for name in ("SSH_AUTH_SOCK", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE", "SSH_SK_PROVIDER"):
+            env.pop(name, None)
         env["GIT_SSH_COMMAND"] = (f"ssh -i {shlex.quote(os.path.abspath(render_key))} "
-                                  f"-o IdentitiesOnly=yes -o BatchMode=yes")
+                                  f"-o IdentitiesOnly=yes -o BatchMode=yes -F /dev/null "
+                                  f"-o ControlMaster=no -o ControlPath=none")
         env["GIT_CONFIG_GLOBAL"] = "/dev/null"
         env["GIT_CONFIG_NOSYSTEM"] = "1"
     return env
@@ -6224,9 +6231,22 @@ class GitRun:
         self.err = err
         self.timed_out = timed_out
 
+    #: git's boilerplate around the line that says what went wrong: never the
+    #: line kept (SHOULD-3 of lane 3's review of T320).
+    BOILERPLATE = re.compile(r"fatal: Could not read from remote repository\.?"
+                             r"|Please make sure you have the correct access rights"
+                             r"|and the repository exists\.?|hint:.*|To \S+")
+
     def last_line(self) -> str:
-        lines = [line for line in self.err.strip().splitlines() if line.strip()]
-        return _redact_url(lines[-1].strip()) if lines else "no message"
+        """The FIRST USEFUL line of stderr, URLs masked: git's boilerplate (the
+        "Could not read from remote repository" lines, `hint:` lines and a
+        push's `To <url>` line) is passed over, so "Permission denied
+        (publickey)" or git's own refusal is the line kept. Where nothing
+        else is left, the first line, git's "fatal: ..." itself."""
+        lines = [line.strip() for line in self.err.splitlines() if line.strip()]
+        useful = [line for line in lines if not self.BOILERPLATE.fullmatch(line)]
+        kept = useful[0] if useful else (lines[0] if lines else "")
+        return _redact_url(kept) if kept else "no message"
 
 
 def _run_bounded(argv: list, env: dict, timeout: float | None) -> GitRun:
@@ -6264,10 +6284,11 @@ def _run_bounded(argv: list, env: dict, timeout: float | None) -> GitRun:
                         pipe.close()
                 proc.wait()
     except BaseException:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except OSError:
-            pass
+        if proc.returncode is None:     # NIT-1: never a group whose leader was reaped
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
         proc.wait()
         raise
     return GitRun(proc.returncode, (out or b"").decode("utf-8", "replace"),
@@ -6306,6 +6327,14 @@ def render_push_url(checkout: str, render_key: str) -> str:
     repo = _norm_repo(url)
     bare = url[:-4] if url.endswith(".git") else url
     if repo == bare or not GITHUB_REPO_RE.match(repo) or repo.split("/")[1] in (".", ".."):
+        if _redact_url(url) != url:
+            # NIT-2: say what is wrong with it: a URL that carries a user
+            # part, a credential, masked here.
+            raise Refusal(f"render_key= is set, and the origin of {checkout}, "
+                          f"{_redact_url(url)}, carries credentials in its URL: the renderer "
+                          f"identity is a deploy key, which pushes only to "
+                          f"ssh://git@github.com/<owner>/<repo>.git, named from a plain origin "
+                          f"URL (D23). Nothing was pushed")
         raise Refusal(f"render_key= is set, and the origin of {checkout}, {_redact_url(url)}, "
                       f"is not a GitHub repository: the renderer identity is a deploy key, "
                       f"which pushes only to ssh://git@github.com/<owner>/<repo>.git (D23). "
@@ -6331,10 +6360,12 @@ class PushResult:
       it now stands. The renderer counts origin carrying `t` or more as pushed,
       and otherwise rebuilds, six push attempts in all (T322).
     - `failed`: the push failed otherwise (authentication, the network, the
-      ruleset or a hook on the server, its time), and the read-back proves
-      origin's `main` does not carry `tip`.
+      ruleset or a hook on the server), and the read-back proves origin's
+      `main` does not carry `tip`.
     - `unconfirmed`: the read-back could not answer (its fetch failed or timed
-      out), or the push said it landed and origin's `main` does not carry it.
+      out); or the push said it landed, or its time ran out, and origin's
+      `main` does not carry it: a server can still apply an update after the
+      client is killed (SHOULD-1 of lane 3's review of T320).
       `cutover` and `rollback` exit 3, and their rerun reads origin back
       before it acts (Y:3157-3159); the renderer records it and ends.
 
@@ -6384,6 +6415,46 @@ def render_readback(checkout: str, tip: str) -> tuple:
     return True, carried.rc == 0, origin_tip, ""
 
 
+def _render_push_config_check(checkout: str, url: str, env: dict) -> None:
+    """MUST-1 of lane 3's review of T320: with `render_key=`, the checkout's
+    own configuration (its `.git/config`, a worktree's, and any file an
+    `include.path` names), which `GIT_CONFIG_GLOBAL` does not cover, must not
+    redirect or widen the deploy key's push. Read in the push's own
+    environment, before the push, each is a `Refusal` (2), nothing pushed:
+    - a `url.<base>.insteadOf` or `url.<base>.pushInsteadOf` whose value is a
+      prefix of the push URL `url`, which would send the key elsewhere;
+    - any key that begins `remote.<url>.`, such as a `pushurl`, which would
+      do the same, compared without case;
+    - a configuration that cannot be read."""
+    def unread(run: GitRun) -> Refusal:
+        return Refusal(f"render_key= is set, and the configuration of {checkout} cannot be "
+                       f"read (`git config` exited {run.rc}: {run.last_line()}), so it cannot "
+                       f"be shown not to redirect the deploy key's push. Nothing was pushed")
+
+    rewrites = render_git(checkout, "config", "-z", "--get-regexp",
+                          r"^url\..*\.(push)?insteadof$", env=env, timeout=git_timeout_s())
+    if rewrites.rc not in (0, 1) or rewrites.timed_out:
+        raise unread(rewrites)
+    for record in rewrites.out.split("\x00"):
+        key, newline, value = record.partition("\n")
+        if newline and url.startswith(value):
+            raise Refusal(f"render_key= is set, and the configuration of {checkout} has "
+                          f"{_redact_url(key)} = {_redact_url(value)}, which rewrites the push "
+                          f"URL {url}: the deploy key's push would go elsewhere. Nothing was "
+                          f"pushed")
+    listed = render_git(checkout, "config", "-z", "--name-only", "--list", env=env,
+                        timeout=git_timeout_s())
+    if listed.rc != 0 or listed.timed_out:
+        raise unread(listed)
+    prefix = f"remote.{url}.".lower()
+    for key in listed.out.split("\x00"):
+        if key.lower().startswith(prefix):
+            raise Refusal(f"render_key= is set, and the configuration of {checkout} has "
+                          f"{_redact_url(key)}, which configures the push URL {url} as a "
+                          f"remote: the deploy key's push could go elsewhere or take more. "
+                          f"Nothing was pushed")
+
+
 def render_push(checkout: str, tip: str, render_key: str = "") -> PushResult:
     """THE ONE PUSH (T320): push `tip` to origin's `main` from `checkout`, as a
     fast-forward only, then read it back. It writes nothing to the checkout's
@@ -6391,16 +6462,22 @@ def render_push(checkout: str, tip: str, render_key: str = "") -> PushResult:
 
     `render_key` is `render_key=`'s path, or "" (Q21(b)(A)). A key file that
     is not a private regular file, and a destination `render_push_url`
-    refuses, are a `Refusal` (2) with nothing pushed. Everything else is a
-    `PushResult`, which each caller maps to its own end."""
+    refuses, and with the key a checkout configuration that would redirect
+    or widen the push (`_render_push_config_check`), are a `Refusal` (2) with
+    nothing pushed. The push never takes tags or submodules along
+    (`push.followTags=false`, `push.recurseSubmodules=no`). Everything else is
+    a `PushResult`, which each caller maps to its own end."""
     if not SHA_RE.match(tip):
         raise ValueError(f"render_push needs a full commit sha, not {tip!r}")
     if render_key:
         _check_private_file(render_key, "the renderer's deploy-key file (`render_key=`)")
     destination = render_push_url(checkout, render_key)
-    pushed = render_git(checkout, "push", "--no-verify", "--porcelain", destination,
-                        f"{tip}:refs/heads/{RENDER_BRANCH}",
-                        env=render_push_env(render_key), timeout=git_timeout_s())
+    env = render_push_env(render_key)
+    if render_key:
+        _render_push_config_check(checkout, destination, env)
+    pushed = render_git(checkout, "-c", "push.followTags=false", "-c", "push.recurseSubmodules=no",
+                        "push", "--no-verify", "--porcelain", destination,
+                        f"{tip}:refs/heads/{RENDER_BRANCH}", env=env, timeout=git_timeout_s())
     # `--porcelain` gives one line per ref, `!` for a ref that was not
     # updated: `[rejected]` is git's own refusal of a push that is not a fast-
     # forward, and `[remote rejected]` the server's, a ruleset or a hook.
@@ -6423,9 +6500,10 @@ def render_push(checkout: str, tip: str, render_key: str = "") -> PushResult:
     elif not answered:
         outcome = "unconfirmed"
         how = f"{how}; {why}"
-    elif pushed.rc == 0 and not pushed.timed_out:
+    elif pushed.timed_out or pushed.rc == 0:
         outcome = "unconfirmed"
-        how = f"{how}, and origin's {RENDER_BRANCH} does not carry {tip}"
+        how = (f"{how}, and origin's {RENDER_BRANCH} does not carry {tip}"
+               + (" yet: the server may still apply it" if pushed.timed_out else ""))
     elif summary.startswith("[rejected]"):
         outcome = "rejected"
     else:
@@ -7373,8 +7451,12 @@ def cmd_render_checkout(args: list) -> int:
     if checkout is None:
         note(f"render needs --checkout <c>: {want}")
         return 64
-    # D12: NEVER CONSULTED, and gone before anything here starts a child.
-    os.environ.pop("LANES_NO_FETCH", None)
+    # D12 AND Y:5776: `LANES_NO_FETCH` is never consulted, and no inherited
+    # `GIT_*` reaches `load_config`, `source_of` or any child (SHOULD-2 of lane
+    # 3's review of T321): both are gone before anything here reads a
+    # repository or starts a child.
+    for name in [key for key in os.environ if key.startswith("GIT_") or key == "LANES_NO_FETCH"]:
+        os.environ.pop(name, None)
     cfg = load_config()
     checkout = os.path.abspath(checkout)
     lock = RenderLock(render_git_dir(checkout))
