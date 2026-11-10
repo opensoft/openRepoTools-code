@@ -6820,46 +6820,45 @@ def register_lookup_request(schema: str, ident: dict, not_after: int) -> list[st
 
     1. `BEGIN ISOLATION LEVEL READ COMMITTED`, named, so no role's or
        database's default level changes what `find_write` sees;
-    2. the one `find_write` call with the write's six values, made once in a
-       MATERIALIZED CTE, and the token `absent` where it returns NULL, so
-       NULL never prints as an empty line (the MUST). Where it returns a
-       seq, the same SELECT adds that entry's `journal.workstation` (Y:1114,
-       NOT NULL and never empty) and its `journal.utc` (Y:1106) in whole
-       epoch seconds, as `journal --since` prints it, from that seq's own
-       `journal` row (lane 3's ruling on T418, #165 6770688147, item 1);
-    3. the found seq's `journal_files` rows as §3.2's canonical rows, sorted,
-       read in the SAME transaction (Y:5300), after the call, so its snapshot
-       is taken under the head row's lock;
+    2. the one `find_write` call with the write's six values, as
+       `coalesce(...::text, 'absent')`, so NULL prints as the token `absent`
+       and never as an empty line (the MUST);
+    3. one `COPY` of ONE text column, read in the SAME transaction (Y:5300),
+       after the call, so its snapshot is taken under the head row's lock,
+       after `find_write`'s wait: first `workstation=<name>`, the found
+       entry's `journal.workstation` (Y:1114, NOT NULL and never empty),
+       and `utc=<epoch>`, its `journal.utc` (Y:1106) in whole epoch seconds,
+       as `journal --since` prints it, both from the `journal` row of this
+       write id, the row `find_write` found; then that seq's `journal_files`
+       rows, §3.2's canonical rows, each built as one value with its two
+       tabs, sorted by path (lane 3's ruling on T418, #165 6770688147, item
+       1, and its ruling on where they are read, #165 6774390716);
     4. `ROLLBACK`.
 
-    Under `-A -t` statement 2 prints `absent`, or the seq, then
-    `workstation=<w>` and `utc=<epoch>`, each on its own line; COPY prints
-    the rows unchanged.
+    Under `-A -t` the call prints its seq or `absent` bare. COPY prints one
+    line per value, escaped as COPY's text format escapes a field, so each
+    row's two tabs print as `\\t`. Where the id is absent, the COPY prints
+    nothing.
 
-    Statement 2's subquery reads `journal` in statement 2's OWN snapshot,
-    taken before `find_write` ran. An orphan of this write that commits
-    while `find_write` waits for the head row's lock is seen by
-    `find_write`, whose statements each take a fresh snapshot, and by
-    statement 3, but not by that subquery. Then statement 2 prints the seq
-    ALONE, never `absent`: the CASE prints `absent` only for `find_write`'s
-    NULL, and the lines' coalesce makes a missing row, or a NULL in it, an
-    empty string, never NULL. The seq alone is an answer
-    `register_lookup_answer` cannot read, so the try is made again, and the
-    next try's snapshot holds the row."""
+    The two values are read in statement 3, not 2, because statement 2's
+    own snapshot is taken before `find_write`'s wait: an orphan of this
+    write that commits during that wait is seen by `find_write`, whose
+    statements each take a fresh snapshot, and by statement 3, but not by
+    statement 2 (lane 3, #165 6774390716). So the try that waited answers
+    found, with both lines and the rows, and no further try is made."""
     write = _pg_quote(ident["write_id"])
-    call = (f"{schema}.find_write({write}, {_pg_quote(register_epoch_utc(not_after))}, "
-            f"{_pg_quote(ident['generation'])}, {_pg_quote(ident['lane'])}, "
-            f"{_pg_quote(ident['verb'])}, {_pg_quote(ident['args_sha256'])})")
     return ["BEGIN ISOLATION LEVEL READ COMMITTED",
-            f"WITH f AS MATERIALIZED (SELECT {call} AS seq) "
-            f"SELECT CASE WHEN f.seq IS NULL THEN {_pg_quote(_REGISTER_LOOKUP_ABSENT)} "
-            "ELSE f.seq::text || coalesce((SELECT chr(10) || 'workstation=' || "
-            "j.workstation || chr(10) || 'utc=' || "
-            f"extract(epoch FROM j.utc)::bigint::text FROM {schema}.journal j "
-            "WHERE j.seq = f.seq), '') END FROM f",
-            "COPY (SELECT path, CASE WHEN present THEN '1' ELSE '0' END, coalesce(sha256, '-') "
-            f"FROM {schema}.journal_files WHERE seq = (SELECT seq FROM {schema}.journal "
-            f"WHERE write_id = {write}) ORDER BY path) TO STDOUT",
+            f"SELECT coalesce({schema}.find_write({write}, "
+            f"{_pg_quote(register_epoch_utc(not_after))}, {_pg_quote(ident['generation'])}, "
+            f"{_pg_quote(ident['lane'])}, {_pg_quote(ident['verb'])}, "
+            f"{_pg_quote(ident['args_sha256'])})::text, {_pg_quote(_REGISTER_LOOKUP_ABSENT)})",
+            f"COPY (WITH j AS (SELECT seq, workstation, utc FROM {schema}.journal "
+            f"WHERE write_id = {write}) SELECT x.line FROM (SELECT 1 AS o, '' AS p, "
+            "'workstation=' || j.workstation AS line FROM j UNION ALL SELECT 2, '', 'utc=' || "
+            "extract(epoch FROM j.utc)::bigint::text FROM j UNION ALL SELECT 3, f.path, "
+            "f.path || chr(9) || CASE WHEN f.present THEN '1' ELSE '0' END || chr(9) || "
+            f"coalesce(f.sha256, '-') FROM {schema}.journal_files f JOIN j ON f.seq = j.seq) x "
+            "ORDER BY x.o, x.p COLLATE \"C\") TO STDOUT",
             "ROLLBACK"]
 
 
@@ -6876,16 +6875,19 @@ def register_lookup_answer(out: str) -> tuple | None:
     the newline that ends the last line is psql's own and not part of the
     answer.
 
-    After a seq come exactly two lines, in this order, each once (lane 3's
+    The lines after the seq are statement 3's COPY of one text column
+    (`register_lookup_request`), one escaped value per line. So a line
+    holding a raw tab, which that COPY never prints, or a NULL (`\\N`), is
+    no answer. Each line is unescaped as COPY's text format escapes it.
+    Then the first two values must be, in this order, each once (lane 3's
     ruling on T418, #165 6770688147, item 1): `workstation=<name>`, where
     `<name>` is a word, as `register commit --workstation` takes one
     (`_REGISTER_WORD_RE`), and never empty, since `journal.workstation` is
     NOT NULL and never '' (Y:1114); and `utc=<epoch>`, whole epoch seconds
-    as `--clock` takes them (`_REGISTER_EPOCH_RE`). A seq with either line
-    missing, repeated, out of order or malformed, an empty `workstation=`
-    included, is no answer. So is a seq alone, which is what statement 2
-    prints for an orphan that committed during `find_write`'s wait
-    (`register_lookup_request`)."""
+    as `--clock` takes them (`_REGISTER_EPOCH_RE`). Each later value is one
+    canonical row, split at its two tabs. A seq with either line missing,
+    repeated, out of order or malformed, an empty `workstation=` included,
+    is no answer, as is a seq alone."""
     lines = out.split("\n")
     if len(lines) > 1 and lines[-1] == "":
         lines.pop()
@@ -6895,15 +6897,20 @@ def register_lookup_answer(out: str) -> tuple | None:
         return (None, None, None, []) if len(lines) == 1 else None
     if not re.fullmatch(r"[0-9]+", lines[0]) or len(lines) < 3:
         return None
-    key, eq, workstation = lines[1].partition("=")
+    if any("\t" in line for line in lines[1:]):
+        return None
+    values = [_pg_unescape(line) for line in lines[1:]]
+    if None in values:
+        return None
+    key, eq, workstation = values[0].partition("=")
     if key != "workstation" or not eq or not _REGISTER_WORD_RE.fullmatch(workstation):
         return None
-    key, eq, utc = lines[2].partition("=")
+    key, eq, utc = values[1].partition("=")
     if key != "utc" or not eq or not _REGISTER_EPOCH_RE.fullmatch(utc):
         return None
     rows = []
-    for line in lines[3:]:
-        row = [_pg_unescape(field) for field in line.split("\t")]
+    for value in values[2:]:
+        row = value.split("\t")
         if (len(row) != 3 or not row[0] or row[1] not in ("0", "1")
                 or (row[1] == "1") != bool(_REGISTER_SHA256_RE.fullmatch(row[2] or ""))
                 or (row[1] == "0" and row[2] != "-")):
