@@ -43,6 +43,7 @@ whose oracle is today's text and today's drop.
 from __future__ import annotations
 
 import calendar
+import hashlib
 import json
 import os
 import re
@@ -2269,6 +2270,130 @@ def _both(est: Estate) -> tuple:
     return up, down
 
 
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+class _Register:
+    """THE ESTATE'S REGISTER IN THE CASE'S DATABASE (T205's `pg`), brought to
+    `primary` with the marker `present` by lane 1's own functions, as line
+    N1's `RealRegister` does (T217h): as T228's writer login, one
+    `commit_write` `import` entry holding the estate's `lanes/LANES.md`, then
+    a `cutover` entry, which writes `lanes/STORE` alone (ruling 1), then
+    `record_marker`. So the guard on `mode=primary`, through the service or
+    directly, reads the register the case seeded, and the case knows each
+    file's whole text (lane 2's reading). `lanes/log/README.md` is not sent:
+    the `files` table's path CHECK refuses it (Q18 (A)).
+
+    THE FORMS are `refs/l1/T112-fu2`'s `lanes-index` (L1-A6, T107): the call
+    `commit_write(bigint, uuid, integer, uuid, jsonb)` as one request,
+    `BEGIN ISOLATION LEVEL SERIALIZABLE`, the call, `COMMIT`
+    (`register_commit_request`), at `register_head.seq` and
+    `register_switch.generation`, with the client version the schema's own
+    `version`; the entry's `journal` keys as `register_commit_entry` writes
+    them, its `edits` with `ord` from 1, and a `files` row per path carrying
+    the sha256 of the path's whole new text (step 8's proof). A write sends
+    no structured rows: no step requires them, and the guard reads files.
+
+    FAILS UNTIL T227 builds `tmpl` by the bootstrap (lane 1's L1-A7) and
+    T228 makes the logins, each by its own assertion, never a psql error."""
+
+    #: T228's fixture writer login, a member of REGISTER-WRITER.
+    WRITER = "lanes_w_fx"
+    #: The render set the case seeds: the estate's register file.
+    PATHS = ("lanes/LANES.md",)
+
+    def __init__(self, est: Estate):
+        self.pg = est.pg
+        assert self._one("SELECT to_regclass('lanes_register.register_head') IS NOT NULL;") \
+            == "t", ("the pg fixture's database holds no lanes_register schema: lane 2's T227 "
+                     "builds tmpl by the bootstrap, which waits for lane 1's L1-A7")
+        can = self._one("SELECT count(*) FROM pg_catalog.pg_roles WHERE rolcanlogin AND "
+                        f"rolname = '{self.WRITER}';")
+        assert can == "1", (f"no {self.WRITER} login: lane 2's T228 makes it by `lanes-index "
+                            "login add fx`; the group REGISTER-WRITER is NOLOGIN")
+        self.client = int(self._one("SELECT version FROM lanes_register.schema_version;"))
+        self.generation = self._one("SELECT generation FROM lanes_register.register_switch;")
+        self.files = {path: (est.wip / path).read_text(encoding="utf-8") for path in self.PATHS}
+        edits, rows = [], []
+        for path, text in self.files.items():
+            edits.append({"ord": len(edits) + 1, "op": "create", "path": path})
+            for line in text[:-1].split("\n") if text.endswith("\n") else text.split("\n"):
+                edits.append({"ord": len(edits) + 1, "op": "append", "path": path,
+                              "new_text": line})
+            rows.append({"path": path, "present": True, "sha256": _sha(text),
+                         "final_newline": text.endswith("\n")})
+        self.send("import", "import", edits, rows)
+        store = "mode primary\n"
+        self.send("cutover", "cutover",
+                  [{"ord": 1, "op": "create", "path": "lanes/STORE"},
+                   {"ord": 2, "op": "append", "path": "lanes/STORE", "new_text": store[:-1]}],
+                  [{"path": "lanes/STORE", "present": True, "sha256": _sha(store),
+                    "final_newline": True}])
+        marked = self._one(f"SELECT lanes_register.record_marker({self.client}, {self.head()}, "
+                           f"'{'3' * 40}', '{HOST}');", user=self.WRITER)
+        assert marked == "present", ("record_marker answered", marked)
+
+    def _one(self, sql: str, user=None) -> str:
+        proc = self.pg.psql(sql) if user is None else self.pg.psql(sql, user=user)
+        out = proc.stdout.strip().splitlines()
+        return out[-1].strip() if out else ""
+
+    def head(self) -> int:
+        return int(self._one("SELECT seq FROM lanes_register.register_head;"))
+
+    def line_of(self, path: str, lane: str) -> int:
+        """The line number of `lane`'s row in `path`."""
+        lines = self.files[path].split("\n")
+        found = [n for n, line in enumerate(lines, 1) if line.startswith(f"| `{lane}` |")]
+        assert len(found) == 1, (lane, found)
+        return found[0]
+
+    def send(self, kind: str, verb: str, edits: list, rows: list) -> int:
+        """One `commit_write` call as the writer's login, at the head the
+        database holds; the seq it committed."""
+        journal = {"kind": kind, "verb": verb, "lane": FROM, "workstation": HOST,
+                   "author": "T237's case", "message": f"{kind} by T237's case",
+                   "git_commit": "1" * 40 if kind == "import" else None,
+                   "git_tree": "2" * 40 if kind == "import" else None,
+                   "repos_blob": None, "args_sha256": "0" * 64}
+        entry = {"journal": journal, "not_after": "2999-12-31T00:00:00Z", "edits": edits,
+                 "files": rows}
+        literal = json.dumps(entry, ensure_ascii=True, separators=(",", ":"))
+        sql = ("BEGIN ISOLATION LEVEL SERIALIZABLE;\n"
+               f"SELECT lanes_register.commit_write({self.head()}, '{uuid.uuid4()}'::uuid, "
+               f"{self.client}, '{self.generation}'::uuid, $entry${literal}$entry$::jsonb);\n"
+               "COMMIT;\n")
+        return int(self.pg.psql(sql, user=self.WRITER).stdout.split()[0])
+
+    def replace(self, path: str, line_no: int, new_text: str) -> int:
+        """THE WRITE: one committed `write` entry whose one edit replaces line
+        `line_no` of `path`, its `old_sha256` the sha256 of the line's text
+        without its LF (step 6), and whose `files` row carries the sha256 of
+        the path's whole new text; the seq it made."""
+        lines = self.files[path].split("\n")
+        old = lines[line_no - 1]
+        lines[line_no - 1] = new_text
+        text = "\n".join(lines)
+        seq = self.send("write", "start-record",
+                        [{"ord": 1, "op": "replace", "path": path, "line_no": line_no,
+                          "old_sha256": _sha(old), "new_text": new_text, "to_path": None}],
+                        [{"path": path, "present": True, "sha256": _sha(text),
+                          "final_newline": text.endswith("\n")}])
+        self.files[path] = text
+        return seq
+
+
+def _live_other(est: Estate):
+    """Another session, `est.other`, live in a window of the lane `FROM`: its
+    own live record under the estate's `HOME` (T203c's `guard_session`), its
+    stand-in `tmux` in a directory of its own, never on the case's `PATH`."""
+    other = guard_session(est.home, est.root / "other-bin", est.wip, window=FROM,
+                          session_id=est.other, name=FROM)
+    est.sessions.append(other)
+    return other
+
+
 def test_the_guard_through_the_service_answers_byte_identical_to_the_direct_read(estate):
     """AT-10: on one state, the service path and the direct path give equal
     stdout, equal stderr once the one fallback line is removed, and equal
@@ -2387,15 +2512,41 @@ def test_a_cache_miss_at_the_service_answers_unavailable_and_fetches_in_the_back
 
 
 def test_a_write_between_two_requests_is_in_the_next_answer(estate):
-    """AT-10: a fresh write between two requests, by `commit_write` as
-    `lanes_w_fx` (T107, T228), is in the next answer."""
-    est = estate(mode="primary")
+    """AT-10, "A fresh write": request, a write by another process, request;
+    the second answer equals the direct read made after the write.
+
+    The write is T107's `commit_write` as T228's `lanes_w_fx`, in a
+    SERIALIZABLE transaction at `register_head.seq` and
+    `register_switch.generation` (`_Register.replace`): it replaces the
+    window's row so that another live session holds the lane, the test
+    plan's `refuse` state, where the first request met its `ok` state. So
+    the second answer differs from the first only by the write, and a
+    cached answer cannot pass. The service is warmed first, since a cold
+    service answers `unavailable` until its `psql` has connected (d8:502).
+    It fails until L1-A6 (T107) lands and T228's logins with T227's
+    template, as T237's Order says, beside L5-S1."""
+    est = estate(mode="primary", to=FROM, to_row=False)
+    _live_other(est)
+    reg = _Register(est)
     svc = _Service(est)
-    first = est.hook("hello")
-    est.pg.psql("SELECT 1;", user="lanes_w_fx")
-    second = est.hook("hello")
-    svc.stop()
-    assert first.code == second.code and not second.killed, (first, second)
+    try:
+        est.hook("hello")
+        first = est.hook("hello")
+        seq = reg.replace("lanes/LANES.md", reg.line_of("lanes/LANES.md", FROM),
+                          _row(FROM, est.other, "LIVE"))
+        second = est.hook("hello")
+    finally:
+        svc.stop()
+    direct = est.hook("hello")
+    assert seq == reg.head(), (seq, reg.head())
+    assert FALLBACK not in first.err and FALLBACK not in second.err, (first, second)
+    assert direct.err.splitlines().count(FALLBACK) == 1, direct.err
+    assert (first.code, first.out, first.err) != (second.code, second.out, second.err), \
+        f"the answer after the write is the answer before it: {second!r}"
+    assert not second.killed and (second.code, second.out) == (direct.code, direct.out), \
+        (second, direct)
+    assert second.err.splitlines() == [line for line in direct.err.splitlines()
+                                       if line != FALLBACK], (second.err, direct.err)
 
 
 def test_the_service_reaches_the_database_only_through_psql(estate):
