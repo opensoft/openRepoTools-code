@@ -2582,6 +2582,14 @@ _SNAPSHOT_ARGS_SHA_RE = re.compile(r"[0-9a-f]{64}")
 #: generation the snapshot prints, and so the ones a caller passes back.
 _SNAPSHOT_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
+#: What a `workstation=` value or a `file=` path may not hold, so that its row
+#: is one line to every reader: the C0 controls and DEL, which
+#: `_RENDER_CONTROL_RE` names, and U+0085, U+2028 and U+2029, which Python's
+#: `str.splitlines()` splits on with the C0 ones (U+001C to U+001E among
+#: them) and which bash's `read` does not. Lane 1's review of T111, #165
+#: 6775233959, NIT 3.
+_SNAPSHOT_LINE_RE = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
+
 #: The variables that name a repository's location, which git reads before
 #: `-C` (git rev-parse --local-env-vars, with the config ones): dropped before
 #: the checkout is read and before the scratch tree is built, as T112 drops
@@ -2786,7 +2794,7 @@ def register_snapshot_queries(*, write_id: str | None = None, images: bool = Fal
                        f"JOIN journal j ON j.seq = f.seq WHERE j.write_id = {quoted}::uuid "
                        f"ORDER BY f.path")
     if entry_blob and at is not None:
-        queries.append(f"SELECT j.repos_blob FROM journal j WHERE j.seq - 1 = {int(at)}")
+        queries.append(f"SELECT j.repos_blob FROM journal j WHERE j.seq = {int(at)} + 1")
     if images:
         bound = _SNAPSHOT_SEQ_MAX if at is None else int(at)
         queries += register_render_queries(bound, since=since)[1:]
@@ -2872,7 +2880,9 @@ def _register_snapshot_images(store, answers: list, k: int, start) -> dict:
                                 f"all read")
         return register_images(journal, edits, files)
     c = start[0]
-    if c <= k and span == ((c + 1, k) if c < k else None):
+    # Line R's reader starts at the latest import where that is above c + 1.
+    first = max(c + 1, latest)
+    if c <= k and span == ((first, k) if c < k else None):
         try:
             return register_images(journal, edits, files, start=start)
         except RenderRefused:
@@ -3126,11 +3136,12 @@ def _register_snapshot(store, opts: dict) -> int:
                     "another-write", f"write {write_id} is seq {seq}, another write's (F10)")
             # The entry's `workstation=` and `utc=` (draft 4.15), each one
             # line. The journal's CHECK refuses only an empty workstation, so
-            # a name holding a control character can be stored; it cannot be
-            # one line, and is a failed read, as a `file=` path holding one is.
+            # a name holding a control character or any other line break
+            # (`_SNAPSHOT_LINE_RE`) can be stored; it cannot be one line, and
+            # is a failed read, as a `file=` path holding one is.
             utc = _render_int(utc, "journal.utc")
             if (not isinstance(workstation, str) or not workstation
-                    or _RENDER_CONTROL_RE.search(workstation)):
+                    or _SNAPSHOT_LINE_RE.search(workstation)):
                 raise SnapshotUnavailable(f"seq {seq}'s journal.workstation {workstation!r} "
                                           f"cannot be a workstation= line")
             found = [seq, workstation, utc, []]
@@ -3140,7 +3151,7 @@ def _register_snapshot(store, opts: dict) -> int:
                                               f"read")
                 path, present, sha256 = row
                 present = _render_bool(present, "journal_files.present")
-                if (not isinstance(path, str) or _RENDER_CONTROL_RE.search(path)
+                if (not isinstance(path, str) or _SNAPSHOT_LINE_RE.search(path)
                         or (present and not (isinstance(sha256, str)
                                              and _IMAGE_DIGEST_RE.fullmatch(sha256)))):
                     raise SnapshotUnavailable(f"seq {seq}'s journal_files row {path!r} "
