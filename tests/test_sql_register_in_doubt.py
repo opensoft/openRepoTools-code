@@ -63,8 +63,10 @@ THE MODULE ALSO HOLDS, each at its own section below: T244's test 12 (AT-12)
 and section 4.3's rival, and T245's D8 and AT-F34 (phase W, the client's
 writers on a real register, through the shim), with T245's texts for 3, which
 read the scripts and run with no engine; and T246's AT-F3, a write in doubt at
-the deadline (phase W, with its direct calls in phase N); and T247's AT-F10,
-a pending record against an unrelated identical command (phase W).
+the deadline (phase W, with its direct calls in phase N); T247's AT-F10, a
+pending record against an unrelated identical command (phase W); and T251's
+AT-LR006 and AT-F33, two attempts of one write meeting at the commit (phase
+N, on these clones).
 
 PHASE W'S WORKSTATION IS T243's: `Estate`, its `estates` fixture, and the
 logging tools of T248 are imported from `test_sql_register_order`, as
@@ -2453,3 +2455,371 @@ def test_a_write_id_already_journaled_for_the_same_arguments_exits_0_at_the_snap
                                    "LANES_WRITE_GENERATION": e.c.switch()["generation"]})
     assert again.code == 0 and again.commit_calls() == [], again.err[-800:]
     assert [r["write_id"] for r in e.journal_after()].count(write_id) == 1
+
+
+# ============================================================ PHASE N: AT-LR006 and AT-F33 (T251)
+#
+# TWO ATTEMPTS OF ONE WRITE MEETING AT THE COMMIT (AT-LR006, TP:4595-4754;
+# AT-F33, TP:4755-4786), on T222's clones, as the writer login in the commit
+# call's own form. Attempts A and B carry one write W: the same id, lane,
+# verb and `args_sha256`, and a `not_after` well past the case. A is a
+# session of its own whose transaction is held open on its stdin; B's
+# snapshot read is one `REPEATABLE READ READ ONLY` transaction as the
+# writer; every barrier is a state polled in `pg_stat_activity` by
+# `application_name` (A `idle in transaction`, or B waiting on a `Lock` with
+# `pg_blocking_pids` naming A). The no-lookup control is `commit_write`'s
+# own text from `pg_get_functiondef`, step 1's lookup cut and nothing else,
+# created in the case's clone as `lanes_register_owner` and granted to the
+# writer. The client's halves (`register commit` exits 0, 75 or 2, and the
+# write exits 0 once its next snapshot finds W) stand as the next snapshot
+# read finding W at n+1.
+#
+# They FAIL UNTIL L1-A6 (T107), with L4-B3 and L4-B5 for the client's
+# halves. Without PostgreSQL 16 each skips.
+
+_SESSIONS = itertools.count(1)
+
+
+class Two:
+    """AT-LR006's fixture on one clone at `primary` with W's entry made:
+    the commit calls of A and B, their sessions and their outcomes."""
+
+    def __init__(self, c: Clone, fn: str = "commit_write") -> None:
+        self.c, self.fn = c, fn
+        self.entry = c.write_entry(seconds=600)
+        self.wid, self.n = str(uuid.uuid4()), c.head()
+        self.gen, self.client = c.switch()["generation"], c.client()
+        self.outcomes: List[Tuple[str, int, str]] = []
+
+    def sql(self, base: int, *, entry: Optional[dict] = None, level: str = "SERIALIZABLE",
+            gen: Optional[str] = None, commit: bool = True) -> str:
+        body = json.dumps(entry or self.entry, ensure_ascii=False)
+        return (f"BEGIN ISOLATION LEVEL {level};\n"
+                f"SELECT {REGISTER}.{self.fn}({base}, '{self.wid}'::uuid, {self.client}, "
+                f"'{gen or self.gen}'::uuid, $t251${body}$t251$::jsonb);\n" + ("COMMIT;\n" if commit else ""))
+
+    def session(self, name: str) -> subprocess.Popen:
+        appname = f"t251-{name}-{next(_SESSIONS)}"
+        proc = subprocess.Popen(self.c.argv({}), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, env=self.c.db.env(WRITER_LOGIN, appname))
+        proc.appname = appname
+        return proc
+
+    def state_of(self, appname: str) -> str:
+        return self.c.value(f"SELECT coalesce(string_agg(state, ','), '') FROM pg_stat_activity "
+                            f"WHERE application_name = '{appname}';")
+
+    def hold_a(self, entry: Optional[dict] = None) -> subprocess.Popen:
+        """A runs `commit_write(n, W)` and stays idle in transaction."""
+        a = self.session("a")
+        a.stdin.write(self.sql(self.n, entry=entry, commit=False))
+        a.stdin.flush()
+        until(self.c, lambda: self.state_of(a.appname) == "idle in transaction", "A idle in transaction")
+        return a
+
+    def finish(self, proc: subprocess.Popen, who: str, tail: str = "") -> Tuple[int, str]:
+        if tail:
+            proc.stdin.write(tail)
+        proc.stdin.close()
+        _, err = proc.communicate(timeout=30)
+        self.outcomes.append((who, proc.returncode, err))
+        return proc.returncode, err
+
+    def call_b(self, base: int, **options) -> Tuple[int, str]:
+        proc = self.c.call(self.sql(base, **options), appname="t251-b")
+        self.outcomes.append(("B", proc.returncode, proc.stderr))
+        return proc.returncode, proc.stderr
+
+    def start_b(self, base: int, **options) -> subprocess.Popen:
+        appname = f"t251-bw-{next(_SESSIONS)}"
+        proc = self.c.start(self.sql(base, **options), appname)
+        proc.appname = appname
+        return proc
+
+    def b_waits_on(self, b: subprocess.Popen, a: subprocess.Popen) -> None:
+        until(self.c, lambda: self.c.value(
+            "SELECT count(*) FROM pg_stat_activity w JOIN pg_stat_activity h "
+            f"ON h.application_name = '{a.appname}' WHERE w.application_name = '{b.appname}' "
+            "AND w.wait_event_type = 'Lock' AND h.pid = ANY (pg_blocking_pids(w.pid));") == "1",
+              "B waiting on a Lock that A blocks")
+
+    def ended(self, proc: subprocess.Popen, who: str) -> Tuple[int, str]:
+        _, err = proc.communicate(timeout=30)
+        self.outcomes.append((who, proc.returncode, err))
+        return proc.returncode, err
+
+    def snapshot(self) -> str:
+        """B's snapshot read: W's seq, or `absent`."""
+        proc = self.c.call("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;\n"
+                           f"SELECT coalesce((SELECT seq FROM {REGISTER}.journal WHERE write_id = "
+                           f"'{self.wid}')::text, 'absent');\nCOMMIT;\n", appname="t251-snap")
+        assert proc.returncode == 0, proc.stderr
+        return proc.stdout.strip()
+
+    def rows(self) -> int:
+        return int(self.c.value(f"SELECT count(*) FROM {REGISTER}.journal WHERE write_id = '{self.wid}';"))
+
+
+def code_of(rc: int, err: str) -> str:
+    if rc == 0:
+        return "committed"
+    m = re.match(r"(?:ERROR|FATAL):  ([0-9A-Z]{5}):", err.splitlines()[0] if err else "")
+    return m.group(1) if m else f"exit {rc}"
+
+
+def control(c: Clone) -> str:
+    """The no-lookup control, `commit_write_nolookup`, in this clone only."""
+    text = c.value(f"SELECT pg_get_functiondef('{REGISTER}.commit_write'::regproc);")
+    cut = re.subn(r"SELECT \* INTO v_old FROM journal WHERE write_id = p_write_id;.*?ERRCODE = 'LR006'; END IF;",
+                  "", text, count=1, flags=re.S)
+    assert cut[1] == 1, "commit_write holds no step-1 lookup to cut for the control"
+    made = cut[0].replace(f"FUNCTION {REGISTER}.commit_write(", f"FUNCTION {REGISTER}.commit_write_nolookup(", 1)
+    done = c.db.psql(f"SET ROLE lanes_register_owner;\n{made};\nRESET ROLE;\n"
+                     f"GRANT EXECUTE ON FUNCTION {REGISTER}.commit_write_nolookup(bigint, uuid, integer, uuid, jsonb) "
+                     "TO lanes_register_writer;\n")
+    assert done.returncode == 0, done.stderr
+    return "commit_write_nolookup"
+
+
+def two(clones, fn: str = "commit_write", c: Optional[Clone] = None) -> Two:
+    if c is None:
+        c = clones()
+        c.to_primary()
+    return Two(c, control(c) if fn != "commit_write" else fn)
+
+
+# -------------------------------------------- the scenarios, each run by its case and by AT-F33's matrix
+def case_0(t: Two) -> str:
+    """A commits before B's snapshot read; B's call made anyway."""
+    t.finish(t.hold_a(), "A", "COMMIT;\n")
+    assert t.snapshot() == str(t.n + 1)
+    return code_of(*t.call_b(t.n + 1))
+
+
+def lr006_1(t: Two, variant: str) -> Tuple[str, str]:
+    if variant == "held":
+        a = t.hold_a()
+        said = t.snapshot()
+        t.finish(a, "A", "COMMIT;\n")
+    else:
+        said = t.snapshot()
+        t.finish(t.hold_a(), "A", "COMMIT;\n")
+    rc, err = t.call_b(t.n)
+    return said, err.splitlines()[0] if rc == 3 and err else code_of(rc, err)
+
+
+def lr006_2(t: Two, base: str) -> str:
+    t.finish(t.hold_a(), "A", "COMMIT;\n")
+    return code_of(*t.call_b(t.n if base == "stale-base" else t.n + 1))
+
+
+def lr006_3(t: Two, level: str, resend: bool = False) -> List[str]:
+    a = t.hold_a()
+    assert t.snapshot() == "absent"
+    b = t.start_b(t.n, level=level)
+    t.b_waits_on(b, a)
+    t.finish(a, "A", "COMMIT;\n")
+    codes = [code_of(*t.ended(b, "B"))]
+    if resend:
+        codes.append(code_of(*t.call_b(t.n + 1, level=level)))
+    return codes
+
+
+def lr006_4(t: Two, resend: bool = False) -> List[str]:
+    a = t.hold_a()
+    b = t.session("b4")
+    b.stdin.write("BEGIN ISOLATION LEVEL SERIALIZABLE;\nSELECT pg_current_snapshot();\n")
+    b.stdin.flush()
+    until(t.c, lambda: t.state_of(b.appname) == "idle in transaction", "B's snapshot taken")
+    t.finish(a, "A", "COMMIT;\n")
+    rest = t.sql(t.n).split("\n", 1)[1]
+    codes = [code_of(*t.finish(b, "B", rest))]
+    if resend:
+        codes.append(code_of(*t.call_b(t.n + 1)))
+    return codes
+
+
+def lr006_5(t: Two, resend: bool = False) -> List[str]:
+    a = t.hold_a()
+    b = t.start_b(t.n)
+    t.b_waits_on(b, a)
+    codes = [code_of(*t.ended(b, "B"))]
+    t.finish(a, "A", "COMMIT;\n")
+    if resend:
+        codes.append(code_of(*t.call_b(t.n + 1)))
+    return codes
+
+
+def lr006_6(t: Two, variant: str) -> Tuple[str, str]:
+    a = t.hold_a()
+    if variant == "rollback":
+        b = t.start_b(t.n)
+        t.b_waits_on(b, a)
+        a_code = code_of(*t.finish(a, "A", "ROLLBACK;\n"))
+        return a_code, code_of(*t.ended(b, "B"))
+    until(t.c, lambda: t.state_of(a.appname) == "", "A's session ended by the 5 s idle bound", deadline=15)
+    rc, err = t.finish(a, "A", "COMMIT;\n")
+    assert rc == 2 and "25P03" in err, (rc, err)
+    assert t.snapshot() == "absent"
+    return "25P03", code_of(*t.call_b(t.n))
+
+
+# ------------------------------------------------------------ AT-LR006
+@pytest.mark.parametrize("variant", ["held", "whole"])
+def test_an_attempt_committed_after_the_snapshot_read_gives_lr006(clones, variant):
+    """B's snapshot read finds W absent at head n; A commits W ([held]: A's
+    transaction open across the read; [whole]: A runs whole after it); B's
+    commit call exits 3 with exactly `ERROR:  LR006: write W is in the
+    journal at seq n+1`; one row for W at n+1, and the head is n+1."""
+    t = two(clones)
+    said, first = lr006_1(t, variant)
+    assert said == "absent"
+    assert first == f"ERROR:  LR006: write {t.wid} is in the journal at seq {t.n + 1}", first
+    assert t.rows() == 1 and t.c.head() == t.n + 1
+
+
+@pytest.mark.parametrize("base", ["stale-base", "fresh-base"])
+def test_lr006_comes_before_lr001(clones, base):
+    """W committed at n+1: a commit call with the stale base n, or the fresh
+    n+1, gives LR006, never LR001, and writes nothing."""
+    t = two(clones)
+    t.finish(t.hold_a(), "A", "COMMIT;\n")
+    before = t.c.state()
+    rc, err = t.call_b(t.n if base == "stale-base" else t.n + 1)
+    assert code_of(rc, err) == "LR006" and t.c.state() == before, err
+
+
+@pytest.mark.parametrize("level", ["SERIALIZABLE", "REPEATABLE READ"], ids=["serializable", "repeatable-read"])
+def test_an_attempt_committed_while_the_commit_waits_gives_40001_then_exit_0(clones, level):
+    """A holds; B's snapshot read; B's commit call waits on a lock A blocks;
+    A commits. B gets 40001, never LR006 or 23505; the next snapshot read
+    finds W at n+1; one row for W."""
+    t = two(clones)
+    assert lr006_3(t, level) == ["40001"]
+    assert t.snapshot() == str(t.n + 1) and t.rows() == 1
+
+
+def test_an_attempt_committed_after_the_commits_snapshot_gives_40001_without_a_wait(clones):
+    """A holds; B begins SERIALIZABLE and takes its snapshot with `SELECT
+    pg_current_snapshot()`; A commits; then B calls `commit_write`: 40001,
+    with no lock wait. The next snapshot finds W; one row."""
+    t = two(clones)
+    assert lr006_4(t) == ["40001"]
+    assert t.snapshot() == str(t.n + 1) and t.rows() == 1
+
+
+def test_an_attempt_holding_past_lock_timeout_gives_55p03_then_exit_0(clones):
+    """A holds and neither commits nor rolls back; B's commit call, seen
+    waiting, gets 55P03 at its 2000 ms `lock_timeout`. After A commits the
+    next snapshot finds W; one row."""
+    t = two(clones)
+    assert lr006_5(t) == ["55P03"]
+    assert t.snapshot() == str(t.n + 1) and t.rows() == 1
+
+
+@pytest.mark.parametrize("variant", ["rollback", "idle-bound"])
+def test_an_attempt_that_never_commits_leaves_the_write_to_the_retry(clones, variant):
+    """[rollback]: A holds, B is seen waiting, A rolls back: B commits W at
+    n+1. [idle-bound]: the role's 5 s idle bound ends A's session; A's
+    COMMIT then exits 2 with 25P03 on its `FATAL:` line; B's snapshot finds
+    W absent, and B commits W at n+1. One row, no 23505."""
+    t = two(clones)
+    _, b = lr006_6(t, variant)
+    assert b == "committed" and t.rows() == 1
+    assert int(t.c.value(f"SELECT seq FROM {REGISTER}.journal WHERE write_id = '{t.wid}';")) == t.n + 1
+    assert not any("23505" in err for _, _, err in t.outcomes)
+
+
+def test_the_no_lookup_control_gives_lr001_where_the_lookup_gives_lr006(clones):
+    """AT-LR006-1's interleaving against the control: LR001, where
+    `commit_write` gives LR006 (so the test detects the lookup's absence);
+    and AT-LR006-2's fresh base against it: 23505 on
+    `journal_write_id_key`."""
+    t = two(clones, "control")
+    _, first = lr006_1(t, "held")
+    assert first.startswith("ERROR:  LR001: "), first
+    u = two(clones, "control", c=t.c)
+    u.finish(u.hold_a(), "A", "COMMIT;\n")
+    rc, err = u.call_b(u.n + 1)
+    assert code_of(rc, err) == "23505" and "journal_write_id_key" in err, err
+
+
+def test_another_writes_entry_committed_after_the_snapshot_read_gives_lr007_another_write(clones):
+    """A carries W's id with other arguments and commits after B's snapshot
+    read: B exits 3, `ERROR:  LR007: write W is seq n+1, another write's
+    (F10)` then exactly `DETAIL:  another-write`; the journal holds A's one
+    row. Under `VERBOSITY=sqlstate` the same call prints `ERROR:  LR007`
+    alone, with no `DETAIL:` line."""
+    t = two(clones)
+    other = json.loads(json.dumps(t.entry))
+    other["journal"]["args_sha256"] = sha256(b"another write, T251")
+    assert t.snapshot() == "absent"
+    t.finish(t.hold_a(entry=other), "A", "COMMIT;\n")
+    before = t.c.state()
+    rc, err = t.call_b(t.n)
+    t.c.check_refused(subprocess.CompletedProcess([], rc, "", err), before, "LR007", "another-write",
+                      f"write {t.wid} is seq {t.n + 1}, another write's (F10)")
+    assert t.rows() == 1
+    terse = subprocess.run([a if a != "VERBOSITY=verbose" else "VERBOSITY=sqlstate" for a in t.c.argv({})],
+                           input=t.sql(t.n), capture_output=True, text=True, timeout=60,
+                           env=t.c.db.env(WRITER_LOGIN, "t251-terse"), check=False)
+    assert terse.stderr.splitlines()[:1] == ["ERROR:  LR007"] and "DETAIL:" not in terse.stderr, terse.stderr
+
+
+def test_a_generation_change_after_the_snapshot_read_gives_lr007_generation(clones):
+    """B's snapshot read; then the restore form's after-loss cutover commits
+    at n+1 (a new generation, the marker `adding`); then B's commit call
+    with the generation it read: LR007 `generation`, not LR002 or LR001;
+    no row for W."""
+    t = two(clones)
+    assert t.snapshot() == "absent"
+    t.c.committed(t.c.operator_entry(after_loss=True, database_label=RESTORED_LABEL))
+    assert t.c.switch()["generation"] != t.gen
+    before = t.c.state()
+    rc, err = t.call_b(t.n)
+    t.c.check_refused(subprocess.CompletedProcess([], rc, "", err), before, "LR007", "generation")
+    assert t.rows() == 0
+
+
+# ------------------------------------------------------------ AT-F33
+def matrix(clones, fn: str) -> List[Tuple[str, int, str]]:
+    """Case 0 and AT-LR006-1 to -6, each on a clone of its own, with the
+    fresh-base resend after each 40001 or 55P03, run twice. Returns every
+    session's outcome, and checks one row for W after each case."""
+    seen: List[Tuple[str, int, str]] = []
+    runs = [lambda t: case_0(t)]
+    runs += [lambda t, v=v: lr006_1(t, v) for v in ("held", "whole")]
+    runs += [lambda t, b=b: lr006_2(t, b) for b in ("stale-base", "fresh-base")]
+    runs += [lambda t, lv=lv: lr006_3(t, lv, resend=True) for lv in ("SERIALIZABLE", "REPEATABLE READ")]
+    runs += [lambda t: lr006_4(t, resend=True), lambda t: lr006_5(t, resend=True)]
+    runs += [lambda t, v=v: lr006_6(t, v) for v in ("rollback", "idle-bound")]
+    for _ in range(2):
+        for run in runs:
+            t = two(clones, fn)
+            run(t)
+            seen += t.outcomes
+            if fn == "commit_write":
+                assert t.rows() == 1, f"{t.rows()} rows for W"
+                assert t.c.value(f"SELECT count(*) = count(DISTINCT write_id) FROM {REGISTER}.journal;") == "t"
+    return seen
+
+
+def test_no_interleaving_of_two_attempts_of_one_write_reaches_23505(clones):
+    """Every B call ends committed, LR006, 40001 or 55P03; A's committed,
+    rolled back, or 25P03; 23505 occurs in no session's output; one row for
+    W after each case."""
+    seen = matrix(clones, "commit_write")
+    for who, rc, err in seen:
+        allowed = {"committed", "LR006", "40001", "55P03"} if who == "B" else {"committed", "25P03"}
+        assert code_of(rc, err) in allowed, (who, rc, err[:300])
+    assert not any("23505" in err for _, _, err in seen)
+
+
+def test_the_no_lookup_control_reaches_23505_so_the_oracle_can_fail(clones):
+    """The same matrix against the no-lookup control shows 23505 on
+    `journal_write_id_key` at least once, or the oracle above could not
+    have caught the branch."""
+    seen = matrix(clones, "control")
+    hits = [err for _, _, err in seen if "23505" in err and "journal_write_id_key" in err]
+    print(f"[T251 control] 23505 on journal_write_id_key: {len(hits)}")
+    assert hits, "the control never reached 23505"
