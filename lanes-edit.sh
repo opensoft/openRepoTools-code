@@ -7050,9 +7050,28 @@ pw_rec_owner() {
   fi
 }
 
+# THE RUN THAT WROTE THE `tail` VALUE (Y:5181, Y:5338–5339; lane
+# openRepoTools-3, #165 6770688147, T418 item 5): the done mark's pid, host
+# and container are the record's, and "in pid `<p>`" names the run that wrote
+# `tail`. A `sent` or `done` value carried in with the record this run took
+# over was written by that record's owner, so they are the record's as this
+# run read it (WR_REC_*), never this run's claim, which this run's own writes
+# of the record stamp on it (Y:5185): a takeover that writes the mark is not
+# that run (Y:5342). Any other value is this run's own (`done` after its
+# `sent`, or `owed`), and takes the record's owner (`pw_rec_owner`). Into
+# PW_O_PID, PW_O_HOST and PW_O_CONTAINER.
+pw_tail_writer() {
+  if [ -n "$WR_TAIL" ] && [ "$WR_TAIL" = "$WR_REC_TAIL" ] && [ "$WR_REC_WRITE_ID" = "$WR_ID" ]; then
+    PW_O_PID="$WR_REC_PID"; PW_O_HOST="$WR_REC_HOST"; PW_O_CONTAINER="$WR_REC_CONTAINER"
+  else
+    pw_rec_owner
+  fi
+}
+
 # THE OUTCOME KNOWN ON 0 (Y:5193–5194, Y:5181): where this run owns the
 # record, the done mark is written first, with `<mark>` as its `tail` and the
-# record's owner, then the record goes with this run's claims. A mark that
+# record's pid, host and container, those of the run that wrote the `tail`
+# value (`pw_tail_writer`), then the record goes with this run's claims. A mark that
 # cannot be written costs only the next run's words, never a second tail,
 # since the record that holds `tail` goes only after it. `<mark>` empty: no
 # mark is written (one is there already). Where this run does not own the
@@ -7060,7 +7079,7 @@ pw_rec_owner() {
 pw_tail_close() {   # <seq> <mark tail value, or empty>
   if [ "$PW_REC_OURS" = 1 ] && wr_claim_owns; then
     if [ -n "${2-}" ]; then
-      pw_rec_owner
+      pw_tail_writer
       wr_done_write "$1" "$2" "$PW_O_PID" "$PW_O_HOST" "$PW_O_CONTAINER" || :
     fi
     if wr_record_remove; then pw_call_dirs_remove; else wr_claim_release; fi
@@ -7079,7 +7098,7 @@ pw_tail_found() {   # <seq>
   case "$WR_TAIL" in
     'sent '*|'done '*)
       tf_v="$WR_TAIL"; tf_mark="$WR_TAIL"
-      pw_rec_owner; tf_p="$PW_O_PID" ;;
+      pw_tail_writer; tf_p="$PW_O_PID" ;;
     *)
       wr_done_read "$WR_ID" || return 1
       tf_v="$WR_DONE_TAIL"; tf_p="$WR_DONE_PID" ;;
