@@ -8090,7 +8090,15 @@ sr_log_names_lane() {   # <--log's object> <L>
 #   always a lane; one in `<L>`'s own is a lane only where a row has it.
 #   `sr_known_die <L> <answer> [routed]` is the refusal, one copy of the words
 #   for the arm, after `add_row_checks`, and for the router, after its one
-#   fetch of W, which passes `routed`.
+#   fetch of W, which passes `routed`. WHERE THE ANSWER IS A FORMER NAME'S (it
+#   differs from `<L>` under case too, as `canon_lane`'s own note tells them
+#   apart), THE WORDS SAY SO AND NAME BOTH WAYS OUT (REV427c S1): resume that
+#   lane as itself, or take a position `next-free` does not offer. A rename
+#   frees the old name's position, and `lane_next_free` counts rows and not
+#   former names, so `next-free` and `lanes --prefix <repo>` offer `<L>` again;
+#   "take a free position as it prints it" sent the caller back to the name
+#   just refused. Whether `next-free` should count alias keys is lane 3's
+#   question; neither is changed here.
 sr_add_row_known() {   # <L> <canon_lane's answer for it>
   [ "${2-}" = "${1-}" ] || return 0
   sak_rows="$(rows_named_ci "${1-}" 2>/dev/null)" || return 2
@@ -8101,6 +8109,9 @@ sr_known_die() {   # <L> <canon_lane's answer> [routed]
   if [ "${3-}" = routed ]; then
     skd_read="the register on origin/$LANES_BRANCH, asked again after a fetch just now into W,"
     skd_not=", and nothing was cloned (Amendment 23 S1, S2)"
+  fi
+  if [ "$(lc "${2-}")" != "$(lc "${1-}")" ]; then
+    die "start-record's first word is '$1', a FORMER name of lane '$2' (${LANES_ALIASES_PATH:-lanes/aliases.tsv}, Amendment 16(e)), as $skd_read answers it: --add-row makes the row of a lane the register does not know yet, and a former name stays its lane's. Resume that lane as itself (LANES_LANE=$2 $SELF start-record $2 RESUMED …), or take a position that \`next-free\` does not offer: it counts rows and not former names, so it offers '$1' again, as \`lanes --prefix <repo>\` does. Nothing was written$skd_not. $SR_USE" 2
   fi
   die "start-record's first word is '$1', and $skd_read answers lane '$2' for it, by a row under any case or as a former name (Amendment 15(a), 16(e)): --add-row makes the row of a lane the register does not know yet, and this one would be a second row for lane $2. Take a free position instead, as \`lanes --prefix <repo>\` prints it. Nothing was written$skd_not. $SR_USE" 2
 }
