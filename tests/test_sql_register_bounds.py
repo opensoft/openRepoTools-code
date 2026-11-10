@@ -418,10 +418,21 @@ ROWS = {
     # the same configuration, whose connection meets the fault; the guard's
     # request is answered `unavailable` and its direct read meets it too, so
     # the hook exits 2 inside its 4.5 s (lane 5's socket contract d8, section
-    # 5.3's table). Its `statement_timeout` is the guard's 1500 ms, a reading:
-    # the contract does not state the service's own.
+    # 5.3's table). Its `statement_timeout` is a request's 180 ms, with
+    # `lock_timeout` 150 ms, set in `PGOPTIONS` just inside the service's
+    # 200 ms timer; only the image fetch differs, at 10 s and 1000 ms under an
+    # 11 s timer (T237x; lane 5's answer 3, #165 comment 6771208498; d8:214,
+    # d8:244). Its F4 case, `[service]`, reads `TIMING_PSQL`'s per-call log,
+    # which sees one-shot calls only: one guard run meets a cold service,
+    # which answers `unavailable` before its `psql` has connected (d8:502),
+    # and the service's "one long-lived `psql` child on pipes" (d8:229)
+    # cannot run through a wrapper that reads its stdin to the end. So the
+    # 57014 that case times is the guard's direct read, at the guard's
+    # 1500 ms, and at 180 ms it fails by its timing assertion until the case
+    # warms the service and times the held child's request (T237x's open
+    # question).
     "service":        dict(group="lanes_register_reader", exit=2, bound=4.5, strict=True,
-                           faults=("F1", "F2", "F3"), statement_ms=1500, table="register_head"),
+                           faults=("F1", "F2", "F3"), statement_ms=180, table="register_head"),
     # T257's five rows (D9's timeouts table, test plan section 3's AT-D9):
     # a writer's snapshot, `S` 8 s, 69 at F1; the commit at F2, in doubt then
     # 3, at least `C` + `S` + `T_L` = 25 s from the commit call's start; the
