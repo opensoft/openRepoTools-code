@@ -7453,15 +7453,22 @@ pw_rec_here() {
 # container is not this run's (#165 6774499606, T418 item 5: REV418b NIT-3,
 # NIT-4): a record of this host and container that this run's claim no longer
 # owns counts as none for that reason, not this one, and the clause is not said.
+# Where the record's host or container, or this run's, is empty, nothing can
+# be matched (`wr_here`: "an empty one never matches"), so the clause says that
+# the record names no host and container this run can match, so it counts as
+# none (Y:5344), and is left in place, never "not this host and container" or
+# "for a rerun there" (lane openRepoTools-3, #165 6779688808, Q14).
 # `<name>` is compared as the row has it (`PW_E_WS_RAW`) and printed filtered.
 pw_no_record_end() {   # <seq>
   local nr_u="" nr_rec=""
   pw_abandon_all
   wr_claim_release || :
-  if [ "$PW_REC_OURS" = 1 ] && [ -z "$WR_UPDATED_UTC" ] && [ -n "$WR_REC_HOST" ]; then
+  if [ "$PW_REC_OURS" = 1 ] && [ -z "$WR_UPDATED_UTC" ]; then
     wr_here
-    if [ "$WR_REC_HOST" != "$WR_HERE_HOST" ] || [ "$WR_REC_CONTAINER" != "$WR_HERE_CONTAINER" ]; then
-      nr_rec=". The pending record here was written on ${WR_REC_HOST}/${WR_REC_CONTAINER:-<unknown>}, not this host and container, so it counts as none, since tails are host-local, and is left in place for a rerun there"
+    if [ -z "$WR_REC_HOST" ] || [ -z "$WR_REC_CONTAINER" ] || [ -z "$WR_HERE_HOST" ] || [ -z "$WR_HERE_CONTAINER" ]; then
+      nr_rec=". The pending record here names no host and container this run can match (the record's ${WR_REC_HOST:-<empty>}/${WR_REC_CONTAINER:-<empty>}, this run's ${WR_HERE_HOST:-<empty>}/${WR_HERE_CONTAINER:-<empty>}; an empty one never matches), so it counts as none, since tails are host-local, and is left in place"
+    elif [ "$WR_REC_HOST" != "$WR_HERE_HOST" ] || [ "$WR_REC_CONTAINER" != "$WR_HERE_CONTAINER" ]; then
+      nr_rec=". The pending record here was written on ${WR_REC_HOST}/${WR_REC_CONTAINER}, not this host and container, so it counts as none, since tails are host-local, and is left in place for a rerun there"
     fi
   fi
   if [ -n "$PW_E_WS_RAW" ] && [ "$PW_E_WS_RAW" = "$WS" ]; then
