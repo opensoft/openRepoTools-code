@@ -10,7 +10,12 @@ THIS MODULE TODAY holds test 1's phase-N part, lane 2's T210:
   * `test_the_render_of_one_entry_and_of_a_full_render_is_timed_and_recorded`
     (N, RE; M6): the pure renderer timed, never asserted;
   * `test_sync_source_register_does_nothing_on_primary_and_says_so` (FP, no
-    engine).
+    engine);
+
+and the image cache's own cases, lane 2's T210e (B10 tasks:972's
+`PENDING-L2`), each named with `image_cache` so that lane 1's T302 selects
+them with `-k 'sql_register_render and image_cache'`, with no engine: see
+"the image cache (T302's API)" below.
 
 Test 1's phase-W parts and its files-mode twin are lane 2's T240, and its
 phase-G part is later still; each adds its cases here.
@@ -77,6 +82,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -822,3 +828,361 @@ def _files_under(root: Path) -> dict:
         return {}
     return {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
             for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+# ============================================================ the image cache (T302's API)
+#
+# THE IMAGE CACHE'S OWN TEST (lane 2's T210e; B10 tasks:972's `PENDING-L2`;
+# F10-OWED items 26 and 34): lane 1's T302 adds the cache to `lanes-index`,
+# under its state directory, `register-images/` (design Y:4963; PC-1), with
+# the five functions and two constants of lane 3's ruling (#165 6746004829,
+# extended by 6755051914) and lane 1's formats (#165 6755106847, "The
+# formats, for lane 2's test"), as its fix round left them (6755799745; lane
+# 3's delta check, 6755954683). T302's first run selects these cases with
+# `-k 'sql_register_render and image_cache'`. They need no engine: each loads
+# `lanes-index` as a module, with `XDG_STATE_HOME` under the case's own
+# directory, and calls the API in process. They fail until T302 lands, by the
+# assertion `image_cache_module` makes; the last one fails until lane 1's
+# follow-up commit too (6755954683, doubts 1 and 2).
+
+#: The API lane 3's ruling fixes: five functions and two constants.
+IMAGE_CACHE_API = ("image_cache_get", "image_cache_put", "image_cache_head",
+                   "image_cache_record", "image_cache_collect")
+IMAGE_CACHE_CONSTANTS = {"IMAGE_CACHE_KEEP": 3, "IMAGE_CACHE_FLOOR_SECONDS": 600}
+#: A temp file as lane 1's format names it: `.<name>.tmp-<pid>-<8 hex>`.
+IMAGE_CACHE_TEMP = re.compile(r"^\..+\.tmp-[0-9]+-[0-9a-f]{8}$")
+#: Older than collection's floor, with room: an hour before now.
+IMAGE_CACHE_OLD = 3600
+
+
+class ImageCache:
+    """`lanes-index` loaded as a module whose state directory is `state`
+    (`XDG_STATE_HOME`), with the cache's paths."""
+
+    def __init__(self, module, state: Path):
+        self.m = module
+        self.root = state / "openRepoTools" / "register-images"
+        self.objects = self.root / "objects"
+        self.seq = self.root / "seq"
+        self.head_file = self.root / "head"
+        self.lock = self.root / "lock"
+
+    def object(self, digest: str) -> Path:
+        return self.objects / digest
+
+    def age(self, path: Path, seconds: int = IMAGE_CACHE_OLD) -> None:
+        """Sets `path`'s mtime `seconds` before now, past the floor."""
+        then = time.time() - seconds
+        os.utime(path, (then, then), follow_symlinks=False)
+
+    def temps(self) -> list:
+        """Every temp file of lane 1's form left anywhere in the cache."""
+        if not self.root.is_dir():
+            return []
+        return sorted(p.relative_to(self.root).as_posix() for p in self.root.rglob(".*")
+                      if IMAGE_CACHE_TEMP.match(p.name))
+
+
+def image_cache_module(tmp_path: Path, monkeypatch) -> ImageCache:
+    """`lanes-index` as a module, under its own name so nothing else in the
+    run shares it, with `XDG_STATE_HOME` set to `<tmp_path>/state`, where
+    `state_dir()` puts `openRepoTools/register-images/`. Asserts the API is
+    there: lane 1's T302, B10 tasks:972 (the case's red until it lands)."""
+    from importlib.machinery import SourceFileLoader
+    import importlib.util
+    loader = SourceFileLoader(f"lanes_index_image_cache_{uuid.uuid4().hex}", str(LANES_INDEX))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    missing = [name for name in (*IMAGE_CACHE_API, *IMAGE_CACHE_CONSTANTS)
+               if not hasattr(module, name)]
+    assert not missing, (
+        f"{LANES_INDEX} has no image cache API, {missing} missing: lane 1's T302 (B10 "
+        f"tasks:972; #165 6755106847) has not landed")
+    state = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    return ImageCache(module, state)
+
+
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(os.lstat(path).st_mode)
+
+
+def _digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def test_the_image_cache_puts_and_gets_an_object_only_by_its_digest(tmp_path, monkeypatch):
+    """`image_cache_put(data)` returns `data`'s sha256 as 64 lowercase hex and
+    writes `objects/<digest>` under `$XDG_STATE_HOME/openRepoTools/
+    register-images/`, the file 0600 and each directory 0700, by a temp file
+    and a rename that leaves no temp file; a `bytearray` is taken as bytes,
+    and anything else raises `TypeError` before the cache is touched, the
+    one error that escapes. `image_cache_get(digest)` returns the bytes only
+    when they hash to `digest`: a missing object, a digest that is not 64
+    lowercase hex, a name outside `objects/`, an object whose bytes changed
+    and a symlink at the object's name are each a miss (None), and `put`
+    replaces the bad object and leaves a link's target alone. A second `put`
+    of an object already whole rewrites nothing and sets its mtime to now,
+    so the floor keeps it (lane 1's readings 1 and 2; fix round NIT-3 and
+    NIT-4)."""
+    cache = image_cache_module(tmp_path, monkeypatch)
+    m = cache.m
+    with pytest.raises(TypeError):
+        m.image_cache_put("lanes/LANES.md as text, not bytes")
+    assert not (tmp_path / "state").exists(), "put touched the cache before its TypeError"
+
+    data = f"# LANES.md {EM} the image cache's own test\n".encode("utf-8")
+    digest = m.image_cache_put(data)
+    assert digest == _digest(data) and re.fullmatch(r"[0-9a-f]{64}", digest), digest
+    assert cache.object(digest).read_bytes() == data
+    assert _mode(cache.object(digest)) == 0o600, oct(_mode(cache.object(digest)))
+    for directory in (tmp_path / "state" / "openRepoTools", cache.root, cache.objects):
+        assert _mode(directory) == 0o700, f"{directory} is {oct(_mode(directory))}, not 0700"
+    assert m.image_cache_get(digest) == data
+    assert m.image_cache_put(bytearray(data)) == digest
+    assert cache.temps() == [], f"a temp file was left: {cache.temps()}"
+
+    # MISSES: an object that is not there, and digests out of form.
+    other = _digest(b"never put\n")
+    assert m.image_cache_get(other) is None
+    for bad in (digest.upper(), digest[:63], digest + "0", "", "../head", None, 7):
+        assert m.image_cache_get(bad) is None, f"get({bad!r}) was not a miss"
+
+    # A WHOLE OBJECT IS NOT WRITTEN AGAIN; ITS MTIME COMES TO NOW.
+    inode = os.lstat(cache.object(digest)).st_ino
+    cache.age(cache.object(digest))
+    assert m.image_cache_put(data) == digest
+    assert os.lstat(cache.object(digest)).st_ino == inode, "a whole object was rewritten"
+    assert time.time() - os.lstat(cache.object(digest)).st_mtime < 60, (
+        "put of a whole object left its old mtime, so the floor would not keep it")
+
+    # AN OBJECT WHOSE BYTES CHANGED IS A MISS, AND PUT REPLACES IT.
+    cache.object(digest).write_bytes(b"torn")
+    assert m.image_cache_get(digest) is None, "get returned bytes that do not hash to the name"
+    assert m.image_cache_put(data) == digest
+    assert m.image_cache_get(digest) == data and cache.object(digest).read_bytes() == data
+
+    # A SYMLINK AT THE OBJECT'S NAME IS A MISS, AND PUT REPLACES IT (NIT-4).
+    outside = tmp_path / "outside"
+    outside.write_bytes(data)
+    cache.object(digest).unlink()
+    cache.object(digest).symlink_to(outside)
+    assert m.image_cache_get(digest) is None, "get followed a symlink at an object's name"
+    assert m.image_cache_put(data) == digest
+    assert not cache.object(digest).is_symlink() and cache.object(digest).read_bytes() == data
+    assert outside.read_bytes() == data, "put changed a link's target"
+    assert cache.temps() == [], f"a temp file was left: {cache.temps()}"
+
+
+def test_the_image_cache_records_manifests_and_a_head_that_moves_only_forward(tmp_path,
+                                                                               monkeypatch):
+    """`image_cache_record(n, manifest)` writes `seq/<n>`, one `<path>` TAB
+    `<digest>` line per path, each LF-ended, sorted by path bytewise, an
+    empty manifest an empty file, 0600; a second record of one `n` merges
+    into the first, a path in both taking the second's digest. `head` is
+    `<n>` and an LF, read with or without the LF and never with a leading
+    zero, and moves only forward; a missing `head`, or one with no seq, is
+    written as the larger of `n` and the highest seq `seq/` lists (NIT-2).
+    `image_cache_head()` answers (seq, manifest), or None. A record whose `n`
+    is not a whole number from 0 to 2**63 - 1, or whose manifest is not a
+    dict of paths with no control character to digests, is skipped, and no
+    call raises (lane 1's readings 6 and 7)."""
+    cache = image_cache_module(tmp_path, monkeypatch)
+    m = cache.m
+    assert m.image_cache_head() is None
+    accented = "lanes/log/repo" + chr(0x00E9) + "-1.md"
+    d1, d2, d3 = (_digest(f"image {k}\n".encode("ascii")) for k in (1, 2, 3))
+    m.image_cache_record(5, {"lanes/log/repoA-1.md": d2, accented: d3, "lanes/LANES.md": d1})
+    expected = [("lanes/LANES.md", d1), ("lanes/log/repoA-1.md", d2), (accented, d3)]
+    assert (cache.seq / "5").read_bytes() == "".join(
+        f"{p}\t{d}\n" for p, d in expected).encode("utf-8"), "the manifest's form or order"
+    assert cache.head_file.read_bytes() == b"5\n"
+    assert _mode(cache.seq / "5") == 0o600 and _mode(cache.head_file) == 0o600
+    assert _mode(cache.seq) == 0o700
+    assert m.image_cache_head() == (5, dict(expected))
+
+    # THE HEAD NEVER MOVES BACK.
+    m.image_cache_record(3, {"lanes/LANES.md": d2})
+    assert (cache.seq / "3").read_bytes() == f"lanes/LANES.md\t{d2}\n".encode("ascii")
+    assert cache.head_file.read_bytes() == b"5\n", "a lower record moved the head back"
+
+    # A SECOND RECORD OF ONE SEQ MERGES, ITS OWN DIGEST WINNING.
+    m.image_cache_record(5, {"lanes/LANES.md": d3, "lanes/aliases.tsv": d1})
+    assert m.image_cache_head() == (5, {"lanes/LANES.md": d3, "lanes/aliases.tsv": d1,
+                                        "lanes/log/repoA-1.md": d2, accented: d3})
+
+    # AN EMPTY MANIFEST IS AN EMPTY FILE; THE HEAD READS WITH OR WITHOUT ITS LF.
+    m.image_cache_record(7, {})
+    assert (cache.seq / "7").read_bytes() == b"" and cache.head_file.read_bytes() == b"7\n"
+    assert m.image_cache_head() == (7, {})
+    cache.head_file.write_bytes(b"7")
+    assert m.image_cache_head() == (7, {}), "a head with no LF is not read"
+    for bad in (b"07\n", b"7\n\n", b" 7\n", b"seven\n", b""):
+        cache.head_file.write_bytes(bad)
+        assert m.image_cache_head() is None, f"a head of {bad!r} was read"
+
+    # A HEAD WITH NO SEQ, OR NONE, IS WRITTEN AS THE LARGER OF n AND seq/'s HIGHEST.
+    cache.head_file.write_bytes(b"seven\n")
+    m.image_cache_record(4, {"lanes/LANES.md": d1})
+    assert cache.head_file.read_bytes() == b"7\n", "a junk head was not repaired to 7"
+    cache.head_file.unlink()
+    m.image_cache_record(2, {"lanes/LANES.md": d1})
+    assert cache.head_file.read_bytes() == b"7\n", "a missing head moved back to 2"
+
+    # RECORDS OUT OF FORM ARE SKIPPED, AND RAISE NOTHING.
+    before = sorted(p.name for p in cache.seq.iterdir())
+    for n, manifest in ((-1, {}), (True, {}), (2 ** 63, {}), ("9", {}), (9.0, {}),
+                        (9, {"lanes/LANES.md": d1.upper()}), (9, {"lanes/a\tb.md": d1}),
+                        (9, {"lanes/a\nb.md": d1}), (9, {"lanes/a" + chr(0) + ".md": d1}),
+                        (9, {"": d1}), (9, [("lanes/LANES.md", d1)]), (9, None)):
+        m.image_cache_record(n, manifest)
+    assert sorted(p.name for p in cache.seq.iterdir()) == before, (
+        "a record out of form wrote a manifest")
+    assert cache.head_file.read_bytes() == b"7\n"
+    assert m.image_cache_record(2 ** 63 - 1, {}) is None
+    assert cache.head_file.read_bytes() == str(2 ** 63 - 1).encode("ascii") + b"\n"
+    assert cache.temps() == [], f"a temp file was left: {cache.temps()}"
+
+
+def test_the_image_cache_collects_all_but_the_last_three_manifests_past_the_floor(
+        tmp_path, monkeypatch):
+    """Collection keeps the manifests of the `IMAGE_CACHE_KEEP` = 3 highest
+    seqs and removes every older one; it removes an object named in none of
+    them only when its mtime is over `IMAGE_CACHE_FLOOR_SECONDS` = 600 old,
+    so an old object a kept manifest names, and a young one none names, both
+    stay. It removes a temp file of the form `.<name>.tmp-<pid>-<8 hex>`
+    only past the same floor, and no other name. Where one of the kept
+    manifests is out of form, it removes no object (lane 1's readings 3, 4
+    and 5). `image_cache_record` collects too, under the same lock."""
+    cache = image_cache_module(tmp_path, monkeypatch)
+    m = cache.m
+    for name, value in IMAGE_CACHE_CONSTANTS.items():
+        assert getattr(m, name) == value, f"{name} is {getattr(m, name)!r}, not {value}"
+    data = [f"image {k}\n".encode("ascii") for k in range(1, 8)]
+    o = [m.image_cache_put(d) for d in data]
+    for k in range(1, 6):
+        m.image_cache_record(k, {"lanes/LANES.md": o[k - 1]})
+    assert sorted(p.name for p in cache.seq.iterdir()) == ["3", "4", "5"], (
+        "record kept a manifest older than the last three")
+
+    for k in (0, 1, 2, 3, 6):
+        cache.age(cache.object(o[k]))
+    temps = {"objects/.x.tmp-41-0123abcd": True, "objects/.y.tmp-42-89abcdef": False,
+             ".head.tmp-43-deadbeef": True, "seq/.5.tmp-44-cafef00d": True}
+    strays = ("objects/notes.txt", "objects/" + "A" * 64, "objects/.x.tmp-45-XYZ")
+    for rel, old in temps.items():
+        (cache.root / rel).write_bytes(b"part")
+        if old:
+            cache.age(cache.root / rel)
+    for rel in strays:
+        (cache.root / rel).write_bytes(b"stray")
+        cache.age(cache.root / rel)
+
+    m.image_cache_collect()
+    kept = {k for k in range(7) if cache.object(o[k]).exists()}
+    assert kept == {2, 3, 4, 5}, (
+        f"objects kept: {sorted(kept)}, not images 3 and 4 (old, named by seqs 3 and 4), 5 "
+        f"(named by the head) and 6 (named by none, younger than the floor)")
+    assert sorted(p.name for p in cache.seq.iterdir() if not p.name.startswith(".")) == \
+        ["3", "4", "5"]
+    for rel, old in temps.items():
+        assert (cache.root / rel).exists() is not old, (
+            f"{rel}: a temp file {'over' if old else 'under'} the floor was "
+            f"{'kept' if old else 'removed'}")
+    for rel in strays:
+        assert (cache.root / rel).exists(), f"collection removed {rel}, not a name it writes"
+    assert m.image_cache_head() == (5, {"lanes/LANES.md": o[4]})
+
+    # A KEPT MANIFEST OUT OF FORM: NO OBJECT IS REMOVED.
+    cache.age(cache.object(o[5]))
+    (cache.seq / "4").write_bytes(b"lanes/LANES.md")
+    m.image_cache_collect()
+    assert cache.object(o[5]).exists(), (
+        "collection removed an object while a kept manifest could not be read")
+
+
+def test_the_image_cache_skips_a_busy_or_odd_lock_and_never_waits(tmp_path, monkeypatch):
+    """Recording and collection take `register-images/lock` with `LOCK_EX |
+    LOCK_NB`, tried once: while another holder has it, `image_cache_record`
+    writes nothing and `image_cache_collect` removes nothing, and neither
+    waits. A `lock` that is not a regular file, a FIFO with no reader here,
+    counts as busy, and the call returns at once with nothing changed
+    (lane 1's fix round, SHOULD-1). The lock file is 0600."""
+    import fcntl
+    import threading
+    cache = image_cache_module(tmp_path, monkeypatch)
+    m = cache.m
+    d1, d2 = (m.image_cache_put(f"image {k}\n".encode("ascii")) for k in (1, 2))
+    m.image_cache_record(1, {"lanes/LANES.md": d1})
+    assert _mode(cache.lock) == 0o600, oct(_mode(cache.lock))
+    loose = m.image_cache_put(b"named by no manifest\n")
+    cache.age(cache.object(loose))
+
+    held = os.open(str(cache.lock), os.O_WRONLY | os.O_APPEND)
+    try:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        start = time.monotonic()
+        m.image_cache_record(2, {"lanes/LANES.md": d2})
+        m.image_cache_collect()
+        assert time.monotonic() - start < 5, "a call waited for the held lock"
+        assert not (cache.seq / "2").exists(), "record wrote while the lock was held"
+        assert cache.head_file.read_bytes() == b"1\n"
+        assert cache.object(loose).exists(), "collect removed an object while the lock was held"
+    finally:
+        os.close(held)
+
+    m.image_cache_collect()
+    assert not cache.object(loose).exists(), "collect did nothing once the lock was free"
+    m.image_cache_record(2, {"lanes/LANES.md": d2})
+    assert cache.head_file.read_bytes() == b"2\n"
+
+    # A FIFO AT THE LOCK'S NAME: BUSY, AT ONCE, WHETHER OR NOT IT BLOCKS ITS OPEN.
+    os.replace(str(cache.lock), str(cache.root / "lock.aside"))
+    os.mkfifo(str(cache.lock), 0o600)
+    loose = m.image_cache_put(b"named by no manifest, again\n")
+    cache.age(cache.object(loose))
+    worker = threading.Thread(target=lambda: (m.image_cache_record(3, {"lanes/LANES.md": d1}),
+                                              m.image_cache_collect()), daemon=True)
+    worker.start()
+    worker.join(10)
+    assert not worker.is_alive(), "record or collect blocked on a FIFO at the lock's name"
+    assert not (cache.seq / "3").exists() and cache.head_file.read_bytes() == b"2\n"
+    assert cache.object(loose).exists(), "collect ran through a FIFO lock"
+    assert stat.S_ISFIFO(os.lstat(cache.lock).st_mode)
+
+
+def test_the_image_cache_follows_no_symlink_at_its_lock_or_its_head(tmp_path, monkeypatch):
+    """Lane 1's follow-up to T302's fix round (lane 3's delta check, #165
+    6755954683, doubts 1 and 2): the lock is opened with `O_NOFOLLOW`, so a
+    symlink planted at `register-images/lock` is a skip, its target neither
+    changed nor created; and `record` treats a symlinked `head` as a missing
+    one, so it replaces the link with a regular `head` and leaves the link's
+    target alone. Until that commit lands, this case fails by its own
+    assertion, where the rest of the image cache's cases pass."""
+    cache = image_cache_module(tmp_path, monkeypatch)
+    m = cache.m
+    d1 = m.image_cache_put(b"image 1\n")
+    m.image_cache_record(1, {"lanes/LANES.md": d1})
+
+    # A SYMLINKED HEAD: RECORD REPLACES THE LINK, NOT ITS TARGET.
+    target = tmp_path / "elsewhere-head"
+    target.write_bytes(b"1\n")
+    cache.head_file.unlink()
+    cache.head_file.symlink_to(target)
+    m.image_cache_record(2, {"lanes/LANES.md": d1})
+    assert target.read_bytes() == b"1\n", "record wrote through a symlinked head"
+    assert not cache.head_file.is_symlink() and cache.head_file.read_bytes() == b"2\n", (
+        "record left a symlinked head in place (lane 3's 6755954683, doubt 2's fix: ELOOP as "
+        "FileNotFoundError), so image_cache_head() stays unreadable")
+
+    # A SYMLINKED LOCK, DANGLING: A SKIP, AND ITS TARGET IS NOT CREATED.
+    planted = tmp_path / "elsewhere" / "lock-target"
+    planted.parent.mkdir()
+    os.replace(str(cache.lock), str(cache.root / "lock.aside"))
+    cache.lock.symlink_to(planted)
+    m.image_cache_record(3, {"lanes/LANES.md": d1})
+    assert not planted.exists(), (
+        "the lock's open followed a symlink and created its target (lane 3's 6755954683, "
+        "doubt 1: O_NOFOLLOW on the lock)")
+    assert not (cache.seq / "3").exists(), "record ran under a symlinked lock"
