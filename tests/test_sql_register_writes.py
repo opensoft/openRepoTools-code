@@ -27,10 +27,11 @@ copy, L1-A4 (T105's constant).
 
 THE FAULT, WITH NO ENGINE (AT-2's "Unreachable"): the configuration's
 `register_url=` names a fresh, empty socket directory, and the `psql` first on
-`PATH` is T203's register fake behind `VERSION_WRAPPER`, which answers T106's
-`psql --version` with 16, and every call with `psql`'s own exit 2 and its
-"connection to server ... failed" text, as the real `psql` answers an empty
-socket directory. The fake's log is the oracle for what reached the store:
+`PATH` is T203's register fake, which since T203b answers T106's `psql
+--version` itself with 16.4 (logged as its own kind, and left out of
+`fake_calls`), and every call that carries a request with `psql`'s own exit 2
+and its "connection to server ... failed" text, as the real `psql` answers an
+empty socket directory. The fake's log is the oracle for what reached the store:
 one call, the snapshot's, with no `commit_write` in it, the configured
 password file and no `PGPASSWORD`, and no call after it (no retry that reads
 as a write, and no fallback). With no request that reached a database, the

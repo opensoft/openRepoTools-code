@@ -64,8 +64,9 @@ cluster's trust.
 
 `sync --source register` NEEDS NO ENGINE: on primary it makes no `psql`
 call, writes nothing and says it does nothing on primary (L1-A15, lane 1's
-T117). It runs with T203's register fake first on `PATH`, whose empty log is
-the oracle for "no `psql` call".
+T117). It runs with T203's register fake first on `PATH`, whose log, with no
+call that carries a request in it, is the oracle for "no `psql` call"; the
+fake answers T106's `psql --version` probe itself since T203b.
 """
 
 from __future__ import annotations
@@ -697,33 +698,17 @@ def test_the_render_of_one_entry_and_of_a_full_render_is_timed_and_recorded(pg, 
 
 # ============================================================ `sync --source register` (FP)
 
-#: T220's `psql --version` wrapper, in its form (`test_sql_register_bounds.py`,
-#: lane 2's T220): T106 asks `psql --version` once per process (L1v4.10:152),
-#: and T203's register fake does not answer it until T203b, so the wrapper
-#: answers it, logged apart, and hands every other call to the fake.
-VERSION_WRAPPER = r'''#!/usr/bin/env python3
-# T210's `psql --version` wrapper (T220's form): the version T106 asks for,
-# logged apart; every other call goes to T203's register fake.
-import os, sys
-here = os.path.dirname(os.path.abspath(__file__))
-if sys.argv[1:] == ["--version"]:
-    with open(os.path.join(here, "psql-version.log"), "a", encoding="utf-8") as handle:
-        handle.write("--version\n")
-    sys.stdout.write("psql (PostgreSQL) 16.4\n")
-    sys.exit(0)
-fake = os.path.join(here, "register-fake-psql")
-os.execv(fake, [fake] + sys.argv[1:])
-'''
-
-
 def fake_psql_dir(directory: Path, answers: list = None) -> dict:
-    """T203's register fake behind `VERSION_WRAPPER`, written to `directory`,
-    which a case puts first on `PATH`. Returns the variables the fake reads:
-    its log, and its answers where `answers` teaches any (T203's docstring)."""
+    """T203's register fake, written to `directory` as `psql`, which a case
+    puts first on `PATH`. Since T203b it answers `psql --version` itself,
+    `psql (PostgreSQL) 16.4` (`PSQL_VERSION_LINE`), the probe lane 1's T106
+    makes once per process on a register path, and logs that probe as its
+    own kind (`"kind": "version"`, no `call`). Returns the variables the fake
+    reads: its log, and its answers where `answers` teaches any (T203's
+    docstring)."""
     directory.mkdir(parents=True, exist_ok=True)
-    for name, text in (("register-fake-psql", REGISTER_FAKE_PSQL), ("psql", VERSION_WRAPPER)):
-        (directory / name).write_text(text, encoding="utf-8")
-        (directory / name).chmod(0o755)
+    (directory / "psql").write_text(REGISTER_FAKE_PSQL, encoding="utf-8")
+    (directory / "psql").chmod(0o755)
     env = {"FAKE_PSQL_LOG": str(directory / "psql.log")}
     if answers is not None:
         (directory / "answers.json").write_text(json.dumps(answers), encoding="utf-8")
@@ -732,11 +717,15 @@ def fake_psql_dir(directory: Path, answers: list = None) -> dict:
 
 
 def fake_calls(fake: dict) -> list:
-    """The fake's log, one object per call that reached it."""
+    """The fake's log, one object per call that carried a request: the
+    entries with no `kind`. A `psql --version` probe (T203b's `"kind":
+    "version"`) sends nothing, so it is left out, as T210's own wrapper
+    left it out before T203b."""
     log = Path(fake["FAKE_PSQL_LOG"])
     if not log.exists():
         return []
-    return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines() if line]
+    entries = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines() if line]
+    return [e for e in entries if e.get("kind") != "version"]
 
 
 def _sanitized_path() -> str:
