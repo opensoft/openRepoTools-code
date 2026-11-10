@@ -6,7 +6,10 @@ T225 (L2-N7; A8): `wip init`'s two cases, AT-3's three reader cases and lane
 
 - `openRepoTools wip init` refuses under the marker, and wherever any file
   under `lanes/` exists with no marker, with no configuration and with
-  `mode=index` (Q14(a); FR-005). They fail until lane 3's T303 lands.
+  `mode=index` (Q14(a); FR-005). The refusal exits 2, under the marker and
+  without it, names the path it found, and prints no `mode=primary` line: that
+  line and AT-3's 69 are the writers' (lane 3, #165 6771319904; T225c). They
+  fail until lane 3's T303 lands.
 - The readers' marker check, F17 (design Y, "F17: the marker check for
   readers"; Y:3055-3068): on a workstation that is not `mode=primary`, a
   reader checks the ref its read uses for `lanes/STORE`; an act refuses 69
@@ -77,6 +80,11 @@ REGISTER_HEADER = ["# LANES.md", "",
                    "owned | handoff path | state |",
                    "|---|---|---|---|---|---|---|"]
 CONFIGURATIONS = ("none", "index")
+#: `wip init`'s refusal code, under the marker and without it (lane 3, #165
+#: 6771319904; `openRepoTools:3682`: "EXIT CODES ARE 0 AND 2"), and the text of
+#: the `mode=primary` line, which is the writers' and never `wip init`'s.
+WIP_REFUSED = 2
+MODE_PRIMARY = "mode=primary"
 
 
 def _register(session_id: str) -> str:
@@ -274,29 +282,33 @@ def _wip_init(root: Path, files: dict, configuration: str) -> tuple:
 
 def _assert_wip_refused(code: int, out: str, before: str, after: str, ahead: list,
                         path: str, where: str) -> None:
-    """T303's refusal: a non-zero exit, the path it found named, nothing
-    committed or queued, and origin's refs unchanged."""
-    assert code != 0, f"{where}: wip init exited 0 with {path} on origin\n{out[-900:]}"
+    """T303's refusal (lane 3, #165 6771319904): exit 2, `openRepoTools`'
+    refusal code ("EXIT CODES ARE 0 AND 2", `openRepoTools:3682`), the path it
+    found named, no `mode=primary` line, nothing committed or queued, and
+    origin's refs unchanged."""
+    assert code == WIP_REFUSED, \
+        f"{where}: wip init exited {code}, not {WIP_REFUSED}, with {path} on origin\n{out[-900:]}"
     assert path in out, f"{where}: the refusal does not name {path}\n{out[-900:]}"
+    primary = [x for x in out.splitlines() if MODE_PRIMARY in x]
+    assert not primary, \
+        f"{where}: wip init prints a {MODE_PRIMARY} line, which is the writers': {primary}"
     assert after == before, f"{where}: origin's refs moved\n{before}\n->\n{after}"
     assert not ahead, f"{where}: a commit or a write is queued: {ahead}\n{out[-900:]}"
 
 
 def test_wip_init_refuses_under_the_marker(tmp_path):
     """AT-3 (Q14(a); FR-005): with `lanes/STORE` on origin's `main`, `wip init`
-    refuses with a non-zero exit, names the marker and commits nothing, the
-    same with no configuration and with `mode=index`. Fails until T303."""
+    refuses with 2, names the marker, prints no `mode=primary` line and
+    commits nothing, the same with no configuration and with `mode=index`.
+    Fails until T303."""
     files = {rel: _template_text(rel) for rel in TEMPLATE_FILES
              if not rel.endswith(".gitkeep")}
     files["lanes/log/README.md"] = "logs.\n"
     files["lanes/STORE"] = STORE_TEXT
-    codes = {}
     for configuration in CONFIGURATIONS:
         code, out, before, after, ahead = _wip_init(tmp_path / configuration, files,
                                                     configuration)
         _assert_wip_refused(code, out, before, after, ahead, "lanes/STORE", configuration)
-        codes[configuration] = code
-    assert len(set(codes.values())) == 1, f"the refusal differs by configuration: {codes}"
 
 
 @pytest.mark.parametrize("found", ["LANES.md", "repos.tsv"])
@@ -304,10 +316,10 @@ def test_wip_init_refuses_under_the_marker(tmp_path):
 def test_wip_init_refuses_where_a_lanes_file_exists_with_no_marker(tmp_path, configuration,
                                                                    found):
     """AT-3's third exception: with no marker and one file under `lanes/`,
-    `wip init` refuses, names the file and commits nothing. `LANES.md` is
-    found with `lanes/log/README.md` missing, the file today's run commits as
-    owed (`openRepoTools:5026-5080`); `repos.tsv` is found alone. Fails until
-    T303."""
+    `wip init` refuses with 2, names the file, prints no `mode=primary` line
+    and commits nothing. `LANES.md` is found with `lanes/log/README.md`
+    missing, the file today's run commits as owed (`openRepoTools:5026-5080`);
+    `repos.tsv` is found alone. Fails until T303."""
     files = {"README.md": _template_text("README.md"), f"lanes/{found}": f"lanes/{found}\n"}
     code, out, before, after, ahead = _wip_init(tmp_path, files, configuration)
     _assert_wip_refused(code, out, before, after, ahead, f"lanes/{found}",
