@@ -23,6 +23,30 @@ THE COMMAND FORMS are operations.md's (act 4's step 7 and section 2.3):
 --after-loss`. The refusals' texts are the test plan's (AT-LRLABEL,
 "Oracle"); a case asserts their words that name the key and S-2.
 
+EACH CASE ON ITS OWN CAUSE, against lane 1's T116 (#165 6770325296) and lane
+3's ruling on it (6770600106):
+- A SCRATCH SCHEMA. While `RENDER_GIT_HALF` is False, `cutover` refuses
+  `register_schema=lanes_register` with 2 before it connects (T116 runs only
+  on a scratch schema, ruling on point 1), which would answer before any
+  case's own cause. Every configuration here names `SCHEMA`, a scratch
+  schema, which the RE fixture's bootstrap makes.
+- THE OPERATOR LANE AND A GIT IDENTITY (T116's point 4). `cutover` refuses
+  with 2, after its one read and before the commit call, where `LANES_LANE`
+  is unset or not a lane's name, where a container has no
+  `LANES_WORKSTATION`, and where git names no author (`git var
+  GIT_AUTHOR_IDENT`). Every host sets `LANES_LANE`, `LANES_WORKSTATION` and
+  the author and committer in its environment, so no case meets them.
+- The refusal before it connects is shown against its control: the same
+  host with `register_label=` sends its read.
+- EXIT 0 IS THE TRANSACTION ALONE until T327 (T116's point 1, accepted as an
+  interim): nothing is pushed and the marker stays `adding`. So the first
+  cutover's `lanes/STORE` on origin fails, by its own assertion, until T327
+  pushes it.
+- T116's other refusals (no import, an `--import` not the latest, a head
+  past it, a switch that does not fit the form; `--marker-first`, 64) come
+  after the label's checks, or need a form no case here uses, and `--import`
+  is always origin's tip, its full 40-hex sha (point 5).
+
 READ, NOT FOUND IN A CONTRACT: "the fake `psql`'s log holds no call" is
 read as "no call that carries a request": a `psql --version` probe is not
 counted (T203's fake), since it sends nothing to a database.
@@ -48,8 +72,19 @@ pytestmark = [WINDOWS_SKIP]
 
 LABEL = "register-lrlabel"
 OTHER = "register-lrlabel-other"
-SCHEMA = "lanes_register"
+
+#: A scratch schema, never `lanes_register` (T116; lane 3, 6770600106).
+SCHEMA = "lrlabel_scratch"
 URL = "postgresql://lrlabel_login@127.0.0.1:55432/register_db"
+
+#: The operator lane, `LANES_LANE` (T116's point 4: a lane's name, with no
+#: space, control character, '<', '>' or '@').
+OPERATOR_LANE = "t218-operator"
+
+#: The git identity `git var GIT_AUTHOR_IDENT` names (T116's point 4): the
+#: author and the committer, `Name <email>`.
+IDENTITY = {"GIT_AUTHOR_NAME": "t218 operator", "GIT_AUTHOR_EMAIL": "t218@example.invalid",
+            "GIT_COMMITTER_NAME": "t218 operator", "GIT_COMMITTER_EMAIL": "t218@example.invalid"}
 
 
 def _private(path: Path, text: str = "") -> Path:
@@ -102,15 +137,16 @@ class Host:
         env = guard_strip_env(os.environ, strip=("T218_",))
         for name in ("XDG_CONFIG_HOME", "LANES_INDEX_CONFIG"):
             env.pop(name, None)
+        for name in ("GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE", "EMAIL"):
+            env.pop(name, None)
         env.update(HOME=str(self.home), XDG_STATE_HOME=str(root / "state"),
                    XDG_CONFIG_HOME=str(root / "config"), TMPDIR=str(root / "t"),
                    LANES_WORKSTATION="Eagle", LANES_NO_GITHUB="1", LANES_REPO=str(self.wip),
-                   LANES_LANE="t218-operator", FAKE_PSQL_LOG=str(self.psql_log),
-                   GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid",
-                   GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid",
+                   LANES_LANE=OPERATOR_LANE, FAKE_PSQL_LOG=str(self.psql_log),
                    GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0",
                    PATH=os.pathsep.join([str(self.fakebin),
                                          os.environ.get("PATH", os.defpath)]))
+        env.update(IDENTITY)
         self.env = env
         self._git("init", "-q", "--bare", "-b", "main", str(self.origin))
         self._git("init", "-q", "-b", "main", str(self.seed))
@@ -174,6 +210,13 @@ def test_cutover_without_register_label_is_refused_2_before_it_connects(tmp_path
         f"cutover with no register_label= is not refused with 2:\n{_said(proc)}")
     assert "register_label=" in proc.stderr and "S-2" in proc.stderr, _said(proc)
     assert host.requests() == [], "cutover connected before it refused"
+
+    # THE CONTROL: the same host with register_label= passes every refusal
+    # before it connects, and sends its read.
+    control = host.run(host.config(), "cutover", "--import", host.tip())
+    assert host.requests() != [], (
+        f"the control, with register_label= set, is refused before it connects too, so the "
+        f"refusal is not the missing label's alone:\n{_said(control)}")
 
 
 # ------------------------------------------------------------- the RE half
@@ -245,5 +288,11 @@ def test_a_first_cutovers_store_names_the_register_label(tmp_path, request):
     proc = host.run(config, "cutover", "--import", host.tip())
     assert proc.returncode == 0, f"the first cutover failed:\n{_said(proc)}"
     host._git("-C", str(host.wip), "fetch", "-q", "origin")
-    store = host._git("-C", str(host.wip), "show", "refs/remotes/origin/main:lanes/STORE").stdout
+    shown = subprocess.run(["git", "-C", str(host.wip), "show",
+                            "refs/remotes/origin/main:lanes/STORE"], capture_output=True,
+                           text=True, env=host.env, stdin=subprocess.DEVNULL)
+    assert shown.returncode == 0, (
+        f"origin has no lanes/STORE after the first cutover: the marker's push is T327's, and "
+        f"until it lands exit 0 is the transaction alone (T116's point 1):\n{_said(proc)}")
+    store = shown.stdout
     assert f"database={LABEL}" in store.splitlines(), f"lanes/STORE does not name {LABEL}: {store}"

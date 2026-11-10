@@ -18,6 +18,16 @@ from the host. Each refusal here is shown against its own control: the same
 estate with the one fault taken away flips, so a refusal is the condition's
 and never a verb this build lacks.
 
+THE FLIP TO `index` (lane 3's ruling 1, #165 6769217709, as lane 1's
+T120-fu1 quotes it, 6770867776): `set-mode index` refuses only on usage and
+where the file cannot be rewritten, and lane 1's reading 4 refuses a 0400
+file or an unwritable directory with 2 in both modes. A configuration that
+`load_config` refuses on its other keys is still written: the flip exits 0
+and prints a note on stderr. So `[index-directory|index-file]` flip a
+configuration `load_config` refuses (`register_url=` with no `reader_url=`,
+lane 1's own example): the refusal is the unwritable file's alone, and the
+control, writable again, writes it, exits 0 and notes it.
+
 THE ESTATE (FM: no engine). Every case runs a copy of `lanes-index` with
 `RENDER_GIT_HALF` set True (T203's `flipped_copy`), so Q6(c)'s refusal, which
 comes first, never answers for the conditions tested here. Beside the copy is
@@ -225,13 +235,17 @@ class Estate:
         return [entry for entry in entries if entry.get("kind") != "version"]
 
     # ----------------------------------------------------------- configuration
-    def config(self, mode: str, *, label: str = LABEL, name: str = "conf") -> Path:
+    def config(self, mode: str, *, label: str = LABEL, name: str = "conf",
+               reader: bool = True) -> Path:
         """A 0600 configuration at `mode`, both URLs on loopback, the password
-        file, and `register_label=<label>`."""
-        return _private(self.root / name / "lanes-index.conf", "\n".join([
-            f"mode={mode}", f"register_url={URL}", f"register_passfile={self.passfile}",
-            f"reader_url={URL}", f"reader_passfile={self.passfile}",
-            f"register_label={label}", f"register_schema={SCHEMA}", ""]))
+        file, and `register_label=<label>`. With `reader` False it names no
+        `reader_url=`, which `load_config` refuses beside a `register_url=`
+        (Amendment 14(c))."""
+        lines = [f"mode={mode}", f"register_url={URL}", f"register_passfile={self.passfile}"]
+        if reader:
+            lines += [f"reader_url={URL}", f"reader_passfile={self.passfile}"]
+        lines += [f"register_label={label}", f"register_schema={SCHEMA}", ""]
+        return _private(self.root / name / "lanes-index.conf", "\n".join(lines))
 
     def set_mode(self, mode: str, config: Path) -> subprocess.CompletedProcess:
         return subprocess.run([sys.executable, str(self.copy), "set-mode", mode,
@@ -360,7 +374,10 @@ def test_the_flip_refuses_a_configuration_it_cannot_write(tmp_path, what, mode):
     estate.switch("primary", "present", LABEL)
     estate.marker(_store(LABEL))
     estate.fetch()
-    config = estate.config("index" if mode == "primary" else "primary")
+    # To `primary`, a configuration that loads; to `index`, one `load_config`
+    # refuses on another key, which is no ground for `index` (ruling 1).
+    config = (estate.config("index") if mode == "primary" else
+              estate.config("primary", reader=False))
     target = config.parent if what == "directory" else config
     saved = stat.S_IMODE(target.stat().st_mode)
     target.chmod(0o500 if what == "directory" else 0o400)
@@ -373,10 +390,22 @@ def test_the_flip_refuses_a_configuration_it_cannot_write(tmp_path, what, mode):
         assert estate.requests() == [], "the refused flip sent a request to the database"
     finally:
         target.chmod(saved)
-    # THE CONTROL: writable again, the same flip is made.
+    # THE CONTROL: writable again, the same flip is made. To `index`, the file
+    # is written though `load_config` still refuses it, and stderr notes it
+    # (lane 1's T120-fu1, 6770867776).
+    lines = config.read_text(encoding="utf-8").splitlines(keepends=True)
     proc = estate.set_mode(mode, config)
     assert proc.returncode == 0, f"the control, writable, does not flip:\n{_said(proc)}"
     assert _mode_lines(config) == [f"mode={mode}"]
+    if mode == "index":
+        after = config.read_text(encoding="utf-8").splitlines(keepends=True)
+        changed = [(old, new) for old, new in zip(lines, after) if old != new]
+        assert len(after) == len(lines) and changed == [("mode=primary\n", "mode=index\n")], (
+            f"set-mode index on a configuration load_config refuses did not write the mode= "
+            f"line alone: {changed}\n{_said(proc)}")
+        assert str(config) in proc.stderr, (
+            f"set-mode index wrote a configuration load_config still refuses, and printed no "
+            f"note naming it on stderr:\n{_said(proc)}")
 
 
 # =========================================================== the readiness check
@@ -399,12 +428,24 @@ def test_the_flip_refuses_a_configuration_it_cannot_write(tmp_path, what, mode):
 # cluster, the RE cases fail by `ReadyEnvironment`'s own assertion on an
 # engine bench, and skip with T205's banner on one with no engine.
 #
-# READ, NOT FOUND IN A CONTRACT: the release's digest list is read as a
-# `SHA256SUMS` file in `sha256sum`'s form beside the installed `lanes-index`,
-# named by `--release <version>` (the design leaves its form open: "its form
-# is the design's"); and check 13's "the fake `psql`'s log is empty" is read
-# as "check 13's line does not depend on the fake's answers", since the run's
-# other checks still connect.
+# CHECK 1'S LIST (lane 3's T218 bullet, #165 6772120103, from its ruling
+# 6770600106 on lane 1's T119 point 1, 6770099190): "the bench puts its tool
+# directory on `PATH` before the inherited entries, holding its `lanes-index`
+# and `openRepoTools-<RELEASE>.sha256` in `sha256sum`'s form; the stale-digest
+# fault changes one named digest." The list names both `lanes-index` and
+# `lanes-edit.sh`, since a list that does not is check 1's FAIL (lane 3,
+# 6770600106; lane 1's T119-fu1, 6772958877). Check 5 asks the `lanes-index`
+# that the same `PATH` names, so `[refusing-build]` puts its refusing copy
+# there, in an install of its own with its own list (6770600106).
+#
+# EACH FP FAULT AGAINST ITS CONTROL: the same bench with the fault taken away
+# passes that one check, so its FAIL is the fault's and not, say, a list
+# check 1 cannot find. The FP bench is no ready environment, so its other
+# checks may fail; only the RE cases require every other line `ok`.
+#
+# READ, NOT FOUND IN A CONTRACT: check 13's "the fake `psql`'s log is empty"
+# is read as "check 13's line does not depend on the fake's answers", since
+# the run's other checks still connect.
 
 #: One check's line (T119's line form).
 CHECK_LINE = re.compile(r"^check (\d+): (ok|FAIL)\b:?[ \t]*(.*)$", re.M)
@@ -424,26 +465,64 @@ def _addresses(host: str) -> list:
 
 class ReadyBench(Estate):
     """The FP half: the estate of T218a, with a configuration at `index`, the
-    workstation named, and the installed tools' release digest list."""
+    workstation named, and the installed tools: the tool directory, holding
+    the flipped `lanes-index`, `lanes-edit.sh` and check 1's list, on `PATH`
+    after the fake `psql` and before the inherited entries."""
 
     RELEASE = "0.0.0-t218"
+
+    #: The tools check 1's list names, each by its file name in the tool
+    #: directory (lane 3, 6770600106; lane 1's `_READY_DIGEST_NAMES`).
+    TOOLS = ("lanes-index", "lanes-edit.sh")
+
+    #: Check 1's list, in the tool directory (lane 1's T119 point 1).
+    DIGEST_LIST = f"openRepoTools-{RELEASE}.sha256"
 
     def __init__(self, root: Path):
         super().__init__(root)
         self.env["LANES_WORKSTATION"] = "Eagle"
+        self.tools = self.copy.parent
+        self.env["PATH"] = self.path_with(self.tools)
         self.digests(stale=False)
 
-    def digests(self, *, stale: bool) -> None:
-        tool = self.copy.parent
+    def path_with(self, tools: Path, *, psql: bool = True) -> str:
+        """`PATH`: the fake `psql`'s directory, then `tools`, then the inherited
+        entries. With `psql` False, no entry holds a `psql`, and `git` is kept
+        by a link of its own."""
+        inherited = [entry for entry in os.environ.get("PATH", os.defpath).split(os.pathsep)
+                     if entry]
+        if psql:
+            return os.pathsep.join([str(self.fakebin), str(tools), *inherited])
+        keep = self.root / "nopsql"
+        keep.mkdir(exist_ok=True)
+        real_git = shutil.which("git", path=os.pathsep.join(inherited))
+        if real_git and not (keep / "git").exists():
+            (keep / "git").symlink_to(real_git)
+        entries = [entry for entry in inherited
+                   if not os.access(os.path.join(entry, "psql"), os.X_OK)]
+        return os.pathsep.join([str(keep), str(tools), *entries])
+
+    def digests(self, *, stale: bool, tools: Path | None = None) -> None:
+        """Check 1's list in `tools` (the bench's tool directory by default):
+        one `<sha256>  <name>` line, `sha256sum`'s form, for each of `TOOLS`.
+        With `stale`, `lanes-index`'s digest alone is another release's."""
+        tools = tools or self.tools
         lines = []
-        for name in sorted(p.name for p in tool.iterdir()):
-            if name == "SHA256SUMS" or not (tool / name).is_file():
-                continue
-            digest = hashlib.sha256((tool / name).read_bytes()).hexdigest()
+        for name in self.TOOLS:
+            digest = hashlib.sha256((tools / name).read_bytes()).hexdigest()
             if stale and name == "lanes-index":
                 digest = hashlib.sha256(b"another release").hexdigest()
             lines.append(f"{digest}  {name}\n")
-        (tool / "SHA256SUMS").write_text("".join(lines), encoding="utf-8")
+        (tools / self.DIGEST_LIST).write_text("".join(lines), encoding="utf-8")
+
+    def install(self, directory: Path, *, refusing: bool) -> Path:
+        """A second install in `directory`: `lanes-index` with `RENDER_GIT_HALF`
+        set to `not refusing`, `lanes-edit.sh`, and check 1's list naming both;
+        returns its `lanes-index`."""
+        copy = flipped_copy(REPO / "lanes-index", directory, not refusing)
+        shutil.copy2(self.tools / "lanes-edit.sh", directory / "lanes-edit.sh")
+        self.digests(stale=False, tools=directory)
+        return copy
 
     def ready(self, config: Path, *args: str, path: str | None = None,
               copy: Path | None = None) -> subprocess.CompletedProcess:
@@ -456,16 +535,8 @@ class ReadyBench(Estate):
                               timeout=120, stdin=subprocess.DEVNULL)
 
     def path_without_psql(self) -> str:
-        """`PATH` with no `psql` on it: every entry that holds one is left out,
-        and `git` is kept by a link of its own."""
-        keep = self.root / "nopsql"
-        keep.mkdir(exist_ok=True)
-        real_git = shutil.which("git", path=self.env["PATH"])
-        if real_git and not (keep / "git").exists():
-            (keep / "git").symlink_to(real_git)
-        entries = [entry for entry in os.environ.get("PATH", os.defpath).split(os.pathsep)
-                   if entry and not os.access(os.path.join(entry, "psql"), os.X_OK)]
-        return os.pathsep.join([str(keep), *entries])
+        """`PATH` with no `psql` on it, the tool directory still on it."""
+        return self.path_with(self.tools, psql=False)
 
 
 class ReadyEnvironment:
@@ -521,8 +592,11 @@ def _fp_fault(bench: ReadyBench, fault: str) -> subprocess.CompletedProcess:
         assert len(found) == 1, (
             "[refusing-build] lanes-index has no RENDER_GIT_HALF line: lane 1's T105, test "
             "14's refusing state, has not landed, so there is no refusing build to check")
-        refusing = flipped_copy(REPO / "lanes-index", bench.root / "refusing", False)
-        return bench.ready(config, "--expect", "index", copy=refusing)
+        # The refusing build is the installed one: its directory, not the
+        # bench's tool directory, is on PATH, which check 5 reads.
+        refusing = bench.install(bench.root / "refusing", refusing=True)
+        return bench.ready(config, "--expect", "index", copy=refusing,
+                           path=bench.path_with(refusing.parent))
     raise AssertionError(f"no FP fault {fault}")
 
 
@@ -567,7 +641,13 @@ def _re_fault(env: ReadyEnvironment, fault: str) -> subprocess.CompletedProcess:
 def test_the_readiness_check_fails_on_each_fault(tmp_path, request, fault):
     number, kind = FAULTS[fault]
     if kind == "FP":
-        proc = _fp_fault(ReadyBench(tmp_path), fault)
+        bench = ReadyBench(tmp_path)
+        # THE CONTROL: the bench with the fault taken away passes this check.
+        control = bench.ready(bench.config("index"), "--expect", "index")
+        assert _checks(control.stdout).get(number, ("", ""))[0] == "ok", (
+            f"[{fault}] the control, with the fault taken away, does not pass check "
+            f"{number}:\n{_said(control)}")
+        proc = _fp_fault(bench, fault)
     else:
         proc = _re_fault(ReadyEnvironment(request, tmp_path), fault)
     checks = _checks(proc.stdout)
