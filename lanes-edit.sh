@@ -766,7 +766,7 @@
 #      lost its turn by D7's deadline, 30 s from the first attempt's start
 #      (LANES_REGISTER_DEADLINE_S sets it for tests), with the write's rerun.
 #      Likewise an attempt whose child is still short of `ready` twice D +
-#      30 s after its start (LANES_REGISTER_SEAM_CAP_S sets it for tests): the
+#      30 s after its start (LANES_REGISTER_READY_CAP_S sets it for tests): the
 #      child gets TERM, then KILL 1 s later where TERM did not end it, its
 #      output is not shown, and nothing was sent by that attempt.
 #      And, until T417's lookup and its exit 3, two ends that send nothing
@@ -5858,12 +5858,15 @@ pw_deadline_s() {
 }
 
 # THE BOUND ON A CHILD THAT HAS NOT REACHED `ready` (lane openRepoTools-3, #165
-# 6770820384, T415's question 3): Y:5001's cap, twice D + 30 s from the child's
-# start, 120 s at D7's 30 s. `LANES_REGISTER_SEAM_CAP_S` sets it for tests, as
-# it sets that cap (Y:5001; tasks:1133), read in base 10. Its caller has PW_D_S.
+# 6770820384, T415's question 3; #165 6774499606, T415 (1)): twice D + 30 s
+# from the child's start, 120 s at D7's 30 s, the default of Y:5001's cap. Its
+# own test setting is `LANES_REGISTER_READY_CAP_S`, read in base 10.
+# `LANES_REGISTER_SEAM_CAP_S`, the seam's cap, never sets it, so a test that
+# ages a claim out with a short seam cap does not also bound its own write's
+# child (review REV415b, S2). Its caller has PW_D_S.
 pw_child_cap_s() {
-  if wr_is_count "${LANES_REGISTER_SEAM_CAP_S:-}"; then
-    printf '%s\n' "$((10#$LANES_REGISTER_SEAM_CAP_S))"
+  if wr_is_count "${LANES_REGISTER_READY_CAP_S:-}"; then
+    printf '%s\n' "$((10#$LANES_REGISTER_READY_CAP_S))"
   else
     printf '%s\n' "$((2 * (PW_D_S + 30)))"
   fi
@@ -6347,7 +6350,7 @@ pw_child_wait() {
 # by it at the seam all the same. Only the child is signalled: it shares this
 # process's group, and a process it started itself is not signalled here.
 pw_child_hung_end() {
-  local ch_n=0 ch_how="TERM" ch_w=""
+  local ch_n=0 ch_how="TERM" ch_w="" ch_b=""
   kill -TERM "$PW_CHILD" 2>/dev/null || :
   while kill -0 "$PW_CHILD" 2>/dev/null && [ "$ch_n" -lt 20 ]; do
     if sleep 0.05 2>/dev/null; then ch_n=$((ch_n + 1)); else sleep 1; ch_n=20; fi
@@ -6359,7 +6362,14 @@ pw_child_hung_end() {
   wait "$PW_CHILD" 2>/dev/null || :
   PW_CHILD=""
   [ -n "$WR_CALLS" ] || ch_w=", and nothing was written"
-  pw_end 75 "attempt ${PW_K}'s child did not reach the seam within ${PW_CAP_S} s of its start, the bound on a child short of \`ready\` (twice D + 30 s, D = ${PW_D_S} s; LANES_REGISTER_SEAM_CAP_S sets it for tests), so it was stopped with ${ch_how}, and its output is not shown. Nothing was sent by that attempt${ch_w}. $(pw_rerun_line)"
+  # The bound as it was set (review REV415b, NIT 4): the test setting where it
+  # is in force, else the default's formula with this run's D.
+  if wr_is_count "${LANES_REGISTER_READY_CAP_S:-}"; then
+    ch_b="LANES_REGISTER_READY_CAP_S=${LANES_REGISTER_READY_CAP_S}"
+  else
+    ch_b="2 × (D + 30) s, D = ${PW_D_S} s"
+  fi
+  pw_end 75 "attempt ${PW_K}'s child did not reach the seam within ${PW_CAP_S} s of its start, the bound on a child short of \`ready\` (${ch_b}), so it was stopped with ${ch_how}, and its output is not shown. Nothing was sent by that attempt${ch_w}. $(pw_rerun_line)"
 }
 
 # ONE MESSAGE TO A CHILD AT THE SEAM (Y:5007): the FIFO opened read-write, so
