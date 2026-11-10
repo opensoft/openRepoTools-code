@@ -42,8 +42,14 @@ banner. They fail until L1-A13 (`import --at`, lane 1's T115), L1-A16 (T118's
 kinds) and lane 3's T301 (the scratch render the proof runs) land.
 
 - The refusal's code is read from `lanes-index`'s named constant,
-  `EXIT_REFUSED` (lane 1's T102 proposes 2: "import --at's refusal: 2"; the
-  constants are lane 1's, `contracts/exit-codes.md` section 1).
+  `EXIT_IMPORT_REFUSED`, PC-10's code for `import --at`'s refusal (lane 1's
+  T102 proposes 2; `contracts/exit-codes.md` sections 1, 3.2 and 4).
+- The `lanes` count is one row per lane that a row names, in
+  `lanes/LANES.md` and `lanes/archive/` together (design.md's `lanes`
+  table, "one row per lane", and step 7, "each row's `raw` must equal its
+  line's text"), never `build_records`' full count, which adds a record for
+  each lane with a log and no row (`repoB-1` here; lane 1's T115 finding,
+  #165 comment 6780760076).
 - The import runs as the operator lane, `LANES_LANE=repoA-2`, through that
   lane's checkout (lane 1's T115; D24), with `LANES_INDEX_CONFIG` naming a
   configuration whose `register_url=` and `reader_url=` name the session
@@ -508,10 +514,29 @@ def _records(reg: Workspace, sha: str) -> dict:
     return mod.build_records(mod.read_snapshot(str(reg.wip), sha))
 
 
+def _row_lanes(reg: Workspace, sha: str) -> set:
+    """The lanes a row names at `sha`, case-folded: `row_name` over every
+    line of `lanes/LANES.md` and of each file under `lanes/archive/`. The
+    design keeps "one row per lane, LANES.md and archive/ together", so a
+    lane with a row in both has one, and a lane with a log and no row has
+    none (design.md, the `lanes` table and "Why the text"; step 7)."""
+    mod = load_indexer()
+    names = set()
+    for path, data in reg.rendered(sha).items():
+        if path == "lanes/LANES.md" or path.startswith("lanes/archive/"):
+            for line in data.decode("utf-8").split("\n"):
+                name = mod.row_name(line)
+                if name:
+                    names.add(name.lower())
+    return names
+
+
 def _assert_proved(reg: FixtureRegister, pg, sha: str) -> None:
     """The import's oracle at `sha` (AT-7, "Success"): seq 0 holds the
     commit, its `lanes` tree id and the digests; each table's count equals
-    the files'; every rendered path's blob id equals the commit's."""
+    the files'; every rendered path's blob id equals the commit's. The
+    `lanes` count is the lanes a row names (`_row_lanes`), not
+    `build_records`' records, which hold a lane with a log and no row too."""
     seq0 = _rows(pg, "SELECT kind, git_commit, git_tree FROM journal WHERE seq = 0")
     assert seq0 == [{"kind": "import", "git_commit": sha, "git_tree": reg.tree(sha)}], seq0
     rendered = reg.rendered(sha)
@@ -519,7 +544,8 @@ def _assert_proved(reg: FixtureRegister, pg, sha: str) -> None:
         pg, "SELECT path, sha256 FROM journal_files WHERE seq = 0 AND present")}
     assert digests == {p: hashlib.sha256(b).hexdigest() for p, b in rendered.items()}
     records = _records(reg, sha)
-    for table in ("lanes", "log_lines", "register_lines"):
+    assert _count(pg, "lanes") == len(_row_lanes(reg, sha)), "lanes' count: the lanes a row names"
+    for table in ("log_lines", "register_lines"):
         assert _count(pg, table) == len(records[table]), f"{table}'s count"
     assert _count(pg, "files") == len(rendered)
     renders = _renders(pg)
@@ -600,7 +626,7 @@ def test_import_refuses_on_a_difference_and_loads_nothing(pg, tmp_path, differen
     and the previous import's seq 0 and tables unchanged after one. Once C'
     is fixed, a re-run succeeds (AT-7, "Refusal")."""
     reg = FixtureRegister(tmp_path / "e")
-    refused = load_indexer().EXIT_REFUSED
+    refused = load_indexer().EXIT_IMPORT_REFUSED
     path, change = DIFFERENCES[difference]
     good = reg.blob(reg.c, path)
     bad = change(good.decode("utf-8")).encode("utf-8")
