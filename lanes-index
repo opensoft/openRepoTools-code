@@ -7322,13 +7322,19 @@ _READY_CHECKS = 13
 
 #: CHECK 1'S DIGEST LIST. Y names "the release's" digests (ops:441, ops:444) and
 #: the test plan an installed-tools directory holding "the release's digest
-#: list" (AT-P8), but neither fixes its form, so this is this build's [P]: in
-#: the directory of the `lanes-index` that PATH names, the installed-tools
-#: directory, the file `openRepoTools-<release>.sha256`, in `sha256sum`'s own
-#: form, one `<sha256>  <name>` line for each installed tool, each name one file
-#: of that directory. A `#` line is a comment.
+#: list" (AT-P8), but neither fixes its form, so lane 1 chose this one, which
+#: stands (lane 3's ruling, #165 6770600106): in the directory of the
+#: `lanes-index` that PATH names, the installed-tools directory, the file
+#: `openRepoTools-<release>.sha256`, in `sha256sum`'s own form, one
+#: `<sha256>  <name>` line for each installed tool, each name one file of that
+#: directory. A `#` line is a comment.
 _READY_DIGEST_LIST = "openRepoTools-{release}.sha256"
 _READY_DIGEST_LINE_RE = re.compile(r"([0-9a-f]{64}) [ *]([A-Za-z0-9_+-][A-Za-z0-9._+-]*)")
+
+#: The tools every release's digest list names (lane 3's ruling, #165
+#: 6770600106): "A list that does not name `lanes-index` and `lanes-edit.sh`
+#: fails." Check 1 names each one a list leaves out.
+_READY_DIGEST_NAMES = ("lanes-index", "lanes-edit.sh")
 
 #: `--release` and `--env`: a version and a label, which become a file name and
 #: part of the last line, so neither can carry a path, a space or a control
@@ -7617,7 +7623,8 @@ def _ready_installed() -> str:
 
 def _ready_check_digests(release: str) -> tuple[bool, str]:
     """CHECK 1 (ops:444): the installed tools' digests equal the release's,
-    by `_READY_DIGEST_LIST` in the installed-tools directory."""
+    by `_READY_DIGEST_LIST` in the installed-tools directory, a list that
+    names each of `_READY_DIGEST_NAMES`."""
     installed = _ready_installed()
     if not installed:
         return False, "there is no lanes-index on PATH, so there are no installed tools to compare"
@@ -7639,6 +7646,10 @@ def _ready_check_digests(release: str) -> tuple[bool, str]:
         entries.append((match.group(1), match.group(2)))
     if not entries:
         return False, f"{listing} names no file"
+    named = {name for _, name in entries}
+    missing = [name for name in _READY_DIGEST_NAMES if name not in named]
+    if missing:
+        return False, f"{listing} does not name {' or '.join(missing)}"
     stale = []
     for digest, name in entries:
         try:
