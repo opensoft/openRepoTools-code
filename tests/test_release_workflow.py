@@ -2022,6 +2022,8 @@ def write_wheel(path: Path, members: Dict[str, Tuple[bytes, int]],
     hatchling would write for them, at `path`."""
     rows = []
     for name, (data, _) in members.items():
+        if name.endswith("/"):
+            continue  # a RECORD lists files, and never a directory entry
         digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest())
         rows.append(f"{name},sha256={digest.decode().rstrip('=')},{len(data)}")
     rows.append(f"{info}RECORD,,")
@@ -2085,6 +2087,28 @@ def an_extra_member(member: str, data: bytes) -> Callable[[dict, str], None]:
     return change
 
 
+def a_directory_entry(name: str) -> Callable[[dict, str], None]:
+    """`name`, a ZIP directory entry (a name ending in `/`, no bytes, typed a
+    directory at 0755), added, where `{info}` is the `.dist-info/` prefix."""
+    def change(members: dict, info: str) -> None:
+        entry = name.format(info=info)
+        assert entry.endswith("/") and entry not in members, (
+            f"the case is wrong: {entry} is not a new directory entry")
+        members[entry] = (b"", stat.S_IFDIR | 0o755)
+    return change
+
+
+def its_parent_directories(members: dict, info: str) -> None:
+    """Every directory above a member, each as a directory entry, as `zip -r`
+    writes a tree: `openrepotools/`, the payload's own folders and the
+    `.dist-info/` one with its `licenses/`."""
+    for name in list(members):
+        parts = name.split("/")[:-1]
+        for at in range(1, len(parts) + 1):
+            members.setdefault("/".join(parts[:at]) + "/",
+                               (b"", stat.S_IFDIR | 0o755))
+
+
 def a_dist_info_file_with(name: str, more: bytes) -> Callable[[dict, str], None]:
     """The `.dist-info/` file `name` with `more` after its last line."""
     def change(members: dict, info: str) -> None:
@@ -2143,6 +2167,19 @@ NOT_THE_COMMITS = {
         None, None),
     "a-sixth-dist-info-file": (
         "INSTALLER", an_extra_member("{info}INSTALLER", b"pip\n"), None, None),
+    # DIRECTORY ENTRIES (opensoft/openRepoTools#352, item 1): each is a name
+    # ending in `/`, which the inventory used to drop, so none was ever seen.
+    "a-directory-entry-nothing-is-under": (
+        "empty-dir/", a_directory_entry("empty-dir/"), None, None),
+    "a-directory-entry-that-is-only-the-start-of-a-parent": (
+        "openrepotools/pay/", a_directory_entry("openrepotools/pay/"), None,
+        None),
+    "a-directory-entry-below-the-payload-with-no-file": (
+        "openrepotools/payload/extra/",
+        a_directory_entry("openrepotools/payload/extra/"), None, None),
+    "the-dist-info-directory-of-another-version": (
+        "openrepotools-9.9.9.dist-info/",
+        a_directory_entry("openrepotools-9.9.9.dist-info/"), None, None),
 }
 
 
@@ -2154,7 +2191,10 @@ def damage(path: Path, member: str, how: str) -> None:
     not have, `method` makes its compression method in the central
     directory 99, one `zipfile` cannot read, and `lzma` first stores it as
     LZMA, which `zipfile` writes and reads, then makes the first byte of its
-    LZMA stream 0xFF, where the range coder's first byte is always 0."""
+    LZMA stream 0xFF, where the range coder's first byte is always 0. `huge`
+    and `big` make its uncompressed size in the central directory, which is
+    what `file_size` reads, 512 MiB and 16 MiB, its bytes and CRC as they
+    were."""
     if how == "lzma":
         with zipfile.ZipFile(path) as wheel:
             kept = [(entry, wheel.read(entry)) for entry in wheel.infolist()]
@@ -2176,6 +2216,8 @@ def damage(path: Path, member: str, how: str) -> None:
         data[at + 16] ^= 0x01
     elif how == "method":
         struct.pack_into("<H", data, at + 10, 99)
+    elif how in ("huge", "big"):
+        struct.pack_into("<I", data, at + 24, (512 if how == "huge" else 16) << 20)
     else:
         assert how in ("deflate", "lzma"), how
         (local,) = struct.unpack_from("<I", data, at + 42)
@@ -2233,11 +2275,12 @@ def test_release_build_the_wheel_check_refuses_a_wheel_that_is_not_the_commit_s(
     member nothing puts in the wheel, a stamp whose bytes are not the
     committed file stamped though its five values are the release's, the
     wheel as built checked in a run of another repository, metadata that
-    names a dependency, a second console script, and a sixth `.dist-info/`
-    file. Each fails, and among the lines it prints beyond the wheel as
-    built's is an `::error::` line naming what is wrong. Only that line is
-    the refusal: the step's own `print`s show some of the same values (the
-    metadata, for one) whether or not it refuses them."""
+    names a dependency, a second console script, a sixth `.dist-info/`
+    file, and four directory entries no file the wheel may hold is under
+    (opensoft/openRepoTools#352). Each fails, and among the lines it prints
+    beyond the wheel as built's is an `::error::` line naming what is wrong.
+    Only that line is the refusal: the step's own `print`s show some of the
+    same values (the metadata, for one) whether or not it refuses them."""
     names, change, head_mode, run = NOT_THE_COMMITS[which]
     if head_mode is not None:
         assert head()[1][names][0] == head_mode, (
@@ -2359,6 +2402,76 @@ def test_release_build_the_wheel_check_names_a_member_it_cannot_read(tmp_path, w
     name = member.format(info=f"openrepotools-{release_['VERSION']}.dist-info/")
     assert [line for line in out.splitlines() if line.startswith("::error::")
             and name in line and "cannot be read" in line], transcript(done)
+
+
+@NEEDS_UPSTREAM
+def test_release_build_the_wheel_check_passes_the_directory_entries_of_its_own_files(
+        tmp_path):
+    """STEP 13 ON THE WHEEL AS BUILT WITH EVERY PARENT DIRECTORY LISTED TOO
+    (opensoft/openRepoTools#352, item 1): a directory entry is allowed where
+    a file the wheel may hold is under it. So the wheel with `openrepotools/`,
+    each of the payload's folders and the `.dist-info/` one with its
+    `licenses/` listed as `zip -r` lists them passes, and prints what the
+    wheel without them prints. hatchling 1.27.0 writes no directory entry,
+    so a release passes both ways."""
+    workflow, release_ = release(), wheel_release("1.1.0")
+    good = run_wheel_check(workflow, tmp_path / "a", release_, None)
+    done = run_wheel_check(workflow, tmp_path / "b", release_, its_parent_directories)
+    with zipfile.ZipFile(tmp_path / "b" / "dist"
+                         / "openrepotools-1.1.0-py3-none-any.whl") as wheel:
+        folders = {n for n in wheel.namelist() if n.endswith("/")}
+    info = "openrepotools-1.1.0.dist-info/"
+    assert {"openrepotools/", "openrepotools/payload/",
+            "openrepotools/payload/skills/handoff/", info,
+            info + "licenses/"} <= folders, (
+        f"the case is wrong, the wheel lists only {sorted(folders)}")
+    assert good.returncode == 0, transcript(good)
+    assert done.returncode == 0, transcript(done)
+    assert done.stdout == good.stdout, transcript(done)
+
+
+#: A WHEEL THAT DECLARES MORE THAN THE CHECK READS (opensoft/openRepoTools#352,
+#: item 2): the central directory's uncompressed sizes are summed first, and a
+#: total over the cap is refused with no member read. Each case is how `damage`
+#: changes the sizes: one member declares 512 MiB, or every member declares
+#: 16 MiB (some 500 MiB in all, and none of them near the cap on its own, so
+#: it is the sum that counts).
+OVER_THE_CAP = {"one-member-declares-512-MiB": "huge",
+                "every-member-declares-16-MiB": "big"}
+
+
+@NEEDS_UPSTREAM
+@pytest.mark.parametrize("which", OVER_THE_CAP)
+def test_release_build_the_wheel_check_refuses_a_wheel_over_the_size_cap_unread(
+        tmp_path, which):
+    """STEP 13 ON A WHEEL WHOSE MEMBERS DECLARE MORE THAN 256 MiB IN ALL
+    (opensoft/openRepoTools#352, item 2): it exits 1 with one `::error::` line
+    naming the uncompressed total, and no traceback. And no member was read
+    first: `openrepotools/cli.py` has a bad CRC in the same wheel, which a read
+    names as `cannot be read` (`UNREADABLE_MEMBERS`), and the output is that
+    one line and nothing else."""
+    how = OVER_THE_CAP[which]
+    workflow, release_ = release(), wheel_release("1.1.0")
+    members, info = wheel_members(release_)
+    wheel = write_wheel(tmp_path / "dist" / "openrepotools-1.1.0-py3-none-any.whl",
+                        members, info)
+    damage(wheel, "openrepotools/cli.py", "crc")
+    with zipfile.ZipFile(wheel) as zipped:
+        names = zipped.namelist()
+    assert len(names) * 16 > 256, f"the case is wrong: {len(names)} members of 16 MiB"
+    for name in (names if how == "big" else [layout.PAYLOAD_PREFIX + "lane"]):
+        damage(wheel, name, how)
+    done = run_heredoc(named(workflow, "build", WHEEL_CHECK_STEP), tmp_path, [wheel],
+                       release_values(release_), cwd=REPO)
+    out = done.stdout + done.stderr
+    assert done.returncode == 1, transcript(done)
+    assert "Traceback (most recent call last)" not in out, transcript(done)
+    assert "cannot be read" not in out, (
+        f"a member was read before the sizes were summed:\n{transcript(done)}")
+    refusals = [line for line in out.splitlines()
+                if line.startswith("::error::") and "uncompressed" in line]
+    assert len(refusals) == 1, transcript(done)
+    assert out.splitlines() == refusals, transcript(done)
 
 
 #: A PAYLOAD FILE'S MODE, HELD TO ONE RULE BY BOTH WHEEL CHECKS (#278): the
@@ -3659,6 +3772,12 @@ NOT_JSON = (200, b"<html><body>the index is down for maintenance</body></html>")
 NO_FILE_LIST = (200, b'{"info": {"name": "openrepotools"}}')
 CUT_OFF = (200, CutShort(b'{"info": {"name": "openrepotools"}, "urls": ['))
 
+#: An answer nested past the JSON decoder's recursion limit (opensoft/
+#: openRepoTools#352, item 3): `json.loads` raises `RecursionError` on it, which
+#: is neither a `ValueError` nor any other error the steps' `except` tuples
+#: named, so each ended in a traceback until it joined them.
+NESTED = (200, b"[" * 100_000)
+
 
 class FakeIndex:
     """AN INDEX'S JSON API ON 127.0.0.1: the `n`th read gets `answers[n]`,
@@ -3791,6 +3910,7 @@ EMPTY_INDEX_CASES = {
     "an-answer-cut-off": (CUT_OFF, "could not be read"),
     "an-answer-that-is-not-json": (NOT_JSON, "is not its JSON API's"),
     "json-without-the-file-list": (NO_FILE_LIST, "is not its JSON API's"),
+    "an-answer-nested-too-deep-to-decode": (NESTED, "is not its JSON API's"),
 }
 
 
@@ -3850,6 +3970,7 @@ SERVED_CASES = {
     "a-refusal-other-than-404": ([(403, [])], 1, "with HTTP 403"),
     "an-answer-that-is-not-json": ([NOT_JSON], 1, "is not its JSON API's"),
     "json-without-the-file-list": ([NO_FILE_LIST], 1, "is not its JSON API's"),
+    "an-answer-nested-too-deep-to-decode": ([NESTED], 1, "is not its JSON API's"),
 }
 
 
