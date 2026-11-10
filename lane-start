@@ -4425,7 +4425,7 @@ if [ "$row_count" = 0 ]; then
     else
       # THE TEXTS FOR 3, AND THE WRITER'S RERUN (T428; D8; Y:5698-5699).
       case "$ar_rc" in
-        3) die "the register row for $LANE MAY NOT have been added: \`$LANES_EDIT add-row\` exited 3, and the write ${LS_D8}. This window has been renamed and nothing has been launched: a lane whose row is in doubt is not started until that is settled." 3 ;;
+        3) die "the register row for $LANE MAY NOT have been added: \`$LANES_EDIT add-row\` exited 3, and it ${LS_D8}. This window has been renamed and nothing has been launched: a lane whose row is in doubt is not started until that is settled." 3 ;;
         69 | 75) die "the register row for $LANE was NOT added (\`$LANES_EDIT add-row\` exited $ar_rc; its own words are above, with the rerun it prints). This window has been renamed and NOTHING else has been written — no session cell, no object log, no launch: a lane with no row is a lane no other lane's liveness read, crossing check or \`lane-start\` can see. Run the writer's printed rerun, or this command again once the register answers." "$ar_rc" ;;
       esac
       ! ls_q4 "$ar_rc" ||
@@ -4903,7 +4903,7 @@ else
         # is in doubt, never "NOT added" or "NOT written".
         if [ -n "$LS_SR_ROW" ]; then
           case "$ls_sr_rc" in
-            3) die "the register row for $LANE MAY NOT have been added, with its STARTED line: \`$LANES_EDIT start-record\` exited 3, and the write ${LS_D8}. This window has been renamed and nothing has been launched: a lane whose row is in doubt is not started until that is settled." 3 ;;
+            3) die "the register row for $LANE MAY NOT have been added, with its STARTED line: \`$LANES_EDIT start-record\` exited 3, and it ${LS_D8}. This window has been renamed and nothing has been launched: a lane whose row is in doubt is not started until that is settled." 3 ;;
             69 | 75) die "the register row for $LANE was NOT added (\`$LANES_EDIT start-record\` exited $ls_sr_rc; its own words are above, with the rerun it prints). This window has been renamed and NOTHING else has been written — no session cell, no object log, no launch: a lane with no row is a lane no other lane's liveness read, crossing check or \`lane-start\` can see. Run the writer's printed rerun, or this command again once the register answers." "$ls_sr_rc" ;;
           esac
           die "the register row for $LANE was NOT added (\`$LANES_EDIT start-record\` exited $ls_sr_rc; its own words are above). This window has been renamed and NOTHING else has been written — no session cell, no object log, no launch: a lane with no row is a lane no other lane's liveness read, crossing check or \`lane-start\` can see. Settle that refusal and re-run, or write it by hand:
@@ -4914,7 +4914,7 @@ else
         fi
         case "$ls_sr_rc" in
           3)
-            note "${ls_sr_what} MAY NOT have been written: \`$LANES_EDIT start-record\` exited 3, and the write ${LS_D8}. The launch is not refused for it: they are the record of this resume, not its licence (spec:318, 2A)." ;;
+            note "${ls_sr_what} MAY NOT have been written: \`$LANES_EDIT start-record\` exited 3, and it ${LS_D8}. The launch is not refused for it: they are the record of this resume, not its licence (spec:318, 2A)." ;;
           69 | 75)
             note "${ls_sr_what} were NOT written: \`$LANES_EDIT start-record\` exited ${ls_sr_rc}, and its words above say so, with the rerun it prints: the write id and its generation where the write has one, or that nothing was sent where it has none (spec:318). Run that rerun, not a command of this script's. The launch is not refused for it: they are the record of this resume, not its licence (2A)." ;;
           *)
