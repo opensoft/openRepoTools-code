@@ -22,16 +22,35 @@ THE FIXTURES:
   * `pg_engine`, session-scoped: the binaries, found once. EVERY CLUSTER
     DEPENDS ON IT, so a test whose fixture closure holds it is a real-engine
     test, which is how `test_sql_register_fixture.py` tells one apart;
-  * `pg_template_sql`, session-scoped and overridable: the SQL that builds the
-    template's schema, empty until the bootstrap lands (T227);
+  * `pg_template_sql`, session-scoped and overridable: how the template is
+    built. By default it is `Bootstrap()`, P8's bootstrap (T227, below); a
+    module may return SQL of its own instead, run on an empty `tmpl`;
   * `pg_cluster`, session-scoped: the session's cluster, with the template
-    `tmpl` built, then closed to connections;
-  * `pg`, one database per test, `CREATE DATABASE t_<n> TEMPLATE tmpl`, and
-    dropped `WITH (FORCE)` at its teardown;
+    `tmpl` built, then closed to connections, and `tmpl_imported` beside it;
+  * `pg`, one database per test, `CREATE DATABASE t_<n> TEMPLATE tmpl`, then
+    section 1.4's two database-level statements, and dropped `WITH (FORCE)`
+    at its teardown;
   * `stoppable_cluster`, a cluster of the test's own, built like the
     session's, for the tests that stop the database: `stop()` is a fast
     shutdown, SIGINT and a wait, and `start_again()` starts it on the same
     data and socket directories.
+
+THE TEMPLATES (T227; the test plan's section 3.1, "The templates"). `tmpl` is
+built on each cluster by P8's bootstrap, `lanes-index bootstrap --no-passwords`
+(lane 1's T109, L1-A7), run through the admin service as AT-P8's fixture runs
+it: a libpq service in `~/.pg_service.conf` of the cluster's own 0700 `admin`
+home, naming the cluster's socket, its superuser and the database, so no
+connection string is ever an argument. It makes the schema, the owner, the
+groups REGISTER-WRITER and READER, the indexer's login and their GRANTs, and
+labels the switch `register-test`. Then `tmpl` is marked `IS_TEMPLATE true
+ALLOW_CONNECTIONS false`. A clone does not copy `pg_database.datacl`, so each
+clone runs section 1.4's `REVOKE ALL ON DATABASE` and `GRANT CONNECT`, with
+`-v db=` its name; the first run prints what a clone's `datacl` held before
+them (open point 12). On the session cluster, `tmpl_imported` is cloned from
+`tmpl`, with test 7's fixture register (T211's `FixtureRegister`) imported by
+`lanes-index import --at` (lane 1's T115, L1-A13). Until that imports, there is
+no `tmpl_imported`, the run's foot says why, and the cases that clone it fail;
+a bootstrap that fails fails each real-engine test, saying so.
 
 The binaries' directory goes first on `PATH` while a cluster is up, so the
 code under test runs the `psql` of the server it talks to, and every
@@ -100,6 +119,33 @@ DIE_WITH_PYTEST = True                    # Linux: PR_SET_PDEATHSIG(SIGQUIT) on 
 DEVNULL = subprocess.DEVNULL
 _SKIPPED: List[str] = []
 _SWEPT: List[str] = []
+
+#: THE CODE UNDER TEST'S `lanes-index`, which the template's build runs.
+REPO = Path(__file__).resolve().parent.parent
+LANES_INDEX = REPO / "lanes-index"
+
+#: THE TEMPLATES (T227): the imported template's name, and the bootstrap's
+#: inputs. The label is the one the import, outage and bounds modules name in
+#: their `register_label=`; the others fill the switch's and the migrations
+#: row's columns, whose CHECKs ask only that each is not empty.
+IMPORTED = "tmpl_imported"
+FX_LABEL = "register-test"
+FX_REPOSITORY = "opensoft/openRepoTools-fixture"
+FX_LANE = "fixture"
+FX_WORKSTATION = "fixture"
+
+#: SECTION 1.4'S TWO DATABASE-LEVEL STATEMENTS, as lane 1's role block holds
+#: them (Y:2243-2244; `lanes-index`'s `_REGISTER_ROLE_BLOCK`), with `-v db=`.
+DATABASE_LEVEL = ('REVOKE ALL ON DATABASE :"db" FROM PUBLIC;\n'
+                  'GRANT CONNECT ON DATABASE :"db" TO lanes_register_writer, '
+                  'lanes_register_reader, lanes_indexer;\n')
+
+#: What the admin's `lanes-index` never inherits: the configuration's and the
+#: workspace's variables. `PG*` goes too, as everywhere here.
+ADMIN_ENV_DROPPED = ("LANES_", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "AGENT_PROTOCOL_ROOT",
+                     "PROJECTS_", "TMUX", "CLAUDE_")
+_DATACL: List[str] = []
+_IMPORTED: List[str] = []
 
 
 def _fixture(**options):
@@ -287,6 +333,25 @@ class ClusterError(Exception):
     pass
 
 
+class Bootstrap:
+    """`pg_template_sql`'S DEFAULT (T227): build `tmpl` by P8's bootstrap,
+    then run `sql`, if any, on it. A plain string instead is SQL run on an
+    empty `tmpl`, as the smokes' clusters have it."""
+
+    def __init__(self, sql: str = "") -> None:
+        self.sql = sql
+
+    def __repr__(self) -> str:
+        return f"Bootstrap(sql={self.sql!r})"
+
+
+def _tail(proc: subprocess.CompletedProcess, size: int = 800) -> str:
+    """A command's last words, stdout then stderr, on one line."""
+    said = " | ".join(line.strip() for line in f"{proc.stdout or ''}\n{proc.stderr or ''}".splitlines()
+                      if line.strip())
+    return said[-size:] or "<nothing>"
+
+
 def _client_env(host: Path, user: str, dbname: str, appname: str, bindir: Path) -> dict:
     env = _without_pg()
     env.update(PGHOST=str(host), PGPORT=str(PORT), PGUSER=user, PGDATABASE=dbname,
@@ -311,11 +376,18 @@ def _die_with_parent(parent: int):
 class Cluster:
     """One cluster: its private directory, its postmaster and its template."""
 
-    def __init__(self, bindir: Path, template_sql: str = "") -> None:
-        self.bindir, self.template_sql = bindir, template_sql
+    def __init__(self, bindir: Path, template_sql="", imported: bool = False) -> None:
+        """`template_sql` is `pg_template_sql`'s value: a `Bootstrap`, or SQL
+        for an empty `tmpl` (the smokes' default). `imported` builds
+        `tmpl_imported` too."""
+        self.bindir, self.template_sql, self.imported = bindir, template_sql, imported
         self.root: Optional[Path] = None
         self.proc: Optional[subprocess.Popen] = None
         self.count, self.timings = 0, {}
+        #: The switch's label where the bootstrap built `tmpl`, else None.
+        self.label: Optional[str] = None
+        #: Why there is no `tmpl_imported`, where it was asked for and is not.
+        self.imported_problem: Optional[str] = None
 
     def tool(self, name: str) -> str:
         return str(self.bindir / name)
@@ -326,10 +398,14 @@ class Cluster:
         return env
 
     def psql(self, sql: str, dbname: str = "postgres", user: str = SUPERUSER,
-             check: bool = True, appname: str = "pytest") -> subprocess.CompletedProcess:
-        proc = subprocess.run([self.tool("psql"), "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1",
-                               "-f", "-"], input=sql, capture_output=True, text=True, timeout=120,
-                              env=_client_env(self.root, user, dbname, appname, self.bindir),
+             check: bool = True, appname: str = "pytest",
+             variables: Optional[Dict[str, str]] = None) -> subprocess.CompletedProcess:
+        argv = [self.tool("psql"), "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1"]
+        for name, value in (variables or {}).items():
+            argv += ["-v", f"{name}={value}"]
+        proc = subprocess.run([*argv, "-f", "-"], input=sql, capture_output=True, text=True,
+                              timeout=120, env=_client_env(self.root, user, dbname, appname,
+                                                           self.bindir),
                               check=False)
         if check and proc.returncode != 0:
             raise ClusterError(f"psql as {user} on {dbname} exited {proc.returncode}: {proc.stderr.strip()}")
@@ -368,12 +444,110 @@ class Cluster:
         t2 = time.monotonic()
         self.launch()
         t3 = time.monotonic()
-        self.psql(f"CREATE DATABASE {TEMPLATE};")
-        if self.template_sql.strip():
-            self.psql(self.template_sql, dbname=TEMPLATE)
-        self.psql(f"ALTER DATABASE {TEMPLATE} WITH IS_TEMPLATE true ALLOW_CONNECTIONS false;")
+        self.build_template()
         t4 = time.monotonic()
         self.timings = {"initdb": t2 - t1, "ready": t3 - t2, "template": t4 - t3, "start": t4 - t0}
+
+    # -------------------------------------------------------- the templates (T227)
+    def build_template(self) -> None:
+        """`tmpl`, by the bootstrap or by SQL, then `tmpl_imported` where it
+        was asked for, then `tmpl` closed to connections."""
+        self.psql(f"CREATE DATABASE {TEMPLATE};")
+        sql = self.template_sql
+        if isinstance(sql, Bootstrap):
+            self.bootstrap(TEMPLATE, FX_LABEL)
+            self.label, sql = FX_LABEL, sql.sql
+        if sql.strip():
+            self.psql(sql, dbname=TEMPLATE)
+        if self.imported:
+            self.build_imported()
+        self.psql(f"ALTER DATABASE {TEMPLATE} WITH IS_TEMPLATE true ALLOW_CONNECTIONS false;")
+
+    def admin_env(self) -> dict:
+        """THE ADMIN'S `lanes-index` ENVIRONMENT: no `PG*`, no configuration or
+        workspace variable, `HOME` the cluster's own `admin` directory (where
+        `~/.pg_service.conf` is, and no `lanes-index.conf`, so `load_config`
+        reads its defaults), the workstation named, and the engine's tools
+        first on `PATH`, so its `psql` is the server's."""
+        env = {k: v for k, v in _without_pg().items() if not k.startswith(ADMIN_ENV_DROPPED)}
+        env.update(HOME=str(self.root / "admin"), LANES_WORKSTATION=FX_WORKSTATION, LC_ALL="C",
+                   TZ="UTC", PATH=_engine_first(self.bindir, env.get("PATH", os.defpath)))
+        return env
+
+    def admin_service(self, database: str) -> str:
+        """The admin service naming `database`: a section of the admin home's
+        `.pg_service.conf`, 0600, with the cluster's socket and superuser.
+        The socket's trust needs no `~/.pgpass`."""
+        home = self.root / "admin"
+        home.mkdir(mode=0o700, exist_ok=True)
+        name, path = f"fx_{database}", home / ".pg_service.conf"
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
+        if f"[{name}]\n" not in text:
+            text += (f"[{name}]\nhost={self.root}\nport={PORT}\nuser={SUPERUSER}\n"
+                     f"dbname={database}\n\n")
+            path.write_text(text, encoding="utf-8")
+            path.chmod(0o600)
+        return name
+
+    def lanes_index(self, argv: List[str]) -> subprocess.CompletedProcess:
+        """The code under test's `lanes-index`, as the admin, from the
+        cluster's directory."""
+        return subprocess.run([sys.executable, str(LANES_INDEX), *argv], stdin=DEVNULL,
+                              capture_output=True, text=True, env=self.admin_env(),
+                              cwd=str(self.root), timeout=300, check=False)
+
+    def bootstrap(self, database: str, label: str) -> str:
+        """P8's bootstrap on `database`, through the admin service, with
+        `--no-passwords`: the roles are global, so a second run on a cluster
+        finds them `unchanged`. Its output, which holds no secret."""
+        proc = self.lanes_index(["bootstrap", "--admin-service", self.admin_service(database),
+                                 "--label", label, "--repository", FX_REPOSITORY,
+                                 "--lane", FX_LANE, "--no-passwords"])
+        if proc.returncode != 0:
+            raise ClusterError(f"`lanes-index bootstrap --no-passwords` through the admin "
+                               f"service on {database} exited {proc.returncode}, so the "
+                               f"template has no register (lane 1's T109, L1-A7, builds the "
+                               f"bootstrap): {_tail(proc)}")
+        return proc.stdout
+
+    def build_imported(self) -> None:
+        """`tmpl_imported`: a clone of `tmpl`, with section 1.4's two
+        statements, and test 7's fixture register imported into it by
+        `lanes-index import --at <C>` as T211 runs it (its `FixtureRegister`,
+        on the cluster's socket as the superuser), then closed to
+        connections. Where any step fails, there is no `tmpl_imported`, and
+        `imported_problem` says why: the session goes on, and only the cases
+        that clone it fail."""
+        if self.label is None:
+            self.imported_problem = "tmpl was not built by the bootstrap, so it holds no register"
+        else:
+            try:
+                from test_sql_register_import import FixtureRegister
+            except ImportError as exc:
+                self.imported_problem = (f"test 7's fixture register, T211's FixtureRegister in "
+                                         f"tests/test_sql_register_import.py, cannot be loaded: {exc}")
+        if self.imported_problem is None:
+            self.psql(f"CREATE DATABASE {IMPORTED} TEMPLATE {TEMPLATE};")
+            self.psql(DATABASE_LEVEL, variables={"db": IMPORTED})
+            path = os.environ.get("PATH", os.defpath)
+            os.environ["PATH"] = _engine_first(self.bindir, path)   # the import's `psql`
+            try:
+                register = FixtureRegister(self.root / "imported")
+                proc = register.import_at(Database(self, IMPORTED), register.c)
+                if proc.returncode != 0:
+                    self.imported_problem = (f"`lanes-index import --at {register.c}` exited "
+                                             f"{proc.returncode} (lane 1's T115, L1-A13, builds "
+                                             f"it): {_tail(proc)}")
+            except Exception as exc:          # the register's own build: git, lanes-edit.sh
+                self.imported_problem = f"test 7's fixture register was not built: {exc!r}"[:1200]
+            finally:
+                os.environ["PATH"] = path
+            if self.imported_problem is not None:
+                self.drop_database(IMPORTED)
+        if self.imported_problem is not None:
+            _IMPORTED.append(self.imported_problem)
+            return
+        self.psql(f"ALTER DATABASE {IMPORTED} WITH IS_TEMPLATE true ALLOW_CONNECTIONS false;")
 
     def launch(self) -> None:
         """`postgres` by `Popen` on this cluster's directories, and wait until it is ready."""
@@ -409,10 +583,23 @@ class Cluster:
             raise ClusterError("the cluster is running, so it cannot be started again")
         self.launch()
 
-    def new_database(self) -> str:
+    def new_database(self, template: str = TEMPLATE) -> str:
+        """`CREATE DATABASE t_<n> TEMPLATE <template>`, then, where the
+        bootstrap built the template, section 1.4's two database-level
+        statements with `-v db=t_<n>`, since a clone does not copy
+        `pg_database.datacl`. The first such clone of a run records what its
+        `datacl` held before them, which the run's foot prints (open point
+        12)."""
         self.count += 1
         name = f"t_{self.count}"
-        self.psql(f"CREATE DATABASE {name} TEMPLATE {TEMPLATE};")
+        self.psql(f"CREATE DATABASE {name} TEMPLATE {template};")
+        if self.label is not None:
+            if not _DATACL:
+                acl = self.psql("SELECT coalesce(datacl::text, 'NULL') FROM pg_catalog.pg_database "
+                                "WHERE datname = :'db';", variables={"db": name}).stdout.strip()
+                _DATACL.append(f"{'empty (NULL)' if acl == 'NULL' else acl}, on {name}, a clone "
+                               f"of {template}")
+            self.psql(DATABASE_LEVEL, variables={"db": name})
         return name
 
     def drop_database(self, name: str) -> None:
@@ -480,10 +667,16 @@ def pytest_terminal_summary(terminalreporter) -> None:
     if _SWEPT:
         terminalreporter.write_line(f"real-engine: removed {len(_SWEPT)} cluster(s) a killed "
                                     f"session left: {', '.join(_SWEPT)}")
+    if _DATACL:
+        terminalreporter.write_line(f"real-engine: a clone's datacl before section 1.4's two "
+                                    f"statements (open point 12): {_DATACL[0]}")
+    for why in _IMPORTED:
+        terminalreporter.write_line(f"real-engine: no {IMPORTED}, so the cases that clone it "
+                                    f"fail: {why}")
 
 
-def _started(found: Probe, template_sql: str) -> Cluster:
-    cluster = Cluster(found.bindir, template_sql)
+def _started(found: Probe, template_sql, imported: bool = False) -> Cluster:
+    cluster = Cluster(found.bindir, template_sql, imported)
     try:
         cluster.start()
     except (ClusterError, OSError, subprocess.SubprocessError) as exc:
@@ -506,15 +699,18 @@ def pg_engine() -> Probe:
 
 
 @_fixture(scope="session")
-def pg_template_sql() -> str:
-    """The template's schema. Empty until L1-A7 lands: T227 overrides this
-    with the bootstrap's roles, migrations and grants."""
-    return ""
+def pg_template_sql():
+    """How `tmpl` is built (T227): P8's bootstrap, `lanes-index bootstrap
+    --no-passwords` through the admin service, which makes the schema, the
+    roles and their GRANTs. A module may override it with `Bootstrap(sql)`,
+    to run its SQL after the bootstrap, or with plain SQL for an empty
+    `tmpl`."""
+    return Bootstrap()
 
 
 @_fixture(scope="session")
 def pg_cluster(pg_engine, pg_template_sql):
-    cluster = _started(pg_engine, pg_template_sql)
+    cluster = _started(pg_engine, pg_template_sql, imported=True)
     patch = pytest.MonkeyPatch()
     patch.setenv("PATH", _engine_first(pg_engine.bindir, os.environ.get("PATH", os.defpath)))
     try:
