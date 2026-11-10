@@ -392,6 +392,14 @@ ROWS = {
                            faults=("F1", "F2", "F3"), statement_ms=5000, table="register_switch"),
     "mode-query":     dict(group=None, exit=0, bound=2, strict=False,
                            faults=("F1",), statement_ms=None, table=None),
+    # T237's row: the guard through the service, `lanes-index serve` started on
+    # the same configuration, whose connection meets the fault; the guard's
+    # request is answered `unavailable` and its direct read meets it too, so
+    # the hook exits 2 inside its 4.5 s (lane 5's socket contract d8, section
+    # 5.3's table). Its `statement_timeout` is the guard's 1500 ms, a reading:
+    # the contract does not state the service's own.
+    "service":        dict(group="lanes_register_reader", exit=2, bound=4.5, strict=True,
+                           faults=("F1", "F2", "F3"), statement_ms=1500, table="register_head"),
 }
 
 FIRST_CASES = [f"{row}-{fault}" for row, spec in ROWS.items() for fault in spec["faults"]]
@@ -493,7 +501,7 @@ class Bench:
         env = dict(self.env, LANES_INDEX_CONFIG=str(config), LANES_LANE="repoA-2")
         tool = self.copy.parent
         index = [sys.executable, str(self.copy)]
-        if row in ("guard", "answer-2"):
+        if row in ("guard", "answer-2", "service"):
             argv = ["bash", str(tool / "lanes-edit.sh"), "guard"]
             # THE SESSION (T203c): a live record in the window `repoA-2` and a
             # stand-in `tmux`, so that the guard gets past its session-record
@@ -522,11 +530,31 @@ class Bench:
             argv = index + ["mode"]
         else:
             raise AssertionError(f"no path for {row}")
-        start = time.monotonic()
-        proc = subprocess.run(argv, input=stdin, capture_output=True, text=True, env=env,
-                              cwd=str(self.wip), timeout=700,
-                              stdin=None if stdin is not None else subprocess.DEVNULL)
-        return proc, time.monotonic() - start
+        serve = None
+        if row == "service":
+            # THE ONE SOCKET PATH (socket contract d8, section 2.1).
+            sock = Path(env.get("XDG_STATE_HOME", str(Path(env["HOME"]) / ".local" / "state"))) \
+                / "openRepoTools" / "run" / "register.sock"
+            serve = subprocess.Popen(index + ["serve"], env=env, cwd=str(self.wip),
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL, start_new_session=True)
+            end = time.monotonic() + 10
+            while not sock.exists() and time.monotonic() < end and serve.poll() is None:
+                time.sleep(0.05)
+            assert sock.exists(), f"lanes-index serve bound no socket at {sock}: {serve.poll()}"
+        try:
+            start = time.monotonic()
+            proc = subprocess.run(argv, input=stdin, capture_output=True, text=True, env=env,
+                                  cwd=str(self.wip), timeout=700,
+                                  stdin=None if stdin is not None else subprocess.DEVNULL)
+            return proc, time.monotonic() - start
+        finally:
+            if serve is not None:
+                serve.terminate()
+                try:
+                    serve.wait(10)
+                except subprocess.TimeoutExpired:
+                    serve.kill()
 
     def calls(self) -> list:
         if not self.timing.exists():
