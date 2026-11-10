@@ -2022,6 +2022,8 @@ def write_wheel(path: Path, members: Dict[str, Tuple[bytes, int]],
     hatchling would write for them, at `path`."""
     rows = []
     for name, (data, _) in members.items():
+        if name.endswith("/"):
+            continue  # a RECORD lists files, and never a directory entry
         digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest())
         rows.append(f"{name},sha256={digest.decode().rstrip('=')},{len(data)}")
     rows.append(f"{info}RECORD,,")
@@ -2085,6 +2087,30 @@ def an_extra_member(member: str, data: bytes) -> Callable[[dict, str], None]:
     return change
 
 
+def a_directory_entry(name: str) -> Callable[[dict, str], None]:
+    """`name`, a ZIP directory entry (a name ending in `/`, no bytes, typed a
+    directory at 0755), added, where `{info}` is the `.dist-info/` prefix."""
+    def change(members: dict, info: str) -> None:
+        entry = name.format(info=info)
+        assert entry.endswith("/"), (
+            f"the case is wrong: {entry} does not end in /, so it is not a directory entry")
+        assert entry not in members, (
+            f"the case is wrong: {entry} is already in the wheel")
+        members[entry] = (b"", stat.S_IFDIR | 0o755)
+    return change
+
+
+def its_parent_directories(members: dict, info: str) -> None:
+    """Every directory above a member, each as a directory entry, as `zip -r`
+    writes a tree: `openrepotools/`, the payload's own folders and the
+    `.dist-info/` one with its `licenses/`."""
+    for name in list(members):
+        parts = name.split("/")[:-1]
+        for at in range(1, len(parts) + 1):
+            members.setdefault("/".join(parts[:at]) + "/",
+                               (b"", stat.S_IFDIR | 0o755))
+
+
 def a_dist_info_file_with(name: str, more: bytes) -> Callable[[dict, str], None]:
     """The `.dist-info/` file `name` with `more` after its last line."""
     def change(members: dict, info: str) -> None:
@@ -2143,6 +2169,19 @@ NOT_THE_COMMITS = {
         None, None),
     "a-sixth-dist-info-file": (
         "INSTALLER", an_extra_member("{info}INSTALLER", b"pip\n"), None, None),
+    # DIRECTORY ENTRIES (opensoft/openRepoTools#352, item 1): each is a name
+    # ending in `/`, which the inventory used to drop, so none was ever seen.
+    "a-directory-entry-nothing-is-under": (
+        "empty-dir/", a_directory_entry("empty-dir/"), None, None),
+    "a-directory-entry-that-is-only-the-start-of-a-parent": (
+        "openrepotools/pay/", a_directory_entry("openrepotools/pay/"), None,
+        None),
+    "a-directory-entry-below-the-payload-with-no-file": (
+        "openrepotools/payload/extra/",
+        a_directory_entry("openrepotools/payload/extra/"), None, None),
+    "the-dist-info-directory-of-another-version": (
+        "openrepotools-9.9.9.dist-info/",
+        a_directory_entry("openrepotools-9.9.9.dist-info/"), None, None),
 }
 
 
@@ -2154,14 +2193,18 @@ def damage(path: Path, member: str, how: str) -> None:
     not have, `method` makes its compression method in the central
     directory 99, one `zipfile` cannot read, and `lzma` first stores it as
     LZMA, which `zipfile` writes and reads, then makes the first byte of its
-    LZMA stream 0xFF, where the range coder's first byte is always 0."""
-    if how == "lzma":
+    LZMA stream 0xFF, where the range coder's first byte is always 0. `bzip2`
+    stores it as BZIP2 and damages nothing: a valid member. `huge` and `big`
+    make its uncompressed size in the central directory, which is what
+    `file_size` reads, 512 MiB and 16 MiB, its bytes and CRC as they were."""
+    if how in ("lzma", "bzip2"):
         with zipfile.ZipFile(path) as wheel:
             kept = [(entry, wheel.read(entry)) for entry in wheel.infolist()]
         with zipfile.ZipFile(path, "w") as wheel:
             for entry, body in kept:
                 if entry.filename == member:
-                    entry.compress_type = zipfile.ZIP_LZMA
+                    entry.compress_type = (zipfile.ZIP_LZMA if how == "lzma"
+                                           else zipfile.ZIP_BZIP2)
                 wheel.writestr(entry, body)
     data = bytearray(path.read_bytes())
     (at,) = struct.unpack_from("<I", data, data.rindex(b"PK\x05\x06") + 16)
@@ -2176,6 +2219,10 @@ def damage(path: Path, member: str, how: str) -> None:
         data[at + 16] ^= 0x01
     elif how == "method":
         struct.pack_into("<H", data, at + 10, 99)
+    elif how in ("huge", "big"):
+        struct.pack_into("<I", data, at + 24, (512 if how == "huge" else 16) << 20)
+    elif how == "bzip2":
+        pass  # stored as BZIP2 above, and left as it is
     else:
         assert how in ("deflate", "lzma"), how
         (local,) = struct.unpack_from("<I", data, at + 42)
@@ -2233,11 +2280,12 @@ def test_release_build_the_wheel_check_refuses_a_wheel_that_is_not_the_commit_s(
     member nothing puts in the wheel, a stamp whose bytes are not the
     committed file stamped though its five values are the release's, the
     wheel as built checked in a run of another repository, metadata that
-    names a dependency, a second console script, and a sixth `.dist-info/`
-    file. Each fails, and among the lines it prints beyond the wheel as
-    built's is an `::error::` line naming what is wrong. Only that line is
-    the refusal: the step's own `print`s show some of the same values (the
-    metadata, for one) whether or not it refuses them."""
+    names a dependency, a second console script, a sixth `.dist-info/`
+    file, and four directory entries no file the wheel may hold is under
+    (opensoft/openRepoTools#352). Each fails, and among the lines it prints
+    beyond the wheel as built's is an `::error::` line naming what is wrong.
+    Only that line is the refusal: the step's own `print`s show some of the
+    same values (the metadata, for one) whether or not it refuses them."""
     names, change, head_mode, run = NOT_THE_COMMITS[which]
     if head_mode is not None:
         assert head()[1][names][0] == head_mode, (
@@ -2330,6 +2378,9 @@ def test_release_build_the_wheel_check_step_as_github_runs_it_holds_the_wheel_to
 #: loop's `except` tuple did not name it, as it names `BadZipFile`, `zlib.error`
 #: and `RuntimeError` (`NotImplementedError`'s base): it derives from
 #: `Exception` alone, so it ended in a traceback until the tuple did (#278).
+#: Since opensoft/openRepoTools#352 the last two are refused by their
+#: compression method (14 and 99) before any member is read, and the tuple
+#: keeps both though no member reaches them (`OTHER_METHODS` below).
 UNREADABLE_MEMBERS = {
     "a-payload-file-with-a-bad-crc": (layout.PAYLOAD_PREFIX + "lanes-edit.sh", "crc"),
     "a-module-with-a-broken-deflate-stream": ("openrepotools/cli.py", "deflate"),
@@ -2359,6 +2410,119 @@ def test_release_build_the_wheel_check_names_a_member_it_cannot_read(tmp_path, w
     name = member.format(info=f"openrepotools-{release_['VERSION']}.dist-info/")
     assert [line for line in out.splitlines() if line.startswith("::error::")
             and name in line and "cannot be read" in line], transcript(done)
+
+
+@NEEDS_UPSTREAM
+def test_release_build_the_wheel_check_passes_the_directory_entries_of_its_own_files(
+        tmp_path):
+    """STEP 13 ON THE WHEEL AS BUILT WITH EVERY PARENT DIRECTORY LISTED TOO
+    (opensoft/openRepoTools#352, item 1): a directory entry is allowed where
+    a file the wheel may hold is under it. So the wheel with `openrepotools/`,
+    each of the payload's folders and the `.dist-info/` one with its
+    `licenses/` listed as `zip -r` lists them passes, and prints what the
+    wheel without them prints. hatchling 1.27.0 writes no directory entry,
+    so a release passes both ways."""
+    workflow, release_ = release(), wheel_release("1.1.0")
+    good = run_wheel_check(workflow, tmp_path / "a", release_, None)
+    done = run_wheel_check(workflow, tmp_path / "b", release_, its_parent_directories)
+    with zipfile.ZipFile(tmp_path / "b" / "dist"
+                         / "openrepotools-1.1.0-py3-none-any.whl") as wheel:
+        folders = {n for n in wheel.namelist() if n.endswith("/")}
+    info = "openrepotools-1.1.0.dist-info/"
+    assert {"openrepotools/", "openrepotools/payload/",
+            "openrepotools/payload/skills/handoff/", info,
+            info + "licenses/"} <= folders, (
+        f"the case is wrong, the wheel lists only {sorted(folders)}")
+    assert good.returncode == 0, transcript(good)
+    assert done.returncode == 0, transcript(done)
+    assert done.stdout == good.stdout, transcript(done)
+
+
+#: A WHEEL THAT DECLARES MORE THAN THE CHECK READS (opensoft/openRepoTools#352,
+#: item 2): the central directory's uncompressed sizes are summed first, and a
+#: total over the cap is refused with no member read. Each case is how `damage`
+#: changes the sizes: one member declares 512 MiB, or every member declares
+#: 16 MiB (some 500 MiB in all, and none of them near the cap on its own, so
+#: it is the sum that counts).
+OVER_THE_CAP = {"one-member-declares-512-MiB": "huge",
+                "every-member-declares-16-MiB": "big"}
+
+
+@NEEDS_UPSTREAM
+@pytest.mark.parametrize("which", OVER_THE_CAP)
+def test_release_build_the_wheel_check_refuses_a_wheel_over_the_size_cap_unread(
+        tmp_path, which):
+    """STEP 13 ON A WHEEL WHOSE MEMBERS DECLARE MORE THAN 256 MiB IN ALL
+    (opensoft/openRepoTools#352, item 2): it exits 1 with one `::error::` line
+    naming the uncompressed total, and no traceback. And no member was read
+    first: `openrepotools/cli.py` has a bad CRC in the same wheel, which a read
+    names as `cannot be read` (`UNREADABLE_MEMBERS`), and the output is that
+    one line and nothing else."""
+    how = OVER_THE_CAP[which]
+    workflow, release_ = release(), wheel_release("1.1.0")
+    members, info = wheel_members(release_)
+    wheel = write_wheel(tmp_path / "dist" / "openrepotools-1.1.0-py3-none-any.whl",
+                        members, info)
+    damage(wheel, "openrepotools/cli.py", "crc")
+    with zipfile.ZipFile(wheel) as zipped:
+        names = zipped.namelist()
+    assert len(names) * 16 > 256, f"the case is wrong: {len(names)} members of 16 MiB"
+    for name in (names if how == "big" else [layout.PAYLOAD_PREFIX + "lane"]):
+        damage(wheel, name, how)
+    done = run_heredoc(named(workflow, "build", WHEEL_CHECK_STEP), tmp_path, [wheel],
+                       release_values(release_), cwd=REPO)
+    out = done.stdout + done.stderr
+    assert done.returncode == 1, transcript(done)
+    assert "Traceback (most recent call last)" not in out, transcript(done)
+    assert "cannot be read" not in out, (
+        f"a member was read before the sizes were summed:\n{transcript(done)}")
+    refusals = [line for line in out.splitlines()
+                if line.startswith("::error::") and "uncompressed" in line]
+    assert len(refusals) == 1, transcript(done)
+    assert out.splitlines() == refusals, transcript(done)
+
+
+#: A MEMBER IN A COMPRESSION METHOD THE CHECK DOES NOT READ
+#: (opensoft/openRepoTools#352, item 2): `zipfile` decompresses a BZIP2 or an
+#: LZMA member with no limit before it cuts the result to the member's declared
+#: size, so a few KB can fill the runner's memory whatever the member declares,
+#: and only STORED and DEFLATED members are read. Each case is how `damage`
+#: changes a payload file: stored as BZIP2 and not damaged, stored as LZMA with
+#: corrupt data, and given the method 99, which `zipfile` cannot read. hatchling
+#: 1.27.0 writes DEFLATED only, so a release has none.
+OTHER_METHODS = {"a-bzip2-member": ("bzip2", 12),
+                 "an-lzma-member": ("lzma", 14),
+                 "a-member-in-method-99": ("method", 99)}
+
+
+@NEEDS_UPSTREAM
+@pytest.mark.parametrize("which", OTHER_METHODS)
+def test_release_build_the_wheel_check_refuses_a_member_in_another_method_unread(
+        tmp_path, which):
+    """STEP 13 ON A WHEEL WITH A MEMBER IN A METHOD OTHER THAN STORED AND
+    DEFLATED (opensoft/openRepoTools#352, item 2): it exits 1 with an
+    `::error::` line that names the member, says it `cannot be read` and names
+    the method, and no traceback. And no member was read first: the same wheel
+    has `openrepotools/cli.py` with a bad CRC, which a read names as `cannot
+    be read` (`UNREADABLE_MEMBERS`), and no line names it."""
+    how, method = OTHER_METHODS[which]
+    release_ = wheel_release("1.1.0")
+    members, info = wheel_members(release_)
+    wheel = write_wheel(tmp_path / "dist" / "openrepotools-1.1.0-py3-none-any.whl",
+                        members, info)
+    member = layout.PAYLOAD_PREFIX + "lane"
+    damage(wheel, member, how)
+    damage(wheel, "openrepotools/cli.py", "crc")
+    done = run_heredoc(named(release(), "build", WHEEL_CHECK_STEP), tmp_path, [wheel],
+                       release_values(release_), cwd=REPO)
+    out = done.stdout + done.stderr
+    assert done.returncode == 1, transcript(done)
+    assert "Traceback (most recent call last)" not in out, transcript(done)
+    errors = [line for line in out.splitlines() if line.startswith("::error::")]
+    assert [line for line in errors if member in line and "cannot be read" in line
+            and f"method {method}" in line], transcript(done)
+    assert not [line for line in errors if "openrepotools/cli.py" in line], (
+        f"a member was read before the methods were checked:\n{transcript(done)}")
 
 
 #: A PAYLOAD FILE'S MODE, HELD TO ONE RULE BY BOTH WHEEL CHECKS (#278): the
@@ -3659,6 +3823,43 @@ NOT_JSON = (200, b"<html><body>the index is down for maintenance</body></html>")
 NO_FILE_LIST = (200, b'{"info": {"name": "openrepotools"}}')
 CUT_OFF = (200, CutShort(b'{"info": {"name": "openrepotools"}, "urls": ['))
 
+#: An answer nested 100,000 deep (opensoft/openRepoTools#352, item 3): `[`
+#: closed by as many `]`, so it is valid JSON and only its depth is wrong. What
+#: the step does with it depends on the interpreter that runs it, because
+#: CPython bounds the C decoder's recursion by the recursion limit up to 3.13
+#: and by stack depth after it (CI's 3.15.2 decodes it). Where `json.loads`
+#: raises `RecursionError`, which is neither a `ValueError` nor any other error
+#: the steps' `except` tuples named, each ended in a traceback until it joined
+#: them, and the refusal's line must carry `(RecursionError:`, as a
+#: `ValueError` would also give "is not its JSON API's". Where it decodes the
+#: list, the step refuses its wrong shape (a `TypeError`) with that line. A
+#: case marked `OF_NESTED` asks the interpreter (`nested_refusal`).
+NESTED = (200, b"[" * 100_000 + b"]" * 100_000)
+OF_NESTED = "what the step's own python3 makes of NESTED"
+
+
+@functools.lru_cache(maxsize=None)
+def nested_refusal(python: str) -> str:
+    """What the `::error::` line for `NESTED` names when `python` runs the
+    step: `(RecursionError:`, or whatever error its `json.loads` raises, and
+    `is not its JSON API's` where it decodes the list. The step's `python3 -`
+    is the one on the step's PATH, which is not always `sys.executable`."""
+    probe = ("import json, sys\n"
+             "try:\n    json.loads(sys.stdin.buffer.read())\n"
+             "except BaseException as error:\n    print(type(error).__name__)\n")
+    done = subprocess.run([python, "-I", "-c", probe], input=NESTED[1],
+                          capture_output=True, check=False, timeout=STEP_TIMEOUT)
+    assert done.returncode == 0, f"{python} cannot probe NESTED: {done.stderr!r}"
+    raised = done.stdout.decode().strip()
+    return f"({raised}:" if raised else "is not its JSON API's"
+
+
+def named_refusal(names: Optional[str]) -> Optional[str]:
+    """`names`, or for `OF_NESTED` what the step's own `python3` makes it."""
+    if names != OF_NESTED:
+        return names
+    return nested_refusal(shutil.which("python3") or "python3")
+
 
 class FakeIndex:
     """AN INDEX'S JSON API ON 127.0.0.1: the `n`th read gets `answers[n]`,
@@ -3791,6 +3992,7 @@ EMPTY_INDEX_CASES = {
     "an-answer-cut-off": (CUT_OFF, "could not be read"),
     "an-answer-that-is-not-json": (NOT_JSON, "is not its JSON API's"),
     "json-without-the-file-list": (NO_FILE_LIST, "is not its JSON API's"),
+    "an-answer-nested-too-deep-to-decode": (NESTED, OF_NESTED),
 }
 
 
@@ -3808,7 +4010,8 @@ def test_release_upload_the_empty_index_check_passes_no_file_or_the_verified_whe
     file, an index that answers with an error, a read with no answer or one
     cut off, and an answer that is not the index's JSON. Each refusal exits 1
     with an `::error::` line naming it, never a traceback (#278)."""
-    answer, names = EMPTY_INDEX_CASES[which]
+    answer, wanted = EMPTY_INDEX_CASES[which]
+    names = named_refusal(wanted)
     done, reads, _ = run_index_step(tmp_path, name, EMPTY_INDEX_STEP, [answer])
     out = done.stdout + done.stderr
     assert (done.returncode == 0) == (names is None), transcript(done)
@@ -3816,8 +4019,11 @@ def test_release_upload_the_empty_index_check_passes_no_file_or_the_verified_whe
     assert "Traceback (most recent call last)" not in out, transcript(done)
     if names is not None:
         assert done.returncode == 1, transcript(done)
-        assert [line for line in out.splitlines()
-                if line.startswith("::error::") and names in line], transcript(done)
+        refusals = [line for line in out.splitlines()
+                    if line.startswith("::error::") and names in line]
+        assert refusals, transcript(done)
+        if wanted == OF_NESTED:
+            assert out.splitlines() == refusals, transcript(done)
 
 
 #: AFTER THE UPLOAD: `(what the index answers, read by read, how many reads
@@ -3850,6 +4056,7 @@ SERVED_CASES = {
     "a-refusal-other-than-404": ([(403, [])], 1, "with HTTP 403"),
     "an-answer-that-is-not-json": ([NOT_JSON], 1, "is not its JSON API's"),
     "json-without-the-file-list": ([NO_FILE_LIST], 1, "is not its JSON API's"),
+    "an-answer-nested-too-deep-to-decode": ([NESTED], 1, OF_NESTED),
 }
 
 
@@ -3869,7 +4076,8 @@ def test_release_upload_the_served_check_reads_until_the_verified_wheel_is_serve
     refuses an index that never does, the wheel yanked, a client error, and
     an answer that is not the index's JSON. Each refusal exits 1 with an
     `::error::` line naming it, never a traceback (#278)."""
-    answers, count, names = SERVED_CASES[which]
+    answers, count, wanted = SERVED_CASES[which]
+    names = named_refusal(wanted)
     if TIMED_OUT in answers and sys.version_info < (3, 10):
         pytest.skip("a read that times out raises `socket.timeout` before "
                     "Python 3.10, which is not the `TimeoutError` the step "
@@ -3885,8 +4093,11 @@ def test_release_upload_the_served_check_reads_until_the_verified_wheel_is_serve
         assert len(sleeps) == count - 1, sleeps
     else:
         assert done.returncode == 1, transcript(done)
-        assert [line for line in out.splitlines()
-                if line.startswith("::error::") and names in line], transcript(done)
+        refusals = [line for line in out.splitlines()
+                    if line.startswith("::error::") and names in line]
+        assert refusals, transcript(done)
+        if wanted == OF_NESTED:
+            assert out.splitlines() == refusals, transcript(done)
     if REFUSED in answers:
         assert "<urlopen error" in done.stdout, (
             "a refused read is a `URLError`, which the step prints as "

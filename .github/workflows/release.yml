@@ -815,11 +815,20 @@ jobs:
       # one command, and carries the commit's LICENSE (FR-002: hatchling
       # builds a wheel with no LICENSE and says nothing, so this check is
       # what refuses one). Every member is read before anything is
-      # compared, and a member that cannot be read, a bad CRC, a broken
-      # deflate stream or a corrupt LZMA one (`lzma.LZMAError`, which is
-      # neither an `OSError` nor a `ValueError`, so the read loop names it),
-      # refuses there (#278). A missing member and an unreadable one are
-      # named, never a traceback.
+      # compared, and a member that cannot be read, a bad CRC or a broken
+      # deflate stream, refuses there (#278). A missing member and an
+      # unreadable one are named, never a traceback. A directory entry is
+      # allowed only where a file the wheel may hold is under it, and any
+      # other is refused by name (hatchling 1.27.0 writes none, so a release
+      # has none to be refused for, opensoft/openRepoTools#352). The
+      # members' declared sizes are summed before anything is read, and a
+      # wheel over `MAX_UNCOMPRESSED` is refused unread. So is a member in
+      # any method but STORED and DEFLATED (hatchling 1.27.0 writes DEFLATED
+      # only): zipfile decompresses BZIP2 and LZMA with no limit before it
+      # cuts a member to its declared size, so that size bounds nothing for
+      # them. Each member is then hashed as it is read and dropped, and only
+      # the three that are parsed, the stamp, METADATA and entry_points.txt,
+      # are kept whole.
       # `tests/test_release_workflow.py` runs this very script on synthetic
       # wheels made from the commit's blobs.
       - name: the wheel holds the commit's own files, byte for byte and mode for mode, and the stamp
@@ -828,7 +837,8 @@ jobs:
         run: |
           export TAG="v$VERSION" COMMIT="$GITHUB_SHA" REPOSITORY="$GITHUB_REPOSITORY"
           python3 -I - "$RUNNER_TEMP/dist-a/openrepotools-$VERSION-py3-none-any.whl" <<'PY'
-          import ast, configparser, email.parser, lzma, os, re, stat, subprocess, sys, tomllib, zipfile, zlib
+          import ast, configparser, email.parser, hashlib, lzma, os, re, stat, subprocess, sys
+          import tomllib, zipfile, zlib
 
           names = ("VERSION", "TAG", "COMMIT", "DIGEST", "REPOSITORY")
           release = {name: os.environ.get(name, "") for name in names}
@@ -843,6 +853,24 @@ jobs:
           info, stamp = f"openrepotools-{version}.dist-info/", "openrepotools/_release.py"
           payload, package = "openrepotools/payload/", "src/openrepotools/"
           modes = {"100755": stat.S_IFREG | 0o755, "100644": stat.S_IFREG | 0o644}
+          # THE MOST THE CHECK READS (opensoft/openRepoTools#352): 256 MiB of
+          # declared uncompressed size in all, summed before any member is
+          # read. Today's wheel declares about 3.6 MB, so a release is some
+          # seventy times under it. For a STORED or DEFLATED member zipfile
+          # returns no more than it declares, and the loop takes it a MiB at
+          # a time, so memory is a chunk plus the three members kept whole,
+          # which the cap bounds. For BZIP2 and LZMA it does not: it
+          # decompresses with no limit before it cuts to the declared size.
+          # So only STORED and DEFLATED are read, and any other method is
+          # refused by name before any member is.
+          MAX_UNCOMPRESSED = 256 * 1024 * 1024
+          read_methods = (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
+          # the five names hatchling's `.dist-info/` holds, and no others
+          dist_info = ["METADATA", "WHEEL", "RECORD", "entry_points.txt",
+                       "licenses/LICENSE"]
+          # the members this check parses, so keeps whole; the rest are
+          # hashed as they are read
+          whole = {stamp, info + "METADATA", info + "entry_points.txt"}
 
           listing = subprocess.run(["git", "ls-tree", "-r", "-z", "--full-tree", sha],
                                    capture_output=True)
@@ -900,27 +928,60 @@ jobs:
           except (OSError, zipfile.BadZipFile) as error:
               sys.exit(f"::error::{sys.argv[1]} cannot be read as a wheel: {error}")
           with wheel:
-              entries = [e for e in wheel.infolist() if not e.filename.endswith("/")]
+              everything = wheel.infolist()
+              total = sum(e.file_size for e in everything)
+              if total > MAX_UNCOMPRESSED:
+                  sys.exit(f"::error::the wheel's members declare {total} bytes uncompressed in "
+                           f"all, over the {MAX_UNCOMPRESSED} this check reads, so none is read")
+              folders = {e.filename for e in everything if e.filename.endswith("/")}
+              entries = [e for e in everything if e.filename not in folders]
               listed = [e.filename for e in entries]
               if len(listed) != len(set(listed)):
                   problems.append("the wheel names one file twice")
               members = {e.filename: e for e in entries}
-              contents = {}
-              for name, entry in members.items():
+              # a directory entry is allowed only above a file the wheel holds
+              allowed = wanted | {stamp} | {info + name for name in dist_info}
+              parents = {"/".join(name.split("/")[:at]) + "/" for name in allowed
+                         for at in range(1, name.count("/") + 1)}
+              for name in sorted(folders - parents):
+                  problems.append(f"{name} is a directory entry in the wheel, and no file the "
+                                  "wheel may hold is under it")
+              other = {n: e.compress_type for n, e in members.items()
+                       if e.compress_type not in read_methods}
+              for name, method in sorted(other.items()):
+                  problems.append(f"{name} in the wheel cannot be read (compression method "
+                                  f"{method}, and only stored and deflated members are read)")
+              sums, kept = {}, {}
+              # with one such member, none is read: the exit below names it
+              for name, entry in ([] if other else members.items()):
+                  hasher, pieces = hashlib.sha256(), []
                   try:
-                      contents[name] = wheel.read(entry)
+                      with wheel.open(entry) as stream:
+                          while chunk := stream.read(1 << 20):
+                              hasher.update(chunk)
+                              if name in whole:
+                                  pieces.append(chunk)
                   except (zipfile.BadZipFile, zlib.error, lzma.LZMAError, EOFError, OSError,
                           RuntimeError, ValueError) as error:
                       problems.append(f"{name} in the wheel cannot be read "
                                       f"({type(error).__name__}: {error})")
-              if len(contents) != len(members):
+                  else:
+                      sums[name] = hasher.digest()
+                      if name in whole:
+                          kept[name] = b"".join(pieces)
+              if len(sums) != len(members):
                   for problem in problems:
                       print(f"::error::{problem}")
                   sys.exit(1)
 
 
               def read(name):
-                  return contents.get(name)
+                  assert name in whole, f"{name} is hashed as it is read, and not kept"
+                  return kept.get(name)
+
+
+              def digest_of(data):
+                  return None if data is None else hashlib.sha256(data).digest()
 
 
               for name in sorted(members):
@@ -936,7 +997,7 @@ jobs:
                                           f"file at {sha}")
                           continue
                       fine = True
-                      if read(name) != data:
+                      if sums[name] != digest_of(data):
                           problems.append(f"{name} in the wheel is not {source} at {sha}, byte for byte")
                           fine = False
                       if got != want:
@@ -948,7 +1009,7 @@ jobs:
                           print(f"{name} = {sha[:12]}:{source}, mode {got:06o}")
                   elif name in modules:
                       source = modules[name]
-                      if read(name) != committed(source):
+                      if sums[name] != digest_of(committed(source)):
                           problems.append(f"{name} in the wheel is not {source} at {sha}")
                       else:
                           print(f"{name} = {sha[:12]}:{source}")
@@ -1019,17 +1080,16 @@ jobs:
                       problems.append(f"the wheel's commands are {scripts}, not {project.get('scripts')}")
                   print(f"commands: {sorted(scripts)}")
               described = sorted(n[len(info):] for n in members if n.startswith(info))
-              if described != sorted(["METADATA", "WHEEL", "RECORD", "entry_points.txt",
-                                      "licenses/LICENSE"]):
+              if described != sorted(dist_info):
                   problems.append(f"the wheel's {info} holds {described}, not exactly METADATA, "
                                   "WHEEL, RECORD, entry_points.txt and licenses/LICENSE")
-              licence, commits = read(info + "licenses/LICENSE"), committed("LICENSE")
+              licence, commits = sums.get(info + "licenses/LICENSE"), committed("LICENSE")
               if commits is None:
                   problems.append(f"{sha} has no LICENSE, and the wheel must carry the commit's")
               elif licence is None:
                   problems.append(f"the wheel has no {info}licenses/LICENSE, so the commit's LICENSE "
                                   "is not in it")
-              elif licence != commits:
+              elif licence != digest_of(commits):
                   problems.append(f"the wheel's {info}licenses/LICENSE is not the commit's LICENSE")
           for problem in problems:
               print(f"::error::{problem}")
@@ -1198,9 +1258,10 @@ jobs:
       # The verified wheel itself, already there, is a re-run of this job
       # after its upload went through, and uploads nothing new. The index
       # is read once: any other HTTP status, a read with no answer, and an
-      # answer that is not the index's JSON each refuse with an `::error::`
-      # line naming it, never a traceback (#278), and "Re-run failed jobs"
-      # reads it again.
+      # answer that is not the index's JSON, one nested too deep for the
+      # decoder (`RecursionError`) among them, each refuse with an `::error::`
+      # line naming it, never a traceback (opensoft/openRepoTools#278 and
+      # opensoft/openRepoTools#352), and "Re-run failed jobs" reads it again.
       - name: the index holds no file of this version but the verified wheel
         run: |
           python3 - <<'PY'
@@ -1225,7 +1286,7 @@ jobs:
               release = json.loads(body)
               held = {f["filename"]: f["digests"]["sha256"] for f in release["urls"]}
               yanked = sorted(f["filename"] for f in release["urls"] if f.get("yanked"))
-          except (ValueError, KeyError, TypeError, AttributeError) as error:
+          except (ValueError, KeyError, TypeError, AttributeError, RecursionError) as error:
               sys.exit(f"::error::{index}'s answer for {url} is not its JSON API's "
                        f"({type(error).__name__}: {error}), {unknown}")
           other = {name: digest for name, digest in held.items() if wanted.get(name) != digest}
@@ -1253,8 +1314,10 @@ jobs:
       # error) and any `http.client.HTTPException` (a status line that is
       # not HTTP, too many headers, a body cut short). Any other HTTP
       # status, 408 and 429 among them, and an answer that is not the
-      # index's JSON, refuse at once with an `::error::` line naming it,
-      # never a traceback (#278). A failure that never clears ends in the
+      # index's JSON (one nested too deep for the decoder, `RecursionError`,
+      # included), refuse at once with an `::error::` line naming it, never
+      # a traceback (opensoft/openRepoTools#278 and
+      # opensoft/openRepoTools#352). A failure that never clears ends in the
       # `after 20 reads` refusal at the foot of the step.
       - name: the index serves exactly the verified wheel
         run: |
@@ -1281,7 +1344,7 @@ jobs:
                       release = json.loads(body)
                       served = {f["filename"]: f["digests"]["sha256"] for f in release["urls"]}
                       yanked = any(f.get("yanked") for f in release["urls"])
-                  except (ValueError, KeyError, TypeError, AttributeError) as error:
+                  except (ValueError, KeyError, TypeError, AttributeError, RecursionError) as error:
                       sys.exit(f"::error::read {attempt}: {index}'s answer for {url} is not its JSON "
                                f"API's ({type(error).__name__}: {error}), {unknown}")
                   if served == wanted:
@@ -1789,7 +1852,7 @@ jobs:
               release = json.loads(body)
               held = {f["filename"]: f["digests"]["sha256"] for f in release["urls"]}
               yanked = sorted(f["filename"] for f in release["urls"] if f.get("yanked"))
-          except (ValueError, KeyError, TypeError, AttributeError) as error:
+          except (ValueError, KeyError, TypeError, AttributeError, RecursionError) as error:
               sys.exit(f"::error::{index}'s answer for {url} is not its JSON API's "
                        f"({type(error).__name__}: {error}), {unknown}")
           other = {name: digest for name, digest in held.items() if wanted.get(name) != digest}
@@ -1834,7 +1897,7 @@ jobs:
                       release = json.loads(body)
                       served = {f["filename"]: f["digests"]["sha256"] for f in release["urls"]}
                       yanked = any(f.get("yanked") for f in release["urls"])
-                  except (ValueError, KeyError, TypeError, AttributeError) as error:
+                  except (ValueError, KeyError, TypeError, AttributeError, RecursionError) as error:
                       sys.exit(f"::error::read {attempt}: {index}'s answer for {url} is not its JSON "
                                f"API's ({type(error).__name__}: {error}), {unknown}")
                   if served == wanted:
