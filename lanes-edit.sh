@@ -198,7 +198,9 @@
 #   with the row's handoff column following; and `lanes/aliases.tsv` gains
 #   `<old>	<new>	<UTC>`. ON PRIMARY (feature 007, T422; Q13(a)) the handoff's
 #   move and stamp are a second act, a git commit in the lane's checkout made
-#   after the register has committed the other three (the arm says how).
+#   after the register has committed the other three (the arm says how). A
+#   rerun finds the register already renamed, writes no register line, and
+#   makes only that act (`rl_rerun`; Y:3449–3451); one that fails is owed.
 #
 #   THE ALIAS TABLE IS WHAT MAKES THE OLD NAME KEEP WORKING (clause (e)).
 #   `canon_lane` — Amendment 15's resolver, which every `<lane>` argument and
@@ -589,7 +591,9 @@
 #      rename already in the register: a move file it cannot read or trust,
 #      S3's refusals in the lane's checkout, and a handoff there that is a
 #      link, not a regular file, untracked, or whose new path is taken. The
-#      act's code is said in one WARNING, never the run's (`pw_rl_move`).
+#      act's code is said in one WARNING, never the run's (`pw_rl_move`),
+#      a rerun's act included, and the move is then owed. And a rerun's
+#      child whose snapshot gives no seq (`rl_rerun`).
 #  64  usage — a caller's bad arguments to one of the reads Amendment 11 added
 #      (`window-lane`, `lane-dir`, `lane-profile`, `last-session`, `forks`,
 #      `duplicate-holder` (issue #39), `workstation`, `fetch-age`, `lanes`,
@@ -19669,18 +19673,21 @@ rl_move_write() {
          > "$REG_SCRATCH/rl-move.tmp" && mv -f -- "$REG_SCRATCH/rl-move.tmp" "$REG_SCRATCH/rl-move"; } 2>/dev/null; then
     return 0
   fi
-  note "WARNING: the rename is in the register at seq ${REGISTER_SEQ}, and its handoff's move could not be handed to the parent that makes it ($REG_SCRATCH/rl-move could not be written), so it is NOT made: the row's handoff column names ${RL_MOVE_TO}, which is not there yet. Make it by hand in $rl_hrepo: $(rl_move_hand_steps "$rl_hrepo" "$RL_MOVE_FROM" "$RL_MOVE_TO" "$RL_MOVE_STAMP")"
+  note "WARNING: the rename is in the register at seq ${REGISTER_SEQ}, and its handoff's move could not be handed to the parent that makes it ($REG_SCRATCH/rl-move could not be written), so it is NOT made: the row's handoff column names ${RL_MOVE_TO}, which is not there yet. The move is owed: $(rl_move_hand_steps "$rl_hrepo" "$rl_old" "$rl_new")."
   return 0
 }
 
-# THE HAND STEPS FOR A MOVE NOT MADE, one sentence: `git mv`, the stamp's line
-# under the header block, and a commit and push of the two paths.
-rl_move_hand_steps() {   # <checkout> <from, or empty> <to> <stamp>
-  if [ -n "$2" ]; then
-    printf 'git -C %s mv %s %s; put the line "%s" under its header block, at its first blank line; then commit those two paths there and push them (lanes-edit.sh commit, the publish act, sends the commit)' "$1" "$2" "$3" "$4"
-  else
-    printf 'put the line "%s" under the header block of %s, at its first blank line; then commit it there and push it (lanes-edit.sh commit, the publish act, sends the commit)' "$4" "$3"
-  fi
+# THE STEPS FOR A MOVE OWED, one sentence (lane 3, #165 6774499606, T422 (6)).
+# Y:5331 has `<owed>` name "the command that does each step by hand", and the
+# rerun is that command (`rl_rerun`). First, S6.3's archive of what `<c>`
+# holds above origin, and the reset to origin; then any person's commit in
+# that archive goes out by `commit`, the publish act; then `lane-rename <old>
+# <new>` again, which writes no register line and makes only the move and the
+# stamp. Never `commit` on the move: its fence refuses the move's D by design.
+# And never a raw `git push`, which skips T420's backstop.
+rl_move_hand_steps() {   # <checkout> <old> <new>
+  printf '(1) in %s, archive what it holds above origin/%s and reset to it (S6.3): list it with git -C %s cherry -v refs/remotes/origin/%s HEAD, and where it lists any commit, git -C %s push origin HEAD:refs/heads/archive/%s-stranded-%s, then git -C %s reset --keep refs/remotes/origin/%s; (2) publish from that archive any commit a person made, with the publish act: LANES_LANE=%s %s commit "<what it is>"; (3) run lane-rename %s %s again, which writes no register line and makes only the move and the stamp. Never `commit` on the move, and never a raw git push of it' \
+    "$1" "$LANES_BRANCH" "$1" "$LANES_BRANCH" "$1" "$3" "$(date -u +%Y%m%dT%H%MZ)" "$1" "$LANES_BRANCH" "$3" "$SELF" "$2" "$3"
 }
 
 # THE LIFECYCLE DIRECTORY'S MOVE, UNDER THE WORKSTATION'S SIDECAR LOCK ON
@@ -19777,7 +19784,7 @@ rl_rerun() {   # <the typed old name>
   if ! { printf 'checkout=\nfrom=%s\nto=%s\nstamp=%s\nold=%s\nnew=%s\nseq=%s\n' \
            "$rr_from" "$rr_cell" "$rr_st" "$rr_loo" "$rr_lon" "$rr_seq" \
            > "$REG_SCRATCH/rl-move.tmp" && mv -f -- "$REG_SCRATCH/rl-move.tmp" "$REG_SCRATCH/rl-move"; } 2>/dev/null; then
-    note "WARNING: lane $1 is lane $rr_lon in the register already (seq ${rr_seq}), so this run wrote no register line; its handoff's move could not be handed to the parent that makes it ($REG_SCRATCH/rl-move could not be written), so it is NOT made: the row's handoff column names ${rr_cell}. Make it by hand: $(rl_move_hand_steps "${rl_hrepo:-<the lane checkout>}" "$rr_from" "$rr_cell" "$rr_st")"
+    note "WARNING: lane $1 is lane $rr_lon in the register already (seq ${rr_seq}), so this run wrote no register line; its handoff's move could not be handed to the parent that makes it ($REG_SCRATCH/rl-move could not be written), so it is NOT made: the row's handoff column names ${rr_cell}. The move is owed: $(rl_move_hand_steps "$(lane_checkout_path "$rr_loo" 2>/dev/null || printf '%s' '<c>')" "$rr_loo" "$rr_lon")."
     exit 0
   fi
   note "lane $1 is lane $rr_lon in the register already (its RENAMED line is in the snapshot at seq ${rr_seq}), so this run writes no register line and makes only the handoff's move and Rule 3 stamp, in the lane's checkout, after this attempt and outside the flag (Y:3449–3451): ${rr_from:+$rr_from → }$rr_cell"
@@ -19824,14 +19831,14 @@ pw_rl_move() {   # <seq> <the child's attempt dir> [rerun]
     [ -n "$pm_c" ] || pm_c="$PW_C"
   fi
   if [ -z "$pm_c" ] || [ "$pm_c" != "$PW_C" ]; then
-    note "WARNING: ${pm_lead}; its handoff's move was named for the checkout ${pm_c:-<none>}, not lane ${PW_LANE}'s $PW_C, so it is NOT made: the row's handoff column names ${pm_to:-<unknown>}, which is not there yet. Make it by hand: $(rl_move_hand_steps "${pm_c:-$PW_C}" "$pm_from" "$pm_to" "$pm_st")."
+    note "WARNING: ${pm_lead}; its handoff's move was named for the checkout ${pm_c:-<none>}, not lane ${PW_LANE}'s $PW_C, so it is NOT made: the row's handoff column names ${pm_to:-<unknown>}, which is not there yet. The move is owed: $(rl_move_hand_steps "$PW_C" "${pm_old:-<old>}" "${pm_new:-<new>}")."
     return 0
   fi
   LANES_REPO="$PW_C" LANES_DIR="$PW_C/lanes" LANES_FILE="$PW_C/lanes/LANES.md" \
     LANES__RL_MOVE="$pm_f" LANES__RL_MOVE_PID="$$" \
     "${BASH:-bash}" "$RESOLVED" ${ORIG_ARGV[@]+"${ORIG_ARGV[@]}"} </dev/null || pm_rc=$?
   [ "$pm_rc" != 0 ] || return 0
-  note "WARNING: ${pm_lead}; its handoff's move and RENAMED stamp in $PW_C did not complete (exit ${pm_rc}, above), so the row's handoff column names ${pm_to}, which is not there yet. Make them by hand: $(rl_move_hand_steps "$PW_C" "$pm_from" "$pm_to" "$pm_st")."
+  note "WARNING: ${pm_lead}; its handoff's move and RENAMED stamp in $PW_C did not complete (exit ${pm_rc}, above), so the row's handoff column names ${pm_to}, which is not there yet. The move is owed: $(rl_move_hand_steps "$PW_C" "${pm_old:-<old>}" "${pm_new:-<new>}")."
   return 0
 }
 
