@@ -841,7 +841,7 @@ def read_forms(family: str, state: Refusing) -> list:
     pid = str(os.getpid())
     if family == "readers":
         return [["--prefetch", "--cache", cache, "--all"],
-                ["--since", "0", "--cache", cache]]
+                ["--since", "0", "--cache", cache, "--files", "register"]]
     return [["--for", "guard", "--prefetch", "--cache", cache, "--pid", pid,
              "--repo", str(state.e.wip), "--lane=repoA-2"],
             ["--for", "guard", "--at", "1", "--pid", pid, "--cache", cache,
