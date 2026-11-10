@@ -271,11 +271,12 @@
 #   words (the writer's rerun where the code is 3, whose note says what D8 says,
 #   in T433's form), prints the handoff fragment, and then exits with the
 #   writer's code: W13 has already committed the ending, and the fragment is read
-#   from the log, so it is right whatever W14 did. After W14's 2 under a seq
-#   base no hand command is printed for it: the writer's stderr is kept and this
-#   command says to run it again from its start (Y:5587, Y:5601); under `@files`
-#   or after `act-begin`'s 2, the hand command stands (Y:5596) (lane 3's REV-ACT
-#   Q4, #165 6774499606).
+#   from the log, so it is right whatever W14 did. Under a seq base no hand
+#   command is printed for a W14 that did not end 0: a 3 keeps the writer's
+#   rerun, and any other code keeps the writer's stderr and this command says
+#   to run it again from its start (Y:5587, Y:5601); under `@files` or after
+#   `act-begin`'s 2, the hand command stands (Y:5596) (lane 3's REV-ACT Q4,
+#   #165 6774499606, and Q11, #165 6779688808).
 #
 # EXIT
 #   0  done
@@ -2805,12 +2806,14 @@ fi
 # is 3 that is the writer's own rerun line (D8, Y:468-469; T417's), which this
 # command does not repeat in a hint of its own; the note says what D8 says for a
 # 3, in T433's form, both sentences (lane 3's G3).
-# NO HAND COMMAND AFTER A 2 UNDER A SEQ BASE (lane 3's REV-ACT Q4, #165
-# 6774499606): a hand command without this act's two variables writes
-# unchecked, which Y:5587 forbids, and one with them would only refuse again.
-# So the writer's stderr is kept and the note says to run this command again
-# from its start (Y:5601). Under `@files`, or after `act-begin`'s 2 (no base),
-# today's hand command stands (Y:5596), and so it does for every other code.
+# NO HAND COMMAND UNDER A SEQ BASE (lane 3's REV-ACT Q4, #165 6774499606,
+# widened by Q11, #165 6779688808, to "any write that did not end 0"): a hand
+# command without this act's two variables writes unchecked, which Y:5587
+# forbids, and one with them would only refuse again. So a 3 keeps the
+# writer's rerun (G3, above), and every other code (2, 69, 75 or any other)
+# keeps the writer's stderr and the note says to run this command again from
+# its start (Y:5601). Under `@files`, or after `act-begin`'s 2 (no base),
+# today's hand command stands (Y:5596).
 w14_rc=0
 if (( dry_run )); then
   plan "lanes-edit.sh log $lane_verb lane:$LANE --text \"$lane_text\""
@@ -2825,8 +2828,8 @@ else
       *)
         w14_seq=0
         case "${LANES_ACT:-}" in '' | *@files) : ;; *) w14_seq=1 ;; esac
-        if [ "$w14_rc" = 2 ] && [ "$w14_seq" = 1 ]; then
-          note "the lane's object log line ($lane_verb) was NOT written: the writer refused it with 2 under this act's base (its words are above). No hand command is printed for it, since one without this act's base and expectations would write unchecked, and one with them would only be refused again. Run this \`lane-end\` again from its start, as it was typed: it takes a new base and reads again what it rests on."
+        if [ "$w14_seq" = 1 ]; then
+          note "the lane's object log line ($lane_verb) was NOT written: the writer answered $w14_rc under this act's base (its words are above). No hand command is printed for it, since one without this act's base and expectations would write unchecked, and one with them would only be refused again. Run this \`lane-end\` again from its start, as it was typed: it takes a new base and reads again what it rests on."
         else
           note "the lane's object log was NOT written ($lane_verb). Write it by hand:"
           note "  LANES_LANE=$LANE $LANES_EDIT log $lane_verb lane:$LANE --text \"$lane_text\""
