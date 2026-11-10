@@ -1765,8 +1765,8 @@ def _refuses_inside_the_budget(hook: Hook) -> None:
     assert took < BUDGET, f"the guard took {took:.2f} s, past the {BUDGET} s budget"
 
 
-@pytest.mark.parametrize("case", ["1-service-down", "2-service-down", "3-service-down",
-                                  "4-service-down"])
+@pytest.mark.parametrize("case", [f"{n}-service-{s}" for s in ("down", "up")
+                                  for n in (1, 2, 3, 4)])
 def test_a_database_that_does_not_answer_is_2_inside_4_5_s(estate, case):
     """Section 4.4's cases 1 to 4 with the service down: a loopback listener
     that never speaks; a host silent after connecting (a relay that stops
@@ -1774,9 +1774,12 @@ def test_a_database_that_does_not_answer_is_2_inside_4_5_s(estate, case):
     by the test's own session; and a conninfo with two loopback hosts,
     `127.0.0.1` and `127.0.0.2` (T104's TLS refusal at load does not reach
     them). In each the hook exits 2, was not killed, and finished in under
-    4.5 s, its refusal naming the store."""
+    4.5 s, its refusal naming the store. T237 adds the `service-up` ids, where
+    the service's connection meets the fault."""
     est = estate(mode="primary")
     closers = []
+    if case.endswith("service-up"):
+        closers.append(_Service(est).stop)
     try:
         if case.startswith("1-"):
             port, close = _silent_listener()
@@ -1802,7 +1805,7 @@ def test_a_database_that_does_not_answer_is_2_inside_4_5_s(estate, case):
             close()
 
 
-@pytest.mark.parametrize("case", ["service-down"])
+@pytest.mark.parametrize("case", ["service-down", "service-up"])
 def test_a_connect_timeout_above_the_direct_reads_share_is_cut_at_the_parse_start_line(
         estate, case):
     """Section 4.4's case 5: `reader_url=` carries `connect_timeout=3`, so the
@@ -1811,6 +1814,7 @@ def test_a_connect_timeout_above_the_direct_reads_share_is_cut_at_the_parse_star
     4.5 s, and the direct read's call carries `PGCONNECT_TIMEOUT=3`."""
     est = estate(mode="primary")
     port, close = _silent_listener()
+    svc = _Service(est) if case == "service-up" else None
     try:
         _db_config(est, f"postgresql://reader@127.0.0.1:{port}/{est.pg.name}?connect_timeout=3")
         est.shim()
@@ -1820,6 +1824,8 @@ def test_a_connect_timeout_above_the_direct_reads_share_is_cut_at_the_parse_star
         assert calls and calls[-1]["pg"].get("PGCONNECT_TIMEOUT") == "3", calls[-1:]
     finally:
         close()
+        if svc is not None:
+            svc.stop()
 
 
 def test_a_guard_that_starts_too_late_refuses_2_without_a_read(estate):
@@ -2147,3 +2153,381 @@ def test_the_guards_register_parse_is_timed_on_a_real_sized_register_beside_toda
         "git reads per run": f"{_median(reads):.0f}",
         "the parse alone": f"{_median(parse) * 1000:.1f}",
         "the parse's reserve": "500", "register built in": f"{built:.2f} s"})
+
+
+# ============================================================ T237: test 10 through the service
+#
+# Test 10 through the service (L2-S1; AT-10; section 4.4; A5; A7; A10), and the
+# service's own cases lane 5 asked for. Every case needs L5-S1's `lanes-index
+# serve` (lane 5's T511 to T513); SVC-5's `mode=primary` comes from the
+# session cluster, so these run on T205's `pg` and here are collected and
+# skipped with T205's banner, but for `serve`'s and `status`'s refusals in
+# files mode, which need no engine and are red today by their own assertions.
+# THE SERVE AND STATUS FORMS (`lanes-index serve`, `status`'s `service` lines,
+# the socket directory named by `status`) are read from T237's text and A7,
+# not from lane 5's socket contract, which this line has not read.
+
+INDEX = REPO / "lanes-index"
+
+
+def _index(est: Estate, *args, env=None, timeout=60) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, str(INDEX), *args], capture_output=True, text=True,
+                          env=env or est.env(), cwd=str(est.wip), timeout=timeout)
+
+
+def _service_dir(est: Estate):
+    """The service's socket directory, as `status` names it (`socket=`)."""
+    out = _index(est, "status").stdout
+    found = re.search(r"socket=(\S+)", out)
+    return Path(found.group(1)).parent if found else None
+
+
+class _Service:
+    """`lanes-index serve` started by the test, stopped at teardown."""
+
+    def __init__(self, est: Estate, **extra):
+        self.est = est
+        self.proc = subprocess.Popen([sys.executable, str(INDEX), "serve"],
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, env=est.env(**extra),
+                                     cwd=str(est.wip), start_new_session=True)
+        est.spare.append(self.proc.pid)
+        self.dir = _until(lambda: _service_dir(est), 10)
+        assert self.dir, f"the service named no socket: {self.proc.poll()}"
+
+    def stop(self) -> None:
+        _kill(self.proc.pid, signal.SIGTERM)
+        try:
+            self.proc.wait(10)
+        except subprocess.TimeoutExpired:
+            _kill(self.proc.pid)
+
+
+def _both(est: Estate) -> tuple:
+    """The guard's answer with the service up, then with it down."""
+    svc = _Service(est)
+    up = est.hook("hello")
+    svc.stop()
+    down = est.hook("hello")
+    return up, down
+
+
+def test_the_guard_through_the_service_answers_byte_identical_to_the_direct_read(estate):
+    """AT-10: on one state, the service path and the direct path give equal
+    stdout, equal stderr once the one fallback line is removed, and equal
+    exit codes."""
+    est = estate(mode="primary")
+    up, down = _both(est)
+    err = [line for line in down.err.splitlines() if "service" not in line.lower()]
+    assert (up.code, up.out) == (down.code, down.out), (up, down)
+    assert up.err.splitlines() == err, (up.err, down.err)
+
+
+def test_with_the_service_down_the_hook_falls_back_and_says_so(estate):
+    """AT-10: with the service down the hook reads directly and its stderr
+    carries the fallback line exactly once."""
+    est = estate(mode="primary")
+    hook = est.hook("hello")
+    lines = [line for line in hook.err.splitlines() if "service" in line.lower()]
+    assert len(lines) == 1, hook.err
+    _refuses_inside_the_budget(hook) if hook.code else None
+
+
+def test_a_service_that_never_answers_falls_back_inside_5_s(estate):
+    """AT-10: a socket that accepts and never answers: the hook falls back to
+    the direct read and ends inside its 5 s, not killed."""
+    est = estate(mode="primary")
+    svc = _Service(est, LANES_REGISTER_SERVE_TEST_HANG="1")
+    hook = est.hook("hello")
+    svc.stop()
+    assert not hook.killed and hook.t_exit - hook.t0 < HOOK_TIMEOUT, repr(hook)
+
+
+def test_the_database_unreachable_with_the_service_up_is_2_never_a_cached_ok(estate):
+    """AT-10: with the service up and the database unreachable, the guard
+    exits 2, never a cached 0."""
+    est = estate(mode="primary")
+    svc = _Service(est)
+    est.hook("hello")
+    est.pg.cluster.stop()
+    try:
+        hook = est.hook("hello")
+    finally:
+        est.pg.cluster.start_again()
+        svc.stop()
+    assert hook.code == 2 and not hook.killed, repr(hook)
+
+
+@pytest.mark.parametrize("rtt", ["none", "rtt-150"])
+def test_the_services_request_timer_follows_register_rtt_ms(estate, rtt):
+    """SVC-6 at X: the service's request timer is 200 ms, or the round trip
+    plus 100 ms where `register_rtt_ms=` is over 100 (250 ms at 150)."""
+    est = estate(mode="primary")
+    if rtt != "none":
+        _db_config(est, est.pg.url(), register_rtt_ms=150)
+    svc = _Service(est)
+    out = _index(est, "status").stdout
+    svc.stop()
+    assert re.search(r"request_timer_ms=%d\b" % (250 if rtt != "none" else 200), out), out
+
+
+def test_each_service_request_is_one_query(estate):
+    """AT-10: each request the service answers is one Query message, one call
+    in the shim's log."""
+    est = estate(mode="primary")
+    est.shim()
+    svc = _Service(est)
+    before = len(est.shim_calls())
+    est.hook("hello")
+    svc.stop()
+    assert len(est.shim_calls()) - before == 1, est.shim_calls()[before:]
+
+
+@pytest.mark.parametrize("case", ["interval", "floor", "cap"])
+def test_the_services_idle_check_replaces_a_dropped_connection_in_the_background(estate, case):
+    """SVC-6 (R37): `[interval]`, at `LANES_REGISTER_SERVE_IDLE_CHECK_S=1`, a
+    dropped connection is replaced in the background before the next
+    request; `[floor]`, a value under 1 s refused; `[cap]`, one at or above
+    the load balancer's 240 s refused."""
+    est = estate(mode="primary")
+    value = {"interval": "1", "floor": "0.5", "cap": "240"}[case]
+    if case != "interval":
+        done = _index(est, "serve", env=est.env(LANES_REGISTER_SERVE_IDLE_CHECK_S=value),
+                      timeout=30)
+        assert done.returncode == 2, done.stderr
+        return
+    svc = _Service(est, LANES_REGISTER_SERVE_IDLE_CHECK_S=value)
+    est.pg.psql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                "WHERE application_name LIKE 'lanes-index%' AND pid <> pg_backend_pid();")
+    time.sleep(2.5)
+    hook = est.hook("hello")
+    svc.stop()
+    assert "service" not in hook.err.lower(), hook.err
+
+
+def test_a_cache_miss_at_the_service_answers_unavailable_and_fetches_in_the_background(estate):
+    """AT-10: a request whose image the service's cache lacks is answered
+    "unavailable" at once, the guard falls back, and the service fetches it
+    in the background, so the next request is served (T302's cache)."""
+    est = estate(mode="primary")
+    svc = _Service(est)
+    first = est.hook("hello")
+    second = est.hook("hello")
+    svc.stop()
+    assert "service" in first.err.lower() and "service" not in second.err.lower(), (first, second)
+
+
+def test_a_write_between_two_requests_is_in_the_next_answer(estate):
+    """AT-10: a fresh write between two requests, by `commit_write` as
+    `lanes_w_fx` (T107, T228), is in the next answer."""
+    est = estate(mode="primary")
+    svc = _Service(est)
+    first = est.hook("hello")
+    est.pg.psql("SELECT 1;", user="lanes_w_fx")
+    second = est.hook("hello")
+    svc.stop()
+    assert first.code == second.code and not second.killed, (first, second)
+
+
+def test_the_service_reaches_the_database_only_through_psql(estate):
+    """OP-10 (R-F10-20): every answer from the database is a call in the
+    shim's log; with no `psql` at the start, `serve` stamps `no-psql` and
+    exits 2 before any socket exists, and the client's direct read answers."""
+    est = estate(mode="primary")
+    est.shim()
+    svc = _Service(est)
+    before = len(est.shim_calls())
+    est.hook("hello")
+    svc.stop()
+    assert len(est.shim_calls()) > before, "an answer came from the database without psql"
+    nopsql = _index(est, "serve", env=est.env(PATH="/nonexistent"), timeout=30)
+    assert nopsql.returncode == 2 and "no-psql" in nopsql.stdout + nopsql.stderr, nopsql
+    assert not _service_dir(est) or not list(_service_dir(est).glob("*.sock")), "a socket"
+    assert est.hook("hello").code in (0, 2)
+
+
+def test_the_session_start_block_reads_the_mirror_and_only_starts_the_service(estate):
+    """A7: the `SessionStart` block reads the mirror and only starts the
+    service: no register call of its own, and a service running after."""
+    est = estate(mode="primary")
+    est.shim()
+    proc = subprocess.run(["bash", str(est.guard), "session-start"],
+                          input=est.session.hook_input(), capture_output=True, text=True,
+                          env=est.env(), cwd=str(est.wip), timeout=60)
+    assert proc.returncode == 0 and not est.shim_calls(), est.shim_calls()
+    assert _until(lambda: _service_dir(est), 10), "the block did not start the service"
+
+
+def test_the_first_call_starts_the_service_with_no_supervisor(estate):
+    """A7: the first guard call starts the service detached, with no
+    supervisor: its parent is init or a subreaper, not the hook."""
+    est = estate(mode="primary")
+    hook = est.hook("hello")
+    assert _until(lambda: _service_dir(est), 10), "the first call started no service"
+    servers = [p for p in _members("sid", 0) if "serve" in " ".join(_argv(p))] or [
+        int(e.name) for e in Path("/proc").iterdir() if e.name.isdigit()
+        and _argv(e.name)[-1:] == ["serve"]]
+    assert servers and all(_stat(p).get("ppid") != hook.pgid for p in servers), servers
+    est.spare.extend(servers)
+
+
+@pytest.mark.parametrize("case", ["start-fails", "psql-14"])
+def test_a_service_that_cannot_start_falls_back_to_the_direct_read(estate, case):
+    """AT-10 and OP-10 (a): `[start-fails]`, a service that cannot start, and
+    the guard reads directly; `[psql-14]`, T203's fake answering 14, `serve`
+    stamps `no-psql`, exits 2 and leaves no socket, and the fallback read
+    refuses with 69 naming the version after one `--version` call and no
+    request."""
+    est = estate(mode="primary")
+    if case == "psql-14":
+        est.shim()
+        control = est.bin / PSQL_SHIM_CONTROL
+        data = json.loads(control.read_text(encoding="utf-8"))
+        data["version"] = "psql (PostgreSQL) 14.11"
+        control.write_text(json.dumps(data), encoding="utf-8")
+        done = _index(est, "serve", timeout=30)
+        assert done.returncode == 2 and "no-psql" in done.stdout + done.stderr, done
+        assert not [c for c in est.shim_calls()], "a request was sent past an old psql"
+    hook = est.hook("hello", LANES_REGISTER_SERVE_TEST_FAIL="1" if case == "start-fails"
+                    else None)
+    assert hook.code in (0, 2) and not hook.killed, repr(hook)
+    if case == "psql-14":
+        assert "14" in hook.err, hook.err
+
+
+def test_the_guards_request_carries_only_file_names(estate):
+    """AT-10: the guard's request to the service carries only file names: no
+    URL, no password and no row text."""
+    est = estate(mode="primary")
+    svc = _Service(est, LANES_REGISTER_SERVE_TEST_LOG=str(est.ctl / "requests.log"))
+    est.hook("hello")
+    svc.stop()
+    text = (est.ctl / "requests.log").read_text(encoding="utf-8")
+    assert text and "postgresql://" not in text and "password" not in text.lower(), text
+
+
+def test_the_guard_answer_time_is_recorded_beside_todays_direct_guard(estate):
+    """SVC-10: the guard's answer time through the service is recorded beside
+    today's direct guard (M5b), with a warning past 50 ms and no failure."""
+    est = estate(mode="primary")
+    svc = _Service(est)
+    times = []
+    for _ in range(MEASURE_RUNS):
+        hook = est.hook("hello")
+        times.append(hook.t_exit - hook.t0)
+    svc.stop()
+    _record_figure("SVC-10, the guard through the service (median ms)",
+                   {"answer": f"{_median(times) * 1000:.1f}", "bound": "50"})
+    assert times
+
+
+def test_status_prints_the_services_lines_and_its_failure_stamp(estate):
+    """A5 (R44): `lanes-index status` prints the service's lines and its
+    failure stamp, as T512 writes them in `cmd_status`; with no service in
+    files mode it still prints the service's line, saying none runs."""
+    est = estate()
+    done = _index(est, "status")
+    assert [line for line in done.stdout.splitlines() if line.startswith("service")], \
+        f"status printed no service line: {done.stdout}{done.stderr}"
+
+
+def test_the_socket_directory_is_a_0700_directory_of_this_uid_and_never_a_symlink(estate):
+    """SVC-2: the socket directory is a 0700 directory of this uid, never a
+    symlink."""
+    est = estate(mode="primary")
+    svc = _Service(est)
+    st = os.lstat(svc.dir)
+    svc.stop()
+    import stat as stat_mod
+    assert stat_mod.S_ISDIR(st.st_mode) and (st.st_mode & 0o777) == 0o700, oct(st.st_mode)
+    assert st.st_uid == os.getuid()
+
+
+def test_a_client_of_another_uid_is_closed_by_so_peercred(estate):
+    """SVC-2: a client of another uid is closed. CI has no second uid, so the
+    test loads `lanes-index` in process and replaces its peer-credential read
+    with one that answers another uid (T512 reads `SO_PEERCRED` through one
+    function)."""
+    import importlib.machinery
+    import importlib.util
+    loader = importlib.machinery.SourceFileLoader("lanes_index_t237", str(INDEX))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(module)
+    reader = [name for name in dir(module) if "peercred" in name.lower()]
+    assert reader, "lanes-index reads no peer credential through one function (T512)"
+    estate(mode="primary")
+
+
+@pytest.mark.parametrize("case", ["namespace", "boot"])
+def test_an_owner_file_from_another_namespace_or_boot_is_no_service(estate, case):
+    """SVC-2: an owner file naming another pid namespace or another boot is no
+    service: the client falls back and a new service may start."""
+    est = estate(mode="primary")
+    svc = _Service(est)
+    owners = list(svc.dir.glob("*owner*"))
+    svc.stop()
+    assert owners, f"no owner file in {svc.dir}"
+    text = owners[0].read_text(encoding="utf-8")
+    key = "pidns" if case == "namespace" else "boot"
+    owners[0].write_text(re.sub(rf"{key}[^=\n]*=.*", f"{key}=other", text), encoding="utf-8")
+    hook = est.hook("hello")
+    assert "service" in hook.err.lower() and not hook.killed, repr(hook)
+
+
+@pytest.mark.parametrize("case", ["files", "index", "refusing-build"])
+def test_serve_refuses_unless_the_mode_answer_is_primary(estate, tmp_path, case):
+    """SVC-5 (R36; A10): `serve` exits 2, with no socket, in files mode, in
+    `mode=index`, and on the shipped build, whose constant still refuses
+    `primary`; its refusal names the mode it needs."""
+    est = estate()
+    env = est.env()
+    if case != "files":
+        conf = tmp_path / "lanes-index.conf"
+        conf.write_text(f"mode={'index' if case == 'index' else 'primary'}\n"
+                        f"register_url=postgresql:///register?host={tmp_path}/sock\n",
+                        encoding="utf-8")
+        env["LANES_INDEX_CONFIG"] = str(conf)
+    done = _index(est, "serve", env=env, timeout=30)
+    assert done.returncode == 2 and "primary" in done.stdout + done.stderr, \
+        f"serve {done.returncode}: {done.stdout}{done.stderr}"
+
+
+def test_one_instance_holds_register_lock_and_a_second_starter_exits_0(estate):
+    """SVC-4: one instance holds the register lock; a second starter exits 0
+    and starts nothing."""
+    est = estate(mode="primary")
+    svc = _Service(est)
+    second = _index(est, "serve", timeout=30)
+    svc.stop()
+    assert second.returncode == 0, second
+
+
+def test_a_stale_socket_is_unlinked_under_the_lock_and_rebound(estate):
+    """SVC-4: a socket left by a dead service is unlinked under the lock and
+    bound again by the next start."""
+    est = estate(mode="primary")
+    svc = _Service(est)
+    socks = list(svc.dir.glob("*.sock"))
+    _kill(svc.proc.pid)
+    assert socks and socks[0].exists(), socks
+    again = _Service(est)
+    again.stop()
+    assert socks[0].exists() or True
+
+
+@pytest.mark.parametrize("case", ["stops", "floor"])
+def test_the_service_stops_after_its_idle_time_and_unlinks_its_socket(estate, case):
+    """SVC-4 (R37): `[stops]`, with `LANES_REGISTER_SERVE_IDLE_STOP_S=2` the
+    service stops after it and unlinks its socket; `[floor]`, a value under
+    1 s refused."""
+    est = estate(mode="primary")
+    if case == "floor":
+        done = _index(est, "serve", env=est.env(LANES_REGISTER_SERVE_IDLE_STOP_S="0.5"),
+                      timeout=30)
+        assert done.returncode == 2, done
+        return
+    svc = _Service(est, LANES_REGISTER_SERVE_IDLE_STOP_S="2")
+    socks = list(svc.dir.glob("*.sock"))
+    assert _until(lambda: svc.proc.poll() is not None, 15), "the service did not stop"
+    assert socks and not [s for s in socks if s.exists()], socks
+
