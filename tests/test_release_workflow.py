@@ -2191,17 +2191,18 @@ def damage(path: Path, member: str, how: str) -> None:
     not have, `method` makes its compression method in the central
     directory 99, one `zipfile` cannot read, and `lzma` first stores it as
     LZMA, which `zipfile` writes and reads, then makes the first byte of its
-    LZMA stream 0xFF, where the range coder's first byte is always 0. `huge`
-    and `big` make its uncompressed size in the central directory, which is
-    what `file_size` reads, 512 MiB and 16 MiB, its bytes and CRC as they
-    were."""
-    if how == "lzma":
+    LZMA stream 0xFF, where the range coder's first byte is always 0. `bzip2`
+    stores it as BZIP2 and damages nothing: a valid member. `huge` and `big`
+    make its uncompressed size in the central directory, which is what
+    `file_size` reads, 512 MiB and 16 MiB, its bytes and CRC as they were."""
+    if how in ("lzma", "bzip2"):
         with zipfile.ZipFile(path) as wheel:
             kept = [(entry, wheel.read(entry)) for entry in wheel.infolist()]
         with zipfile.ZipFile(path, "w") as wheel:
             for entry, body in kept:
                 if entry.filename == member:
-                    entry.compress_type = zipfile.ZIP_LZMA
+                    entry.compress_type = (zipfile.ZIP_LZMA if how == "lzma"
+                                           else zipfile.ZIP_BZIP2)
                 wheel.writestr(entry, body)
     data = bytearray(path.read_bytes())
     (at,) = struct.unpack_from("<I", data, data.rindex(b"PK\x05\x06") + 16)
@@ -2218,6 +2219,8 @@ def damage(path: Path, member: str, how: str) -> None:
         struct.pack_into("<H", data, at + 10, 99)
     elif how in ("huge", "big"):
         struct.pack_into("<I", data, at + 24, (512 if how == "huge" else 16) << 20)
+    elif how == "bzip2":
+        pass  # stored as BZIP2 above, and left as it is
     else:
         assert how in ("deflate", "lzma"), how
         (local,) = struct.unpack_from("<I", data, at + 42)
@@ -2373,6 +2376,9 @@ def test_release_build_the_wheel_check_step_as_github_runs_it_holds_the_wheel_to
 #: loop's `except` tuple did not name it, as it names `BadZipFile`, `zlib.error`
 #: and `RuntimeError` (`NotImplementedError`'s base): it derives from
 #: `Exception` alone, so it ended in a traceback until the tuple did (#278).
+#: Since opensoft/openRepoTools#352 the last two are refused by their
+#: compression method (14 and 99) before any member is read, and the tuple
+#: keeps both though no member reaches them (`OTHER_METHODS` below).
 UNREADABLE_MEMBERS = {
     "a-payload-file-with-a-bad-crc": (layout.PAYLOAD_PREFIX + "lanes-edit.sh", "crc"),
     "a-module-with-a-broken-deflate-stream": ("openrepotools/cli.py", "deflate"),
@@ -2472,6 +2478,49 @@ def test_release_build_the_wheel_check_refuses_a_wheel_over_the_size_cap_unread(
                 if line.startswith("::error::") and "uncompressed" in line]
     assert len(refusals) == 1, transcript(done)
     assert out.splitlines() == refusals, transcript(done)
+
+
+#: A MEMBER IN A COMPRESSION METHOD THE CHECK DOES NOT READ
+#: (opensoft/openRepoTools#352, item 2): `zipfile` decompresses a BZIP2 or an
+#: LZMA member with no limit before it cuts the result to the member's declared
+#: size, so a few KB can fill the runner's memory whatever the member declares,
+#: and only STORED and DEFLATED members are read. Each case is how `damage`
+#: changes a payload file: stored as BZIP2 and not damaged, stored as LZMA with
+#: corrupt data, and given the method 99, which `zipfile` cannot read. hatchling
+#: 1.27.0 writes DEFLATED only, so a release has none.
+OTHER_METHODS = {"a-bzip2-member": ("bzip2", 12),
+                 "an-lzma-member": ("lzma", 14),
+                 "a-member-in-method-99": ("method", 99)}
+
+
+@NEEDS_UPSTREAM
+@pytest.mark.parametrize("which", OTHER_METHODS)
+def test_release_build_the_wheel_check_refuses_a_member_in_another_method_unread(
+        tmp_path, which):
+    """STEP 13 ON A WHEEL WITH A MEMBER IN A METHOD OTHER THAN STORED AND
+    DEFLATED (opensoft/openRepoTools#352, item 2): it exits 1 with an
+    `::error::` line that names the member, says it `cannot be read` and names
+    the method, and no traceback. And no member was read first: the same wheel
+    has `openrepotools/cli.py` with a bad CRC, which a read names as `cannot
+    be read` (`UNREADABLE_MEMBERS`), and no line names it."""
+    how, method = OTHER_METHODS[which]
+    release_ = wheel_release("1.1.0")
+    members, info = wheel_members(release_)
+    wheel = write_wheel(tmp_path / "dist" / "openrepotools-1.1.0-py3-none-any.whl",
+                        members, info)
+    member = layout.PAYLOAD_PREFIX + "lane"
+    damage(wheel, member, how)
+    damage(wheel, "openrepotools/cli.py", "crc")
+    done = run_heredoc(named(release(), "build", WHEEL_CHECK_STEP), tmp_path, [wheel],
+                       release_values(release_), cwd=REPO)
+    out = done.stdout + done.stderr
+    assert done.returncode == 1, transcript(done)
+    assert "Traceback (most recent call last)" not in out, transcript(done)
+    errors = [line for line in out.splitlines() if line.startswith("::error::")]
+    assert [line for line in errors if member in line and "cannot be read" in line
+            and f"method {method}" in line], transcript(done)
+    assert not [line for line in errors if "openrepotools/cli.py" in line], (
+        f"a member was read before the methods were checked:\n{transcript(done)}")
 
 
 #: A PAYLOAD FILE'S MODE, HELD TO ONE RULE BY BOTH WHEEL CHECKS (#278): the
@@ -3772,11 +3821,14 @@ NOT_JSON = (200, b"<html><body>the index is down for maintenance</body></html>")
 NO_FILE_LIST = (200, b'{"info": {"name": "openrepotools"}}')
 CUT_OFF = (200, CutShort(b'{"info": {"name": "openrepotools"}, "urls": ['))
 
-#: An answer nested past the JSON decoder's recursion limit (opensoft/
-#: openRepoTools#352, item 3): `json.loads` raises `RecursionError` on it, which
-#: is neither a `ValueError` nor any other error the steps' `except` tuples
-#: named, so each ended in a traceback until it joined them.
-NESTED = (200, b"[" * 100_000)
+#: An answer nested past the JSON decoder's recursion limit
+#: (opensoft/openRepoTools#352, item 3): 100,000 `[` closed by as many `]`, so
+#: it is valid JSON and only its depth is wrong. `json.loads` raises
+#: `RecursionError` on it, which is neither a `ValueError` nor any other error
+#: the steps' `except` tuples named, so each ended in a traceback until it
+#: joined them. A case asks for `RecursionError` in the refusal's line, as a
+#: `ValueError` would also give the line "is not its JSON API's".
+NESTED = (200, b"[" * 100_000 + b"]" * 100_000)
 
 
 class FakeIndex:
@@ -3910,7 +3962,7 @@ EMPTY_INDEX_CASES = {
     "an-answer-cut-off": (CUT_OFF, "could not be read"),
     "an-answer-that-is-not-json": (NOT_JSON, "is not its JSON API's"),
     "json-without-the-file-list": (NO_FILE_LIST, "is not its JSON API's"),
-    "an-answer-nested-too-deep-to-decode": (NESTED, "is not its JSON API's"),
+    "an-answer-nested-too-deep-to-decode": (NESTED, "(RecursionError:"),
 }
 
 
@@ -3970,7 +4022,7 @@ SERVED_CASES = {
     "a-refusal-other-than-404": ([(403, [])], 1, "with HTTP 403"),
     "an-answer-that-is-not-json": ([NOT_JSON], 1, "is not its JSON API's"),
     "json-without-the-file-list": ([NO_FILE_LIST], 1, "is not its JSON API's"),
-    "an-answer-nested-too-deep-to-decode": ([NESTED], 1, "is not its JSON API's"),
+    "an-answer-nested-too-deep-to-decode": ([NESTED], 1, "(RecursionError:"),
 }
 
 
