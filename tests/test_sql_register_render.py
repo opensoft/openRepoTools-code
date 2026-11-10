@@ -744,23 +744,21 @@ def _sanitized_path() -> str:
                            and not os.path.exists(os.path.join(part, "psql")))
 
 
-#: The workspace's repository, as its `workspace.yaml` names it, and so the
-#: register source `sync --source register:<owner/repo>` must name
-#: (`lanes-index`'s `source_of`).
-WORKSPACE_REPOSITORY = "opensoft/t210-register"
-
-
 def workspace(root: Path, fakebin: Path) -> tuple:
-    """A files-mode workspace whose `workspace.yaml` names
-    `WORKSPACE_REPOSITORY`, on a bare origin, at C (SEED), with a fake `tmux`
-    and `fakebin` first on `PATH`, in the environment
-    `test_sql_register_import.py`'s `Workspace` sets. Returns (the estate,
-    the environment)."""
+    """A files-mode workspace on a bare origin, at C (SEED), whose
+    `workspace.yaml` names that origin as its `repository:` and the checkout
+    as its `path:`, as `test_sql_register_import.py`'s `Workspace` names
+    them, with a fake `tmux` and `fakebin` first on `PATH`, in the
+    environment that `Workspace` sets. Returns (the estate, the environment,
+    the register source `sync --source` must name: `register:` and the
+    repository as `lanes-index`'s `source_of` normalizes it, its `.git`
+    dropped)."""
     estate = Estate(root)
     agents = estate.home / ".agents"
     agents.mkdir(parents=True, exist_ok=True)
     (agents / "workspace.yaml").write_text(
-        f"repository: {WORKSPACE_REPOSITORY}\npath: {estate.checkout}\n", encoding="utf-8")
+        f"repository: {estate.origin}\npath: {estate.checkout}\n", encoding="utf-8")
+    source = "register:" + re.sub(r"\.git$", "", str(estate.origin))
     fakebin.mkdir(parents=True, exist_ok=True)
     (fakebin / "tmux").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     (fakebin / "tmux").chmod(0o755)
@@ -773,14 +771,16 @@ def workspace(root: Path, fakebin: Path) -> tuple:
                LANES_HOST="eagle", LANES_OS="linux", LANES_CONTAINER="none",
                LANES_IN_CONTAINER="0", LANES_NO_GITHUB="1", LANES_REPO=str(estate.checkout),
                PATH=str(fakebin) + os.pathsep + _sanitized_path())
-    return estate, env
+    return estate, env, source
 
 
 def test_sync_source_register_does_nothing_on_primary_and_says_so(tmp_path):
     """`lanes-index sync --source register:<owner/repo>` on a `mode=primary`
     workstation, this workstation's own source, makes no `psql` call, writes
     nothing (the checkout's HEAD, status, index and `origin/main` as they
-    were), exits 0, and its output says it does nothing on primary (AT-1's
+    were, and nothing in `lanes-index`'s state directory but its sync lock:
+    no index store, no status record), exits 0, and its output says it does
+    nothing on primary (AT-1's
     FP case; lane 1's T117, "`cmd_sync` with a `register:<owner/repo>`
     source does nothing on primary, and says so"; the delta's "The post-write
     nudge does not re-index the mirror into its own source"). #160's
@@ -788,7 +788,7 @@ def test_sync_source_register_does_nothing_on_primary_and_says_so(tmp_path):
     primary."""
     fakebin = tmp_path / "fakebin"
     fake = fake_psql_dir(fakebin)
-    estate, env = workspace(tmp_path / "ws", fakebin)
+    estate, env, source = workspace(tmp_path / "ws", fakebin)
     copy = flipped(tmp_path)
     sock = tmp_path / "sock"
     sock.mkdir()
@@ -802,11 +802,30 @@ def test_sync_source_register_does_nothing_on_primary_and_says_so(tmp_path):
                           f"postgresql://lanes_r_t210@{host}:5432/lanes_t210", passfile)
     env.update(fake, LANES_INDEX_CONFIG=str(conf))
     env.pop("LANES_INDEX", None)
-    before = estate.state()
-    proc = run_index(copy, ["sync", "--source", f"register:{WORKSPACE_REPOSITORY}"], env,
-                     cwd=estate.checkout)
+    state_root = Path(env["XDG_STATE_HOME"])
+    before, state_before = estate.state(), _files_under(state_root)
+    proc = run_index(copy, ["sync", "--source", source], env, cwd=estate.checkout)
     said = proc.stdout + proc.stderr
     assert proc.returncode == 0, f"sync exited {proc.returncode}: {said}"
     assert fake_calls(fake) == [], f"sync made a psql call on primary: {fake_calls(fake)}"
     assert "primary" in said, f"sync's output does not say it does nothing on primary: {said!r}"
     assert estate.state() == before, "sync wrote to the checkout"
+    state_after = _files_under(state_root)
+    written = sorted(p for p, digest in state_after.items() if state_before.get(p) != digest)
+    assert all(SYNC_LOCK_FILES.match(p) for p in written), (
+        f"sync wrote under {state_root} on primary, beyond its lock: {written}")
+
+
+#: What a sync may leave in `lanes-index`'s state directory,
+#: `$XDG_STATE_HOME/openRepoTools/`, when it does nothing: its one-at-a-time
+#: lock and the lock's rerun marks (`SyncLock`, 14(d) and #161). An index
+#: store (`lanes-index.sqlite`) or a status record is a write.
+SYNC_LOCK_FILES = re.compile(r"^openRepoTools/lanes-index\.(lock|rerun(-[a-z]+)?)$")
+
+
+def _files_under(root: Path) -> dict:
+    """Every file under `root`, {relative path: sha256}."""
+    if not root.is_dir():
+        return {}
+    return {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in sorted(root.rglob("*")) if p.is_file()}
