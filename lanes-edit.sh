@@ -4509,7 +4509,7 @@ cp_archive_steps() {
 # process whose mode is `primary` (`REG_MODE`, the writers' one answer, which
 # an attempt's child also holds) drops the register's flag here, and makes the
 # inventory's fork as before. On primary the register's nudge is replaced by
-# the renderer's fork after `committed` (`pw_render_fork`), which no
+# the renderer's fork at a write's end 0 (`pw_render_fork`), which no
 # `LANES_INDEX=off` skips. Only a push sets the register's flag (`cp_pushed`),
 # and an attempt's child never reaches one (Y:5042), so this is the rule for
 # any push a primary process makes. Any other mode, or none asked, is today's
@@ -5824,8 +5824,9 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
 #       the files `register commit` reads (`pw_attempt_files`), and the child
 #       (`pw_child_start`, `pw_child_wait`);
 #   (c) the commit call and the decision on its answer (`pw_commit`,
-#       `pw_decide`), and after `committed`, the renderer's fork
-#       (`pw_render_fork`, T416);
+#       `pw_decide`), and at every end 0 that learns the write is in the
+#       register (`committed`, a snapshot's `found=`, the commit's `already`),
+#       the renderer's fork, once a run (`pw_render_fork`, T416);
 #   (d) a 69 at the first snapshot (`pw_first_69`);
 #   (e) D7's deadline and the run's end (`pw_run`, `pw_end`).
 #
@@ -5835,7 +5836,7 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
 # tail by match or replay for a write already in the register, the record's
 # `tail` key and the done mark (T418).
 PW_LANE=""; PW_C=""; PW_AUTHOR=""; PW_D_S=30; PW_T0=0; PW_RUN=""; PW_RUN_DIR=""
-PW_LOCK=""; PW_REC_OURS=0
+PW_LOCK=""; PW_REC_OURS=0; PW_RENDERED=0
 PW_K=0; PW_DIR=""; PW_CHILD=""; PW_KEPT=""; PW_FIRST_DONE=0; PW_RELAY=""; PW_RC=0
 PW_S_GEN=""; PW_S_WID=""; PW_S_FOUND=""; PW_S_N=""; PW_S_CLOCK=""; PW_S_NOT_AFTER=""
 
@@ -6310,11 +6311,15 @@ pw_doubt_end() {   # <the end's code> <its message, or empty> [<attempt dir>]
 
 # A WRITE ALREADY IN THE REGISTER (a snapshot's `found=`, or the commit's
 # `already <s>`): the tail by match or by replay, the `tail` key and the done
-# mark are T418's (Y:5289–5373). Until then this run sends no second commit,
-# names the verb's after-COMMIT steps as owed, removes the record (Y:5194:
-# "after the tail is done or named as owed") and ends with 0.
+# mark are T418's (Y:5289–5373). The write is in the register, so once every
+# kept child has its `abandon` the renderer is forked, once a run
+# (`pw_render_fork`; lane openRepoTools-3's ruling, #165 6769061039, T416's
+# item 1), before the `tail=sent` T418 writes here. Until T418 this run sends
+# no second commit, names the verb's after-COMMIT steps as owed, removes the
+# record (Y:5194: "after the tail is done or named as owed") and ends with 0.
 pw_found_end() {   # <seq> <how it was found>
   pw_abandon_all
+  pw_render_fork
   note "write $WR_ID is in the register at seq $1, committed by an earlier attempt or run ($2); this run sent no second commit of it. Its after-COMMIT steps did not run in this run, and may be owed: those of lanes-edit.sh $WR_VERB. Do by hand any that did not run."
   wr_record_remove || wr_claim_release
   exit 0
@@ -6411,9 +6416,17 @@ pw_keep() {
   PW_CHILD=""
 }
 
-# THE RENDERER'S FORK (T416; FR-027; Y:5377; contract §3.7), once the commit
-# has answered `committed <s>` and before the child is sent it (Y:5009): the
-# one resolver's `lanes-index` (`lanes_index_bin`), `render --checkout <c>`,
+# THE RENDERER'S FORK (T416; FR-027; Y:5377; contract §3.7), ONCE A RUN, at
+# every end 0 at which the run learns its write is in the register, before
+# `tail=sent` where the run writes one (lane openRepoTools-3's ruling, #165
+# 6769061039, T416's item 1; renders coalesce, Y:2984–2985, so an extra fork
+# costs one pass): once the commit has answered `committed <s>` and before the
+# child is sent it (`pw_committed`; Y:5009), and at a snapshot's `found=` or
+# the commit's `already <s>` (`pw_found_end`), where T418's ends take it over
+# (whichever of T416 and T418 lands second moves it). PW_RENDERED makes every
+# call after the first a no-op, so a run that learns the write at more than
+# one end forks once. The fork is the one resolver's `lanes-index`
+# (`lanes_index_bin`), `render --checkout <c>`,
 # where `<c>` is the lane's checkout `pw_checkout` took from
 # `lane_checkout_path`, with no S3 (R17). DETACHED AS `index_nudge` FORKS
 # (Amendment 14(d)): from a subshell that exits at once, so this process has no
@@ -6428,9 +6441,11 @@ pw_keep() {
 # left (lane openRepoTools-4's plan, §11.5; R47). Its answer is never read: a
 # `lanes-index` before T321 has no such form (64), and from T321 phase 2's
 # answers "git half not installed" (69; contract :804). Where no `lanes-index`
-# resolves, which the commit has just run, nothing is forked.
+# resolves, which the snapshot or the commit has just run, nothing is forked.
 pw_render_fork() {
   local rf_bin=""
+  [ "$PW_RENDERED" = 0 ] || return 0
+  PW_RENDERED=1
   rf_bin="$(lanes_index_bin)"
   [ -n "$rf_bin" ] || return 0
   ( unset LANES_NO_FETCH
