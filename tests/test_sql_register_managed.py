@@ -123,6 +123,19 @@ WS, AUTHOR, OPERATOR = "ws-t224", "T224 Fixture <t224@example.invalid>", "operat
 MARKER_COMMIT = "c0ffee" + "4" * 34
 
 
+@pytest.fixture(scope="session")
+def pg_template_sql():
+    """AN EMPTY TEMPLATE FOR THIS MODULE'S CLUSTERS. `pg_template_sql` is the
+    fixture's overridable hook, and T227 makes its default the bootstrap,
+    with T228's logins, on every cluster. AT-LRMPG's server is a new one
+    whose only admin is CNPG's `initdb` owner, which runs the bootstrap and
+    makes the logins itself: roles a superuser made first would leave that
+    admin without ADMIN OPTION on them (PostgreSQL 16) and give `login add`
+    logins that exist already. So each `stoppable_cluster` here starts
+    empty, as the provider's does."""
+    return ""
+
+
 def _said(proc: subprocess.CompletedProcess) -> str:
     return f"exit {proc.returncode}\nstdout: {proc.stdout}\nstderr: {proc.stderr}"
 
@@ -936,18 +949,22 @@ class TlsEnvironment:
     does, each id fails here by its own assertion on an engine bench, and
     skips with T205's banner where `pg_engine` finds none.
 
-    READ FROM F12B'S T229 TEXT, NOT A CONTRACT: the fixture is a
-    `pgcluster.Cluster` (so `root`, `bindir`, `psql`, `stop` and
-    `start_again`), listening on 127.0.0.1 at `port`, with `hostssl` and
-    `scram-sha-256` and a `hostnossl` line that rejects, and a chain whose
-    root alone is the file `root_cert`; its Unix socket stays at `root`, and
-    trust lets the provider and the admin in on it. Its two start options
-    are `start_again(leaf_only=True)`, the leaf served without the
-    intermediate (T230's `[leaf-only]`), and `start_again(standby=True)`,
-    whose readiness poll takes `standby` in place of `ready` (the test
-    plan's `[in-recovery]`)."""
+    LINE FX'S PLANNED NAMES (the coordinator, 16:50Z), NOT A CONTRACT: a
+    `TLSCluster` with `root_cert`, `database_name`, `url(user)`,
+    `client_env(user)`, `configuration(directory, database=None,
+    mode="index")` and `second_database(label)`. This module uses
+    `configuration(directory)`, a 0600 `lanes-index.conf` naming the
+    fixture's logins (T228's `lanes_w_fx` and `lanes_r_fx`) on loopback TCP
+    with `sslmode=verify-full` and `sslrootcert=` the root alone, and
+    `root_cert`. READ FROM F12B'S T229 TEXT, and not in that list: it is a
+    `pgcluster.Cluster` (`root`, `bindir`, `stop`, `start_again`), its Unix
+    socket at `root`; and its two start options are
+    `start_again(leaf_only=True)`, the leaf served without the intermediate
+    (T230's `[leaf-only]`), and `start_again(standby=True)`, whose readiness
+    poll takes `standby` in place of `ready` (the test plan's
+    `[in-recovery]`)."""
 
-    NEEDS = ("root", "port", "root_cert", "stop", "start_again")
+    NEEDS = ("configuration", "root_cert", "root", "bindir", "stop", "start_again")
 
     def __init__(self, request, root: Path):
         request.getfixturevalue("pg_engine")
@@ -958,22 +975,47 @@ class TlsEnvironment:
         self.tls = request.getfixturevalue("tls_cluster")
         missing = [name for name in self.NEEDS if not hasattr(self.tls, name)]
         assert not missing, f"T229's tls_cluster has no {', '.join(missing)}"
-        self.host = getattr(self.tls, "host", "127.0.0.1")
-        self.m = Managed(request, root, cluster=self.tls, scram=False)
-        self.service = self.m.database("t224_tls")
-        self.m.bootstrapped(self.service)
-        self.files = self.m.logins(self.service, "e1", dump=False)
+        self.root = root
+        made = Path(self.tls.configuration(root / "conf"))
+        self.base = made / "lanes-index.conf" if made.is_dir() else made
+        self.lines = self.base.read_text(encoding="utf-8").splitlines()
+        self.register_url = next(line.split("=", 1)[1] for line in self.lines
+                                 if line.startswith("register_url="))
+        self.login = self.register_url.split("//", 1)[1].split("@", 1)[0]
+        (root / "home").mkdir(exist_ok=True)
+        (root / "t").mkdir(exist_ok=True)
+        env = guard_strip_env(os.environ, strip=("T224_", "XDG_"))
+        env.update(HOME=str(root / "home"), XDG_CONFIG_HOME=str(root / "config"),
+                   XDG_STATE_HOME=str(root / "state"), TMPDIR=str(root / "t"),
+                   LANES_WORKSTATION="Eagle", LANES_NO_GITHUB="1", LC_ALL="C",
+                   PATH=os.pathsep.join([str(self.tls.bindir), os.environ.get("PATH", os.defpath)]))
+        self.env = env
 
-    def url(self, login: str, **query: str) -> str:
-        params = {"sslmode": "verify-full", "sslrootcert": str(self.tls.root_cert)}
+    def url(self, **query: str | None) -> str:
+        """The configuration's `register_url=`, with `query`'s parameters set,
+        or dropped where None."""
+        head, _, tail = self.register_url.partition("?")
+        params = dict(piece.split("=", 1) for piece in tail.split("&") if "=" in piece)
         params.update(query)
         tail = "&".join(f"{k}={v}" for k, v in params.items() if v is not None)
-        return f"postgresql://{login}@{self.host}:{self.tls.port}/t224_tls" + (f"?{tail}" if tail else "")
+        return head + (f"?{tail}" if tail else "")
+
+    def socket_url(self) -> str:
+        """The same URL at the cluster's own Unix socket."""
+        head, _, tail = self.register_url.partition("?")
+        _scheme, _, rest = head.partition("//")
+        port = rest.split("@", 1)[1].split("/", 1)[0].rsplit(":", 1)[1]
+        database = rest.split("/", 1)[1]
+        return (f"postgresql://{self.login}@{quote(str(self.tls.root), safe='')}:{port}/{database}"
+                + (f"?{tail}" if tail else ""))
 
     def ready(self, register_url: str) -> subprocess.CompletedProcess:
-        config = self.m.config(f"c{uuid.uuid4().hex[:8]}", register_url, self.files["lanes_w_e1"],
-                               self.url("lanes_r_e1"), self.files["lanes_r_e1"])
-        return self.m.ready(config)
+        config = _private(self.root / f"c{uuid.uuid4().hex[:8]}" / "lanes-index.conf", "\n".join(
+            [f"register_url={register_url}" if line.startswith("register_url=") else line
+             for line in self.lines]) + "\n")
+        env = dict(self.env, LANES_INDEX_CONFIG=str(config))
+        return _run([sys.executable, str(REPO / "lanes-index"), "ready", "--expect", "index",
+                     "--release", "0.0.0-t224", "--env", "t224"], env, self.root, pty_run=False)
 
     def restart(self, **option: bool) -> None:
         import inspect
@@ -988,19 +1030,17 @@ class TlsEnvironment:
 
 #: Check 11's ids: what each does to the environment, and whether it passes.
 CHECK_11 = {
-    "passes": (lambda env: env.url("lanes_w_e1"), True),
-    "sslmode-prefer": (lambda env: env.url("lanes_w_e1", sslmode="prefer"), False),
-    "no-sslrootcert": (lambda env: env.url("lanes_w_e1", sslrootcert=None), False),
-    "unix-socket": (lambda env: f"postgresql://lanes_w_e1@{quote(str(env.tls.root), safe='')}:"
-                                f"{env.tls.port}/t224_tls?sslmode=verify-full&"
-                                f"sslrootcert={env.tls.root_cert}", False),
-    "in-recovery": (lambda env: (env.restart(standby=True), env.url("lanes_w_e1"))[1], False),
+    "passes": (lambda env: env.url(), True),
+    "sslmode-prefer": (lambda env: env.url(sslmode="prefer"), False),
+    "no-sslrootcert": (lambda env: env.url(sslrootcert=None), False),
+    "unix-socket": (lambda env: env.socket_url(), False),
+    "in-recovery": (lambda env: (env.restart(standby=True), env.url())[1], False),
     # T230 (R2's S3; X's TLS rules and FR-011's server half, R09). Each meets
     # the TLS cluster at a loopback host, so T104's refusal at load lets its
     # URL load and check 11 meets it.
-    "leaf-only": (lambda env: (env.restart(leaf_only=True), env.url("lanes_w_e1"))[1], False),
-    "system-root": (lambda env: env.url("lanes_w_e1", sslrootcert="system"), False),
-    "plaintext": (lambda env: env.url("lanes_w_e1", sslmode="disable", sslrootcert=None), False),
+    "leaf-only": (lambda env: (env.restart(leaf_only=True), env.url())[1], False),
+    "system-root": (lambda env: env.url(sslrootcert="system"), False),
+    "plaintext": (lambda env: env.url(sslmode="disable", sslrootcert=None), False),
 }
 
 
@@ -1015,7 +1055,7 @@ def test_ready_check_11_needs_tls_and_the_primary(tmp_path, request, case):
     else:
         assert state == "FAIL" and proc.returncode == 2, (
             f"[{case}] check 11 does not fail, or ready does not exit 2:\n{_said(proc)}")
-        assert "lanes_w_e1" in reason, f"[{case}] check 11 does not name the connection:\n{_said(proc)}"
+        assert env.login in reason, f"[{case}] check 11 does not name the connection:\n{_said(proc)}"
 
 
 # ============================================================ tls_at_load
