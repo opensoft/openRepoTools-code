@@ -6605,11 +6605,12 @@ def _register_commit_end(store: PostgresStore, ident: dict, entry: dict, code: i
             if held:
                 say(held)
     else:
+        # LR004 never reaches this map: `cmd_register_commit` ends it in
+        # `_register_commit_lr004` instead, so the map does not name it.
         why = {"LR002": "the register's switch is not primary with the marker present, so "
                         "no write commits",
                "LR003": "this client is outside the register schema's window; the message "
-                        "names both numbers",
-               "LR004": "the edits do not apply, or the proof differs"}.get(
+                        "names both numbers"}.get(
                    err.sqlstate, "the database refused the transaction")
         note(f"the register ({store.label}, schema {store.schema}) refused write {write} "
              f"with {err.sqlstate}: {why}; nothing was written")
@@ -6708,12 +6709,14 @@ def _register_commit_lr004(store: PostgresStore, att: dict, ident: dict, entry: 
     edited = sorted({e["path"] for e in entry["edits"]}
                     | {e["to_path"] for e in entry["edits"] if e["to_path"]},
                     key=lambda p: p.encode("utf-8"))
-    count = len(entry["edits"])
-    note(f"LR004 on write {write}: every file its entry read from tree/ ({len(paths)} paths) "
-         f"equals SQL's at seq {n}, so the image cache was right and the entry itself was "
-         f"refused - its {count} edit{'' if count == 1 else 's'} of {', '.join(edited)} do "
-         f"not apply, or its proof differs: {first.message}. A resend would be the same "
-         f"request, so none is made; nothing was written")
+    count, npaths = len(entry["edits"]), len(paths)
+    note(f"LR004 on write {write}: every file its entry read from tree/ ({npaths} "
+         f"path{'' if npaths == 1 else 's'}) equals SQL's at seq {n}, so the image cache was "
+         f"right and the entry itself was refused - its {count} "
+         f"edit{'' if count == 1 else 's'} of {', '.join(edited)} "
+         f"{'does' if count == 1 else 'do'} not apply, or its proof differs: "
+         f"{first.message}. A resend would be the same request, so none is made; nothing "
+         f"was written")
     return EXIT_UNAVAILABLE
 
 
