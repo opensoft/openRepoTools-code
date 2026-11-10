@@ -22,9 +22,10 @@ once T121 is in, and the guard side waits for lane 5's T507 (L5-A3, L5-A5).
 
 THE GUARD is driven as T220 drives it (`test_sql_register_bounds.py`):
 `bash lanes-edit.sh guard` from a copy of `lanes-edit.sh` beside T203's
-flipped `lanes-index` (`flipped_copy`), the hook's JSON on stdin, a stand-in
-`tmux` whose window is the lane, and `LANES_INDEX_CONFIG` naming a
-`mode=primary` configuration. Two things are this module's own:
+flipped `lanes-index` (`flipped_copy`), the hook's JSON on stdin, a live
+session record and a stand-in `tmux` in the lane's window (T203c's
+`guard_session`), and `LANES_INDEX_CONFIG` naming a `mode=primary`
+configuration. Two things are this module's own:
 
 - the lane's checkout is under `$HOME/projects`, so that the guard's scope
   test (`under_projects_root`, clause (e)) lets the prompt through to the
@@ -32,23 +33,34 @@ flipped `lanes-index` (`flipped_copy`), the hook's JSON on stdin, a stand-in
 - "exits as the mirror's answer gives" is read as: exits as the same guard,
   on the same hook input and the same checkout, exits in files mode
   (`mode=index`, the reference run, with `LANES_NO_FETCH=1` so that it moves
-  no ref). The mirror's answer is then today's parser's, and no session
-  record has to be forged here.
+  no ref). The mirror's answer is then today's parser's.
 
-The hook's JSON is compact, as the harness sends it, since the guard's `jstr`
-reads `"cwd":"<dir>"` with no blank after the colon. No live session record
-is written: today's guard refuses 2 at its session-record check, clause (d),
-before any register read. So a guard case reaches T507's prefetch only where
-T507 reads before that check; lane 5 is to confirm where it reads.
+THE SESSION (T203c's `guard_session(home, bin, checkout, session_id=...)`;
+T215d): today's guard reads this workstation's session records after its
+workspace and tmux checks and before any register read, and refuses 2 where
+none is live in its window (lane 5, #165 6755266457: T507's prefetch reads
+after that check). So each case that drives the guard in the lane's window
+runs with a live record whose session id is the estate's own, `Estate.session`,
+the one a register row names (`{session}`), in the window `repoA-2`, and the
+stand-in `tmux` it writes to the estate's `bin`; the case's `env()` and
+`hook_input()` come from it. The hook's JSON is compact, as the harness sends
+it, since the guard's `jstr` reads `"cwd":"<dir>"` with no blank after the
+colon. A case that takes the session out of any window (`TMUX=None`: AT-P3's)
+has no session record at all, as its text says. An estate has no `request`,
+so `_end_guard_sessions`, an autouse fixture, ends each session with the
+test, as `request.addfinalizer(session.close)` would. The estate's base
+environment is `guard_strip_env(os.environ, strip=("T215_",))`, which takes
+`PROJECTS_ROOT` and `AGENT_PROTOCOL_ROOT` out beside the lane's, the
+harness's, tmux's, libpq's and the fake's variables (F10's items 27, 28).
 
 THE STAND-INS, each first on `PATH`:
 
-- T203's register fake `psql`, behind this module's `--version` wrapper
-  (`VERSION_WRAPPER`), as T220 carries one until T203b gives the fake that
-  answer. The wrapper also logs each other call's start, on the wall clock,
-  to `psql-starts.log` beside it. The fake is taught to exit 2, as a stopped
-  database does (`STOPPED`); the service's socket is absent, since phase 1
-  has no service;
+- T203's register fake `psql`, which answers `psql --version` itself since
+  T203b, behind this module's start logger (`START_PSQL`): the fake's log
+  holds no time, so the logger writes each call's start, on the wall clock,
+  to `psql-starts.log` beside it, and a `--version` call goes straight on and
+  is not logged. The fake is taught to exit 2, as a stopped database does
+  (`STOPPED`); the service's socket is absent, since phase 1 has no service;
 - a `git` wrapper (`GIT_WRAPPER`) that logs each call's wall-clock start and
   argv. A MIRROR CALL is a `git` call with an argument naming
   `origin/<branch>`: the guard's mirror path reads `origin/$LANES_BRANCH` as
@@ -115,19 +127,16 @@ SCHEMA = "lanes_register"
 STOPPED = [{"exit": 2, "stderr": "psql: error: connection to server at \"127.0.0.1\", port "
                                  "55432 failed: Connection refused\n"}]
 
-VERSION_WRAPPER = r'''#!/usr/bin/env python3
-# T215's `psql --version` wrapper, as T220's: the version T106 asks for once
-# per process, logged apart; each other call's start (wall clock) logged to
-# psql-starts.log; then T203's register fake.
+START_PSQL = r'''#!/usr/bin/env python3
+# T215's start logger in front of T203's register fake: each call that carries
+# a request has its start (wall clock) logged to psql-starts.log beside it,
+# since the fake's log holds no time. T203b's fake answers `psql --version`
+# itself (F10's item 25), so a --version call goes straight on, unlogged.
 import json, os, sys, time
 here = os.path.dirname(os.path.abspath(__file__))
-if sys.argv[1:] == ["--version"]:
-    with open(os.path.join(here, "psql-version.log"), "a", encoding="utf-8") as handle:
-        handle.write("--version\n")
-    sys.stdout.write("psql (PostgreSQL) 16.4\n")
-    sys.exit(0)
-with open(os.path.join(here, "psql-starts.log"), "a", encoding="utf-8") as handle:
-    handle.write(json.dumps({"start": time.time(), "argv": sys.argv[1:]}) + "\n")
+if sys.argv[1:] != ["--version"]:
+    with open(os.path.join(here, "psql-starts.log"), "a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"start": time.time(), "argv": sys.argv[1:]}) + "\n")
 fake = os.path.join(here, "register-fake-psql")
 os.execv(fake, [fake] + sys.argv[1:])
 '''
@@ -138,12 +147,6 @@ GIT_WRAPPER = r'''#!/bin/sh
 { date +%s.%N | tr -d '\n'; printf '\037%s\037' "$(pwd -P)"; for a in "$@"; do printf '%s\037' "$a"; done; printf '\n'; } >> "$T215_GIT_LOG"
 exec "$T215_REAL_GIT" "$@"
 '''
-
-#: FAKE `tmux`, as T220's: the window is the lane.
-FAKE_TMUX = """#!/bin/sh
-case "$*" in *display-message*) printf '%s\\n' "${T215_WINDOW:-repoA-2}" ;; esac
-exit 0
-"""
 
 #: THE TIMING WRAPPER for the real-engine case: logs the call's start, then a
 #: watcher in a session of its own logs the call's end once the call's
@@ -260,17 +263,37 @@ def _bounded(args: list) -> bool:
                                                            for a in args)
 
 
+#: The live guard sessions this test's estates have made (T203c), ended by
+#: `_end_guard_sessions` when the test ends.
+_SESSIONS: list = []
+
+
+@pytest.fixture(autouse=True)
+def _end_guard_sessions(request):
+    """`request.addfinalizer(session.close)` for every guard session an
+    estate made in the test (an `Estate` has no `request` of its own)."""
+    def end():
+        while _SESSIONS:
+            _SESSIONS.pop().close()
+    request.addfinalizer(end)
+
+
 class Estate:
     """One test's estate: a bare origin, the lane's register checkout under
     `$HOME/projects`, the copies of `lanes-edit.sh` and the flipped
-    `lanes-index`, the stand-ins, and a `mode=primary` configuration."""
+    `lanes-index`, the stand-ins, and a `mode=primary` configuration. The
+    guard's session (a live record and a stand-in `tmux`, T203c's
+    `guard_session`) is made when the first case that needs it asks."""
 
     def __init__(self, root: Path, origin_messages: list, register: str = "# LANES.md\n"):
         """`register` is `lanes/LANES.md`'s text, with `{session}` standing for
         this estate's session id, the one the hook's input carries."""
-        from sql_register_helpers import REGISTER_FAKE_PSQL, flipped_copy
+        from sql_register_helpers import REGISTER_FAKE_PSQL, flipped_copy, guard_strip_env
         self.root = root
+        #: The session's id: the hook's `session_id`, the record's, and the one
+        #: a register row names (`{session}`).
         self.session = str(uuid.uuid4())
+        self._guard_session = None
         root.mkdir(parents=True, exist_ok=True)
         try:
             self.copy = flipped_copy(INDEXER, root / "tool", True)
@@ -282,16 +305,15 @@ class Estate:
             if (REPO / name).exists():
                 shutil.copy2(REPO / name, root / "tool" / name)
         self.bin, self.fakebin = root / "bin", root / "fakebin"
-        _script(self.bin / "tmux", FAKE_TMUX)
         _script(self.bin / "git", GIT_WRAPPER)
         _script(self.fakebin / "register-fake-psql", REGISTER_FAKE_PSQL)
-        _script(self.fakebin / "psql", VERSION_WRAPPER)
+        _script(self.fakebin / "psql", START_PSQL)
         self.git_log = root / "git.log"
         self.psql_log = root / "psql.log"
         self.starts = self.fakebin / "psql-starts.log"
         self.answers = root / "psql-answers.json"
         self.answers.write_text(json.dumps(STOPPED), encoding="utf-8")
-        home = root / "home"
+        home = self.home = root / "home"
         self.origin = root / "origin.git"
         self.wip = home / "projects" / "wip"
         self.wip.parent.mkdir(parents=True)
@@ -299,8 +321,11 @@ class Estate:
         self.cache = root / "cache" / "se"
         self.cache.parent.mkdir()
         self.passfile = _private(root / "conf" / "pgpass")
-        env = {k: v for k, v in os.environ.items()
-               if not k.startswith(("LANES_", "CLAUDE_", "TMUX", "PG", "FAKE_PSQL", "T215_"))}
+        # THE BASE ENVIRONMENT, T203c's: the lane's, the harness's, tmux's,
+        # libpq's and the fake's variables out, `PROJECTS_ROOT` and
+        # `AGENT_PROTOCOL_ROOT` with them (F10's items 27 and 28), and this
+        # module's own.
+        env = guard_strip_env(os.environ, strip=("T215_",))
         env.update(HOME=str(home), XDG_STATE_HOME=str(root / "state"),
                    XDG_CONFIG_HOME=str(root / "config"), TMPDIR=str(root / "t"),
                    LANES_WORKSTATION="Eagle", LANES_NO_GITHUB="1", LANES_REPO=str(self.wip),
@@ -381,21 +406,41 @@ class Estate:
                     path.read_text(encoding="utf-8").splitlines() if "=" in line)
 
     # ------------------------------------------------------------------ the guard
-    def guard_env(self, config: Path, **extra) -> dict:
-        """The hook's environment; an `extra` value of None removes that
-        variable, as `TMUX=None` takes this session out of any window."""
-        env = dict(self.env, LANES_INDEX_CONFIG=str(config), LANES_LANE=WINDOW,
-                   TMUX="/tmp/t215,1,0", TMUX_PANE="%1", T215_WINDOW=WINDOW)
-        for key, value in extra.items():
-            if value is None:
-                env.pop(key, None)
-            else:
-                env[key] = value
-        return env
+    def guard_session(self):
+        """The live session the guard cases run in (T203c): a record for a
+        live pid, `self.session` in the window `repoA-2`, on this workstation
+        (`$HOME/.claude/sessions`), and the stand-in `tmux` it writes to `bin`.
+        Made once, and ended with the test by `_end_guard_sessions`."""
+        from sql_register_helpers import guard_session
+        if self._guard_session is None:
+            self._guard_session = guard_session(self.home, self.bin, self.wip, window=WINDOW,
+                                                session_id=self.session)
+            _SESSIONS.append(self._guard_session)
+        return self._guard_session
 
-    def hook_input(self) -> str:
+    def guard_env(self, config: Path, **extra) -> dict:
+        """The hook's environment, in the lane's window: the session's
+        (`TMUX`, `TMUX_PANE`, the stand-in `tmux` first on `PATH`). An `extra`
+        value of None removes that variable. `TMUX=None` takes the session out
+        of any window: there is then no session, and no record is written."""
+        base = dict(self.env, LANES_INDEX_CONFIG=str(config), LANES_LANE=WINDOW)
+        if "TMUX" in extra and extra["TMUX"] is None:
+            for key, value in extra.items():
+                if value is None:
+                    base.pop(key, None)
+                else:
+                    base[key] = value
+            return base
+        return self.guard_session().env(base, **extra)
+
+    def hook_input(self, windowed: bool = True) -> str:
         """The hook's JSON, compact as the harness sends it: the guard's
-        `jstr` reads `"<key>":"<value>"` with no blank after the colon."""
+        `jstr` reads `"<key>":"<value>"` with no blank after the colon. In the
+        lane's window it is the session's (`guard_session().hook_input()`);
+        out of any window (`windowed=False`) it is the same JSON, built here,
+        and no session record is written."""
+        if windowed:
+            return self.guard_session().hook_input()
         return json.dumps({"hook_event_name": "UserPromptSubmit",
                            "session_id": self.session, "cwd": str(self.wip),
                            "prompt": "hello"}, separators=(",", ":"))
@@ -405,14 +450,16 @@ class Estate:
         process group of its own. Returns its exit (None where killed), its
         output, `t0` (wall clock, at its start) and its elapsed seconds."""
         argv = ["bash", str(self.root / "tool" / "lanes-edit.sh"), "guard"]
+        env = self.guard_env(config, **extra)
+        hook = self.hook_input(windowed=extra.get("TMUX", True) is not None)
         t0 = time.time()
         start = time.monotonic()
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, cwd=str(self.wip),
-                                env=self.guard_env(config, **extra), start_new_session=True)
+                                env=env, start_new_session=True)
         killed = False
         try:
-            out, err = proc.communicate(self.hook_input(), timeout=GUARD_TIMEOUT)
+            out, err = proc.communicate(hook, timeout=GUARD_TIMEOUT)
         except subprocess.TimeoutExpired:
             killed = True
             os.killpg(proc.pid, signal.SIGKILL)
