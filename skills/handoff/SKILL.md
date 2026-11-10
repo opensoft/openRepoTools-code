@@ -511,16 +511,20 @@ a change in it. Its three writes then carry `LANES_EXPECT="row:<lane> bind:<lane
 `row:<window name>` added where the window's name is not the lane (the set `lane-handoff`'s own PAUSED writes carry),
 and `LANES_ACT` as a prefix on each call, never exported. **`alias:<lane>` stands for the walk's keys:** on a primary
 base the block asks `canon-lane --walk` for the names the typed name walked through and lists `row:<n> alias:<n>` for
-each, since the answer of `canon-lane` changes when a row or an alias line appears for any of them (Y:5624). Where
-`act-begin`, a read or the walk exits 69, 75 or 3, the register cannot be consulted and every write would be refused 69
-as well, so none of the three is attempted: the block sets `row_write_refused`, and step 5 prints the restart command
-with `--lane`. **A write that exits 69, and a block that sent none, end the same way:** after the third write the block
-prints ONE note that says how the record is completed later (`lane-handoff --late --at <UTC>`, run from a shell by
-whoever relaunches the lane, once the register answers and before the relaunch), however many of the three exited 69
+each, since the answer of `canon-lane` changes when a row or an alias line appears for any of them (Y:5624). **Where
+`act-begin`, a read or the walk exits 69, 75 or 3, the block ends with that code.** The register cannot be consulted
+and every write would be refused 69 as well, so none of the three is sent: the block prints the note below and exits
+there, and step 5 prints the restart command with `--lane`. **Every other answer holds the writes the same way and
+ends the block 1,** naming the verb and its code: `act-begin`'s 1 or 64, an `act-begin` that exited 0 with no line or a
+malformed one, an identity read that failed, and any walk code but 0, 69, 75 and 3, a 2 included (lane 3, #165
+6774499606, A2). **A write that exits 69, and a block that sent none, print the same note:** ONE note that says how the
+record is completed later (`lane-handoff --late --at <UTC> --lane <L>`, run from a shell by whoever relaunches the
+lane, once the register answers and before the relaunch), after the third write however many of the three exited 69
 (spec:692; B12b tasks:1361 and :1375). Where `act-begin` exits 2 the helper predates feature 007 and the writes go as
-they always did, with `LANES_EXPECT` still set, which such a helper reads no more than it reads `LANES_ACT`. Off a
-SQL register the base reads `<id>@files` and both variables are ignored. Set `L`, `sread`, `lane`, `ws` and the rest
-as steps 1 and 2 have them, as for every block here; `sread` is defined in the first block of this file.
+they always did, with `LANES_ACT` unset and `LANES_EXPECT` kept, which such a helper reads no more than it reads
+`LANES_ACT`; this skill sets no `SWAPPING`, so the note says the lane stays as it is. Off a SQL register the base
+reads `<id>@files` and both variables are ignored. Set `L`, `sread`, `lane`, `ws` and the rest as steps 1 and 2 have
+them, as for every block here; `sread` is defined in the first block of this file.
 
 ```sh
 # FEATURE 007 (FR-029; Y:5678) — THIS ACT'S BASE, TAKEN BEFORE ANYTHING IS READ OR
@@ -533,32 +537,43 @@ as steps 1 and 2 have them, as for every block here; `sread` is defined in the f
 # this act's base, so both are unset first.
 #
 # WHAT EACH ANSWER OF `act-begin` DOES (lane 3, #165 6770733371, its shared rulings
-# 1 and 2). 0 with a base is kept. 2 is a helper predating feature 007: the writes go
-# as they always did, still carrying their `LANES_EXPECT`, which such a helper reads
-# no more than it reads `LANES_ACT`. 69, 75 and 3 mean the register cannot be
-# consulted and every write below would be refused 69 as well, so none of the three
-# is sent (`act_down`, as `$ws_missing` stops them) and the note, printed once after
-# the third write, says how the record is completed. Anything else is a read that
-# FAILED and refuses as `sread` does (Amendment 7(d)). A container with no
-# workstation writes nothing here, so it takes no base.
+# 1 and 2, and 6774499606, A2). 0 with a base is kept. 2 is a helper predating
+# feature 007: the writes go as they always did, `LANES_ACT` unset (it is left empty
+# here, which every helper reads as unset) and every `LANES_EXPECT` kept, which such
+# a helper reads no more than it reads `LANES_ACT`. 69, 75 and 3 mean the register
+# cannot be consulted and every write below would be refused 69 as well, so none of
+# the three is sent (`act_down`, as `$ws_missing` stops them), the note says how the
+# record is completed, and the block ENDS WITH THAT CODE. Anything else is a read that
+# FAILED or an answer that is not a base, and REFUSES BY HOLDING: the REFUSED line
+# names the verb and its code, none of the three is sent, the note prints and the
+# block ends 1. A container with no workstation writes nothing here, so it takes no base.
 unset LANES_ACT LANES_EXPECT
-act_line=""; act_scopes=""; act_down=""; act_w69=""
+act_line=""; act_scopes=""; act_down=""; act_exit=""; act_w69=""
 act_re='^[0-9a-f]{32}@(files|(0|[1-9][0-9]{0,17}):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$'
 # THE 69 NOTE (spec:692, :700-702; Y:5573; lane 3, #165 6770733371, T429's
-# question 5 and T431's question 3). Where a `PAUSED` write exits 69 or none of them
-# is sent, a note names how the record is completed later: the late `PAUSED` path,
-# who runs it and when. THERE IS ONE TEXT AND ONE PLACE IT PRINTS (`act_69_note`,
-# after the third write): `act_w69` is set by a write that exited 69, and by
-# `act_down_say` where `act-begin`, an identity read or the walk stopped the writes,
-# so the note prints once however many of those happen (lane 3's round B12b,
-# tasks:1361 and :1375). `act_down_say` runs here, not in a `$( )`, because it
-# sets `act_down`. It clears the base and the scopes, which no write below will use.
-act_down_say() {   # act_down_say <the call that stopped the writes> <its exit code>
-  act_down=1; act_w69=1; act_line=""; act_scopes=""
-  echo "NO PAUSED WRITES: \`$1\` exited $2, so the register cannot be consulted and every write below would be refused 69 as well. None of the three is sent: no PAUSED line, no register line and no state cell is written. The handoff step 2 refreshed stands, and step 5 prints the restart command with --lane."
+# question 5 and T431's question 3; 6774499606, REV-ACT 1 and 2). Where a `PAUSED`
+# write exits 69 or none of them is sent, a note names how the record is completed
+# later: the late `PAUSED` path, who runs it and when, with `--lane <L>`, because a
+# shell outside the lane's window takes the workstation's newest swap, which can be
+# another lane's. THE SKILL SETS NO `SWAPPING` AND SAYS NONE: the lane stays as it is,
+# because `--late --lane` needs no `SWAPPING` (T431's question 4). THERE IS ONE TEXT
+# (`act_69_note`) AND IT PRINTS ONCE ON EVERY PATH. A write that exited 69 sets
+# `act_w69`, and the note prints after the third write, however many of the three
+# exited 69 (lane 3's round B12b, tasks:1361 and :1375). Where `act-begin`, an identity
+# read or the walk stopped the writes, none was sent: the note prints at the end of the
+# reads, before anything is built, and the block ends there. `act_down_say` and
+# `act_hold` run here, not in a `$( )`, because they set `act_down`. They clear the
+# base and the scopes, which no write below will use.
+act_down_say() {   # act_down_say <the call that stopped the writes> <its exit code: 69, 75 or 3>
+  act_down=1; act_exit="$2"; act_line=""; act_scopes=""
+  echo "NO PAUSED WRITES: \`$1\` exited $2, so the register cannot be consulted and every write below would be refused 69 as well. None of the three is sent: no PAUSED line, no register line and no state cell is written. The handoff step 2 refreshed stands, and step 5 prints the restart command with --lane. This block ends $2."
+}
+act_hold() {   # act_hold: the REFUSED line above held the writes (A2); the block ends 1
+  act_down=1; act_exit=1; act_line=""; act_scopes=""
+  echo "NO PAUSED WRITES: the refusal above holds them. None of the three is sent: no PAUSED line, no register line and no state cell is written. The handoff step 2 refreshed stands, and step 5 prints the restart command with --lane. This block ends 1."
 }
 act_69_note() {
-  echo "THE PAUSED RECORD IS INCOMPLETE, and the lane stays as it is, an interrupted swap. The record is completed later with \`lane-handoff --late --at <UTC>\`, run from a shell by whoever relaunches the lane, once the register answers and BEFORE the relaunch (step 6 says why); the UTC is the moment this session ended."
+  echo "THE PAUSED RECORD IS INCOMPLETE, and the lane stays as it is, an interrupted swap. The record is completed later with \`lane-handoff --late --at <UTC> --lane ${lane:-<L>}\`, run from a shell by whoever relaunches the lane, once the register answers and BEFORE the relaunch (step 6 says why); the UTC is the moment this session ended."
 }
 # A WRITE THAT EXITED 3 IS IN DOUBT, NOT REFUSED (Y:5698, F9; lane 3, #165 6770733371,
 # T431's question 2 and its shared ruling 3). The act carries on, as it does after any
@@ -579,13 +594,13 @@ if [[ -z "$ws_missing" ]]; then
   case "$act_rc" in
     0)  if [[ ! "$act_line" =~ $act_re ]]; then
           printf 'REFUSED: `%s act-begin` exited 0 and printed %s, which is not a base (a 32-digit act id, an @, then files or a seq and a generation). Every write below would be refused 2 for it, and this skill will not write a PAUSED record, a register line or a state cell on one. Run it by hand to see what it says.\n' "$L" "${act_line:-nothing}" >&2
-          exit 1
+          act_hold
         fi ;;
     2)  act_line=""
         echo "NO ACT BASE: \`$L act-begin\` exited 2, a lanes-edit.sh predating feature 007, so the writes below carry no base, as they did before." ;;
     69|75|3) act_down_say "$L act-begin" "$act_rc" ;;
     *)  printf 'REFUSED: `%s act-begin` failed (exit %s). That is NOT a base: a read that failed is never an answer (Amendment 7(d)), and this skill will not write a PAUSED record, a register line or a state cell without one. Run it by hand to see what it says.\n' "$L" "$act_rc" >&2
-        exit 1 ;;
+        act_hold ;;
   esac
 fi
 # THE IDENTITY, READ AGAIN UNDER THE BASE (Y:5678; the second of the three
@@ -605,7 +620,9 @@ fi
 # whose 69 arm re-reads the mirror once feature 007's T406 has landed, but through
 # `act_read` below, which has `sread`'s answers for 0, 2, 8 and a failed read and
 # stops the writes on a 69 (and a 75 or a 3) as `act-begin`'s own answer does,
-# and which unsets `LANES_READ_MIRROR` for its call, so an inherited one is no answer.
+# ending the block with that code, and which unsets `LANES_READ_MIRROR` for its call,
+# so an inherited one is no answer. A read that failed any other way holds the writes
+# and ends the block 1 (A2).
 act_read() {   # act_read <var> "<what the failure is NOT>" <verb> [args…]
   ar_var="$1"; ar_not="$2"; shift 2
   ar_out=""; ar_rc=0
@@ -625,7 +642,7 @@ act_read() {   # act_read <var> "<what the failure is NOT>" <verb> [args…]
       8)  ar_out="" ;;
       *)  printf 'REFUSED: `%s %s` failed (exit %s). That is NOT %s — a read that failed is never an answer (Amendment 7(d)), and this skill will not write a PAUSED record, a register line or a state cell on one. Run it by hand to see what it says.\n' \
             "$L" "$1" "$ar_rc" "$ar_not" >&2
-          exit 1 ;;
+          ar_out=""; act_hold ;;
     esac
   fi
   eval "$ar_var=\$ar_out"
@@ -678,9 +695,10 @@ if [[ -z "$ws_missing" && -z "$act_down" ]]; then
   # `canon-lane`. The walk is asked on a primary base only, where the keys are read:
   # in files mode both variables are ignored, and a helper predating feature 007
   # has no `--walk`. A walk that exits 69, 75 or 3 is `act-begin`'s failure with the
-  # same code (G2): the writes stop, as `act-begin`'s own 69, 75 and 3 stop them.
-  # EVERY OTHER END REFUSES, exit 1, and that includes a 2, which is NOT
-  # `act-begin`'s 2: there the helper predates feature 007 and the writes go on. The
+  # same code (G2): the writes stop, as `act-begin`'s own 69, 75 and 3 stop them, and
+  # the block ends with that code. EVERY OTHER END REFUSES BY HOLDING (A2): none of the
+  # three is sent, the note prints and the block ends 1, and that includes a 2, which is
+  # NOT `act-begin`'s 2: there the helper predates feature 007 and the writes go on. The
   # walk is asked only after `act-begin` took a primary base, so the helper has
   # `act-begin`, and a 2 from `canon-lane --walk` is `canon-lane`'s own refusal (it
   # spends 2 on two rows that differ only by case, Amendment 15(d), and on a name it
@@ -695,20 +713,31 @@ if [[ -z "$ws_missing" && -z "$act_down" ]]; then
         case "$aw_rc" in
           0)  if [[ -z "$act_walk" ]]; then
                 printf 'REFUSED: `%s canon-lane --walk %s` exited 0 and printed no name, so the names lane %s was found through are NOT known, and the writes below would leave their keys out: a change to one of them would not refuse them (Y:5624). Nothing of step 4 was written.\n' "$L" "$id_typed" "$lane" >&2
-                exit 1
-              fi
-              while IFS= read -r aw_n; do
-                [[ "$aw_n" =~ $name_re ]] || continue
-                act_scope_add "row:$aw_n"; act_scope_add "alias:$aw_n"
-              done <<< "$act_walk" ;;
+                act_hold
+              else
+                while IFS= read -r aw_n; do
+                  [[ "$aw_n" =~ $name_re ]] || continue
+                  act_scope_add "row:$aw_n"; act_scope_add "alias:$aw_n"
+                done <<< "$act_walk"
+              fi ;;
           69|75|3) act_down_say "$L canon-lane --walk $id_typed" "$aw_rc" ;;
           *)  printf 'REFUSED: `%s canon-lane --walk %s` failed (exit %s), so the names lane %s was found through are NOT known, and the writes below would leave their keys out: a change to one of them would not refuse them (Y:5624). Nothing of step 4 was written. A `lanes-edit.sh` with no `--walk` is older than this skill.\n' "$L" "$id_typed" "$aw_rc" "$lane" >&2
-              exit 1 ;;
+              act_hold ;;
         esac ;;
   esac
   if [[ -z "$act_down" && -n "$id_window" && "$id_window" != "$lane" && "$id_window" =~ $name_re ]]; then
     act_scope_add "row:$id_window"
   fi
+fi
+# THE WRITES ARE HELD HERE, AND THE BLOCK ENDS (lane 3, #165 6774499606, A2 and T431's
+# question 2). `act_down` is set only above, by `act-begin`, an identity read or the
+# walk, and nothing below builds a record that no write will carry: the note prints
+# ONCE and the block ends with `act_exit`, the 69, 75 or 3 that stopped the writes, or
+# 1 where an answer refused them. The handoff step 2 refreshed stands, and step 5 still
+# prints the restart command: say in the report which code and why, and go on to it.
+if [[ -n "$act_down" ]]; then
+  act_69_note
+  exit "$act_exit"
 fi
 # AMENDMENT 11 CLAUSE (c) — THE RECORD'S TWO NEW SUB-FIELDS, AND ITS SECOND REF.
 # A swap is the ONE moment the lane is certainly running, so it is the one
@@ -946,10 +975,11 @@ if [[ "$kind" == unknown ]]; then why_text="$why_text kind unknown"; else why_te
 # `LANES_EXPECT` as a prefix on its own call, the same scopes on all three,
 # because (b) is `lane-handoff`'s W11 and (a) and (c) are its W9 and W12. Both
 # are empty where the act has no base (a helper predating feature 007), which a
-# helper and a files-mode register read as no act. And (a) and (b) are not
-# attempted where `act_down` is set: the register could not be read.
+# helper and a files-mode register read as no act. Where the writes were held
+# (`act_down`: the register could not be read, or an answer refused them) the
+# block ended above, so none of the three is reached.
 if [[ -z "$ws_missing" ]]; then
-if [[ -z "$uuid_missing" && -z "$act_down" ]]; then
+if [[ -z "$uuid_missing" ]]; then
 wr_rc=0
 LANES_ACT="$act_line" LANES_EXPECT="$act_scopes" LANES_LANE="$lane" LANES_SESSION="$uuid" "$L" log PAUSED "lane:$lane" \
   → "$payload" \
@@ -969,7 +999,9 @@ fi
 fi
 # (c) the row: ONE WRITE, which sets the whole state cell (Amendment 13(a)).
 # row_write_refused is what step 5 reads: empty on success, "1" the moment the
-# write below does not land.
+# write below does not land. The name is older than step 5's words: a 3 is not a
+# refusal (Y:5700), so step 5 says the row write "may not be written", which is
+# true of a refusal, a 3 and a write never sent alike.
 # IT USED TO BE TWO WRITES AND BOTH WERE GUESSES AT A CELL THAT WAS A HISTORY:
 # `replace-in-row` flipping the leading state word — found by grepping the row
 # for `| WORD ·`, or `| WORD |` for a cell with no history after it, because the
@@ -1006,9 +1038,6 @@ row_write_refused=""
 if [[ -n "$ws_missing" ]]; then
   row_write_refused=1
   echo "NOT WRITTEN: the row's state cell stays as it is, because every register write from a container with no \$LANES_WORKSTATION stops (clause (k) rule (d)). The handoff refreshed in step 2 names this gap, and step 5 prints the restart command with --lane, because a restart cannot resolve this lane from a row that was never set."
-elif [[ -n "$act_down" ]]; then
-  # `act-begin` said 69 above, and said why: the row's state cell stays as it is.
-  row_write_refused=1
 else
 wr_rc=0
 LANES_ACT="$act_line" LANES_EXPECT="$act_scopes" "$L" set-row-state "$lane" "PAUSED · $hs_line" || wr_rc=$?
@@ -1019,8 +1048,9 @@ if [[ "$wr_rc" != 0 ]]; then
 fi
 fi
 # THE 69 NOTE, ONCE (spec:692): after the third write, so a 69 from any one of the
-# three, or none of them sent (`act_down_say`), prints it one time and not once per
-# write. The writers' own stderr, above, says which write the register refused.
+# three prints it one time and not once per write. The writers' own stderr, above,
+# says which write the register refused. Where none was sent, the note was printed
+# above, where the block ended.
 [[ -z "$act_w69" ]] || act_69_note
 ```
 
@@ -1043,14 +1073,24 @@ and prints one line after the write: it exited 3, it may not be written, and the
 writes it once or finds it, is what to run (off primary, where the writer prints no such rerun, the commit is local
 and may already be on origin). The writers' own stderr is kept, so that rerun is printed above the line, and the block
 adds no hint of its own beside it. Say in the report which of the three exited 3, and relay that rerun. A 3 from the
-row write also sets `row_write_refused`, so that step 5 names the lane in the restart command.
+row write also sets `row_write_refused`, so that step 5 names the lane in the restart command, and step 5 then says
+the row write may not be written, never that it was refused (Y:5700; lane 3, #165 6774499606, T431's question 1).
 
 **A write that exits 69 prints the note, once** (spec:692: the three writes "SHALL exit 69 and then print a note"). The
 block goes on to the next write, as after any write that did not land, and after the third prints the note of how
 the record is completed later: the lane stays as it is, an interrupted swap, and whoever relaunches the lane runs
-`lane-handoff --late --at <UTC>` from a shell, once the register answers and before the relaunch. It prints one time
-whether one, two or all three writes exited 69, and the same one time where `act-begin`, a read or the walk stopped
-them. Say in the report which of the three exited 69; the writers' own stderr, above the note, names the refusal.
+`lane-handoff --late --at <UTC> --lane <L>` from a shell, once the register answers and before the relaunch. It
+prints one time whether one, two or all three writes exited 69, and the same one time where `act-begin`, a read or
+the walk stopped them. Say in the report which of the three exited 69; the writers' own stderr, above the note, names
+the refusal.
+
+**A block that ends with a code held the writes, and the swap goes on to step 5** (lane 3, #165 6774499606, A2 and
+T431's question 2). Where `act-begin`, an identity read or the walk exited 69, 75 or 3, the block sent none of the
+three writes, printed the note and ended with that code. Where an answer was not a base or a read failed any other way
+(`act-begin`'s 1 or 64, an exit 0 with no line or a malformed one, any walk code but 0, 69, 75 and 3), the block sent
+none, printed the REFUSED line that names the verb and its code and then the note, and ended 1. Either way the handoff
+step 2 refreshed stands and nothing of step 4 was written. A nonzero end from this block is therefore not a reason to
+stop: say in the report which code it ended with and which call it was, set `row_write_refused=1`, and run step 5.
 
 ## 5. Print the restart command — one command, no menu
 
@@ -1065,7 +1105,7 @@ else
   restart_cmd="pclaude --lane $lane ${CLAUDE_PROFILE_NAME:-<profile>}"
 fi
 restart_note=''
-[[ -z "${row_write_refused:-}" ]] || restart_note=' (row write was refused; the lane must be named explicitly)'
+[[ -z "${row_write_refused:-}" ]] || restart_note=' (the row write may not be written; the lane must be named explicitly)'
 printf 'READY TO SWAP — restart with: %s%s\n' "$restart_cmd" "$restart_note"
 lane-start --help 2>/dev/null | grep -q -- '--confirm' \
   && echo 'restart stamps: written by lane-start (Amendment 8(d))' \
@@ -1116,8 +1156,9 @@ file prints. The profile argument is the only part the operator changes, and onl
 
 The fallback for an older installation without `lclaude` is explicit `pclaude --lane <lane> <profile>`;
 bare `pclaude` is profile-only on updated installations. With `lclaude`, **`--lane <lane>` is printed only
-where step 4's row write was refused** — the row was never set to
-`PAUSED`, so a restart cannot resolve this lane from it and the operator must name it explicitly. `--lane`
+where step 4's row write may not have been written** — it was refused, it exited 3, or none was sent, and step 5 says
+"may not be written" in every case, never "refused" (Y:5700) — so the row may never have been set to
+`PAUSED`, a restart cannot resolve this lane from it, and the operator must name it explicitly. `--lane`
 is a **leading** option to `claude-profile`, read before the action or the profile — measured in the
 launcher itself, *"the first token that is not one of them ends this loop"* — so it goes BEFORE the profile
 and never after it: `pclaude <profile> --lane <lane>` would be handed to Claude itself, not to the
