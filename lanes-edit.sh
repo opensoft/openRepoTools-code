@@ -2734,7 +2734,7 @@ delete_lines() {   # <line numbers, one per line, any order>
 # installed, and the call runs unbounded where it is not, as that one does
 # (lane 3's ruling, #165 6754806910; contract §2.4's `mode` row).
 append_line_primary_refusals() {   # <text>
-  alc_why=""; alc_rc=0; alc_out=""; alc_odd=0; alc_said=""; alc_dir=""
+  alc_why=""; alc_rc=0; alc_out=""; alc_odd=0; alc_said=""; alc_dir=""; alc_timer=bare
   alc_bin="$(lanes_index_bin)"
   if [ -z "$alc_bin" ]; then
     alc_why="could not be run: there is no lanes-index beside $SCRIPT_DIR/lanes-edit.sh or on PATH"
@@ -2753,6 +2753,7 @@ append_line_primary_refusals() {   # <text>
       # exec'd in place by bash 5, and the notice comes back. The call's own
       # stderr keeps its file.
       if command -v timeout >/dev/null 2>&1; then
+        alc_timer=timed
         ( timeout -k 1 2 "$alc_bin" register classify <"$alc_dir/in" >"$alc_dir/out" 2>"$alc_dir/err"; exit "$?" ) 2>/dev/null || alc_rc=$?
       else
         ( "$alc_bin" register classify <"$alc_dir/in" >"$alc_dir/out" 2>"$alc_dir/err"; exit "$?" ) 2>/dev/null || alc_rc=$?
@@ -2775,9 +2776,16 @@ append_line_primary_refusals() {   # <text>
     [ -n "$alc_said" ] || alc_said="lanes-index printed no text"
     die "on primary, append-line asks lanes-index register classify whether its text is one of the four it refuses, and lanes-index refused (exit 2): $alc_said. Nothing was written, and the lock was not taken." 2
   fi
-  case "$alc_rc" in
-    124) append_line_classify_failed "did not answer within 2 s, and was stopped (exit 124)" ;;
-    137) append_line_classify_failed "was killed (exit 137): by its 2 s timer after it ignored the stop, or by a signal" ;;
+  # 124 AND 137 SAY WHAT THEY CAN MEAN, as the mode question's do (T409).
+  # Under the timer, a 124 is its stop, and a 137 is its KILL a second after a
+  # stop that was ignored, or a kill that was not the timer's. Where the call
+  # ran bare, with no `timeout`, no timer ran: a 124 is the call's own code and
+  # takes the plain line below, "exited 124 (…)", and a 137 is a signal's
+  # (lane 3, #165 6767463594, item 1). Every one exits 69, nothing written.
+  case "${alc_rc}:${alc_timer}" in
+    124:timed) append_line_classify_failed "did not answer within 2 s, and was stopped (exit 124)" ;;
+    137:timed) append_line_classify_failed "was killed (exit 137): by its 2 s timer after it ignored the stop, or by a signal" ;;
+    137:bare) append_line_classify_failed "was killed by a signal (exit 137)" ;;
   esac
   [ "$alc_rc" = 0 ] || append_line_classify_failed "exited $alc_rc${alc_said:+ ($alc_said)}"
   [ "$alc_odd" = 0 ] ||
