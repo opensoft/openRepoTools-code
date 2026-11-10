@@ -6439,7 +6439,9 @@ pw_snap_read() {   # <the snapshot's stdout, in a file>
 # On a refusal or a failed read, what `lanes-index` said on stderr is passed
 # on first, verbatim. Then the first snapshot settles the write's id and writes
 # its record (T412's `wr_id_settle`; Y:5192), and a later one must echo this
-# write's id and generation.
+# write's id and generation. A run that took over a record holding `tail`
+# goes from an answered snapshot to the done mark, whatever it answers
+# (`pw_took_tail`).
 pw_snapshot() {
   local ps_bin="" ps_rc=0 ps_l="" ps_det="" ps_end=""
   local -a ps_a
@@ -6500,6 +6502,7 @@ pw_snapshot() {
     pw_snap_end 69 "\`lanes-index register snapshot\` answered write ${PW_S_WID} of generation ${PW_S_GEN} where this write is ${WR_ID} of ${WR_GEN}, which is a failed read"
   fi
   [ -z "$PW_S_FOUND" ] || pw_tail "$PW_S_FOUND" "attempt ${PW_K}'s snapshot found it" "$PW_DIR/snapshot"
+  [ -z "$WR_TOOK_TAIL" ] || pw_took_tail
   return 0
 }
 
@@ -7354,6 +7357,28 @@ pw_tail_found() {   # <seq>
     done) pw_tail_said "$1" "its after-COMMIT steps ran at ${tf_utc} in pid ${tf_p:-<unknown>}" ;;
   esac
   pw_tail_said "$1" "its after-COMMIT steps were named as owed at ${tf_utc}, and this run runs none of them; they are owed again: $(pw_owed_words)"
+}
+
+# A RECORD TAKEN OVER THAT HOLDS `tail` (WR_TOOK_TAIL; lane openRepoTools-3,
+# #165 6774499606, T412 (1)), whatever the snapshot answered. Y:5342: "A run
+# that reads a `sent` or `done` record writes the done mark from it, then
+# removes the record." A snapshot that found the write has already reached
+# `pw_tail_found` through `pw_tail`; one that did not goes straight to it here,
+# at the seq the record's `tail` value names, and the run sends nothing, with
+# no child started and no lookup made: a takeover rewrites nothing
+# in such a record, so no `call=` line could be added for a commit call of its
+# own (`wr_record_write`). The mark's pid, host and container are the
+# record's (`pw_tail_writer`). A value naming no seq (neither `sent <s> ...`
+# nor `done <s> ...`) is not a `tail` this file writes, and is left to the
+# attempt as before (T412 (1), Y:5342; lane 4's reading, asked of lane 3).
+pw_took_tail() {
+  local tt_s=""
+  case "$WR_TOOK_TAIL" in
+    'sent '*|'done '*) tt_s="${WR_TOOK_TAIL#* }"; tt_s="${tt_s%% *}" ;;
+  esac
+  wr_is_count "$tt_s" || return 0
+  pw_tail_found "$tt_s" || :
+  return 0
 }
 
 # THE STEPS THAT MAY BE OWED, in words: the verb's row of F14's table
