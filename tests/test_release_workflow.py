@@ -16,15 +16,16 @@ answer as the forge, the index, `curl`, the build and pipx do:
 - in each upload job, the guard again, the dist step, the approval and tag
   re-checks, and both index checks;
 - in the install check, the fetch from TestPyPI, the digest step, pipx's
-  install and its one link, `--version`, and the 3.9 leg's compile.
+  install and its one link, `--version`, the offline `--install` and the
+  macOS rerun after it (with a `/bin` whose `bash` reads as 3.2), and the
+  3.9 leg's compile.
 
-SIX ARE STILL READ ONLY AS TEXT. Five are held by their commands: the
+FOUR ARE STILL READ ONLY AS TEXT. Three are held by their commands: the
 build's tool install from its hash lock and its two `git archive`
-extractions, and the install check's install of pipx from its hash lock,
-its offline `--install`, and the macOS rerun, which is held to the offline
-`--install` line for line but for the lines it names. The sixth, the
-build's record of the wheel, is held by its place and by its id, which the
-build job's outputs read.
+extractions, and the install check's install of pipx from its hash lock.
+The fourth, the build's record of the wheel, is held by its place and by
+its id, which the build job's outputs read. The macOS rerun is also held
+to the offline `--install` line for line, but for the lines it names.
 Every job's whole step list is pinned in order (`STEP_ORDER`).
 
 contracts/workflows.md's `release.yml` list is the specification, one prefix
@@ -43,10 +44,14 @@ per part of it (plan.md, "The test layout"):
   gate on `tests.yml`'s four jobs and the digest step, each run under a
   forge, the digest step also in a copy of the checkout whose standard or
   pin names another definition; the build step run with a fake build;
-  step 13's wheel check run on synthetic wheels made from HEAD's blobs; and
-  the digest label, one literal in the installer, the pin and the standard;
+  step 13's wheel check run on synthetic wheels made from HEAD's blobs,
+  some damaged so a member cannot be read, its whole step on a rehearsal's
+  branch and on the tag, and `tests.yml`'s own wheel check beside it on
+  each mode a payload file must not have; and the digest label, one
+  literal in the installer, the pin and the standard;
 - `test_release_stamp_writer_*`: the build's own stamp writer, run on a copy
-  of the committed stamp and read back by `--version` from a `package_tree`;
+  of the committed stamp and read back by `--version` from a `package_tree`,
+  and the steps from it on to the wheel check, run in order;
 - `test_release_guard_build_*` and `test_release_guard_upload_*` (FR-048):
   the repository guard, run under each row of contracts/workflows.md's table,
   and each upload job's own first step;
@@ -94,11 +99,13 @@ and `TMUX*` variable is removed first, and `gh` and `curl` are fakes that
 write down that they were asked and refuse, unless a case puts a forge of its
 own ahead of them. A heredoc is cut out as the model's `heredoc()` cuts one,
 and run with this Python under `-I`: the stamp writer with the two copies as
-its arguments, and the wheel check with the wheel as its one argument. Both
-read the release's values from `VERSION`, `TAG`, `COMMIT`, `DIGEST` and
-`REPOSITORY` (contracts/stamp.md), and the wheel check reads the run's own
-commit and repository from `GITHUB_SHA` and `GITHUB_REPOSITORY` as well,
-which carry the same values (the model's reads `GITHUB_SHA`).
+its arguments, the wheel check with the wheel as its one argument, and the 3.9
+leg's compile step with no arguments, which reads `PIPX_HOME` and is run as the
+Python the case names (`AS_ANOTHER_PYTHON`). The first two read the release's
+values from `VERSION`, `TAG`, `COMMIT`, `DIGEST` and `REPOSITORY`
+(contracts/stamp.md), and the wheel check reads the run's own commit and
+repository from `GITHUB_SHA` and `GITHUB_REPOSITORY` as well, which carry the
+same values (the model's reads `GITHUB_SHA`).
 
 WITHOUT THE SUBMODULE every test that reads YAML or the standard SKIPS, as the
 command tests do (`NEEDS_UPSTREAM`), and a composed run fails instead. Nothing
@@ -117,7 +124,9 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import stat
+import struct
 import subprocess
 import sys
 import threading
@@ -141,8 +150,10 @@ PYPROJECT = REPO / "pyproject.toml"
 PIN = REPO / "contracts" / "openreposhape-pin.yaml"
 STAMP = layout.STAMP_SOURCE
 
-#: THE MODEL: openRepoShape v1.1.0's own workflow, in the pinned submodule
-#: (`190133d`). Its artifact actions' pins are this workflow's.
+#: THE MODEL: openRepoShape's own release.yml, in the pinned submodule, at
+#: whatever commit `contracts/openreposhape-pin.yaml` names (`5017830`, v1.1.1,
+#: when the pin moved to it from `190133d`, v1.1.0; the two workflows differ in
+#: comment lines only). Its artifact actions' pins are this workflow's.
 MODEL = UPSTREAM / ".github" / "workflows" / "release.yml"
 STANDARD_SCRIPTS = UPSTREAM / "scripts"
 
@@ -200,7 +211,7 @@ INSTALL_LEGS = [("ubuntu-24.04", "3.x"), ("macos-latest", "3.x"),
 
 #: THE BUILD'S STEPS ADAPTED FROM THE MODEL, BY THE MODEL'S OWN NAMES, each
 #: a prefix the step's `name:` begins with (contracts/workflows.md's build
-#: steps 2 to 13; the model's are at `release.yml:206-665` at v1.1.0). Step 1,
+#: steps 2 to 14; the model's are at `release.yml:206-665` at v1.1.0). Step 1,
 #: the version and the repository guard, is found by the outputs it records.
 REF_STEP = "the dispatched ref is the annotated tag v<version> at this commit"
 ON_BRANCH_STEP = "the commit is on main or on the version's release branch"
@@ -715,17 +726,23 @@ def fixture_git(home: Path, cwd: Path, *args: str, data: Optional[str] = None) -
     return done.stdout.strip()
 
 
-def tagged_origin(where: Path, tags: Tuple[str, ...]) -> Tuple[Path, str, Dict[str, str]]:
-    """A bare repository on this filesystem holding one commit and an
-    annotated tag at it for each of `tags`, and an empty repository whose
-    `origin` is it, by a `file://` URL: what the ref step fetches from.
-    Returns that repository, the commit, and each tag's object."""
+def tagged_origin(where: Path, tags: Tuple[str, ...], history: int = 1
+                  ) -> Tuple[Path, str, Dict[str, str]]:
+    """A bare repository on this filesystem holding `history` commits and an
+    annotated tag at the last for each of `tags`, and an empty repository
+    whose `origin` is it, by a `file://` URL: what the ref step fetches from.
+    The commits are in a line, the first with no parent and each later one
+    the child of the one before it, and `history` is 1 unless a case asks for
+    more. Returns that repository, the last commit, and each tag's object."""
     home, origin, checkout = where / "home", where / "origin.git", where / "checkout"
     for directory in (origin, checkout):
         directory.mkdir(parents=True)
     fixture_git(home, origin, "init", "--quiet", "--bare")
     tree = fixture_git(home, origin, "mktree", data="")
     commit = fixture_git(home, origin, "commit-tree", tree, "-m", "the release commit")
+    for _ in range(history - 1):
+        commit = fixture_git(home, origin, "commit-tree", tree, "-p", commit,
+                             "-m", "the release commit")
     objects = {}
     for tag in tags:
         fixture_git(home, origin, "tag", "-a", tag, "-m", f"openRepoTools {tag}", commit)
@@ -1449,6 +1466,47 @@ def test_release_build_the_ref_step_holds_the_ref_the_forge_and_git_to_v_version
             f"the step asked the forge about a ref it must refuse: {forge_asked(tmp_path)}")
 
 
+@NEEDS_UPSTREAM
+@NEEDS_BASH
+@WINDOWS_SKIP
+def test_release_build_the_ref_step_fetches_the_tag_again_without_cutting_the_checkout_s_history(
+        tmp_path):
+    """STEP 2 ON A TAG KEEPS THE CHECKOUT'S FULL HISTORY (the step's own
+    comment, and the header's: it "fetches the tag again without `--depth`").
+    RUN on `refs/tags/v1.1.0` in a checkout that holds four commits and the
+    tag, as the build's `fetch-depth: 0` leaves it, the step passes and the
+    checkout is not shallow afterwards: it still holds all four, where a depth
+    would cut that history off at this commit. The step's one `git fetch`
+    also names no option that limits history, which a depth beyond the four
+    commits would not show. A depth that the fetch line takes from a variable,
+    and that is beyond the four commits, would pass both checks; that is
+    contrived, and no case holds it."""
+    history = 4
+    checkout, commit, objects = tagged_origin(tmp_path / "git", ("v1.1.0",), history)
+    home = tmp_path / "git" / "home"
+    fixture_git(home, checkout, "fetch", "--quiet", "origin", "+refs/tags/*:refs/tags/*")
+    assert fixture_git(home, checkout, "rev-parse", "--is-shallow-repository") == "false"
+    assert fixture_git(home, checkout, "rev-list", "--count", commit) == str(history)
+    forge, values = api_forge(tmp_path, annotated_tag(CODE_LEG, "v1.1.0",
+                                                      objects["v1.1.0"], commit))
+    values.update(GITHUB_REF="refs/tags/v1.1.0", GITHUB_REF_NAME="v1.1.0",
+                  GITHUB_SHA=commit, GITHUB_REPOSITORY=CODE_LEG, VERSION="1.1.0")
+    workflow = release()
+    step = named(workflow, "build", REF_STEP)
+    runner = Runner(tmp_path / "work", workflow, "build", values, forge)
+    done = runner.run(step, cwd=checkout)
+    assert done.returncode == 0, transcript(done)
+    assert fixture_git(home, checkout, "rev-parse", "--is-shallow-repository") == "false", (
+        f"the step left the checkout shallow:\n{transcript(done)}")
+    assert fixture_git(home, checkout, "rev-list", "--count", commit) == str(history), (
+        f"the step cut the checkout's history off:\n{transcript(done)}")
+    fetches = [line for line in commands(run_text(step))
+               if re.search(r"\bgit\s+fetch\b", line)]
+    assert len(fetches) == 1, fetches
+    assert not re.search(r"--(?:depth|deepen|shallow-since|shallow-exclude)\b",
+                         fetches[0]), fetches[0]
+
+
 #: A `gh` that answers `compare` as the forge does (`FORGE_COMPARE`, a JSON map
 #: of branch to status as `compare/<commit>...<branch>` reads, flipped where a
 #: script asks the other way round), writes down each branch it was asked
@@ -1926,9 +1984,12 @@ def wheel_release(version: str) -> dict:
 def wheel_members(release_: dict) -> Tuple[Dict[str, Tuple[bytes, int]], str]:
     """THE WHEEL THE RELEASE BUILD WRITES FOR HEAD, laid out as hatchling
     1.27.0 lays it out, from git's own blobs: the package's modules, the
-    stamp with the release's five values, the 24 payload files at the modes
-    hatchling gives HEAD's (0755 or 0644), and the five `.dist-info` names.
-    Returns `{member: (bytes, mode)}` and the `.dist-info/` prefix."""
+    stamp with the release's five values, the 24 payload files, and the five
+    `.dist-info` names. Each has the whole mode hatchling gives it, as
+    TestPyPI's 1.1.0rc1 wheel has them: a payload file is a regular file at
+    0755 or 0644 as HEAD records it, a module a regular file at 0644, and a
+    `.dist-info` file, which hatchling writes itself, 0644 with no file type.
+    Returns `{member: (bytes, whole mode)}` and the `.dist-info/` prefix."""
     sha, tree = head()
     members: Dict[str, Tuple[bytes, int]] = {}
     for path in sorted(tree):
@@ -1937,11 +1998,11 @@ def wheel_members(release_: dict) -> Tuple[Dict[str, Tuple[bytes, int]], str]:
             data = head_blob(path)
             if found.group(1) == "_release.py":
                 data = stamped(data.decode("utf-8"), release_).encode("utf-8")
-            members[f"openrepotools/{found.group(1)}"] = (data, 0o644)
+            members[f"openrepotools/{found.group(1)}"] = (data, stat.S_IFREG | 0o644)
     for rel in layout.payload_paths():
         mode = tree[rel][0]
         members[layout.PAYLOAD_PREFIX + rel] = (
-            head_blob(rel), 0o755 if mode == "100755" else 0o644)
+            head_blob(rel), stat.S_IFREG | (0o755 if mode == "100755" else 0o644))
     info = f"openrepotools-{release_['VERSION']}.dist-info/"
     members[info + "METADATA"] = ((
         "Metadata-Version: 2.4\nName: openrepotools\n"
@@ -1957,8 +2018,8 @@ def wheel_members(release_: dict) -> Tuple[Dict[str, Tuple[bytes, int]], str]:
 
 def write_wheel(path: Path, members: Dict[str, Tuple[bytes, int]],
                 info: str) -> Path:
-    """`members` as a wheel, with the `RECORD` hatchling would write for
-    them, at `path`."""
+    """`members` as a wheel, each at its whole mode, with the `RECORD`
+    hatchling would write for them, at `path`."""
     rows = []
     for name, (data, _) in members.items():
         digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest())
@@ -1970,7 +2031,7 @@ def write_wheel(path: Path, members: Dict[str, Tuple[bytes, int]],
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as wheel:
         for name, (data, mode) in every.items():
             entry = zipfile.ZipInfo(name, date_time=WHEEL_TIME)
-            entry.external_attr = (stat.S_IFREG | mode) << 16
+            entry.external_attr = mode << 16
             entry.create_system = 3
             entry.compress_type = zipfile.ZIP_DEFLATED
             wheel.writestr(entry, data)
@@ -2052,9 +2113,11 @@ NOT_THE_COMMITS = {
     "a-payload-byte-changed": ("lanes-edit.sh", a_changed_byte("lanes-edit.sh"),
                                None, None),
     "a-payload-mode-0755-made-0644": (
-        "link-estates", a_changed_mode("link-estates", 0o644), "100755", None),
+        "link-estates", a_changed_mode("link-estates", stat.S_IFREG | 0o644),
+        "100755", None),
     "a-payload-mode-0644-made-0755": (
-        "repos.tsv", a_changed_mode("repos.tsv", 0o755), "100644", None),
+        "repos.tsv", a_changed_mode("repos.tsv", stat.S_IFREG | 0o755), "100644",
+        None),
     "a-licenses-LICENSE-of-other-bytes": (
         "licenses/LICENSE", a_changed_member("{info}licenses/LICENSE"), None,
         None),
@@ -2083,17 +2146,62 @@ NOT_THE_COMMITS = {
 }
 
 
+def damage(path: Path, member: str, how: str) -> None:
+    """`member` of the zip at `path`, damaged in place as a transfer can
+    damage it, its bytes and every other member left as they are: `crc`
+    makes its CRC-32 in the central directory one bit off, `deflate` makes
+    the first byte of its compressed bytes 0xFF, a block type deflate does
+    not have, `method` makes its compression method in the central
+    directory 99, one `zipfile` cannot read, and `lzma` first stores it as
+    LZMA, which `zipfile` writes and reads, then makes the first byte of its
+    LZMA stream 0xFF, where the range coder's first byte is always 0."""
+    if how == "lzma":
+        with zipfile.ZipFile(path) as wheel:
+            kept = [(entry, wheel.read(entry)) for entry in wheel.infolist()]
+        with zipfile.ZipFile(path, "w") as wheel:
+            for entry, body in kept:
+                if entry.filename == member:
+                    entry.compress_type = zipfile.ZIP_LZMA
+                wheel.writestr(entry, body)
+    data = bytearray(path.read_bytes())
+    (at,) = struct.unpack_from("<I", data, data.rindex(b"PK\x05\x06") + 16)
+    while data[at:at + 4] == b"PK\x01\x02":
+        named, extra, comment = struct.unpack_from("<HHH", data, at + 28)
+        if data[at + 46:at + 46 + named] == member.encode("utf-8"):
+            break
+        at += 46 + named + extra + comment
+    else:
+        raise AssertionError(f"the case is wrong: {member} is not in {path.name}")
+    if how == "crc":
+        data[at + 16] ^= 0x01
+    elif how == "method":
+        struct.pack_into("<H", data, at + 10, 99)
+    else:
+        assert how in ("deflate", "lzma"), how
+        (local,) = struct.unpack_from("<I", data, at + 42)
+        named, extra = struct.unpack_from("<HH", data, local + 26)
+        # `zipfile` writes LZMA behind a 9 byte header: the version, the
+        # properties' length and the five properties.
+        data[local + 30 + named + extra + (9 if how == "lzma" else 0)] = 0xFF
+    path.write_bytes(bytes(data))
+
+
 def run_wheel_check(workflow: dict, work: Path, release_: dict,
                     change: Optional[Callable[[dict, str], None]],
-                    run: Optional[dict] = None) -> subprocess.CompletedProcess:
+                    run: Optional[dict] = None,
+                    damaged: Optional[Tuple[str, str]] = None
+                    ) -> subprocess.CompletedProcess:
     """The wheel check's heredoc on the wheel as built for `release_`, with
     `change` made to it, under the run's values: the release's, or `run`'s
-    where it names any."""
+    where it names any. `damaged`, `(member, how)`, is then done to the
+    written file (`damage`)."""
     members, info = wheel_members(release_)
     if change is not None:
         change(members, info)
     wheel = write_wheel(work / "dist" / f"openrepotools-{release_['VERSION']}"
                         "-py3-none-any.whl", members, info)
+    if damaged is not None:
+        damage(wheel, damaged[0].format(info=info), damaged[1])
     values = release_values(release_)
     values.update(run or {})
     return run_heredoc(named(workflow, "build", WHEEL_CHECK_STEP), work, [wheel],
@@ -2152,6 +2260,194 @@ def test_release_build_the_wheel_check_refuses_a_wheel_that_is_not_the_commit_s(
     new = [line for line in lines(bad, "b") if line not in known]
     assert [line for line in new if line.startswith("::error::") and names in line], (
         f"no ::error:: line of the refusal names {names}:\n{transcript(bad)}")
+
+
+#: THE WHEEL CHECK'S WHOLE STEP, ON THE RUNS A DISPATCH CAN BE: `(the
+#: dispatched ref, the version, the repository it runs in)`. A rehearsal is
+#: dispatched on a branch, in this repository, as rehearsals run today, and
+#: builds the version of the tag it rehearses, `1.1.0rc1` first; a release is
+#: dispatched on its own tag, in the code leg. Each wheel is stamped with the
+#: repository of its own run, so a `REPOSITORY` hard-coded to either name
+#: fails one of the two cases.
+WHEEL_CHECK_REFS = {
+    "a-rehearsal-branch": ("refs/heads/l3-rehearsal-v1.1.0", "1.1.0rc1",
+                           THIS_REPOSITORY),
+    "the-version-s-tag": ("refs/tags/v1.1.0", "1.1.0", CODE_LEG),
+}
+
+
+@NEEDS_UPSTREAM
+@NEEDS_BASH
+@WINDOWS_SKIP
+@pytest.mark.parametrize("which", WHEEL_CHECK_REFS)
+def test_release_build_the_wheel_check_step_as_github_runs_it_holds_the_wheel_to_v_version(
+        tmp_path, which):
+    """STEP 13, THE WHOLE STEP, RUN AS GITHUB RUNS IT: its bash line sets `TAG`,
+    `COMMIT` and `REPOSITORY` from `$VERSION`, `$GITHUB_SHA` and
+    `$GITHUB_REPOSITORY`, and hands its heredoc the wheel at
+    `$RUNNER_TEMP/dist-a/openrepotools-$VERSION-py3-none-any.whl`. With the
+    wheel as built for the release put there, stamped with the repository of
+    the run, it passes on a rehearsal's branch in this repository and on the
+    version's tag in the code leg alike. So the `TAG` it holds the stamp to
+    is `v$VERSION`, which comes from `$VERSION` and never from the ref's
+    name: a branch's name is `l3-rehearsal-v1.1.0`, and the heredoc refuses
+    a `TAG` that is not `v$VERSION`. And the `REPOSITORY` it holds the stamp
+    to is `$GITHUB_REPOSITORY`, never the code leg's by name: a rehearsal
+    runs in this repository, where the heredoc refuses a `REPOSITORY` that is
+    not the run's."""
+    ref, version, repository = WHEEL_CHECK_REFS[which]
+    release_ = dict(wheel_release(version), REPOSITORY=repository)
+    workflow = release()
+    step = named(workflow, "build", WHEEL_CHECK_STEP)
+    if "tomllib" in heredoc(run_text(step)) and sys.version_info < (3, 11):
+        pytest.skip("the step's script reads TOML with tomllib, which is "
+                    "Python 3.11's and up, as the build job's Python is")
+    values = {"VERSION": version, "GITHUB_SHA": release_["COMMIT"],
+              "GITHUB_REPOSITORY": release_["REPOSITORY"],
+              "DIGEST": release_["DIGEST"], "GITHUB_REF": ref,
+              "GITHUB_REF_NAME": ref_name(ref)}
+    fakes = python_tool(tmp_path / "fakes", "python3", AS_PYTHON)
+    runner = Runner(tmp_path / "work", workflow, "build", values, fakes)
+    members, info = wheel_members(release_)
+    write_wheel(Path(runner.env["RUNNER_TEMP"]) / "dist-a"
+                / f"openrepotools-{version}-py3-none-any.whl", members, info)
+    done = runner.run(step, cwd=REPO)
+    assert done.returncode == 0, transcript(done)
+    lines = done.stdout.splitlines()
+    assert (f"openrepotools/_release.py: the committed file, with "
+            f"{list(layout.STAMP_FIELDS)} written") in lines, transcript(done)
+    assert lines[-1] == "commands: ['openRepoTools']", (
+        f"the check did not run to its end:\n{transcript(done)}")
+
+
+#: A MEMBER THE CHECK CANNOT READ (#278): the wheel as built, written, then
+#: damaged on disk (`damage`). Each is `(the member, where `{info}` is the
+#: `.dist-info/` prefix, how it is damaged)`. Reading it raises, in turn,
+#: `zipfile`'s `BadZipFile` ("Bad CRC-32"), `zlib.error`,
+#: `NotImplementedError` and `lzma.LZMAError`, and each must end in an
+#: `::error::` line naming the member, never in a traceback. None of the four
+#: is an `OSError` or a `ValueError`. What set the last apart is that the read
+#: loop's `except` tuple did not name it, as it names `BadZipFile`, `zlib.error`
+#: and `RuntimeError` (`NotImplementedError`'s base): it derives from
+#: `Exception` alone, so it ended in a traceback until the tuple did (#278).
+UNREADABLE_MEMBERS = {
+    "a-payload-file-with-a-bad-crc": (layout.PAYLOAD_PREFIX + "lanes-edit.sh", "crc"),
+    "a-module-with-a-broken-deflate-stream": ("openrepotools/cli.py", "deflate"),
+    "a-dist-info-file-zipfile-cannot-decompress": ("{info}METADATA", "method"),
+    "a-payload-file-stored-as-lzma-with-corrupt-data": (
+        layout.PAYLOAD_PREFIX + "lane", "lzma"),
+}
+
+
+@NEEDS_UPSTREAM
+@pytest.mark.parametrize("which", UNREADABLE_MEMBERS)
+def test_release_build_the_wheel_check_names_a_member_it_cannot_read(tmp_path, which):
+    """STEP 13 ON A WHEEL WITH A MEMBER IT CANNOT READ (#278): a payload file
+    with a bad CRC, a module whose deflate stream is broken, a `.dist-info`
+    file in a compression method `zipfile` cannot read, and a payload file
+    stored as LZMA with corrupt data. Each exits 1, and names the member in
+    an `::error::` line that says it cannot be read, with no traceback, as a
+    member missing from the wheel is named."""
+    member, how = UNREADABLE_MEMBERS[which]
+    release_ = wheel_release("1.1.0")
+    done = run_wheel_check(release(), tmp_path / "w", release_, None,
+                           damaged=(member, how))
+    out = done.stdout + done.stderr
+    assert done.returncode == 1, transcript(done)
+    assert "Traceback (most recent call last)" not in out, (
+        f"the check crashed rather than name the member:\n{transcript(done)}")
+    name = member.format(info=f"openrepotools-{release_['VERSION']}.dist-info/")
+    assert [line for line in out.splitlines() if line.startswith("::error::")
+            and name in line and "cannot be read" in line], transcript(done)
+
+
+#: A PAYLOAD FILE'S MODE, HELD TO ONE RULE BY BOTH WHEEL CHECKS (#278): the
+#: build's step 13 here, and `tests.yml`'s `package` job's wheel check. The
+#: rule is the commit's mode WHOLE, `100755` or `100644`: a regular file at
+#: 0755 or 0644 and no other bit. hatchling 1.27.0 writes every payload file
+#: so (TestPyPI's 1.1.0rc1 wheel), and pip makes a member executable only
+#: when it is typed a regular file. Each case is `(the payload file, its mode
+#: at HEAD, the whole mode it has in the wheel)`, and both checks refuse
+#: every one, naming the file. Before #278 step 13 read only the permission
+#: bits, so it passed a file typed as a symlink, as a directory or not typed
+#: at all, and `tests.yml`'s read only the low nine, so it passed the setuid,
+#: setgid and sticky bits and no type.
+NOT_THE_COMMIT_S_MODE = {
+    "a-0644-file-typed-as-a-symlink": ("repos.tsv", "100644", stat.S_IFLNK | 0o644),
+    "a-0644-file-typed-as-a-directory": ("repos.tsv", "100644", stat.S_IFDIR | 0o644),
+    "a-0755-file-with-no-file-type": ("lane", "100755", 0o755),
+    "a-0755-file-setuid": ("lane", "100755", stat.S_IFREG | 0o4755),
+    "a-0755-file-setgid": ("lane", "100755", stat.S_IFREG | 0o2755),
+    "a-0755-file-sticky": ("lane", "100755", stat.S_IFREG | 0o1755),
+}
+
+
+def package_job_wheel_check() -> dict:
+    """`tests.yml`'s `package` job's wheel check: the one step whose script
+    hands a `<<'PY'` heredoc the wheel the job's first build left."""
+    package = (standard().load_yaml(TESTS_WORKFLOW).get("jobs") or {}).get("package")
+    if not isinstance(package, dict) or not isinstance(package.get("steps"), list):
+        pytest.fail("tests.yml has no `package` job with steps", pytrace=False)
+    found = [s for s in package["steps"] if heredoc_opened(run_text(s))
+             and '"$RUNNER_TEMP"/a/' in run_text(s)]
+    if len(found) != 1:
+        pytest.fail(f"tests.yml's package job has {len(found)} wheel checks, not "
+                    "one", pytrace=False)
+    return found[0]
+
+
+def heredoc_opened(script: str) -> bool:
+    return any(line.rstrip().endswith("<<'PY'") for line in script.splitlines())
+
+
+@NEEDS_UPSTREAM
+@pytest.mark.parametrize("which", NOT_THE_COMMIT_S_MODE)
+def test_release_build_the_wheel_check_and_tests_yml_s_refuse_a_payload_mode_not_the_commit_s(
+        tmp_path, which):
+    """BOTH WHEEL CHECKS, ONE RULE FOR A PAYLOAD FILE'S MODE (#278): step 13
+    on the release's wheel, and `tests.yml`'s check on the unstamped wheel
+    its `package` job builds, each made from HEAD's blobs with one payload
+    file at the case's mode. Each wheel as built passes its check; with the
+    mode changed, each check exits 1 with an `::error::` line naming the
+    file, and no traceback. So the two cannot disagree on a member's type,
+    its setuid, setgid or sticky bit, or a missing type."""
+    rel, head_mode, mode = NOT_THE_COMMIT_S_MODE[which]
+    assert head()[1][rel][0] == head_mode, (
+        f"the case is wrong: HEAD's {rel} is not {head_mode}")
+    member = layout.PAYLOAD_PREFIX + rel
+
+    def given_the_mode(members: dict, info: str) -> None:
+        members[member] = (members[member][0], mode)
+
+    workflow = release()
+    theirs = package_job_wheel_check()
+    unstamped = dict(layout.UNSTAMPED)
+    for whose, side, change in (("release.yml", "built", None),
+                                ("release.yml", "case", given_the_mode),
+                                ("tests.yml", "built", None),
+                                ("tests.yml", "case", given_the_mode)):
+        work = tmp_path / whose / side
+        if whose == "release.yml":
+            done = run_wheel_check(workflow, work, wheel_release("1.1.0"), change)
+        else:
+            members, info = wheel_members(unstamped)
+            if change is not None:
+                change(members, info)
+            wheel = write_wheel(work / "a" / "openrepotools-0.0.0-py3-none-any.whl",
+                                members, info)
+            done = run_heredoc(theirs, work, [wheel], {}, cwd=REPO)
+        out = done.stdout + done.stderr
+        assert "Traceback (most recent call last)" not in out, transcript(done)
+        if side == "built":
+            assert done.returncode == 0, (
+                f"{whose}'s check refuses the wheel as built, so this case proves "
+                f"nothing:\n{transcript(done)}")
+        else:
+            assert done.returncode == 1, f"{whose}'s check:\n{transcript(done)}"
+            assert [line for line in out.splitlines()
+                    if line.startswith("::error::") and member in line], (
+                f"no ::error:: line of {whose}'s check names {member}:\n"
+                f"{transcript(done)}")
 
 
 # --- the stamp writer --------------------------------------------------------------
@@ -2459,6 +2755,168 @@ def test_release_stamp_writer_step_stamps_both_extractions_with_the_run_s_reposi
     assert ('REPOSITORY="$GITHUB_REPOSITORY"' in script
             or normal(env.get("REPOSITORY")) == "github.repository"), (
         "the stamp's REPOSITORY is not the run's GITHUB_REPOSITORY")
+
+
+#: THE STEPS AFTER THE STAMP WRITER, RUN. Each case above runs the stamp step
+#: alone, so a step inserted after it (the review's mutant N5: an unnamed step
+#: that rewrote both `TAG`s) was caught by `STEP_ORDER`'s count and by nothing
+#: that runs it. What stands between the stamp and a release is the build,
+#: which packages whatever its two extractions hold, and the wheel check, which
+#: refuses a stamp that is not the release's. So these cases run the steps from
+#: the stamp writer through the wheel check, as the workflow has them, in order.
+#:
+#: THE BUILD'S BACKEND, FAKED TO PACKAGE THE TREE IT RUNS IN: `$RUNNER_TEMP/
+#: tools/bin/python -m build ... --outdir <dir> .` writes into `<dir>` a copy of
+#: the wheel `CHAIN_TEMPLATE` names, with the tree's own `src/openrepotools/
+#: _release.py` for its stamp, so the stamp that any step has left in the tree
+#: is the one the wheel holds. Every other member, `RECORD` included (which the
+#: wheel check does not read), is the template's.
+CHAIN_BUILD = r'''
+import os, sys, zipfile
+out = sys.argv[sys.argv.index("--outdir") + 1]
+os.makedirs(out, exist_ok=True)
+with open(os.path.join("src", "openrepotools", "_release.py"), "rb") as handle:
+    stamp = handle.read()
+template = os.environ["CHAIN_TEMPLATE"]
+with zipfile.ZipFile(template) as source:
+    with zipfile.ZipFile(os.path.join(out, os.path.basename(template)), "w") as built:
+        for entry in source.infolist():
+            copy = zipfile.ZipInfo(entry.filename, entry.date_time)
+            copy.external_attr, copy.create_system = entry.external_attr, entry.create_system
+            copy.compress_type = zipfile.ZIP_DEFLATED
+            built.writestr(copy, stamp if entry.filename == "openrepotools/_release.py"
+                           else source.read(entry))
+'''
+
+#: A STEP INSERTED AFTER THE STAMP WRITER that rewrites one of the five values
+#: the writer wrote, in both extractions: the assignment line `STAMP_WAS`
+#: becomes `STAMP_NOW`. It refuses a stamp that does not hold that line, so a
+#: case cannot pass for want of a stamp to rewrite.
+REWRITES_THE_STAMP = '''python3 -I - "$TREE_A/src/openrepotools/_release.py" \\
+    "$TREE_B/src/openrepotools/_release.py" <<'PY'
+import os, sys
+for path in sys.argv[1:]:
+    with open(path, encoding="utf-8", newline="") as handle:
+        text = handle.read()
+    assert os.environ["STAMP_WAS"] in text, path
+    with open(path, "w", encoding="utf-8", newline="") as handle:
+        handle.write(text.replace(os.environ["STAMP_WAS"], os.environ["STAMP_NOW"]))
+PY
+'''
+
+#: What that step rewrites each of the stamp's five values to: another value of
+#: the shape the writer accepts, so that only the wheel check can refuse it.
+REWRITTEN = {"VERSION": "9.9.9", "TAG": "v9.9.9", "COMMIT": "9" * 40,
+             "DIGEST": "9" * 64, "REPOSITORY": "someone/else"}
+
+NEEDS_GNU_BUILD_TOOLS = pytest.mark.skipif(
+    shutil.which("sha256sum") is None or shutil.which("cmp") is None,
+    reason="the build step runs GNU's sha256sum and cmp")
+
+
+def run_from_the_stamp_writer_to_the_wheel_check(
+        tmp_path: Path, rewrite: Optional[str] = None
+) -> List[Tuple[str, subprocess.CompletedProcess]]:
+    """THE BUILD'S STEPS FROM THE STAMP WRITER THROUGH THE WHEEL CHECK, as the
+    workflow has them and in its order, each run as GitHub runs it: over two
+    extractions that are copies of the committed stamp, `python3` this
+    interpreter, and the build's backend `CHAIN_BUILD`, with the wheel check
+    reading the wheel the build wrote. With `rewrite` naming one of the stamp's
+    five values, a step that rewrites it in both extractions is run right after
+    the writer. Stops at the first step that fails. Returns each step run, by
+    its label, and how it ended."""
+    workflow = release()
+    steps = steps_of(workflow, "build")
+    writer = where(workflow, "build", named(workflow, "build", STAMP_STEP))
+    check = where(workflow, "build", named(workflow, "build", WHEEL_CHECK_STEP))
+    assert writer < check, "the wheel check does not come after the stamp writer"
+    chain = steps[writer:check + 1]
+    for step in chain:
+        if not run_text(step):
+            pytest.fail(f"{label(step)!r} sits between the stamp writer and the "
+                        "wheel check, and is not a `run:` step: the suite cannot "
+                        "run it", pytrace=False)
+    if "tomllib" in heredoc(run_text(chain[-1])) and sys.version_info < (3, 11):
+        pytest.skip("the step's script reads TOML with tomllib, which is "
+                    "Python 3.11's and up, as the build job's Python is")
+    release_ = wheel_release("1.1.0")
+    trees = [tmp_path / "a" / "openRepoTools",
+             tmp_path / "b" / "elsewhere" / "v1.1.0-src"]
+    for tree in trees:
+        copy = tree / "src" / "openrepotools" / "_release.py"
+        copy.parent.mkdir(parents=True)
+        # The build's `git archive` extracts the commit, so each copy is HEAD's
+        # blob, whatever the work tree's file holds.
+        copy.write_bytes(head_blob("src/openrepotools/_release.py"))
+    members, info = wheel_members(release_)
+    template = write_wheel(tmp_path / "template" / "openrepotools-1.1.0-py3-none-any.whl",
+                           members, info)
+    values = {"VERSION": release_["VERSION"], "GITHUB_SHA": release_["COMMIT"],
+              "GITHUB_REPOSITORY": release_["REPOSITORY"],
+              "DIGEST": release_["DIGEST"], "TREE_A": str(trees[0]),
+              "TREE_B": str(trees[1]), "CHAIN_TEMPLATE": str(template)}
+    if rewrite is not None:
+        chain.insert(1, {"run": REWRITES_THE_STAMP})
+        values.update(STAMP_WAS=f'{rewrite} = "{release_[rewrite]}"',
+                      STAMP_NOW=f'{rewrite} = "{REWRITTEN[rewrite]}"')
+    fakes = python_tool(tmp_path / "fakes", "python3", AS_PYTHON)
+    runner = Runner(tmp_path / "work", workflow, "build", values, fakes)
+    python_tool(Path(runner.env["RUNNER_TEMP"]) / "tools" / "bin", "python", CHAIN_BUILD)
+    ran = []
+    for step in chain:
+        done = runner.run(step, cwd=REPO)
+        ran.append((label(step), done))
+        if done.returncode != 0:
+            break
+    return ran
+
+
+@NEEDS_UPSTREAM
+@NEEDS_BASH
+@WINDOWS_SKIP
+@NEEDS_GNU_BUILD_TOOLS
+def test_release_stamp_writer_the_steps_after_it_to_the_wheel_check_leave_the_stamp_as_written(
+        tmp_path):
+    """THE STAMP WRITER AND EVERY STEP AFTER IT UP TO THE WHEEL CHECK, RUN IN
+    ORDER (the review's mutant N5, which only `STEP_ORDER`'s count caught):
+    each exits 0, and the wheel check, which reads the stamp the build
+    packaged from the two extractions, passes it. So a step between the writer
+    and the check that changes the stamp the writer wrote is refused by the
+    wheel check here, as it is in production, and not only counted."""
+    ran = run_from_the_stamp_writer_to_the_wheel_check(tmp_path)
+    failed = [f"{name}:\n{transcript(done)}" for name, done in ran if done.returncode != 0]
+    assert not failed, "\n".join(failed)
+    check = named(release(), "build", WHEEL_CHECK_STEP)
+    assert ran[-1][0] == label(check), [name for name, _ in ran]
+    lines = ran[-1][1].stdout.splitlines()
+    assert (f"openrepotools/_release.py: the committed file, with "
+            f"{list(layout.STAMP_FIELDS)} written") in lines, transcript(ran[-1][1])
+    assert lines[-1] == "commands: ['openRepoTools']", (
+        f"the check did not run to its end:\n{transcript(ran[-1][1])}")
+
+
+@NEEDS_UPSTREAM
+@NEEDS_BASH
+@WINDOWS_SKIP
+@NEEDS_GNU_BUILD_TOOLS
+@pytest.mark.parametrize("name", layout.STAMP_FIELDS)
+def test_release_stamp_writer_a_step_after_it_that_rewrites_the_stamp_is_refused_by_the_wheel_check(
+        tmp_path, name):
+    """WHAT THAT RUN CATCHES (the same steps, with one inserted right after the
+    writer that rewrites one of the stamp's five values in both extractions,
+    as N5 rewrote `TAG`): the build packages the same rewritten stamp from
+    both, so its `cmp` passes them, and the wheel check refuses the wheel,
+    with an `::error::` line naming the value, as it does in production."""
+    ran = run_from_the_stamp_writer_to_the_wheel_check(tmp_path, rewrite=name)
+    check = named(release(), "build", WHEEL_CHECK_STEP)
+    assert ran[-1][0] == label(check) and len(ran) > 3, (
+        "the steps before the wheel check did not all pass:\n"
+        + "\n".join(f"{step}:\n{transcript(done)}" for step, done in ran))
+    refused = ran[-1][1]
+    assert refused.returncode != 0, transcript(refused)
+    assert [line for line in refused.stdout.splitlines()
+            if line.startswith("::error::") and f'{name} = "{REWRITTEN[name]}"' in line], (
+        f"no ::error:: line names the rewritten {name}:\n{transcript(refused)}")
 
 
 # --- the repository guard (FR-048) --------------------------------------------------
@@ -3132,10 +3590,38 @@ SERVED = (200, [(INDEX_WHEEL, VERIFIED, False)])
 NOT_YET = (404, [])
 DROPPED = (None, [])
 
+#: A READ THAT FAILS WITH A `URLError` AND NO HTTP STATUS, which a dropped
+#: connection is not (that one is a `ConnectionError`, which urllib does not
+#: wrap): the index redirects the read to a port nobody listens on, urllib
+#: follows it, and its connection is refused.
+REFUSED = (302, [])
+
+#: A READ THAT TIMES OUT: the index takes the request and answers nothing, and
+#: the client's read gives up. urllib raises that as a bare `TimeoutError`, as
+#: it does a dropped connection, not wrapped in a `URLError`, so only the
+#: `TimeoutError` member of the step's `except` catches it. The status is no
+#: HTTP status, only one the other answers do not use.
+TIMED_OUT = (0, [])
+
+#: How long the step's first read waits, in seconds, in a case with a
+#: `TIMED_OUT` answer: the step asks for 30, and the clock (`CLOCK`) cuts it to
+#: this.
+READ_TIMEOUT = 0.5
+
+#: How long the index holds a read it never answers, in seconds: far the
+#: longer, since it holds the read until the client gives up and closes the
+#: connection, and a read the index had to close itself would be a dropped
+#: connection and no timeout.
+HELD_FOR = 10
+
 #: THE CLOCK, the one other thing faked: `time.sleep` writes down what it was
-#: asked and returns at once, so 20 reads 15 seconds apart take no time. It is
-#: a `sitecustomize` on the step's PYTHONPATH, so the step's script runs as
-#: it is written.
+#: asked and returns at once, so 20 reads 15 seconds apart take no time, and
+#: the timeout of the first read, where a case names one, is cut, so that a
+#: read nobody answers gives up at once and not after the step's 30 seconds.
+#: Only the first read's, and only cut: a later read keeps the step's own
+#: timeout, and a read that asked for none is given none. It is a
+#: `sitecustomize` on the step's PYTHONPATH, so the step's script runs as it is
+#: written.
 CLOCK = '''import os, time
 
 
@@ -3145,18 +3631,53 @@ def sleep(seconds, _log=os.environ["FAKE_CLOCK_LOG"]):
 
 
 time.sleep = sleep
+
+if os.environ.get("FAKE_READ_TIMEOUT"):
+    import socket
+
+    _connect, _made = socket.create_connection, []
+
+    def create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
+                          *args, **kwargs):
+        if not _made and isinstance(timeout, (int, float)):
+            timeout = min(timeout, float(os.environ["FAKE_READ_TIMEOUT"]))
+        _made.append(address)
+        return _connect(address, timeout, *args, **kwargs)
+
+    socket.create_connection = create_connection
 '''
+
+
+class CutShort(bytes):
+    """An answer's body sent with a `Content-Length` 64 bytes longer than it,
+    then the connection closed: an answer broken off half way."""
+
+
+#: Answers whose body is not the index's JSON (#278): another page, and JSON
+#: without the file list.
+NOT_JSON = (200, b"<html><body>the index is down for maintenance</body></html>")
+NO_FILE_LIST = (200, b'{"info": {"name": "openrepotools"}}')
+CUT_OFF = (200, CutShort(b'{"info": {"name": "openrepotools"}, "urls": ['))
 
 
 class FakeIndex:
     """AN INDEX'S JSON API ON 127.0.0.1: the `n`th read gets `answers[n]`,
     and every read after the last answer gets the last again. Each answer is
-    `(status, files)`, a file `(filename, sha256, yanked)`; the status `None`
+    `(status, files)`, a file `(filename, sha256, yanked)`, or `(status,
+    body)`, bytes sent as they are (`CutShort` cut off); the status `None`
     closes the connection with no response at all, a connection error with
-    no HTTP status. Every read's path is written down in `reads`."""
+    no HTTP status, the status 302 (`REFUSED`) redirects the read to a port
+    nobody listens on, and the status 0 (`TIMED_OUT`) takes the read and
+    answers nothing until the client gives up. Every read's path is written
+    down in `reads`."""
 
     def __init__(self, answers: list) -> None:
         self.answers, self.reads = list(answers), []
+        # a port nobody listens on: bound, so that no one else takes it, and
+        # never listening, so that a connection to it is refused
+        self.parked = socket.socket()
+        self.parked.bind(("127.0.0.1", 0))
+        self.nobody_listens = f"http://127.0.0.1:{self.parked.getsockname()[1]}/"
         index = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -3167,17 +3688,34 @@ class FakeIndex:
                 if status is None:
                     self.close_connection = True
                     return
-                body = json.dumps(
+                if status == TIMED_OUT[0]:
+                    # take the request and say nothing: the client closes the
+                    # connection when its read times out, which ends the
+                    # `recv` with no bytes; one that never does ends it at
+                    # `HELD_FOR`, and this index then closes the connection
+                    self.connection.settimeout(HELD_FOR)
+                    try:
+                        self.connection.recv(1)
+                    except OSError:
+                        pass
+                    self.close_connection = True
+                    return
+                body = files if isinstance(files, bytes) else json.dumps(
                     {"info": {"name": "openrepotools"},
                      "urls": [{"filename": name, "digests": {"sha256": digest},
                                "yanked": yanked}
                               for name, digest, yanked in files]}
                     if status == 200 else {"message": f"HTTP {status}"}).encode()
+                short = 64 if isinstance(files, CutShort) else 0
                 self.send_response(status)
+                if status == REFUSED[0]:
+                    self.send_header("Location", index.nobody_listens)
                 self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Content-Length", str(len(body) + short))
                 self.end_headers()
                 self.wfile.write(body)
+                if short:
+                    self.close_connection = True
 
             def log_message(self, *args) -> None:
                 pass
@@ -3197,13 +3735,16 @@ class FakeIndex:
         self.server.shutdown()
         self.server.server_close()
         self.thread.join()
+        self.parked.close()
 
 
 def run_index_step(tmp_path: Path, name: str, prefix: str, answers: list
                    ) -> Tuple[subprocess.CompletedProcess, List[str], List[str]]:
     """Job `name`'s step `prefix`, run under the Runner with the job's own
-    `INDEX`, the build's record and `JSON_BASE` the fake index's. Returns the
-    run, the paths read, and the sleeps asked for."""
+    `INDEX`, the build's record and `JSON_BASE` the fake index's. A case with
+    a `TIMED_OUT` answer has the step's first read give up after
+    `READ_TIMEOUT` seconds, where the step asks for 30. Returns the run, the
+    paths read, and the sleeps asked for."""
     workflow = release()
     assert (job(workflow, name).get("env") or {}).get("JSON_BASE") == JSON_BASES[name], (
         f"the {name} job reads {job(workflow, name).get('env')}")
@@ -3215,7 +3756,9 @@ def run_index_step(tmp_path: Path, name: str, prefix: str, answers: list
         values = {"VERSION": INDEX_VERSION, "WHEEL": INDEX_WHEEL,
                   "WHEEL_SHA256": VERIFIED, "JSON_BASE": index.base,
                   "no_proxy": "*", "NO_PROXY": "*", "PYTHONPATH": str(clock),
-                  "PYTHONDONTWRITEBYTECODE": "1", "FAKE_CLOCK_LOG": str(log)}
+                  "PYTHONDONTWRITEBYTECODE": "1", "FAKE_CLOCK_LOG": str(log),
+                  "FAKE_READ_TIMEOUT": (str(READ_TIMEOUT)
+                                        if TIMED_OUT in answers else "")}
         runner = Runner(tmp_path / "work", workflow, name, values)
         done = runner.run(named(workflow, name, prefix))
         reads = list(index.reads)
@@ -3224,24 +3767,30 @@ def run_index_step(tmp_path: Path, name: str, prefix: str, answers: list
 
 
 #: BEFORE THE UPLOAD (FR-031, the lead's ruling, design.md Open Questions
-#: item 15): `(what the index answers, whether the step passes)`. A 404 is a
-#: version with no file yet, and a version listed with no file holds no file
-#: either; the verified wheel at its digest, not yanked, is a re-run after an
-#: upload that went through. Every other file refuses, and so does an index
-#: that answers with an error.
+#: item 15): `(what the index answers, what the refusal's `::error::` line
+#: names, or None where the step passes)`. A 404 is a version with no file
+#: yet, and a version listed with no file holds no file either; the verified
+#: wheel at its digest, not yanked, is a re-run after an upload that went
+#: through. Every other file refuses, and so do an index that answers with
+#: an error, a read with no answer or one cut off, and an answer that is not
+#: the index's JSON, each named and never in a traceback (#278).
 EMPTY_INDEX_CASES = {
-    "no-file-of-the-version-yet": (NOT_YET, True),
-    "the-verified-wheel-at-its-digest": (SERVED, True),
-    "the-version-listed-with-no-file": ((200, []), True),
-    "the-verified-wheel-yanked": ((200, [(INDEX_WHEEL, VERIFIED, True)]), False),
+    "no-file-of-the-version-yet": (NOT_YET, None),
+    "the-verified-wheel-at-its-digest": (SERVED, None),
+    "the-version-listed-with-no-file": ((200, []), None),
+    "the-verified-wheel-yanked": ((200, [(INDEX_WHEEL, VERIFIED, True)]), "yanked"),
     "the-wheel-s-name-at-another-digest": (
-        (200, [(INDEX_WHEEL, ANOTHER_DIGEST, False)]), False),
+        (200, [(INDEX_WHEEL, ANOTHER_DIGEST, False)]), ANOTHER_DIGEST),
     "another-file-beside-the-verified-wheel": (
         (200, [(INDEX_WHEEL, VERIFIED, False),
-               (INDEX_SDIST, ANOTHER_DIGEST, False)]), False),
-    "another-file-alone": ((200, [(INDEX_SDIST, ANOTHER_DIGEST, False)]), False),
-    "an-index-error": ((503, []), False),
-    "a-refusal-other-than-404": ((403, []), False),
+               (INDEX_SDIST, ANOTHER_DIGEST, False)]), INDEX_SDIST),
+    "another-file-alone": ((200, [(INDEX_SDIST, ANOTHER_DIGEST, False)]), INDEX_SDIST),
+    "an-index-error": ((503, []), "with HTTP 503"),
+    "a-refusal-other-than-404": ((403, []), "with HTTP 403"),
+    "a-connection-closed-with-no-response": (DROPPED, "could not be read"),
+    "an-answer-cut-off": (CUT_OFF, "could not be read"),
+    "an-answer-that-is-not-json": (NOT_JSON, "is not its JSON API's"),
+    "json-without-the-file-list": (NO_FILE_LIST, "is not its JSON API's"),
 }
 
 
@@ -3256,35 +3805,51 @@ def test_release_upload_the_empty_index_check_passes_no_file_or_the_verified_whe
     it reads the version's JSON once, passes a 404, a version with no file
     and the verified wheel already there at its digest, not yanked, and
     refuses the wheel yanked, the wheel's name at another digest, any other
-    file, and an index that answers with an error."""
-    answer, passes = EMPTY_INDEX_CASES[which]
+    file, an index that answers with an error, a read with no answer or one
+    cut off, and an answer that is not the index's JSON. Each refusal exits 1
+    with an `::error::` line naming it, never a traceback (#278)."""
+    answer, names = EMPTY_INDEX_CASES[which]
     done, reads, _ = run_index_step(tmp_path, name, EMPTY_INDEX_STEP, [answer])
-    assert (done.returncode == 0) == passes, transcript(done)
+    out = done.stdout + done.stderr
+    assert (done.returncode == 0) == (names is None), transcript(done)
     assert reads == [f"/pypi/openrepotools/{INDEX_VERSION}/json"], reads
-    if not passes and answer[0] == 200:
-        assert "::error::" in done.stdout + done.stderr, transcript(done)
+    assert "Traceback (most recent call last)" not in out, transcript(done)
+    if names is not None:
+        assert done.returncode == 1, transcript(done)
+        assert [line for line in out.splitlines()
+                if line.startswith("::error::") and names in line], transcript(done)
 
 
-#: AFTER THE UPLOAD: `(what the index answers, read by read, whether the step
-#: passes, how many reads it makes)`. It reads until the index serves exactly
-#: the verified wheel, through a 404, an empty listing, a server error or a
-#: connection closed with no response, up to 20 reads, and refuses the wheel
-#: yanked, any other file and a client error at once.
+#: AFTER THE UPLOAD: `(what the index answers, read by read, how many reads
+#: the step makes, what its refusal's `::error::` line names, or None where
+#: it passes)`. It reads until the index serves exactly the verified wheel,
+#: through a 404, an empty listing, a server error, a connection closed with
+#: no response, a connection refused, a read that times out or an answer cut
+#: off, up to 20 reads. It refuses at the first read the wheel yanked, a
+#: client error and an answer that is not the index's JSON, and after the 20
+#: an index that never serves exactly the wheel (another file beside it
+#: every time, its digest another every time, or the wheel only at the 21st
+#: read), each named and never in a traceback (#278).
 SERVED_CASES = {
-    "served-at-the-first-read": ([SERVED], True, 1),
-    "not-yet-then-served": ([NOT_YET, SERVED], True, 2),
-    "an-empty-listing-then-served": ([(200, []), SERVED], True, 2),
-    "a-server-error-then-served": ([(503, []), SERVED], True, 2),
-    "a-connection-error-then-served": ([DROPPED, SERVED], True, 2),
-    "served-at-the-twentieth-read": ([NOT_YET] * 19 + [SERVED], True, 20),
-    "served-only-after-twenty-reads": ([NOT_YET] * 20 + [SERVED], False, 20),
+    "served-at-the-first-read": ([SERVED], 1, None),
+    "not-yet-then-served": ([NOT_YET, SERVED], 2, None),
+    "an-empty-listing-then-served": ([(200, []), SERVED], 2, None),
+    "a-server-error-then-served": ([(503, []), SERVED], 2, None),
+    "a-connection-error-then-served": ([DROPPED, SERVED], 2, None),
+    "a-refused-connection-then-served": ([REFUSED, SERVED], 2, None),
+    "a-timed-out-read-then-served": ([TIMED_OUT, SERVED], 2, None),
+    "an-answer-cut-off-then-served": ([CUT_OFF, SERVED], 2, None),
+    "served-at-the-twentieth-read": ([NOT_YET] * 19 + [SERVED], 20, None),
+    "served-only-after-twenty-reads": ([NOT_YET] * 20 + [SERVED], 20, "after 20 reads"),
     "another-file-beside-it-every-time": (
         [(200, [(INDEX_WHEEL, VERIFIED, False),
-                (INDEX_SDIST, ANOTHER_DIGEST, False)])], False, 20),
+                (INDEX_SDIST, ANOTHER_DIGEST, False)])], 20, INDEX_SDIST),
     "another-digest-every-time": (
-        [(200, [(INDEX_WHEEL, ANOTHER_DIGEST, False)])], False, 20),
-    "served-yanked": ([(200, [(INDEX_WHEEL, VERIFIED, True)])], False, 1),
-    "a-refusal-other-than-404": ([(403, [])], False, 1),
+        [(200, [(INDEX_WHEEL, ANOTHER_DIGEST, False)])], 20, ANOTHER_DIGEST),
+    "served-yanked": ([(200, [(INDEX_WHEEL, VERIFIED, True)])], 1, "yanked"),
+    "a-refusal-other-than-404": ([(403, [])], 1, "with HTTP 403"),
+    "an-answer-that-is-not-json": ([NOT_JSON], 1, "is not its JSON API's"),
+    "json-without-the-file-list": ([NO_FILE_LIST], 1, "is not its JSON API's"),
 }
 
 
@@ -3297,17 +3862,39 @@ def test_release_upload_the_served_check_reads_until_the_verified_wheel_is_serve
         tmp_path, name, which):
     """THE SERVED-DIGEST CHECK, RUN against a fake index, in each upload job:
     it keeps reading, 15 seconds apart, up to 20 reads, through a read that
-    fails with no HTTP status, until the index serves exactly the verified
-    wheel, and passes then; it refuses an index that never does, the wheel
-    yanked, and a client error."""
-    answers, passes, count = SERVED_CASES[which]
+    fails with no HTTP status (a connection closed with no response, one
+    refused, which urllib raises as a `URLError` that has no status, or one
+    that times out, which it raises as a bare `TimeoutError`) or is cut off,
+    until the index serves exactly the verified wheel, and passes then; it
+    refuses an index that never does, the wheel yanked, a client error, and
+    an answer that is not the index's JSON. Each refusal exits 1 with an
+    `::error::` line naming it, never a traceback (#278)."""
+    answers, count, names = SERVED_CASES[which]
+    if TIMED_OUT in answers and sys.version_info < (3, 10):
+        pytest.skip("a read that times out raises `socket.timeout` before "
+                    "Python 3.10, which is not the `TimeoutError` the step "
+                    "catches; the upload jobs run on the runner's 3.12")
     done, reads, sleeps = run_index_step(tmp_path, name, SERVED_STEP, answers)
-    assert (done.returncode == 0) == passes, transcript(done)
+    out = done.stdout + done.stderr
+    assert (done.returncode == 0) == (names is None), transcript(done)
     assert reads == [f"/pypi/openrepotools/{INDEX_VERSION}/json"] * count, (
         f"{len(reads)} reads, not {count}: {reads}")
     assert set(sleeps) <= {"15"}, sleeps
-    if passes:
+    assert "Traceback (most recent call last)" not in out, transcript(done)
+    if names is None:
         assert len(sleeps) == count - 1, sleeps
+    else:
+        assert done.returncode == 1, transcript(done)
+        assert [line for line in out.splitlines()
+                if line.startswith("::error::") and names in line], transcript(done)
+    if REFUSED in answers:
+        assert "<urlopen error" in done.stdout, (
+            "a refused read is a `URLError`, which the step prints as "
+            f"`<urlopen error ...>`:\n{transcript(done)}")
+    if TIMED_OUT in answers:
+        assert "did not answer yet (timed out)" in done.stdout, (
+            "a read that times out is a bare `TimeoutError`, which the step "
+            f"prints as `(timed out)`:\n{transcript(done)}")
 
 
 # --- the install check ---------------------------------------------------------------
@@ -3647,18 +4234,30 @@ FINGERPRINT_LINES = (
 #: `--install`, run a second time under Apple's `/bin/bash` 3.2, and different
 #: only where it must be. Each difference allowed, in order: `(the offline
 #: --install's lines, the macOS rerun's lines)`. Its own home and offline
-#: directory; the bash it runs under, which must print a `BASH_VERSION` of
-#: 3.2; `/bin` first on the `--install`'s PATH; its own output files; and
-#: refusals that name that bash. The skip line, the count line, the receipt's
-#: 28 rows and the link's fingerprint are the offline --install's own.
+#: directory, and A BIN DIRECTORY OF ITS OWN holding pipx's link, its value
+#: copied (#278), so that it places the sixteen commands rather than find
+#: them already installed; the bash it runs under, which must print a
+#: `BASH_VERSION` of 3.2; `/bin` first on the `--install`'s PATH; its own
+#: output files; its count line naming its bin directory; the check that all
+#: sixteen were placed there; a second `--install` into that bin directory,
+#: with the check that it found all sixteen already installed and unchanged,
+#: so that the placing loop's other arm runs under 3.2 as well (#278); and
+#: refusals that name that bash. The skip line, the receipt's 28 rows and the
+#: link's fingerprint are the offline --install's own.
 MACOS_RERUN_LINES = (
     (['home="$RUNNER_TEMP/install-home"',
-      'offline="$RUNNER_TEMP/offline-bin"'],
+      'offline="$RUNNER_TEMP/offline-bin"',
+      'mkdir "$home" "$offline"'],
      ['home="$RUNNER_TEMP/install-home-bin-bash"',
-      'offline="$RUNNER_TEMP/offline-bin-bin-bash"']),
+      'offline="$RUNNER_TEMP/offline-bin-bin-bash"',
+      'bin_dir="$RUNNER_TEMP/bin-bin-bash"',
+      'mkdir "$home" "$offline" "$bin_dir"']),
+    (['link="$PIPX_BIN_DIR/openRepoTools"'],
+     ['ln -s "$(readlink "$PIPX_BIN_DIR/openRepoTools")" "$bin_dir/openRepoTools"',
+      'link="$bin_dir/openRepoTools"']),
     ([],
      ['# shellcheck disable=SC2016',
-      'version="$(env -i PATH="/bin:$offline:$PIPX_BIN_DIR:$PATH" bash -c '
+      'version="$(env -i PATH="/bin:$offline:$bin_dir:$PATH" bash -c '
       '\'printf "%s\\n" "$BASH_VERSION"\')"',
       'echo "BASH_VERSION $version, from the bash first on PATH=/bin:..."',
       'case "$version" in',
@@ -3669,14 +4268,18 @@ MACOS_RERUN_LINES = (
       '    exit 1',
       '    ;;',
       'esac']),
-    (['env -i HOME="$home" PATH="$offline:$PIPX_BIN_DIR:$PATH" \\'],
-     ['env -i HOME="$home" PATH="/bin:$offline:$PIPX_BIN_DIR:$PATH" \\']),
-    (['    "$link" --install > "$RUNNER_TEMP/install.out" 2> '
+    (['env -i HOME="$home" PATH="$offline:$PIPX_BIN_DIR:$PATH" \\',
+      '    OPENREPOTOOLS_BIN_DIR="$PIPX_BIN_DIR" '
+      'OPENREPOTOOLS_REPO=offline.invalid/sentinel \\',
+      '    "$link" --install > "$RUNNER_TEMP/install.out" 2> '
       '"$RUNNER_TEMP/install.err" ||',
       '    status=$?',
       'cat "$RUNNER_TEMP/install.out"',
       'cat "$RUNNER_TEMP/install.err" >&2'],
-     ['    "$PIPX_BIN_DIR/openRepoTools" --install > '
+     ['env -i HOME="$home" PATH="/bin:$offline:$bin_dir:$PATH" \\',
+      '    OPENREPOTOOLS_BIN_DIR="$bin_dir" '
+      'OPENREPOTOOLS_REPO=offline.invalid/sentinel \\',
+      '    "$bin_dir/openRepoTools" --install > '
       '"$RUNNER_TEMP/install-bin-bash.out" \\',
       '    2> "$RUNNER_TEMP/install-bin-bash.err" || status=$?',
       'cat "$RUNNER_TEMP/install-bin-bash.out"',
@@ -3684,6 +4287,9 @@ MACOS_RERUN_LINES = (
     (['  echo "::error::the offline --install exited $status"'],
      ['  echo "::error::the offline --install under /bin/bash $version exited '
       '$status"']),
+    (['count="openRepoTools: 16 of 17 placed in $PIPX_BIN_DIR, and 1 left to '
+      'pipx"'],
+     ['count="openRepoTools: 16 of 17 placed in $bin_dir, and 1 left to pipx"']),
     (['  seen="$(grep -cFx -e "$line" "$RUNNER_TEMP/install.out" || true)"'],
      ['  seen="$(grep -cFx -e "$line" "$RUNNER_TEMP/install-bin-bash.out" || '
       'true)"']),
@@ -3691,6 +4297,37 @@ MACOS_RERUN_LINES = (
       '$line"'],
      ['    echo "::error::--install under /bin/bash $version printed this line '
       '$seen times, not once: $line"']),
+    ([],
+     ['placed="$(grep -cF -e ": installed at $bin_dir/" '
+      '"$RUNNER_TEMP/install-bin-bash.out" || true)"',
+      'if [ "$placed" -ne 16 ]; then',
+      '  echo "::error::--install under /bin/bash $version placed $placed '
+      'commands in $bin_dir, not all 16"',
+      '  exit 1',
+      'fi',
+      'status=0',
+      'env -i HOME="$home" PATH="/bin:$offline:$bin_dir:$PATH" \\',
+      '    OPENREPOTOOLS_BIN_DIR="$bin_dir" '
+      'OPENREPOTOOLS_REPO=offline.invalid/sentinel \\',
+      '    "$bin_dir/openRepoTools" --install > '
+      '"$RUNNER_TEMP/install-bin-bash-again.out" \\',
+      '    2> "$RUNNER_TEMP/install-bin-bash-again.err" || status=$?',
+      'cat "$RUNNER_TEMP/install-bin-bash-again.out"',
+      'cat "$RUNNER_TEMP/install-bin-bash-again.err" >&2',
+      'if [ "$status" -ne 0 ]; then',
+      '  echo "::error::the second offline --install under /bin/bash $version '
+      'exited $status"',
+      '  exit 1',
+      'fi',
+      'unchanged="$(grep -F -e ": already installed at $bin_dir/" '
+      '"$RUNNER_TEMP/install-bin-bash-again.out" | grep -cF \' (unchanged)\' '
+      '|| true)"',
+      'if [ "$unchanged" -ne 16 ]; then',
+      '  echo "::error::the second --install under /bin/bash $version found '
+      '$unchanged commands already installed and unchanged in $bin_dir, not '
+      'all 16"',
+      '  exit 1',
+      'fi']),
     (['  echo "::error::--install wrote no receipt at $receipt"'],
      ['  echo "::error::--install under /bin/bash $version wrote no receipt at '
       '$receipt"']),
@@ -3699,8 +4336,8 @@ MACOS_RERUN_LINES = (
      ['  echo "::error::under /bin/bash $version the receipt has $lines lines '
       'and $rows rows, not 28"']),
     (['  echo "::error::--install changed pipx\'s link at $link"'],
-     ['  echo "::error::--install under /bin/bash $version changed pipx\'s link '
-      'at $link"']),
+     ['  echo "::error::--install under /bin/bash $version changed the copy of '
+      'pipx\'s link at $link"']),
 )
 
 #: The offline `--install` step, in either file: the one step of its job, with
@@ -3796,6 +4433,190 @@ def test_release_install_check_the_macos_leg_reruns_under_bin_bash_3_2():
                 and prints and "3.2" in text)
 
     assert [s for s in steps if reruns(run_text(s))], [label(s) for s in steps]
+
+
+def runnable_pipx_venv(pipx_home: Path) -> Path:
+    """pipx's environment of the package as `pipx install` leaves it, and one
+    that RUNS: a real virtual environment (`venv --without-pip`, the standard
+    library alone) holding `package_layout`'s package tree in its own
+    `site-packages`, pip's console script naming its own `bin/python`, and a
+    `pipx_metadata.json`, which `--install` reads only for its existence, as
+    tests/test_package.py's `installed` fixture makes one. Returns the venv."""
+    venv = pipx_home.absolute() / "venvs" / "openrepotools"
+    made = subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)],
+                          capture_output=True, text=True, check=False)
+    assert made.returncode == 0, f"no venv at {venv}:\n{made.stdout}{made.stderr}"
+    asked = subprocess.run(
+        [str(venv / "bin" / "python"), "-I", "-c",
+         "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+        capture_output=True, text=True, check=False)
+    parts = Path(asked.stdout.strip()).resolve().relative_to(venv.resolve()).parts
+    assert asked.returncode == 0 and parts[0] == "lib" and len(parts) == 3, asked
+    layout.package_tree(venv, parts[1])
+    layout.console_script(venv / "bin" / "openRepoTools", str(venv / "bin" / "python"))
+    (venv / "pipx_metadata.json").write_text("{}\n", encoding="utf-8")
+    return venv
+
+
+#: APPLE'S `/bin`, FOR A RUN ON ANY HOST: its `bash` is this host's bash,
+#: reading as 3.2 to the rerun's one question, `bash -c '... $BASH_VERSION'`,
+#: as the 3.9 step is run by this Python reading as 3.9 (`AS_ANOTHER_PYTHON`).
+#: What Apple's bash 3.2 itself makes of `--install` is the macOS leg's to
+#: show, on the runner.
+APPLE_BIN_BASH = r'''#!/bin/sh
+case "$1:$2" in
+-c:*BASH_VERSION*) printf '%s\n' '3.2.57(1)-release'; exit 0 ;;
+esac
+exec @BASH@ "$@"
+'''
+
+#: A command `--install` placed: `<command>: installed at <bin>/<command>`.
+PLACED = re.compile(r"^(\S+): installed at (.+)/\1$", re.M)
+
+#: A command `--install` found in place with its bytes and its mode, as the
+#: rerun's second run finds all sixteen: `<command>: already installed at
+#: <bin>/<command> (unchanged)`.
+UNCHANGED = re.compile(r"^(\S+): already installed at (.+)/\1 \(unchanged\)$", re.M)
+
+#: THE RERUN'S SECOND `--install`, into the bin directory the first one placed
+#: the sixteen commands in (#278): `(the system's tool that a stand-in ahead
+#: of it answers wrongly for one command in that directory, or None; that
+#: command; whether the step passes)`. The placing loop calls `cmp -s` on each
+#: command it finds in place, then `mode_is`, which calls `find -perm`, and
+#: says `already installed at ... (unchanged)` only where the bytes are the
+#: same and the mode is 755. With the system's tools the second run finds all
+#: sixteen so, and the step passes. With a `cmp` that reports one command
+#: different the loop updates it, and with a `find` that prints nothing for
+#: one command, as it does for a mode that is not 755, the loop says `(mode
+#: restored to 755)` of it. Either way only 15 are `(unchanged)`, and the
+#: step must refuse, because its count requires 16. The `find` case is the
+#: one that holds the ` (unchanged)` in that count: the updated command is no
+#: `already installed` line, but the restored one is, so a count of every
+#: `already installed` line would still refuse the first case, at 15, and
+#: pass the second, at 16.
+RERUN_SECOND_RUN = {
+    "all-sixteen-found-already-installed-and-unchanged": (None, None, True),
+    "one-command-the-second-run-would-update": ("cmp", "lane", False),
+    "one-command-whose-mode-the-second-run-would-restore": ("find", "lane", False),
+}
+
+#: THE STAND-INS OF `RERUN_SECOND_RUN`: `(the shell lines of a stand-in that
+#: answers wrongly for the one command `{command}` and hands every other call
+#: to the system's tool; what the second run then says of that command)`. The
+#: placing loop asks `cmp -s <source> <target>`, so the target is the last
+#: argument, and `mode_is` asks `find <target> -maxdepth 0 -perm 755 -print`,
+#: so the target is the first. A `cmp` that exits 1 says the bytes differ, and
+#: a `find` that prints nothing says the mode is not 755.
+RERUN_STAND_INS = {
+    "cmp": ('for last in "$@"; do :; done\n'
+            'case "$last" in */bin-bin-bash/{command}) exit 1 ;; esac\n',
+            "{command}: updated at {bin}/{command}"),
+    "find": ('case "$1" in */bin-bin-bash/{command}) exit 0 ;; esac\n',
+             "{command}: already installed at {bin}/{command} "
+             "(mode restored to 755)"),
+}
+
+
+@NEEDS_UPSTREAM
+@NEEDS_BASH
+@WINDOWS_SKIP
+@pytest.mark.parametrize("which", RERUN_SECOND_RUN)
+def test_release_install_check_the_macos_rerun_places_the_sixteen_commands_in_a_bin_directory_of_its_own(
+        tmp_path, which):
+    """THE OFFLINE `--install`, THEN THE macOS RERUN, RUN as the macOS leg
+    runs them (#278): one `$RUNNER_TEMP` and one `$PIPX_BIN_DIR`, pipx's
+    environment a real venv holding the package with pipx's link to it, and
+    the rerun's `/bin` a directory whose `bash` reads as 3.2 (`APPLE_BIN_BASH`).
+    The offline `--install` places the sixteen commands in pipx's bin
+    directory. The rerun places the same sixteen again, each `installed at`
+    and none `already installed`, in a bin directory of its own named by its
+    count line, and leaves pipx's bin directory as it was. In pipx's bin
+    directory, as before #278, it would find all sixteen already installed
+    and place none under 3.2. The rerun then runs `--install` a second time
+    into that bin directory, and the placing loop's other arm, under the same
+    bash, must find all sixteen `already installed at ... (unchanged)`: the
+    step passes. Where one command is reported different, or its mode is not
+    755 (`RERUN_SECOND_RUN`), the second run updates it, or says `(mode
+    restored to 755)` of it, 15 are unchanged, and the step exits 1 naming
+    that count."""
+    wrong, differs, passes = RERUN_SECOND_RUN[which]
+    workflow = release()
+    steps = install_steps(workflow)
+    offline = offline_install_step(steps, "release.yml's install job")
+    reruns = [s for s in steps if condition_kind(s.get("if")) == "macos"
+              and SENTINEL.search(run_text(s))]
+    assert len(reruns) == 1, [label(s) for s in reruns]
+    host_bash = shutil.which("bash")
+    apple_bin = tmp_path / "apple-bin"
+    apple_bin.mkdir()
+    (apple_bin / "bash").write_text(
+        APPLE_BIN_BASH.replace("@BASH@", shlex.quote(host_bash)), encoding="utf-8")
+    (apple_bin / "bash").chmod(0o755)
+    if wrong is not None:
+        system = shutil.which(wrong)
+        assert system, f"the case needs the system's {wrong} to hand every other call to"
+        (apple_bin / wrong).write_text(
+            "#!/bin/sh\n" + RERUN_STAND_INS[wrong][0].format(command=differs)
+            + f'exec {shlex.quote(system)} "$@"\n', encoding="utf-8")
+        (apple_bin / wrong).chmod(0o755)
+    text = run_text(reruns[0])
+    assert text.count('PATH="/bin:') == 3, (
+        "the rerun no longer puts /bin first for its version probe and for each of "
+        "its two --install runs")
+    rerun = dict(reruns[0], run=text.replace('PATH="/bin:', f'PATH="{apple_bin}:'))
+    pipx_bin = tmp_path / "pipx" / "bin"
+    pipx_bin.mkdir(parents=True)
+    venv = runnable_pipx_venv(tmp_path / "pipx" / "home")
+    (pipx_bin / "openRepoTools").symlink_to(venv / "bin" / "openRepoTools")
+    runner = Runner(tmp_path / "work", workflow, "install",
+                    {"PIPX_BIN_DIR": str(pipx_bin)})
+
+    first = runner.run(offline)
+    assert first.returncode == 0, transcript(first)
+    placed_first = PLACED.findall(first.stdout)
+    assert len(placed_first) == 16 and {d for _, d in placed_first} == {str(pipx_bin)}, (
+        transcript(first))
+    pipx_s = sorted((p.name, p.lstat().st_ino, p.lstat().st_mtime_ns,
+                     p.lstat().st_ctime_ns) for p in pipx_bin.iterdir())
+
+    again = runner.run(rerun)
+    assert again.returncode == (0 if passes else 1), transcript(again)
+    temp = Path(runner.env["RUNNER_TEMP"])
+    first_run, second_run = (temp / "install-bin-bash.out",
+                             temp / "install-bin-bash-again.out")
+    assert first_run.is_file() and second_run.is_file(), (
+        f"the rerun did not run --install twice:\n{transcript(again)}")
+    placing, finding = (first_run.read_text(encoding="utf-8"),
+                        second_run.read_text(encoding="utf-8"))
+    counts = re.findall(r"^openRepoTools: 16 of 17 placed in (.+), and 1 left to pipx$",
+                        placing, re.M)
+    assert len(counts) == 1 and counts[0] != str(pipx_bin), (
+        f"the rerun placed in pipx's own bin directory, or said nothing:\n"
+        f"{transcript(again)}")
+    placed_again = PLACED.findall(placing)
+    assert sorted(n for n, _ in placed_again) == sorted(n for n, _ in placed_first), (
+        transcript(again))
+    assert {d for _, d in placed_again} == {counts[0]}, transcript(again)
+    assert "already installed at" not in placing, transcript(again)
+    unchanged = UNCHANGED.findall(finding)
+    assert {d for _, d in unchanged} == {counts[0]}, transcript(again)
+    assert not PLACED.findall(finding), (
+        f"the second run placed a command, and found it not there:\n{transcript(again)}")
+    if passes:
+        assert sorted(n for n, _ in unchanged) == sorted(n for n, _ in placed_first), (
+            transcript(again))
+    else:
+        assert sorted(n for n, _ in unchanged) == sorted(
+            n for n, _ in placed_first if n != differs), transcript(again)
+        says = RERUN_STAND_INS[wrong][1].format(command=differs, bin=counts[0])
+        assert says in finding, transcript(again)
+        assert [line for line in again.stdout.splitlines()
+                if line.startswith("::error::")
+                and "found 15 commands already installed and unchanged in "
+                f"{counts[0]}, not all 16" in line], transcript(again)
+    assert sorted((p.name, p.lstat().st_ino, p.lstat().st_mtime_ns,
+                   p.lstat().st_ctime_ns) for p in pipx_bin.iterdir()) == pipx_s, (
+        "the rerun touched pipx's bin directory")
 
 
 @NEEDS_UPSTREAM
@@ -3965,7 +4786,9 @@ PYTHON_3_9_LEG = "<the Python 3.9 leg's own step: its if: is the 3.9 condition>"
 #: action it uses): so a step inserted anywhere, named or not, fails here, as
 #: does one moved or dropped, and a step found by its role can be renamed. An
 #: inserted step could undo a check before it (a step after the stamp writer
-#: that rewrote the stamp, say) while every check still passes on its own.
+#: that rewrote the stamp, say) while every check still passes on its own; the
+#: steps from the stamp writer through the wheel check are also run in order,
+#: and the wheel check refuses that stamp (`test_release_stamp_writer_*_after_it_*`).
 STEP_ORDER = {
     "build": ["actions/checkout", "actions/setup-python", BUILD_GUARD, *BUILD_STEPS,
               "actions/upload-artifact"],
@@ -4097,7 +4920,21 @@ HEADER_CARRIES = (
     # the ref step's fetch needs the code leg public
     "opensoft/openRepoTools-code STAYS PUBLIC: the ref step fetches the tag "
     "from it with no credentials, as the model does, and the migration "
-    "creates it public.")
+    "creates it public.",
+    # Brett Heap's acts as the header words them: each environment's
+    # settings, how little of them the build reads, and what the ruleset on
+    # the tags `v*` allows. spec.md, contracts/workflows.md and the proposal
+    # state the same settings, so a header sentence that changes here is one
+    # that changes there
+    "The build refuses every dispatch until both environments exist with a "
+    "required reviewer and the deployment limit, and no job reads more of "
+    "these acts than that.",
+    "each with brettheap as the required reviewer, self-review allowed, "
+    "administrators not bypassing, and a deployment limit of exactly one tag "
+    "rule, `v*`.",
+    "Only that a required reviewer is named (any, not brettheap in "
+    "particular) and the limit are checked here (FR-029).",
+    "only the admin role creates, moves or deletes one")
 
 
 @NEEDS_UPSTREAM
@@ -4118,8 +4955,10 @@ def test_release_header_carries_the_six_releasing_sections_in_order():
 def test_release_header_says_what_releasing_needs(phrase):
     """The procedure's commands verbatim, its approval step, the branch and
     tag policy's terms, the rehearsal branch, both repositories and both
-    environments, and the missing pypi.org publisher, the second line of
-    defence."""
+    environments, the missing pypi.org publisher, the second line of
+    defence, and Brett Heap's acts as the header words them: each
+    environment's settings, how little of them the build reads, and what the
+    tag ruleset allows."""
     assert phrase in header(), f"the RELEASING header never says {phrase!r}"
 
 

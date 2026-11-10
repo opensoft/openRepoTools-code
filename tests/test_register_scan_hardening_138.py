@@ -49,7 +49,14 @@ def lane_line(verb: str, lane: str, sid: str, utc: str) -> str:
 
 
 class Register:
-    """One workspace repository: `origin` bare, `wip` its clone."""
+    """One workspace repository: `origin` bare, `wip` its clone, and W.
+
+    THE EXPLICIT SEAM (Amendment 23; the review of opensoft/openRepoTools#282,
+    MUST 5): every case writes through `wip`, named by `LANES_REPO`, which is
+    where it puts its faults; W, the readers' copy `LANES_WORKSPACE_ROOT` names,
+    is a clone of its own beside it. With `LANES_WORKSPACE_ROOT` at `wip` and
+    no `LANES_REPO`, Amendment 23's routing would send every write to
+    `<wip>-lanes/<lane>/`, away from the faults."""
 
     def __init__(self, tmp: Path):
         self.tmp = tmp
@@ -65,7 +72,7 @@ class Register:
         env.update(HOME=str(self.home), TMPDIR=str(tmp / "tmp"),
                    AGENT_PROTOCOL_ROOT=str(self.home / ".agents"),
                    PROJECTS_ROOT=str(self.home / "projects"),
-                   LANES_WORKSPACE_ROOT=str(self.wip), LANES_WORKSTATION="Eagle",
+                   LANES_WORKSTATION="Eagle",
                    LANES_HOST="Eagle", LANES_CONTAINER="none", LANES_IN_CONTAINER="0",
                    LANES_OS="linux", LANES_NO_GITHUB="1", LANES_INDEX="off",
                    GIT_AUTHOR_NAME="register tests", GIT_AUTHOR_EMAIL="t@example.invalid",
@@ -83,6 +90,9 @@ class Register:
             "repoX-1", lane_line("STARTED", "repoX-1", WRITER_ID, "2026-09-11T00:00:00Z"),
             lane_line("PAUSED", "repoX-1", WRITER_ID, "2026-09-11T01:00:00Z")))
         self.publish("seed the register")
+        self.ws = tmp / "ro" / "wip"
+        self.raw_git("clone", "-q", str(self.origin), str(self.ws))
+        self.env.update(LANES_WORKSPACE_ROOT=str(self.ws), LANES_REPO=str(self.wip))
 
     def raw_git(self, *args: str) -> str:
         return subprocess.run(["git", *args], capture_output=True, text=True,
@@ -175,19 +185,20 @@ def test_a_refusal_in_the_scan_commits_no_peer_edit(reg, act):
     assert reg.dirty().strip() == "M lanes/LANES.md"
 
 
-def test_a_sweep_that_writes_still_captures_the_peer_edit_as_its_own_commit(reg):
-    """The capture moved; it did not go: the peer's edit still lands in its own
-    `LANES(pre-existing@…)` commit and never inside the sweep's."""
-    peer_edit(reg)
+def test_a_sweep_over_a_peer_register_edit_refuses_and_captures_nothing(reg):
+    """The capture moved in #157 4b; Amendment 23 S3 step 4 withdraws it
+    (ratified choice 9, #198 slice 1b). A sweep that would write refuses (2)
+    over a peer's pending register edit, commits nothing, and leaves the edit
+    as it was, for `commit` to commit as its own act. It never lands inside
+    the sweep's commit, which is what the capture was for."""
+    edited = peer_edit(reg)
     before = reg.head()
     result = reg.sweep("repoX-2")
-    assert result.returncode == 0, (result.stdout, result.stderr)
-    subjects = reg.git("log", "--format=%s", f"{before}..HEAD").splitlines()
-    assert len(subjects) == 2, subjects
-    assert subjects[1].startswith("LANES(pre-existing@Eagle)")
-    assert "retire-dormant" in subjects[0]
-    swept = reg.git("show", "--format=", "-U0", "HEAD", "--", "lanes/LANES.md")
-    assert "a peer's half-written cell" not in swept
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert "never swept into another write" in result.stderr
+    assert "captured pre-existing edit" not in result.stderr
+    assert reg.head() == before
+    assert reg.read("lanes/LANES.md") == edited
 
 
 # ------------------------------------------------- #138: retire_rows' scan
@@ -249,12 +260,15 @@ def test_item_12_a_symlinked_log_path_refuses_and_writes_nothing_through_it(reg)
 def test_item_8_the_retired_line_carries_the_writers_unpushed_newest_transcript(reg):
     """#138 item 8: the writer's uuid came from the PUBLISHED row alone, so a
     sweeping lane whose newest transcript is stamped in this checkout and not
-    yet pushed signed its append-only RETIRED lines with the older one."""
+    yet pushed signed its append-only RETIRED lines with the older one. Under
+    Amendment 23 S3 (#198 slice 1b) a write refuses over an unpushed commit, so
+    the stamp is published first; the RETIRED line must still carry the NEWEST
+    id of the row, never its first."""
     newest = "dddd0138-0004-4000-8000-000000000004"
     text = reg.read("lanes/LANES.md").replace(
         f"| harness `{WRITER_ID}` |", f"| harness `{WRITER_ID}` `{newest}` |")
     reg.write("lanes/LANES.md", text)
-    reg.commit("repoX-1 resumed in a new transcript, not yet pushed")
+    reg.publish("repoX-1 resumed in a new transcript")
     result = reg.sweep("repoX-2")
     assert result.returncode == 0, (result.stdout, result.stderr)
     retired = [line for line in reg.read("lanes/log/repoX-2.md").splitlines()
@@ -589,12 +603,13 @@ def test_item_1_an_unreadable_published_register_refuses_the_sweep(reg):
     from #97) reads the published register and this checkout's row with their
     status and refuses UNKNOWN (1) on either failing. Pinned here, because
     the fence for a live session whose id is only in the published row rests
-    on that refusal: here this checkout's uncommitted edit dropped the id."""
+    on that refusal. (It used to be reached with this checkout's uncommitted
+    edit dropping the id; Amendment 23 S3 now refuses that edit first, choice
+    9, so the published read's failure is pinned on its own.)"""
     live = "cccc0138-0003-4000-8000-000000000003"
     text = reg.read("lanes/LANES.md").replace(f"| `repoX-2` | harness `{OLD_ID}`", f"| `repoX-2` | harness `{live}`")
     reg.write("lanes/LANES.md", text)
     reg.publish("repoX-2 is live in a session here")
-    reg.write("lanes/LANES.md", text.replace(live, OLD_ID))
     reg.live(live)
     reg.refuse_git("show origin/main:lanes/LANES.md")
     before = reg.head()
@@ -603,3 +618,46 @@ def test_item_1_an_unreadable_published_register_refuses_the_sweep(reg):
     assert "is UNKNOWN" in result.stderr
     assert reg.head() == before
     assert not (reg.wip / "lanes/log/repoX-2.md").exists()
+
+
+# ------------------------------------- Amendment 23's routing, by default resolution
+
+def test_a_routed_sweep_over_a_peer_edit_in_W_warns_and_captures_nothing(reg):
+    """SHOULD 4, the default-resolution case of the refusal above (which was
+    the capture until slice 1b). Under
+    `LANES_ROUTE_WRITES=1` with W resolved from its root and no `LANES_REPO`,
+    the sweep goes through the sweeping lane's own checkout, so nothing
+    captures the peer's edit in W. Since the re-review's N2 only `commit`
+    refuses over it: the sweep WARNS, naming the edit and that checkout,
+    retires the row there, and leaves W's HEAD and the edit as they were."""
+    edited = peer_edit(reg)
+    before = reg.head()
+    result = reg.sweep("repoX-2", LANES_ROUTE_WRITES="1", LANES_REPO="",
+                       LANES_WORKSPACE_ROOT=str(reg.wip))
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert "WARNING" in result.stderr and "uncommitted edit to its register" in result.stderr, result.stderr
+    assert f"{os.path.realpath(reg.wip)}-lanes/repoX-1/lanes/LANES.md" in result.stderr
+    assert reg.head() == before and reg.read("lanes/LANES.md") == edited
+    published = reg.raw_git("--git-dir", str(reg.origin), "show", "main:lanes/LANES.md")
+    assert any(line.startswith("| `repoX-2` |") and "RETIRED" in line for line in published.splitlines()), published
+    assert "a peer's half-written cell" not in published, "the sweep captured nothing"
+    assert (reg.tmp / "wip-lanes" / "repoX-1" / ".git").is_dir(), "it went through the sweeper's checkout"
+
+
+def test_item_9_refuses_in_the_scan_under_the_opt_in_too(reg):
+    """MUST 5's seam, under the routing: with `LANES_ROUTE_WRITES=1` the
+    sweep still writes through `wip`, where the case puts its fault, and so
+    still refuses in the scan. Had the fixture left W at `wip`, the sweep
+    would go through `<wip>-lanes/repoX-1/`, never see the fault, and push."""
+    logs = reg.wip / "lanes" / "log"
+    before = reg.head()
+    logs.chmod(0)
+    try:
+        result = reg.sweep("repoX-2", LANES_ROUTE_WRITES="1")
+    finally:
+        logs.chmod(0o755)
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "exists and could not be listed" in result.stderr
+    assert reg.head() == before
+    assert reg.dirty() == ""
+    assert not (reg.tmp / "wip-lanes").exists(), "no lane checkout was made beside wip"

@@ -275,12 +275,24 @@ mkdir -p "$HOME/projects" "$TMPDIR" "$SANDBOX/fakebin"
 export PATH="$SANDBOX/fakebin:$PATH"
 export CLAUDE_CONFIG_DIR="$HOME/.claude"
 # `LANES_WORKSPACE_ROOT` joins the list Amendment 9(a) made it part of: with
-# every seam unset, the DEFAULT resolution — `$AGENT_PROTOCOL_ROOT/workspace.yaml`
-# — is what every case below exercises, which is the whole point of unsetting
-# them. `AGENT_PROTOCOL_ROOT` is then re-exported into the sandbox, two lines
+# every seam unset, the resolution through `$AGENT_PROTOCOL_ROOT/workspace.yaml`
+# is what finds W for every case below — and, since Amendment 23, the cases
+# write through the ONE seam set back further down, `LANES_REPO=$WIP`.
+# `AGENT_PROTOCOL_ROOT` is then re-exported into the sandbox, two lines
 # down, so the default finds the sandbox's file and never the operator's.
 unset LANES_FILE LANES_EDIT LANES_REPO LANES_PATH LANES_LANE LANES_WORKSPACE_ROOT \
-      LANES_REPOS_TSV LANES_REPOS_TSV_SHIPPED PROJECTS_ROOT CLAUDE_PROJECTS_DIR CLAUDE_BIN CLAUDE_NO_LANE 2>/dev/null
+      LANES_REPOS_TSV LANES_REPOS_TSV_SHIPPED PROJECTS_ROOT CLAUDE_PROJECTS_DIR CLAUDE_BIN CLAUDE_NO_LANE \
+      LANES_DIR LANES_NO_FETCH LANES_NO_GIT LANES_GIT LANES_SESSION 2>/dev/null
+# AND EVERY OTHER `LANES_*` AND `TMUX*` THE CALLER'S SHELL CARRIES (opensoft/
+# openRepoTools#193 item 25; lane openRepoTools-3's condition on act 2's seam,
+# ort186 Q9). A launched lane exports `LANES_REPO` and `LANES_WORKSPACE_ROOT`
+# into every shell it starts, and Amendment 23 adds two internal markers, so a
+# run from inside a lane window would otherwise read — and write — the real
+# register. The names above stay spelled out; this catches the ones nobody has
+# named yet. The suite sets its own `TMUX`, `LANES_WORKSTATION` and seam below.
+for a23_var in $(compgen -v); do
+  case "$a23_var" in LANES_*|TMUX*) unset "$a23_var" 2>/dev/null ;; esac
+done
 export AGENT_PROTOCOL_ROOT="$HOME/.agents"
 mkdir -p "$AGENT_PROTOCOL_ROOT"
 # THE ONE `LANES_*` SEAM THIS SUITE SETS RATHER THAN UNSETS, for the reason the
@@ -688,11 +700,39 @@ export PATH="$SANDBOX/fakebin:$OPENREPOTOOLS_BIN_DIR:$PATH"
 ORIGIN="$SANDBOX/origin.git"
 WIP="$HOME/projects/brett-wip"
 git init -q --bare -b main "$ORIGIN"
+git -C "$ORIGIN" config gc.auto 0; git -C "$ORIGIN" config maintenance.auto false
 git clone -q "$ORIGIN" "$WIP" 2>/dev/null
 git -C "$WIP" config user.email "test@example.invalid"
 git -C "$WIP" config user.name  "lane helper tests"
+git -C "$WIP" config gc.auto 0; git -C "$WIP" config maintenance.auto false
 mkdir -p "$WIP/lanes" "$WIP/handoffs"
 printf '# handoffs — one directory per estate\n' > "$WIP/handoffs/README.md"
+
+# AMENDMENT 23 — THE SUITE WRITES THROUGH THE EXPLICIT `LANES_REPO` SEAM, and
+# `$WIP` is that checkout (S2.1: "the test seam … with S3–S5 applying in it").
+# Every assertion below on `$WIP` stands because every write still lands
+# there: an explicit `LANES_REPO` is honoured in place. The workspace checkout
+# W that `workspace.yaml` names is now a SEPARATE checkout path, because S5
+# refuses a write whose `LANES_REPO` is W itself — and it sits outside
+# `$HOME/projects`, so the projects root every listing case reads is the one it
+# always was. `LANES_FILE` goes beside `LANES_REPO` for `lane-start` and
+# `lane-end`, which take the register from W whenever `LANES_FILE` is empty.
+# Amendment 23's own behaviour, with the DEFAULT resolution, is proven in
+# `tests/test_a23_*.py` (lane openRepoTools-3's ruling on ort186 Q9).
+#
+# W IS A SECOND VIEW OF `$WIP`'S OWN REPOSITORY, not a clone of its own: its
+# `.git` is a gitfile naming `$WIP/.git`, and its `lanes`, `handoffs` and
+# `.gitignore` are links into `$WIP`. So every tool that reads W ITSELF rather
+# than `LANES_REPO` — `lane-worktrees` greps W's `origin/main`, `workspace-root`
+# answers W — reads exactly what it read when W was `$WIP`, while S5's test,
+# which compares the two CHECKOUT paths, sees two. Nothing in this suite writes
+# W, and nothing may: it shares `$WIP`'s index.
+WIP_RO="$SANDBOX/ro/brett-wip"
+mkdir -p "$WIP_RO"
+printf 'gitdir: %s\n' "$(cd -P -- "$WIP" && pwd -P)/.git" > "$WIP_RO/.git"
+ln -s "$WIP/lanes" "$WIP_RO/lanes"
+ln -s "$WIP/handoffs" "$WIP_RO/handoffs"
+ln -s "$WIP/.gitignore" "$WIP_RO/.gitignore"
 
 # THE POINTER FILE, which is the whole of the new resolution (Amendment 9(a)).
 # `repository:` is the sandbox's own bare origin rather than a GitHub slug, and
@@ -700,8 +740,12 @@ printf '# handoffs — one directory per estate\n' > "$WIP/handoffs/README.md"
 # a non-GitHub origin is checked exactly as a GitHub one is.
 {
   printf 'repository: %s\n' "$ORIGIN"
-  printf 'path: %s\n' "$WIP"
+  printf 'path: %s\n' "$WIP_RO"
 } > "$AGENT_PROTOCOL_ROOT/workspace.yaml"
+# The REAL spelling, as the resolver's `pwd -P` gave every helper W before.
+LANES_REPO="$(cd -P -- "$WIP" && pwd -P)"
+export LANES_REPO
+export LANES_FILE="$LANES_REPO/lanes/LANES.md"
 
 LANES="$WIP/lanes/LANES.md"
 {
@@ -711,6 +755,14 @@ LANES="$WIP/lanes/LANES.md"
 } > "$LANES"
 
 add_seed_row() { printf '%s\n' "$1" >> "$LANES"; }
+# A FIXTURE COMMIT IN THE SHARED CHECKOUT IS PUBLISHED AT ONCE (#198, slice
+# 1b). Before Amendment 23 S3 the next lanes-edit.sh write pulled it onto its
+# own and pushed both — the carry S3 withdrew. Every write now refuses over a
+# commit origin lacks, so a fixture that commits here pushes too.
+wip_publish() {
+  git -C "$WIP" pull -q --rebase origin main >/dev/null 2>&1 || :
+  git -C "$WIP" push -q origin main >/dev/null 2>&1 || :
+}
 
 # repoA-1  a lane whose session has ENDED — free, and resumable
 # repoA-2  the same, with no transcript of its own
@@ -1598,90 +1650,51 @@ has  "…printing who holds it" "$out" "HOLDS    lane repoE-1"
 has  "…and refusing in Rule 1's words" "$err" "stops and reports"
 hasnt "…and writing nothing to the taker's log" "$(cat "$LOGD/repoF-1.md")" "opensoft/repoE#21"
 
-# A claim is decided by which CLAIMED LANDS first, and a rebase is what makes
-# that decidable — so a checkout that cannot be rebased is refused outright.
+# AMENDMENT 23 S3, RATIFIED CHOICE 8 (#198 slice 1b). A claim used to refuse a
+# checkout with any other tracked file dirty, because that file blocked the
+# `pull --rebase` that decided the race. No writer pulls now: the race is
+# decided by push order and S4's replay, so a peer's unstaged change elsewhere
+# refuses only where the fast-forward would overwrite it.
 printf '# a peer left this here mid-write\n' >> "$WIP/handoffs/README.md"
 run env LANES_LANE=repoE-1 "$E" claim "opensoft/repoE#30" --no-github
-is   "claim refuses on a checkout that cannot be rebased" "$rc" 2
-has  "…naming the offending file" "$err" "handoffs/README.md"
-has  "…and why it matters" "$err" "the race cannot be run safely here"
+is   "a peer's file mid-write elsewhere no longer refuses a claim (choice 8)" "$rc" 0
+has  "…the claim is written to the lane's own log" "$(cat "$LOGD/repoE-1.md")" ", opensoft/repoE#30"
+is   "…and the peer's file is left exactly as it was found" "$(git -C "$WIP" status --porcelain -- handoffs/README.md | awk '{print $1}')" "M"
+hasnt "…never committed" "$(git -C "$WIP" show --name-only --format= HEAD)" "handoffs/README.md"
 git -C "$WIP" checkout -q -- handoffs/README.md
-run env LANES_LANE=repoE-1 "$E" claim "opensoft/repoE#30" --no-github
-is   "…and takes the claim once the tree is clean again" "$rc" 0
 
-# R11 (Addendum 3) — the guard TOLERATES a peer's uncommitted REGISTER edit.
-# `lanes/LANES.md` is dirty in this shared checkout for much of the day: the
-# register takes ~500 commits a day and a half-written row is what one of them
-# looks like a second before it lands, so refusing every claim on it would push
-# lanes to stop using the tool. `claim`, `release` and `log` take the helper's
-# existing pre-existing capture for the register FIRST — its own attributed
-# commit, with the same warning every register write already prints — and only
-# then re-test the checkout. What F1 fixed is untouched: the register never
-# reaches commit_push dirty, so Amendment 5(d)'s skip-the-pull branch — the one
-# that disables the rescan deciding the race — is still unreachable from all
-# three.
+# RATIFIED CHOICE 9: A PENDING HAND EDIT OF THE REGISTER REFUSES EVERY WRITER BUT
+# `commit`, with nothing written. R11 (Addendum 3) captured it instead, as a
+# `LANES(pre-existing@…)` commit of the peer's line; that capture is withdrawn
+# for every writer — the register's own pathspec writers (a LANDING) included —
+# because the edit may be a peer's in this shared checkout, and it is committed
+# by its own act.
 before_rev="$(git -C "$WIP" rev-parse HEAD)"
 printf 'a peer left this register line uncommitted\n' >> "$LANES"
 run env LANES_LANE=repoE-1 "$E" claim "opensoft/repoE#31" --no-github
-is   "a dirty lanes/LANES.md no longer refuses a claim: it is CAPTURED first" "$rc" 0
-has  "…warning that the content is not this invocation's" "$err" "not this invocation's"
-has  "…and capturing it as its own attributed commit" "$err" "captured pre-existing edit"
-has  "…while the claim itself is written to the lane's own log" "$(cat "$LOGD/repoE-1.md")" ", opensoft/repoE#31"
-is   "…leaving the register clean behind it" "$(git -C "$WIP" status --porcelain -- lanes/LANES.md | grep -c .)" 0
-is   "…as TWO commits, never one" "$(git -C "$WIP" rev-list --count "$before_rev..HEAD")" 2
-has  "…the capture the older of the two" "$(git -C "$WIP" log --format=%s "$before_rev..HEAD" | tail -n1)" "LANES(pre-existing@"
-is   "…carrying the register and nothing else" "$(git -C "$WIP" show --name-only --format= 'HEAD~1')" "lanes/LANES.md"
-has  "…and the peer's own line, attributed to nobody else" "$(git -C "$WIP" show 'HEAD~1')" "+a peer left this register line uncommitted"
-has  "…the claim the newer" "$(git -C "$WIP" log --format=%s -n1 HEAD)" "LOG(repoE-1@"
-is   "…carrying the lane's log and nothing else" "$(git -C "$WIP" show --name-only --format= HEAD)" "lanes/log/repoE-1.md"
-
-printf 'and a second peer line, still uncommitted\n' >> "$LANES"
+is   "a dirty lanes/LANES.md refuses a claim (choice 9)" "$rc" 2
+has  "…naming the act that commits it" "$err" "commit \"<what the edit is>\""
+has  "…with nothing written" "$err" "Nothing was written."
+hasnt "…and no capture" "$err" "captured pre-existing edit"
+hasnt "…so no line in the lane's log" "$(cat "$LOGD/repoE-1.md")" "opensoft/repoE#31"
+is   "…and no commit at all" "$(git -C "$WIP" rev-parse HEAD)" "$before_rev"
+is   "…the peer's register edit left exactly as it was found" "$(git -C "$WIP" status --porcelain -- lanes/LANES.md | awk '{print $1}')" "M"
 run env LANES_LANE=repoE-1 "$E" log OPENED "opensoft/repoE#32" --no-github
-is   "log takes the same capture and proceeds" "$rc" 0
-has  "…capturing the peer's line first" "$err" "captured pre-existing edit"
-has  "…and writing its own line" "$(cat "$LOGD/repoE-1.md")" ", opensoft/repoE#32"
-printf 'and a third peer line, still uncommitted\n' >> "$LANES"
-run env LANES_LANE=repoE-1 "$E" release "opensoft/repoE#31" "capture then release" --no-github
-is   "release does too" "$rc" 0
-has  "…capturing first" "$err" "captured pre-existing edit"
-has  "…and writing the RELEASED line" "$(cat "$LOGD/repoE-1.md")" ", opensoft/repoE#31 — capture then release"
-
-# …and ANYTHING ELSE is still a refusal, exit 2. That refusal is taken BEFORE
-# the lock and before the capture, so a write that refuses never leaves a
-# commit of somebody else's register line behind either.
-before_rev="$(git -C "$WIP" rev-parse HEAD)"
-printf '# a peer left this here mid-write\n' >> "$WIP/handoffs/README.md"
-printf 'and a register line at the same moment\n' >> "$LANES"
-run env LANES_LANE=repoE-1 "$E" claim "opensoft/repoE#35" --no-github
-is   "a dirty file that is NOT the register still refuses a claim" "$rc" 2
-has  "…naming it" "$err" "handoffs/README.md"
-has  "…and why it matters" "$err" "the race cannot be run safely here"
-has  "…with the recovery its own author runs" "$err" "handoff(<lane>@<workstation>)"
-hasnt "…writing nothing to the lane's log" "$(cat "$LOGD/repoE-1.md")" "opensoft/repoE#35"
-is   "…and making no commit at all" "$(git -C "$WIP" rev-parse HEAD)" "$before_rev"
-hasnt "…not even the pre-existing capture: the refusal comes first" "$err" "captured pre-existing edit"
-is   "…so the peer's register edit is left exactly as it was found" "$(git -C "$WIP" status --porcelain -- lanes/LANES.md | awk '{print $1}')" "M"
-run env LANES_LANE=repoE-1 "$E" log OPENED "opensoft/repoE#36" --no-github
-is   "log refuses on the same checkout" "$rc" 2
-run env LANES_LANE=repoE-1 "$E" release "opensoft/repoE#32" "refused, never written" --no-github
+is   "log refuses on it too" "$rc" 2
+run env LANES_LANE=repoE-1 "$E" release "opensoft/repoE#30" "refused, never written" --no-github
 is   "release refuses on it as well" "$rc" 2
-hasnt "…so the release was not written either" "$(cat "$LOGD/repoE-1.md")" "refused, never written"
-git -C "$WIP" checkout -q -- handoffs/README.md
-
-# A LANDING reaches the same place by the other road: the register is one of
-# ITS OWN pathspecs, so the ordinary handle_preexisting call captures it and
-# R11's capture stands aside. One behaviour, two routes, and the register is
-# never left dirty for commit_push either way.
+hasnt "…so the release was not written" "$(cat "$LOGD/repoE-1.md")" "refused, never written"
 run env LANES_LANE=repoE-1 "$E" log LANDING "opensoft/repoE#41" --no-github
-is   "a LANDING still writes with a dirty register: that file is one of ITS pathspecs" "$rc" 0
-has  "…capturing the peer's line as its own commit first" "$err" "captured pre-existing edit"
-run env LANES_LANE=repoE-1 "$E" log LANDED "opensoft/repoE#41" "→" "def5678"
-is   "…and its LANDED closes it again" "$rc" 0
-printf '# a peer left this here mid-write\n' >> "$WIP/handoffs/README.md"
-run env LANES_LANE=repoE-1 "$E" log LANDING "opensoft/repoE#42" --no-github
-is   "…while an UNRELATED dirty file refuses a LANDING too: the exemption is those two paths and no others" "$rc" 2
-has  "…naming it" "$err" "handoffs/README.md"
-git -C "$WIP" checkout -q -- handoffs/README.md
+is   "a LANDING, whose own pathspec the register is, refuses too" "$rc" 2
+is   "…still with no commit" "$(git -C "$WIP" rev-parse HEAD)" "$before_rev"
+run env LANES_LANE=repoE-1 "$E" commit "a peer's register line, committed by its own act"
+is   "commit is the act that commits it" "$rc" 0
+is   "…as ONE commit" "$(git -C "$WIP" rev-list --count "$before_rev..HEAD")" 1
+has  "…under its own subject" "$(git -C "$WIP" log --format=%s -n1 HEAD)" "a peer's register line, committed by its own act"
+is   "…published" "$(git -C "$WIP" rev-parse HEAD)" "$(git -C "$WIP" rev-parse refs/remotes/origin/main)"
+is   "…and the register is clean behind it" "$(git -C "$WIP" status --porcelain -- lanes/LANES.md | grep -c .)" 0
+run env LANES_LANE=repoE-1 "$E" release "opensoft/repoE#30" "released once the register is clean" --no-github
+is   "…and the release goes through once it is" "$rc" 0
 
 # --------------------------------------------------- the cross-repo warning
 
@@ -1997,7 +2010,7 @@ esac
 exec "${REAL_GIT:?}" "$@"
 FAKE
 chmod +x "$SANDBOX/r67-gitfail/git"
-r67()  { env LANES_WORKSPACE_ROOT="$R67_WIP" LANES_LANE=repo67-2 LANES_SESSION="$DEAD_ID" "$@"; }
+r67()  { env LANES_REPO="$R67_WIP" LANES_FILE="$R67_WIP/lanes/LANES.md" LANES_LANE=repo67-2 LANES_SESSION="$DEAD_ID" "$@"; }
 r67x() { r67 env PATH="$SANDBOX/r67-gitfail:$PATH" REAL_GIT="$(command -v git)" "$@"; }
 R67_PS="$(printf '%s\t%s\t%s' 900671 1 "claude --session-id $R67_ID --fork-session --resume /nonexistent/projects/$R67_ID.jsonl")"
 
@@ -2089,9 +2102,22 @@ has  "…writing a RELEASED line carrying the reason" "$(cat "$LOGD/repoE-1.md")
 # ---------------------------------------------------------- CLAIM-LOST
 #
 # The race is decided by which CLAIMED LANDS on main first. The peer commits
-# and pushes; this lane's fetch is deferred, so its pre-check sees a main that
-# does not yet carry the peer's line — and the peer's claim arrives exactly
-# where it arrives in life: in the rebase inside its own push.
+# and does NOT push; `race-at-push`, this claim's `LANES_GIT`, pushes the
+# peer's commit at the moment this claim pushes. So the pre-check and S3's
+# fetch both read a main without the peer's line, this claim's push is refused,
+# and the replay on origin's new tip (Amendment 23 S4) rescans FIRST and finds
+# it — exactly where a rival arrives in life. (Before #198's slice 1b this used
+# `LANES_NO_FETCH=1`, which S3 now refuses for every writer: ratified choice 2.)
+cat > "$SANDBOX/race-at-push" <<'RACE'
+#!/usr/bin/env bash
+# At the helper's FIRST push only: the peer's prepared commits land first.
+case " $* " in *" push "*)
+  if [ ! -e "$RACE_MARK" ]; then : > "$RACE_MARK"; git -C "$RACE_CLONE" push -q origin main; fi ;;
+esac
+exec git "$@"
+RACE
+chmod +x "$SANDBOX/race-at-push"
+race() { env LANES_GIT="$SANDBOX/race-at-push" RACE_CLONE="$CLONE2" RACE_MARK="$SANDBOX/race.$1" "${@:2}"; }
 CLONE2="$SANDBOX/clone2"
 git clone -q "$ORIGIN" "$CLONE2" 2>/dev/null
 git -C "$CLONE2" config user.email "peer@example.invalid"
@@ -2102,10 +2128,10 @@ mkdir -p "$CLONE2/lanes/log"
 } > "$CLONE2/lanes/log/repoH-2.md"
 git -C "$CLONE2" add -- lanes/log/repoH-2.md
 git -C "$CLONE2" commit -q -m "LOG(repoH-2@Raven): CLAIMED opensoft/repoH#4"
-git -C "$CLONE2" push -q origin main
 
-run env LANES_LANE=repoH-1 LANES_NO_FETCH=1 "$E" claim "opensoft/repoH#4" --no-github
+run race h4 env LANES_LANE=repoH-1 "$E" claim "opensoft/repoH#4" --no-github
 is   "a claim whose rival landed first exits 7" "$rc" 7
+has  "…found by the replay of its refused push (Amendment 23 S4)" "$err" "push refused (attempt 1 of 6)"
 has  "…naming the lane that landed first" "$err" "another lane's claim landed on main before this one: @repoH-2"
 has  "…and citing Rule 1 rather than queueing" "$err" "stop and report"
 has  "…writing a CLAIM-LOST line in this lane's own log" "$(cat "$LOGD/repoH-1.md")" "CLAIM-LOST — lane repoH-1, session "
@@ -2114,24 +2140,22 @@ run "$E" who "opensoft/repoH#4"
 has  "…and the object is the winner's" "$out" "HOLDS    lane repoH-2"
 is   "…and the loser holds nothing" "$(printf '%s\n' "$out" | grep -c '^HOLDS')" 1
 
-# The winner is whichever rival is ALREADY on the rebased history — the one
-# that LANDED first — and never the earliest timestamp. Two rivals land during
-# one rebase window: repoH-2 lands FIRST carrying the LATER UTC.
+# The winner is whichever rival is ALREADY on origin's new tip — the one that
+# LANDED first — and never the earliest timestamp. Two rivals land at this
+# claim's push, in one push: repoH-2 FIRST in history, carrying the LATER UTC.
 LATE_UTC="$(utc_at +10M)"
 EARLY_UTC="$(utc_at +5M)"
 git -C "$CLONE2" pull -q --rebase origin main 2>/dev/null
 printf 'CLAIMED — lane repoH-2, session %s@Raven, %s, opensoft/repoH#60\n' "$DEAD_ID" "$LATE_UTC" >> "$CLONE2/lanes/log/repoH-2.md"
 git -C "$CLONE2" add -- lanes/log/repoH-2.md
 git -C "$CLONE2" commit -q -m "LOG(repoH-2@Raven): CLAIMED opensoft/repoH#60"
-git -C "$CLONE2" push -q origin main
 { printf '# lane repoH-4 — object log (lane-collision-protocol Amendment 7)\n'
   printf 'CLAIMED — lane repoH-4, session %s@Raven, %s, opensoft/repoH#60\n' "$DEAD_ID" "$EARLY_UTC"
 } > "$CLONE2/lanes/log/repoH-4.md"
 git -C "$CLONE2" add -- lanes/log/repoH-4.md
 git -C "$CLONE2" commit -q -m "LOG(repoH-4@Raven): CLAIMED opensoft/repoH#60"
-git -C "$CLONE2" push -q origin main
 
-run env LANES_LANE=repoH-1 LANES_NO_FETCH=1 "$E" claim "opensoft/repoH#60" --no-github
+run race h60 env LANES_LANE=repoH-1 "$E" claim "opensoft/repoH#60" --no-github
 is   "a claim that two rivals beat to main exits 7" "$rc" 7
 has  "…naming the one that LANDED first" "$err" "@repoH-2"
 hasnt "…never the one whose timestamp is earlier" "$err" "@repoH-4"
@@ -2167,20 +2191,29 @@ is   "--force reads staleness from origin/main too, so a four-hour-old claim wit
 has  "…in Rule 1's own words" "$err" "has since OPENED a PR naming it"
 hasnt "…and no TAKEOVER is written on a claim that is not stale" "$(cat "$LOGD/repoH-1.md")" "opensoft/repoH#51"
 
-# ------------------------- R11 and the race, in the same run (F1's own repro)
+# ------------------------- a dirty register, and then the race (F1's own repro)
 #
-# The two halves together: a rival's CLAIMED is already on `main`, and THIS
-# checkout carries a peer's half-written register line. Before F1 this sequence
-# left an unpushed local CLAIMED and two lanes holding one object; after F1 and
-# before R11 it was an exit-2 refusal on the one file this checkout is dirty in
-# most of the day. Now the capture clears the way, `pull --rebase` runs, the
-# rescan sees the rival, and the loser abandons the claim: one holder, exit 7.
-peer_log_line "CLAIMED — lane repoH-2, session $DEAD_ID@Raven, $(date -u +%Y-%m-%dT%H:%M:%SZ), opensoft/repoH#70" "CLAIMED opensoft/repoH#70"
+# F1's sequence: a rival's CLAIMED lands, and THIS checkout carries a peer's
+# half-written register line. Before F1 it left an unpushed local CLAIMED and
+# two lanes holding one object; R11 then captured the line and raced. Under
+# Amendment 23 S3 (ratified choice 9) the dirty register refuses the claim
+# before anything is read or written, and `commit` is the act that commits it;
+# the race that follows is lost by the claim, with exit 7 and one holder.
 printf 'a peer left this register line uncommitted\n' >> "$LANES"
-run env LANES_LANE=repoH-1 LANES_NO_FETCH=1 "$E" claim "opensoft/repoH#70" --no-github
-is   "a claim raced from a checkout with a dirty register still LOSES, exit 7" "$rc" 7
-has  "…having captured the peer's register line on the way" "$err" "captured pre-existing edit"
-has  "…and naming the lane whose claim landed on main first" "$err" "another lane's claim landed on main before this one: @repoH-2"
+run race h70a env LANES_LANE=repoH-1 "$E" claim "opensoft/repoH#70" --no-github
+is   "a claim from a checkout with a dirty register is refused before it races (choice 9)" "$rc" 2
+has  "…naming the act that commits the register" "$err" "commit \"<what the edit is>\""
+hasnt "…writing nothing in this lane's log" "$(cat "$LOGD/repoH-1.md")" "opensoft/repoH#70"
+is   "…and pushing nothing: the race was never reached" "$(test -e "$SANDBOX/race.h70a" && echo raced || echo quiet)" "quiet"
+run env LANES_LANE=repoH-1 "$E" commit "a peer's register line"
+is   "…the register line goes in by its own act" "$rc" 0
+git -C "$CLONE2" pull -q --rebase origin main 2>/dev/null
+printf 'CLAIMED — lane repoH-2, session %s@Raven, %s, opensoft/repoH#70\n' "$DEAD_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$CLONE2/lanes/log/repoH-2.md"
+git -C "$CLONE2" add -- lanes/log/repoH-2.md
+git -C "$CLONE2" commit -q -m "LOG(repoH-2@Raven): CLAIMED opensoft/repoH#70"
+run race h70 env LANES_LANE=repoH-1 "$E" claim "opensoft/repoH#70" --no-github
+is   "and the claim raced next LOSES, exit 7" "$rc" 7
+has  "…naming the lane whose claim landed on main first" "$err" "another lane's claim landed on main before this one: @repoH-2"
 has  "…writing CLAIM-LOST in this lane's own log" "$(cat "$LOGD/repoH-1.md")" "opensoft/repoH#70 → lane:repoH-2"
 is   "…with the register left clean" "$(git -C "$WIP" status --porcelain -- lanes/LANES.md | grep -c .)" 0
 run "$E" who "opensoft/repoH#70"
@@ -2193,17 +2226,16 @@ has  "…the one that landed first" "$out" "HOLDS    lane repoH-2"
 # change for that verdict to go stale, because a RESUMED line is the LANE's
 # own log, never an event `claim_rescan_hook`'s rival scan reads. repoT-1 is
 # dead exactly as repoL-1 (seeded above); the peer resumes it on the SAME
-# stale-pre-fetch trick the CLAIM-LOST races above use — pushed to origin
-# before this claim runs, but invisible to its own pre-check under
-# LANES_NO_FETCH=1, so the takeover is granted on knowledge that is already
-# out of date by the time its own push loop rebases onto what really landed.
+# `race-at-push` the CLAIM-LOST races above use — landed at this claim's push,
+# so the takeover is granted on knowledge that is out of date by the time the
+# replay of its refused push runs on what really landed, with the takeover it
+# decided on carried across the `exec` (Amendment 23 S4).
 git -C "$CLONE2" pull -q --rebase origin main 2>/dev/null
 printf 'RESUMED — lane repoT-1, session %s@Eagle, %s, lane:repoT-1\n' "$DEAD_ID" "$(utc_at +1M)" >> "$CLONE2/lanes/log/repoT-1.md"
 git -C "$CLONE2" add -- lanes/log/repoT-1.md
 git -C "$CLONE2" commit -q -m "LOG(repoT-1@Eagle): RESUMED"
-git -C "$CLONE2" push -q origin main
 
-run env LANES_LANE=repoT-2 LANES_NO_FETCH=1 "$E" claim "opensoft/repoT#1" --no-github --force
+run race t1 env LANES_LANE=repoT-2 "$E" claim "opensoft/repoT#1" --no-github --force
 is   "a dead-lane takeover whose source RESUMES before the push lands aborts, exit 9 (never 7, a RIVAL's own code)" "$rc" 9
 has  "…naming the lane that is alive again" "$err" "lane repoT-1 is no longer confirmed dead"
 has  "…and citing Rule 1 rather than completing the takeover" "$err" "stop and report; do not author a successor"
@@ -2219,17 +2251,16 @@ has  "…held by the revived lane itself" "$out" "HOLDS    lane repoT-1"
 # status was `awk`'s, so an unreadable log came back as an empty verdict with
 # no marker set, and the abort told the operator the log had "moved past the
 # terminal line" — which nothing had read. The peer removes repoTx-1's log
-# from origin on the same stale-pre-fetch trick, so the grant is made on the
-# old ref and the recheck after the rebase finds no log to read. It still
+# from origin at this claim's push, the same `race-at-push`, so the grant is
+# made on the old tip and the replay's recheck finds no log to read. It still
 # aborts with 9, in words that say only what was established. The log is put
 # back afterwards so no later section meets a row with no log.
 git -C "$CLONE2" pull -q --rebase origin main 2>/dev/null
 git -C "$CLONE2" rm -q -- lanes/log/repoTx-1.md
 git -C "$CLONE2" commit -q -m "fixture: repoTx-1's log is unreadable on the takeover's recheck"
-git -C "$CLONE2" push -q origin main
 TX_GONE_AT="$(git -C "$CLONE2" rev-parse HEAD)"
 
-run env LANES_LANE=repoTx-2 LANES_NO_FETCH=1 "$E" claim "opensoft/repoTx#1" --no-github --force
+run race tx1 env LANES_LANE=repoTx-2 "$E" claim "opensoft/repoTx#1" --no-github --force
 is    "a dead-lane takeover whose source log CANNOT BE READ on the recheck aborts, exit 9" "$rc" 9
 has   "…saying the dead verdict could not be reconfirmed because the log was not read" "$err" "its own object log could not be read, or yielded no lane-kind line at all"
 hasnt "…never that the log moved past its terminal line, which nobody read" "$err" "has moved past the terminal line"
@@ -2858,7 +2889,7 @@ has   "…carrying the merge sha as a payload" "$(cat "$LOGD/repoZA-1.md")" ", o
 ZL_ID="aaaa0006-2222-4000-8000-aaaa00062222"
 write_record_ns "$sessions_dir/live-zl.json" "$ZL_ID" "$LIVE_PID" "$live_start" "othersess:@9.%9" "repozl-99" "derived" "busy"
 git -C "$CLONE2" pull -q --rebase origin main 2>/dev/null
-( LANES_WORKSPACE_ROOT="$CLONE2" LANES_LANE=repoZL-1 "$E" add-row \
+( LANES_REPO="$CLONE2" LANES_FILE="$CLONE2/lanes/LANES.md" LANES_LANE=repoZL-1 "$E" add-row \
     "| \`repoZL-1\` | harness \`$ZL_ID\` | Eagle / test / brett | 2026-09-11T00:00Z | none | handoffs/repoZL/x.md | ACTIVE |" ) >/dev/null 2>&1
 is    "the peer's row is on origin/main and not in this checkout" "$(grep -c '^| `repoZL-1`' "$LANES" || :)" 0
 run env LANES_NO_FETCH=1 "$E" live-holder repoZL-1
@@ -2874,7 +2905,7 @@ ZS_ID="aaaa0007-3333-4000-8000-aaaa00073333"
 write_record_ns "$sessions_dir/live-zs.json" "$ZS_ID" "$LIVE_PID" "$live_start" "othersess:@9.%9" "repozs-99" "derived" "busy"
 "$E" add-row "| \`repoZS-1\` | pending — set by the session's first act | Eagle / test / brett | 2026-09-11T00:00Z | none | handoffs/repoZS/x.md | ACTIVE |" >/dev/null 2>&1
 git -C "$CLONE2" pull -q --rebase origin main 2>/dev/null
-( LANES_WORKSPACE_ROOT="$CLONE2" LANES_LANE=repoZS-1 "$E" replace-in-row repoZS-1 \
+( LANES_REPO="$CLONE2" LANES_FILE="$CLONE2/lanes/LANES.md" LANES_LANE=repoZS-1 "$E" replace-in-row repoZS-1 \
     "pending — set by the session's first act" "harness \`$ZS_ID\`" "the session stamps its own row" ) >/dev/null 2>&1
 is    "this checkout's row still records no session id" "$(grep '^| `repoZS-1`' "$LANES" | grep -c 'pending' || :)" 1
 zs_before="$(grep -c 'rename-window repoZS-1' "$FAKE_TMUX_LOG" || :)"
@@ -2887,7 +2918,7 @@ git -C "$WIP" pull -q --rebase origin main 2>/dev/null || :
 # lane-start: "this lane is new" is decided against what has LANDED, so a
 # second row is refused rather than written.
 git -C "$CLONE2" pull -q --rebase origin main 2>/dev/null
-( LANES_WORKSPACE_ROOT="$CLONE2" LANES_LANE=repoZD-1 "$E" add-row \
+( LANES_REPO="$CLONE2" LANES_FILE="$CLONE2/lanes/LANES.md" LANES_LANE=repoZD-1 "$E" add-row \
     "| \`repoZD-1\` | harness \`$DEAD_ID\` | Raven / test / brett | 2026-09-11T00:00Z | none | handoffs/repoZD/x.md | ACTIVE |" ) >/dev/null 2>&1
 is    "the peer's row for repoZD-1 is on origin/main and not here" "$(grep -c '^| `repoZD-1`' "$LANES" || :)" 0
 zd_before="$(grep -c 'rename-window repoZD-1' "$FAKE_TMUX_LOG" || :)"
@@ -2943,7 +2974,7 @@ hasnt "…so no ENDED line is missing from a closed lane" "$(cat "$LOGD/repoZH-1
 # working tree that a fetch does not move.
 "$E" add-row "| \`repoZZ-1\` | harness \`$DEAD_ID\` | Eagle / test / brett | 2026-09-11T00:00Z | none | handoffs/repoZZ/x.md | IDLE, NOTHING CLAIMED |" >/dev/null 2>&1
 git -C "$CLONE2" pull -q --rebase origin main 2>/dev/null
-( LANES_WORKSPACE_ROOT="$CLONE2" LANES_LANE=repoZZ-1 "$E" set-row-state repoZZ-1 \
+( LANES_REPO="$CLONE2" LANES_FILE="$CLONE2/lanes/LANES.md" LANES_LANE=repoZZ-1 "$E" set-row-state repoZZ-1 \
     "LANDING #8 · into repoZZ main, posted by the peer" ) >/dev/null 2>&1
 is    "the peer's LANDING is on origin/main and not in this checkout's row" "$(grep '^| `repoZZ-1`' "$LANES" | grep -c 'LANDING #8' || :)" 0
 run   "$END" repoZZ-1
@@ -3171,13 +3202,12 @@ printf '{"type":"user"}\n' > "$tdir/$ZC1.jsonl"
 printf '{"type":"user"}\n' > "$tdir/$ZC2.jsonl"
 "$E" add-row "| \`repoZC-1\` | harness \`$ZC1\` | Eagle / test / brett | 2026-09-11T00:00Z | none | handoffs/repoZC/x.md | ACTIVE |" >/dev/null 2>&1
 git -C "$CLONE2" pull -q --rebase origin main 2>/dev/null
-( LANES_WORKSPACE_ROOT="$CLONE2" LANES_LANE=repoZC-1 "$E" replace-in-row repoZC-1 \
+( LANES_REPO="$CLONE2" LANES_FILE="$CLONE2/lanes/LANES.md" LANES_LANE=repoZC-1 "$E" replace-in-row repoZC-1 \
     "harness \`$ZC1\`" "harness \`$ZC1\` → harness \`$ZC2\`" "the session stamps its own row" ) >/dev/null 2>&1
 
 # First, the reviewer's own sequence: this checkout is BEHIND and has not pulled.
-# `--dry-run`, because a checkout that is behind cannot write its row at all —
-# `commit_push` rebases the status on to the peer's line, conflicts, and aborts,
-# which is a different refusal and already the right one.
+# `--dry-run`, which plans from the same reads and writes nothing; the durable
+# half below runs the same launch for real.
 is    "the peer's new session id is on origin/main and not in this checkout" \
       "$(grep '^| `repoZC-1`' "$LANES" | grep -c "$ZC2" || :)" 0
 before_rev="$(git -C "$WIP" rev-parse HEAD)"
@@ -3190,14 +3220,21 @@ hasnt "…never the id this checkout's copy ends on" "$err" "$ZC1"
 has   "…and the status it plans to append names the same id" "$err" "launching claude --name repoZC-1 --resume $ZC2"
 is    "…while --dry-run still writes nothing" "$(git -C "$WIP" rev-parse HEAD)" "$before_rev"
 
-# And the durable half: the same divergence with HEAD already current, so the
-# row write lands and the `RESUMED` line is really written. This checkout's COPY
-# of the row is the older one — the shape R19's second reproduction uses, and
-# the shape this register is in for much of the day (R11).
-git -C "$WIP" pull -q --rebase origin main 2>/dev/null
-awk -v drop=" → harness \`$ZC2\`" '{ if ($0 ~ /^\| `repoZC-1`/) { i = index($0, drop); if (i) $0 = substr($0, 1, i - 1) substr($0, i + length(drop)) } print }' \
-  "$LANES" > "$SANDBOX/lanes.tmp"
-cat -- "$SANDBOX/lanes.tmp" > "$LANES"
+# And the durable half: the same divergence, so the row write lands and the
+# `RESUMED` line is really written. This checkout's COPY of the row is the
+# older one because the checkout is BEHIND: HEAD is still the commit before the
+# peer's stamp — the shape R19's second reproduction uses, and the shape this
+# register is in for much of the day (R11). Amendment 23 S3 fast-forwards it
+# under the lock before each write, so the writes land on origin's tip, and the
+# resume target is read before them, from the published cell. (Until slice 1b
+# the fixture made the copy older with an uncommitted hand edit of the row on a
+# current HEAD; S3 now refuses every writer over a pending register edit,
+# ratified choice 9, so that fixture measured the refusal and not R33.)
+git -C "$WIP" fetch -q origin main 2>/dev/null
+is    "this checkout is behind origin/main, not diverged from it" \
+      "$(git -C "$WIP" merge-base --is-ancestor HEAD refs/remotes/origin/main && git -C "$WIP" rev-list --count HEAD..refs/remotes/origin/main | grep -cv '^0$')" 1
+is    "…with no hand edit in the register" \
+      "$(git -C "$WIP" status --porcelain -- lanes/LANES.md | grep -c .)" 0
 is    "this checkout's copy of the row is older than the one on origin/main" \
       "$(grep '^| `repoZC-1`' "$LANES" | grep -c "$ZC2" || :)" 0
 is    "…while origin/main still names both ids" \
@@ -3222,7 +3259,7 @@ run   "$START" --dry-run --dir "$HOME/projects/repoA" repoZF-1
 is    "a row this checkout has and origin/main does not still exits 0" "$rc" 0
 has   "…and says there is no published cell to read" "$err" "the register on origin/main has none"
 has   "…naming the id nothing outside this checkout can see" "$err" "which nothing else can see: $ZF1"
-has   "…and the act that publishes it" "$err" "push the register from here"
+has   "…and the act that publishes it, never a bare push (Amendment 23 S3)" "$err" "publish the register from here, then re-run: LANES_LANE=repoZF-1 "
 has   "…taking a NEW session rather than resuming an unpublished id" "$err" "PLAN exec claude --name repoZF-1"
 hasnt "…which is the whole of the rule: no decision comes off the working tree" "$err" "--resume $ZF1"
 git -C "$WIP" checkout -q -- lanes/LANES.md
@@ -3738,24 +3775,20 @@ is    "…and one set of records that agree: the row's newest stamp names it too
 unset FAKE_TMUX_WINDOW
 rm -f "$sessions_dir/live-dw.json"
 
-# ---- RV-B2: the handoff stamp's DEGRADED pushes, and which recovery each is
+# ---- RV-B2, after Amendment 23's slice 2b: the stamp's DEGRADED pushes
 #
-# F-B7's whole deliverable is a SENTENCE — `hs_carry_note` telling the reader
-# whether anything on this workstation will ever push the commit `lane-start`
-# just made — and at `77a2f49` not one assertion in this suite read either
-# branch of it (`grep -c "register's own checkout" test_lane_helpers.sh` -> 0).
-# An untested sentence is what drifts, and this one is the difference between a
-# stamp that lands by itself and a stamp nobody will ever see again.
+# The stamp is ONE `lanes-edit.sh write-handoff --stamp` now, through the
+# register's checkout and under its lock (S3, S4), and `lane-start` runs no git
+# of its own: no pull, no push, and no `hs_carry_note`. F-B7's sentence said
+# which later write would carry a stranded stamp out; under S3 none does, and
+# every later write refuses over it, so there is no sentence left to choose.
+# The reader is told the helper's own words, the commit kept and named, and
+# lane-start's note naming the publish act. The launch still exits 0.
 #
-# THE REJECTION IS SCOPED BY THE COMMIT, NOT BY THE DIRECTORY. In the first case
-# the handoff repo IS the register's checkout, so a blanket refusal of `push -C
-# $WIP` would fail `set-row-state` instead — and `lane-start` runs under
-# `set -e`, so it would never reach the handoff block the case is about.
-# Amendment 8(d) gives the stamp commit the subject `handoff(<lane>@<ws>): …`,
-# which no register write carries, and the push follows its own commit
-# immediately: HEAD is therefore an exact discriminator. `commit_push` commits
-# before it pulls or pushes for the same reason, so the register's own calls are
-# always looking at a register commit when this fake reads HEAD.
+# THE REJECTION IS SCOPED BY THE COMMIT, NOT BY THE DIRECTORY, as it was: the
+# stamp's commit is the only one whose subject is `handoff(<lane>@<ws>): …`,
+# and `commit_publish` pushes straight after it commits, so HEAD is an exact
+# discriminator. `LANES_GIT` is the binary `lanes-edit.sh`'s network calls use.
 cat > "$SANDBOX/rejectgit" <<'FAKE'
 #!/usr/bin/env bash
 # Refuses $RJ_VERB (`push` or `pull`) for the handoff stamp's commit ONLY;
@@ -3775,14 +3808,8 @@ exec git "$@"
 FAKE
 chmod +x "$SANDBOX/rejectgit"
 
-# The paths as GIT spells them, which is what `lane-start` prints: `hs_repo` is
-# `rev-parse --show-toplevel` of the handoff's real path, so comparing against
-# the shell's own `$WIP`/`$WS2` would compare two spellings of one directory.
-WIP_REAL="$(git -C "$WIP" rev-parse --show-toplevel)"
-
-# (a) THE HANDOFF IS IN THE REGISTER'S OWN CHECKOUT. The next `lanes-edit.sh`
-#     write out of it pushes the branch, and the orphaned commit rides out with
-#     it — so the note may promise the carry, and does.
+# (a) A REFUSED PUSH WITH ORIGIN UNMOVED is no lost race, so nothing is
+#     replayed: the stamp's commit is kept on HEAD and named (S4, exit 6).
 CN_A="cccc0001-1111-4000-8000-cccc00011111"
 printf '{"type":"custom-title","customTitle":"repoCN-1","sessionId":"%s"}\n' "$CN_A" > "$tdir/$CN_A.jsonl"
 mkdir -p "$WIP/handoffs/repoCN"
@@ -3797,19 +3824,23 @@ run env LANES_GIT="$SANDBOX/rejectgit" RJ_VERB=push "$START" --dir "$HOME/projec
 is   "a handoff stamp whose PUSH is rejected still exits 0 — the record is not the licence" "$rc" 0
 has  "…the stamp really written and committed all the same" "$(cat "$WIP/handoffs/repoCN/a.md")" "RESUMED by $CN_A (lane repoCN-1) at "
 has  "…in its own commit, which is the one nothing pushed" "$(git -C "$WIP" log --format=%s -n1)" "handoff(repoCN-1@"
-has  "…and the reader told what state that leaves, in the branch's own words" "$err" "the push was rejected — the stamp is a local commit here and other workstations cannot see it yet."
-has  "…told to LOOK before pushing again, never to push blind" "$err" "git -C $WIP_REAL fetch origin main && git -C $WIP_REAL log --oneline origin/main -3"
-has  "…the re-push conditional on what that look finds" "$err" "git -C $WIP_REAL push origin main      # only if it is not there"
-has  "…and F-B7's sentence for a handoff INSIDE the register's checkout, verbatim" "$err" "(this handoff is in the register's own checkout, so the next lanes-edit.sh write out of it pushes the branch and carries this commit with it.)"
-hasnt "…never the other branch's, which would be the wrong promise here" "$err" "no lanes-edit.sh write will ever push it"
+has  "…the helper saying why nothing was replayed, and that the commit is kept" "$err" "refused with origin/main unmoved, so this is no lost race and a replay would meet the same refusal; the commit is local and kept on HEAD"
+has  "…and lane-start pointing at those words, which say where the commit is kept" "$err" "its words above say whether a commit was made, where it is kept, and the command that finishes it"
+has  "…and naming the publish act where those words offer it, as they do with origin unmoved" "$err" "commit \"<what it is>\", the publish act"
+hasnt "…never promising that a later write carries it: S3 refuses every one" "$err" "carries this commit with it"
+# The fixture publishes it, as its owner would, and the sections below start
+# from a checkout with nothing unpublished (S3).
+git -C "$WIP" push -q origin main
+is   "…the stranded stamp is published before any later write meets it (S3)" "$(git -C "$WIP" fetch -q origin && git -C "$WIP" rev-list --count refs/remotes/origin/main..HEAD)" 0
 
-# (b) THE HANDOFF IS RESOLVED THROUGH `LANES_WORKSPACE_ROOT`, into a checkout no
-#     `lanes-edit.sh` write ever goes out of. Nothing will carry this commit,
-#     and promising a carry that will not happen is worse than printing the
-#     command — so the note names the checkout and says the command is the whole
-#     of the recovery. Its own bare origin, because the point is that this is a
-#     SECOND repository: `hs_resolve`'s case (b) must miss before case (c) hits,
-#     which is why the cell names a file `$WIP` does not have.
+# (b) A HANDOFF ONLY ANOTHER CHECKOUT HOLDS. `hs_resolve`'s case (c) found it
+#     through `LANES_WORKSPACE_ROOT` and stamped it there, in a checkout no
+#     write ever pushes from. Since slice 2b the stamp goes only where the
+#     row's cell resolves in the checkout this lane's writes go through
+#     (E15), so here it is NOT written: nothing is left in a checkout nothing
+#     publishes, and the line is printed for the session's own first act. The
+#     cell names a file `$WIP` does not have, in a second repository with its
+#     own bare origin.
 WS2_ORIGIN="$SANDBOX/ws2-origin.git"; WS2="$SANDBOX/ws2"
 git init -q --bare -b main "$WS2_ORIGIN"
 git clone -q "$WS2_ORIGIN" "$WS2" 2>/dev/null
@@ -3828,23 +3859,24 @@ is   "the cell names a handoff the register's checkout does NOT hold" "$([ -e "$
 
 run env LANES_GIT="$SANDBOX/rejectgit" RJ_VERB=push LANES_FILE="$LANES" LANES_REPO="$WIP" \
         LANES_WORKSPACE_ROOT="$WS2" "$START" --dir "$HOME/projects/repoA" repoCN-2 --no-launch
-is   "…and a rejected push on THAT checkout exits 0 too" "$rc" 0
-has  "…the stamp written into the second checkout, not the register's" "$(cat "$WS2/handoffs/repoCN/b.md")" "RESUMED by $CN_B (lane repoCN-2) at "
+is   "…and a handoff the register's checkout does not hold still exits 0" "$rc" 0
+hasnt "…the second checkout's copy NOT stamped: a handoff is written only where the lane's writes go" "$(cat "$WS2/handoffs/repoCN/b.md")" "RESUMED by"
+is   "…nor committed there" "$(git -C "$WS2" log --format=%s -n1)" "handoff fixture for repoCN-2"
 is   "…which the register's checkout never gained a copy of" "$([ -e "$WIP/handoffs/repoCN/b.md" ] && printf present || printf absent)" absent
-has  "…and F-B7's OTHER sentence, naming the checkout nothing will ever push" "$err" "(this handoff is NOT in the register's checkout ($WS2_REAL), so no lanes-edit.sh write will ever push it: the command above is the whole of the recovery.)"
+has  "…the run saying the stamp was not written" "$err" "Rule 3's stamp was NOT written"
+has  "…and printing the line for the session to write as its first act" "$err" "RESUMED by $CN_B (lane repoCN-2) at "
 hasnt "…never promising a carry that no write will perform" "$err" "carries this commit with it"
 
-# ---- RV-B3: an ABORTED PULL is not proof the commit stayed here
+# ---- RV-B3, after slice 2b: THE STAMP NO LONGER PULLS
 #
 # The case, live on 2026-09-12T23:04Z: this lane's handoff commit hit a
 # `pull --rebase` abort on a peer lane's untracked log file, and the peer's own
-# helper then rebased and pushed — carrying this lane's local commit `59a2576`
-# out to origin UNDERNEATH its own `f053245`. The branch's recovery was a bare
-# re-push, so a reader who ran it at that moment would have landed the same Rule
-# 3 stamp twice, in the one document this protocol never rewrites. The
-# push-rejected branch has always told the reader to look first; this one now
-# does too, and the test pins the ORDER as well as the text, because a look
-# printed after the push it is meant to gate is not a look.
+# helper then rebased and pushed, carrying this lane's local commit out to
+# origin underneath its own. That pull is gone: S3 fetches and fast-forwards
+# the checkout under its lock before the edit, and S4 replays the edit where
+# the push lost a race. So a git that refuses every `pull` while the stamp's
+# commit is HEAD changes nothing at all: the stamp is committed and pushed, and
+# no pull is run or printed.
 CN_C="cccc0003-3333-4000-8000-cccc00033333"
 printf '{"type":"custom-title","customTitle":"repoCN-3","sessionId":"%s"}\n' "$CN_C" > "$tdir/$CN_C.jsonl"
 printf 'Lane: repoCN-3 — single-use resume prompt\n\n# state\n' > "$WIP/handoffs/repoCN/c.md"
@@ -3855,17 +3887,12 @@ git -C "$WIP" push -q origin main
 "$E" add-row "| \`repoCN-3\` | harness \`$CN_C\` | Eagle / test / brett | 2026-09-11T00:00Z | none | handoffs/repoCN/c.md | ACTIVE |" >/dev/null 2>&1
 
 run env LANES_GIT="$SANDBOX/rejectgit" RJ_VERB=pull "$START" --dir "$HOME/projects/repoA" repoCN-3 --no-launch
-is   "a handoff stamp whose PULL aborts still exits 0" "$rc" 0
-has  "…the stamp written and committed here all the same" "$(git -C "$WIP" log --format=%s -n1)" "handoff(repoCN-3@"
-has  "…the branch saying what happened, not the timeout's words" "$err" "the pull before the push did not apply (a conflict, or no reachable origin) — the rebase is aborted, the checkout is clean, and the stamp is a local commit here that was not pushed."
-hasnt "…and never ruling (h)'s line, which is a different failure" "$err" "the pull before the push TIMED OUT"
-has  "…then the LOOK, because a peer's push may already carry this very commit" "$err" "git -C $WIP_REAL fetch origin main && git -C $WIP_REAL log --oneline origin/main -3   # a peer's push may already carry it"
-has  "…and the re-push conditional on what it finds" "$err" "git -C $WIP_REAL pull --rebase origin main && git -C $WIP_REAL push origin main      # only if it is not there"
-cn_look="$(printf '%s\n' "$err" | grep -n -- 'log --oneline origin/main -3' | head -n1 | cut -d: -f1)"
-cn_push="$(printf '%s\n' "$err" | grep -n -- 'pull --rebase origin main && ' | head -n1 | cut -d: -f1)"
-is   "…the look printed BEFORE the re-push it gates, which is the whole of RV-B3" \
-     "$([ -n "$cn_look" ] && [ -n "$cn_push" ] && [ "$cn_look" -lt "$cn_push" ] && printf 'look first' || printf "look $cn_look, push $cn_push")" "look first"
-has  "…and F-B7's carry note under it, the same two branches as the push case" "$err" "(this handoff is in the register's own checkout, so the next lanes-edit.sh write out of it pushes the branch and carries this commit with it.)"
+is   "a launch whose git refuses the stamp's pull still exits 0" "$rc" 0
+has  "…the stamp written and committed here" "$(git -C "$WIP" log --format=%s -n1)" "handoff(repoCN-3@"
+is   "…and PUSHED: there is no pull for it to need" "$(git -C "$WIP" fetch -q origin && git -C "$WIP" rev-list --count refs/remotes/origin/main..HEAD)" 0
+hasnt "…no pull run or printed" "$err" "pull --rebase"
+hasnt "…and none of the old branch's words" "$err" "the pull before the push"
+has  "…the run saying where it went" "$err" "handoff stamped through \`write-handoff\`, which exited 0: "
 
 # ------------------------------------------------- lane-start --confirm / --yes
 #
@@ -4579,20 +4606,27 @@ FAKE
 chmod +x "$SANDBOX/hanggit" "$SANDBOX/peekgit"
 
 run env LANES_GIT="$SANDBOX/hanggit" LANES_GIT_TIMEOUT=2 "$E" set-row-state repoGH-1 "LIVE · HUNGPUSH"
+# AMENDMENT 23 S4 (#198, slice 1b): a push that times out is not a failure to
+# report as one. It goes to the read-back, and a push the read-back cannot
+# find on origin is 3, `pushed, not confirmed: <sha>`, never success, with the
+# commit kept on HEAD for the publish act.
 if [ "$HAVE_TIMEOUT" = 1 ]; then
   is    "a push that hangs past the timeout exits 3" "$rc" 3
-  has   "…saying so, with the budget it was given" "$err" "TIMED OUT after 2s"
-  has   "…and that the mutex is not held through it" "$err" "the mutex is released"
-  has   "…telling the writer a hung push may have LANDED before it looks again" "$err" "often means it LANDED"
+  has   "…saying so, with the budget it was given" "$err" "the push timed out after 2s"
+  has   "…as a push it cannot confirm, by its sha" "$err" "pushed, not confirmed: $(git -C "$WIP" rev-parse HEAD)"
+  has   "…and never as success" "$err" "never reported as success"
 else
   skip  "a push that hangs past the timeout exits 3" "$NO_TIMEOUT_WHY"
   skip  "…saying so, with the budget it was given" "$NO_TIMEOUT_WHY"
-  skip  "…and that the mutex is not held through it" "$NO_TIMEOUT_WHY"
-  skip  "…telling the writer a hung push may have LANDED before it looks again" "$NO_TIMEOUT_WHY"
+  skip  "…as a push it cannot confirm, by its sha" "$NO_TIMEOUT_WHY"
+  skip  "…and never as success" "$NO_TIMEOUT_WHY"
 fi
 is    "…the lock is released, not left for the next lane to age out" "$([ -d "$H_LOCK" ] && printf held || printf free)" "free"
 has   "…and the edit is safe as a local commit" "$(git -C "$WIP" log --oneline -n1)" "HUNGPUSH"
 has   "…which is the row, really written" "$(grep '^| `repoGH-1`' "$LANES")" "HUNGPUSH"
+run env LANES_LANE=repoGH-1 "$E" commit "publish the push that hung"
+is    "…and the publish act sends it, so no later write refuses over it" "$rc" 0
+is    "…with nothing left on HEAD that origin lacks" "$(git -C "$WIP" rev-list --count refs/remotes/origin/main..HEAD)" 0
 
 # The lock names its holder, and a lock whose holder is DEAD is stale at once —
 # not ten minutes later, which is how long every other writer used to wait.
@@ -4612,6 +4646,9 @@ PEEK_LOCK="$H_LOCK" PEEK_OUT="$SANDBOX/peek.pid" \
   env PEEK_LOCK="$H_LOCK" PEEK_OUT="$SANDBOX/peek.pid" LANES_GIT="$SANDBOX/peekgit" \
   "$E" set-row-state repoGH-1 "LIVE · PEEK" >/dev/null 2>&1 || :
 h_peek="$(cat "$SANDBOX/peek.pid" 2>/dev/null || printf '')"
+# THE PID IS THE FIRST FIELD: the file is `<pid> <container> <host>` since
+# Amendment 23 S2, because a pid does not cross a pid namespace.
+h_peek="${h_peek%% *}"
 # THE `case` IS HOISTED OUT OF THE `$( )`, and it has to be (A9 Addendum 4,
 # R-A9-11). Bash 3.2's parser reads the `)` that closes a case PATTERN as the
 # one that closes the command substitution, so this exact expression is a
@@ -4647,32 +4684,27 @@ fi
 rm -rf "$H_LOCK"
 
 # =========================================================================
-# #32 — `commit_push` NAMES THE ATTEMPT THAT ACTUALLY LANDED, NEVER AN
-# EARLIER ONE ORIGIN HAS SINCE OVERTAKEN.
+# #32, AND AMENDMENT 23 S4 — A WRITE NAMES THE ATTEMPT THAT ACTUALLY LANDED,
+# AND A PEER'S REWRITE OF THE SAME ROW IS NO LONGER A CONFLICT.
 #
 # Observed on Eagle, three to four times in one hour on 2026-09-13/14 while
 # several lanes wrote the register concurrently: `set-row-state` /
 # `append-line` printed "rebase conflict on origin/main — nothing was
-# pushed" for a commit that WAS on origin by the time anyone read the line —
-# carried out by the very next lanes-edit.sh write through this same shared
-# checkout, which pulls this dangling local commit onto its own and pushes
-# both together. A caller who trusted "nothing was pushed" and redid the
-# write wrote a duplicate line (issue #32). The second clone plays the peer
-# that moves origin between this invocation's own commit and its push,
-# exactly as it does for the lost-claim race above.
+# pushed" for a commit that WAS on origin by the time anyone read the line,
+# carried out by the next write through this shared checkout (issue #32).
+# Under #198's slice 1b there is no pull and so no rebase conflict: every
+# write fetches and fast-forwards under its lock first (S3), and a push
+# refused because origin moved drops the write's commit and runs the write
+# again on origin's new tip (S4). The second clone plays the peer that moves
+# origin between this invocation's own commit and its push.
 #
-# THIS SANDBOX'S OWN CHECKOUT IS ALREADY DIRTY, from the rejectgit cases
-# above (a stamp whose push or pull was faked to fail leaves its commit
-# local, and the fixture files those cases wrote are still uncommitted
-# where their own act never got to commit them) — real content, and none of
-# it this section's. `dirty_elsewhere` would read it as "someone else's
-# uncommitted file" and route every case below through Amendment 5(d)'s
-# skip-the-pull branch instead of the rebase this section means to exercise,
-# so it is committed first, exactly as its own author would.
+# THIS SANDBOX'S OWN CHECKOUT MAY STILL HOLD FIXTURE FILES earlier cases left
+# uncommitted: real content, and none of it this section's. It is committed
+# and published first, exactly as its own author would.
 # -------------------------------------------------------------------------
 if [ -n "$(git -C "$WIP" diff --name-only 2>/dev/null)" ]; then
   git -C "$WIP" add -u -- .
-  git -C "$WIP" commit -q -m "fixture cleanup: commit content earlier cases left uncommitted, before the #32 race/conflict cases"
+  git -C "$WIP" commit -q -m "fixture cleanup: commit content earlier cases left uncommitted, before the #32 race cases"
   git -C "$WIP" pull -q --rebase origin main 2>/dev/null || :
   git -C "$WIP" push -q origin main
 fi
@@ -4680,17 +4712,17 @@ git -C "$CLONE2" pull -q --rebase origin main 2>/dev/null
 RC_ID="aaaa0005-c0c0-4000-8000-aaaa0005c0c0"
 "$E" add-row "| \`repoRC-1\` | harness \`$RC_ID\` | Eagle / test / brett | 2026-09-11T00:00Z | none | handoffs/repoRC/x.md | ACTIVE |" >/dev/null 2>&1
 
-# -- a race a LATER attempt wins: not a conflict, and the message must name
-#    the attempt that actually pushed, never attempt 1's rejection — and the
-#    retry must not write the row's own text twice.
+# -- a race a LATER attempt wins: the message must name the attempt that
+#    actually pushed, never attempt 1's refusal — and the replay must not write
+#    the row's own text twice.
 RACE_FLAG="$SANDBOX/race-peer-landed"
 rm -f -- "$RACE_FLAG"
 cat > "$SANDBOX/racegit" <<FAKE
 #!/usr/bin/env bash
 # Plays the second workstation, landing its own commit in the exact window
-# the retry loop exists for: after this attempt's own pull --rebase has
-# already succeeded and just before its push, so the push is rejected and
-# the NEXT attempt's own pull --rebase is what actually meets the peer.
+# the replay exists for: after this attempt's own fast-forward and commit and
+# just before its push, so the push is refused and attempt 2 runs the whole
+# write again on the peer's tip.
 for a in "\$@"; do
   if [ "\$a" = push ] && [ ! -e "$RACE_FLAG" ]; then
     touch "$RACE_FLAG"
@@ -4698,7 +4730,7 @@ for a in "\$@"; do
     printf 'CLAIMED — lane repoH-2, session %s@Raven, %s, opensoft/repoH#92\n' \
       "$DEAD_ID" "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$CLONE2/lanes/log/repoH-2.md"
     git -C "$CLONE2" add -- lanes/log/repoH-2.md
-    git -C "$CLONE2" commit -q -m "LOG(repoH-2@Raven): lands between this attempt's pull and its push"
+    git -C "$CLONE2" commit -q -m "LOG(repoH-2@Raven): lands between this attempt's commit and its push"
     git -C "$CLONE2" push -q origin main >/dev/null 2>&1
   fi
 done
@@ -4707,17 +4739,18 @@ FAKE
 chmod +x "$SANDBOX/racegit"
 
 run env LANES_GIT="$SANDBOX/racegit" "$E" set-row-state repoRC-1 "LIVE · RACE-RETRY-WINS"
-is    "a peer landing between this attempt's pull and its push still exits 0" "$rc" 0
+is    "a peer landing between this attempt's commit and its push still exits 0" "$rc" 0
+has   "…attempt 1's push refused, and the write run again" "$err" "push refused (attempt 1 of 6)"
 has   "…the message names attempt 2, the one that actually pushed" "$err" "pushed origin/main (attempt 2)"
 hasnt "…never claiming attempt 1 pushed it" "$err" "pushed origin/main (attempt 1)"
-is    "…and the retry writes the row's text once, never twice" "$(grep -c 'RACE-RETRY-WINS' "$LANES")" 1
+is    "…and the replay writes the row's text once, never twice" "$(grep -c 'RACE-RETRY-WINS' "$LANES")" 1
+is    "…with nothing left on HEAD that origin lacks" "$(git -C "$WIP" rev-list --count refs/remotes/origin/main..HEAD)" 0
 
-# -- a race the rebase truly cannot resolve: the peer rewrote the SAME row.
-#    `rebase --abort` must leave the tree clean, the message must say so
-#    truthfully, and — because a write that runs after this one carries the
-#    dangling commit out regardless of what conflicted here — it must say to
-#    LOOK before resetting or redoing anything, the same rule RV-B3 took for
-#    the handoff stamp's own push in `lane-start`.
+# -- the peer rewrote the SAME row before this write. Until slice 1b that was a
+#    rebase conflict, exit 3 and a recovery ending in `reset --hard`. Now the
+#    write fetches and fast-forwards first, so the peer's row is the base it
+#    edits: exit 0, this write's state on origin's tip, no rebase, nothing left
+#    local, and no recovery text to read.
 git -C "$CLONE2" pull -q --rebase origin main 2>/dev/null
 PC_LINE="$(grep -n '^| `repoRC-1`' "$CLONE2/lanes/LANES.md" | head -n1 | cut -d: -f1)"
 PC_ROW="$(sed -n -e "${PC_LINE}p" "$CLONE2/lanes/LANES.md")"
@@ -4732,67 +4765,12 @@ git -C "$CLONE2" commit -q -m "LANES(repoRC-1@Raven): peer rewrites the same row
 git -C "$CLONE2" push -q origin main
 
 run "$E" set-row-state repoRC-1 "LIVE · OURS-CONFLICT"
-is    "a peer's rewrite of the SAME row is a real conflict: exit 3" "$rc" 3
-has   "…REBASE CONFLICT is still named" "$err" "REBASE CONFLICT on origin/main"
-has   "…the abort runs and says the tree is clean" "$err" "rebase ABORTED — the worktree is clean and NOT mid-rebase"
-is    "…and it really is clean" "$(git -C "$WIP" status --porcelain | grep -c .)" 0
-has   "…told to fetch before resetting or redoing anything" "$err" \
-      "fetch origin main || echo FETCH-FAILED"
-has   "…and STOP named for a FAILED fetch too, never treated as leave to redo" "$err" \
-      "if that printed FETCH-FAILED, STOP and retry — a stale or unreachable origin proves nothing either way"
-
-# Copilot's round-4 review of #50 (5203455553): the very peer write this
-# recovery exists for carries a dangling commit by REBASING it onto a newer
-# base — which the branch just above this one takes — and a rebase changes
-# the commit's sha without changing its patch. `merge-base --is-ancestor
-# $cp_sha …` (round 2's own fix) checks the OLD sha, so it can still answer
-# "not-there" once the change is published under a new one. `git cherry`
-# compares by PATCH, so it finds it either way; verified against a real bare
-# repo for a peer-rebased commit (0, correctly ALREADY THERE — where
-# `merge-base --is-ancestor` on the same sha answered "not-there"), a
-# genuinely local-only one (1, correctly not-there), and a fetch against a
-# bad remote (FETCH-FAILED, cherry never run against a stale ref).
-has   "…checked by CONTENT (git cherry), never by a sha a peer's rebase can change" "$err" \
-      "cherry origin/main"
-cp_sha_printed="$(printf '%s\n' "$err" | grep -oE 'cherry origin/main [0-9a-f]{7,40}' | head -n1 | awk '{print $3}')"
-is    "…naming a real local commit to check, not a placeholder" \
-      "$([ -n "$cp_sha_printed" ] && printf 'has-sha' || printf 'MISSING')" "has-sha"
-has   "…counting only the patches git cherry could not find upstream" "$err" \
-      "grep -c '^+'"
-has   "…the reset is now conditional on that look, not unconditional" "$err" \
-      "only if it is not there: read back exactly what you wrote"
-has   "…and the die itself is scoped to this attempt, never a permanent claim" "$err" \
-      "not pushed by this attempt; a later write from this checkout may already carry it"
-hasnt "…never the old unconditional claim an aborted pull cannot prove" "$err" \
-      "rebase conflict on origin/main — nothing was pushed."
-pc_fetch="$(printf '%s\n' "$err" | grep -n -- 'fetch origin main || echo FETCH-FAILED' | head -n1 | cut -d: -f1)"
-pc_look="$(printf '%s\n' "$err" | grep -n -- 'cherry origin/main' | head -n1 | cut -d: -f1)"
-pc_reset="$(printf '%s\n' "$err" | grep -n -- 'reset --hard origin/main' | head -n1 | cut -d: -f1)"
-is    "…fetched, THEN checked by content, THEN reset — the same order RV-B3 pins" \
-      "$([ -n "$pc_fetch" ] && [ -n "$pc_look" ] && [ -n "$pc_reset" ] && [ "$pc_fetch" -lt "$pc_look" ] && [ "$pc_look" -lt "$pc_reset" ] && printf 'ordered' || printf "fetch $pc_fetch, look $pc_look, reset $pc_reset")" "ordered"
-
-# Copilot's review of #50 (5202640056), suppressed comment on lanes-edit.sh:1180:
-# the gate above was attached only to the diagnostic `diff` line — a caller
-# whose fetch/look just showed the commit already on origin was still told, by
-# the next two unconditional lines, to reset and redo, which is the exact
-# duplicate this PR exists to prevent. A single STOP between the look and the
-# reset gates all three lines below it (diff, reset, redo) at once, the same
-# job the existing "only if it is not there" qualifier does for the diff line
-# alone.
-has   "…and told to STOP there instead of resetting or redoing a landed commit" "$err" \
-      "if that printed 0, STOP — reset or redo now would write it a second time."
-pc_stop="$(printf '%s\n' "$err" | grep -n -- 'STOP — reset or redo now' | head -n1 | cut -d: -f1)"
-is    "…the STOP sits between the look and the reset, gating both reset and redo" \
-      "$([ -n "$pc_look" ] && [ -n "$pc_stop" ] && [ -n "$pc_reset" ] && [ "$pc_look" -lt "$pc_stop" ] && [ "$pc_stop" -lt "$pc_reset" ] && printf 'ordered' || printf "look $pc_look, stop $pc_stop, reset $pc_reset")" "ordered"
-
-# Suite housekeeping: this conflict is real and stays real (the peer's row
-# rewrite is still on origin), so nothing later inherits this section's own
-# dangling commit — and nothing later finds $WIP behind the peer's push
-# either, which every case below this one assumes it never is. Fully synced
-# to the CURRENT origin/main (the abort's own fetch already has it), not
-# merely one commit back from wherever HEAD happened to be.
-git -C "$WIP" fetch -q origin main 2>/dev/null || :
-git -C "$WIP" reset --hard origin/main >/dev/null 2>&1
+is    "a peer's earlier rewrite of the SAME row is the base this write edits: exit 0" "$rc" 0
+has   "…its own state on origin's tip" "$(git -C "$WIP" show refs/remotes/origin/main:lanes/LANES.md | grep '^| `repoRC-1`')" "OURS-CONFLICT"
+hasnt "…no REBASE CONFLICT" "$err" "REBASE CONFLICT"
+hasnt "…and no recovery that resets with --hard" "$err" "reset --hard"
+is    "…the tree clean" "$(git -C "$WIP" status --porcelain -- lanes | grep -c .)" 0
+is    "…and nothing left on HEAD that origin lacks" "$(git -C "$WIP" rev-list --count refs/remotes/origin/main..HEAD)" 0
 
 # --------------------------------------- the pointer file, when it does NOT answer
 #
@@ -4824,6 +4802,9 @@ FOREIGN="$SANDBOX/foreign"
 git init -q -b main "$FOREIGN"
 git -C "$FOREIGN" remote add origin "https://github.com/opensoft/not-your-wip.git"
 
+# EACH HELPER RUNS WITH THE SEAM UNSET (Amendment 23): what these cases refuse
+# is the DEFAULT resolution through workspace.yaml, and `lane-start` and
+# `lane-end` never ask for W at all while `LANES_REPO` and `LANES_FILE` are set.
 for helper in lanes-edit.sh lane-start lane-end link-estates; do
   case "$helper" in
   lanes-edit.sh) args=(who --lane repoA-1) ;;
@@ -4836,33 +4817,33 @@ for helper in lanes-edit.sh lane-start lane-end link-estates; do
   esac
 
   rm -f -- "$WS_YAML"
-  ws_run "$helper" "${args[@]}"
+  ws_run env -u LANES_REPO -u LANES_FILE "$helper" "${args[@]}"
   is   "$helper refuses with exit 1 when there is no workspace.yaml" "$WS_RC" 1
   has  "…and names the file that is missing" "$WS_MSG" "there is no $WS_YAML"
   has  "…and names the one command that writes it" "$WS_MSG" "openRepoTools wip init"
 
   printf 'path: %s\n' "$WIP" > "$WS_YAML"
-  ws_run "$helper" "${args[@]}"
+  ws_run env -u LANES_REPO -u LANES_FILE "$helper" "${args[@]}"
   is   "$helper refuses a workspace.yaml with no repository:" "$WS_RC" 1
   has  "…saying which key is missing" "$WS_MSG" "names no \`repository:\`"
 
   printf 'repository: %s\n' "$ORIGIN" > "$WS_YAML"
-  ws_run "$helper" "${args[@]}"
+  ws_run env -u LANES_REPO -u LANES_FILE "$helper" "${args[@]}"
   is   "$helper refuses a workspace.yaml with no path:" "$WS_RC" 1
   has  "…saying which key is missing" "$WS_MSG" "names no \`path:\`"
 
   { printf 'repository: %s\n' "$ORIGIN"; printf 'path: %s/nowhere\n' "$SANDBOX"; } > "$WS_YAML"
-  ws_run "$helper" "${args[@]}"
+  ws_run env -u LANES_REPO -u LANES_FILE "$helper" "${args[@]}"
   is   "$helper refuses a path: that is not a git checkout" "$WS_RC" 1
   has  "…saying so in those words" "$WS_MSG" "which is not a git checkout"
 
   { printf 'repository: %s\n' "$ORIGIN"; printf 'path: %s\n' "$FOREIGN"; } > "$WS_YAML"
-  ws_run "$helper" "${args[@]}"
+  ws_run env -u LANES_REPO -u LANES_FILE "$helper" "${args[@]}"
   is   "$helper refuses a path: that is a checkout of something ELSE" "$WS_RC" 1
   has  "…naming both repositories" "$WS_MSG" "is a checkout of"
 
   { printf 'repository: %s\n' "$ORIGIN"; printf 'path: %s/lanes\n' "$WIP"; } > "$WS_YAML"
-  ws_run "$helper" "${args[@]}"
+  ws_run env -u LANES_REPO -u LANES_FILE "$helper" "${args[@]}"
   is   "$helper refuses a path: that is a SUBDIRECTORY, not the root" "$WS_RC" 1
   has  "…naming the root it should have been" "$WS_MSG" "not the ROOT of that checkout"
 
@@ -4873,13 +4854,13 @@ done
 # path derived from its own location — which is what Amendment 9(a) retired,
 # and what an installed command in ~/.local/bin could not do anyway.
 rm -f -- "$WS_YAML"
-ws_run lanes-edit.sh who --lane repoA-1
+ws_run env -u LANES_REPO -u LANES_FILE lanes-edit.sh who --lane repoA-1
 hasnt "the refusal names no path derived from the command's own location" \
       "$WS_MSG" "$OPENREPOTOOLS_BIN_DIR/lanes"
 
 cp -- "$WS_YAML_SAVED" "$WS_YAML"
 is   "the sandbox's own pointer file is restored for the guards below" \
-     "$(sed -n 's/^path:[[:space:]]*//p' "$WS_YAML" | head -n1)" "$WIP"
+     "$(sed -n 's/^path:[[:space:]]*//p' "$WS_YAML" | head -n1)" "$WIP_RO"
 
 section "== Amendment 11: the record's fields, and clause (h)'s reads =="
 
@@ -5179,6 +5160,7 @@ hasnt "…while writing nothing at all" "$(git -C "$WIP" log --format=%s -n1)" "
 # reason — a fixture step, not a fix to anything under test.
 git -C "$WIP" add -A >/dev/null 2>&1
 git -C "$WIP" commit -q -m "commit pending handoff edits before the clause (c) write cases" >/dev/null 2>&1 || :
+wip_publish   # Amendment 23 S3: a write refuses over a commit origin lacks, so the fixture publishes it
 run env LANES_LANE=repoA11w-1 "$E" log RESUMED "lane:repoA11w-1" '→' "swap; workstation Eagle" "tick 8.4 landed, and 5.7a, 5.9a stay unheld"
 is   "…while a comma in the FREE TEXT is ordinary prose and is written" "$rc" 0
 has  "…exactly as it was given" "$(tail -n1 "$LOGD/repoA11w-1.md")" "landed, and 5.7a, 5.9a stay unheld"
@@ -5986,6 +5968,7 @@ git init -q -b main "$HOME/projects/repoA11b"
 git -C "$HOME/projects/repoA11b" remote add origin "https://github.com/opensoft/repoA11b.git"
 git -C "$WIP" add -A >/dev/null 2>&1
 git -C "$WIP" commit -q -m "commit pending handoffs before the Amendment 11 lane-start cases" >/dev/null 2>&1 || :
+wip_publish   # Amendment 23 S3: a write refuses over a commit origin lacks, so the fixture publishes it
 FAKE_TMUX_WINDOW="a11start:@42" FAKE_TMUX_WINDOW_INDEX=3 FAKE_TMUX_WINDOW_NAME=claude \
   CLAUDE_PROFILE_NAME=team-05a run "$START" repoA11b 1 --no-launch
 is   "lane-start exits 0 for a new lane under Amendment 11" "$rc" 0
@@ -8500,6 +8483,7 @@ section "== Amendment 15: a lane name is one name under any case =="
 # cannot rebase — which is those cases' subject and not this one's.
 git -C "$WIP" add -A >/dev/null 2>&1
 git -C "$WIP" commit -q -m "commit the sandbox's pending edits before the Amendment 15 cases" >/dev/null 2>&1 || :
+wip_publish   # Amendment 23 S3: a write refuses over a commit origin lacks, so the fixture publishes it
 
 # THE FIXTURE IS THE INCIDENT'S OWN SHAPE: a MIXED-CASE row, a checkout whose
 # directory is spelled that way too, and a log file already written under the
@@ -8993,6 +8977,7 @@ has  "…as does the ENDED line in the lane's log" \
 # and every case after it red for a reason that is not about this amendment.
 git -C "$WIP" add -A >/dev/null 2>&1
 git -C "$WIP" commit -q -m "commit the sandbox's pending edits before the round-4 cases" >/dev/null 2>&1 || :
+wip_publish   # Amendment 23 S3: a write refuses over a commit origin lacks, so the fixture publishes it
 add_seed_row "| \`repoTwo-1\` | harness \`$DEAD_ID\` | Eagle / test / brett | 2026-09-11T00:00Z | none | handoffs/repoTwo/x.md | ACTIVE |"
 add_seed_row "| \`repoLate-1\` | harness \`$DEAD_ID\` | Eagle / test / brett | 2026-09-11T00:00Z | none | handoffs/repoLate/x.md | ACTIVE |"
 add_seed_row "| \`repoDrop-1\` | harness \`$DEAD_ID\` | Eagle / test / brett | 2026-09-11T00:00Z | none | handoffs/repoDrop/x.md | ACTIVE |"
@@ -9166,10 +9151,10 @@ has  "…citing the merge that is a person's act" "$err" "Amendment 15(d)"
 # ---- add-row ASKS THE PUBLISHED REGISTER, NOT ONLY THIS COPY OF IT -----------
 #
 # The case-duplicate refusal scanned `$LANES_FILE` alone, so a row `origin`
-# already carries is invisible on a checkout that is behind: `add-row` appends
-# the second spelling, `commit_push` rebases the first in underneath it, and the
-# pair 15(a) makes this command refuse is published by the command that refuses
-# it.
+# already carries is invisible on a checkout that is behind: `add-row` appended
+# the second spelling, the old push loop rebased the first in underneath it, and
+# the pair 15(a) makes this command refuse was published by the command that
+# refuses it.
 a15_publish_row "| \`repoPush-1\` | harness \`$DEAD_ID\` | Eagle / test / brett | 2026-09-14T00:00Z | none | handoffs/repoPush/x.md | ACTIVE |"
 is   "the row is on origin/main and not in this checkout" \
      "$(grep -ci '^| `repopush-1` ' "$LANES" || :)" 0
@@ -9177,7 +9162,7 @@ run "$E" add-row "| \`repopush-1\` | harness \`$DEAD_ID\` | Eagle / test / brett
 is   "add-row refuses a row the PUBLISHED register already carries under another case" "$rc" 2
 has  "…naming the row that is there, in its own spelling" "$err" "spelled repoPush-1"
 has  "…citing the clause that makes the two one lane" "$err" "Amendment 15(a)"
-has  "…and naming the one command that makes this checkout current" "$err" "pull --rebase"
+has  "…and naming the verbs that bring this checkout to it (Amendment 23 S3)" "$err" "each fast-forwards this checkout to it first"
 is   "…adding nothing" "$(grep -ci '^| `repopush-1` ' "$LANES" || :)" 0
 # AND IT STILL REFUSES A ROW ONLY THIS CHECKOUT HAS, which is the half the local
 # scan is there for: a row added here and not yet pushed is on no origin at all.
@@ -9191,6 +9176,14 @@ has  "…named in its own spelling" "$err" "spelled repoTwo-1"
 # at all, so the state a failed rename leaves — the canonical file here, the
 # old-cased path still in the remote tree — walked past it, and the next write
 # staged the canonical path alone and left the published one where it was.
+#
+# AND SINCE AMENDMENT 23 S3 THE TWO FILES MEET IN THIS CHECKOUT (rv1b's NIT 2
+# on slice 1b): the write fast-forwards before `ensure_log` runs, so the
+# published old-cased log arrives beside the untracked canonical copy, and the
+# refusal is the two-logs one. One tracked and one untracked is the stray copy
+# a failed rename leaves, not two logs for 15(d)'s hand merge — a commit of the
+# copy would publish the second file — so the refusal says which is which and
+# that the cure is to remove the copy and re-run.
 a15_publish "lanes/log/repodrop-1.md" "# lane repodrop-1 — object log (lane-collision-protocol Amendment 7)
 STARTED — lane repoDrop-1, session $DEAD_ID@Eagle, $OLD_UTC, lane:repoDrop-1 → home opensoft/repoDrop; estate repoDrop"
 { printf '# lane repoDrop-1 — object log (lane-collision-protocol Amendment 7)\n'
@@ -9198,34 +9191,40 @@ STARTED — lane repoDrop-1, session $DEAD_ID@Eagle, $OLD_UTC, lane:repoDrop-1 �
 } > "$LOGD/repoDrop-1.md"
 run env LANES_LANE=repodrop-1 LANES_SESSION="$DEAD_ID" "$E" log PAUSED lane:repodrop-1 --no-github
 is   "a canonical file beside an old-cased PUBLISHED path is refused" "$rc" 2
-has  "…naming the path that is published" "$err" "published as lanes/log/repodrop-1.md"
+has  "…naming the path that is published" "$err" "lanes/log/repodrop-1.md is the log this checkout has from origin"
 has  "…and saying which half of the rename landed" "$err" "rename whose commit never landed"
-has  "…with the one command that settles it" "$err" "pull --rebase"
+has  "…naming the untracked copy as the stray" "$err" "lanes/log/repoDrop-1.md is NOT TRACKED"
+has  "…with the act that settles it: remove the copy and re-run" "$err" "lanes/log/repoDrop-1.md\") and re-run"
+has  "…after which the write renames the published log in its own commit" "$err" "renames the tracked log once, inside its own commit"
+hasnt "…never 15(d)'s hand merge, which would publish the copy" "$err" "Merge them by hand"
 is   "…appending nothing to the file it would have split the lane across" \
      "$(grep -c '^PAUSED' "$LOGD/repoDrop-1.md" || :)" 0
 rm -f -- "$LOGD/repoDrop-1.md"
 
-# ---- A LOG THIS CHECKOUT HAS AND ORIGIN DOES NOT IS STILL THIS LANE'S --------
+# ---- A LANE'S OWN LOG, PENDING UNDER THE OTHER CASE, IS ITS OWN PATH --------
 #
-# `claim` exempts its own log from the dirty-checkout refusal, and computes that
-# path with `log_path_ci` — whose fallback was the canonical path outright, a
-# path that need not exist. A lane whose log is still spelled the old way and
-# has never been pushed therefore had its OWN uncommitted log read as an
-# unrelated dirty file, and the claim was refused for it.
+# `claim` used to exempt its own log from the dirty-checkout refusal, and a log
+# still spelled the old way was read as an unrelated dirty file. Amendment 23 S3
+# step 4 asks it the other way round: a pending change to a path the write
+# commits refuses (2), naming THAT path — the claim's own log under the case it
+# is spelled — because a pathspec commit would carry the change under the
+# claim's subject. The log is committed and published first, so the pending
+# line is the one thing S3 has to find.
 { printf '# lane repolocal-1 — object log (lane-collision-protocol Amendment 7)\n'
   printf 'STARTED — lane repoLocal-1, session %s@Eagle, %s, lane:repoLocal-1 → home opensoft/repoLocal; estate repoLocal\n' "$DEAD_ID" "$OLD_UTC"
 } > "$LOGD/repolocal-1.md"
 git -C "$WIP" add -- lanes/log/repolocal-1.md >/dev/null 2>&1
-git -C "$WIP" commit -q -m "LOG(repoLocal-1@Eagle): STARTED — committed here and pushed nowhere"
+git -C "$WIP" commit -q -m "LOG(repoLocal-1@Eagle): STARTED"
+git -C "$WIP" push -q origin main
 printf 'RESUMED — lane repoLocal-1, session %s@Eagle, %s, lane:repoLocal-1 → home opensoft/repoLocal\n' "$DEAD_ID" "$OLD_UTC" >> "$LOGD/repolocal-1.md"
-is   "the lane's own log is dirty here and on no origin" \
+is   "the lane's own log holds a pending line" \
      "$(git -C "$WIP" status --porcelain -- lanes/log/repolocal-1.md | grep -c . || :)" 1
 run env LANES_LANE=repolocal-1 LANES_SESSION="$DEAD_ID" "$E" claim "opensoft/repoLocal#1" --no-github
-is   "a claim is not refused for its own log, written under the other case" "$rc" 0
-hasnt "…never reading that log as somebody else's uncommitted work" \
-      "$err" "refusing to claim on a checkout that cannot be rebased"
-is   "…and the log is the row's spelling afterwards" \
-     "$(ls "$LOGD" | grep -c '^repoLocal-1\.md$' || :)" 1
+is   "a claim over a pending line in its own log refuses (S3 step 4)" "$rc" 2
+has  "…naming that log, in the case it is spelled" "$err" "lanes/log/repolocal-1.md"
+has  "…with nothing written" "$err" "Nothing was written."
+hasnt "…never the old guard's words" "$err" "cannot be rebased"
+git -C "$WIP" checkout -q -- lanes/log/repolocal-1.md
 
 # ---- A LANE NAME IS NOT A REGULAR EXPRESSION --------------------------------
 #
@@ -9276,8 +9275,8 @@ has  "…including the log a lane's own scan has to find in it" \
 
 # ---- THE RACE'S WINNER IS JOINED ON A FILE NAME, AND THE LINE SPELLS IT FREELY
 #
-# LAST IN THIS SECTION, because it is decided by an `origin/main` this checkout
-# must not have fetched yet. `first_landed_of` reads the pickaxe's oldest commit
+# The two rivals land at this claim's push (`race-at-push`, Amendment 23 S4's
+# replay finds them). `first_landed_of` reads the pickaxe's oldest commit
 # that touched a rival's LOG FILE and joins that file's name against the holder
 # rows. The file carries the row's canonical spelling from the moment the first
 # write renames it (Amendment 15); the holder row carries whatever the winning
@@ -9295,14 +9294,12 @@ git -C "$CLONE2" pull -q --rebase origin main 2>/dev/null || :
 } > "$CLONE2/lanes/log/repoRace-2.md"
 git -C "$CLONE2" add -- lanes/log/repoRace-2.md
 git -C "$CLONE2" commit -q -m "LOG(repoRace-2@Raven): CLAIMED opensoft/repoRace#7"
-git -C "$CLONE2" push -q origin main
 { printf '# lane repoRace-3 — object log (lane-collision-protocol Amendment 7)\n'
   printf 'CLAIMED — lane repoRace-3, session %s@Raven, %s, opensoft/repoRace#7\n' "$DEAD_ID" "$(utc_at -1M)"
 } > "$CLONE2/lanes/log/repoRace-3.md"
 git -C "$CLONE2" add -- lanes/log/repoRace-3.md
 git -C "$CLONE2" commit -q -m "LOG(repoRace-3@Raven): CLAIMED opensoft/repoRace#7"
-git -C "$CLONE2" push -q origin main
-run env LANES_LANE=repoRace-1 LANES_NO_FETCH=1 LANES_SESSION="$DEAD_ID" "$E" claim "opensoft/repoRace#7" --no-github
+run race r7 env LANES_LANE=repoRace-1 LANES_SESSION="$DEAD_ID" "$E" claim "opensoft/repoRace#7" --no-github
 is   "a claim two rivals beat to main exits 7" "$rc" 7
 has  "…naming the one that LANDED first, whose own line spells it in another case" \
      "$err" "@repoRace-2"
@@ -9742,7 +9739,9 @@ ren_unread="$WIP/lanes/aliases-unreadable.tsv"
 printf 'someLane-1\tsomeLane-2\t2026-09-15T00:00:00Z\n' > "$ren_unread"
 chmod 0000 "$ren_unread"
 ren_before="$(git -C "$WIP" rev-parse HEAD)"
-run env LANES_NO_FETCH=1 LANES_SESSION="$REN3_ID" \
+# (No LANES_NO_FETCH=1 here: for a writer that is a failed fetch, and S3
+# would refuse it with 2 before the table is read — ratified choice 2.)
+run env LANES_SESSION="$REN3_ID" \
     LANES_ALIASES_TSV="$ren_unread" LANES_ALIASES_PATH=lanes/aliases-unreadable.tsv \
     "$E" rename-lane repoRen-1 repoRen-21 --no-github
 if [ "$rc" = 0 ]; then
@@ -9834,7 +9833,7 @@ ren_before="$(git -C "$WIP" rev-parse HEAD)"
 run env LANES_SESSION="$REN6_ID" "$E" rename-lane repoKind-1 repoKind-2 --no-github
 is   "an alias table origin carries and this checkout does not is refused" "$rc" 2
 has  "…because appending here would drop every alias already published" "$err" "drop every alias already published"
-has  "…and it names the pull" "$err" "pull --rebase"
+has  "…and it names the restore, since S3 already brought this checkout to origin's tip" "$err" "checkout -- lanes/aliases.tsv"
 is   "…with nothing written" "$(git -C "$WIP" rev-parse HEAD)" "$ren_before"
 git -C "$WIP" checkout -- lanes/aliases.tsv
 
@@ -13209,8 +13208,9 @@ is    "…and so is history with no lane" "$rc" 64
 # the register it is pointed at and appends to every lane's log. Run against the
 # suite's own sandbox register it would rewrite the fixtures of every case above
 # and below it, and what it is being tested for — that it takes a whole register
-# at once — is exactly what makes that unsafe. `LANES_WORKSPACE_ROOT` is the
-# seam Amendment 9(a) left for pointing a helper at another sandbox.
+# at once — is exactly what makes that unsafe. An explicit `LANES_REPO` (with
+# its `LANES_FILE`) is the seam for pointing a helper at another sandbox; it
+# was `LANES_WORKSPACE_ROOT` until Amendment 23 made that W, which no write uses.
 MIG_ORIGIN="$SANDBOX/a13-origin.git"; MIG_WIP="$SANDBOX/a13wip"
 git init -q --bare -b main "$MIG_ORIGIN"
 git clone -q "$MIG_ORIGIN" "$MIG_WIP" 2>/dev/null
@@ -13248,7 +13248,7 @@ git -C "$MIG_WIP" push -q -u origin main
 MIG_HEAD0="$(git -C "$MIG_WIP" rev-parse HEAD)"
 
 a13_tmp_before="$(ls -d "$TMPDIR"/tmp.* 2>/dev/null | grep -c . || :)"
-run env LANES_WORKSPACE_ROOT="$MIG_WIP" "$E" migrate-state-cells
+run env LANES_REPO="$MIG_WIP" LANES_FILE="$MIG_WIP/lanes/LANES.md" "$E" migrate-state-cells
 is    "the migration is a DRY RUN by default" "$rc" 0
 has   "…saying so" "$out" "DRY RUN, nothing is written"
 has   "…naming the archive it would write" "$out" "lanes/archive/LANES-pre-amendment-13-"
@@ -13267,7 +13267,7 @@ is    "…not even a commit" "$(git -C "$MIG_WIP" rev-parse HEAD)" "$MIG_HEAD0"
 # untracked file is in neither list and this act would commit its first lines
 # inside the migration's own commit, under the migration's message.
 printf '# lane repoMig-4 — object log (seeded by a peer, uncommitted)\n' > "$MIG_WIP/lanes/log/repoMig-4.md"
-run env LANES_WORKSPACE_ROOT="$MIG_WIP" "$E" migrate-state-cells
+run env LANES_REPO="$MIG_WIP" LANES_FILE="$MIG_WIP/lanes/LANES.md" "$E" migrate-state-cells
 is    "…a row whose object log is untracked is SKIPPED, not committed for its author" "$rc" 0
 has   "…naming the file and whose it is" "$out" "exists here but is NOT TRACKED"
 has   "…and counting it among the skipped" "$out" "1 skipped"
@@ -13278,7 +13278,7 @@ git -C "$MIG_WIP" push -q origin main 2>/dev/null || :
 # this act makes is counted from where the act starts, not from the seed.
 MIG_HEAD1="$(git -C "$MIG_WIP" rev-parse HEAD)"
 
-run env LANES_WORKSPACE_ROOT="$MIG_WIP" "$E" migrate-state-cells --yes
+run env LANES_REPO="$MIG_WIP" LANES_FILE="$MIG_WIP/lanes/LANES.md" "$E" migrate-state-cells --yes
 is    "the act exits 0" "$rc" 0
 is    "…and it is ONE commit (Rule 9), not one per row" \
       "$(git -C "$MIG_WIP" rev-list --count "$MIG_HEAD1"..HEAD)" 1
@@ -13324,7 +13324,7 @@ printf '| `%s` | harness `%s` | Eagle / test / brett | 2026-09-12 | none | h | A
 git -C "$MIG_WIP" add -A >/dev/null 2>&1
 git -C "$MIG_WIP" commit -q -m "seed a lane whose name alone is longer than the cap"
 git -C "$MIG_WIP" push -q origin main 2>/dev/null || :
-run env LANES_WORKSPACE_ROOT="$MIG_WIP" "$E" migrate-state-cells --yes
+run env LANES_REPO="$MIG_WIP" LANES_FILE="$MIG_WIP/lanes/LANES.md" "$E" migrate-state-cells --yes
 is    "a lane whose name alone overruns the cap still migrates" "$rc" 0
 # TWO LINES, AND THE SPLIT IS NOT A STYLE CHOICE: `grep` and the awk program's
 # `\|` on ONE line is what `test_no_shipped_bash_reaches_for_gnu_only_utilities_unaccompanied`
@@ -13338,17 +13338,17 @@ is    "…with its line inside ratified decision O1's 240 characters" "$mig_long
 has   "…and the line says it was cut" "$(grep "^| \`$MIG_LONG\`" "$MIG_WIP/lanes/LANES.md")" " ..."
 MIG_HEAD2="$(git -C "$MIG_WIP" rev-parse HEAD)"
 
-run env LANES_WORKSPACE_ROOT="$MIG_WIP" "$E" history repoMig-1 --since 2026-09-12T11:00:00Z
+run env LANES_REPO="$MIG_WIP" LANES_FILE="$MIG_WIP/lanes/LANES.md" "$E" history repoMig-1 --since 2026-09-12T11:00:00Z
 is    "history reads the migrated narrative" "$rc" 0
 hasnt "…--since drops every entry older than the instant" "$out" "opened the PR"
 has   "…and keeps the instant itself" "$out" "land it as drafted"
 has   "…and what came after it" "$out" "PAUSED for the night"
 
-run env LANES_WORKSPACE_ROOT="$MIG_WIP" "$E" migrate-state-cells --yes
+run env LANES_REPO="$MIG_WIP" LANES_FILE="$MIG_WIP/lanes/LANES.md" "$E" migrate-state-cells --yes
 is    "a SECOND run refuses: the migration is ONE act" "$rc" 2
 has   "…saying the register is already in the shape" "$err" "already in Amendment 13(a)'s shape"
 is    "…and changed nothing" "$(git -C "$MIG_WIP" rev-list --count "$MIG_HEAD2"..HEAD)" 0
-run env LANES_WORKSPACE_ROOT="$MIG_WIP" "$E" migrate-state-cells --no-such-flag
+run env LANES_REPO="$MIG_WIP" LANES_FILE="$MIG_WIP/lanes/LANES.md" "$E" migrate-state-cells --no-such-flag
 is    "an unknown flag is a refusal, not a silent dry run" "$rc" 2
 
 section "== Amendment 19: a closed or dormant lane leaves the listing =="
@@ -13356,8 +13356,8 @@ section "== Amendment 19: a closed or dormant lane leaves the listing =="
 # ITS OWN WORKSPACE, for `migrate-state-cells`'s reason one section up: this
 # section RETIRES a whole repository's dormant rows and creates their logs, and
 # pointed at the suite's own register it would close fixtures the cases above
-# and below it are built on. `LANES_WORKSPACE_ROOT` is the seam Amendment 9(a)
-# left for pointing a helper at another sandbox.
+# and below it are built on. An explicit `LANES_REPO` with its `LANES_FILE` is
+# the seam for pointing a helper at another sandbox (Amendment 23 S2.1).
 #
 # THE SEED IS THE AMENDMENT'S OWN: a live lane, a parked one, an ended one and
 # THREE ROWS WITH NO LOG — the population measured on openxFactory on
@@ -13413,7 +13413,7 @@ git -C "$A19_WIP" commit -q -m "seed the Amendment 19 sandbox"
 git -C "$A19_WIP" push -q -u origin main
 A19_HEAD0="$(git -C "$A19_WIP" rev-parse HEAD)"
 
-a19() { env LANES_WORKSPACE_ROOT="$A19_WIP" "$@"; }
+a19() { env LANES_REPO="$A19_WIP" LANES_FILE="$A19_WIP/lanes/LANES.md" "$@"; }
 a19_field() {   # <rows> <lane> <field number>
   printf '%s\n' "$1" | awk -F'\t' -v l="$2" -v f="$3" '$1 == l { print $f; exit }'
 }
@@ -13935,22 +13935,28 @@ git -C "$A19_WIP" push -q origin main
 run a19 "$LANES_CMD" --prefix repo19bad </dev/null
 has   "an unparseable state cell remains visible for repair" "$out" "repo19bad-1"
 
-# Publish an archive-only peer commit just as add-row reaches its rebase. The
-# preflight saw no retired repo19race-1; the post-rebase fence must stop push.
+# Publish an archive-only peer commit just before add-row's own Amendment 23 S3
+# fetch, under its lock. The checks before the lock saw no retired
+# repo19race-1; S3's fetch finds origin moved under them, so add-row runs again
+# from the top on origin's new tip (rv1b's MUST 2 on slice 1b), and its checks
+# refuse the retired name before a byte is written. (Until slice 1b the peer
+# landed at add-row's `pull --rebase`, which no writer runs any more.)
 A19_PEER="$SANDBOX/a19-peer"
 git clone -q "$A19_ORIGIN" "$A19_PEER" 2>/dev/null
 git -C "$A19_PEER" config user.email "test@example.invalid"
 git -C "$A19_PEER" config user.name "lane helper tests"
 cat > "$SANDBOX/git-archive-race" <<'WRAP'
 #!/usr/bin/env bash
-if [ "${1-}" = -C ] && [ "${2-}" = "$A19_WIP" ] && [ "${3-}" = pull ] &&
-   [ ! -e "$A19_RACE_MARKER" ]; then
-  : > "$A19_RACE_MARKER"
-  printf '| `repo19race-1` | peer | Eagle | 2026-09-29 | none | none | RETIRED |\n' >> "$A19_PEER/lanes/archive/LANES-retired.md"
-  "$REAL_GIT" -C "$A19_PEER" add -- lanes/archive/LANES-retired.md || exit 1
-  "$REAL_GIT" -C "$A19_PEER" commit -q -m 'peer retires repo19race-1' || exit 1
-  "$REAL_GIT" -C "$A19_PEER" push -q origin main || exit 1
-fi
+case " $* " in
+  *" fetch "*" +refs/heads/main:refs/remotes/origin/main "*)
+    if [ ! -e "$A19_RACE_MARKER" ]; then
+      : > "$A19_RACE_MARKER"
+      printf '| `repo19race-1` | peer | Eagle | 2026-09-29 | none | none | RETIRED |\n' >> "$A19_PEER/lanes/archive/LANES-retired.md"
+      "$REAL_GIT" -C "$A19_PEER" add -- lanes/archive/LANES-retired.md || exit 1
+      "$REAL_GIT" -C "$A19_PEER" commit -q -m 'peer retires repo19race-1' || exit 1
+      "$REAL_GIT" -C "$A19_PEER" push -q origin main || exit 1
+    fi ;;
+esac
 exec "$REAL_GIT" "$@"
 WRAP
 chmod +x "$SANDBOX/git-archive-race"
@@ -13959,12 +13965,17 @@ cp "$SANDBOX/git-archive-race" "$SANDBOX/racebin/git"
 run a19 env PATH="$SANDBOX/racebin:$PATH" A19_WIP="$A19_WIP" A19_PEER="$A19_PEER" \
     A19_RACE_MARKER="$SANDBOX/a19-raced" REAL_GIT="$(command -v git)" \
     LANES_LANE=repo19-2 "$E" add-row "| \`repo19race-1\` | harness \`$A19_OLD\` | Eagle / test / brett | 2026-09-29 | none | none | LIVE |"
+is    "the peer's retirement landed inside add-row's run" "$([ -e "$SANDBOX/a19-raced" ] && echo yes)" yes
 is    "an add-row losing to a peer retirement refuses to push" "$rc" 2
-has   "…naming the peer retirement" "$err" "was retired by a peer"
-is    "…and the rejected local HEAD no longer has its row" \
+has   "…having seen origin move under its checks, and run again on the new tip" "$err" "moved while this write's checks ran"
+has   "…naming the peer retirement" "$err" "lane 'repo19race-1' is RETIRED"
+is    "…and this checkout's register never had its row" \
       "$(grep -c '^| `repo19race-1`' "$A19_WIP/lanes/LANES.md" || :)" 0
+# The BARE origin, never a clone's `origin/main`: the peer's tracking ref is
+# moved by nothing this run does, so reading it passed whatever happened
+# (rv1b's NIT 3 on slice 1b).
 is    "…and the remote has no resurrected active row" \
-      "$(git -C "$A19_PEER" show origin/main:lanes/LANES.md | grep -c '^| `repo19race-1`' || :)" 0
+      "$(git --git-dir "$A19_ORIGIN" show main:lanes/LANES.md | grep -c '^| `repo19race-1`' || :)" 0
 run a19 env LANES_LANE=repo19-2 "$E" add-row "| \`repo19race-2\` | harness \`$A19_OLD\` | Eagle / test / brett | 2026-09-29 | none | none | LIVE |"
 is    "a later unrelated add-row can still push" "$rc" 0
 is    "…without carrying the retired row into the published register" \
@@ -15182,6 +15193,7 @@ is    "…and the lane it just bound is RUNNING under the act that confirmed it"
 # reason.
 git -C "$WIP" add -A >/dev/null 2>&1
 git -C "$WIP" commit -q -m "commit the sandbox's pending handoffs before the fence cases" >/dev/null 2>&1 || :
+wip_publish   # Amendment 23 S3: a write refuses over a commit origin lacks, so the fixture publishes it
 
 # (a) A SNAPSHOT THIS HELPER CANNOT READ IS NEVER REPLACED BY ONE IT CAN.
 # `repoRC-3` carries the `schema: 999` file section 8 wrote. A reader that fails
@@ -15209,6 +15221,7 @@ is    "…having left that snapshot alone too" \
 rc_seed_handoff repoRC-7
 git -C "$WIP" add -- handoffs/repoRC >/dev/null 2>&1
 git -C "$WIP" commit -q -m "seed repoRC-7's handoff" >/dev/null 2>&1 || :
+wip_publish   # Amendment 23 S3: a write refuses over a commit origin lacks, so the fixture publishes it
 rc_row repoRC-7 "harness \`$RC_ID\`"
 rc_seed_log repoRC-7
 run "$E" set-lane-state repoRC-7 RUNNING --owner "$RC_ID" --agent claude --profile team-01a
@@ -15366,6 +15379,7 @@ ln -s "$RC_DIR" "$RC_LINK"
 rc_seed_handoff repoRC-8
 git -C "$WIP" add -- handoffs/repoRC >/dev/null 2>&1
 git -C "$WIP" commit -q -m "seed repoRC-8's handoff" >/dev/null 2>&1 || :
+wip_publish   # Amendment 23 S3: a write refuses over a commit origin lacks, so the fixture publishes it
 rc_row repoRC-8 "harness \`$RC_ID\`"
 { printf '# lane repoRC-8 — object log (lane-collision-protocol Amendment 7)\n'
   printf 'STARTED — lane repoRC-8, session %s@Eagle, 2026-09-15T00:00:00Z, lane:repoRC-8 → home opensoft/repoRC; dir %s; profile team-01a\n' \
@@ -15401,6 +15415,7 @@ is    "…and the lane's own checkout is still not a tree either, whichever spel
 rc_seed_handoff repoRC-9
 git -C "$WIP" add -- handoffs/repoRC >/dev/null 2>&1
 git -C "$WIP" commit -q -m "seed repoRC-9's handoff" >/dev/null 2>&1 || :
+wip_publish   # Amendment 23 S3: a write refuses over a commit origin lacks, so the fixture publishes it
 rc_row repoRC-9 "harness \`$RC_ID\`"
 rc_seed_log repoRC-9
 
@@ -15983,9 +15998,9 @@ git -C "$MGM_WIP" push -q -u origin main
 
 # (a) THE VALID SHORTHAND: 2, naming the owner, in both modes.
 mg_b="$(mgm_fp)"
-run env LANES_WORKSPACE_ROOT="$MGM_WIP" "$E" migrate-state-cells
+run env LANES_REPO="$MGM_WIP" LANES_FILE="$MGM_WIP/lanes/LANES.md" "$E" migrate-state-cells
 mgm_refused "the migration's dry run over the valid shorthand" 2 ledger-2 "$mg_b"
-run env LANES_WORKSPACE_ROOT="$MGM_WIP" "$E" migrate-state-cells --yes
+run env LANES_REPO="$MGM_WIP" LANES_FILE="$MGM_WIP/lanes/LANES.md" "$E" migrate-state-cells --yes
 mgm_refused "migrate-state-cells --yes over the valid shorthand" 2 ledger-2 "$mg_b"
 hasnt "…and never rewrites the marker to the migration's own word" "$(cat "$MGM_WIP/lanes/LANES.md")" "MIGRATED"
 
@@ -15994,9 +16009,9 @@ mgm_register "MANAGED OWNER · ledger 2"
 git -C "$MGM_WIP" commit -q -am "the ledger lands a shorthand whose token does not parse"
 git -C "$MGM_WIP" push -q origin main
 mg_b="$(mgm_fp)"
-run env LANES_WORKSPACE_ROOT="$MGM_WIP" "$E" managed-projection repoMG-2
+run env LANES_REPO="$MGM_WIP" LANES_FILE="$MGM_WIP/lanes/LANES.md" "$E" managed-projection repoMG-2
 is    "the malformed shorthand reads as unknown (1) before the migration asks" "$rc" 1
-run env LANES_WORKSPACE_ROOT="$MGM_WIP" "$E" migrate-state-cells --yes
+run env LANES_REPO="$MGM_WIP" LANES_FILE="$MGM_WIP/lanes/LANES.md" "$E" migrate-state-cells --yes
 mgm_refused "migrate-state-cells --yes over a malformed shorthand" 1 - "$mg_b"
 
 # (c) THE ROW REWRITTEN IS THIS CHECKOUT'S. Published as a legacy one-word row,
@@ -16009,19 +16024,29 @@ git -C "$MGM_WIP" push -q origin main
 mgm_register "MANAGED OWNER · ledger-3"
 git -C "$MGM_WIP" commit -q -am "an unpushed marker, in this checkout only"
 mg_b="$(mgm_fp)"
-run env LANES_WORKSPACE_ROOT="$MGM_WIP" "$E" managed-projection repoMG-2
+run env LANES_REPO="$MGM_WIP" LANES_FILE="$MGM_WIP/lanes/LANES.md" "$E" managed-projection repoMG-2
 is    "the two copies' disagreement reads as unknown (1), never the published row's legacy 8" "$rc" 1
 has   "…naming the register file it read" "$err" "register file, $MGM_WIP/lanes/LANES.md, carries"
 has   "…and both ways the copies can disagree" "$err" "AHEAD of origin"
 has   "…a fast-forward being the other remedy" "$err" "fast-forward it"
-run env LANES_WORKSPACE_ROOT="$MGM_WIP" "$E" migrate-state-cells --yes
-mgm_refused "migrate-state-cells --yes over a marker only this checkout carries" 1 - "$mg_b"
+# The seam's own answer is the dry run's since slice 1b: the dry run is a read
+# and takes no S3, so it reaches the scan and reads both copies. The act takes
+# Amendment 23 S3 under its lock first, and S3 refuses a checkout holding a
+# commit origin lacks (2, ratified choice 5) before the scan begins — so the
+# act never commits over the marker either, and the reason it gives is S3's.
+run env LANES_REPO="$MGM_WIP" LANES_FILE="$MGM_WIP/lanes/LANES.md" "$E" migrate-state-cells
+mgm_refused "the migration's dry run over a marker only this checkout carries" 1 - "$mg_b"
 has   "…saying the two copies disagree" "$err" "the two copies disagree on"
+run env LANES_REPO="$MGM_WIP" LANES_FILE="$MGM_WIP/lanes/LANES.md" "$E" migrate-state-cells --yes
+is    "migrate-state-cells --yes over a marker only this checkout carries is refused with 2, by S3" "$rc" 2
+has   "…naming the commit origin lacks" "$err" "1 unpublished commit(s)"
+has   "…before a byte is written" "$err" "Nothing was written."
+is    "…and changed nothing: register HEAD here and on origin, status, the register's bytes, every log's bytes, no archive" "$(mgm_fp)" "$mg_b"
 
 # (d) AND THE SAME REGISTER WITH NO MARKER IN EITHER COPY MIGRATES, so each
 # refusal above was the seam's and not the fixture's.
 git -C "$MGM_WIP" reset -q --hard origin/main
-run env LANES_WORKSPACE_ROOT="$MGM_WIP" "$E" migrate-state-cells --yes
+run env LANES_REPO="$MGM_WIP" LANES_FILE="$MGM_WIP/lanes/LANES.md" "$E" migrate-state-cells --yes
 is    "the legacy register itself migrates" "$rc" 0
 has   "…taking the diary row" "$out" "1 to migrate"
 has   "…into its log" "$(cat "$MGM_WIP/lanes/log/repoMG-3.md")" "NOTED — lane repoMG-3"
@@ -16060,9 +16085,9 @@ git -C "$MGM_WIP" push -q origin main
 
 # (a) THE VALID MARKER: 2, naming the owner, in both modes.
 mg_b="$(mga_fp)"
-run env LANES_WORKSPACE_ROOT="$MGM_WIP" "$E" archive-rows repoMG
+run env LANES_REPO="$MGM_WIP" LANES_FILE="$MGM_WIP/lanes/LANES.md" "$E" archive-rows repoMG
 mga_refused "archive-rows' dry run over a retired managed row" 2 ledger-1 "$mg_b"
-run env LANES_WORKSPACE_ROOT="$MGM_WIP" "$E" archive-rows repoMG --yes
+run env LANES_REPO="$MGM_WIP" LANES_FILE="$MGM_WIP/lanes/LANES.md" "$E" archive-rows repoMG --yes
 mga_refused "archive-rows --yes over a retired managed row" 2 ledger-1 "$mg_b"
 
 # (b) A MALFORMED ONE — generation=0 — is UNKNOWN: 1.
@@ -16072,7 +16097,7 @@ cat "$SANDBOX/mga-register" > "$MGM_WIP/lanes/LANES.md"
 git -C "$MGM_WIP" commit -q -am "the ledger lands a retired marker whose generation does not parse"
 git -C "$MGM_WIP" push -q origin main
 mg_b="$(mga_fp)"
-run env LANES_WORKSPACE_ROOT="$MGM_WIP" "$E" archive-rows repoMG --yes
+run env LANES_REPO="$MGM_WIP" LANES_FILE="$MGM_WIP/lanes/LANES.md" "$E" archive-rows repoMG --yes
 mga_refused "archive-rows --yes over a malformed retired marker" 1 - "$mg_b"
 
 # (c) AND WITH THAT ROW GONE THE SAME MOVE LANDS, so each refusal above was the
@@ -16081,7 +16106,7 @@ grep -v '^| `repoMG-11` ' "$MGM_WIP/lanes/LANES.md" > "$SANDBOX/mga-register"
 cat "$SANDBOX/mga-register" > "$MGM_WIP/lanes/LANES.md"
 git -C "$MGM_WIP" commit -q -am "the managed ledger takes its row back"
 git -C "$MGM_WIP" push -q origin main
-run env LANES_WORKSPACE_ROOT="$MGM_WIP" "$E" archive-rows repoMG --yes
+run env LANES_REPO="$MGM_WIP" LANES_FILE="$MGM_WIP/lanes/LANES.md" "$E" archive-rows repoMG --yes
 is    "the legacy retired row alone is archived" "$rc" 0
 is    "…out of the register" "$(grep -c '^| `repoMG-12` ' "$MGM_WIP/lanes/LANES.md" || :)" 0
 is    "…and into the archive" "$(grep -c '^| `repoMG-12` ' "$MGM_WIP/lanes/archive/LANES-retired.md" || :)" 1
@@ -16111,6 +16136,7 @@ git -C "$HOME/projects/repoWS" remote add origin "https://github.com/opensoft/re
 # refusal is out of the way.
 git -C "$WIP" add -A >/dev/null 2>&1
 git -C "$WIP" commit -q -m "commit the sandbox's pending handoffs before the workstation-seam cases" >/dev/null 2>&1 || :
+wip_publish   # Amendment 23 S3: a write refuses over a commit origin lacks, so the fixture publishes it
 
 # `LANES_IN_CONTAINER=0` THROUGHOUT THIS SECTION, and the reason is the rule
 # itself (`R-A11-14`): with the seam unset, the DEFAULT is `hostname -s` OUTSIDE
@@ -17504,6 +17530,15 @@ is   "the suite never created a log outside the sandbox" \
      "$(ls "$REAL_WS/lanes/log" 2>/dev/null | grep -c '^repo[A-Z]' || :)" 0
 is   "the suite never wrote the real register" \
      "$(cat "$REAL_WS/lanes/LANES.md" 2>/dev/null | grep -c '^| `repo[A-Z]' || :)" 0
+# AMENDMENT 23 — NOR MADE A LANE CHECKOUT BESIDE IT. A write that missed the
+# seam would resolve through workspace.yaml and clone `<W>-lanes/<lane>/`, so the
+# operator's `<REAL_WS>-lanes` must carry no fixture lane, partial or lock…
+is   "the suite never made a lane checkout beside the real workspace" \
+     "$(ls -A -- "${REAL_WS:+$REAL_WS-lanes}" 2>/dev/null | grep -c '^\.\{0,1\}repo[A-Z]' || :)" 0
+# …and nor did it beside the sandbox's own W: every write in this file went
+# through the explicit `LANES_REPO` seam, which makes no lane checkout at all.
+is   "…and every write went through the seam: no lane checkout beside the sandbox's W" \
+     "$(ls -A -- "$WIP_RO-lanes" 2>/dev/null | grep -c '^\.\{0,1\}repo[A-Z]' || :)" 0
 # BOTH OF THEM READ A PIPE, and the second one did not until A9 Addendum 4
 # (R-A9-13, F3). `grep -c PATTERN FILE` on a file that is not there prints
 # NOTHING and exits 2, so with no `~/.agents/workspace.yaml` on the host
