@@ -108,9 +108,9 @@
 #   1  a read failed, which is never "nothing to report" (Amendment 7(d)); or
 #      the act was refused by A2 (feature 007, T429; #165 6774499606):
 #      `act-begin` answered anything but a base, 69, 75, 3 or an old helper's 2,
-#      or `canon-lane --walk` anything but 0, 69, 75 or 3. The handoff file is
-#      still written, the PAUSED record's writes are held and the 69 note is
-#      printed, in every mode, and nothing after them is done.
+#      or `canon-lane --walk` anything but 0 with a name, 69, 75 or 3. The
+#      handoff file is still written, the PAUSED record's writes are held and
+#      the 69 note is printed, in every mode, and nothing after them is done.
 #  69, 75, 3  the register's own answers to `--late`'s one write, passed as the
 #      helper gave them in place of that 2 (feature 007, T429; ERR-36): the
 #      database could not be reached, the register was busy, or it could not
@@ -1646,7 +1646,7 @@ unset LANES_ACT LANES_EXPECT
 act_base=""; act_rc=0; act_hold=""; act_refuse=""; act_bad=""
 # A2's refusal, said once where it is decided: <the verb and its code>.
 act_refuse_note() {
-	note "$1, so this act REFUSES before its first write, with 1 (A2: \`act-begin\` answers a base, 69, 75, 3 or an old helper's 2, and \`canon-lane --walk\` 0, 69, 75 or 3; anything else is refused). It refuses by holding: none of the PAUSED record's writes is sent, the handoff file is still written (\`R-A11-11\`), the lane stays SWAPPING, and this command exits 1 once that is done."
+	note "$1, so this act REFUSES before its first write, with 1 (A2: \`act-begin\` answers a base, 69, 75, 3 or an old helper's 2, and \`canon-lane --walk\` 0 with a name, 69, 75 or 3; anything else is refused). It refuses by holding: none of the PAUSED record's writes is sent, the handoff file is still written (\`R-A11-11\`), the lane stays SWAPPING, and this command exits 1 once that is done."
 }
 # THE LINE'S FORM (Y:5577–5579), read as `lanes-edit.sh`'s `act_parse` reads it
 # (REV-ACT2 M2): `<act-id>@files`, or `<act-id>@<seq>:<generation>` — 32
@@ -1859,7 +1859,9 @@ esac
 # 69, 75 and 3 hold the PAUSED record's writes, and any other code refuses the
 # act with 1 by holding them too (`act_refuse`), since a key left out is a
 # change a write would not see (Y:5622). Its stderr is relayed, as
-# `act-begin`'s is.
+# `act-begin`'s is. An exit 0 that prints no name is no walk answer (Y:5624:
+# the typed name comes first): it is the walk's form of A2's "an exit 0 with
+# no line", and is refused the same way (#165 6779688808, (10, 24)).
 act_walk=""
 case "$act_base" in
 '' | *@files) : ;;
@@ -1869,7 +1871,16 @@ case "$act_base" in
 		aw_errf="$(mktemp "${TMPDIR:-/tmp}/lane-handoff-walk.XXXXXX" 2>/dev/null || printf '')"
 		act_walk="$(LANES_NO_FETCH=1 "$LANES_EDIT" canon-lane --walk "$lane_typed" 2>"${aw_errf:-/dev/null}")" || aw_rc=$?
 		case "$aw_rc" in
-		0) : ;;
+		0)
+			case "$act_walk" in
+			*[![:space:]]*) : ;;
+			*)
+				[ -z "$aw_errf" ] || [ ! -s "$aw_errf" ] || cat -- "$aw_errf" >&2
+				act_walk=""; act_base=""; unset LANES_ACT
+				act_hold="\`$LANES_EDIT canon-lane --walk $lane_typed\` exited 0 and printed no name"
+				act_refuse="$act_hold"
+				act_refuse_note "the names lane $lane was found through are NOT known: $act_hold" ;;
+			esac ;;
 		69 | 75 | 3)
 			[ -z "$aw_errf" ] || [ ! -s "$aw_errf" ] || cat -- "$aw_errf" >&2
 			act_walk=""; act_base=""; unset LANES_ACT
