@@ -233,11 +233,38 @@ def state_dir() -> str:
     return os.path.join(base, "openRepoTools")
 
 
+#: The variables that move where git finds a repository. A `git -C <dir>` this
+#: file runs is asked of `<dir>` and of nowhere else, so none of them reaches
+#: it (`git_location_free_env`); `register commit` also drops them from its
+#: own process before `tree/` is read.
+_REGISTER_GIT_LOCATION = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                          "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE",
+                          "GIT_CEILING_DIRECTORIES")
+
+
+def git_location_free_env() -> dict:
+    """A copy of this process's environment without any name in
+    `_REGISTER_GIT_LOCATION`, for the `env=` of a call that runs git.
+
+    LINE R (opensoft/openRepoTools#165, comment 6775233959): git sets
+    `GIT_DIR` for its hooks, so a register command run from one met a `GIT_DIR`
+    that made `git -C <dir> rev-parse --show-toplevel` answer `GIT_WORK_TREE`,
+    or `<dir>` itself where only `GIT_DIR` was set, for every `<dir>`, and
+    `load_config` refused its own configuration with 2. The copy is made per
+    call and `os.environ` is left as it is."""
+    env = dict(os.environ)
+    for name in _REGISTER_GIT_LOCATION:
+        env.pop(name, None)
+    return env
+
+
 def git_work_tree_of(path: str) -> str:
     """The work tree `path` sits inside, or "" where it is in none.
 
     Asked of the nearest directory that EXISTS, because a store or a
-    configuration not created yet is still a file that would land inside it."""
+    configuration not created yet is still a file that would land inside it.
+    Git is run without the variables that move where it finds a repository
+    (`git_location_free_env`), so a `GIT_DIR` a hook passed on never answers for `path`."""
     probe = os.path.abspath(path)
     while probe and not os.path.isdir(probe):
         parent = os.path.dirname(probe)
@@ -247,7 +274,7 @@ def git_work_tree_of(path: str) -> str:
     try:
         proc = subprocess.run(["git", "-C", probe, "rev-parse", "--show-toplevel"],
                               capture_output=True, text=True, check=False,
-                              stdin=subprocess.DEVNULL)
+                              stdin=subprocess.DEVNULL, env=git_location_free_env())
     except OSError:
         return ""
     if proc.returncode != 0:
@@ -1029,7 +1056,7 @@ def _set_mode_fetch(root: str, form: str) -> None:
     timeout = (float(SET_MODE_GIT_TIMEOUT_DEFAULT) if raw == "" else
                float(raw) if re.fullmatch(r"[0-9]+", raw) and int(raw) > 0 else None)
     what = f"`git fetch origin {branch()}` in {root}"
-    env = dict(os.environ)
+    env = git_location_free_env()
     env["GIT_TERMINAL_PROMPT"] = "0"
     try:
         proc = subprocess.run(["git", "-c", "gc.auto=0", "-c", "maintenance.auto=false",
@@ -1416,7 +1443,8 @@ def git(root: str, *args: str, check: bool = True, data: bytes | None = None,
         text: bool = True) -> subprocess.CompletedProcess:
     proc = subprocess.run(["git", "-C", root, *args], capture_output=True,
                           check=False, input=data, text=text if data is None else False,
-                          stdin=None if data is not None else subprocess.DEVNULL)
+                          stdin=None if data is not None else subprocess.DEVNULL,
+                          env=git_location_free_env())
     if check and proc.returncode != 0:
         err = proc.stderr if isinstance(proc.stderr, str) else proc.stderr.decode("utf-8", "replace")
         raise StoreUnusable("unread", f"git {' '.join(args)} failed in {root}: "
@@ -4543,7 +4571,7 @@ def mirror_fetch(root: str, timeout: float | None) -> None:
     `timeout`, from `mirror_git_timeout`, bounds it. A fetch that fails or
     runs out of time raises `StoreUnusable` of kind `unread`."""
     what = f"`git fetch origin {branch()}` in {root}"
-    env = dict(os.environ)
+    env = git_location_free_env()
     env["GIT_TERMINAL_PROMPT"] = "0"
     try:
         proc = subprocess.run(["git", "-c", "gc.auto=0", "-c", "maintenance.auto=false",
@@ -4614,7 +4642,8 @@ def mirror_register_seq(root: str, deadline: float | None = None, *,
                 ["git", "-c", "log.showSignature=false", "-C", root, "log", "--first-parent",
                  "-n", str(MIRROR_SEQ_PAGE), "--skip", str(walked),
                  "--format=%H%x00%(trailers:key=Register-Seq,valueonly)", tip, "--"],
-                capture_output=True, check=False, stdin=subprocess.DEVNULL, timeout=left)
+                capture_output=True, check=False, stdin=subprocess.DEVNULL, timeout=left,
+                env=git_location_free_env())
         except subprocess.TimeoutExpired:
             raise StoreUnusable("unread", out_of_time)
         except OSError as exc:
@@ -11274,13 +11303,6 @@ def _register_commit_lr004(store: PostgresStore, att: dict, ident: dict, entry: 
     return EXIT_UNAVAILABLE
 
 
-#: The variables that move where git finds a repository, dropped before
-#: `tree/` is read.
-_REGISTER_GIT_LOCATION = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
-                          "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE",
-                          "GIT_CEILING_DIRECTORIES")
-
-
 def _register_build_entry(att: dict, ident: dict,
                           shipped_repos: str | None) -> tuple[dict, RegisterView]:
     """`register_commit_entry` over `tree/`, and the view it read `tree/`
@@ -15468,7 +15490,7 @@ def _cutover_author() -> str:
     try:
         proc = subprocess.run(["git", "var", "GIT_AUTHOR_IDENT"], capture_output=True,
                               encoding="utf-8", errors="replace", check=False,
-                              stdin=subprocess.DEVNULL, timeout=30)
+                              stdin=subprocess.DEVNULL, timeout=30, env=git_location_free_env())
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Refusal(f"cutover: git could not name the author of the marker's commit "
                       f"({exc}); nothing was written")
