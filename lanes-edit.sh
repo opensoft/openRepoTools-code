@@ -2650,6 +2650,39 @@ $CP_CARRY_COPIES
 CEC_EOF
   printf '%s' "$cec_out"
 }
+# FEATURE 007 — THE MARKER'S ONE READ (lane 3's #165 6755027994): does
+# <tip> carry `lanes/STORE`, the marker of an estate whose register is SQL?
+# The writers' marker check (`cs_marker_refuse`, T419) and the readers' F17
+# (T504) both ask it here, so the two never read the marker differently.
+#   reg_marker_read <repo> <tip>
+#     <repo>  the checkout git reads in, `$LANES_REPO`; the path is read from
+#             its top level (`--full-tree`), as `<tip>:lanes/STORE` reads it
+#     <tip>   the revision to read: a commit sha, or a ref the caller has
+#             resolved. EMPTY where there is no origin branch to read (no
+#             origin ref, or `LANES_NO_GIT=1`, which the caller decides): then
+#             `$LANES_DIR/STORE` in the working tree is read instead, F17's
+#             other half (Y:4946); a file, a directory or a link, dangling or
+#             not, counts as present
+# THE ANSWER IS THE EXIT CODE; nothing is printed on stdout, and git's stderr
+# is dropped:
+#   0  PRESENT — the marker is in <tip>'s tree (or the working tree);
+#   1  ABSENT — it is not;
+#   2  THE READ FAILED — git could not read <tip>'s tree: an object missing or
+#      unreadable, or a <tip> that names nothing. Nothing is known, so it is
+#      never ABSENT; each caller ends as its own rule says for a failed read.
+#      The working-tree read never fails.
+# `ls-tree`, not `cat-file -e`: `cat-file -e <tip>:lanes/STORE` is 128 for an
+# absent path and for a tree git cannot read alike, while `ls-tree` is 0 and
+# silent for an absent path.
+reg_marker_read() {   # <repo> <tip; empty: the working tree>
+  if [ -z "${2:-}" ]; then
+    [ -e "$LANES_DIR/STORE" ] || [ -L "$LANES_DIR/STORE" ] || return 1
+    return 0
+  fi
+  rmr_hit="$(git --no-replace-objects -C "$1" ls-tree --full-tree --name-only "$2" -- lanes/STORE 2>/dev/null)" || return 2
+  [ -n "$rmr_hit" ] || return 1
+  return 0
+}
 # FEATURE 007, T419 — THE WRITERS' MARKER CHECK (FR-004; the design's
 # requirement "A writer that is not `mode=primary` refuses under the marker",
 # spec:41–57; F17's test, Y:4946). Once an estate's register is SQL,
@@ -2674,17 +2707,15 @@ cs_marker_refuse() {   # <what> <the tip: a revision; empty: no origin branch> <
   if [ "$NO_GIT" != 1 ] && [ -n "$2" ]; then
     csm_tip="$(git -C "$LANES_REPO" rev-parse -q --verify "$2^{commit}" 2>/dev/null || :)"
   fi
+  csm_rc=0; reg_marker_read "$LANES_REPO" "$csm_tip" || csm_rc=$?
+  [ "$csm_rc" != 1 ] || return 0
+  [ "$csm_rc" = 0 ] ||
+    cs_refuse "$1" "git could not read the tree of origin/$LANES_BRANCH at ${csm_tip:0:12}, $3, to look for lanes/STORE, the marker of an estate whose register is SQL, so whether this workstation may write the files is unknown (feature 007, FR-004)"
   if [ -z "$csm_tip" ]; then
-    [ -e "$LANES_DIR/STORE" ] || [ -L "$LANES_DIR/STORE" ] || return 0
     if [ "$NO_GIT" = 1 ]; then csm_where="$LANES_DIR/STORE is in the working tree (LANES_NO_GIT=1)"
     else csm_where="$LANES_DIR/STORE is in the working tree, and there is no origin/$LANES_BRANCH here to read instead"
     fi
   else
-    csm_rc=0
-    csm_hit="$(git --no-replace-objects -C "$LANES_REPO" ls-tree --name-only "$csm_tip" -- lanes/STORE 2>/dev/null)" || csm_rc=$?
-    [ "$csm_rc" = 0 ] ||
-      cs_refuse "$1" "git could not read the tree of origin/$LANES_BRANCH at ${csm_tip:0:12}, $3, to look for lanes/STORE, the marker of an estate whose register is SQL, so whether this workstation may write the files is unknown (feature 007, FR-004)"
-    [ -n "$csm_hit" ] || return 0
     csm_where="lanes/STORE is on origin/$LANES_BRANCH at ${csm_tip:0:12}, $3"
   fi
   csm_mode="files mode"; [ "$REG_MODE" = index ] && csm_mode="\`mode=index\`"
