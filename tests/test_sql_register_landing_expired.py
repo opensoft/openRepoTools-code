@@ -22,7 +22,9 @@ byte-identical to today's.
 
 THE CASES: (a) to (g) and (k) to (m) are FP; (i) and (j) are RE, on T205's
 `pg_cluster`, skipped without PostgreSQL 16 by its banner. Case (h), the
-rollback, is T279's.
+rollback, is T279's. The fifteenth test, new since v3f, is T112's AT-F13
+case (R-F10-34): `register commit` expires an imported stale `LANDING` by
+Rule 6's key, the shipped table then the per-wip one (RE; at its section).
 
 THE FP BENCH (`Bench`): `lanes-edit.sh` copied beside a `lanes-index` that is
 T207's contract stub (`contract_stub`, CLI4.5 section 6's copy rule, with
@@ -62,6 +64,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -1244,3 +1247,121 @@ def test_a_landed_between_the_forms_snapshot_and_commit_leaves_the_retry_nothing
     kinds = reg.rows("SELECT kind FROM register_lines WHERE path = 'lanes/LANES.md' "
                      f"AND line_no > {start} ORDER BY line_no")
     assert [r["kind"] for r in kinds] == ["LANDING", "LANDED"], kinds
+
+
+# ============================================================ T112's AT-F13 case (T253b)
+#
+# R-F10-34 (lane 3, #165 6755386771, reading 7; B10 tasks:413, :429;
+# `PLACEMENT.md` section 2 as `PLACEMENT-2.md` amends it), with lane 3's point 4
+# (#165 6768050756): the fixture is accepted, and the alias is also listed in the
+# case's own shipped table, through `LANES_REPOS_TSV_SHIPPED` (lane 1, #165
+# 6766921904, point 2), with a third key, so that one case proves both halves of
+# Rule 6's order: the per-wip table overrides the shipped one, and within it the
+# last row wins. Each table read alone, or the per-wip table's first row
+# (`alias_lookup`'s, `lanes-edit.sh:3436-3446` at `39839dc`), gives another key.
+
+#: The alias, and its three keys: the shipped table's, the per-wip table's
+#: first row's, and Rule 6's (the per-wip table's last row).
+STALE_ALIAS = "r7x"
+SHIPPED_KEY, FIRST_ROW_KEY, RULE6_KEY = "opensoft/r7-shipped", "opensoft/r7-first", "opensoft/r7-rule6"
+SHIPPED_TSV = f"# alias\towner/repo\n{STALE_ALIAS}\t{SHIPPED_KEY}\n"
+PER_WIP_TSV = (f"# alias\towner/repo\n{STALE_ALIAS}\t{FIRST_ROW_KEY}\n"
+               f"{STALE_ALIAS}\t{RULE6_KEY}\n")
+
+
+def git_blob_id(data: bytes) -> str:
+    """The blob id git gives `data`, as `changes.tsv` names it."""
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def test_register_commit_expires_an_imported_stale_landing_by_the_shipped_then_per_wip_repo_key(
+        registers, tmp_path):
+    """T112's AT-F13 case, RE (R-F10-34): a clone of `tmpl`, brought to
+    `primary` by AT-LR006's route, whose `import` entry loads a `LANDING`
+    older than Rule 6's 30 minutes, for one PR, on a repository the line
+    spells by an alias. The case's per-wip `lanes/repos.tsv` lists the alias
+    twice, the earlier row naming another key, and its own shipped table
+    (`LANES_REPOS_TSV_SHIPPED`) lists it with a third key; the import's row
+    carries Rule 6's key, the last row's (`rule6_aliases`,
+    `lanes-edit.sh:6938` at code `39839dc`). Then `lanes-index register
+    commit`, from T203's flipped copy, on an attempt directory in T101's
+    format built on `register snapshot --tree`, appends a `LANDING EXPIRED`
+    for that PR and spelling in T223's line form. It exits 0 with `committed
+    <seq>`, with no LR005 `expired-none`, and the `LANDING`'s slot in
+    `main_slots` is freed for Rule 6's key (Y:1989). It runs no
+    `append-line`, so it needs no L4-B10. It fails until T107, T227's
+    `tmpl`, T111 and T112 land (L1-A6, L1-A9, L1-A10; T227)."""
+    reg = registers("tmpl")
+    clock = reg.clock()
+    stale_utc = utc_of(clock - 45 * 60)
+    stale = (f"LANDING {EM} lane {HOLDER}, session {SID_H}@{WS}, {stale_utc}, PR #{PR} into "
+             f"{STALE_ALIAS} main")
+    files = register_files([stale], repos=PER_WIP_TSV)
+    body = files["lanes/LANES.md"]
+    line_no = body.split("\n").index(stale) + 1
+    rows = line_rows([stale], clock, {STALE_ALIAS: RULE6_KEY}, first_line=line_no)
+    assert [r["repo_key"] for r in rows] == [RULE6_KEY], rows
+    reg.import_files({p: t for p, t in files.items() if RENDER_SET.match(p)}, rows)
+    reg.to_primary()
+    taken = (HOLDER, str(PR), RULE6_KEY)
+    assert taken in reg.open_landings(), (
+        f"the import's LANDING does not take main for Rule 6's key: {reg.open_landings()}")
+
+    # THE WORKSTATION: the checkout's origin carries the per-wip table, the
+    # shipped table is the case's own, and `lanes-index` is T203's flipped copy.
+    fakebin = tmp_path / "fakebin"
+    origin, checkout, env = _workspace(tmp_path / "ws", fakebin, files)
+    shipped = tmp_path / "shipped-repos.tsv"
+    shipped.write_text(SHIPPED_TSV, encoding="utf-8")
+    copy = flipped_copy(LANES_INDEX, tmp_path / "bin", True)
+    conf = tmp_path / "lanes-index.conf"
+    conf.write_text(f"mode=primary\nregister_url={reg.db.url(WRITER_LOGIN)}\n"
+                    f"reader_url={reg.db.url()}\n", encoding="utf-8")
+    conf.chmod(0o600)
+    env.update(LANES_INDEX_CONFIG=str(conf), LANES_REPOS_TSV_SHIPPED=str(shipped),
+               PATH=str(reg.cluster.bindir) + os.pathsep + env["PATH"])
+    env.pop("LANES_INDEX", None)
+
+    def index(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, str(copy), *args], capture_output=True,
+                              encoding="utf-8", errors="replace", env=env, timeout=120,
+                              cwd=str(checkout), check=False, stdin=subprocess.DEVNULL)
+
+    # THE ATTEMPT DIRECTORY (T101's format, contract section 3.3), on the
+    # scratch tree `register snapshot --tree` builds at `n`.
+    released = (f"LANDING EXPIRED {EM} lane {OTHER} {EM} PR #{PR} into {STALE_ALIAS} main "
+                f"for lane {HOLDER} {EM} {utc_of(clock)}")
+    args_sha = hashlib.sha256(f"{OTHER}\0append-line\0{released}".encode("utf-8")).hexdigest()
+    attempt = tmp_path / "attempt"
+    attempt.mkdir()
+    snap = index("register", "snapshot", "--write-id", "new", "--lane", OTHER, "--verb",
+                 "append-line", "--args-sha256", args_sha, "--tree", str(attempt / "tree"),
+                 "--checkout", str(checkout))
+    assert snap.returncode == 0, f"register snapshot exited {snap.returncode}: {snap.stderr}"
+    keys = dict(line.partition("=")[::2] for line in snap.stdout.splitlines() if "=" in line)
+    (attempt / "snapshot").write_text(snap.stdout, encoding="utf-8")
+    tree_head = git(attempt / "tree", "rev-parse", "HEAD:lanes/LANES.md", env=env).strip()
+    base = git(attempt / "tree", "cat-file", "blob", tree_head, env=env).encode("utf-8")
+    image = base + released.encode("utf-8") + b"\n"
+    (attempt / "images" / "lanes").mkdir(parents=True)
+    (attempt / "images" / "lanes" / "LANES.md").write_bytes(image)
+    (attempt / "changes.tsv").write_text(
+        f"M\tlanes/LANES.md\t{tree_head}\t{git_blob_id(image)}\n", encoding="utf-8")
+    (attempt / "files").write_text(
+        f"lanes/LANES.md\t1\t{hashlib.sha256(image).hexdigest()}\n", encoding="utf-8")
+    (attempt / "msg").write_text(f"LANES({OTHER}@{WS}): append line {EM} T253's case\n",
+                                 encoding="utf-8")
+    (attempt / "author").write_text(f"{AUTHOR}\n", encoding="utf-8")
+    (attempt / "not_after").write_text(keys["not_after"] + "\n", encoding="utf-8")
+
+    done = index("register", "commit", "--write-id", keys["write_id"], "--generation",
+                 keys["generation"], "--lane", OTHER, "--verb", "append-line", "--args-sha256",
+                 args_sha, "--workstation", WS, str(attempt))
+    assert "expired-none" not in done.stderr, (
+        f"register commit met LR005 expired-none: the LANDING EXPIRED's repo_key is not Rule "
+        f"6's (shipped, then per-wip, the last row winning): {done.stderr}")
+    assert done.returncode == 0, f"register commit exited {done.returncode}: {done.stderr}"
+    assert re.fullmatch(r"committed [0-9]+\n", done.stdout), done.stdout
+    assert taken not in reg.open_landings(), (
+        f"main_slots still holds the LANDING for {RULE6_KEY}: {reg.open_landings()}")
+
