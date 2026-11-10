@@ -4964,7 +4964,7 @@ WR_STATE=""; WR_D=""; WR_LANE=""; WR_SESSION=""; WR_VERB=""; WR_CMDLINE=""
 WR_ARGS=()
 WR_PLAN=""; WR_SNAP_ARGS=()
 WR_ID=""; WR_GEN=""; WR_DATABASE=""; WR_CREATED_UTC=""; WR_UPDATED_UTC=""
-WR_ATTEMPTS=0; WR_CALLS=""; WR_TAIL=""
+WR_ATTEMPTS=0; WR_CALLS=""; WR_TAIL=""; WR_TOOK_TAIL=""
 WR_CLAIM=""; WR_CLAIM_K=-1; WR_CLAIM_PID=""; WR_CLAIM_START=""
 WR_CLAIM_HOST=""; WR_CLAIM_CONTAINER=""; WR_CLAIM_UTC=""
 WR_HERE_HOST=""; WR_HERE_CONTAINER=""
@@ -5052,24 +5052,36 @@ wr_digest() {   # <lane> <session> <verb> [<arg>...]
 wr_host_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 # A record's and a done mark's maximum age, 15 minutes (Y:5183, Y:5207).
-# `LANES_REGISTER_PENDING_MAX_AGE_S` sets it for tests.
+# `LANES_REGISTER_PENDING_MAX_AGE_S` sets it for tests, read and printed in base
+# 10 as `wr_seam_cap_s` is, so `08` is 8 s in every compare and every message
+# that names it (#165 6770820384, T415's 4).
 wr_max_age_s() {
   if wr_is_count "${LANES_REGISTER_PENDING_MAX_AGE_S:-}"; then
-    printf '%s\n' "$LANES_REGISTER_PENDING_MAX_AGE_S"
+    printf '%s\n' "$((10#$LANES_REGISTER_PENDING_MAX_AGE_S))"
   else
     printf '900\n'
   fi
 }
 
-# How long a claim from another host or container counts as live: 120 s, "the
-# seam's cap" (Y:5220), which is 2 x (D + 30 s) at D7's 30 s and which
-# `LANES_REGISTER_SEAM_CAP_S` sets for tests (Y:5001).
+# THE SEAM'S CAP, 2 x (D + 30 s), 120 s at D7's 30 s (Y:5001), where D is D7's
+# deadline: 30 s, or `LANES_REGISTER_DEADLINE_S` for tests (Y:2632-2644), as
+# T415's `pw_deadline_s` reads it, the one reader of D (T415's merge of T412).
+# DEC-25 keeps this one cap: it is also how
+# long a claim that cannot be tested here counts as live, another host's among
+# them (Y:5220) (lane openRepoTools-3, #165 6774499606, T415 (1)).
+# `LANES_REGISTER_SEAM_CAP_S` sets the cap itself, for tests (Y:5001). Each is
+# read in base 10, so a leading zero is neither octal nor an arithmetic error
+# in `wr_claim_capped`'s `$(( ))`: `08` is 8 s (#165 6770820384, T415's 4). A
+# value that is not a count of at most 18 digits (`wr_is_count`) is not read,
+# so twice D + 30 stays inside the shell's arithmetic.
 wr_seam_cap_s() {
+  local sc_d=30
   if wr_is_count "${LANES_REGISTER_SEAM_CAP_S:-}"; then
-    printf '%s\n' "$LANES_REGISTER_SEAM_CAP_S"
-  else
-    printf '120\n'
+    printf '%s\n' "$((10#$LANES_REGISTER_SEAM_CAP_S))"
+    return 0
   fi
+  sc_d="$(pw_deadline_s)"
+  printf '%s\n' "$(( 2 * (sc_d + 30) ))"
 }
 
 # A 0700 directory this uid owns, made where it is missing (Y:5172, Y:5180: "in
@@ -5219,10 +5231,11 @@ wr_utc_of_epoch() {   # <epoch seconds>
     date -u -j -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || :
 }
 
-# A CLAIM WHOSE OWNER CANNOT BE TESTED HERE is live for the seam's cap, 120 s
-# (`wr_seam_cap_s`), and dead after it: Y:5220 for a claim from another host or
-# container, "since its pid cannot be tested here", and DEC-25 for the two of
-# this host that cannot be tested either. The cap runs from the later of
+# A CLAIM WHOSE OWNER CANNOT BE TESTED HERE is live for the seam's cap,
+# 2 x (D + 30 s), 120 s at D7's 30 s (`wr_seam_cap_s`; Y:5001), and dead after
+# it: Y:5220 for a claim from another host or container, "since its pid cannot
+# be tested here", and DEC-25 for the two of this host that cannot be tested
+# either. The cap runs from the later of
 # `<from>`, the claim's own time, and the record's `updated_utc`; where neither
 # can be read, from the claim file's mtime; where even that cannot be read, the
 # claim is live. WR_LIVE_WHY is `<why>`, and WR_LIVE_UNTIL the epoch second from
@@ -5512,9 +5525,14 @@ wr_done_purge() {
 # host's clock on every write, a `call=` line's included (T412; open point 36).
 # The done marks past their age go first (Y:5183). 1, with nothing written,
 # where this run no longer owns the record, a value would break its line, or
-# the file cannot be written.
+# the file cannot be written; and where the record this run took over holds
+# `tail` (WR_TOOK_TAIL): a takeover rewrites nothing in such a record, since
+# its `pid` is the run that wrote `tail` (Y:5179, Y:5342; lane
+# openRepoTools-3, #165 6774499606, T412 (1)). So no `call=` line is added to
+# it, and no call is sent for it.
 wr_record_write() {
   local rw_dir rw_now rw_tmp rw_body rw_v rw_l
+  [ -z "$WR_TOOK_TAIL" ] || return 1
   wr_claim_owns || return 1
   wr_done_purge
   rw_dir="$(wr_pending_dir)" || return 1
@@ -5604,10 +5622,15 @@ wr_record_remove() {
 # THE RECORD TAKEN OVER (Y:5206): its id, generation, `call=` lines, `tail`,
 # `attempts`, `created_utc` and `database` become this run's. Its `pid`,
 # `pid_start`, `host` and `container` become this run's claim's when it is next
-# written (Y:5185).
+# written (Y:5185) -- but only where it holds no `tail`. A record that holds
+# `tail` is never rewritten (Y:5342; lane openRepoTools-3, #165 6774499606,
+# T412 (1)): WR_TOOK_TAIL keeps its value, `wr_record_write` writes nothing
+# while it does, and the record stays as found, its `pid`, `host` and
+# `container` those of the run that wrote `tail` (Y:5179), for T418's done
+# mark. Only its removal (`wr_record_remove`) is left to this run.
 wr_record_take_over() {
   WR_ID="$WR_REC_WRITE_ID"; WR_GEN="$WR_REC_GENERATION"
-  WR_CALLS="$WR_REC_CALLS"; WR_TAIL="$WR_REC_TAIL"
+  WR_CALLS="$WR_REC_CALLS"; WR_TAIL="$WR_REC_TAIL"; WR_TOOK_TAIL="$WR_REC_TAIL"
   WR_CREATED_UTC="$WR_REC_CREATED_UTC"; WR_DATABASE="$WR_REC_DATABASE"
   WR_ATTEMPTS="$WR_REC_ATTEMPTS"
   wr_is_count "$WR_ATTEMPTS" || WR_ATTEMPTS=0
@@ -5714,7 +5737,7 @@ wr_id_plan() {
   local ip_e ip_g ip_f ip_rc ip_n
   ip_e="${LANES_WRITE_ID:-}"; ip_g="${LANES_WRITE_GENERATION:-}"
   ip_f="$WR_STATE/register-pending/$WR_D"
-  WR_ID=""; WR_GEN=""; WR_CALLS=""; WR_TAIL=""; WR_ATTEMPTS=0
+  WR_ID=""; WR_GEN=""; WR_CALLS=""; WR_TAIL=""; WR_TOOK_TAIL=""; WR_ATTEMPTS=0
   WR_CREATED_UTC=""; WR_DATABASE=""
   wr_record_read "$ip_f"; ip_rc=$?
   if [ "$ip_rc" = 2 ]; then
@@ -5765,8 +5788,10 @@ wr_id_plan() {
 # AFTER THE FIRST SNAPSHOT ANSWERED 0 (contract §3.2): its stdout, in a file,
 # gives the generation and the write id, minted or echoed, so the record is
 # written now, after that snapshot and before any commit call (Y:5192) -- unless
-# the snapshot found the write in the register (`found=`), which is the tail's
-# case (T418) and writes no record here.
+# the snapshot found the write in the register (`found=`), or the record taken
+# over holds `tail` (WR_TOOK_TAIL), which is never rewritten (Y:5342; lane
+# openRepoTools-3, #165 6774499606, T412 (1)). Both are the tail's case (T418),
+# and write no record here.
 #
 #   new     the minted id; the record is new
 #   reuse, env
@@ -5819,6 +5844,7 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
     *) return 1 ;;
   esac
   [ -n "$is_found" ] && return 0
+  [ -z "$WR_TOOK_TAIL" ] || return 0
   wr_record_write
 }
 
