@@ -28,7 +28,12 @@ and lane 2's T255 part (L2-W6, phase W):
   * `test_the_image_cache_check_and_a_miss_are_timed_per_attempt`, through
     lane 1's T302 API;
   * `test_each_shape_on_a_delayed_relay_is_recorded[<shape>-<rtt>]`, under
-    section 5.6's option B, which lane 3 ruled (R-P23).
+    section 5.6's option B, which lane 3 ruled (R-P23);
+
+and T254's M9 (L2-W5, phase W):
+`test_the_bind_and_the_guards_set_row_state_are_timed_in_both_modes`, both
+modes inside one test. T254's AT-F6 guard cases are in
+`tests/test_sql_register_guard.py`, the guard line's.
 
 T226's guard parts, M5b's `test_todays_direct_guard_is_timed_in_its_four_parts`
 and M10's `test_the_guards_register_parse_is_timed_on_a_real_sized_register_beside_todays_six_reads_through_git`,
@@ -71,7 +76,8 @@ T112 (L1-A10, `register commit`) and T114 (L1-A12, `journal --last`), lane
 5's L5-A3 and L5-A5 (T506's `swapped` on primary), and lane 2's T227 (the
 bootstrap's template and `tmpl_imported`), T228 and T229 (the TLS and
 counting clusters, and the relay) land; T255's also wait for lane 4's L4-B3
-and L4-B8 (the verbs on primary) and lane 1's T302 (the image cache). `lanes-index` runs as T203's flipped copy, `RENDER_GIT_HALF = True`,
+and L4-B8 (the verbs on primary) and lane 1's T302 (the image cache); M9
+waits for lane 4's L4-B9 and lane 5's L5-A1 and L5-B1. `lanes-index` runs as T203's flipped copy, `RENDER_GIT_HALF = True`,
 so `mode=primary` loads (open point 3), and connects as two logins of this
 module's own, members of the writer and the reader groups, by the cluster's
 trust.
@@ -1436,3 +1442,81 @@ def test_each_shape_on_a_delayed_relay_is_recorded(pg_engine, request, shape, rt
     record([f"| relay | {platform.node()}, TLS cluster behind the delayed loopback | shape {shape.upper()} "
             f"at RTT {rtt} ms | median {delayed['median']:.1f} ms, p95 {delayed['p95']:.1f} ms, "
             f"n={delayed['n']}; at RTT 0 median {local['median']:.1f} ms | about {trips:.1f} round trips |"])
+
+
+# ============================================================ T254: M9 (phase W)
+
+#: `bound_s` at `c` = 2 with one address, as `guard-bind` computes it from
+#: the configuration (section 5.1's M9 rule; lane 4's "The record, and its
+#: liveness test"), and the variable tests set it by.
+BOUND_S = 500
+#: The session that answers 2 and binds, and the lane it leaves.
+SID_BIND = "bbbbbbbb-0009-4000-8000-00000000b009"
+
+
+def _bind_run(db, root: Path, mode: str) -> tuple:
+    """One M9 run on a fresh estate with a local bare origin (section 5.3):
+    answer 2's bind, `lane-start --no-launch --bind repoA 2`, then the
+    guard's `set-row-state` on the lane it leaves, each exec to exit in the
+    guard's own path. Returns (the bind's ms, `set-row-state`'s ms, the
+    register writes on primary or the origin's new commits in files mode,
+    and the head or the commit count before the bind).
+    The argv are read from section 5.1's M9 row, for lane 4 to confirm."""
+    estate = VerbEstate(db, root, mode)
+    estate.env.update(LANES_BIND_BOUND_S=str(BOUND_S), LANES_SESSION=SID_BIND,
+                      CLAUDE_CODE_SESSION_ID=SID_BIND)
+    before = head(db) if mode == "primary" else estate.origin_commits()
+    spent = []
+    for argv in (["@lane-start", "--no-launch", "--bind", "repoA", "2"],
+                 ["set-row-state", "repoA-1", f"PAUSED {DOT} answer 2 bound this session to repoA-2"]):
+        ms, proc = timed(lambda: estate.run(argv))
+        assert proc.returncode == 0, (f"{mode}: `{' '.join(argv)}` exited {proc.returncode}: "
+                                      f"{(proc.stdout + proc.stderr)[-600:]}")
+        spent.append(ms)
+    grown = (head(db) if mode == "primary" else estate.origin_commits()) - before
+    return spent[0], spent[1], grown, before
+
+
+def test_the_bind_and_the_guards_set_row_state_are_timed_in_both_modes(pg_engine, pg, tmp_path):
+    """M9 (section 5.1; AT-F6): answer 2's bind and the guard's
+    `set-row-state` on the lane it leaves, exec to exit, cold once and 20
+    warm, each run on a fresh estate with a local bare origin, in files mode
+    and on primary; recorded beside `bound_s` (500 s at `c` = 2), never
+    asserted (ruling 16: the detached form applies, so M9 decides nothing).
+
+    The oracle: every call exits 0; on primary each run's bind is one
+    `start-record` write and `set-row-state` one more, so the journal grows
+    by exactly two and their write ids are distinct (AT-F6: one journal
+    entry for the bind, two for answer 2); in files mode the origin's
+    `main` grows by at least those two commits. The test takes no mode id:
+    T254's own AT-F6 tests take none (NOTES 327, check 17), and both modes
+    run inside it. Fails until lane 4's L4-B9 and lane 5's L5-A1 and L5-B1
+    land."""
+    lines = []
+    for mode in MODES:
+        binds, rows_set = [], []
+        for k in range(1 + N_WARM):
+            if mode == "primary":
+                name = pg.cluster.new_database()
+                db = Database(pg.cluster, name)
+            else:
+                name, db = None, pg
+            try:
+                bind_ms, set_ms, grown, before = _bind_run(db, tmp_path / f"{mode}-{k}", mode)
+                if mode == "primary":
+                    assert grown == 2, f"run {k}: the journal grew by {grown}, not 2"
+                    ids = rows(db, f"SELECT count(DISTINCT write_id) AS d FROM journal WHERE seq > {before}")
+                    assert ids == [{"d": 2}], ids
+                else:
+                    assert grown >= 2, f"run {k}: the origin's main grew by {grown} commit(s)"
+            finally:
+                if name is not None:
+                    pg.cluster.drop_database(name)
+            binds.append(bind_ms)
+            rows_set.append(set_ms)
+        link = f"rtt=0, tls=none; bound_s={BOUND_S} (c=2, N_a=1)"
+        lines.append(figure("M9", f"{mode} mode, fresh estate, local bare origin",
+                            "`lane-start --no-launch --bind`, exec to exit", binds, link))
+        lines.append(figure("M9", f"{mode} mode, fresh estate, local bare origin",
+                            "the guard's `set-row-state` on the lane it leaves", rows_set, link))
+    record(lines)
