@@ -475,9 +475,11 @@ class FixtureRegister(Workspace):
 
 
 def _rows(pg, sql: str) -> list:
-    """`sql`'s rows as JSON objects, read in the register's schema."""
+    """`sql`'s rows as JSON objects, read in the register's schema. By
+    `jsonb_agg`, whose text is one line: `json_agg` puts a line break
+    between its elements, so a last-line read of it fails on two rows."""
     out = pg.psql(f"SET search_path TO {SCHEMA};\n"
-                  f"SELECT coalesce(json_agg(t), '[]'::json) FROM ({sql}) t;\n").stdout
+                  f"SELECT coalesce(jsonb_agg(t), '[]'::jsonb) FROM ({sql}) t;\n").stdout
     return json.loads(out.strip().splitlines()[-1])
 
 
