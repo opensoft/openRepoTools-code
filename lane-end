@@ -251,12 +251,16 @@
 #      the reading verb's own code (feature 007, T403; FR-036): 69, the
 #      register could not be read; 75, register busy; 3, in doubt. Nothing is
 #      written. The reads are the lane's row (`register-text`), `canon-lane`,
-#      `lane-objects`, `register-row`, and `--retire-dormant`'s `lanes
-#      --decide` listing. The default read arms see these codes only from a SQL
-#      register; `register-text` spends 69 in every mode where the register
-#      cannot be read, and any code it exits with is passed on, never read as
-#      an empty register. The ownership seam's read, `managed-projection`,
-#      keeps its 1, UNKNOWN (research.md ERR-46).
+#      `lane-objects`, `register-row`, `--retire-dormant`'s `lanes --decide`
+#      listing, and every other read an arm already dies on: `lane-checkout`,
+#      `resolve-home`, `forks`, `duplicate-holder`, `live-holder`,
+#      `last-session`, `transcript-holders` and the close-out gate's
+#      `lane-dir` (lane 3, #165 6767463594, question 9); each keeps its own
+#      code for any other answer. The default read arms see these codes only
+#      from a SQL register; `register-text` spends 69 in every mode where the
+#      register cannot be read, and any code it exits with is passed on, never
+#      read as an empty register. The ownership seam's read,
+#      `managed-projection`, keeps its 1, UNKNOWN (research.md ERR-46).
 #   130, 143  stopped by INT or TERM (128 plus the signal): the run ends where
 #      the signal found it and removes its temporary file, never resumes
 #
@@ -596,8 +600,11 @@ usage() { sed -n -e '1,2d' -e '/^#/!q' -e 's/^# \{0,1\}//' -e p "$RESOLVED"; }
 # the verb's own code ("pass the code", Y:5722), naming it, before this
 # command writes anything. Where a read's arm already died, it keeps its words
 # and exits with these three codes instead of its own (`le_read_code`); every
-# other code keeps that arm's exit (research.md ERR-36). No read verb emits any
-# of the three in files mode (Y:5746), so neither changes anything there.
+# other code keeps that arm's exit (research.md ERR-36). Y:5734's four rows are
+# not a closed list: every arm that already refuses on a `lanes-edit.sh` read
+# does the same (lane 3, #165 6767463594, question 9), so `lane-end` ends 69
+# where the register cannot be read (Y:3014). No read verb emits any of the
+# three in files mode (Y:5746), so neither changes anything there.
 le_read_code() {   # <the verb's exit> <the arm's own exit for any other code>
   case "$1" in 69 | 75 | 3) printf '%s\n' "$1" ;; *) printf '%s\n' "$2" ;; esac
 }
@@ -1036,7 +1043,7 @@ lane_register_follow() {
       note "lane $LANE's own register checkout could not be made (\`$LANES_EDIT lane-checkout $LANE --create\` exited $lrf_rc, above), so this command reads W's register, which may not show what this lane's earlier writes put there (Amendment 23 S1, 8(d)). Each write below says for itself whether it went through." ;;
     *)
       [ -z "$lrf_err" ] || printf '%s\n' "$lrf_err" >&2
-      die "lane $LANE's own register checkout could not be read (\`$LANES_EDIT lane-checkout $LANE\` exited $lrf_rc, above), so the row this command acts on cannot be read where its writes go (Amendment 23 S1). $lrf_none" 1 ;;
+      die "lane $LANE's own register checkout could not be read (\`$LANES_EDIT lane-checkout $LANE\` exited $lrf_rc, above), so the row this command acts on cannot be read where its writes go (Amendment 23 S1). $lrf_none" "$(le_read_code "$lrf_rc" 1)" ;;
   esac
   return 0
 }
@@ -1084,7 +1091,7 @@ if [ -n "$home_override" ]; then
   case "$home_rc" in
     0|8) : ;;
     2) die "--home $home_override is refused for lane $LANE (the writer's reason is above). Nothing has been written and the row is untouched." 2 ;;
-    *) die "$LANES_EDIT resolve-home $LANE $home_override failed (exit $home_rc). That is not a verdict on the option, and this script will not close a row on an argument it could not check. Fix the helper, then re-run." 1 ;;
+    *) die "$LANES_EDIT resolve-home $LANE $home_override failed (exit $home_rc). That is not a verdict on the option, and this script will not close a row on an argument it could not check. Fix the helper, then re-run." "$(le_read_code "$home_rc" 1)" ;;
   esac
 fi
 
@@ -1169,7 +1176,7 @@ if [ -n "$retire_target" ]; then
   fk_rows="$("$LANES_EDIT" forks "$LANE" 2>/dev/null)" || fk_rc=$?
   case "$fk_rc" in
     0 | 8) : ;;
-    *) die "$LANES_EDIT forks $LANE failed (exit $fk_rc). That is NOT 'no fork of it is live', and this script will not name an act for a fork it could not prove is one. Run it by hand to see what it says, then re-run." 1 ;;
+    *) die "$LANES_EDIT forks $LANE failed (exit $fk_rc). That is NOT 'no fork of it is live', and this script will not name an act for a fork it could not prove is one. Run it by hand to see what it says, then re-run." "$(le_read_code "$fk_rc" 1)" ;;
   esac
 
   fk_sid=""; fk_pid=""; fk_kind=""; fk_cwd=""
@@ -1210,7 +1217,7 @@ FORKS
     dh_rows="$(LANES_NO_FETCH=1 "$LANES_EDIT" duplicate-holder "$LANE" 2>/dev/null)" || dh_rc=$?
     case "$dh_rc" in
       0 | 8) : ;;
-      *) die "$LANES_EDIT duplicate-holder $LANE failed (exit $dh_rc). That is NOT 'no duplicate holder is live', and this script will not name an act against a process it could not prove is one. Run it by hand to see what it says, then re-run." 1 ;;
+      *) die "$LANES_EDIT duplicate-holder $LANE failed (exit $dh_rc). That is NOT 'no duplicate holder is live', and this script will not name an act against a process it could not prove is one. Run it by hand to see what it says, then re-run." "$(le_read_code "$dh_rc" 1)" ;;
     esac
   fi
 
@@ -1241,7 +1248,7 @@ LIVE
         fi
         ;;
       8) : ;;
-      *) die "$LANES_EDIT live-holder $LANE failed (exit $lh_rc) while checking whether $retire_target is lane $LANE's own live session. That is NOT 'it is not' — fix the helper or the records, then re-run." 1 ;;
+      *) die "$LANES_EDIT live-holder $LANE failed (exit $lh_rc) while checking whether $retire_target is lane $LANE's own live session. That is NOT 'it is not' — fix the helper or the records, then re-run." "$(le_read_code "$lh_rc" 1)" ;;
     esac
   fi
 
@@ -1574,7 +1581,7 @@ DUPES
     dup_id="$(LANES_NO_FETCH=1 "$LANES_EDIT" last-session "$LANE" 2>/dev/null)" || du_rc=$?
     case "$du_rc" in
       0 | 8) : ;;
-      *) die "$LANES_EDIT last-session $LANE exited $du_rc, so the id the row records could not be read and whether '$retire_target' is a DUPLICATE of it is not known. That is not 'it is not one', and this script will not name an act against a process it could not prove is one." 1 ;;
+      *) die "$LANES_EDIT last-session $LANE exited $du_rc, so the id the row records could not be read and whether '$retire_target' is a DUPLICATE of it is not known. That is not 'it is not one', and this script will not name an act against a process it could not prove is one." "$(le_read_code "$du_rc" 1)" ;;
     esac
     if [ "$du_rc" = 0 ] && [ -n "$dup_id" ]; then
       # `thh_rc` AND NOT `dh_rc`: this is `transcript-holders`' OWN exit
@@ -1586,7 +1593,7 @@ DUPES
       case "$thh_rc" in
         0 | 8) : ;;
         2) note "this \`lanes-edit.sh\` has no \`transcript-holders\` (exit 2), so a duplicate of lane $LANE's own transcript cannot be looked for here. Install the one beside this script (\`openRepoTools --install\`)." ;;
-        *) die "$LANES_EDIT transcript-holders $dup_id exited $thh_rc, so whether '$retire_target' is a live duplicate of lane $LANE's own transcript could NOT be read — which is not 'it is not one'." 1 ;;
+        *) die "$LANES_EDIT transcript-holders $dup_id exited $thh_rc, so whether '$retire_target' is a live duplicate of lane $LANE's own transcript could NOT be read — which is not 'it is not one'." "$(le_read_code "$thh_rc" 1)" ;;
       esac
       if [ "$thh_rc" = 0 ]; then
         # WHICH PROFILES HAVE AN INTERACTIVE HOLDER, FIRST (Copilot round 10,
@@ -2394,9 +2401,12 @@ case "$gate_rc" in
      gate_log="the close-out gate could not be read (lane-worktrees exit $gate_rc)" ;;
 esac
 # A ROOT THAT COULD NOT BE READ IS THE GATE UNREAD WHATEVER THE SWEEP ANSWERED
-# (Copilot round 2 on #175): exit 1, the environment, on 3 and 2 as on 0.
+# (Copilot round 2 on #175): exit 1, the environment, on 3 and 2 as on 0. Where
+# the unread read is `lane-dir`'s and it answered 69, 75 or 3, the gate exits
+# with that code instead (T403; #165 6767463594 item 9): the register could not
+# be read, and that is not an answer about the lane's root.
 if [ -n "$gate_unread" ]; then
-  gate_exit=1
+  gate_exit="$(le_read_code "$gd_rc" 1)"
   case "$gate_rc" in
     2 | 3) gate_log="$gate_log; and its own root could not be read for residue" ;;
   esac
@@ -2434,7 +2444,7 @@ else
       note "($gate_foreign FOREIGN tree(s) beside these are not this lane's, and were not counted.)"
     fi
     if [ -n "$gate_unread" ]; then note "and: $gate_unread"; fi
-    if [ "$gate_exit" = 1 ] && [ -n "$gate_err" ]; then
+    if { [ "$gate_exit" = 1 ] || [ -n "$gate_unread" ]; } && [ -n "$gate_err" ]; then
       note "what the gate said on stderr:"
       printf '%s\n' "$gate_err" | sed -e 's/^/    /' >&2
     fi
