@@ -33,6 +33,13 @@ WHAT IT CHECKS, by the test plan's entries and lane 2's task T221:
     `lanes-index bootstrap`, lane 1's T109 with T104's key. Its two rendering
     ids ask for the session cluster at run time and bootstrap empty databases
     of their own; its four refusal ids need no engine.
+  * `test_commit_write_derives_step_6s_deletes_so_the_tables_equal_the_imports_derivation`,
+    new since v3f (R-F10-34, R-F13-2): T107's step 6 and step 7 at the engine. Its
+    four ids from lane 3's ruling (c) (two renames, two strays), and case 6a's two,
+    `[6a-replace]` and `[6a-remove]`, where the entry takes away the line that holds
+    a lane's hold on an object and sends no hold on it: the tables equal the
+    import's derivation, step 7 re-marks `superseded_by` and stamps no `seq` or
+    `mode`, and step 5a's `objects:` keys name every lane holding the object.
 
 REAL ENGINE. Every case but the one-number rule and DEC-23's test asks for
 `pg`, one database cloned from the session's template, so its fixture closure
@@ -1304,7 +1311,8 @@ def test_the_bootstrap_renders_register_schema_both_ways_and_refuses_the_rest(
 #: or T115's derivation code.
 STEP6_UTC = "2026-11-09T10:00:00Z"
 STEP6_ROW_A, STEP6_ROW_B, STEP6_ROW_R = "| `Lane-A` | x |", "| `Lane-B` | y |", "| `Lane-R` | x |"
-STEP6_LOG_A, STEP6_LOG_R = "lanes/log/Lane-A.md", "lanes/log/Lane-R.md"
+STEP6_LOG_A, STEP6_LOG_B, STEP6_LOG_R = ("lanes/log/Lane-A.md", "lanes/log/Lane-B.md",
+                                         "lanes/log/Lane-R.md")
 STEP6_WORD_MS = "2026-11-09T10:00:00.123Z"           # a WORD line with milliseconds (lane 3)
 STEP6_STRAY_SHA = "5" * 40
 
@@ -1346,11 +1354,12 @@ def step6_rows(files: dict, holds_spelled=("CLAIMED", "TAKEOVER")) -> dict:
 STEP6_CLAIM_O1, _f1 = step6_log("CLAIMED", "o1")
 STEP6_CLAIM_O2, _f2 = step6_log("CLAIMED", "o2")
 STEP6_OPEN_O3, _f3 = step6_log("OPENED", "o3")
+STEP6_TAKE_O1, _f4 = step6_log("TAKEOVER", "o1", "2026-11-09T11:00:00Z")   # Lane-B's, on Lane-A's o1
 STEP6_WORD, _fw = step6_log("WORD", None, STEP6_WORD_MS)
 STEP6_RENAMED, _fr = step6_log("RENAMED", None, "2026-11-10T12:00:00Z")
 STEP6_STRAY, _fs = step6_log("NOTED", None)
-STEP6_FIELDS = {STEP6_CLAIM_O1: _f1, STEP6_CLAIM_O2: _f2, STEP6_OPEN_O3: _f3, STEP6_WORD: _fw,
-                STEP6_RENAMED: _fr, STEP6_STRAY: _fs}
+STEP6_FIELDS = {STEP6_CLAIM_O1: _f1, STEP6_CLAIM_O2: _f2, STEP6_OPEN_O3: _f3, STEP6_TAKE_O1: _f4,
+                STEP6_WORD: _fw, STEP6_RENAMED: _fr, STEP6_STRAY: _fs}
 
 #: Each case: the mirror before, and the mirror after the write.
 STEP6_CASES = {
@@ -1368,6 +1377,19 @@ STEP6_CASES = {
          STEP6_LOG_A: [STEP6_CLAIM_O1, STEP6_CLAIM_O2, STEP6_OPEN_O3]},
         {"lanes/LANES.md": ["# Lanes", STEP6_ROW_A],
          STEP6_LOG_A: [STEP6_CLAIM_O1, STEP6_STRAY, STEP6_CLAIM_O2, STEP6_OPEN_O3]}),
+    # Case 6a (R-F13-2; lane 3, #165 6771318480, option (i)): Lane-B's TAKEOVER on o1 is
+    # the line that supersedes Lane-A's CLAIMED, and the write takes that line away (a
+    # replace by a stray; a remove of its log by a write) and sends NO hold on o1.
+    "6a-replace": (
+        {"lanes/LANES.md": ["# Lanes", STEP6_ROW_A, STEP6_ROW_B],
+         STEP6_LOG_A: [STEP6_CLAIM_O1], STEP6_LOG_B: [STEP6_TAKE_O1]},
+        {"lanes/LANES.md": ["# Lanes", STEP6_ROW_A, STEP6_ROW_B],
+         STEP6_LOG_A: [STEP6_CLAIM_O1], STEP6_LOG_B: [STEP6_STRAY]}),
+    "6a-remove": (
+        {"lanes/LANES.md": ["# Lanes", STEP6_ROW_A, STEP6_ROW_B],
+         STEP6_LOG_A: [STEP6_CLAIM_O1], STEP6_LOG_B: [STEP6_TAKE_O1]},
+        {"lanes/LANES.md": ["# Lanes", STEP6_ROW_A, STEP6_ROW_B],
+         STEP6_LOG_A: [STEP6_CLAIM_O1]}),
 }
 
 
@@ -1377,8 +1399,25 @@ def step6_entry(case: str, before: dict, after: dict) -> dict:
     rows only for the lines written, with the holds from every line of the
     renamed log. The strays as `import --single` sends them: a `delete`; and,
     with no insert op, a `replace` of every later line and an `append`
-    (6755386771, "No insert op now")."""
+    (6755386771, "No insert op now"). Case 6a's two (lane 3, #165 6771318480):
+    a stray's `replace` of Lane-B's TAKEOVER line by a line on no object, with
+    the replaced line's own `log_lines` row, and a write's `remove` of Lane-B's
+    log; each sends no `object_holds` row, since no line of Lane-B names o1
+    after it (T112's `register_commit_entry` sends none for a pair left with
+    no line)."""
     rows = step6_rows(after)
+    if case == "6a-replace":
+        return entry("stray-import", "import --single", journal={"git_commit": STEP6_STRAY_SHA},
+                     edits=[{"ord": 1, "op": "replace", "path": STEP6_LOG_B, "line_no": 1,
+                             "old_sha256": line_sha(before[STEP6_LOG_B][0]),
+                             "new_text": after[STEP6_LOG_B][0]}],
+                     files=[{"path": STEP6_LOG_B, "present": True,
+                             "sha256": rendered(after[STEP6_LOG_B]), "final_newline": True}],
+                     log_lines=[r for r in rows["log_lines"] if r["path"] == STEP6_LOG_B])
+    if case == "6a-remove":
+        return entry("write", "remove-log", journal={"args_sha256": ARGS_SHA256},
+                     edits=[{"ord": 1, "op": "remove", "path": STEP6_LOG_B}],
+                     files=[{"path": STEP6_LOG_B, "present": False}])
     if case.startswith("rename-"):
         renamed = {**rows["log_lines"][-1], "workstation": WS}      # primary: Rule 10's CHECK
         lanes = [r for r in rows["lanes"] if r["lane"] == "Lane-R"]
@@ -1443,6 +1482,13 @@ def structured(db) -> dict:
     return out
 
 
+def step6_holds_of(db, obj: str) -> dict:
+    """Every stored `object_holds` row on `obj`, whole, by lane key."""
+    rows = json.loads(sql(db, f"SELECT coalesce(jsonb_agg(to_jsonb(t)), '[]') FROM "
+                              f"{SCHEMA}.object_holds t WHERE object = {sql_text(obj)};"))
+    return {row["lane_key"]: row for row in rows}
+
+
 @pytest.mark.parametrize("case", list(STEP6_CASES))
 def test_commit_write_derives_step_6s_deletes_so_the_tables_equal_the_imports_derivation(
         pg, case):
@@ -1459,12 +1505,30 @@ def test_commit_write_derives_step_6s_deletes_so_the_tables_equal_the_imports_de
     entry of the mirror after the write leaves in a second clone of `tmpl`.
     `[rename-live-claim]` also asserts the claim's hold is the new lane's, and
     `[stray-inserts-before-the-end]` that each hold below the inserted line
-    points at its own line."""
+    points at its own line.
+
+    CASE 6A (R-F13-2; lane 3, #165 6771318480, option (i); T107's `PENDING-L2`
+    marker), `[6a-replace]` and `[6a-remove]`: Lane-B's TAKEOVER on `o1` is the
+    line that supersedes Lane-A's CLAIMED on it, and the entry replaces that
+    line (a stray's `replace`) or removes its log (a write's `remove`) and
+    sends no hold on `o1`. Beside the tables equal to the import's derivation,
+    each asserts that step 7 re-marks `superseded_by` on every stored row of
+    `o1` as for an object the entry sends, so Lane-A's CLAIMED is live again, and
+    stamps no `seq` or `mode` on it; and that the entry's `journal_scopes`
+    hold `objects:lane-a` and `objects:lane-b`, every lane holding the object,
+    so that the flip is reported (step 5a). They fail until lane 1's commit of
+    6a on T107 (`lanes-index` line S), where `commit_write` as T112-fu2 reads
+    it re-marks only the objects the entry sends."""
     before, after = STEP6_CASES[case]
     n = bring_to_primary(pg, before, **step6_rows(before))
-    if case.startswith("stray-"):
+    body = step6_entry(case, before, after)
+    if body["journal"]["kind"] == "stray-import":       # a stray's, which clears a divergence
         assert record_mirror_state(pg, "ws-stray", STEP6_STRAY_SHA, None).returncode == 0
-    proc = commit_call(pg, n, step6_entry(case, before, after))
+    if case.startswith("6a-"):                          # the control: the claim is superseded
+        was = step6_holds_of(pg, "o1")
+        assert {k: v["superseded_by"] for k, v in was.items()} == {"lane-a": "lane-b",
+                                                                   "lane-b": None}, was
+    proc = commit_call(pg, n, body)
     code, message = error_of(proc)
     assert proc.returncode == 0, (
         f"commit_write refused the {case} write with {code} (23505, 23503, 23514 and LR005 "
@@ -1494,3 +1558,21 @@ def test_commit_write_derives_step_6s_deletes_so_the_tables_equal_the_imports_de
             line = lines[(h["file"], h["ordinal"])]
             assert (line["object"], line["verb"]) == (h["object"], h["verb"]), (h, line)
         assert sorted(h["ordinal"] for h in got["object_holds"]) == [1, 3, 4], holds
+    if case.startswith("6a-"):
+        now = step6_holds_of(pg, "o1")
+        assert set(now) == {"lane-a"}, (
+            f"{case}: step 6 should have deleted Lane-B's hold on o1 with its line, and left "
+            f"Lane-A's: {now}")
+        assert now["lane-a"]["superseded_by"] is None, (
+            f"{case}: Lane-A's CLAIMED on o1 is still superseded by "
+            f"{now['lane-a']['superseded_by']!r}, though Lane-B's TAKEOVER is gone: step 7 did "
+            f"not re-mark the object, since the entry sends no hold on it (case 6a)")
+        assert (now["lane-a"]["seq"], now["lane-a"]["mode"]) == (
+            was["lane-a"]["seq"], was["lane-a"]["mode"]), (
+            f"{case}: the re-mark stamped Lane-A's row: it was {(was['lane-a']['seq'], was['lane-a']['mode'])}, "
+            f"it is {(now['lane-a']['seq'], now['lane-a']['mode'])}; it takes no seq or mode")
+        keys = set(json.loads(sql(pg, f"SELECT coalesce(jsonb_agg(scope), '[]') FROM "
+                                      f"{SCHEMA}.journal_scopes WHERE seq = {n + 1};")))
+        assert {"objects:lane-a", "objects:lane-b"} <= keys, (
+            f"{case}: the entry's journal_scopes are {sorted(keys)}; step 5a should add objects: "
+            f"for every lane holding o1, objects:lane-a and objects:lane-b, so the flip is reported")
