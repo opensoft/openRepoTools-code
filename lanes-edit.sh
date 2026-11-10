@@ -546,8 +546,10 @@
 #      alias's new name included; an `--add-row` for a name `canon_lane`
 #      answers any lane for, a row under any case or a former name, naming
 #      it; under `LANES_ROUTE_WRITES=1` those two are refused before anything
-#      is cloned where W's fetch answers, and an `--add-row`'s row and
-#      `--log` object that name another lane always; and a
+#      is cloned where W's own copy answers a lane and its fetch confirms
+#      it, and so are an `--add-row`'s row, and every refusal the arm makes
+#      of its `--log`, where the arm would refuse none of the call's other
+#      words first; and a
 #      `LANES_SESSION` that is not a transcript uuid. A cell append whose
 #      anchor does not hold is no refusal: it is left out and said, and the
 #      write goes on.
@@ -17877,9 +17879,10 @@ write_lane_of() {   # <verb> <its arguments…>
     # A first word in another spelling than the row's passes here, since this
     # arm reads no row, and so does an `--add-row` for a name the register
     # already answers for: `lane_checkout_enter` refuses each before anything
-    # is cloned (#165 6770733371, new question (a); #165 6774499606, T427's
-    # question 3); where its fetch of W was no answer, the arm refuses it in
-    # the lane's checkout, before the lock (#165 6767463594, question 6). An
+    # is cloned where W's own copy answers a lane and its fetch confirms it
+    # (#165 6770733371, new question (a); #165 6774499606, T427's question
+    # 3); otherwise the arm refuses it in the lane's checkout, before the lock
+    # (#165 6767463594, question 6). An
     # `--add-row` with no row after it is the
     # arm's usage refusal too, so it is not routed either (REV427b, N1), as a
     # missing `<L>` is not, and nothing is cloned for it.
@@ -18981,9 +18984,11 @@ Nothing was written." 2
   #   byte, an alias's new name included (6767463594, question 6); an
   #   `--add-row` for which `canon_lane` answers any lane at all, naming it
   #   (6774499606, T427's question 3); under LANES_ROUTE_WRITES=1 the router
-  #   refuses those two before anything is cloned where W's fetch answers
-  #   (6770733371, new question (a)), and an `--add-row`'s row and `--log`
-  #   object that name another lane always; a
+  #   refuses those two before anything is cloned where W's own copy answers
+  #   a lane and its fetch confirms it (6770733371, new question (a)), and an
+  #   `--add-row`'s row, and every refusal the arm makes of its `--log`,
+  #   where the arm would refuse none of the call's other words first
+  #   (6779688808, Q21); a
   #   LANES_SESSION that is not a transcript uuid; S3's refusals; each with
   #   nothing written · 3 pushed, not confirmed · 4 the lock · 5 an edit's
   #   proof · 6 S4's commit, kept and named · 69 on primary, at T409's ask
