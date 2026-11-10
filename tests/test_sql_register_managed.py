@@ -995,6 +995,12 @@ CHECK_11 = {
                                 f"{env.tls.port}/t224_tls?sslmode=verify-full&"
                                 f"sslrootcert={env.tls.root_cert}", False),
     "in-recovery": (lambda env: (env.restart(standby=True), env.url("lanes_w_e1"))[1], False),
+    # T230 (R2's S3; X's TLS rules and FR-011's server half, R09). Each meets
+    # the TLS cluster at a loopback host, so T104's refusal at load lets its
+    # URL load and check 11 meets it.
+    "leaf-only": (lambda env: (env.restart(leaf_only=True), env.url("lanes_w_e1"))[1], False),
+    "system-root": (lambda env: env.url("lanes_w_e1", sslrootcert="system"), False),
+    "plaintext": (lambda env: env.url("lanes_w_e1", sslmode="disable", sslrootcert=None), False),
 }
 
 
@@ -1010,6 +1016,90 @@ def test_ready_check_11_needs_tls_and_the_primary(tmp_path, request, case):
         assert state == "FAIL" and proc.returncode == 2, (
             f"[{case}] check 11 does not fail, or ready does not exit 2:\n{_said(proc)}")
         assert "lanes_w_e1" in reason, f"[{case}] check 11 does not name the connection:\n{_said(proc)}"
+
+
+# ============================================================ tls_at_load
+#
+# T230, lane 1's `tls_at_load` (L1-1; T104; CLI4.5 section 2.5): each item
+# through `lanes-index mode`, with `mode=index` in the file, so Q6(c) never
+# answers. FP: nothing connects. A refused file is 2 from `mode`, naming the
+# key and what is missing and printing no URL; 3 from `journal --write-id`
+# (CO-3); and 1 under `register read --for guard`'s prefetch, form 2 (O14).
+
+#: A TCP host that is not loopback, and the loopback stand-ins.
+REMOTE = "db.t230.invalid"
+LOOPBACK = "127.0.0.1"
+
+
+def _tls_url(login: str, host: str, query: str = "") -> str:
+    return f"postgresql://{login}@{host}:5432/register_db" + (f"?{query}" if query else "")
+
+
+def _tls_files(root: Path) -> dict:
+    """Each item's configuration lines, and what it expects: `index` (it
+    loads), or the key its refusal names and the words of what is missing."""
+    rootfile = _private(root / "ca" / "root.crt", "not a certificate: only its existence counts\n")
+    socket = quote("/tmp/t230-socket", safe="")
+    reader = f"reader_url={_tls_url('lanes_r_t230', LOOPBACK)}"
+    return {
+        "no-sslmode": ([f"register_url={_tls_url('lanes_w_t230', REMOTE)}", reader],
+                       ("register_url=", "sslmode")),
+        "system-root": ([f"register_url={_tls_url('lanes_w_t230', REMOTE, 'sslmode=verify-full&sslrootcert=system')}",
+                         reader], ("register_url=", "system")),
+        "missing-root": ([f"register_url={_tls_url('lanes_w_t230', REMOTE, 'sslmode=verify-full&sslrootcert=' + str(root / 'ca' / 'absent.crt'))}",
+                          reader], ("register_url=", "sslrootcert")),
+        "root-file": ([f"register_url={_tls_url('lanes_w_t230', REMOTE, 'sslmode=verify-full&sslrootcert=' + str(rootfile))}",
+                       reader], "index"),
+        "socket": ([f"register_url={_tls_url('lanes_w_t230', socket)}", reader], "index"),
+        "loopback": ([f"register_url={_tls_url('lanes_w_t230', LOOPBACK)}", reader], "index"),
+        "no-register-url": ([f"url={_tls_url('lanes_writer', REMOTE)}",
+                             f"reader_url={_tls_url('lanes_reader', REMOTE)}"], "index"),
+        "reader-url": ([f"register_url={_tls_url('lanes_w_t230', LOOPBACK)}",
+                        f"reader_url={_tls_url('lanes_r_t230', REMOTE)}"], ("reader_url=", "sslmode")),
+        "two-hosts": ([f"register_url=postgresql://lanes_w_t230@{LOOPBACK}:5432,{REMOTE}:5432/register_db",
+                       reader], ("register_url=", "sslmode")),
+    }
+
+
+#: The items, and the two that read the refused file through another verb.
+TLS_AT_LOAD = ["no-sslmode", "system-root", "missing-root", "root-file", "socket", "loopback",
+               "no-register-url", "reader-url", "two-hosts", "journal-write-id", "for-guard"]
+
+
+@pytest.mark.parametrize("item", TLS_AT_LOAD)
+def test_tls_at_load_refuses_a_url_off_loopback_without_verify_full_and_a_root_file(tmp_path, item):
+    bench = LoginBench(tmp_path)
+    files = _tls_files(tmp_path)
+    lines, expect = files["no-sslmode" if item in ("journal-write-id", "for-guard") else item]
+    config = _private(tmp_path / "conf" / "lanes-index.conf", "\n".join(["mode=index", *lines, ""]))
+    bench.env["LANES_INDEX_CONFIG"] = str(config)
+    urls = [line.split("=", 1)[1] for line in lines]
+    if item == "journal-write-id":
+        proc = bench.run(["journal", "--write-id", str(uuid.uuid4()), "--not-after", "2000000000",
+                          "--generation", str(uuid.uuid4()), "--lane", "t230", "--verb", "append-line",
+                          "--args-sha256", "0" * 64], pty_run=False)
+        assert proc.returncode == 3, f"[{item}] journal --write-id on a refused file is not 3:\n{_said(proc)}"
+    elif item == "for-guard":
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        proc = bench.run(["register", "read", "--for", "guard", "--prefetch", "--cache",
+                          str(tmp_path / "cache"), "--pid", str(os.getpid()), "--repo", str(repo)],
+                         pty_run=False)
+        assert proc.returncode == 1, (
+            f"[{item}] register read --for guard --prefetch on a refused file is not 1:\n{_said(proc)}")
+    else:
+        proc = bench.run(["mode"], pty_run=False)
+        if expect == "index":
+            assert (proc.returncode, proc.stdout) == (0, "index\n"), f"[{item}] does not load:\n{_said(proc)}"
+        else:
+            key, missing = expect
+            assert proc.returncode == 2 and proc.stdout == "", f"[{item}] is not refused with 2:\n{_said(proc)}"
+            assert key in proc.stderr and missing in proc.stderr, (
+                f"[{item}] the refusal does not name {key} and {missing}:\n{_said(proc)}")
+    for url in urls:
+        if expect != "index" or item in ("journal-write-id", "for-guard"):
+            assert url not in proc.stdout + proc.stderr, f"[{item}] the refusal printed a URL"
+    assert bench.requests() == [], f"[{item}] a request was sent: nothing connects at load"
 
 
 # ============================================================ lane 1's two
