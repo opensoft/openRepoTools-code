@@ -6668,12 +6668,16 @@ def cmd_register_commit(args: list[str]) -> int:
 #: here, is 3, since none of them settles the write.
 REGISTER_LOOKUP_EXITS = {"LR007": EXIT_REFUSED}
 
-#: The SQLSTATE a lookup try ends on WITHOUT AN ANSWER (Y:5250-5253): 55P03,
+#: The SQLSTATEs a lookup try ends on WITHOUT AN ANSWER (Y:5250-5253): 55P03,
 #: the head row's lock not granted within the try's `lock_timeout`, whose
-#: holder may be this write's own orphan. Like a failed connect and a try cut
-#: by `T_L`, it is tried again while a new try can start inside the window.
-#: LR011 and LR007 are answers, and are never tried again.
-REGISTER_LOOKUP_RETRIED = frozenset({"55P03"})
+#: holder may be this write's own orphan; and 57014, the try's
+#: `statement_timeout`, the server's own "no answer within the bound" (Y:3524),
+#: the counterpart of a try cut by `T_L`, whose transaction ends and frees the
+#: lock (lane 3's ruling, opensoft/openRepoTools#165 6755922262). Like a failed
+#: connect and a try cut by `T_L`, each is tried again while a new try can
+#: start inside the window. LR011 and LR007 are answers, and are never tried
+#: again.
+REGISTER_LOOKUP_RETRIED = frozenset({"55P03", "57014"})
 
 #: `R`, the window every try starts inside, from the end of the client's own
 #: wait (Y:5247). It is closed: a try may start at its 10 s mark (Y:5279).
@@ -6685,8 +6689,16 @@ REGISTER_LOOKUP_SPACING_S = 1.0
 #: one-second grain.
 REGISTER_LOOKUP_AHEAD_S = 2
 
-#: Contract §3.4's stderr line where no try took the head row's lock.
+#: Contract §3.4's stderr line where no try took the head row's lock: every
+#: try ended as Y:5245 names a try that fails to take it, in 55P03, a failed
+#: connect (`psql`'s exit 2) or its timer `T_L`, or in 57014, `T_L`'s
+#: counterpart. Where a try ended any other way, this line is not printed,
+#: and `_REGISTER_LOOKUP_NO_ANSWER` says how the tries ended instead.
 _REGISTER_LOOKUP_NO_LOCK = "journal: no try took the head row's lock within 10 s"
+_REGISTER_LOOKUP_NO_ANSWER = "journal: no try gave an answer within 10 s"
+#: The token the lookup's SELECT prints where `find_write` returns NULL, and
+#: the only text read as absent (lane 3's MUST, #165 6755922262).
+_REGISTER_LOOKUP_ABSENT = "absent"
 
 _REGISTER_JOURNAL_USAGE = (
     f"{PROG} journal --write-id <uuid> --not-after <epoch s> --generation <uuid> "
@@ -6803,18 +6815,27 @@ def _register_sleep_until(when: float) -> None:
 
 
 def register_lookup_request(schema: str, ident: dict, not_after: int) -> list[str]:
-    """The lookup as ONE request (contract §2.3 and §3.4; Y:5235): `BEGIN`, at
-    the default READ COMMITTED; the one `find_write` call with the write's six
-    values; the found seq's `journal_files` rows as §3.2's canonical rows,
-    sorted, read in the SAME transaction (Y:5300), after the call, so its
-    snapshot is taken under the head row's lock; then `ROLLBACK`. Under
-    `-A -t` the call prints its seq bare, or an empty line for NULL, and COPY
-    prints the rows unchanged."""
+    """The lookup as ONE request of FOUR statements (contract §2.3 and §3.4;
+    Y:5235; lane 3's rulings, #165 6755922262, reading 2):
+
+    1. `BEGIN ISOLATION LEVEL READ COMMITTED`, named, so no role's or
+       database's default level changes what `find_write` sees;
+    2. the one `find_write` call with the write's six values, as
+       `coalesce(...::text, 'absent')`, so NULL prints as the token `absent`
+       and never as an empty line (the MUST);
+    3. the found seq's `journal_files` rows as §3.2's canonical rows, sorted,
+       read in the SAME transaction (Y:5300), after the call, so its snapshot
+       is taken under the head row's lock;
+    4. `ROLLBACK`.
+
+    Under `-A -t` the call prints its seq or `absent` bare, and COPY prints
+    the rows unchanged."""
     write = _pg_quote(ident["write_id"])
-    return ["BEGIN",
-            f"SELECT {schema}.find_write({write}, {_pg_quote(register_epoch_utc(not_after))}, "
-            f"{_pg_quote(ident['generation'])}, {_pg_quote(ident['lane'])}, "
-            f"{_pg_quote(ident['verb'])}, {_pg_quote(ident['args_sha256'])})",
+    return ["BEGIN ISOLATION LEVEL READ COMMITTED",
+            f"SELECT coalesce({schema}.find_write({write}, "
+            f"{_pg_quote(register_epoch_utc(not_after))}, {_pg_quote(ident['generation'])}, "
+            f"{_pg_quote(ident['lane'])}, {_pg_quote(ident['verb'])}, "
+            f"{_pg_quote(ident['args_sha256'])})::text, {_pg_quote(_REGISTER_LOOKUP_ABSENT)})",
             "COPY (SELECT path, CASE WHEN present THEN '1' ELSE '0' END, coalesce(sha256, '-') "
             f"FROM {schema}.journal_files WHERE seq = (SELECT seq FROM {schema}.journal "
             f"WHERE write_id = {write}) ORDER BY path) TO STDOUT",
@@ -6824,19 +6845,25 @@ def register_lookup_request(schema: str, ident: dict, not_after: int) -> list[st
 def register_lookup_answer(out: str) -> tuple | None:
     """A lookup's stdout, read: `(seq, rows)` where `find_write` found the
     write, its rows each `[path, present, sha256]` (§3.2's canonical values);
-    `(None, [])` where it returned NULL, absent with the lock held; None
-    where the answer cannot be read."""
+    `(None, [])` where its one line is exactly the token `absent`, absent
+    with the lock held; and None, NO ANSWER, for anything else it cannot
+    read, which is tried again (lane 3's MUST, #165 6755922262). That
+    includes an empty stdout, a blank line anywhere, `absent` with anything
+    after it or around it (`absent ` with a trailing space), `Absent`, and a
+    first line that is neither the token nor a seq. A stdout that holds no
+    answer is never read as absent. Only the newline that ends the last line
+    is psql's own and not part of the answer."""
     lines = out.split("\n")
-    if lines and lines[-1] == "":
+    if len(lines) > 1 and lines[-1] == "":
         lines.pop()
-    if not any(lines):
-        return None, []
+    if not all(lines):
+        return None
+    if lines[0] == _REGISTER_LOOKUP_ABSENT:
+        return (None, []) if len(lines) == 1 else None
     if not re.fullmatch(r"[0-9]+", lines[0]):
         return None
     rows = []
     for line in lines[1:]:
-        if not line:
-            continue
         row = [_pg_unescape(field) for field in line.split("\t")]
         if (len(row) != 3 or not row[0] or row[1] not in ("0", "1")
                 or (row[1] == "1") != bool(_REGISTER_SHA256_RE.fullmatch(row[2] or ""))
@@ -6852,14 +6879,15 @@ def _register_lookup_try(store: PostgresStore, ident: dict,
     """One try of the lookup: (how it ended, the answer, the failure, the
     refusal). It ended:
 
-    - `found` or `absent`: `find_write` answered;
+    - `found` or `absent`: `find_write` answered, and its stdout was read
+      (`register_lookup_answer`);
     - `refused`: `psql`'s exit 3 with a SQLSTATE that is an answer (LR007,
-      LR011, any other but 55P03);
+      LR011, any other but 55P03 and 57014);
     - `again`: with no answer, so it is tried again while a new try can start
       inside the window (Y:5250): a failed connect or a lost connection (exit
-      2), the timer `T_L`, a 55P03, and every other end that names no
-      SQLSTATE - exit 1, a signal, an exit 3 with none, or an answer that
-      cannot be read;
+      2), the timer `T_L`, a 55P03 or a 57014, and every other end that names
+      no SQLSTATE - exit 1, a signal, an exit 3 with none, or an answer that
+      cannot be read, an empty one included;
     - `unsent`: never handed to a `psql` that could take it - none on PATH,
       or one too old - which no later try would change."""
     try:
@@ -6875,20 +6903,50 @@ def _register_lookup_try(store: PostgresStore, ident: dict,
         return "unsent", None, PsqlFailed(exc.kind, exc.detail, ran=False), None
     answer = register_lookup_answer(out)
     if answer is None:
-        shown = re.sub(r"[^\x20-\x7e]", "?", out.strip())[:80]
+        # `ascii` keeps a blank line, a trailing space or a case visible, and
+        # escapes every byte outside printable ASCII.
         return "again", None, PsqlFailed(
-            "unreadable", f"the answer was {shown!r}, not a seq with its file rows",
-            psql_exit=0), None
+            "unreadable", f"the answer was {ascii(out[:80])}, not `{_REGISTER_LOOKUP_ABSENT}` "
+            f"alone or a seq with its file rows", psql_exit=0), None
     return ("absent" if answer[0] is None else "found"), answer, None, None
+
+
+def _register_lookup_how(failure: PsqlFailed, err: RegisterError | None) -> tuple[bool, str]:
+    """How a try with no answer ended, as a few words for the tries' tally,
+    and whether that end shows the try did not take the head row's lock: a
+    55P03 or a 57014, a failed connect (`psql`'s exit 2), or the timer `T_L`
+    (Y:5245, with 57014 as `T_L`'s counterpart). Exit 1, a signal, an exit 3
+    naming no SQLSTATE and an answer that cannot be read do not show it."""
+    if err is not None:
+        return err.sqlstate in REGISTER_LOOKUP_RETRIED, err.sqlstate
+    if failure.timer_expired:
+        return True, "the client timer's cut"
+    code = failure.psql_exit
+    if code == 2:
+        return True, "exit 2"
+    if code is None:
+        return False, "no exit status"
+    if code < 0:
+        return False, f"signal {-code}"
+    if code == 0:
+        return False, f"exit 0 with an answer {PROG} cannot read"
+    if code == 3:
+        return False, "exit 3 naming no SQLSTATE"
+    return False, f"exit {code}"
 
 
 def _register_lookup_end(ident: dict, kind: str, answer: tuple | None,
                          failure: PsqlFailed | None, err: RegisterError | None,
-                         tries: int) -> int:
+                         ends: list[tuple[bool, str]]) -> int:
     """What the lookup's last try prints, and its code (contract §3.4's exits;
     §2.6's stderr): found and absent on stdout, 0; LR007's `ERROR:` and
     `DETAIL:` lines, 2; and 3, the pending record kept, for LR011, any other
-    SQLSTATE, a call never sent, and no try that took the lock."""
+    SQLSTATE, a call never sent, and no try that gave an answer.
+
+    `ends` holds `_register_lookup_how` for each try that gave no answer, in
+    order. Where none gave one, contract §3.4's line, "no try took the head
+    row's lock", is printed only where it is true, every try having ended in
+    a way that shows it; otherwise the line says how the tries ended."""
     write = ident["write_id"]
     kept = (f"write {write} stays in doubt: keep its pending record, and look it up again "
             f"under the same id")
@@ -6918,7 +6976,15 @@ def _register_lookup_end(ident: dict, kind: str, answer: tuple | None,
     if kind == "unsent":
         note(f"journal: the lookup of write {write} {register_psql_end(failure)}: {kept}")
         return EXIT_IN_DOUBT
-    note(_REGISTER_LOOKUP_NO_LOCK)
+    tries = len(ends)
+    if all(without_lock for without_lock, _how in ends):
+        note(_REGISTER_LOOKUP_NO_LOCK)
+    else:
+        tally: dict = {}
+        for _without_lock, how in ends:
+            tally[how] = tally.get(how, 0) + 1
+        note(f"{_REGISTER_LOOKUP_NO_ANSWER}: {tries} {'try' if tries == 1 else 'tries'}, "
+             f"ended in " + ", ".join(f"{how} ({count})" for how, count in tally.items()))
     note(f"journal: write {write}: {tries} {'try' if tries == 1 else 'tries'}, the last of "
          f"which {register_psql_end(failure)}" + (f" ({err.sqlstate})" if err else "")
          + f"; {kept}")
@@ -6966,19 +7032,19 @@ def _register_journal_lookup(values: dict, started: float) -> int:
     # inside the window, its 10 s mark included (lane 4's answer 40).
     opened = time.monotonic()
     closes = opened + REGISTER_LOOKUP_WINDOW_S
-    start, tries = opened, 0
+    start, ends = opened, []
     while True:
         _register_sleep_until(start)
         began = time.monotonic()
-        tries += 1
         kind, answer, failure, err = _register_lookup_try(store, ident, not_after)
         ended = time.monotonic()
         if kind != "again":
             break
+        ends.append(_register_lookup_how(failure, err))
         start = max(began + REGISTER_LOOKUP_SPACING_S, ended)
         if start > closes:
             break
-    return _register_lookup_end(ident, kind, answer, failure, err, tries)
+    return _register_lookup_end(ident, kind, answer, failure, err, ends)
 
 
 def _register_read_failed(what: str, failure: StoreUnusable) -> int:
