@@ -28,12 +28,21 @@ WHAT IT CHECKS, by the test plan's entries and lane 2's task T221:
     files, and needs no engine.
   * `test_register_snapshot_prints_its_keys_in_the_contracts_order_and_refuses_with_its_codes`,
     new since v3f (R-F9-3): lane 1's T111 alone, from CLI4.10 and L1v4.10.
+  * `test_the_bootstrap_renders_register_schema_both_ways_and_refuses_the_rest`,
+    new since v3f (R-F10-1): DEC-23's rendering of `register_schema=` by
+    `lanes-index bootstrap`, lane 1's T109 with T104's key. Its two rendering
+    ids ask for the session cluster at run time and bootstrap empty databases
+    of their own; its four refusal ids need no engine.
 
-REAL ENGINE. Every case but the one-number rule asks for `pg`, one database
-cloned from the session's template, so its fixture closure holds `pg_engine`
-(T200's rule). The cases assume the template that T227 builds by `lanes-index
-bootstrap --no-passwords`; on T205's empty template they fail, since the schema
-is not there. Without PostgreSQL 16 they skip with T205's banner.
+REAL ENGINE. Every case but the one-number rule and DEC-23's test asks for
+`pg`, one database cloned from the session's template, so its fixture closure
+holds `pg_engine` (T200's rule). The cases assume the template that T227
+builds by `lanes-index bootstrap --no-passwords`; on T205's empty template they
+fail, since the schema is not there. Without PostgreSQL 16 they skip with
+T205's banner. DEC-23's two rendering ids take `pg_cluster` by
+`request.getfixturevalue`, so they skip the same way, but that function's
+closure does not hold `pg_engine`; its name holds neither word of the launch
+job's filter, so T200's check is unaffected.
 
 A REGISTER ON `primary` with the marker `present` is reached as AT-LR006's
 fixture reaches it (the test plan at 4610-4615): by the documented functions as
@@ -57,11 +66,14 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from conftest import REPO, git
-from sql_register_helpers import LANES_INDEX, flipped_copy
+from pgcluster import Database
+from sql_register_helpers import (LANES_INDEX, REGISTER_FAKE_PSQL, RENDER_GIT_HALF_LINE,
+                                  flipped_copy)
 
 SCHEMA = "lanes_register"
 OWNER, WRITER, READER = "lanes_register_owner", "lanes_register_writer", "lanes_register_reader"
@@ -1027,3 +1039,259 @@ def test_register_snapshot_prints_its_keys_in_the_contracts_order_and_refuses_wi
         got["clock"]) + 2, got
     assert got["schema"] == str(window(pg)["version"]), got
     assert (got["c"], got["n_a"]) == (str(CONNECT_TIMEOUT), str(ADDRESSES)), got
+
+
+# =================================================================== DEC-23's rendering
+#: The scratch name the rendering cases bootstrap: any `register_schema=` but
+#: the default (lane 2's reading of "a scratch schema", NOTES question 6).
+SCRATCH = "t221_scratch"
+ADMIN_SERVICE = "t221_admin"
+BOOTSTRAP = ["bootstrap", "--admin-service", ADMIN_SERVICE, "--label", "t221",
+             "--repository", "opensoft/t221", "--lane", LANE, "--no-passwords"]
+
+#: `lanes_register` as one whole identifier token: the three roles, whose names
+#: begin with it, are other tokens (DEC-23; lane 3, #165 6748109738).
+SCHEMA_TOKEN = re.compile(r"(?<![A-Za-z0-9_$])lanes_register(?![A-Za-z0-9_$])")
+DIGEST = re.compile(r"\b[0-9a-f]{64}\b")
+
+#: Each refusal id's configurations: `register_schema=` that is not
+#: `[a-z_][a-z0-9_]{0,62}` (upper case, a leading digit, a hyphen, 64
+#: characters), one beginning `pg_`, and one equal to the index half's schema,
+#: `lanes_index` or the configured `schema=` (lane 3, #165 6748109738).
+SCHEMA_REFUSALS = {
+    "identifier-rule": ["register_schema=T221_scratch\n", "register_schema=1t221\n",
+                        "register_schema=t221-scratch\n", f"register_schema={'t' * 64}\n"],
+    "pg-prefix": ["register_schema=pg_t221\n"],
+    "index-schema": ["register_schema=lanes_index\n",
+                     "schema=t221_index\nregister_schema=t221_index\n"],
+}
+
+#: Migration 1's own `CREATE SCHEMA` line (Y's §1.2 block), where
+#: `[leftover-refused]`'s copy names the schema once more after it.
+CREATE_SCHEMA_LINE = re.compile(r"^CREATE SCHEMA (?:IF NOT EXISTS )?lanes_register\b[^\n]*$", re.M)
+LEFTOVER = "ALTER SCHEMA lanes_register OWNER TO lanes_register_owner;   -- t221: a leftover"
+
+
+def bootstrap_conf(where: Path, text: str) -> Path:
+    """A 0600 `lanes-index.conf` holding `text`, outside every work tree."""
+    where.mkdir(parents=True, exist_ok=True)
+    path = where / "lanes-index.conf"
+    path.write_text(text, encoding="utf-8")
+    path.chmod(0o600)
+    return path
+
+
+def fake_admin(tmp_path: Path, conf: Path, tag: str) -> tuple:
+    """The bootstrap's environment with the register's fake `psql` first on
+    `PATH`, taught to fail every request as a database that cannot be reached
+    does, and `conf` as the configuration: so a run that gets past every
+    refusal reaches the admin connection and exits 69, and its log shows the
+    request; a refused run sends nothing. No engine is needed."""
+    base = tmp_path / tag
+    base.mkdir()
+    fake = base / "fake"
+    fake.mkdir()
+    (fake / "psql").write_text(REGISTER_FAKE_PSQL, encoding="utf-8")
+    (fake / "psql").chmod(0o755)
+    answers = base / "answers.json"
+    answers.write_text(json.dumps([{"exit": 2, "stderr": (
+        f'psql: error: connection to server on socket "{base}/.s.PGSQL.5432" failed: '
+        f'No such file or directory\n')}]), encoding="utf-8")
+    log = base / "psql.log"
+    nowhere = SimpleNamespace(host=base / "no-cluster", port=5432, name="t221_none")
+    env = admin_env(base, nowhere)
+    env.update(PATH=f"{fake}{os.pathsep}{env.get('PATH', os.defpath)}",
+               FAKE_PSQL_LOG=str(log), FAKE_PSQL_ANSWERS=str(answers),
+               LANES_INDEX_CONFIG=str(conf))
+    return env, log
+
+
+def requests_of(log: Path) -> list:
+    """The fake's entries that carried a request (never a `--version`)."""
+    if not log.exists():
+        return []
+    entries = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    return [e for e in entries if e.get("kind") != "version"]
+
+
+def reaches_the_admin_connection(copy: Path, tmp_path: Path, tag: str) -> None:
+    """THE CONTROL: with `register_schema=` the scratch name, the same run gets
+    past every refusal to the admin service, so a 2 in the case is the
+    refusal it asserts and not a bootstrap this build lacks."""
+    env, log = fake_admin(tmp_path, bootstrap_conf(tmp_path / tag, f"register_schema={SCRATCH}\n"),
+                          f"{tag}-run")
+    proc = run_index(copy, BOOTSTRAP, env)
+    sent = requests_of(log)
+    assert proc.returncode == 69 and sent, (
+        f"the control, register_schema={SCRATCH} through a database that cannot be reached, "
+        f"does not reach the admin connection and end 69 ({len(sent)} request(s) sent):\n"
+        f"{shown(proc)}")
+    assert all(e["service"] == ADMIN_SERVICE for e in sent), sent
+
+
+def refused_and_sent_nothing(proc: subprocess.CompletedProcess, log: Path, what: str) -> None:
+    sent = requests_of(log)
+    assert proc.returncode == 2, f"{what}: not refused with 2:\n{shown(proc)}"
+    assert not sent, f"{what}: refused, but {len(sent)} request(s) reached psql: {sent}"
+    assert not re.search(r": created\b", proc.stdout), f"{what}: created something:\n{shown(proc)}"
+
+
+def fresh_database(cluster, tag: str) -> Database:
+    """An empty database of the session cluster, from `template0`, owned by
+    the fixture's superuser, which the admin service connects as."""
+    name = f"t221_{tag}_{uuid.uuid4().hex[:8]}"
+    cluster.psql(f"CREATE DATABASE {name} TEMPLATE template0;")
+    return Database(cluster, name)
+
+
+def migration_digests(proc: subprocess.CompletedProcess) -> dict:
+    """Each `migration <n>: created` line's two digests: `script_sha256`'s, and
+    the rendered one the bootstrap prints beside it (lane 1, #165 6748099727)."""
+    found = {}
+    for line in proc.stdout.splitlines():
+        m = re.match(r"^migration ([0-9]+): created\b", line)
+        if not m:
+            continue
+        script = re.search(r"script_sha256\W+([0-9a-f]{64})\b", line)
+        digests = DIGEST.findall(line)
+        assert script and len(digests) == 2, f"no two digests beside script_sha256: {line!r}"
+        other = digests[1] if digests[0] == script.group(1) else digests[0]
+        found[int(m.group(1))] = (script.group(1), other)
+    assert found, f"the bootstrap created no migration:\n{shown(proc)}"
+    return found
+
+
+#: One schema's objects, its owners and its privileges, as one JSON object:
+#: every relation with its columns, defaults, constraints and definition,
+#: every function's whole definition (its `SET search_path` among it), the
+#: triggers, the types, and the ACLs and default privileges.
+DESCRIBE = """
+SELECT jsonb_build_object(
+  'owner', n.nspowner::regrole::text, 'acl', n.nspacl::text,
+  'relations', (SELECT coalesce(jsonb_agg(jsonb_build_array(
+      c.relname, c.relkind, c.relowner::regrole::text, c.relacl::text,
+      (SELECT coalesce(jsonb_agg(jsonb_build_array(a.attname, format_type(a.atttypid, a.atttypmod),
+              a.attnotnull, pg_get_expr(d.adbin, d.adrelid), a.attacl::text) ORDER BY a.attnum), '[]')
+         FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+        WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped),
+      (SELECT coalesce(jsonb_agg(jsonb_build_array(k.conname, pg_get_constraintdef(k.oid))
+              ORDER BY k.conname), '[]') FROM pg_constraint k WHERE k.conrelid = c.oid),
+      CASE WHEN c.relkind = 'i' THEN pg_get_indexdef(c.oid)
+           WHEN c.relkind IN ('v', 'm') THEN pg_get_viewdef(c.oid) END) ORDER BY c.relname), '[]')
+    FROM pg_class c WHERE c.relnamespace = n.oid),
+  'functions', (SELECT coalesce(jsonb_agg(jsonb_build_array(
+      p.proname, pg_get_function_identity_arguments(p.oid), p.proowner::regrole::text,
+      p.proacl::text, CASE WHEN p.prokind IN ('f', 'p') THEN pg_get_functiondef(p.oid) END)
+      ORDER BY p.proname, pg_get_function_identity_arguments(p.oid)), '[]')
+    FROM pg_proc p WHERE p.pronamespace = n.oid),
+  'triggers', (SELECT coalesce(jsonb_agg(pg_get_triggerdef(t.oid) ORDER BY t.tgname), '[]')
+    FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+   WHERE c.relnamespace = n.oid AND NOT t.tgisinternal),
+  'types', (SELECT coalesce(jsonb_agg(jsonb_build_array(y.typname, y.typtype, y.typacl::text)
+      ORDER BY y.typname), '[]') FROM pg_type y WHERE y.typnamespace = n.oid),
+  'defaults', (SELECT coalesce(jsonb_agg(jsonb_build_array(d.defaclrole::regrole::text,
+      d.defaclobjtype, d.defaclacl::text) ORDER BY d.defaclrole::regrole::text, d.defaclobjtype),
+      '[]') FROM pg_default_acl d WHERE d.defaclnamespace = n.oid))
+FROM pg_namespace n WHERE n.nspname = '{schema}';
+"""
+
+
+def describe(db, schema: str) -> dict:
+    out = sql(db, DESCRIBE.format(schema=schema))
+    assert out, f"there is no schema {schema} in {db.name}"
+    return json.loads(out)
+
+
+@pytest.mark.parametrize("case", ["default-unchanged", "scratch-every-site", "leftover-refused",
+                                  "identifier-rule", "pg-prefix", "index-schema"])
+def test_the_bootstrap_renders_register_schema_both_ways_and_refuses_the_rest(
+        request, tmp_path, case):
+    """DEC-23 (lane 3, #165 6748109738; R-F10-1): `lanes-index bootstrap`
+    through the admin service, as T109 builds it.
+
+      * `[default-unchanged]`: with `register_schema=` unset, on an empty
+        database, the rendered script is T107's migration byte for byte: the
+        digest printed beside `script_sha256` equals it, and so does the
+        `migrations` row's;
+      * `[scratch-every-site]`: with a scratch name, that schema holds every
+        relation, function, trigger and type a default bootstrap makes, with
+        the same owners and privileges, each definition the default's with
+        the whole token `lanes_register` replaced and nothing else changed;
+        the three roles keep their names; and no `lanes_register` schema is
+        made;
+      * `[leftover-refused]`: a copy whose migration names `lanes_register`
+        once more, at a site DEC-23 does not render, is refused with 2 and
+        sends nothing (lane 2's reading, NOTES question 33);
+      * `[identifier-rule]`, `[pg-prefix]` and `[index-schema]`: each
+        configuration of `SCHEMA_REFUSALS` is refused with 2, sending nothing.
+
+    The last four need no engine: the register's fake `psql` stands in for
+    the database, and a control run shows the same bootstrap reaching it.
+    The first two ask for the session cluster at run time, so without
+    PostgreSQL 16 they skip with T205's banner."""
+    if case in SCHEMA_REFUSALS:
+        reaches_the_admin_connection(LANES_INDEX, tmp_path, "control")
+        for n, text in enumerate(SCHEMA_REFUSALS[case], start=1):
+            env, log = fake_admin(tmp_path, bootstrap_conf(tmp_path / f"conf-{n}", text), f"run-{n}")
+            refused_and_sent_nothing(run_index(LANES_INDEX, BOOTSTRAP, env), log,
+                                     f"{text.strip()!r}")
+        return
+    if case == "leftover-refused":
+        reaches_the_admin_connection(LANES_INDEX, tmp_path, "control")
+        found = RENDER_GIT_HALF_LINE.search(LANES_INDEX.read_bytes())
+        assert found, f"{LANES_INDEX} holds no RENDER_GIT_HALF line for T203's flipped_copy"
+        copy = flipped_copy(LANES_INDEX, tmp_path / "leftover", found.group(1) == b"True")
+        text = copy.read_text(encoding="utf-8")
+        sites = CREATE_SCHEMA_LINE.findall(text)
+        assert len(sites) == 1, f"{LANES_INDEX} holds {len(sites)} `CREATE SCHEMA lanes_register` lines"
+        copy.write_text(CREATE_SCHEMA_LINE.sub(lambda m: m.group(0) + "\n" + LEFTOVER, text),
+                        encoding="utf-8")
+        env, log = fake_admin(tmp_path, bootstrap_conf(tmp_path / "conf", f"register_schema={SCRATCH}\n"),
+                              "run")
+        refused_and_sent_nothing(run_index(copy, BOOTSTRAP, env), log, "the leftover's copy")
+        return
+    cluster = request.getfixturevalue("pg_cluster")
+    made = []
+    try:
+        default = fresh_database(cluster, "default")
+        made.append(default.name)
+        (tmp_path / "default").mkdir()
+        proc = run_index(LANES_INDEX, BOOTSTRAP, admin_env(tmp_path / "default", default))
+        assert proc.returncode == 0, shown(proc)
+        template, rendered_digest = migration_digests(proc)[1]
+        if case == "default-unchanged":
+            assert rendered_digest == template, (
+                f"on {SCHEMA} the rendered script's digest {rendered_digest} is not "
+                f"script_sha256 {template}:\n{shown(proc)}")
+            assert sql(default, f"SELECT script_sha256 FROM {SCHEMA}.migrations "
+                                f"WHERE version = 1;") == template
+            return
+        scratch = fresh_database(cluster, "scratch")
+        made.append(scratch.name)
+        (tmp_path / "scratch").mkdir()
+        env = admin_env(tmp_path / "scratch", scratch)
+        env["LANES_INDEX_CONFIG"] = str(bootstrap_conf(tmp_path / "scratch" / "conf",
+                                                       f"register_schema={SCRATCH}\n"))
+        proc = run_index(LANES_INDEX, BOOTSTRAP, env)
+        assert proc.returncode == 0, shown(proc)
+        script, rendered_scratch = migration_digests(proc)[1]
+        assert script == template and rendered_scratch != template, (
+            f"for {SCRATCH} the bootstrap prints {script} and {rendered_scratch}, not the "
+            f"template's {template} beside a rendered digest of its own:\n{shown(proc)}")
+        assert sql(scratch, f"SELECT to_regnamespace('{SCHEMA}') IS NULL;") == "t", (
+            f"a bootstrap for {SCRATCH} made a {SCHEMA} schema")
+        assert sql(scratch, f"SELECT count(*) FROM pg_roles WHERE rolname IN "
+                            f"('{OWNER}', '{WRITER}', '{READER}');") == "3"
+        assert sql(scratch, f"SELECT count(*) FROM pg_roles WHERE rolname LIKE "
+                            f"'{SCRATCH.replace('_', chr(92) + '_')}%';") == "0"
+        want = json.loads(SCHEMA_TOKEN.sub(SCRATCH, json.dumps(describe(default, SCHEMA))))
+        got = describe(scratch, SCRATCH)
+        assert want["relations"] and want["functions"] and want["acl"], want
+        for part in want:
+            assert got[part] == want[part], (
+                f"{SCRATCH}'s {part} differ from {SCHEMA}'s with the token replaced:\n"
+                f"want {json.dumps(want[part], indent=1)[:3000]}\n"
+                f"got  {json.dumps(got[part], indent=1)[:3000]}")
+    finally:
+        for name in made:
+            cluster.drop_database(name)
