@@ -4256,10 +4256,12 @@ wr_digest() {   # <lane> <session> <verb> [<arg>...]
 wr_host_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 # A record's and a done mark's maximum age, 15 minutes (Y:5183, Y:5207).
-# `LANES_REGISTER_PENDING_MAX_AGE_S` sets it for tests.
+# `LANES_REGISTER_PENDING_MAX_AGE_S` sets it for tests, read and printed in base
+# 10 as `wr_seam_cap_s` is, so `08` is 8 s in every compare and every message
+# that names it (#165 6770820384, T415's 4).
 wr_max_age_s() {
   if wr_is_count "${LANES_REGISTER_PENDING_MAX_AGE_S:-}"; then
-    printf '%s\n' "$LANES_REGISTER_PENDING_MAX_AGE_S"
+    printf '%s\n' "$((10#$LANES_REGISTER_PENDING_MAX_AGE_S))"
   else
     printf '900\n'
   fi
@@ -4267,10 +4269,12 @@ wr_max_age_s() {
 
 # How long a claim from another host or container counts as live: 120 s, "the
 # seam's cap" (Y:5220), which is 2 x (D + 30 s) at D7's 30 s and which
-# `LANES_REGISTER_SEAM_CAP_S` sets for tests (Y:5001).
+# `LANES_REGISTER_SEAM_CAP_S` sets for tests (Y:5001), read in base 10, so a
+# leading zero is neither octal nor an arithmetic error in `wr_claim_capped`'s
+# `$(( ))`: `08` is 8 s (#165 6770820384, T415's 4).
 wr_seam_cap_s() {
   if wr_is_count "${LANES_REGISTER_SEAM_CAP_S:-}"; then
-    printf '%s\n' "$LANES_REGISTER_SEAM_CAP_S"
+    printf '%s\n' "$((10#$LANES_REGISTER_SEAM_CAP_S))"
   else
     printf '120\n'
   fi
