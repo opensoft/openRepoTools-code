@@ -23,6 +23,9 @@ WHAT IT HOLDS, by its four sources:
   * Lane 5's nine (A5; T504 to T506 and T509), their guessed names kept.
   * Lane 4's two read verbs (R29; GB section 4.3; T401), `register-text` and
     `register-grep`, with T401's two exit-2 cases each (O21a).
+  * Lane 4's `key()` trim (T259; R31; GB section 4.3; T426): the one test that
+    asks `retired-identity` about spellings that differ only past the
+    sixteenth digit, in files mode and on primary.
 
 THE ARMS' IDS ARE THEIR LINES AT `2a057a6d`, as the test plan names them (the
 block, T217), so they move with slices 1a and 1b and are re-cited at each
@@ -66,7 +69,7 @@ unless `OPENREPOTOOLS_REQUIRE_PG=1`.
 WHAT EACH WAITS FOR (the block's Order): L4-A1, L5-A4 and L5-A5; lane 1's
 three for L1v4.5's T113 and T114; lane 5's for T504 to T506 and T509; the
 `--decide` test for T502; the read verbs' for lane 4's T401; the arms for
-lane 4's T402 to T408.
+lane 4's T402 to T408; `key()`'s trim, on primary only, for lane 4's T426.
 """
 
 from __future__ import annotations
@@ -2029,3 +2032,109 @@ def test_register_grep_prints_what_git_grep_prints_and_1_with_no_match(estate, p
         assert text.returncode == 0 and STORE_ONLY_ROW in text.stdout, \
             ("the store did not answer: the 69 may be a failed prefetch", text.returncode,
              text.stderr)
+
+
+# ------------------------------------------------- lane 4's key() trim (T426)
+#: THE CASES (T259; R31; the design's S3, "The normalized `archive:` key"; the
+#: test plan's AT-LR010, "a long digit run"). `retired-identity <lane>` prints
+#: each archived spelling that `RETIRED_ROWS_AWK` matches, and exits 0; it
+#: matches by the lane's name in any case, or by `key()`; where none matches
+#: it exits 8. `key()` is the name before its last `-`, lower-cased, a `-`, and
+#: the digits after it (less one trailing letter) without their leading zeros.
+#: v2.5's SQL trims those zeros as text, a lone `0` kept. The awk's `p + 0` is
+#: a double, so two runs that differ only past the 15th digit key alike, and
+#: it matches a row that no SQL key names (the design: `foo-9007199254740993`
+#: keys to `foo-9007199254740992` under mawk 1.3.4, and a run of 30 prints with
+#: an exponent). Lane 4's T426 trims as text on primary, and keeps `(p + 0)`
+#: in files mode (spec:59; review m7), so the two columns differ on the last
+#: three rows alone, and those three in files mode are the answers today.
+#:
+#: Each row is (case, the archived spelling, the lane asked, whether files mode
+#: answers it, whether primary does). Each case has a repository name of its
+#: own, so that one archive holds them all and no row answers another's
+#: question. The first five are the controls: both modes answer them, so a
+#: no-answer further down is the key's and not a verb that answers nothing.
+KEY_ROWS = (
+    ("leading-zeros", "keya-0007", "keya-7", True, True),
+    ("lone-zero", "keyb-000", "keyb-0", True, True),
+    ("trailing-letter", "keyc-0012b", "keyc-12", True, True),
+    ("padded-16-digits", "keyd-0009007199254740993", "keyd-9007199254740993", True, True),
+    ("padded-30-digits", "keye-000123456789012345678901234567890",
+     "keye-123456789012345678901234567890", True, True),
+    ("16-digits-differ-in-the-last", "keyf-9007199254740992", "keyf-9007199254740993",
+     True, False),
+    ("16-digits-differ-the-other-way", "keyg-9007199254740993", "keyg-9007199254740992",
+     True, False),
+    ("30-digits-differ-in-the-last", "keyh-123456789012345678901234567890",
+     "keyh-123456789012345678901234567891", True, False),
+)
+
+#: An archived row as the register writes it (`archive-rows`): the lane in
+#: backticks in its first cell. The state cell's separator is built, not typed.
+KEY_ARCHIVE_ROW = ("| `{lane}` | harness `{uuid}` | Eagle / test / brett | 2026-10-01T00:00Z "
+                   "| none | handoffs/{lane}.md | RETIRED " + chr(0xB7) + " 2026-09-02T00:00:00Z "
+                   + chr(0xB7) + " retired |")
+
+
+def sql_key(name: str) -> str:
+    """v2.5's key of an archived name, by the design's S3 rule: the name before
+    its last `-`, lower-cased, `-`, and the digits after it, less one trailing
+    letter, trimmed of leading zeros as text (`0` stays `0`); `""` where there
+    is no key (no `-`, or what follows is not all digits)."""
+    found = re.match(r"^(.*)-([0-9]+)[A-Za-z]?$", name)
+    if not found:
+        return ""
+    return found.group(1).lower() + "-" + (found.group(2).lstrip("0") or "0")
+
+
+def seed_key_archive(estate: Estate) -> None:
+    """Retire each `KEY_ROWS` spelling into the estate's archive, committed and
+    pushed, so that files mode reads it from `origin/main` and the primary
+    store, built from this checkout's render set afterwards, holds it too."""
+    archive = estate.wip / "lanes" / "archive" / "LANES-retired.md"
+    rows = [KEY_ARCHIVE_ROW.format(lane=spelling, uuid=f"eeeeeeee-0002-4000-8000-{n:012d}")
+            for n, (_, spelling, _, _, _) in enumerate(KEY_ROWS, 1)]
+    archive.write_text(archive.read_text(encoding="utf-8").rstrip("\n") + "\n"
+                       + "\n".join(rows) + "\n", encoding="utf-8")
+    estate._git("add", "-A")
+    estate._git("commit", "-q", "-m", "retire the spellings the key() case asks about")
+    estate._git("push", "-q", "origin", "main")
+
+
+@pytest.mark.parametrize("mode", ["primary", "files"])
+def test_retired_rows_key_trims_leading_zeros_as_text_on_primary(estate, mode):
+    """`RETIRED_ROWS_AWK`'s `key()` trims a number's leading zeros as text on
+    primary (lane 4's T426; R31; GB section 4.3), so `retired-identity` reads
+    the archive by the keys v2.5 gives it; files mode keeps `(p + 0)`, byte
+    for byte as today (spec:59). The archive holds the `KEY_ROWS` spellings,
+    and each is asked about by its lane.
+    `[primary]`: a run of 16 digits or more that differs from an archived one
+    in its last digit is NOT retired (exit 8, nothing on stdout), and a run
+    padded with zeros still is (exit 0, the archived spelling). The expected
+    answers are first held to v2.5's own key (`sql_key`), so that the table is
+    the contract's and not a guess. It fails until T426 trims on primary, and
+    until `reg_open` sets `retired-identity`'s mode as a reader (T504).
+    `[files]`: the same questions, answered as `(p + 0)` answers them today,
+    the three near-duplicates included: they are retired, by the double's
+    rounding. It passes at the base and must pass after T426."""
+    seed_key_archive(estate)
+    primary = Primary(estate) if mode == "primary" else None
+    run = primary.edit if primary else estate.edit
+    if primary:
+        for case, spelling, asked, _, answers in KEY_ROWS:
+            sql = spelling.lower() == asked.lower() or (
+                sql_key(asked) != "" and sql_key(spelling) == sql_key(asked))
+            assert answers == sql, (case, "the table disagrees with v2.5's key", spelling, asked)
+    for case, spelling, asked, in_files, on_primary in KEY_ROWS:
+        answers = on_primary if primary else in_files
+        result = run("retired-identity", asked)
+        where = (mode, case, "exit", result.returncode, "calls at the door:",
+                 len(primary.door.calls()) if primary else "-", spelling, asked,
+                 result.stdout, result.stderr)
+        if answers:
+            assert (result.returncode, result.stdout) == (0, spelling + "\n"), where
+        else:
+            assert (result.returncode, result.stdout) == (8, ""), where
+    if primary:
+        assert primary.door.calls(), ("the primary run never reached the door, so it read as "
+                                      "files mode does", primary.door.calls())
