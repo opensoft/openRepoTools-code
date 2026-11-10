@@ -2358,8 +2358,10 @@ class _Register:
     def send(self, kind: str, verb: str, edits: list, rows: list) -> int:
         """One `commit_write` call as the writer's login, at the head the
         database holds; the seq it committed."""
+        # `journal.author` is `Name <address>` (its CHECK, `^[^<>]+ <[^<>]*>$`).
         journal = {"kind": kind, "verb": verb, "lane": FROM, "workstation": HOST,
-                   "author": "T237's case", "message": f"{kind} by T237's case",
+                   "author": "T237 case <t237@example.invalid>",
+                   "message": f"{kind} by T237's case",
                    "git_commit": "1" * 40 if kind == "import" else None,
                    "git_tree": "2" * 40 if kind == "import" else None,
                    "repos_blob": None, "args_sha256": "0" * 64}
