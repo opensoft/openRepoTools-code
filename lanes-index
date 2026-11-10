@@ -6179,17 +6179,38 @@ def git_timeout_s() -> int | None:
     return None
 
 
-def render_git_env() -> dict:
-    """The environment every git call of the renderer and of the push starts
-    from (Y:5776): the caller's own, with every inherited `GIT_*` variable
+def _render_child_env() -> dict:
+    """The caller's own environment, with every inherited `GIT_*` variable
     removed, so an inherited `GIT_DIR`, `GIT_INDEX_FILE`, `GIT_SSH_COMMAND`,
-    `GIT_CONFIG_*` or `GIT_ASKPASS` reaches none of them, and with
+    `GIT_CONFIG_*` or `GIT_ASKPASS` reaches no child, and with
     `LANES_NO_FETCH` dropped (D12; T321): the renderer never consults it, and
     no child of its inherits it. Nothing here is interactive, so git never
-    prompts on a terminal."""
+    prompts on a terminal. The re-fork's environment (`render_refork`), and
+    the start of `render_git_env`'s."""
     env = {key: value for key, value in os.environ.items()
            if not key.startswith("GIT_") and key != "LANES_NO_FETCH"}
     env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
+def render_git_env() -> dict:
+    """The environment every git call of the renderer and of the push starts
+    from (Y:5776): `_render_child_env()`'s, with F29's pin against replaced
+    commits, which would move `m` or answer a read-back for a commit origin
+    never received, made whole HERE, so T320's read-back (`render_readback`)
+    has it too (SHOULD-1 of lane 3's review of T322):
+    - `GIT_NO_REPLACE_OBJECTS=1`: no `refs/replace/*`;
+    - `GIT_GRAFT_FILE=/dev/null`: no `<git-dir>/info/grafts`, which
+      `GIT_NO_REPLACE_OBJECTS` does not cover in git 2.43. Git advises on
+      every graft file it opens, `/dev/null` included, so
+      `advice.graftFileDeprecated=false` is set beside it, as
+      `GIT_CONFIG_COUNT` (git 2.31 or later)."""
+    env = _render_child_env()
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    env["GIT_GRAFT_FILE"] = "/dev/null"
+    env["GIT_CONFIG_COUNT"] = "1"
+    env["GIT_CONFIG_KEY_0"] = "advice.graftFileDeprecated"
+    env["GIT_CONFIG_VALUE_0"] = "false"
     return env
 
 
@@ -6394,9 +6415,12 @@ def render_readback(checkout: str, tip: str) -> tuple:
     """S4's read-back: fetch `origin main` into `refs/remotes/origin/main`,
     bounded by `LANES_GIT_TIMEOUT`, and ask `merge-base --is-ancestor` whether
     it carries `tip`. Returns (answered, carried, origin's tip, why): where
-    the fetch did not answer, `answered` is False and nothing is known."""
+    the fetch did not answer, `answered` is False and nothing is known. Its
+    fetch writes no `FETCH_HEAD`, as the pass's own does not (NIT-7 of lane
+    3's review of T322): `lanes-edit.sh` reads that file's age as the
+    checkout's own fetch."""
     fetched = render_git(checkout, "-c", "gc.auto=0", "-c", "maintenance.auto=false",
-                         "fetch", "--no-tags", "-q", "origin",
+                         "fetch", "--no-tags", "--no-write-fetch-head", "-q", "origin",
                          f"+refs/heads/{RENDER_BRANCH}:refs/remotes/origin/{RENDER_BRANCH}",
                          timeout=git_timeout_s())
     if fetched.rc != 0:
@@ -6420,7 +6444,9 @@ def _render_push_config_check(checkout: str, url: str, env: dict) -> None:
     own configuration (its `.git/config`, a worktree's, and any file an
     `include.path` names), which `GIT_CONFIG_GLOBAL` does not cover, must not
     redirect or widen the deploy key's push. Read in the push's own
-    environment, before the push, each is a `Refusal` (2), nothing pushed:
+    environment, `env`, which the caller hands over without the key's
+    `GIT_SSH_COMMAND` (NIT-3 of lane 3's review of T322), before the push,
+    each is a `Refusal` (2), nothing pushed:
     - a `url.<base>.insteadOf` or `url.<base>.pushInsteadOf` whose value is a
       prefix of the push URL `url`, which would send the key elsewhere;
     - any key that begins `remote.<url>.`, such as a `pushurl`, which would
@@ -6465,8 +6491,10 @@ def render_push(checkout: str, tip: str, render_key: str = "") -> PushResult:
     refuses, and with the key a checkout configuration that would redirect
     or widen the push (`_render_push_config_check`), are a `Refusal` (2) with
     nothing pushed. The push never takes tags or submodules along
-    (`push.followTags=false`, `push.recurseSubmodules=no`). Everything else is
-    a `PushResult`, which each caller maps to its own end."""
+    (`push.followTags=false`, `push.recurseSubmodules=no`), and is never
+    signed (`push.gpgSign=false`, NIT-2 of lane 3's review of T322).
+    Everything else is a `PushResult`, which each caller maps to its own
+    end."""
     if not SHA_RE.match(tip):
         raise ValueError(f"render_push needs a full commit sha, not {tip!r}")
     if render_key:
@@ -6474,8 +6502,11 @@ def render_push(checkout: str, tip: str, render_key: str = "") -> PushResult:
     destination = render_push_url(checkout, render_key)
     env = render_push_env(render_key)
     if render_key:
-        _render_push_config_check(checkout, destination, env)
+        _render_push_config_check(checkout, destination,
+                                  {key: value for key, value in env.items()
+                                   if key != "GIT_SSH_COMMAND"})
     pushed = render_git(checkout, "-c", "push.followTags=false", "-c", "push.recurseSubmodules=no",
+                        "-c", "push.gpgSign=false",
                         "push", "--no-verify", "--porcelain", destination,
                         f"{tip}:refs/heads/{RENDER_BRANCH}", env=env, timeout=git_timeout_s())
     # `--porcelain` gives one line per ref, `!` for a ref that was not
@@ -6623,25 +6654,30 @@ def render_git_dir(checkout: str) -> str:
 #    non-empty `Register-Seq` of a commit that is no resolved stray (lane 3's
 #    T117 ruling 5, through the skip set of `render_register_seq`). Run out of
 #    time, or no trailer on the whole line: recorded, nothing pushed.
+#    AT `files` THE PASS ENDS HERE: it renders nothing and records no
+#    divergence, since nothing at `files` can clear one (lane 3's ruling on
+#    T322's open point 2). Every later step is at `primary`.
 # 4. CHECK FOR A DIVERGENCE, each recorded as `diverged at <sha>` through
-#    `record_mirror_state`, nothing pushed: at `primary`, an `m` above `h` at
-#    its commit `R` (R2's N6), and a commit after `R` that changes a
-#    render-set path and is no resolved stray; at either switch, a render set
-#    at `R` that is not the images at `m`.
+#    `record_mirror_state`, nothing pushed: an `m` above `h` at its commit
+#    `R` (R2's N6); a commit after `R` that changes a render-set path and is
+#    no resolved stray; and a render set at `R` that is not the images at
+#    `m`.
 # 5. THE TARGET, `t = min(h, m + 64, o - 1)`, `o` the first entry after `m`
 #    that `journal.operator` flags (PC-3). Where `m + 1` is one, nothing is
 #    rendered (F2): its command owns it.
 # 6. BUILD `m+1 .. t` with T301's image builder, under the private index
 #    `<git-dir>/lanes-render.index` and `commit-tree --no-gpg-sign`, each
-#    message composed here (D15), and PUSH through `render_push` (T320): a
-#    rejection refetches, origin carrying `t` or more counts as pushed, and
-#    otherwise the pass rebuilds on origin's new tip, six attempts in all.
+#    message composed here (D15), each commit read back by form C, which must
+#    read its `k`, and PUSH through `render_push` (T320): a rejection
+#    refetches, N6 is checked again, origin carrying `t` or more counts as
+#    pushed, and otherwise the pass rebuilds on origin's new tip, six
+#    attempts in all.
 #
 # IT NEVER TOUCHES A HEAD, AN INDEX OR A WORKING TREE OF THE CHECKOUT. Its git
 # calls read objects and refs, write objects, `refs/remotes/origin/main` (the
 # fetch, and T320's read-back) and its own `lanes-render.*` files; it writes
-# no `FETCH_HEAD`. Every git call starts from `render_git_env()`, with
-# `GIT_NO_REPLACE_OBJECTS=1` and `TZ=UTC` added (F29).
+# no `FETCH_HEAD`. Every git call starts from `render_git_env()`, which pins
+# out replace refs and grafts (F29), with `TZ=UTC` added.
 
 #: Form C's page, in commits (Y:2843).
 RENDER_PAGE = 200
@@ -6651,6 +6687,9 @@ RENDER_BATCH = 64
 RENDER_PUSH_ATTEMPTS = 6
 #: The pass's private index, in the checkout's git directory (Y:2855).
 RENDER_INDEX_NAME = "lanes-render.index"
+#: The build's private directory for the blobs and messages it hands git,
+#: beside the index, and cleared with it (NIT-4 of lane 3's review of T322).
+RENDER_WORK_NAME = "lanes-render.tmp"
 #: The trailer that ties a commit to its seq (contract section 2).
 REGISTER_SEQ_KEY = "Register-Seq"
 #: A line of a trailer block as F29 names one (Y:5964): `Token: value`, the
@@ -6660,11 +6699,21 @@ _RENDER_TRAILER_LINE_RE = re.compile(r"[A-Za-z0-9-]+: .*")
 _RENDER_AUTHOR_RE = re.compile(r"([^<>]+) <([^<>]*)>")
 #: F29's pins for the build's git calls (contract section 1): blob bytes,
 #: the encoding header and the signature, with no gc and no split or sparse
-#: index in the way of the private index.
+#: index in the way of the private index, and none of the lane's own hooks,
+#: such as `post-index-change`, run by a build (NIT-5 of lane 3's review of
+#: T322).
 _RENDER_BUILD_PINS = ("-c", "core.autocrlf=false", "-c", "i18n.commitEncoding=UTF-8",
                       "-c", "commit.gpgSign=false", "-c", "gc.auto=0",
                       "-c", "maintenance.auto=false", "-c", "core.splitIndex=false",
-                      "-c", "core.sparseCheckout=false", "-c", "core.precomposeUnicode=false")
+                      "-c", "core.sparseCheckout=false", "-c", "core.precomposeUnicode=false",
+                      "-c", "core.hooksPath=/dev/null")
+#: Form C's pins (Y:2843-2847), on the walk and on the build's read-back of
+#: each commit: no signature output, `:` as the only trailer separator, `#`
+#: as the comment character, which also marks git's scissors line, and the
+#: output in UTF-8 (NIT-1 of lane 3's review of T322): a checkout's own
+#: `core.commentChar` or `i18n.logOutputEncoding` would hide every trailer.
+_RENDER_WALK_PINS = ("-c", "log.showSignature=false", "-c", "trailer.separators=:",
+                     "-c", "core.commentChar=#", "-c", "i18n.logOutputEncoding=UTF-8")
 
 
 class RenderPass:
@@ -6674,9 +6723,12 @@ class RenderPass:
       push or by another renderer's (Y:2885-2886). The one PROGRESS outcome
       (F15): `reached`, origin's last `Register-Seq` after it, is above
       `found`, where the pass found it;
-    - `nothing-missing`: `m` is at the head, or above it at `files`;
+    - `nothing-missing`: `m` is at the head;
     - `operator-next`: `m + 1` is an operator entry, which its command
       pushes (F2);
+    - `at-files`: the switch is at `files`, where the pass renders nothing
+      and records no divergence, since nothing at `files` can clear one
+      (lane 3's ruling on T322's open point 2);
     - `diverged`: `diverged at <sha>` was recorded (D16);
     - `fetch-failed`: the fetch of `origin main` failed or timed out;
     - `walk-failed`: form C ran out of time, found no `Register-Seq`, or
@@ -6688,7 +6740,7 @@ class RenderPass:
     - `read-failed`: the register could not be read, or its rows do not
       replay (D10).
 
-    `rc` is the exit the pass leaves: 0 for the first three, 69 for
+    `rc` is the exit the pass leaves: 0 for the first four, 69 for
     `read-failed` (Y:3527, "the render ends; the lag stays"), and 1 for the
     rest, which end the renderer with what it found recorded."""
 
@@ -6697,7 +6749,7 @@ class RenderPass:
     def __init__(self, outcome: str, detail: str, *, found=None, reached=None, target=None,
                  tip: str = ""):
         self.outcome = outcome
-        self.rc = (0 if outcome in ("rendered", "nothing-missing", "operator-next")
+        self.rc = (0 if outcome in ("rendered", "nothing-missing", "operator-next", "at-files")
                    else EXIT_UNAVAILABLE if outcome == "read-failed" else 1)
         self.found = found
         self.reached = reached
@@ -6729,10 +6781,9 @@ def render_store(cfg: dict):
 
 
 def _render_env(**extra: str) -> dict:
-    """`render_git_env()` with F29's two environment pins: no replace refs,
-    which would also move `m`, and the UTC zone."""
+    """`render_git_env()`, which already pins out replace refs and grafts,
+    with F29's other environment pin, the UTC zone, and `extra`."""
     env = render_git_env()
-    env["GIT_NO_REPLACE_OBJECTS"] = "1"
     env["TZ"] = "UTC"
     env.update(extra)
     return env
@@ -6747,12 +6798,35 @@ def _render_left(deadline):
     return None if deadline is None else deadline - time.monotonic()
 
 
-def _render_workstation() -> str:
-    """The name `record_mirror_state` files a divergence's finder under:
-    `LANES_WORKSTATION`, as the writer that forked the renderer has it, or
-    this host's name. Nothing is asked of `lanes-edit.sh`, whose helper
-    environment would give a child `LANES_NO_FETCH` (D12)."""
-    return os.environ.get("LANES_WORKSTATION") or os.uname().nodename or "unknown"
+def _render_in_container() -> bool:
+    """`lanes-edit.sh`'s `lanes_in_container` (ecd1bce :926-932):
+    `LANES_IN_CONTAINER` at 1 or 0 forces the answer (its test seam, which
+    nothing else sets), and otherwise `/.dockerenv` or `/run/.containerenv`
+    says this is a container."""
+    seam = os.environ.get("LANES_IN_CONTAINER", "")
+    if seam in ("0", "1"):
+        return seam == "1"
+    return os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+
+
+def _render_workstation() -> str | None:
+    """The name `record_mirror_state` files a divergence's finder under,
+    `found_by_ws`, taken as `lanes-edit.sh`'s `lanes_workstation_pair` takes
+    it (ecd1bce :935-944; SHOULD-3 of lane 3's review of T322):
+    `LANES_WORKSTATION`, as the writer that forked the renderer has it; else,
+    outside a container, this host's short name, `hostname -s`'s, the host
+    name cut at its first dot; else None, filed as NULL, which `found_by_ws`'s
+    CHECK allows: a container's own host name is its id, a name no reader
+    can match (Amendment 11, R-A11-14), and `_render_record` says so on
+    stderr. Nothing is asked of `lanes-edit.sh`, whose helper environment
+    would give a child `LANES_NO_FETCH` (D12)."""
+    seam = os.environ.get("LANES_WORKSTATION", "")
+    if seam:
+        return seam
+    if _render_in_container():
+        return None
+    name = os.uname().nodename
+    return name.split(".", 1)[0] or name or "unknown"
 
 
 def _render_one_line(text: str, limit: int = 500) -> str:
@@ -6787,8 +6861,7 @@ def render_register_seq(checkout: str, tip: str, skip=frozenset(),
                        f"(LANES_GIT_TIMEOUT)")
         if left is not None and left <= 0:
             raise StoreUnusable("unread", out_of_time)
-        run = render_git(checkout, "-c", "log.showSignature=false",
-                         "-c", "trailer.separators=:", "log", "--first-parent",
+        run = render_git(checkout, *_RENDER_WALK_PINS, "log", "--first-parent",
                          "-n", str(RENDER_PAGE), "--skip", str(start),
                          f"--format=%H%x00%(trailers:key={REGISTER_SEQ_KEY},valueonly)",
                          tip, "--", env=_render_env(), timeout=left)
@@ -6820,6 +6893,20 @@ def render_register_seq(checkout: str, tip: str, skip=frozenset(),
         start += commits
 
 
+def render_seq_of(checkout: str, commit: str) -> str:
+    """FORM C ON ONE COMMIT, with the walk's pins and environment: the first
+    non-empty `Register-Seq` value `git log -n 1` reads from `commit`, as
+    `render_register_seq` takes one, or "" where it reads none. The build
+    reads each commit it makes back with it (SHOULD-2 of lane 3's review of
+    T322). Raises `RenderBuildFailed` where git fails or `LANES_GIT_TIMEOUT`
+    runs out."""
+    out = _render_git_ok(render_git(checkout, *_RENDER_WALK_PINS, "log", "-n", "1",
+                                    f"--format=%(trailers:key={REGISTER_SEQ_KEY},valueonly)",
+                                    commit, "--", env=_render_env(), timeout=git_timeout_s()),
+                         f"form C's `git log` of {commit}")
+    return next((line.strip() for line in out.split("\n") if line.strip()), "")
+
+
 def render_strays_after(checkout: str, after: str, tip: str, skip=frozenset()) -> str | None:
     """The divergence's git half (Y:2928-2930): the oldest commit on `tip`'s
     first-parent line after `after` (`R`) that changes a render-set path and
@@ -6828,8 +6915,10 @@ def render_strays_after(checkout: str, after: str, tip: str, skip=frozenset()) -
     commit is read against its first parent, a merge included, with no
     rename detection, so a rename shows both its paths; the render set is
     filtered in code (`register_render_path`). Raises `StoreUnusable`
-    (`unread`) where git fails or `LANES_GIT_TIMEOUT` runs out."""
-    run = render_git(checkout, "-c", "log.showSignature=false", "log", "--first-parent",
+    (`unread`) where git fails or `LANES_GIT_TIMEOUT` runs out. It has form
+    C's pins: git re-encodes all of `--format`'s output to a checkout's own
+    `i18n.logOutputEncoding`, and no `%H` would then be read (NIT-1)."""
+    run = render_git(checkout, *_RENDER_WALK_PINS, "log", "--first-parent",
                      "--diff-merges=first-parent", "--no-renames", "--raw", "--no-abbrev",
                      "-z", "--format=%H", f"{after}..{tip}", "--",
                      env=_render_env(), timeout=git_timeout_s())
@@ -7022,11 +7111,18 @@ def _render_record(store, diverged: str | None, error: str | None) -> None:
     """`record_mirror_state` (D16), one request with D9's `render` row:
     `diverged` is a stray's sha or None, `error` the pass's why or None,
     which clears `last_error`. A record that fails is said, and the pass
-    ends as it would have."""
+    ends as it would have. A divergence filed with no finder, in a container
+    with no `LANES_WORKSTATION`, is said (SHOULD-3 of lane 3's review of
+    T322)."""
     text = None if error is None else _render_one_line(error)
+    finder = _render_workstation()
+    if diverged is not None and finder is None:
+        note("render: this is a container and LANES_WORKSTATION is not set, so the divergence "
+             "is filed with no finder (found_by_ws NULL), never under the container's own id "
+             "(Amendment 11, R-A11-14). The launcher exports LANES_WORKSTATION")
     try:
         store.request([f'SELECT "{store.schema}".record_mirror_state('
-                       f'{_pg_quote(_render_workstation())}, {_pg_quote(diverged)}, '
+                       f'{_pg_quote(finder)}, {_pg_quote(diverged)}, '
                        f'{_pg_quote(text)})'], "render")
     except (StoreUnusable, ValueError) as exc:
         note(f"render: the mirror state could not be recorded ({exc}); status will not show "
@@ -7041,12 +7137,26 @@ def _render_git_ok(run: GitRun, what: str) -> str:
     return run.out
 
 
+def _render_clear(path: str) -> None:
+    """Remove what `path` names, a file, a symbolic link (never followed) or
+    a whole directory; nothing where it is absent. Raises `OSError`."""
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(info.st_mode):
+        shutil.rmtree(path)
+    else:
+        os.unlink(path)
+
+
 def render_build(checkout: str, git_dir: str, parent: str, parent_set: dict, seqs: list,
                  images: dict, entries: dict) -> str:
     """BUILD `seqs` on `parent` (Y:2855-2862; contract section 1), and return
-    the last commit. Under the lock, `lanes-render.index` and its `.lock`
-    are cleared first: a renderer killed inside `read-tree` or `update-index`
-    leaves that `.lock`. Then, for each `k`:
+    the last commit. Under the lock, `lanes-render.index`, its `.lock` and
+    the build's directory `lanes-render.tmp` are cleared first: a renderer
+    killed inside `read-tree` or `update-index` leaves that `.lock`, and one
+    killed inside the build leaves that directory. Then, for each `k`:
 
     - `read-tree <parent>` into the private index (`GIT_INDEX_FILE`);
     - the blobs that differ from the parent's render set written with
@@ -7055,26 +7165,39 @@ def render_build(checkout: str, git_dir: str, parent: str, parent_set: dict, seq
       removed with `--force-remove`: the render set is then exactly the
       images at `k`, whatever the parent held;
     - `write-tree`, then `commit-tree --no-gpg-sign -p <parent>`, with D15's
-      message, author, committer and dates.
+      message, author, committer and dates;
+    - FORM C ON THE NEW COMMIT (`render_seq_of`), which must read `k`
+      (SHOULD-2 of lane 3's review of T322): a journal message whose
+      trailers git reads otherwise, one with a scissors line or with a
+      `Register-Seq` already in its final trailer block, would leave a commit
+      at which the next pass finds a false divergence.
 
-    The blobs and the message pass through 0600 files in a private temporary
-    directory, byte for byte, since `render_git` gives git no stdin. Each
-    blob id git writes is checked against `render_blob_sha`'s. A failure
-    raises `RenderBuildFailed`; what it leaves is unreferenced objects."""
-    import tempfile
+    The blobs and the message pass through 0600 files in the 0700 directory
+    `<git-dir>/lanes-render.tmp`, byte for byte, since `render_git` gives git
+    no stdin; the directory is removed when the build ends (NIT-4 of lane
+    3's review of T322). Each blob id git writes is checked against
+    `render_blob_sha`'s. A failure, a file there that cannot be made or
+    written included, raises `RenderBuildFailed`, and nothing is pushed;
+    what it leaves is unreferenced objects."""
     index = os.path.join(git_dir, RENDER_INDEX_NAME)
-    for stale in (index, index + ".lock"):
-        try:
-            os.unlink(stale)
-        except FileNotFoundError:
-            pass
+    work = os.path.join(git_dir, RENDER_WORK_NAME)
+    try:
+        for stale in (index, index + ".lock", work):
+            _render_clear(stale)
+    except OSError as exc:
+        raise RenderBuildFailed(f"the build's files left in {git_dir} could not be cleared: "
+                                f"{exc.strerror or exc}") from exc
     top = _render_git_ok(render_git(checkout, "rev-parse", "--show-toplevel",
                                     env=_render_env(), timeout=git_timeout_s()),
                          "`git rev-parse --show-toplevel`").strip()
     if not top:
         raise RenderBuildFailed(f"{checkout} has no working tree to stage paths from")
     staging = _render_env(GIT_INDEX_FILE=index)
-    work = tempfile.mkdtemp(prefix="lanes-render-")
+    try:
+        os.mkdir(work, 0o700)
+    except OSError as exc:
+        raise RenderBuildFailed(f"the build's directory {work} could not be made: "
+                                f"{exc.strerror or exc}") from exc
     try:
         tip, current = parent, parent_set
         for k in seqs:
@@ -7123,8 +7246,20 @@ def render_build(checkout: str, git_dir: str, parent: str, parent_set: dict, seq
                 timeout=git_timeout_s()), f"seq {k}'s `git commit-tree`").strip()
             if not SHA_RE.match(tree) or not SHA_RE.match(commit):
                 raise RenderBuildFailed(f"seq {k}'s tree or commit id could not be read")
+            read = render_seq_of(top, commit)
+            if read != str(k):
+                raise RenderBuildFailed(
+                    f"seq {k}'s commit {commit} reads "
+                    + (f"{REGISTER_SEQ_KEY} {read}" if read else f"no {REGISTER_SEQ_KEY}")
+                    + f" by form C, not {k}: git reads its journal message's trailers "
+                    f"otherwise (such as after a scissors line, or with a {REGISTER_SEQ_KEY} "
+                    f"already in its final trailer block), and the next pass would find a "
+                    f"divergence at it")
             tip, current = commit, want
         return tip
+    except OSError as exc:
+        raise RenderBuildFailed(f"a file in the build's directory {work} could not be "
+                                f"written: {exc.strerror or exc}") from exc
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -7178,15 +7313,21 @@ def render_pass(checkout: str, cfg: dict, *, store=None) -> RenderPass:
     except StoreUnusable as exc:
         return stop("walk-failed", f"{exc.detail}; nothing was pushed")
 
-    def diverged_from(found: int, at: str, origin_tip: str):
-        """The git half of the check at `found`, `at` its commit: R2's N6
-        and the strays after it, at `primary` alone."""
-        if mode != "primary":
-            return None
+    def above_head(found: int, at: str):
+        """R2's N6 at `found`, `at` its commit: a `Register-Seq` above the
+        journal's head while the switch is at `primary`."""
         if found > head:
             return stop("diverged", f"diverged at {at}: it carries {REGISTER_SEQ_KEY} {found}, "
                         f"above the journal's head {head} while the switch is at primary "
                         f"(R2's N6); nothing was pushed", diverged=at, found=found)
+        return None
+
+    def diverged_from(found: int, at: str, origin_tip: str):
+        """The git half of the check at `found`, `at` its commit: R2's N6
+        and the strays after it. Reached at `primary` alone."""
+        ended = above_head(found, at)
+        if ended:
+            return ended
         try:
             stray = render_strays_after(checkout, at, origin_tip, skip)
         except StoreUnusable as exc:
@@ -7204,16 +7345,18 @@ def render_pass(checkout: str, cfg: dict, *, store=None) -> RenderPass:
         say(f"{PROG} render: {detail}")
         return RenderPass(outcome, detail, **fields)
 
-    # 4. THE DIVERGENCE CHECK'S GIT HALF.
+    # AT `files` THE PASS RENDERS NOTHING AND RECORDS NO DIVERGENCE, since
+    # nothing at `files` can clear one (lane 3's ruling on T322's open point
+    # 2). That covers (ii')'s marker-first window, `t <= h < m` (Y:2850).
+    if mode != "primary":
+        return clean("at-files", f"the switch is at {mode}, where nothing is rendered and no "
+                     f"divergence is recorded: origin carries {REGISTER_SEQ_KEY} {m}, and the "
+                     f"journal's head is {head}", found=m, reached=m)
+
+    # 4. THE DIVERGENCE CHECK'S GIT HALF. After it, `m <= h`.
     ended = diverged_from(m, carrier, tip)
     if ended:
         return ended
-    if m > head:
-        # AT `files` ONLY, as (ii')'s marker-first window has it: no
-        # divergence, and `t <= h < m` renders nothing (Y:2850).
-        return clean("nothing-missing", f"origin carries {REGISTER_SEQ_KEY} {m}, above the "
-                     f"journal's head {head} with the switch at {mode}; nothing to render",
-                     found=m, reached=m, target=head)
 
     # 5. THE TARGET, from the entries after `m`.
     upto = min(head, m + RENDER_BATCH)
@@ -7298,6 +7441,11 @@ def render_pass(checkout: str, cfg: dict, *, store=None) -> RenderPass:
         except StoreUnusable as exc:
             return stop("walk-failed", f"after a rejected push: {exc.detail}", found=m,
                         target=target)
+        # N6 FIRST (NIT-6 of lane 3's review of T322): a forged trailer that
+        # lands during the race is a divergence, never counted as pushed.
+        ended = above_head(now_m, now_carrier)
+        if ended:
+            return ended
         if now_m >= target:
             return clean("rendered", f"origin {RENDER_BRANCH} at {base} already carries "
                          f"{REGISTER_SEQ_KEY} {now_m}, at or past seq {target}, after "
@@ -7331,12 +7479,14 @@ def render_pass(checkout: str, cfg: dict, *, store=None) -> RenderPass:
 # origin's last `Register-Seq` past where that pass found it, or once for
 # each rerun mark it finds after it releases. Every other end of a pass is a
 # stop condition, and ends it with nothing on any HEAD: nothing missing; an
-# operator seq next; `diverged at`; a fetch, authentication or six-rejection
-# failure (with a walk or build that failed); a failed journal read. After
-# RENDER_PASS_CAP passes it hands over: it releases the lock and re-forks
-# itself once, detached, only if its last pass made progress, so the last
-# write of a burst is rendered though no write follows, and no process lives
-# unbounded under a steady stream.
+# operator seq next; the switch at `files`; `diverged at`; a fetch,
+# authentication or six-rejection failure (with a walk or build that
+# failed); a failed journal read. After RENDER_PASS_CAP passes it hands over:
+# it releases the lock and re-forks itself once, detached, if its last pass
+# made progress OR it finds a rerun mark after the release (MUST-1 of lane
+# 3's review of T323: T321's handshake promises every write a pass after
+# it), so the last write of a burst is rendered though no write follows, and
+# no process lives unbounded under a steady stream.
 
 #: PC-3: the passes one renderer process makes before it hands over.
 RENDER_PASS_CAP = 16
@@ -7351,14 +7501,16 @@ def _render_self_argv(checkout: str) -> list:
 def render_refork(checkout: str) -> bool:
     """THE HANDOVER'S RE-FORK, detached as the writer's fork is (contract
     section 3.7): a session of its own, stdin, stdout and stderr on
-    /dev/null, no descriptor but those, and `render_git_env()`'s
-    environment, so no `GIT_*` and no `LANES_NO_FETCH` reaches it. It is
-    never waited for. Returns whether it started; one that cannot be started
-    is said, and the next fork renders what it would have."""
+    /dev/null, no descriptor but those, and `_render_child_env()`'s
+    environment, so no `GIT_*` but `GIT_TERMINAL_PROMPT` and no
+    `LANES_NO_FETCH` reaches it: it is no git call, and `render_git_env`'s
+    pins are for git calls. It is never waited for. Returns whether it
+    started; one that cannot be started is said, and the next fork renders
+    what it would have."""
     try:
         subprocess.Popen(_render_self_argv(checkout), stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         env=render_git_env(), close_fds=True, start_new_session=True)
+                         env=_render_child_env(), close_fds=True, start_new_session=True)
     except OSError as exc:
         note(f"render: the handover's re-fork could not be started ({exc}); the next render "
              f"renders what is left")
@@ -7377,8 +7529,10 @@ def _render_holding(lock: RenderLock, checkout: str, cfg: dict) -> int:
       found the lock held, is rendered by this process, and never left with
       nobody due to read it.
     - AFTER RENDER_PASS_CAP PASSES it releases and ends, re-forking itself
-      once, detached, only if its last pass made progress. A mark found
-      then is left for the re-fork, or for the next fork.
+      once, detached, if its last pass made progress OR, after the release,
+      it finds a rerun mark (MUST-1 of lane 3's review of T323): the mark's
+      write is promised a pass after it (T321), and the re-fork, or a fork
+      that takes the lock before it, clears the mark and renders it.
     Returns the last pass's exit."""
     rc = 0
     passes = 0
@@ -7394,13 +7548,17 @@ def _render_holding(lock: RenderLock, checkout: str, cfg: dict) -> int:
         passes += 1
         if passes >= RENDER_PASS_CAP:
             lock.release()
-            if result.progressed:
+            # THE HANDSHAKE'S SECOND HALF holds at the cap too: the mark is
+            # looked for after the release, never before it.
+            marked = lock.has_rerun()
+            if result.progressed or marked:
                 started = render_refork(checkout)
+                why = "its last pass made progress" if result.progressed else "a rerun mark"
                 note(f"render: {passes} passes, the cap: the lock is released and the renderer "
-                     f"{'re-forked' if started else 'not re-forked'} to go on")
+                     f"{'re-forked' if started else 'not re-forked'} to go on, for {why}")
             else:
-                note(f"render: {passes} passes, the cap, the last with no progress: the lock is "
-                     f"released, and nothing is re-forked")
+                note(f"render: {passes} passes, the cap, the last with no progress and no rerun "
+                     f"mark: the lock is released, and nothing is re-forked")
             return rc
         if result.progressed:
             continue
@@ -7421,11 +7579,19 @@ def cmd_render_checkout(args: list) -> int:
     renderer that a primary write forks, detached, in the writing lane's
     checkout `<c>`. One render at a time per checkout, and no fork waits.
 
-    Exits: 0, rendered, or another render holds the lock and renders again
-    for this one; 2, a refused configuration (Q6(c)'s refusal of
-    `mode=primary` included, at load, before any answer: C13) or a `<c>`
-    that is no git checkout; 1, a render lock that cannot be used; 64,
-    usage."""
+    Exits, the holder's being its last pass's (`RenderPass.rc`; T322, T323):
+    - 0: rendered, nothing missing, an operator entry next, or the switch at
+      `files`; or another render holds the lock and renders again for this
+      one;
+    - 1: a stop that is recorded with the mirror state (`diverged at`, a
+      failed fetch, walk, build or push, six rejected pushes), a render lock
+      or rerun mark that cannot be used, or a `StoreUnusable` no pass caught;
+    - 2: a refused configuration (Q6(c)'s refusal of `mode=primary`
+      included, at load, before any answer: C13; a push `render_push`
+      refuses), or a `<c>` that is no git checkout;
+    - 64: usage;
+    - 69: the register could not be read, or its rows do not replay
+      (Y:3527: the render ends, and the lag stays)."""
     want = f"render --checkout <c> - see {PROG} --help"
     checkout = None
     i = 0
