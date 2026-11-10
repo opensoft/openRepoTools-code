@@ -6053,12 +6053,42 @@ pw_snapshot() {
 }
 
 # A SNAPSHOT THAT REFUSED OR FAILED ENDS THE RUN (Y:5017–5023): with its code,
-# or after F3's lookup where a `call` line is held (`pw_end`).
+# or after F3's lookup where a `call` line is held (`pw_end`). A 69 at the
+# first snapshot is `pw_first_69`'s.
 pw_snap_end() {   # <2 | 69> <why>
   if [ "$1" = 2 ]; then
     pw_end 2 "attempt ${PW_K}'s snapshot: $2. Nothing was sent by this run"
   fi
+  [ "$PW_FIRST_DONE" = 1 ] || pw_first_69 "$2"
   pw_end 69 "the register could not be read at attempt ${PW_K}'s snapshot: $2. Nothing was written by this run. $(pw_rerun_line)"
+}
+
+# ---- (d) A 69 AT THE FIRST SNAPSHOT (open point 38, taken under R26; spec:318
+# and :338; lane openRepoTools-4's plan, §11.2). What the note says depends on
+# whether the run had a write id:
+#   - A RUN THAT PASSED `--write-id new` (WR_PLAN new, aged or fresh), given
+#     no `LANES_WRITE_ID` id and taking over no record: the mint is at that
+#     snapshot, and the record comes only after it (Y:5192), so no id was
+#     minted and no record of this run was written. The note says that nothing
+#     was sent, and the rerun is the command as it was given: no
+#     `LANES_WRITE_ID` or `LANES_WRITE_GENERATION`, or `LANES_WRITE_ID=new`
+#     again where it was given, since the record it is to replace is still
+#     there (`pw_given_text`).
+#   - A RUN THAT HAD AN ID (WR_PLAN env or reuse: `LANES_WRITE_ID`, as by an
+#     earlier printed rerun, or a record taken over) prints it again with its
+#     generation, `LANES_WRITE_ID=<id> LANES_WRITE_GENERATION=<g> …`, which
+#     settles the write with or without the record (Y:5219, Y:5222). A plain
+#     rerun there could mint a new id and make a committed write twice.
+# THE CLAIM: this 69 removes the run's own claim file, `<d>.take.<k>`, taken
+# before the snapshot (T412), so no claim is left with no record and a dead
+# owner (`pw_end`'s `pw_record_done`). A record of this write's own with no
+# `call` line goes with it (Y:5196); one that holds a `call` line is in doubt
+# from the run's start, and waits for F3's lookup (Y:5017–5023).
+pw_first_69() {   # <why>
+  if [ "$WR_PLAN" = env ] || [ "$WR_PLAN" = reuse ]; then
+    pw_end 69 "the register could not be read at this write's first snapshot: $1. This run sent nothing for write $WR_ID of register generation $WR_GEN, and that says nothing of whether an earlier run committed it. Run it again by its write id, which settles the write with or without its record and never writes it twice: $(wr_rerun_text "$WR_ID" "$WR_GEN")"
+  fi
+  pw_end 69 "the register could not be read at this write's first snapshot: $1. No write id was minted and no pending record of this run was written: nothing was sent. Run it again as it was given: $(pw_given_text)"
 }
 
 # THE RERUN A 69 OR A 75 PRINTS (spec:318; open point 38): the write's id with
