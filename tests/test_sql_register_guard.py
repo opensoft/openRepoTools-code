@@ -58,7 +58,8 @@ from pathlib import Path
 import pytest
 
 from conftest import REPO, WINDOWS_SKIP
-from sql_register_helpers import (ARGV_LOG, GUARD_PANE, GUARD_WINDOW, contract_stub,
+from sql_register_helpers import (ARGV_LOG, GUARD_PANE, GUARD_WINDOW, PSQL_SHIM,
+                                  PSQL_SHIM_CONTROL, PSQL_SHIM_LOG, contract_stub,
                                   guard_session, guard_strip_env)
 
 pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
@@ -213,7 +214,9 @@ sys.exit(int(ctl("body-rc", "0") or 0))
 #: `<ctl>/lanes-edit.log`, then answers `set-row-state` with 0, or sleeps on it
 #: (`edit-sleep`), and answers `start-record` with the code in
 #: `start-record-rc` where that file is there; every other call, and every call
-#: where `edit-real` is there, runs the checkout's `lanes-edit.sh`.
+#: where `edit-real` is there, runs the checkout's `lanes-edit.sh`. T254's
+#: `inject-row` runs the real `act-begin`, then a rival's `set-row-state` on
+#: the lane it names, outside the act (case 9's injected row change).
 _STUB_EDIT = r'''#!@PY@ -I
 import json, os, sys, time
 CTL = @CTL@
@@ -230,6 +233,13 @@ with open(os.path.join(CTL, "lanes-edit.log"), "a", encoding="utf-8") as handle:
         k: os.environ.get(k) for k in ("LANES_ACT", "LANES_EXPECT", "LANES_WRITE_ID")}),
         sort_keys=True) + "\n")
 verb = args[0] if args else ""
+if verb == "act-begin" and ctl("inject-row") is not None:
+    import subprocess
+    done = subprocess.run(["bash", REAL] + args)
+    env = {k: v for k, v in os.environ.items() if k not in ("LANES_ACT", "LANES_EXPECT")}
+    lane = ctl("inject-row")
+    subprocess.run(["bash", REAL, "set-row-state", lane, "LIVE - a rival's change"], env=env)
+    sys.exit(done.returncode)
 if verb == "start-record" and ctl("start-record-rc") is not None:
     sys.stderr.write("lanes-edit.sh start-record: the stand-in's code\n")
     sys.exit(int(ctl("start-record-rc")))
@@ -488,6 +498,40 @@ class Estate:
         self.sessions = [self.session]
         self.spare = []
 
+    def primary(self, pg) -> None:
+        """T254: the estate on `mode=primary` against the session cluster
+        (T205's `pg`), in T220's configuration form (its `Bench.config`: two
+        URLs naming this test's database). The register's tables come from
+        T227's `tmpl_imported` and its logins from T228, so a primary case
+        waits for both besides lane 4's and lane 5's code; the bind's own
+        calls go through T203's `PSQL_SHIM`, whose log the case reads."""
+        conf = self.root / "conf" / "lanes-index.conf"
+        conf.parent.mkdir(mode=0o700)
+        url = pg.url()
+        conf.write_text("\n".join([
+            "mode=primary", f"register_url={url}", f"reader_url={url}",
+            "register_label=register-test", ""]), encoding="utf-8")
+        conf.chmod(0o600)
+        self.pg = pg
+        self.extra["LANES_INDEX_CONFIG"] = str(conf)
+
+    def shim(self, arms=()) -> Path:
+        """T203's `PSQL_SHIM` first on `PATH`, handing calls to the cluster's
+        own `psql`, with `arms`; its log is `<bin>/psql-shim.log`."""
+        shim = _script(self.bin / "psql", PSQL_SHIM)
+        (self.bin / PSQL_SHIM_CONTROL).write_text(json.dumps(
+            {"psql": self.pg.cluster.tool("psql"), "arms": list(arms)}), encoding="utf-8")
+        return shim
+
+    def shim_calls(self) -> list:
+        """The shim's request calls (its `--version` probes left out)."""
+        path = self.bin / PSQL_SHIM_LOG
+        if not path.exists():
+            return []
+        calls = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+                 if line.strip()]
+        return [c for c in calls if "kind" not in c]
+
     def _git(self, argv, cwd) -> str:
         return subprocess.run(["git", *argv], cwd=str(cwd), env=self.base, check=True,
                               capture_output=True, text=True).stdout
@@ -600,9 +644,12 @@ def estate(tmp_path, request):
     children)."""
     made = []
 
-    def make(**kwargs) -> Estate:
+    def make(mode="files", **kwargs) -> Estate:
+        pg = request.getfixturevalue("pg") if mode == "primary" else None
         est = Estate(tmp_path / f"e{len(made)}", **kwargs)
         made.append(est)
+        if pg is not None:
+            est.primary(pg)
         return est
 
     yield make
@@ -660,7 +707,7 @@ def _renames(est: Estate, since: int = 0) -> list:
 
 # ============================================================ T214: AT-F6, phase N
 
-@pytest.mark.parametrize("mode", ["files"])
+@pytest.mark.parametrize("mode", ["files", "primary"])
 def test_answer_2_exits_2_binding_before_t0_plus_1_s_and_the_runner_sees_eof(estate, mode):
     """AT-F6 case 1: answer `2` exits 2 with "BINDING" before `T0 + 1 s`,
     asserted at twice it (section 4's rule 2), while the stand-in `lane-start`
@@ -670,7 +717,7 @@ def test_answer_2_exits_2_binding_before_t0_plus_1_s_and_the_runner_sees_eof(est
     `deadline_epoch` 505 s after `started_utc`, "BINDING" says "bounded at
     500 s" and to send the work again in a minute or so, and the body runs as
     `timeout -k 10 490 ... guard-bind --body <uuid>`."""
-    est = estate()
+    est = estate(mode=mode)
     est.set("hold", 60)
     est.make_offer()
     head = est.origin_head()
@@ -697,13 +744,13 @@ def test_answer_2_exits_2_binding_before_t0_plus_1_s_and_the_runner_sees_eof(est
     assert argv[1:4] == ["-k", "10", "490"] and argv[-3:] == ["guard-bind", "--body", est.sid], argv
 
 
-@pytest.mark.parametrize("mode", ["files"])
+@pytest.mark.parametrize("mode", ["files", "primary"])
 def test_the_bind_child_survives_a_group_kill_and_hangup_and_ends_bound(estate, mode):
     """AT-F6 case 2: the child survives a `SIGKILL` and a `SIGHUP` sent to the
     hook's whole process group, and the record ends `bound`. Its `ended_utc`
     less `started_utc` is recorded beside `bound_s`, never asserted (lane 4's
     row 37)."""
-    est = estate()
+    est = estate(mode=mode)
     est.set("hold", 60)
     est.make_offer()
     hook = est.answer_2()
@@ -722,11 +769,11 @@ def test_the_bind_child_survives_a_group_kill_and_hangup_and_ends_bound(estate, 
           f"beside bound_s = {record['bound_s']} s")
 
 
-@pytest.mark.parametrize("mode", ["files"])
+@pytest.mark.parametrize("mode", ["files", "primary"])
 def test_a_prompt_mid_bind_is_not_passed_and_leaves_the_record(estate, mode):
     """AT-F6 case 3: a prompt mid-bind gets "BINDING IN PROGRESS" with exit 2,
     is not passed, and the record is byte for byte unchanged."""
-    est = estate()
+    est = estate(mode=mode)
     est.set("hold", 60)
     est.make_offer()
     est.answer_2()
@@ -738,7 +785,7 @@ def test_a_prompt_mid_bind_is_not_passed_and_leaves_the_record(estate, mode):
     assert len(est.starts()) == 1, "a prompt mid-bind started a second bind"
 
 
-@pytest.mark.parametrize("mode", ["files"])
+@pytest.mark.parametrize("mode", ["files", "primary"])
 def test_after_bound_one_moved_then_the_next_prompt_passes(estate, mode):
     """AT-F6 case 4: after `bound`, one "MOVED" naming the lane and this
     session (lane 5's draft 7, #165 6767031889), with the owed notes, the
@@ -746,7 +793,7 @@ def test_after_bound_one_moved_then_the_next_prompt_passes(estate, mode):
     now named `<to>` whose row ends on this session, exits 0. The row and the
     window's name are the test's stand-ins for what the real `lane-start
     --bind` and the guard's rename leave."""
-    est = estate()
+    est = estate(mode=mode)
     est.make_offer()
     est.answer_2()
     record = est.ended()
@@ -764,13 +811,13 @@ def test_after_bound_one_moved_then_the_next_prompt_passes(estate, mode):
     assert hook.code == 0 and "MOVED" not in hook.text, repr(hook)
 
 
-@pytest.mark.parametrize("mode", ["files"])
+@pytest.mark.parametrize("mode", ["files", "primary"])
 def test_a_failed_bind_renames_back_keeps_the_offer_and_allows_three_attempts(estate, mode):
     """AT-F6 case 5: after a stand-in failure, the why, the window renamed back
     to `<from>`, the offer kept (`mode=name-drift`, `bind=k`), attempt 2 on
     the next `2`; after the third failure choice 2 is no longer offered, and
     a `2` typed anyway is refused with the offer kept."""
-    est = estate()
+    est = estate(mode=mode)
     est.set("rc", 1)
     est.make_offer()
     for attempt in (1, 2, 3):
@@ -800,7 +847,7 @@ def test_a_failed_bind_renames_back_keeps_the_offer_and_allows_three_attempts(es
     assert len(est.starts()) == 3, est.starts()
 
 
-@pytest.mark.parametrize("mode", ["files"])
+@pytest.mark.parametrize("mode", ["files", "primary"])
 def test_a_dead_bind_outer_answers_in_progress_while_its_session_lives_then_no_outcome(
         estate, mode):
     """AT-F6 case 6: the outer killed with `-9` while the stand-in holds: its
@@ -811,7 +858,7 @@ def test_a_dead_bind_outer_answers_in_progress_while_its_session_lives_then_no_o
     `name-drift`, `rc=unknown`, `ended_utc` the guard's time, the offer kept,
     and none of the five values copied (the stand-in made no pending record);
     the next `2` binds anew."""
-    est = estate()
+    est = estate(mode=mode)
     est.set("hold", 60)
     est.make_offer()
     est.answer_2()
@@ -843,12 +890,12 @@ def test_a_dead_bind_outer_answers_in_progress_while_its_session_lives_then_no_o
     assert est.record()["bind"] == "2", est.record()
 
 
-@pytest.mark.parametrize("mode", ["files"])
+@pytest.mark.parametrize("mode", ["files", "primary"])
 def test_a_reused_bind_pid_gives_no_outcome_with_no_session_test(estate, mode):
     """AT-F6 case 6's last sentence: an altered `pidstart` reads as dead with
     no session test, "no outcome" at once, while the outer and its session
     still live."""
-    est = estate()
+    est = estate(mode=mode)
     est.set("hold", 60)
     est.make_offer()
     est.answer_2()
@@ -920,7 +967,7 @@ def test_a_bind_body_past_its_bound_ends_with_the_bounds_code_and_leaves_no_proc
             "the bind's set-row-state never ran"
 
 
-@pytest.mark.parametrize("mode", ["files"])
+@pytest.mark.parametrize("mode", ["files", "primary"])
 def test_a_live_bind_past_its_bound_that_timeout_has_not_ended_answers_2_and_names_the_pid_to_kill(
         estate, mode):
     """Row (a): a `binding` record with `bounded=yes` and `bound_s=500`, its
@@ -929,7 +976,7 @@ def test_a_live_bind_past_its_bound_that_timeout_has_not_ended_answers_2_and_nam
     BOUND and is still running (pid <p>, started <utc>)", that its `timeout`
     has not ended it and it is likely stuck on the disk or the network, and
     what `kill <p>` costs."""
-    est = estate()
+    est = estate(mode=mode)
     holder = _sleeper()
     est.spare.append(holder.pid)
     started = time.time() - 600
@@ -946,7 +993,8 @@ def test_a_live_bind_past_its_bound_that_timeout_has_not_ended_answers_2_and_nam
     assert est.offer.read_bytes() == before, "the record changed"
 
 
-@pytest.mark.parametrize("where", ["host-files", "container-files"])
+@pytest.mark.parametrize("where", ["host-files", "container-files", "host-primary",
+                                   "container-primary"])
 def test_a_binding_from_another_host_or_container_is_not_judged_by_its_pid_until_the_deadline_plus_60_s(
         estate, where):
     """Row (b): a `binding` record whose `host` or `container` differs from the
@@ -956,7 +1004,7 @@ def test_a_binding_from_another_host_or_container_is_not_judged_by_its_pid_until
     text adds that the child there may still be running and that on primary
     `bind:<to>` refuses whichever bind commits second; past it, stale with no
     copies: exit 2 once, `name-drift`, `rc=unknown`, and no rename."""
-    est = estate()
+    est = estate(mode=where.rsplit("-", 1)[1])
     host, container = (("Elsewhere", CONTAINER) if where.startswith("host")
                        else (HOST, "other-box"))
     dead = _dead_pid()
@@ -1011,15 +1059,14 @@ def _real_estate(estate, **kwargs) -> Estate:
     return est
 
 
-def test_two_sessions_binding_one_lane_in_files_mode_the_second_is_refused_at_the_reread(
-        estate):
-    """Row (d): two sessions answer `2` for one lane on the files-mode
-    fixture. The bind that reaches `lane-start`'s re-read of `binding` second
-    is refused there, the other record ends `bound`, and there is one
-    `RESUMED` line and one stamp for the lane. Lane 4's table gives no exit
-    code for the re-read, so the code seen is recorded, not asserted."""
-    one = _real_estate(estate)
+def _two_binds(estate, mode="files") -> tuple:
+    """Two sessions, in windows `FROM` and `repoA-4`, each named `TO`, both
+    answering `2` with the real `lane-start`: the two estates and their
+    outcomes."""
+    one = _real_estate(estate, mode=mode)
     two = _real_estate(estate)
+    if mode == "primary":
+        two.extra["LANES_INDEX_CONFIG"] = one.extra["LANES_INDEX_CONFIG"]
     two.home, two.wip, two.origin = one.home, one.wip, one.origin
     two.offer = one.offer.parent / two.sid
     two.base.update(HOME=str(one.home), LANES_REPO=str(one.wip))
@@ -1035,7 +1082,17 @@ def test_two_sessions_binding_one_lane_in_files_mode_the_second_is_refused_at_th
     assert read_record(two.offer).get("mode") == "name-drift", read_record(two.offer)
     one.answer_2()
     two.answer_2()
-    ends = [one.ended(60), two.ended(60)]
+    return one, two, [one.ended(60), two.ended(60)]
+
+
+def test_two_sessions_binding_one_lane_in_files_mode_the_second_is_refused_at_the_reread(
+        estate):
+    """Row (d): two sessions answer `2` for one lane on the files-mode
+    fixture. The bind that reaches `lane-start`'s re-read of `binding` second
+    is refused there, the other record ends `bound`, and there is one
+    `RESUMED` line and one stamp for the lane. Lane 4's table gives no exit
+    code for the re-read, so the code seen is recorded, not asserted."""
+    one, two, ends = _two_binds(estate)
     modes = sorted(r["mode"] for r in ends)
     print(f"T214 row (d): the second bind's code: {[r.get('rc') for r in ends]}")
     assert modes == ["bind-failed", "bound"], ends
@@ -1044,8 +1101,10 @@ def test_two_sessions_binding_one_lane_in_files_mode_the_second_is_refused_at_th
 
 
 @pytest.mark.parametrize("kind,code,mode", [
-    (kind, code, "files") for kind in ("resume", "new") for code in (2, 75, 3, 69)],
-    ids=[f"{kind}-{code}-files" for kind in ("resume", "new") for code in (2, 75, 3, 69)])
+    (kind, code, mode) for mode in ("files", "primary") for kind in ("resume", "new")
+    for code in (2, 75, 3, 69)],
+    ids=[f"{kind}-{code}-{mode}" for mode in ("files", "primary") for kind in ("resume", "new")
+         for code in (2, 75, 3, 69)])
 def test_the_bind_child_records_bind_failed_with_the_code_and_binds_nothing(estate, kind, code,
                                                                             mode):
     """The record's code: the child runs the real `lane-start --no-launch
@@ -1055,7 +1114,7 @@ def test_the_bind_child_records_bind_failed_with_the_code_and_binds_nothing(esta
     child writes no stamp. In files mode the five copies are never written.
     `start-record`'s code is the `LANES_EDIT` stand-in's; it fails until lane
     4's `start-record` (L4-B9) as well as L5-A1."""
-    est = _real_estate(estate, to=TO if kind == "resume" else "repoA-5",
+    est = _real_estate(estate, mode=mode, to=TO if kind == "resume" else "repoA-5",
                        to_row=kind == "resume")
     est.set("start-record-rc", code)
     est.make_offer()
@@ -1070,11 +1129,11 @@ def test_the_bind_child_records_bind_failed_with_the_code_and_binds_nothing(esta
     assert not [k for k in COPIES if k in record], record
 
 
-@pytest.mark.parametrize("mode", ["files"])
+@pytest.mark.parametrize("mode", ["files", "primary"])
 def test_the_bind_child_reaches_tmux_through_tmux_pane(estate, mode):
     """AT-F6 case 12: the child's untargeted `tmux` call reaches the stand-in
     with `TMUX_PANE` set to the hook's pane and its stdin on `/dev/null`."""
-    est = estate()
+    est = estate(mode=mode)
     est.set("tmux")
     est.make_offer()
     est.answer_2()
@@ -1086,7 +1145,7 @@ def test_the_bind_child_reaches_tmux_through_tmux_pane(estate, mode):
     assert ["display-message", "-p", "#{pane_id}"] in est.session.tmux_calls()
 
 
-@pytest.mark.parametrize("mode", ["files"])
+@pytest.mark.parametrize("mode", ["files", "primary"])
 def test_the_bind_child_environment_is_as_lane_4_lists_it(estate, mode):
     """AT-F6 case 13: the stand-in `lane-start` sees `LANES_NO_FETCH`,
     `LANES_ACT` and `LANES_EXPECT` unset, `TMUX` and `TMUX_PANE` set,
@@ -1094,7 +1153,7 @@ def test_the_bind_child_environment_is_as_lane_4_lists_it(estate, mode):
     `LANE_START_HANDOFF_ANSWER` unset, and `LANES_GIT_TIMEOUT=45`, each set
     in the hook's own environment. The `LANES_ACT` and `LANES_EXPECT` of the
     `set-row-state` on the lane left are primary's, T254's."""
-    est = estate()
+    est = estate(mode=mode)
     est.make_offer()
     est.answer_2(LANES_ACT="act-0@1:g", LANES_EXPECT="row:x", LANES_WRITE_ID="w-1",
                  LANES_WRITE_GENERATION="g-1", LANE_START_HANDOFF_ANSWER="y",
@@ -1116,12 +1175,12 @@ def test_the_hook_string_and_guard_timeout_are_unchanged():
     assert b"GUARD_TIMEOUT=5" in lines
 
 
-@pytest.mark.parametrize("mode", ["files"])
+@pytest.mark.parametrize("mode", ["files", "primary"])
 def test_kill_of_the_bind_outer_ends_the_record_with_the_signals_code(estate, mode):
     """AT-F6 case 15: `kill <p>` on the outer mid-bind, while the stand-in
     holds, ends the record with the signal's code, 143 (lane 3's point 11),
     the `why` "stopped by a signal" and "what it wrote is not known"."""
-    est = estate()
+    est = estate(mode=mode)
     est.set("hold", 60)
     est.make_offer()
     est.answer_2()
@@ -1149,7 +1208,7 @@ def _no_timeout_path(root: Path) -> str:
     return str(farm)
 
 
-@pytest.mark.parametrize("mode", ["files"])
+@pytest.mark.parametrize("mode", ["files", "primary"])
 def test_a_bind_with_no_timeout_says_bounded_no_and_kill_stops_its_group_once(
         estate, tmp_path, mode):
     """AT-F6 case 16: with `timeout` hidden from `PATH` and
@@ -1160,7 +1219,7 @@ def test_a_bind_with_no_timeout_says_bounded_no_and_kill_stops_its_group_once(
     that this host has no `timeout`, so nothing stops it, what `kill <p>`
     costs, and "Your prompt was NOT sent". Then `kill <p>` stops the body's
     group and the outer writes the outcome."""
-    est = estate(path=_no_timeout_path(tmp_path))
+    est = estate(mode=mode, path=_no_timeout_path(tmp_path))
     est.set("hold", 60)
     est.make_offer()
     hook = est.answer_2(LANES_BIND_BOUND_S="15")
@@ -1186,13 +1245,13 @@ def test_a_bind_with_no_timeout_says_bounded_no_and_kill_stops_its_group_once(
     assert not _members("pgid", start[0]["pgid"]), "the body's group was left running"
 
 
-@pytest.mark.parametrize("mode", ["files"])
+@pytest.mark.parametrize("mode", ["files", "primary"])
 def test_the_bind_resume_path_makes_at_most_n_r_read_calls(estate, mode):
     """AT-F6 case 17: a counting `LANES_EDIT` stand-in sees at most `N_r` = 17
     calls on the real `lane-start --no-launch --bind`'s resume path, each a
     `lanes-edit.sh` process that makes one register read; the test fails where
     `N_r` must grow (lane 4's section, "The record, and its liveness test")."""
-    est = _real_estate(estate)
+    est = _real_estate(estate, mode=mode)
     est.make_offer()
     est.answer_2()
     record = est.ended(90)
@@ -1253,7 +1312,7 @@ def test_guard_bind_computes_bound_s_from_c_n_a_and_the_service(estate, configur
     assert body[0]["parent"][1:4] == ["-k", "10", str(bound - 10)], body
 
 
-@pytest.mark.parametrize("mode", ["files"])
+@pytest.mark.parametrize("mode", ["files", "primary"])
 def test_answer_2_survives_a_group_sigterm_at_the_hooks_timeout(estate, mode):
     """Lane 4's row 34, answer 2 killed partway: a stand-in `lane-start` that
     takes 10.5 s, today's measured bind, and forks a `( ... & )` child as
@@ -1261,7 +1320,7 @@ def test_answer_2_survives_a_group_sigterm_at_the_hooks_timeout(estate, mode):
     form's hook has exited 2 before the timer, and its child completes, the
     record ending `bound`. The body ended on its own, so the outer sweeps
     nothing: the forked child is still alive after the outcome."""
-    est = estate()
+    est = estate(mode=mode)
     est.set("sleep", 10.5)
     est.set("fork", 40)
     est.make_offer()
@@ -1279,12 +1338,12 @@ def test_answer_2_survives_a_group_sigterm_at_the_hooks_timeout(estate, mode):
     assert _alive(fork), "the body's own exit was followed by a sweep of its group"
 
 
-@pytest.mark.parametrize("mode", ["files"])
+@pytest.mark.parametrize("mode", ["files", "primary"])
 def test_a_failed_bind_can_be_answered_again(estate, mode):
     """Lane 4's row 35, a failed bind answered again: after the stand-in fails
     once, the window is renamed back to `<from>`, the offer kept, and the next
     `2` starts attempt 2."""
-    est = estate()
+    est = estate(mode=mode)
     est.set("rc", 1)
     est.make_offer()
     est.answer_2()
@@ -1380,3 +1439,259 @@ def test_the_post_bind_refill_is_one_register_read_and_never_git(estate, tmp_pat
     after = [line for line in logged if float(line.split(" ", 1)[0]) > done_at]
     assert not after, f"git was called after lane-start's end, by the refill: {after}"
     assert stub.exists()
+
+
+# ============================================================ T254: AT-F6's writes, primary
+#
+# AT-F6's cases 8 to 11 and 18 to 21 bind on primary only and take no mode id
+# (A1). Each runs on the session cluster (T205's `pg`), so on a bench with no
+# engine it is collected and skipped with T205's banner; each fails until
+# lane 4's `start-record` (L4-B9), lane 5's bind (L5-A1) and its phase 2's
+# lookup (L5-B1, T510) land, and on the register's template and logins (T227,
+# T228). The lookup's tries follow AT-F3's rule (R26, 40): they start inside
+# a closed 10 s window, with D9's 9 s timer (open point 37).
+
+#: The lookup's argv, which the child sends with the five values it copied
+#: from `start-record`'s pending record (case 19).
+LOOKUP = ("journal", "--write-id")
+
+
+def _lookups(est: Estate) -> list:
+    """The shim's calls that carry the bind's lookup (`find_write`)."""
+    return [c for c in est.shim_calls() if "find_write" in c.get("sent", "")]
+
+
+def _commits(est: Estate) -> list:
+    """The shim's calls that carry a commit (`commit_write`)."""
+    return [c for c in est.shim_calls() if "commit_write" in c.get("sent", "")]
+
+
+def test_two_sessions_binding_one_lane_one_start_record_commits(estate):
+    """AT-F6 case 8: two sessions answer `2` for one lane on the primary
+    fixture: one `start-record` commits, and the other is refused 2 by its
+    `bind:<to>` expectation."""
+    one, two, ends = _two_binds(estate, mode="primary")
+    assert sorted(r["mode"] for r in ends) == ["bind-failed", "bound"], ends
+    failed = [r for r in ends if r["mode"] == "bind-failed"][0]
+    assert failed["rc"] == "2" and f"bind:{TO}" in failed["why"], failed
+
+
+def test_the_bind_is_one_register_write_and_refuses_a_changed_row(estate):
+    """AT-F6 case 9: on primary the bind is one journal entry, and with the
+    `set-row-state` on the lane left answer 2 journals two; a row change
+    injected after `act-begin` refuses it with 2 and writes nothing."""
+    est = _real_estate(estate, mode="primary")
+    est.shim()
+    est.make_offer()
+    est.answer_2()
+    record = est.ended(90)
+    assert record["mode"] == "bound", record
+    assert len(_commits(est)) == 2, [c.get("arms") for c in _commits(est)]
+    rival = _real_estate(estate, mode="primary")
+    rival.shim()
+    rival.set("inject-row", TO)
+    rival.make_offer()
+    rival.answer_2()
+    record = rival.ended(90)
+    assert record["mode"] == "bind-failed" and record["rc"] == "2", record
+    starts = [c for c in _commits(rival) if "start-record" in c.get("sent", "")]
+    assert not starts or all("commit_write" in c["sent"] for c in starts), starts
+
+
+@pytest.mark.parametrize("held", ["found", "absent"])
+def test_a_bind_in_doubt_looks_its_write_up_before_a_rerun(estate, held):
+    """AT-F6 case 10: an injected `psql` exit 2 gives `rc=3` with the id:
+    `[absent]`, exit 2 on every call from the bind's commit call on;
+    `[found]`, the shim's `after` mode on that call, which commits, then exit
+    2 on every later call. At the next `2` the child's lookup runs first:
+    `[absent]` binds anew under a new id; `[found]` writes no second
+    `RESUMED`, its done mark says `done`, and the record ends `bound`."""
+    est = _real_estate(estate, mode="primary")
+    arms = ([{"mode": "fail-match", "match": "commit_write", "from": 1}] if held == "absent"
+            else [{"mode": "after", "match": "commit_write", "call": 1},
+                  {"mode": "fail-call", "from": 2}])
+    est.shim(arms)
+    est.make_offer()
+    est.answer_2()
+    record = est.ended(120)
+    assert record["mode"] == "bind-failed" and record["rc"] == "3", record
+    assert all(k in record for k in COPIES), record
+    est.shim()
+    est.hook("hello")
+    before = len(est.shim_calls())
+    est.answer_2()
+    record = est.ended(120)
+    calls = est.shim_calls()[before:]
+    look = [i for i, c in enumerate(calls) if "find_write" in c.get("sent", "")]
+    start = [i for i, c in enumerate(calls) if "start-record" in c.get("sent", "")
+             and "commit_write" in c.get("sent", "")]
+    assert look and (not start or look[0] < start[0]), calls
+    assert record["mode"] == "bound", record
+    if held == "found":
+        assert not start, f"the found write was committed again: {calls}"
+
+
+def test_a_rerun_after_a_failed_stamp_push_writes_one_stamp(estate):
+    """AT-F6 case 11 (R-F10-32; lane 5's T503, #165 6755410581): a rerun after
+    a failed stamp push writes no register line and no second stamp; its
+    output holds exactly one line with both `Rule 3's stamp` and `NOT` while
+    the stamp is unpushed, and none once it is published (lane 5's hand
+    counts 1, 0, 1 and 1 for unpushed, published, no upstream and
+    `LANES_NO_GIT`); and a rerun never retries a failed `set-row-state`
+    (Y:5511)."""
+    est = _real_estate(estate, mode="primary")
+    est.shim()
+    hooks = est.root / "origin-hooks"
+    hooks.mkdir()
+    _script(hooks / "pre-receive", "#!/bin/sh\nexit 1\n")
+    est._git(["config", "core.hooksPath", str(hooks)], est.origin)
+    est.make_offer()
+    est.answer_2()
+    record = est.ended(120)
+    owed = [n for n in record["note"] if "Rule 3's stamp" in n and "NOT" in n]
+    assert record["mode"] == "bound" and len(owed) == 1, record
+    commits = len(_commits(est))
+    edits = [e for e in est.log("lanes-edit.log") if e["argv"][:1] == ["set-row-state"]]
+    rerun = subprocess.run(["bash", str(REPO / "lane-start"), "--no-launch", "--bind", est.sid,
+                            "repoA", "3"], capture_output=True, text=True, timeout=120,
+                           env=est.env(), cwd=str(est.wip))
+    lines = [line for line in (rerun.stdout + rerun.stderr).splitlines()
+             if "Rule 3's stamp" in line and "NOT" in line]
+    assert len(lines) == 1, rerun.stdout + rerun.stderr
+    assert len(_commits(est)) == commits, "the rerun wrote a register line"
+    assert [e for e in est.log("lanes-edit.log") if e["argv"][:1] == ["set-row-state"]] \
+        == edits, "the rerun retried set-row-state"
+    est._git(["config", "--unset", "core.hooksPath"], est.origin)
+
+
+@pytest.mark.parametrize("held", ["found", "absent"])
+def test_a_bind_killed_mid_commit_waits_for_ended_utc_plus_c_before_its_lookup(
+        estate, tmp_path, held):
+    """AT-F6 case 18: a bind stopped by `kill <p>` while the shim holds
+    `start-record`'s commit call on a FIFO, and answered `2` at once: the
+    outer copies the five values; the child's lookup starts, in the shim's
+    log, no earlier than the record's `ended_utc` plus `C`, `N_a`*`c` + 6 s,
+    8 s at `c` = 2, and gets no LR011; `[found]` writes no second
+    `RESUMED`, where the shim held the call after the real `psql` had
+    returned (`timer`), and `[absent]` binds anew, where it held it before
+    (`hold`)."""
+    est = _real_estate(estate, mode="primary")
+    fifo = tmp_path / f"hold-{held}"
+    os.mkfifo(fifo)
+    mode = "timer" if held == "found" else "hold"
+    est.shim([{"mode": mode, "match": "commit_write", "call": 1, "fifo": str(fifo)}])
+    est.make_offer()
+    est.answer_2()
+    record = est.outer()
+    assert _until(lambda: _commits(est), 60), "start-record's commit call never came"
+    _kill(int(record["pid"]), signal.SIGTERM)
+    record = est.ended(60)
+    assert all(k in record for k in COPIES), record
+    ended = _epoch(record["ended_utc"])
+    est.shim()
+    before = len(est.shim_calls())
+    est.answer_2()
+    # THE SHIM LOGS NO TIME, so the lookup's start is read by watching for its
+    # entry, at 50 ms: the time seen is at most 50 ms after the start.
+    seen = _until(lambda: time.time() if [c for c in est.shim_calls()[before:]
+                                          if "find_write" in c.get("sent", "")] else None,
+                  120, 0.05)
+    assert seen, est.shim_calls()[before:]
+    print(f"T254 case 18: the lookup seen {seen - ended:.2f} s after ended_utc (C = 8 s)")
+    assert seen >= ended + 8, (seen, ended)
+    end = est.ended(120)
+    assert "LR011" not in end.get("why", ""), end
+
+
+@pytest.mark.parametrize("case", ["found", "another-write", "generation"])
+def test_the_bind_childs_lookup_sends_the_five_copied_values(estate, case):
+    """AT-F6 case 19: with the window's name spelled otherwise than the lane's
+    canonical name, after case 10's `[found]` `rc=3`, the child's lookup is
+    `lanes-index journal --write-id <id> --not-after <n> --generation <g>
+    --lane <write_lane> --verb start-record --args-sha256 <h>`, the five
+    values copied from `start-record`'s pending record, never derived from
+    `to`, and the found entry writes no second `RESUMED`. `[another-write]`:
+    the record's `args_sha256` copy changed, LR007 `another-write` ends `rc=2`
+    with the server's message and the copies dropped; `[generation]`: the
+    `generation` copy changed, `rc=2` with a plain rerun's refusal and the
+    copies kept."""
+    est = _real_estate(estate, mode="primary")
+    est.shim([{"mode": "after", "match": "commit_write", "call": 1},
+              {"mode": "fail-call", "from": 2}])
+    est.make_offer()
+    est.answer_2()
+    record = est.ended(120)
+    assert record["rc"] == "3" and all(k in record for k in COPIES), record
+    copies = {k: record[k] for k in COPIES}
+    if case != "found":
+        key = "args_sha256" if case == "another-write" else "generation"
+        lines = [line for line in est.offer.read_text(encoding="utf-8").splitlines()
+                 if not line.startswith(f"{key}=")]
+        write_record(est.offer, lines + [f"{key}=0{copies[key][1:]}"])
+    est.shim()
+    est.hook("hello")
+    est.answer_2()
+    record = est.ended(120)
+    sent = " ".join(c.get("sent", "") for c in _lookups(est))
+    for key in ("write_id", "not_after", "write_lane"):
+        assert copies[key] in sent, (key, copies[key])
+    if case == "found":
+        assert record["mode"] == "bound", record
+    elif case == "another-write":
+        assert record["rc"] == "2" and not [k for k in COPIES if k in record], record
+    else:
+        assert record["rc"] == "2" and all(k in record for k in COPIES), record
+
+
+def test_the_stale_row_copies_a_dead_outers_pending_call_and_the_next_2_looks_it_up(estate):
+    """AT-F6 case 20: the outer killed with `-9` while a stand-in `lane-start`
+    has written a `start-record` pending record of this session with a `call`
+    line: once no process of the outer's session is left, the stale row
+    copies the five values, `not_after` the largest among its `call` lines,
+    and the next `2` makes the lookup, in the shim's log, before any
+    `start-record` call."""
+    est = estate(mode="primary")
+    est.shim()
+    est.set("hold", 60)
+    est.make_offer()
+    est.answer_2()
+    record = est.outer()
+    outer = int(record["pid"])
+    _kill(outer, signal.SIGKILL)
+    est.release()
+    assert _until(lambda: not _members("sid", outer), 30), "the outer's session never emptied"
+    hook = est.hook("hello")
+    assert hook.code == 2 and NO_OUTCOME in hook.err, repr(hook)
+    record = est.record()
+    assert all(k in record for k in COPIES), record
+    est.extra["LANES_LANE_START"] = str(REPO / "lane-start")
+    est.set("edit-real")
+    est.answer_2()
+    est.ended(120)
+    calls = est.shim_calls()
+    first_lookup = next(i for i, c in enumerate(calls) if "find_write" in c.get("sent", ""))
+    starts = [i for i, c in enumerate(calls) if "start-record" in c.get("sent", "")]
+    assert not starts or first_lookup < min(starts), calls
+
+
+def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate):
+    """AT-F6 case 21 (R-P23): on the primary fixture behind T229's delayed
+    loopback, 75 ms each way with TLS on, and `connect_timeout=3` with one
+    address: `guard-bind` records `bound_s=530`, the bind ends `bound`, its
+    `ended_utc` less `started_utc` recorded beside the 530 s, and the
+    guard's register read is the hook's last database call in the shim's
+    log. Waits for T229's `delayed_loopback`, which this line does not
+    have."""
+    est = _real_estate(estate, mode="primary")
+    relay = pytest.importorskip("pgcluster").__dict__.get("delayed_loopback")
+    assert relay is not None, "tests/pgcluster.py has no delayed_loopback (T229)"
+    est.shim()
+    est.make_offer()
+    hook = est.answer_2()
+    record = est.outer()
+    assert record["bound_s"] == "530", record
+    record = est.ended(530)
+    assert record["mode"] == "bound", record
+    print(f"T254 case 21: ended_utc - started_utc = "
+          f"{_epoch(record['ended_utc']) - _epoch(record['started_utc'])} s beside 530 s")
+    assert hook.code == 2
