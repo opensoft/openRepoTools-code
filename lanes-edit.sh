@@ -562,7 +562,15 @@
 #      Every other failure of the question — a configuration `lanes-index`
 #      refuses, a `lanes-index` too old to know `mode`, none to run, a crash,
 #      no answer within 2 s — runs the verb in files mode with one warning,
-#      and is never 69.
+#      and is never 69. THE WRITERS' MARKER CHECK (feature 007, T419;
+#      FR-004) is 69 too, with nothing written: where that answer is not
+#      primary (no configuration, `index`, or a question that failed), a
+#      write whose fetched tip carries `lanes/STORE`, the marker of an
+#      estate whose register is SQL, refuses after Amendment 23 S3's fetch
+#      and before its step 2, and the publish act before it pushes, with
+#      "this estate's register is SQL; configure `mode=primary`". Under
+#      `LANES_NO_FETCH=1` it reads origin's tip as last fetched, and under
+#      `LANES_NO_GIT=1` the working tree.
 #   3  PUSHED, NOT CONFIRMED: <sha> (Amendment 23 S4, its one cause). The write
 #      committed and pushed — or its push timed out, and a hung push often
 #      lands — and the read-back could not confirm the commit on origin: the
@@ -2487,6 +2495,8 @@ remote_has_branch() {
 #   1. FETCH. A fetch that fails is a refusal (ratified choice 2): without a
 #      current origin the writer knows neither its base nor whether it could
 #      confirm a push. `LANES_NO_FETCH=1` is a fetch that failed, for a writer.
+#      Off primary, the tip it fetched is then read for the marker
+#      (`cs_marker_refuse`, feature 007), which refuses 69, not 2.
 #   2. An operation in progress, or unmerged entries.
 #   3. Not on the branch: a detached HEAD or another branch.
 #   4. Staged entries other than this write's own pathspecs. Never commit
@@ -2513,7 +2523,8 @@ remote_has_branch() {
 # whatever `remote.origin.fetch` says.
 #
 # `LANES_NO_GIT=1` (edit only: no commit, no push) skips all of it, as the
-# guard it replaces did — that mode publishes nothing to guard.
+# guard it replaces did — that mode publishes nothing to guard — but for the
+# marker check, which reads `$LANES_DIR/STORE` in the working tree there.
 CS_NO_ORIGIN_BRANCH=0
 CS_CARRY_DIFF=""
 CS_CARRY_ANCHORED=0
@@ -2639,11 +2650,83 @@ $CP_CARRY_COPIES
 CEC_EOF
   printf '%s' "$cec_out"
 }
+# FEATURE 007 — THE MARKER'S ONE READ (lane 3's #165 6755027994): does
+# <tip> carry `lanes/STORE`, the marker of an estate whose register is SQL?
+# The writers' marker check (`cs_marker_refuse`, T419) and the readers' F17
+# (T504) both ask it here, so the two never read the marker differently.
+#   reg_marker_read <repo> <tip>
+#     <repo>  the checkout git reads in, `$LANES_REPO`; the path is read from
+#             its top level (`--full-tree`), as `<tip>:lanes/STORE` reads it
+#     <tip>   the revision to read: a commit sha, or a ref the caller has
+#             resolved. EMPTY where there is no origin branch to read (no
+#             origin ref, or `LANES_NO_GIT=1`, which the caller decides): then
+#             `$LANES_DIR/STORE` in the working tree is read instead, F17's
+#             other half (Y:4946); a file, a directory or a link, dangling or
+#             not, counts as present
+# THE ANSWER IS THE EXIT CODE; nothing is printed on stdout, and git's stderr
+# is dropped:
+#   0  PRESENT — the marker is in <tip>'s tree (or the working tree);
+#   1  ABSENT — it is not;
+#   2  THE READ FAILED — git could not read <tip>'s tree: an object missing or
+#      unreadable, or a <tip> that names nothing. Nothing is known, so it is
+#      never ABSENT; each caller ends as its own rule says for a failed read.
+#      The working-tree read never fails.
+# `ls-tree`, not `cat-file -e`: `cat-file -e <tip>:lanes/STORE` is 128 for an
+# absent path and for a tree git cannot read alike, while `ls-tree` is 0 and
+# silent for an absent path.
+reg_marker_read() {   # <repo> <tip; empty: the working tree>
+  if [ -z "${2:-}" ]; then
+    [ -e "$LANES_DIR/STORE" ] || [ -L "$LANES_DIR/STORE" ] || return 1
+    return 0
+  fi
+  rmr_hit="$(git --no-replace-objects -C "$1" ls-tree --full-tree --name-only "$2" -- lanes/STORE 2>/dev/null)" || return 2
+  [ -n "$rmr_hit" ] || return 1
+  return 0
+}
+# FEATURE 007, T419 — THE WRITERS' MARKER CHECK (FR-004; the design's
+# requirement "A writer that is not `mode=primary` refuses under the marker",
+# spec:41–57; F17's test, Y:4946). Once an estate's register is SQL,
+# `lanes/STORE` is on origin, and a writer that is not on primary would write
+# files that are now only the mirror. So it reads the marker on the tip its
+# own S3 fetch returned (`checkout_sync`, after step 1), and the publish act
+# reads it again before it pushes (`cp_publish_act`). Where it is there, 69
+# with the requirement's text, and nothing written. ONLY OFF PRIMARY: where
+# T409's question answered `files` (no configuration, or a question that
+# failed) or `index`. On primary the marker is always on origin, and the
+# write path is SQL's. An empty `REG_MODE` was never asked, and is not
+# checked: `write-handoff`, whose S3 runs inside `$( )`, and an attempt's
+# child under `LANES_REGISTER_SCRATCH`. THE READ is `ls-tree`, which tells an
+# absent marker (0, nothing printed) from a tree git cannot read (not 0),
+# where `cat-file -e` is 128 for both; a read that fails refuses (2), since
+# it proves nothing. Under `LANES_NO_GIT=1`, or where there is no origin
+# branch to read, it is F17's other half: `$LANES_DIR/STORE` in the working
+# tree. Where the marker is absent it prints nothing and changes nothing.
+cs_marker_refuse() {   # <what> <the tip: a revision; empty: no origin branch> <whose tip it is>
+  case "$REG_ASK:$REG_MODE" in 1:files|1:index) : ;; *) return 0 ;; esac   # the write guard's 14 verbs only, never write-handoff (lane 3, #165 6754806910)
+  csm_tip=""
+  if [ "$NO_GIT" != 1 ] && [ -n "$2" ]; then
+    csm_tip="$(git -C "$LANES_REPO" rev-parse -q --verify "$2^{commit}" 2>/dev/null || :)"
+  fi
+  csm_rc=0; reg_marker_read "$LANES_REPO" "$csm_tip" || csm_rc=$?
+  [ "$csm_rc" != 1 ] || return 0
+  [ "$csm_rc" = 0 ] ||
+    cs_refuse "$1" "git could not read the tree of origin/$LANES_BRANCH at ${csm_tip:0:12}, $3, to look for lanes/STORE, the marker of an estate whose register is SQL, so whether this workstation may write the files is unknown (feature 007, FR-004)"
+  if [ -z "$csm_tip" ]; then
+    if [ "$NO_GIT" = 1 ]; then csm_where="$LANES_DIR/STORE is in the working tree (LANES_NO_GIT=1)"
+    else csm_where="$LANES_DIR/STORE is in the working tree, and there is no origin/$LANES_BRANCH here to read instead"
+    fi
+  else
+    csm_where="lanes/STORE is on origin/$LANES_BRANCH at ${csm_tip:0:12}, $3"
+  fi
+  csm_mode="files mode"; [ "$REG_MODE" = index ] && csm_mode="\`mode=index\`"
+  note "$csm_where. This workstation writes in $csm_mode, so \`$cmd\` refuses, and nothing was written (feature 007, FR-004)."
+  die "this estate's register is SQL; configure \`mode=primary\`" 69
+}
 checkout_sync() {   # <what> <lane> <write|carry|publish> [<pathspec it commits>…]
   cs_what="$1"; cs_lane="${2:-}"; cs_mode="$3"; shift 3
   CS_NO_ORIGIN_BRANCH=0; CS_CARRY_DIFF=""; CS_CARRY_BASE=""
   CS_LANE="$cs_lane"
-  [ "$NO_GIT" = 1 ] && return 0
+  [ "$NO_GIT" = 1 ] && { cs_marker_refuse "$cs_what" "" ""; return 0; }   # feature 007, T419
   cs_c="$LANES_REPO"
   cs_trk="refs/remotes/origin/$LANES_BRANCH"; cs_br="refs/heads/$LANES_BRANCH"
   cs_gd="$(git -C "$cs_c" rev-parse --absolute-git-dir 2>/dev/null)" ||
@@ -2671,6 +2754,11 @@ checkout_sync() {   # <what> <lane> <write|carry|publish> [<pathspec it commits>
 
   # ---- 1. fetch
   if [ "${LANES_NO_FETCH:-0}" = 1 ]; then
+    # FEATURE 007, T419: a tip already carrying the marker is 69, not this 2
+    # (agreement test 3: "With `LANES_NO_FETCH=1` and the marker already in
+    # its tip, the writer still exits 69"). Read as last fetched, since no
+    # fetch is made; where the marker is absent, the 2 below as before.
+    cs_marker_refuse "$cs_what" "$cs_trk" "as this checkout last fetched it (LANES_NO_FETCH=1)"
     cs_refuse "$cs_what" "LANES_NO_FETCH=1 is set, and for a writer a fetch that did not run is a fetch that failed (Amendment 23 S3 step 1, ratified choice 2): without a current origin/$LANES_BRANCH this write knows neither its base nor whether it could confirm a push" \
       "run this write without LANES_NO_FETCH (reads may keep it)"
   fi
@@ -2705,6 +2793,12 @@ checkout_sync() {   # <what> <lane> <write|carry|publish> [<pathspec it commits>
   # landed at attempt 1. Made on this sha, the write's push is refused where
   # origin moved since, and S4's replay decides on the new tip.
   cs_now="$(git -C "$cs_c" rev-parse -q --verify "$cs_trk" 2>/dev/null || :)"
+  # FEATURE 007, T419 — THE MARKER, ON THE TIP THIS FETCH RETURNED, before the
+  # recheck's replay and before step 2: under the marker no verb's own checks
+  # run again (`cs_recheck`), and nothing is written. An origin with no branch
+  # has no tip, and the working tree is read instead (F17).
+  cs_mtip="$cs_now"; [ "$CS_NO_ORIGIN_BRANCH" != 1 ] || cs_mtip=""
+  cs_marker_refuse "$cs_what" "$cs_mtip" "the tip this write's own fetch returned"
   if [ "$CS_RECHECK" = 1 ] && [ "$CS_NO_ORIGIN_BRANCH" != 1 ]; then
     # AGAINST THE TIP THE CHECKS READ (`CS_SEEN`), and against the one just
     # before this fetch: in a shared checkout another process may have moved
@@ -3757,9 +3851,12 @@ cp_replay() {   # <sha> <subject>
 # refused and a rebase of a stack is the stale-base hazard #198 measured, so it
 # refuses, naming S6.3's archive. #214's fence still vouches for what the queue
 # holds, and the push sends the commit the fence read. Then the read-back, and
-# no replay: there is no edit to repeat.
+# no replay: there is no edit to repeat. FEATURE 007, T419: off primary, it
+# first reads the marker on origin's tip as it now stands, which S3 fetched
+# (`cs_marker_refuse`): under it, 69, and nothing is pushed.
 cp_publish_act() {
   cpa_trk="refs/remotes/origin/$LANES_BRANCH"; cpa_br="refs/heads/$LANES_BRANCH"
+  cs_marker_refuse publish "$cpa_trk" "the tip the publish act pushes onto"
   cpa_rc=0
   cpa_list="$(git --no-replace-objects -C "$LANES_REPO" --no-pager cherry -v "$cpa_trk" "$cpa_br" 2>/dev/null)" || cpa_rc=$?
   [ "$cpa_rc" = 0 ] || die "git could not compare $cpa_br with $cpa_trk, so what this publish would send is unknown; nothing was pushed (#194)" 2
