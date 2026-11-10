@@ -75,6 +75,21 @@ start time nor its stderr, so F4's oracle, "the call ending with 57014 ... no
 earlier than the path's `statement_timeout` after the call's start", reads
 this module's own wrapper in front of the real `psql`, which logs each
 call's start and end on the monotonic clock and its stderr's first line.
+Its first statement also stamps the call's begin, with its parent's pid, in
+`psql-begin.log`, before it reads stdin, so a call its caller's timer kills
+is stamped too (T220f).
+
+`STATUS`'S TWO ROWS (T220f; lane 3's T220 bullet, #165 comment 6772120103,
+and its ruling 6, 6770600106) time the register's request alone, from its
+start to the exit, never from the command's start: `status` runs #160's half
+first, whose `lanes-edit.sh` calls took 17 to 23 s each under load (lane 1's
+T117 point 6, 6769905855). `[status-F1]`, `[status-F2]` and `[status-F3]`
+take `Bench.request_elapsed()`: from the begin stamp of the first `psql` that
+the command's own process starts on the register's path (its once-per-process
+`psql --version`, which T117's `_run_register` counts inside the request's
+client timer, or else the request's own call) to the command's exit.
+`[status]`'s 57014 time was already the request's own call, from its start
+to its end, as every row's is.
 """
 
 from __future__ import annotations
@@ -346,9 +361,16 @@ class StartupRelay(SilentListener):
 TIMING_PSQL = r'''#!/usr/bin/env python3
 # T220's timing wrapper in front of the real psql: each call's start and end
 # on the monotonic clock, its exit and its stderr's first line, one JSON
-# object per call in psql-timing.log beside it.
-import json, os, subprocess, sys, time
+# object per call in psql-timing.log beside it. Its first statement stamps
+# the call's begin, written with its parent's pid to psql-begin.log before
+# it reads stdin, so a call its caller's timer kills is stamped too (T220f).
+import time
+begin = time.monotonic()
+import json, os, subprocess, sys
 here = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(here, "psql-begin.log"), "a", encoding="utf-8") as handle:
+    handle.write(json.dumps({"argv": sys.argv[1:], "ppid": os.getppid(),
+                             "begin": begin}) + "\n")
 real = os.environ["T220_REAL_PSQL"]
 data = sys.stdin.buffer.read() if sys.argv[1:] != ["--version"] else b""
 start = time.monotonic()
@@ -578,11 +600,22 @@ class Bench:
                 time.sleep(0.05)
             assert sock.exists(), f"lanes-index serve bound no socket at {sock}: {serve.poll()}"
         try:
+            # `subprocess.run`'s form, with the command's pid and its exit
+            # stamp kept for `request_elapsed` (T220f).
             start = time.monotonic()
-            proc = subprocess.run(argv, input=stdin, capture_output=True, text=True, env=env,
-                                  cwd=str(self.wip), timeout=700,
-                                  stdin=None if stdin is not None else subprocess.DEVNULL)
-            return proc, time.monotonic() - start
+            with subprocess.Popen(argv, stdin=subprocess.PIPE if stdin is not None
+                                  else subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True, env=env,
+                                  cwd=str(self.wip)) as child:
+                self.pid = child.pid
+                try:
+                    out, err = child.communicate(stdin, timeout=700)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    raise
+                self.exited = time.monotonic()
+            proc = subprocess.CompletedProcess(argv, child.returncode, out, err)
+            return proc, self.exited - start
         finally:
             if serve is not None:
                 serve.terminate()
@@ -596,6 +629,24 @@ class Bench:
             return []
         return [json.loads(l) for l in self.timing.read_text(encoding="utf-8").splitlines()
                 if l and json.loads(l)["argv"] != ["--version"]]
+
+    def request_elapsed(self) -> float:
+        """`status`'s time (T220f; lane 3's T220 bullet, #165 comment
+        6772120103): from the register's request's start to the command's
+        exit, never from the command's start, since #160's half runs first
+        (lane 1's T117 point 6, 6769905855). The stamp lane 2 chooses is the
+        begin stamp of the first `psql` that the command's own process starts
+        on the register's path: its once-per-process `psql --version`, which
+        T117's `_run_register` counts inside the request's client timer, or
+        else the call with section 2.2's argv. A `psql` started by another
+        process, or with #160's argv, is not the request's."""
+        log = self.bin / "psql-begin.log"
+        begins = [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines() if l] \
+            if log.exists() else []
+        own = [b["begin"] for b in begins if b["ppid"] == self.pid
+               and b["argv"] in (["--version"], REGISTER_ARGV)]
+        assert own, "the command started no psql on the register's path: no request was sent"
+        return self.exited - min(own)
 
 
 def _record(row: str, elapsed: float, bound: float, rule: str) -> None:
@@ -677,12 +728,18 @@ def test_each_database_path_exits_inside_its_bound(pg, tmp_path, request, case):
         assert "BINDING" in proc.stdout + proc.stderr
     if row == "mode-query":
         assert proc.stdout == "index\n" and bench.calls() == [], "the query reads no database"
+    if row == "status":
+        # T220f: D9's row bounds the register's request, so `status` is timed
+        # from that request's start to its exit, never from the command's
+        # start (lane 3, #165 comments 6772120103 and 6770600106, ruling 6).
+        elapsed = bench.request_elapsed()
     if spec["strict"]:
         assert elapsed < spec["bound"], f"{case}: {elapsed:.2f} s, not under {spec['bound']} s"
         _record(case, elapsed, spec["bound"], "timing rule 1")
     else:
         assert elapsed < 2 * spec["bound"], f"{case}: {elapsed:.2f} s against {spec['bound']} s"
-        _record(case, elapsed, spec["bound"], "timing rule 2")
+        _record(case, elapsed, spec["bound"], "timing rule 2" + (
+            ", from the register request's start" if row == "status" else ""))
 
 
 def _slow_statement(pg, table: str, group: str, seconds: float) -> None:
