@@ -19156,6 +19156,91 @@ lane_state_rename() {   # <the old name's control root> <new lane>
   return 0
 }
 
+# FEATURE 007, T422 — `rename-lane` ON PRIMARY UNDER Q13(a) (Y:3444–3451,
+# Y:5092; spec:368–376; lane 3's R18 and R19). The register's transaction
+# comes first: an attempt's child (T413–T415) commits the row's key cell, the
+# log's move and `RENAMED` line, and `lanes/aliases.tsv` as one journal entry,
+# with the row's handoff column already naming the handoff's new path. The
+# handoff's move and Rule 3 stamp follow, after `committed`: the PARENT makes
+# them outside the flag, as a git commit in the lane's checkout `<c>` under
+# Amendment 23's S3 and S4, which is no register write (R18; review M5), and
+# the renderer never moves the handoff. A move that fails leaves the row's
+# column naming the file not yet moved (spec:372–376).
+#
+# THE CHECKOUT THE HANDOFF IS READ IN, into `rl_hrepo`: `LANES_REPO` off the
+# flag, as it always was; under it, `<c>`, the lane's own checkout by its name
+# (`lane_checkout_path`), which the parent's `pw_checkout` names from the same
+# lane and requires to be there (R17). The scratch tree holds no handoff
+# (Y:5050). A `<c>` that is not there is an internal error, 2, nothing sent.
+rl_handoff_repo() {   # <the old name, as the row spells it>
+  rl_hrepo="${LANES_REPO:-}"
+  [ -n "$REG_SCRATCH" ] || return 0
+  rl_hrepo="$(lane_checkout_path "$1")" || rl_hrepo=""
+  [ -n "$rl_hrepo" ] && [ -d "$rl_hrepo" ] ||
+    die "refusing to rename lane $1 in an attempt's child under LANES_REGISTER_SCRATCH: its own register checkout, ${rl_hrepo:-<no workspace>}, is not here, and on primary the handoff its row names is read there before anything is sent, and moved and stamped there after the register commits (Q13(a); Y:5092). Its parent requires that checkout before the first attempt, so this is an internal error of the write path. Nothing was sent." 2
+}
+
+# THE TWO REFUSALS ONLY PRIMARY MAKES, before the seam (Y:5092), for a handoff
+# the row names and `<c>` holds (`rl_h_touch`): each path under `handoffs/`,
+# since the move's push on primary sends nothing else (T420's backstop;
+# spec:183–185; R16 (d)); and no pending change to either path in `<c>`,
+# which the move's own S3 step 4 would refuse after COMMIT. 2, nothing sent.
+rl_move_refuse_checks() {
+  rmr_p=""; rmr_hits=""
+  for rmr_p in "$rl_h_rel" "$rl_h_rel_new"; do
+    case "$rmr_p" in
+      handoffs/?*) : ;;
+      *) die "lane $rl_old's row names the handoff '$rl_hcell', which is $rmr_p in its checkout $rl_hrepo and not a file under handoffs/. On primary the register commits this rename first, and the handoff's move and Rule 3 stamp follow as a git commit in that checkout, whose push sends only changes under handoffs/ (Q13(a); D10; spec:183–185), so this move could never be published. Move that handoff under handoffs/<estate>/ in a commit of its own, point the row's handoff column at it (replace-in-row), and re-run. Nothing was sent." 2 ;;
+    esac
+  done
+  [ "$NO_GIT" != 1 ] || return 0
+  rmr_hits="$(LANES_REPO="$rl_hrepo" cs_pending_of "$rl_h_rel" "$rl_h_rel_new" | tr '\n' ' ')"
+  [ -z "${rmr_hits// /}" ] ||
+    die "the handoff lane $rl_old's row names holds an uncommitted change in its checkout $rl_hrepo: ${rmr_hits}— and on primary its move and Rule 3 stamp are a commit by pathspec in that checkout once the register has committed this rename, which would carry that change under the rename's subject, so its S3 would refuse it then, after COMMIT (Amendment 23 S3 step 4). Read it: git -C $rl_hrepo diff HEAD. Whoever made it commits it first, as its own write (\`handoff(<lane>@<workstation>): <what>\`), and re-run. Nothing was sent." 2
+}
+
+# RULE 3'S STAMP, BUILT AND PROVEN (Amendment 16(d)): the line goes under the
+# handoff's header block, at the first blank line after its first, and taking
+# it back out must give the file back byte for byte. Into `rl_hat`, the line
+# it follows, and `rl_htmpd`, a temporary directory holding `pre` (the file)
+# and `out` (the stamped copy), which the caller removes. A file that cannot
+# be read, or that cannot take the stamp, is 5, in files mode's own words.
+rl_stamp_build() {   # <the handoff> <the stamp>
+  rl_hat="$(awk 'NR > 1 && /^[[:space:]]*$/ { print NR; exit }' "$1" 2>/dev/null || :)"
+  [ -n "$rl_hat" ] || rl_hat=1
+  rl_htmpd="$(mktemp -d)" || die "no temporary directory could be made under ${TMPDIR:-/tmp} for the handoff's Rule 3 stamp." 1
+  cat -- "$1" > "$rl_htmpd/pre" 2>/dev/null || { rm -rf -- "$rl_htmpd"; die "the handoff at $1 could not be read, so Rule 3's stamp cannot be written and this rename is not made without it." 5; }
+  { head -n "$rl_hat" -- "$rl_htmpd/pre"
+    printf '%s\n' "$2"
+    tail -n "+$((rl_hat + 1))" -- "$rl_htmpd/pre"
+  } > "$rl_htmpd/out"
+  if [ "$(sed -n -e "$((rl_hat + 1))p" "$rl_htmpd/out")" != "$2" ] ||
+     ! { head -n "$rl_hat" -- "$rl_htmpd/out"; tail -n "+$((rl_hat + 2))" -- "$rl_htmpd/out"; } | cmp -s - "$rl_htmpd/pre"
+  then
+    rm -rf -- "$rl_htmpd"
+    die "the handoff at $1 cannot take Rule 3's stamp without rewriting a byte of it, and a handoff written whole from anything but its own bytes is the act that lost two lanes' rows on 2026-09-08. The line it wants under its header block is: $2" 5
+  fi
+  return 0
+}
+
+# THE STAMPED COPY REPLACES THE HANDOFF BY RENAME (opensoft/openRepoTools#158;
+# the comment at its call in `rename-lane`): `rl_htmpd/out` goes to an
+# exclusive temporary file beside the handoff, `rl_htmp`, which `cleanup`
+# removes, with the handoff's mode, and `mv -f` replaces it. `rl_htmpd` is
+# removed here. 5 where any step fails, in files mode's own words.
+rl_stamp_publish() {   # <the handoff>
+  rl_hpub="$( CDPATH=''; cd -P -- "$(dirname -- "$1")" && pwd -P )" || { rm -rf -- "$rl_htmpd"; die "the directory of the handoff at $1 could not be resolved, so Rule 3's stamp cannot be published beside it and this rename is not made without it." 5; }
+  rl_hpub="$rl_hpub/$(basename -- "$1")"
+  rl_htmp="$(mktemp "$rl_hpub.rename.XXXXXX")" || { rl_htmp=""; rm -rf -- "$rl_htmpd"; die "no temporary file could be made beside the handoff at $1, and Rule 3's stamp is not written into a handoff in place. This rename is not made without it." 5; }
+  if ! cp -p -- "$rl_hpub" "$rl_htmp" || ! cat -- "$rl_htmpd/out" > "$rl_htmp" || ! mv -f -- "$rl_htmp" "$rl_hpub"; then
+    rm -f -- "$rl_htmp"; rl_htmp=""; rm -rf -- "$rl_htmpd"
+    die "the handoff at $1 could not be written, so Rule 3's stamp is not there and this rename is not made without it." 5
+  fi
+  rl_htmp=""
+  rm -rf -- "$rl_htmpd"
+  return 0
+}
+
 # ------------------------------------------------- the worktree inventory
 #
 # A TREE ID IS DERIVED FROM ITS PATH AND FROM NOTHING ELSE, so that a branch
@@ -22361,11 +22446,19 @@ EOF
       esac
     fi
     rl_hfile=""; rl_hfile_new=""; rl_h_rel=""; rl_h_rel_new=""
+    # FEATURE 007, T422 — ON PRIMARY THE HANDOFF IS THE LANE CHECKOUT'S (Q13(a);
+    # Y:5092; spec:368–376). An attempt's child runs this arm on a scratch tree
+    # that holds the register's render set and no handoff (Y:5050), so the
+    # handoff the row names is looked for, and every check below is made, in
+    # the lane's own checkout `<c>`, where the parent makes its move and stamp
+    # after COMMIT (`rl_hrepo`, `rl_move_write`). Off the flag it is
+    # `LANES_REPO`, as it always was.
+    rl_handoff_repo "$rl_old"
     if [ -n "$rl_hcell" ]; then
       case "$rl_hcell" in
         '~/'*) rl_hfile="$HOME/${rl_hcell#'~/'}"; rl_hfile_new="$HOME/${rl_hpath_new#'~/'}" ;;
         /*)    rl_hfile="$rl_hcell"; rl_hfile_new="$rl_hpath_new" ;;
-        *)     rl_hfile="${LANES_REPO:+$LANES_REPO/}$rl_hcell"; rl_hfile_new="${LANES_REPO:+$LANES_REPO/}$rl_hpath_new" ;;
+        *)     rl_hfile="${rl_hrepo:+$rl_hrepo/}$rl_hcell"; rl_hfile_new="${rl_hrepo:+$rl_hrepo/}$rl_hpath_new" ;;
       esac
       # THE CONTAINMENT TEST IS PHYSICAL (Copilot round 5 on openRepoTools#81).
       # A string prefix accepts `handoffs/../../outside/x.md` and accepts a path
@@ -22382,8 +22475,8 @@ EOF
       # (and its estate directory) at the first swap — so `cd -P` of the leaf
       # directory fails for every lane that has not swapped yet, and taking that
       # failure as "outside the workspace" refused the ordinary case.
-      if [ -n "${LANES_REPO:-}" ]; then
-        rl_repo_real="$( CDPATH=''; cd -P -- "$LANES_REPO" 2>/dev/null && pwd -P )" || rl_repo_real="$LANES_REPO"
+      if [ -n "$rl_hrepo" ]; then
+        rl_repo_real="$( CDPATH=''; cd -P -- "$rl_hrepo" 2>/dev/null && pwd -P )" || rl_repo_real="$rl_hrepo"
         rl_anc="$(dirname -- "$rl_hfile")"; rl_suffix=""; rl_hdir_real=""; rl_walk=0
         while [ "$rl_walk" -lt 64 ]; do
           if [ -d "$rl_anc" ]; then
@@ -22421,7 +22514,7 @@ EOF
       # `lane-start` computes), so a row naming one elsewhere is a hand edit,
       # and the exit is to put the file where the row's own convention puts it.
       if [ -z "$rl_h_rel" ]; then
-        die "lane $rl_old's row names the handoff '$rl_hcell', which resolves to $rl_hfile — outside the workspace repository ${LANES_REPO:-<unknown>}. A rename is FOUR MOVES IN ONE COMMIT (Amendment 16), and a commit cannot carry a file outside its own checkout, so this one would be three moves and a note. Move that handoff under $LANES_REPO — \`handoffs/<estate>/session-handoff-<date>-lane-$rl_old.md\` is the path \`lane-start\` computes — point the row's handoff column at it, and re-run. Nothing was written." 2
+        die "lane $rl_old's row names the handoff '$rl_hcell', which resolves to $rl_hfile — outside the workspace repository ${rl_hrepo:-<unknown>}. A rename is FOUR MOVES IN ONE COMMIT (Amendment 16), and a commit cannot carry a file outside its own checkout, so this one would be three moves and a note. Move that handoff under $rl_hrepo — \`handoffs/<estate>/session-handoff-<date>-lane-$rl_old.md\` is the path \`lane-start\` computes — point the row's handoff column at it, and re-run. Nothing was written." 2
       fi
       # `-L` BESIDE `-e`, because `-e` IS FALSE ON A DANGLING LINK (Copilot
       # round 5) — and `mv` would then replace that link, destroying a path this
@@ -22460,8 +22553,19 @@ EOF
     # half-written handoff would be stamped and committed under this rename's
     # message, the thing the old `--no-sweep` default was made to stop.
     if [ "$rl_h_touch" = 1 ] && [ "$NO_GIT" != 1 ] \
-       && ! git -C "$LANES_REPO" ls-files --error-unmatch -- "$rl_h_rel" >/dev/null 2>&1; then
-      die "the handoff at $rl_h_rel exists here and git does not track it, so its lines have never been committed by anyone — and this rename would stamp it, move it and commit it under its own message. Whoever wrote it commits it first: \`git -C $LANES_REPO add -- $rl_h_rel && git -C $LANES_REPO commit -m \"handoff(<lane>@<workstation>): <what>\"\`. Nothing was written." 2
+       && ! git -C "$rl_hrepo" ls-files --error-unmatch -- "$rl_h_rel" >/dev/null 2>&1; then
+      die "the handoff at $rl_h_rel exists here and git does not track it, so its lines have never been committed by anyone — and this rename would stamp it, move it and commit it under its own message. Whoever wrote it commits it first: \`git -C $rl_hrepo add -- $rl_h_rel && git -C $rl_hrepo commit -m \"handoff(<lane>@<workstation>): <what>\"\`. Nothing was written." 2
+    fi
+    # FEATURE 007, T422 — ON PRIMARY, TWO MORE REFUSALS BEFORE THE SEAM, so a
+    # handoff whose move and stamp could not be committed after COMMIT refuses
+    # with nothing sent (Y:5092). The move is a git commit in `<c>` whose push
+    # T420's backstop lets through only where every path it changes is under
+    # `handoffs/` (spec:183–185; R16 (d)), so a handoff elsewhere in `<c>` is
+    # refused here, where files mode would carry it in its one commit. And a
+    # pending change to either path in `<c>` is the lane's own unfinished work,
+    # which S3 step 4 refuses there as files mode refuses it here (S3 step 4).
+    if [ -n "$REG_SCRATCH" ] && [ "$rl_h_touch" = 1 ]; then
+      rl_move_refuse_checks
     fi
 
     # ---- NOTHING ABOVE HAS WRITTEN A BYTE. The four moves follow, in one
@@ -22478,7 +22582,12 @@ EOF
        && { [ "$NO_GIT" = 1 ] || git -C "$LANES_REPO" ls-files --error-unmatch -- "$rl_log_old_rel" >/dev/null 2>&1; }; then
       rl_paths+=("$rl_log_old_rel")
     fi
-    if [ "$rl_h_touch" = 1 ]; then
+    # FEATURE 007, T422 — ON PRIMARY THE HANDOFF PATHS LEAVE THE CHANGE SET
+    # (Y:5092; the plan's §3.13): the transaction holds the row, the log and
+    # the alias table, the seam refuses any path outside the render set
+    # (Y:5060), and the handoff's move and stamp are the parent's git commit
+    # in `<c>` after COMMIT (R18).
+    if [ "$rl_h_touch" = 1 ] && [ -z "$REG_SCRATCH" ]; then
       rl_paths+=("$rl_h_rel_new")
       [ "$rl_hmove" = 1 ] && rl_paths+=("$rl_h_rel")
     fi
@@ -22495,7 +22604,7 @@ EOF
     # four moves are one act and a filesystem can refuse the third of them.
     RL_SNAP="$(mktemp -d)" || die "no temporary directory could be made under ${TMPDIR:-/tmp}, and this write is not made without somewhere to put the copy that undoes it. Nothing was written." 1
     [ -n "$rl_log_old" ] && { cat -- "$rl_log_old" > "$RL_SNAP/log" || die "lane $rl_old's object log at $rl_log_old could not be read, so there is no copy to roll back to and this rename is not started. Nothing was written." 5; }
-    [ "$rl_h_touch" = 1 ] && { cat -- "$rl_hfile" > "$RL_SNAP/handoff" || die "the handoff at $rl_hfile is named by the row and could not be READ, so it can be neither stamped nor rolled back — and a rename that moved it unstamped is three moves and a half (Amendment 16(d)). Fix the permission, or point the row's column at a handoff that is there, and re-run. Nothing was written." 5; }
+    [ "$rl_h_touch" = 1 ] && [ -z "$REG_SCRATCH" ] && { cat -- "$rl_hfile" > "$RL_SNAP/handoff" || die "the handoff at $rl_hfile is named by the row and could not be READ, so it can be neither stamped nor rolled back — and a rename that moved it unstamped is three moves and a half (Amendment 16(d)). Fix the permission, or point the row's column at a handoff that is there, and re-run. Nothing was written." 5; }
     RL_ALIAS="$LANES_ALIASES_TSV"; RL_ALIAS_EXISTED=0
     if [ -f "$LANES_ALIASES_TSV" ]; then
       RL_ALIAS_EXISTED=1
@@ -22538,10 +22647,32 @@ EOF
     # on 2026-09-08 was a file written whole from what somebody remembered.
     rl_hstamp="RENAMED from $rl_old by $rl_uuid (lane $rl_new) at $rl_utc"
     rl_hdone=0
+    RL_MOVE_FROM=""; RL_MOVE_TO=""; RL_MOVE_STAMP=""
     if [ -z "$rl_hcell" ]; then
       note "the row names no handoff, so there is none to move or stamp (Amendment 16(d))"
     elif [ ! -f "$rl_hfile" ]; then
       note "the handoff the row names is not at $rl_hfile, so nothing was moved or stamped and the row's handoff column is left exactly as it is. If it turns up, rename it — $rl_hcell → $rl_hpath_new — and stamp it: $rl_hstamp"
+    elif [ -n "$REG_SCRATCH" ]; then
+      # FEATURE 007, T422 — ON PRIMARY, THE TRANSACTION FIRST (Q13(a); Y:3444–
+      # 3451, Y:5092; spec:368–376). Nothing is moved or stamped here: the
+      # stamp's checks run on `<c>`'s file before the seam, so a handoff that
+      # cannot take the stamp refuses with nothing sent; the row's handoff
+      # column is rewritten as if the file had moved (`rl_hdone`), so a move
+      # that fails after COMMIT leaves the column naming the file not yet
+      # moved; and the move and the stamp are kept for the parent, which makes
+      # them after `committed`, outside the flag (R18; `rl_move_write`).
+      [ "$rl_hmove" = 1 ] || rl_hfile_new="$rl_hfile"
+      rl_stamp_build "$rl_hfile" "$rl_hstamp"
+      rm -rf -- "$rl_htmpd"; rl_htmpd=""
+      RL_MOVE_TO="$rl_h_rel_new"; RL_MOVE_STAMP="$rl_hstamp"
+      if [ "$rl_hmove" = 1 ]; then
+        RL_MOVE_FROM="$rl_h_rel"
+        rl_hdone=1
+        note "the handoff moves $rl_hcell → $rl_hpath_new and takes Rule 3's stamp at line $((rl_hat + 1)) in lane ${rl_old}'s checkout $rl_hrepo once the register has committed this rename, as a git commit of its own (Q13(a)); the row's handoff column names $rl_hpath_new from this write on"
+      else
+        RL_MOVE_TO="$rl_h_rel"
+        note "the handoff $rl_hcell is not named \`…-lane-$rl_old.md\`, so it has no lane in its name to rename; it takes Rule 3's stamp at line $((rl_hat + 1)) where it is, in lane ${rl_old}'s checkout $rl_hrepo, once the register has committed this rename, as a git commit of its own (Q13(a))"
+      fi
     else
       if [ "$rl_hmove" = 1 ]; then
         RL_H_OLD="$rl_hfile"; RL_H_NEW="$rl_hfile_new"
@@ -22560,20 +22691,9 @@ EOF
       # The redirect is checked for the same reason: this file runs `set -u` and
       # not `set -e`, so an unwritable handoff would otherwise reach the
       # "stamped" note having written nothing.
-      rl_hat="$(awk 'NR > 1 && /^[[:space:]]*$/ { print NR; exit }' "$rl_hfile_new" 2>/dev/null || :)"
-      [ -n "$rl_hat" ] || rl_hat=1
-      rl_htmpd="$(mktemp -d)" || die "no temporary directory could be made under ${TMPDIR:-/tmp} for the handoff's Rule 3 stamp." 1
-      cat -- "$rl_hfile_new" > "$rl_htmpd/pre" 2>/dev/null || { rm -rf -- "$rl_htmpd"; die "the handoff at $rl_hfile_new could not be read, so Rule 3's stamp cannot be written and this rename is not made without it." 5; }
-      { head -n "$rl_hat" -- "$rl_htmpd/pre"
-        printf '%s\n' "$rl_hstamp"
-        tail -n "+$((rl_hat + 1))" -- "$rl_htmpd/pre"
-      } > "$rl_htmpd/out"
-      if [ "$(sed -n -e "$((rl_hat + 1))p" "$rl_htmpd/out")" != "$rl_hstamp" ] ||
-         ! { head -n "$rl_hat" -- "$rl_htmpd/out"; tail -n "+$((rl_hat + 2))" -- "$rl_htmpd/out"; } | cmp -s - "$rl_htmpd/pre"
-      then
-        rm -rf -- "$rl_htmpd"
-        die "the handoff at $rl_hfile_new cannot take Rule 3's stamp without rewriting a byte of it, and a handoff written whole from anything but its own bytes is the act that lost two lanes' rows on 2026-09-08. The line it wants under its header block is: $rl_hstamp" 5
-      fi
+      # The stamped copy and its proof (`rl_stamp_build`), shared with the
+      # primary branch's checks before the seam and its move after COMMIT.
+      rl_stamp_build "$rl_hfile_new" "$rl_hstamp"
       # AND THE STAMPED COPY REPLACES THE HANDOFF BY RENAME, NEVER THROUGH A
       # REDIRECT INTO IT (opensoft/openRepoTools#158). `>` truncated the handoff
       # before the first stamped byte was written, so a writer killed inside
@@ -22591,15 +22711,7 @@ EOF
       # leaves is `<handoff>.rename.XXXXXX`, which no reader of `*.md` takes
       # for a handoff. THIS MAKES THE STAMP ATOMIC, NOT THE RENAME: a crash
       # between two of the four moves still leaves them apart.
-      rl_hpub="$( CDPATH=''; cd -P -- "$(dirname -- "$rl_hfile_new")" && pwd -P )" || { rm -rf -- "$rl_htmpd"; die "the directory of the handoff at $rl_hfile_new could not be resolved, so Rule 3's stamp cannot be published beside it and this rename is not made without it." 5; }
-      rl_hpub="$rl_hpub/$(basename -- "$rl_hfile_new")"
-      rl_htmp="$(mktemp "$rl_hpub.rename.XXXXXX")" || { rl_htmp=""; rm -rf -- "$rl_htmpd"; die "no temporary file could be made beside the handoff at $rl_hfile_new, and Rule 3's stamp is not written into a handoff in place. This rename is not made without it." 5; }
-      if ! cp -p -- "$rl_hpub" "$rl_htmp" || ! cat -- "$rl_htmpd/out" > "$rl_htmp" || ! mv -f -- "$rl_htmp" "$rl_hpub"; then
-        rm -f -- "$rl_htmp"; rl_htmp=""; rm -rf -- "$rl_htmpd"
-        die "the handoff at $rl_hfile_new could not be written, so Rule 3's stamp is not there and this rename is not made without it." 5
-      fi
-      rl_htmp=""
-      rm -rf -- "$rl_htmpd"
+      rl_stamp_publish "$rl_hfile_new"
       note "handoff stamped at line $((rl_hat + 1)) of $rl_hpath_new: $rl_hstamp"
     fi
     # The row's handoff column follows the file, and only where the file
@@ -22643,6 +22755,11 @@ EOF
     # behind its back would be a second, inverse change nobody asked for.
     RL_HEAD_BEFORE="$(git -C "$LANES_REPO" rev-parse HEAD 2>/dev/null || printf '')"
     rl_msg="LANES($rl_new@$WS): RENAMED lane $rl_old → $rl_new (Amendment 16) — the row, $rl_log_new_rel, the handoff and $LANES_ALIASES_PATH in one commit"
+    # FEATURE 007, T422 — ON PRIMARY THE ENTRY'S MESSAGE NAMES WHAT IT HOLDS:
+    # the seam hands `$msg` to the journal verbatim (Y:5061), and the handoff
+    # is not in this entry but in the git commit that follows it (Q13(a)).
+    [ -z "$REG_SCRATCH" ] ||
+      rl_msg="LANES($rl_new@$WS): RENAMED lane $rl_old → $rl_new (Amendment 16) — the row, $rl_log_new_rel and $LANES_ALIASES_PATH in one register write; the handoff's move and stamp follow in the lane's checkout (Q13(a))"
     commit_publish "$rl_msg" "${rl_paths[@]}"
     rl_rc=$?
     # `commit_publish` RETURNED, so either it committed or it had nothing staged;
