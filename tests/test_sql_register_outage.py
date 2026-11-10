@@ -69,6 +69,7 @@ and the silent database are real-engine cases on `tests/pgcluster.py`'s `pg`.
 
 from __future__ import annotations
 
+import calendar
 import errno
 import json
 import os
@@ -194,7 +195,7 @@ def _handoff(i: int) -> str:
     return f"handoff {i}\n"
 
 
-def _fast_import(bare: Path, messages: list, env: dict) -> None:
+def _fast_import(bare: Path, messages: list, env: dict, register: str = "# LANES.md\n") -> None:
     """Append `messages`, one commit each, first-parent, to `bare`'s `main`
     by `git fast-import`. The first commit of an empty repository writes the
     register; every later one keeps its parent's tree."""
@@ -202,7 +203,7 @@ def _fast_import(bare: Path, messages: list, env: dict) -> None:
     has_main = subprocess.run([git, "--git-dir", str(bare), "rev-parse", "-q", "--verify",
                                "refs/heads/main"], capture_output=True, env=env).returncode == 0
     out = []
-    register = b"# LANES.md\n"
+    register = register.encode("utf-8")
     for i, message in enumerate(messages, 1):
         data = message.encode("utf-8")
         out.append(b"commit refs/heads/main\n")
@@ -253,9 +254,12 @@ class Estate:
     `$HOME/projects`, the copies of `lanes-edit.sh` and the flipped
     `lanes-index`, the stand-ins, and a `mode=primary` configuration."""
 
-    def __init__(self, root: Path, origin_messages: list):
+    def __init__(self, root: Path, origin_messages: list, register: str = "# LANES.md\n"):
+        """`register` is `lanes/LANES.md`'s text, with `{session}` standing for
+        this estate's session id, the one the hook's input carries."""
         from sql_register_helpers import REGISTER_FAKE_PSQL, flipped_copy
         self.root = root
+        self.session = str(uuid.uuid4())
         root.mkdir(parents=True, exist_ok=True)
         try:
             self.copy = flipped_copy(INDEXER, root / "tool", True)
@@ -299,7 +303,7 @@ class Estate:
         git = env["T215_REAL_GIT"]
         subprocess.run([git, "init", "-q", "--bare", "-b", "main", str(self.origin)],
                        check=True, env=env)
-        _fast_import(self.origin, origin_messages, env)
+        _fast_import(self.origin, origin_messages, env, register.replace("{session}", self.session))
         subprocess.run([git, "clone", "-q", str(self.origin), str(self.wip)], check=True,
                        env=env, capture_output=True)
         # THE WORKSPACE, as `test_lanes_index.py` names it (Amendment 9(a)):
@@ -365,16 +369,22 @@ class Estate:
 
     # ------------------------------------------------------------------ the guard
     def guard_env(self, config: Path, **extra) -> dict:
+        """The hook's environment; an `extra` value of None removes that
+        variable, as `TMUX=None` takes this session out of any window."""
         env = dict(self.env, LANES_INDEX_CONFIG=str(config), LANES_LANE=WINDOW,
                    TMUX="/tmp/t215,1,0", TMUX_PANE="%1", T215_WINDOW=WINDOW)
-        env.update(extra)
+        for key, value in extra.items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[key] = value
         return env
 
     def hook_input(self) -> str:
         """The hook's JSON, compact as the harness sends it: the guard's
         `jstr` reads `"<key>":"<value>"` with no blank after the colon."""
         return json.dumps({"hook_event_name": "UserPromptSubmit",
-                           "session_id": str(uuid.uuid4()), "cwd": str(self.wip),
+                           "session_id": self.session, "cwd": str(self.wip),
                            "prompt": "hello"}, separators=(",", ":"))
 
     def guard(self, config: Path, **extra) -> dict:
@@ -954,3 +964,417 @@ def test_the_register_seq_lookup_is_timed_bounded_beside_the_unbounded_and_grep_
     logs = estate.log_calls()
     assert len(logs) == 1 and _bounded(logs[0]["args"]), (
         f"the guard's lookup is not the bounded form: {[c['args'] for c in logs]}")
+
+
+# ===================================================================== T219
+#
+# Test P3 and test D20's phase-N cases (L2-N5; AT-P3; AT-D20). The FP cases
+# run on the stopped fake, or on the fake taught the probe's one answer,
+# `<mode>|<set_seq>|<kind of the entry at set_seq>` (D9's `outage` row, as
+# T121 reads it). The cases whose probe or guard reads a database whose
+# switch is at `files` after a `rollback` entry run on `pg`, brought there by
+# the real commands, `import --at <C>`, `cutover --import <C>` and `rollback`
+# (T121's usage; lane 3's T304 for `rollback`), and wait for T304.
+
+DOT = chr(0xB7)
+REGISTER_HEADER = ["# LANES.md", "",
+                   "| lane | session id | workstation / env / user | started (UTC) | objects "
+                   "owned | handoff path | state |",
+                   "|---|---|---|---|---|---|---|"]
+#: A password in the configuration's password file, which no output carries.
+SECRET = "t215-secret-password"
+#: The probe's answer where the database answers with the switch at primary.
+PRIMARY = [{"match": "register_switch", "stdout": "primary|5|cutover\n", "exit": 0}]
+
+
+def _register(session_cell: str) -> str:
+    """A register whose one row binds `WINDOW` to `session_cell`, in
+    `test_lanes_index.py`'s row form."""
+    row = (f"| `{WINDOW}` | harness `{session_cell}` | Eagle / test / brett | 2026-10-01T00:00Z "
+           f"| none | handoffs/{WINDOW}.md | LIVE {DOT} 2026-10-01T02:00:00Z {DOT} working |")
+    return "\n".join(REGISTER_HEADER + [row, ""])
+
+
+def _index(estate: Estate, config: Path, *argv, env: dict | None = None,
+           timeout: float = 120) -> tuple:
+    """`lanes-index <argv>` from the flipped copy, on the fake's `PATH`
+    unless `env` is given; returns (the process, its elapsed seconds)."""
+    if env is None:
+        env = dict(estate.env, LANES_INDEX_CONFIG=str(config), LANES_LANE=WINDOW)
+    start = time.monotonic()
+    proc = subprocess.run([sys.executable, str(estate.copy), *argv], capture_output=True,
+                          text=True, env=env, cwd=str(estate.wip), timeout=timeout,
+                          stdin=subprocess.DEVNULL)
+    return proc, time.monotonic() - start
+
+
+def _fields(path: Path) -> dict:
+    return dict(line.split("=", 1) for line in
+                path.read_text(encoding="utf-8").splitlines() if "=" in line)
+
+
+def _names_the_store(out: str) -> bool:
+    """The store named without credentials: its label or its database."""
+    return LABEL in out or "register_db" in out
+
+
+def test_the_guards_outage_refusal_names_the_store_the_cause_and_both_ways_out(tmp_path):
+    """AT-P3: with `mode=primary`, the database stopped, no tmux window and
+    no session record, the guard tries its direct read and exits 2; its
+    refusal names the store, without credentials, and the cause, and
+    carries both ways out, `lanes-index status` and `lanes-index rollback`
+    from a shell or a `CLAUDE_NO_LANE=1` session."""
+    estate = Estate(tmp_path, [_render(1)])
+    estate.passfile.write_text(f"127.0.0.1:55432:register_db:t215_login:{SECRET}\n",
+                               encoding="utf-8")
+    config = estate.config()
+    result = estate.guard(config, TMUX=None, TMUX_PANE=None, LANES_LANE=None)
+    out = result["out"]
+    assert not result["killed"], "the hook was killed at 5 s, and the prompt passed"
+    assert estate.psql_starts(), "the guard made no direct read: the fake psql has no call"
+    assert result["exit"] == 2, f"the guard exited {result['exit']}"
+    assert _names_the_store(out), f"the refusal names no store: {out[-600:]}"
+    assert SECRET not in out and "t215_login:" not in out, "the refusal carries a credential"
+    assert "unreachable" in out or "Connection refused" in out, f"no cause: {out[-600:]}"
+    for words in ("lanes-index status", "lanes-index rollback", "CLAUDE_NO_LANE=1"):
+        assert words in out, f"the refusal does not carry {words!r}: {out[-600:]}"
+
+
+def test_claude_no_lane_lets_a_session_through_before_any_input(tmp_path):
+    """AT-P3: with `CLAUDE_NO_LANE=1` the hook exits 0 at once, before any
+    input is read: its stdin is a pipe whose writer never writes nor closes,
+    so a read would block past the 5 s kill timer."""
+    estate = Estate(tmp_path, [_render(1)])
+    config = estate.config()
+    read_end, write_end = os.pipe()
+    try:
+        proc = subprocess.Popen(["bash", str(tmp_path / "tool" / "lanes-edit.sh"), "guard"],
+                                stdin=read_end, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, cwd=str(estate.wip), start_new_session=True,
+                                env=estate.guard_env(config, CLAUDE_NO_LANE="1", TMUX=None,
+                                                     TMUX_PANE=None))
+        os.close(read_end)
+        read_end = -1
+        try:
+            out, err = proc.communicate(timeout=GUARD_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.communicate()
+            raise AssertionError("the hook read its stdin and blocked past 5 s")
+    finally:
+        for fd in (read_end, write_end):
+            if fd >= 0:
+                os.close(fd)
+    assert proc.returncode == 0, f"the hook exited {proc.returncode}: {(out + err)[-400:]}"
+    assert estate.psql_starts() == [], "the skipped hook read the database"
+
+
+@pytest.mark.parametrize("verb", ["status"])
+def test_status_and_rollback_run_with_no_lane_session_and_no_guard(tmp_path, verb):
+    """AT-P3: `status` runs with no lane session (no window, no lane, no
+    session record) and no guard; with the database stopped it answers
+    inside twice its bound, AT-D9's `status` row, 8 s (timing rule 2), with
+    its own exit, 69, naming the unreachable store without credentials.
+    T279 adds `[rollback]`."""
+    estate = Estate(tmp_path, [_render(1)])
+    estate.passfile.write_text(f"127.0.0.1:55432:register_db:t215_login:{SECRET}\n",
+                               encoding="utf-8")
+    config = estate.config()
+    env = estate.guard_env(config, TMUX=None, TMUX_PANE=None, LANES_LANE=None)
+    proc, elapsed = _index(estate, config, verb, env=env)
+    out = proc.stdout + proc.stderr
+    assert elapsed < 2 * 8, f"{verb} took {elapsed:.2f} s"
+    _record(f"{verb} with the database stopped", elapsed, 8, "timing rule 2")
+    assert proc.returncode == 69, f"{verb} exited {proc.returncode}: {out[-600:]}"
+    assert _names_the_store(out), f"{verb} names no store: {out[-600:]}"
+    assert SECRET not in out
+
+
+def test_outage_declare_writes_its_fields_and_clear_removes_it(tmp_path):
+    """AT-D20: on Brett's word, with the database not answering from this
+    host, `outage declare --until <UTC> --why <words> --mirror-seq <m>`
+    sends its probe and writes `register-outage` beside `lanes-index.conf`,
+    0600, in config.md section 6.3's form and order (T121): `format=1`,
+    `kind=word`, `database=` the label, `utc=` now, `host=` the
+    workstation, `until=`, `mirror-seq=` and `why=` verbatim. `last-head=`
+    follows only where `status` recorded a head, which none has here.
+    `outage clear` removes it, and a second clear exits 0, none recorded."""
+    estate = Estate(tmp_path, [_render(1), _render(2)])
+    config = estate.config()
+    before = time.time()
+    proc = estate.declare(config, mirror_seq=2)
+    after = time.time()
+    path = config.parent / "register-outage"
+    assert proc.returncode == 0, f"outage declare exited {proc.returncode}: {proc.stderr}"
+    assert len(estate.psql_starts()) == 1, "the probe was not sent once"
+    assert path.stat().st_mode & 0o777 == 0o600
+    lines = path.read_text(encoding="utf-8").splitlines()
+    keys = [line.split("=", 1)[0] for line in lines]
+    assert keys == ["format", "kind", "database", "utc", "host", "until", "mirror-seq", "why"], keys
+    fields = _fields(path)
+    assert (fields["format"], fields["kind"], fields["database"], fields["host"],
+            fields["until"], fields["mirror-seq"], fields["why"]) == \
+        ("1", "word", LABEL, "Eagle", UNTIL, "2", WHY), fields
+    stamp = calendar.timegm(time.strptime(fields["utc"], "%Y-%m-%dT%H:%M:%SZ"))
+    assert before - 2 <= stamp <= after + 2, f"utc={fields['utc']} is not the declaration's time"
+    proc, _ = _index(estate, config, "outage", "clear")
+    assert proc.returncode == 0 and not path.exists(), f"clear: {proc.returncode}: {proc.stderr}"
+    proc, _ = _index(estate, config, "outage", "clear")
+    assert proc.returncode == 0, f"a second clear exited {proc.returncode}: {proc.stderr}"
+    assert "no declared outage" in proc.stdout + proc.stderr
+
+
+def test_outage_declare_refuses_while_the_database_answers_or_without_until(tmp_path):
+    """AT-D20: with the database answering from this host and the switch at
+    `primary`, Brett's word is refused, 2, and no file is written; with no
+    `--until`, 2 and no file. Lane 1's usage besides (#165 comment
+    6754714549): `--until` beside `--rollback` is 64, and no file."""
+    estate = Estate(tmp_path, [_render(1), _render(2)])
+    config = estate.config()
+    path = config.parent / "register-outage"
+    estate.answers.write_text(json.dumps(PRIMARY), encoding="utf-8")
+    proc = estate.declare(config, mirror_seq=2)
+    assert proc.returncode == 2 and not path.exists(), f"answering: {proc.returncode}: {proc.stderr}"
+    estate.answers.write_text(json.dumps(STOPPED), encoding="utf-8")
+    proc, _ = _index(estate, config, "outage", "declare", "--why", WHY, "--mirror-seq", "2")
+    assert proc.returncode == 2 and not path.exists(), f"no --until: {proc.returncode}: {proc.stderr}"
+    proc, _ = _index(estate, config, "outage", "declare", "--rollback", "--mirror-seq", "2",
+                     "--until", UNTIL)
+    assert proc.returncode == 64 and not path.exists(), f"--until beside --rollback: {proc.returncode}"
+
+
+@pytest.mark.parametrize("case", ["ok", "refuse"])
+def test_a_declared_outage_lets_the_guard_answer_from_the_mirror(tmp_path, case):
+    """AT-D20: with a valid declaration and the database stopped, the guard
+    answers from the mirror, whose register binds this session's lane
+    (`ok`, exit 0) or holds it for another session (`refuse`, exit 2),
+    printing the declared line in place of the cause."""
+    other = str(uuid.uuid4())
+    estate = Estate(tmp_path, [_render(1), _render(2), _render(3)],
+                    register=_register("{session}" if case == "ok" else other))
+    config = estate.config()
+    fields = estate.declared(config, mirror_seq=3)
+    estate.reset_logs()
+    result = estate.guard(config)
+    assert not result["killed"], "the hook was killed at 5 s"
+    assert estate.psql_starts(), "the guard made no direct read: the fake psql has no call"
+    assert f"read: mirror at {estate.tip()[:12]}" in result["out"], result["out"][-600:]
+    assert _label(fields) in result["out"], result["out"][-600:]
+    assert result["exit"] == (0 if case == "ok" else 2), f"{case}: exit {result['exit']}"
+
+
+@pytest.mark.parametrize("case", ["expired", "other_database"])
+def test_an_expired_or_foreign_declaration_changes_nothing(tmp_path, case):
+    """AT-D20: a declaration past its `until=` (`expired`), or naming
+    another database (`other_database`), opens nothing: the guard tries its
+    direct read and exits 2 with the ordinary outage refusal, never reading
+    the mirror nor printing a declared line. Expiry is a UTC already past,
+    never a wait."""
+    estate = Estate(tmp_path, [_render(1), _render(2), _render(3)])
+    config = estate.config()
+    path = config.parent / "register-outage"
+    if case == "expired":
+        proc, _ = _index(estate, config, "outage", "declare", "--until", "2000-01-01T00:00:00Z",
+                         "--why", WHY, "--mirror-seq", "3",
+                         env=dict(estate.env, LANES_INDEX_CONFIG=str(config), LANES_LANE=WINDOW))
+        assert proc.returncode == 0 and path.exists(), f"expired: {proc.returncode}: {proc.stderr}"
+    else:
+        foreign = estate.config(name="conf-other")
+        foreign.write_text(foreign.read_text(encoding="utf-8").replace(
+            f"register_label={LABEL}", "register_label=another-register"), encoding="utf-8")
+        estate.declared(foreign, mirror_seq=3)
+        shutil.copy2(foreign.parent / "register-outage", path)
+    estate.reset_logs()
+    result = estate.guard(config)
+    assert not result["killed"], "the hook was killed at 5 s"
+    assert estate.psql_starts(), "the guard made no direct read: the fake psql has no call"
+    assert result["exit"] == 2, f"{case}: the guard exited {result['exit']}"
+    assert "read: mirror" not in result["out"] and "declared outage" not in result["out"]
+    assert estate.mirror_calls() == [], f"{case}: the guard read the mirror"
+
+
+def test_writes_and_deciding_reads_still_refuse_during_a_declared_outage(tmp_path):
+    """AT-D20: under a valid declaration, with the database stopped, a write,
+    `claim`, and a deciding read, `who`, each still refuse with 69: the
+    declaration opens the guard's read alone."""
+    estate = Estate(tmp_path, [_render(1), _render(2), _render(3)])
+    config = estate.config()
+    estate.declared(config, mirror_seq=3)
+    env = estate.guard_env(config, TMUX=None, TMUX_PANE=None)
+    for argv in (["claim", "t215-object"], ["who", "t215-object"]):
+        proc = subprocess.run(["bash", str(tmp_path / "tool" / "lanes-edit.sh"), *argv],
+                              capture_output=True, text=True, env=env, cwd=str(estate.wip),
+                              timeout=120, stdin=subprocess.DEVNULL)
+        assert proc.returncode == 69, (f"`{argv[0]}` exited {proc.returncode}: "
+                                       f"{(proc.stdout + proc.stderr)[-400:]}")
+
+
+def _free_port() -> int:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
+
+
+def _on_pg(pg, root: Path, request, steps: list) -> tuple:
+    """An estate whose configuration names this test's database on `pg`, as
+    a writer's and a reader's logins made here until T228's exist, brought
+    through `steps` by the real commands: `import --at <C>`, `cutover
+    --import <C>` and `rollback`. Returns (the estate, the configuration, the
+    real `psql`'s environment, the reader's login)."""
+    estate = Estate(root, [_render(1)])
+    writer, reader = (f"t215_{uuid.uuid4().hex[:12]}" for _ in range(2))
+    pg.psql(f"CREATE ROLE {writer} LOGIN IN ROLE lanes_register_writer;\n"
+            f"CREATE ROLE {reader} LOGIN IN ROLE lanes_register_reader;")
+    request.addfinalizer(lambda: pg.cluster.psql(f"DROP ROLE IF EXISTS {writer}, {reader};",
+                                                 check=False))
+    config = _private(root / "conf-pg" / "lanes-index.conf", "\n".join([
+        "mode=primary", f"register_url={pg.url(writer)}", f"register_passfile={estate.passfile}",
+        f"reader_url={pg.url(reader)}", f"reader_passfile={estate.passfile}",
+        f"register_label={LABEL}", f"register_schema={SCHEMA}", ""]))
+    env = dict(estate.env, LANES_INDEX_CONFIG=str(config), LANES_LANE=WINDOW,
+               PATH=os.pathsep.join([str(estate.bin), str(Path(pg.psql_bin).parent),
+                                     os.environ.get("PATH", os.defpath)]))
+    c = estate.tip()
+    forms = {"import": ["import", "--at", c], "cutover": ["cutover", "--import", c],
+             "rollback": ["rollback"]}
+    for step in steps:
+        proc, _ = _index(estate, config, *forms[step], env=env, timeout=300)
+        assert proc.returncode == 0, f"`{step}` exited {proc.returncode}: {proc.stderr[-600:]}"
+    return estate, config, env, reader
+
+
+def _rollbacks_k(config: Path) -> int:
+    """`k` from the declaration `rollback` wrote (T304), set aside so that the
+    case can declare again."""
+    path = config.parent / "register-outage"
+    assert path.exists(), "`rollback` wrote no declaration (T304)"
+    fields = _fields(path)
+    assert fields.get("kind") == "rollback" and "until" not in fields, fields
+    path.rename(config.parent / "register-outage.rollbacks")
+    return int(fields["mirror-seq"])
+
+
+@pytest.mark.parametrize("form", ["word", "rollback"])
+def test_outage_declare_is_refused_where_the_probe_reads_primary(tmp_path, form):
+    """AT-D20: the probe reads the switch at `primary`: `outage declare`
+    exits 2 and writes no file, on Brett's word and in the `--rollback
+    --mirror-seq <k>` form alike. FP: the fake answers the probe as the
+    database would."""
+    estate = Estate(tmp_path, [_render(1), _render(2)])
+    config = estate.config()
+    estate.answers.write_text(json.dumps(PRIMARY), encoding="utf-8")
+    proc = estate.declare(config, mirror_seq=4, rollback=(form == "rollback"))
+    assert proc.returncode == 2, f"{form}: exit {proc.returncode}: {proc.stderr}"
+    assert not (config.parent / "register-outage").exists(), f"{form}: a file was written"
+    assert len(estate.psql_starts()) == 1, f"{form}: the probe was not sent once"
+
+
+def test_outage_declare_on_a_persons_word_during_a_rollback_is_refused_and_prints_the_rollback_form(
+        pg, tmp_path, request):
+    """AT-D20, real engine, on T304: the probe reads the switch at `files`
+    with a `rollback` entry at `set_seq`: Brett's word exits 2, writes no
+    file and prints `outage declare --rollback --mirror-seq <k>`, `k` being
+    `set_seq - 1`; that command, as printed, writes the declaration, marked
+    as from a rollback, with `mirror-seq=<k>` and no expiry."""
+    estate, config, env, _ = _on_pg(pg, tmp_path, request, ["import", "cutover", "rollback"])
+    k = _rollbacks_k(config)
+    path = config.parent / "register-outage"
+    proc, _ = _index(estate, config, "outage", "declare", "--until", UNTIL, "--why", WHY,
+                     "--mirror-seq", str(k + 5), env=env)
+    assert proc.returncode == 2 and not path.exists(), f"Brett's word: {proc.returncode}"
+    printed = f"outage declare --rollback --mirror-seq {k}"
+    assert printed in proc.stdout + proc.stderr, (proc.stdout + proc.stderr)[-600:]
+    proc, _ = _index(estate, config, *printed.split(), env=env)
+    assert proc.returncode == 0, f"as printed: {proc.returncode}: {proc.stderr}"
+    fields = _fields(path)
+    assert fields["kind"] == "rollback" and fields["mirror-seq"] == str(k), fields
+    assert "until" not in fields
+
+
+@pytest.mark.parametrize("case", ["wrong-k", "no-mirror-seq", "not-a-rollback-entry",
+                                  "unreadable"])
+def test_outage_declare_rollback_is_refused_for_a_wrong_k_a_missing_mirror_seq_or_a_switch_it_cannot_read(
+        tmp_path, request, case):
+    """AT-D20: the `--rollback` form exits 2 and writes no file for a wrong
+    `<k>`, with no `--mirror-seq`, where the entry at `set_seq` is not a
+    `rollback`, and where the probe cannot read the switch. FP for
+    `no-mirror-seq` (refused before the probe) and `unreadable` (the fake
+    exits 2); `wrong-k` and `not-a-rollback-entry` run on `pg`, after
+    `rollback` (T304) and after `import` alone."""
+    if case in ("no-mirror-seq", "unreadable"):
+        estate = Estate(tmp_path, [_render(1), _render(2)])
+        config = estate.config()
+        if case == "no-mirror-seq":
+            proc, _ = _index(estate, config, "outage", "declare", "--rollback")
+        else:
+            proc = estate.declare(config, mirror_seq=4, rollback=True)
+    else:
+        pg = request.getfixturevalue("pg")
+        steps = ["import", "cutover", "rollback"] if case == "wrong-k" else ["import"]
+        estate, config, env, _ = _on_pg(pg, tmp_path, request, steps)
+        k = _rollbacks_k(config) + 1 if case == "wrong-k" else 1
+        proc, _ = _index(estate, config, "outage", "declare", "--rollback", "--mirror-seq",
+                         str(k), env=env)
+    assert proc.returncode == 2, f"{case}: exit {proc.returncode}: {proc.stderr}"
+    assert not (config.parent / "register-outage").exists(), f"{case}: a file was written"
+
+
+@pytest.mark.parametrize("case", ["found-files", "found-primary", "failed-primary-again",
+                                  "failed-partition"])
+def test_a_rollbacks_declaration_counts_only_where_the_guards_read_finds_the_switch_at_files(
+        pg, tmp_path, request, case):
+    """AT-D20, real engine, on T304: a rollback's declaration (SVC-12's
+    condition 2) by what the guard's read finds:
+    - `found-files`: the switch at `files`: the guard answers from the
+      mirror, with the declared line;
+    - `found-primary`: a cutover has set `primary` again: the guard answers
+      from the database, and `status` reports the file;
+    - `failed-primary-again` and `failed-partition`: the read fails, the
+      switch being `primary` again, or the guard cut off: the guard exits 2
+      with the ordinary refusal, and never reads the mirror."""
+    steps = ["import", "cutover", "rollback"]
+    if case in ("found-primary", "failed-primary-again"):
+        steps.append("cutover")
+    estate, config, env, reader = _on_pg(pg, tmp_path, request, steps)
+    path = config.parent / "register-outage"
+    assert path.exists(), "`rollback` wrote no declaration (T304)"
+    fields = _fields(path)
+    k = int(fields["mirror-seq"])
+    estate.grow([_render(k)])
+    estate.fetch()
+    url = (pg.url(reader) if case.startswith("found")
+           else f"postgresql://{reader}@127.0.0.1:{_free_port()}/{pg.name}")
+    guard_config = estate.config(url=url, name="conf-guard")
+    shutil.copy2(path, guard_config.parent / "register-outage")
+    estate.reset_logs()
+    result = estate.guard(guard_config, PATH=env["PATH"])
+    assert not result["killed"], "the hook was killed at 5 s"
+    if case == "found-files":
+        assert f"read: mirror at {estate.tip()[:12]}" in result["out"], result["out"][-600:]
+        assert _label(fields) in result["out"], result["out"][-600:]
+        return
+    assert "read: mirror" not in result["out"] and _label(fields) not in result["out"]
+    if case == "found-primary":
+        proc, _ = _index(estate, config, "status", env=env)
+        assert "register-outage" in proc.stdout + proc.stderr, (proc.stdout + proc.stderr)[-600:]
+        return
+    assert result["exit"] == 2, f"{case}: exit {result['exit']}"
+    assert estate.mirror_calls() == [], f"{case}: the guard read the mirror"
+
+
+def test_status_reports_a_declaration_left_in_place(pg, tmp_path, request):
+    """AT-D20, real engine: with the database answering and the switch at
+    `primary`, a declaration left in place is ignored by the guard, which
+    answers from the database, and `status` reports it."""
+    estate, config, env, reader = _on_pg(pg, tmp_path, request, ["import", "cutover"])
+    estate.declared(config, mirror_seq=1)
+    guard_config = estate.config(url=pg.url(reader), name="conf-guard")
+    shutil.copy2(config.parent / "register-outage", guard_config.parent / "register-outage")
+    result = estate.guard(guard_config, PATH=env["PATH"])
+    assert not result["killed"], "the hook was killed at 5 s"
+    assert "read: mirror" not in result["out"] and "declared outage" not in result["out"]
+    proc, _ = _index(estate, config, "status", env=env)
+    assert proc.returncode == 0, f"status exited {proc.returncode}: {proc.stderr[-600:]}"
+    assert "register-outage" in proc.stdout + proc.stderr, (proc.stdout + proc.stderr)[-600:]
