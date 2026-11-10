@@ -3821,14 +3821,42 @@ NOT_JSON = (200, b"<html><body>the index is down for maintenance</body></html>")
 NO_FILE_LIST = (200, b'{"info": {"name": "openrepotools"}}')
 CUT_OFF = (200, CutShort(b'{"info": {"name": "openrepotools"}, "urls": ['))
 
-#: An answer nested past the JSON decoder's recursion limit
-#: (opensoft/openRepoTools#352, item 3): 100,000 `[` closed by as many `]`, so
-#: it is valid JSON and only its depth is wrong. `json.loads` raises
-#: `RecursionError` on it, which is neither a `ValueError` nor any other error
-#: the steps' `except` tuples named, so each ended in a traceback until it
-#: joined them. A case asks for `RecursionError` in the refusal's line, as a
-#: `ValueError` would also give the line "is not its JSON API's".
+#: An answer nested 100,000 deep (opensoft/openRepoTools#352, item 3): `[`
+#: closed by as many `]`, so it is valid JSON and only its depth is wrong. What
+#: the step does with it depends on the interpreter that runs it, because
+#: CPython bounds the C decoder's recursion by the recursion limit up to 3.13
+#: and by stack depth after it (CI's 3.15.2 decodes it). Where `json.loads`
+#: raises `RecursionError`, which is neither a `ValueError` nor any other error
+#: the steps' `except` tuples named, each ended in a traceback until it joined
+#: them, and the refusal's line must carry `(RecursionError:`, as a
+#: `ValueError` would also give "is not its JSON API's". Where it decodes the
+#: list, the step refuses its wrong shape (a `TypeError`) with that line. A
+#: case marked `OF_NESTED` asks the interpreter (`nested_refusal`).
 NESTED = (200, b"[" * 100_000 + b"]" * 100_000)
+OF_NESTED = "what the step's own python3 makes of NESTED"
+
+
+@functools.lru_cache(maxsize=None)
+def nested_refusal(python: str) -> str:
+    """What the `::error::` line for `NESTED` names when `python` runs the
+    step: `(RecursionError:`, or whatever error its `json.loads` raises, and
+    `is not its JSON API's` where it decodes the list. The step's `python3 -`
+    is the one on the step's PATH, which is not always `sys.executable`."""
+    probe = ("import json, sys\n"
+             "try:\n    json.loads(sys.stdin.buffer.read())\n"
+             "except BaseException as error:\n    print(type(error).__name__)\n")
+    done = subprocess.run([python, "-I", "-c", probe], input=NESTED[1],
+                          capture_output=True, check=False, timeout=STEP_TIMEOUT)
+    assert done.returncode == 0, f"{python} cannot probe NESTED: {done.stderr!r}"
+    raised = done.stdout.decode().strip()
+    return f"({raised}:" if raised else "is not its JSON API's"
+
+
+def named_refusal(names: Optional[str]) -> Optional[str]:
+    """`names`, or for `OF_NESTED` what the step's own `python3` makes it."""
+    if names != OF_NESTED:
+        return names
+    return nested_refusal(shutil.which("python3") or "python3")
 
 
 class FakeIndex:
@@ -3962,7 +3990,7 @@ EMPTY_INDEX_CASES = {
     "an-answer-cut-off": (CUT_OFF, "could not be read"),
     "an-answer-that-is-not-json": (NOT_JSON, "is not its JSON API's"),
     "json-without-the-file-list": (NO_FILE_LIST, "is not its JSON API's"),
-    "an-answer-nested-too-deep-to-decode": (NESTED, "(RecursionError:"),
+    "an-answer-nested-too-deep-to-decode": (NESTED, OF_NESTED),
 }
 
 
@@ -3980,7 +4008,8 @@ def test_release_upload_the_empty_index_check_passes_no_file_or_the_verified_whe
     file, an index that answers with an error, a read with no answer or one
     cut off, and an answer that is not the index's JSON. Each refusal exits 1
     with an `::error::` line naming it, never a traceback (#278)."""
-    answer, names = EMPTY_INDEX_CASES[which]
+    answer, wanted = EMPTY_INDEX_CASES[which]
+    names = named_refusal(wanted)
     done, reads, _ = run_index_step(tmp_path, name, EMPTY_INDEX_STEP, [answer])
     out = done.stdout + done.stderr
     assert (done.returncode == 0) == (names is None), transcript(done)
@@ -3988,8 +4017,11 @@ def test_release_upload_the_empty_index_check_passes_no_file_or_the_verified_whe
     assert "Traceback (most recent call last)" not in out, transcript(done)
     if names is not None:
         assert done.returncode == 1, transcript(done)
-        assert [line for line in out.splitlines()
-                if line.startswith("::error::") and names in line], transcript(done)
+        refusals = [line for line in out.splitlines()
+                    if line.startswith("::error::") and names in line]
+        assert refusals, transcript(done)
+        if wanted == OF_NESTED:
+            assert out.splitlines() == refusals, transcript(done)
 
 
 #: AFTER THE UPLOAD: `(what the index answers, read by read, how many reads
@@ -4022,7 +4054,7 @@ SERVED_CASES = {
     "a-refusal-other-than-404": ([(403, [])], 1, "with HTTP 403"),
     "an-answer-that-is-not-json": ([NOT_JSON], 1, "is not its JSON API's"),
     "json-without-the-file-list": ([NO_FILE_LIST], 1, "is not its JSON API's"),
-    "an-answer-nested-too-deep-to-decode": ([NESTED], 1, "(RecursionError:"),
+    "an-answer-nested-too-deep-to-decode": ([NESTED], 1, OF_NESTED),
 }
 
 
@@ -4042,7 +4074,8 @@ def test_release_upload_the_served_check_reads_until_the_verified_wheel_is_serve
     refuses an index that never does, the wheel yanked, a client error, and
     an answer that is not the index's JSON. Each refusal exits 1 with an
     `::error::` line naming it, never a traceback (#278)."""
-    answers, count, names = SERVED_CASES[which]
+    answers, count, wanted = SERVED_CASES[which]
+    names = named_refusal(wanted)
     if TIMED_OUT in answers and sys.version_info < (3, 10):
         pytest.skip("a read that times out raises `socket.timeout` before "
                     "Python 3.10, which is not the `TimeoutError` the step "
@@ -4058,8 +4091,11 @@ def test_release_upload_the_served_check_reads_until_the_verified_wheel_is_serve
         assert len(sleeps) == count - 1, sleeps
     else:
         assert done.returncode == 1, transcript(done)
-        assert [line for line in out.splitlines()
-                if line.startswith("::error::") and names in line], transcript(done)
+        refusals = [line for line in out.splitlines()
+                    if line.startswith("::error::") and names in line]
+        assert refusals, transcript(done)
+        if wanted == OF_NESTED:
+            assert out.splitlines() == refusals, transcript(done)
     if REFUSED in answers:
         assert "<urlopen error" in done.stdout, (
             "a refused read is a `URLError`, which the step prints as "
