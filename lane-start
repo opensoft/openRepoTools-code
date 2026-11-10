@@ -263,7 +263,15 @@
 #   0  done
 #   1  environment — not inside tmux, no tmux, a RECORDED directory that is
 #      gone, no register, or `lanes-edit.sh live-holder` failed (which is NOT
-#      the same as its answering 8, "no live session holds this lane")
+#      the same as its answering 8, "no live session holds this lane").
+#      And, since feature 007 (T428; lane 3's A2, #165 6774499606), a base
+#      this launch could not take: `act-begin`, or its `--rebase`, exiting 2
+#      (a helper with no `start-record`), 1, 64 or any code but 0, 69, 75
+#      and 3, or exiting 0 with no line or a malformed one; or a failed
+#      `canon-lane --walk`: any code but 0, 69, 75 and 3 (its 64, a helper
+#      with no `--walk`; its 66, an alias table it could not read), or an
+#      exit 0 that prints no name. Each names the verb and its code, and
+#      nothing is renamed or written.
 #   2  refusal — an ARGUMENT ERROR, and one further case this amendment adds: a
 #      name that is not a lane, a position that is not a position, a name a
 #      window cannot take, a lane whose register holds two rows and so resolves
@@ -296,7 +304,8 @@
 #      spends 69 in every mode where the register cannot be read, and any
 #      code it exits with is passed on, never read as an empty register.
 #      AND THE ACT'S WRITES (feature 007, T428; spec:317-318): `act-begin`'s
-#      own code where this launch could take no base; `start-record`'s 2,
+#      or `canon-lane --walk`'s 69, 75 or 3 where this launch could take no
+#      base or know no walk (every other code is 1, above); `start-record`'s 2,
 #      which on primary is a second binding, in every case; its code where it
 #      makes a new lane's row, or binds under `--bind`; and `request-handoff`'s
 #      69, 75 and 3. A resume's refused `start-record` is a note, and the
@@ -1247,10 +1256,41 @@ ls_late_refuse() {   # <the read, as run> <its exit> <what it would have told>
 # written over; off primary `<act-id>@files`, which no write reads. A read in
 # a dry run too. Its stderr is held and shown only where it fails: off
 # primary a success says at most the mode warning every later write repeats.
-# No base, no launch: every write of the act would be refused the same way,
-# so it refuses here, passing the code, before anything is renamed or
-# written. And `LANES_EXPECT` is never exported (Y:5581): an act's scopes
-# ride as a prefix on the one call they belong to, so none is inherited.
+# No base, no launch, read as lane 3's A2 reads it (#165 6774499606): its
+# 69, 75 and 3 refuse with the code (G1's first arm). Everything else
+# refuses with 1, naming the verb and its code, before anything is renamed
+# or written: its 1 or 64, an exit 0 with no line or a malformed one, and
+# its 2 too. A 2 comes from a helper older than T410, which reads neither
+# variable (Y:5596); another act goes on without a base there, but
+# `lane-start` refuses, because no such helper has `start-record`. And
+# `LANES_EXPECT` is never exported (Y:5581): an act's scopes ride as a
+# prefix on the one call they belong to, so none is inherited.
+# THE LINE'S FORM (Y:5577-5579), read as `lanes-edit.sh`'s `act_parse`
+# reads it, with `case` patterns of spelled-out bracket lists:
+# `<act-id>@files`, or `<act-id>@<seq>:<generation>`.
+ls_act_form() (   # <the line>: 0 where it is a base
+  set -f
+  laf_h='[0123456789abcdef]'
+  laf_id="${1%%@*}"; laf_rest="${1#*@}"
+  case "$1" in *@*) : ;; *) return 1 ;; esac
+  case "$laf_id" in "" | *[!0123456789abcdef]*) return 1 ;; esac
+  [ "${#laf_id}" -eq 32 ] || return 1
+  [ "$laf_rest" != files ] || return 0
+  case "$laf_rest" in *:*) : ;; *) return 1 ;; esac
+  laf_seq="${laf_rest%%:*}"; laf_gen="${laf_rest#*:}"
+  case "$laf_seq" in
+    0) : ;;
+    [123456789]*)
+      case "$laf_seq" in *[!0123456789]*) return 1 ;; esac
+      [ "${#laf_seq}" -le 18 ] || return 1 ;;
+    *) return 1 ;;
+  esac
+  # shellcheck disable=SC2254  # the generation's pattern is a glob on purpose
+  case "$laf_gen" in
+    $laf_h$laf_h$laf_h$laf_h$laf_h$laf_h$laf_h$laf_h-$laf_h$laf_h$laf_h$laf_h-$laf_h$laf_h$laf_h$laf_h-$laf_h$laf_h$laf_h$laf_h-$laf_h$laf_h$laf_h$laf_h$laf_h$laf_h$laf_h$laf_h$laf_h$laf_h$laf_h$laf_h) return 0 ;;
+  esac
+  return 1
+)
 unset LANES_EXPECT
 LS_TMP="$(mktemp)"
 ls_act=""; ls_act_rc=0
@@ -1259,15 +1299,14 @@ if [ "$ls_act_rc" != 0 ]; then
   [ -s "$LS_TMP" ] && cat -- "$LS_TMP" >&2
   case "$ls_act_rc" in
     69 | 75 | 3) ls_read_refuse "$LANES_EDIT act-begin" "$ls_act_rc" "this launch's base, the register's head the act's writes are checked against" ;;
-    2) die "\`$LANES_EDIT act-begin\` exited 2 (its words are above), so this launch has no base for its writes. A \`lanes-edit.sh\` with no \`act-begin\` exits 2 for an unknown subcommand; install the one beside this script. Nothing was launched, renamed or written." 2 ;;
-    *) die "\`$LANES_EDIT act-begin\` exited $ls_act_rc (its words are above), so this launch has no base for its writes, and that is not a base. Nothing was launched, renamed or written." "$ls_act_rc" ;;
+    2) die "\`$LANES_EDIT act-begin\` exited 2 (its words are above), so this launch has no base for its writes. A \`lanes-edit.sh\` with no \`act-begin\` exits 2 for an unknown subcommand, and has no \`start-record\` either, so this launch refuses rather than go on without a base (A2); install the one beside this script. Nothing was launched, renamed or written." 1 ;;
+    *) die "\`$LANES_EDIT act-begin\` exited $ls_act_rc (its words are above), so this launch has no base for its writes, and that is not a base. Nothing was launched, renamed or written." 1 ;;
   esac
 fi
-case "$ls_act" in
-  "" | *$'\n'*)
-    [ -s "$LS_TMP" ] && cat -- "$LS_TMP" >&2
-    die "\`$LANES_EDIT act-begin\` exited 0 and printed no single line of base, so this launch has no base for its writes. Nothing was launched, renamed or written." 69 ;;
-esac
+if ! ls_act_form "$ls_act"; then
+  [ -s "$LS_TMP" ] && cat -- "$LS_TMP" >&2
+  die "\`$LANES_EDIT act-begin\` exited 0 and printed no single line of base, \`<act-id>@files\` or \`<act-id>@<seq>:<generation>\` (Y:5577-5578), so this launch has no base for its writes. Nothing was launched, renamed or written." 1
+fi
 export LANES_ACT="$ls_act"
 : > "$LS_TMP"
 
@@ -1313,22 +1352,35 @@ esac
 # read, and only where `canon-lane` answered: in files mode no write reads
 # LANES_EXPECT (Y:5596), and a launch that carried on with the typed name
 # decided on that name alone. A walk that fails is `act-begin`'s failure
-# with the same code (G2, G1): its 69, 75 and 3 refuse with the code, and
-# any other code refuses with that code too, as `act-begin`'s last arm
-# does, before anything is renamed or written: a key left out is a change
-# the write would not see.
+# with the same code (G2), read as lane 3's A2 reads it (#165 6774499606):
+# its 69, 75 and 3 refuse with the code (G1's first arm), and any other
+# code, or an exit 0 that prints no name, refuses with 1, naming the verb
+# and its code, before anything is renamed or written: a key left out is a
+# change the write would not see. So its 64, a helper with no `--walk`, and
+# its 66, the alias table Amendment 16(e) reads and could not, are each
+# named, and each exits 1, as the EXIT table's 1 says (REV-LSLE SHOULD 1):
+# `canon-lane`'s own 66 above keeps 16(e)'s 2. Its stderr is held, as
+# `act-begin`'s is, and shown where it fails.
 LS_WALK=""
 case "$LANES_ACT" in
   *@files) : ;;
   *)
     if [ "$cl_rc" = 0 ]; then
       lw_rc=0
-      LS_WALK="$("$LANES_EDIT" canon-lane --walk "$ls_typed" 2>/dev/null)" || lw_rc=$?
-      case "$lw_rc" in
-        0) : ;;
-        69 | 75 | 3) ls_read_refuse "$LANES_EDIT canon-lane --walk $ls_typed" "$lw_rc" "which names lane ${LANE}'s spelling was found through" ;;
-        *) die "\`$LANES_EDIT canon-lane --walk $ls_typed\` exited $lw_rc, so the names lane ${LANE}'s spelling was found through are NOT known, and this launch's writes would leave their keys out: a change to one of them would not refuse them (Y:5624). A \`lanes-edit.sh\` with no \`--walk\` exits 64 (its \`canon-lane\` takes one lane); install the one beside this script. Nothing was launched, renamed or written." "$lw_rc" ;;
-      esac
+      : > "$LS_TMP"
+      LS_WALK="$("$LANES_EDIT" canon-lane --walk "$ls_typed" 2>"$LS_TMP")" || lw_rc=$?
+      if [ "$lw_rc" != 0 ] || [ -z "$LS_WALK" ]; then
+        [ -s "$LS_TMP" ] && cat -- "$LS_TMP" >&2
+        lw_why="exited $lw_rc (its words are above)"; lw_fix=""
+        case "$lw_rc" in
+          69 | 75 | 3) ls_read_refuse "$LANES_EDIT canon-lane --walk $ls_typed" "$lw_rc" "which names lane ${LANE}'s spelling was found through" ;;
+          0) lw_why="exited 0 and printed no name, where a walk prints the typed name first" ;;
+          64) lw_fix=" A \`lanes-edit.sh\` with no \`--walk\` exits 64, its \`canon-lane\` taking one lane; install the one beside this script." ;;
+          66) lw_fix=" Its 66 is the lane alias table it could not read, through which Amendment 16(e) resolves a renamed lane's old names; fix that read and re-run." ;;
+        esac
+        die "\`$LANES_EDIT canon-lane --walk $ls_typed\` ${lw_why}, so the names lane ${LANE}'s spelling was found through are NOT known, and this launch's writes would leave their keys out: a change to one of them would not refuse them (Y:5624).${lw_fix} Nothing was launched, renamed or written." 1
+      fi
+      : > "$LS_TMP"
     fi ;;
 esac
 
@@ -3023,11 +3075,14 @@ if [ "$bind_recheck" = 1 ] && [ "$bind_waited" = 1 ]; then
   ls_reb=""; ls_reb_rc=0
   ls_reb="$("$LANES_EDIT" act-begin --rebase 2>"$LS_TMP")" || ls_reb_rc=$?
   [ -s "$LS_TMP" ] && cat -- "$LS_TMP" >&2
-  if [ "$ls_reb_rc" != 0 ] || [ -z "$ls_reb" ]; then
+  # `act-begin`'s arms, as A2 reads them (#165 6774499606): 69, 75 and 3
+  # pass the code; any other code, and an exit 0 with no line or a
+  # malformed one, refuses with 1, naming the verb and its code.
+  if [ "$ls_reb_rc" != 0 ] || ! ls_act_form "$ls_reb"; then
     case "$ls_reb_rc" in
       69 | 75 | 3) ls_read_refuse "$LANES_EDIT act-begin --rebase" "$ls_reb_rc" "this launch's base after the handoff wait" "$ls_rb_done" ;;
-      0) die "\`$LANES_EDIT act-begin --rebase\` exited 0 and printed no base, so this launch has none after the handoff wait. $ls_rb_done" 69 ;;
-      *) die "\`$LANES_EDIT act-begin --rebase\` exited $ls_reb_rc (its words are above), so this launch's base could not be moved past the handoff wait, and its writes would be checked against a base the holder's own handoff has passed. $ls_rb_done" "$ls_reb_rc" ;;
+      0) die "\`$LANES_EDIT act-begin --rebase\` exited 0 and printed no single line of base, \`<act-id>@files\` or \`<act-id>@<seq>:<generation>\` (Y:5577-5578), so this launch has none after the handoff wait. $ls_rb_done" 1 ;;
+      *) die "\`$LANES_EDIT act-begin --rebase\` exited $ls_reb_rc (its words are above), so this launch's base could not be moved past the handoff wait, and its writes would be checked against a base the holder's own handoff has passed. $ls_rb_done" 1 ;;
     esac
   fi
   export LANES_ACT="$ls_reb"
