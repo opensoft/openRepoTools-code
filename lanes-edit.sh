@@ -4086,8 +4086,9 @@ reg_mode_query() {
     reg_mode_files "could not be asked: no temporary directory could be made under ${TMPDIR:-/tmp} to hold its answer"
     return 0
   fi
-  rmq_rc=0
+  rmq_rc=0; rmq_timer=bare
   if command -v timeout >/dev/null 2>&1; then
+    rmq_timer=timed
     ( timeout -k 1 2 "$rmq_bin" mode </dev/null >"$rmq_dir/out" 2>"$rmq_dir/err"; exit "$?" ) 2>/dev/null || rmq_rc=$?
   else
     ( "$rmq_bin" mode </dev/null >"$rmq_dir/out" 2>"$rmq_dir/err"; exit "$?" ) 2>/dev/null || rmq_rc=$?
@@ -4098,26 +4099,31 @@ reg_mode_query() {
   rmq_said="$(head -c 1000 -- "$rmq_dir/err" 2>/dev/null | tr '\n\r\t' '   ' | tr -d '\000-\037' || :)"
   while [ "${rmq_said% }" != "$rmq_said" ]; do rmq_said="${rmq_said% }"; done
   rm -rf -- "$rmq_dir"
-  case "$rmq_rc" in
-    0)
+  case "${rmq_rc}:${rmq_timer}" in
+    0:*)
       case "$rmq_out" in
         index|"index"$'\n') REG_MODE=index ;;
         primary|"primary"$'\n') REG_MODE=primary ;;
         *) reg_mode_files "exited 0 without answering one line, index or primary" ;;
       esac ;;
-    78)
+    78:*)
       REG_MODE=refused
       [ -n "$rmq_said" ] || rmq_said="lanes-index printed no text"
       die "$rmq_said (\`lanes-index mode\` exited 78, EX_CONFIG: lanes-index refuses this workstation's mode=primary in this build. \`$cmd\` wrote nothing, and wrote no files instead.)" 69 ;;
-    # 124 AND 137 EACH SAY WHAT THEY CAN MEAN, in `classify`'s words (T424):
-    # a 137 is the timer's KILL a second after a stop that was ignored, or a
-    # kill that was not the timer's. Both still run files mode with one
-    # warning, as F8 runs every failure but 78 (Y:5712–5713; FR-002; contract
-    # §3.1; lane 3, #165 6755641373, point 1).
-    124)
+    # 124 AND 137 EACH SAY WHAT THEY CAN MEAN, in `classify`'s words (T424).
+    # Under the timer, a 124 is its stop, and a 137 is its KILL a second after
+    # a stop that was ignored, or a kill that was not the timer's. Where the
+    # call ran bare, with no `timeout`, no timer ran: a 124 is the call's own
+    # code and takes the `*)` arm, "exited 124 (…)", and a 137 is a signal's
+    # (lane 3, #165 6767463594, item 1). Every one still runs files mode with
+    # one warning, as F8 runs every failure but 78 (Y:5712–5713; FR-002;
+    # contract §3.1; lane 3, #165 6755641373, point 1).
+    124:timed)
       reg_mode_files "did not answer within 2 s, and was stopped (exit 124)" ;;
-    137)
+    137:timed)
       reg_mode_files "was killed (exit 137): by its 2 s timer after it ignored the stop, or by a signal" ;;
+    137:bare)
+      reg_mode_files "was killed by a signal (exit 137)" ;;
     *)
       reg_mode_files "exited $rmq_rc${rmq_said:+ ($rmq_said)}" ;;
   esac
