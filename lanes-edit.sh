@@ -574,9 +574,10 @@
 #      `lanes-index register classify`, gives no answer this file can read,
 #      so that it cannot say whether the text is one of the four it refuses
 #      (see 2): no `lanes-index` to run, an exit other than 0 and 2 (the 64
-#      of a `lanes-index` that has no `classify`, a crash, a signal), or an
-#      exit 0 without exactly one line of five tab-separated fields (contract
-#      §2.7, "No other code"; §2.8). It never writes the text unclassified.
+#      of a `lanes-index` that has no `classify`, a crash, a signal, its 2 s
+#      timer), or an exit 0 without exactly one line of five tab-separated
+#      fields (contract §2.7, "No other code"; §2.8). It never writes the text
+#      unclassified.
 #   3  PUSHED, NOT CONFIRMED: <sha> (Amendment 23 S4, its one cause). The write
 #      committed and pushed — or its push timed out, and a hung push often
 #      lands — and the read-back could not confirm the commit on origin: the
@@ -2425,13 +2426,15 @@ delete_lines() {   # <line numbers, one per line, any order>
 # is relayed as 2. Anything else that is not one answer this file can read
 # exits 69, nothing written (`append_line_classify_failed`): no `lanes-index`
 # to run; an exit other than 0 and 2 (64, which a `lanes-index` with no
-# `classify` gives, a crash, a signal); or an exit 0 without exactly one
-# LF-ended line of five non-empty tab-separated fields of printable ASCII,
-# whose `<slot_role>` is `take`, `close` or `-` and whose `<utc_ts>` is `-` or
-# whole seconds (contract §2.7, "No other code … as 69 for a failed read";
-# §2.8). Its stdout and stderr go to files, as the mode question's do, so a
-# stand-in that leaves a child behind holds no pipe open here. No timer: the
-# contract gives this call none, and it makes no database call.
+# `classify` gives, a crash, a signal, its timer's 124 or 137); or an exit 0
+# without exactly one LF-ended line of five non-empty tab-separated fields of
+# printable ASCII, whose `<slot_role>` is `take`, `close` or `-` and whose
+# `<utc_ts>` is `-` or whole seconds (contract §2.7, "No other code … as 69
+# for a failed read"; §2.8). Its stdout and stderr go to files, as the mode
+# question's do, so a stand-in that leaves a child behind holds no pipe open
+# here. Its timer is the mode question's, `timeout -k 1 2` where `timeout` is
+# installed, and the call runs unbounded where it is not, as that one does
+# (lane 3's ruling, #165 6754806910; contract §2.4's `mode` row).
 append_line_primary_refusals() {   # <text>
   alc_why=""; alc_rc=0; alc_out=""; alc_odd=0; alc_said=""; alc_dir=""
   alc_bin="$(lanes_index_bin)"
@@ -2444,7 +2447,11 @@ append_line_primary_refusals() {   # <text>
     elif ! printf '%s\n' "$1" >"$alc_dir/in" 2>/dev/null; then
       alc_why="could not be asked: the text could not be written to $alc_dir/in"
     else
-      "$alc_bin" register classify <"$alc_dir/in" >"$alc_dir/out" 2>"$alc_dir/err" || alc_rc=$?
+      if command -v timeout >/dev/null 2>&1; then
+        timeout -k 1 2 "$alc_bin" register classify <"$alc_dir/in" >"$alc_dir/out" 2>"$alc_dir/err" || alc_rc=$?
+      else
+        "$alc_bin" register classify <"$alc_dir/in" >"$alc_dir/out" 2>"$alc_dir/err" || alc_rc=$?
+      fi
       # WHAT IT SAID, AS ONE LINE, as the mode question reads it.
       alc_said="$(head -c 1000 -- "$alc_dir/err" 2>/dev/null | tr '\n\r\t' '   ' | tr -d '\000-\037' || :)"
       while [ "${alc_said% }" != "$alc_said" ]; do alc_said="${alc_said% }"; done
@@ -2463,6 +2470,10 @@ append_line_primary_refusals() {   # <text>
     [ -n "$alc_said" ] || alc_said="lanes-index printed no text"
     die "on primary, append-line asks lanes-index register classify whether its text is one of the four it refuses, and lanes-index refused (exit 2): $alc_said. Nothing was written, and the lock was not taken." 2
   fi
+  case "$alc_rc" in
+    124) append_line_classify_failed "did not answer within 2 s, and was stopped (exit 124)" ;;
+    137) append_line_classify_failed "was killed (exit 137): by its 2 s timer after it ignored the stop, or by a signal" ;;
+  esac
   [ "$alc_rc" = 0 ] || append_line_classify_failed "exited $alc_rc${alc_said:+ ($alc_said)}"
   [ "$alc_odd" = 0 ] ||
     append_line_classify_failed "exited 0 with an answer holding a byte that is not printable ASCII, a tab or a line feed"
@@ -4045,10 +4056,11 @@ index_nudge() {
 # the rule `index_open` has always used. A test's stand-in goes where it looks
 # first, beside a COPY of this file that also has the `repos.tsv` and
 # `lane-start` this file reads from `$SCRIPT_DIR`, so nothing installed runs.
-# Prints the path, or nothing where there is none. It resolves every
-# `lanes-index` call on the mode and SQL paths: `index_open` and the writers'
-# mode question here. `index_nudge` above keeps PATH alone, for the reason its
-# comment gives (lane 3's ruling on T409's item 8, #165 6747281902).
+# Prints the path, or nothing where there is none. Every `lanes-index` call
+# on the mode and SQL paths resolves through it, whichever function makes the
+# call, so this comment names none of them. `index_nudge` above keeps PATH
+# alone, for the reason its comment gives (lane 3's ruling on T409's item 8,
+# #165 6747281902).
 lanes_index_bin() {
   if [ -x "$SCRIPT_DIR/lanes-index" ]; then
     printf '%s\n' "$SCRIPT_DIR/lanes-index"
