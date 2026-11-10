@@ -2447,10 +2447,17 @@ append_line_primary_refusals() {   # <text>
     elif ! printf '%s\n' "$1" >"$alc_dir/in" 2>/dev/null; then
       alc_why="could not be asked: the text could not be written to $alc_dir/in"
     else
+      # IN A SUBSHELL THAT ENDS IN `exit`, ITS OWN STDERR DROPPED (lane 3's
+      # ruling, #165 6755027994): a call that a signal ends, the timer's KILL
+      # or another, is waited for in there, so bash's job notice ("Killed")
+      # goes nowhere and this shell reads the plain 137. The `exit` is what
+      # makes bash fork: a lone command in `( … )`, with or without a `;`, is
+      # exec'd in place by bash 5, and the notice comes back. The call's own
+      # stderr keeps its file.
       if command -v timeout >/dev/null 2>&1; then
-        timeout -k 1 2 "$alc_bin" register classify <"$alc_dir/in" >"$alc_dir/out" 2>"$alc_dir/err" || alc_rc=$?
+        ( timeout -k 1 2 "$alc_bin" register classify <"$alc_dir/in" >"$alc_dir/out" 2>"$alc_dir/err"; exit "$?" ) 2>/dev/null || alc_rc=$?
       else
-        "$alc_bin" register classify <"$alc_dir/in" >"$alc_dir/out" 2>"$alc_dir/err" || alc_rc=$?
+        ( "$alc_bin" register classify <"$alc_dir/in" >"$alc_dir/out" 2>"$alc_dir/err"; exit "$?" ) 2>/dev/null || alc_rc=$?
       fi
       # WHAT IT SAID, AS ONE LINE, as the mode question reads it.
       alc_said="$(head -c 1000 -- "$alc_dir/err" 2>/dev/null | tr '\n\r\t' '   ' | tr -d '\000-\037' || :)"
