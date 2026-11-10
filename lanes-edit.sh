@@ -4162,10 +4162,7 @@ utc_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 #
 # NOT HERE: the 3 for an owner still live at D7's deadline (Y:5218) is T417's,
 # with the exit-3 rule (review M8). The `tail` key's values, the done mark's
-# writer and the owed texts are T418's ("The tail, once", Y:5289). Here, a
-# record taken over that holds `tail` is never rewritten (WR_TOOK_TAIL; Y:5342;
-# lane openRepoTools-3, #165 6774499606, T412 (1)): T418 writes the done mark
-# from it as found, then removes it.
+# writer and the owed texts are T418's ("The tail, once", Y:5289).
 WR_NL="$(printf '\nx')"; WR_NL="${WR_NL%x}"; WR_CR="$(printf '\r')"
 WR_STATE=""; WR_D=""; WR_LANE=""; WR_SESSION=""; WR_VERB=""; WR_CMDLINE=""
 WR_ARGS=()
