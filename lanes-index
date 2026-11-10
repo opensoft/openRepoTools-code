@@ -4562,7 +4562,8 @@ def mirror_fetch(root: str, timeout: float | None) -> None:
 
 def mirror_register_seq(root: str, deadline: float | None = None, *,
                         skip: frozenset[str] | set[str] | None = None,
-                        passed: list | None = None) -> tuple[int, str]:
+                        passed: list | None = None,
+                        tip: str | None = None) -> tuple[int, str]:
     """`m`, the newest `Register-Seq` on `origin/<branch>` in the checkout
     `root` AS LAST FETCHED, and the commit that carries it. Nothing here
     fetches: `mirror_fetch` does, where its caller wants the fetch.
@@ -4588,9 +4589,17 @@ def mirror_register_seq(root: str, deadline: float | None = None, *,
     fails or the deadline passes; of kind `no-seq` where no commit on that
     first-parent line carries a `Register-Seq` that counts, or the newest
     that does carries one that is not a whole number. `outage declare` reads
-    its `mirror-seq=` with it after a fetch (F11), with no skip set."""
-    tip = tip_of(root)
-    ref = f"origin/{branch()}"
+    its `mirror-seq=` with it after a fetch (F11), with no skip set.
+
+    `tip`, where given, is the commit the walk starts from in place of
+    `origin/<branch>`'s tip: `import --at <M> --after-loss` (T115) takes `M`'s
+    newest `Register-Seq` (D22), and checks itself that `M` is on origin.
+    Without it, the walk is what it always was."""
+    if tip is None:
+        tip = tip_of(root)
+        ref = f"origin/{branch()}"
+    else:
+        ref = tip[:12]
     resolved = frozenset(skip or ())
     over: list = []
     walked = 0
@@ -13112,6 +13121,972 @@ def _export_worktrees(out_dir: str, cfg: dict, unusable) -> int:
     return 0
 
 
+# ================================================== the import (feature 007, T115)
+#
+# `LANES-INDEX IMPORT --AT <C>` (operations.md §2.2's act 4, step 6, and act 3's
+# step 8; §2.3's disaster path; design.md S5's "Import", D22, D24 and §1.3's
+# kinds table; FR-049, FR-052, FR-053; L1-A13). The operator lane runs it with
+# `LANES_LANE=` its name, through its own checkout (D24, Y:653; F12):
+# `LANES_REPO` where the operator names one, as `lanes-edit.sh` honours it,
+# else `lanes-edit.sh lane-checkout <lane>`'s `<W>-lanes/<lane>/`, and never
+# `W`. It takes origin only (Q4(c)(i)): after a fetch (`LANES_NO_FETCH=1`
+# skips it), `C` must be on `origin/<branch>`, and only `C`'s objects are read,
+# never a working tree or a local commit.
+#
+# ITS FOUR STEPS. None holds a transaction across a git act (F23): each
+# database call is one request, and git runs only between them.
+#   1. THE READ, one REPEATABLE READ request under D9's import row (Y:3530):
+#      the version window, the switch, which must read `files` with the marker
+#      `absent`, the head, the journal's shape and the database's clock.
+#   2. THE ENTRY. `C`'s render set, read strictly from origin's objects, and
+#      refused where a file cannot be held: not UTF-8, a CR (a line ending the
+#      renderer cannot reproduce) or a NUL. Then the import's one `commit_write`
+#      entry, derived through T112's helpers and nothing else (ERR-49): every
+#      line a `create` or an `append`; `files` with `C`'s digests; `lanes` by
+#      `_register_lane_row`; `log_lines` by `_register_log_row`, so the `WORD`
+#      lines stay verbatim and flagged (Q4(d)(i)); `register_lines` by
+#      `register_slot_rows`, the walk run ONCE over `lanes/LANES.md` in line
+#      order (ERR-53); `object_holds` by `_register_last_hold`; `repo_key` in
+#      Rule 6's order; a NULL workstation fallback; `owner` sent NULL. A live
+#      claim pair already at `C` is marked `exempt` (§1.2). Under
+#      `--after-loss` the entry's `root_seq` is `M`'s newest `Register-Seq`,
+#      `m` (D22; ops §2.3).
+#   3. THE STAGING SCHEMA AND THE PROOF. REGISTER-WRITER can make no schema and
+#      no temporary table: the role block revokes ALL on the database from
+#      PUBLIC, and grants the writer CONNECT, USAGE, SELECT and EXECUTE on six
+#      functions (design §1.4). So the staged tables are the register schema's
+#      own, inside ONE SERIALIZABLE transaction that its own request rolls
+#      back: `commit_write` loads the entry there, LR010's key check included
+#      (lane 3's ruling, #165 6711924759), the same request reads the staged
+#      rows, and ROLLBACK ends it. Nobody else ever sees them. The proof, R3's
+#      three parts, outside any transaction (`import_proof`):
+#        - a blob id per path: T301's scratch render (`register_images` over
+#          the staged journal rows, written by `register_write_images`) is
+#          hashed by `git hash-object`, never `-w`, and each id, and the set of
+#          paths, must equal `C`'s render set's; and `render_file`'s digest of
+#          every staged path equals `C`'s;
+#        - the counts: each staged table's count equals the rows the entry sent,
+#          and the count the files give: `files`, `doc_lines`, #160's
+#          `build_records`' `log_lines` (its unreadable ones too) and
+#          `register_lines`, and the lanes `row_name` finds a row for;
+#        - the same answers for every lane from the files and from SQL. A
+#          reader on primary runs today's parser on SQL's images (D17), which
+#          the first part proves byte-identical, so its answers are the files'.
+#          The structured rows each lane's reads and rules rest on are compared
+#          with #160's: every lane's `lanes` row with `build_records`' record,
+#          and the `holds` view with #160's `holds` rule over `build_records`'
+#          `log_lines`.
+#      Any difference refuses with `EXIT_IMPORT_REFUSED`, 2, naming the first
+#      differing path, and nothing is swapped in. `--dry-run`, the rehearsal's
+#      (ops act 3, step 8), ends here.
+#   4. THE SWAP: the same entry, under the same write id, in one short
+#      transaction, the commit call's form (contract §2.3), with nothing but
+#      the call inside it. `commit_write`'s step 8 proves every file again
+#      against the digests the proof checked, so it commits only the bytes the
+#      proof saw. A re-import before a confirmed cutover replaces seq 0 (or the
+#      after-loss root `m`); after a rollback it continues at the next seq
+#      (§1.3). The switch stays `files` (D24).
+# A scratch schema, `register_schema=`, serves the rehearsal: the import
+# reads and writes only the schema the configuration names.
+#
+# ITS ENDS (contracts/exit-codes.md §3.2, §4): 0 proven and swapped in, or
+# proven under `--dry-run`; 2 (`EXIT_IMPORT_REFUSED`, T102's code) for a
+# failed proof, LR010, a source that is not origin, a switch not at `files`,
+# a file it cannot hold, a refused configuration (Q6(c) included) and each of
+# its own refusals, with nothing swapped in; 69 for a database that cannot be
+# reached or refuses, or a 330 s timer that expires; 64 for usage.
+
+#: PC-10'S CODE FOR THE IMPORT'S REFUSAL (contracts/exit-codes.md §1 and §4;
+#: T102): 2, with nothing swapped in.
+EXIT_IMPORT_REFUSED = 2
+
+#: THE ONE READ before the staged load, in one REPEATABLE READ snapshot, as
+#: REGISTER-WRITER under D9's import row: the version window, the switch, the
+#: head, the journal's size, its chained entries and its root's seq, and the
+#: database's clock, for `not_after` (F3).
+_IMPORT_READS = (
+    "SELECT version, writers_from, readers_from FROM schema_version WHERE id = 1",
+    "SELECT mode, marker_state, generation, database_label, set_seq FROM register_switch "
+    "WHERE id = 1",
+    "SELECT seq FROM register_head WHERE id = 1",
+    "SELECT count(*), count(*) FILTER (WHERE base_seq IS NOT NULL), "
+    "min(seq) FILTER (WHERE base_seq IS NULL) FROM journal",
+    "SELECT extract(epoch FROM clock_timestamp())",
+)
+
+#: The staged reads after T301's five (`register_render_queries`), in the
+#: staging request's order: `render_file`'s digests, the counts, the lanes,
+#: the holds, the open slots, and the database's clock, for the swap's
+#: `not_after`.
+_IMPORT_STAGED_READS = (
+    "SELECT path, encode(sha256(render_file(path)), 'hex') FROM files ORDER BY path",
+    "SELECT (SELECT count(*) FROM files), (SELECT count(*) FROM doc_lines), "
+    "(SELECT count(*) FROM lanes), (SELECT count(*) FROM log_lines), "
+    "(SELECT count(*) FROM log_lines WHERE unreadable), (SELECT count(*) FROM register_lines), "
+    "(SELECT count(*) FROM register_lines WHERE slot_role IS NOT NULL), "
+    "(SELECT count(*) FROM object_holds), (SELECT count(*) FROM object_holds WHERE exempt)",
+    "SELECT l.lane_key, l.lane, l.aliases::text, l.home, l.workstation, l.started_utc, "
+    "l.handoff_path, l.state_phrase, l.objects_cell, l.session_ids::text, l.last_session, "
+    "l.archived, d.path FROM lanes l LEFT JOIN doc_lines d ON d.line_id = l.row_line_id "
+    "ORDER BY l.lane_key",
+    "SELECT object, lane_key, verb, file, ordinal FROM holds ORDER BY object, lane_key",
+    "SELECT slot_kind, count(*) FROM main_slots GROUP BY slot_kind ORDER BY slot_kind",
+    "SELECT extract(epoch FROM clock_timestamp())",
+)
+
+#: The `lanes` fields part 3 compares with #160's `build_records`, in the
+#: staged read's column order after `lane_key`.
+_IMPORT_LANE_FIELDS = ("lane", "aliases", "home", "workstation", "started_utc", "handoff_path",
+                       "state_phrase", "objects_cell", "session_ids", "last_session",
+                       "archived")
+
+#: The counts `_IMPORT_STAGED_READS`' second read gives, in its order.
+_IMPORT_COUNTS = ("files", "doc_lines", "lanes", "log_lines", "unreadable", "register_lines",
+                  "slots", "object_holds", "exempt")
+
+#: How many differences a refusal lists after the first.
+_IMPORT_SHOWN = 20
+
+_IMPORT_USAGE = f"""\
+{PROG} import --at <C>               load the register's files at C, prove, then swap in
+{PROG} import --at <C> --dry-run     the same load and proof, and nothing swapped in
+{PROG} import --at <M> --after-loss  after a loss: the baseline is M's Register-Seq
+
+Loads the SQL register from the workspace repository's files at commit C, as
+origin holds them (operations.md §2.2, act 4's step 6), into a staged
+transaction it rolls back; proves the staged register renders C's render set
+byte for byte, with the same counts and the same answers for every lane (R3's
+three-part proof); and only then swaps the same entry in, in one short
+transaction. The switch stays files. Run it as the operator lane, with
+LANES_LANE=<lane>, from that lane's checkout: LANES_REPO, else the one
+`lanes-edit.sh lane-checkout <lane>` names, never W. It fetches origin first
+unless LANES_NO_FETCH=1. A scratch register_schema= serves the rehearsal.
+
+  --at <C>       the commit, its full sha, on origin/<branch>
+  --dry-run      the rehearsal: everything but the swap
+  --after-loss   the disaster path's re-import, after the replacement's
+                 bootstrap: the journal's root is M's newest Register-Seq (D22)
+
+Exit: 0 proven and swapped in (or proven, with --dry-run) · 2 refused, nothing
+swapped in · 64 usage · 69 the register cannot be reached or refused, or the
+call's timer expired."""
+
+
+class _ImportUsage(Exception):
+    """An `import` command line that is not its usage: 64, before anything is
+    read."""
+
+
+class _ImportEnd(Exception):
+    """An end of `import` but 0 that is not a refusal of its own: its code,
+    its own line, and psql's lines, which go first, verbatim (register-cli
+    §2.6)."""
+
+    def __init__(self, code: int, message: str, psql_lines: tuple = (), notes: tuple = ()):
+        super().__init__(message)
+        self.code = code
+        self.psql_lines = psql_lines
+        self.notes = notes
+
+
+def _import_args(args: list[str]) -> dict | None:
+    """The import's flags; None for `--help`. `--at` takes the commit's full
+    sha, 40 hex digits, read in lower case. `--dry-run` and `--after-loss`
+    each stand alone (USAGE: `[--dry-run | --after-loss]`)."""
+    opts: dict = {"at": None, "dry_run": False, "after_loss": False}
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("-h", "--help"):
+            return None
+        name, eq, value = arg.partition("=")
+        if name == "--at":
+            if not eq:
+                value = args[i + 1] if i + 1 < len(args) else ""
+                i += 1
+            if opts["at"] is not None:
+                raise _ImportUsage("import: --at is given twice")
+            if not re.fullmatch(r"[0-9A-Fa-f]{40}", value):
+                raise _ImportUsage("import: --at takes the commit's full sha, 40 hex digits")
+            opts["at"] = value.lower()
+        elif arg in ("--dry-run", "--after-loss"):
+            key = arg[2:].replace("-", "_")
+            if opts[key]:
+                raise _ImportUsage(f"import: {arg} is given twice")
+            opts[key] = True
+        else:
+            raise _ImportUsage(f"import: unknown argument '{arg}'")
+        i += 1
+    if opts["at"] is None:
+        raise _ImportUsage("import needs --at <C>")
+    if opts["dry_run"] and opts["after_loss"]:
+        raise _ImportUsage("import: --dry-run and --after-loss are each a form of their own")
+    return opts
+
+
+def cmd_import(args: list[str]) -> int:
+    """`lanes-index import` (above): its exits, by the contract's constants."""
+    try:
+        opts = _import_args(args)
+    except _ImportUsage as exc:
+        note(f"{exc} - see {PROG} import --help")
+        return EXIT_USAGE
+    if opts is None:
+        say(_IMPORT_USAGE)
+        return EXIT_OK
+    try:
+        return _import(opts)
+    except Refusal as exc:
+        note(f"REFUSED: {exc}")
+        return EXIT_IMPORT_REFUSED
+    except _ImportEnd as exc:
+        for line in exc.psql_lines:
+            sys.stderr.write(line + "\n")
+        note(str(exc))
+        for text in exc.notes:
+            note(text)
+        return exc.code
+    except StoreUnusable as exc:
+        note(f"import: {exc.kind}: {exc.detail}; nothing was swapped in")
+        return EXIT_UNAVAILABLE
+
+
+def _import(opts: dict) -> int:
+    commit, after_loss, dry_run = opts["at"], opts["after_loss"], opts["dry_run"]
+    timing: dict = {}
+
+    def lap(name: str, since: float) -> float:
+        now = time.monotonic()
+        timing[name] = now - since
+        return now
+
+    t0 = time.monotonic()
+    # BEFORE ANYTHING CONNECTS: the configuration, whose writer it is, and
+    # where it reads (F12; Rule 10; D24).
+    cfg = load_config()
+    lane = _import_lane()
+    workstation = _import_workstation()
+    root = _import_checkout(lane)
+    author = _import_author(root)
+    store = PostgresStore(cfg, "register_writer")
+    shipped = register_shipped_repos_text()
+    t = lap("setup", t0)
+
+    # 1. THE READ.
+    st = _import_read(store)
+    read_at = time.monotonic()
+    t = lap("read", t)
+    if (st["mode"], st["marker"]) != ("files", "absent"):
+        raise Refusal(f"import: the switch reads {st['mode']} with the marker {st['marker']}, "
+                      f"and an import runs only at files with the marker absent (§1.3's kinds "
+                      f"table): after a cutover, the rollback comes first; nothing was "
+                      f"swapped in")
+
+    # 2. THE ENTRY: origin's objects alone, then T112's derivation.
+    source = _import_source(root, commit, fetch=os.environ.get("LANES_NO_FETCH") != "1")
+    m = _import_after_loss_seq(root, commit) if after_loss else None
+    if st["chained"]:
+        if after_loss:
+            raise Refusal(f"import: --after-loss loads a replacement whose journal holds at "
+                          f"most an import's root, and this one holds {st['entries']} entries, "
+                          f"chained to seq {st['head']}: it is not the re-import route's "
+                          f"fresh database (D22; ops §2.3); nothing was swapped in")
+        base, seq = st["head"], st["head"] + 1
+    else:
+        if not after_loss and st["root"] not in (None, 0):
+            raise Refusal(f"import: the journal's root is an after-loss import at seq "
+                          f"{st['root']}, and a plain re-import would take seq 0, under the "
+                          f"Register-Seq that main already carries: re-import with --after-loss "
+                          f"(D22); nothing was swapped in")
+        base, seq = st["head"], (m if after_loss else 0)
+    try:
+        records = build_records(read_snapshot(root, commit))
+    except StoreUnusable as exc:
+        raise Refusal(f"import: {commit[:12]}'s files cannot be read as #160's parser reads "
+                      f"them ({exc.detail}); nothing was swapped in")
+    t = lap("source", t)
+    timer = store.bounds("import")[1]
+    entry = import_entry(source, root=root, lane=lane, workstation=workstation, author=author,
+                         shipped_repos=shipped, root_seq=m,
+                         not_after=_import_not_after(st["clock"], read_at, timer))
+    t = lap("derive", t)
+    for warning in source["warnings"]:
+        sys.stderr.write(warning + "\n")
+
+    # 3. THE STAGING SCHEMA AND THE PROOF.
+    from uuid import uuid4
+    write_id = str(uuid4())
+    staged = _import_stage(store, base, st["generation"], write_id, entry, seq)
+    staged_at = time.monotonic()
+    t = lap("staged load with LR010's key check", t)
+    differences = import_proof(source, staged, entry, records, root)
+    t = lap("proof", t)
+    if differences:
+        first_path, first_why = differences[0]
+        more = [f"import: also {path or 'the counts'}: {why}"
+                for path, why in differences[1:1 + _IMPORT_SHOWN]]
+        if len(differences) > 1 + _IMPORT_SHOWN:
+            more.append(f"import: and {len(differences) - 1 - _IMPORT_SHOWN} more")
+        raise _ImportEnd(EXIT_IMPORT_REFUSED, f"REFUSED: import: the proof failed at "
+                         f"{first_path or 'the counts'}: {first_why}; R3's three-part proof "
+                         f"did not hold, so nothing was swapped in (S5)", notes=tuple(more))
+    counts = staged["counts"]
+    summary = (f"{len(source['render'])} paths, {counts['doc_lines']} lines, "
+               f"{counts['lanes']} lanes, {counts['log_lines']} log lines "
+               f"({counts['unreadable']} unreadable, kept verbatim and flagged), "
+               f"{counts['register_lines']} register lines ({counts['slots']} with a slot), "
+               f"{counts['object_holds']} holds ({counts['exempt']} exempt); "
+               f"main_slots open: " + (", ".join(f"{kind} {n}" for kind, n in staged["open"])
+                                       or "none"))
+    if dry_run:
+        say(f"import: dry run: the proof holds at seq {seq}, {commit} (lanes tree "
+            f"{source['tree']}): {summary}; nothing was swapped in")
+        _import_timing(timing)
+        return EXIT_OK
+
+    # 4. THE SWAP.
+    entry["not_after"] = _import_not_after(staged["clock"], staged_at, timer)
+    got = _import_swap(store, base, st["generation"], write_id, entry)
+    lap("swap", t)
+    if got != seq:
+        raise _ImportEnd(EXIT_UNAVAILABLE, f"import: the swap committed at seq {got}, and the "
+                         f"staged load proved seq {seq}: the head moved between them; rerun the "
+                         f"import, which replaces it")
+    say(f"import: seq {seq} swapped in, {'the after-loss baseline, ' if after_loss else ''}"
+        f"{commit} (lanes tree {source['tree']}): {summary}; the switch stays files, and the "
+        f"cutover follows on Brett's word")
+    _import_timing(timing)
+    return EXIT_OK
+
+
+def _import_timing(timing: dict) -> None:
+    """THE IMPORT'S TIME, by step (lane 3's ruling, #165 6711924759: the key
+    check's cost is the import's, and the rehearsal measures it): the staged
+    load carries LR010's key check inside its `commit_write`, and the swap
+    carries it again. REGISTER-WRITER cannot call the check alone."""
+    say("import: timing: " + ", ".join(f"{name} {secs * 1000:.0f} ms"
+                                       for name, secs in timing.items()))
+
+
+def _import_not_after(clock: float, read_at: float, timer: float) -> str:
+    """`not_after` (F3) for a call starting now: the database's clock as last
+    read, plus the seconds since on this host's monotonic clock, plus the
+    call's client timer and 2 s (D9's import row; lane 1's v2.6)."""
+    now = clock + (time.monotonic() - read_at)
+    return _dt.datetime.fromtimestamp(now + timer + 2, _dt.timezone.utc).isoformat()
+
+
+def _import_lane() -> str:
+    """The operator lane, `LANES_LANE` (F12; Amendment 23's S2, "no lane, no
+    write"): the entry's `lane`. Unset, or not a lane's name, is refused (2)."""
+    lane = os.environ.get("LANES_LANE", "").strip()
+    if not lane:
+        raise Refusal("import: LANES_LANE is not set: the import writes for the operator lane, "
+                      "so it runs with LANES_LANE=<operator lane>, through that lane's checkout "
+                      "(D24; Amendment 23's S2, \"no lane, no write\"); nothing was swapped in")
+    if re.search(r"[\s<>@]", lane) or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in lane):
+        raise Refusal("import: LANES_LANE is not a lane's name: it holds a space, a control "
+                      "character, '<', '>' or '@'; nothing was swapped in")
+    return lane
+
+
+def _import_workstation() -> str:
+    """This workstation's name (Rule 10), the entry's `workstation`, as the
+    cutover reads it: `$LANES_WORKSTATION`, else `lanes-edit.sh workstation`.
+    A container with no name, or a name that cannot be read, is refused (2)."""
+    name = os.environ.get("LANES_WORKSTATION", "")
+    if not name:
+        try:
+            name, how = this_workstation()
+        except StoreUnusable as exc:
+            raise Refusal(f"import: this workstation's name cannot be read ({exc.detail}); "
+                          f"nothing was swapped in")
+        if how == "container-unset":
+            raise Refusal("import: this is a container and LANES_WORKSTATION is not set, so the "
+                          "import's entry would be stamped with the container's own id "
+                          "(Amendment 11, R-A11-14); nothing was swapped in")
+    if not name.strip() or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in name):
+        raise Refusal("import: this workstation's name is empty or holds a control character; "
+                      "nothing was swapped in")
+    return name
+
+
+def _import_checkout(lane: str) -> str:
+    """THE OPERATOR LANE'S CHECKOUT (D24, Y:653): `LANES_REPO` where it is set,
+    the operator's override that `lanes-edit.sh` honours too, else the
+    checkout `lanes-edit.sh lane-checkout <lane>` names, `<W>-lanes/<lane>/`.
+    Returns its top directory. Never `W`: a `LANES_REPO` that is `W` is
+    refused (2), where `W` can be read at all; so is a directory that is not
+    a git checkout, or a lane with no checkout of its own."""
+    named = os.environ.get("LANES_REPO", "")
+    if named:
+        where = named
+    else:
+        try:
+            proc = _helper_run(["lane-checkout", lane], 60, f"lane {lane}'s checkout")
+        except StoreUnusable as exc:
+            raise Refusal(f"import: lane {lane}'s checkout cannot be found ({exc.detail}); "
+                          f"nothing was swapped in")
+        where = proc.stdout.strip()
+        if proc.returncode != 0 or not where:
+            why = (proc.stderr.strip().splitlines() or ["no answer"])[0].strip()
+            raise Refusal(f"import: lane {lane} has no checkout of its own (`lanes-edit.sh "
+                          f"lane-checkout {lane}` exited {proc.returncode}: {why}). Make it "
+                          f"with `lanes-edit.sh lane-checkout {lane} --create`, or name one with "
+                          f"LANES_REPO; the import never reads W (D24); nothing was swapped in")
+    top = git(where, "rev-parse", "--show-toplevel", check=False)
+    root = top.stdout.strip()
+    if top.returncode != 0 or not root:
+        raise Refusal(f"import: {where} is not a git checkout, so origin's objects cannot be "
+                      f"read through it; nothing was swapped in")
+    if named:
+        try:
+            w = workspace_root()
+        except StoreUnusable:
+            w = ""
+        if w and os.path.realpath(w) == os.path.realpath(root):
+            raise Refusal(f"import: LANES_REPO names W itself ({root}); the import reads "
+                          f"origin through the operator lane's own checkout, never W (D24); "
+                          f"nothing was swapped in")
+    return root
+
+
+def _import_author(root: str) -> str:
+    """The entry's `author`, `Name <email>`: the identity git would record for
+    a commit in the operator lane's checkout, `git var GIT_AUTHOR_IDENT`, less
+    its date, as the cutover takes its own. Where git names none, it is
+    refused (2), since the journal holds no entry without one."""
+    try:
+        proc = subprocess.run(["git", "-C", root, "var", "GIT_AUTHOR_IDENT"],
+                              capture_output=True, encoding="utf-8", errors="replace",
+                              check=False, stdin=subprocess.DEVNULL, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Refusal(f"import: git could not name the import's author ({exc}); nothing was "
+                      f"swapped in")
+    match = re.fullmatch(r"([^<>\n]+ <[^<>\n]*>) [0-9]+ [+-][0-9]{4}", proc.stdout.strip())
+    if proc.returncode != 0 or not match:
+        raise Refusal(f"import: git names no author in {root}: set user.name and user.email "
+                      f"there; nothing was swapped in")
+    return match.group(1)
+
+
+def _import_source(root: str, commit: str, *, fetch: bool) -> dict:
+    """`import_source` with every git failure a refusal (2): a fetch that
+    fails, or objects that cannot be read, leave origin's `C` unproven."""
+    try:
+        return import_source(root, commit, fetch=fetch)
+    except StoreUnusable as exc:
+        raise Refusal(f"import: origin's {commit[:12]} cannot be read through {root} "
+                      f"({exc.detail}); nothing was swapped in")
+
+
+def import_source(root: str, commit: str, *, fetch: bool) -> dict:
+    """ORIGIN'S `C`, AND NOTHING ELSE (Q4(c)(i); S5): the render set at
+    `commit` as the checkout `root` holds origin's objects.
+
+    With `fetch`, `git fetch origin <branch>` first (`mirror_fetch`, bounded
+    by `LANES_GIT_TIMEOUT`). `commit` must then be a commit there that
+    `origin/<branch>` contains, else `Refusal`: a local or unpushed commit is
+    no source. The repository must be a sha1 one, whose ids the journal's
+    CHECKs take.
+
+    Each render-set path's bytes must be a file the register can hold, else
+    `Refusal` naming the path, and its line where there is one: UTF-8, read
+    strictly; no CR, since a line holds none (`doc_lines`' CHECK) and the
+    renderer ends each line with LF alone; no NUL; and a path with no control
+    character.
+
+    Returns `commit`; `tree`, `C:lanes`'s id; `blobs`, `{path: blob id}` of
+    the render set and `lanes/repos.tsv`; `render`, the render set's paths
+    sorted bytewise; `data` and `texts`, each path's bytes and text; `lines`,
+    each path's `(lines, final_newline)` by `register_doc_lines`; and
+    `warnings`, `parse_log`'s `unreadable:` lines for the logs (Q4(d)(i)'s
+    warning)."""
+    if fetch:
+        mirror_fetch(root, mirror_git_timeout())
+    if not has_commit(root, commit):
+        raise Refusal(f"import: {commit} is not a commit that {root} holds, so it is not "
+                      f"origin's (Q4(c)(i)): fetch, or name origin/{branch()}'s; nothing was "
+                      f"swapped in")
+    tip = tip_of(root)
+    if not is_ancestor(root, commit, tip):
+        raise Refusal(f"import: {commit} is not on origin/{branch()} (its tip is {tip}): the "
+                      f"import takes origin's commits only, never a local one (Q4(c)(i)); "
+                      f"nothing was swapped in")
+    tree = git(root, "rev-parse", "--verify", "-q", f"{commit}:lanes", check=False).stdout.strip()
+    if not SHA_RE.match(tree):
+        raise Refusal(f"import: {commit} has no lanes tree, or it is not a sha1 id; nothing was "
+                      f"swapped in")
+    blobs: dict = {}
+    proc = git(root, "ls-tree", "-r", "-z", commit, "--", LANES_DIR)
+    for item in proc.stdout.split("\0"):
+        if not item:
+            continue
+        meta, _, path = item.partition("\t")
+        _mode, kind, obj = meta.split()
+        if kind == "blob" and (register_render_path(path) or path == REGISTER_REPOS_PATH):
+            blobs[path] = obj
+    render = sorted((p for p in blobs if register_render_path(p)), key=lambda p: p.encode("utf-8"))
+    if REGISTER_PATH not in blobs:
+        raise Refusal(f"import: {commit} carries no {REGISTER_PATH}; nothing was swapped in")
+    if REGISTER_REPOS_PATH in blobs and not SHA_RE.match(blobs[REGISTER_REPOS_PATH]):
+        raise Refusal(f"import: {REGISTER_REPOS_PATH}'s id at {commit[:12]} is not a sha1 id; "
+                      f"nothing was swapped in")
+    contents = cat_blobs(root, [blobs[p] for p in render])
+    data, texts, lines, warnings = {}, {}, {}, []
+    for path in render:
+        if _RENDER_CONTROL_RE.search(path):
+            raise Refusal(f"import: {path!r} holds a control character in its name, so no image "
+                          f"can be written for it; nothing was swapped in")
+        raw = contents.get(blobs[path])
+        if raw is None:
+            raise Refusal(f"import: {path}'s blob {blobs[path]} cannot be read in {root}; "
+                          f"nothing was swapped in")
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise Refusal(f"import: {path} is not UTF-8 at byte {exc.start}, so the register "
+                          f"cannot hold it byte for byte; nothing was swapped in")
+        for char, what in (("\r", "a carriage return (CR): a line ending the renderer cannot "
+                                  "reproduce, since it ends each line with LF alone"),
+                           ("\x00", "a NUL, which a line cannot hold")):
+            at = text.find(char)
+            if at >= 0:
+                raise Refusal(f"import: {path} line {text.count(chr(10), 0, at) + 1} holds "
+                              f"{what}; nothing was swapped in")
+        data[path], texts[path] = raw, text
+        lines[path] = register_doc_lines(text)
+        if path.startswith(LOG_PREFIX):
+            warnings += parse_log(path, text)[1]
+    return {"commit": commit, "tree": tree, "blobs": blobs, "render": render, "data": data,
+            "texts": texts, "lines": lines, "warnings": warnings}
+
+
+def _import_after_loss_seq(root: str, commit: str) -> int:
+    """`m` for `--after-loss` (D22; ops §2.3): the newest `Register-Seq` on
+    `M`'s first-parent line, `M` the commit imported, read by
+    `mirror_register_seq` from `M`, with no skip set, since the journal that
+    named the resolved strays is lost. None found is refused (2): a register
+    never cut over has no mirror seq to continue from."""
+    timeout = mirror_git_timeout()
+    try:
+        m, _carrier = mirror_register_seq(
+            root, None if timeout is None else time.monotonic() + timeout, tip=commit)
+    except StoreUnusable as exc:
+        raise Refusal(f"import: --after-loss takes {commit[:12]}'s newest Register-Seq as its "
+                      f"baseline (D22), and it cannot be read ({exc.detail}); nothing was "
+                      f"swapped in")
+    return m
+
+
+def register_import_exempt(holds: list) -> int:
+    """`object_holds.exempt` for an import (§1.2: "set only by an import, on a
+    pair already at C"): each live claim on an object that more than one lane
+    holds live at `C` is marked exempt, so `one_live_claim` does not refuse
+    the history it was not there to see, while a later claim over any live
+    imported claim is still caught. A claim is live, as `one_live_claim`
+    reads it, where its verb is CLAIMED or TAKEOVER and no other lane's last
+    line on the object is a TAKEOVER (`superseded_by`). `holds` are
+    `_register_last_hold`'s rows, changed in place. Returns how many it
+    marked."""
+    by_object: dict = {}
+    for row in holds:
+        by_object.setdefault(row["object"], []).append(row)
+    marked = 0
+    for rows in by_object.values():
+        live = [row for row in rows if row["verb"] in _REGISTER_CLAIM_VERBS
+                and not any(other["lane_key"] != row["lane_key"] and other["verb"] == "TAKEOVER"
+                            for other in rows)]
+        if len(live) > 1:
+            for row in live:
+                row["exempt"] = True
+                marked += 1
+    return marked
+
+
+def import_entry(source: dict, *, root: str, lane: str, workstation: str, author: str,
+                 not_after: str, shipped_repos: str | None, root_seq: int | None = None) -> dict:
+    """THE IMPORT'S ENTRY, as `commit_write` takes it (its head comment;
+    §1.3's kinds table, `import`), derived from `import_source`'s answer
+    through T112's helpers and nothing else (lane 3's reading 7, #165
+    6755386771; ERR-49):
+
+    - `journal`: kind and verb `import`, the operator `lane`, this
+      `workstation`, `author`, the message, `git_commit` `C`, `git_tree` the
+      id of `C:lanes`, and `repos_blob` `C`'s `lanes/repos.tsv`'s id;
+    - `root_seq`, under `--after-loss` only: `m` (D22);
+    - `not_after` (F3);
+    - `edits`: per render-set path, bytewise, a `create` and one `append` per
+      line, so the journal alone renders any seq from the import on;
+    - `files`: each path present, with the sha256 of `C`'s bytes and its
+      `final_newline`;
+    - `lanes`: `_register_lane_row` of every lane a row in `lanes/LANES.md`
+      or `lanes/archive/` names, with `owner` NULL;
+    - `log_lines`: `_register_log_row` of every log line, the unreadable
+      ones kept and flagged (Q4(d)(i));
+    - `register_lines`: `register_slot_rows`, the walk, run ONCE over
+      `lanes/LANES.md` in line order with a NULL workstation fallback
+      (ERR-53; Y:1273);
+    - `object_holds`: `_register_last_hold` of every (object, lane) a
+      readable log line names, never a `lane:` object, `repo_key` and D19's
+      spellings over Rule 6's table, the shipped `repos.tsv` and then `C`'s;
+      and `register_import_exempt`'s marks.
+    It carries no delete: the import clears every data table first (§1.3)."""
+    att = {"tree": root, "tree_blobs": dict(source["blobs"]), "changes": {}, "renames": {},
+           "images": {}}
+    view = RegisterView(att, {})
+    table = register_repo_table(shipped_repos, view.before(REGISTER_REPOS_PATH))
+    edits: list = []
+    files: list = []
+    log_rows: list = []
+    pairs: dict = {}
+    keys: set = set()
+    for path in source["render"]:
+        lines, final_newline = source["lines"][path]
+        edits.append({"ord": len(edits) + 1, "op": "create", "path": path, "line_no": None,
+                      "old_sha256": None, "new_text": None, "to_path": None})
+        for line_no, text in enumerate(lines, 1):
+            edits.append({"ord": len(edits) + 1, "op": "append", "path": path,
+                          "line_no": line_no, "old_sha256": None, "new_text": text,
+                          "to_path": None})
+        files.append({"path": path, "present": True,
+                      "sha256": hashlib.sha256(source["data"][path]).hexdigest(),
+                      "final_newline": final_newline})
+        if path == REGISTER_PATH or path.startswith(REGISTER_ARCHIVE_PREFIX):
+            keys.update(_register_lower(name) for name in map(row_name, lines) if name)
+        if path.startswith(LOG_PREFIX) and path != REGISTER_LOG_README:
+            for line_no, text in enumerate(lines, 1):
+                row = _register_log_row(path, line_no, text)
+                if row is None:
+                    continue
+                log_rows.append(row)
+                if not row["unreadable"] and register_hold_object(row["object"]):
+                    pairs[(row["object"], _register_lower(file_lane(path)))] = None
+    slot_rows = list(register_slot_rows(source["lines"][REGISTER_PATH][0], table, None).values())
+    aliases = _register_lane_aliases(view.before(ALIASES_PATH))
+    lane_rows = [row for row in (_register_lane_row(view, "before", key, aliases)
+                                 for key in sorted(keys)) if row is not None]
+    hold_rows = [row for row in (_register_last_hold(view, obj, key, table)
+                                 for obj, key in sorted(pairs)) if row is not None]
+    register_import_exempt(hold_rows)
+    commit, tree = source["commit"], source["tree"]
+    if root_seq is None:
+        what = f"import — the register's files at {commit[:12]}, lanes tree {tree[:12]} (S5)"
+    else:
+        what = (f"after-loss import — the register's files at {commit[:12]}, its baseline "
+                f"the mirror's Register-Seq {root_seq} (D22)")
+    entry = {"journal": {"kind": "import", "verb": "import", "lane": lane,
+                         "workstation": workstation, "author": author,
+                         "message": f"LANES({lane}@{workstation}): {what}",
+                         "git_commit": commit, "git_tree": tree,
+                         "repos_blob": source["blobs"].get(REGISTER_REPOS_PATH)},
+             "not_after": not_after, "edits": edits, "files": files, "lanes": lane_rows,
+             "log_lines": log_rows, "register_lines": slot_rows, "object_holds": hold_rows}
+    if root_seq is not None:
+        entry["root_seq"] = root_seq
+    return entry
+
+
+def _import_end(exc: PsqlFailed, what: str, *, swap: bool) -> _ImportEnd:
+    """A call that did not answer, as the import's end (contracts/exit-codes.md
+    §3.2): a refusal of the register's own, LR010's key check, a switch not
+    at `files` (LR002) or an entry that did not prove (LR004), is 2, nothing
+    swapped in; any other SQLSTATE, a call never sent or one that did not
+    answer, 69. After the swap's call, one that did not answer leaves it
+    unknown whether the swap committed: a rerun reads the register again and
+    replaces it."""
+    code, lines = _cutover_psql_lines(exc)
+    if not exc.ran:
+        return _ImportEnd(EXIT_UNAVAILABLE, f"import: the {what} was not sent ({exc.detail}); "
+                          f"nothing was swapped in", lines)
+    if exc.psql_exit == 3 and code in ("LR002", "LR004", "LR010"):
+        return _ImportEnd(EXIT_IMPORT_REFUSED, f"import: REFUSED: the {what} refused the entry "
+                          f"({code}, above); nothing was swapped in", lines)
+    if exc.psql_exit == 3 and code:
+        return _ImportEnd(EXIT_UNAVAILABLE, f"import: the database refused the {what} ({code}, "
+                          f"above); nothing was swapped in", lines)
+    if swap:
+        end = ("whether the swap committed is not known: a rerun reads the register again, and "
+               "a re-import replaces it")
+    elif what == "staged load":
+        end = "the staged load is rolled back with its session, so nothing was swapped in"
+    else:
+        end = "nothing was swapped in"
+    if exc.timer_expired:
+        return _ImportEnd(EXIT_UNAVAILABLE, f"import: the {what}'s timer expired (D9, Y:3530); "
+                          f"{end}", lines)
+    return _ImportEnd(EXIT_UNAVAILABLE, f"import: the {what} ended with psql's exit "
+                      f"{exc.psql_exit} ({exc.detail}); {end}", lines)
+
+
+def _import_read(store) -> dict:
+    """THE ONE READ (`_IMPORT_READS`), parsed, with the writers' version window
+    checked (§1.5). Every failure is 69, with nothing swapped in."""
+    try:
+        res = store._query_many(list(_IMPORT_READS), snapshot=True, row="import")
+    except PsqlFailed as exc:
+        raise _import_end(exc, "read of the register", swap=False)
+    try:
+        if len(res) != len(_IMPORT_READS):
+            raise ValueError(len(res))
+        (version,), (switch,), (head,), (journal,), (clock,) = res
+        st = {"version": int(version[0]), "writers_from": int(version[1]),
+              "readers_from": int(version[2]), "mode": switch[0], "marker": switch[1],
+              "generation": switch[2], "label": switch[3], "set_seq": int(switch[4]),
+              "head": int(head[0]), "entries": int(journal[0]), "chained": int(journal[1]) > 0,
+              "root": None if journal[2] is None else int(journal[2]), "clock": float(clock[0])}
+        if not UUID_FULL_RE.match(st["generation"] or ""):
+            raise ValueError("the switch's generation")
+    except (ValueError, TypeError, IndexError):
+        raise _ImportEnd(EXIT_UNAVAILABLE, "import: the register's answer to its read is not in "
+                         "the shape this build reads; nothing was swapped in")
+    why = register_version_refusal(st["version"], st["writers_from"], st["readers_from"],
+                                   write=True)
+    if why:
+        raise _ImportEnd(EXIT_UNAVAILABLE, f"import: {why}; nothing was swapped in")
+    return st
+
+
+def _import_call(store, base: int, generation: str, write_id: str, entry: dict) -> str:
+    """The `commit_write` call of the import's entry, in the commit's form
+    (contract §2.3), its function named in the configured schema."""
+    payload = json.dumps(entry, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return (f"SELECT {store.schema}.commit_write({int(base)}, {_pg_quote(write_id)}, "
+            f"{REGISTER_SCHEMA_VERSION}, {_pg_quote(generation)}, {_pg_quote(payload)}::jsonb)")
+
+
+def _import_stage(store, base: int, generation: str, write_id: str, entry: dict,
+                  seq: int) -> dict:
+    """THE STAGED LOAD (step 3): ONE request under D9's import row, `SET
+    search_path`, `BEGIN ISOLATION LEVEL SERIALIZABLE`, the `commit_write`
+    call, T301's five render reads at `seq` (`register_render_queries`) and
+    `_IMPORT_STAGED_READS`, each answered as COPY rows behind the marker, and
+    `ROLLBACK`. Nothing it loads outlives the request.
+
+    Returns, typed: `journal`, `edits` and `files`, for `register_images`;
+    `digests`, `{path: render_file's sha256}`; `counts`, by `_IMPORT_COUNTS`;
+    `lanes`, the staged `lanes` rows by `lane_key`; `holds`, the staged
+    `holds` view's `(object, lane_key, verb, file, ordinal)`; `open`,
+    `main_slots`' open takes by slot kind; and `clock`. A call that does not
+    answer is `_import_end`'s; an answer it cannot read is 69."""
+    reads = register_render_queries(seq) + list(_IMPORT_STAGED_READS)
+    parts = [f'SET search_path TO "{store.schema}"', "BEGIN ISOLATION LEVEL SERIALIZABLE",
+             _import_call(store, base, generation, write_id, entry), REGISTER_MARKER_COPY]
+    for query in reads:
+        parts += [f"COPY ({query}) TO STDOUT", REGISTER_MARKER_COPY]
+    parts.append("ROLLBACK")
+    try:
+        out = store.request(parts, "import")
+    except PsqlFailed as exc:
+        raise _import_end(exc, "staged load", swap=False)
+    marker = "\x1eLANES-INDEX-NEXT"
+    answers, current = [], []
+    for line in out.split("\n"):
+        if line == marker:
+            answers.append(current)
+            current = []
+        elif line != "":
+            current.append([_pg_unescape(field) for field in line.split("\t")])
+    try:
+        if len(answers) != 1 + len(reads) or current:
+            raise ValueError(f"{len(answers)} answers")
+        got = int(answers[0][0][0])
+        if got != seq:
+            raise ValueError(f"the staged load took seq {got}, not {seq}")
+        head, latest = (int(v) for v in answers[2][0])
+        if (head, latest) != (seq, seq):
+            raise ValueError(f"the staged head is {head} and its latest import {latest}")
+        staged = {"journal": _render_rows(answers[3], "journal"),
+                  "edits": _render_rows(answers[4], "journal_edits"),
+                  "files": _render_rows(answers[5], "journal_files"),
+                  "digests": {path: digest for path, digest in answers[6]}}
+        staged["counts"] = dict(zip(_IMPORT_COUNTS, (int(v) for v in answers[7][0])))
+        if len(staged["counts"]) != len(_IMPORT_COUNTS):
+            raise ValueError("the counts")
+        lanes = {}
+        for row in answers[8]:
+            fields = dict(zip(("lane_key",) + _IMPORT_LANE_FIELDS + ("path",), row))
+            for key in ("aliases", "session_ids"):
+                fields[key] = None if fields[key] is None else json.loads(fields[key])
+            fields["archived"] = fields["archived"] == "t"
+            lanes[fields["lane_key"]] = fields
+        staged["lanes"] = lanes
+        staged["holds"] = {(o, k, v, f, int(n)) for o, k, v, f, n in answers[9]}
+        staged["open"] = [(kind, int(n)) for kind, n in answers[10]]
+        staged["clock"] = float(answers[11][0][0])
+    except RenderRefused as exc:
+        raise _ImportEnd(EXIT_UNAVAILABLE, f"import: the staged load's answer cannot be read "
+                         f"({exc}); nothing was swapped in")
+    except (ValueError, TypeError, IndexError, KeyError) as exc:
+        raise _ImportEnd(EXIT_UNAVAILABLE, f"import: the staged load's answer is not in the "
+                         f"shape this build reads ({exc}); nothing was swapped in")
+    return staged
+
+
+def _import_swap(store, base: int, generation: str, write_id: str, entry: dict) -> int:
+    """THE SWAP (step 4): one request under D9's import row, `BEGIN ISOLATION
+    LEVEL SERIALIZABLE`, the same `commit_write` call the staged load made,
+    and `COMMIT`. Returns the seq it committed."""
+    call = _import_call(store, base, generation, write_id, entry)
+    try:
+        out = store.request(["BEGIN ISOLATION LEVEL SERIALIZABLE", call, "COMMIT"], "import")
+    except PsqlFailed as exc:
+        raise _import_end(exc, "swap", swap=True)
+    answer = [line.strip() for line in out.splitlines() if line.strip()]
+    if len(answer) != 1 or not answer[0].isdigit():
+        raise _ImportEnd(EXIT_UNAVAILABLE, "import: the swap's transaction committed, but psql's "
+                         "answer does not read as its seq: a rerun reads the register again")
+    return int(answer[0])
+
+
+def _import_files_holds(records: dict) -> set:
+    """#160'S `holds`, the files' side of part 3: its PostgreSQL view as `ddl`
+    states it, over `build_records`' `log_lines` - each lane's last readable
+    line on an object, the lane compared in lower case and "last" by the file
+    bytewise, then the line; never a `lane:` object; held while its verb is
+    open, unless another lane's last line on the object is a TAKEOVER. As
+    `(object, lane in lower case, verb, file, ordinal)`."""
+    last: dict = {}
+    for rec in records["log_lines"].values():
+        obj = rec.get("object")
+        if rec.get("unreadable") or obj is None or obj.startswith("lane:"):
+            continue
+        key = (obj, _register_lower(rec["lane"]))
+        here = (rec["file"].encode("utf-8"), rec["ordinal"])
+        if key not in last or here > (last[key]["file"].encode("utf-8"), last[key]["ordinal"]):
+            last[key] = rec
+    takeovers: dict = {}
+    for (obj, lk), rec in last.items():
+        if rec["verb"] == "TAKEOVER":
+            takeovers.setdefault(obj, set()).add(lk)
+    return {(obj, lk, rec["verb"], rec["file"], rec["ordinal"]) for (obj, lk), rec in last.items()
+            if rec["verb"] in OPEN_VERBS and not (takeovers.get(obj, set()) - {lk})}
+
+
+def import_proof(source: dict, staged: dict, entry: dict, records: dict,
+                 root: str) -> list[tuple[str, str]]:
+    """R3'S THREE-PART PROOF of the staged load (design.md S5; ops act 4's
+    step 6), outside any transaction. Returns the differences as `(path,
+    why)`, sorted by path bytewise, with "" for a difference of no one path;
+    none where the proof holds.
+
+    1. A BLOB ID PER PATH, BYTE-IDENTICAL: T301's scratch render of the staged
+       journal (`register_images`, whose own proof checks each image against
+       its `journal_files` digest), written into a scratch tree by
+       `register_write_images`, hashed by `git hash-object --no-filters` in
+       `root`, never with `-w`; each id equals `C`'s, and the path sets are
+       equal. And `render_file`'s digest of every staged path equals the
+       sha256 of `C`'s bytes.
+    2. THE COUNTS: each staged table's count equals the rows `entry` sent, and
+       the count the files give: the render set's paths and lines; #160's
+       `build_records`' `log_lines`, its unreadable ones, and its
+       `register_lines`; and the lanes a row names, by `row_name`.
+    3. EVERY LANE'S ANSWERS: each staged `lanes` row equals `build_records`'
+       first record with a row for that lane, field by field, where #160
+       reads the file the row is in (`lanes/LANES.md`, and of the archive
+       `LANES-retired.md` alone); and the staged `holds` view equals #160's
+       `holds` over the files (`_import_files_holds`)."""
+    import tempfile     # used here alone, so the module's imports stay as they were
+    diffs: list = []
+    # 1. A blob id per path.
+    images: dict | None = None
+    try:
+        images = register_images(staged["journal"], staged["edits"], staged["files"])
+    except RenderRefused as exc:
+        diffs.append(("", f"T301's render of the staged journal refused: {exc}"))
+    if images is not None:
+        scratch = tempfile.mkdtemp(prefix="lanes-index-import-")
+        try:
+            out_dir = os.path.join(scratch, "render")
+            try:
+                register_write_images(out_dir, images)
+            except (RenderRefused, OSError) as exc:
+                raise Refusal(f"import: the scratch render could not be written ({exc}); "
+                              f"nothing was swapped in")
+            paths = sorted(images, key=lambda p: p.encode("utf-8"))
+            proc = subprocess.run(
+                ["git", "-C", root, "hash-object", "--no-filters", "--stdin-paths"],
+                input="".join(os.path.join(out_dir, *p.split("/")) + "\n" for p in paths),
+                capture_output=True, encoding="utf-8", errors="replace", check=False)
+            ids = proc.stdout.split()
+            if proc.returncode != 0 or len(ids) != len(paths):
+                raise Refusal(f"import: git hash-object could not hash the scratch render "
+                              f"({_mirror_git_error(proc.stderr.encode('utf-8'))}); nothing was "
+                              f"swapped in")
+            rendered = dict(zip(paths, ids))
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+        for path in set(rendered) | set(source["render"]):
+            want = source["blobs"][path] if path in source["data"] else None
+            got = rendered.get(path)
+            if want != got:
+                diffs.append((path, f"its blob id is {got or 'absent'} from SQL and "
+                                    f"{want or 'absent'} at {source['commit'][:12]}"))
+    for path in set(staged["digests"]) | set(source["render"]):
+        want = (hashlib.sha256(source["data"][path]).hexdigest() if path in source["data"]
+                else None)
+        got = staged["digests"].get(path)
+        if want != got:
+            diffs.append((path, f"render_file gives sha256 {got or 'no file'}, and "
+                                f"{source['commit'][:12]}'s bytes are {want or 'absent'}"))
+    # 2. The counts.
+    counts = staged["counts"]
+    row_lanes = {_register_lower(name) for path in source["render"]
+                 if path == REGISTER_PATH or path.startswith(REGISTER_ARCHIVE_PREFIX)
+                 for name in map(row_name, source["lines"][path][0]) if name}
+    files_side = {
+        "files": len(source["render"]),
+        "doc_lines": sum(len(source["lines"][p][0]) for p in source["render"]),
+        "lanes": len(row_lanes),
+        "log_lines": len(records["log_lines"]),
+        "unreadable": sum(1 for rec in records["log_lines"].values() if rec.get("unreadable")),
+        "register_lines": len(records["register_lines"]),
+    }
+    sent = {"lanes": len(entry["lanes"]), "log_lines": len(entry["log_lines"]),
+            "register_lines": len(entry["register_lines"]),
+            "object_holds": len(entry["object_holds"]),
+            "exempt": sum(1 for row in entry["object_holds"] if row["exempt"])}
+    for name, want in files_side.items():
+        if counts[name] != want:
+            diffs.append(("", f"{name}: {counts[name]} staged, {want} from the files"))
+    for name, want in sent.items():
+        if counts[name] != want:
+            diffs.append(("", f"{name}: {counts[name]} staged, {want} sent"))
+    # 3. Every lane's answers.
+    files_lanes: dict = {}
+    for rec in records["lanes"].values():
+        if rec.get("row_file") is not None:
+            files_lanes.setdefault(_register_lower(rec["lane"]), rec)
+    for key, row in staged["lanes"].items():
+        rec = files_lanes.get(key)
+        if rec is None:
+            if row["path"] in (REGISTER_PATH, ARCHIVE_PATH):
+                diffs.append((row["path"], f"lane {row['lane']}'s row is in SQL, and #160's "
+                                           f"parser finds none for it"))
+            continue
+        want = {"lane": rec["lane"], "aliases": json.loads(rec["aliases"]),
+                "home": rec["home"], "workstation": rec["workstation"],
+                "started_utc": rec["started_utc"], "handoff_path": rec["handoff_path"],
+                "state_phrase": rec["state_phrase"], "objects_cell": rec["objects_cell"],
+                "session_ids": json.loads(rec["session_ids"]),
+                "last_session": rec["last_session"], "archived": bool(rec["archived"])}
+        for field in _IMPORT_LANE_FIELDS:
+            if row[field] != want[field]:
+                diffs.append((row["path"] or "", f"lane {row['lane']}'s {field} is "
+                                                 f"{row[field]!r} from SQL and "
+                                                 f"{want[field]!r} from the files"))
+    for key, rec in files_lanes.items():
+        if key not in staged["lanes"]:
+            diffs.append((rec["row_file"], f"lane {rec['lane']}'s row is in the files at line "
+                                           f"{rec['row_ordinal']}, and SQL holds no row for it"))
+    sql_holds = staged["holds"]
+    file_holds = _import_files_holds(records)
+    for obj, lk, verb, path, ordinal in sorted(sql_holds ^ file_holds):
+        side = "SQL alone" if (obj, lk, verb, path, ordinal) in sql_holds else "the files alone"
+        diffs.append((path, f"line {ordinal}: lane {lk}'s {verb} hold on {obj} is in {side}"))
+    return sorted(diffs, key=lambda d: (d[0] == "", d[0].encode("utf-8"), d[1]))
+
+
 # ================================================ the cutover (feature 007, T116)
 #
 # `LANES-INDEX CUTOVER`, ITS TRANSACTION (operations.md §2.2's act 4, step 7,
@@ -13854,6 +14829,8 @@ def main(argv: list[str]) -> int:
     # ahead of #160's argument loop, to the subcommand's own parser.
     if verb == "cutover":
         return cmd_cutover(args)
+    if verb == "import":
+        return cmd_import(args)
     if verb == "mode":
         return cmd_mode(args)
     if verb == "outage":
