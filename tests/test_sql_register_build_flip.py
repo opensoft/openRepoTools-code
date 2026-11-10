@@ -47,6 +47,31 @@ WHAT IT HOLDS, by task:
       block answer from the mirror, exit 0, and carry the `read: mirror`
       line; the prompt guard exits 2; and `managed-projection` answers 1,
       UNKNOWN, never 8.
+  * T256 (L2-W6), the flipped state and the render fork's stub test, each a
+    REAL-ENGINE case (the flipped state is RE: its write is a `register
+    snapshot` reply and a commit, which a fake cannot fabricate):
+    - `[flipped]`: on the FLIPPED copy, with `register_url=` on the session
+      cluster's socket, on an imported register after the cutover, the same
+      `log NOTED` exits 0, the journal gains one entry, the shim's log holds
+      one attempt of two calls (the snapshot and the commit, sent as
+      `register_url=`'s login with `register_passfile=` and no `PGPASSWORD`),
+      and the files are unchanged, since there is no git half in this build;
+    - `[replay-keeps-pid]` (R-T409-9; lane 3, #165 6747281902, T409's item
+      9): with a configuration, the stand-in logs one `mode` call across a
+      write whose replay keeps its pid, slice 1a's routed `exec` (Y:4858,
+      Y:5121: the ask is made once). Its `[J3]` word is
+      `sql_register_build_flip and replay-keeps-pid`;
+    - `test_a_primary_write_forks_render_checkout_on_the_lane_checkout_
+      detached[plain|no-fetch-set|index-off-set]`: after a primary write
+      commits, the stand-in's log holds one `render` call, `render --checkout
+      <c>`, `<c>` the writing lane's checkout, `<W>-lanes/<lane>/`; its
+      environment has no `LANES_NO_FETCH`, though the verb ran with it set in
+      `[no-fetch-set]` (D12); it is made though `LANES_INDEX=off` is set in
+      `[index-off-set]`; its stdin is closed or `/dev/null` and its
+      descriptors 3 to 9 are closed, as `index_nudge`'s fork has them; and
+      the writer exits with the verb's own code while the stand-in holds the
+      `render` call on a FIFO, so no fork waits, and the flipped copy's
+      answer to it, "git half not installed", is never read.
 
 THE CODES ARE READ FROM THE CONSTANTS (contracts/exit-codes.md section 1:
 "the tests read the constant, never a literal"): `EXIT_CONFIG` and
@@ -82,17 +107,37 @@ the `lanes-index` it stands in front of. A reader case first asserts that the
 reader asked `lanes-index`, so a case that never reaches the refusal fails on
 that, never vacuously (`session-start` excepted, as T217's mirror test does).
 
-NO NETWORK AND NO ENGINE. Every remote is a bare repository under `tmp_path`,
-`$HOME` is temporary, and `db.invalid` is never resolved: nothing connects.
+NO NETWORK. Every remote is a bare repository under `tmp_path`, `$HOME` is
+temporary, and `db.invalid` is never resolved: in the refusing state nothing
+connects.
+
+THE REAL ENGINE, for T256's cases only. The flipped state takes `pg` from
+`tests/pgcluster.py`, one database cloned from the session's template, and so
+skips with T205's banner where no PostgreSQL 16 is found, unless
+`OPENREPOTOOLS_REQUIRE_PG=1`. The render fork's test asks for `pg` itself, so
+its fixture closure holds `pg_engine` (T200's rule). `[flipped]` and
+`[replay-keeps-pid]` share their function with the refusing state, which needs
+no engine and always runs (AT-14: "The refusing state is FP"), so they take
+`pg` by `request.getfixturevalue` and skip alone. Their register is reached as
+AT-LR006's fixture reaches one (TP:4610-4615), by the documented functions as
+`lanes_register_writer`: `commit_write` with an `import` entry holding the
+estate's render set, then a `cutover` entry, then `record_marker`, as T221's
+module does; the template is T227's, built by `lanes-index bootstrap
+--no-passwords`. Two logins join the writer and the reader groups and connect
+by the cluster's trust. The shim (T203's `PSQL_SHIM`, unarmed) stands in front
+of the cluster's own `psql` and logs every call.
 
 WHAT EACH WAITS FOR (the block's Order): T212's tests fail until L1-A3, L1-A4,
 L1-A11 and L5-A5 land: lane 1's T105 (the constant and `mode`), T113
 (`register read`) and lane 5's T504 (the read door). D3's test passes at once
-on a build that never asks the mode.
+on a build that never asks the mode. T256's fail until L4-B1 and L4-B13 land,
+and `[replay-keeps-pid]` until lane 4's T409 follow-up for its item 9; on an
+engine they also need T227's template and lane 1's T107 functions.
 """
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -100,6 +145,8 @@ import re
 import shutil
 import subprocess
 import sys
+import time
+import uuid
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from urllib.parse import quote
@@ -134,24 +181,67 @@ NOT_BUILT = "this build does not have it"
 #: What a case copies beside the stand-in, as T217's `Primary` does (CLI4.5:885).
 COPIED_BESIDE = ("lanes-edit.sh", "lanes", "repos.tsv", "lane-start", "lane-worktrees")
 
-#: The stand-in's log, beside it.
+#: The stand-in's files, beside it: its log, the FIFO a `render` call is held
+#: on where a case names one, and the held calls' ends.
 CALL_LOG = "lanes-index.calls"
+HOLD_FILE = "lanes-index.hold"
+ENDS_LOG = "lanes-index.ends"
 
-#: THE LOGGING STAND-IN (AT-14's fixture): `lanes-index` at the path
-#: `lanes-edit.sh` finds. It logs each call, one JSON object per line, then
-#: runs `TARGET`, the `lanes-index` it stands in front of, with the same argv,
-#: stdin and descriptors.
+#: THE LOGGING STAND-IN (AT-14's fixture; TP:2613-2616: "a logging wrapper
+#: that records each call's argv, environment and open descriptors, and then
+#: runs the flipped copy"): `lanes-index` at the path `lanes-edit.sh` finds.
+#: It logs each call, one JSON object per line: its argv, the NAMES in its
+#: environment (never a value), and the state of descriptors 0 to 9 as it
+#: found them, `closed`, `devnull` or `open`. Then it runs `TARGET`, the
+#: `lanes-index` it stands in front of, with the same argv, stdin and
+#: descriptors. A `render` call, where `lanes-index.hold` beside it names a
+#: FIFO, is first held on that FIFO until a case opens it for writing and
+#: closes it; then it runs, and its end goes to `lanes-index.ends`.
 LOGGING_WRAPPER = r'''#!/usr/bin/env python3
-# TEST 14's LOGGING STAND-IN at lanes-index's path (feature 007, AT-14): one
-# JSON object per call in lanes-index.calls beside it, then the lanes-index it
-# stands in front of, with the same argv, stdin and descriptors.
-import json, os, sys
+# TEST 14's LOGGING STAND-IN at lanes-index's path (feature 007, AT-14;
+# TP:2613-2616): one JSON object per call in lanes-index.calls beside it, with
+# the call's argv, the names in its environment and the state of descriptors 0
+# to 9, then the lanes-index it stands in front of. A `render` call, where
+# lanes-index.hold beside it names a FIFO, is held on that FIFO first, then
+# run, and its end is logged in lanes-index.ends.
+import json, os, stat, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-record = {"argv": sys.argv[1:], "pid": os.getpid(), "ppid": os.getppid()}
+
+
+def descriptor(number):
+    try:
+        found = os.fstat(number)
+    except OSError:
+        return "closed"
+    try:
+        null = os.stat(os.devnull)
+    except OSError:
+        return "open"
+    if stat.S_ISCHR(found.st_mode) and found.st_rdev == null.st_rdev:
+        return "devnull"
+    return "open"
+
+
+# THE DESCRIPTORS FIRST, before this script opens anything of its own.
+fds = {str(number): descriptor(number) for number in range(10)}
+argv = sys.argv[1:]
+record = {"argv": argv, "pid": os.getpid(), "ppid": os.getppid(), "fds": fds,
+          "env": sorted(os.environ)}
 with open(os.path.join(HERE, "lanes-index.calls"), "a", encoding="utf-8") as log:
     log.write(json.dumps(record) + "\n")
-os.execv(sys.executable, [sys.executable, TARGET] + sys.argv[1:])
+hold = os.path.join(HERE, "lanes-index.hold")
+if argv[:1] == ["render"] and os.path.exists(hold):
+    import subprocess
+    with open(hold, encoding="utf-8") as handle:
+        fifo = handle.read().strip()
+    with open(fifo, encoding="utf-8") as held:
+        held.read()
+    code = subprocess.call([sys.executable, TARGET] + argv)
+    with open(os.path.join(HERE, "lanes-index.ends"), "a", encoding="utf-8") as ends:
+        ends.write(json.dumps({"argv": argv, "exit": code}) + "\n")
+    sys.exit(code)
+os.execv(sys.executable, [sys.executable, TARGET] + argv)
 '''
 
 #: The `read: mirror` line (design S3, "The mirror reads"), on stderr.
@@ -185,6 +275,33 @@ READER_CASES = sorted(DECIDE_READS) + ["listing", "session-start", "guard", "pro
 #: What a decide read and `managed-projection` exit, `lanes-edit.sh`'s own
 #: codes (contracts/exit-codes.md, `lanes-edit.sh`'s table; design S3).
 READ_FAILED, PROJECTION_UNKNOWN, PROJECTION_NEVER, GUARD_REFUSED = 69, 1, 8, 2
+
+#: THE FLIPPED STATE'S REGISTER (T256), as T221's module names it: the
+#: schema, its three groups, and the two logins `lanes-index` connects as,
+#: made once per cluster, members of the writer and the reader groups, with no
+#: password.
+SCHEMA = "lanes_register"
+WRITER, READER = "lanes_register_writer", "lanes_register_reader"
+LOGIN_WRITER, LOGIN_READER = "t256_register_writer", "t256_register_reader"
+
+#: What the fixture's own entries are stamped with (AT-LR006's fixture).
+FIXTURE_LANE, FIXTURE_WS, FIXTURE_AUTHOR = "Lane-T256", "ws-t256", "T256 <t256@example.invalid>"
+NOT_AFTER = "2100-01-01T00:00:00Z"            # well past every case (lane 1's v2.3)
+MARKER_COMMIT = "e" * 40
+STORE_LABEL, STORE_UTC = "t256", "2026-11-10T12:00:00Z"
+
+#: The writing lane of every flipped write: a LIVE row in `Estate`'s register.
+WRITING_LANE = "repoA-2"
+
+#: How long a case waits for a detached fork to show in the stand-in's log.
+FORK_SECONDS = 20.0
+
+#: THE RENDER FORK'S THREE (TP:2621-2624): the verb's own environment.
+FORK_CASES = {
+    "plain": {},
+    "no-fetch-set": {"LANES_NO_FETCH": "1"},
+    "index-off-set": {"LANES_INDEX": "off"},
+}
 
 
 # ------------------------------------------------------------------ helpers
@@ -339,6 +456,197 @@ class Refusing:
         return self.e.tip(), self.e._git("rev-parse", "HEAD").strip()
 
 
+# ------------------------------------------ T256: the flipped state's world
+def db_psql(db, script: str, role: str | None = None) -> subprocess.CompletedProcess:
+    """One `psql` as the fixture's superuser, with the commit call's settings,
+    as `role` where one is named (T221's form)."""
+    head = "\\set VERBOSITY verbose\n\\set SHOW_CONTEXT never\nSET client_encoding = 'UTF8';\n"
+    if role:
+        head += f"SET ROLE {role};\n"
+    return subprocess.run([db.psql_bin, "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1"],
+                          input=head + script, capture_output=True, encoding="utf-8",
+                          errors="replace", env=db.env(appname="t256"), timeout=120, check=False)
+
+
+def sql(db, script: str, role: str | None = None) -> str:
+    proc = db_psql(db, script, role)
+    assert proc.returncode == 0, (f"psql{' as ' + role if role else ''} exited "
+                                  f"{proc.returncode}: {proc.stderr.strip()}\n{script}")
+    return proc.stdout.strip()
+
+
+def window(db) -> dict:
+    return json.loads(sql(db, f"SELECT to_jsonb(v) FROM {SCHEMA}.schema_version v;"))
+
+
+def journal_count(db) -> int:
+    return int(sql(db, f"SELECT count(*) FROM {SCHEMA}.journal;"))
+
+
+def rendered(lines) -> str:
+    """The sha256 of a file of `lines`, LF-ended, as `render_file` renders it."""
+    return hashlib.sha256("".join(line + "\n" for line in lines).encode("utf-8")).hexdigest()
+
+
+def entry(kind: str, verb: str, **parts) -> dict:
+    """One `commit_write` entry: the journal object, `not_after`, and `parts`."""
+    journal = {"kind": kind, "verb": verb, "lane": FIXTURE_LANE, "workstation": FIXTURE_WS,
+               "author": FIXTURE_AUTHOR, "message": f"t256: {kind}"}
+    journal.update(parts.pop("journal", {}))
+    return {"journal": journal, "not_after": NOT_AFTER, **parts}
+
+
+def render_lines(estate: Estate) -> dict:
+    """The render set at the estate's origin (CLI4.5 section 3.2), each file
+    as its lines: what the import loads, so the register answers as the files
+    do."""
+    found = {}
+    for path in sorted((estate.wip / "lanes").rglob("*")):
+        rel = path.relative_to(estate.wip).as_posix()
+        if not (path.is_file() and helpers.RENDER_SET_PATH.match(rel)):
+            continue
+        text = estate.head_text(rel)
+        assert text.endswith("\n"), f"{rel} has no final newline, which the import entry assumes"
+        found[rel] = text[:-1].split("\n")
+    return found
+
+
+def import_entry(files: dict, commit: str, tree: str) -> dict:
+    """An import of `files` (path to its lines) at `commit`: each created, its
+    lines appended, and each path's digest as it renders."""
+    edits, order = [], 0
+    for path in sorted(files):
+        order += 1
+        edits.append({"ord": order, "op": "create", "path": path})
+        for text in files[path]:
+            order += 1
+            edits.append({"ord": order, "op": "append", "path": path, "new_text": text})
+    return entry("import", "import", journal={"git_commit": commit, "git_tree": tree},
+                 edits=edits,
+                 files=[{"path": p, "present": True, "sha256": rendered(files[p]),
+                         "final_newline": True} for p in sorted(files)])
+
+
+def cutover_entry(commit: str, tree: str) -> dict:
+    """The cutover's `lanes/STORE` (D21's five fields, as T221's module writes
+    them)."""
+    lines = ("store=primary", f"database={STORE_LABEL}", f"import={commit}",
+             f"lanes-tree={tree}", f"utc={STORE_UTC}")
+    return entry("cutover", "cutover",
+                 edits=[{"ord": 1, "op": "create", "path": "lanes/STORE"},
+                        *({"ord": n, "op": "append", "path": "lanes/STORE", "new_text": line}
+                          for n, line in enumerate(lines, start=2))],
+                 files=[{"path": "lanes/STORE", "present": True, "sha256": rendered(lines),
+                         "final_newline": True}])
+
+
+def committed(db, base: int, body: dict, what: str) -> int:
+    """The commit call as the writer sends it (AT-LR006's fixture): one
+    SERIALIZABLE transaction around `commit_write`, as `lanes_register_writer`."""
+    generation = sql(db, f"SELECT generation FROM {SCHEMA}.register_switch;")
+    literal = json.dumps(body, ensure_ascii=True).replace("'", "''")
+    proc = db_psql(db, f"BEGIN ISOLATION LEVEL SERIALIZABLE;\n"
+                       f"SELECT {SCHEMA}.commit_write({base}, '{uuid.uuid4()}'::uuid, "
+                       f"{window(db)['version']}, '{generation}'::uuid, '{literal}'::jsonb);\n"
+                       f"COMMIT;\n", WRITER)
+    assert proc.returncode == 0, f"{what}: commit_write refused it: {proc.stderr.strip()}"
+    return int(proc.stdout.strip().splitlines()[-1])
+
+
+def bring_to_primary(db, estate: Estate) -> int:
+    """AT-LR006's route (TP:4610-4615): as `lanes_register_writer`, an import
+    of the estate's render set at its origin, then a cutover, then
+    `record_marker`. Returns the head, the cutover's seq."""
+    commit = estate.tip()
+    tree = estate._git("rev-parse", "origin/main:lanes").strip()
+    head = int(sql(db, f"SELECT seq FROM {SCHEMA}.register_head;"))
+    imported = committed(db, head, import_entry(render_lines(estate), commit, tree), "the import")
+    cut = committed(db, imported, cutover_entry(commit, tree), "the cutover")
+    marker = sql(db, f"SELECT {SCHEMA}.record_marker({window(db)['version']}, {cut}, "
+                     f"'{MARKER_COMMIT}', '{FIXTURE_WS}');", WRITER)
+    assert marker == "present", f"record_marker answered {marker!r}, not present"
+    switch = json.loads(sql(db, f"SELECT to_jsonb(s) FROM {SCHEMA}.register_switch s;"))
+    assert (switch["mode"], switch["marker_state"]) == ("primary", "present"), switch
+    return cut
+
+
+def ensure_logins(db) -> None:
+    """The writer's and the reader's login, once per cluster (roles are
+    cluster-wide), members of their groups, with no password."""
+    for login, group in ((LOGIN_WRITER, WRITER), (LOGIN_READER, READER)):
+        sql(db, f"DO $l$ BEGIN CREATE ROLE {login} LOGIN IN ROLE {group}; "
+                f"EXCEPTION WHEN duplicate_object THEN NULL; END $l$;")
+
+
+class Flipped:
+    """Test 14's flipped state over an `Estate` and one `pg` database: the
+    register imported from the estate and brought to `primary` with the
+    marker `present`; a 0600 configuration whose `register_url=` and
+    `reader_url=` name the session cluster's socket; T203's flipped copy, with
+    the checkout's `lanes-edit.sh` beside the logging stand-in in front of it;
+    and the shim in front of the cluster's own `psql`."""
+
+    def __init__(self, estate: Estate, db):
+        self.e, self.db = estate, db
+        self.root = estate.root / "test14-flipped"
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.passfile = write_private(self.root / "secrets" / "register.pgpass",
+                                      f"*:*:*:{LOGIN_WRITER}:not-a-secret\n")
+        self.reader_passfile = write_private(self.root / "secrets" / "reader.pgpass",
+                                             f"*:*:*:{LOGIN_READER}:not-a-secret\n")
+        ensure_logins(db)
+        self.cut = bring_to_primary(db, estate)
+        self.config = estate.write_config(self.config_text())
+        self.copy = state_copy(self.root / "flipped", True)
+        self.shim_dir = self.root / "shimbin"
+        self.shim_dir.mkdir(parents=True, exist_ok=True)
+        shim = self.shim_dir / "psql"
+        shim.write_text(helpers.PSQL_SHIM, encoding="utf-8")
+        shim.chmod(0o755)
+        self.bin = self.root / "bin"
+        self.edit_path = beside(self.bin, self.copy)
+
+    def config_text(self) -> str:
+        """Unix-socket URLs, so the fake-`psql` host rule holds (L1v4.5:525)."""
+        return (f"mode=primary\n"
+                f"register_url={self.db.url(LOGIN_WRITER)}\n"
+                f"register_passfile={self.passfile}\n"
+                f"reader_url={self.db.url(LOGIN_READER)}\n"
+                f"reader_passfile={self.reader_passfile}\n")
+
+    def env(self, **extra) -> dict:
+        env = {"LANES_EDIT": str(self.edit_path), "LANES_INDEX_CONFIG": str(self.config),
+               "PATH": self.e.path_with(self.shim_dir, Path(self.db.cluster.bindir)),
+               "LANES_INDEX": None, "LANES_LANE": WRITING_LANE}
+        env.update(extra)
+        return env
+
+    def write(self, text: str, timeout: float = 120, **extra) -> subprocess.CompletedProcess:
+        """`log NOTED` as the writing lane: one primary write."""
+        return self.e.run("bash", self.edit_path, "log", "NOTED", f"lane:{WRITING_LANE}", text,
+                          env=self.env(**extra), timeout=timeout)
+
+    def routed(self) -> dict:
+        """Slice 1a's routing (Amendment 23 S2): no `LANES_REPO`, and the write
+        goes through, and replays in, the lane's own checkout."""
+        return {"LANES_REPO": None, "LANES_ROUTE_WRITES": "1"}
+
+    def lane_checkout(self) -> Path:
+        """`<W>-lanes/<lane>/`, W being the path `workspace.yaml` names."""
+        return Path(f"{self.e.ws}-lanes") / WRITING_LANE
+
+    def shim_calls(self) -> list:
+        """The calls the shim handed on that carry a request: not `--version`."""
+        path = self.shim_dir / helpers.PSQL_SHIM_LOG
+        if not path.exists():
+            return []
+        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+        return [row for row in rows if row.get("kind") != "version"]
+
+    def origin_and_head(self) -> tuple:
+        return self.e.tip(), self.e._git("rev-parse", "HEAD").strip()
+
+
 def the_78(proc: subprocess.CompletedProcess, config_code: int, what: str) -> None:
     """Q6(c)'s answer from `mode`: 78, nothing on stdout, and stderr exactly
     one line, the fixed text."""
@@ -402,18 +710,64 @@ def mode_under_index_off_case(state: Refusing) -> None:
     assert state.psql_calls() == [], state.psql_calls()
 
 
+def flipped_case(world: Flipped) -> None:
+    """`[flipped]` (TP:2601-2606): the same `log NOTED` exits 0, the journal
+    gains one entry, the shim's log holds one attempt of two calls (Q7 (A'')),
+    the snapshot and then the commit, each as `register_url=`'s login with
+    `register_passfile=` and no `PGPASSWORD`, and the files are unchanged."""
+    before, entries = world.origin_and_head(), journal_count(world.db)
+    proc = world.write("test 14 - flipped, a primary write")
+    assert proc.returncode == 0, shown(proc)
+    assert journal_count(world.db) == entries + 1, "the journal did not gain one entry"
+    sent = world.shim_calls()
+    assert len(sent) == 2, ("one attempt is two calls, the snapshot and the commit", sent)
+    assert "commit_write" not in sent[0]["stdin"] and "commit_write" in sent[1]["stdin"], \
+        ("the snapshot first, then the commit", [s["stdin"][:200] for s in sent])
+    for call in sent:
+        pg = call.get("pg", {})
+        assert (pg.get("PGUSER"), pg.get("PGHOST"), pg.get("PGDATABASE")) == (
+            LOGIN_WRITER, str(world.db.host), world.db.name), ("not register_url='s login", pg)
+        assert call.get("passfile") == str(world.passfile), ("not register_passfile=", call)
+        assert call.get("pgpassword") is False, ("PGPASSWORD reached psql", call)
+    assert world.origin_and_head() == before, "the files moved: this build has no git half"
+
+
+def replay_keeps_pid_case(world: Flipped) -> None:
+    """`[replay-keeps-pid]` (R-T409-9; lane 3, #165 6747281902, T409's item
+    9): with a configuration, a write that routes through its lane's
+    checkout, whose replay is an `exec` that keeps the pid, asks the mode
+    once: one `mode` call in the stand-in's log (Y:4858, Y:5121)."""
+    proc = world.write("test 14 - a replay keeps its pid", **world.routed())
+    assert proc.returncode == 0, shown(proc)
+    assert world.lane_checkout().is_dir(), ("the write did not route, so it did not replay",
+                                            shown(proc))
+    modes = [c for c in calls(world.bin) if c["argv"] == ["mode"]]
+    assert len(modes) == 1, ("the mode ask was made more than once, or never, across the replay",
+                             [c["argv"] for c in calls(world.bin)])
+
+
 STATE_CASES = {
     "refusing": refusing_case,
     "mode-under-index-off": mode_under_index_off_case,
+    "flipped": flipped_case,
+    "replay-keeps-pid": replay_keeps_pid_case,
 }
+
+#: The cases that need the real engine, taken by `request.getfixturevalue`.
+FLIPPED_CASES = ("flipped", "replay-keeps-pid")
 
 
 @pytest.mark.parametrize("case", list(STATE_CASES))
-def test_mode_primary_is_refused_until_the_git_half_and_goes_to_sql_once_flipped(estate, case):
+def test_mode_primary_is_refused_until_the_git_half_and_goes_to_sql_once_flipped(
+        estate, request, case):
     """Test 14's one test of both states (AT-14): with the refusal in place,
     `mode=primary` is refused where the configuration is read, 78 from
-    `mode`, 2 from every other command, with the fixed text."""
-    STATE_CASES[case](Refusing(estate))
+    `mode`, 2 from every other command, with the fixed text; with the constant
+    flipped, the same write goes to SQL."""
+    if case in FLIPPED_CASES:
+        STATE_CASES[case](Flipped(estate, request.getfixturevalue("pg")))
+    else:
+        STATE_CASES[case](Refusing(estate))
 
 
 def test_lanes_edit_asks_lanes_index_mode_only_where_a_configuration_exists(estate):
@@ -548,3 +902,75 @@ def test_readers_under_the_refusal_answer_the_78_as_a_failed_read(estate, reader
         assert "UNKNOWN" in proc.stderr, shown(proc)
     assert state.psql_calls() == [], ("a reader connected under the refusal", state.psql_calls())
     assert state.origin_and_head() == before, "the files or origin moved"
+
+
+# ------------------------------------- T256: the render fork's stub test
+def release(fifo: Path) -> bool:
+    """Let a call held on `fifo` go: open it for writing, which a held reader
+    makes possible at once, and close it. False where nothing holds it."""
+    try:
+        fd = os.open(str(fifo), os.O_WRONLY | os.O_NONBLOCK)
+    except OSError:
+        return False
+    os.close(fd)
+    return True
+
+
+def within(seconds: float, find):
+    """`find()` once it is truthy, or its last answer when `seconds` pass."""
+    deadline = time.monotonic() + seconds
+    found = find()
+    while not found and time.monotonic() < deadline:
+        time.sleep(0.05)
+        found = find()
+    return found
+
+
+@pytest.mark.parametrize("case", list(FORK_CASES))
+def test_a_primary_write_forks_render_checkout_on_the_lane_checkout_detached(estate, pg, case):
+    """The render fork (phase W's stub test; TP:2612-2629; lane 4's section,
+    "What phase 2 ships for phase 3", "The renderer fork"): after a primary
+    write commits, the stand-in's log holds one `render` call, made by a
+    detached fork, `render --checkout <c>`, `<c>` the writing lane's
+    checkout, `<W>-lanes/<lane>/`; with no `LANES_NO_FETCH` in its
+    environment though the verb ran with it in `[no-fetch-set]` (D12); made
+    though `LANES_INDEX=off` is set in `[index-off-set]`, since
+    `lane-worktrees` sets that variable on every call (Y:5717); with its stdin
+    closed or `/dev/null` and its descriptors 3 to 9 closed, as
+    `index_nudge`'s fork has them; and the writer exits with the verb's own
+    code while the stand-in holds the call on a FIFO, so no fork waits."""
+    world = Flipped(estate, pg)
+    fifo = world.root / "render.fifo"
+    os.mkfifo(str(fifo))
+    (world.bin / HOLD_FILE).write_text(str(fifo) + "\n", encoding="utf-8")
+    try:
+        try:
+            proc = world.write(f"test 14 - the render fork, {case}", timeout=90,
+                               **world.routed(), **FORK_CASES[case])
+        except subprocess.TimeoutExpired:
+            pytest.fail("the writer did not exit while the render call was held: it waited for "
+                        "its fork", pytrace=False)
+        assert proc.returncode == 0, ("the verb's own code", shown(proc))
+
+        def renders():
+            return [c for c in calls(world.bin) if c["argv"][:1] == ["render"]]
+
+        held = within(FORK_SECONDS, renders)
+        assert len(held) == 1, ("one render call, made by the fork",
+                                [c["argv"] for c in calls(world.bin)])
+        call = held[0]
+        argv = call["argv"]
+        assert argv[:2] == ["render", "--checkout"] and len(argv) == 3, argv
+        assert os.path.realpath(argv[2].rstrip("/")) == os.path.realpath(world.lane_checkout()), \
+            ("<c> is the writing lane's checkout", argv[2], world.lane_checkout())
+        assert "LANES_NO_FETCH" not in call["env"], ("the fork carries LANES_NO_FETCH", case)
+        assert call["fds"]["0"] in ("closed", "devnull"), ("the fork's stdin is open", call["fds"])
+        assert [n for n in range(3, 10) if call["fds"][str(n)] != "closed"] == [], \
+            ("descriptors 3 to 9 are not all closed", call["fds"])
+        assert not (world.bin / ENDS_LOG).exists(), \
+            "the held render call ended before it was let go"
+    finally:
+        released = within(FORK_SECONDS, lambda: release(fifo))
+    assert released, "no render call was held on the FIFO to let go"
+    ended = within(FORK_SECONDS, lambda: (world.bin / ENDS_LOG).exists())
+    assert ended, "the render call did not end once it was let go"
