@@ -63,11 +63,11 @@
 # rename "may not be written; run the printed `LANES_WRITE_ID` rerun, which
 # writes it once or finds it", and off primary the commit is local and this
 # attempt cannot confirm it reached origin · `4` the mutex · `5` a move refused
-# · `6` git · `69` the register's database cannot be reached, or refuses: nothing
-# was written, and a lane stops and tells Brett · `75` the register is busy, a
-# lost turn with nothing written. Never this file's own numbers: every one of
-# them is decided in the writer, and two tables of codes for one act is how they
-# come to disagree.
+# · `6` git · `69` the register cannot be reached, or refuses: nothing was
+# written, and a lane stops and tells Brett · `75` the register is busy, a lost
+# turn with nothing written. Never this file's own numbers: every one of them is
+# decided in the writer, and two tables of codes for one act is how they come to
+# disagree.
 #
 # THE TEXTS FOR 3, 75 AND 69 ARE THE SQL REGISTER'S (feature 007, T433; design
 # D8, D7 and D10, Y:468-469, Y:455-456 and Y:511-512; Y:5738). On primary a 3 is
@@ -131,9 +131,9 @@ read could not be made.
 Exit: the writer's own codes — 0 done · 1 environment · 2 refused · 3 in doubt:
 on primary the rename "may not be written; run the printed `LANES_WRITE_ID`
 rerun, which writes it once or finds it", off primary committed and not
-confirmed pushed · 4 mutex · 5 a move refused · 6 git · 69 the register's
-database cannot be reached, or refuses (nothing written) · 75 the register is
-busy (nothing written).
+confirmed pushed · 4 mutex · 5 a move refused · 6 git · 69 the register cannot
+be reached, or refuses (nothing written) · 75 the register is busy (nothing
+written).
 USAGE
 }
 
@@ -263,7 +263,7 @@ if [ "$rc" != 0 ]; then
 	2) note "nothing was renamed here either: the window still carries '${win_name:-none}' and no pane was typed into." ;;
 	3) note "the write exited 3 (the writer's own code, above). This window was NOT touched. On primary the rename may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun (off primary), the commit is local and may already be on origin." ;;
 	75) note "the write exited 75 (the writer's own code, above): the register is busy, and this rename lost its turn with nothing written. This window was NOT touched. A retry in seconds is safe." ;;
-	69) note "the write exited 69 (the writer's own code, above): the register's database could not be reached, or refused the write, and nothing was written. This window was NOT touched. Stop and tell Brett; a retry is safe once the register can be reached." ;;
+	69) note "the write exited 69 (the writer's own code, above): the register could not be reached, or refused the write, and nothing was written. This window was NOT touched. Stop and tell Brett; a retry is safe once the register can be reached." ;;
 	*) note "the write exited $rc (the writer's own code, above). This window was NOT touched — read what it said before re-running." ;;
 	esac
 	exit "$rc"
