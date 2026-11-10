@@ -18,6 +18,18 @@ THIS MODULE TODAY holds lane 2's T226 part (L2-N8, phase N):
     then with the journal grown 2x and 5x; and
     `test_swapped_with_several_candidates_is_timed_beside_its_journal_last_calls`.
 
+and lane 2's T255 part (L2-W6, phase W):
+
+  * `test_each_verb_is_timed_end_to_end_in_both_modes[<verb>]` (M7), in files
+    mode against a local bare origin and on primary;
+  * `test_each_paths_connections_and_queries_are_counted[<path>]` (M13), the
+    paths `m1`, `m2`, `m6`, `m7`, `m9` and `m10` once each on T229's counting
+    cluster (T237 writes `[m5]`);
+  * `test_the_image_cache_check_and_a_miss_are_timed_per_attempt`, through
+    lane 1's T302 API;
+  * `test_each_shape_on_a_delayed_relay_is_recorded[<shape>-<rtt>]`, under
+    section 5.6's option B, which lane 3 ruled (R-P23).
+
 T226's guard parts, M5b's `test_todays_direct_guard_is_timed_in_its_four_parts`
 and M10's `test_the_guards_register_parse_is_timed_on_a_real_sized_register_beside_todays_six_reads_through_git`,
 are in `tests/test_sql_register_guard.py`, which a later line writes once
@@ -57,8 +69,9 @@ PostgreSQL 16 each skips with T205's banner. They fail until lane 1's T107
 (L1-A6, the schema and `commit_write`), T111 (L1-A9, `register snapshot`),
 T112 (L1-A10, `register commit`) and T114 (L1-A12, `journal --last`), lane
 5's L5-A3 and L5-A5 (T506's `swapped` on primary), and lane 2's T227 (the
-bootstrap's template and `tmpl_imported`), T228 and T229 (the TLS cluster)
-land. `lanes-index` runs as T203's flipped copy, `RENDER_GIT_HALF = True`,
+bootstrap's template and `tmpl_imported`), T228 and T229 (the TLS and
+counting clusters, and the relay) land; T255's also wait for lane 4's L4-B3
+and L4-B8 (the verbs on primary) and lane 1's T302 (the image cache). `lanes-index` runs as T203's flipped copy, `RENDER_GIT_HALF = True`,
 so `mode=primary` loads (open point 3), and connects as two logins of this
 module's own, members of the writer and the reader groups, by the cluster's
 trust.
@@ -1114,3 +1127,312 @@ def test_swapped_with_several_candidates_is_timed_beside_its_journal_last_calls(
                                 f"`lanes-edit.sh swapped {WS}`, exec to exit", times,
                                 f"rtt=0, tls=none; {count} pickaxe(s)"))
     record(lines)
+
+
+# ============================================================ T255: test 9's phase-W measurements
+
+#: M7's verbs (section 5.1), each as `lanes-edit.sh` (or `lane-start`) takes
+#: it, with `{k}` for the run's number so no two runs collide, and the
+#: register writes each makes. The argv are read from `lanes-edit.sh`'s usage
+#: at the base; "a landing's five writes" is lane 2's reading of Rule 6's
+#: landing (the take, its log line, the close, its log line, the release),
+#: for lane 4 to confirm against its [L4-c] section.
+VERBS = {
+    "log-noted": ([["log", "NOTED", "lane:repoA-1", "t255 measured note {k}"]], 1),
+    "claim": ([["claim", "opensoft/repoA#{k}", "--no-github"]], 1),
+    "landing": ([
+        ["append-line", f"LANDING {EM} lane repoA-1, session {SID_A1}@{WS}, {{utc}}, PR #{{k}} into "
+                        f"opensoft/repoA main"],
+        ["log", "LANDING", "pr:opensoft/repoA#{k}", "t255 landing {k}"],
+        ["append-line", f"LANDED {EM} lane repoA-1, session {SID_A1}@{WS}, {{utc}}, PR #{{k}} into "
+                        f"opensoft/repoA main {ARROW} abc1234"],
+        ["log", "CLOSED", "pr:opensoft/repoA#{k}", "merged abc1234"],
+        ["release", "pr:opensoft/repoA#{k}", "landed", "--no-github"]], 5),
+    "lane-start-dry-run": ([["@lane-start", "--dry-run", "repoA", "1"]], 0),
+}
+MODES = ("files", "primary")
+
+
+class VerbEstate:
+    """The estate a verb runs in, in one mode: T210's estate at C, with the
+    workspace `lanes-edit.sh workspace-root` answers (`$HOME/.agents/
+    workspace.yaml`, W4a's form) and the lane's identity; on primary the
+    register brought to `primary` and `LANES_INDEX_CONFIG`, in files mode
+    the twin on its own local bare origin (AT-9's fixture: the files-mode
+    figure is a lower bound of today's cost)."""
+
+    def __init__(self, db, root: Path, mode: str, reg=None):
+        self.mode, self.db = mode, db
+        if mode == "primary":
+            self.reg = reg or PrimaryRegister(db, root)
+            self.estate, self.bin = self.reg.estate, self.reg.copy.parent
+            if (REPO / "lane-start").exists():
+                shutil.copy2(str(REPO / "lane-start"), str(self.bin / "lane-start"))
+            env = dict(self.reg.env)
+        else:
+            self.reg, self.estate = None, Estate(root / "estate")
+            self.bin = root / "bin"
+            self.bin.mkdir(parents=True)
+            for name in ("lanes-edit.sh", "lanes-index", "lane-start"):
+                if (REPO / name).exists():
+                    shutil.copy2(str(REPO / name), str(self.bin / name))
+            env = index_env(root, root / "no-config", self.estate.home)
+            env.pop("LANES_INDEX_CONFIG")
+        (self.estate.home / ".agents").mkdir(parents=True, exist_ok=True)
+        (self.estate.home / ".agents" / "workspace.yaml").write_text(
+            f"repository: {self.estate.origin}\npath: {self.estate.checkout}\n", encoding="utf-8")
+        env.update(LANES_REPO=str(self.estate.checkout), LANES_BRANCH="main", LANES_WORKSTATION=WS,
+                   LANES_NO_GITHUB="1", LANES_LANE="repoA-1", LANES_SESSION=SID_A1)
+        self.env = env
+
+    def run(self, argv: list) -> subprocess.CompletedProcess:
+        if argv[0].startswith("@"):
+            command = ["bash", str(self.bin / argv[0][1:]), *argv[1:]]
+        else:
+            command = ["bash", str(self.bin / "lanes-edit.sh"), *argv]
+        return subprocess.run(command, capture_output=True, encoding="utf-8", errors="replace",
+                              env=self.env, cwd=str(self.estate.checkout), timeout=300,
+                              stdin=subprocess.DEVNULL, check=False)
+
+    def origin_commits(self) -> int:
+        return int(git(self.estate.origin, "rev-list", "--count", "main", env=self.estate.env).strip())
+
+
+@pytest.mark.parametrize("verb", list(VERBS))
+def test_each_verb_is_timed_end_to_end_in_both_modes(pg_engine, pg, tmp_path, verb):
+    """M7 (section 5.1; P5, what a lane feels): the verb, exec to exit, cold
+    once and 20 warm, in files mode against a local bare origin and on
+    primary, on the same host. The oracle: every run exits 0; on primary the
+    journal grows by exactly the verb's writes per run and each `write_id`
+    appears once; in files mode the origin's `main` grows by them. The
+    figures are recorded, never asserted. Fails until lane 4's L4-B3 and
+    L4-B8 route the verbs through the storage layer on primary."""
+    steps, writes = VERBS[verb]
+    lines = []
+    for mode in MODES:
+        estate = VerbEstate(pg, tmp_path / mode, mode)
+        before = head(pg) if mode == "primary" else estate.origin_commits()
+        times = []
+        for k in range(1 + N_WARM):
+            utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            argvs = [[part.format(k=1000 + k, utc=utc) for part in step] for step in steps]
+            start = time.monotonic_ns()
+            for argv in argvs:
+                proc = estate.run(argv)
+                assert proc.returncode == 0, (f"{verb} in {mode} mode, run {k}: `{' '.join(argv)}` "
+                                              f"exited {proc.returncode}: {(proc.stdout + proc.stderr)[-600:]}")
+            times.append((time.monotonic_ns() - start) / 1e6)
+        runs = 1 + N_WARM
+        if mode == "primary":
+            assert head(pg) == before + runs * writes, (
+                f"{verb} on primary: the journal grew by {head(pg) - before}, not {runs * writes}")
+            grown = rows(pg, f"SELECT count(*) AS n, count(DISTINCT write_id) AS d FROM journal "
+                             f"WHERE seq > {before}")[0]
+            assert grown == {"n": runs * writes, "d": runs * writes}, grown
+        elif writes:
+            assert estate.origin_commits() >= before + runs * writes, (
+                f"{verb} in files mode pushed {estate.origin_commits() - before} commit(s)")
+        link = ("rtt=0, tls=none, local bare origin" if mode == "files"
+                else f"rtt=0, tls=none, {writes} write(s) per run")
+        lines.append(figure("M7", f"{mode} mode", f"`{verb}`, exec to exit", times, link))
+    record(lines)
+
+
+# ------------------------------------------------------------------ M13
+def _counted(log: Path, offset: int) -> tuple:
+    """The counting cluster's log lines after `offset`: (connections,
+    Query messages), from `log_connections`' "connection authorized" lines
+    and `log_statement=all`'s "statement:" lines, one per simple Query."""
+    text = log.read_bytes()[offset:].decode("utf-8", "replace")
+    return (len(re.findall(r"connection authorized", text)),
+            len(re.findall(r"LOG:  statement: ", text)))
+
+
+def _path_m1(reg, root: Path):
+    done = fake_write(reg.copy, reg.env, reg.estate.checkout, root / "m1", "repoA-1", "log",
+                      _edit_log_noted("repoA-1", SID_A1, "t255 m1"), "lanes-edit.sh log: t255 m1")
+    assert done["code"] == 0, (done["snapshot"].stderr, done["commit"] and done["commit"].stderr)
+
+
+def _path_m2(reg, root: Path):
+    log = "lanes/log/repoA-1.md"
+    appends = Appends(reg.pg, [log])
+    text = f"NOTED {EM} lane repoA-1, session {SID_A1}@{WS}, 2026-11-10T00:00:00Z, lane:repoA-1 {EM} t255 m2"
+    proc = in_one_session(reg.pg, [appends.statements(appends.entry("repoA-1", log, [text]))])
+    assert proc.returncode == 0, proc.stderr
+
+
+def _path_m6(reg, root: Path):
+    proc = run_index(reg.copy, ["render", "--images", "--at", head(reg.pg), "--out", root / "m6"], reg.env)
+    assert proc.returncode == 0, proc.stderr
+
+
+def _path_m7(reg, root: Path):
+    proc = VerbEstate(reg.pg, root, "primary", reg).run(["log", "NOTED", "lane:repoA-1", "t255 m7"])
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def _path_m9(reg, root: Path):
+    """M9's path: answer 2's bind, `lane-start --no-launch --bind`, then the
+    guard's `set-row-state` on the lane it leaves (section 5.1). The argv is
+    read from section 5.1's M9 row, for lane 4 to confirm."""
+    estate = VerbEstate(reg.pg, root, "primary", reg)
+    estate.env["LANES_BIND_BOUND_S"] = "500"
+    for argv in (["@lane-start", "--no-launch", "--bind", "repoA", "2"],
+                 ["set-row-state", "repoA-1", f"PAUSED {DOT} t255 m9"]):
+        proc = estate.run(argv)
+        assert proc.returncode == 0, f"`{' '.join(argv)}`: {(proc.stdout + proc.stderr)[-600:]}"
+
+
+def _path_m10(reg, root: Path):
+    """M10's part 4 on primary: the guard's register read through the
+    direct read (contract section 3.6, `register read --for guard`; the
+    service down). Its argv past `--for guard` is lane 5's T507 to state."""
+    proc = run_index(reg.copy, ["register", "read", "--for", "guard"], reg.env)
+    assert proc.returncode == 0, proc.stderr
+
+
+M13_PATHS = {"m1": _path_m1, "m2": _path_m2, "m6": _path_m6, "m7": _path_m7, "m9": _path_m9,
+             "m10": _path_m10}
+
+
+@pytest.mark.parametrize("path", list(M13_PATHS))
+def test_each_paths_connections_and_queries_are_counted(pg_engine, request, tmp_path, path):
+    """M13 (section 5.1; section 5.6): each path run once on T229's counting
+    cluster, whose log holds each connection and each Query message; the
+    path's connections (c) and Query messages (q) are read from the lines it
+    added and recorded, with the path's own oracle (it exits 0). Whether a
+    ceiling is asserted per path is open point 24, so none is. T237 writes
+    `[m5]` through the service; each `verify:` names its own ids, so
+    neither passes with the other's alone (R1's M1)."""
+    counting = needs(request, "counting_cluster", "lane 2's T229 (section 5.6's counting cluster)")
+    db = Database(counting, counting.new_database())
+    try:
+        reg = PrimaryRegister(db, tmp_path)
+        log = Path(counting.root) / "server.log"
+        offset = log.stat().st_size
+        M13_PATHS[path](reg, tmp_path)
+        c, q = _counted(log, offset)
+        assert c >= 1, f"{path} made no connection the counting cluster logged"
+        record([f"| M13 | {platform.node()}, counting cluster, Unix socket | `{path}` | "
+                f"c={c}, q={q} | n=1 (a count does not vary with load) |"])
+    finally:
+        counting.drop_database(db.name)
+
+
+# ------------------------------------------------------------------ the image cache
+def test_the_image_cache_check_and_a_miss_are_timed_per_attempt(pg_engine, pg, tmp_path, monkeypatch):
+    """Per attempt (AT-9's oracle; lane 4's "[L4-c]", about 3 ms for the
+    check and about 10 ms for a miss), through lane 1's T302 API in process
+    (#165 6755106847): the snapshot's image-cache check, `image_cache_head()`
+    and one `image_cache_get` per path of the head's manifest, each a hit;
+    and a miss, `image_cache_get` answering None, then `image_cache_put` of
+    the image read from SQL. Cold once, then 20 warm, each in this case's own
+    state directory. The oracle: every hit returns bytes that hash to its
+    digest and equal `render_file`'s image; a miss's put returns that digest,
+    and the next get returns the bytes. AT-4 (g) proves the cache correct;
+    this case times it. Fails until T302."""
+    reg = PrimaryRegister(pg, tmp_path)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "cache-state"))
+    module = _lanes_index_module()
+    for name in ("image_cache_get", "image_cache_put", "image_cache_head", "image_cache_record"):
+        assert hasattr(module, name), f"lanes-index has no `{name}`: lane 1's T302 builds it"
+    paths = sorted(p for p in reg.estate.render_set())
+    images = images_of(pg, paths)
+    n = head(pg)
+    manifest = {p: module.image_cache_put(images[p]) for p in paths}
+    assert manifest == {p: sha256(images[p]) for p in paths}, "put returns each image's digest"
+    module.image_cache_record(n, manifest)
+    checks, misses = [], []
+    for k in range(1 + N_WARM):
+        start = time.monotonic_ns()
+        found = module.image_cache_head()
+        hits = {p: module.image_cache_get(d) for p, d in (found[1] if found else {}).items()}
+        checks.append((time.monotonic_ns() - start) / 1e6)
+        assert found is not None and found[0] == n, f"the cache's head is {found and found[0]}, not {n}"
+        assert hits == images, "each hit is the image render_file gives"
+        fresh = f"t255 miss {k} {uuid.uuid4()}\n".encode("utf-8")
+        start = time.monotonic_ns()
+        assert module.image_cache_get(sha256(fresh)) is None, "a new image is a miss"
+        digest = module.image_cache_put(fresh)
+        misses.append((time.monotonic_ns() - start) / 1e6)
+        assert digest == sha256(fresh) and module.image_cache_get(digest) == fresh
+    record([figure("AT-9", "fixture cluster, Unix socket", f"the image cache's check, {len(paths)} paths",
+                   checks, "in process, no psql; lane 4: about 3 ms"),
+            figure("AT-9", "fixture cluster, Unix socket", "an image-cache miss: get, then put",
+                   misses, "in process, no psql; lane 4: about 10 ms")])
+
+
+# ------------------------------------------------------------------ the delayed relay
+#: Section 5.6's shapes as lane 5's netem run times them (#165 6722703424),
+#: on T229's TLS cluster: A, a new `psql` per read with one query through
+#: `-c`; B1, a held session sending a reader's statements one by one; B2,
+#: the same as one Query joined with `\;`. C stays on the bench.
+SHAPE_READS = ["SET search_path TO pg_catalog", "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY",
+               "SELECT 1", "COMMIT"]
+RTTS_MS = (20, 150)
+
+
+def _held(env: dict, psql: str):
+    return subprocess.Popen([psql, "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1"], stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, bufsize=1)
+
+
+def _ask(session, text: str) -> None:
+    """Send `text` on the held session and wait for its marker line."""
+    marker = f"t255-{uuid.uuid4().hex[:8]}"
+    session.stdin.write(text + f"\n\\echo {marker}\n")
+    session.stdin.flush()
+    for line in session.stdout:
+        if line.strip() == marker:
+            return
+    raise AssertionError(f"the held session ended: {session.stderr.read()}")
+
+
+@pytest.mark.parametrize("rtt", RTTS_MS, ids=[str(r) for r in RTTS_MS])
+@pytest.mark.parametrize("shape", ["a", "b1", "b2"])
+def test_each_shape_on_a_delayed_relay_is_recorded(pg_engine, request, shape, rtt):
+    """Section 5.6's option B, which lane 3 ruled for open point 23 (R-P23;
+    #165 6741861590): each shape through T229's `delayed_loopback` in front
+    of the TLS cluster, `delay_s` = RTT / 2 each way, 30 timed runs after 3
+    warm-ups (lane 5's counts), beside the same shape at RTT 0 on the TLS
+    cluster itself, so the row gives the network share and the round trips
+    it implies (n = (median - median at 0) / RTT). Every run answers. Never
+    asserted; the relay models no slow start, loss or kernel timer, so it
+    checks n for small messages."""
+    tls = needs(request, "tls_cluster", "lane 2's T229 (section 5.6's TLS cluster)")
+    relay_of = getattr(pgcluster, "delayed_loopback", None)
+    assert relay_of is not None, "tests/pgcluster.py has no delayed_loopback: lane 2's T229 builds it"
+    psql = tls.tool("psql")
+
+    def timings(env: dict) -> list:
+        times = []
+        if shape == "a":
+            for _ in range(33):
+                ms, proc = timed(lambda: subprocess.run([psql, "-X", "-A", "-t", "-c", "SELECT 1"],
+                                                        capture_output=True, text=True, env=env,
+                                                        timeout=120, check=False))
+                assert (proc.returncode, proc.stdout.strip()) == (0, "1"), proc.stderr
+                times.append(ms)
+        else:
+            session = _held(env, psql)
+            try:
+                text = ("\n".join(s + ";" for s in SHAPE_READS) if shape == "b1"
+                        else " \\; ".join(SHAPE_READS) + ";")
+                for _ in range(33):
+                    ms, _none = timed(lambda: _ask(session, text))
+                    times.append(ms)
+            finally:
+                session.stdin.close()
+                session.wait(timeout=60)
+        return times[3:]
+
+    env = tls.client_env()
+    local = _stats(timings(env))
+    with relay_of(int(env["PGPORT"]), rtt / 2000.0) as relay:
+        port = getattr(relay, "port", relay)
+        delayed = _stats(timings(dict(env, PGHOST="127.0.0.1", PGPORT=str(port))))
+    trips = (delayed["median"] - local["median"]) / rtt
+    record([f"| relay | {platform.node()}, TLS cluster behind the delayed loopback | shape {shape.upper()} "
+            f"at RTT {rtt} ms | median {delayed['median']:.1f} ms, p95 {delayed['p95']:.1f} ms, "
+            f"n={delayed['n']}; at RTT 0 median {local['median']:.1f} ms | about {trips:.1f} round trips |"])
