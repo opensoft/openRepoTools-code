@@ -19955,14 +19955,23 @@ rl_move_write() {
 # THE STEPS FOR A MOVE OWED, one sentence (lane 3, #165 6774499606, T422 (6)).
 # Y:5331 has `<owed>` name "the command that does each step by hand", and the
 # rerun is that command (`rl_rerun`). First, S6.3's archive of what `<c>`
-# holds above origin, and the reset to origin; then any person's commit in
-# that archive goes out by `commit`, the publish act; then `lane-rename <old>
-# <new>` again, which writes no register line and makes only the move and the
-# stamp. Never `commit` on the move: its fence refuses the move's D by design.
+# holds above origin, and the reset to origin. Then
+# any person's commit in that archive goes out by `commit`, the publish act,
+# from `<new>`'s checkout, where `LANES_LANE=<new>` routes it: made first
+# where it is not there, and the commit put on it by `cherry-pick`
+# (REV422c S2). Then `lane-rename <old> <new>` again, which writes no
+# register line and makes only the move and the stamp: in `<new>`'s checkout
+# once W resolves `<old>` to `<new>`, which is why it must be there, since
+# a rerun without it refuses 2 and `lane-rename` reads that 2 as its repair
+# run. Never `commit` on the move: its fence refuses the move's D by design.
 # And never a raw `git push`, which skips T420's backstop.
 rl_move_hand_steps() {   # <checkout> <old> <new>
-  printf '(1) in %s, archive what it holds above origin/%s and reset to it (S6.3): list it with git -C %s cherry -v refs/remotes/origin/%s HEAD, and where it lists any commit, git -C %s push origin HEAD:refs/heads/archive/%s-stranded-%s, then git -C %s reset --keep refs/remotes/origin/%s; (2) publish from that archive any commit a person made, with the publish act: LANES_LANE=%s %s commit "<what it is>"; (3) run lane-rename %s %s again, which writes no register line and makes only the move and the stamp. Never `commit` on the move, and never a raw git push of it' \
-    "$1" "$LANES_BRANCH" "$1" "$LANES_BRANCH" "$1" "$3" "$(date -u +%Y%m%dT%H%MZ)" "$1" "$LANES_BRANCH" "$3" "$SELF" "$2" "$3"
+  local hs_nc=""
+  hs_nc="$(lane_checkout_path "$3" 2>/dev/null)" || hs_nc=""
+  [ -n "$hs_nc" ] || hs_nc="<W>-lanes/$3"
+  printf '(1) in %s, archive what it holds above origin/%s and reset to it (S6.3): list it with git -C %s cherry -v refs/remotes/origin/%s HEAD, and where it lists any commit, git -C %s push origin HEAD:refs/heads/archive/%s-stranded-%s, then git -C %s reset --keep refs/remotes/origin/%s; (2) where lane %s'"'"'s checkout, %s, is not there yet, make it: %s lane-checkout %s --create (the publish act routes there, and so does the rerun once W resolves %s to %s); then, for each commit step (1) listed that a person made, never the move'"'"'s own handoff(%s@...): RENAMED commit, put it there and publish it: git -C %s cherry-pick <sha>, then the publish act, LANES_LANE=%s %s commit "<what it is>"; (3) run lane-rename %s %s again, which writes no register line and makes only the move and the stamp. Never `commit` on the move, and never a raw git push of it' \
+    "$1" "$LANES_BRANCH" "$1" "$LANES_BRANCH" "$1" "$3" "$(date -u +%Y%m%dT%H%MZ)" "$1" "$LANES_BRANCH" \
+    "$3" "$hs_nc" "$SELF" "$3" "$2" "$3" "$3" "$hs_nc" "$3" "$SELF" "$2" "$3"
 }
 
 # THE LIFECYCLE DIRECTORY'S MOVE, UNDER THE WORKSTATION'S SIDECAR LOCK ON
