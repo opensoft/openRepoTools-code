@@ -1772,12 +1772,24 @@ def cmd_render(args: list[str]) -> int:
 # - `head`: the decimal seq of the newest manifest recorded. It moves only
 #   forward;
 # - `lock`: the flock that recording and collection take, in `SyncLock`'s
-#   form, but with `LOCK_NB` and no wait: a busy lock skips the record.
+#   form, but with `LOCK_NB` and no wait: a busy lock skips the record. It is
+#   opened without blocking, and a `lock` that is not a regular file counts
+#   as busy.
 #
 # THE CACHE IS ADVISORY (design Y:2516): correctness rests on the digests the
 # database gives at `n`, and on the head check. So no error escapes the five
-# `image_cache_*` functions. An `OSError`, a busy lock or a corrupt file is a
-# miss or a skipped write, and the caller fetches whole. Each caller:
+# `image_cache_*` functions but `image_cache_put`'s `TypeError` for data that
+# is not bytes. An `OSError`, a busy lock or a corrupt file is a miss or a
+# skipped write, and the caller fetches whole.
+#
+# NOTHING IS FSYNCED. After a power loss, a renamed file can be empty or torn,
+# and each such file is a miss. An object fails its re-hash. A manifest or a
+# `head` out of form is a miss, and the next record replaces it. An empty or
+# cut-short manifest reads as a valid partial one, so its callers fetch the
+# rest whole. That is accepted for an advisory cache (lane 3's review, #165
+# 6755345889).
+#
+# Each caller:
 # - uses an object only through `image_cache_get(<the digest the database
 #   gave at n>)`, so an object is used only when its name equals that digest
 #   (D17);
@@ -1802,8 +1814,8 @@ IMAGE_CACHE_KEEP = 3
 
 #: Collection's floor (PC-1): an object is removed only when its mtime is over
 #: 10 minutes old, so an object a writer has put and not yet recorded, or one
-#: a reader is copying, stays. An abandoned temp file is removed on the same
-#: floor.
+#: a reader is copying, stays, but for the narrow race `image_cache_put`
+#: names. An abandoned temp file is removed on the same floor.
 IMAGE_CACHE_FLOOR_SECONDS = 600
 
 #: A digest: a sha256 as 64 lowercase hex, as `journal_files` holds it.
@@ -1836,9 +1848,11 @@ def _image_cache_makedirs(*subs: str) -> str:
 
 def _image_cache_read(path: str) -> bytes:
     """A cache file's bytes, read whole, from a regular file only: a FIFO or a
-    device in its place is refused before any read can block. Raises
+    device in its place is refused before any read can block, and a symlink
+    is not followed (lane 3's review, #165 6755345889). So a symlink at an
+    object's name is a miss, which `image_cache_put` replaces. Raises
     `OSError`."""
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0))
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise OSError(f"{path} is not a regular file")
@@ -1949,25 +1963,46 @@ def _image_cache_lock(root: str):
     its own (design Y:4963): the file opened for append, made 0600, and
     `LOCK_EX | LOCK_NB`. Unlike `SyncLock`, it is tried once, with no wait
     (lane 3's ruling, #165 6746004829), and where `fcntl` is missing there is
-    no lock, so nothing is recorded. Returns the open file, which holds the
-    lock until it is closed, or None where the lock is busy or missing.
-    Raises `OSError` where the file cannot be opened."""
+    no lock, so nothing is recorded.
+
+    The open never blocks: `O_NONBLOCK`, with `O_CLOEXEC`. A `lock` that is
+    not a regular file, such as a FIFO with a reader, counts as a busy lock.
+    A FIFO with no reader refuses the open (lane 3's review, #165
+    6755345889).
+
+    Returns the open descriptor, which holds the lock until `os.close`, or
+    None where the lock is busy or missing. Raises `OSError` where the file
+    cannot be opened."""
     try:
         import fcntl
     except ImportError:
         return None
-    path = os.path.join(root, _IMAGE_LOCK)
-    handle = open(path, "ab")
+    fd = os.open(os.path.join(root, _IMAGE_LOCK),
+                 os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NONBLOCK | os.O_CLOEXEC, 0o600)
     try:
-        os.chmod(path, 0o600)
+        if stat.S_ISREG(os.fstat(fd).st_mode):
+            try:
+                os.fchmod(fd, 0o600)
+            except OSError:
+                pass
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
     except OSError:
         pass
+    os.close(fd)
+    return None
+
+
+def _image_cache_seqs(seq_dir: str) -> list:
+    """The seqs `seq/` lists, highest first, from the names `_IMAGE_SEQ_RE`
+    matches whole; none where `seq/` is missing. Raises `OSError` where it
+    cannot be listed."""
     try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        handle.close()
-        return None
-    return handle
+        listed = os.listdir(seq_dir)
+    except FileNotFoundError:
+        return []
+    return sorted((seq for seq in (int(name) for name in listed if _IMAGE_SEQ_RE.fullmatch(name))
+                   if seq <= _IMAGE_SEQ_MAX), reverse=True)
 
 
 def _image_cache_record_locked(root: str, n: int, manifest: dict) -> None:
@@ -1976,10 +2011,14 @@ def _image_cache_record_locked(root: str, n: int, manifest: dict) -> None:
       in both taking this record's digest. An earlier record that cannot be
       read, or is out of form, is replaced;
     - `head`, moved to `n` only where `n` is above it. A `head` that is
-      missing, or holds no seq, is written. One that cannot be read is left
-      as it is, since it may name a seq above `n`.
+      missing, or holds no seq, as a crash can leave it, is written as the
+      larger of `n` and the highest seq `seq/` lists, so it never moves back
+      (lane 3's review, #165 6755345889). Where `seq/` cannot be listed, it
+      is left. A `head` that cannot be read is left as it is, since it may
+      name a seq above `n`.
     Raises `OSError`."""
-    target = os.path.join(root, _IMAGE_SEQS, str(n))
+    seq_dir = os.path.join(root, _IMAGE_SEQS)
+    target = os.path.join(seq_dir, str(n))
     try:
         merged = _image_cache_parse_manifest(_image_cache_read(target)) or {}
     except OSError:
@@ -1991,8 +2030,10 @@ def _image_cache_record_locked(root: str, n: int, manifest: dict) -> None:
         head = _image_cache_parse_seq(_image_cache_read(head_path))
     except FileNotFoundError:
         head = None
-    if head is None or n > head:
-        _image_cache_write(head_path, f"{n}\n".encode("ascii"))
+    if head is not None and n <= head:
+        return
+    to = n if head is not None else max([n, *_image_cache_seqs(seq_dir)])
+    _image_cache_write(head_path, f"{to}\n".encode("ascii"))
 
 
 def _image_cache_named(seq_dir: str, seqs: list):
@@ -2043,13 +2084,9 @@ def _image_cache_collect_locked(root: str) -> None:
     seq_dir = os.path.join(root, _IMAGE_SEQS)
     objects_dir = os.path.join(root, _IMAGE_OBJECTS)
     try:
-        listed = os.listdir(seq_dir)
-    except FileNotFoundError:
-        listed = []
+        seqs = _image_cache_seqs(seq_dir)
     except OSError:
         return
-    seqs = sorted((seq for seq in (int(name) for name in listed if _IMAGE_SEQ_RE.fullmatch(name))
-                   if seq <= _IMAGE_SEQ_MAX), reverse=True)
     named = _image_cache_named(seq_dir, seqs[:IMAGE_CACHE_KEEP])
     if named is not None:
         _image_cache_sweep(objects_dir, _IMAGE_DIGEST_RE, now, named)
@@ -2081,14 +2118,22 @@ def image_cache_put(data: bytes) -> str:
     `objects/<digest>` is written by a temp file and `os.replace` where it is
     missing, with no lock: two writers of one digest write the same bytes
     (design Y:4963).
-    - An object `image_cache_get` would not return, unreadable or not
-      hashing to its name, counts as missing, and is replaced.
+    - An object `image_cache_get` would not return, unreadable, a symlink, or
+      not hashing to its name, counts as missing, and is replaced.
     - An object already whole is not written again. Its mtime is set to now,
-      so collection's 10-minute floor keeps it until the caller records it.
+      so collection's 10-minute floor keeps it while the caller records it.
+      That narrows the race with a collector, and does not close it: a
+      `utime` that lands between the collector's `lstat` and its unlink
+      loses the object, which costs a later reader one miss (lane 3's
+      review, #165 6755345889).
     - A write that fails is skipped. The digest is returned all the same, and
       a later reader misses.
-    `data` is bytes, as `hashlib` takes it: anything else raises `TypeError`
-    there, before the cache is touched."""
+    `data` is `bytes` or a `bytearray`. Anything else raises `TypeError`
+    before the cache is touched, the one error that escapes this section's
+    five functions."""
+    if not isinstance(data, (bytes, bytearray)):
+        raise TypeError(f"image_cache_put takes bytes, not {type(data).__name__}")
+    data = bytes(data)
     digest = hashlib.sha256(data).hexdigest()
     try:
         root = _image_cache_makedirs(_IMAGE_OBJECTS)
@@ -2134,8 +2179,9 @@ def image_cache_record(n: int, manifest: dict[str, str]) -> None:
       only the paths its writer read at `n`, and a second record of one `n`
       merges its paths into the first, a path in both taking the second's
       digest;
-    - it moves `head` to `n` only where `n` is above it, so `head` never moves
-      back;
+    - it moves `head` to `n` only where `n` is above it. A `head` that is
+      missing or holds no seq takes the larger of `n` and the highest seq
+      `seq/` lists. So `head` never moves back;
     - it then collects, as `image_cache_collect` does, under the same flock.
     The flock is taken with `LOCK_NB`: where another writer holds it, the
     record is skipped, never waited for. A record is skipped too where `n` is
@@ -2162,7 +2208,7 @@ def image_cache_record(n: int, manifest: dict[str, str]) -> None:
     except (OSError, ValueError):
         pass
     finally:
-        lock.close()
+        os.close(lock)
 
 
 def image_cache_collect() -> None:
@@ -2185,7 +2231,7 @@ def image_cache_collect() -> None:
     except (OSError, ValueError):
         pass
     finally:
-        lock.close()
+        os.close(lock)
 
 
 # ======================================================== the records built
