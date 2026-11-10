@@ -23755,6 +23755,19 @@ EOF
       [ "$rh_nap" -gt "$rh_left" ] && rh_nap="$rh_left"
       sleep "$rh_nap"
       log_sync
+      # FEATURE 007, T423 — ON PRIMARY EACH POLL READS THE REGISTER AT ITS HEAD
+      # (D17; Y:5090; contract §3.6: "After `committed`, the child's tail reads
+      # take D17's path through the read family that `reg_flush` drops"). On
+      # primary only an attempt's child reaches this wait, after `committed`,
+      # and `log_sync` fetches nothing there (D12): the flag returns before any
+      # fetch (T413), and its primary form makes no fetch and no flush with the
+      # read door open (T506). So the family the wait's first read cached would
+      # answer every later poll at that read's head, and a release written
+      # since would never be seen. `reg_flush` (lane 5's T505) drops the whole
+      # family, `.head` with it, before each poll's read, so the read below is
+      # the readers' second read at the register's head (§3.6, form 3), never
+      # git. Off primary, `log_sync`'s fetch and drops are the poll, as before.
+      [ "$REG_MODE" != primary ] || reg_flush
       rh_out=""; rh_rc=0
       rh_out="$(lane_binding_scan "$lane")" || rh_rc=$?
       [ "$rh_rc" = 0 ] || { note "the lane's log could not be read on this poll — waiting on"; continue; }
