@@ -119,7 +119,8 @@
 # with `LANES_EXPECT="bind:<lane>"` and `LANES_LANE="<lane>"` on that one call.
 # Its exits are passed on where they are the register's own — 69 and 75 as they
 # are, and 3 with the writer's printed rerun relayed, never a hint of this
-# word's — and `LANES_ACT` is unset before any launch or attach.
+# word's — and `LANES_ACT` and `LANES_EXPECT` are unset before any launch or
+# attach.
 
 set -euo pipefail
 
@@ -205,17 +206,21 @@ fi
 [ -n "$LANES_EDIT" ] && [ -x "$LANES_EDIT" ] || die "no register reader at ${LANES_EDIT:-lanes-edit.sh} — it is installed beside this
     command by \`openRepoTools --install\`. Run that, or set \$LANES_EDIT." 2
 
-# FEATURE 007, T432 — NO ACT'S BASE REACHES A LAUNCH OR AN ATTACH (the design's
-# "Before a launch `LANES_ACT` is unset", Y:5596; review m11). An exported
+# FEATURE 007, T432 — NO ACT'S BASE OR EXPECTATION REACHES A LAUNCH OR AN ATTACH
+# (the design's "Before a launch `LANES_ACT` is unset", Y:5596; review m11; lane
+# 3's ruling that both variables are unset before a launch or a detached child,
+# #165 6770733371, shared ruling G5 and T432's question 5). An exported
 # `LANES_ACT` is inherited by whatever this command `exec`s — the launcher, and
 # through it the session and that session's guard, or `tmux attach` — and a
 # session that carried another act's base would run its own writes under it.
-# This command takes its own base for its one write, in `go_elsewhere`, and
-# hands it to that one call alone, so it has no use for an inherited one. It is
-# unset HERE, before any read, which puts it before every launch, attach and
-# window move below and leaves no later branch to forget it. In files mode the
-# variable is ignored, so nothing there changes.
-unset LANES_ACT
+# An exported `LANES_EXPECT` is the same, since Y:5581 says it "is never
+# exported" and the guard's child is to see both unset (AT-F6 (13), Y:5563).
+# This command takes its own base and its own expectation for its one write, in
+# `go_elsewhere`, and hands them to that one call alone, so it has no use for an
+# inherited one. Both are unset HERE, before any read, which puts it before every
+# launch, attach and window move below and leaves no later branch to forget it.
+# In files mode the variables are ignored, so nothing there changes.
+unset LANES_ACT LANES_EXPECT
 
 # ------------------------------------------------------------------ arguments
 
