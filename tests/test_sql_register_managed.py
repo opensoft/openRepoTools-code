@@ -280,7 +280,8 @@ class Managed:
                                          os.environ.get("PATH", os.defpath)]))
         self.env = env
         # THE PROVIDER makes the admin, CNPG's initdb owner: no SUPERUSER.
-        self.cluster.psql(f"CREATE ROLE {ADMIN} LOGIN CREATEROLE CREATEDB NOSUPERUSER;")
+        self.cluster.psql(f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{ADMIN}') THEN "
+                          f"CREATE ROLE {ADMIN} LOGIN CREATEROLE CREATEDB NOSUPERUSER; END IF; END $$;")
         # SECTION 5.6'S COUNTING CLUSTER'S LOG: each connection and statement,
         # each line prefixed with its backend's pid.
         self.cluster.psql("ALTER SYSTEM SET log_connections = on;\n"
@@ -614,7 +615,7 @@ def test_login_add_run_again_puts_back_a_lost_membership_and_changes_nothing_els
     m.bootstrapped(service)
     m.logins(service, "e1", dump=False)
     before = {login: m.role(login) for login in ("lanes_w_e1", "lanes_r_e1")}
-    m.psql(f"REVOKE {WRITER} FROM lanes_w_e1;")
+    m.psql(f"REVOKE {WRITER} FROM lanes_w_e1 GRANTED BY {ADMIN};")
     assert m.role("lanes_w_e1")["groups"] == [], "the membership was not revoked by hand"
     again = m.login("add", "e1", service)
     assert again.returncode == 0, f"login add e1, run again, failed:\n{_said(again)}"
