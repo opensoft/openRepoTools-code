@@ -911,7 +911,7 @@ OTHER_ARMS = {
     "lane-end-2490": (Arm("lane-end", ("repoA-2",), "log", "2543", match="ENDED*"),
                       (69, 75, 3), "code"),
     "lane-worktrees-508-524": (Arm("lane-worktrees", ("add", "repoA-2", "s1", "--dry-run"),
-                                   "canon-lane", "508"), (69, 75, 3), "refuse"),
+                                   "canon-lane", "508"), (69, 75, 3), "refuse-own-exit"),
     "lane-handoff-1463": (Arm("lane-handoff", ("--lane", "repoA-2", "the arms' test"),
                               "canon-lane", "1463", world="primary"), (69,), "mirror"),
     "lane-handoff-2817": (Arm("lane-handoff", ("--late", "--at", "2026-10-01T03:00:00Z", "--lane",
@@ -1034,7 +1034,10 @@ def test_75_and_3_refuse_the_launch_at_each_lane_start_arm(tmp_path, arm_id, cod
         assert result.returncode == code, (arm_id, code, result.returncode, result.stderr[-2000:])
     assert not launched(world), (arm_id, code, "the agent ran")
     assert names_the_code(result.stderr, code), (arm_id, code, result.stderr[-2000:])
-    assert re.search(r"(?i)nothing (was|has been|is) (written|changed)|wrote nothing",
+    # T217j (lane 4's T402 finding; lane 3, 6770688147): the early refusal says "Nothing was
+    # launched, renamed or written.", the late one "has written no row, no STARTED or RESUMED
+    # line and no stamp"; each says nothing was written.
+    assert re.search(r"(?i)\bnothing (was|has been|is)\b[^.\n]*\bwritten\b|\bwrote nothing\b|\bhas written no\b",
                      result.stderr), (arm_id, code, result.stderr[-2000:])
     assert re.search(r"(?i)\b(retry|re-?run|again)\b", result.stderr), \
         (arm_id, code, "no word that a retry is safe", result.stderr[-2000:])
@@ -1084,6 +1087,14 @@ def test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives(
     result = run_arm(world, arm, code)
     if kind == "refuse":
         assert result.returncode == code, (arm_id, code, result.returncode, result.stderr[-3000:])
+        assert world.register_bytes() == before, (arm_id, code, "a refusal that wrote")
+    elif kind == "refuse-own-exit":
+        # T217j (lane 3, 6770688147): lane-worktrees refuses with its own exit, 2 (its header's
+        # exit table: lane-end's gate reads 3 as "something to retire", add's 1 as "made"),
+        # naming the read's code, with nothing made.
+        assert result.returncode == 2, (arm_id, code, result.returncode, result.stderr[-3000:])
+        assert re.search(rf"REFUSED, nothing was made: .*exited {code}\b", result.stderr), \
+            (arm_id, code, result.stderr[-2000:])
         assert world.register_bytes() == before, (arm_id, code, "a refusal that wrote")
     elif kind == "code":
         assert result.returncode == code, (arm_id, code, result.returncode, result.stderr[-3000:])
@@ -1249,13 +1260,28 @@ def test_lane_worktrees_register_reads_go_through_a_verb_and_refuse_69(tmp_path,
     world = ArmWorld(tmp_path / "w")
     stray = world.home / "projects" / "repoA-2-stray"
     stray.mkdir(parents=True)
+    tree = world.lane_dir.parent / ".lane-worktrees" / "repoA-2" / "s1"
+    if read == "lifecycle-events-711":
+        # T217j (lane 4's T404 finding): with no tree the failed read is a note (T404's task
+        # line, lane 3's item 2); a lane's tree is what an unreadable claim can take.
+        tree.parent.mkdir(parents=True)
+        world.git("-C", str(world.lane_dir), "worktree", "add", "-q", "-b", "s1", str(tree))
     env = world.arm_env("register-grep", 69, match=match, stderr=UNREACHABLE_STDERR.rstrip("\n"))
     result = world.run("lane-worktrees", *argv, env=env)
     assert world.reached(), (read, "the read never went through register-grep",
                              result.returncode, result.stderr[-3000:])
-    assert result.returncode != 0, (read, result.stdout[-2000:], result.stderr[-2000:])
+    if read == "lifecycle-events-5596":
+        # T217j: the estate report changes nothing and exits 0 (its header), naming what it
+        # could not read.
+        assert result.returncode == 0, (read, result.stdout[-2000:], result.stderr[-2000:])
+        assert re.search(r"Records the report could not read[\s\S]*register-grep` exited 69",
+                         result.stdout), (read, result.stdout[-2000:])
+    else:
+        assert result.returncode != 0, (read, result.stdout[-2000:], result.stderr[-2000:])
+        assert re.search(r"(?i)register", result.stdout + result.stderr), (read, result.stderr[-2000:])
     assert stray.is_dir(), (read, "the sweep deleted on a failed read")
-    assert re.search(r"(?i)register", result.stdout + result.stderr), (read, result.stderr[-2000:])
+    if read == "lifecycle-events-711":
+        assert tree.is_dir(), (read, "the sweep deleted a tree on a failed read")
 
 
 def test_index_flag_on_primary_changes_nothing_and_prints_no_index_line(primary):
