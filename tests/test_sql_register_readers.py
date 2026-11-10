@@ -1910,6 +1910,18 @@ def mode_runs(estate: Estate, primary: Primary) -> dict:
             "primary": lambda *a: primary.edit(*a)}
 
 
+def store_asks(primary: Primary) -> int:
+    """How many register calls the door has put to the store so far (the
+    wrapper's counted calls, as the one-call failure counts them). A read
+    verb on primary answers from the register through the door, never from
+    the checkout's files or from git (FR-034; T401's primary branch,
+    `reg_image` and `reg_paths`), so a primary run that answered leaves this
+    count higher than it was before the run. Where it stays put the run read
+    the files, as files mode does, and a case that loops over all three modes
+    passes without having tested primary."""
+    return len(primary.door.register_calls())
+
+
 def strip_end(text: str) -> str:
     """`.register` normalizes trailing newlines and files mode's `cat` does
     not (lane 5's note on answer 14), so a byte case holds up to them."""
@@ -1925,7 +1937,9 @@ def test_register_text_answers_the_bytes_the_scripts_read_today_and_69_on_a_fail
     the door's `n` (`reg_image`); 69 on a failed read in every mode; and 2,
     with nothing on stdout, for a path outside the set (`lanes/repos.tsv`,
     and `lanes/log/README.md`, O21 (a)) in every mode, the store reachable on
-    primary. Each 2 case first shows the verb answers in its mode."""
+    primary. Each 2 case first shows the verb answers in its mode, and on
+    primary that the answer came through the register: the door asked the
+    store for it, as FR-034 has it, and the files did not answer (T217g)."""
     runs = mode_runs(estate, primary)
     if case in ("files", "index"):
         for path in VERB_PATHS:
@@ -1947,9 +1961,15 @@ def test_register_text_answers_the_bytes_the_scripts_read_today_and_69_on_a_fail
         assert (gone.returncode, gone.stdout) == (69, ""), (gone.returncode, gone.stderr)
     else:
         for mode, run in runs.items():
+            asked = store_asks(primary)
             control = run("register-text", "lanes/LANES.md")
             assert control.returncode == 0, (case, mode, "the verb does not answer",
                                              control.returncode, control.stderr)
+            if mode == "primary":
+                assert store_asks(primary) > asked, \
+                    (case, mode, "the primary answer never came through the register: the door "
+                     "asked the store nothing, so it read the files, which FR-034 forbids",
+                     primary.door.calls())
             result = run("register-text", OUTSIDE_PATHS[case])
             assert (result.returncode, result.stdout) == (2, ""), \
                 (case, mode, result.returncode, result.stdout, result.stderr)
@@ -1983,7 +2003,10 @@ def test_register_grep_prints_what_git_grep_prints_and_1_with_no_match(estate, p
     match; 69 on a failed read; 2 for a path outside the set; `-- lanes/log`
     greps the lane logs alone, never `lanes/log/README.md`; and on primary a
     case pair of logs is 69 with nothing on stdout, while the same store
-    answers `register-text` (Q-W11-4 (A); R2f4-S14)."""
+    answers `register-text` (Q-W11-4 (A); R2f4-S14). In `[no-match]`,
+    `[other-path]`, `[log-readme]` and `[log-dir-skips-readme]` the primary
+    run also asks the store through the door, since the files answer the same
+    1, 2 or lines and so prove nothing about primary (T217g)."""
     runs = mode_runs(estate, primary)
     ere = "^(STARTED|NOTED) "
     if case in ("files", "index"):
@@ -1998,9 +2021,15 @@ def test_register_grep_prints_what_git_grep_prints_and_1_with_no_match(estate, p
         assert f"lanes/log/{STORE_ONLY_LANE}.md:" in result.stdout, result.stdout
     elif case == "no-match":
         for mode, run in runs.items():
+            asked = store_asks(primary)
             result = run("register-grep", "-E", "^NO SUCH LINE$", "--", "lanes/log")
             assert (result.returncode, result.stdout) == (1, ""), (mode, result.returncode,
                                                                   result.stderr)
+            if mode == "primary":
+                assert store_asks(primary) > asked, \
+                    (case, mode, "the primary 1 never came through the register: the door asked "
+                     "the store nothing, so it grepped git, which FR-034 forbids",
+                     primary.door.calls())
     elif case == "failed-read":
         primary.door.unreachable()
         result = runs["primary"]("register-grep", "-E", ere, "--", "lanes/log")
@@ -2015,17 +2044,29 @@ def test_register_grep_prints_what_git_grep_prints_and_1_with_no_match(estate, p
         assert (gone.returncode, gone.stdout) == (69, ""), (gone.returncode, gone.stderr)
     elif case in OUTSIDE_PATHS:
         for mode, run in runs.items():
+            asked = store_asks(primary)
             control = run("register-grep", "-E", ere, "--", "lanes/log")
             assert control.returncode == 0, (case, mode, "the verb does not answer",
                                              control.returncode, control.stderr)
+            if mode == "primary":
+                assert store_asks(primary) > asked, \
+                    (case, mode, "the primary answer never came through the register: the door "
+                     "asked the store nothing, so it grepped git, which FR-034 forbids",
+                     primary.door.calls())
             result = run("register-grep", "-E", ere, "--", OUTSIDE_PATHS[case])
             assert (result.returncode, result.stdout) == (2, ""), \
                 (case, mode, result.returncode, result.stdout, result.stderr)
     elif case == "log-dir-skips-readme":
         readme_ere = "^(# the object logs|STARTED )"
         for mode, run in runs.items():
+            asked = store_asks(primary)
             result = run("register-grep", "-E", readme_ere, "--", "lanes/log")
             assert result.returncode == 0, (mode, result.returncode, result.stderr)
+            if mode == "primary":
+                assert store_asks(primary) > asked, \
+                    (case, mode, "the primary answer never came through the register: the door "
+                     "asked the store nothing, so it grepped git, which FR-034 forbids",
+                     primary.door.calls())
             assert "README.md" not in result.stdout, (mode, result.stdout)
             assert "lanes/log/repoA-2.md:" in result.stdout, (mode, result.stdout)
     else:
