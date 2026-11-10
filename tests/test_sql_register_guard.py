@@ -1695,3 +1695,277 @@ def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate):
     print(f"T254 case 21: ended_utc - started_utc = "
           f"{_epoch(record['ended_utc']) - _epoch(record['started_utc'])} s beside 530 s")
     assert hook.code == 2
+
+
+# ============================================================ T213: test 10's direct part
+#
+# Test 10's direct part, the guard without the service (AT-10; section 4.4):
+# each case runs with the service down, so the guard's own direct read meets
+# the fault; T237 adds the `service-up` cases. The database cases run on the
+# session cluster, so here they are collected and skipped with T205's banner;
+# they fail until L1-A2, L1-A11 and L5-A3, and the second read past the start
+# line's until L1v4.5's T113 and lane 5's T507. The hook's 4.5 s is asserted
+# as stated; every other bound at twice its value, recorded beside it (section
+# 1.2's timing rule).
+
+#: The guard's frame (design, "One budget"; section 4's rule 1).
+BUDGET = 4.5
+#: The parse's start line, `T0 + 3.75 s` (SVC-8), asserted at twice it.
+START_LINE = 3.75
+
+
+def _silent_listener(host="127.0.0.1"):
+    """Section 4.4's case 1: a loopback listener on port 0 that accepts and
+    never speaks. Returns (its port, a function that closes it)."""
+    import socket
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind((host, 0))
+    server.listen(16)
+    held, stop = [], threading.Event()
+
+    def accept():
+        server.settimeout(0.2)
+        while not stop.is_set():
+            try:
+                conn, _ = server.accept()
+                held.append(conn)
+            except OSError:
+                continue
+
+    thread = threading.Thread(target=accept, daemon=True)
+    thread.start()
+
+    def close():
+        stop.set()
+        thread.join(1)
+        for conn in held:
+            conn.close()
+        server.close()
+
+    return server.getsockname()[1], close
+
+
+def _db_config(est: Estate, reader_url: str, **keys) -> Path:
+    """The estate's configuration with its reader's URL replaced (T220's
+    form), plus any of `register_addresses=` and the like."""
+    conf = Path(est.extra["LANES_INDEX_CONFIG"])
+    lines = [line for line in conf.read_text(encoding="utf-8").splitlines()
+             if not line.startswith("reader_url=")]
+    lines.append(f"reader_url={reader_url}")
+    lines.extend(f"{k}={v}" for k, v in keys.items())
+    conf.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return conf
+
+
+def _refuses_inside_the_budget(hook: Hook) -> None:
+    took = hook.t_exit - hook.t0
+    print(f"T213: the guard exited {hook.code} after {took:.3f} s (budget {BUDGET} s)")
+    assert not hook.killed and hook.code == 2, repr(hook)
+    assert took < BUDGET, f"the guard took {took:.2f} s, past the {BUDGET} s budget"
+
+
+@pytest.mark.parametrize("case", ["1-service-down", "2-service-down", "3-service-down",
+                                  "4-service-down"])
+def test_a_database_that_does_not_answer_is_2_inside_4_5_s(estate, case):
+    """Section 4.4's cases 1 to 4 with the service down: a loopback listener
+    that never speaks; a host silent after connecting (a relay that stops
+    forwarding at the first query); a read behind a migration's lock, held
+    by the test's own session; and a conninfo with two loopback hosts,
+    `127.0.0.1` and `127.0.0.2` (T104's TLS refusal at load does not reach
+    them). In each the hook exits 2, was not killed, and finished in under
+    4.5 s, its refusal naming the store."""
+    est = estate(mode="primary")
+    closers = []
+    try:
+        if case.startswith("1-"):
+            port, close = _silent_listener()
+            closers.append(close)
+            _db_config(est, f"postgresql://reader@127.0.0.1:{port}/{est.pg.name}")
+        elif case.startswith("2-"):
+            relay = pytest.importorskip("pgcluster").__dict__.get("silent_after_startup")
+            assert relay is not None, "tests/pgcluster.py has no silent-after-startup relay"
+        elif case.startswith("3-"):
+            holder = est.pg.session()
+            closers.append(holder.kill)
+            holder.stdin.write("BEGIN; LOCK TABLE register_head IN ACCESS EXCLUSIVE MODE;\n")
+            holder.stdin.flush()
+        else:
+            ports = [_silent_listener(h) for h in ("127.0.0.1", "127.0.0.2")]
+            closers.extend(c for _, c in ports)
+            _db_config(est, "postgresql://reader@127.0.0.1:%d,127.0.0.2:%d/%s"
+                       % (ports[0][0], ports[1][0], est.pg.name))
+        hook = est.hook("hello")
+        _refuses_inside_the_budget(hook)
+    finally:
+        for close in closers:
+            close()
+
+
+@pytest.mark.parametrize("case", ["service-down"])
+def test_a_connect_timeout_above_the_direct_reads_share_is_cut_at_the_parse_start_line(
+        estate, case):
+    """Section 4.4's case 5: `reader_url=` carries `connect_timeout=3`, so the
+    connect alone would end past the start line; against case 1's listener
+    the read's own timer ends it at `T0 + 3.75 s`, the hook exits 2 in under
+    4.5 s, and the direct read's call carries `PGCONNECT_TIMEOUT=3`."""
+    est = estate(mode="primary")
+    port, close = _silent_listener()
+    try:
+        _db_config(est, f"postgresql://reader@127.0.0.1:{port}/{est.pg.name}?connect_timeout=3")
+        est.shim()
+        hook = est.hook("hello")
+        _refuses_inside_the_budget(hook)
+        calls = est.shim_calls()
+        assert calls and calls[-1]["pg"].get("PGCONNECT_TIMEOUT") == "3", calls[-1:]
+    finally:
+        close()
+
+
+def test_a_guard_that_starts_too_late_refuses_2_without_a_read(estate):
+    """AT-10: a guard that starts at or past the direct read's cap refuses 2
+    and makes no read (the 5 s is one budget, spent once). The stand-in
+    `tmux` holds the hook's fixed parts past the start line, so `T0` is
+    early and the read would start too late."""
+    est = estate(mode="primary")
+    est.shim()
+    tmux = est.session.tmux
+    text = tmux.read_text(encoding="utf-8")
+    tmux.write_text(text.replace("[ \"${1-}\" = display-message ] || exit 0",
+                                 "sleep 1.3\n[ \"${1-}\" = display-message ] || exit 0", 1),
+                    encoding="utf-8")
+    hook = est.hook("hello")
+    _refuses_inside_the_budget(hook)
+    assert not est.shim_calls(), "a guard past its start line still read"
+
+
+def test_a_whole_file_fetch_the_start_line_cuts_fills_the_image_cache_for_the_next_prompt(
+        estate, tmp_path):
+    """Section 4.4's case 6, with the service down: the image cache lacks
+    `lanes/LANES.md` at `n`, and the shim holds the direct read's whole-file
+    fetch on a FIFO; the hook exits 2 at the cut inside the budget; the fetch
+    runs on in a detached child, and once released writes the file to the
+    image cache, so the next prompt's read fetches no whole file and
+    answers."""
+    est = estate(mode="primary")
+    fifo = tmp_path / "whole-file"
+    os.mkfifo(fifo)
+    est.shim([{"mode": "hold", "match": "lanes/LANES.md", "call": 1, "fifo": str(fifo)}])
+    hook = est.hook("hello")
+    _refuses_inside_the_budget(hook)
+    with open(fifo, "w"):
+        pass
+    before = len(est.shim_calls())
+    time.sleep(1.0)
+    hook = est.hook("hello")
+    assert hook.code in (0, 2) and not hook.killed, repr(hook)
+    assert not [c for c in est.shim_calls()[before + 1:]
+                if "lanes/LANES.md" in c.get("sent", "")], "the next prompt fetched it again"
+
+
+def test_the_direct_read_connects_as_its_engineers_reader_login(estate):
+    """AT-10: the guard's direct read connects as the engineer's reader login
+    (design section 1.4, `lanes-index login add`), never as the writer."""
+    est = estate(mode="primary")
+    est.shim()
+    est.hook("hello")
+    calls = est.shim_calls()
+    assert calls, "the guard made no direct read"
+    assert all("writer" not in (c.get("pg", {}).get("PGUSER") or "") for c in calls), calls
+
+
+def test_no_session_environment_carries_a_database_url_or_password(estate):
+    """AT-10: no variable of the session's environment, as the guard and the
+    bind's child see it, carries a database URL or a password."""
+    est = estate(mode="primary")
+    est.make_offer()
+    est.answer_2()
+    est.ended()
+    env = est.starts()[0]["env"]
+    leaked = {k: v for k, v in env.items() if v and ("postgresql://" in v or "PGPASSWORD" in k)}
+    assert not leaked, leaked
+    child = est.session.env(est.base, **est.extra)
+    assert not [k for k, v in child.items() if k.startswith("PG") or "postgresql://" in v]
+
+
+def test_claude_no_lane_still_skips_before_any_input(estate):
+    """AT-10: `CLAUDE_NO_LANE=1` still makes the guard exit 0 before it reads
+    any input: nothing printed, no `tmux` call and no read."""
+    est = estate()
+    calls = len(est.session.tmux_calls())
+    hook = run_hook(["bash", str(est.guard), "guard"], "not json at all",
+                    est.env(CLAUDE_NO_LANE="1"), est.session.cwd)
+    assert hook.code == 0 and hook.text == "", repr(hook)
+    assert len(est.session.tmux_calls()) == calls, est.session.tmux_calls()[calls:]
+
+
+def test_the_guard_maps_69_75_and_3_to_2(estate, tmp_path):
+    """AT-10: where the guard's register read ends 69, 75 or 3, the guard
+    exits 2 (the hook's only refusal), never the read's own code. Through
+    the contract's stub `lanes-index`, beside a copy of `lanes-edit.sh`,
+    with each end injected by `stub_outcome`."""
+    from sql_register_helpers import stub_outcome
+    code = tmp_path / "code"
+    contract_stub(code)
+    for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
+        shutil.copy2(REPO / name, code / name)
+    for end in (69, 75, 3):
+        est = estate(guard=code / "lanes-edit.sh")
+        conf = tmp_path / f"lanes-index-{end}.conf"
+        conf.write_text(f"register_url=postgresql:///register?host={tmp_path}/sock\n",
+                        encoding="utf-8")
+        est.extra["LANES_INDEX_CONFIG"] = str(conf)
+        stub_outcome(code, ["register", "read"], exit=end)
+        hook = est.hook("hello")
+        assert hook.code == 2 and not hook.killed, (end, repr(hook))
+        calls = [json.loads(line) for line in (code / ARGV_LOG).read_text(
+            encoding="utf-8").splitlines()] if (code / ARGV_LOG).exists() else []
+        assert [c for c in calls if c[:2] == ["register", "read"]], (end, calls)
+
+
+@pytest.mark.parametrize("case", ["at-the-cap", "under-a-declaration", "no-declaration-read"])
+def test_a_second_read_past_the_start_line_is_noted_not_refused(estate, case):
+    """S36-T507, lane 5's name: the guard's second read, form 4 (`register
+    read --for guard --at <n> --pid <pid> --cache <file> --lane=<key>`).
+    `[at-the-cap]`: started at or past `T0 + 3.75 s` it ends 2 and writes no
+    `.log.<key>`, and the guard notes the log as unreadable and does not
+    refuse (B4); `[under-a-declaration]`: its cut stays `T0 + 3.75 s` under
+    an unexpired declaration (B5); `[no-declaration-read]`: it reads no
+    declaration."""
+    est = estate(mode="primary")
+    est.shim([{"mode": "window", "ms": 3900, "match": "--for guard"}] if case == "at-the-cap"
+             else [])
+    if case == "under-a-declaration":
+        conf = Path(est.extra["LANES_INDEX_CONFIG"])
+        (conf.parent / "register-outage").write_text(
+            "format=1\nkind=word\ndatabase=register\nutc=2026-11-10T00:00:00Z\nhost=Eagle\n"
+            f"until={_utc(time.time() + 3600)}\nmirror-seq=1\nwhy=test\n", encoding="utf-8")
+    hook = est.hook("hello")
+    assert not hook.killed and hook.t_exit - hook.t0 < BUDGET, repr(hook)
+    assert "second read" not in hook.err or hook.code != 2, repr(hook)
+    forms = [c for c in est.shim_calls() if "--for" in " ".join(c.get("argv", []))]
+    assert forms, "the guard made no second read"
+
+
+def test_the_guards_last_budget_line_is_below_guard_timeout():
+    """Lane 5's (A5): the last line of SVC-8's budget, the guard's own
+    printing of its refusal, is below `GUARD_TIMEOUT`, 5 s: the guard's
+    largest budget constant, read from `lanes-edit.sh`, is under 5000 ms.
+    Fails until L5-A3 (lane 5's T507) writes the budget."""
+    text = GUARD.read_text(encoding="utf-8")
+    found = re.findall(r"^GUARD_BUDGET_[A-Z_]*_MS=(\d+)", text, re.M)
+    assert found, "lanes-edit.sh states no GUARD_BUDGET_*_MS line (lane 5's T507)"
+    assert max(int(v) for v in found) < 5000, found
+
+
+def test_the_session_start_block_makes_no_register_call_on_primary(estate):
+    """Lane 5's (A5; R39): the `SessionStart` block, in the mirror class,
+    makes no register call on primary: the shim logs no call while it
+    runs."""
+    est = estate(mode="primary")
+    est.shim()
+    proc = subprocess.run(["bash", str(est.guard), "session-start"],
+                          input=est.session.hook_input(), capture_output=True, text=True,
+                          env=est.env(), cwd=str(est.wip), timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert not est.shim_calls(), est.shim_calls()
