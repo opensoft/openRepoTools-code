@@ -64,7 +64,8 @@
 #                                          --state "<STATE> · <one line>" }
 #                                        --log lane:<lane> → "<payload>"
 #                                        (feature 007: lane-start's row, cell, state and log writes
-#                                         as ONE write, one commit and push; LANES_SESSION as for log)
+#                                         as ONE write, one commit and push; LANES_LANE=<lane> and
+#                                         LANES_SESSION=<transcript uuid> are required)
 #   lanes-edit.sh                      commit             "<message>"         # commit a hand edit; with
 #                                         nothing staged, publish the stranded
 #                                         register and handoff commits (#194)
@@ -538,9 +539,11 @@
 #      AND FEATURE 007'S `start-record` (T427), each with nothing written: its
 #      usage; every refusal of the writes it makes as one (`add-row`'s,
 #      `append-session-id`'s of the text it appends, `set-row-state`'s and
-#      `log`'s); and a row or a `--log` object that names another lane than its
-#      first word. A cell append whose anchor does not hold is no refusal: it
-#      is left out and said, and the write goes on.
+#      `log`'s); a row or a `--log` object that names another lane than its
+#      first word; and a `LANES_LANE` that is not that word, byte for byte, or
+#      a `LANES_SESSION` that is not a transcript uuid. A cell append whose
+#      anchor does not hold is no refusal: it is left out and said, and the
+#      write goes on.
 #  64  usage — a caller's bad arguments to one of the reads Amendment 11 added
 #      (`window-lane`, `lane-dir`, `lane-profile`, `last-session`, `forks`,
 #      `duplicate-holder` (issue #39), `workstation`, `fetch-age`, `lanes`,
@@ -7880,6 +7883,33 @@ row_state_split_or_die() {   # <lane> <its line> <its row>
 # acceptance, 6752888006).
 start_record_tail() {
   lane_state_follow "$we_lane" "$we_verb" "$we_pay" "$we_uuid" "$we_pre" "$we_seam"
+}
+
+# `start-record`'S FORM, READ FROM ITS WORDS AS THEY ARRIVED (feature 007, T427;
+# lane 3's ruling 4, #165 6755005268), for `lane_row_gate`, which has no other
+# copy of them: 0 where the call's options hold `--add-row`, the form that makes
+# the lane's row; 1 otherwise. `ORIG_ARGV` is walked as the arm reads it: the
+# leading global flags, the verb, `<L>` and `<STARTED|RESUMED>`, then each option
+# with its own words, so a word that is only another option's text (a why that
+# reads `--add-row`) is not the flag.
+sr_argv_adds_row() {
+  sra_i=0; sra_n=${#ORIG_ARGV[@]}
+  while [ "$sra_i" -lt "$sra_n" ]; do
+    case "${ORIG_ARGV[$sra_i]}" in
+      --no-sweep|--sweep|--no-github) sra_i=$((sra_i + 1)) ;;
+      *) break ;;
+    esac
+  done
+  sra_i=$((sra_i + 3))
+  while [ "$sra_i" -lt "$sra_n" ]; do
+    case "${ORIG_ARGV[$sra_i]}" in
+      --add-row) return 0 ;;
+      --append-cell|--log) sra_i=$((sra_i + 4)) ;;
+      --state) sra_i=$((sra_i + 2)) ;;
+      *) sra_i=$((sra_i + 1)) ;;
+    esac
+  done
+  return 1
 }
 
 # A read fetches first — there is no index, so "current" means "after a fetch".
@@ -17637,9 +17667,12 @@ write_lane_of() {   # <verb> <its arguments…>
     # review's M6). Without this arm, `*) return 1` would let it write through W
     # under LANES_ROUTE_WRITES=1, which Amendment 23 S5 forbids. A first word
     # that is missing or a flag is the arm's own usage refusal (2), as for
-    # `write-handoff`.
+    # `write-handoff`. So is a call whose LANES_LANE is not `<L>` or whose
+    # LANES_SESSION is not a transcript uuid (lane 3's rulings 2 and 3, #165
+    # 6755005268): it is not routed, and the arm refuses it before any clone.
     start-record)
       case "${1-}" in ''|-*) return 1 ;; esac
+      [ "${LANES_LANE-}" = "$1" ] && valid_uuid "${LANES_SESSION-}" || return 1
       printf '%s\n' "$1" ;;
     append-line)
       [ -n "${1-}" ] || return 1
@@ -17791,6 +17824,10 @@ lane_row_gate() {   # <canonical lane> <its checkout>
   case "$cmd" in
     set-row-state|replace-in-row|append-session-id|rename-lane|write-handoff) lrg_log=0 ;;
     log|commit|request-handoff|append-line|claim|release|retire-rows|archive-rows|migrate-state-cells) lrg_log=1 ;;
+    # FEATURE 007, T427 (lane 3's ruling 4, #165 6755005268; N5): `start-record
+    # --add-row` makes the lane's row, as `add-row` does, so it passes; every
+    # other form edits the row that is there, as `set-row-state` does.
+    start-record) if sr_argv_adds_row; then return 0; fi; lrg_log=0 ;;
     *) return 0 ;;
   esac
   [ ! -e "$2/.git" ] || return 0
@@ -18648,10 +18685,12 @@ Nothing was written." 2
   #   EXIT CODES (the table at the head of this file): 0 written and
   #   confirmed · 1 environment, or a read `add-row`'s tests could not make ·
   #   2 usage; every refusal of the writes it makes as one; a row or a `--log`
-  #   object that names another lane than its first word; S3's refusals; each
-  #   with nothing written · 3 pushed, not confirmed · 4 the lock · 5 an
-  #   edit's proof · 6 S4's commit, kept and named · 69 on primary, at T409's
-  #   ask (T415 and T417 give 69, 75 and 3 their primary meanings)
+  #   object that names another lane than its first word; a LANES_LANE that is
+  #   not that word, or a LANES_SESSION that is not a transcript uuid; S3's
+  #   refusals; each with nothing written · 3 pushed, not confirmed · 4 the
+  #   lock · 5 an edit's proof · 6 S4's commit, kept and named · 69 on
+  #   primary, at T409's ask (T415 and T417 give 69, 75 and 3 their primary
+  #   meanings)
   start-record)
     sr_use="usage: start-record <lane> <STARTED|RESUMED> { --add-row \"<full | row |>\" | [--append-cell \"<anchor>\" \"<text to append>\" \"<why>\"]... --state \"<STATE> · <one line>\" } --log lane:<lane> → \"<payload>\""
     sr_in="${1-}"; sr_verb="${2-}"
@@ -18701,6 +18740,24 @@ Nothing was written." 2
       lane:?*) : ;;
       *) die "--log's object is the lane itself, lane:<lane>, since $sr_verb is a lane verb, and '$sr_obj' is not one. Nothing was written. $sr_use" 2 ;;
     esac
+    # THE CALLER NAMES THE LANE AND THE SESSION, as Y:5528's call form does
+    # (lane 3's rulings 2 and 3 on T427, #165 6755005268). `LANES_LANE` is
+    # `<L>` byte for byte, so T412's digest, the pending record's `lane`, T415's
+    # `--lane` and the row all name one lane. `LANES_SESSION` is a transcript
+    # uuid, `valid_uuid`'s 8-4-4-4-12 hexadecimal, the test `write_event_checks`
+    # makes of every event line's session (Amendment 7(b), R-A11 (e)): Y:5431's
+    # guard finds the pending record by it, and a fallback to the row's last id
+    # would read the row before this write, the previous transcript's. Asked
+    # before any read and before the lock; `write_lane_of` does not route a call
+    # that fails either, so no checkout is cloned for it.
+    if [ "${LANES_LANE-}" != "$sr_in" ]; then
+      sr_says="LANES_LANE is not set"; [ -z "${LANES_LANE:-}" ] || sr_says="LANES_LANE is '$LANES_LANE'"
+      die "$sr_says, and start-record's first word is '$sr_in': the call names its lane in both, byte for byte (LANES_LANE=$sr_in $SELF start-record $sr_in …), so its digest, its pending record and its row are one lane's. Nothing was written. $sr_use" 2
+    fi
+    if ! valid_uuid "${LANES_SESSION-}"; then
+      sr_says="LANES_SESSION is not set"; [ -z "${LANES_SESSION:-}" ] || sr_says="LANES_SESSION is '$LANES_SESSION', which is not a transcript uuid"
+      die "$sr_says: start-record's log line names the session taking the act, and the pending record is found by it, so the call names it (LANES_SESSION=\"\$CLAUDE_CODE_SESSION_ID\" LANES_LANE=$sr_in $SELF start-record …). It is never taken from the row, which this write is about to change. Nothing was written. $sr_use" 2
+    fi
     # THE WORDS' OWN TESTS, BEFORE THE FETCH, THE RESOLVER AND THE LOCK, as
     # `set-row-state` and `append-session-id` make theirs.
     sr_word=""; sr_line=""
@@ -18753,7 +18810,7 @@ Nothing was written." 2
     # INSTANT FOR THE ONE WRITE: the state cell is stamped with the log line's
     # UTC, taken here as `log` takes it.
     sr_utc="$(utc_now)"
-    write_event_checks "$sr_lane" "$sr_verb" "lane:$sr_lane" '→' "$sr_pay" "" "$sr_utc" "$(session_for "$sr_lane")"
+    write_event_checks "$sr_lane" "$sr_verb" "lane:$sr_lane" '→' "$sr_pay" "" "$sr_utc" "$LANES_SESSION"
     acquire_lock
     checkout_sync start-record "$sr_lane" write "$LANES_PATH" "${we_paths[@]}" "$we_lp"   # Amendment 23 S3
     managed_seam_refuse "$sr_lane" "start-record"   # 283: again, on what S3 brought in (write_event says why)
