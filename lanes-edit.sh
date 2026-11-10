@@ -23872,7 +23872,10 @@ EOF
   # with no fetch. Its notes, the PLAN lines included, say the register, not
   # the pushed or published log (lane openRepoTools-3, #165 6770688147, T423
   # Q5). A failed poll waits on, but a wait whose last poll failed ends 69,
-  # not 2's "still bound", which it cannot know (T423 Q6). A run that finds
+  # not 2's "still bound", which it cannot know (T423 Q6). Where the wait ends
+  # 2 after `committed`, its notes name the request's register seq, as the 69's
+  # do; the window's name is not given back here, which is `lane-start`'s
+  # (SR:690), never the verb's (#165 6774499606, T423 item 1). A run that finds
   # its request committed and runs none of this tail exits 2, not 0, naming
   # the tail it did not run (T418's `pw_tail_said`), and the register's own
   # 69, 75 and 3 are the primary branch's (T415, T417).
@@ -24170,16 +24173,26 @@ EOF
           fi ;;
       esac
     done
+    # FEATURE 007, T423 — ON PRIMARY THE REQUEST IS NAMED WITH ITS REGISTER SEQ
+    # ON EVERY END OF THE WAIT (lane openRepoTools-3, #165 6774499606, T423
+    # item 1; B13 item 12). The 69 below always named it, and the empty end's
+    # 2 named the request without it. `rh_after_committed` has returned by
+    # here, so on primary `REGISTER_SEQ` is the seq this run's one write
+    # committed at. Files mode has no seq and keeps its words. The window's
+    # name is not given back here: that is `lane-start`'s (SR:690), never the
+    # verb's.
+    rh_atseq=""
+    [ -z "$REG_SCRATCH" ] || rh_atseq=", in the register at seq ${REGISTER_SEQ}"
     if [ -n "$REG_SCRATCH" ] && [ "$rh_last" != 0 ]; then
       note "THE WAIT ENDED ON A POLL THAT COULD NOT READ THE REGISTER. As read before the request, $(binding_facts "$lane" "$rh_host" "$rh_cont" "$rh_win" "$rh_utc" "$rh_bsess" "$rh_wstate")"
-      note "  the request: $rh_wrote → $rh_pay, as session $rh_uuid, in the register at seq ${REGISTER_SEQ}"
+      note "  the request: $rh_wrote → $rh_pay, as session $rh_uuid${rh_atseq}"
       note "  the pane:    ${rh_typed} (this tmux server says that window is $rh_wstate)"
       die "the register could not be read at this wait's last poll, so whether lane $lane is still bound, or was released after the last poll that read it, is not known here, and NOTHING here has bound it. The request is in the register and is not written again. Read the lane once the register answers, and bind it if it is free; or ask again with a longer wait:
     $SELF binding $lane
     $SELF request-handoff $lane --wait 900" 69
     fi
     note "THE WAIT ENDED WITH NOTHING. $(binding_facts "$lane" "$rh_host" "$rh_cont" "$rh_win" "$rh_utc" "$rh_bsess" "$rh_wstate")"
-    note "  the request: $rh_wrote → $rh_pay, as session $rh_uuid"
+    note "  the request: $rh_wrote → $rh_pay, as session $rh_uuid${rh_atseq}"
     note "  the pane:    ${rh_typed} (this tmux server says that window is $rh_wstate)"
     die "no PAUSED, ENDED or RETIRED newer than that request arrived in ${rh_wait}s, so lane $lane is still bound and NOTHING here has bound it (Amendment 18(e)). A working session is never interrupted — a hook fires at a prompt boundary, and a session inside a long turn answers when that turn ends. Wait longer, or override, which is a SECOND invocation and never automatic:
     $SELF request-handoff $lane --wait 900
