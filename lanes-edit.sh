@@ -15062,6 +15062,25 @@ binding_facts() {   # <lane> <host> <container> <window> <utc> <session> <window
     "$1" "${4:-none}" "${3:-none}" "${2:-unknown}" "${6:-unknown}" "${5:-unknown}" "${7:-unknown}"
 }
 
+# FEATURE 007, T423 — `request-handoff`'S TAIL RUNS ONLY AFTER `committed`
+# (FR-024: every side effect outside the register runs after the seam; F14,
+# Y:5153; Y:5011–5012; lane openRepoTools-4's block, T423). On primary each
+# attempt's verb runs as a child under the internal flag, and `write_event`
+# returns into the arm once the seam has said `committed <s>`, which sets
+# `REGISTER_SEQ` (T414). Two ways back reach the arm with nothing committed:
+# `LANES_NO_GIT=1`, whose `commit_publish` returns 0 above the seam's branch,
+# and a seam that found nothing staged. Either way this child made no commit
+# call, so what follows the write in the arm, the pane, the wait, and the words
+# that say a request was written or a binding forced, would act on a line that
+# is not in the register. The child ends 2 here instead, before any of it, and
+# its parent takes that as a child that ended before `ready`: no commit call,
+# and the child's output and code are the run's end (Y:5016). Off the flag
+# `REG_SCRATCH` is empty, and this returns at once.
+rh_after_committed() {   # <what the write was: the request, or the forced release>
+  [ -z "$REG_SCRATCH" ] || [ -n "$REGISTER_SEQ" ] ||
+    die "request-handoff's ${1-write} returned in an attempt's child under LANES_REGISTER_SCRATCH without its seam's \`committed\` (LANES_NO_GIT=1 in this environment, or nothing staged), so this child made no commit call. Nothing after the seam runs: no pane is typed into, nothing is waited for, and nothing is said to be written (FR-024; Y:5011). It is an internal error of the write path. Nothing was sent." 2
+}
+
 # The UTC of the lane's last `STARTED` or `RESUMED` — Amendment 18(b)'s BINDING,
 # read from the lane's own log out of `origin/<branch>` like every other state
 # read. Clause (h) rule 2 compares a record's `nameSince` against it: a rename
@@ -23656,6 +23675,7 @@ EOF
         exit 0
       fi
       write_event "$lane" PAUSED "lane:$lane" '→' "$rh_fpay" "forced release" "$(utc_now)" "$rh_uuid" || exit $?
+      rh_after_committed "forced release"
       note "FORCED: lane $lane's binding is released on behalf of ${rh_bsess:-the bound session}. $(binding_facts "$lane" "$rh_host" "$rh_cont" "$rh_win" "$rh_utc" "$rh_bsess" "$rh_wstate")"
       note "If that session is alive after all it will read this line at its next prompt and refuse EVERY prompt from then on, naming it and naming you, until the person there hands off or ends it (Amendment 18(e)). Two places never both write a lane in silence."
       exit 0
@@ -23685,6 +23705,7 @@ EOF
     fi
     rh_wrote="$(utc_now)"
     write_event "$lane" HANDOFF-REQUESTED "lane:$lane" '→' "$rh_pay" "" "$rh_wrote" "$rh_uuid" || exit $?
+    rh_after_committed request
     note "REQUESTED: $(binding_facts "$lane" "$rh_host" "$rh_cont" "$rh_win" "$rh_utc" "$rh_bsess" "$rh_wstate")"
 
     # ---- AND ONLY NOW THE PANE, WHERE IT IS ON THIS TMUX SERVER (Amendment
