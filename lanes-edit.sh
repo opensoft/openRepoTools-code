@@ -3653,7 +3653,11 @@ EOF
 #      read. Turns of `read -t 1 -u 5`; after a turn with no message the
 #      parent is tested with `pid_start_of` against `parent.pid`, whose 2 is
 #      live (R49), as is a shell with no such function yet (`wr_claim_live`'s
-#      `untested`); and the cap, `wr_seam_cap_s` (Y:5001).
+#      `untested`); and the cap, `wr_seam_cap_s` (Y:5001). A turn that times
+#      out part way through the parent's line keeps what it read: bash's
+#      `read -t` leaves that partial input in its variable, and it is joined
+#      to the next turn's read, so a line split across two turns is read
+#      whole (W7-T422's finding: `committed 8` was read as `ommitted 8`).
 #   6. `committed <s>`: `seam.out` is `tail`, fds 1 and 2 go back to 3 and 4,
 #      the buffered `out.1` and then `out.2` are replayed, `REGISTER_SEQ` is
 #      set, `REG_STORE` is set to `sql` (T504's variable: nothing else in a
@@ -3726,7 +3730,7 @@ cp_seam() {
   local cs_tab="" cs_raw="" cs_l="" cs_meta="" cs_p="" cs_q="" cs_sm="" cs_dm="" cs_b="" cs_n="" \
         cs_st="" cs_x="" cs_i=0 cs_known=0 cs_extra="" cs_out="" cs_bad="" cs_ren="${LOG_RENAMED_FROM:-}" \
         cs_to="" cs_ton=0 cs_fromd=0 cs_tsv="" cs_rows="" cs_img="" cs_h="" cs_d="$REG_SCRATCH" \
-        cs_pl="" cs_ptok="" cs_tok="" cs_prc=0 cs_cap="" cs_t0=0 cs_msg="" cs_s=""
+        cs_pl="" cs_ptok="" cs_tok="" cs_prc=0 cs_cap="" cs_t0=0 cs_msg="" cs_s="" cs_buf=""
   local cs_sts cs_ps cs_bs cs_ns
   cs_sts=(); cs_ps=(); cs_bs=(); cs_ns=()
   cs_tab="$(printf '\t')"
@@ -3852,11 +3856,19 @@ CS_EOF
   IFS=" $cs_tab" read -r cs_x cs_ptok cs_q <<<"$cs_pl" || :
   cs_cap="$(wr_seam_cap_s)"
   cs_t0="$SECONDS"
+  # A TURN THAT TIMES OUT KEEPS ITS PARTIAL INPUT (W7-T422's finding; Y:4999–
+  # 5007). bash's `read -t` saves what it read before the timeout in its
+  # variable and returns more than 128, so the bytes of a line the timeout cut
+  # are kept in `cs_buf` and joined to the next read that ends at the newline.
+  # A timeout that read nothing adds nothing. The parent and cap tests between
+  # turns are unchanged.
   while :; do
     cs_msg=""
     if IFS= read -r -t 1 -u 5 cs_msg; then
+      cs_msg="${cs_buf}${cs_msg}"
       break
     fi
+    cs_buf="${cs_buf}${cs_msg}"
     cs_tok=""; cs_prc=0
     cs_tok="$(pid_start_of "$PPID" 2>/dev/null)" || cs_prc=$?
     case "$cs_prc" in
