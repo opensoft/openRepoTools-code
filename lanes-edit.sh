@@ -1349,10 +1349,12 @@ unset LANES__REPLAY_PID LANES__ATTEMPT LANES__CLAIM_FROM LANES__CLAIM_DEAD LANES
 #     are on one clock. An honoured directory with no such clock is 2. The host's
 #     clock stays where it decides no register state: `age_of` in a listing,
 #     the listing's partition, `fetch-age`, `request-handoff`'s wait, and the
-#     pending record's own stamps (`wr_host_utc`). Where an age is printed to
-#     explain a decision, `claim --force`'s refusal and `who`'s stale lines,
-#     `age_of` is passed `now_epoch`, so its words agree with the decision
-#     (ruling item 5);
+#     pending record's own stamps (`wr_host_utc`). Where an age is printed
+#     beside a decision, `claim --force`'s refusal, every line of `who_object`,
+#     which `claim`'s refusal prints in the child, and `who_landing`'s LANDING
+#     line, `age_of` is passed `now_epoch`, so its words agree with the decision
+#     and one printed block reads one clock (ruling item 5; lane
+#     openRepoTools-3's ruling, #165 6767463594, delta question 5);
 #   * the routing re-exec, S3 (`checkout_sync`) and `log_sync`'s fetch are
 #     skipped, `gh_reads` is cached in the run's directory, and
 #     `sidecar_lock_dir` answers the path the parent wrote into `<dir>/lock`,
@@ -6683,9 +6685,11 @@ row_field_unescape_into() {   # <field> ; sets ROW_FIELD_OUT
 # Durations that DECIDE — Rule 6's minutes and `claim --force`'s staleness — so
 # both read `now_epoch`: the snapshot's clock under feature 007's internal
 # flag, the host's otherwise (D13; T413). `age_of` above keeps the host's clock
-# in a listing; where it prints the age a decision was made on (`who`'s stale
-# lines, `claim --force`'s refusal) it is passed `now_epoch` (lane
-# openRepoTools-3's ruling, #165 6755005268, item 5).
+# in a listing; where it prints beside a decision (`claim --force`'s refusal,
+# every line of `who_object`, which `claim`'s refusal prints in the child, and
+# `who_landing`'s LANDING line) it is passed `now_epoch` (lane
+# openRepoTools-3's rulings, #165 6755005268, item 5, and #165 6767463594,
+# delta question 5).
 older_than_minutes() {   # <utc> <minutes>
   om_t="$(epoch_of "$1")"; [ -n "$om_t" ] || return 1
   [ "$(( $(now_epoch) - om_t ))" -gt "$(( $2 * 60 ))" ]
@@ -8741,18 +8745,24 @@ who_object() {
   fi
   printf 'object   %s\n' "$wo_obj"
   wo_held=0
+  # ONE CLOCK PER PRINTED BLOCK: every age this block prints takes `now_epoch`,
+  # the `super.`, `HOLDS` and `closed` lines as well as the stale lines below.
+  # `claim`'s refusal prints this block in the child under feature 007's
+  # internal flag, where `now_epoch` is the snapshot's clock; with no flag it is
+  # the host's, which `age_of` alone reads, so the bytes are unchanged (lane
+  # openRepoTools-3's ruling, #165 6767463594, delta question 5; T413).
   while IFS="$US" read -r s_utc s_lane s_verb s_uuid s_ws s_o s_ref s_pay s_txt s_file s_line; do
     [ -n "${s_verb:-}" ] || continue
     wo_sup="$(superseded_by "$wo_obj" "$s_lane" "$s_verb")"
     if [ -n "$wo_sup" ]; then
       printf 'super.   lane %-22s %-9s %s (%s ago) — superseded by TAKEOVER (lane:%s) at %s\n' \
-        "$s_lane" "$s_verb" "$s_utc" "$(age_of "$s_utc")" "${wo_sup%@*}" "${wo_sup#*@}"
+        "$s_lane" "$s_verb" "$s_utc" "$(age_of "$s_utc" "$(now_epoch)")" "${wo_sup%@*}" "${wo_sup#*@}"
       printf '         this lane no longer holds it; it closes its own line with: lanes-edit.sh release %s "taken over by %s"\n' "$wo_obj" "${wo_sup%@*}"
     elif is_open_verb "$s_verb"; then
-      printf 'HOLDS    lane %-22s %-9s %s (%s ago)%s\n' "$s_lane" "$s_verb" "$s_utc" "$(age_of "$s_utc")" "${s_pay:+ ${s_ref:-} $s_pay}"
+      printf 'HOLDS    lane %-22s %-9s %s (%s ago)%s\n' "$s_lane" "$s_verb" "$s_utc" "$(age_of "$s_utc" "$(now_epoch)")" "${s_pay:+ ${s_ref:-} $s_pay}"
       wo_held=1
     else
-      printf 'closed   lane %-22s %-9s %s (%s ago)%s\n' "$s_lane" "$s_verb" "$s_utc" "$(age_of "$s_utc")" "${s_pay:+ ${s_ref:-} $s_pay}"
+      printf 'closed   lane %-22s %-9s %s (%s ago)%s\n' "$s_lane" "$s_verb" "$s_utc" "$(age_of "$s_utc" "$(now_epoch)")" "${s_pay:+ ${s_ref:-} $s_pay}"
     fi
     # A line written with --no-github is not yet a Rule 1 claim: the comment a
     # person outside this estate reads does not exist.
