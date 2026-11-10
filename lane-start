@@ -168,6 +168,11 @@
 #      another window carries it too the rename is undone and the run refuses;
 #   5. the row: `lanes-edit.sh add-row` when there is none, otherwise
 #      `set-row-state`. Never a hand edit and never a whole-file write.
+#      FEATURE 007 (T428): where the session is a transcript uuid this run
+#      can name, the row (or its session cell and state) and the object log's
+#      STARTED or RESUMED line are ONE write, `lanes-edit.sh start-record`,
+#      one commit and push, made under this launch's act (`act-begin`, before
+#      the first read) with the scopes its reads decided on;
 #      THE STATE IS AMENDMENT 6(c)'s STAMP, written here rather than owed to
 #      the session afterwards, and since Amendment 13(a) it is the WHOLE cell
 #      (`<STATE> · <UTC> · <one line>`, the UTC stamped by the writer):
@@ -290,6 +295,12 @@
 #      only from a SQL register; `register-text`, the read of the lane's row,
 #      spends 69 in every mode where the register cannot be read, and any
 #      code it exits with is passed on, never read as an empty register.
+#      AND THE ACT'S WRITES (feature 007, T428; spec:317-318): `act-begin`'s
+#      own code where this launch could take no base; `start-record`'s 2,
+#      which on primary is a second binding, in every case; its code where it
+#      makes a new lane's row, or binds under `--bind`; and `request-handoff`'s
+#      69, 75 and 3. A resume's refused `start-record` is a note, and the
+#      launch goes on.
 #
 # ENVIRONMENT
 #   PROJECTS_ROOT        default ~/projects
@@ -1259,6 +1270,7 @@ esac
 export LANES_ACT="$ls_act"
 : > "$LS_TMP"
 
+ls_typed="$LANE"   # the name as typed, for `canon-lane --walk` (T428, below)
 cl_out=""; cl_rc=0
 cl_out="$("$LANES_EDIT" canon-lane "$LANE" 2>/dev/null)" || cl_rc=$?
 cl_why=""; cl_pair=0
@@ -1289,6 +1301,30 @@ case "$cl_rc" in
   # here is a second row for a lane already running under its row's spelling.
   69 | 75 | 3) ls_read_refuse "$LANES_EDIT canon-lane $LANE" "$cl_rc" "the register's spelling of lane $LANE" ;;
   *) note "$LANES_EDIT canon-lane $LANE failed (exit $cl_rc) — carrying on with the name as typed, which the register may spell differently" ;;
+esac
+
+# FEATURE 007, T428 - THE NAMES `canon-lane` WALKED, FOR THE ACT'S KEYS
+# (Y:5622). Its answer changes when a row or an alias line appears for any
+# name on the walk, not only for the answer, so the act lists `row:<n>` and
+# `alias:<n>` for every name `canon-lane --walk` (T411) prints. Asked only on
+# a primary base, where the keys are read, and only where `canon-lane`
+# answered: in files mode no write reads LANES_EXPECT (Y:5596), and a launch
+# that carried on with the typed name decided on that name alone. Its 69, 75
+# and 3 refuse with the code, as `canon-lane`'s do; any other end refuses too,
+# because a key left out is a change the write would not see.
+LS_WALK=""
+case "$LANES_ACT" in
+  *@files) : ;;
+  *)
+    if [ "$cl_rc" = 0 ]; then
+      lw_rc=0
+      LS_WALK="$("$LANES_EDIT" canon-lane --walk "$ls_typed" 2>/dev/null)" || lw_rc=$?
+      case "$lw_rc" in
+        0) : ;;
+        69 | 75 | 3) ls_read_refuse "$LANES_EDIT canon-lane --walk $ls_typed" "$lw_rc" "which names lane ${LANE}'s spelling was found through" ;;
+        *) die "\`$LANES_EDIT canon-lane --walk $ls_typed\` exited $lw_rc, so the names lane ${LANE}'s spelling was found through are NOT known, and this launch's writes would leave their keys out: a change to one of them would not refuse them (Y:5622). A \`lanes-edit.sh\` with no \`--walk\` exits 2; install the one beside this script. Nothing was launched, renamed or written." 1 ;;
+      esac
+    fi ;;
 esac
 
 repo="${repo:-$LANE}"          # the verbatim form has no <repo> of its own
@@ -2342,8 +2378,13 @@ esac
 # still permits the take, which is what keeps the /clear, the usage reset and the
 # profile switch working in the windows this estate actually has.
 win_veto=""; win_veto_why=""
+# 1 where a read of the window's name in the register decided something here
+# (this veto, or the new lane's own-name fence), so the act lists
+# `row:<window name>` (feature 007, T428; Y's reads table, Y:5641-5642).
+LS_WIN_ROW_READ=0
 if [ -n "$win_sid" ] && [ -n "$this_window_name" ] && [ "$this_window_name" != "$LANE" ]; then
   if [ "$(printf '%s' "$this_window_name" | tr 'A-Z' 'a-z')" != "$(printf '%s' "$LANE" | tr 'A-Z' 'a-z')" ]; then
+    LS_WIN_ROW_READ=1
     wnv_rc=0
     "$LANES_EDIT" register-row "$this_window_name" >/dev/null 2>&1 || wnv_rc=$?
     case "$wnv_rc" in
@@ -2631,6 +2672,7 @@ if [ "$row_count" = 0 ]; then
     "" | *[!A-Za-z0-9._-]* | .* | -*) : ;;
     *)
       if [ "$(printf '%s' "$this_window_name" | tr 'A-Z' 'a-z')" != "$(printf '%s' "$LANE" | tr 'A-Z' 'a-z')" ]; then
+        LS_WIN_ROW_READ=1   # T428: the act lists row:<window name>
         for own_read in register-row register-row-local; do
           own_rc=0
           LANES_NO_FETCH=1 "$LANES_EDIT" "$own_read" "$this_window_name" >/dev/null 2>&1 || own_rc=$?
@@ -2773,7 +2815,11 @@ if [ "$bind_rc" = 0 ]; then
     ls_rh_rc=0
     # ITS LANE, NAMED (Amendment 23 S2): `request-handoff` writes the lane's
     # record, so the lane its write belongs to is said rather than derived.
-    LANES_LANE="$LANE" "${ls_rh[@]}" || ls_rh_rc=$?
+    # AND ITS EXPECTATION, W8's `bind:<lane>` (feature 007, T428; Y:5649;
+    # FR-029), a prefix on this one call under the act's LANES_ACT: on primary
+    # a binding line another place wrote after this act's base refuses it 2.
+    ls_rh_expect="bind:$(printf '%s' "$LANE" | tr 'A-Z' 'a-z')"
+    LANES_LANE="$LANE" LANES_EXPECT="$ls_rh_expect" "${ls_rh[@]}" || ls_rh_rc=$?
     case "$ls_rh_rc" in
       # 007 (T402): an answer of 0 is a line `request-handoff` WROTE to the
       # lane's append-only log (not under --dry-run, which writes none): the
@@ -2790,9 +2836,17 @@ if [ "$bind_rc" = 0 ]; then
          fi ;;
       8) bind_recheck=1; step "lane $LANE was already free by the time the request was made — binding it here" ;;
       2) die "the handoff was not obtained (the helper's own facts and its \`--force\` line are above), so lane $LANE is still bound elsewhere and NOTHING here has been renamed, written or launched." 2 ;;
-      # A WRITE'S ARM (Y:5731), so it keeps 1 in every mode until T428 passes
-      # the code and relays the writer's rerun (lane 3's ruling 6747281902,
-      # T402 item 2): no caller tells 3 from 1 here.
+      # A WRITE'S ARM (Y:5731), AND IT PASSES THE CODE NOW (feature 007, T428;
+      # lane 3's ruling 6747281902, T402 item 2; ERR-33): 69 and the busy 75
+      # say nothing was sent; the in-doubt 3 says the request may be in the
+      # lane's log or may not, and the writer's own words above carry its
+      # printed rerun, which writes it once or finds it. Every other code
+      # keeps 1, as the read arms keep theirs (ERR-36).
+      69 | 75)
+        ls_rh_why="the register is busy"
+        [ "$ls_rh_rc" = 75 ] || ls_rh_why="the register could not be read, or refused the write"
+        die "$LANES_EDIT request-handoff $LANE exited ${ls_rh_rc}: ${ls_rh_why}, so the handoff was NOT asked for, and nothing here has been renamed, written or launched. Its words are above; ask again once it answers." "$ls_rh_rc" ;;
+      3) die "$LANES_EDIT request-handoff $LANE exited 3: the request is IN DOUBT. Its HANDOFF-REQUESTED line, or under --force its PAUSED on the holder's behalf, may already be in lane ${LANE}'s log, or may not. Run the rerun the writer printed above, which writes it once or finds it; do not ask again by a command of this script's, which would write a second request. Nothing here has been renamed or launched, and no row, STARTED or RESUMED line or stamp was written." 3 ;;
       *) die "$LANES_EDIT request-handoff $LANE exited $ls_rh_rc, which is neither 'the lane is free' nor the refusal that says it is not — nothing here has been renamed, written or launched." 1 ;;
     esac
   fi
@@ -4137,6 +4191,77 @@ if [ "$LS_ROUTED" = 1 ]; then
   fi
 fi
 
+# FEATURE 007, T428 - THE BIND IS ONE WRITE, `start-record` (FR-025; "The bind
+# as one verb", design Y:5521-5555; spec:317-318). The row (W1), or the
+# session-cell appends (W2 to W5) and the state (W6), with the STARTED or
+# RESUMED line (W7), are ONE call of `lanes-edit.sh start-record`: one commit
+# and push in files mode, one transaction on primary, and the partial states
+# three commits left between them go away. This section collects the parts;
+# 5b makes the call once the log line's payload is known. Where no transcript
+# uuid is knowable (`lane_sid_known` is 0) there is no log line to write
+# (Amendment 7(b)), and `start-record` takes none, so the row's writes stay the
+# separate verbs they were, each with its own expectations.
+#
+# THE EXPECTATIONS (Y:5648-5656; FR-029): each write names, as a prefix on its
+# own call, the scopes its deciding reads stand for, under the act's base. The
+# one call carries their union: the lane's row, its binding lines, the names
+# `canon-lane` walked (`row:` and `alias:`), its archive rows under both their
+# spellings, every session uuid it writes, and the window's own row where a
+# read of the window's name decided something. In files mode no write reads
+# them; on primary a scope another place changed after the base refuses the
+# write with 2, with nothing written.
+LS_SR_ONE=0
+(( ! lane_sid_known )) || LS_SR_ONE=1
+LS_SR_ROW=""; LS_SR_STATE=""; LS_SR_CELLS=(); LS_SR_PLAN=(); LS_SR_SIDS=()
+LS_EXPECT=""
+ls_scope_add() {   # <scope>: appended to LS_EXPECT once, in lower case
+  lsa_s="$(printf '%s' "$1" | tr 'A-Z' 'a-z')"
+  case " $LS_EXPECT " in *" $lsa_s "*) return 0 ;; esac
+  LS_EXPECT="${LS_EXPECT:+$LS_EXPECT }$lsa_s"
+  return 0
+}
+ls_lane_shaped() {   # <name>: 0 where `check_lane_name` would take it
+  case "${1-}" in "" | *[!A-Za-z0-9._-]* | .* | -*) return 1 ;; esac
+  return 0
+}
+# THE ARCHIVE'S SECOND SPELLING (Y:5623): `RETIRED_ROWS_AWK`'s `key()`, in
+# bash. The part after the last `-`, with one trailing letter dropped, must
+# be digits; the key is the head, lower-cased, `-`, and that number with its
+# leading zeros removed (`0` stays `0`). Nothing where there is no key.
+ls_archive_key() {   # <lane>
+  lak_h="${1%-*}"; lak_p="${1##*-}"
+  [ "$lak_h" != "$1" ] || return 0
+  case "$lak_p" in *[A-Za-z]) lak_p="${lak_p%?}" ;; esac
+  case "$lak_p" in "" | *[!0-9]*) return 0 ;; esac
+  while [ "${#lak_p}" -gt 1 ] && [ "${lak_p#0}" != "$lak_p" ]; do lak_p="${lak_p#0}"; done
+  printf '%s-%s\n' "$(printf '%s' "$lak_h" | tr 'A-Z' 'a-z')" "$lak_p"
+}
+ls_expect_for() {   # <1: the archive keys> <1: the window's row> [<session uuid>…]; sets LS_EXPECT
+  lef_arch="$1"; lef_win="$2"; shift 2
+  LS_EXPECT=""
+  ls_scope_add "row:$LANE"; ls_scope_add "bind:$LANE"; ls_scope_add "alias:$LANE"
+  if [ "$lef_arch" = 1 ]; then
+    ls_scope_add "archive:$LANE"
+    lef_k="$(ls_archive_key "$LANE")"
+    [ -z "$lef_k" ] || ls_scope_add "archive:$lef_k"
+  fi
+  while IFS= read -r lef_n; do
+    ls_lane_shaped "$lef_n" || continue
+    ls_scope_add "row:$lef_n"; ls_scope_add "alias:$lef_n"
+  done <<LS_WALK_NAMES
+$LS_WALK
+LS_WALK_NAMES
+  for lef_s in "$@"; do
+    if [[ "$lef_s" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+      ls_scope_add "sid:$lef_s"
+    fi
+  done
+  if [ "$lef_win" = 1 ] && [ "$LS_WIN_ROW_READ" = 1 ] && ls_lane_shaped "$this_window_name"; then
+    ls_scope_add "row:$this_window_name"
+  fi
+  return 0
+}
+
 if [ "$row_count" = 0 ]; then
   # AMENDMENT 13(a) — A NEW ROW IS BORN IN THE PHRASE. The state cell opened
   # with the bare word `STARTING` for as long as the cell was a diary; it is one
@@ -4148,7 +4273,12 @@ if [ "$row_count" = 0 ]; then
   new_line="$lane_verb by $stamp_who (lane $LANE) — lane-start on $ws: row created"
   new_state="LIVE · $utc · $(cut_to_line "$new_line")"
   new_row="| \`$LANE\` | $session_cell | $ws / $env_name / $user | $started | none | $handoff | $new_state |"
-  if (( dry_run )); then
+  if (( LS_SR_ONE )); then
+    # W1, carried by the one call at 5b (T428): `start-record --add-row`.
+    LS_SR_ROW="$new_row"
+    LS_SR_PLAN+=("lanes-edit.sh add-row" "  $new_row")
+    LS_SR_SIDS+=("$harness_sid" "$new_sid")
+  elif (( dry_run )); then
     plan "lanes-edit.sh add-row"
     plan "  $new_row"
   else
@@ -4158,8 +4288,10 @@ if [ "$row_count" = 0 ]; then
     # lane with an unwritten stamp — every other lane's liveness read, every
     # crossing check and the next `lane-start` all key on that row — so this is
     # a refusal that says so, before the window is anything but renamed.
+    # W1's expectations, alone (T428; Y:5652): no log line rides with it here.
     ar_rc=0
-    LANES_LANE="$LANE" "$LANES_EDIT" add-row "$new_row" || ar_rc=$?
+    ls_expect_for 1 1 "$harness_sid" "$new_sid"
+    LANES_LANE="$LANE" LANES_EXPECT="$LS_EXPECT" "$LANES_EDIT" add-row "$new_row" || ar_rc=$?
     if [ "$ar_rc" = 0 ]; then
       step "row added"
     else
@@ -4186,13 +4318,23 @@ else
     if [ -z "$cell_anchor" ]; then
       note "the row's session cell records no transcript uuid to append to (some rows carry only \`session_…\` footer ids, which are not transcript ids). STAMP IT AS THIS SESSION'S FIRST ACT:"
       note "  $harness_hint"
+    elif (( LS_SR_ONE )); then
+      # W2, carried by the one call at 5b (T428): `--append-cell`.
+      LS_SR_CELLS+=(--append-cell "$cell_anchor" "→ $harness_cell" "$harness_why")
+      LS_SR_PLAN+=("lanes-edit.sh append-session-id $LANE '$cell_anchor' '→ $harness_cell'")
+      LS_SR_SIDS+=("$harness_sid")
     elif (( dry_run )); then
       plan "lanes-edit.sh append-session-id $LANE '$cell_anchor' '→ $harness_cell'"
-    elif LANES_LANE="$LANE" "$LANES_EDIT" append-session-id "$LANE" "$cell_anchor" "→ $harness_cell" "$harness_why"; then
-      step "session cell updated: $cell_anchor → $harness_sid (the transcript live in this window)"
     else
-      note "the session cell was NOT extended with $harness_sid (this checkout's copy of the row does not carry $cell_anchor exactly once IN ITS SESSION CELL — it may be older than the published one). STAMP IT AS THIS SESSION'S FIRST ACT:"
-      note "  $harness_hint"
+      ls_w_rc=0
+      ls_expect_for 0 1 "$harness_sid"   # W2's (T428; Y:5653)
+      LANES_LANE="$LANE" LANES_EXPECT="$LS_EXPECT" "$LANES_EDIT" append-session-id "$LANE" "$cell_anchor" "→ $harness_cell" "$harness_why" || ls_w_rc=$?
+      if [ "$ls_w_rc" = 0 ]; then
+        step "session cell updated: $cell_anchor → $harness_sid (the transcript live in this window)"
+      else
+        note "the session cell was NOT extended with $harness_sid (this checkout's copy of the row does not carry $cell_anchor exactly once IN ITS SESSION CELL — it may be older than the published one). STAMP IT AS THIS SESSION'S FIRST ACT:"
+        note "  $harness_hint"
+      fi
     fi
   fi
 
@@ -4207,13 +4349,23 @@ else
     if [ -z "$row_sid" ]; then
       note "the row's session cell records no transcript uuid to append the recovered id to. STAMP IT AS THIS SESSION'S FIRST ACT:"
       note "  $restored_hint"
+    elif (( LS_SR_ONE )); then
+      # W3, carried by the one call at 5b (T428): `--append-cell`.
+      LS_SR_CELLS+=(--append-cell "$row_sid" "→ $restored_cell" "session cell: restored $restored_sid from the lane's last PAUSED record")
+      LS_SR_PLAN+=("lanes-edit.sh append-session-id $LANE '$row_sid' '→ $restored_cell'")
+      LS_SR_SIDS+=("$restored_sid")
     elif (( dry_run )); then
       plan "lanes-edit.sh append-session-id $LANE '$row_sid' '→ $restored_cell'"
-    elif LANES_LANE="$LANE" "$LANES_EDIT" append-session-id "$LANE" "$row_sid" "→ $restored_cell" "session cell: restored $restored_sid from the lane's last PAUSED record"; then
-      step "session cell updated: $row_sid → $restored_sid (the exact transcript from the lane's last PAUSED record)"
     else
-      note "the session cell was NOT extended with recovered transcript $restored_sid (this checkout's copy of the row may be older than the published one). The launch is unaffected and so is the NEXT one: this recovery reads the lane's last PAUSED record and not the cell, so it finds the same transcript again and prints this same act — the row keeps naming an id no transcript answers to until somebody runs it. STAMP IT AS THIS SESSION'S FIRST ACT:"
-      note "  $restored_hint"
+      ls_w_rc=0
+      ls_expect_for 0 0 "$restored_sid"   # W3's (T428; Y:5653)
+      LANES_LANE="$LANE" LANES_EXPECT="$LS_EXPECT" "$LANES_EDIT" append-session-id "$LANE" "$row_sid" "→ $restored_cell" "session cell: restored $restored_sid from the lane's last PAUSED record" || ls_w_rc=$?
+      if [ "$ls_w_rc" = 0 ]; then
+        step "session cell updated: $row_sid → $restored_sid (the exact transcript from the lane's last PAUSED record)"
+      else
+        note "the session cell was NOT extended with recovered transcript $restored_sid (this checkout's copy of the row may be older than the published one). The launch is unaffected and so is the NEXT one: this recovery reads the lane's last PAUSED record and not the cell, so it finds the same transcript again and prints this same act — the row keeps naming an id no transcript answers to until somebody runs it. STAMP IT AS THIS SESSION'S FIRST ACT:"
+        note "  $restored_hint"
+      fi
     fi
   fi
 
@@ -4244,13 +4396,23 @@ else
     if [ -z "$row_sid" ]; then
       note "the row's session cell records no session id this script can read (some rows carry only \`session_…\` footer ids). STAMP IT AS THIS SESSION'S FIRST ACT:"
       note "  $stamp_hint"
+    elif (( LS_SR_ONE )); then
+      # W4, carried by the one call at 5b (T428): `--append-cell`.
+      LS_SR_CELLS+=(--append-cell "$row_sid" "→ harness \`$new_sid\`" "session cell: $prog minted $new_sid for this window")
+      LS_SR_PLAN+=("lanes-edit.sh append-session-id $LANE '$row_sid' '→ harness \`$new_sid\`'")
+      LS_SR_SIDS+=("$new_sid")
     elif (( dry_run )); then
       plan "lanes-edit.sh append-session-id $LANE '$row_sid' '→ harness \`$new_sid\`'"
-    elif LANES_LANE="$LANE" "$LANES_EDIT" append-session-id "$LANE" "$row_sid" "→ harness \`$new_sid\`" "session cell: $prog minted $new_sid for this window"; then
-      step "session cell updated: $row_sid → $new_sid"
     else
-      note "the session cell was NOT stamped (this checkout's copy of the row does not carry $row_sid exactly once IN ITS SESSION CELL — it may be older than the published one). STAMP IT AS THIS SESSION'S FIRST ACT:"
-      note "  $stamp_hint"
+      ls_w_rc=0
+      ls_expect_for 0 0 "$new_sid"   # W4's (T428; Y:5653)
+      LANES_LANE="$LANE" LANES_EXPECT="$LS_EXPECT" "$LANES_EDIT" append-session-id "$LANE" "$row_sid" "→ harness \`$new_sid\`" "session cell: $prog minted $new_sid for this window" || ls_w_rc=$?
+      if [ "$ls_w_rc" = 0 ]; then
+        step "session cell updated: $row_sid → $new_sid"
+      else
+        note "the session cell was NOT stamped (this checkout's copy of the row does not carry $row_sid exactly once IN ITS SESSION CELL — it may be older than the published one). STAMP IT AS THIS SESSION'S FIRST ACT:"
+        note "  $stamp_hint"
+      fi
     fi
   fi
 
@@ -4321,11 +4483,16 @@ else
   # and not its licence — the same rule Amendment 6(c) and the handoff's Rule 3
   # stamp already take here — so a stamp that could not be written prints the
   # act that writes it and the lane still starts.
-  if (( dry_run )); then
+  if (( LS_SR_ONE )); then
+    # W6, carried by the one call at 5b (T428): `--state`.
+    LS_SR_STATE="LIVE · $state_line"
+    LS_SR_PLAN+=("lanes-edit.sh set-row-state $LANE \"LIVE · $state_line\"")
+  elif (( dry_run )); then
     plan "lanes-edit.sh set-row-state $LANE \"LIVE · $state_line\""
   else
     srs_rc=0
-    LANES_LANE="$LANE" "$LANES_EDIT" set-row-state "$LANE" "LIVE · $state_line" || srs_rc=$?
+    ls_expect_for 1 0   # W6's (T428; Y:5654)
+    LANES_LANE="$LANE" LANES_EXPECT="$LS_EXPECT" "$LANES_EDIT" set-row-state "$LANE" "LIVE · $state_line" || srs_rc=$?
     if [ "$srs_rc" = 0 ]; then
       step "row state set: LIVE · $lane_verb by ${lane_sid:-unknown}"
     else
@@ -4357,36 +4524,24 @@ else
     if [ -z "$row_sid" ]; then
       note "the row's session cell records no id to append to, so this launch's $AGENT_WORD id is not in it. STAMP IT AS THIS SESSION'S FIRST ACT:"
       note "  LANES_LANE=$LANE $LANES_EDIT append-session-id $LANE \"<the session cell's last id>\" \"→ $agent_cell\""
+    elif (( LS_SR_ONE )); then
+      # W5, carried by the one call at 5b (T428): `--append-cell`. The verb
+      # appends every cell before the state; the two are different cells.
+      LS_SR_CELLS+=(--append-cell "$row_sid" "→ $agent_cell" "session cell: $prog launched $AGENT for this lane")
+      LS_SR_PLAN+=("lanes-edit.sh append-session-id $LANE '$row_sid' '→ $agent_cell'")
     elif (( dry_run )); then
       plan "lanes-edit.sh append-session-id $LANE '$row_sid' '→ $agent_cell'"
-    elif LANES_LANE="$LANE" "$LANES_EDIT" append-session-id "$LANE" "$row_sid" "→ $agent_cell" "session cell: $prog launched $AGENT for this lane"; then
-      step "session cell updated: $row_sid → $agent_cell"
     else
-      note "the session cell was NOT extended with $agent_cell (this checkout's copy of the row may be older than the published one). STAMP IT AS THIS SESSION'S FIRST ACT:"
-      note "  LANES_LANE=$LANE $LANES_EDIT append-session-id $LANE \"<the session cell's last id>\" \"→ $agent_cell\""
+      ls_w_rc=0
+      ls_expect_for 0 0   # W5's (T428; Y:5653): its id is the agent's own, not a uuid
+      LANES_LANE="$LANE" LANES_EXPECT="$LS_EXPECT" "$LANES_EDIT" append-session-id "$LANE" "$row_sid" "→ $agent_cell" "session cell: $prog launched $AGENT for this lane" || ls_w_rc=$?
+      if [ "$ls_w_rc" = 0 ]; then
+        step "session cell updated: $row_sid → $agent_cell"
+      else
+        note "the session cell was NOT extended with $agent_cell (this checkout's copy of the row may be older than the published one). STAMP IT AS THIS SESSION'S FIRST ACT:"
+        note "  LANES_LANE=$LANE $LANES_EDIT append-session-id $LANE \"<the session cell's last id>\" \"→ $agent_cell\""
+      fi
     fi
-  fi
-fi
-
-# THE HANDOFF'S WRITABLE PATH, BESIDE THE ROW'S SPELLING (plan §2.7). The row's
-# cell is a spelling a reader can follow, and under the opt-in a person who
-# follows it lands in W, where no tool writes (Amendment 23 S5). `handoff-path`
-# names the same file in the checkout this lane's writes go through, which is
-# where 5c stamps it, where 5d reads the first prompt from, and where a hand
-# edit belongs. A read; in a dry run it fetches nothing.
-HS_PATH=""
-ls_cell="$handoff"
-[ "$row_count" != 1 ] || ls_cell="$(cell 7 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' || :)"
-if [ -n "$ls_cell" ]; then
-  hsp_rc=0; hsp_nf=0
-  (( ! dry_run )) || hsp_nf=1
-  HS_PATH="$(LANES_NO_FETCH="$hsp_nf" "$LANES_EDIT" handoff-path "$LANE" 2>/dev/null)" || hsp_rc=$?
-  if [ "$hsp_rc" = 0 ] && [ -n "$HS_PATH" ]; then
-    step "the lane's handoff '$ls_cell' is written through $HS_PATH"
-  else
-    HS_PATH=""
-    [ "$hsp_rc" = 8 ] || (( dry_run )) ||
-      note "where this lane's handoff is written could not be read (\`$LANES_EDIT handoff-path $LANE\` exited $hsp_rc), and a first prompt is read from that file alone, never from W's copy (5d)"
   fi
 fi
 
@@ -4396,6 +4551,10 @@ fi
 # liveness and handoff path out of, and a log line that named a lane with no
 # row would point at nothing. It never fails the launch: a lane that cannot
 # write its log still starts, and says that it could not.
+# SINCE FEATURE 007 (T428) THE LINE AND THE ROW ARE ONE WRITE, made at the
+# foot of this section by `start-record`, so the row's arms are the line's:
+# a new row's refusal, any 2, and the guard's bind refusing on any code stop
+# the launch; a resume's refusal is still a note.
 
 # `owner/repo` out of the lane's own origin. Every URL form the estate uses:
 # `git@github.com:owner/repo.git`, `https://github.com/owner/repo`, `ssh://…`.
@@ -4537,14 +4696,83 @@ if (( AGENT_EXPLICIT )); then ls_defer_agent=" $(quoted --agent "$AGENT")"; fi
 if (( ! lane_sid_known )); then
   note "no transcript uuid is knowable at this instant (the row's stamp says '${lane_sid:-unknown}'), so the lane's $lane_verb log line is NOT written: Amendment 7(b) makes that field a transcript uuid and only that, and the log is append-only. Nor is the handoff's Rule 3 stamp. BOTH are written by the first act that knows the uuid, which is this session's own:"
   note "  $prog --no-launch $self_args$ls_defer_agent"
-elif (( dry_run )); then
-  plan "lanes-edit.sh log $lane_verb lane:$LANE → \"$lane_payload\""
 else
-  if LANES_LANE="$LANE" LANES_SESSION="$lane_sid" "$LANES_EDIT" log "$lane_verb" "lane:$LANE" '→' "$lane_payload"; then
-    step "object log: $lane_verb lane:$LANE, home $home_nwo"
+  # FEATURE 007, T428 - THE ONE CALL: W1, or W2 to W6, with W7, as
+  # `start-record`, carrying the union of their expectations (Y:5648-5656)
+  # and the act's LANES_ACT. LANES_LANE and LANES_SESSION are the lane and
+  # the transcript the line names, as the verb requires (lane 3's rulings 2
+  # and 3 on T427, #165 6755005268).
+  ls_expect_for 1 1 "$lane_sid" ${LS_SR_SIDS[@]+"${LS_SR_SIDS[@]}"}
+  ls_sr=(start-record "$LANE" "$lane_verb")
+  if [ -n "$LS_SR_ROW" ]; then
+    ls_sr+=(--add-row "$LS_SR_ROW")
+    ls_sr_what="lane ${LANE}'s new row and its $lane_verb line"
   else
-    note "the lane's object log was NOT written ($lane_verb, home $home_nwo). Write it as this session's first act:"
-    note "  LANES_LANE=$LANE $LANES_EDIT log $lane_verb lane:$LANE '→' \"$lane_payload\""
+    ls_sr+=(${LS_SR_CELLS[@]+"${LS_SR_CELLS[@]}"} --state "$LS_SR_STATE")
+    ls_sr_what="lane ${LANE}'s state cell, the session-cell entries this run appends, and its $lane_verb line"
+  fi
+  ls_sr+=(--log "lane:$LANE" '→' "$lane_payload")
+  ls_sr_hint="LANES_LANE=$LANE LANES_SESSION=$lane_sid $(quoted "$LANES_EDIT" "${ls_sr[@]}")"
+  if (( dry_run )); then
+    # TODAY'S PLAN LINES, AS THE PARTS OF THE ONE WRITE, then the call itself.
+    plan "lanes-edit.sh start-record $LANE $lane_verb: ONE register write of the parts below, one commit and push in files mode, one transaction on primary (feature 007, T428)"
+    for ls_p in ${LS_SR_PLAN[@]+"${LS_SR_PLAN[@]}"}; do plan "$ls_p"; done
+    plan "lanes-edit.sh log $lane_verb lane:$LANE → \"$lane_payload\""
+    plan "  the call: LANES_EXPECT='$LS_EXPECT' $ls_sr_hint"
+  else
+    ls_sr_rc=0
+    LANES_LANE="$LANE" LANES_SESSION="$lane_sid" LANES_EXPECT="$LS_EXPECT" "$LANES_EDIT" "${ls_sr[@]}" || ls_sr_rc=$?
+    # THE ARMS (Y:5539-5544; spec:317-318; the task's "The arms"). Any 2
+    # stops the launch, LR010's included: on primary an expectation's 2 is
+    # a second binding. A write that must exist, a new row, stops with its
+    # code; so does the guard's detached bind on any code, with no stamp, its
+    # record ending failed with that code. A resume's write only prints a
+    # note: the stamp is written and the launch goes on (2A).
+    case "$ls_sr_rc" in
+      0)
+        if [ -n "$LS_SR_ROW" ]; then
+          step "row added"
+        else
+          step "row state set: LIVE · $lane_verb by ${lane_sid:-unknown}"
+        fi
+        step "object log: $lane_verb lane:$LANE, home $home_nwo"
+        step "  (one register write with the row: \`start-record\`)" ;;
+      2)
+        die "lane ${LANE}'s bind was REFUSED: \`$LANES_EDIT start-record\` exited 2 (its words are above), and none of ${ls_sr_what} was written. A 2 refuses the whole write: on primary a scope this launch read changed after its base, which is another place binding or changing lane $LANE, a SECOND BINDING this launch does not write over; or LR010, a key that is not a scope, or a refusal of the write's own words (spec:317; FR-029). This window has been renamed to $LANE, and nothing has been launched. Read the lane before running this again: $LANES_EDIT binding $LANE" 2 ;;
+      *)
+        if [ -n "$LS_SR_ROW" ]; then
+          die "the register row for $LANE was NOT added (\`$LANES_EDIT start-record\` exited $ls_sr_rc; its own words are above). This window has been renamed and NOTHING else has been written — no session cell, no object log, no launch: a lane with no row is a lane no other lane's liveness read, crossing check or \`lane-start\` can see. Settle that refusal and re-run, or write it by hand:
+    $ls_sr_hint" "$ls_sr_rc"
+        fi
+        if [ -n "$bind_sid" ]; then
+          die "the bind of $bind_sid as lane ${LANE}'s session was NOT made: \`$LANES_EDIT start-record\` exited $ls_sr_rc (its words are above), so no stamp is written and nothing is bound; the guard's record of this bind ends failed with this code (Y:5539-5544)." "$ls_sr_rc"
+        fi
+        note "${ls_sr_what} were NOT written: \`$LANES_EDIT start-record\` exited $ls_sr_rc, and its words above say what was left. The launch is not refused for it: they are the record of this resume, not its licence (spec:318, 2A). Once those words say nothing was written, write them as this session's first act:"
+        note "  $ls_sr_hint" ;;
+    esac
+  fi
+fi
+
+# THE HANDOFF'S WRITABLE PATH, BESIDE THE ROW'S SPELLING (plan §2.7). The row's
+# cell is a spelling a reader can follow, and under the opt-in a person who
+# follows it lands in W, where no tool writes (Amendment 23 S5). `handoff-path`
+# names the same file in the checkout this lane's writes go through, which is
+# where 5c stamps it, where 5d reads the first prompt from, and where a hand
+# edit belongs. A read; in a dry run it fetches nothing. READ AFTER 5b (T428):
+# a new lane's row is made by 5b's one call, and this read finds it there.
+HS_PATH=""
+ls_cell="$handoff"
+[ "$row_count" != 1 ] || ls_cell="$(cell 7 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' || :)"
+if [ -n "$ls_cell" ]; then
+  hsp_rc=0; hsp_nf=0
+  (( ! dry_run )) || hsp_nf=1
+  HS_PATH="$(LANES_NO_FETCH="$hsp_nf" "$LANES_EDIT" handoff-path "$LANE" 2>/dev/null)" || hsp_rc=$?
+  if [ "$hsp_rc" = 0 ] && [ -n "$HS_PATH" ]; then
+    step "the lane's handoff '$ls_cell' is written through $HS_PATH"
+  else
+    HS_PATH=""
+    [ "$hsp_rc" = 8 ] || (( dry_run )) ||
+      note "where this lane's handoff is written could not be read (\`$LANES_EDIT handoff-path $LANE\` exited $hsp_rc), and a first prompt is read from that file alone, never from W's copy (5d)"
   fi
 fi
 
