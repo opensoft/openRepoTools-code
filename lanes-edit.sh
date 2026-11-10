@@ -2690,22 +2690,28 @@ reg_marker_read() {   # <repo> <tip; empty: the working tree>
 # files that are now only the mirror. So it reads the marker on the tip its
 # own S3 fetch returned (`checkout_sync`, after step 1), and the publish act
 # reads it again before it pushes (`cp_publish_act`). Where it is there, 69
-# with the requirement's text, and nothing written. ONLY OFF PRIMARY: where
-# T409's question answered `files` (no configuration, or a question that
-# failed) or `index`. On primary the marker is always on origin, and the
-# write path is SQL's. An empty `REG_MODE` was never asked, and is not
-# checked: `write-handoff`, whose S3 runs inside `$( )`, and an attempt's
-# child under `LANES_REGISTER_SCRATCH`. THE READ is `ls-tree`, which tells an
-# absent marker (0, nothing printed) from a tree git cannot read (not 0),
-# where `cat-file -e` is 128 for both; a read that fails refuses (2), since
-# it proves nothing. Under `LANES_NO_GIT=1`, or where there is no origin
-# branch to read, it is F17's other half: `$LANES_DIR/STORE` in the working
-# tree. Where the marker is absent it prints nothing and changes nothing.
+# with the requirement's text, and nothing written. THE GATE is `REG_ASK=1`,
+# which the write guard's arm at the dispatcher sets for its verbs, `commit`'s
+# publish act included; and ONLY OFF PRIMARY: where T409's question answered
+# `files` (no configuration, or a question that failed) or `index`. On
+# primary the marker is always on origin, and the write path is SQL's. Every
+# other run passes the gate unchecked: `write-handoff`, whose S3 runs inside
+# `$( )`, has `REG_ASK` 0, and an attempt's child as T413 makes it has
+# `REG_ASK` 0 and `REG_MODE` `primary` (lane 3, #165 6754806910 and
+# 6767463594). THE TIP is resolved as `have_remote_ref` resolves it, with no
+# `^{commit}`: no ref is no origin branch to read, and a ref whose commit git
+# cannot read goes to the read, which answers 2. THE READ is `ls-tree`, which
+# tells an absent marker (0, nothing printed) from a tree git cannot read
+# (not 0), where `cat-file -e` is 128 for both; a read that fails refuses
+# (2), since it proves nothing. Under `LANES_NO_GIT=1`, or where there is no
+# origin branch to read, it is F17's other half: `$LANES_DIR/STORE` in the
+# working tree. Where the marker is absent it prints nothing and changes
+# nothing.
 cs_marker_refuse() {   # <what> <the tip: a revision; empty: no origin branch> <whose tip it is>
-  case "$REG_ASK:$REG_MODE" in 1:files|1:index) : ;; *) return 0 ;; esac   # the write guard's 14 verbs only, never write-handoff (lane 3, #165 6754806910)
+  case "$REG_ASK:$REG_MODE" in 1:files|1:index) : ;; *) return 0 ;; esac   # the gate: the write guard's verbs (REG_ASK=1) off primary, never write-handoff (lane 3, #165 6754806910, 6767463594)
   csm_tip=""
-  if [ "$NO_GIT" != 1 ] && [ -n "$2" ]; then
-    csm_tip="$(git -C "$LANES_REPO" rev-parse -q --verify "$2^{commit}" 2>/dev/null || :)"
+  if [ "$NO_GIT" != 1 ] && [ -n "$2" ]; then   # have_remote_ref's form: a ref naming a commit git cannot read resolves, and the read answers 2 (lane 3, #165 6767463594)
+    csm_tip="$(git -C "$LANES_REPO" rev-parse -q --verify "$2" 2>/dev/null || :)"
   fi
   csm_rc=0; reg_marker_read "$LANES_REPO" "$csm_tip" || csm_rc=$?
   [ "$csm_rc" != 1 ] || return 0
