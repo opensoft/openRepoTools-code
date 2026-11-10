@@ -7936,8 +7936,16 @@ SR_USE="usage: start-record <lane> <STARTED|RESUMED> { --add-row \"<full | row |
 # backticks, as `add_row_checks` reads `lane_new`. A row that names another
 # lane, or none, is refused because one write is one lane's; a row that names
 # `<L>` in another case is refused for its spelling. 2 either way, with
-# nothing written.
+# nothing written. A ROW IS ONE LINE, AND THAT IS ASKED FIRST (REV427b, M1):
+# `add_row_checks` reads `lane_new` from every line of the row, so a row with a
+# newline or a carriage return in it could name `<L>` here and another lane
+# there, and get past this test to the lock, where `ensure_log` made a log for
+# the second name before the append refused it.
 sr_row_names_lane() {   # <the row> <L>
+  srn_row="${1-}"
+  if [ "${srn_row//[$'\n\r']/}" != "$srn_row" ]; then
+    die "the row given to --add-row is ONE line, and this one carries a newline or a carriage return: a newline in it would split the row in two and every row after it would be read as a lane. Nothing was written. $SR_USE" 2
+  fi
   srn_named=""
   case "${1-}" in *'`'*'`'*) srn_named="${1#*\`}"; srn_named="${srn_named%%\`*}" ;; esac
   if [ -z "$srn_named" ] || [ "$(lc "$srn_named")" != "$(lc "${2-}")" ]; then
@@ -17967,8 +17975,9 @@ lane_checkout_enter() {   # <write_lane_of's status> <its lane, or empty>
   # the lane's checkout, so a routed call cloned that checkout first, for a
   # write refused anyway: the cost `lane_row_gate` exists to avoid. So the
   # router refuses first:
-  #   * `--add-row`'s row names `<L>` byte for byte (`sr_row_names_lane`). The
-  #     test reads nothing, so it comes before `canon_lane` too.
+  #   * `--add-row`'s row is one line and names `<L>` byte for byte
+  #     (`sr_row_names_lane`). The test reads nothing, so it comes before
+  #     `canon_lane` too.
   #   * Every other form is a resume. Where this router's own `canon_lane`
   #     answer is not `<L>` byte for byte, it is asked again after one fetch of
   #     W (`log_sync`: W is still `LANES_REPO` here), as the gate asks a miss,
@@ -18899,6 +18908,11 @@ Nothing was written." 2
       # still gets Amendment 15(a)'s refusal from `add_row_checks`.
       sr_row_names_lane "$sr_row" "$sr_in"
       add_row_checks "$sr_row"
+      # AND THE LANE `add_row_checks` READ IS `<L>` BYTE FOR BYTE, asked of
+      # `lane_new` itself, before the lock (REV427b, M1): this arm refuses so
+      # wherever it runs, whether or not a router asked the row first.
+      [ "$lane_new" = "$sr_in" ] ||
+        die "the row given to --add-row spells its lane '$lane_new' in its first cell, and start-record's first word is '$sr_in': the row names <lane> byte for byte, since LANES_LANE equals it and is the digest's lane as given (Y:5171), so the digest, the pending record, the row and the log line spell one lane alike. Spell the lane alike in the row, the first word and LANES_LANE. Nothing was written. $sr_use" 2
       sr_lane="$lane_new"
       [ "$(lc "${sr_obj#lane:}")" = "$(lc "$sr_lane")" ] ||
         die "--log names $sr_obj, and this write is lane $sr_lane's: its log line is that lane's own, lane:$sr_lane. Nothing was written. $sr_use" 2
