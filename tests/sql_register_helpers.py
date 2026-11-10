@@ -42,7 +42,8 @@ makes it executable and puts `<dir>` first on `PATH`. Its environment:
 - `FAKE_PSQL_LOG` (required) names its log: one JSON object per call, in call
   order, with `FAKE_PSQL`'s fields, `url`, `passfile`, `pgpassword` and
   `stdin`, and these besides:
-  - `call`, the call's number in this log, from 1;
+  - `call`, the call's number in this log, from 1, counting only the calls
+    that carry a request: a `psql --version` call is not counted (below);
   - `argv`, the whole argument list (P1475): what each path sends is the
     test's to assert, and the fake asserts no `VERBOSITY` for the calls the
     design leaves unnamed (the test plan's open point 29);
@@ -60,6 +61,19 @@ makes it executable and puts `<dir>` first on `PATH`. Its environment:
   refused: the call is logged with `refused`, and the fake exits 1. No
   register path puts a connection string in an argument list (Y:3491; CLI4.5
   §2.2 and §6).
+- `psql --version`, a call whose whole argument list is `--version`, is a
+  call of its own kind. Lane 1's T106 runs it once per process on a register
+  path, before it sends anything, and refuses a `psql` older than 15 with 69,
+  naming its version, with nothing sent (L1v4.10:152; lane 1, #165
+  6752661856). The fake reads no stdin for it and answers `psql (PostgreSQL)
+  16.4` (`PSQL_VERSION_LINE`) with exit 0, unless a `version` rule in
+  `FAKE_PSQL_ANSWERS` answers it. Its log entry is
+  `{"kind": "version", "url": …, "passfile": …, "pgpassword": …, "argv":
+  ["--version"], "connect_timeout": …, "options": …, "service": …, "pg":
+  {…}}`, with no `call` and no `stdin`. So the calls that carry a request are
+  the entries with no `kind`, a case counting them leaves the probe out
+  (`e.get("kind") != "version"`), and their `call` numbers are the ones a
+  test without the probe sees.
 - `FAKE_PSQL_ANSWERS` (optional) names a JSON file: a list of answers, each
   taught for the calls it names. The first that names a call answers it:
   - it names calls by `call` (that call alone), `from` (every call from that
@@ -68,7 +82,13 @@ makes it executable and puts `<dir>` first on `PATH`. Its environment:
   - it answers with `sleep` (seconds, before anything else: a hang past the
     caller's timer), then `stdout` and `stderr`, then `signal` (a name, such
     as `KILL`, that the fake sends itself: a death by a signal) or `exit`
-    (default 0).
+    (default 0);
+  - a rule with `"kind": "version"` names the `psql --version` calls, every
+    one, and only them: it takes no `call`, `from` or `match`, and answers
+    as any rule does. Every other rule names only the calls that carry a
+    request. So T257's `[snapshot-psql-14]` teaches `{"kind": "version",
+    "stdout": "psql (PostgreSQL) 14.11\\n"}`, and a `--version` that hangs or
+    fails is taught with `sleep` or `exit`.
 
   So the 69 refusal is `{"call": 1, "exit": 2}`; the retry's shape is
   `{"match": "commit_write", "exit": 3, "stderr": "ERROR:  40001: could not
@@ -86,6 +106,13 @@ control file:
 
 - `psql` (optional): the real `psql` to hand calls to; otherwise the first
   `psql` on `PATH` that is not the shim.
+- `version` (optional): the line the shim answers `psql --version` with,
+  `psql (PostgreSQL) 16.4` (`PSQL_VERSION_LINE`) where it is absent, such as
+  `"psql (PostgreSQL) 14.11"` for T257's `[snapshot-psql-14]`. A call whose
+  whole argument list is `--version` (lane 1's T106 probe, once per process
+  on a register path: L1v4.10:152) is answered by the shim itself, that line
+  and exit 0, and is never handed on: it reads no stdin, no arm applies to it,
+  and it is not counted in `call`, `from` or the state.
 - `arms`: a list, each arm a mode and the calls it applies to. An arm names
   calls by `call` (call k alone), `from` (every call from call k on) or
   `match` (a text the call's script carries, such as `find_write` for a
@@ -129,11 +156,16 @@ The shim writes, beside itself, `psql-shim.log`, one JSON object per call
 when the call starts: `call`, `argv`, `stdin`, `sent` (the script as handed
 on), `arms` (the modes applied), and the fake's `url`, `passfile`,
 `pgpassword` and `pg`; `psql-shim.ends`, one line per call that ended, with
-the codes; and its counters in `psql-shim.state`. A control file it cannot
-read, an arm it does not know, or an arm that cannot apply to the call it
-names (a `before` on a call with no `COMMIT`, an `edit-entry` field that is
+the codes; and its counters in `psql-shim.state`. A `psql --version` call's
+entry in `psql-shim.log` is its own kind, `{"kind": "version", "argv":
+["--version"], "url": …, "passfile": …, "pgpassword": …, "pg": {…}}`, with
+no `call`, and it writes nothing to `psql-shim.ends` or the state, so the
+calls that carry a request are the entries with no `kind`. A control file it
+cannot read, an arm it does not know, or an arm that cannot apply to the call
+it names (a `before` on a call with no `COMMIT`, an `edit-entry` field that is
 not there) ends the call with exit 1 and `psql-shim: …` on stderr, recorded
-in the log as `error`, sending nothing.
+in the log as `error`, sending nothing; on a `--version` call, so does a
+control file it cannot read or a `version` that is not a string.
 
 STANDARD LIBRARY ONLY, AND NOTHING FROM THE SUITE: no `conftest`, no pytest,
 so the module loads the same way under pytest and under a task's
@@ -170,6 +202,11 @@ PSQL_SHIM_ENDS = "psql-shim.ends"
 #: The shim's ten modes (the test plan's section 3.2).
 PSQL_SHIM_MODES = ("window", "before", "after", "timer", "fail-call", "fail-match",
                    "edit-entry", "no-reconnect", "hold", "fork")
+
+#: WHAT BOTH `psql`s ANSWER `psql --version` WITH, unless a test names another
+#: (the fake's `version` rule, the shim's `version` key): a `psql` lane 1's
+#: T106 accepts, 15 or later (L1v4.10:152). Each script holds this text too.
+PSQL_VERSION_LINE = "psql (PostgreSQL) 16.4"
 
 
 def flipped_copy(source, dest, value) -> Path:
@@ -234,14 +271,19 @@ REGISTER_FAKE_PSQL = r'''#!/usr/bin/env python3
 # PGCONNECT_TIMEOUT, PGOPTIONS, PGSERVICE and every PG* variable it received.
 # A test may teach it an answer per call (FAKE_PSQL_ANSWERS); otherwise it
 # answers as FAKE_PSQL does. No database exists. It asserts no VERBOSITY.
+# `psql --version` (lane 1's T106 probe) is a call of its own kind: answered
+# DEFAULT_VERSION, or by a {"kind": "version"} rule, logged with
+# "kind": "version" and never counted in `call`.
 import fcntl, json, os, signal, sys, time
 
+DEFAULT_VERSION = "psql (PostgreSQL) 16.4"
 log = os.environ["FAKE_PSQL_LOG"]
 answers = os.environ.get("FAKE_PSQL_ANSWERS", "")
 vfile = os.environ.get("FAKE_PSQL_VERSION_FILE", "")
 version = open(vfile).read().strip() if vfile else "1"
 args = sys.argv[1:]
-stdin = sys.stdin.read()
+asks_version = args == ["--version"]
+stdin = "" if asks_version else sys.stdin.read()
 env = os.environ
 url = ""
 if any(env.get(k) for k in ("PGHOST", "PGPORT", "PGDATABASE", "PGUSER")):
@@ -259,11 +301,15 @@ refused = [a for a in args if a == "--dbname" or a.startswith("--dbname=") or
            "postgresql://" in a or "postgres://" in a]
 if refused:
     record["refused"] = "a connection string or -d in the arguments: %s" % json.dumps(refused)
+if asks_version:
+    record = dict({"kind": "version"}, **{k: v for k, v in record.items() if k != "stdin"})
 with open(log, "a+", encoding="utf-8") as handle:
     fcntl.flock(handle, fcntl.LOCK_EX)
     handle.seek(0)
-    call = sum(1 for _ in handle) + 1
-    record = dict({"call": call}, **record)
+    # `call` counts the calls that carry a request: never a --version entry.
+    call = sum(1 for line in handle if not line.startswith('{"kind": "version"')) + 1
+    if not asks_version:
+        record = dict({"call": call}, **record)
     handle.write(json.dumps(record) + "\n")
 if refused:
     sys.stderr.write("psql: error: the fake refuses %s\n" % record["refused"])
@@ -271,11 +317,17 @@ if refused:
 
 
 def taught():
+    # A {"kind": "version"} rule names every --version call and only them;
+    # every other rule names only the calls that carry a request.
     if not answers:
         return None
     with open(answers, encoding="utf-8") as handle:
         rules = json.load(handle)
     for rule in rules:
+        if (rule.get("kind") == "version") != asks_version:
+            continue
+        if asks_version:
+            return rule
         if "call" in rule and rule["call"] != call:
             continue
         if "from" in rule and call < rule["from"]:
@@ -298,6 +350,9 @@ if rule is not None:
         os.kill(os.getpid(), getattr(signal, "SIG" + rule["signal"]))
         time.sleep(5)
     sys.exit(int(rule.get("exit", 0)))
+if asks_version:
+    sys.stdout.write(DEFAULT_VERSION + "\n")
+    sys.exit(0)
 if vfile and "CREATE TABLE IF NOT EXISTS" in stdin:
     with open(vfile, "w") as handle:
         handle.write("1\n")
@@ -354,9 +409,12 @@ PSQL_SHIM = r'''#!/usr/bin/env -S python3 -I
 # `python3 -I` script, standard library only, in front of the REAL psql, armed
 # per test by psql-shim.json beside it. Its modes: window, before, after,
 # timer, fail-call, fail-match, edit-entry, no-reconnect, hold and fork.
+# `psql --version` (lane 1's T106 probe) it answers itself, DEFAULT_VERSION or
+# the control file's `version`, logged with "kind": "version" and never counted.
 # tests/sql_register_helpers.py's docstring is its manual.
 import fcntl, json, os, re, signal, subprocess, sys, time
 
+DEFAULT_VERSION = "psql (PostgreSQL) 16.4"
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONTROL = os.path.join(HERE, "psql-shim.json")
 LOG = os.path.join(HERE, "psql-shim.log")
@@ -500,8 +558,42 @@ def text(data):
     return data.decode("utf-8", "surrogateescape")
 
 
+def version(args):
+    # `psql --version`, as lane 1's T106 asks it once per process (L1v4.10:152):
+    # answered here, never handed on; no arm applies to it, it reads no stdin,
+    # and it is not counted in the state or written to the ends.
+    record = {"kind": "version", "argv": args}
+    record.update(connection())
+    error, line = "", DEFAULT_VERSION
+    try:
+        try:
+            with open(CONTROL, encoding="utf-8") as handle:
+                control = json.load(handle)
+        except FileNotFoundError:
+            control = {}
+        except ValueError as exc:
+            raise ShimError("the control file is not JSON: %s" % exc)
+        if not isinstance(control, dict):
+            raise ShimError("the control file is not a JSON object")
+        line = control.get("version", DEFAULT_VERSION)
+        if not isinstance(line, str):
+            raise ShimError("`version` is not a string: %s" % json.dumps(line))
+    except ShimError as exc:
+        error = str(exc)
+        record["error"] = error
+    append(LOG, record)
+    if error:
+        sys.stderr.write("psql-shim: %s\n" % error)
+        return 1
+    sys.stdout.write(line + "\n")
+    sys.stdout.flush()
+    return 0
+
+
 def main():
     args = sys.argv[1:]
+    if args == ["--version"]:
+        return version(args)
     raw = sys.stdin.buffer.read()
     script = text(raw)
     record = {"argv": args, "stdin": script}
