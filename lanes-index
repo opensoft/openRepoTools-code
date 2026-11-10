@@ -1657,9 +1657,12 @@ def render_git_env() -> dict:
     """The environment every git call of the renderer and of the push starts
     from (Y:5776): the caller's own, with every inherited `GIT_*` variable
     removed, so an inherited `GIT_DIR`, `GIT_INDEX_FILE`, `GIT_SSH_COMMAND`,
-    `GIT_CONFIG_*` or `GIT_ASKPASS` reaches none of them. Nothing here is
-    interactive, so git never prompts on a terminal."""
-    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    `GIT_CONFIG_*` or `GIT_ASKPASS` reaches none of them, and with
+    `LANES_NO_FETCH` dropped (D12; T321): the renderer never consults it, and
+    no child of its inherits it. Nothing here is interactive, so git never
+    prompts on a terminal."""
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("GIT_") and key != "LANES_NO_FETCH"}
     env["GIT_TERMINAL_PROMPT"] = "0"
     return env
 
@@ -1903,6 +1906,211 @@ def render_push(checkout: str, tip: str, render_key: str = "") -> PushResult:
         outcome = "failed"
     return PushResult(outcome, destination, pushed.rc, pushed.timed_out, origin_tip,
                       f"{outcome} to {destination}: {how}")
+
+
+# ===================================== `render --checkout <c>`'s lock (group C)
+#
+# ONE RENDER AT A TIME PER CHECKOUT, AND NO FORK WAITS (feature 007's T321:
+# D14; S2's first bullet; FR-044; the phase plan's "The render lock").
+#
+# - THE LOCK is `fcntl.flock(LOCK_EX | LOCK_NB)` on `<git-dir>/lanes-render.lock`
+#   of the checkout `<c>`, in `SyncLock`'s form: never the lane's write lock,
+#   and never a `mkdir` mutex. The kernel releases a `flock` when its holder
+#   dies, even by SIGKILL, where a `mkdir` mutex would stay behind and the
+#   checkout would render nothing again ([L4-4]).
+# - THE FILE IS OPENED CLOSE-ON-EXEC, so a `git push` that outlives a killed
+#   renderer does not keep the lock.
+# - BOTH HALVES OF `SyncLock`'s HANDSHAKE (`cmd_sync`): a fork that finds the
+#   lock held writes `<git-dir>/lanes-render.rerun`, tries the lock once more,
+#   and exits; the holder, after it releases, looks for a mark once more and
+#   takes the lock back for it. Without the second half, a write that commits
+#   between the holder's last look and its release is never rendered ([L4-3]).
+# - `LANES_NO_FETCH` IS NEVER CONSULTED (D12): `render --checkout` drops it
+#   from its own environment first, and `render_git_env` from every child's.
+
+RENDER_LOCK_NAME = "lanes-render.lock"
+RENDER_RERUN_NAME = "lanes-render.rerun"
+
+
+class RenderLock:
+    """The render lock of one checkout's git directory, and its rerun mark."""
+
+    def __init__(self, git_dir: str):
+        self.path = os.path.join(git_dir, RENDER_LOCK_NAME)
+        self.rerun = os.path.join(git_dir, RENDER_RERUN_NAME)
+        self.fd = None
+
+    def acquire(self) -> bool:
+        """Take the lock at once, or answer False: it never waits. The file is
+        opened close-on-exec and never through a symbolic link. An error that
+        is not "held" (a git directory this account cannot write) raises."""
+        import errno
+        import fcntl
+        if self.fd is not None:
+            return True
+        fd = os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            os.close(fd)
+            if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
+                return False
+            raise
+        self.fd = fd
+        return True
+
+    def release(self) -> None:
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+    def mark_rerun(self) -> None:
+        """Leave the mark that asks the holder to render again. A mark that
+        cannot be written is said: the write it stands for then waits for the
+        next render."""
+        try:
+            fd = os.open(self.rerun, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_CLOEXEC
+                         | os.O_NOFOLLOW, 0o600)
+            try:
+                os.write(fd, (utc_now() + "\n").encode("ascii"))
+            finally:
+                os.close(fd)
+        except OSError as exc:
+            note(f"render: the rerun mark {self.rerun} could not be written "
+                 f"({exc.strerror or exc}); the next render renders this write")
+
+    def has_rerun(self) -> bool:
+        return os.path.lexists(self.rerun)
+
+    def clear_rerun(self) -> None:
+        """Take the mark away. One that cannot be removed raises, since the
+        holder would otherwise take the lock back for it for ever."""
+        try:
+            os.unlink(self.rerun)
+        except FileNotFoundError:
+            pass
+
+
+def render_git_dir(checkout: str) -> str:
+    """The git directory of `<c>`, the lane's checkout, which holds the lock:
+    per checkout, a linked worktree's own. Anything else is refused with 2."""
+    got = render_git(checkout, "rev-parse", "--absolute-git-dir")
+    git_dir = got.out.strip()
+    if got.rc != 0 or not git_dir or not os.path.isdir(git_dir):
+        raise Refusal(f"render --checkout {checkout} names no git checkout: {got.last_line()}")
+    return git_dir
+
+
+def render_pass(checkout: str, cfg: dict) -> int:
+    """S2's pass in `checkout`, under its render lock: fetch, find `m`, check
+    for a divergence, build `m+1 .. t` and push through `render_push` (T322;
+    D15; D16; contracts/render-commit.md). This build has the lock and its
+    handshake and not the pass, so a pass renders nothing, says so, and ends
+    0, and the holder ends after one turn unless a mark asks again."""
+    note(f"render --checkout {checkout}: this build has the render lock and its handshake, "
+         f"not the pass; nothing rendered")
+    return 0
+
+
+def _render_holding(lock: RenderLock, checkout: str, cfg: dict) -> int:
+    """The holder's side of the handshake. Each turn clears the rerun mark,
+    the pass's first act (S2), and runs a pass; T323 bounds the passes. Then
+    it releases, looks for a mark once more, and takes the lock back for it:
+    a mark left after the clear, by a fork that found the lock held, is
+    rendered by this process, and never left with nobody due to read it."""
+    rc = 0
+    while True:
+        try:
+            lock.clear_rerun()
+        except OSError as exc:
+            note(f"render: the rerun mark {lock.rerun} cannot be removed "
+                 f"({exc.strerror or exc}); nothing rendered")
+            return 1
+        rc = render_pass(checkout, cfg)
+        lock.release()
+        # THE HANDSHAKE'S SECOND HALF: after the release, never before it.
+        try:
+            again = lock.has_rerun() and lock.acquire()
+        except OSError as exc:
+            note(f"render: the render lock {lock.path} cannot be taken back for a rerun mark "
+                 f"({exc.strerror or exc}); the next render renders it")
+            return rc or 1
+        if not again:
+            return rc
+
+
+def cmd_render_checkout(args: list) -> int:
+    """`lanes-index render --checkout <c>` (contract section 3.7; T321): the
+    renderer that a primary write forks, detached, in the writing lane's
+    checkout `<c>`. One render at a time per checkout, and no fork waits.
+
+    Exits: 0, rendered, or another render holds the lock and renders again
+    for this one; 2, a refused configuration (Q6(c)'s refusal of
+    `mode=primary` included, at load, before any answer: C13) or a `<c>`
+    that is no git checkout; 1, a render lock that cannot be used; 64,
+    usage."""
+    want = f"render --checkout <c> - see {PROG} --help"
+    checkout = None
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("-h", "--help"):
+            say(USAGE)
+            return 0
+        if arg == "--checkout" or arg.startswith("--checkout="):
+            value = arg.split("=", 1)[1] if "=" in arg else (args[i + 1] if i + 1 < len(args)
+                                                            else "")
+            if not value:
+                note(f"--checkout needs the lane's checkout: {want}")
+                return 64
+            if checkout is not None:
+                note(f"--checkout is given twice: {want}")
+                return 64
+            checkout = value
+            i += 1 if "=" in arg else 2
+            continue
+        note(f"unknown argument '{arg}' for render --checkout: {want}")
+        return 64
+    if checkout is None:
+        note(f"render needs --checkout <c>: {want}")
+        return 64
+    # D12: NEVER CONSULTED, and gone before anything here starts a child.
+    os.environ.pop("LANES_NO_FETCH", None)
+    cfg = load_config()
+    checkout = os.path.abspath(checkout)
+    lock = RenderLock(render_git_dir(checkout))
+    try:
+        held = lock.acquire()
+        if not held:
+            # THE HANDSHAKE'S FIRST HALF: the mark, then ONE more try. If that
+            # fails too, somebody holds the lock now, after the mark was
+            # written, and the holder looks for marks after it lets go.
+            lock.mark_rerun()
+            held = lock.acquire()
+    except OSError as exc:
+        lock.release()
+        note(f"render --checkout {checkout}: the render lock {lock.path} cannot be taken: "
+             f"{exc.strerror or exc}")
+        return 1
+    if not held:
+        say(f"{PROG} render: another render holds {lock.path}; it renders again before it "
+            f"is done")
+        return 0
+    try:
+        return _render_holding(lock, checkout, cfg)
+    finally:
+        lock.release()
+
+
+def _render_checkout_main(args: list) -> int:
+    try:
+        return cmd_render_checkout(args)
+    except Refusal as exc:
+        note(f"REFUSED: {exc}")
+        return 2
+    except StoreUnusable as exc:
+        note(f"{exc.kind}: {exc.detail}")
+        return 1
 
 
 # ================================================================ the acts
@@ -2889,6 +3097,7 @@ USAGE = f"""\
 {PROG} status                                 per source: store, provenance, lag, errors
 {PROG} export    --out <dir> [--source <s> | --worktrees]
                                              the `--index` read flags' reader
+{PROG} render    --checkout <c>              the renderer, one at a time per checkout
 
 The DERIVED INDEX of the lane register (lane-collision-protocol Amendment 14).
 It is written behind the sources by this command alone, read only by tooling
@@ -2910,6 +3119,12 @@ that decides nothing, and never a gate: no lane act reads it or waits on it.
               `lanes --index` and `lanes-edit.sh history --index` - or, with
               `--worktrees`, every inventory source's rows for `lanes --index
               --worktrees`. Not for people.
+  render      `--checkout <c>`: the renderer a primary write forks in the
+              writing lane's checkout <c>. One render at a time per checkout,
+              under an `flock` on <git-dir>/lanes-render.lock: a render that
+              finds it held leaves <git-dir>/lanes-render.rerun and exits 0,
+              and the holder renders again for it before it is done. It
+              never reads LANES_NO_FETCH. Not for people.
 
   --source <s>  `register:<owner/repo>`, which must be this workstation's own
                 and is the default; `inventory` (or `inventory:<Workstation>`,
@@ -2949,6 +3164,10 @@ def main(argv: list[str]) -> int:
         say(f"{PROG} {VERSION} (schema {SCHEMA_VERSION})")
         return 0
     verb, args = argv[0], argv[1:]
+    # FEATURE 007'S `render --checkout <c>` (T321): its own parser, ahead of
+    # #160's argument loop. Any other `render` form is not this one's.
+    if verb == "render" and any(a == "--checkout" or a.startswith("--checkout=") for a in args):
+        return _render_checkout_main(args)
     source = None
     dry_run = False
     worktrees = False
