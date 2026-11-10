@@ -1223,6 +1223,42 @@ ls_late_refuse() {   # <the read, as run> <its exit> <what it would have told>
   fi
   ls_read_refuse "$1" "$2" "$3" "$llr_done"
 }
+
+# FEATURE 007, T428 - THIS LAUNCH IS AN ACT, AND ITS BASE IS TAKEN FIRST
+# (FR-029, FR-035; "The acts and their expectations", design Y:5567-5596;
+# `lane-start`'s table, Y:5627-5657). `lanes-edit.sh act-begin` runs before
+# the first read that decides anything, `canon-lane` below, and its one line
+# is exported as `LANES_ACT` to every verb this launch calls: on primary
+# `<act-id>@<seq>:<generation>`, the register's head when the act began, which
+# each write checks its `LANES_EXPECT` scopes against, so a change another
+# place makes after this read refuses the write with 2 instead of being
+# written over; off primary `<act-id>@files`, which no write reads. A read in
+# a dry run too. Its stderr is held and shown only where it fails: off
+# primary a success says at most the mode warning every later write repeats.
+# No base, no launch: every write of the act would be refused the same way,
+# so it refuses here, passing the code, before anything is renamed or
+# written. And `LANES_EXPECT` is never exported (Y:5577): an act's scopes
+# ride as a prefix on the one call they belong to, so none is inherited.
+unset LANES_EXPECT
+LS_TMP="$(mktemp)"
+ls_act=""; ls_act_rc=0
+ls_act="$("$LANES_EDIT" act-begin 2>"$LS_TMP")" || ls_act_rc=$?
+if [ "$ls_act_rc" != 0 ]; then
+  [ -s "$LS_TMP" ] && cat -- "$LS_TMP" >&2
+  case "$ls_act_rc" in
+    69 | 75 | 3) ls_read_refuse "$LANES_EDIT act-begin" "$ls_act_rc" "this launch's base, the register's head the act's writes are checked against" ;;
+    2) die "\`$LANES_EDIT act-begin\` exited 2 (its words are above), so this launch has no base for its writes. A \`lanes-edit.sh\` with no \`act-begin\` exits 2 for an unknown subcommand; install the one beside this script. Nothing was launched, renamed or written." 2 ;;
+    *) die "\`$LANES_EDIT act-begin\` exited $ls_act_rc (its words are above), so this launch has no base for its writes, and that is not a base. Nothing was launched, renamed or written." "$ls_act_rc" ;;
+  esac
+fi
+case "$ls_act" in
+  "" | *$'\n'*)
+    [ -s "$LS_TMP" ] && cat -- "$LS_TMP" >&2
+    die "\`$LANES_EDIT act-begin\` exited 0 and printed no single line of base, so this launch has no base for its writes. Nothing was launched, renamed or written." 69 ;;
+esac
+export LANES_ACT="$ls_act"
+: > "$LS_TMP"
+
 cl_out=""; cl_rc=0
 cl_out="$("$LANES_EDIT" canon-lane "$LANE" 2>/dev/null)" || cl_rc=$?
 cl_why=""; cl_pair=0
@@ -1953,7 +1989,9 @@ live_holder() { "$LANES_EDIT" live-holder "$LANE"; }
 # lookup, fetches first, and unions the published ids with this checkout's (R25),
 # so asking it costs one fetch and can only ever ADD a reason to refuse.
 holder_here=0
-LS_TMP="$(mktemp)"
+# Made at the act base above (T428), where `act-begin`'s words are held.
+[ -n "$LS_TMP" ] || LS_TMP="$(mktemp)"
+: > "$LS_TMP"
 holder=""; lh_rc=0
 holder="$(live_holder 2>"$LS_TMP")" || lh_rc=$?
 [ -s "$LS_TMP" ] && cat -- "$LS_TMP" >&2
@@ -2852,7 +2890,39 @@ fi
 [ "$lane_claude_checked" = 0 ] || bind_recheck=1
 if [ "$bind_recheck" = 1 ] && (( dry_run )); then
   plan "read the binding again before the rename, and refuse if the lane moved while this run was taking it"
+  [ "$bind_waited" = 1 ] &&
+    plan "$LANES_EDIT act-begin --rebase, then read lane ${LANE}'s row again (register-row), and refuse if it changed outside its state cell while the handoff was waited for (feature 007, T428)"
   bind_recheck=0
+fi
+# FEATURE 007, T428 - THE ACT IS RE-BASED PAST THE HANDOFF WAIT (D5's first
+# condition, Y:5657; FR-029). After a `request-handoff` that answered 0 or 8
+# the holder's own PAUSED writes, made while this run waited (300 s by
+# default), are past this act's base, so the act's first write would be
+# refused for them. `act-begin --rebase` keeps the act's id and takes a new
+# base from the register as it is now, BEFORE the reads this act keeps are
+# read again (Y:5591-5592): the binding, below, and the row this run decided
+# on. The row is then compared with what was read before the wait, its state
+# cell aside, which is the one cell the holder's handoff writes; any other
+# change refuses with 2, because nothing re-reads it after the new base and a
+# write made on it would be one that base never checked. Not on the Claude
+# resolution's wait alone: that wait has no handoff in it.
+ls_rb_done="Nothing has been renamed or launched, and this run has written no row, no STARTED or RESUMED line and no stamp."
+[ -z "$ls_rh_wrote" ] ||
+  ls_rb_done="${ls_rb_done} One line of the handoff stands: ${ls_rh_wrote}, written whole to the append-only log (R-A11-11)."
+if [ "$bind_recheck" = 1 ] && [ "$bind_waited" = 1 ]; then
+  : > "$LS_TMP"
+  ls_reb=""; ls_reb_rc=0
+  ls_reb="$("$LANES_EDIT" act-begin --rebase 2>"$LS_TMP")" || ls_reb_rc=$?
+  [ -s "$LS_TMP" ] && cat -- "$LS_TMP" >&2
+  if [ "$ls_reb_rc" != 0 ] || [ -z "$ls_reb" ]; then
+    case "$ls_reb_rc" in
+      69 | 75 | 3) ls_read_refuse "$LANES_EDIT act-begin --rebase" "$ls_reb_rc" "this launch's base after the handoff wait" "$ls_rb_done" ;;
+      0) die "\`$LANES_EDIT act-begin --rebase\` exited 0 and printed no base, so this launch has none after the handoff wait. $ls_rb_done" 69 ;;
+      *) die "\`$LANES_EDIT act-begin --rebase\` exited $ls_reb_rc (its words are above), so this launch's base could not be moved past the handoff wait, and its writes would be checked against a base the holder's own handoff has passed. $ls_rb_done" "$ls_reb_rc" ;;
+    esac
+  fi
+  export LANES_ACT="$ls_reb"
+  step "act re-based past the handoff wait: $LANES_ACT"
 fi
 if [ "$bind_recheck" = 1 ]; then
   : > "$LS_TMP"
@@ -2883,6 +2953,32 @@ if [ "$bind_recheck" = 1 ]; then
        note "this \`lanes-edit.sh\` has no \`binding\`, so whether the lane moved again while this run waited is not known here; carrying on." ;;
     *) die "$LANES_EDIT binding $LANE exited $bind_again_rc on the re-read before the rename, so whether this lane is still free could NOT be established — and that is not 'it is'. Nothing has been renamed, written or launched." "$(ls_read_code "$bind_again_rc" 1)" ;;
   esac
+fi
+# THE ROW, READ AGAIN AFTER THE NEW BASE (T428; Y:5657). Field 8 is the state
+# cell by position, as field 7 is the handoff path (5c says why a row's place
+# is counted from the front); it is blanked on both copies before they are
+# compared. 0 and 8 are answers; any other code refuses, passing 69, 75 and 3.
+ls_row_but_state() {   # <register-row's answer>
+  printf '%s\n' "$1" | awk -F'|' 'BEGIN { OFS = "|" } NF >= 9 { $8 = "" } { print }'
+}
+if [ "$bind_recheck" = 1 ] && [ "$bind_waited" = 1 ]; then
+  ls_rr=""; ls_rr_rc=0
+  ls_rr="$("$LANES_EDIT" register-row "$LANE" 2>/dev/null)" || ls_rr_rc=$?
+  case "$ls_rr_rc" in
+    0 | 8) [ "$ls_rr_rc" = 0 ] || ls_rr="" ;;
+    69 | 75 | 3) ls_read_refuse "$LANES_EDIT register-row $LANE" "$ls_rr_rc" "lane ${LANE}'s row after the handoff wait" "$ls_rb_done" ;;
+    *) die "\`$LANES_EDIT register-row $LANE\` exited $ls_rr_rc on the re-read after the handoff wait, so whether lane ${LANE}'s row changed while this run waited could NOT be read, and that is not 'it did not'. $ls_rb_done" "$(ls_read_code "$ls_rr_rc" 1)" ;;
+  esac
+  ls_rr_was="$pub_row"; [ "$pub_rc" = 0 ] || ls_rr_was=""
+  if [ "$(ls_row_but_state "$ls_rr")" != "$(ls_row_but_state "$ls_rr_was")" ]; then
+    ls_rr_now="${ls_rr%%$'\n'*}"; ls_rr_then="${ls_rr_was%%$'\n'*}"
+    die "lane ${LANE}'s row changed outside its state cell while this run waited for the handoff: it read
+      ${ls_rr_then:-no row}
+    before the wait, and it reads
+      ${ls_rr_now:-no row}
+    now. Everything this run decided from the row was decided on the first, so it takes nothing on the second (feature 007, T428; D5's first condition). $ls_rb_done Re-run to decide again on the row as it is." 2
+  fi
+  step "lane ${LANE}'s row: unchanged after the handoff wait but for its state cell"
 fi
 
 if (( dry_run )); then
