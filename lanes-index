@@ -788,15 +788,21 @@ def cmd_mode(args: list[str]) -> int:
 #      check that `lanes/STORE` names this database"). A fetch that fails
 #      refuses too: a ref not fetched proves nothing about origin.
 #
-# SETTING `index` refuses only where the file cannot be rewritten, or where the
-# configuration as it would be written is refused on its own grounds
-# (Amendment 14(c), 007's keys), never for the database or the switch: the
-# rollback and the disaster path need it with the database down (ops:473). A
+# SETTING `index` refuses only on usage (ops:473; exit-codes.md:190), with one
+# ground added by lane 3's ruling 1 (opensoft/openRepoTools#165 6769217709): a
+# file it cannot rewrite refuses with 2. That is a read-only mount, a file that
+# is not regular or not UTF-8 or cannot be read, and a named `--config` (or
+# `LANES_INDEX_CONFIG`) that does not exist. It never refuses on the
+# configuration's other keys, nor for the database or the switch: the rollback
+# and the disaster path need it with the database down (ops:473), and a
 # `mode=primary` this build refuses (Q6(c)) is no ground, since the flip to
-# `index` is its way out. After the write, where the configuration names the
-# register, it reads the switch as `primary` does, and warns where it still
-# reads `primary`: this workstation's writers then refuse with 69 under the
-# marker (r3a/REPORT.md:317). A read that fails is a note, never a refusal.
+# `index` is its way out. After it has written, or found the file already
+# saying `index`, it loads the result as every later command loads it, and
+# prints a note on stderr where that is still refused; it exits 0. Where the
+# result loads and names the register, it reads the switch as `primary` does,
+# and warns where it still reads `primary`: this workstation's writers then
+# refuse with 69 under the marker (r3a/REPORT.md:317). A read that fails is a
+# note, never a refusal.
 
 #: The marker's path on `origin/<branch>` (D21).
 SET_MODE_MARKER_PATH = "lanes/STORE"
@@ -818,9 +824,11 @@ bench's mount of the configuration is read-only.
             fetched origin/<branch> has a lanes/STORE with store=primary that
             names this database: the label register_label= and the switch
             both give.
-  index     With the database up or down. It warns where the switch still
-            reads primary: this workstation's writers then refuse with 69
-            under the marker.
+  index     With the database up or down, whatever the file's other keys
+            say; refused only where the file cannot be rewritten. It notes
+            where the file as written is still refused, and warns where the
+            switch still reads primary: this workstation's writers then
+            refuse with 69 under the marker.
   --config  The file to rewrite; by default $LANES_INDEX_CONFIG, else
             ${{XDG_CONFIG_HOME:-~/.config}}/openRepoTools/lanes-index.conf.
 
@@ -962,7 +970,8 @@ def _set_mode_refuse_unwritable(real: str, path: str, form: str) -> None:
 
 def _set_mode_load(text: str, form: str) -> dict:
     """`load_config` of the configuration AS IT WOULD BE WRITTEN, `text`,
-    with every check of the file itself; a refusal is 2, naming `form`."""
+    with every check of the file itself; a refusal is 2, naming `form`. Only
+    `set-mode primary` calls it: `index` loads the result after writing."""
     try:
         return load_config(text=text)
     except Refusal as exc:
@@ -1013,7 +1022,8 @@ def _set_mode_fetch(root: str, form: str) -> None:
     `lanes-edit.sh` fetches it, bounded by `LANES_GIT_TIMEOUT` as its
     `git_net` reads it: 60 s where it is unset or empty, and no bound where it
     is 0 or not a whole number. A fetch that fails or runs out of time is
-    refused (2): a ref not fetched proves nothing about origin."""
+    refused (2), never 69: a ref not fetched proves nothing about origin.
+    `LANES_NO_FETCH` does not skip it (lane 3's reading 3, #165 6769217709)."""
     raw = os.environ.get("LANES_GIT_TIMEOUT", "")
     timeout = (float(SET_MODE_GIT_TIMEOUT_DEFAULT) if raw == "" else
                float(raw) if re.fullmatch(r"[0-9]+", raw) and int(raw) > 0 else None)
@@ -1201,6 +1211,24 @@ def _set_mode_index_switch(cfg: dict) -> None:
              f"(operations.md §2.4, §2.3's step 5; r3a/REPORT.md:317)")
 
 
+def _set_mode_index_result(shown: str) -> None:
+    """After `set-mode index` has written, or found the file already saying
+    `index`: the result, loaded by `load_config` from the file as every later
+    command loads it. Where it is still refused, a note on stderr naming why,
+    and the switch is not read; else the switch, as `_set_mode_index_switch`
+    reads it. Neither changes the exit, 0 (lane 3's ruling 1, #165
+    6769217709: `set-mode index` never refuses on the configuration's other
+    keys)."""
+    try:
+        cfg = load_config()
+    except Refusal as exc:
+        note(f"set-mode index: NOTE: the configuration {shown} is still refused, with its mode "
+             f"at `index`: {exc}. Every lanes-index command that reads it refuses with 2 until "
+             f"it is fixed, and the register's switch was not read")
+        return
+    _set_mode_index_switch(cfg)
+
+
 def cmd_set_mode(args: list[str]) -> int:
     """`lanes-index set-mode index|primary [--config <path>]` (operations.md
     §2.4; T120): 0, written, or the file already says the mode; 2, a refusal,
@@ -1259,11 +1287,17 @@ def _set_mode(mode: str, config: str | None) -> int:
     changed = was != mode
     if not changed:
         after_text = text
-    cfg = _set_mode_load(after_text, form)
-    if mode == "primary" and not cfg["register_label"]:
-        raise Refusal(f"{form}: {path} names no `register_label=`, the label of the database "
-                      f"its register_url= reaches, so it cannot show that origin's "
-                      f"{SET_MODE_MARKER_PATH} names this database (D21; ops:468); {nothing}")
+    # ONLY `primary` loads the configuration as it would be written before it
+    # writes (lane 3's ruling 1, #165 6769217709): `index` never refuses on the
+    # file's other keys, and loads the result only after it has written.
+    cfg: dict = {}
+    if mode == "primary":
+        cfg = _set_mode_load(after_text, form)
+        if not cfg["register_label"]:
+            raise Refusal(f"{form}: {path} names no `register_label=`, the label of the "
+                          f"database its register_url= reaches, so it cannot show that "
+                          f"origin's {SET_MODE_MARKER_PATH} names this database (D21; "
+                          f"ops:468); {nothing}")
     if changed:
         _set_mode_refuse_unwritable(real, path, form)
     if mode == "primary":
@@ -1295,7 +1329,7 @@ def _set_mode(mode: str, config: str | None) -> int:
                f" ({count} `mode=` lines, each rewritten; the last was the one read)")
         say(f"set-mode: {shown}: {was_shown} -> {mode}{how}")
     if mode == "index":
-        _set_mode_index_switch(cfg)
+        _set_mode_index_result(shown)
     return EXIT_OK
 
 
