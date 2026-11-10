@@ -196,7 +196,9 @@
 #   `lanes/log/<new>.md` and gains a `RENAMED` line; the handoff the row names
 #   is renamed to the same date with `lane-<new>` and gains a Rule 3 stamp,
 #   with the row's handoff column following; and `lanes/aliases.tsv` gains
-#   `<old>	<new>	<UTC>`.
+#   `<old>	<new>	<UTC>`. ON PRIMARY (feature 007, T422; Q13(a)) the handoff's
+#   move and stamp are a second act, a git commit in the lane's checkout made
+#   after the register has committed the other three (the arm says how).
 #
 #   THE ALIAS TABLE IS WHAT MAKES THE OLD NAME KEEP WORKING (clause (e)).
 #   `canon_lane` — Amendment 15's resolver, which every `<lane>` argument and
@@ -577,6 +579,17 @@
 #      attempt's output; and a 64 from either call, which this file never
 #      sends: an internal error. The verb's own refusal in an attempt's child,
 #      before `ready`, is the run's end with that child's code and output.
+#      AND FEATURE 007'S `rename-lane` ON PRIMARY (T422; Q13(a); Y:5092;
+#      R18), each with nothing sent: in an attempt's child, before the seam,
+#      a handoff the row names that is not under `handoffs/` in the lane's
+#      checkout, or has a pending change there (`rl_move_refuse_checks`), a
+#      lane checkout that is not there (`rl_handoff_repo`), and a write that
+#      returned with no `committed <seq>` (`rl_after_committed`); and in the
+#      handoff act its parent runs after COMMIT (`rl_move_act`), with the
+#      rename already in the register: a move file it cannot read or trust,
+#      S3's refusals in the lane's checkout, and a handoff there that is a
+#      link, not a regular file, untracked, or whose new path is taken. The
+#      act's code is said in one WARNING, never the run's (`pw_rl_move`).
 #  64  usage — a caller's bad arguments to one of the reads Amendment 11 added
 #      (`window-lane`, `lane-dir`, `lane-profile`, `last-session`, `forks`,
 #      `duplicate-holder` (issue #39), `workstation`, `fetch-age`, `lanes`,
@@ -22288,6 +22301,30 @@ Nothing was written." 2
   # the rename from the content, as it always does. `ensure_log`'s two-step
   # `mv` is not needed either: a case-ONLY rename is refused below, so the two
   # names are two files on every filesystem this ships to.
+  #
+  # ON PRIMARY (FEATURE 007, T422; Q13(a), Brett's answer, #165 6710653292;
+  # Y:3444–3451, Y:5092; spec:368–376; lane 3's R18 and R19) THE FOUR MOVES
+  # ARE TWO ACTS, AND THE TRANSACTION COMES FIRST:
+  #   - THE TRANSACTION, from an attempt's child: the row's key cell, the
+  #     log's move and its `RENAMED` line, and `lanes/aliases.tsv`, as one
+  #     journal entry. The row's handoff column already names the handoff's
+  #     new path, and the handoff's checks, the stamp's among them, read the
+  #     lane checkout's file before the seam, so a handoff that could not be
+  #     moved and stamped refuses with nothing sent.
+  #   - THEN THE HANDOFF, after `committed`: the parent moves it and writes
+  #     Rule 3's stamp in the lane's checkout, outside the flag, as this
+  #     arm's own S3–S4 commit (`pw_rl_move`, `rl_move_act`), which is no
+  #     register write. The renderer never moves it. A move that fails
+  #     leaves the column naming the file not yet moved, with the hand steps
+  #     printed, and the run keeps the code its tail gave.
+  #   - The lifecycle directory moves under the workstation's sidecar lock
+  #     (R19), and the note and the comments cite `register seq <s>` where
+  #     they cited the commit's sha (Q19(A)).
+  #   - EXIT 3 ON PRIMARY IS D8's: the rename may not be written; run the
+  #     printed `LANES_WRITE_ID` rerun, which writes it once or finds it
+  #     (T417; the exit table's row 3). Off primary 3 is still a push not
+  #     confirmed, which `commit_publish` says in its own words. 69 and 75
+  #     are the primary branch's, and nothing was written.
   rename-lane)
     rl_old=""; rl_new=""; rl_why=""; rl_verbatim=0
     while [ $# -gt 0 ]; do
@@ -22994,6 +23031,11 @@ EOF
     # exists, the work is IN it, and `commit_publish` owns the recovery from there
     # — its exit 3 says so in its own words, and undoing a committed rename
     # behind its back would be a second, inverse change nobody asked for.
+    # ON PRIMARY (feature 007, T422) NO COMMIT IS MADE HERE: the seam hands
+    # the change set to the parent, whose commit call decides it, and the
+    # scratch tree's HEAD never moves, so the undo is the scratch tree's alone.
+    # A 3 there is D8's (T417): the rename may not be written; run the printed
+    # `LANES_WRITE_ID` rerun, which writes it once or finds it.
     RL_HEAD_BEFORE="$(git -C "$LANES_REPO" rev-parse HEAD 2>/dev/null || printf '')"
     rl_msg="LANES($rl_new@$WS): RENAMED lane $rl_old → $rl_new (Amendment 16) — the row, $rl_log_new_rel, the handoff and $LANES_ALIASES_PATH in one commit"
     # FEATURE 007, T422 — ON PRIMARY THE ENTRY'S MESSAGE NAMES WHAT IT HOLDS:
@@ -23021,7 +23063,18 @@ EOF
     release_lock
     [ "$rl_rc" = 0 ] || exit "$rl_rc"
 
-    rl_sha="$(git -C "$LANES_REPO" rev-parse HEAD 2>/dev/null || printf '')"
+    # FEATURE 007, T422 — ON PRIMARY, `register seq <s>` WHERE THE SHA WAS
+    # (Q19(A); Y:266–267, Y:5076): in an attempt's child HEAD is the scratch
+    # tree's snapshot commit, not this write's, whose commit is the mirror's,
+    # made later by the renderer with `Register-Seq: <s>` in its trailers. So
+    # the note and each comment below cite `register seq <s>`, from
+    # `REGISTER_SEQ`, which only the seam's `committed <s>` sets; a replay's
+    # child takes the entry's own seq (T418), so a replayed comment cites it.
+    if [ -n "$REG_SCRATCH" ]; then
+      rl_sha="register seq ${REGISTER_SEQ}"
+    else
+      rl_sha="$(git -C "$LANES_REPO" rev-parse HEAD 2>/dev/null || printf '')"
+    fi
     note "lane $rl_old is lane $rl_new (${rl_sha:-no sha}); '$rl_old' resolves to it for ever through $LANES_ALIASES_PATH"
 
     # (g) ONE COMMENT PER OBJECT THE LANE HOLDS — Amendment 7(b)'s partition,
