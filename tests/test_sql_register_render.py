@@ -492,6 +492,10 @@ def projection_entry(copy: Path, env: dict, checkout: Path, root: Path, entry: s
     attempt = root / "attempt"
     out = {"snapshot": None, "commit": None, "code": None, "attempt": attempt,
            "message": message, "line": None, "fields": {}, "args_sha256": args_sha256}
+    # THE ATTEMPT DIRECTORY EXISTS BEFORE THE FIRST SNAPSHOT, as the seam's
+    # does (contract section 3.3: its digest, run nonce and attempt "are
+    # known before the first snapshot"); `--tree` names an empty `tree/` in it.
+    attempt.mkdir(parents=True, exist_ok=True)
     snap = run_index(copy, ["register", "snapshot", "--write-id", "new", "--lane", lane,
                             "--verb", verb, "--args-sha256", args_sha256,
                             "--tree", attempt / "tree", "--checkout", checkout], env)
