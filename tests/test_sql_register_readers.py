@@ -5,7 +5,7 @@ plan's AT-C5; R29; FR-033, FR-034, FR-036, FR-059).
 This module supersedes lane 5's seed of the same name (T502 part 1,
 `refs/l5/T502`), and keeps its one test, `lanes --decide`, by name.
 
-WHAT IT HOLDS, by its four sources:
+WHAT IT HOLDS, by its five sources:
 
   * AT-C5's sixteen (the test plan, "The readers' table, the one-call
     failure, and the callers' default arms"): each reader by the design's
@@ -26,6 +26,10 @@ WHAT IT HOLDS, by its four sources:
   * Lane 4's `key()` trim (T259; R31; GB section 4.3; T426): the one test that
     asks `retired-identity` about spellings that differ only past the
     sixteenth digit, in files mode and on primary.
+  * Lane 2's T235 (F13b's proposed task, for lane 3 to place; lane 5's
+    choice (b), #165 6778955065): on primary, T505's three read sites,
+    `known_lanes`, `remote_log_events` and `worktree_rows`, read the store and
+    never git, by the fake `git`'s argv log, on a real engine.
 
 THE ARMS' IDS ARE THEIR LINES AT `2a057a6d`, as the test plan names them (the
 block, T217), so they move with slices 1a and 1b and are re-cited at each
@@ -69,7 +73,9 @@ unless `OPENREPOTOOLS_REQUIRE_PG=1`.
 WHAT EACH WAITS FOR (the block's Order): L4-A1, L5-A4 and L5-A5; lane 1's
 three for L1v4.5's T113 and T114; lane 5's for T504 to T506 and T509; the
 `--decide` test for T502; the read verbs' for lane 4's T401; the arms for
-lane 4's T402 to T408; `key()`'s trim, on primary only, for lane 4's T426.
+lane 4's T402 to T408; `key()`'s trim, on primary only, for lane 4's T426;
+T235's for lane 5's T505, and its three later forms for lane 3's rulings
+on lane 5's points 4, 5 and 6.
 Every case on `RealRegister` (lane 1's three and `managed-projection`'s RE
 case) also fails until lane 2's T227 (`tmpl` built by the bootstrap) and
 T228 (the `lanes_w_fx` and `lanes_r_fx` logins), each by the fixture's own
@@ -2109,6 +2115,212 @@ def test_lanes_accepts_decide_and_reads_as_without_it(estate, primary):
             assert refused.stdout == "", (where, argv, refused.stdout)
             assert f"unknown argument '{argv[-1]}' for lanes" in refused.stderr, \
                 (where, argv, refused.stderr)
+
+
+# ------------------------------- T235: T505's three read sites (F13b, proposed)
+#: THE FAKE `git`'S ARGV LOG (T235): a `git` in front of the real one that
+#: appends each call's argv, its words joined by US, one call a line, to
+#: `$T235_GIT_LOG`, then runs the real one at `$T235_REAL_GIT`.
+LOGGING_GIT = r'''#!/usr/bin/env bash
+# THE LOGGING GIT (T235): log this call's argv in one write, then run the real git.
+t235_line="$(printf '%s\037' "$@")"
+printf '%s\n' "$t235_line" >> "$T235_GIT_LOG"
+exec "$T235_REAL_GIT" "$@"
+'''
+
+#: The log directory `known_lanes`, `remote_log_events` and `worktree_rows`'
+#: pin read by git off primary (P2's `lanes-edit.sh`, `LANES_LOG_PREFIX`).
+LOG_DIR = "lanes/log"
+
+#: T235's ids (F13b's block, T235): four the text writes whole, and three
+#: whose answer waits for lane 3's rulings on lane 5's points 4, 5 and 6
+#: (#165 6774988528; lane 5, 6778955065). No id holds the word `worktrees`,
+#: which lane 4's T404 word `sql_register_readers and worktrees` (B12b
+#: tasks:886) would otherwise select.
+T235_CASES = ["known-lanes", "remote-log-events-lanes", "remote-log-events-history",
+              "worktree-rows", "case-pair", "out-of-class", "failed-second-read"]
+T235_LATER = ("case-pair", "out-of-class", "failed-second-read")
+
+#: Lines only the store's logs hold (T235): a `dir` for repoA-2, and a note.
+T235_DIR = "/work/t235-only-in-the-store"
+T235_NOTE = "T235: a note only the store holds"
+
+
+def git_log_reads(log: Path) -> list:
+    """The calls in the fake `git`'s argv log that read `lanes/log` by git:
+    an `ls-tree` naming it, or a `show` of a path under it."""
+    if not log.exists():
+        return []
+    found = []
+    for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+        argv = line.split("\037")
+        if argv and argv[-1] == "":
+            argv = argv[:-1]
+        rest, i = [], 0
+        while i < len(argv):
+            if argv[i] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace"):
+                i += 2
+                continue
+            if argv[i].startswith("-"):
+                i += 1
+                continue
+            rest = argv[i:]
+            break
+        if not rest:
+            continue
+        verb, args = rest[0], rest[1:]
+        if verb == "ls-tree" and any(LOG_DIR in a for a in args):
+            found.append(argv)
+        elif verb == "show" and any(a.startswith(LOG_DIR) or f":{LOG_DIR}" in a for a in args):
+            found.append(argv)
+    return found
+
+
+def _rows(stdout: str) -> dict:
+    """A listing's rows by their first column, the lane."""
+    return {line.split("\t", 1)[0]: line for line in stdout.splitlines() if line}
+
+
+@pytest.mark.parametrize("case", T235_CASES)
+def test_on_primary_known_lanes_remote_log_events_and_worktree_rows_read_the_store_and_never_git(
+        pg, estate, tmp_path, case):
+    """T235 (F13b's proposed task for lane 5's T505, for lane 3 to place;
+    lane 5's T505 plan, #165 6774988528, question 12; lane 5's choice (b),
+    6778955065; FR-033, FR-034): on primary, `known_lanes`,
+    `remote_log_events` and `worktree_rows` read the store and never git.
+    Each id asserts the store's answer, and that no `git ls-tree` and no `git
+    show` of `lanes/log` ran, by the fake `git`'s argv log (`LOGGING_GIT`):
+
+      * `[known-lanes]`: a lane's log with no register row, only in the store,
+        which `known_lanes` lists from the family (`lanes --all --closed`);
+      * `[remote-log-events-lanes]` and `[remote-log-events-history]`: events
+        only the store holds, which `remote_log_events` returns through
+        `lanes` without `--lane`, and through `history --all`;
+      * `[worktree-rows]`: the `worktrees` arm on primary, through
+        `worktree_rows` and its log-set pin (P2's `lanes-edit.sh:17222`): a
+        tree under a `dir` only the store's log names;
+      * `[case-pair]` and `[out-of-class]`, the logs `--all` leaves out (a
+        case pair's two logs, and a stem outside the class), and
+        `[failed-second-read]`, a second read that fails and must be told
+        apart from "no log": each asserts no git read, and then FAILS UNTIL
+        lane 3 rules on lane 5's points 4, 5 and 6, since no text gives
+        their answer.
+
+    The register is the estate's, brought to primary on the `pg` fixture's
+    database by AT-LR006's route (`RealRegister`), with the store-only files
+    in its import; the run is the checkout's `lanes-edit.sh` copied beside
+    the flipped copy, as `managed-projection`'s RE case runs. FAILS UNTIL
+    lane 5's T505, and, with the module's other real-register cases, until
+    lane 2's T227 and T228. Real engine: it skips without one (T205)."""
+    files = render_set(estate.wip)
+    a2 = files["lanes/log/repoA-2.md"].decode("utf-8")
+    trees = tmp_path / "t235-roots"
+    if case == "known-lanes":
+        files[f"lanes/log/{STORE_ONLY_LANE}.md"] = STORE_ONLY_LOG.encode()
+    elif case == "remote-log-events-lanes":
+        files["lanes/log/repoA-2.md"] = (
+            a2 + f"STARTED — lane repoA-2, session {UUID_A2}@Eagle, 2026-10-06T00:00:00Z, "
+            f"lane:repoA-2 → home opensoft/repoA; dir {T235_DIR}; profile team-01b\n").encode()
+    elif case == "remote-log-events-history":
+        files["lanes/log/repoA-2.md"] = (
+            a2 + f"NOTED — lane repoA-2, session {UUID_A2}@Eagle, 2026-10-06T00:00:00Z, "
+            f"lane:repoA-2 — {T235_NOTE}\n").encode()
+    elif case == "worktree-rows":
+        # `lane_control_root`: a `dir` whose parent is there gives `<parent>/.lane-state/<lane>`,
+        # and a sidecar of a schema no reader knows is listed by its id and path, never parsed.
+        sidecar = trees / ".lane-state" / STORE_ONLY_LANE / "trees" / "t235.yaml"
+        sidecar.parent.mkdir(parents=True)
+        sidecar.write_text(f"schema: t235-a-schema-no-reader-knows\ntree: t235-store-tree\n"
+                           f"path: {trees / 'tree'}\n", encoding="utf-8")
+        files[f"lanes/log/{STORE_ONLY_LANE}.md"] = (
+            f"STARTED — lane {STORE_ONLY_LANE}, session {STORE_ONLY_UUID}@Eagle, "
+            f"2026-10-05T00:00:00Z, lane:{STORE_ONLY_LANE} → home opensoft/repoS; "
+            f"dir {trees / 'repoS-1'}\n").encode()
+    elif case == "case-pair":
+        files["lanes/log/repoP-1.md"] = ("STARTED — lane repoP-1, session "
+                                         f"{STORE_ONLY_UUID}@Eagle, 2026-10-05T00:00:00Z, "
+                                         "lane:repoP-1 → home opensoft/repoP\n").encode()
+        files["lanes/log/RepoP-1.md"] = "NOTED — the case pair's other half\n".encode()
+    elif case == "out-of-class":
+        files["lanes/log/a,b.md"] = "NOTED — a log whose name is outside the class\n".encode()
+    else:                                                    # failed-second-read
+        files["lanes/log/a,b.md"] = "NOTED — a log the prefetch leaves out\n".encode()
+    reg = RealRegister(pg, tmp_path / "real", files)
+    edit = reg.tools()
+    door = None
+    if case == "failed-second-read":
+        # The module's door in front of a flipped copy: every second read (form 3) fails 69.
+        door = tmp_path / "real" / "door"
+        helpers.flipped_copy(helpers.LANES_INDEX, door / "store", True)
+        _write(door / "lanes-index", DOOR_WRAPPER)
+        for name in RealRegister.TOOLS:
+            shutil.copy2(REPO / name, door / name)
+        (door / "lanes-index.fail").write_text(json.dumps(
+            {"all": True, "forms": [3], "exit": UNREACHABLE_EXIT, "stdout": "mode primary\n",
+             "stderr": UNREACHABLE_STDERR}), encoding="utf-8")
+        edit = door / "lanes-edit.sh"
+    shim = tmp_path / "t235-git"
+    real_git = shutil.which("git")
+    _write(shim / "git", LOGGING_GIT)
+
+    def git_env(log: Path) -> dict:
+        return {"LANES_EDIT": str(edit), "LANES_INDEX_CONFIG": str(reg.config), "LANES_INDEX": None,
+                "PATH": str(shim) + os.pathsep + estate.env["PATH"],
+                "T235_GIT_LOG": str(log), "T235_REAL_GIT": real_git}
+
+    # THE CONTROL: the fake `git` is the one on PATH, and its log shows the read the sites
+    # make off primary, so a run that logs none made none (a T505 run may log no call at all).
+    control = tmp_path / "t235-git-control.log"
+    listed = estate.run("git", "-C", estate.wip, "ls-tree", "--name-only", "origin/main", "--",
+                        f"{LOG_DIR}/", env=git_env(control))
+    assert listed.returncode == 0 and git_log_reads(control), (
+        "the control: the fake git logged no ls-tree of lanes/log", listed.stderr)
+
+    def run(*argv: str) -> subprocess.CompletedProcess:
+        log = tmp_path / f"t235-git-{'-'.join(argv)}.log"
+        result = estate.run("bash", edit, *argv, env=git_env(log))
+        assert not git_log_reads(log), (case, argv, "git read lanes/log", git_log_reads(log),
+                                        result.stderr[-1500:])
+        return result
+
+    if case in T235_LATER:
+        for argv in (("lanes", "--all", "--closed"), ("history", "--all")):
+            run(*argv)
+        asked = [c["argv"] for c in door_second_reads(door)] if door else []
+        pytest.fail(f"FAILS UNTIL lane 3 rules on lane 5's points 4, 5 and 6 (#165 6774988528; "
+                    f"lane 5, 6778955065): no text gives [{case}]'s answer (second reads made: "
+                    f"{asked})", pytrace=False)
+    if case == "known-lanes":
+        result = run("lanes", "--all", "--closed")
+        assert result.returncode == 0, (case, result.returncode, result.stderr[-1500:])
+        rows = _rows(result.stdout)
+        assert "repoB-1" in rows, (case, "the control: a log with no row in both stores",
+                                   result.stdout)
+        assert STORE_ONLY_LANE in rows, (case, "not the store's answer", result.stdout)
+    elif case == "remote-log-events-lanes":
+        result = run("lanes", "--all", "--closed")
+        assert result.returncode == 0, (case, result.returncode, result.stderr[-1500:])
+        rows = _rows(result.stdout)
+        assert "repoA-2" in rows, (case, result.stdout)
+        assert T235_DIR in rows["repoA-2"], (case, "not the store's answer", rows["repoA-2"])
+    elif case == "remote-log-events-history":
+        result = run("history", "--all")
+        assert result.returncode == 0, (case, result.returncode, result.stderr[-1500:])
+        assert T235_NOTE in result.stdout, (case, "not the store's answer", result.stdout)
+    else:                                                    # worktree-rows
+        result = run("worktrees")
+        assert result.returncode == 0, (case, result.returncode, result.stdout,
+                                        result.stderr[-1500:])
+        assert "t235-store-tree" in result.stdout, (case, "not the store's answer", result.stdout)
+
+
+def door_second_reads(door: Path) -> list:
+    """The form-3 calls the door in `door` was asked (`DOOR_WRAPPER`'s log)."""
+    path = door / "lanes-index.calls"
+    if not path.exists():
+        return []
+    calls = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    return [c for c in calls if c.get("form") == 3]
 
 
 # ------------------------------------------------- lane 4's two read verbs
