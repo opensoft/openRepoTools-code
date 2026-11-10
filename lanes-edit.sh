@@ -674,10 +674,11 @@
 #      started in pid <p> on <host>/<container> (claimed <utc>)", with the
 #      effect check, `history <lane> --since <utc>` or `register-row <lane>`.
 #      And where that owner cannot be tested here (DEC-25: the claim names no
-#      pid or cannot be read, or its pid lives with no start time), "an
-#      identical write holds the claim
+#      pid or cannot be read, its pid lives with no start time, or it is from
+#      another host or container, Y:5220), "an identical write holds the claim
 #      <state>/register-pending/<d>.take.<k>, whose owner cannot be tested
-#      here", with the UTC after which a run may take it.
+#      here", with the pid, host and container a claim from another host or
+#      container names, and the UTC after which a run may take it.
 #   4  the mutex could not be taken within 60s — or, Amendment 23 S1, a lane
 #      checkout's creation lock within the clone's budget and a minute
 #   5  an edit moved more than one line and was refused — or, Amendment 15, a
@@ -5965,9 +5966,9 @@ pw_run_dir() {
 # T412's `wr_claim_take` returned 2, with WR_OWNER_* naming the highest claim).
 # This run sent nothing, and that write's outcome is not known, so it exits 3
 # and leaves the record and the claims as they are. Three forms:
-#   - a claim whose owner cannot be tested here (DEC-25): `no-pid` or
-#     `no-start`, live only for the seam's cap, which D7's deadline beat:
-#     `pw_owner_untested_end`;
+#   - a claim whose owner cannot be tested here (DEC-25): `no-pid`,
+#     `no-start` or `other-host`, live only for the seam's cap, which D7's
+#     deadline beat: `pw_owner_untested_end`;
 #   - a pending record beside the claim: Y:5218's text, with its write id, its
 #     lookup and its printed rerun, whose `LANES_SESSION` is the value the
 #     digest took (ERR-38). A record there that cannot be read names no id,
@@ -5979,11 +5980,13 @@ pw_run_dir() {
 #     pid with no start time (Y:5181). A run that was itself under
 #     `LANES_WRITE_ID` prints its own id again with its generation instead of
 #     the plain command.
-# A claim from another host or container (`other-host`, Y:5220) has a pid, and
-# takes the second or third form.
+# A claim from another host or container (`other-host`, Y:5220) takes the
+# first form, with its pid, host and container, whatever lies beside it: its
+# pid cannot be tested here (lane 3, #165 6769061039, T417 item 2). So every
+# pid the second and third forms print is this host's.
 pw_owner_live_end() {
   local po_rec="" po_rc=0 po_p="" po_utc="" po_look="" po_re="" po_l="" po_b="" po_c="" po_n="" po_f="" po_d="" po_max="" po_last=""
-  case "$WR_OWNER_WHY" in no-pid|no-start) pw_owner_untested_end ;; esac
+  case "$WR_OWNER_WHY" in no-pid|no-start|other-host) pw_owner_untested_end ;; esac
   po_p="${WR_OWNER_PID:-<unknown>}"; po_utc="${WR_OWNER_UTC:-<unknown>}"
   po_rec="$WR_STATE/register-pending/$WR_D"
   wr_record_read "$po_rec"; po_rc=$?
@@ -6010,20 +6013,26 @@ pw_owner_live_end() {
 }
 
 # AN UNTESTED CLAIM AT D7's DEADLINE (T417; DEC-25, #165 6750702819): the
-# highest claim names no pid or cannot be read (`no-pid`), or its pid lives and
-# it recorded no start time, so a reused pid cannot be told (`no-start`). It
-# counts as live for the seam's cap from DEC-25's anchor, and D7's deadline
+# highest claim names no pid or cannot be read (`no-pid`); its pid lives and
+# it recorded no start time, so a reused pid cannot be told (`no-start`); or
+# it is from another host or container, or from one either side cannot name,
+# so its pid cannot be tested here at all (`other-host`, Y:5220; lane 3, #165
+# 6769061039, T417 item 2), and the text names its pid, host and container.
+# It counts as live for the seam's cap from DEC-25's anchor, and D7's deadline
 # came first. The run exits 3 in a form of its own, naming the claim file and
 # the UTC after which a run may take it (WR_OWNER_TAKE_AFTER, the cap's end),
 # and saying that it sent nothing; the rerun is the one it would print at any
 # other end before its first snapshot.
 pw_owner_untested_end() {
   local pu_why="" pu_re="" pu_f="$WR_OWNER_FILE"
-  if [ "$WR_OWNER_WHY" = no-start ]; then
-    pu_why="its pid, ${WR_OWNER_PID:-<unknown>}, lives, and the claim recorded no start time, so a reused pid cannot be told"
-  else
-    pu_why="it names no pid, or cannot be read"
-  fi
+  case "$WR_OWNER_WHY" in
+    no-start)
+      pu_why="its pid, ${WR_OWNER_PID:-<unknown>}, lives, and the claim recorded no start time, so a reused pid cannot be told" ;;
+    other-host)
+      pu_why="it was made by pid ${WR_OWNER_PID:-<unknown>} on ${WR_OWNER_HOST:-<unknown>}/${WR_OWNER_CONTAINER:-<unknown>}, and this run is on ${WR_HERE_HOST:-<unknown>}/${WR_HERE_CONTAINER:-<unknown>}: a pid of another host or container, or of one not named, cannot be tested here (Y:5220)" ;;
+    *)
+      pu_why="it names no pid, or cannot be read" ;;
+  esac
   if wr_is_uuid "${LANES_WRITE_ID:-}"; then
     pu_re="$(wr_rerun_text "$LANES_WRITE_ID" "${LANES_WRITE_GENERATION:-<generation>}")"
   else
