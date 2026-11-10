@@ -4482,15 +4482,17 @@ reg_read_files() {   # <why>
 # `read: mirror at <sha12>, <k> sequences behind or unknown (sql unreachable:
 # <why>)`, the `read:` family's third line (YS:626; Y's "The mirror reads"), on
 # stderr, never stdout. The mirror is `origin/$LANES_BRANCH` as last fetched;
-# where there is none to read, the checkout's HEAD. This door never knows how
+# where there is no origin ref to read, the checkout's HEAD; where origin's ref
+# names no commit git can resolve, no sha is claimed. This door never knows how
 # far behind it is, so `<k>` is `unknown`.
 reg_mirror_line() {   # <why>
   rml_sha=""
   if [ -n "$LANES_REPO" ]; then
     if have_remote_ref; then
       rml_sha="$(git -C "$LANES_REPO" rev-parse -q --verify "refs/remotes/origin/$LANES_BRANCH^{commit}" 2>/dev/null || :)"
+    else
+      rml_sha="$(git -C "$LANES_REPO" rev-parse -q --verify "HEAD^{commit}" 2>/dev/null || :)"
     fi
-    [ -n "$rml_sha" ] || rml_sha="$(git -C "$LANES_REPO" rev-parse -q --verify "HEAD^{commit}" 2>/dev/null || :)"
   fi
   rml_show="no commit this checkout can name"
   [ -z "$rml_sha" ] || rml_show="${rml_sha:0:12}"
