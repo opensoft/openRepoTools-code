@@ -63,7 +63,8 @@ THE MODULE ALSO HOLDS, each at its own section below: T244's test 12 (AT-12)
 and section 4.3's rival, and T245's D8 and AT-F34 (phase W, the client's
 writers on a real register, through the shim), with T245's texts for 3, which
 read the scripts and run with no engine; and T246's AT-F3, a write in doubt at
-the deadline (phase W, with its direct calls in phase N).
+the deadline (phase W, with its direct calls in phase N); and T247's AT-F10,
+a pending record against an unrelated identical command (phase W).
 
 PHASE W'S WORKSTATION IS T243's: `Estate`, its `estates` fixture, and the
 logging tools of T248 are imported from `test_sql_register_order`, as
@@ -80,6 +81,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -88,6 +90,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import pytest
 
 from pgcluster import SUPERUSER, TEMPLATE, Database
+from sql_register_helpers import _proc_start
 from test_sql_register_order import (CLIENT, EM, LA, LB, LC, OBJ, UUID_RE, Barrier, Estate, Writer,  # noqa: F401
                                      claim, estates, hold_point, kind_line, loggers, session_of,
                                      tool_calls)
@@ -2086,3 +2089,367 @@ def test_lr008_alone_never_gives_3_or_69(estates, case):
         arm["call"] = 1
     w = e.run(LA, note(LA, f"lr008 {case}"), extra=DEADLINE, arms=[arm])
     assert w.code not in (3, 69), w.err[-800:]
+
+
+# ============================================================ PHASE W: AT-F10 (T247)
+#
+# A PENDING RECORD AND AN UNRELATED IDENTICAL COMMAND (AT-F10, TP:6443-6580).
+# The record's name `<d>` is the entry's `journal.args_sha256`, the sha256
+# of `lanes-pending/1`, `LANES_LANE`, `LANES_SESSION`, the verb and each
+# argument, NUL-separated; it is owned by the run in its highest-numbered
+# claim file `<d>.take.<k>`, whose liveness is tested on that claim's pid
+# and start time, never on the record's `pid`. The claims the test writes
+# hold `pid=`, `start=`, `host=`, `container=` and `utc=`, one per line, each
+# owner a live stand-in (`Owner`) where it is on this host.
+#
+# A CLAIM WITH NO RECORD BESIDE IT (Q-L2-6; R26, lane 4's answer to 42):
+# `[live-at-deadline]` asserts the 3's text: it names the claim by pid, host
+# and container and the UTC it was claimed; says the record is not yet
+# written, so its write id is not known, and that this run sent nothing; and
+# gives the effect check, `lanes-edit.sh history <lane> --since <utc>` or
+# `lanes-edit.sh register-row <lane>`. `[write-id-live-at-deadline]`: a run
+# under `LANES_WRITE_ID` prints its own id again with its generation.
+#
+# They FAIL UNTIL L4-B2 lands, and the record-less text until lane 4's T417.
+# Without PostgreSQL 16 each skips.
+
+MAX_AGE = {"LANES_REGISTER_PENDING_MAX_AGE_S": "2"}
+
+
+class Owner:
+    """A live stand-in owner on this host: a process blocked on its stdin."""
+
+    def __init__(self) -> None:
+        self.proc = subprocess.Popen([sys.executable, "-I", "-c", "import sys; sys.stdin.read()"],
+                                     stdin=subprocess.PIPE)
+        self.pid, self.start = self.proc.pid, _proc_start(self.proc.pid)
+        self.ended_at: Optional[float] = None
+
+    def end(self) -> None:
+        if self.proc.poll() is None:
+            self.proc.stdin.close()
+            self.proc.wait(timeout=30)
+            self.ended_at = time.time()
+
+
+def dead_pid() -> int:
+    gone = subprocess.Popen([sys.executable, "-I", "-c", "pass"])
+    gone.wait()
+    return gone.pid
+
+
+def digest(lane: str, argv: Sequence[str]) -> str:
+    return sha256("\0".join(["lanes-pending/1", lane, session_of(lane), *argv]).encode("utf-8"))
+
+
+def write_claim(e: Estate, d: str, k: int, pid: int, start: str = "", *, host: str = "eagle",
+                container: str = "none", utc: Optional[str] = None) -> Path:
+    where = e.state / PENDING
+    where.mkdir(mode=0o700, parents=True, exist_ok=True)
+    claim_file = where / f"{d}.take.{k}"
+    claim_file.write_text(f"pid={pid}\nstart={start}\nhost={host}\ncontainer={container}\nutc={utc or e.utc()}\n",
+                          encoding="utf-8")
+    return claim_file
+
+
+def set_field(path: Path, key: str, value: str) -> None:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    path.write_text("\n".join(f"{key}={value}" if l.startswith(key + "=") else l for l in lines) + "\n",
+                    encoding="utf-8")
+
+
+def snapshot_state(e: Estate) -> Dict[str, str]:
+    where = e.state / PENDING
+    return {p.name: p.read_text(encoding="utf-8") for p in where.iterdir()} if where.is_dir() else {}
+
+
+@CLIENT
+def test_an_expired_pending_record_is_not_reused(estates):
+    """A record from a write that committed, older than the maximum age
+    (`LANES_REGISTER_PENDING_MAX_AGE_S=2`): the identical command warns,
+    prints the lookup, mints a new id and writes."""
+    e = estates()
+    argv = note(LA, "expired record")
+    _, old = killed(e, LA, argv)
+    time.sleep(3)
+    w = e.run(LA, argv, extra=MAX_AGE)
+    assert w.code == 0 and "WARNING" in w.err and f"--write-id {old}" in w.err, w.err[-800:]
+    assert old not in w.write_ids()
+    ids = [r["write_id"] for r in e.journal_after()]
+    assert ids.count(old) == 1 and len(ids) == 2, ids
+
+
+@CLIENT
+@pytest.mark.parametrize("case", ["ends-in-time", "live-at-deadline"])
+def test_a_live_pending_record_is_waited_for_not_shared(estates, case):
+    """The second of two identical runs waits while the first's owner lives.
+    [ends-in-time]: the first ends inside the deadline, and the second writes
+    under its own id: two entries. [live-at-deadline]: at a 1 s deadline the
+    second exits 3, never 75, saying an identical write is still running in
+    the first's pid (write id, start UTC), with no commit call of its own, and
+    the record and its claims as the first left them."""
+    e = estates()
+    gate = fifo(e, "first")
+    argv = note(LA, f"identical {case}")
+    first = e.launch(LA, argv, arms=[{"mode": "hold", "match": "commit_write", "call": 1, "fifo": str(gate)}])
+    held = hold_point(gate, first)
+    left = snapshot_state(e)
+    second = e.launch(LA, argv, extra=DEADLINE if case == "live-at-deadline" else None)
+    if case == "ends-in-time":
+        until_seen("the second's first call", lambda: second.calls(), second)
+        held.close()
+        assert first.wait() == 0 and second.wait() == 0, second.err[-800:]
+        ids = {r["write_id"] for r in e.journal_after()}
+        assert len(ids) == 2 and set(second.write_ids()) & ids and not set(second.write_ids()) & set(first.write_ids())
+    else:
+        assert second.wait() == 3, second.err[-800:]
+        assert "an identical write is still running in pid" in second.err and str(first.proc.pid) in second.err
+        assert first.write_ids()[0] in second.err and second.commit_calls() == []
+        assert snapshot_state(e) == left
+        held.close()
+        assert first.wait() == 0
+
+
+@CLIENT
+@pytest.mark.parametrize("case", ["host-now", "container-now", "claim-old-record-fresh", "both-old"])
+def test_a_claim_from_another_host_or_container_counts_as_live_for_120_s(estates, case):
+    """The highest claim names another host or container, with a pid dead
+    here; it counts as live for 120 s from the later of its UTC and the
+    record's `updated_utc`. [host-now], [container-now] and
+    [claim-old-record-fresh]: a plain rerun waits and at a 1 s deadline exits
+    3, sending nothing, naming the claim's pid. [both-old]: it creates the
+    next claim and takes the record over."""
+    e = estates()
+    argv = note(LA, f"other host {case}")
+    exit3(e, LA, argv)
+    rec = the_record(e)["path"]
+    pid, old = dead_pid(), e.utc(121 / 60)
+    other = {"container": "ctr-2"} if case == "container-now" else {"host": "eagle-2"}
+    write_claim(e, rec.name, 1, pid, utc=old if case in ("claim-old-record-fresh", "both-old") else e.utc(), **other)
+    if case == "both-old":
+        set_field(rec, "updated_utc", old)
+        gate = fifo(e, "both-old")
+        w = e.launch(LA, argv, arms=[{"mode": "hold", "match": "commit_write", "call": 1, "fifo": str(gate)}])
+        held = hold_point(gate, w)
+        assert f"{rec.name}.take.2" in take_files(e), take_files(e)
+        held.close()
+        assert w.wait() == 0, w.err[-800:]
+    else:
+        w = e.run(LA, argv, extra=DEADLINE)
+        assert w.code == 3 and str(pid) in w.err and w.commit_calls() == [], w.err[-800:]
+
+
+@CLIENT
+@pytest.mark.parametrize("case", ["ends-in-time", "live-at-deadline"])
+def test_a_lanes_write_id_run_waits_for_a_live_owner(estates, case):
+    """A record whose highest claim's owner is a live stand-in, met by the
+    printed rerun under `LANES_WRITE_ID`. [live-at-deadline]: exit 3, no
+    commit call, the record and its claims unchanged. [ends-in-time]: the
+    owner ends; the run goes on, its one commit call after the owner's end,
+    and the write commits once under that id."""
+    e = estates()
+    argv = note(LA, f"write id {case}")
+    _, write_id, generation = exit3(e, LA, argv)
+    rec = the_record(e)["path"]
+    owner = Owner()
+    try:
+        write_claim(e, rec.name, 1, owner.pid, owner.start)
+        left = snapshot_state(e)
+        w = e.launch(LA, argv, extra=dict(DEADLINE if case == "live-at-deadline" else {},
+                                          LANES_WRITE_ID=write_id, LANES_WRITE_GENERATION=generation))
+        if case == "ends-in-time":
+            until_seen("the run's first call", lambda: w.calls(), w)
+            owner.end()
+        code = w.wait()
+    finally:
+        owner.end()
+    if case == "live-at-deadline":
+        assert code == 3 and w.commit_calls() == [] and snapshot_state(e) == left, w.err[-800:]
+    else:
+        assert code == 0, w.err[-800:]
+        commits = [c for c in w.stamps() if "commit_write" in (c.get("stdin") or "")]
+        assert len(commits) == 1 and commits[0]["t"] >= owner.ended_at
+        assert [r["write_id"] for r in e.journal_after()].count(write_id) == 1
+
+
+@CLIENT
+@pytest.mark.parametrize("case", ["ends-in-time", "live-at-deadline", "write-id-live-at-deadline"])
+def test_a_claim_with_no_record_beside_it_is_waited_for(estates, case):
+    """`<d>.take.0` with no record, its owner a live stand-in. At a 1 s
+    deadline an identical run exits 3 with no commit call and no claim of
+    its own; [live-at-deadline]'s text names the claim by pid, host,
+    container and UTC, says the record is not yet written so its write id is
+    not known and this run sent nothing, and gives the effect check;
+    [write-id-live-at-deadline] prints its own id again with its generation.
+    [ends-in-time]: the owner ends, and the run creates `<d>.take.1`, writes
+    and commits once."""
+    e = estates()
+    argv = note(LA, f"no record {case}")
+    d = digest(LA, argv)
+    owner = Owner()
+    utc = e.utc()
+    extra: Dict[str, str] = {} if case == "ends-in-time" else dict(DEADLINE)
+    mine = str(uuid.uuid4())
+    if case == "write-id-live-at-deadline":
+        extra.update(LANES_WRITE_ID=mine, LANES_WRITE_GENERATION=e.c.switch()["generation"])
+    try:
+        write_claim(e, d, 0, owner.pid, owner.start, utc=utc)
+        w = e.launch(LA, argv, extra=extra)
+        if case == "ends-in-time":
+            until_seen("the run's first call", lambda: w.calls(), w)
+            owner.end()
+        code = w.wait()
+    finally:
+        owner.end()
+    if case == "ends-in-time":
+        assert code == 0 and len(e.journal_after()) == 1, w.err[-800:]
+        return
+    assert code == 3 and w.commit_calls() == [], w.err[-800:]
+    assert take_files(e) == [f"{d}.take.0"], take_files(e)
+    if case == "live-at-deadline":
+        for said in (str(owner.pid), "eagle", utc, "not yet written", "sent nothing"):
+            assert said in w.err, f"{said!r} is not in the 3's text: {w.err[-800:]}"
+        assert f"lanes-edit.sh history {LA} --since" in w.err or f"lanes-edit.sh register-row {LA}" in w.err
+    else:
+        assert f"LANES_WRITE_ID={mine}" in w.err and extra["LANES_WRITE_GENERATION"] in w.err, w.err[-800:]
+
+
+@CLIENT
+def test_a_reused_pid_in_a_pending_record_reads_as_dead(estates):
+    """The highest claim's pid is live, but its start time differs: the
+    owner reads as dead, so the run creates the next claim and takes the
+    record over."""
+    e = estates()
+    argv = note(LA, "reused pid")
+    _, write_id, _ = exit3(e, LA, argv)
+    rec = the_record(e)["path"]
+    owner = Owner()
+    try:
+        write_claim(e, rec.name, 1, owner.pid, "1")
+        w = e.run(LA, argv)
+    finally:
+        owner.end()
+    assert w.code == 0, w.err[-800:]
+    assert [r["write_id"] for r in e.journal_after()].count(write_id) == 1
+
+
+@CLIENT
+@pytest.mark.parametrize("case", ["record-pid-live", "record-pid-dead"])
+def test_liveness_is_the_highest_claims_never_the_records_pid(estates, case):
+    """[record-pid-live]: the record's `pid` is live, its highest claim's
+    owner dead: taken over. [record-pid-dead]: the converse is waited for,
+    and at a 1 s deadline the run exits 3 with no commit call."""
+    e = estates()
+    argv = note(LA, f"liveness {case}")
+    _, write_id, _ = exit3(e, LA, argv)
+    rec = the_record(e)["path"]
+    owner = Owner()
+    try:
+        if case == "record-pid-live":
+            set_field(rec, "pid", str(owner.pid))
+            write_claim(e, rec.name, 1, dead_pid())
+        else:
+            set_field(rec, "pid", str(dead_pid()))
+            write_claim(e, rec.name, 1, owner.pid, owner.start)
+        w = e.run(LA, argv, extra=DEADLINE if case == "record-pid-dead" else None)
+    finally:
+        owner.end()
+    if case == "record-pid-live":
+        assert w.code == 0 and [r["write_id"] for r in e.journal_after()].count(write_id) == 1, w.err[-800:]
+    else:
+        assert w.code == 3 and w.commit_calls() == [], w.err[-800:]
+
+
+@CLIENT
+def test_the_pending_digest_covers_the_session_and_equals_args_sha256(estates):
+    """The record is 0600 in a 0700 directory, and its name equals the
+    entry's `args_sha256`, the digest of `lanes-pending/1`, the lane, the
+    session, the verb and each argument, NUL-separated. Two runs differing
+    only in `LANES_SESSION` have different digests, and neither takes the
+    other's record: two records while both are held, two entries after."""
+    e = estates()
+    argv = note(LA, "digest")
+    gates = fifo(e, "digest-1"), fifo(e, "digest-2")
+    one = e.launch(LA, argv, arms=[{"mode": "hold", "match": "commit_write", "call": 1, "fifo": str(gates[0])}])
+    first = hold_point(gates[0], one)
+    rec = the_record(e)["path"]
+    entry = json.loads(ENTRY_IN_SCRIPT.search(one.commit_calls()[0]["stdin"]).group(1).replace("''", "'"))
+    assert rec.name == entry["journal"]["args_sha256"] == digest(LA, argv)
+    assert rec.stat().st_mode & 0o777 == 0o600 and rec.parent.stat().st_mode & 0o777 == 0o700
+    two = e.launch(LA, argv, extra={"LANES_SESSION": str(uuid.uuid4())},
+                   arms=[{"mode": "hold", "match": "commit_write", "call": 1, "fifo": str(gates[1])}])
+    second = hold_point(gates[1], two)
+    assert len(pending(e)) == 2, pending(e)
+    first.close()
+    second.close()
+    assert (one.wait(), two.wait()) == (0, 0)
+    assert len({r["write_id"] for r in e.journal_after()}) == 2
+
+
+@CLIENT
+@pytest.mark.parametrize("case", ["arguments", "verb", "generation"])
+def test_a_write_id_of_other_arguments_verb_or_generation_is_refused_2_at_the_snapshot(estates, case):
+    """A `LANES_WRITE_ID` naming a committed entry of other arguments, or
+    of another verb, or a printed rerun whose `LANES_WRITE_GENERATION` is
+    not the switch's: exit 2 at the snapshot, naming the id (and what
+    differs), with no commit call, and nothing written."""
+    e = estates()
+    w = e.run(LA, note(LA, "the entry"))
+    assert w.code == 0
+    write_id = w.write_ids()[0]
+    generation = e.c.switch()["generation"] if case != "generation" else str(uuid.uuid4())
+    argv = {"arguments": note(LA, "other arguments"), "verb": ["log", "NOTED", f"lane:{LA}", "T247 other verb"],
+            "generation": note(LA, "the entry")}[case]
+    before = e.journal_after()
+    again = e.run(LA, argv, extra={"LANES_WRITE_ID": write_id, "LANES_WRITE_GENERATION": generation})
+    assert again.code == 2 and again.commit_calls() == [] and write_id in again.err, again.err[-800:]
+    assert e.journal_after() == before
+
+
+@CLIENT
+@pytest.mark.parametrize("case", ["fresh", "past-max-age"])
+def test_a_record_of_another_generation_is_refused_2_until_lanes_write_id_new(estates, case):
+    """A record of another generation, fresh or past the maximum age: a
+    plain rerun refuses with 2 at its first snapshot, with no commit call;
+    its text names the write id, `created_utc` and both generations, the
+    effect check, and `LANES_WRITE_ID=new`; the record is left as it is,
+    `lanes-index status` lists it, and a second plain rerun refuses the same
+    way."""
+    e = estates()
+    argv = note(LA, f"generation {case}")
+    _, write_id, generation = exit3(e, LA, argv)
+    rec = the_record(e)
+    other = str(uuid.uuid4())
+    set_field(rec["path"], "generation", other)
+    extra = dict(MAX_AGE) if case == "past-max-age" else {}
+    if extra:
+        time.sleep(3)
+    left = snapshot_state(e)
+    for _ in range(2):
+        w = e.run(LA, argv, extra=extra)
+        assert w.code == 2 and w.commit_calls() == [], w.err[-800:]
+        for said in (write_id, rec["fields"].get("created_utc", "created_utc"), other, generation,
+                     "LANES_WRITE_ID=new"):
+            assert said in w.err, f"{said!r} is not in the refusal: {w.err[-800:]}"
+        assert f"lanes-edit.sh history {LA} --since" in w.err or f"lanes-edit.sh register-row {LA}" in w.err
+        assert snapshot_state(e) == left
+    env = dict(e.env, PATH=os.pathsep.join([str(e.psql_dir(f"status-{case}")), e.env["PATH"]]))
+    status = subprocess.run([str(e.bindir / "lanes-index"), "status"], capture_output=True, text=True,
+                            env=env, check=False, timeout=120)
+    assert write_id in status.stdout, status.stdout[-800:]
+
+
+@CLIENT
+def test_a_write_id_already_journaled_for_the_same_arguments_exits_0_at_the_snapshot(estates):
+    """A `LANES_WRITE_ID` rerun of a write already in the journal with the
+    same arguments exits 0 at the snapshot, with no commit call, and the
+    journal holds it once."""
+    e = estates()
+    argv = note(LA, "journaled")
+    w = e.run(LA, argv)
+    assert w.code == 0
+    write_id = w.write_ids()[0]
+    again = e.run(LA, argv, extra={"LANES_WRITE_ID": write_id,
+                                   "LANES_WRITE_GENERATION": e.c.switch()["generation"]})
+    assert again.code == 0 and again.commit_calls() == [], again.err[-800:]
+    assert [r["write_id"] for r in e.journal_after()].count(write_id) == 1
