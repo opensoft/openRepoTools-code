@@ -583,7 +583,11 @@
 #      `commit`'s publish act over a queued commit that changes a path under
 #      the register's directory, a divergence from the register, or that is
 #      not a handoff write, refused with nothing pushed and the commits kept
-#      on HEAD (`cp_publish_fence`).
+#      on HEAD (`cp_publish_fence`); and, at `commit_publish`'s push, the
+#      branch-wide push: a commit it would send that changes a path outside
+#      `handoffs/`, a merge or root commit among them, a range it cannot
+#      read, or no origin branch, refused before the push with nothing
+#      pushed, the write's commit kept on HEAD (`cp_primary_push_check`).
 #  64  usage — a caller's bad arguments to one of the reads Amendment 11 added
 #      (`window-lane`, `lane-dir`, `lane-profile`, `last-session`, `forks`,
 #      `duplicate-holder` (issue #39), `workstation`, `fetch-age`, `lanes`,
@@ -3402,6 +3406,63 @@ commit_carry_refuse() {
   note "  then make the change through its verb (set-row-state, replace-in-row, append-line, log …), which writes it through the register"
   die "refusing \`commit\`'s carry form on primary (feature 007): $LANES_PATH in $LANES_REPO differs from HEAD, a hand edit, and on primary the register is the database and that file is its rendering, so a hand edit of it is never committed, carried or pushed (D10; FR-026; R16). On primary \`commit\` runs only as the publish act, for queued handoff commits, with $LANES_PATH clean. Nothing was written." 2
 }
+# THE BACKSTOP AT `commit_publish`'S PUSH ON PRIMARY (T420; D10's branch-wide
+# push; spec:183–185; FR-026; R16 (d)). At 1b no write but the publish act can
+# push a queued commit (S3's step 5 refuses every other mode over one), so this
+# push sends the write's own commit; and on primary verbs stop at T414's seam
+# and `commit`'s carry form is refused, so the one commit still meant to reach
+# it is `rename-lane`'s handoff move (T422), made outside the flag with staged
+# paths under `handoffs/`. This holds that as a check, not a count: the commits
+# the push would send, those on the branch that origin's tip lacks (`rev-list
+# <origin>..<tip>`, each read against its parent with `--no-renames`, so a move
+# out of `lanes/` shows the path it leaves), change only paths under
+# `handoffs/`, of any status, or the push refuses with 2 before it is made. A
+# merge or root commit among them, a read that fails, a commit `diff-tree`
+# skips, or no origin branch to read refuses too, since each proves nothing.
+# The write's commit is then local and kept on HEAD, and named, with S6.3's
+# archive. CP_PRIMARY_TIP is the tip read here, and the push sends exactly it,
+# so a commit another writer makes on top between the read and the push stays
+# local, unread and unsent.
+CP_PRIMARY_TIP=""
+cp_primary_push_check() {   # <this write's commit> <its subject>
+  local pb_trk="refs/remotes/origin/$LANES_BRANCH" pb_br="refs/heads/$LANES_BRANCH" \
+        pb_base="" pb_tip="" pb_revs="" pb_odd="" pb_pairs="" pb_n=0 pb_raw="" pb_bad="" pb_rc=0
+  CP_PRIMARY_TIP=""
+  if [ "$CS_NO_ORIGIN_BRANCH" = 1 ]; then
+    die "refusing to push on primary (feature 007): origin has no branch $LANES_BRANCH, so this push would publish the whole branch, and on primary a push from lanes-edit.sh sends only handoff changes onto origin's tip (D10; FR-026; R16 (d)). Nothing was pushed; this write's commit is local and kept on HEAD: $1 $2" 2
+  fi
+  pb_base="$(git --no-replace-objects -C "$LANES_REPO" rev-parse -q --verify "$pb_trk^{commit}")" || pb_rc=$?
+  pb_tip="$(git --no-replace-objects -C "$LANES_REPO" rev-parse -q --verify "$pb_br^{commit}")" || pb_rc=$?
+  if [ "$pb_rc" = 0 ] && [ -n "$pb_base" ] && [ -n "$pb_tip" ]; then
+    pb_revs="$(git --no-replace-objects -C "$LANES_REPO" rev-list --parents "$pb_base..$pb_tip")" || pb_rc=$?
+  else
+    pb_rc=1
+  fi
+  pb_odd="$(printf '%s\n' "$pb_revs" | awk 'NF > 0 && NF != 2 { printf "  %s %s\n", substr($1, 1, 12), (NF > 2 ? "is a merge commit" : "is a root commit") }')" || pb_rc=$?
+  pb_pairs="$(printf '%s\n' "$pb_revs" | awk 'NF == 2')" || pb_rc=$?
+  # `diff-tree --stdin` SKIPS A COMMIT IT CANNOT READ and still exits 0, so
+  # every commit handed to it must come back as a header, as in the fence.
+  if [ -n "$pb_pairs" ]; then
+    pb_n="$(printf '%s\n' "$pb_pairs" | awk 'END { print NR }')" || pb_rc=$?
+    pb_raw="$(printf '%s\n' "$pb_pairs" | git --no-replace-objects -C "$LANES_REPO" -c core.quotePath=false diff-tree --stdin --always -r --no-renames --raw --ignore-submodules=none)" || pb_rc=$?
+  fi
+  pb_bad="$(printf '%s\n' "$pb_raw" | awk -F '\t' -v want="$pb_n" '
+    NF == 0 { next }
+    NF == 1 && $1 ~ /^[0-9a-f]+$/ { c = substr($1, 1, 12); seen++; next }
+    { split($1, f, " "); if (NF != 2 || index($2, "handoffs/") != 1) printf "  %s %s %s\n", c, f[5], $2 }
+    END { if (seen != want) exit 3 }')" || pb_rc=$?
+  [ "$pb_rc" = 0 ] ||
+    die "refusing to push on primary (feature 007): git could not read, or this helper could not classify, the commits on $pb_br that refs/remotes/origin/$LANES_BRANCH lacks, so whether each changes only paths under handoffs/ is unknown (D10; FR-026; R16 (d)). Nothing was pushed; this write's commit is local and kept on HEAD: $1 $2" 2
+  if [ -n "$pb_odd$pb_bad" ]; then
+    note "of the commits this push would send to origin/$LANES_BRANCH, these are not handoff changes (a merge or root commit, or a path outside handoffs/):"
+    [ -z "$pb_odd" ] || printf '%s\n' "$pb_odd" >&2
+    [ -z "$pb_bad" ] || printf '%s\n' "$pb_bad" >&2
+    note "look at them: git -C $LANES_REPO log --stat refs/remotes/origin/$LANES_BRANCH..$pb_br"
+    cp_recovery_steps
+    die "refusing to push on primary (feature 007): a push from lanes-edit.sh there sends only commits whose every path is under handoffs/, since the register is the database and what origin holds under ${LANES_PREFIX:-lanes/} is its rendering (D10's branch-wide push; spec:183–185; FR-026; R16 (d)). Nothing was pushed; this write's commit is local and kept on HEAD, and every write that makes a git commit from this checkout refuses over it (S3's unpushed row) until it is archived and dropped, as above: $1 $2" 2
+  fi
+  CP_PRIMARY_TIP="$pb_tip"
+}
 
 # #194, AS #214's ADVERSARIAL CHECK HARDENED IT — WHAT `commit` MAY PUBLISH
 # WITH NOTHING STAGED, read from the objects the push will send and nothing
@@ -3708,6 +3769,13 @@ EOF
 
   # ---- 2. THE PUSH: the branch as S3 left it plus this one commit, no pull.
   cp_spec="refs/heads/$LANES_BRANCH:refs/heads/$LANES_BRANCH"
+  # FEATURE 007, T420 — THE BACKSTOP ON PRIMARY (spec:183–185; FR-026; R16
+  # (d)): outside the flag, the push sends only commits whose every path is
+  # under `handoffs/`, and exactly the tip that was read (`cp_primary_push_check`).
+  if cp_on_primary; then
+    cp_primary_push_check "$cp_sha" "$msg"
+    cp_spec="$CP_PRIMARY_TIP:refs/heads/$LANES_BRANCH"
+  fi
   cp_u=""
   [ "$CS_NO_ORIGIN_BRANCH" = 1 ] && cp_u="-u"
   cp_prc=0
