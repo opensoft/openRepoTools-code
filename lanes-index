@@ -2541,7 +2541,8 @@ def image_cache_collect() -> None:
 #   1. a `--generation` that is not the switch's: 2, LR007 `generation`,
 #      whatever the switch reads and whether or not the journal holds the id;
 #   2. the write id found with this run's lane, verb and `args_sha256`: 0,
-#      with `found=` and that seq's `file=` rows, and no tree is built;
+#      with `found=`, then the entry's `workstation=` and `utc=` (draft
+#      4.15), then that seq's `file=` rows, and no tree is built;
 #   2'. the write id found for another write: 2, LR007 `another-write`;
 #   3. `REGISTER_SCHEMA_VERSION` outside the writers' window: 69, naming both
 #      numbers and the remedy;
@@ -2757,7 +2758,11 @@ def register_snapshot_queries(*, write_id: str | None = None, images: bool = Fal
     4. the database's clock, in whole seconds (D13), truncated as
        `journal.utc` is;
     5. with `write_id`, a UUID this file checked: that id's journal entry,
-       its seq, lane, verb and `args_sha256`;
+       its seq, lane, verb and `args_sha256`, then its `workstation` and its
+       `utc` in epoch seconds, which a found entry prints (contract §3.2,
+       draft 4.15: Y:1114 and Y:1106; lane 3's ruling, #165 6770688147, T418
+       item 1), truncated as the clock is, though the journal's CHECK keeps
+       `utc` in whole seconds;
     6. with `write_id`: that entry's `journal_files` rows, in the same
        transaction (Y:5300);
     7. with `entry_blob` and `at`: the `repos_blob` of the entry at `at + 1`,
@@ -2774,7 +2779,8 @@ def register_snapshot_queries(*, write_id: str | None = None, images: bool = Fal
     ]
     if write_id is not None:
         quoted = _pg_quote(write_id)
-        queries.append(f"SELECT j.seq, j.lane, j.verb, j.args_sha256 FROM journal j "
+        queries.append(f"SELECT j.seq, j.lane, j.verb, j.args_sha256, j.workstation, "
+                       f"floor(extract(epoch FROM j.utc))::bigint FROM journal j "
                        f"WHERE j.write_id = {quoted}::uuid")
         queries.append(f"SELECT f.path, f.present, f.sha256 FROM journal_files f "
                        f"JOIN journal j ON j.seq = f.seq WHERE j.write_id = {quoted}::uuid "
@@ -3108,17 +3114,26 @@ def _register_snapshot(store, opts: dict) -> int:
         # CHECKS 2 AND 2': the write id, with this run's lane, verb and
         # arguments, or another write's (Y:4987).
         entry = answers[4]
-        if len(entry) > 1 or (entry and len(entry[0]) != 4):
+        if len(entry) > 1 or (entry and len(entry[0]) != 6):
             raise SnapshotUnavailable(f"the journal's entry of write {write_id} could not "
                                       f"be read")
         if entry:
-            seq, lane, verb, args_sha256 = entry[0]
+            seq, lane, verb, args_sha256, workstation, utc = entry[0]
             seq = _render_int(seq, "journal.seq")
             if (lane, verb, args_sha256) != (opts["--lane"], opts["--verb"],
                                              opts["--args-sha256"]):
                 return _register_snapshot_lr007(
                     "another-write", f"write {write_id} is seq {seq}, another write's (F10)")
-            found = [seq, []]
+            # The entry's `workstation=` and `utc=` (draft 4.15), each one
+            # line. The journal's CHECK refuses only an empty workstation, so
+            # a name holding a control character can be stored; it cannot be
+            # one line, and is a failed read, as a `file=` path holding one is.
+            utc = _render_int(utc, "journal.utc")
+            if (not isinstance(workstation, str) or not workstation
+                    or _RENDER_CONTROL_RE.search(workstation)):
+                raise SnapshotUnavailable(f"seq {seq}'s journal.workstation {workstation!r} "
+                                          f"cannot be a workstation= line")
+            found = [seq, workstation, utc, []]
             for row in answers[5]:
                 if len(row) != 3:
                     raise SnapshotUnavailable(f"seq {seq}'s journal_files rows could not be "
@@ -3130,8 +3145,8 @@ def _register_snapshot(store, opts: dict) -> int:
                                              and _IMAGE_DIGEST_RE.fullmatch(sha256)))):
                     raise SnapshotUnavailable(f"seq {seq}'s journal_files row {path!r} "
                                               f"cannot be a file= row")
-                found[1].append(f"{path}\t{1 if present else 0}\t{sha256 if present else '-'}")
-            found[1].sort(key=lambda r: r.split("\t", 1)[0].encode("utf-8"))
+                found[3].append(f"{path}\t{1 if present else 0}\t{sha256 if present else '-'}")
+            found[3].sort(key=lambda r: r.split("\t", 1)[0].encode("utf-8"))
     if found is None:
         # CHECK 3: the version, after the write id, as `commit_write` checks it
         # (Y:1419's step order; §2.8).
@@ -3183,8 +3198,11 @@ def _register_snapshot(store, opts: dict) -> int:
     if printed_id is not None:
         say(f"write_id={printed_id}")
     if found is not None:
-        say(f"found={found[0]}")
-        for row in found[1]:
+        found_seq, found_ws, found_utc, found_rows = found
+        say(f"found={found_seq}")
+        say(f"workstation={found_ws}")
+        say(f"utc={found_utc}")
+        for row in found_rows:
             say(f"file={row}")
     say(f"switch={mode}")
     say(f"marker={marker}")
@@ -3208,7 +3226,9 @@ def cmd_register_snapshot(args: list[str]) -> int:
     STDOUT: one `key=value` per line, LF-ended, in §3.2's order: `format=1`,
     `generation=`, `write_id=` (echoed, or minted for `--write-id new`;
     absent for `act-begin` and for `--generation` alone under `--at`),
-    `found=` and its seq's `file=` rows (only where check 2 found the id),
+    `found=`, then its entry's `workstation=` (`journal.workstation`) and
+    `utc=` (`journal.utc`, in epoch seconds), then its seq's `file=` rows
+    (all only where check 2 found the id; contract §3.2, draft 4.15),
     `switch=`, `marker=`, `n=`, `clock=`, `not_after=` (the clock plus the
     commit's client timer `C` plus 2 s), `schema=`, `repos_blob=` (only with
     `--tree`, where the tree holds `lanes/repos.tsv`), `c=` (`register_url=`'s
@@ -3222,7 +3242,8 @@ def cmd_register_snapshot(args: list[str]) -> int:
       configuration, Q6(c)'s refusal of `mode=primary` included;
     - 64: usage, before the configuration is read and before any connection;
     - 69: checks 3 and 4; a database it cannot reach, its timer `S` included;
-      a 55P03 or any other refusal (Y:2627); any failed read, an `--at <k>`
+      a 55P03 or any other refusal (Y:2627); any failed read, a found
+      entry whose workstation cannot be one line included, an `--at <k>`
       above the head, a `k` it cannot render, a checkout it cannot read, and
       a tree or images it could not write, with `<dir>` as it was."""
     try:
