@@ -1412,8 +1412,14 @@ LANES_ROUTED="${LANES__CHECKOUT_LANE:-}"   # the lane, in the re-run process onl
 # carried (`reg_mode_ask`; lane 5's answer 11, #165 6746507353). Empty: not
 # asked. Consumers test `= primary` only. Never exported: `LANES__MODE` is the
 # carry. `REG_ASK` is set by the write guard's arm at the dispatcher.
+# `REG_PW` is T415's marker that this process entered the register's attempt
+# loop: 0 here, whatever the environment says, never exported and never read
+# from it, and set to 1 only by the primary arm, immediately before `pw_run`.
+# The guard after that arm tests it and nothing else (lane openRepoTools-3,
+# #165 6774499606, A1).
 REG_MODE=""
 REG_ASK=0
+REG_PW=0
 if [ -n "${LANES__MODE:-}" ] &&
    { [ "${LANES__PID:-}" = "$$" ] || [ "${LANES__REPLAY_PID:-}" = "$$" ]; }; then
   case "$LANES__MODE" in index|primary|files) REG_MODE="$LANES__MODE" ;; esac
@@ -20985,6 +20991,7 @@ if [ "$REG_ASK" = 1 ]; then
     primary)
       [ "$cmd" != commit ] ||
         die "this lanes-edit.sh has no SQL write path: \`lanes-index mode\` answered primary, which only a lanes-index newer than this lanes-edit.sh answers. \`$cmd\` wrote nothing, and wrote no files instead. Install the lanes-edit.sh that ships with that lanes-index." 69
+      REG_PW=1
       pw_run ${1+"$@"} ;;
   esac
 fi
@@ -20992,9 +20999,16 @@ fi
 # REV415, S2). `pw_run` ends this process on every path. But where an expansion
 # fails inside it, an arithmetic error for one, bash abandons the whole `if`
 # above and goes on after its `fi`, into the routing and the verb's files-mode
-# arm. So a writer whose mode question answered `primary`, outside an attempt's
-# child, refuses here with 69, having written no files.
-if [ "$REG_MODE" = primary ] && [ -z "$REG_SCRATCH" ]; then
+# arm. So a process that entered the attempt loop refuses here with 69, having
+# written no files. ONE MARKER IS TESTED, AND NOTHING ELSE (lane
+# openRepoTools-3, #165 6774499606, A1): `REG_PW`, set just before `pw_run`.
+# Keyed on the mode, this guard would also stop a process that never entered
+# the loop: a reader once T504 opens the register above here, `commit`'s
+# publish act (T420), or `write-handoff`. After `reg_mode_ask` answers
+# `primary` nothing between it and the arm can abort, so a 1 here means only
+# that `pw_run` was entered and returned or was abandoned. An attempt's child
+# runs this file afresh, so its `REG_PW` is 0.
+if [ "$REG_PW" = 1 ]; then
   die "\`lanes-index mode\` answered primary, and \`$cmd\` left the register's attempt loop without ending, which is an internal error of this lanes-edit.sh. Whether it reached the register is not known: a write already made reads as found when the command is run again. \`$cmd\` wrote no files instead." 69
 fi
 
