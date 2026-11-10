@@ -564,6 +564,10 @@
 #      list, or lists in a form the seam cannot read; a blob id that is not
 #      40 hex digits; and a case-only rename that is not one D line and one A
 #      line.
+#      AND FEATURE 007'S `claim` (T421; FR-031; Y:3349–3354), in an attempt's
+#      child under the flag, an internal error with nothing sent: CLAIM-LOST's
+#      rescan or its line reached there (`claim_lost_unreachable`), which only
+#      1b's re-run after a refused push reaches.
 #      AND FEATURE 007'S PRIMARY BRANCH (T415; FR-018; Y:2459, Y:5014,
 #      Y:5603–5605; the contract's §3.2 and §3.3), the parent's, each with
 #      nothing written: a write that names no lane, or whose lane's own
@@ -717,7 +721,9 @@
 #      commit is named OFF HEAD, with `reflog -5`. Every later write from that
 #      checkout refuses under S3 until the lane publishes or archives it
 #   7  ANOTHER ACT GOT THERE FIRST, and this one wrote nothing. `claim`:
-#      CLAIM-LOST, another lane's claim landed on main first.
+#      CLAIM-LOST, another lane's claim landed on main first; never on
+#      primary (feature 007, T421; FR-031), where the later claim is the
+#      register's refusal, 2, with nothing written (Y:3349–3354).
 #      `set-lane-state`: the lifecycle fence did not match — the state, the
 #      generation or the operation id moved under this process — so a stale
 #      finalizer cannot overwrite a newer owner (openRepoTools#91).
@@ -749,6 +755,9 @@
 #      `--force` over a dead lane's hold). NEVER coerced to 7: that code
 #      means a RIVAL's claim landed first, and this is the same lane the
 #      takeover was granted over, alive again rather than beaten to main.
+#      Never on primary (feature 007, T421; FR-031): 1b's re-run, which makes
+#      this check, is never made there, and each attempt runs `claim`'s own
+#      checks on its snapshot instead (Y:5080).
 #  10  THE RECORD IS THERE AND COULD NOT BE READ, which is the other half of 8
 #      and never 8 itself (Copilot round 6 on openRepoTools#97). `lane-state`
 #      spends it for a lifecycle snapshot that EXISTS at the control root and
@@ -16349,6 +16358,20 @@ gh_comment() {
   printf '%s\n' "$gc_url"
 }
 
+# FEATURE 007, T421 — CLAIM-LOST IS UNREACHABLE ON PRIMARY (FR-031; Y:3349–3354,
+# Y:5080, Y:5089, Y:5095). Its two functions below run only on 1b's re-run,
+# the `exec` that a refused push or S3's `cs_recheck` makes (`CP_REPLAYING`),
+# and an attempt's child makes neither: the seam stands where the push was
+# (T414), and S3 is skipped whole under the flag (T413). On primary the race
+# is the commit's: the loser's next attempt reads the winner's line on its
+# snapshot, and `claim`'s own check refuses it with 2, writing nothing
+# (Q12(a)). So under the flag each function asserts it was not reached, as an
+# internal error, 2, before `ready`: nothing is sent.
+claim_lost_unreachable() {   # <the function reached>
+  [ -z "$REG_SCRATCH" ] ||
+    die "refusing to run ${1} in an attempt's child under LANES_REGISTER_SCRATCH: CLAIM-LOST is never written on primary, where a claim that loses its race is the register's refusal, 2, with nothing written (Q12(a)), and only 1b's re-run after a refused push reaches ${1}, which a child never makes. An internal error of the write path. Nothing was sent." 2
+}
+
 # The check a `claim` replay runs first (Amendment 23 S4), on origin's new tip.
 # If another lane's CLAIMED or TAKEOVER on this object is on the rebased
 # history, THEIRS LANDED FIRST and this claim has lost. Git's push
@@ -16388,6 +16411,7 @@ EOF
 }
 
 claim_rescan_hook() {
+  claim_lost_unreachable claim_rescan_hook   # feature 007, T421: never on primary
   CLAIM_WINNER=""
   # AMENDMENT 23 S4: THE REPLAY'S FIRST CHECK. This claim's push was refused,
   # its commit dropped, and origin's new tip fetched — so OUR line is not on
@@ -16485,6 +16509,7 @@ EOF
 # `claim_rescan_hook`, and the CLAIM-LOST line is the only one of this claim's
 # that reaches origin: the CLAIMED or TAKEOVER commit was dropped.
 claim_lost_write() {   # <7|9> <lane> <object> <uuid>
+  claim_lost_unreachable claim_lost_write   # feature 007, T421: never on primary
   clw_rc="$1"; clw_lane="$2"; clw_obj="$3"; clw_uuid="$4"
   # "ALIVE AGAIN" ONLY WHERE IT WAS SEEN (Copilot on 05d7889, PR #61):
   # `claim_rescan_hook` sets `CLAIM_ABANDON_REVIVED` for a confirmed revival — a
