@@ -1648,6 +1648,35 @@ act_base=""; act_rc=0; act_hold=""; act_refuse=""; act_bad=""
 act_refuse_note() {
 	note "$1, so this act REFUSES before its first write, with 1 (A2: \`act-begin\` answers a base, 69, 75, 3 or an old helper's 2, and \`canon-lane --walk\` 0, 69, 75 or 3; anything else is refused). It refuses by holding: none of the PAUSED record's writes is sent, the handoff file is still written (\`R-A11-11\`), the lane stays SWAPPING, and this command exits 1 once that is done."
 }
+# THE LINE'S FORM (Y:5577–5579), read as `lanes-edit.sh`'s `act_parse` reads it
+# (REV-ACT2 M2): `<act-id>@files`, or `<act-id>@<seq>:<generation>` — 32
+# lower-case hex digits, an `@`, then `files`, or a seq of 1 to 18 digits with
+# no leading zero (or `0`), a colon and a lower-case uuid. A second line, a
+# space or an upper-case digit fails it, so no base is exported that every
+# write would refuse with 2. The same check as `lane-start`'s `ls_act_form`.
+act_form() (   # <the line>: 0 where it is a base
+	set -f
+	af_h='[0123456789abcdef]'
+	case "$1" in *@*) : ;; *) return 1 ;; esac
+	af_id="${1%%@*}"; af_rest="${1#*@}"
+	case "$af_id" in '' | *[!0123456789abcdef]*) return 1 ;; esac
+	[ "${#af_id}" -eq 32 ] || return 1
+	[ "$af_rest" != files ] || return 0
+	case "$af_rest" in *:*) : ;; *) return 1 ;; esac
+	af_seq="${af_rest%%:*}"; af_gen="${af_rest#*:}"
+	case "$af_seq" in
+	0) : ;;
+	[123456789]*)
+		case "$af_seq" in *[!0123456789]*) return 1 ;; esac
+		[ "${#af_seq}" -le 18 ] || return 1 ;;
+	*) return 1 ;;
+	esac
+	# shellcheck disable=SC2254  # the generation's pattern is a glob on purpose
+	case "$af_gen" in
+	$af_h$af_h$af_h$af_h$af_h$af_h$af_h$af_h-$af_h$af_h$af_h$af_h-$af_h$af_h$af_h$af_h-$af_h$af_h$af_h$af_h-$af_h$af_h$af_h$af_h$af_h$af_h$af_h$af_h$af_h$af_h$af_h$af_h) return 0 ;;
+	esac
+	return 1
+)
 act_errf="$(mktemp "${TMPDIR:-/tmp}/lane-handoff-act.XXXXXX" 2>/dev/null || printf '')"
 act_base="$("$LANES_EDIT" act-begin 2>"${act_errf:-/dev/null}")" || act_rc=$?
 case "$act_rc" in
@@ -1657,14 +1686,7 @@ case "$act_rc" in
 	# it. An exit 0 with no line, or with a line that is no base, is A2's
 	# "everything else", and is refused.
 	if [ -z "$act_base" ]; then act_bad="printed no base"
-	else
-		act_id="${act_base%%@*}"; act_rest="${act_base#*@}"
-		if [ "${#act_id}" != 32 ]; then act_bad="printed a line that is no base"
-		else
-			case "$act_id" in *[!0123456789abcdef]*) act_bad="printed a line that is no base" ;; esac
-			case "$act_base" in *[[:space:]]* | *@*@*) act_bad="printed a line that is no base" ;; esac
-			case "$act_rest" in files | [0123456789]*:*) : ;; *) act_bad="printed a line that is no base" ;; esac
-		fi
+	elif ! act_form "$act_base"; then act_bad="printed a line that is no base"
 	fi
 	if [ -n "$act_bad" ]; then
 		act_base=""
