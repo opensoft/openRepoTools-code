@@ -20117,6 +20117,20 @@ pw_rl_move() {   # <seq> <the child's attempt dir> [rerun]
   return 0
 }
 
+# THE ROW'S HANDOFF CELL WHEN THE RENAME WAS RENDERED (REV422c S1's rarer
+# case): origin's oldest commit whose `LANES.md` holds the renamed key cell,
+# ``*(ex `<old>`, renamed <utc>)*``, which the rename writes and nothing else
+# does; that row's sixth cell, read as the arm reads it. 0 where it is
+# `<path>`; 1 where it is another, or no such commit is read.
+rl_cell_at_rename() {   # <path> <old> <utc>
+  local ca_mark="*(ex \`$2\`, renamed $3)*" ca_sha="" ca_row=""
+  [ "$NO_GIT" != 1 ] || return 1
+  ca_sha="$(git -C "$LANES_REPO" log --reverse --format=%H -S"$ca_mark" "refs/remotes/origin/$LANES_BRANCH" -- "$LANES_PATH" 2>/dev/null | head -n 1)"
+  [ -n "$ca_sha" ] || return 1
+  ca_row="$(git -C "$LANES_REPO" show "$ca_sha:$LANES_PATH" 2>/dev/null | grep -F -- "$ca_mark" | head -n 1)"
+  [ -n "$ca_row" ] && [ "$(row_cell "$ca_row" 7 | sed 's/^ *//; s/ *$//')" = "$1" ]
+}
+
 # THE HANDOFF ACT ITSELF (R18; review M5): `rename-lane` as the parent ran it
 # again in `<c>`, outside the flag. Its input is the child's `rl-move`, read
 # whole and checked: two paths under `handoffs/`, with no `.` or `..` part and
@@ -20181,12 +20195,30 @@ rl_move_act() {
     exit 0
   fi
   # FEATURE 007, T422 — A RERUN OWES ONLY THE MOVE ITS FIRST RUN LEFT (Y:3449–
-  # 3451; lane 3, #165 batch 6, Q29). Read at origin's tip, after S3: where no
-  # `<from>` is there and no file is at `<to>` either, nothing is owed. The
-  # first run's own words, 0, and no hand steps.
+  # 3451; lane 3, #165 batch 6, Q27 and Q29; lane 4's REV422c S1). Read at
+  # origin's tip, after S3, where no `<from>` is there:
+  # - NO FILE AT `<to>` EITHER: nothing is owed. The first run's own words,
+  #   0, and no hand steps (Q29).
+  # - A FILE AT `<to>` AND A `<from>` NAMED: `<to>` is not the file this rename
+  #   moves, a later handoff the cell names since, so no move is owed: 0, no
+  #   hand steps (S1).
+  # - A FILE AT `<to>` AND NO `<from>`, a handoff not named for its lane: it
+  #   takes this rename's stamp only where origin's render of the rename shows
+  #   the row naming it then (`rl_cell_at_rename`). Any other handoff the cell
+  #   names since never takes the old stamp: 0, no hand steps.
   if [ "$ma_rerun" = 1 ] && { [ -z "$ma_hf" ] || { [ ! -e "$ma_hf" ] && [ ! -L "$ma_hf" ]; }; }; then
     if [ ! -e "$ma_ht" ] && [ ! -L "$ma_ht" ]; then
       note "the handoff the row names is not at $ma_ht, so nothing was moved or stamped and the row's handoff column is left exactly as it is. If it turns up, rename it — ${ma_from:-$ma_to} → $ma_to — and stamp it: $ma_st"
+      release_lock
+      exit 0
+    fi
+    if [ -n "$ma_hf" ]; then
+      note "the handoff the row names is at $ma_to, and $ma_from, the file this rename would move there, is not at origin's tip, so $ma_to is not this rename's to move or stamp, and no move is owed. Nothing was moved or stamped."
+      release_lock
+      exit 0
+    fi
+    if ! rl_cell_at_rename "$ma_to" "$ma_old" "${ma_st##* at }"; then
+      note "the handoff the row names, $ma_to, is not named for its lane, and origin's render of this rename does not show the row naming it then, so it is not this rename's to stamp, and no stamp is owed. Nothing was moved or stamped. If it is the handoff the rename left unstamped, stamp it by hand: $ma_st"
       release_lock
       exit 0
     fi
