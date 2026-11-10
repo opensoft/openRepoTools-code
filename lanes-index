@@ -13129,9 +13129,12 @@ def _export_worktrees(out_dir: str, cfg: dict, unusable) -> int:
 # `LANES_LANE=` its name, through its own checkout (D24, Y:653; F12):
 # `LANES_REPO` where the operator names one, as `lanes-edit.sh` honours it,
 # else `lanes-edit.sh lane-checkout <lane>`'s `<W>-lanes/<lane>/`, and never
-# `W`. It takes origin only (Q4(c)(i)): after a fetch (`LANES_NO_FETCH=1`
-# skips it), `C` must be on `origin/<branch>`, and only `C`'s objects are read,
-# never a working tree or a local commit.
+# `W`: a `LANES_REPO` that is `W` is refused (2), and so is one set where `W`
+# cannot be read to tell (a read that failed is never an answer; Amendment
+# 7(d); #165 6781033556), with that read's error named. It takes origin only
+# (Q4(c)(i)): after a fetch (`LANES_NO_FETCH=1` skips it), `C` must be on
+# `origin/<branch>`, and only `C`'s objects are read, never a working tree or
+# a local commit.
 #
 # ITS FOUR STEPS. None holds a transaction across a git act (F23): each
 # database call is one request, and git runs only between them.
@@ -13175,7 +13178,10 @@ def _export_worktrees(out_dir: str, cfg: dict, unusable) -> int:
 #          The structured rows each lane's reads and rules rest on are compared
 #          with #160's: every lane's `lanes` row with `build_records`' record,
 #          and the `holds` view with #160's `holds` rule over `build_records`'
-#          `log_lines`.
+#          `log_lines`. #160 reads only `LANES-retired.md` of the archive, so
+#          a lane whose row is in another archive file is not compared; the
+#          summary line counts those (`import_uncompared`; lane 3's ruling,
+#          #165 6781033556).
 #      Any difference refuses with `EXIT_IMPORT_REFUSED`, 2, naming the first
 #      differing path, and nothing is swapped in. `--dry-run`, the rehearsal's
 #      (ops act 3, step 8), ends here.
@@ -13431,8 +13437,12 @@ def _import(opts: dict) -> int:
                          f"{first_path or 'the counts'}: {first_why}; R3's three-part proof "
                          f"did not hold, so nothing was swapped in (S5)", notes=tuple(more))
     counts = staged["counts"]
+    uncompared = import_uncompared(staged, records)
     summary = (f"{len(source['render'])} paths, {counts['doc_lines']} lines, "
-               f"{counts['lanes']} lanes, {counts['log_lines']} log lines "
+               f"{counts['lanes']} lanes ({uncompared} uncompared in part 3"
+               + (": their row is in an archive file other than LANES-retired.md, which #160 "
+                  "does not read" if uncompared else "")
+               + f"), {counts['log_lines']} log lines "
                f"({counts['unreadable']} unreadable, kept verbatim and flagged), "
                f"{counts['register_lines']} register lines ({counts['slots']} with a slot), "
                f"{counts['object_holds']} holds ({counts['exempt']} exempt); "
@@ -13516,8 +13526,15 @@ def _import_checkout(lane: str) -> str:
     the operator's override that `lanes-edit.sh` honours too, else the
     checkout `lanes-edit.sh lane-checkout <lane>` names, `<W>-lanes/<lane>/`.
     Returns its top directory. Never `W`: a `LANES_REPO` that is `W` is
-    refused (2), where `W` can be read at all; so is a directory that is not
-    a git checkout, or a lane with no checkout of its own."""
+    refused (2); so is a `LANES_REPO` set where `W` cannot be read, since a
+    read that failed is never an answer (Amendment 7(d); lane 3's ruling,
+    opensoft/openRepoTools#165 6781033556): the refusal names that read's
+    error. So is a directory that is not a git checkout, or a lane with no
+    checkout of its own. With `LANES_REPO` unset the import makes no `W` read
+    at all: the checkout is `lanes-edit.sh lane-checkout <lane>`'s
+    `<W>-lanes/<lane>/`, which that helper derives from `W` and which is
+    never `W`, and a `W` that cannot be read refuses there as a lane with no
+    checkout of its own."""
     named = os.environ.get("LANES_REPO", "")
     if named:
         where = named
@@ -13542,9 +13559,15 @@ def _import_checkout(lane: str) -> str:
     if named:
         try:
             w = workspace_root()
-        except StoreUnusable:
-            w = ""
-        if w and os.path.realpath(w) == os.path.realpath(root):
+        except (StoreUnusable, OSError) as exc:
+            # A read that failed is never an answer (Amendment 7(d)): "W could
+            # not be read" is not "LANES_REPO is not W", so it is refused (2).
+            why = exc.detail if isinstance(exc, StoreUnusable) else str(exc)
+            raise Refusal(f"import: LANES_REPO is set, and W cannot be read to check that it "
+                          f"is not W itself ({why}); a read that failed is not an answer "
+                          f"(Amendment 7(d)), so the import reads nothing through {root}; "
+                          f"nothing was swapped in")
+        if os.path.realpath(w) == os.path.realpath(root):
             raise Refusal(f"import: LANES_REPO names W itself ({root}); the import reads "
                           f"origin through the operator lane's own checkout, never W (D24); "
                           f"nothing was swapped in")
@@ -13580,6 +13603,16 @@ def _import_source(root: str, commit: str, *, fetch: bool) -> dict:
                       f"({exc.detail}); nothing was swapped in")
 
 
+def _import_git_why(proc) -> str:
+    """git's failure as a refusal names it: `exited <code>: <its first line on
+    stderr>` (`no message` where it said nothing), with any URL's user and
+    password taken out, as `_mirror_git_error` does."""
+    err = proc.stderr if isinstance(proc.stderr, str) else proc.stderr.decode("utf-8", "replace")
+    lines = [line.strip() for line in err.splitlines() if line.strip()]
+    first = re.sub(r"(://)[^/\s@]*@", r"\1", lines[0]) if lines else "no message"
+    return f"exited {proc.returncode}: {first}"
+
+
 def import_source(root: str, commit: str, *, fetch: bool) -> dict:
     """ORIGIN'S `C`, AND NOTHING ELSE (Q4(c)(i); S5): the render set at
     `commit` as the checkout `root` holds origin's objects.
@@ -13587,8 +13620,10 @@ def import_source(root: str, commit: str, *, fetch: bool) -> dict:
     With `fetch`, `git fetch origin <branch>` first (`mirror_fetch`, bounded
     by `LANES_GIT_TIMEOUT`). `commit` must then be a commit there that
     `origin/<branch>` contains, else `Refusal`: a local or unpushed commit is
-    no source. The repository must be a sha1 one, whose ids the journal's
-    CHECKs take.
+    no source, and a `git merge-base --is-ancestor` that fails to answer (an
+    exit other than 0 and 1, or a 1 with a line on stderr) is refused naming
+    git's exit and its first line on stderr, never read as "not on origin".
+    The repository must be a sha1 one, whose ids the journal's CHECKs take.
 
     Each render-set path's bytes must be a file the register can hold, else
     `Refusal` naming the path, and its line where there is one: UTF-8, read
@@ -13609,7 +13644,18 @@ def import_source(root: str, commit: str, *, fetch: bool) -> dict:
                       f"origin's (Q4(c)(i)): fetch, or name origin/{branch()}'s; nothing was "
                       f"swapped in")
     tip = tip_of(root)
-    if not is_ancestor(root, commit, tip):
+    # `git merge-base --is-ancestor`: 0 an ancestor, and 1 with nothing on
+    # stderr not one. Any other exit, or a 1 that says something (git 2.43
+    # answers 1 with `error: Could not read <id>` for an object it cannot
+    # open), is git failing to answer, which is not "not an ancestor" (the nit
+    # of lane 3's ruling, #165 6781033556): the refusal names git's exit and
+    # its first line on stderr.
+    ancestry = git(root, "merge-base", "--is-ancestor", commit, tip, check=False)
+    if ancestry.returncode != 0 and (ancestry.returncode != 1 or ancestry.stderr.strip()):
+        raise Refusal(f"import: git could not tell whether {commit} is on origin/{branch()} "
+                      f"(its tip is {tip}): `git merge-base --is-ancestor` {_import_git_why(ancestry)}"
+                      f"; nothing was swapped in")
+    if ancestry.returncode != 0:
         raise Refusal(f"import: {commit} is not on origin/{branch()} (its tip is {tip}): the "
                       f"import takes origin's commits only, never a local one (Q4(c)(i)); "
                       f"nothing was swapped in")
@@ -13963,6 +14009,28 @@ def _import_files_holds(records: dict) -> set:
             if rec["verb"] in OPEN_VERBS and not (takeovers.get(obj, set()) - {lk})}
 
 
+def _import_files_lanes(records: dict) -> dict:
+    """#160's `lanes` records that name a row, by the lane's name in lower case,
+    the first of each: what part 3 compares each staged `lanes` row with."""
+    files_lanes: dict = {}
+    for rec in records["lanes"].values():
+        if rec.get("row_file") is not None:
+            files_lanes.setdefault(_register_lower(rec["lane"]), rec)
+    return files_lanes
+
+
+def import_uncompared(staged: dict, records: dict) -> int:
+    """HOW MANY STAGED `lanes` ROWS PART 3 DID NOT COMPARE (lane 3's ruling,
+    opensoft/openRepoTools#165 6781033556, item 3: its count goes in the
+    summary line). #160 reads only `lanes/archive/LANES-retired.md` of the
+    archive, so a lane whose row sits in any other archive file has no record
+    of #160's to compare with: `import_proof` skips it, and this counts the
+    rows it skips, by the rule it skips them by."""
+    files_lanes = _import_files_lanes(records)
+    return sum(1 for key, row in staged["lanes"].items()
+               if key not in files_lanes and row["path"] not in (REGISTER_PATH, ARCHIVE_PATH))
+
+
 def import_proof(source: dict, staged: dict, entry: dict, records: dict,
                  root: str) -> list[tuple[str, str]]:
     """R3'S THREE-PART PROOF of the staged load (design.md S5; ops act 4's
@@ -13985,7 +14053,9 @@ def import_proof(source: dict, staged: dict, entry: dict, records: dict,
        first record with a row for that lane, field by field, where #160
        reads the file the row is in (`lanes/LANES.md`, and of the archive
        `LANES-retired.md` alone); and the staged `holds` view equals #160's
-       `holds` over the files (`_import_files_holds`)."""
+       `holds` over the files (`_import_files_holds`). A lane whose row is in
+       another archive file has no record of #160's and is not compared:
+       `import_uncompared` counts those, for the summary line."""
     import tempfile     # used here alone, so the module's imports stay as they were
     diffs: list = []
     # 1. A blob id per path.
@@ -14053,10 +14123,7 @@ def import_proof(source: dict, staged: dict, entry: dict, records: dict,
         if counts[name] != want:
             diffs.append(("", f"{name}: {counts[name]} staged, {want} sent"))
     # 3. Every lane's answers.
-    files_lanes: dict = {}
-    for rec in records["lanes"].values():
-        if rec.get("row_file") is not None:
-            files_lanes.setdefault(_register_lower(rec["lane"]), rec)
+    files_lanes = _import_files_lanes(records)
     for key, row in staged["lanes"].items():
         rec = files_lanes.get(key)
         if rec is None:
