@@ -1295,3 +1295,202 @@ def test_the_bootstrap_renders_register_schema_both_ways_and_refuses_the_rest(
     finally:
         for name in made:
             cluster.drop_database(name)
+
+
+# =================================================================== T107's step 6
+#: The small mirrors of T107's step-6 cases (lane 3, #165 6755386771, ruling (c)
+#: and "Lane 2's cases"; PLACEMENT.md section 1). Every row is literal, in Y
+#: section 1.3's entry form, as T223's direct calls are: no case calls T112's
+#: or T115's derivation code.
+STEP6_UTC = "2026-11-09T10:00:00Z"
+STEP6_ROW_A, STEP6_ROW_B, STEP6_ROW_R = "| `Lane-A` | x |", "| `Lane-B` | y |", "| `Lane-R` | x |"
+STEP6_LOG_A, STEP6_LOG_R = "lanes/log/Lane-A.md", "lanes/log/Lane-R.md"
+STEP6_WORD_MS = "2026-11-09T10:00:00.123Z"           # a WORD line with milliseconds (lane 3)
+STEP6_STRAY_SHA = "5" * 40
+
+
+def step6_log(verb: str, obj, utc: str = STEP6_UTC) -> tuple:
+    """One log line: its text, and its parsed fields (Y's derivation, by hand)."""
+    text = f"{verb} {EM_DASH} {obj if obj else 'note'} {EM_DASH} {utc}"
+    return text, {"verb": verb, "object": obj, "utc": utc, "utc_ts": utc}
+
+
+def step6_rows(files: dict, holds_spelled=("CLAIMED", "TAKEOVER")) -> dict:
+    """The structured rows of `files` by lane 2's literal derivation of these
+    small mirrors (Y:1193-1273, reading 7's corrections): a `lanes` row per
+    row line; a `log_lines` row per log line, its lane the file's, NULL
+    workstation; each lane's last line per object a hold, `spellings` on
+    CLAIMED and TAKEOVER only; no `register_lines`, since no line has a kind;
+    no `lane:` objects; NULL `owner`."""
+    lanes, logs, holds = [], [], {}
+    for path, lines in sorted(files.items()):
+        for n, text in enumerate(lines, start=1):
+            m = re.fullmatch(r"\| `([^`]+)` \| [a-z] \|", text)
+            if path == "lanes/LANES.md" and m:
+                lanes.append({"path": path, "line_no": n, "raw": text, "lane_key": m.group(1).lower(),
+                              "lane": m.group(1), "archived": False, "owner": None})
+            elif path.startswith("lanes/log/"):
+                lane = path[len("lanes/log/"):-len(".md")]
+                fields = STEP6_FIELDS[text]
+                logs.append({"path": path, "line_no": n, "raw": text, "lane": lane,
+                             "workstation": None, "unreadable": False, **fields})
+                if fields["object"]:
+                    holds[(fields["object"], lane.lower())] = {
+                        "object": fields["object"], "lane_key": lane.lower(), "lane": lane,
+                        "verb": fields["verb"], "utc_ts": fields["utc_ts"], "file": path,
+                        "ordinal": n,
+                        "spellings": [fields["object"]] if fields["verb"] in holds_spelled else None}
+    return {"lanes": lanes, "log_lines": logs, "object_holds": list(holds.values())}
+
+
+STEP6_CLAIM_O1, _f1 = step6_log("CLAIMED", "o1")
+STEP6_CLAIM_O2, _f2 = step6_log("CLAIMED", "o2")
+STEP6_OPEN_O3, _f3 = step6_log("OPENED", "o3")
+STEP6_WORD, _fw = step6_log("WORD", None, STEP6_WORD_MS)
+STEP6_RENAMED, _fr = step6_log("RENAMED", None, "2026-11-10T12:00:00Z")
+STEP6_STRAY, _fs = step6_log("NOTED", None)
+STEP6_FIELDS = {STEP6_CLAIM_O1: _f1, STEP6_CLAIM_O2: _f2, STEP6_OPEN_O3: _f3, STEP6_WORD: _fw,
+                STEP6_RENAMED: _fr, STEP6_STRAY: _fs}
+
+#: Each case: the mirror before, and the mirror after the write.
+STEP6_CASES = {
+    "rename-live-claim": (
+        {"lanes/LANES.md": ["# Lanes", STEP6_ROW_A], STEP6_LOG_A: [STEP6_CLAIM_O1]},
+        {"lanes/LANES.md": ["# Lanes", STEP6_ROW_R], STEP6_LOG_R: [STEP6_CLAIM_O1, STEP6_RENAMED]}),
+    "rename-millisecond-word-log": (
+        {"lanes/LANES.md": ["# Lanes", STEP6_ROW_A], STEP6_LOG_A: [STEP6_WORD]},
+        {"lanes/LANES.md": ["# Lanes", STEP6_ROW_R], STEP6_LOG_R: [STEP6_WORD, STEP6_RENAMED]}),
+    "stray-deletes-a-row": (
+        {"lanes/LANES.md": ["# Lanes", STEP6_ROW_A, STEP6_ROW_B]},
+        {"lanes/LANES.md": ["# Lanes", STEP6_ROW_B]}),
+    "stray-inserts-before-the-end": (
+        {"lanes/LANES.md": ["# Lanes", STEP6_ROW_A],
+         STEP6_LOG_A: [STEP6_CLAIM_O1, STEP6_CLAIM_O2, STEP6_OPEN_O3]},
+        {"lanes/LANES.md": ["# Lanes", STEP6_ROW_A],
+         STEP6_LOG_A: [STEP6_CLAIM_O1, STEP6_STRAY, STEP6_CLAIM_O2, STEP6_OPEN_O3]}),
+}
+
+
+def step6_entry(case: str, before: dict, after: dict) -> dict:
+    """The write each case commits. The renames as T112 now builds them (B10
+    tasks:428): the row line's `replace`, the log's `rename`, and `log_lines`
+    rows only for the lines written, with the holds from every line of the
+    renamed log. The strays as `import --single` sends them: a `delete`; and,
+    with no insert op, a `replace` of every later line and an `append`
+    (6755386771, "No insert op now")."""
+    rows = step6_rows(after)
+    if case.startswith("rename-"):
+        renamed = {**rows["log_lines"][-1], "workstation": WS}      # primary: Rule 10's CHECK
+        lanes = [r for r in rows["lanes"] if r["lane"] == "Lane-R"]
+        return entry("write", "rename-lane", journal={"args_sha256": ARGS_SHA256},
+                     edits=[{"ord": 1, "op": "replace", "path": "lanes/LANES.md", "line_no": 2,
+                             "old_sha256": line_sha(STEP6_ROW_A), "new_text": STEP6_ROW_R},
+                            {"ord": 2, "op": "rename", "path": STEP6_LOG_A, "to_path": STEP6_LOG_R},
+                            {"ord": 3, "op": "append", "path": STEP6_LOG_R,
+                             "new_text": STEP6_RENAMED}],
+                     files=[{"path": "lanes/LANES.md", "present": True,
+                             "sha256": rendered(after["lanes/LANES.md"]), "final_newline": True},
+                            {"path": STEP6_LOG_R, "present": True,
+                             "sha256": rendered(after[STEP6_LOG_R]), "final_newline": True},
+                            {"path": STEP6_LOG_A, "present": False}],
+                     lanes=lanes, log_lines=[renamed],
+                     object_holds=[h for h in rows["object_holds"] if h["file"] == STEP6_LOG_R])
+    stray = {"journal": {"git_commit": STEP6_STRAY_SHA}}
+    if case == "stray-deletes-a-row":
+        return entry("stray-import", "import --single", **stray,
+                     edits=[{"ord": 1, "op": "delete", "path": "lanes/LANES.md", "line_no": 2,
+                             "old_sha256": line_sha(STEP6_ROW_A)}],
+                     files=[{"path": "lanes/LANES.md", "present": True,
+                             "sha256": rendered(after["lanes/LANES.md"]), "final_newline": True}])
+    old, new = before[STEP6_LOG_A], after[STEP6_LOG_A]
+    edits = [{"ord": n - 1, "op": "replace", "path": STEP6_LOG_A, "line_no": n,
+              "old_sha256": line_sha(old[n - 1]), "new_text": new[n - 1]}
+             for n in range(2, len(old) + 1)]
+    edits.append({"ord": len(edits) + 1, "op": "append", "path": STEP6_LOG_A, "new_text": new[-1]})
+    return entry("stray-import", "import --single", **stray, edits=edits,
+                 files=[{"path": STEP6_LOG_A, "present": True, "sha256": rendered(new),
+                         "final_newline": True}],
+                 log_lines=[r for r in rows["log_lines"] if r["path"] == STEP6_LOG_A
+                            and r["line_no"] >= 2],
+                 object_holds=[h for h in rows["object_holds"] if h["file"] == STEP6_LOG_A
+                               and h["ordinal"] >= 2])
+
+
+#: The four structured tables, each row keyed by its line's `(path, line_no)`
+#: in place of a line id, without the columns a write stamps: the written seq,
+#: the mode and the workstation (lane 2's reading, NOTES question 33).
+STRUCTURED = {
+    "lanes": f"SELECT to_jsonb(t) - 'row_line_id' - 'last_seq' - 'last_mode' - 'workstation' || "
+             f"jsonb_build_object('path', d.path, 'line_no', d.line_no) FROM {SCHEMA}.lanes t "
+             f"LEFT JOIN {SCHEMA}.doc_lines d ON d.line_id = t.row_line_id",
+    "log_lines": f"SELECT to_jsonb(t) - 'line_id' - 'seq' - 'mode' - 'workstation' || "
+                 f"jsonb_build_object('path', d.path, 'line_no', d.line_no) FROM "
+                 f"{SCHEMA}.log_lines t LEFT JOIN {SCHEMA}.doc_lines d ON d.line_id = t.line_id",
+    "register_lines": f"SELECT to_jsonb(t) - 'line_id' - 'seq' - 'mode' - 'workstation' || "
+                      f"jsonb_build_object('path', d.path, 'line_no', d.line_no) FROM "
+                      f"{SCHEMA}.register_lines t LEFT JOIN {SCHEMA}.doc_lines d "
+                      f"ON d.line_id = t.line_id",
+    "object_holds": f"SELECT to_jsonb(t) - 'seq' - 'mode' FROM {SCHEMA}.object_holds t",
+}
+
+
+def structured(db) -> dict:
+    out = {}
+    for table, query in STRUCTURED.items():
+        rows = json.loads(sql(db, f"SELECT coalesce(jsonb_agg(r ORDER BY r::text), '[]') "
+                                  f"FROM ({query}) AS q(r);"))
+        out[table] = rows
+    return out
+
+
+@pytest.mark.parametrize("case", list(STEP6_CASES))
+def test_commit_write_derives_step_6s_deletes_so_the_tables_equal_the_imports_derivation(
+        pg, case):
+    """T107's step 6 under lane 3's ruling (c) (#165 6755386771): as a
+    `replace` or `delete` changes a line, `commit_write` deletes that line's
+    structured rows, and a `rename` deletes the old path's holds and moves
+    `log_lines` to the new file's lane; the entry carries no deletes.
+
+    Each case clones `tmpl`, brings it to `primary` with the marker `present`
+    by AT-LR006's route, with its mirror as the import; a stray first records
+    its sha by `record_mirror_state`. Then `commit_write` returns its seq, with
+    no 23505, 23503, 23514 (Y:1217-1219) or LR005, and `lanes`, `log_lines`,
+    `register_lines` and `object_holds` equal, row for row, what one `import`
+    entry of the mirror after the write leaves in a second clone of `tmpl`.
+    `[rename-live-claim]` also asserts the claim's hold is the new lane's, and
+    `[stray-inserts-before-the-end]` that each hold below the inserted line
+    points at its own line."""
+    before, after = STEP6_CASES[case]
+    n = bring_to_primary(pg, before, **step6_rows(before))
+    if case.startswith("stray-"):
+        assert record_mirror_state(pg, "ws-stray", STEP6_STRAY_SHA, None).returncode == 0
+    proc = commit_call(pg, n, step6_entry(case, before, after))
+    code, message = error_of(proc)
+    assert proc.returncode == 0, (
+        f"commit_write refused the {case} write with {code} (23505, 23503, 23514 and LR005 "
+        f"are the gap's effects, 6755386771): {message}\n{proc.stderr.strip()}")
+    assert int(proc.stdout.strip().splitlines()[-1]) == n + 1
+    got = structured(pg)
+    oracle = Database(pg.cluster, pg.cluster.new_database())
+    try:
+        committed(oracle, head(oracle), import_entry(after, **step6_rows(after)),
+                  "the oracle's import of the mirror after the write")
+        want = structured(oracle)
+    finally:
+        pg.cluster.drop_database(oracle.name)
+    for table in STRUCTURED:
+        assert got[table] == want[table], (
+            f"{case}: {table} is not the import's derivation of the mirror after the write:\n"
+            f"got  {json.dumps(got[table], indent=1)[:3000]}\n"
+            f"want {json.dumps(want[table], indent=1)[:3000]}")
+    holds = {(h["object"], h["lane_key"]): h for h in got["object_holds"]}
+    if case == "rename-live-claim":
+        assert ("o1", "lane-a") not in holds, holds
+        assert (holds[("o1", "lane-r")]["file"], holds[("o1", "lane-r")]["ordinal"]) == (
+            STEP6_LOG_R, 1), holds
+    if case == "stray-inserts-before-the-end":
+        lines = {(r["path"], r["line_no"]): r for r in got["log_lines"]}
+        for h in got["object_holds"]:
+            line = lines[(h["file"], h["ordinal"])]
+            assert (line["object"], line["verb"]) == (h["object"], h["verb"]), (h, line)
+        assert sorted(h["ordinal"] for h in got["object_holds"]) == [1, 3, 4], holds
