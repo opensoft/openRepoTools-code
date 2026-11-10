@@ -2411,6 +2411,661 @@ def open_store(cfg: dict, role: str):
     return SqliteStore(cfg) if cfg["store"] == "sqlite" else PostgresStore(cfg, role)
 
 
+# ===== the SQL register: the declared outage (007)
+#
+# `lanes-index outage declare` AND `outage clear` (feature 007,
+# opensoft/openRepoTools#165; D20, design Y:599-612; operations.md §2.5;
+# contracts/config.md §6; contracts/exit-codes.md §3.2; T121). A declared
+# outage is the file `register-outage` beside `lanes-index.conf`, never a row
+# in the database that is down. Each guard's client reads it offline, on
+# `mode=primary` only (SVC-12; lane 5's T507), and `status` (T117) and
+# `ready`'s check 7 (T119) report one left in place. Both sides read its form
+# from config.md §6.3, which `parse_register_outage` holds.
+#
+# ON BRETT'S WORD, `outage declare --until <UTC> --why <words>` probes the
+# database first, on D9's `outage` row as the REGISTER-WRITER: one read of the
+# switch's `mode` and `set_seq`, and of the kind of the journal entry at
+# `set_seq`. A database that answers from this host refuses it, 2: the outage
+# is then not estate-wide. Its silence is the declaration's premise, and every
+# end of the probe before its read completes counts the same (D9, Y:3535), so
+# `outage declare` never exits 69. `mirror-seq=` is then the newest
+# `Register-Seq` on `origin/<branch>`, read after a fetch, or `--mirror-seq
+# <m>` where this host cannot fetch (F11).
+#
+# FROM A ROLLBACK, `outage declare --rollback --mirror-seq <k>` is written only
+# where the probe reads the switch at `files`, the entry at its `set_seq` a
+# `rollback`, and `<k>` that entry's base, `set_seq - 1` (R2's M1). A probe
+# that cannot read the switch refuses it, 2, as does any other answer (V2's
+# S-4). It carries no expiry. Lane 3's `rollback` (T304) writes the same record
+# where its directory is writable, through `register_outage_text` and
+# `write_register_outage`.
+
+#: THE DECLARATION'S FILE (D20; config.md §6.1), beside `lanes-index.conf`.
+REGISTER_OUTAGE_FILE = "register-outage"
+
+#: The keys a well-formed declaration carries once each, whatever its kind
+#: (config.md §6.3). `until=` joins them exactly when `kind=word`, and
+#: `last-head=` where `status` recorded a head.
+REGISTER_OUTAGE_KEYS = ("format", "kind", "database", "utc", "host", "mirror-seq", "why")
+
+#: A UTC in the declaration, `utc=` and `until=`, and `--until`'s own form,
+#: whole seconds (config.md §6.3).
+_OUTAGE_UTC_FORM = "%Y-%m-%dT%H:%M:%SZ"
+_OUTAGE_UTC_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+
+#: FORM C'S PAGE (SVC-12, Y:4455-4466; the renderer's pass, Y:2840-2846): one
+#: `git log --first-parent -n 200`, never with `--grep`, whose `-n` would count
+#: matches rather than the commits walked.
+MIRROR_SEQ_PAGE = 200
+
+#: `LANES_GIT_TIMEOUT`'s default, in seconds, as `lanes-edit.sh`'s `git_net`
+#: reads it.
+MIRROR_GIT_TIMEOUT_DEFAULT = 60
+
+_OUTAGE_USAGE = f"""\
+{PROG} outage declare --until <UTC> --why <words> [--mirror-seq <m>]
+{PROG} outage declare --rollback --mirror-seq <k> [--why <words>]
+{PROG} outage clear
+
+The declared outage (D20; operations.md section 2.5): the file
+`register-outage` beside lanes-index.conf. Run each on every configured
+workstation, from the host, as `set-mode` is.
+
+  declare     On Brett's word: <UTC> is its expiry, YYYY-MM-DDTHH:MM:SSZ, and
+              <words> his words, verbatim, on one line. It probes the database
+              first, as the REGISTER-WRITER, and a database that answers from
+              this host refuses it. `mirror-seq=` is the newest Register-Seq on
+              origin/<branch> after a fetch, or --mirror-seq <m>, from
+              `status` on a host that can fetch, where this one cannot.
+  --rollback  The rollback's declaration, as `rollback` prints it: <k> is the
+              rollback's head, and the probe must read the switch at `files`
+              with a `rollback` entry at set_seq <k>+1. It has no expiry.
+  clear       Removes the declaration, and says so where none is recorded.
+
+Exit: 0 written or removed · 2 refused, with nothing written · 64 usage."""
+
+
+class _OutageUsage(Exception):
+    """An `outage` command line that is not its usage: exit 64, before
+    anything is read or sent."""
+
+
+def _outage_has_line_break(text: str) -> bool:
+    """Whether `text` holds a line break: any character `str.splitlines` ends
+    a line at (LF, CR, VT, FF, FS, GS, RS, NEL, LS and PS), so a reader that
+    splits the file, or `.outage`'s `label=`, at any of them still finds one
+    line (DEC-21; lane 5's O15)."""
+    return "".join(text.splitlines()) != text
+
+
+def _outage_utf8(text: str) -> bool:
+    """Whether `text` encodes as UTF-8: an argument or a variable that was not
+    UTF-8 reaches Python as lone surrogates, which do not."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _outage_utc_ok(text: str) -> bool:
+    """`YYYY-MM-DDTHH:MM:SSZ`, naming a real instant (config.md §6.3)."""
+    if not _OUTAGE_UTC_RE.fullmatch(text):
+        return False
+    try:
+        _dt.datetime.strptime(text, _OUTAGE_UTC_FORM)
+    except ValueError:
+        return False
+    return True
+
+
+def register_outage_path(cfg: dict) -> str:
+    """`register-outage` beside `lanes-index.conf` (D20; config.md §6.1): in
+    the directory of the configuration's path as `load_config` names it,
+    `$LANES_INDEX_CONFIG` or the default, made absolute and not resolved."""
+    return os.path.join(os.path.dirname(os.path.abspath(cfg["path"])), REGISTER_OUTAGE_FILE)
+
+
+def parse_register_outage(text: str) -> dict:
+    """A declaration's fields, from its text, where it is WELL FORMED by
+    config.md §6.3; otherwise `ValueError`, naming the first fault.
+
+    Well formed: `format=1` the first line; `key=value` lines, each split at
+    its first `=`, LF-ended, and each key at most once; every key of
+    `REGISTER_OUTAGE_KEYS` present; `kind=` `word` or `rollback`; `until=`
+    present exactly when `kind=word`; `utc=` and `until=` each
+    `YYYY-MM-DDTHH:MM:SSZ`; `mirror-seq=` a whole number; and `why=` with no
+    line break. A key this build does not know is kept and ignored, within
+    `format=1`. Whether a declaration is unexpired, and names the reading
+    host's `register_label=`, is its reader's question (SVC-12's condition 2;
+    T507), not its form's."""
+    if not text.endswith("\n"):
+        raise ValueError("its last line is not LF-ended")
+    fields: dict = {}
+    for number, line in enumerate(text[:-1].split("\n"), 1):
+        if number == 1 and line != "format=1":
+            raise ValueError("its first line is not `format=1`")
+        key, eq, value = line.partition("=")
+        if not eq or not key:
+            raise ValueError(f"its line {number} is not `key=value`")
+        if key in fields:
+            raise ValueError(f"`{key}=` is on more than one line")
+        fields[key] = value
+    for key in REGISTER_OUTAGE_KEYS:
+        if key not in fields:
+            raise ValueError(f"it carries no `{key}=`")
+    if fields["kind"] not in ("word", "rollback"):
+        raise ValueError("its `kind=` is neither `word` nor `rollback`")
+    if ("until" in fields) != (fields["kind"] == "word"):
+        raise ValueError("`until=` is present with `kind=word` only, and always with it")
+    for key in ("utc", "until"):
+        if key in fields and not _outage_utc_ok(fields[key]):
+            raise ValueError(f"its `{key}=` is not a UTC of the form YYYY-MM-DDTHH:MM:SSZ")
+    if not re.fullmatch(r"[0-9]+", fields["mirror-seq"]):
+        raise ValueError("its `mirror-seq=` is not a whole number")
+    if _outage_has_line_break(fields["why"]):
+        raise ValueError("its `why=` holds a line break")
+    return fields
+
+
+def read_register_outage(path: str) -> dict | None:
+    """The declaration at `path` (`register_outage_path`), by
+    `parse_register_outage`: None where none is recorded, and `ValueError`
+    where one is there that cannot be read as UTF-8 or is not well formed.
+    `outage clear` reports with it, and `status` (T117) can report a
+    declaration left in place with it."""
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ValueError(f"it cannot be read ({exc.strerror or exc})")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError("it is not UTF-8")
+    return parse_register_outage(text)
+
+
+def register_outage_text(*, kind: str, database: str, host: str, mirror_seq: int, why: str,
+                         until: str | None = None, utc: str | None = None,
+                         last_head: int | None = None) -> str:
+    """The declaration's bytes, in config.md §6.3's form and key order:
+    `format=1`, `kind=`, `database=`, `utc=` (now, where `utc` is None),
+    `host=`, `until=` where given, `mirror-seq=`, `why=`, and `last-head=`
+    where given. Checked by `parse_register_outage` before it is returned, so
+    the writer holds itself to the reader's rule: `ValueError` where a value
+    holds a line break, or the text would not be well formed."""
+    lines = [("format", "1"), ("kind", kind), ("database", database),
+             ("utc", utc if utc is not None else utc_now()), ("host", host)]
+    if until is not None:
+        lines.append(("until", until))
+    lines += [("mirror-seq", str(mirror_seq)), ("why", why)]
+    if last_head is not None:
+        lines.append(("last-head", str(last_head)))
+    for key, value in lines:
+        if _outage_has_line_break(value):
+            raise ValueError(f"its `{key}=` would hold a line break")
+        if not _outage_utf8(value):
+            raise ValueError(f"its `{key}=` would not be UTF-8")
+    text = "".join(f"{key}={value}\n" for key, value in lines)
+    parse_register_outage(text)
+    return text
+
+
+def write_register_outage(path: str, text: str) -> None:
+    """`text` as `path`, by a temp file in the same directory and a rename
+    (config.md §6.3), so no reader sees half a file, and a write that fails
+    leaves the file as it was, with no temp file behind. Raises `OSError`
+    where the directory cannot be written."""
+    directory = os.path.dirname(path)
+    tmp = ""
+    try:
+        for attempt in range(100):
+            candidate = os.path.join(directory, f".{os.path.basename(path)}."
+                                                f"{os.getpid()}.{attempt}.tmp")
+            try:
+                fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                continue
+            tmp = candidate
+            break
+        else:
+            raise FileExistsError(f"no free temp file name beside {path}")
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(text.encode("utf-8"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+        tmp = ""
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    # The rename itself, to disk, where the directory can be opened for it.
+    try:
+        dir_fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(dir_fd)
+
+
+def mirror_git_timeout() -> float | None:
+    """`LANES_GIT_TIMEOUT` as `lanes-edit.sh`'s `git_net` reads it: the bound,
+    in seconds, of a git call that touches the network, 60 where it is unset
+    or empty, and None, no bound, where it is 0 or not a whole number."""
+    raw = os.environ.get("LANES_GIT_TIMEOUT", "")
+    if raw == "":
+        return float(MIRROR_GIT_TIMEOUT_DEFAULT)
+    if not re.fullmatch(r"[0-9]+", raw) or int(raw) == 0:
+        return None
+    return float(raw)
+
+
+def _mirror_git_error(stderr: bytes) -> str:
+    """git's first `fatal:` or `error:` line on stderr, else its last line,
+    with any URL's user and password taken out."""
+    lines = [line for line in stderr.decode("utf-8", "replace").splitlines() if line.strip()]
+    if not lines:
+        return "no message"
+    first = next((line for line in lines if line.startswith(("fatal:", "error:"))), lines[-1])
+    return re.sub(r"(://)[^/\s@]*@", r"\1", first.strip())
+
+
+def mirror_fetch(root: str, timeout: float | None) -> None:
+    """`git fetch -q origin <branch>` in the checkout `root`, as
+    `lanes-edit.sh` fetches it, so its `origin/<branch>` is origin's own;
+    `timeout`, from `mirror_git_timeout`, bounds it. A fetch that fails or
+    runs out of time raises `StoreUnusable` of kind `unread`."""
+    what = f"`git fetch origin {branch()}` in {root}"
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    try:
+        proc = subprocess.run(["git", "-c", "gc.auto=0", "-c", "maintenance.auto=false",
+                               "-C", root, "fetch", "-q", "origin", branch()],
+                              capture_output=True, check=False, stdin=subprocess.DEVNULL,
+                              env=env, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise StoreUnusable("unread", f"{what} did not end within {timeout:g} s "
+                            f"(LANES_GIT_TIMEOUT)")
+    except OSError as exc:
+        raise StoreUnusable("unread", f"{what} could not be run: {exc}")
+    if proc.returncode != 0:
+        raise StoreUnusable("unread", f"{what} exited {proc.returncode}: "
+                            f"{_mirror_git_error(proc.stderr)}")
+
+
+def mirror_register_seq(root: str, deadline: float | None = None) -> tuple[int, str]:
+    """`m`, the newest `Register-Seq` on `origin/<branch>` in the checkout
+    `root` AS LAST FETCHED, and the commit that carries it. Nothing here
+    fetches: `mirror_fetch` does, where its caller wants the fetch.
+
+    Form C (SVC-12, Y:4455-4466), in pages as the renderer's pass finds `m`
+    (Y:2840-2846): `git log --first-parent -n 200 --skip <s>
+    --format='%H%x00%(trailers:key=Register-Seq,valueonly)'` from the tip,
+    never with `--grep`, taking the first non-empty value. `deadline`, a
+    `time.monotonic()` instant, bounds the whole walk.
+
+    Raises `StoreUnusable`: of kind `unread` where the ref is missing, git
+    fails or the deadline passes; of kind `no-seq` where no commit on that
+    first-parent line carries a `Register-Seq`, or the newest that does
+    carries one that is not a whole number. `outage declare` reads its
+    `mirror-seq=` with it after a fetch (F11), and `status` (T117) can read
+    `m` with it."""
+    tip = tip_of(root)
+    ref = f"origin/{branch()}"
+    skip = 0
+    while True:
+        left = None if deadline is None else deadline - time.monotonic()
+        out_of_time = (f"the walk of {ref}'s first-parent line for a Register-Seq ran out "
+                       f"of time after {skip} commits (LANES_GIT_TIMEOUT)")
+        if left is not None and left <= 0:
+            raise StoreUnusable("unread", out_of_time)
+        try:
+            proc = subprocess.run(
+                ["git", "-c", "log.showSignature=false", "-C", root, "log", "--first-parent",
+                 "-n", str(MIRROR_SEQ_PAGE), "--skip", str(skip),
+                 "--format=%H%x00%(trailers:key=Register-Seq,valueonly)", tip, "--"],
+                capture_output=True, check=False, stdin=subprocess.DEVNULL, timeout=left)
+        except subprocess.TimeoutExpired:
+            raise StoreUnusable("unread", out_of_time)
+        except OSError as exc:
+            raise StoreUnusable("unread", f"git could not be run in {root}: {exc}")
+        if proc.returncode != 0:
+            raise StoreUnusable("unread", f"`git log` of {ref} exited {proc.returncode} in "
+                                f"{root}: {_mirror_git_error(proc.stderr)}")
+        commits, commit = 0, ""
+        for line in proc.stdout.decode("utf-8", "replace").split("\n"):
+            if "\x00" in line:
+                commits += 1
+                commit, _, line = line.partition("\x00")
+            value = line.strip()
+            if commit and value:
+                if not re.fullmatch(r"[0-9]+", value):
+                    raise StoreUnusable("no-seq", f"commit {commit[:12]}, the newest on {ref}'s "
+                                        f"first-parent line to carry a Register-Seq, carries "
+                                        f"{value!r}, which is not a whole number")
+                return int(value), commit
+        if commits < MIRROR_SEQ_PAGE:
+            raise StoreUnusable("no-seq", f"no commit on {ref}'s first-parent line carries a "
+                                f"Register-Seq ({skip + commits} read)")
+        skip += commits
+
+
+def _outage_mirror_seq() -> tuple[int, str]:
+    """`mirror-seq=` on Brett's word with no `--mirror-seq`: `m` read after a
+    fetch (ops:497; F11), in the workspace repository's checkout as `sync`
+    finds it (`lanes-edit.sh workspace-root`; Amendment 9(a)). The fetch, and
+    then the walk, are each bounded by `mirror_git_timeout`, as the
+    renderer's are. `StoreUnusable` where this host cannot fetch or read it."""
+    root = workspace_root()
+    timeout = mirror_git_timeout()
+    mirror_fetch(root, timeout)
+    return mirror_register_seq(root, None if timeout is None else time.monotonic() + timeout)
+
+
+def _outage_probe(store) -> dict:
+    """D9'S `outage` ROW (Y:3535): ONE read as the REGISTER-WRITER, connected
+    as a writer's snapshot is, with the row's bounds and its client timer,
+    `N_a`·`c` + 6 s: the switch's `mode` and `set_seq`, and the kind of the
+    journal entry at `set_seq`, '' where there is none.
+
+    `answered` is True where `psql` ended 0: the database answered from this
+    host, and `switch` is `files` or `primary`, or None where its answer could
+    not be read. Every other end before the read completes - no answer within
+    its bounds, a refusal, a `psql` that could not be run - is `answered`
+    False. `end` says which, with nothing secret in it (contract §2.6)."""
+    schema = f'"{store.schema}"'
+    sql = (f"SELECT s.mode, s.set_seq, coalesce((SELECT j.kind FROM {schema}.journal AS j "
+           f"WHERE j.seq = s.set_seq), '') FROM {schema}.register_switch AS s WHERE s.id = 1")
+    try:
+        out = store.request([sql], "outage")
+    except PsqlFailed as exc:
+        if exc.timer_expired:
+            end = f"no answer within its client timer: {exc.detail}"
+        elif not exc.ran:
+            end = f"nothing was sent: {exc.detail}"
+        else:
+            end = f"psql exited {exc.psql_exit}: {exc.first_line or exc.detail}"
+        return {"answered": False, "end": end}
+    except StoreUnusable as exc:
+        return {"answered": False, "end": f"nothing was sent: {exc.detail}"}
+    match = re.fullmatch(r"(files|primary)\|(-?[0-9]+)\|([a-z-]*)\n?", out)
+    if not match:
+        return {"answered": True, "switch": None, "set_seq": None, "kind": "",
+                "end": "the database answered, and its answer could not be read"}
+    return {"answered": True, "switch": match.group(1), "set_seq": int(match.group(2)),
+            "kind": match.group(3),
+            "end": f"the switch reads {match.group(1)} at set_seq {match.group(2)}"}
+
+
+def _outage_refuse_unwritable(path: str, form: str, nothing: str) -> None:
+    """A configuration directory this process cannot write, as a bench's
+    read-only mount of it is (Q23(a)), refused with 2 before anything is sent:
+    declare it from the host, as `set-mode` refuses (ops:470)."""
+    directory = os.path.dirname(path)
+    if not os.access(directory, os.W_OK | os.X_OK):
+        raise Refusal(f"{form}: {directory} cannot be written from here, as on a bench's "
+                      f"read-only mount of the configuration: run it from the host, as "
+                      f"`set-mode` is (ops:470; operations.md §2.5); {nothing}")
+
+
+def _outage_host(form: str) -> str:
+    """`host=`, the workstation the declaration is made on: `$LANES_WORKSTATION`
+    where it is set, the seam `lanes-edit.sh workstation` answers with first;
+    otherwise that command. A container with no name is refused, as every
+    writer of a workstation column refuses it (R-A11-14)."""
+    name = os.environ.get("LANES_WORKSTATION", "")
+    if not name:
+        try:
+            name, how = this_workstation()
+        except StoreUnusable as exc:
+            raise Refusal(f"{form}: this workstation's name cannot be read ({exc.detail}); "
+                          f"export LANES_WORKSTATION, or run it from the host; nothing was "
+                          f"written")
+        if how == "container-unset":
+            raise Refusal(f"{form}: this is a container and LANES_WORKSTATION is not set, so "
+                          f"`host=` would be the container's own id (R-A11-14). Run it from "
+                          f"the host's shell; nothing was written")
+    if not name.strip() or _outage_has_line_break(name):
+        raise Refusal(f"{form}: this workstation's name is empty or holds a line break, and "
+                      f"`host=` is one line; nothing was written")
+    return name
+
+
+def _outage_args(args: list[str]) -> dict | None:
+    """`outage`'s command line: its verb, `declare` or `clear`, and
+    `declare`'s flags, each as `--flag <value>` or `--flag=<value>`; None for
+    `--help`. Usage is `_OutageUsage`: no verb or an unknown one, an unknown
+    argument, a flag with no value or given twice, an argument to `clear`, and
+    `--until` beside `--rollback`, whose declaration carries no expiry."""
+    if not args:
+        raise _OutageUsage("outage needs `declare` or `clear`")
+    if args[0] in ("-h", "--help"):
+        return None
+    verb, rest = args[0], args[1:]
+    if verb not in ("declare", "clear"):
+        raise _OutageUsage(f"outage: unknown verb '{verb}': it is `declare` or `clear`")
+    opts: dict = {"verb": verb, "--until": None, "--why": None, "--mirror-seq": None,
+                  "--rollback": False}
+    i = 0
+    while i < len(rest):
+        arg = rest[i]
+        if arg in ("-h", "--help"):
+            return None
+        if verb == "clear":
+            raise _OutageUsage(f"outage clear takes no argument, and was given '{arg}'")
+        name, eq, value = arg.partition("=")
+        if name in ("--until", "--why", "--mirror-seq"):
+            if not eq:
+                if i + 1 >= len(rest):
+                    raise _OutageUsage(f"outage declare: {name} needs a value")
+                i += 1
+                value = rest[i]
+            if not value:
+                raise _OutageUsage(f"outage declare: {name} needs a value")
+            if opts[name] is not None:
+                raise _OutageUsage(f"outage declare: {name} is given twice")
+            opts[name] = value
+        elif arg == "--rollback":
+            if opts["--rollback"]:
+                raise _OutageUsage("outage declare: --rollback is given twice")
+            opts["--rollback"] = True
+        else:
+            raise _OutageUsage(f"outage declare: unknown argument '{arg}'")
+        i += 1
+    if opts["--rollback"] and opts["--until"] is not None:
+        raise _OutageUsage("outage declare --rollback takes no --until: a rollback's "
+                           "declaration carries no expiry, and counts until it is cleared")
+    return opts
+
+
+def cmd_outage(args: list[str]) -> int:
+    """`lanes-index outage declare` and `outage clear` (D20; operations.md
+    §2.5; contracts/exit-codes.md §3.2): 0, the declaration written or
+    removed, or none to remove; 2, a refusal, with nothing written; 64, usage,
+    before anything is read. Never 69: on Brett's word a database that does
+    not answer is the declaration's premise, and in the `--rollback` form the
+    same silence is 2."""
+    try:
+        opts = _outage_args(args)
+    except _OutageUsage as exc:
+        note(f"{exc} - see {PROG} outage --help")
+        return EXIT_USAGE
+    if opts is None:
+        say(_OUTAGE_USAGE)
+        return EXIT_OK
+    try:
+        if opts["verb"] == "clear":
+            return _outage_clear()
+        return _outage_declare(opts)
+    except Refusal as exc:
+        note(f"REFUSED: {exc}")
+        return EXIT_REFUSED
+
+
+def _outage_declare(opts: dict) -> int:
+    """`outage declare`, in both forms (ops:496-507): each refusal is a
+    `Refusal`, 2, raised before the file is written."""
+    rollback = opts["--rollback"]
+    until, why, given = opts["--until"], opts["--why"], opts["--mirror-seq"]
+    form = "outage declare --rollback" if rollback else "outage declare"
+    nothing = "nothing was written"
+    # BEFORE ANYTHING IS READ OR SENT: ops §2.5's refusals that need no probe,
+    # in its order, then those of the declaration's form (DEC-21; config.md
+    # §6.3).
+    if not rollback and until is None:
+        raise Refusal(f"{form}: no --until <UTC>. On Brett's word the outage's expiry is "
+                      f"his to name, and every guard ignores the declaration after it (D20; "
+                      f"operations.md §2.5); {nothing}")
+    if rollback and given is None:
+        raise Refusal(f"{form}: no --mirror-seq <k>. A rollback's declaration records the "
+                      f"rollback's head k, as `rollback` prints it; without it, it would "
+                      f"record the mirror's m and reopen R2's M1 (operations.md §2.5); "
+                      f"{nothing}")
+    if not rollback and why is None:
+        raise Refusal(f"{form}: no --why <words>. On Brett's word the declaration records "
+                      f"his words, verbatim (D20); {nothing}")
+    if why is not None and _outage_has_line_break(why):
+        raise Refusal(f"{form}: --why holds a line break. The declaration carries the words "
+                      f"on one line, so the guard's `.outage` label stays on one line "
+                      f"(DEC-21; lane 5's O15); {nothing}")
+    if why is not None and not _outage_utf8(why):
+        raise Refusal(f"{form}: --why is not UTF-8 text, and the declaration is UTF-8 "
+                      f"(contracts/config.md §6.3); {nothing}")
+    if until is not None and not _outage_utc_ok(until):
+        raise Refusal(f"{form}: --until {until!r} is not a UTC of the form "
+                      f"YYYY-MM-DDTHH:MM:SSZ (contracts/config.md §6.3); {nothing}")
+    if given is not None and not re.fullmatch(r"[0-9]+", given):
+        raise Refusal(f"{form}: --mirror-seq {given!r} is not a whole number, as a "
+                      f"Register-Seq is (contracts/config.md §6.3); {nothing}")
+    # THE CONFIGURATION: one refused, Q6(c)'s refusal included, is 2
+    # (exit-codes.md §2). The declaration names the database it covers by this
+    # host's `register_label=` (config.md §6.3), and the probe connects as
+    # `register_url=`'s REGISTER-WRITER.
+    cfg = load_config()
+    label = cfg["register_label"]
+    if not label:
+        raise Refusal(f"{form}: {cfg['path']} names no `register_label=`, the label of the "
+                      f"database the declaration covers (contracts/config.md §6.3); {nothing}")
+    if not cfg["register_url"]:
+        raise Refusal(f"{form}: {cfg['path']} names no `register_url=`, the REGISTER-WRITER "
+                      f"login the probe connects as (D9, Y:3535); {nothing}")
+    store = PostgresStore(cfg, "register_writer")
+    path = register_outage_path(cfg)
+    _outage_refuse_unwritable(path, form, nothing)
+    host = _outage_host(form)
+    # THE PROBE (D9, Y:3535), and ops §2.5's refusals that read it. Where two
+    # of them describe one answer, the narrower one's text is given: Brett's
+    # word at `files` after a rollback is also a database that answers.
+    probe = _outage_probe(store)
+    switch, set_seq, kind = probe.get("switch"), probe.get("set_seq"), probe.get("kind")
+    after_rollback = probe["answered"] and switch == "files" and kind == "rollback"
+    if not rollback:
+        if after_rollback:
+            raise Refusal(f"{form}: the database answers from this host, and the switch "
+                          f"reads `files` after a rollback, its entry at set_seq {set_seq}. A "
+                          f"declaration on Brett's word would record the mirror's m, not the "
+                          f"rollback's head (R2's M1; operations.md §2.5); {nothing}. Run "
+                          f"instead:\n{PROG} outage declare --rollback --mirror-seq "
+                          f"{set_seq - 1}")
+        if probe["answered"]:
+            raise Refusal(f"{form}: the database answers from this host ({probe['end']}), so "
+                          f"the outage is not estate-wide from here (operations.md §2.5); "
+                          f"{nothing}")
+    else:
+        if probe["answered"] and switch == "primary":
+            raise Refusal(f"{form}: the database answers from this host, with the switch at "
+                          f"`primary` (set_seq {set_seq}): no rollback has set it to `files` "
+                          f"(operations.md §2.5); {nothing}")
+        if probe["answered"] and switch == "files" and not after_rollback:
+            entry = f"of kind `{kind}`" if kind else "absent"
+            raise Refusal(f"{form}: the switch reads `files`, but the journal entry at its "
+                          f"set_seq {set_seq} is {entry}, not a `rollback` (operations.md "
+                          f"§2.5); {nothing}")
+        if after_rollback and int(given) != set_seq - 1:
+            raise Refusal(f"{form} --mirror-seq {given}: the rollback's head k is "
+                          f"{set_seq - 1}, set_seq {set_seq} less one, and not {given} (R2's "
+                          f"M1; operations.md §2.5); {nothing}. Run instead:\n{PROG} outage "
+                          f"declare --rollback --mirror-seq {set_seq - 1}")
+        if not after_rollback:
+            raise Refusal(f"{form}: the probe cannot read the switch ({probe['end']}). A "
+                          f"rollback's declaration counts only where a guard's own read finds "
+                          f"the switch at `files`, so here it would gain nothing and be left "
+                          f"behind (V2's S-4; operations.md §2.5); {nothing}")
+    # `mirror-seq=` (F11): the rollback's head k, as given; on Brett's word, m
+    # as given, or else read after a fetch, and with neither, 2 (ops:497).
+    if rollback:
+        seq, whence = int(given), f"the rollback's head k, its entry at set_seq {set_seq}"
+    elif given is not None:
+        seq, whence = int(given), "as --mirror-seq gave it"
+    else:
+        try:
+            seq, commit = _outage_mirror_seq()
+        except StoreUnusable as exc:
+            raise Refusal(f"{form}: no mirror-seq: this host cannot read the mirror's "
+                          f"Register-Seq after a fetch ({exc.detail}). Run `{PROG} status` on "
+                          f"a host that can, and name its m here with --mirror-seq <m> (F11; "
+                          f"operations.md §2.5); {nothing}")
+        whence = f"origin/{branch()} at {commit[:12]}, read after a fetch"
+    try:
+        text = register_outage_text(kind="rollback" if rollback else "word", database=label,
+                                    host=host, mirror_seq=seq,
+                                    why=why if why is not None else "rollback",
+                                    until=None if rollback else until)
+    except ValueError as exc:
+        raise Refusal(f"{form}: the declaration would not be well formed ({exc}); {nothing}")
+    replaced = os.path.lexists(path)
+    try:
+        write_register_outage(path, text)
+    except OSError as exc:
+        raise Refusal(f"{form}: {path} could not be written ({exc.strerror or exc}); "
+                      f"{nothing}, and no temp file is left")
+    say(f"outage declared: {path}" + (", replacing the declaration there" if replaced else ""))
+    for line in text.splitlines():
+        say(f"  {line}")
+    say(f"the probe: {probe['end']}")
+    say(f"mirror-seq: {whence}")
+    return EXIT_OK
+
+
+def _outage_clear() -> int:
+    """`outage clear` (ops:541): removes this host's declaration, and where
+    none is recorded says so and exits 0, so a clear on every host can be
+    repeated. A configuration directory it cannot write is 2, as `outage
+    declare`'s is, with nothing removed."""
+    cfg = load_config()
+    path = register_outage_path(cfg)
+    if not os.path.lexists(path):
+        say(f"outage clear: no declared outage is recorded at {path}; nothing to clear")
+        return EXIT_OK
+    _outage_refuse_unwritable(path, "outage clear", "nothing was removed")
+    try:
+        fields = read_register_outage(path)
+        what = (f"kind={fields['kind']}, declared {fields['utc']} on {fields['host']}"
+                if fields else "")
+    except ValueError as exc:
+        what = f"not well formed: {exc}"
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        say(f"outage clear: no declared outage is recorded at {path}; nothing to clear")
+        return EXIT_OK
+    except OSError as exc:
+        raise Refusal(f"outage clear: {path} could not be removed ({exc.strerror or exc}); "
+                      f"nothing was removed")
+    say(f"outage cleared: removed {path}" + (f" ({what})" if what else ""))
+    return EXIT_OK
+
+
 # ===== the SQL register: schema, roles, bootstrap and logins (007)
 #
 # THE SQL REGISTER'S SCHEMA, WHICH THE BOOTSTRAP ALONE APPLIES (feature 007,
@@ -5363,6 +6018,661 @@ class SyncLock:
             self.handle = None
 
 
+# ===== the SQL register: status, reconcile and sync on primary (007)
+#
+# #160'S `status`, `reconcile` AND `sync` ON THE SQL REGISTER'S SIDE (feature
+# 007, opensoft/openRepoTools#165; T117, FR-048, L1-A15; design Y:4853 and
+# Y:4854; contracts/exit-codes.md §3.4). #160's own lines and exits stay as
+# they were: a configuration with no `register_url=` prints and exits exactly
+# as before, and so does every `reconcile` and `sync` on `mode=index`.
+#
+# STATUS, where `register_url=` is configured, in either mode, prints the
+# register's block after #160's sources (`status_register`). It makes ONE
+# request as this engineer's READER, on D9's `status` row (Y:3528), in one
+# read-only snapshot: the readers' schema window, the switch, the journal's
+# head `n` and the generation, the mirror state (D16), and the journal's answer
+# for each pending record's write id (D8, F10). The mirror's `m` is the newest
+# `Register-Seq` on `origin/<branch>` as last fetched in the workspace checkout,
+# read by T121's `mirror_register_seq`; `status` never fetches. Then the
+# pending records under `<state>/register-pending/`, and the declaration
+# `register-outage`, which it reports as left in place while the database
+# answers (ops §2.5). Each read records the head it found in
+# `<state>/register-head`, so a `status` that cannot read the register prints
+# `m` and that last head, `h`, or "unknown" (ops §2.3, the disaster path's
+# step 4), and exits 69 (Y:3528). The service's lines are lane 5's T512, after
+# these (R44).
+#
+# RECONCILE, on `mode=primary` and for the register's source, checks the mirror
+# against SQL and writes nothing (`reconcile_register`; Y:4854). It compares the
+# render set at `R`, the commit on `origin/<branch>` that carries `m`, with each
+# render-set path's latest `journal_files` digest at or below `m`. It names
+# each commit after `R` that changes the render set and carries no
+# `Register-Seq` (Y:2921-2930), and counts the seqs the mirror lacks. It makes
+# one request as READER, on D9's renderer row, which `reconcile` shares
+# (Y:3527). A mirror that differs is reported with 0 (exit-codes.md §3.4, [P]).
+# The re-render is lane 3's T325, in phase 3.
+#
+# SYNC of the register's source on `mode=primary` does nothing and says so
+# (`sync_register_on_primary`). It makes no `psql` call, takes no lock and
+# writes no file: the mirror is never indexed back into the database it came
+# from (Y:1031; Y:2976-2978). The inventory's sync is unchanged.
+
+#: THE LAST HEAD `status` READ (ops §2.3, the disaster path's step 4; ops:511;
+#: config.md §6.2), in the state directory: `format=1`, `database=`,
+#: `generation=`, `head=` and `utc=`, one per line, 0600, by temp file and
+#: rename. A `status` that cannot read the register prints it as `h`, beside
+#: the mirror's `m`. `register_outage_text(last_head=...)` can take it
+#: (T121; T304), through `read_register_last_head`.
+REGISTER_HEAD_FILE = "register-head"
+
+#: THE PENDING RECORDS (F10; Y:5171-5172): `<state>/register-pending/<d>`, where
+#: `<d>` is 64 lower hex. Claim files (`<d>.take.<k>`) and temp files are
+#: passed over.
+REGISTER_PENDING_DIR = "register-pending"
+_REGISTER_PENDING_NAME_RE = re.compile(r"[0-9a-f]{64}")
+
+#: THE RENDER SET IN A TREE (Q18(A); Y:2924-2926), as `git` takes it: the four
+#: paths, with `lanes/log/README.md` left out. `lanes/STORE`, the marker, is
+#: set aside, as the rollback's proof sets it aside (ops §2.3, step 3).
+REGISTER_RENDER_PATHSPECS = (REGISTER_PATH, ALIASES_PATH, "lanes/archive/", LOG_PREFIX)
+REGISTER_RENDER_EXCLUDED = "lanes/log/README.md"
+
+#: How many of `reconcile`'s differences it names, one per line. It counts the
+#: rest.
+RECONCILE_SHOWN = 100
+
+#: The indent of a continuation line in `status`'s blocks, under the value.
+_REGISTER_INDENT = " " * 15
+
+
+def _register_shown(value, limit: int = 200) -> str:
+    """`value` as one printable line: each C0 or C1 control character, DEL,
+    U+2028 and U+2029 as `?`, and at most `limit` characters."""
+    text = re.sub(r"[\x00-\x1f\x7f-\x9f  ]", "?", "" if value is None else str(value))
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _register_utc(column: str) -> str:
+    """A `timestamptz` column as `YYYY-MM-DDTHH:MM:SSZ`, whatever `TimeZone`
+    the session has: this build's register calls set none."""
+    return f"to_char({column} AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')"
+
+
+def _register_state_queries() -> list[str]:
+    """The four reads every register state read starts with: the readers'
+    schema window (§1.5), the switch (S1), the head `n` and the mirror state
+    (D16), each one row."""
+    return [
+        "SELECT version, writers_from, readers_from FROM schema_version WHERE id = 1",
+        f"SELECT mode, marker_state, marker_seq, marker_commit, generation, repository, "
+        f"database_label, {_register_utc('set_utc')}, set_seq, set_by_lane, set_by_ws "
+        f"FROM register_switch WHERE id = 1",
+        "SELECT seq FROM register_head WHERE id = 1",
+        f"SELECT diverged_sha, {_register_utc('found_utc')}, found_by_ws, last_error, "
+        f"{_register_utc('last_error_utc')} FROM mirror_state WHERE id = 1"]
+
+
+def _register_state_of(answers: list) -> dict:
+    """`_register_state_queries`' four answers as one dict. A missing row, or a
+    value that is not what its column holds, is `RegisterUnavailable`."""
+    version = _register_one_row(answers[0], 3, "schema_version")
+    switch = _register_one_row(answers[1], 11, "register_switch")
+    head = _register_one_row(answers[2], 1, "register_head")
+    mirror = _register_one_row(answers[3], 5, "mirror_state")
+    try:
+        return {"version": int(version[0]), "writers_from": int(version[1]),
+                "readers_from": int(version[2]),
+                "mode": switch[0] or "", "marker": switch[1] or "",
+                "marker_seq": None if switch[2] is None else int(switch[2]),
+                "marker_commit": switch[3] or "", "generation": (switch[4] or "").lower(),
+                "repository": switch[5] or "", "label": switch[6] or "",
+                "set_utc": switch[7] or "", "set_seq": int(switch[8]),
+                "set_by_lane": switch[9] or "", "set_by_ws": switch[10] or "",
+                "n": int(head[0]),
+                "diverged": mirror[0] or "", "found_utc": mirror[1] or "",
+                "found_by_ws": mirror[2] or "", "last_error": mirror[3] or "",
+                "last_error_utc": mirror[4] or ""}
+    except (TypeError, ValueError):
+        raise RegisterUnavailable("psql answered a register state this build cannot read: "
+                                  "a number that is not one")
+
+
+def _register_read_failure(exc: StoreUnusable) -> str:
+    """Why a register read did not answer, with nothing secret in it
+    (contract §2.6): its timer, nothing sent, or `psql`'s exit and its first
+    line on stderr."""
+    if isinstance(exc, PsqlFailed):
+        if exc.timer_expired:
+            return f"no answer within its client timer: {exc.detail}"
+        if not exc.ran:
+            return f"nothing was sent: {exc.detail}"
+        return f"psql exited {exc.psql_exit}: {exc.first_line or exc.detail}"
+    return f"nothing was sent: {exc.detail}"
+
+
+def register_state_read(cfg: dict, row: str, extra: list[str] | None = None) -> tuple:
+    """ONE register read as this engineer's READER (Y:2317; Y:3460), on D9's
+    `row`, in one REPEATABLE READ READ ONLY snapshot, sent as one request
+    (contract §2.3): `_register_state_queries`, then `extra`.
+
+    Returns `(state, extra's answers, "")`. Where the register cannot be read,
+    it returns `(None, [], why)`: no answer, a failed statement, a missing row,
+    or a schema outside the readers' window (§1.5; Y:2338), whose answer is
+    then not used. Each is 69 to `status` and `reconcile` (D10; Y:3527;
+    Y:3528)."""
+    queries = _register_state_queries() + list(extra or [])
+    try:
+        store = PostgresStore(cfg, "register_reader")
+        answers = store._query_many(queries, snapshot=True, row=row)
+        if len(answers) != len(queries):
+            raise RegisterUnavailable(f"psql answered {len(answers)} of the {len(queries)} "
+                                      f"reads of one snapshot")
+        state = _register_state_of(answers)
+    except StoreUnusable as exc:
+        return None, [], _register_read_failure(exc)
+    except RegisterUnavailable as exc:
+        return None, [], str(exc)
+    refusal = register_version_refusal(state["version"], state["writers_from"],
+                                       state["readers_from"], write=False)
+    if refusal:
+        return None, [], f"{refusal}; nothing it read is shown (Y:2338)"
+    return state, answers[len(_register_state_queries()):], ""
+
+
+def _register_store_name(cfg: dict) -> str:
+    """The register's database, without a credential (contract §2.6): this
+    host's `register_label=`, or else the host and database `reader_url=`
+    names."""
+    if cfg["register_label"]:
+        return f"database {_register_shown(cfg['register_label'])}"
+    env = pg_url_env(cfg["reader_url"], "`reader_url=`")
+    return (f"database {_register_shown(env.get('PGDATABASE') or '(the default)')} at "
+            f"{_register_shown(env.get('PGHOST') or '(the default host)')}")
+
+
+def _register_mirror(root: str, unread: str = "") -> dict:
+    """`m`, the newest `Register-Seq` on `origin/<branch>` as last fetched in
+    the checkout `root`, and the commit `R` carrying it, by T121's
+    `mirror_register_seq`, the walk bounded by `LANES_GIT_TIMEOUT`. Nothing is
+    fetched. `why` says why there is no `m`: `unread` where `root` itself
+    could not be found, `unread: ...` where git failed, and `no-seq: ...`
+    where no commit carries one."""
+    if not root:
+        return {"m": None, "commit": "", "why": f"unread: {unread or 'no workspace checkout'}",
+                "text": f"unread - {unread or 'no workspace checkout'}"}
+    timeout = mirror_git_timeout()
+    try:
+        m, commit = mirror_register_seq(root, None if timeout is None
+                                        else time.monotonic() + timeout)
+    except StoreUnusable as exc:
+        return {"m": None, "commit": "", "why": f"{exc.kind}: {exc.detail}",
+                "text": f"{exc.kind} - {exc.detail}"}
+    return {"m": m, "commit": commit, "why": "",
+            "text": f"Register-Seq {m} at {commit[:12]}, origin/{branch()} as last fetched in "
+                    f"{root} (not fetched here)"}
+
+
+def register_head_path() -> str:
+    """`<state>/register-head`, the last head `status` read."""
+    return os.path.join(state_dir(), REGISTER_HEAD_FILE)
+
+
+def read_register_last_head() -> dict | None:
+    """The last head `status` recorded: `format`, `database`, `generation`,
+    `head` (an int) and `utc`. None where none is recorded, or the file cannot
+    be read as one."""
+    try:
+        with open(register_head_path(), "rb") as handle:
+            text = handle.read(4096).decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    fields: dict = {}
+    for line in text.split("\n"):
+        key, eq, value = line.partition("=")
+        if eq and key not in fields:
+            fields[key] = value
+    if fields.get("format") != "1" or not re.fullmatch(r"-?[0-9]+", fields.get("head", "")):
+        return None
+    fields["head"] = int(fields["head"])
+    return fields
+
+
+def record_register_head(state: dict) -> None:
+    """Records the head `state` read, by temp file and rename in a 0700 state
+    directory (T121's `write_register_outage`, which writes any such file).
+    Raises `OSError`."""
+    text = "".join(f"{key}={_register_shown(value)}\n" for key, value in (
+        ("format", 1), ("database", state["label"]), ("generation", state["generation"]),
+        ("head", state["n"]), ("utc", utc_now())))
+    os.makedirs(state_dir(), mode=0o700, exist_ok=True)
+    write_register_outage(register_head_path(), text)
+
+
+def register_pending_records() -> tuple[str, list, str]:
+    """The pending records (F10; Y:5171-5172), each as a dict: `name`, its
+    file name, `<d>`; `fields`, its first value of each key; `calls`, how many
+    `call` lines it holds; `write_id`, lower-cased; `id_ok`, whether that is
+    a UUID; and `error`, why it could not be read, or "". Returns `(the
+    directory, the records by name, why the directory could not be listed or
+    "")`. Only lane 4's writers write them; this reads and changes nothing."""
+    directory = os.path.join(state_dir(), REGISTER_PENDING_DIR)
+    try:
+        names = sorted(os.listdir(directory))
+    except FileNotFoundError:
+        return directory, [], ""
+    except OSError as exc:
+        return directory, [], f"{directory} cannot be listed ({exc.strerror or exc})"
+    records = []
+    for name in names:
+        if not _REGISTER_PENDING_NAME_RE.fullmatch(name):
+            continue
+        rec = {"name": name, "fields": {}, "calls": 0, "write_id": "", "id_ok": False,
+               "error": ""}
+        records.append(rec)
+        path = os.path.join(directory, name)
+        try:
+            if not stat.S_ISREG(os.lstat(path).st_mode):
+                raise ValueError("it is not a regular file")
+            with open(path, "rb") as handle:
+                text = handle.read(1 << 20).decode("utf-8")
+        except FileNotFoundError:
+            rec["error"] = "it was removed while it was read"
+            continue
+        except OSError as exc:
+            rec["error"] = f"it cannot be read ({exc.strerror or exc})"
+            continue
+        except ValueError as exc:
+            rec["error"] = str(exc) if not isinstance(exc, UnicodeDecodeError) else "it is not UTF-8"
+            continue
+        for line in text.split("\n"):
+            key, eq, value = line.partition("=")
+            if not eq:
+                continue
+            if key == "call":
+                rec["calls"] += 1
+            elif key not in rec["fields"]:
+                rec["fields"][key] = value
+        rec["write_id"] = rec["fields"].get("write_id", "").lower()
+        rec["id_ok"] = bool(UUID_FULL_RE.match(rec["write_id"]))
+    return directory, records, ""
+
+
+def _register_pending_query(ids: list[str]) -> str:
+    """The journal's answer for each write id: its seq, lane, verb and
+    `args_sha256`. `ids` are UUIDs."""
+    return ("SELECT write_id, seq, lane, verb, args_sha256 FROM journal WHERE write_id IN ("
+            + ", ".join(f"{_pg_quote(i)}::uuid" for i in ids) + ") ORDER BY seq")
+
+
+def _register_pending_line(rec: dict, state: dict | None, found: dict) -> str:
+    """One pending record, and what the journal says of its write id (test
+    plan's AT-D8: `status` lists each record and reports whether its id is in
+    the journal)."""
+    shown = _register_shown
+    if rec["error"]:
+        return f"{rec['name'][:12]}: cannot be read: {shown(rec['error'])}"
+    f = rec["fields"]
+    what = (f"{rec['name'][:12]}: write {shown(f.get('write_id') or '?', 40)}, lane "
+            f"{shown(f.get('lane') or '?', 80)}, verb {shown(f.get('verb') or '?', 40)}, made "
+            f"{shown(f.get('created_utc') or '?', 40)}, {rec['calls']} call line(s)"
+            f"{' - in doubt' if rec['calls'] else ''}, tail {shown(f.get('tail') or 'none', 80)}")
+    generation = (f.get("generation") or "").lower()
+    if not rec["id_ok"]:
+        verdict = "its write_id is not a UUID, so it was not looked up"
+    elif state is None:
+        verdict = "not looked up, since the register cannot be read"
+    elif generation and generation != state["generation"]:
+        verdict = (f"of generation {shown(generation, 40)}, and this register is "
+                   f"{state['generation']}: a plain rerun refuses it; look for its effect, "
+                   f"then rerun with LANES_WRITE_ID=new (F10)")
+    elif rec["write_id"] in found:
+        row = found[rec["write_id"]]
+        if (row[2], row[3], row[4] or "") == (f.get("lane"), f.get("verb"),
+                                              f.get("args_sha256") or ""):
+            verdict = f"in the journal at seq {row[1]}"
+        else:
+            verdict = (f"its id is in the journal at seq {row[1]}, for another write (lane "
+                       f"{shown(row[2], 80)}, verb {shown(row[3], 40)})")
+    else:
+        verdict = f"not in the journal at n {state['n']}"
+    return f"{what}: {verdict}"
+
+
+def _register_outage_lines(cfg: dict, state: dict | None) -> list[str]:
+    """The declaration beside `lanes-index.conf` (D20; config.md §6), as
+    `status` reports it: none, one not well formed, or its fields and what
+    they mean here. While the database answers, one present is LEFT IN PLACE,
+    to be ended at once (ops §2.5, "How it ends")."""
+    path = register_outage_path(cfg)
+    try:
+        fields = read_register_outage(path)
+    except ValueError as exc:
+        return [f"a file that is not a well-formed declaration is at {path} ({exc}): no "
+                f"guard honours it, and `{PROG} outage clear` removes it"]
+    if fields is None:
+        return [f"none declared ({path})"]
+    shown = _register_shown
+    if fields["kind"] == "word":
+        lines = [f"declared outage on Brett's word, at {fields['utc']} on "
+                 f"{shown(fields['host'], 80)}, until {fields['until']}, for database "
+                 f"{shown(fields['database'], 80)}, mirror-seq {fields['mirror-seq']}: "
+                 f"\"{shown(fields['why'], 400)}\" ({path})"]
+    else:
+        lines = [f"declared outage from a rollback, at {fields['utc']} on "
+                 f"{shown(fields['host'], 80)}, for database {shown(fields['database'], 80)}, "
+                 f"mirror-seq {fields['mirror-seq']} (the rollback's head), with no expiry "
+                 f"({path})"]
+    if fields["database"] != cfg["register_label"]:
+        lines.append(f"it names database {shown(fields['database'], 80)}, and this host's "
+                     f"register_label= is {shown(cfg['register_label'] or '(unset)', 80)}: no "
+                     f"guard here honours it")
+    if fields["kind"] == "word" and fields["until"] <= utc_now():
+        lines.append(f"it expired at {fields['until']}, so every guard ignores it")
+    if state is None:
+        lines.append("the database cannot be read from here, so on mode=primary a guard may "
+                     "answer from the mirror under it (SVC-12)")
+    elif fields["kind"] == "rollback" and state["mode"] == "files":
+        lines.append("left in place while the database answers, with the switch at `files`: "
+                     "the rollback's step 6 ends it (operations.md §2.3)")
+    else:
+        lines.append(f"left in place while the database answers: end it with `{PROG} outage "
+                     f"clear` on each configured workstation (operations.md §2.5)")
+    return lines
+
+
+def status_register(cfg: dict, root: str, root_unread: str = "") -> int:
+    """`status`'s register block (Y:4853; exit-codes.md §3.4), printed where
+    `register_url=` is configured: the switch, `n`, the generation, the
+    mirror's last `Register-Seq` and the lag, `diverged at`, the renderer's
+    last failed pass, the pending records and a declaration left in place.
+    Returns 0, or 69 where the register cannot be read or its timer expires;
+    it then prints `m` and the last head recorded here, and the lag from them
+    where it can (Y:3528; ops §2.3, step 4)."""
+    directory, records, unlisted = register_pending_records()
+    ids = sorted({rec["write_id"] for rec in records if rec["id_ok"]})
+    state, answers, why = register_state_read(cfg, "status",
+                                              [_register_pending_query(ids)] if ids else [])
+    found = {}
+    if state is not None and ids:
+        for row in answers[0]:
+            if len(row) == 5 and row[0]:
+                found[row[0].lower()] = row
+    say(f"register: {_register_store_name(cfg)} (mode={cfg['mode']}; schema "
+        f"{cfg['register_schema']})")
+    mirror = _register_mirror(root, root_unread)
+    m = mirror["m"]
+    if state is None:
+        say(f"  read:        the register cannot be read - {_register_shown(why, 400)}")
+        say("  n:           unknown, since the register cannot be read")
+        last = read_register_last_head()
+        if last is None:
+            say(f"  last head:   unknown: no head is recorded at {register_head_path()}")
+        else:
+            say(f"  last head:   {last['head']}, recorded by status at "
+                f"{_register_shown(last.get('utc') or '?', 40)} (database "
+                f"{_register_shown(last.get('database') or '?', 80)}, generation "
+                f"{_register_shown(last.get('generation') or '?', 40)})")
+        say(f"  mirror:      {mirror['text']}")
+        if last is None or m is None:
+            lag = "unknown: it needs the mirror's m and a recorded head"
+        elif last["head"] >= m:
+            lag = (f"at least {last['head'] - m} seq(s): the last head recorded here, "
+                   f"{last['head']}, less the mirror's {m}")
+        else:
+            lag = (f"unknown: the mirror's {m} is past the last head recorded here, "
+                   f"{last['head']}")
+        say(f"  lag:         {lag}")
+    else:
+        try:
+            record_register_head(state)
+        except OSError as exc:
+            note(f"status: the head could not be recorded at {register_head_path()} "
+                 f"({exc.strerror or exc})")
+        marker = f"marker {state['marker']}"
+        if state["marker_seq"] is not None:
+            marker += f" (seq {state['marker_seq']}" + (
+                f", commit {state['marker_commit'][:12]})" if state["marker_commit"] else ")")
+        say(f"  switch:      {state['mode']}, {marker}; set at seq {state['set_seq']} on "
+            f"{state['set_utc']} by {_register_shown(state['set_by_lane'], 80)} on "
+            f"{_register_shown(state['set_by_ws'], 80)}")
+        label = (f"  database:    {_register_shown(state['label'], 80)}, repository "
+                 f"{_register_shown(state['repository'], 120)}")
+        if state["label"] != cfg["register_label"]:
+            label += (f"; this host's register_label= is "
+                      f"{_register_shown(cfg['register_label'] or '(unset)', 80)}")
+        say(label)
+        say(f"  n:           {state['n']}" + (", the journal is empty" if state["n"] < 0 else ""))
+        say(f"  generation:  {state['generation']}")
+        say(f"  mirror:      {mirror['text']}")
+        if m is None:
+            lag = "unknown, since the mirror's m cannot be read here (the mirror line says why)"
+        elif m <= state["n"]:
+            lag = f"{state['n'] - m} seq(s): n {state['n']} less the mirror's {m}"
+        else:
+            lag = (f"none, and the mirror's {m} is past n {state['n']}: at primary a divergence "
+                   f"the renderer records (R2's N6); at files, (ii')'s marker-first window")
+        say(f"  lag:         {lag}")
+        if state["diverged"]:
+            say(f"  divergence:  diverged at {state['diverged']} (found {state['found_utc']} by "
+                f"{_register_shown(state['found_by_ws'], 80)}): resolve it with `{PROG} import "
+                f"--single <sha>` or `{PROG} render --revert <sha>` (D16)")
+        else:
+            say("  divergence:  none recorded")
+        if state["last_error"]:
+            say(f"  renderer:    its last failed pass, at {state['last_error_utc']}: "
+                f"{_register_shown(state['last_error'], 400)}")
+        else:
+            say("  renderer:    no failed pass recorded")
+    if unlisted:
+        say(f"  pending:     unread - {unlisted}")
+    elif not records:
+        say(f"  pending:     none in {directory}")
+    else:
+        say(f"  pending:     {len(records)} record(s) in {directory}")
+        for rec in records:
+            say(f"    {_register_pending_line(rec, state, found)}")
+    outage = _register_outage_lines(cfg, state)
+    say(f"  outage:      {outage[0]}")
+    for line in outage[1:]:
+        say(f"{_REGISTER_INDENT}{line}")
+    return EXIT_OK if state is not None else EXIT_UNAVAILABLE
+
+
+def _register_render_set(root: str, sha: str) -> dict:
+    """The render set in the tree of commit `sha`: each path's sha256, the
+    digest `journal_files` holds (S2), or None for an entry that is not a
+    file. `StoreUnusable` where git cannot read it."""
+    proc = git(root, "ls-tree", "-r", "-z", sha, "--", *REGISTER_RENDER_PATHSPECS)
+    entries = []
+    for entry in proc.stdout.split("\0"):
+        if not entry:
+            continue
+        meta, _, path = entry.partition("\t")
+        if path == REGISTER_RENDER_EXCLUDED:
+            continue
+        parts = meta.split()
+        entries.append((path, parts[2] if len(parts) == 3 and parts[1] == "blob" else ""))
+    blobs = cat_blobs(root, [obj for _path, obj in entries if obj])
+    return {path: (hashlib.sha256(blobs[obj]).hexdigest() if obj in blobs else None)
+            for path, obj in entries}
+
+
+def _register_strays(root: str, commit: str, tip: str) -> tuple[list[str], int]:
+    """The commits after `commit` on `tip`'s first-parent line that change
+    the render set, and how many commits come after it. None of them carries
+    a `Register-Seq`, since `commit` is the newest that does, so none is a
+    render commit (Y:2921-2930)."""
+    count = git(root, "rev-list", "--first-parent", "--count", f"{commit}..{tip}")
+    proc = git(root, "-c", "log.showSignature=false", "log", "--first-parent", "--format=%H",
+               f"{commit}..{tip}", "--", *REGISTER_RENDER_PATHSPECS,
+               f":(exclude){REGISTER_RENDER_EXCLUDED}")
+    try:
+        after = int(count.stdout.strip())
+    except ValueError:
+        after = 0
+    return [line for line in proc.stdout.split("\n") if SHA_RE.match(line)], after
+
+
+def reconcile_register(cfg: dict, requested: str | None, dry_run: bool) -> int:
+    """`reconcile` on `mode=primary`, for the register's source: the mirror
+    checked against SQL, READ-ONLY (Y:4854; exit-codes.md §3.4). Nothing is
+    written, and no lock is taken, here or in the database.
+
+    Exits 0 once the check is made, whatever it found: a mirror that differs
+    is reported on stdout ([P]). 69 where the register cannot be read or its
+    timer expires (D10; Y:3527). #160's 1 where the mirror's checkout cannot
+    be read. 2 for a `--source` that is not this workstation's register."""
+    root, tip = "", ""
+    source = requested or "the register's source"
+    mirror = {"m": None, "commit": "", "why": "", "text": ""}
+    try:
+        root = workspace_root()
+        source = resolve_source(requested, root)
+        tip = tip_of(root)
+        mirror = _register_mirror(root)
+    except StoreUnusable as exc:
+        mirror.update(why=f"{exc.kind}: {exc.detail}", text=f"{exc.kind} - {exc.detail}")
+    m, commit = mirror["m"], mirror["commit"]
+    mine, strays, after = None, [], 0
+    if m is not None:
+        try:
+            mine = _register_render_set(root, commit)
+            strays, after = _register_strays(root, commit, tip)
+        except StoreUnusable as exc:
+            mirror["why"] = f"{exc.kind}: {exc.detail}"
+            mirror["text"] += f"; its render set cannot be read - {exc.kind}: {exc.detail}"
+            mine = None
+    after_m = -2 if m is None else m
+    extra = [f"SELECT min(seq), max(seq), count(*) FILTER (WHERE seq > {after_m}), "
+             f"count(*) FILTER (WHERE seq > {after_m} AND operator) FROM journal"]
+    if mine is not None:
+        extra.append(f"SELECT DISTINCT ON (path) path, present, sha256 FROM journal_files "
+                     f"WHERE seq <= {m} AND path <> 'lanes/STORE' ORDER BY path, seq DESC")
+    state, answers, why = register_state_read(cfg, "render", extra)
+    if state is not None:
+        try:
+            summary = _register_one_row(answers[0], 4, "the journal's extent")
+            first = None if summary[0] is None else int(summary[0])
+            lacks, operators = int(summary[2]), int(summary[3])
+        except (RegisterUnavailable, TypeError, ValueError) as exc:
+            state, why = None, (str(exc) if isinstance(exc, RegisterUnavailable) else
+                                "psql answered a journal extent this build cannot read")
+    say(f"{PROG} reconcile: {source} on primary - the mirror against the SQL register, "
+        f"read-only{' - DRY RUN' if dry_run else ''}")
+    say(f"  mirror:      {mirror['text']}"
+        + (f"; the tip is {tip[:12]}" if tip and commit and tip != commit else ""))
+    nothing = "nothing was written: this check is read-only"
+    if state is None:
+        say(f"  register:    cannot be read - {_register_shown(why, 400)}")
+        say(f"  result:      the check could not be made; {nothing}")
+        return EXIT_UNAVAILABLE
+    say(f"  register:    switch {state['mode']}, marker {state['marker']}; n {state['n']}; "
+        f"generation {state['generation']}")
+    if state["diverged"]:
+        recorded = (f"diverged at {state['diverged']} (found {state['found_utc']} by "
+                    f"{_register_shown(state['found_by_ws'], 80)})")
+    else:
+        recorded = "none recorded"
+    if mine is None:
+        say(f"  divergence:  {recorded}")
+        if mirror["why"].startswith("no-seq"):
+            say(f"  result:      the mirror carries no Register-Seq, so it has no seq to be "
+                f"compared at, and it is no mirror of this register; {nothing}")
+            return EXIT_OK
+        say(f"  result:      the mirror cannot be read, so it was not compared; {nothing}")
+        return 1
+    differences, rows = [], []
+    if first is None:
+        compared = f"none: the journal is empty, and the mirror is at seq {m}"
+        differences.append("the journal is empty")
+    elif m > state["n"]:
+        compared = (f"none: the mirror's {m} is past n {state['n']}, at primary a divergence "
+                    f"the renderer records (R2's N6)")
+        differences.append(f"the mirror's Register-Seq {m} is past n {state['n']}")
+    elif m < first:
+        compared = (f"none: the journal begins at seq {first}, after the mirror's {m}, so SQL "
+                    f"holds no images at {m}")
+        differences.append(f"the journal begins after seq {m}")
+    else:
+        sql = {row[0]: row[2] for row in answers[1] if len(row) == 3 and row[1] == "t"}
+        for path in sorted(set(sql) | set(mine)):
+            if path not in mine:
+                rows.append(f"missing   {_register_shown(path)}: in SQL at seq {m}, not on the "
+                            f"mirror")
+            elif path not in sql:
+                rows.append(f"extra     {_register_shown(path)}: on the mirror, not in SQL at "
+                            f"seq {m}")
+            elif mine[path] != sql[path]:
+                rows.append(f"differs   {_register_shown(path)}: the mirror's sha256 "
+                            f"{(mine[path] or 'not a file')[:12]}, SQL's {sql[path][:12]}")
+        total = len(set(sql) | set(mine))
+        if rows:
+            compared = f"{len(rows)} of {total} render-set path(s) differ:"
+            differences.append(f"{len(rows)} path(s) at seq {m}")
+        else:
+            compared = f"{total} render-set path(s), each equal on the mirror and in SQL"
+    label = f"at seq {m}:"
+    say(f"  {label}{' ' * max(1, 13 - len(label))}{compared}")
+    for line in rows[:RECONCILE_SHOWN]:
+        say(f"    {line}")
+    if len(rows) > RECONCILE_SHOWN:
+        say(f"    and {len(rows) - RECONCILE_SHOWN} more")
+    if strays:
+        say(f"  after it:    {len(strays)} of the {after} commit(s) after {commit[:12]} change "
+            f"the render set and carry no Register-Seq, so none is a render commit: "
+            + ", ".join(strays[:RECONCILE_SHOWN])
+            + (f", and {len(strays) - RECONCILE_SHOWN} more" if len(strays) > RECONCILE_SHOWN
+               else ""))
+        differences.append(f"{len(strays)} stray commit(s) after seq {m}")
+    else:
+        say(f"  after it:    {after} commit(s) after {commit[:12]}, none of them changing the "
+            f"render set")
+    if m <= state["n"]:
+        span = f" ({m + 1} to {state['n']})" if lacks else ""
+        say(f"  lag:         {lacks} seq(s) the mirror lacks{span}, {operators} of them operator "
+            f"entries")
+    say(f"  divergence:  {recorded}")
+    if differences:
+        say(f"  result:      the mirror differs from SQL ({'; '.join(differences)}); {nothing}, "
+            f"and a divergence is resolved on a person's word (D16; operations.md §2.3)")
+    elif state["diverged"]:
+        say(f"  result:      the mirror equals SQL at seq {m}, and the divergence recorded "
+            f"stands until a person resolves it (D16); {nothing}")
+    else:
+        say(f"  result:      the mirror equals SQL at seq {m}; {nothing}, and T325 re-renders "
+            f"what the mirror lacks, in phase 3")
+    return EXIT_OK
+
+
+def register_primary_config() -> dict | None:
+    """The configuration, where it loads and says `mode=primary`; None
+    otherwise. A configuration it refuses is None too, so the caller's #160
+    path refuses it where it always has, Q6(c)'s refusal included."""
+    try:
+        cfg = load_config()
+    except Refusal:
+        return None
+    return cfg if cfg["mode"] == "primary" else None
+
+
+def sync_register_on_primary(requested: str | None) -> int:
+    """`sync` of the register's source on `mode=primary`: nothing, said on
+    stdout, and 0 (exit-codes.md §3.4; Y:1031; Y:2976-2978). No `psql` call, no
+    lock and no file. A `--source` naming another workstation's register is
+    still refused, 2, as #160 refuses it; `register` alone names this one."""
+    source = "the register's source"
+    if requested and requested != "register":
+        try:
+            source = resolve_source(requested, workspace_root())
+        except StoreUnusable:
+            source = requested
+    say(f"{PROG} sync: {source} - sync does nothing on primary: under mode=primary the SQL "
+        f"register is the register's store, and its mirror is never indexed back into the "
+        f"database it came from (design Y:1031, Y:2976); nothing was read from it and nothing "
+        f"was written")
+    return EXIT_OK
+
+
 # ================================================================ the acts
 
 def resolve_source(requested: str | None, root: str) -> str:
@@ -5987,6 +7297,10 @@ def cmd_sync(requested: str | None) -> int:
         say(f"{PROG} sync: LANES_INDEX=off - nothing indexed")
         return 0
     kind = "inventory" if is_inventory(requested) else "register"
+    # ON PRIMARY, THE REGISTER'S SYNC DOES NOTHING AND SAYS SO (T117; Y:4854),
+    # before the lock: no `psql`, no lock file, no status written.
+    if kind == "register" and register_primary_config() is not None:
+        return sync_register_on_primary(requested)
     asked = {kind: requested}
     # A SOURCE IS REFUSED BEFORE THE LOCK IS ASKED FOR (opensoft/openRepoTools#173,
     # Copilot's fourth review of #171). Behind a held lock this sync only
@@ -6062,6 +7376,13 @@ def cmd_reconcile(requested: str | None, dry_run: bool) -> int:
         say(f"{PROG} reconcile: LANES_INDEX=off - nothing indexed")
         return 0
     kind = "inventory" if is_inventory(requested) else "register"
+    # ON PRIMARY, THE REGISTER'S RECONCILE IS THE MIRROR'S READ-ONLY CHECK
+    # AGAINST SQL (T117; Y:4854): no lock, and nothing written.
+    if kind == "register":
+        primary = register_primary_config()
+        if primary is not None:
+            return reconcile_register(primary, None if requested == "register" else requested,
+                                      dry_run)
     lock = SyncLock()
     if not dry_run and not lock.acquire(60):
         note(f"another sync has held {lock.path} for 60 s; nothing written")
@@ -6125,12 +7446,14 @@ def cmd_status() -> int:
     root = ""
     source = ""
     tip = ""
+    root_unread = ""
     try:
         root = workspace_root()
         source = source_of(root)
         tip = tip_of(root)
     except StoreUnusable as exc:
         say(f"workspace: {exc.detail}")
+        root_unread = exc.detail
         rc = 1
     provs: list = []
     try:
@@ -6194,6 +7517,11 @@ def cmd_status() -> int:
         say(f"  last sync:   {entry.get('last_sync_utc') or 'never, from this workstation'}"
             f"{' (' + entry['last_result'] + ')' if entry.get('last_result') else ''}")
         say(f"  last error:  {entry.get('last_error') or 'none'}")
+    # THE SQL REGISTER'S BLOCK (T117; Y:4853), where it is configured, in either
+    # mode: 69 where it cannot be read, over #160's own exit (Y:3528).
+    if cfg["register_url"]:
+        if status_register(cfg, root if tip else "", root_unread) != EXIT_OK:
+            rc = EXIT_UNAVAILABLE
     return rc
 
 
@@ -6489,6 +7817,8 @@ def main(argv: list[str]) -> int:
     # ahead of #160's argument loop, to the subcommand's own parser.
     if verb == "mode":
         return cmd_mode(args)
+    if verb == "outage":
+        return cmd_outage(args)
     if verb == "register" and args[:1] == ["classify"]:
         return cmd_register_classify(args[1:])
     if verb == "bootstrap":
