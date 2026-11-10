@@ -7216,15 +7216,20 @@ pw_rec_here() {
 # 6770688147, T418 item 1). A record from another host or container counts as
 # none (Y:5344) and is left as it is, for a rerun there, which can take it over
 # and replay; only this run's claim goes, and the words gain one clause naming
-# that record's host and container (T418 item 6). `<name>` is compared as the
-# row has it (`PW_E_WS_RAW`) and printed filtered (#165 6774499606, T418 item 5:
-# REV418b NIT-4).
+# that record's host and container (T418 item 6), only where that host or
+# container is not this run's (#165 6774499606, T418 item 5: REV418b NIT-3,
+# NIT-4): a record of this host and container that this run's claim no longer
+# owns counts as none for that reason, not this one, and the clause is not said.
+# `<name>` is compared as the row has it (`PW_E_WS_RAW`) and printed filtered.
 pw_no_record_end() {   # <seq>
   local nr_u="" nr_rec=""
   pw_abandon_all
   wr_claim_release || :
   if [ "$PW_REC_OURS" = 1 ] && [ -z "$WR_UPDATED_UTC" ] && [ -n "$WR_REC_HOST" ]; then
-    nr_rec=". The pending record here was written on ${WR_REC_HOST}/${WR_REC_CONTAINER:-<unknown>}, not this host and container, so it counts as none, since tails are host-local, and is left in place for a rerun there"
+    wr_here
+    if [ "$WR_REC_HOST" != "$WR_HERE_HOST" ] || [ "$WR_REC_CONTAINER" != "$WR_HERE_CONTAINER" ]; then
+      nr_rec=". The pending record here was written on ${WR_REC_HOST}/${WR_REC_CONTAINER:-<unknown>}, not this host and container, so it counts as none, since tails are host-local, and is left in place for a rerun there"
+    fi
   fi
   if [ -n "$PW_E_WS_RAW" ] && [ "$PW_E_WS_RAW" = "$WS" ]; then
     nr_u="$(wr_utc_of_epoch "$PW_E_UTC")"
