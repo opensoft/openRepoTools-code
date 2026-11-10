@@ -1292,9 +1292,14 @@ def _path_m9(reg, root: Path):
 
 def _path_m10(reg, root: Path):
     """M10's part 4 on primary: the guard's register read through the
-    direct read (contract section 3.6, `register read --for guard`; the
-    service down). Its argv past `--for guard` is lane 5's T507 to state."""
-    proc = run_index(reg.copy, ["register", "read", "--for", "guard"], reg.env)
+    direct read, the service down: form 2, the guard's prefetch,
+    `register read --for guard --prefetch --cache <file> --pid <pid> --repo
+    <dir> [--lane=<window>]` (CLI412:661; lane 1's T113, called by T507's
+    `guard_run`). How the caller's cut at `T0 + 3.75 s` reaches it is T507's,
+    so none is set here."""
+    proc = run_index(reg.copy, ["register", "read", "--for", "guard", "--prefetch", "--cache",
+                                root / "m10" / "cache", "--pid", os.getpid(), "--repo",
+                                reg.estate.checkout, "--lane=repoA-1"], reg.env)
     assert proc.returncode == 0, proc.stderr
 
 
