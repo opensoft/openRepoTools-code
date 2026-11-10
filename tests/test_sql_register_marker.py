@@ -355,19 +355,20 @@ def test_a_reader_refuses_when_its_read_ref_carries_the_marker_and_its_tree_does
 
 def test_an_unconfigured_workstations_acts_refuse_and_listings_read_the_mirror(tmp_path):
     """AT-3 (Q21(a)(A)): on an unconfigured workstation under the marker,
-    `who` exits 69 with Amendment 22's text, and the `lanes` listing reads on,
-    exits 0 and prints the `read: mirror` line at origin's tip. Fails until
+    `who` exits 69 with Amendment 22's text, and the listing, `lanes --all`
+    (which today exits 0 and lists the lane), reads on, exits 0 and prints the
+    `read: mirror` line at origin's tip. Fails until
     T504 and T507."""
     home, wip, origin, env = _estate(tmp_path, str(uuid.uuid4()))
     marker = _push_marker(tmp_path, origin, env)
     _git(wip, env, "fetch", "-q", "origin", "main")
     code, out, err = _who(wip, env)
     assert code == 69 and AMENDMENT_22 in err, f"who: {code}\n{out[-600:]}{err[-600:]}"
-    code, out, err = _run([LANES], env, wip)
-    assert code == 0, f"lanes: {code}\n{out[-600:]}{err[-600:]}"
+    code, out, err = _run([LANES, "--all"], env, wip)
+    assert code == 0, f"lanes --all: {code}\n{out[-600:]}{err[-600:]}"
     assert f"{MIRROR_LINE}{marker[:12]}" in err, \
-        f"lanes printed no `read: mirror at {marker[:12]}` line on stderr\n{err[-900:]}"
-    assert GUARD_WINDOW in out, f"lanes did not read on\n{out[-900:]}"
+        f"lanes --all printed no `read: mirror at {marker[:12]}` line on stderr\n{err[-900:]}"
+    assert GUARD_WINDOW in out, f"lanes --all did not read on\n{out[-900:]}"
 
 
 def test_the_marker_check_runs_at_the_end_of_log_sync(tmp_path):
