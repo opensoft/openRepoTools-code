@@ -4167,7 +4167,17 @@ reg_config_present() {
 # as theirs do. Its stdout and stderr go to files, so a stand-in that leaves a
 # child behind holds no pipe open here, and stdout is compared whole: exactly
 # one line, `index` or `primary`, its newline optional (`cat -v`, so a NUL
-# cannot vanish from it).
+# cannot vanish from it). THE ONE FORM, with `timeout` and without it:
+# `( <call> <in >out 2>err; exit "$?" ) 2>/dev/null || rmq_rc=$?` (lane 3,
+# #165 6755027994, as 6755641373's point 2 corrects it). The call runs in a
+# subshell whose own stderr is /dev/null, so the job notice bash prints when it
+# reaps a call a signal ended ("Killed", "Terminated", "Segmentation fault"),
+# a `timeout` that had to KILL included, is printed there and never reaches
+# this file's stderr; the code is the same, and the call's own stderr stays in
+# its file. `exit "$?"` keeps the subshell a subshell: bash 5 runs a lone
+# command in `( )`, or `( …; )`, in place, which would put the notice back
+# here. Its one cost: bash's message for a redirection that fails goes to
+# /dev/null too, and `$rmq_dir` is a fresh `mktemp`.
 reg_mode_query() {
   rmq_bin="$(lanes_index_bin)"
   if [ -z "$rmq_bin" ]; then
@@ -4179,11 +4189,12 @@ reg_mode_query() {
     reg_mode_files "could not be asked: no temporary directory could be made under ${TMPDIR:-/tmp} to hold its answer"
     return 0
   fi
-  rmq_rc=0
+  rmq_rc=0; rmq_timer=bare
   if command -v timeout >/dev/null 2>&1; then
-    timeout -k 1 2 "$rmq_bin" mode </dev/null >"$rmq_dir/out" 2>"$rmq_dir/err" || rmq_rc=$?
+    rmq_timer=timed
+    ( timeout -k 1 2 "$rmq_bin" mode </dev/null >"$rmq_dir/out" 2>"$rmq_dir/err"; exit "$?" ) 2>/dev/null || rmq_rc=$?
   else
-    "$rmq_bin" mode </dev/null >"$rmq_dir/out" 2>"$rmq_dir/err" || rmq_rc=$?
+    ( "$rmq_bin" mode </dev/null >"$rmq_dir/out" 2>"$rmq_dir/err"; exit "$?" ) 2>/dev/null || rmq_rc=$?
   fi
   rmq_out="$(cat -v -- "$rmq_dir/out" 2>/dev/null; printf .)"; rmq_out="${rmq_out%.}"
   # WHAT IT SAID, AS ONE LINE, for the warning or the refusal to repeat: its
@@ -4191,19 +4202,31 @@ reg_mode_query() {
   rmq_said="$(head -c 1000 -- "$rmq_dir/err" 2>/dev/null | tr '\n\r\t' '   ' | tr -d '\000-\037' || :)"
   while [ "${rmq_said% }" != "$rmq_said" ]; do rmq_said="${rmq_said% }"; done
   rm -rf -- "$rmq_dir"
-  case "$rmq_rc" in
-    0)
+  case "${rmq_rc}:${rmq_timer}" in
+    0:*)
       case "$rmq_out" in
         index|"index"$'\n') REG_MODE=index ;;
         primary|"primary"$'\n') REG_MODE=primary ;;
         *) reg_mode_files "exited 0 without answering one line, index or primary" ;;
       esac ;;
-    78)
+    78:*)
       REG_MODE=refused
       [ -n "$rmq_said" ] || rmq_said="lanes-index printed no text"
       die "$rmq_said (\`lanes-index mode\` exited 78, EX_CONFIG: lanes-index refuses this workstation's mode=primary in this build. \`$cmd\` wrote nothing, and wrote no files instead.)" 69 ;;
-    124|137)
-      reg_mode_files "did not answer within 2 s, and was stopped" ;;
+    # 124 AND 137 EACH SAY WHAT THEY CAN MEAN, in `classify`'s words (T424).
+    # Under the timer, a 124 is its stop, and a 137 is its KILL a second after
+    # a stop that was ignored, or a kill that was not the timer's. Where the
+    # call ran bare, with no `timeout`, no timer ran: a 124 is the call's own
+    # code and takes the `*)` arm, "exited 124 (…)", and a 137 is a signal's
+    # (lane 3, #165 6767463594, item 1). Every one still runs files mode with
+    # one warning, as F8 runs every failure but 78 (Y:5712–5713; FR-002;
+    # contract §3.1; lane 3, #165 6755641373, point 1).
+    124:timed)
+      reg_mode_files "did not answer within 2 s, and was stopped (exit 124)" ;;
+    137:timed)
+      reg_mode_files "was killed (exit 137): by its 2 s timer after it ignored the stop, or by a signal" ;;
+    137:bare)
+      reg_mode_files "was killed by a signal (exit 137)" ;;
     *)
       reg_mode_files "exited $rmq_rc${rmq_said:+ ($rmq_said)}" ;;
   esac
@@ -18166,13 +18189,14 @@ esac
 # container with no workstation name and a W with no register refuse first,
 # and BEFORE THE ROUTING below, so a refusal here comes before any clone,
 # fetch, lock or `exec`. The write guard's verbs only (`REG_ASK`), and once
-# (`reg_mode_ask`). Not under `LANES_REGISTER_SCRATCH`, an attempt's child,
-# which asks nothing, since asking would recurse into the primary branch (the
-# design's F22; T413 honours that flag, and replaces this test with its own).
+# (`reg_mode_ask`). Under a flag T413 honours nothing is asked; T409 tests no
+# flag itself (lane 3, #165 6755005268): a stray `LANES_REGISTER_SCRATCH`
+# export skips nothing here, so a primary register still meets the 69 below
+# and never a files-mode write (Y:5034).
 # PHASE 1'S ARM: `primary` exits 69 here and never writes the files instead,
 # the placeholder that phase 2's T415 replaces (only a `lanes-index` newer than
 # this file answers it). `index` and `files` run the verb as it runs today.
-if [ "$REG_ASK" = 1 ] && [ -z "${LANES_REGISTER_SCRATCH:-}" ]; then
+if [ "$REG_ASK" = 1 ]; then
   reg_mode_ask
   case "$REG_MODE" in
     primary)
