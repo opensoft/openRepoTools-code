@@ -766,9 +766,11 @@
 #      lost its turn by D7's deadline, 30 s from the first attempt's start
 #      (LANES_REGISTER_DEADLINE_S sets it for tests), with the write's rerun.
 #      Likewise an attempt whose child is still short of `ready` twice D +
-#      30 s after its start (LANES_REGISTER_READY_CAP_S sets it for tests): the
-#      child gets TERM, then KILL 1 s later where TERM did not end it, its
-#      output is not shown, and nothing was sent by that attempt.
+#      30 s after its start (LANES_REGISTER_READY_CAP_S sets it for tests),
+#      or 1 s before a kept child's seam cap where that comes first: every
+#      kept child gets `abandon`, the child and every process under it get
+#      TERM, then KILL 1 s later where TERM did not end them, its output is
+#      not shown, and nothing was sent by that attempt.
 #      And, until T417's lookup and its exit 3, two ends that send nothing
 #      more and keep the pending record, so a rerun settles the write by its
 #      id: an end while the record holds a commit call that may have
@@ -5828,8 +5830,9 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
 #   (b) each attempt: its directory and `parent.pid` (`pw_attempt_dir`), the
 #       snapshot (`pw_snapshot`), the act's checks at it (`pw_act_at_snapshot`),
 #       the files `register commit` reads (`pw_attempt_files`), and the child
-#       (`pw_child_start`, `pw_child_wait`), stopped where it never reaches
-#       `ready` (`pw_child_hung_end`);
+#       (`pw_child_start`, `pw_child_wait`), stopped, with every process under
+#       it, where it never reaches `ready` or a kept child's seam cap is 1 s
+#       away (`pw_child_hung_end`, `pw_child_tree`);
 #   (c) the commit call and the decision on its answer (`pw_commit`,
 #       `pw_decide`);
 #   (d) a 69 at the first snapshot (`pw_first_69`);
@@ -5843,7 +5846,7 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
 PW_LANE=""; PW_C=""; PW_AUTHOR=""; PW_D_S=30; PW_T0=0; PW_RUN=""; PW_RUN_DIR=""
 PW_LOCK=""; PW_REC_OURS=0
 PW_K=0; PW_DIR=""; PW_CHILD=""; PW_KEPT=""; PW_FIRST_DONE=0; PW_RELAY=""; PW_RC=0
-PW_CAP_S=120; PW_CHILD_T0=0
+PW_CAP_S=120; PW_CHILD_T0=0; PW_READY_T=0; PW_SEAM_CAP_S=120; PW_KEPT_END=""; PW_KEPT_K=""
 PW_S_GEN=""; PW_S_WID=""; PW_S_FOUND=""; PW_S_N=""; PW_S_CLOCK=""; PW_S_NOT_AFTER=""
 
 # D7's deadline in whole seconds: 30, or `LANES_REGISTER_DEADLINE_S` for tests
@@ -6319,49 +6322,107 @@ pw_child_start() {
 # A child still short of `ready` more than PW_CAP_S seconds after its start is
 # stopped, and the run ends (`pw_child_hung_end`). `SECONDS` has a one-second
 # grain, so the test is "more than": never before the bound, at most 1 s after.
+# AND THE WAIT ENDS FIRST WHERE A KEPT CHILD'S SEAM CAP IS 1 s AWAY (lane
+# openRepoTools-3, #165 6774499606, T415 (3); Y:5004: "A live parent never
+# meets the cap"; review REV415b, NIT 3): at PW_KEPT_END - 1 (`pw_keep`), where
+# that comes before the bound, the run ends the same way, and every kept child
+# gets `abandon` before its cap can pass. PW_READY_T is `SECONDS` as read just
+# before the last look that found no `ready`, so it is never after the child's
+# own seam wait starts, and its cap never ends before PW_READY_T + its cap.
 pw_child_wait() {
-  PW_RC=0
-  while [ ! -e "$PW_DIR/ready" ]; do
+  local cw_now=""
+  PW_RC=0; PW_READY_T="$PW_CHILD_T0"
+  while cw_now="$SECONDS"; [ ! -e "$PW_DIR/ready" ]; do
+    PW_READY_T="$cw_now"
     if ! kill -0 "$PW_CHILD" 2>/dev/null; then
       [ ! -e "$PW_DIR/ready" ] || return 0
       wait "$PW_CHILD" || PW_RC=$?
       PW_CHILD=""
       return 1
     fi
+    if [ -n "$PW_KEPT_END" ] && [ "$SECONDS" -ge $((PW_KEPT_END - 1)) ]; then
+      pw_child_hung_end kept || return 1
+    fi
     if [ $((SECONDS - PW_CHILD_T0)) -gt "$PW_CAP_S" ]; then
       [ ! -e "$PW_DIR/ready" ] || return 0
-      pw_child_hung_end
+      pw_child_hung_end bound || return 1
     fi
     sleep 0.05 2>/dev/null || sleep 1
   done
   return 0
 }
 
+# EVERY PROCESS UNDER THE CHILD (lane openRepoTools-3, #165 6774499606, T415
+# (2); review REV415b, S1): its children by `pgrep -P`, then theirs, a
+# generation at a time, one pid a line. The child shares this process's group
+# and `setsid` is barred (#165 6755005268), so a command it runs in the
+# foreground, a `git`, a `lanes-index` read or a lock wait, would outlive a
+# KILL of the child alone and keep the caller's stdout and stderr open on its
+# fds 3 and 4. Empty where it has none or `pgrep` is missing; `pgrep` runs in a
+# `$( )` of this shell, so it is never under the child itself.
+pw_child_tree() {
+  local ct_gen="$PW_CHILD" ct_next="" ct_all="" ct_d=0
+  while [ -n "$ct_gen" ] && [ "$ct_d" -lt 64 ]; do
+    ct_next="$(pgrep -P "$ct_gen" 2>/dev/null)" || ct_next=""
+    case "$ct_next" in *[!0-9$WR_NL]*) ct_next="" ;; esac
+    [ -n "$ct_next" ] || break
+    ct_all="${ct_all}${ct_all:+$WR_NL}${ct_next}"
+    ct_gen="${ct_next//$WR_NL/,}"
+    ct_d=$((ct_d + 1))
+  done
+  [ -z "$ct_all" ] || printf '%s\n' "$ct_all"
+}
+
 # A CHILD THAT NEVER REACHES `ready` (lane openRepoTools-3, #165 6770820384,
 # T415's question 3; T415's line at B12b; review REV415, N3): past its bound,
-# PW_CAP_S seconds from its start (Y:5001), it gets TERM, then KILL 1 s later
-# if it is still there, and is reaped. None of its output is replayed. The run
+# PW_CAP_S seconds from its start (Y:5001), or 1 s before a kept child's seam
+# cap where that comes first (#165 6774499606, T415 (3)). Every kept child gets
+# `abandon` FIRST, so none meets its cap while the child below is stopped
+# (Y:5026). Then the processes under the child are listed (`pw_child_tree`),
+# the child gets TERM, and they get it with the child; whatever is left of
+# them 1 s later gets KILL, the child listed again first (#165 6774499606,
+# T415 (2)). The child is reaped and none of its output is replayed. The run
 # ends as at D7's deadline: 75, nothing sent by that attempt, naming the
-# attempt and the bound, with the write's rerun. Where the pending record
-# holds a `call` line, F3's lookup comes first (`pw_end`, `pw_doubt_end`;
-# Y:5020, Y:5024), and every kept child gets `abandon` before the end
-# (Y:5026). No commit call was made for this attempt, since the parent makes
-# one only at `ready`; a child that reached `ready` just before its TERM ends
-# by it at the seam all the same. Only the child is signalled: it shares this
-# process's group, and a process it started itself is not signalled here.
-pw_child_hung_end() {
-  local ch_n=0 ch_how="TERM" ch_w="" ch_b=""
-  kill -TERM "$PW_CHILD" 2>/dev/null || :
+# attempt and why it was stopped, with the write's rerun. Where the pending
+# record holds a `call` line, F3's lookup comes first (`pw_end`,
+# `pw_doubt_end`; Y:5020, Y:5024). No commit call was made for this attempt,
+# since the parent makes one only at `ready`; a child that reached `ready` just
+# before its TERM ends by it at the seam all the same.
+# A CHILD THAT ENDED ON ITS OWN between the wait's `kill -0` and the TERM, so
+# that the TERM finds no such process, is not stopped: its code is taken with
+# `wait`, PW_CHILD is cleared, and 1 sends the run to `pw_child_end`, its own
+# end (Y:5016; review REV415b, NIT 5). Nothing is signalled then.
+pw_child_hung_end() {   # bound | kept
+  local ch_n=0 ch_how="TERM" ch_w="" ch_b="" ch_tree="" ch_p="" ch_t=0 ch_kids=""
+  local ch_kk="$PW_KEPT_K"
+  ch_t=$((SECONDS - PW_CHILD_T0))
+  pw_abandon_kept
+  ch_tree="$(pw_child_tree)"
+  if ! kill -TERM "$PW_CHILD" 2>/dev/null; then
+    PW_RC=0
+    wait "$PW_CHILD" 2>/dev/null || PW_RC=$?
+    PW_CHILD=""
+    return 1
+  fi
+  for ch_p in $ch_tree; do kill -TERM "$ch_p" 2>/dev/null || :; done
   while kill -0 "$PW_CHILD" 2>/dev/null && [ "$ch_n" -lt 20 ]; do
     if sleep 0.05 2>/dev/null; then ch_n=$((ch_n + 1)); else sleep 1; ch_n=20; fi
   done
+  ch_tree="${ch_tree}${ch_tree:+$WR_NL}$(pw_child_tree)"
   if kill -0 "$PW_CHILD" 2>/dev/null; then
     kill -KILL "$PW_CHILD" 2>/dev/null || :
     ch_how="TERM, then KILL 1 s later"
   fi
+  for ch_p in $ch_tree; do
+    if kill -0 "$ch_p" 2>/dev/null; then kill -KILL "$ch_p" 2>/dev/null || :; fi
+  done
   wait "$PW_CHILD" 2>/dev/null || :
   PW_CHILD=""
+  [ -z "$ch_tree" ] || ch_kids=", and every process it had started got the same"
   [ -n "$WR_CALLS" ] || ch_w=", and nothing was written"
+  if [ "$1" = kept ]; then
+    pw_end 75 "attempt ${PW_K}'s child had not reached the seam ${ch_t} s after its start, and attempt ${ch_kk}'s child, kept at its seam after a commit call in doubt, was within 1 s of the seam's cap of ${PW_SEAM_CAP_S} s, so the run ended first (Y:5004): every kept child got \`abandon\`, attempt ${PW_K}'s child was stopped with ${ch_how}${ch_kids}, and its output is not shown. Nothing was sent by that attempt${ch_w}. $(pw_rerun_line)"
+  fi
   # The bound as it was set (review REV415b, NIT 4): the test setting where it
   # is in force, else the default's formula with this run's D.
   if wr_is_count "${LANES_REGISTER_READY_CAP_S:-}"; then
@@ -6369,7 +6430,7 @@ pw_child_hung_end() {
   else
     ch_b="2 × (D + 30) s, D = ${PW_D_S} s"
   fi
-  pw_end 75 "attempt ${PW_K}'s child did not reach the seam within ${PW_CAP_S} s of its start, the bound on a child short of \`ready\` (${ch_b}), so it was stopped with ${ch_how}, and its output is not shown. Nothing was sent by that attempt${ch_w}. $(pw_rerun_line)"
+  pw_end 75 "attempt ${PW_K}'s child did not reach the seam within ${PW_CAP_S} s of its start, the bound on a child short of \`ready\` (${ch_b}), so it was stopped with ${ch_how}${ch_kids}, and its output is not shown. Nothing was sent by that attempt${ch_w}. $(pw_rerun_line)"
 }
 
 # ONE MESSAGE TO A CHILD AT THE SEAM (Y:5007): the FIFO opened read-write, so
@@ -6400,7 +6461,7 @@ pw_abandon_kept() {
   done <<PA_EOF
 $PW_KEPT
 PA_EOF
-  PW_KEPT=""
+  PW_KEPT=""; PW_KEPT_END=""; PW_KEPT_K=""
 }
 
 # EVERY KEPT CHILD, AND THE ATTEMPT'S OWN, GET `abandon` before any end but 0
@@ -6695,9 +6756,17 @@ pw_decide() {
 }
 
 # A COMMIT CALL IN DOUBT (Y:5014): nothing is sent to its child, which stays at
-# its seam, kept, and the call keeps its line in the record.
+# its seam, kept, and the call keeps its line in the record. When its seam cap
+# passes is kept too, in this process's `SECONDS`: the child's cap, PW_SEAM_CAP_S
+# (`wr_seam_cap_s`, the child's own), counts from its seam wait, which starts
+# after PW_READY_T (`pw_child_wait`). PW_KEPT_END is the earliest such end, and
+# PW_KEPT_K its attempt (lane openRepoTools-3, #165 6774499606, T415 (3)).
 pw_keep() {
+  local pk_end=$((PW_READY_T + PW_SEAM_CAP_S))
   PW_KEPT="${PW_KEPT}${PW_KEPT:+$WR_NL}$PW_CHILD $PW_DIR"
+  if [ -z "$PW_KEPT_END" ] || [ "$pk_end" -lt "$PW_KEPT_END" ]; then
+    PW_KEPT_END="$pk_end"; PW_KEPT_K="$PW_K"
+  fi
   PW_CHILD=""
 }
 
@@ -6795,6 +6864,7 @@ pw_run() {   # <the verb's arguments>
   wr_begin
   PW_D_S="$(pw_deadline_s)"
   PW_CAP_S="$(pw_child_cap_s)"
+  PW_SEAM_CAP_S="$((10#$(wr_seam_cap_s)))"
   wr_claim_take "$(( $(date -u +%s) + PW_D_S ))" || pr_rc=$?
   [ "$pr_rc" = 0 ] || pw_owner_live_end
   wr_id_plan
