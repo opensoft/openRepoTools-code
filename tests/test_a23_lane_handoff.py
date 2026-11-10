@@ -486,3 +486,20 @@ def test_a_why_with_a_tab_is_a_space_in_the_subject(tmp_path, short_root):
     published = _published(box, cell)
     assert published.endswith("\n---\n\n" + HANDOFF), published
     assert _origin(box, "log", "-1", "--format=%s", "main", "--", cell).strip() == SUBJECT
+
+
+@pytest.mark.parametrize("flag, mode", [("--restart", "respawn"), ("--exit", "end")])
+def test_the_no_tmux_refusal_names_its_mode_not_both_words(tmp_path, short_root, flag, mode):
+    """opensoft/openRepoTools#355: `lane-handoff` built the mode word for its
+    no-tmux refusal from `${do_restart:+respawn}${do_exit:+end}`. Both flags are
+    `0` or `1`, never empty, so both expansions fired and the message named
+    `respawnend`, which is no mode. `--restart` names `respawn`, `--exit` names
+    `end`, and the refusal's other words are unchanged."""
+    box, _checkout, _cell_, _before = _ready(tmp_path, short_root)
+
+    result = _handoff(box, flag)
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert "respawnend" not in result.stderr, result.stderr
+    assert f"there is no tmux here to {mode} this pane with. Do it by hand" in result.stderr, result.stderr
+    assert "the record is written, and there is no tmux here to" in result.stderr, result.stderr
+    assert "the record is the part that mattered." in result.stderr, result.stderr
