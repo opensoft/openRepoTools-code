@@ -11719,8 +11719,12 @@ guard_offer_file() {   # <session uuid>
 # `bound` and `bind-failed`.
 #
 # ITS FILES: the record, `<offers>/<uuid>`; each attempt's output,
-# `<uuid>.bind.<k>.out`; and the body's facts, `<uuid>.bind.<k>.facts`, which the
-# outer folds into the record and removes. Every write is under `umask 077`, so
+# `<uuid>.bind.<n>.out`, which the record's `out=` names; and the body's facts,
+# `<uuid>.bind.<n>.facts`, beside it, which the outer folds into the record and
+# removes. `<n>` is the files' index, one above the highest already there, and
+# not the attempt, which `bind=` counts 1 to 3 per offer (lane 3's rulings on
+# the contract's point 18, opensoft/openRepoTools#165 6751772589 and
+# 6751818233). Every write is under `umask 077`, so
 # they are 0600 and a new `offers/` is 0700 (lane 3's ruling on the contract,
 # opensoft/openRepoTools#165 6746215510, point 1), and every rewrite is a
 # temporary file in `offers/` and `mv -f` (point 2). The `.bind.*` files live as
@@ -12737,6 +12741,84 @@ guard_offer_choices() {   # <from> <the lane choice 2 moves to> <binds spent>
   return 0
 }
 
+# THE RENAME BACK (feature 007, T502; ERR-23; lane 3's ruling on the contract,
+# opensoft/openRepoTools#165 6746215510, point 7). Answer 2 renames the window
+# to `<to>` before its bind starts, because `lane-start`'s veto 2 refuses to
+# take a session live in a window named for another lane. Where that bind then
+# fails (cases 6 and 7), is found stale on this host (case 9), or never starts
+# (the hook's own two failure paths), the offer is KEPT — and an offer about
+# `<from>` asked in a window still named `<to>` is one `guard_answer`'s identity
+# test drops at the next prompt, so "answer `2` again" could not be taken:
+# today's finding, the #70 loop again (Y:5509). So the window is renamed back to
+# `<from>`. UNTARGETED, like the rename it undoes: the hook runs inside the
+# session's own pane. Case 10 renames nothing, since that bind ran on another
+# host or container.
+#   0 renamed · 1 not, and the person is told the one command
+guard_window_back() {   # <from> <to>
+  gwb_from="${1-}"; gwb_to="${2-}"
+  [ -n "$gwb_from" ] || return 1
+  if command -v tmux >/dev/null 2>&1 && tmux rename-window "$gwb_from" 2>/dev/null; then
+    note "This window has been renamed back to $gwb_from, the lane it was before the answer \`2\`, so the offer it keeps is still this window's."
+    return 0
+  fi
+  note "This window could NOT be renamed back to $gwb_from, so it still carries ${gwb_to:-the other lane}'s name, and the next prompt would drop the kept offer as one about another window. Rename it first: tmux rename-window -t ${G_WINREF:-<this window>} $gwb_from"
+  return 1
+}
+
+# THE BIND CHILD'S ENVIRONMENT (Y:5410–5415; tasks.md T502; R52, ERR-11), set in
+# the hook's fork, so the outer and its body run under it and the hook does not.
+# The bind is a write act of its own (D12): it takes its own act base and its
+# own write id, so `LANES_NO_FETCH`, `LANES_ACT`, `LANES_EXPECT` and
+# `LANES_WRITE_ID` are unset, and with it `LANES_WRITE_GENERATION`, a printed
+# rerun's variable, which must not reach the `lane-start` inside the bind
+# (ERR-11). `LANE_START_HANDOFF_ANSWER` is unset too: set to `yes` it would let
+# `lane-start` ask the holder to hand off and wait up to 300 s, where unset, with
+# stdin on `/dev/null`, it refuses with 2 instead. `LANES_GIT_TIMEOUT` is 45,
+# which bounds the stamp's pull and push. Everything else is kept — `HOME`,
+# `PATH`, `CLAUDE_CONFIG_DIR`, `LANES_WORKSTATION`, `LANES_CONTAINER`,
+# `LANES_REPO`, `LANES_EDIT`, `LANES_LANE_START`, `LANES_INDEX_CONFIG` and
+# `TMUX` — and `TMUX_PANE` is set by the fork to the pane the hook resolved.
+# `LANES_BIND_BODY` is the outer's, which unsets it for the body (R48); and
+# `LANES_BIND_FACTS` is the outer's handoff to its body, which the outer sets
+# or unsets itself, and the body takes and unsets before `lane-start`.
+guard_bind_child_env() {
+  unset LANES_NO_FETCH LANES_ACT LANES_EXPECT LANES_WRITE_ID LANES_WRITE_GENERATION LANE_START_HANDOFF_ANSWER
+  export LANES_GIT_TIMEOUT=45
+}
+
+# THE FILES' INDEX OF A NEW ATTEMPT, APART FROM THE ATTEMPT (lane 3's rulings on
+# the contract's point 18, opensoft/openRepoTools#165 6751772589 and its
+# correction 6751818233): one above the highest index among the uuid's
+# `<offers>/<uuid>.bind.<n>.*` files, and 1 where there are none. So a new
+# attempt never reuses a name whose files are still there — after case 11 a
+# live outer's `.out` may be — and the fork's `>` never empties one. `bind`
+# stays the attempt, 1 to 3 per offer; the record's `out=` names the attempt's
+# own file, and the facts file sits beside it.
+guard_bind_next_index() {   # <offer file>
+  gbx_f="${1-}"; gbx_n=0
+  for gbx_x in "$gbx_f".bind.*; do
+    [ -e "$gbx_x" ] || continue
+    gbx_i="${gbx_x#"$gbx_f".bind.}"; gbx_i="${gbx_i%%.*}"
+    case "$gbx_i" in ''|*[!0-9]*) continue ;; esac
+    [ "${#gbx_i}" -le 6 ] || continue
+    [ "$((10#$gbx_i))" -le "$gbx_n" ] || gbx_n=$((10#$gbx_i))
+  done
+  printf '%s\n' "$((gbx_n + 1))"
+}
+
+# THE ATTEMPT'S FACTS FILE, BESIDE THE `out=` THE RECORD NAMES (the same
+# rulings): found there, never recomputed from `bind`. An `out` that is not this
+# offer's own `<offer file>.bind.<n>.out` names no facts file, so nothing is
+# read from, written to or removed at a path the record could point anywhere.
+guard_bind_facts_of() {   # <offer file> <the record's out>
+  gbfo_f="${1-}"; gbfo_o="${2-}"
+  [ -n "$gbfo_f" ] || return 1
+  case "$gbfo_o" in "$gbfo_f".bind.*.out) : ;; *) return 1 ;; esac
+  gbfo_i="${gbfo_o#"$gbfo_f".bind.}"; gbfo_i="${gbfo_i%.out}"
+  case "$gbfo_i" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "${gbfo_o%.out}.facts"
+}
+
 # THE STALE ROW'S SESSION TEST (Y:5505; tasks.md T502). `$detach` made the outer
 # the leader of a session of its own, and the body, `timeout` and any `git`
 # under its own `timeout` stay in that session after the outer dies; the
@@ -12793,8 +12875,10 @@ guard_bind_session_live() {   # <sid>
 #    5  after success: MOVED once, the owed notes, the record removed; the next
 #       prompt is judged by the table and, the three agreeing, passes
 #    6  after a failure below the third attempt: the why, `mode=name-drift`
-#       with `bind=k` kept, and the offer KEPT
+#       with `bind=k` kept, the window renamed back to `<from>`
+#       (`guard_window_back`), and the offer KEPT
 #    7  after the third failure: the same, and choice 2 no longer offered
+#       (ERR-23: the window is renamed back here too)
 #    2  same host and container, the child live inside `deadline_epoch`:
 #       BINDING IN PROGRESS, the record unchanged ("at the latest" only where
 #       `bounded=yes`)
@@ -12805,7 +12889,8 @@ guard_bind_session_live() {   # <sid>
 #    9  stale, same host and container — the outer's pid reused, or dead with
 #       no process left in the session it led, or with no pid and past its
 #       deadline: no outcome, `mode=name-drift`, `rc=unknown`, `ended_utc` the
-#       guard's time, the offer KEPT
+#       guard's time, the window renamed back to `<from>` (ERR-23), the offer
+#       KEPT
 #   10  `binding` from another host or container: unchanged until
 #       `deadline_epoch` plus 60 s, then as 9, renaming nothing
 #   11  unreadable (case 11's set, `guard_bind_readable`): dropped, with
@@ -12825,7 +12910,11 @@ guard_bind_session_live() {   # <sid>
 # the one removal that can meet a live outer, so the `.bind.*` files are left for
 # the next removal to sweep, and a live outer's `.out` is never unlinked.
 
-# A WELL-FORMED `pid`: decimal digits, no leading 0, above 1 (point 15).
+# A WELL-FORMED `pid`: decimal digits, no leading 0, above 1 (point 15), and
+# at most 10 digits, `pid_start_of`'s own cap (lane 3's ruling on the
+# contract's point 17, opensoft/openRepoTools#165 6751772589): a longer one
+# would read as live at every prompt by R49 and hold case 3 for ever, where a
+# malformed `pid` waits for `deadline_epoch` and then is case 9.
 guard_bind_pid_ok() {   # <pid>
   case "${1-}" in ''|0*|*[!0-9]*) return 1 ;; esac
   [ "${#1}" -le 10 ] && [ "$1" -gt 1 ] || return 1
@@ -12872,6 +12961,8 @@ EOF
       guard_bind_rewrite "$gbt_f" "" mode=name-drift || gbt_back=1
       guard_triple
       note "THE BIND TO LANE $GBR_TO FAILED (exit $GBR_RC): ${GBR_WHY:-the record gives no reason}${GBR_OUT:+ — its output is kept in $GBR_OUT}."
+      # CASES 6 AND 7 RENAME THE WINDOW BACK (Y:5502; ERR-23 for the third).
+      guard_window_back "$GBR_FROM" "$GBR_TO" || :
       if [ "$gbt_back" = 1 ]; then
         note "…and the offer could not be restored in $gbt_f, so this prompt's answer is the same as the last one's until it can."
       elif [ "$gbt_k" -ge 3 ]; then
@@ -12950,6 +13041,8 @@ EOF
     guard_bind_rewrite "$gbt_f" "" mode=name-drift rc=unknown "ended_utc=$(utc_now)" || gbt_back=1
     guard_triple
     note "THE BIND STARTED AT ${GBR_STARTED:-a time the record does not give} (attempt $gbt_k) IS NO LONGER RUNNING AND LEFT NO OUTCOME: $gbt_why. What it wrote is not known; the next \`2\` finds out first."
+    # CASE 9 RENAMES THE WINDOW BACK TOO (ERR-23); case 10, above, does not.
+    guard_window_back "$GBR_FROM" "$GBR_TO" || :
     if [ "$gbt_back" = 1 ]; then
       note "…and the offer could not be restored in $gbt_f, so this prompt's answer is the same as the last one's until it can."
     else
@@ -13096,9 +13189,16 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     # cell, the one thing the next resume follows. The veto is right and stays:
     # what changes is that the person has just said this window is the other
     # lane.
+    # WHETHER IT LANDED IS KEPT: the hook's own two failure paths below rename
+    # the window back to `<from>` (`guard_window_back`), and only a rename this
+    # hook made is undone.
+    ga_ren=0
     if command -v tmux >/dev/null 2>&1; then
-      tmux rename-window "$ga_to" 2>/dev/null ||
+      if tmux rename-window "$ga_to" 2>/dev/null; then
+        ga_ren=1
+      else
         note "the window could not be renamed to $ga_to, so lane-start may refuse to take this session as that lane's (its step 3b veto 2)."
+      fi
     fi
     # FEATURE 007, T502 — AND THEN THE BIND RUNS DETACHED, IN EVERY MODE (FR-038;
     # opensoft/openRepoTools#347). It measured 10.47 s in files mode, against a
@@ -13114,9 +13214,14 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     # 8): `bind=k+1`, `host`, `container`, the timing keys from the one helper
     # the outer runs at its start, `out` and `detach`. The identity, `utc`,
     # T507's and T510's keys and `ended_utc` are kept; the attempt before's
-    # outcome, `pid`, `pidstart`, `out` and timing keys are dropped.
+    # outcome, `pid`, `pidstart`, `out` and timing keys are dropped. `bind`
+    # counts the attempts, 1 to 3 per offer, and the FILES' INDEX is apart from
+    # it: one above the highest among the uuid's `.bind.*` files, so the fork's
+    # `>` never empties a file still there (lane 3's rulings on the contract's
+    # point 18, #165 6751772589 and 6751818233). `out=` names the attempt's own
+    # file, and the outer and its body find the facts file beside it.
     ga_k=$((ga_k + 1))
-    ga_out="$ga_f.bind.$ga_k.out"
+    ga_out="$ga_f.bind.$(guard_bind_next_index "$ga_f").out"
     ga_bs="$(guard_bind_bound_s "$ga_f")"
     ga_bd=no
     command -v timeout >/dev/null 2>&1 && ga_bd=yes
@@ -13138,6 +13243,7 @@ guard_answer() {   # <offer file> <the prompt> <pane>
          "deadline_epoch=$((ga_ep + ga_bs + 5))" "host=$WS" "container=$LANES_CONTAINER_NAME" \
          "out=$ga_out" "detach=$ga_dn"; then
       guard_refuse "the bind could not be recorded in $ga_f, so it was NOT started: NOTHING has been written to the register, and the offer is KEPT. Answer \`2\` again once that directory is writable, or choose \`1\` or \`3\`."
+      [ "$ga_ren" = 0 ] || guard_window_back "$ga_from" "$ga_to" || :
       return 2
     fi
     # THE OUTER'S PID IS `$!` INSIDE THE FORK, handed back through the command
@@ -13147,10 +13253,12 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     # descriptors 3 to 9 closed as `index_nudge` closes them — so a runner that
     # waits for EOF on them does not wait for the bind. `TMUX_PANE` is the pane
     # this hook resolved: with no tty, tmux finds the current pane only through
-    # it.
+    # it. The rest of the child's environment is `guard_bind_child_env`'s, set
+    # inside the fork, so the hook's own is untouched.
     ga_tp="${ga_pane:-${TMUX_PANE:-}}"
     [ -n "$ga_tp" ] || ga_tp="$(tmux display-message -p '#{pane_id}' 2>/dev/null || :)"
     ga_p="$( ( umask 077
+               guard_bind_child_env
                [ -z "$ga_tp" ] || export TMUX_PANE="$ga_tp"
                ${ga_det[@]+"${ga_det[@]}"} nohup "$RESOLVED" guard-bind "$G_ID" </dev/null >"$ga_out" 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
                printf '%s\n' "$!" ) 2>/dev/null || : )"
@@ -13161,6 +13269,7 @@ guard_answer() {   # <offer file> <the prompt> <pane>
         [ "$ga_k" -le 1 ] || ga_back+=("bind=$((ga_k - 1))")
         guard_bind_rewrite "$ga_f" "bind started_utc bound_s bounded deadline_epoch host container out detach" "${ga_back[@]}" || :
         guard_refuse "the bind's child could not be started, so this window has NOT moved to $ga_to and NOTHING has been written. The offer is KEPT: answer \`2\` again, or choose \`1\` or \`3\`."
+        [ "$ga_ren" = 0 ] || guard_window_back "$ga_from" "$ga_to" || :
         return 2 ;;
     esac
     guard_triple
@@ -13301,10 +13410,15 @@ guard_bind_outer() {   # <session uuid>
   # no pid: running until `deadline_epoch`, then stale with no session test.
   gbo_ps=""; gbo_psrc=0
   gbo_ps="$(pid_start_of "$$" 2>/dev/null)" || gbo_psrc=$?
-  gbo_pid=("pid=$$")
-  [ "$gbo_psrc" != 0 ] || [ -z "$gbo_ps" ] || gbo_pid+=("pidstart=$gbo_ps")
-  # THE ATTEMPT'S OUTPUT FILE, as the hook named it, for the outcome's words.
-  gbo_outf="${GBR_OUT:-$gbo_f.bind.$gbo_k.out}"
+  gbo_pid=("pid=$$"); gbo_myps=""
+  if [ "$gbo_psrc" = 0 ] && [ -n "$gbo_ps" ]; then gbo_myps="$gbo_ps"; gbo_pid+=("pidstart=$gbo_ps"); fi
+  # THE ATTEMPT'S OWN FILES, FROM THE RECORD'S `out=`, never recomputed from
+  # `bind`, which counts attempts and is not the files' index (lane 3's rulings
+  # on the contract's point 18, #165 6751772589 and 6751818233). The facts file
+  # sits beside it; an `out` that is not this offer's own names none.
+  gbo_outf="$GBR_OUT"
+  gbo_facts="$(guard_bind_facts_of "$gbo_f" "$gbo_outf" || :)"
+  [ -n "$gbo_outf" ] || gbo_outf="the output file of this attempt, which its record does not name"
   gbo_bs="$(guard_bind_bound_s "$gbo_f")"
   GBO_BD=no
   command -v timeout >/dev/null 2>&1 && GBO_BD=yes
@@ -13320,8 +13434,13 @@ guard_bind_outer() {   # <session uuid>
   # empty, before its first step, so a file missing at the end means the body
   # never ran. Any file at that name from before this outer is removed first,
   # so the file read at the end can only be this body's.
-  gbo_facts="$gbo_f.bind.$gbo_k.facts"
-  rm -f -- "$gbo_facts" 2>/dev/null || :
+  [ -z "$gbo_facts" ] || rm -f -- "$gbo_facts" 2>/dev/null || :
+  # AND ITS PATH IS HANDED TO THE BODY, the seam's included, in
+  # `LANES_BIND_FACTS`: the path this outer found beside the record's `out=`, so
+  # a body that cannot read the record itself still knows where its account
+  # goes, and never works it out from `bind`. An environment variable, and not
+  # an argument, so the seam is still run "with the uuid" alone (R48).
+  if [ -n "$gbo_facts" ]; then export LANES_BIND_FACTS="$gbo_facts"; else unset LANES_BIND_FACTS; fi
 
   gbo_cmd=("$RESOLVED" guard-bind --body "$gbo_u")
   [ -z "$gbo_body" ] || gbo_cmd=("$gbo_body" "$gbo_u")
@@ -13383,7 +13502,7 @@ guard_bind_outer() {   # <session uuid>
   # the `why` is Y:5488's and the facts, if any, are not read: what it wrote is
   # not known.
   gbo_fhave=0; gbo_fwhy=""; gbo_fnotes=()
-  if [ "$gbo_how" = self ] && [ -f "$gbo_facts" ]; then
+  if [ "$gbo_how" = self ] && [ -n "$gbo_facts" ] && [ -f "$gbo_facts" ]; then
     gbo_fhave=1
     gbo_seenwhy=0
     while IFS= read -r gbo_l || [ -n "$gbo_l" ]; do
@@ -13414,19 +13533,26 @@ guard_bind_outer() {   # <session uuid>
       fi ;;
   esac
   gbo_out+=("ended_utc=$(utc_now)")
-  # WRITTEN ONLY OVER ITS OWN RECORD: one that no longer says `binding` with this
-  # pid has been answered by the guard since (its stale row) or removed, and an
-  # outcome written over it would contradict what the person was told.
-  if ! guard_bind_load "$gbo_f" || [ "$GBR_MODE" != binding ] || [ "$GBR_PID" != "$$" ]; then
-    note "guard-bind: the record at $gbo_f no longer says this bind is running (mode=${GBR_MODE:-none}, pid ${GBR_PID:-none}), so its outcome is not written over it: ${gbo_out[*]}"
-    rm -f -- "$gbo_facts"
+  # WRITTEN ONLY OVER ITS OWN RECORD (lane 3's ruling on the contract's point
+  # 18, question 2, #165 6751772589): just before the write the record is read
+  # again, and the outcome goes in only where it is still this outer's own
+  # `binding`, with its own `pid` and its own `pidstart` (none, where it wrote
+  # `pid` alone). One that is not has been answered by the guard since (its
+  # stale row), dropped (case 11) or replaced by a new offer's attempt, and an
+  # outcome written over it would contradict what the person was told; it is
+  # left as it is, and the outcome stays in this attempt's `.out`, where these
+  # words go. The write itself is still a temporary file and `mv -f`.
+  if ! guard_bind_load "$gbo_f" || [ "$GBR_MODE" != binding ] || [ "$GBR_PID" != "$$" ] ||
+     [ "$GBR_PIDSTART" != "$gbo_myps" ]; then
+    note "guard-bind: the record at $gbo_f is no longer this bind's own (mode=${GBR_MODE:-none}, pid ${GBR_PID:-none}, pidstart ${GBR_PIDSTART:-none}), so it is left as it is and the outcome is not written over it: ${gbo_out[*]}"
+    [ -z "$gbo_facts" ] || rm -f -- "$gbo_facts"
     return 0
   fi
   if ! guard_bind_rewrite "$gbo_f" "mode rc why note ended_utc" "${gbo_out[@]}"; then
     note "guard-bind: the outcome could not be written to $gbo_f: ${gbo_out[*]}"
     return 1
   fi
-  rm -f -- "$gbo_facts"
+  [ -z "$gbo_facts" ] || rm -f -- "$gbo_facts"
   note "guard-bind: the bind ended: ${gbo_out[*]}"
   return 0
 }
@@ -13454,17 +13580,32 @@ guard_bind_body() {   # <session uuid>
   fi
   G_ID="$gbb_u"
   gbb_f="$(guard_offer_file "$gbb_u")"
-  if ! guard_bind_load "$gbb_f" || [ "$GBR_MODE" != binding ]; then
-    note "guard-bind --body: the record at $gbb_f does not say mode=binding (it says ${GBR_MODE:-nothing}), so nothing was run."
-    return 2
+  # ITS FACTS FILE SITS BESIDE THE RECORD'S `out=` (lane 3's rulings on the
+  # contract's point 18, #165 6751772589 and 6751818233), and the outer hands
+  # it that path in `LANES_BIND_FACTS`, which is taken only where it names this
+  # offer's own `.bind.<n>.facts`, and is not passed on to `lane-start`.
+  gbb_facts=""
+  if [ -n "${LANES_BIND_FACTS:-}" ] &&
+     [ "$(guard_bind_facts_of "$gbb_f" "${LANES_BIND_FACTS%.facts}.out" || :)" = "$LANES_BIND_FACTS" ]; then
+    gbb_facts="$LANES_BIND_FACTS"
   fi
-  gbb_from="$GBR_FROM"; gbb_to="$GBR_TO"; gbb_out="$GBR_OUT"
-  gbb_facts="$gbb_f.bind.$GBR_BIND.facts"
+  unset LANES_BIND_FACTS
   # ITS FACTS FILE, EMPTY, BEFORE ITS FIRST STEP (lane 3's ruling on the
   # contract's point 16(a), opensoft/openRepoTools#165 6747528875): the outer
   # then reads a missing file as a body that never ran, and never as one that
   # owes nothing.
-  guard_bind_facts "$gbb_facts" || :
+  [ -z "$gbb_facts" ] || guard_bind_facts "$gbb_facts" || :
+  if ! guard_bind_load "$gbb_f" || [ "$GBR_MODE" != binding ]; then
+    note "guard-bind --body: the record at $gbb_f does not say mode=binding (it says ${GBR_MODE:-nothing}), so nothing was run."
+    [ -z "$gbb_facts" ] || guard_bind_facts "$gbb_facts" "why=the bind's record at $gbb_f could not be read, or no longer said mode=binding, when its body started, so the body ran nothing" || :
+    return 2
+  fi
+  gbb_from="$GBR_FROM"; gbb_to="$GBR_TO"; gbb_out="$GBR_OUT"
+  # WHERE THE OUTER HANDED NO PATH, the body finds it beside `out=` itself.
+  if [ -z "$gbb_facts" ]; then
+    gbb_facts="$(guard_bind_facts_of "$gbb_f" "$gbb_out" || :)"
+    [ -z "$gbb_facts" ] || guard_bind_facts "$gbb_facts" || :
+  fi
   gbb_start="$(guard_lane_start)"
   [ -n "$gbb_start" ] || gbb_start=lane-start
   # WHERE `lane-start`'s OWN WORDS BEGIN in the attempt's output file, so that
@@ -13535,7 +13676,7 @@ guard_bind_body() {   # <session uuid>
   fi
   # AN ACCOUNT THAT COULD NOT BE WRITTEN IS NOT LEFT LOOKING LIKE "NOTHING OWED":
   # the empty file goes, and the outer then records its point 16(d) note.
-  guard_bind_facts "$gbb_facts" ${gbb_notes[@]+"${gbb_notes[@]}"} || rm -f -- "$gbb_facts" 2>/dev/null || :
+  [ -z "$gbb_facts" ] || guard_bind_facts "$gbb_facts" ${gbb_notes[@]+"${gbb_notes[@]}"} || rm -f -- "$gbb_facts" 2>/dev/null || :
   return 0
 }
 
