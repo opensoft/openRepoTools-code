@@ -5838,11 +5838,17 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
 #   (d) a 69 at the first snapshot (`pw_first_69`);
 #   (e) D7's deadline and the run's end (`pw_run`, `pw_end`).
 #
+# HERE TOO (T417): F3's lookup, which every end but 0 waits for while the
+# pending record holds a `call` line, its outcomes and its exit 3
+# (`pw_lookup_clock`, `pw_lookup`, `pw_doubt_end` and `pw_lookup_3`, under
+# "THE IN-DOUBT RULE" below); and the exit 3 for an identical write's owner
+# still live at D7's deadline (`pw_owner_live_end`), or for a claim that
+# cannot be tested here (`pw_owner_untested_end`).
+#
 # NOT HERE: the renderer's fork after `committed` (T416); `commit` on primary,
-# which keeps T409's 69 until T420; F3's lookup, which every end but 0 waits for
-# while the pending record holds a `call` line, and its exit 3 (T417); and the
-# tail by match or replay for a write already in the register, the record's
-# `tail` key and the done mark (T418).
+# which keeps T409's 69 until T420; and the tail by match or replay for a
+# write already in the register, the record's `tail` key and the done mark
+# (T418), which replaces `pw_found_end` for the lookup's `found` too.
 PW_LANE=""; PW_C=""; PW_AUTHOR=""; PW_D_S=30; PW_T0=0; PW_RUN=""; PW_RUN_DIR=""
 PW_LOCK=""; PW_REC_OURS=0
 PW_K=0; PW_DIR=""; PW_CHILD=""; PW_KEPT=""; PW_FIRST_DONE=0; PW_RELAY=""; PW_RC=0
