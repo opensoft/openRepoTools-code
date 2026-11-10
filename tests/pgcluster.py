@@ -42,7 +42,12 @@ it: a libpq service in `~/.pg_service.conf` of the cluster's own 0700 `admin`
 home, naming the cluster's socket, its superuser and the database, so no
 connection string is ever an argument. It makes the schema, the owner, the
 groups REGISTER-WRITER and READER, the indexer's login and their GRANTs, and
-labels the switch `register-test`. Then `tmpl` is marked `IS_TEMPLATE true
+labels the switch `register-test`. Then the fixture's logins are made (T228:
+`lanes-index login add fx` and `login add --dump-job`, through the same service
+under a pty, since `login` refuses off a terminal): `lanes_w_fx` and
+`lanes_r_fx`, as which every session a test runs as REGISTER-WRITER or as
+READER logs in, and `lanes_register_dump`; their passwords stay in memory for
+`passfile()`. Then `tmpl` is marked `IS_TEMPLATE true
 ALLOW_CONNECTIONS false`. A clone does not copy `pg_database.datacl`, so each
 clone runs section 1.4's `REVOKE ALL ON DATABASE` and `GRANT CONNECT`, with
 `-v db=` its name; the first run prints what a clone's `datacl` held before
@@ -146,6 +151,18 @@ ADMIN_ENV_DROPPED = ("LANES_", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "AGENT_PROTO
                      "PROJECTS_", "TMUX", "CLAUDE_")
 _DATACL: List[str] = []
 _IMPORTED: List[str] = []
+
+#: THE FIXTURE'S LOGINS (T228): the engineer `login add` is run for, and the
+#: three logins it and `login add --dump-job` make. Every session a test runs
+#: as REGISTER-WRITER or as READER logs in as the writer or the reader.
+FX_ENGINEER = "fx"
+FX_WRITER, FX_READER, FX_DUMP = "lanes_w_fx", "lanes_r_fx", "lanes_register_dump"
+FX_LOGINS = (FX_WRITER, FX_READER, FX_DUMP)
+
+#: A password-file line as `login add` prints it once, to a terminal:
+#: `*:*:<database>:<login>:<password>` (lane 1's `_register_pgpass_line`).
+PASSWORD_LINE = re.compile(r"^\*:\*:(?:[^:\\\n]|\\.)*:(lanes_[a-z0-9_]+):([^:\s]+)$", re.M)
+_SECRET_FIELD = re.compile(r"^(\*:\*:.*:)[^:\n]*$", re.M)
 
 
 def _fixture(**options):
@@ -335,14 +352,20 @@ class ClusterError(Exception):
 
 class Bootstrap:
     """`pg_template_sql`'S DEFAULT (T227): build `tmpl` by P8's bootstrap,
-    then run `sql`, if any, on it. A plain string instead is SQL run on an
-    empty `tmpl`, as the smokes' clusters have it."""
+    then make the fixture's logins (T228) unless `logins` is False, then run
+    `sql`, if any, on it. A plain string instead is SQL run on an empty
+    `tmpl`, as the smokes' clusters have it."""
 
-    def __init__(self, sql: str = "") -> None:
-        self.sql = sql
+    def __init__(self, sql: str = "", logins: bool = True) -> None:
+        self.sql, self.logins = sql, logins
 
     def __repr__(self) -> str:
-        return f"Bootstrap(sql={self.sql!r})"
+        return f"Bootstrap(sql={self.sql!r}, logins={self.logins!r})"
+
+
+def _masked(text: str) -> str:
+    """`text` with each password-file line's last field, the password, hidden."""
+    return _SECRET_FIELD.sub(lambda m: m.group(1) + "<password>", text or "")
 
 
 def _tail(proc: subprocess.CompletedProcess, size: int = 800) -> str:
@@ -388,6 +411,9 @@ class Cluster:
         self.label: Optional[str] = None
         #: Why there is no `tmpl_imported`, where it was asked for and is not.
         self.imported_problem: Optional[str] = None
+        #: The fixture's logins' passwords, as `login add` printed them once
+        #: (T228). Kept in memory for `passfile()`, never printed.
+        self.passwords: Dict[str, str] = {}
 
     def tool(self, name: str) -> str:
         return str(self.bindir / name)
@@ -456,7 +482,10 @@ class Cluster:
         sql = self.template_sql
         if isinstance(sql, Bootstrap):
             self.bootstrap(TEMPLATE, FX_LABEL)
-            self.label, sql = FX_LABEL, sql.sql
+            self.label = FX_LABEL
+            if sql.logins:
+                self.make_logins(TEMPLATE)
+            sql = sql.sql
         if sql.strip():
             self.psql(sql, dbname=TEMPLATE)
         if self.imported:
@@ -495,6 +524,86 @@ class Cluster:
         return subprocess.run([sys.executable, str(LANES_INDEX), *argv], stdin=DEVNULL,
                               capture_output=True, text=True, env=self.admin_env(),
                               cwd=str(self.root), timeout=300, check=False)
+
+    def lanes_index_tty(self, argv: List[str]) -> Tuple[int, str, str]:
+        """`lanes_index` with its stdout a pty, for `login`, which refuses off
+        a terminal (operations.md section 2.4): (exit, stdout, stderr), the
+        pty's CR LF read back as LF. A run that outlasts the admin's 300 s is
+        killed."""
+        import pty
+        import select
+        primary, secondary = pty.openpty()
+        try:
+            proc = subprocess.Popen([sys.executable, str(LANES_INDEX), *argv], stdin=DEVNULL,
+                                    stdout=secondary, stderr=subprocess.PIPE,
+                                    env=self.admin_env(), cwd=str(self.root))
+        except OSError:
+            os.close(primary)
+            raise
+        finally:
+            os.close(secondary)
+        out, end = [], time.monotonic() + 300
+        try:
+            while time.monotonic() < end:
+                ready, _, _ = select.select([primary], [], [], max(0.0, end - time.monotonic()))
+                if not ready:
+                    break
+                try:
+                    chunk = os.read(primary, 65536)
+                except OSError:                     # EIO: the child closed its end
+                    break
+                if not chunk:
+                    break
+                out.append(chunk)
+        finally:
+            os.close(primary)
+        if proc.poll() is None and time.monotonic() >= end:
+            proc.kill()
+        err = proc.stderr.read().decode("utf-8", "replace")
+        proc.stderr.close()
+        code = proc.wait(timeout=DEADLINE)
+        return code, b"".join(out).decode("utf-8", "replace").replace("\r\n", "\n"), err
+
+    def make_logins(self, database: str) -> None:
+        """THE FIXTURE'S LOGINS (T228; section 3.1, "The fixture's logins"),
+        once per cluster, after the bootstrap: `lanes-index login add fx`,
+        then `login add --dump-job`, each through the admin service on
+        `database` and under a pty (lane 1's T110, L1-A8). They make
+        `lanes_w_fx` in REGISTER-WRITER and `lanes_r_fx` in READER, each with
+        its own floors, and `lanes_register_dump` in READER, each with a
+        SCRAM verifier lane 1's code computes. The passwords each prints
+        once are kept for `passfile()`: the socket's trust ignores them, a
+        TLS cluster's SCRAM does not. No error text here holds one."""
+        service = self.admin_service(database)
+        for argv in (["login", "add", FX_ENGINEER, "--admin-service", service],
+                     ["login", "add", "--dump-job", "--admin-service", service]):
+            code, out, err = self.lanes_index_tty(argv)
+            if code != 0:
+                raise ClusterError(f"`lanes-index {' '.join(argv[:3])}` through the admin service "
+                                   f"on {database} exited {code}, so the fixture has no logins "
+                                   f"(lane 1's T110, L1-A8, builds `login`): "
+                                   f"{_masked(out)[-400:]} | {_masked(err)[-400:]}")
+            self.passwords.update(PASSWORD_LINE.findall(out))
+        names = ", ".join(f"'{login}'" for login in FX_LOGINS)
+        can = self.psql(f"SELECT rolname FROM pg_catalog.pg_roles WHERE rolcanlogin AND "
+                        f"rolname IN ({names}) ORDER BY 1;").stdout.split()
+        missing = sorted(set(FX_LOGINS) - set(can)) + sorted(set(FX_LOGINS) - set(self.passwords))
+        if missing:
+            raise ClusterError(f"after `login add`, these logins cannot log in or printed no "
+                               f"password line: {', '.join(missing)}")
+
+    def passfile(self, login: str) -> Path:
+        """A 0600 libpq password file holding `login`'s line at any host,
+        port and database, in the cluster's private `secrets` directory:
+        what a `register_passfile=` or `reader_passfile=` names."""
+        if login not in self.passwords:
+            raise ClusterError(f"no password for {login}: only the fixture's logins have one")
+        secrets = self.root / "secrets"
+        secrets.mkdir(mode=0o700, exist_ok=True)
+        path = secrets / f"{login}.pgpass"
+        path.write_text(f"*:*:*:{login}:{self.passwords[login]}\n", encoding="utf-8")
+        path.chmod(0o600)
+        return path
 
     def bootstrap(self, database: str, label: str) -> str:
         """P8's bootstrap on `database`, through the admin service, with
