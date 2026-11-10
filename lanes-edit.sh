@@ -7622,12 +7622,15 @@ pw_seam_out_read() {   # <attempt dir>
 # record holds a `call` line, any code but 0 waits for F3's lookup first
 # (`pw_end`, `pw_doubt_end`); then `out.1` is replayed on stdout, then `out.2` on
 # stderr, and the run exits the child's code. A 0 ends the run with no lookup
-# (Y:5020).
+# (Y:5020). T422: a `rename-lane` rerun ends its child 0 here with the move it
+# still owes in `<dir>/rl-move`, and that move is made after the replay, before
+# `<dir>` goes (`pw_rl_move … rerun`; Y:3449–3451).
 pw_child_end() {
   if [ "$PW_RC" = 0 ]; then
     pw_abandon_all
     pw_record_done
     pw_replay "$PW_DIR"
+    [ "$WR_VERB" != rename-lane ] || pw_rl_move "$PW_S_N" "$PW_DIR" rerun   # T422: a rerun's move (Y:3449–3451)
     pw_run_dir_done
     exit 0
   fi
@@ -19699,6 +19702,88 @@ rl_state_rename() {   # <the old name's control root> <new lane>
   return 0
 }
 
+# THE RERUN, IN AN ATTEMPT'S CHILD (Y:3449–3451: "rerunning `lane-rename`
+# finds the register already renamed and makes only the move and the stamp";
+# lane 3, #165 6774499606, T422 (2)). Called where `canon_lane` answered
+# `<new>` for the typed `<old>`, before a byte is written. It acts only where
+# the snapshot shows this rename done: `<new>`'s log holds a `RENAMED` line
+# from `<old>`, and the row's handoff cell names a path under `handoffs/` that
+# the first run named for its move: the `-lane-<new>.md` name it rewrote the
+# cell to, with `-lane-<old>.md` as the file not yet moved, or a handoff not
+# named for its lane, stamped where it is. Then this run writes no register
+# line: the move goes to the parent in `rl-move`, as the first run's did,
+# with that line's stamp, the seq of the snapshot that holds the rename, and
+# NO checkout, since the child looked at none; the parent makes it in its own
+# `<c>` (`pw_rl_move … rerun`). The child ends 0 before `ready`, so no commit
+# call is made. The act reads origin's tip after its S3: where origin has the
+# file at `<to>` with the stamp and nothing at `<from>`, it is 0 with nothing
+# written. Anything else returns, and the caller refuses as before. Never in a
+# replay, whose snapshot predates its own write.
+rl_rerun() {   # <the typed old name>
+  local rr_l="" rr_rest="" rr_ln="" rr_s="" rr_o="" rr_u="" rr_t="" rr_on="" rr_oo="" rr_lu="" rr_lt="" \
+        rr_lon="" rr_loo="" rr_log="" rr_n="" rr_row="" rr_cell="" rr_base="" rr_dir="" rr_bl="" rr_sl="" \
+        rr_ol="" rr_keep="" rr_from="" rr_seq="" rr_st="" rr_want_n="" rr_want_o=""
+  [ -n "$REG_SCRATCH" ] && [ "$REG_REPLAY" != 1 ] || return 0
+  rr_log="$(log_file_for "$rl_old")"
+  [ -f "$rr_log" ] && [ ! -L "$rr_log" ] || return 0
+  rr_want_n="$(lc "$rl_new")"; rr_want_o="$(lc "$1")"
+  # THE LAST `RENAMED` LINE FROM `<old>` TO `<new>`, parsed by its fixed
+  # separators (`event_line`): `RENAMED — lane <new>, session <uuid>@<ws>,
+  # <utc>, lane:<new> ← lane:<old> — <why>`.
+  while IFS= read -r rr_l || [ -n "$rr_l" ]; do
+    case "$rr_l" in "RENAMED — lane "*) : ;; *) continue ;; esac
+    rr_rest="${rr_l#"RENAMED — lane "}"
+    rr_ln="${rr_rest%%", session "*}"; [ "$rr_ln" != "$rr_rest" ] || continue
+    rr_rest="${rr_rest#*", session "}"
+    rr_s="${rr_rest%%", "*}"; [ "$rr_s" != "$rr_rest" ] || continue
+    rr_rest="${rr_rest#*", "}"
+    rr_t="${rr_rest%%", "*}"; [ "$rr_t" != "$rr_rest" ] || continue
+    rr_rest="${rr_rest#*", "}"
+    rr_o="${rr_rest%%" — "*}"
+    case "$rr_o" in "lane:"*" ← lane:"*) : ;; *) continue ;; esac
+    rr_on="${rr_o#lane:}"; rr_on="${rr_on%%" ← lane:"*}"
+    rr_oo="${rr_o#*" ← lane:"}"
+    [ "$(lc "$rr_ln")" = "$rr_want_n" ] && [ "$(lc "$rr_on")" = "$rr_want_n" ] &&
+      [ "$(lc "$rr_oo")" = "$rr_want_o" ] && valid_uuid "${rr_s%%@*}" || continue
+    rr_lu="${rr_s%%@*}"; rr_lt="$rr_t"; rr_lon="$rr_on"; rr_loo="$rr_oo"
+  done < "$rr_log"
+  [ -n "$rr_lu" ] || return 0
+  # THE ROW'S HANDOFF CELL, the sixth, counted from the left as the arm does.
+  rr_n="$(row_line "$rl_old" 2>/dev/null)" || return 0
+  rr_row="$(sed -n -e "${rr_n}p" "$LANES_FILE")"
+  rr_cell="$(row_cell "$rr_row" 7 | sed 's/^ *//; s/ *$//')"
+  case "$rr_cell" in handoffs/?*) : ;; *) return 0 ;; esac
+  case "/$rr_cell/" in *"/../"*|*"/./"*|*"//"*) return 0 ;; esac
+  [ "${rr_cell//[[:cntrl:]]/}" = "$rr_cell" ] || return 0
+  rr_base="${rr_cell##*/}"; rr_dir="${rr_cell%"$rr_base"}"
+  rr_bl="$(lc "$rr_base")"; rr_sl="$(lc "-lane-$rr_lon.md")"; rr_ol="$(lc "-lane-$rr_loo.md")"
+  case "$rr_bl" in
+    *"$rr_sl")
+      rr_keep=$(( ${#rr_base} - ${#rr_sl} ))
+      [ "$rr_keep" -gt 0 ] || return 0
+      rr_from="$rr_dir${rr_base:0:$rr_keep}-lane-$rr_loo.md" ;;
+    # THE CELL STILL NAMES `<old>`'s FILE: the first run found none to move
+    # and left the column as it was, so no move was owed.
+    *"$rr_ol") return 0 ;;
+  esac
+  rr_st="RENAMED from $rr_loo by $rr_lu (lane $rr_lon) at $rr_lt"
+  rr_l=""
+  while IFS= read -r rr_l || [ -n "$rr_l" ]; do
+    case "$rr_l" in n=*) rr_seq="${rr_l#n=}"; break ;; esac
+    rr_l=""
+  done 2>/dev/null < "$REG_SCRATCH/snapshot"
+  wr_is_count "$rr_seq" ||
+    die "refusing to rename lane $1 again in an attempt's child under LANES_REGISTER_SCRATCH: the register already holds it, and this attempt's snapshot, $REG_SCRATCH/snapshot, gives no seq to make the handoff's move after, an internal error of the write path. Nothing was sent." 2
+  if ! { printf 'checkout=\nfrom=%s\nto=%s\nstamp=%s\nold=%s\nnew=%s\nseq=%s\n' \
+           "$rr_from" "$rr_cell" "$rr_st" "$rr_loo" "$rr_lon" "$rr_seq" \
+           > "$REG_SCRATCH/rl-move.tmp" && mv -f -- "$REG_SCRATCH/rl-move.tmp" "$REG_SCRATCH/rl-move"; } 2>/dev/null; then
+    note "WARNING: lane $1 is lane $rr_lon in the register already (seq ${rr_seq}), so this run wrote no register line; its handoff's move could not be handed to the parent that makes it ($REG_SCRATCH/rl-move could not be written), so it is NOT made: the row's handoff column names ${rr_cell}. Make it by hand: $(rl_move_hand_steps "${rl_hrepo:-<the lane checkout>}" "$rr_from" "$rr_cell" "$rr_st")"
+    exit 0
+  fi
+  note "lane $1 is lane $rr_lon in the register already (its RENAMED line is in the snapshot at seq ${rr_seq}), so this run writes no register line and makes only the handoff's move and Rule 3 stamp, in the lane's checkout, after this attempt and outside the flag (Y:3449–3451): ${rr_from:+$rr_from → }$rr_cell"
+  exit 0
+}
+
 # THE PARENT'S MOVE AND STAMP, AFTER `committed` (R18; Y:3444–3451, Y:5092),
 # from `pw_tail_child` once the child has exited and its `seam.out` is read,
 # while its record still holds `tail=sent`, before `tail=done` is written
@@ -19714,8 +19799,13 @@ rl_state_rename() {   # <the old name's control root> <new lane>
 # steps, and the run keeps its code: the rename is committed either way, as
 # with its other steps after COMMIT (Y:5328), and the row's handoff column
 # names the file not yet moved (spec:372–376).
-pw_rl_move() {   # <seq> <the child's attempt dir>
-  local pm_f="$2/rl-move" pm_l="" pm_c="" pm_from="" pm_to="" pm_st="" pm_rc=0
+# A RERUN'S MOVE (`rerun`, from `pw_child_end`; `rl_rerun`): this run wrote no
+# register line, its child looked at no checkout and names none, and the move
+# is made in this run's own `<c>`, `PW_C`, at the seq of the snapshot that
+# holds the rename. A failed one is the same one WARNING, and the run's code
+# stays 0.
+pw_rl_move() {   # <seq> <the child's attempt dir> [rerun]
+  local pm_f="$2/rl-move" pm_l="" pm_c="" pm_from="" pm_to="" pm_st="" pm_old="" pm_new="" pm_rc=0 pm_lead=""
   [ -f "$pm_f" ] || return 0
   while IFS= read -r pm_l || [ -n "$pm_l" ]; do
     case "$pm_l" in
@@ -19723,18 +19813,25 @@ pw_rl_move() {   # <seq> <the child's attempt dir>
       from=*) pm_from="${pm_l#from=}" ;;
       to=*) pm_to="${pm_l#to=}" ;;
       stamp=*) pm_st="${pm_l#stamp=}" ;;
+      old=*) pm_old="${pm_l#old=}" ;;
+      new=*) pm_new="${pm_l#new=}" ;;
     esac
     pm_l=""
   done < "$pm_f" 2>/dev/null
+  pm_lead="register write $WR_ID is in the register at seq ${1}"
+  if [ "${3-}" = rerun ]; then
+    pm_lead="this run wrote no register line, since lane ${pm_old:-<old>}'s rename to ${pm_new:-<new>} is in the register already (seq ${1})"
+    [ -n "$pm_c" ] || pm_c="$PW_C"
+  fi
   if [ -z "$pm_c" ] || [ "$pm_c" != "$PW_C" ]; then
-    note "WARNING: register write $WR_ID is in the register at seq ${1}; its handoff's move was named for the checkout ${pm_c:-<none>}, not lane ${PW_LANE}'s $PW_C, so it is NOT made: the row's handoff column names ${pm_to:-<unknown>}, which is not there yet. Make it by hand: $(rl_move_hand_steps "${pm_c:-$PW_C}" "$pm_from" "$pm_to" "$pm_st")."
+    note "WARNING: ${pm_lead}; its handoff's move was named for the checkout ${pm_c:-<none>}, not lane ${PW_LANE}'s $PW_C, so it is NOT made: the row's handoff column names ${pm_to:-<unknown>}, which is not there yet. Make it by hand: $(rl_move_hand_steps "${pm_c:-$PW_C}" "$pm_from" "$pm_to" "$pm_st")."
     return 0
   fi
   LANES_REPO="$PW_C" LANES_DIR="$PW_C/lanes" LANES_FILE="$PW_C/lanes/LANES.md" \
     LANES__RL_MOVE="$pm_f" LANES__RL_MOVE_PID="$$" \
     "${BASH:-bash}" "$RESOLVED" ${ORIG_ARGV[@]+"${ORIG_ARGV[@]}"} </dev/null || pm_rc=$?
   [ "$pm_rc" != 0 ] || return 0
-  note "WARNING: register write $WR_ID is in the register at seq ${1}; its handoff's move and RENAMED stamp in $PW_C did not complete (exit ${pm_rc}, above), so the row's handoff column names ${pm_to}, which is not there yet. Make them by hand: $(rl_move_hand_steps "$PW_C" "$pm_from" "$pm_to" "$pm_st")."
+  note "WARNING: ${pm_lead}; its handoff's move and RENAMED stamp in $PW_C did not complete (exit ${pm_rc}, above), so the row's handoff column names ${pm_to}, which is not there yet. Make them by hand: $(rl_move_hand_steps "$PW_C" "$pm_from" "$pm_to" "$pm_st")."
   return 0
 }
 
@@ -19781,6 +19878,10 @@ rl_move_act() {
      ! ( check_lane_name "$ma_old" && check_lane_name "$ma_new" ) 2>/dev/null; then
     die "refusing to $ma_what: the move its parent named, $RL_MOVE, has no RENAMED stamp, no seq or no lane names, an internal error of the primary write path. Nothing was written." 2
   fi
+  # A RERUN'S MOVE NAMES NO CHECKOUT (`rl_rerun`): its parent's own `<c>`, the
+  # `LANES_REPO` it started this act with (`pw_rl_move … rerun`). A move after
+  # `committed` always names one, and its parent refuses it without.
+  [ -n "$ma_c" ] || ma_c="$LANES_REPO"
   ma_real="$( CDPATH=''; cd -P -- "$LANES_REPO" 2>/dev/null && pwd -P )" || ma_real=""
   ma_creal="$( CDPATH=''; cd -P -- "$ma_c" 2>/dev/null && pwd -P )" || ma_creal=""
   [ -n "$ma_real" ] && [ "$ma_real" = "$ma_creal" ] ||
@@ -22735,6 +22836,7 @@ Nothing was written." 2
     # own spelling, and with clause (e) behind it a name this lane was called
     # two renames ago renames the lane it is now.
     rl_crc=0
+    rl_typed="$rl_old"   # feature 007, T422: the rerun is asked by the name as typed (`rl_rerun`)
     rl_old="$(canon_lane "$rl_old")" || rl_crc=$?
     # ONE CONDITION, ONE CODE (Copilot round 6 on openRepoTools#81). `canon_lane`
     # answers 66 for an alias table it could not read so that `canon-lane`'s four
@@ -22781,6 +22883,13 @@ Nothing was written." 2
     # case-insensitive filesystem they are the same intent, whose stored lane
     # carries the canonical spelling rather than the requested new spelling.
     if [ "$(lc "$rl_old")" = "$(lc "$rl_new")" ]; then
+      # FEATURE 007, T422 — UNLESS IT IS THE RERUN (Y:3449–3451): on primary,
+      # where the typed `<old>` is another name than `<new>` and `canon_lane`
+      # answered `<new>`, the register holds this rename already, and a
+      # handoff move it still owes is made with no register line (`rl_rerun`,
+      # which ends the child where it acts). Files mode, and a rerun with no
+      # move to make, refuse here as they always have.
+      [ "$(lc "$rl_typed")" = "$(lc "$rl_new")" ] || rl_rerun "$rl_typed"
       die "'$rl_old' and '$rl_new' are ONE name under any case (Amendment 15), so this is not a rename at all: it is a change to the row's own SPELLING, which every reader already resolves to and which Amendment 15(d) makes a hand act — the newer row's session id(s) appended to the older row's cell, in one commit. Nothing was written." 2
     fi
 
