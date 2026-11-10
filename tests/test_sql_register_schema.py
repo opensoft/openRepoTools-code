@@ -571,6 +571,7 @@ def test_a_migration_against_an_older_snapshot_ends_69(pg, tmp_path, case):
                            f"'{gen}'::uuid, '{json.dumps(body).replace(chr(39), chr(39) * 2)}'"
                            f"::jsonb);\nCOMMIT;\n")
         writer.stdin.close()
+        writer.stdin = None
         wait_for(pg, "t221-commit", "a.wait_event_type = 'Lock' AND cardinality("
                  "pg_blocking_pids(a.pid)) > 0", "the commit call waiting on the head row")
         _, err = migration.communicate("COMMIT;\n", timeout=60)
