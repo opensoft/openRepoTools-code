@@ -4529,10 +4529,15 @@ object_slug()    { case "$1" in *:openspec/changes/*) printf '%s\n' "${1##*/}" ;
 #
 # THE FIRST ANSWER WAS AN ALIAS LOOKUP IN THIS PARSE, AND IT WAS THE WRONG ONE
 # (Copilot round 1 on openRepoTools#81). A rename FREES the old name — no row
-# carries it, so `lane_next_free` hands the position out and a NEW lane can be
-# called it — and from that moment the field `lane <old>` is ambiguous: it is
-# the renamed lane's history in one file and the new lane's present in another.
-# No amount of resolving a NAME tells those apart, because the name is the same.
+# carries it, so a NEW lane can be called it — and from that moment the field
+# `lane <old>` is ambiguous: it is the renamed lane's history in one file and
+# the new lane's present in another. No amount of resolving a NAME tells those
+# apart, because the name is the same. This said `lane_next_free` hands the
+# freed position out; since lane 3's batch 8 Q47 (opensoft/openRepoTools#165
+# 6780753157) it counts every alias key as taken and does not, because a row
+# under a former name ends that name's resolution (Amendment 16(e)). The file
+# rule below stays as the defence for a row minted under a former name in the
+# past, or by hand or by `add-row`.
 #
 # THE FILE DOES. Amendment 7's first sentence is one file per lane, single
 # writer, and Amendment 15 makes its name the row's own spelling — so
@@ -6759,10 +6764,15 @@ lane_alias_target() {   # <typed name> [<forbidden name>]
 
 # ONE HOP, and the reason it exists apart from the walk above: "a ROW WINS OVER
 # AN ALIAS" has to be asked at EVERY hop and not only at the start (Copilot round
-# 1). After `A → B`, a lane legitimately minted under the name `A` again — the
-# position `A` freed is one `lane_next_free` will hand out — makes `A` both a row
+# 1). After `A → B`, a lane minted under the name `A` again makes `A` both a row
 # and an alias key, and a chain `C → A` must then stop AT `A`, which is a lane,
-# rather than carry on to `B`, which is a different one. Walking hop by hop in
+# rather than carry on to `B`, which is a different one. This called such a lane
+# "legitimately minted", because `lane_next_free` handed out the position `A`
+# freed. It no longer does (lane 3's batch 8 Q47, opensoft/openRepoTools#165
+# 6780753157): a row under `A` ends `A`'s resolution to `B`, which clause (e)
+# promises never happens. The test stays as the defence for a row minted under a
+# former name in the past, or by hand or by `add-row`, which reads no alias key —
+# such rows may exist, and they still win. Walking hop by hop in
 # the shell is what lets the row test sit between the hops; the chains this
 # estate writes are one or two long, and `register_text` is cached, so the cost
 # is an awk per hop over a table of a few lines.
@@ -6780,11 +6790,16 @@ lane_alias_hop() {   # <name>
     END { if (tolower(want) in map) { print map[tolower(want)]; exit 0 } exit 1 }'
 }
 
-# lane_alias_keys — every key of the table, one per line, as written. The one
-# caller is `rename-lane`, which refuses a `<new>` that is already a key
+# lane_alias_keys — every key of the table, one per line, as written. The first
+# caller was `rename-lane`, which refuses a `<new>` that is already a key
 # (Copilot round 1): a row under a former name TAKES PRECEDENCE over the alias,
 # so minting one deliberately would end that former name's resolution — the one
-# thing clause (e) promises never happens.
+# thing clause (e) promises never happens. `lane_next_free` reads it for the
+# same reason (lane 3's batch 8 Q47, opensoft/openRepoTools#165 6780753157):
+# each key of the repository is a taken position, so `next-free` never offers a
+# former name for a new row, and a table it cannot read offers none.
+# `lane_checkout_old` (Amendment 23 S1) reads it too, to find the checkout a
+# renamed lane had under its old name.
 lane_alias_keys() {
   lak_out="$(lane_alias_text)" || return 5
   printf '%s\n' "$lak_out" | awk -F'\t' '
@@ -6801,10 +6816,13 @@ lane_alias_keys() {
 # round 1 on openRepoTools#81). A name that is a lane today IS that lane — which
 # is what makes renaming a lane BACK to a name readable — and the chain has to
 # be walked with that test BETWEEN the hops, because an alias key can become a
-# row again: `A → B` frees the name `A`, `lane_next_free` hands that position
-# out, and a later `C → A` must then answer `A`, the lane, rather than running
-# on to `B`, which is a different one. Taking only the END of the chain answered
-# `B` and lost `C`'s own lane.
+# row again: `A → B` frees the name `A`, a row is minted under it, and a later
+# `C → A` must then answer `A`, the lane, rather than running on to `B`, which
+# is a different one. Taking only the END of the chain answered `B` and lost
+# `C`'s own lane. This said `lane_next_free` hands that position out; since lane
+# 3's batch 8 Q47 (opensoft/openRepoTools#165 6780753157) it counts every alias
+# key as taken and does not, so the test is now the defence for a row minted
+# under a former name in the past, or by hand or by `add-row`.
 #
 # The loop is bounded by a `seen` list rather than by a number, for
 # `lane_alias_target`'s reason: every hop consumes one key of a finite table.
@@ -10293,6 +10311,22 @@ lane_position_rows() {   # 0 with the names · 1 where a source exists and could
   return 0
 }
 
+# A FORMER NAME IS A TAKEN POSITION TOO (lane 3's batch 8 Q47,
+# opensoft/openRepoTools#165 6780753157). Every key of the alias table is counted
+# with the rows, by the rows' own rule: the whole name before its last hyphen is
+# the repository, without regard to case, and the position is the digits after
+# it, a trailing letter dropped. Amendment 16(e) says the old name resolves for
+# ever, and a row under it TAKES PRECEDENCE over the alias, so a position a
+# rename freed is not free: `rename-lane` already refused a `<new>` that is a
+# key for exactly that reason, and this was the one reader that disagreed. It
+# offered the freed position, and `lane-start` then resolved the name it was
+# given to the renamed lane rather than starting a new one.
+#
+# AND A TABLE THAT CANNOT BE READ OFFERS NO POSITION, as a register or an
+# archive that cannot be read offers none above: the names it holds are names
+# this position must avoid, and a read that failed is not an answer
+# (Amendment 7(d)). A table that is absent is an estate that never renamed a
+# lane, and changes nothing.
 lane_next_free() {   # <repo> ; rows on stdin
   [ -n "${1-}" ] || return 64
   lnf_more=""
@@ -10300,7 +10334,14 @@ lane_next_free() {   # <repo> ; rows on stdin
     note "the register or the archive of retired rows exists and could not be read, so the rows this position must avoid are not all known. A position is handed out ONCE and a read that failed is not an answer (Amendment 7(d)), so none is offered."
     return 1
   fi
-  { cat; printf '%s\n' "$lnf_more"; } | awk -F'\t' -v r="$1" '
+  lnf_keys=""; lnf_krc=0
+  lnf_keys="$(lane_alias_keys 2>/dev/null)" || lnf_krc=$?
+  if [ "$lnf_krc" != 0 ]; then
+    if [ "$lnf_krc" = 5 ]; then lnf_why="$(lane_alias_err)"; else lnf_why="its keys could not be listed, exit $lnf_krc"; fi
+    note "${LANES_ALIASES_PATH:-lanes/aliases.tsv} could not be read ($lnf_why), so the FORMER names this position must avoid are not all known (Amendment 16(e)). A position is handed out ONCE and a read that failed is not an answer (Amendment 7(d)), so none is offered."
+    return 1
+  fi
+  { cat; printf '%s\n' "$lnf_more"; printf '%s\n' "$lnf_keys"; } | awk -F'\t' -v r="$1" '
     BEGIN { rl = tolower(r) }
     $1 != "" {
       # THE WHOLE NAME BEFORE THE POSITION IS COMPARED, NOT A PREFIX (Copilot
@@ -18594,9 +18635,13 @@ Nothing was written." 2
     # makes a name that is a lane today BE that lane — so minting a row under a
     # name some other lane was renamed AWAY from would end that lane's old name
     # resolving, which is the one thing clause (e) promises never happens. The
-    # refusal is here, at the one writer that can do it deliberately; a row
-    # minted under a freed name by `lane-start` is a different act and the
-    # readers handle it by the row-wins rule itself.
+    # refusal is here, at the one writer that can do it deliberately. This went
+    # on to call a row minted under a freed name by `lane-start` a different act,
+    # which the readers handle by the row-wins rule itself. Since lane 3's batch
+    # 8 Q47 (opensoft/openRepoTools#165 6780753157) `next-free` counts every
+    # alias key as taken and offers no former name's position, for this
+    # refusal's own reason; the row-wins rule stays as the defence for a row
+    # minted under a former name in the past, or by hand or by `add-row`.
     rl_krc=0
     rl_keys="$(lane_alias_keys 2>/dev/null)" || rl_krc=$?
     if [ "$rl_krc" = 5 ]; then
