@@ -5749,6 +5749,189 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
   wr_record_write
 }
 
+# ------------------------------------------------ F: THE PRIMARY BRANCH (T415)
+#
+# 007 T415 (FR-018; Y:4981–5030, Y:2504–2646; the contract's §3.2 and §3.3).
+# Where the writers' mode question answers `primary`, a write verb runs HERE,
+# once per writer process, and never in files mode: S1's attempt loop, until
+# D7's deadline. Each attempt takes one `lanes-index register snapshot`, which
+# builds a scratch tree at its seq; runs the verb as a CHILD of this file on
+# that tree, under T413's internal flag; stops it at T414's seam; and makes one
+# `lanes-index register commit`, whose answer decides the attempt (Y:5008).
+#
+# THE PARENT'S STEPS, in order (lane openRepoTools-4's plan, §3.7; T415's line):
+#   (a) before the first attempt: the lane's checkout `<c>` (`pw_checkout`,
+#       R17), a pending hand edit in it (`pw_hand_edit_refuse`), the client's
+#       act checks 1–4 (`act_checks`, T410), the author (`pw_author_read`), the
+#       write id, the claim and the record's plan (T412's `wr_` functions), and
+#       the run's directory (`pw_run_dir`);
+#   (b) each attempt: its directory and `parent.pid` (`pw_attempt_dir`), the
+#       snapshot (`pw_snapshot`), the act's checks at it (`pw_act_at_snapshot`),
+#       the files `register commit` reads (`pw_attempt_files`), and the child
+#       (`pw_child_start`, `pw_child_wait`);
+#   (c) the commit call and the decision on its answer (`pw_commit`,
+#       `pw_decide`);
+#   (d) a 69 at the first snapshot (`pw_first_69`);
+#   (e) D7's deadline and the run's end (`pw_run`, `pw_end`).
+#
+# NOT HERE: the renderer's fork after `committed` (T416); `commit` on primary,
+# which keeps T409's 69 until T420; F3's lookup, which every end but 0 waits for
+# while the pending record holds a `call` line, and its exit 3 (T417); and the
+# tail by match or replay for a write already in the register, the record's
+# `tail` key and the done mark (T418).
+PW_LANE=""; PW_C=""; PW_AUTHOR=""; PW_D_S=30; PW_T0=0; PW_RUN=""; PW_RUN_DIR=""
+PW_LOCK=""; PW_REC_OURS=0
+
+# D7's deadline in whole seconds: 30, or `LANES_REGISTER_DEADLINE_S` for tests
+# (Y:2632–2641).
+pw_deadline_s() {
+  if wr_is_count "${LANES_REGISTER_DEADLINE_S:-}"; then
+    printf '%s\n' "$LANES_REGISTER_DEADLINE_S"
+  else
+    printf '30\n'
+  fi
+}
+
+# THE LANE'S CHECKOUT, `<c>` (R17; FR-018). The lane is the one the routing
+# attributes the write to (`write_lane_of`), and `<c>` is that lane's checkout,
+# from its name alone (`lane_checkout_path`): no `lane_checkout_enter`, no clone
+# and no S3. On primary the verb runs on a scratch tree the register builds, and
+# `<c>` is read only for a pending hand edit, the author, and the `repos.tsv`
+# its `origin/main` gives the snapshot (Y:5048–5050). A checkout that is not
+# there would need a clone, which is D12's fetch, so the write refuses with 2.
+# A form that writes nothing (a dry run) has no lane and no write here: it keeps
+# T409's 69 for now.
+pw_checkout() {   # <the verb's arguments>
+  local pc_rc=0 pc_l=""
+  pc_l="$(write_lane_of "$cmd" ${1+"$@"})" || pc_rc=$?
+  case "$pc_rc" in
+    0) : ;;
+    2) die "no lane, no write: \`$cmd\` names no lane here, so on primary there is no lane checkout to read its author and its pending hand edits from, and a write never falls back to the workspace checkout. Name the lane it is for — LANES_LANE=<lane> $SELF $cmd … — and run it again. Nothing was sent." 2 ;;
+    *) die "\`$cmd\` as given writes nothing (a dry run), and on primary this lanes-edit.sh runs only writes, through the register's attempt loop: it has no primary path for this form yet. Nothing was written, and no files were written instead." 69 ;;
+  esac
+  check_lane_name "$pc_l"
+  PW_LANE="$(canon_lane "$pc_l")" || exit $?
+  check_lane_name "$PW_LANE"
+  PW_C="$(lane_checkout_path "$PW_LANE")" || die "$(lanes_workspace_why)" 1
+  [ -d "$PW_C" ] ||
+    die "lane ${PW_LANE}'s own register checkout, $PW_C/, is not here, and on primary a write makes no clone to make it, since a clone is a fetch (D12): the verb runs on a scratch tree the register builds, and reads only its author, its pending hand edits and its repos.tsv from that checkout. Make the checkout first, as lane-start does at a launch — $SELF lane-checkout $PW_LANE --create — then run \`$cmd\` again. Nothing was sent." 2
+  return 0
+}
+
+# A PENDING HAND EDIT IN `<c>` (Y:2459–2464; Amendment 23's S3 step 4). The verb
+# runs on a scratch tree, so the lane's checkout is the one place a hand edit of
+# a rendered file can be seen, and on primary it is never carried or committed:
+# the write refuses with 2, naming each file and the recovery that works on
+# primary, before anything is sent. The render set is the seam's
+# (`cp_seam_render_path`); `lanes/STORE`, `repos.tsv` and the handoffs are not
+# in it.
+pw_hand_edit_refuse() {
+  local ph_hits="" ph_p="" ph_l=""
+  ph_hits="$(LANES_REPO="$PW_C" cs_pending_of lanes/LANES.md lanes/aliases.tsv lanes/log lanes/archive)"
+  while IFS= read -r ph_p; do
+    [ -n "$ph_p" ] || continue
+    cp_seam_render_path "$ph_p" || continue
+    ph_l="$ph_l $ph_p"
+  done <<PH_EOF
+$ph_hits
+PH_EOF
+  [ -n "$ph_l" ] || return 0
+  note "RECOVERY, in $PW_C:"
+  note "  read it:      git -C $PW_C diff HEAD --$ph_l"
+  note "  restore it:   git -C $PW_C checkout HEAD --$ph_l"
+  note "  then make the change through its verb, and run this write again"
+  die "refusing to write on primary: lane ${PW_LANE}'s checkout, $PW_C, holds an uncommitted edit of$ph_l, which the register renders. On primary the register is the database and that file is its rendering, so a hand edit there is never committed, carried or swept into a write (Y:2459). Nothing was sent." 2
+}
+
+# THE AUTHOR (Y:5379; D15): `<c>`'s identity, as `git -C <c> var
+# GIT_AUTHOR_IDENT` gives it, less its date: `Name <email>`, for the attempt's
+# `author` file. Where git gives none, the write refuses with 2 before the first
+# snapshot, as a files-mode commit there would fail.
+pw_author_read() {
+  local pa_i=""
+  pa_i="$(git -C "$PW_C" var GIT_AUTHOR_IDENT 2>/dev/null)" || pa_i=""
+  PW_AUTHOR=""
+  case "$pa_i" in *'>'*) PW_AUTHOR="${pa_i%>*}>" ;; esac
+  case "$PW_AUTHOR" in ?*' <'*'>') : ;; *) PW_AUTHOR="" ;; esac
+  wr_value_ok "$PW_AUTHOR" || PW_AUTHOR=""
+  [ -n "$PW_AUTHOR" ] ||
+    die "refusing to write on primary: git gives no author identity in lane ${PW_LANE}'s checkout, $PW_C (\`git -C $PW_C var GIT_AUTHOR_IDENT\` answered none), and the register's journal records each write's author (D15), as a commit there would need one. Set user.name and user.email for that checkout, then run \`$cmd\` again. Nothing was sent." 2
+  return 0
+}
+
+# THE RUN'S DIRECTORY, `<state>/register-writes/<d>/<run>/` (T413; contract
+# §3.3): `<run>` is 32 lower-case hex from 16 random bytes, minted now, so every
+# attempt's directory is known before the first snapshot, which mints a new
+# write's id. `register-writes/`, `<d>/` and `<d>/<run>/` are made with mode
+# 0700 (lane openRepoTools-3, #165 6755005268). Also the path each attempt's
+# `lock` names: this process's own sidecar lock, which the child's tail takes
+# for its sidecar acts (Y:5044; F-B1). This run's claim is released on a
+# failure here, since nothing was sent.
+pw_run_dir() {
+  local pr_w="$WR_STATE/register-writes"
+  PW_RUN="$(act_mint_id)" || PW_RUN=""
+  if [ -z "$PW_RUN" ] || ! wr_dir_0700 "$WR_STATE" || ! wr_dir_0700 "$pr_w" ||
+     ! wr_dir_0700 "$pr_w/$WR_D" || ! wr_dir_0700 "$pr_w/$WR_D/$PW_RUN"; then
+    wr_claim_release
+    die "this write's attempt directories cannot be kept: $pr_w/$WR_D/${PW_RUN:-<run>} is not a 0700 directory of this user's and cannot be made one, or no run nonce could be read from /dev/urandom. Nothing was sent" 1
+  fi
+  PW_RUN_DIR="$pr_w/$WR_D/$PW_RUN"
+  PW_LOCK="$(sidecar_lock_dir 2>/dev/null)" || PW_LOCK=""
+  case "$PW_LOCK" in /*|'') : ;; *) PW_LOCK="$PWD/$PW_LOCK" ;; esac
+  return 0
+}
+
+# AN IDENTICAL WRITE'S OWNER STILL LIVE AT D7's DEADLINE (Y:5218; T412's
+# `wr_claim_take` returned 2). Its exit 3 and the texts are T417's, which maps
+# them in `_EXIT_3_CAUSES`. Until then this run ends with 75, the busy code: it
+# sent nothing, and a rerun once that pid has ended takes the record over and
+# settles the write by its id.
+pw_owner_live_end() {
+  local po_re=""
+  if wr_is_uuid "${LANES_WRITE_ID:-}"; then
+    po_re="$(wr_rerun_text "$LANES_WRITE_ID" "${LANES_WRITE_GENERATION:-<generation>}")"
+  else
+    po_re="$(pw_given_text)"
+  fi
+  die "an identical write is still running in pid ${WR_OWNER_PID:-<unknown>} (its claim ${WR_OWNER_FILE}, made ${WR_OWNER_UTC:-<unknown>} on ${WR_OWNER_HOST:-<unknown>}/${WR_OWNER_CONTAINER:-<unknown>}), and this run's deadline of ${PW_D_S} s has passed; this run sent nothing, and that write's outcome is not known. Once pid ${WR_OWNER_PID:-<unknown>} has ended, run the same command again: it takes that write's pending record over, if one was left, and settles it by its id. ${po_re}" 75
+}
+
+# THE COMMAND AS IT WAS GIVEN, for a rerun where the run had no write id (open
+# point 38; spec:318): `LANES_WRITE_ID=new` again where it was given, with the
+# lane and the session the digest took (ERR-38).
+pw_given_text() {
+  if [ "${LANES_WRITE_ID:-}" = new ]; then
+    wr_rerun_new_text
+  else
+    printf 'LANES_LANE=%s LANES_SESSION=%s %s\n' \
+      "$(printf '%q' "$WR_LANE")" "$(printf '%q' "$WR_SESSION")" "$WR_CMDLINE"
+  fi
+}
+
+# THE PRIMARY BRANCH, once per writer process. It never returns: every path
+# ends the process with the run's code.
+pw_run() {   # <the verb's arguments>
+  local pr_rc=0
+  # ---- (a) BEFORE THE FIRST ATTEMPT.
+  pw_checkout ${1+"$@"}
+  pw_hand_edit_refuse
+  act_checks
+  pw_author_read
+  wr_begin
+  PW_D_S="$(pw_deadline_s)"
+  wr_claim_take "$(( $(date -u +%s) + PW_D_S ))" || pr_rc=$?
+  [ "$pr_rc" = 0 ] || pw_owner_live_end
+  wr_id_plan
+  case "$WR_PLAN" in
+    reuse) PW_REC_OURS=1 ;;
+    env) [ "$WR_REC_WRITE_ID" != "$WR_ID" ] || PW_REC_OURS=1 ;;
+  esac
+  pw_run_dir
+  # STEP (a) ALONE: the attempts come in steps (b) to (e).
+  wr_claim_release
+  die "this lanes-edit.sh has no SQL write path: \`lanes-index mode\` answered primary, which only a lanes-index newer than this lanes-edit.sh answers. \`$cmd\` wrote nothing, and wrote no files instead. Install the lanes-edit.sh that ships with that lanes-index." 69
+}
+
 # ---------------------------------------------------------------- the verbs
 #
 # A lane HOLDS an object while its own last line on it is OPEN. WITHDRAWN is
@@ -19894,23 +20077,27 @@ case "$cmd" in
     ;;
 esac
 
-# FEATURE 007, T409 — THE WRITERS' MODE QUESTION AND PHASE 1'S MODE ARM
+# FEATURE 007, T409 — THE WRITERS' MODE QUESTION, AND T415'S PRIMARY ARM
 # (FR-002, FR-003; lane 3's R17). Asked after the two guards above, so a
 # container with no workstation name and a W with no register refuse first,
 # and BEFORE THE ROUTING below, so a refusal here comes before any clone,
 # fetch, lock or `exec`. The write guard's verbs only (`REG_ASK`), and once
 # (`reg_mode_ask`). Under a flag T413 honours nothing is asked; T409 tests no
 # flag itself (lane 3, #165 6755005268): a stray `LANES_REGISTER_SCRATCH`
-# export skips nothing here, so a primary register still meets the 69 below
-# and never a files-mode write (Y:5034).
-# PHASE 1'S ARM: `primary` exits 69 here and never writes the files instead,
-# the placeholder that phase 2's T415 replaces (only a `lanes-index` newer than
-# this file answers it). `index` and `files` run the verb as it runs today.
+# export skips nothing here, so a primary register still meets the primary
+# arm below and never a files-mode write (Y:5034).
+# PHASE 2'S ARM (T415): `primary` runs the write through the register's attempt
+# loop, `pw_run`, which ends this process and never writes the files instead.
+# `commit` keeps phase 1's 69 until T420 gives it its primary form (T415's line:
+# "no state between T415 and T420 runs it in the loop"). `index` and `files`
+# run the verb as it runs today.
 if [ "$REG_ASK" = 1 ]; then
   reg_mode_ask
   case "$REG_MODE" in
     primary)
-      die "this lanes-edit.sh has no SQL write path: \`lanes-index mode\` answered primary, which only a lanes-index newer than this lanes-edit.sh answers. \`$cmd\` wrote nothing, and wrote no files instead. Install the lanes-edit.sh that ships with that lanes-index." 69 ;;
+      [ "$cmd" != commit ] ||
+        die "this lanes-edit.sh has no SQL write path: \`lanes-index mode\` answered primary, which only a lanes-index newer than this lanes-edit.sh answers. \`$cmd\` wrote nothing, and wrote no files instead. Install the lanes-edit.sh that ships with that lanes-index." 69
+      pw_run ${1+"$@"} ;;
   esac
 fi
 
