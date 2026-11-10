@@ -861,15 +861,17 @@ class Estate:
 
     # -------------------------------------------------- running writers
     def launch(self, lane: str, argv: Sequence[str], arms: Sequence[dict] = (), extra: dict = None,
-               barrier: Optional[Barrier] = None, origin: Optional[Path] = None) -> Writer:
+               barrier: Optional[Barrier] = None, origin: Optional[Path] = None,
+               first: Sequence[Path] = (), script: Optional[Path] = None) -> Writer:
         name = f"{next(self._n):02d}-{lane}"
         where, agents = self.checkout(name, origin)
         psql = self.psql_dir(name, arms)
         env = dict(self.env)
         env.update(LANES_LANE=lane, LANES_SESSION=session_of(lane), LANES_REPO=str(where),
-                   AGENT_PROTOCOL_ROOT=str(agents), PATH=str(psql) + os.pathsep + self.env["PATH"])
+                   AGENT_PROTOCOL_ROOT=str(agents),
+                   PATH=os.pathsep.join([*map(str, first), str(psql), self.env["PATH"]]))
         env.update(extra or {})
-        command = ["bash", str(self.lanes_edit), *argv]
+        command = ["bash", str(script or self.lanes_edit), *argv]
         if barrier is not None:
             command = [sys.executable, "-I", str(self.launcher), str(barrier.ready / name),
                        str(barrier.fifo), *command]
@@ -1460,3 +1462,240 @@ def test_the_burst_window_is_effective_a_short_deadline_sends_writers_busy(estat
         if w.code == 75:
             assert all(not e.has_write(x) for x in w.write_ids()), f"{w.lane} busy, yet written"
     record("window-effective", busy=codes.count(75), drain_s=round(drain, 2))
+
+
+# ============================================================ PHASE W: AT-F14, output once (T248)
+#
+# F14 (S1, "Output and side effects, once"; lane 4's section): the verb runs
+# as a child that stops at the seam; only the deciding attempt's output is
+# replayed, stdout first; every side effect outside the register runs once,
+# after COMMIT; one run makes one journal entry. On test 4's estate (T243's
+# `Estate`), with logging fakes for `gh`, `tmux` and a `git` wrapper that log
+# their environment (TP:6847-6851). The child's state directory is read as
+# `<XDG_STATE_HOME>/openRepoTools/register-writes/` (a reading: lane 4 names
+# `<state>/register-writes/`). They FAIL UNTIL L4-B3 and L4-B7 land (T413,
+# T414, T415), with T243's own; without PostgreSQL 16 each skips.
+
+_ENV_LOGGER = r'''#!/usr/bin/env python3
+# T248's logging stand-in: its name, argv, whether the flag reached it, and
+# each seam.out it can see; then the real tool, where one is named.
+import glob, json, os, sys
+HERE = os.path.dirname(os.path.abspath(__file__))
+NAME = os.path.basename(sys.argv[0])
+REAL = REAL_TOOL
+STATE = STATE_DIR
+seams = {p: open(p, encoding="utf-8", errors="replace").read()
+         for p in glob.glob(os.path.join(STATE, "**", "seam.out"), recursive=True)}
+with open(os.path.join(HERE, "tools.log"), "a", encoding="utf-8") as log:
+    log.write(json.dumps({"tool": NAME, "argv": sys.argv[1:], "scratch": os.environ.get(
+        "LANES_REGISTER_SCRATCH"), "seams": seams}) + "\n")
+if REAL:
+    os.execv(REAL, [REAL] + sys.argv[1:])
+'''
+
+
+def loggers(e: Estate) -> Path:
+    """`git` (a wrapper), `gh` and `tmux` (fakes), each logging to
+    `tools.log` beside them."""
+    where = e.root / "loggers"
+    where.mkdir(exist_ok=True)
+    for tool, real in (("git", shutil.which("git")), ("gh", None), ("tmux", None)):
+        (where / tool).write_text(_ENV_LOGGER.replace("REAL_TOOL", repr(real))
+                                  .replace("STATE_DIR", repr(str(e.state))), encoding="utf-8")
+        (where / tool).chmod(0o755)
+    return where
+
+
+def tool_calls(where: Path, tool: Optional[str] = None) -> List[dict]:
+    log = where / "tools.log"
+    calls = [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines() if l] if log.exists() else []
+    return [c for c in calls if tool is None or c["tool"] == tool]
+
+
+def register_writes(e: Estate) -> Path:
+    return e.state / "openRepoTools" / "register-writes"
+
+
+def seam_outs(e: Estate) -> Dict[str, str]:
+    return {str(p): p.read_text(encoding="utf-8", errors="replace")
+            for p in register_writes(e).rglob("seam.out")} if register_writes(e).exists() else {}
+
+
+@CLIENT
+def test_a_writer_prints_its_output_once_however_many_attempts_it_made(estates):
+    """Test 4's burst of ten: each committed writer's stdout carries its
+    success text exactly once, however many attempts it made, and its stderr
+    no line twice (only the deciding attempt's)."""
+    e = estates()
+    writers, _ = burst(e, [f"{KEY}#{400 + k}" for k in range(10)], 200)
+    assert [w.code for w in writers] == [0] * 10, [(w.lane, w.code, w.err[-300:]) for w in writers]
+    for w in writers:
+        assert len(SEQ_SAID.findall(w.out)) == 1, f"{w.lane} printed its success text not once: {w.out!r}"
+        lines = [l for l in w.err.splitlines() if l.strip()]
+        assert len(lines) == len(set(lines)), f"{w.lane}'s stderr repeats an attempt's lines: {w.err!r}"
+    record("output-once", attempts={w.lane: len(w.snapshot_calls()) for w in writers})
+
+
+@CLIENT
+def test_a_refused_writer_replays_its_output_then_the_refusal(estates):
+    """Test 4's case (a): the writer refused at its commit prints its
+    buffered output, then the refusal, last, naming the holder, and no
+    success text."""
+    e = estates()
+    barrier = Barrier(e.root, 2)
+    writers = [e.launch(lane, claim(OBJ, "--no-github"), arms=[WINDOW], barrier=barrier) for lane in (LA, LB)]
+    barrier.release()
+    assert sorted(w.wait() for w in writers) == [0, 2]
+    win, lose = sorted(writers, key=lambda w: w.code)
+    assert not SEQ_SAID.search(lose.out), f"the refused writer printed success text: {lose.out!r}"
+    lines = [l for l in lose.err.splitlines() if l.strip()]
+    assert lines and win.lane in lines[-1], f"the refusal naming {win.lane} is not last: {lose.err!r}"
+    assert len(lines) == len(set(lines)), f"the refused writer's stderr repeats lines: {lose.err!r}"
+
+
+@CLIENT
+@pytest.mark.parametrize("effect", ["tmux", "gh"])
+def test_a_side_effect_runs_once_after_commit_and_never_for_a_refusal(estates, effect):
+    """[gh]: two claimants on O; the fake `gh` is called once, by the
+    committed claim, citing its seq, never by the refused one. [tmux]: two
+    `request-handoff`s for one lane; the fake `tmux` is called by the
+    committed one only, after its COMMIT (the journal holds it when `tmux`
+    runs), and never by a refused one."""
+    e = estates()
+    where = loggers(e)
+    barrier = Barrier(e.root, 2)
+    if effect == "gh":
+        writers = [e.launch(lane, claim(OBJ), arms=[WINDOW], barrier=barrier, first=[where])
+                   for lane in (LA, LB)]
+    else:
+        writers = [e.launch(lane, ["request-handoff", LC, "--session", session_of(LC)], arms=[WINDOW],
+                            barrier=barrier, first=[where]) for lane in (LA, LB)]
+    barrier.release()
+    for w in writers:
+        w.wait()
+    committed = [w for w in writers if w.code == 0]
+    grew = e.journal_after()
+    assert len(committed) == len(grew) >= 1, ([(w.lane, w.code, w.err[-300:]) for w in writers], grew)
+    calls = tool_calls(where, effect)
+    assert len(calls) == len(committed), f"{effect} ran {len(calls)} times for {len(committed)} commits: {calls}"
+    if effect == "gh":
+        assert f"register seq {grew[0]['seq']}" in json.dumps(calls), calls
+    for call in calls:
+        assert set(call["seams"].values()) <= {"tail", "tail\n"}, f"{effect} ran before COMMIT: {call}"
+
+
+#: The test copy of `lanes-edit.sh` whose writes reach the seam twice: its
+#: `commit_publish` (T414's seam) is renamed and called twice by a wrapper.
+TWICE = ('commit_publish() { commit_publish_t248_once "$@" || return; '
+         'commit_publish_t248_once "$@"; }\n')
+
+
+@CLIENT
+def test_a_second_reach_of_the_seam_in_one_run_exits_2(estates):
+    """One run, one journal entry: an arm the test copy makes reach the seam
+    twice exits 2, "a second register write in one run", naming the first
+    seq, and the journal holds that one entry."""
+    e = estates()
+    text = e.lanes_edit.read_text(encoding="utf-8")
+    assert text.count("\ncommit_publish() {") == 1, "lanes-edit.sh has no commit_publish, T414's seam"
+    twice = e.bindir / "lanes-edit-twice.sh"
+    twice.write_text(text.replace("\ncommit_publish() {", "\n" + TWICE + "commit_publish_t248_once() {", 1),
+                     encoding="utf-8")
+    w = e.run(LA, ["append-line", f"NOTE {EM} lane {LA}: one run, two reaches (T248)"], script=twice)
+    grew = e.journal_after()
+    assert w.code == 2, f"exit {w.code}, not 2: {w.err[-600:]}"
+    assert len(grew) == 1, grew
+    assert "a second register write in one run" in w.err and str(grew[0]["seq"]) in w.err, w.err
+
+
+@CLIENT
+@pytest.mark.parametrize("case", ["outside-register-writes", "wrong-mode", "other-parent"])
+def test_the_scratch_flag_is_honoured_only_for_its_own_attempt_directory(estates, case):
+    """A write run with `LANES_REGISTER_SCRATCH` exported, naming a directory
+    outside `<state>/register-writes/`, one of mode 0755, or one whose
+    `parent.pid` is not the run's parent, does not take it as the flag: the
+    shim's log shows the run's own snapshot and commit calls, and it
+    commits."""
+    e = estates()
+    base = e.root / "elsewhere" if case == "outside-register-writes" else register_writes(e)
+    attempt = base / "attempt-t248"
+    attempt.mkdir(parents=True)
+    attempt.chmod(0o755 if case == "wrong-mode" else 0o700)
+    (attempt / "parent.pid").write_text("1\n" if case == "other-parent" else f"{os.getpid()}\n",
+                                        encoding="utf-8")
+    w = e.run(LA, ["append-line", f"NOTE {EM} lane {LA}: the flag refused, {case} (T248)"],
+              extra={"LANES_REGISTER_SCRATCH": str(attempt)})
+    assert w.code == 0, f"[{case}] exit {w.code}: {w.err[-600:]}"
+    assert w.snapshot_calls() and w.commit_calls(), f"[{case}] the run made no snapshot or commit call"
+    assert len(e.journal_after()) == 1
+
+
+@CLIENT
+def test_the_scratch_flag_never_reaches_git_gh_or_tmux(estates):
+    """The child unsets `LANES_REGISTER_SCRATCH` at once, so the logged
+    environments of the `git` wrapper, the fake `gh` and the fake `tmux`
+    never hold it, over a committed claim and a refused one."""
+    e = estates()
+    where = loggers(e)
+    barrier = Barrier(e.root, 2)
+    writers = [e.launch(lane, claim(OBJ), arms=[WINDOW], barrier=barrier, first=[where]) for lane in (LA, LB)]
+    barrier.release()
+    assert sorted(w.wait() for w in writers) == [0, 2]
+    calls = tool_calls(where)
+    assert {c["tool"] for c in calls} >= {"git", "gh"}, f"the loggers saw too little: {calls[:3]}"
+    held = [c for c in calls if c["scratch"]]
+    assert held == [], f"LANES_REGISTER_SCRATCH reached {sorted({c['tool'] for c in held})}"
+
+
+@CLIENT
+@pytest.mark.parametrize("case", ["parent-gone", "cap"])
+def test_a_child_at_the_seam_stops_with_none_and_runs_no_tail(estates, case):
+    """With its parent killed ([parent-gone]) or stopped by SIGSTOP at the
+    cap (`LANES_REGISTER_SEAM_CAP_S=3`, [cap]) while it waits at the seam,
+    the child writes `seam.out` as `none` and runs no tail: the fake `gh` is
+    not called, and nothing is written. The parent's commit call is held by
+    the shim and never sent."""
+    e = estates()
+    where = loggers(e)
+    fifo = e.root / "hold.fifo"
+    os.mkfifo(str(fifo))
+    w = e.launch(LA, claim(OBJ), first=[where], extra={"LANES_REGISTER_SEAM_CAP_S": "3"},
+                 arms=[{"mode": "hold", "match": "commit_write", "call": 1, "fifo": str(fifo)}])
+    held = hold_point(fifo, w)
+    try:
+        os.kill(w.proc.pid, 9 if case == "parent-gone" else 19)
+        deadline = time.monotonic() + 20
+        while "none" not in "".join(seam_outs(e).values()):
+            assert time.monotonic() < deadline, f"[{case}] no seam.out reads none: {seam_outs(e)}"
+            time.sleep(0.1)
+        time.sleep(0.5)
+        assert tool_calls(where, "gh") == [], f"[{case}] the tail ran: {tool_calls(where, 'gh')}"
+        assert e.journal_after() == []
+    finally:
+        if case == "cap":
+            os.kill(w.proc.pid, 18)
+    assert held is not None  # never closed: the held commit call is never sent
+
+
+@CLIENT
+@pytest.mark.parametrize("decision", ["committed", "abandon"])
+def test_seam_out_is_written_once_before_the_child_acts(estates, decision):
+    """`seam.out` is written once, with noclobber: `tail` before the child
+    acts on `committed` (the fake `gh`, the claim's tail, sees `tail`), and
+    `none` before it acts on `abandon` (the refused claim's child runs no
+    tail). No `seam.out` holds anything else."""
+    e = estates()
+    where = loggers(e)
+    if decision == "committed":
+        w = e.run(LA, claim(OBJ), first=[where])
+        assert w.code == 0, w.err[-600:]
+        gh = tool_calls(where, "gh")
+        assert gh and all(set(c["seams"].values()) == {"tail"} or set(c["seams"].values()) == {"tail\n"}
+                          for c in gh), f"gh saw no seam.out reading tail: {gh}"
+    else:
+        assert e.run(LB, claim(OBJ, "--no-github")).code == 0
+        w = e.run(LA, claim(OBJ), first=[where])
+        assert w.code == 2, w.err[-600:]
+        assert tool_calls(where, "gh") == [], "the abandoned attempt ran its tail"
+    for path, said in seam_outs(e).items():
+        assert said.strip() in ("tail", "none") and said.count("\n") <= 1, f"{path}: {said!r}"
