@@ -17901,7 +17901,10 @@ lane_row_gate() {   # <canonical lane> <its checkout>
   [ ! -e "$2/.git" ] || return 0
   lrg_rc=0; lrg_known "$1" "$lrg_log" || lrg_rc=$?
   [ "$lrg_rc" = 1 ] || return 0
-  log_sync
+  # ONE FETCH OF W (REV427b, N3): where the router's `start-record` re-ask has
+  # fetched W just now, in this process, that fetch is the one, and the miss
+  # above was asked after it.
+  [ "$LOG_SYNC_FETCH" = yes ] || log_sync
   [ "$LOG_SYNC_FETCH" = yes ] || return 0
   lrg_rc=0; lrg_known "$1" "$lrg_log" || lrg_rc=$?
   [ "$lrg_rc" = 1 ] || return 0
