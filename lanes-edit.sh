@@ -5504,6 +5504,60 @@ wr_done_purge() {
   return 0
 }
 
+# THE DONE MARK WRITTEN (T418; Y:5180–5183; `contracts/pending-record.md` §6):
+# when a run removes a record on 0, it first writes `<state>/register-done/
+# <write_id>`, mode 0600 in a 0700 directory, by temporary file and `mv`, one
+# `key=value` a line: `write_id`, `seq`, `tail` (the record's `done` or `sent`
+# value, or `owed <utc>` where the tail was named as owed), the record's
+# `pid`, `host` and `container`, and `utc`, this host's clock. The marks past
+# their age go first (Y:5183). 1, with nothing written, where a value would
+# break its line or the file cannot be written.
+wr_done_write() {   # <seq> <tail value> <pid> <host> <container>
+  local dw_dir dw_tmp dw_now dw_v
+  wr_is_uuid "$WR_ID" && wr_is_count "${1-}" || return 1
+  for dw_v in "${2-}" "${3-}" "${4-}" "${5-}"; do wr_value_ok "$dw_v" || return 1; done
+  dw_dir="$WR_STATE/register-done"
+  wr_dir_0700 "$WR_STATE" && wr_dir_0700 "$dw_dir" || return 1
+  wr_done_purge
+  dw_now="$(wr_host_utc)"
+  dw_tmp="$(mktemp "$dw_dir/.$WR_ID.XXXXXX" 2>/dev/null)" || dw_tmp=""
+  [ -n "$dw_tmp" ] || return 1
+  if ! printf 'write_id=%s\nseq=%s\ntail=%s\npid=%s\nhost=%s\ncontainer=%s\nutc=%s\n' \
+         "$WR_ID" "$1" "$2" "${3-}" "${4-}" "${5-}" "$dw_now" > "$dw_tmp" 2>/dev/null ||
+     ! mv -f -- "$dw_tmp" "$dw_dir/$WR_ID" 2>/dev/null; then
+    rm -f -- "$dw_tmp" 2>/dev/null
+    return 1
+  fi
+  return 0
+}
+
+# THE DONE MARK READ (T418): `<state>/register-done/<id>` into WR_DONE_*. 0
+# where it is there, names that write id, and holds a `tail` of `sent`, `done`
+# or `owed`; 1 otherwise, which a run reads as no mark.
+WR_DONE_SEQ=""; WR_DONE_TAIL=""; WR_DONE_PID=""; WR_DONE_HOST=""; WR_DONE_CONTAINER=""; WR_DONE_UTC=""
+wr_done_read() {   # <write id>
+  local dr_f dr_l="" dr_w=""
+  WR_DONE_SEQ=""; WR_DONE_TAIL=""; WR_DONE_PID=""; WR_DONE_HOST=""; WR_DONE_CONTAINER=""; WR_DONE_UTC=""
+  wr_is_uuid "${1-}" || return 1
+  dr_f="$WR_STATE/register-done/$1"
+  [ -f "$dr_f" ] && [ -r "$dr_f" ] || return 1
+  while IFS= read -r dr_l || [ -n "$dr_l" ]; do
+    case "$dr_l" in
+      write_id=*) dr_w="${dr_l#write_id=}" ;;
+      seq=*) WR_DONE_SEQ="${dr_l#seq=}" ;;
+      tail=*) WR_DONE_TAIL="${dr_l#tail=}" ;;
+      pid=*) WR_DONE_PID="${dr_l#pid=}" ;;
+      host=*) WR_DONE_HOST="${dr_l#host=}" ;;
+      container=*) WR_DONE_CONTAINER="${dr_l#container=}" ;;
+      utc=*) WR_DONE_UTC="${dr_l#utc=}" ;;
+    esac
+    dr_l=""
+  done < "$dr_f" 2>/dev/null
+  [ "$dr_w" = "$1" ] || return 1
+  case "$WR_DONE_TAIL" in 'sent '*|'done '*|'owed '*) return 0 ;; esac
+  return 1
+}
+
 # THE RECORD WRITTEN (Y:5172): by its owner only, by a temporary file and `mv`,
 # mode 0600 in the 0700 `register-pending/`, one `key=value` a line in Y's
 # order, `call=` lines and `tail` last. `updated_utc` is rewritten from this
@@ -6671,20 +6725,109 @@ pw_learned() {   # <seq>
   return 0
 }
 
-# `committed <s>` TO ONE CHILD AT ITS SEAM (Y:5009–5012): the child replays its
-# own buffered output and runs the verb's code after the seam once, after
-# COMMIT; this process reaps it and, where its `seam.out` says `tail`, removes
-# the record and exits the child's code. Where it does not, the child never
-# read `committed`, and this returns 1 for the replay (Y:5342).
+# `committed <s>` TO ONE CHILD AT ITS SEAM (Y:5009–5012, Y:5291–5298): the
+# record's owner first writes `tail=sent <s> <utc>` into the record; only the
+# owner can (`wr_record_write` tests the claim), so two runs on one record
+# never both send it (`contracts/pending-record.md` §9.1). A run that cannot
+# write it sends nothing, and names the tail as owed. The child then replays
+# its own buffered output and runs the verb's code after the seam once, after
+# COMMIT; this process reaps it and, where its `seam.out` says `tail`, writes
+# `tail=done <s> <rc> <utc>`, the done mark from it, removes the record and
+# exits the child's code. Where it does not, the child never read
+# `committed`: the owner removes `tail` again, and this returns 1 for the
+# replay (Y:5342).
 pw_tail_child() {   # <seq> <pid> <attempt dir>
-  local tc_rc=0
+  local tc_rc=0 tc_was="$WR_TAIL"
   pw_learned "$1"
+  WR_TAIL="sent $1 $(wr_host_utc)"
+  if ! wr_record_write; then
+    WR_TAIL="$tc_was"
+    pw_abandon_one "$2" "$3"
+    [ "$PW_CHILD" != "$2" ] || PW_CHILD=""
+    pw_tail_owed "$1" "this run could not write tail=sent into its pending record, $WR_STATE/register-pending/$WR_D (it no longer owns it, or the file cannot be written), and a tail is sent only after it (Y:5293), so no child was sent one"
+  fi
   pw_send "$3" "committed $1" || :
   wait "$2" || tc_rc=$?
   [ "$PW_CHILD" != "$2" ] || PW_CHILD=""
-  pw_seam_out_tail "$3" || return 1
-  pw_record_done
+  if ! pw_seam_out_tail "$3"; then
+    WR_TAIL=""
+    wr_record_write || :
+    return 1
+  fi
+  WR_TAIL="done $1 $tc_rc $(wr_host_utc)"
+  wr_record_write || :
+  pw_tail_close "$1" "$WR_TAIL"
   exit "$tc_rc"
+}
+
+# THE RECORD'S OWNER, as the record states it: this run's claim where this run
+# has written the record, else the owner's as the record taken over names it
+# (Y:5172: `pid`, `host` and `container` are copies of the owner's claim).
+# Into PW_O_PID, PW_O_HOST and PW_O_CONTAINER.
+PW_O_PID=""; PW_O_HOST=""; PW_O_CONTAINER=""
+pw_rec_owner() {
+  if [ -n "$WR_UPDATED_UTC" ]; then
+    PW_O_PID="$WR_CLAIM_PID"; PW_O_HOST="$WR_CLAIM_HOST"; PW_O_CONTAINER="$WR_CLAIM_CONTAINER"
+  else
+    PW_O_PID="$WR_REC_PID"; PW_O_HOST="$WR_REC_HOST"; PW_O_CONTAINER="$WR_REC_CONTAINER"
+  fi
+}
+
+# THE OUTCOME KNOWN ON 0 (Y:5193–5194, Y:5181): where this run owns the
+# record, the done mark is written first, with `<mark>` as its `tail` and the
+# record's owner, then the record goes with this run's claims. A mark that
+# cannot be written costs only the next run's words, never a second tail,
+# since the record that holds `tail` goes only after it. `<mark>` empty: no
+# mark is written (one is there already). Where this run does not own the
+# record, only its own claim goes.
+pw_tail_close() {   # <seq> <mark tail value, or empty>
+  if [ "$PW_REC_OURS" = 1 ] && wr_claim_owns; then
+    if [ -n "${2-}" ]; then
+      pw_rec_owner
+      wr_done_write "$1" "$2" "$PW_O_PID" "$PW_O_HOST" "$PW_O_CONTAINER" || :
+    fi
+    wr_record_remove || wr_claim_release
+  else
+    wr_claim_release
+  fi
+}
+
+# THE `tail` KEY FOUND (Y:5296, Y:5333–5342): in the record, or in the done mark
+# under the write id. `sent` or `done` in the record, or any value in the mark,
+# means this run runs no tail: every child gets `abandon`, a record's value
+# goes into the done mark, the record goes, and the run exits as for a tail it
+# did not run, with the table's words. 1 where neither holds a value.
+pw_tail_found() {   # <seq>
+  local tf_v="" tf_w="" tf_utc="" tf_p="" tf_mark=""
+  case "$WR_TAIL" in
+    'sent '*|'done '*)
+      tf_v="$WR_TAIL"; tf_mark="$WR_TAIL"
+      pw_rec_owner; tf_p="$PW_O_PID" ;;
+    *)
+      wr_done_read "$WR_ID" || return 1
+      tf_v="$WR_DONE_TAIL"; tf_p="$WR_DONE_PID" ;;
+  esac
+  tf_w="${tf_v%% *}"; tf_utc="${tf_v##* }"
+  pw_abandon_all
+  pw_tail_close "$1" "$tf_mark"
+  case "$tf_w" in
+    sent) pw_tail_said "$1" "its after-COMMIT steps may have run at ${tf_utc} in pid ${tf_p:-<unknown>}, and are not run again: $(pw_owed_words)" ;;
+    done) pw_tail_said "$1" "its after-COMMIT steps ran at ${tf_utc} in pid ${tf_p:-<unknown>}" ;;
+  esac
+  pw_tail_said "$1" "its after-COMMIT steps were named as owed at ${tf_utc}, and this run runs none of them: $(pw_owed_words)"
+}
+
+# THE STEPS THAT MAY BE OWED, in words. Until the texts' own step it names the
+# verb.
+pw_owed_words() {
+  printf 'those of lanes-edit.sh %s. Do by hand any that did not run\n' "$WR_VERB"
+}
+
+# A RUN THAT RUNS NONE OF THE TAIL ENDS HERE (Y:5328): the write is committed
+# either way, so it prints one WARNING and exits 0.
+pw_tail_said() {   # <seq> <what of the tail>
+  note "WARNING: register write $WR_ID is in the register at seq ${1}; ${2}."
+  exit 0
 }
 
 # THE WRITE FOUND IN THE REGISTER, by `already <s>`, a snapshot's `found=` or
@@ -6695,6 +6838,7 @@ pw_tail_child() {   # <seq> <pid> <attempt dir>
 pw_tail() {   # <seq> <how it was learned> <the answer, in a file>
   local pt_l="" pt_p="" pt_d="" pt_mp="" pt_md="" pt_rest="" pt_h=""
   pw_learned "$1"
+  pw_tail_found "$1" || :
   pw_entry_rows "$3"
   if [ -n "$PW_E_DIGEST" ] && [ -n "$PW_CHILD" ]; then
     pt_h="$(pw_dir_digest "$PW_DIR")" || pt_h=""
@@ -6889,13 +7033,12 @@ pw_first_diff() {   # <the replay's files>
 }
 
 # A TAIL THIS RUN DID NOT RUN (Y:5328–5331): the write is committed either
-# way. Every child gets `abandon`, the record goes, the run prints one
-# WARNING, and exits 0. Until the texts' own step, `<owed>` names the verb.
+# way. Every child gets `abandon`, the done mark keeps `owed <utc>` (Y:5340),
+# the record goes, and the run prints one WARNING and exits 0.
 pw_tail_owed() {   # <seq> <what became of the tail>
   pw_abandon_all
-  pw_record_done
-  note "WARNING: register write $WR_ID is in the register at seq ${1}; ${2}, so its after-COMMIT steps did NOT run: those of lanes-edit.sh ${WR_VERB}. Do by hand any that did not run."
-  exit 0
+  pw_tail_close "$1" "owed $(wr_host_utc)"
+  pw_tail_said "$1" "${2}, so its after-COMMIT steps did NOT run: $(pw_owed_words)"
 }
 
 # ---- (c) THE COMMIT CALL (S1's step 3; Y:2556; contract §3.3). The `call`
