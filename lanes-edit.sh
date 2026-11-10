@@ -543,8 +543,11 @@
 #      `log`'s); a row or a `--log` object that names another lane than its
 #      first word; a `LANES_LANE` that is not that word, byte for byte; a
 #      first word that is not the row's own spelling, byte for byte, an
-#      alias's new name included, which under `LANES_ROUTE_WRITES=1` is
-#      refused before anything is cloned where W's fetch answers; and a
+#      alias's new name included; an `--add-row` for a name `canon_lane`
+#      answers any lane for, a row under any case or a former name, naming
+#      it; under `LANES_ROUTE_WRITES=1` those two are refused before anything
+#      is cloned where W's fetch answers, and an `--add-row`'s row and
+#      `--log` object that name another lane always; and a
 #      `LANES_SESSION` that is not a transcript uuid. A cell append whose
 #      anchor does not hold is no refusal: it is left out and said, and the
 #      write goes on.
@@ -7899,9 +7902,12 @@ start_record_tail() {
 # the row, in SRA_ROW with SRA_ROW_GIVEN=1, for the router's test of it (lane 3,
 # #165 6770733371, new question (a)); an `--add-row` with no word after it
 # leaves SRA_ROW_GIVEN=0, `write_lane_of` does not route that call, and the arm
-# refuses it in its usage words.
+# refuses it in its usage words. AND THE `--log` OBJECT, for the router's test
+# of it (lane 3, #165 6774499606, T427's question 3): SRA_LOGS counts the
+# `--log`s, and SRA_LOG is the object of one the arm's parse takes, three words
+# with the arrow second, as the arm's parse takes them.
 sr_argv_adds_row() {
-  SRA_ROW=""; SRA_ROW_GIVEN=0
+  SRA_ROW=""; SRA_ROW_GIVEN=0; SRA_LOG=""; SRA_LOGS=0; sra_add=1
   sra_i=0; sra_n=${#ORIG_ARGV[@]}
   while [ "$sra_i" -lt "$sra_n" ]; do
     case "${ORIG_ARGV[$sra_i]}" in
@@ -7913,16 +7919,24 @@ sr_argv_adds_row() {
   while [ "$sra_i" -lt "$sra_n" ]; do
     case "${ORIG_ARGV[$sra_i]}" in
       --add-row)
-        if [ $((sra_i + 1)) -lt "$sra_n" ]; then
+        if [ "$sra_add" = 1 ] && [ $((sra_i + 1)) -lt "$sra_n" ]; then
           SRA_ROW="${ORIG_ARGV[$((sra_i + 1))]}"; SRA_ROW_GIVEN=1
         fi
-        return 0 ;;
-      --append-cell|--log) sra_i=$((sra_i + 4)) ;;
+        sra_add=0; sra_i=$((sra_i + 2)) ;;
+      --log)
+        SRA_LOGS=$((SRA_LOGS + 1))
+        if [ $((sra_i + 3)) -lt "$sra_n" ]; then
+          case "${ORIG_ARGV[$((sra_i + 2))]}" in
+            '→'|'->') SRA_LOG="${ORIG_ARGV[$((sra_i + 1))]}" ;;
+          esac
+        fi
+        sra_i=$((sra_i + 4)) ;;
+      --append-cell) sra_i=$((sra_i + 4)) ;;
       --state) sra_i=$((sra_i + 2)) ;;
       *) sra_i=$((sra_i + 1)) ;;
     esac
   done
-  return 1
+  [ "$sra_add" = 0 ]
 }
 
 # `start-record`'S USAGE, one copy for its arm and for the refusals below,
@@ -7971,6 +7985,46 @@ sr_spelling_die() {   # <L> <canon_lane's answer> [routed]
     ssd_not=", and nothing was cloned (Amendment 23 S1, S2)"
   fi
   die "start-record's first word is '$1', and $ssd_read resolves it to lane '$2': <lane> is the row's own spelling, byte for byte, since LANES_LANE equals it and is the digest's lane as given (Y:5171), so the digest, the pending record, the row and the log line spell one lane alike. Name the lane as its row does (LANES_LANE=$2 $SELF start-record $2 …). Nothing was written$ssd_not. $SR_USE" 2
+}
+
+# `start-record --add-row`'S `--log` OBJECT NAMES `<L>` (feature 007, T427;
+# lane 3, #165 6755005268, T427's question 7): `lane:<L>`, its lane compared
+# without case, as the object a new row's log line is read under. THE TEST
+# READS NOTHING, so, like the row's, it is asked by the router before anything
+# is cloned (lane 3, #165 6774499606, T427's question 3) and by the arm before
+# `add_row_checks`, in the same words. Both callers ask it only of an object of
+# the form `lane:<lane>`; any other is the arm's usage refusal.
+sr_log_names_lane() {   # <--log's object> <L>
+  [ "$(lc "${1#lane:}")" = "$(lc "${2-}")" ] ||
+    die "--log names ${1-}, and this write is lane ${2-}'s: its log line is that lane's own, lane:${2-}. Nothing was written. $SR_USE" 2
+}
+
+# `start-record --add-row` FOR A NAME `canon_lane` ANSWERS A LANE FOR (feature
+# 007, T427; lane 3, #165 6774499606, T427's question 3): tasks:1320 makes
+# `<L>` the row's own spelling, so an `--add-row` for which `canon_lane`
+# answers any lane at all exits 2, naming it, routed or not. `canon_lane`
+# answers a lane where a row matches the name under any case, or where the
+# alias table resolves it, a former name's (Amendment 15(a), 16(e)); a name
+# with neither is the miss it hands back as typed, a new lane's.
+#   `sr_add_row_known <L> <canon_lane's answer for it>` is 0 where that answer
+#   is a lane, 1 where it is the miss, and 2 where the read of the rows could
+#   not be made: no answer (R22). An answer in another spelling than `<L>` is
+#   always a lane; one in `<L>`'s own is a lane only where a row has it.
+#   `sr_known_die <L> <answer> [routed]` is the refusal, one copy of the words
+#   for the arm, after `add_row_checks`, and for the router, after its one
+#   fetch of W, which passes `routed`.
+sr_add_row_known() {   # <L> <canon_lane's answer for it>
+  [ "${2-}" = "${1-}" ] || return 0
+  sak_rows="$(rows_named_ci "${1-}" 2>/dev/null)" || return 2
+  [ -n "$sak_rows" ]
+}
+sr_known_die() {   # <L> <canon_lane's answer> [routed]
+  skd_read="the register"; skd_not=""
+  if [ "${3-}" = routed ]; then
+    skd_read="the register on origin/$LANES_BRANCH, asked again after a fetch just now into W,"
+    skd_not=", and nothing was cloned (Amendment 23 S1, S2)"
+  fi
+  die "start-record's first word is '$1', and $skd_read answers lane '$2' for it, by a row under any case or as a former name (Amendment 15(a), 16(e)): --add-row makes the row of a lane the register does not know yet, and this one would be a second row for lane $2. Take a free position instead, as \`lanes --prefix <repo>\` prints it. Nothing was written$skd_not. $SR_USE" 2
 }
 
 # A read fetches first — there is no index, so "current" means "after a fetch".
@@ -17732,10 +17786,12 @@ write_lane_of() {   # <verb> <its arguments…>
     # LANES_SESSION is not a transcript uuid (lane 3's rulings 2 and 3, #165
     # 6755005268): it is not routed, and the arm refuses it before any clone.
     # A first word in another spelling than the row's passes here, since this
-    # arm reads no row, and `lane_checkout_enter` refuses it before anything
-    # is cloned (#165 6770733371, new question (a)); where its fetch of W was
-    # no answer, the arm refuses it in the lane's checkout, before the lock
-    # (#165 6767463594, question 6). An `--add-row` with no row after it is the
+    # arm reads no row, and so does an `--add-row` for a name the register
+    # already answers for: `lane_checkout_enter` refuses each before anything
+    # is cloned (#165 6770733371, new question (a); #165 6774499606, T427's
+    # question 3); where its fetch of W was no answer, the arm refuses it in
+    # the lane's checkout, before the lock (#165 6767463594, question 6). An
+    # `--add-row` with no row after it is the
     # arm's usage refusal too, so it is not routed either (REV427b, N1), as a
     # missing `<L>` is not, and nothing is cloned for it.
     start-record)
@@ -17984,33 +18040,57 @@ lane_checkout_enter() {   # <write_lane_of's status> <its lane, or empty>
   # write refused anyway: the cost `lane_row_gate` exists to avoid. So the
   # router refuses first:
   #   * `--add-row`'s row is one line and names `<L>` byte for byte
-  #     (`sr_row_names_lane`). The test reads nothing, so it comes before
-  #     `canon_lane` too.
+  #     (`sr_row_names_lane`), and its `--log` object, where it is one of the
+  #     form `lane:<lane>`, names `<L>` (`sr_log_names_lane`; lane 3, #165
+  #     6774499606, T427's question 3). Both tests read nothing, so they come
+  #     before `canon_lane` too.
+  #   * AN `--add-row` FOR WHICH `canon_lane` ANSWERS ANY LANE AT ALL, a row
+  #     under any case or an alias's new name, is refused, 2, naming it
+  #     (`sr_known_die`; the same ruling). A miss is a new lane's and goes on
+  #     unasked; an answer that is a lane is asked again after one fetch of
+  #     W, as below, and refused only where it is still one.
   #   * Every other form is a resume. Where this router's own `canon_lane`
   #     answer is not `<L>` byte for byte, it is asked again after one fetch of
   #     W (`log_sync`: W is still `LANES_REPO` here), as the gate asks a miss,
   #     so a rename that another checkout published and W has not fetched yet
   #     is never refused. A second answer that is still not `<L>` is refused,
   #     2, naming it; one that is `<L>` is the lane the write goes through.
-  #   * A FETCH THAT FAILED OR DID NOT RUN IS NO ANSWER (R22), as at the gate:
-  #     the write goes on, and the arm decides in the lane's checkout, after its
-  #     own fetch, as it did before this ruling. UNDER `LANES_NO_FETCH=1` THERE
+  #   * A FETCH THAT FAILED OR DID NOT RUN, OR A READ OF THE ROWS THAT COULD
+  #     NOT BE MADE, IS NO ANSWER (R22), as at the gate: the write goes on, and
+  #     the arm decides in the lane's checkout, after its own fetch, as it did
+  #     before these rulings. UNDER `LANES_NO_FETCH=1` THERE
   #     IS NO FETCH TO ASK AFTER, so the router does not ask again (REV427b,
   #     N2): that too is no answer, and the no-fetch refusal below, or the arm
   #     in an existing checkout, decides.
-  # Both are asked whether the lane's checkout exists or not, so a routed call
-  # gets this answer from the router, never from the checkout's copy.
+  # Each is asked whether the lane's checkout exists or not, so a routed call
+  # gets these answers from the router, never from the checkout's copy.
+  lcn_add=0
   if [ "$cmd" = start-record ] && sr_argv_adds_row && [ "$SRA_ROW_GIVEN" = 1 ]; then
+    lcn_add=1
     sr_row_names_lane "$SRA_ROW" "$lcn_lane"
+    if [ "$SRA_LOGS" = 1 ]; then
+      case "$SRA_LOG" in lane:?*) sr_log_names_lane "$SRA_LOG" "$lcn_lane" ;; esac
+    fi
   fi
   lcn_c="$(canon_lane "$lcn_lane")" || exit $?
-  if [ "$cmd" = start-record ] && [ "$lcn_c" != "$lcn_lane" ] &&
-     [ "${LANES_NO_FETCH:-0}" != 1 ] && ! sr_argv_adds_row; then
-    log_sync
-    if [ "$LOG_SYNC_FETCH" = yes ]; then
-      lcn_c="$(canon_lane "$lcn_lane")" || exit $?
-      [ "$lcn_c" = "$lcn_lane" ] ||
-        sr_spelling_die "$lcn_lane" "$lcn_c" routed
+  if [ "$cmd" = start-record ] && [ "${LANES_NO_FETCH:-0}" != 1 ]; then
+    if [ "$lcn_add" = 1 ]; then
+      if sr_add_row_known "$lcn_lane" "$lcn_c"; then
+        log_sync
+        if [ "$LOG_SYNC_FETCH" = yes ]; then
+          lcn_c="$(canon_lane "$lcn_lane")" || exit $?
+          if sr_add_row_known "$lcn_lane" "$lcn_c"; then
+            sr_known_die "$lcn_lane" "$lcn_c" routed
+          fi
+        fi
+      fi
+    elif [ "$lcn_c" != "$lcn_lane" ]; then
+      log_sync
+      if [ "$LOG_SYNC_FETCH" = yes ]; then
+        lcn_c="$(canon_lane "$lcn_lane")" || exit $?
+        [ "$lcn_c" = "$lcn_lane" ] ||
+          sr_spelling_die "$lcn_lane" "$lcn_c" routed
+      fi
     fi
   fi
   check_lane_name "$lcn_c"
@@ -18805,9 +18885,12 @@ Nothing was written." 2
   #   2 usage; every refusal of the writes it makes as one; a row or a `--log`
   #   object that names another lane than its first word; a LANES_LANE that is
   #   not that word; a first word that is not the row's own spelling, byte for
-  #   byte, an alias's new name included (6767463594, question 6), which
-  #   under LANES_ROUTE_WRITES=1 the router refuses before anything is cloned
-  #   where W's fetch answers (6770733371, new question (a)); a
+  #   byte, an alias's new name included (6767463594, question 6); an
+  #   `--add-row` for which `canon_lane` answers any lane at all, naming it
+  #   (6774499606, T427's question 3); under LANES_ROUTE_WRITES=1 the router
+  #   refuses those two before anything is cloned where W's fetch answers
+  #   (6770733371, new question (a)), and an `--add-row`'s row and `--log`
+  #   object that name another lane always; a
   #   LANES_SESSION that is not a transcript uuid; S3's refusals; each with
   #   nothing written · 3 pushed, not confirmed · 4 the lock · 5 an edit's
   #   proof · 6 S4's commit, kept and named · 69 on primary, at T409's ask
@@ -18907,18 +18990,25 @@ Nothing was written." 2
     # keeps it and `log` then finds it. A row that is there is found as
     # `set-row-state` finds it, after `log`'s fetch (R30). EITHER WAY `<L>` IS
     # THE ROW'S OWN SPELLING, byte for byte (lane 3, #165 6767463594,
-    # question 6), and a first word in another spelling is refused, 2. Under
-    # `LANES_ROUTE_WRITES=1` the router has asked both already, before anything
-    # was cloned (#165 6770733371, new question (a)); here they are asked again
-    # in the same words, for a call that is not routed and for a resume whose
-    # router fetch was no answer.
+    # question 6), and a first word in another spelling is refused, 2. A NEW
+    # ROW IS A NEW LANE'S: an `--add-row` for which `canon_lane` answers any
+    # lane at all is refused, 2, naming it (#165 6774499606, T427's question
+    # 3). Under `LANES_ROUTE_WRITES=1` the router has asked these already,
+    # before anything was cloned (#165 6770733371, new question (a)), and an
+    # `--add-row`'s `--log` object too; here they are asked again in the same
+    # words, for a call that is not routed and for one whose router fetch was
+    # no answer. A row under any case is the one exception: the router names
+    # it in `sr_known_die`'s words, and this arm in Amendment 15(a)'s, from
+    # `add_row_checks`, which `add-row` shares.
     if [ "$sr_rows" = 1 ]; then
-      # THE ROW'S TEST READS NOTHING, SO IT COMES FIRST, before `add_row_checks`
-      # and its reads, as the router asks it before the clone (new question
-      # (a)). So a row that spells `<L>` in another case is refused for its
+      # THE ROW'S TEST AND THE `--log` TEST READ NOTHING, SO THEY COME FIRST,
+      # before `add_row_checks` and its reads, as the router asks them before
+      # the clone (new question (a); lane 3, #165 6774499606, T427's question
+      # 3). So a row that spells `<L>` in another case is refused for its
       # spelling, routed or not; a row the lane already has, spelled as `<L>`,
       # still gets Amendment 15(a)'s refusal from `add_row_checks`.
       sr_row_names_lane "$sr_row" "$sr_in"
+      sr_log_names_lane "$sr_obj" "$sr_in"
       add_row_checks "$sr_row"
       # AND THE LANE `add_row_checks` READ IS `<L>` BYTE FOR BYTE, asked of
       # `lane_new` itself, before the lock (REV427b, M1): this arm refuses so
@@ -18926,8 +19016,14 @@ Nothing was written." 2
       [ "$lane_new" = "$sr_in" ] ||
         die "the row given to --add-row spells its lane '$lane_new' in its first cell, and start-record's first word is '$sr_in': the row names <lane> byte for byte, since LANES_LANE equals it and is the digest's lane as given (Y:5171), so the digest, the pending record, the row and the log line spell one lane alike. Spell the lane alike in the row, the first word and LANES_LANE. Nothing was written. $sr_use" 2
       sr_lane="$lane_new"
-      [ "$(lc "${sr_obj#lane:}")" = "$(lc "$sr_lane")" ] ||
-        die "--log names $sr_obj, and this write is lane $sr_lane's: its log line is that lane's own, lane:$sr_lane. Nothing was written. $sr_use" 2
+      # AND `canon_lane` ANSWERS NO LANE FOR IT (lane 3, #165 6774499606,
+      # T427's question 3), asked after `add_row_checks`' fetch and before the
+      # lock. A row under any case got Amendment 15(a)'s refusal above, so
+      # what is left here is a former name's: an alias the table resolves to
+      # another lane, refused, 2, naming it. Plain `add-row` does not ask
+      # this; its row for a former name is older than 007 (REV427b's R7a).
+      sr_c="$(canon_lane "$sr_lane")" || exit 2   # Amendment 15
+      [ "$sr_c" = "$sr_lane" ] || sr_known_die "$sr_lane" "$sr_c"
       CS_RECHECK=1   # `add-row`'s, for the same reason: its checks ran before the lock
     else
       log_sync
