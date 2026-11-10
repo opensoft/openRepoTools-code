@@ -569,7 +569,8 @@
 #      nothing written: a write that names no lane, or whose lane's own
 #      checkout is not there to read (`pw_checkout`; D12: no clone); an unset,
 #      empty or out-of-class LANES_LANE (`pw_lane_given`); LANES_NO_GIT=1,
-#      since on primary the write is its commit (`pw_no_git_refuse`); a hand
+#      since on primary the write is its commit (`pw_no_git_refuse`), but
+#      for `request-handoff`, whose refusal there is 64 (below); a hand
 #      edit of a rendered file pending in that checkout (`pw_hand_edit_refuse`);
 #      no author identity there (`pw_author_read`); an act whose generation is
 #      not the snapshot's, or whose base is past it (`pw_act_at_snapshot`); a
@@ -588,7 +589,10 @@
 #      contract because its four callers sit in front of a launch as those do. IT WAS IN NO TABLE AT ALL until this round (F-X16), while
 #      being the code the contract gives every one of those reads.
 #      Amendment 23's `lane-checkout` and `refresh-workspace` spend it too.
-#      So does feature 007's `act-begin` (T410).
+#      So does feature 007's `act-begin` (T410). And feature 007's primary
+#      branch (T415) refuses `request-handoff` with it, with nothing sent,
+#      where it names no lane (`pw_checkout`) and under LANES_NO_GIT=1
+#      (`pw_no_git_refuse`): its callers read its 2 as "still bound".
 #
 #  66  EX_NOINPUT — AMENDMENT 16(e)'s ALIAS TABLE COULD NOT BE READ, and
 #      `canon-lane` is the one verb that spends it. `lanes/aliases.tsv` is what
@@ -5962,15 +5966,18 @@ pw_lane_given() {
 # commit: the child's `commit_publish` returns 0 before the seam, so the run
 # would end 0 with nothing written. So it refuses 2 here, beside
 # `pw_lane_given`, before its claim and its first snapshot, naming the flag.
-# Nothing is sent. A dry run meets it too, since a dry run takes the write's
+# Nothing is sent. `request-handoff`'s refusal is 64, as for its missing lane
+# (`pw_checkout`): its callers read its 2 as "still bound" (`lane`:1253,
+# `lane-start`:2875) (lane 3, #165 6774499606, T415 (4); review REV415b, NIT 6). A dry run meets it too, since a dry run takes the write's
 # whole path and refuses wherever the real write would (lane 3, #165
 # 6770820384, T415's question 2). `commit` never reaches the loop (T420), so it
 # is unchanged; T421's and T423's guards stay as backstops.
 pw_no_git_refuse() {
-  local pg_w="" pg_cmd="lanes-edit.sh"
+  local pg_w="" pg_cmd="lanes-edit.sh" pg_rc=2
   [ "$NO_GIT" = 1 ] || return 0
+  [ "$cmd" != request-handoff ] || pg_rc=64
   for pg_w in ${ORIG_ARGV[@]+"${ORIG_ARGV[@]}"}; do pg_cmd="$pg_cmd $(printf '%q' "$pg_w")"; done
-  die "refusing to write on primary: LANES_NO_GIT=1 is set, which means edit only, with no commit and no push. On primary a write is its commit to the register, so under it this run would end 0 having written nothing. Nothing was sent. Unset it and run the command again: env -u LANES_NO_GIT ${pg_cmd}" 2
+  die "refusing to write on primary: LANES_NO_GIT=1 is set, which means edit only, with no commit and no push. On primary a write is its commit to the register, so under it this run would end 0 having written nothing. Nothing was sent. Unset it and run the command again: env -u LANES_NO_GIT ${pg_cmd}" "$pg_rc"
 }
 
 # A PENDING HAND EDIT IN `<c>` (Y:2459–2464; Amendment 23's S3 step 4). The verb
@@ -5980,7 +5987,11 @@ pw_no_git_refuse() {
 # primary, before anything is sent. The render set is the seam's
 # (`cp_seam_render_path`); `lanes/STORE`, `repos.tsv` and the handoffs are not
 # in it. The recovery's two commands quote the checkout and each path with
-# `printf '%q'`, so each can be pasted as it is (review REV415, N4).
+# `printf '%q'`, so each can be pasted as it is (review REV415, N4). Its
+# restore is `git restore --source=HEAD --staged --worktree`, as T420's
+# `commit_hand_edit_refuse` gives it, not `checkout HEAD --`, which fails for a
+# staged new file that HEAD lacks (lane 3, #165 6774499606, T420 5(a); review
+# REV420b, N3). The restore deletes such a file, so reading it stays first.
 pw_hand_edit_refuse() {
   local ph_hits="" ph_p="" ph_l="" ph_q="" ph_c=""
   ph_hits="$(LANES_REPO="$PW_C" cs_pending_of lanes/LANES.md lanes/aliases.tsv lanes/log lanes/archive)"
@@ -5996,7 +6007,7 @@ PH_EOF
   ph_c="$(printf '%q' "$PW_C")"
   note "RECOVERY, in $PW_C:"
   note "  read it:      git -C $ph_c diff HEAD --$ph_q"
-  note "  restore it:   git -C $ph_c checkout HEAD --$ph_q"
+  note "  restore it:   git -C $ph_c restore --source=HEAD --staged --worktree --$ph_q"
   note "  then make the change through its verb, and run this write again"
   die "refusing to write on primary: lane ${PW_LANE}'s checkout, $PW_C, holds an uncommitted edit of$ph_l, which the register renders. On primary the register is the database and that file is its rendering, so a hand edit there is never committed, carried or swept into a write (Y:2459). Nothing was sent." 2
 }
