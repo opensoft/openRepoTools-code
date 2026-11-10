@@ -3419,6 +3419,9 @@ cp_on_primary() {
 # lock. The recovery is the one that works on primary, as
 # `pw_hand_edit_refuse` gives it, with the checkout and each path quoted for a
 # shell: read the edit, restore the file, make the change through its verb.
+# Its restore is `git restore --source=HEAD --staged --worktree`, not
+# `checkout HEAD --`, which fails for a staged new file that HEAD lacks
+# (REV420b N3). The restore deletes such a file, so reading it stays first.
 commit_hand_edit_refuse() {
   local ch_hits="" ch_p="" ch_l="" ch_q="" ch_c=""
   ch_hits="$(cs_pending_of "$LANES_PATH" lanes/LANES.md lanes/aliases.tsv lanes/log lanes/archive)"
@@ -3434,7 +3437,7 @@ CH_EOF
   ch_c="$(printf '%q' "$LANES_REPO")"
   note "RECOVERY, in $LANES_REPO:"
   note "  read it:      git -C $ch_c diff HEAD --$ch_q"
-  note "  restore it:   git -C $ch_c checkout HEAD --$ch_q"
+  note "  restore it:   git -C $ch_c restore --source=HEAD --staged --worktree --$ch_q"
   note "  then make the change through its verb (set-row-state, replace-in-row, append-line, log …), which writes it through the register"
   die "refusing \`commit\` on primary (feature 007): $LANES_REPO holds an uncommitted edit of$ch_l, a hand edit of what the register renders, and on primary the register is the database and those files are its rendering, so a hand edit of them is never committed, carried or pushed (D10; FR-026; spec:171–173; R16). On primary \`commit\` runs only as the publish act, for queued handoff commits and a person's commits of lanes/repos.tsv or lanes/log/README.md, with every rendered file clean. Nothing was written." 2
 }
