@@ -641,3 +641,180 @@ def test_the_readiness_check_13_compares_each_hosts_address_count_with_register_
         assert state == "ok", f"[{case}] check 13 is not ok:\n{_said(proc)}"
         assert str(count) in reason and str(n_a or 1) in reason, (
             f"[{case}] check 13 does not print the count and N_a:\n{_said(proc)}")
+
+
+# ===================================================================== the bootstrap
+#
+# T218c: `lanes-index bootstrap --admin-service <service> --label <name>
+# --repository <owner/name> --lane <name> [--no-passwords]` (operations.md
+# section 2.4; lane 1's T109). The admin connection is a service in the
+# test's own `$HOME/.pg_service.conf`, with a 0600 `~/.pgpass` beside it, so
+# no connection string is ever an argument, and `lanes-index` hands it to
+# `psql` only as `PGSERVICE`. FP for the refusals and the service; RE for the
+# runs that create (a `stoppable_cluster` of the test's own, since roles are
+# global to a cluster), which skip with T205's banner here.
+
+ADMIN = "t218admin"
+BOOTSTRAP_INPUTS = ("--label", LABEL, "--repository", "opensoft/t218-workspace",
+                    "--lane", "t218-operator")
+
+#: The objects the bootstrap names on its `created` or `unchanged` lines.
+OBJECT_LINE = re.compile(r"^(?P<what>.+?):? (?P<state>created|unchanged)$", re.M)
+
+#: The four variables `lanes-index` drops before it runs `psql` (SVC-2).
+DROPPED = ("PGSERVICEFILE", "PGSYSCONFDIR", "PGPASSFILE", "PGPASSWORD")
+
+
+class Bootstrap(Estate):
+    """The estate, with the admin service in `$HOME/.pg_service.conf`."""
+
+    def __init__(self, root: Path, *, host: str = "127.0.0.1", port: int = 55432,
+                 user: str = "postgres", dbname: str = "register_db"):
+        super().__init__(root)
+        self.env["LANES_WORKSTATION"] = "Eagle"
+        self.service_file = _private(self.home / ".pg_service.conf", "\n".join([
+            f"[{ADMIN}]", f"host={host}", f"port={port}", f"user={user}", f"dbname={dbname}",
+            ""]))
+        _private(self.home / ".pgpass", f"*:*:*:{user}:not-a-secret\n")
+        self.conf = self.config("index")
+
+    def bootstrap(self, *args: str, pty_run: bool = False) -> subprocess.CompletedProcess:
+        argv = [sys.executable, str(self.copy), "bootstrap", *args]
+        env = dict(self.env, LANES_INDEX_CONFIG=str(self.conf))
+        if not pty_run:
+            return subprocess.run(argv, capture_output=True, text=True, env=env,
+                                  cwd=str(self.wip), timeout=300, stdin=subprocess.DEVNULL)
+        import pty
+        primary, secondary = pty.openpty()
+        try:
+            proc = subprocess.Popen(argv, stdout=secondary, stderr=subprocess.PIPE,
+                                    stdin=subprocess.DEVNULL, env=env, cwd=str(self.wip))
+            os.close(secondary)
+            secondary = -1
+            out = b""
+            while True:
+                try:
+                    chunk = os.read(primary, 65536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                out += chunk
+            err = proc.stderr.read().decode("utf-8", "replace")
+            proc.wait(timeout=300)
+        finally:
+            os.close(primary)
+            if secondary >= 0:
+                os.close(secondary)
+        return subprocess.CompletedProcess(argv, proc.returncode,
+                                           out.decode("utf-8", "replace").replace("\r\n", "\n"),
+                                           err)
+
+
+def _creating(entries: list) -> list:
+    return [entry for entry in entries
+            if re.search(r"\b(CREATE|GRANT|ALTER|INSERT)\b", entry.get("stdin", ""))]
+
+
+def _bootstrap_cluster(request, root: Path):
+    """RE: a cluster of the test's own, a database cloned from `template0`, and
+    the admin service naming its socket and its bootstrap superuser."""
+    cluster = request.getfixturevalue("stoppable_cluster")
+    import pgcluster
+    name = "t218_p8"
+    cluster.psql(f"CREATE DATABASE {name} TEMPLATE template0;")
+    bench = Bootstrap(root, host=str(cluster.root), port=pgcluster.PORT,
+                      user=pgcluster.SUPERUSER, dbname=name)
+    bench.env["PATH"] = os.pathsep.join([str(cluster.bindir),
+                                         os.environ.get("PATH", os.defpath)])
+    return cluster, name, bench
+
+
+def _catalog(cluster, name: str) -> str:
+    """Tables, columns, constraints, table GRANTs and routine privileges of the
+    register's schema, one sorted dump."""
+    sql = ("SELECT 'c', table_name, column_name, data_type FROM information_schema.columns "
+           f"WHERE table_schema = '{SCHEMA}' UNION ALL "
+           "SELECT 'k', table_name, constraint_name, constraint_type FROM "
+           f"information_schema.table_constraints WHERE table_schema = '{SCHEMA}' UNION ALL "
+           "SELECT 'g', table_name, grantee, privilege_type FROM "
+           f"information_schema.role_table_grants WHERE table_schema = '{SCHEMA}' UNION ALL "
+           "SELECT 'r', routine_name, grantee, privilege_type FROM "
+           f"information_schema.routine_privileges WHERE routine_schema = '{SCHEMA}' "
+           "ORDER BY 1, 2, 3, 4")
+    return cluster.psql(sql, dbname=name).stdout
+
+
+def test_bootstrap_run_twice_leaves_one_schema_and_the_same_grants(tmp_path, request):
+    cluster, name, bench = _bootstrap_cluster(request, tmp_path)
+    first = bench.bootstrap("--admin-service", ADMIN, *BOOTSTRAP_INPUTS, "--no-passwords")
+    assert first.returncode == 0, f"the first bootstrap failed:\n{_said(first)}"
+    states = [m.group("state") for m in OBJECT_LINE.finditer(first.stdout)]
+    assert states and set(states) == {"created"}, _said(first)
+    before = _catalog(cluster, name)
+    switch = cluster.psql(f"SELECT mode, marker_state, set_seq, database_label "
+                          f"FROM {SCHEMA}.register_switch", dbname=name).stdout
+    for word in ("files", "absent", "-1", LABEL):
+        assert word in switch, f"after the first run the switch is not files/absent/-1/{LABEL}"
+    second = bench.bootstrap("--admin-service", ADMIN, *BOOTSTRAP_INPUTS, "--no-passwords")
+    assert second.returncode == 0, f"the second bootstrap failed:\n{_said(second)}"
+    again = [m.group("state") for m in OBJECT_LINE.finditer(second.stdout)]
+    assert again and set(again) == {"unchanged"}, _said(second)
+    assert len(again) == len(states)
+    assert _catalog(cluster, name) == before, "the second run changed the catalog"
+
+
+def test_bootstrap_prints_password_file_lines_and_stores_no_secret(tmp_path, request):
+    cluster, name, bench = _bootstrap_cluster(request, tmp_path)
+    files_before = {p for p in bench.home.rglob("*")} | {p for p in bench.wip.rglob("*")}
+    proc = bench.bootstrap("--admin-service", ADMIN, *BOOTSTRAP_INPUTS, pty_run=True)
+    assert proc.returncode == 0, f"the bootstrap under a pty failed:\n{_said(proc)}"
+    # One password-file line, the indexer's: host:port:database:user:password.
+    lines = [line for line in proc.stdout.splitlines() if re.fullmatch(r"[^:\s]+:\d+:[^:]+:[^:]+:\S+", line)]
+    assert len(lines) == 1 and ":lanes_indexer:" in lines[0], _said(proc)
+    secret = lines[0].rsplit(":", 1)[1]
+    # The lanes-index.conf lines: register_label= the --label, and no secret.
+    assert f"register_label={LABEL}" in proc.stdout.splitlines(), _said(proc)
+    conf_lines = [line for line in proc.stdout.splitlines()
+                  if re.match(r"^[a-z_]+=", line)]
+    assert not any(secret in line for line in conf_lines)
+    for path in ({p for p in bench.home.rglob("*")} | {p for p in bench.wip.rglob("*")}):
+        if path.is_file() and path not in files_before:
+            assert secret.encode() not in path.read_bytes(), f"{path} holds the secret"
+
+
+def test_the_bootstrap_refuses_when_stdout_is_not_a_terminal(tmp_path):
+    bench = Bootstrap(tmp_path)
+    proc = bench.bootstrap("--admin-service", ADMIN, *BOOTSTRAP_INPUTS)
+    assert proc.returncode == 2, f"bootstrap through a pipe is not refused with 2:\n{_said(proc)}"
+    assert _creating(bench.requests()) == [], "the refused bootstrap sent a creating statement"
+
+
+@pytest.mark.parametrize("argument", ["key-value", "uri"])
+def test_the_bootstrap_refuses_a_connection_string_argument_with_2(tmp_path, argument):
+    bench = Bootstrap(tmp_path)
+    value = {"key-value": "host=127.0.0.1 user=postgres dbname=register_db",
+             "uri": "postgresql://postgres@127.0.0.1:55432/register_db"}[argument]
+    proc = bench.bootstrap("--admin-service", value, *BOOTSTRAP_INPUTS, "--no-passwords")
+    assert proc.returncode == 2, (
+        f"[{argument}] a connection string in --admin-service is not refused with 2:\n"
+        f"{_said(proc)}")
+    assert bench.requests() == [], f"[{argument}] the refused bootstrap sent a request"
+
+
+def test_the_bootstrap_passes_the_admin_service_only_as_pgservice(tmp_path):
+    bench = Bootstrap(tmp_path)
+    bench.env.update(PGSERVICEFILE=str(tmp_path / "elsewhere.conf"),
+                     PGSYSCONFDIR=str(tmp_path / "sysconf"),
+                     PGPASSFILE=str(tmp_path / "elsewhere.pgpass"),
+                     PGPASSWORD="inherited-not-a-secret")
+    proc = bench.bootstrap("--admin-service", ADMIN, *BOOTSTRAP_INPUTS, "--no-passwords")
+    entries = bench.requests()
+    assert entries, f"the bootstrap sent nothing through psql:\n{_said(proc)}"
+    for entry in entries:
+        assert "refused" not in entry, f"a connection string or -d in psql's argv: {entry}"
+        assert not any(arg.startswith("service=") or "service=" in arg
+                       for arg in entry["argv"]), entry["argv"]
+        assert entry["service"] == ADMIN, f"PGSERVICE is not the admin service: {entry}"
+        dropped = sorted(name for name in DROPPED if name in entry["pg"])
+        assert dropped == [], f"psql received the inherited {dropped}"
