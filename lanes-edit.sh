@@ -5809,11 +5809,12 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
 #       the files `register commit` reads (`pw_attempt_files`), and the child
 #       (`pw_child_start`, `pw_child_wait`);
 #   (c) the commit call and the decision on its answer (`pw_commit`,
-#       `pw_decide`);
+#       `pw_decide`), and after `committed`, the renderer's fork
+#       (`pw_render_fork`, T416);
 #   (d) a 69 at the first snapshot (`pw_first_69`);
 #   (e) D7's deadline and the run's end (`pw_run`, `pw_end`).
 #
-# NOT HERE: the renderer's fork after `committed` (T416); `commit` on primary,
+# NOT HERE: `commit` on primary,
 # which keeps T409's 69 until T420; F3's lookup, which every end but 0 waits for
 # while the pending record holds a `call` line, and its exit 3 (T417); and the
 # tail by match or replay for a write already in the register, the record's
@@ -6395,10 +6396,39 @@ pw_keep() {
   PW_CHILD=""
 }
 
+# THE RENDERER'S FORK (T416; FR-027; Y:5377; contract §3.7), once the commit
+# has answered `committed <s>` and before the child is sent it (Y:5009): the
+# one resolver's `lanes-index` (`lanes_index_bin`), `render --checkout <c>`,
+# where `<c>` is the lane's checkout `pw_checkout` took from
+# `lane_checkout_path`, with no S3 (R17). DETACHED AS `index_nudge` FORKS
+# (Amendment 14(d)): from a subshell that exits at once, so this process has no
+# child to wait for and never reads its status; stdin from /dev/null, stdout
+# and stderr on /dev/null, and descriptors 3 to 9 closed, so it holds no
+# descriptor of this run's and keeps no caller's pipe open. `LANES_NO_FETCH` is
+# removed from its environment (D12), so the renderer fetches origin.
+# NOT BEHIND `LANES_INDEX=off`, which `index_nudge` honours: `lane-worktrees`
+# sets that variable on every call it makes, and it must never skip the fork
+# (Y:5377; FR-027). It stays in this process's group, as `index_nudge`'s fork
+# does, so a signal to the group ends it too, and the next fork renders what it
+# left (lane openRepoTools-4's plan, §11.5; R47). Its answer is never read: a
+# `lanes-index` before T321 has no such form (64), and from T321 phase 2's
+# answers "git half not installed" (69; contract :804). Where no `lanes-index`
+# resolves, which the commit has just run, nothing is forked.
+pw_render_fork() {
+  local rf_bin=""
+  rf_bin="$(lanes_index_bin)"
+  [ -n "$rf_bin" ] || return 0
+  ( unset LANES_NO_FETCH
+    "$rf_bin" render --checkout "$PW_C" </dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- & ) >/dev/null 2>&1
+  return 0
+}
+
 # `committed <s>` (Y:5009–5012). Every other kept child gets `abandon`: none of
 # their calls committed, since one that had would have made this call's answer
-# LR006 (Y:2563–2575). The renderer's fork (T416) and the record's `tail=sent`
-# (T418) come here, before the message. The child then replays its own buffered
+# LR006 (Y:2563–2575). The renderer's fork (`pw_render_fork`, T416) and the
+# record's `tail=sent` (T418) come here, before the message, so the renderer
+# is forked for the write even where the child then does not take the message.
+# The child then replays its own buffered
 # output and runs the verb's tail once, after COMMIT; the parent reaps it,
 # removes the record (T418 writes the done mark first) and exits the child's
 # code. A child that did not take the message as `tail` (its `seam.out` reads
@@ -6408,6 +6438,7 @@ pw_keep() {
 pw_committed() {   # <seq>
   local pm_out=""
   pw_abandon_kept
+  pw_render_fork
   pw_send "$PW_DIR" "committed $1" || :
   PW_RC=0
   wait "$PW_CHILD" || PW_RC=$?
