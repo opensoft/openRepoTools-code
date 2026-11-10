@@ -2439,6 +2439,10 @@ def open_store(cfg: dict, role: str):
 # S-4). It carries no expiry. Lane 3's `rollback` (T304) writes the same record
 # where its directory is writable, through `register_outage_text` and
 # `write_register_outage`.
+#
+# IN BOTH FORMS, `last-head=` is the last head `status` recorded on this host
+# (`read_register_last_head`; ops:511), for the disaster path's notice, and is
+# written only where that record's `database=` is the declaration's.
 
 #: THE DECLARATION'S FILE (D20; config.md §6.1), beside `lanes-index.conf`.
 REGISTER_OUTAGE_FILE = "register-outage"
@@ -3016,11 +3020,19 @@ def _outage_declare(opts: dict) -> int:
                           f"a host that can, and name its m here with --mirror-seq <m> (F11; "
                           f"operations.md §2.5); {nothing}")
         whence = f"origin/{branch()} at {commit[:12]}, read after a fetch"
+    # `last-head=` (ops:511; config.md §6.2-6.3), in both forms: the last head
+    # `status` recorded here, for the disaster path's notice, only where that
+    # record names this declaration's database. Where none is recorded, or it
+    # names another, the declaration carries no `last-head=` line (lane 3's
+    # ruling, opensoft/openRepoTools#165 6770600106, item 4).
+    recorded = read_register_last_head()
+    last_head = (recorded["head"] if recorded is not None
+                 and recorded.get("database") == label else None)
     try:
         text = register_outage_text(kind="rollback" if rollback else "word", database=label,
                                     host=host, mirror_seq=seq,
                                     why=why if why is not None else "rollback",
-                                    until=None if rollback else until)
+                                    until=None if rollback else until, last_head=last_head)
     except ValueError as exc:
         raise Refusal(f"{form}: the declaration would not be well formed ({exc}); {nothing}")
     replaced = os.path.lexists(path)
@@ -6061,8 +6073,9 @@ class SyncLock:
 #: config.md §6.2), in the state directory: `format=1`, `database=`,
 #: `generation=`, `head=` and `utc=`, one per line, 0600, by temp file and
 #: rename. A `status` that cannot read the register prints it as `h`, beside
-#: the mirror's `m`. `register_outage_text(last_head=...)` can take it
-#: (T121; T304), through `read_register_last_head`.
+#: the mirror's `m`. `outage declare` (T121) writes it as `last-head=`, through
+#: `read_register_last_head`, where its `database=` is the declaration's; T304's
+#: `rollback` can, through `register_outage_text(last_head=...)`.
 REGISTER_HEAD_FILE = "register-head"
 
 #: THE PENDING RECORDS (F10; Y:5171-5172): `<state>/register-pending/<d>`, where
