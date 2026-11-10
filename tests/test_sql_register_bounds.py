@@ -57,8 +57,18 @@ under `$HOME/projects`), its `env()` and its `hook_input()`, torn down by
 `request.addfinalizer(session.close)`; and the case's base environment is
 `guard_strip_env(os.environ)`, which takes `PROJECTS_ROOT` and
 `AGENT_PROTOCOL_ROOT` out beside the lane's, the harness's, tmux's and
-libpq's. No register row names the session here, so each row takes
-`guard_session`'s own session id.
+libpq's.
+
+THE BENCH'S REGISTER NAMES THE LIVE SESSION (T220e): its `lanes/LANES.md` holds
+one row, binding the lane's window `repoA-2` to `SID`, the id the guard
+session is made with, in `test_lanes_index.py`'s row form (T203c's own unit
+test uses it). So the guard's checks on the checkout's register all pass, and
+what can refuse the prompt on the bench is the database alone. Without the row,
+today's guard refuses 2 at its row check, "the register has no row for
+`repoA-2`", which is also exit 2 within 4.5 s, so the guard rows would pass
+against a guard that never reads the database. With it, today's guard lets the
+prompt through, 0, and the guard rows fail by their exit assertion until L5-A3
+and L5-A5 land.
 
 THE TIMING WRAPPER (`TIMING_PSQL`): T203's shim records neither a call's
 start time nor its stderr, so F4's oracle, "the call ending with 57014 ... no
@@ -94,6 +104,17 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
 
 INDEXER = REPO / "lanes-index"
 LANES_EDIT = REPO / "lanes-edit.sh"
+#: The guard session's id, and the one register row that names it (T220e).
+SID = "6b2f6c1e-3c1d-4b8e-9a4f-7d0e5a1b2c3d"
+DOT = chr(0xB7)
+REGISTER = "\n".join([
+    "# LANES.md", "",
+    "| lane | session id | workstation / env / user | started (UTC) | objects owned "
+    "| handoff path | state |",
+    "|---|---|---|---|---|---|---|",
+    f"| `repoA-2` | harness `{SID}` | Eagle / test / brett | 2026-10-01T00:00Z | none "
+    f"| handoffs/repoA-2.md | LIVE {DOT} 2026-10-01T02:00:00Z {DOT} working |",
+    ""])
 SCHEMA = "lanes_register"
 #: `c` and `N_a` when no configuration sets them (D9; CLI4.10 section 2.4).
 C, N_A = 2, 1
@@ -428,7 +449,7 @@ class Bench:
         (tmp_path / ".agents" / "workspace.yaml").write_text(
             f"repository: {self.origin}\npath: {self.wip}\n", encoding="utf-8")
         (self.wip / "lanes" / "log").mkdir(parents=True)
-        (self.wip / "lanes" / "LANES.md").write_text("# LANES.md\n", encoding="utf-8")
+        (self.wip / "lanes" / "LANES.md").write_text(REGISTER, encoding="utf-8")
         for argv in (["add", "-A"], ["commit", "-q", "-m", "C"], ["push", "-q", "origin", "main"]):
             subprocess.run(["git", *argv], cwd=str(self.wip), check=True, env=env,
                            capture_output=True)
@@ -441,10 +462,11 @@ class Bench:
         """The guard rows' live session (T203c): a record on this workstation
         for a live pid, and a stand-in `tmux` that answers the guard's window
         queries, written to this bench's `bin`, for the checkout under
-        `$HOME/projects`. Made once, torn down when the test ends."""
+        `$HOME/projects`, with `SID`, the id the bench's register row names
+        (T220e). Made once, torn down when the test ends."""
         from sql_register_helpers import guard_session
         if self.session is None:
-            self.session = guard_session(self.root, self.bin, self.wip)
+            self.session = guard_session(self.root, self.bin, self.wip, session_id=SID)
             self.request.addfinalizer(self.session.close)
         return self.session
 
