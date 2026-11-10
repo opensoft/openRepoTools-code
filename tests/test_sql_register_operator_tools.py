@@ -48,9 +48,12 @@ Every other case refuses, or flips, under any of the readings.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -359,3 +362,282 @@ def test_the_flip_refuses_a_configuration_it_cannot_write(tmp_path, what, mode):
     proc = estate.set_mode(mode, config)
     assert proc.returncode == 0, f"the control, writable, does not flip:\n{_said(proc)}"
     assert _mode_lines(config) == [f"mode={mode}"]
+
+
+# =========================================================== the readiness check
+#
+# T218b: `lanes-index ready [--expect index|primary] [--release <version>]
+# [--env <name>]` (operations.md section 2.4; lane 1's T119, which selects
+# these with `sql_register_operator_tools and (the_readiness_check_fails or
+# the_readiness_check_passes or the_readiness_check_10 or
+# the_readiness_check_13)`). Its line form is T119's entry (lane 1's, which
+# lane 3 accepted, #165 6754522885): `check <n>: ok` or `check <n>: FAIL:
+# <reason>`, one line per check in order, then a last line; exit 0 when every
+# check passed, 2 when any failed, 64 for usage. It changes nothing.
+#
+# THE KINDS (AT-P8): FP for the digest, `psql` and refusing-build faults, and
+# for check 13, which reads only the resolver; RE for the ready environment,
+# its other faults, and check 10. The ready environment is section 5.6's TLS
+# cluster (T229), bootstrapped under the pty through its own admin service
+# (T109), with one engineer's two logins made by `lanes-index login add`
+# (T110), since check 11 always fails on a Unix socket. Until T229 gives that
+# cluster, the RE cases fail by `ReadyEnvironment`'s own assertion on an
+# engine bench, and skip with T205's banner on one with no engine.
+#
+# READ, NOT FOUND IN A CONTRACT: the release's digest list is read as a
+# `SHA256SUMS` file in `sha256sum`'s form beside the installed `lanes-index`,
+# named by `--release <version>` (the design leaves its form open: "its form
+# is the design's"); and check 13's "the fake `psql`'s log is empty" is read
+# as "check 13's line does not depend on the fake's answers", since the run's
+# other checks still connect.
+
+#: One check's line (T119's line form).
+CHECK_LINE = re.compile(r"^check (\d+): (ok|FAIL)\b:?[ \t]*(.*)$", re.M)
+
+
+def _checks(text: str) -> dict:
+    """`ready`'s check lines, by number: (`ok` or `FAIL`, the reason)."""
+    return {int(m.group(1)): (m.group(2), m.group(3) or "") for m in CHECK_LINE.finditer(text)}
+
+
+def _addresses(host: str) -> list:
+    """The distinct addresses `host` resolves to, by libpq's own lookup:
+    `getaddrinfo` with `SOCK_STREAM`, any family, no flags (check 13)."""
+    return sorted({info[4][0] for info in
+                   socket.getaddrinfo(host, 5432, 0, socket.SOCK_STREAM)})
+
+
+class ReadyBench(Estate):
+    """The FP half: the estate of T218a, with a configuration at `index`, the
+    workstation named, and the installed tools' release digest list."""
+
+    RELEASE = "0.0.0-t218"
+
+    def __init__(self, root: Path):
+        super().__init__(root)
+        self.env["LANES_WORKSTATION"] = "Eagle"
+        self.digests(stale=False)
+
+    def digests(self, *, stale: bool) -> None:
+        tool = self.copy.parent
+        lines = []
+        for name in sorted(p.name for p in tool.iterdir()):
+            if name == "SHA256SUMS" or not (tool / name).is_file():
+                continue
+            digest = hashlib.sha256((tool / name).read_bytes()).hexdigest()
+            if stale and name == "lanes-index":
+                digest = hashlib.sha256(b"another release").hexdigest()
+            lines.append(f"{digest}  {name}\n")
+        (tool / "SHA256SUMS").write_text("".join(lines), encoding="utf-8")
+
+    def ready(self, config: Path, *args: str, path: str | None = None,
+              copy: Path | None = None) -> subprocess.CompletedProcess:
+        env = dict(self.env, LANES_INDEX_CONFIG=str(config))
+        if path is not None:
+            env["PATH"] = path
+        return subprocess.run([sys.executable, str(copy or self.copy), "ready",
+                               "--release", self.RELEASE, "--env", "t218", *args],
+                              capture_output=True, text=True, env=env, cwd=str(self.wip),
+                              timeout=120, stdin=subprocess.DEVNULL)
+
+    def path_without_psql(self) -> str:
+        """`PATH` with no `psql` on it: every entry that holds one is left out,
+        and `git` is kept by a link of its own."""
+        keep = self.root / "nopsql"
+        keep.mkdir(exist_ok=True)
+        real_git = shutil.which("git", path=self.env["PATH"])
+        if real_git and not (keep / "git").exists():
+            (keep / "git").symlink_to(real_git)
+        entries = [entry for entry in os.environ.get("PATH", os.defpath).split(os.pathsep)
+                   if entry and not os.access(os.path.join(entry, "psql"), os.X_OK)]
+        return os.pathsep.join([str(keep), *entries])
+
+
+class ReadyEnvironment:
+    """The RE half: AT-P8's ready environment. It needs section 5.6's TLS
+    cluster (T229), which `tests/pgcluster.py` does not give yet, so it fails
+    by its own assertion until T229 lands; with no engine, the
+    `stoppable_cluster` it asks for first skips with T205's banner."""
+
+    def __init__(self, request, root: Path):
+        request.getfixturevalue("stoppable_cluster")
+        import pgcluster
+        tls = getattr(pgcluster, "tls_cluster", None)
+        assert tls is not None, (
+            "AT-P8's ready environment needs section 5.6's TLS cluster, T229's, since check "
+            "11 always fails on a Unix socket; tests/pgcluster.py has no tls_cluster yet")
+        self.bench = ReadyBench(root)
+        self.cluster = request.getfixturevalue("tls_cluster")
+        self.config = self.cluster.ready_configuration(self.bench, label=LABEL)
+
+    def ready(self, *args: str) -> subprocess.CompletedProcess:
+        return self.bench.ready(self.config, *args)
+
+    def admin(self, sql: str) -> None:
+        """One statement through the admin connection, as the owner."""
+        self.cluster.psql(f"SET ROLE lanes_register_owner; {sql}")
+
+
+#: Each fault: the check it fails, its kind, and what it does to the
+#: environment (AT-P8's oracle, "The readiness check").
+FAULTS = {
+    "stale-digest": (1, "FP"),
+    "no-psql": (2, "FP"),
+    "refusing-build": (5, "FP"),
+    "early-primary": (3, "RE"),
+    "grant-outside-scope": (4, "RE"),
+    "workstation-unset": (6, "RE"),
+    "outage-declared": (7, "RE"),
+    "expect-primary-switch-files": (8, "RE"),
+    "expect-primary-origin-another": (8, "RE"),
+    "version-window": (9, "RE"),
+}
+
+
+def _fp_fault(bench: ReadyBench, fault: str) -> subprocess.CompletedProcess:
+    config = bench.config("index")
+    if fault == "stale-digest":
+        bench.digests(stale=True)
+        return bench.ready(config, "--expect", "index")
+    if fault == "no-psql":
+        return bench.ready(config, "--expect", "index", path=bench.path_without_psql())
+    if fault == "refusing-build":
+        found = RENDER_GIT_HALF_LINE.findall((REPO / "lanes-index").read_bytes())
+        assert len(found) == 1, (
+            "[refusing-build] lanes-index has no RENDER_GIT_HALF line: lane 1's T105, test "
+            "14's refusing state, has not landed, so there is no refusing build to check")
+        refusing = flipped_copy(REPO / "lanes-index", bench.root / "refusing", False)
+        return bench.ready(config, "--expect", "index", copy=refusing)
+    raise AssertionError(f"no FP fault {fault}")
+
+
+def _re_fault(env: ReadyEnvironment, fault: str) -> subprocess.CompletedProcess:
+    bench = env.bench
+    if fault == "early-primary":
+        text = env.config.read_text(encoding="utf-8").replace("mode=index", "mode=primary")
+        env.config.write_text(text, encoding="utf-8")
+        return env.ready("--expect", "index")
+    if fault == "grant-outside-scope":
+        env.admin("GRANT INSERT ON lanes_register.journal TO lanes_register_reader")
+        return env.ready("--expect", "index")
+    if fault == "workstation-unset":
+        bench.env.pop("LANES_WORKSTATION", None)
+        return env.ready("--expect", "index")
+    if fault == "outage-declared":
+        proc = subprocess.run([sys.executable, str(bench.copy), "outage", "declare",
+                               "--until", "2099-01-01T00:00:00Z", "--why", "t218 fault"],
+                              capture_output=True, text=True, timeout=120, cwd=str(bench.wip),
+                              env=dict(bench.env, LANES_INDEX_CONFIG=str(env.config)),
+                              stdin=subprocess.DEVNULL)
+        assert proc.returncode == 0, f"outage declare (T121) did not declare:\n{_said(proc)}"
+        return env.ready("--expect", "index")
+    if fault == "expect-primary-switch-files":
+        bench.marker(_store(LABEL))
+        return env.ready("--expect", "primary")
+    if fault == "expect-primary-origin-another":
+        env.admin("UPDATE lanes_register.register_switch SET mode = 'primary', "
+                  "marker_state = 'present', import_commit = repeat('a', 40), "
+                  "import_tree = repeat('b', 40), import_seq = 0, marker_seq = 1, "
+                  "marker_commit = repeat('c', 40) WHERE id = 1")
+        bench.marker(_store(OTHER))
+        return env.ready("--expect", "primary")
+    if fault == "version-window":
+        env.admin("UPDATE lanes_register.schema_window SET writers_from = version + 1, "
+                  "readers_from = version + 1")
+        return env.ready("--expect", "index")
+    raise AssertionError(f"no RE fault {fault}")
+
+
+@pytest.mark.parametrize("fault", list(FAULTS))
+def test_the_readiness_check_fails_on_each_fault(tmp_path, request, fault):
+    number, kind = FAULTS[fault]
+    if kind == "FP":
+        proc = _fp_fault(ReadyBench(tmp_path), fault)
+    else:
+        proc = _re_fault(ReadyEnvironment(request, tmp_path), fault)
+    checks = _checks(proc.stdout)
+    assert proc.returncode == 2, f"[{fault}] ready does not exit 2:\n{_said(proc)}"
+    assert checks.get(number, ("", ""))[0] == "FAIL", (
+        f"[{fault}] check {number} is not a FAIL line of its own:\n{_said(proc)}")
+    if kind == "RE":
+        others = sorted(n for n, (state, _) in checks.items() if state == "FAIL" and n != number)
+        assert others == [], f"[{fault}] other checks fail too: {others}\n{_said(proc)}"
+
+
+def test_the_readiness_check_passes_a_ready_environment(tmp_path, request):
+    env = ReadyEnvironment(request, tmp_path)
+    proc = env.ready("--expect", "index")
+    checks = _checks(proc.stdout)
+    assert proc.returncode == 0, f"ready fails a ready environment:\n{_said(proc)}"
+    assert sorted(checks) == list(range(1, 14)), f"not one line per check:\n{_said(proc)}"
+    assert all(state == "ok" for state, _ in checks.values()), _said(proc)
+
+
+#: Check 10's cases (AT-P8): the switch, the configuration, and whether it fails.
+CHECK_10 = ["equal", "label-only", "url-only", "files"]
+
+
+@pytest.mark.parametrize("case", CHECK_10)
+def test_the_readiness_check_10_compares_register_label_with_the_switch_label(
+        tmp_path, request, case):
+    env = ReadyEnvironment(request, tmp_path)
+    primary = ("UPDATE lanes_register.register_switch SET mode = 'primary', "
+               "marker_state = 'present', import_commit = repeat('a', 40), "
+               "import_tree = repeat('b', 40), import_seq = 0, marker_seq = 1, "
+               "marker_commit = repeat('c', 40) WHERE id = 1")
+    if case != "files":
+        env.admin(primary)
+    text = env.config.read_text(encoding="utf-8")
+    if case == "label-only":
+        text = text.replace(f"register_label={LABEL}", f"register_label={OTHER}")
+    elif case == "url-only":
+        second = env.cluster.second_database(label=OTHER)
+        second.admin(primary)
+        text = text.replace(env.cluster.database_name, second.name)
+    elif case == "files":
+        text = text.replace(f"register_label={LABEL}", f"register_label={OTHER}")
+    env.config.write_text(text, encoding="utf-8")
+    proc = env.ready("--expect", "index")
+    state, reason = _checks(proc.stdout).get(10, ("", ""))
+    if case in ("equal", "files"):
+        assert state == "ok", f"[{case}] check 10 is not ok:\n{_said(proc)}"
+    else:
+        assert state == "FAIL" and proc.returncode == 2, (
+            f"[{case}] check 10 does not fail:\n{_said(proc)}")
+        x, y = (OTHER, LABEL) if case == "label-only" else (LABEL, OTHER)
+        assert f"register_label={x}, but the switch names {y}" in reason, _said(proc)
+
+
+#: Check 13's cases (AT-P8): `register_addresses=` equal to the count, one
+#: below it, and an IP literal with no `register_addresses=`.
+CHECK_13 = ["equal", "above", "ip-literal"]
+
+
+@pytest.mark.parametrize("case", CHECK_13)
+def test_the_readiness_check_13_compares_each_hosts_address_count_with_register_addresses(
+        tmp_path, case):
+    bench = ReadyBench(tmp_path)
+    host = "127.0.0.1" if case == "ip-literal" else "localhost"
+    found = _addresses(host)
+    count = len(found)
+    if case == "above" and count < 2:
+        pytest.skip(f"not run: this runner resolves localhost to {count} address ({found})")
+    url = URL.replace("127.0.0.1", host)
+    lines = [f"mode=index", f"register_url={url}", f"register_passfile={bench.passfile}",
+             f"reader_url={url}", f"reader_passfile={bench.passfile}",
+             f"register_label={LABEL}", f"register_schema={SCHEMA}"]
+    n_a = {"equal": count, "above": count - 1, "ip-literal": None}[case]
+    if n_a is not None:
+        lines.append(f"register_addresses={n_a}")
+    config = _private(tmp_path / "conf13" / "lanes-index.conf", "\n".join(lines) + "\n")
+    proc = bench.ready(config, "--expect", "index")
+    state, reason = _checks(proc.stdout).get(13, ("", ""))
+    if case == "above":
+        assert state == "FAIL" and proc.returncode == 2, (
+            f"[{case}] check 13 does not fail:\n{_said(proc)}")
+        for word in [host, str(count), str(n_a), *found]:
+            assert word in reason, f"[{case}] check 13's reason does not name {word}:\n{_said(proc)}"
+    else:
+        assert state == "ok", f"[{case}] check 13 is not ok:\n{_said(proc)}"
+        assert str(count) in reason and str(n_a or 1) in reason, (
+            f"[{case}] check 13 does not print the count and N_a:\n{_said(proc)}")
