@@ -42,20 +42,35 @@ absent.
 Every case FAILS UNTIL lane 1's T107 (L1-A6, `commit_write` and its step 7)
 and T118 (L1-A16, the kinds' slots), and lane 2's T227 (`tmpl_imported`) and
 T228 (`lanes_w_fx`) land. Without PostgreSQL 16 each skips.
+
+THE MODULE ALSO HOLDS, each at its own section below: T243's test 4, C10,
+D19 and section 4.1 (phase W, the client's writers on a real register); T232's
+AT-LR5 and AT-LR009 (phase N, `commit_write` called directly, as here); T248's
+AT-F14 (phase W); and T252's AT-F5 group B (phase W).
 """
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import itertools
 import json
+import os
+import re
+import shutil
 import subprocess
+import sys
+import threading
+import time
 import uuid
-from typing import List, Optional, Sequence, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import pytest
 
 from pgcluster import Database
+from sql_register_helpers import (LANES_INDEX, PSQL_SHIM, PSQL_SHIM_CONTROL, PSQL_SHIM_ENDS,
+                                  PSQL_SHIM_LOG, REPO, flipped_copy)
 
 REGISTER = "lanes_register"
 IMPORTED = "tmpl_imported"
@@ -526,3 +541,922 @@ def test_the_for_lane_checks_refuse_a_for_lane_off_a_landing_expired_and_a_landi
         text, row = expired(c, pr=None, slot=("close", "hold"))
     c.refused(c.append(L2, text, row), "23514", None,
               'new row for relation "register_lines" violates check constraint')
+
+
+# ============================================================ PHASE W: test 4, C10, D19 and 4.1 (T243)
+#
+# THE CLIENT'S WRITERS ON A REAL REGISTER (AT-4's fixture, TP:876-898). Each
+# case's register is a clone of `tmpl` (T227), brought by AT-LR006's route, as
+# T222f's cases bring theirs: an `import` entry at seq 0 holding the case's
+# files (`Clone.import_files`), then `Clone.to_primary`'s `cutover` entry at
+# seq 1 and `record_marker`, so the first write is seq 2 and the objects are
+# free. The workstation (`Estate`):
+#   * one configuration at `mode=primary`, naming the clone through T228's
+#     `lanes_w_fx`, and one `XDG_STATE_HOME`, so every writer shares one
+#     `lanes-index` state directory and one image cache, `register-images/`;
+#   * T203's flipped copy of `lanes-index` beside `lanes-edit.sh`,
+#     `repos.tsv` and `lane-start`;
+#   * a bare origin at the register's files with `lanes/repos.tsv` beside
+#     them, and one checkout per writer (a reading: AT-4 names one
+#     configuration, and the writers' git fetches are kept off one index);
+#   * a fake `gh` that logs each call with its body (AT-D8's form);
+#   * per writer, a `psql` directory of its own: a stamp wrapper, which logs
+#     each call's start time, in front of T203's shim (section 3.2), so each
+#     writer's arms, log and counters are its own;
+#   * the start barrier: each writer is launched through a launcher that blocks
+#     on a FIFO the test opens only once all N launchers wait (TP:886-888).
+# The window W is the shim's `window` arm on `commit_write`, the attempt's
+# second call (TP:889-893). Lines are written by the client's own verbs.
+#
+# They FAIL UNTIL lane 1's T107 (L1-A6), lane 4's attempt loop on primary
+# (L4-B3) and `claim`'s register seq (L4-B8), lane 1's T302 (the image cache),
+# and lane 2's T227 (`tmpl`) and T228 (`lanes_w_fx`) land. Without PostgreSQL
+# 16 each skips.
+
+EM, ARROW, DOT = chr(0x2014), chr(0x2192), chr(0x00B7)
+W_TEMPLATE = "tmpl"
+W_WS = "Eagle"
+REPOS_PATH = "lanes/repos.tsv"
+#: Test 4's lanes: ten burst writers, and the pairs of C10, D19 and (a)-(h).
+BURST = [f"repoW{k:02d}-1" for k in range(1, 11)]
+LA, LB, LC = "repoA-1", "repoB-1", "repoC-1"
+W_LANES = [LA, LB, LC, *BURST]
+#: Object O, and X: X's repository becomes an alias of O's at T1 (C10, D19).
+ALIAS_REPO = "oldname/r9"
+OBJ = f"{KEY}#41"
+OBJ_X = f"{ALIAS_REPO}#41"
+REPOS_T0 = f"# alias\towner/repo\n{ALIAS}\t{KEY}\n"
+REPOS_T1 = REPOS_T0 + f"{ALIAS_REPO}\t{KEY}\n"
+#: The busy text's words (D7; P231-233) and the default's (AT-4 (h)).
+BUSY_WORDS = ("register busy", "nothing", "retry")
+D7_S, TWICE_D7_S = 30, 60
+UUID_RE = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+SEQ_SAID = re.compile(r"register seq ([0-9]+)")
+
+
+def session_of(lane: str) -> str:
+    k = int(hashlib.sha256(lane.encode()).hexdigest()[:8], 16)
+    return f"{k:08x}-0243-4000-8000-{k:012x}"
+
+
+def w_row(lane: str) -> str:
+    return (f"| `{lane}` | harness `{session_of(lane)}` | {W_WS} / test / brett | 2026-05-01T00:00Z "
+            f"| none | handoffs/{lane}.md | LIVE {DOT} 2026-05-01T00:00:00Z {DOT} working |")
+
+
+def estate_files(lanes: Sequence[str]) -> Dict[str, str]:
+    """The register's render set: a row per lane, an empty event list, the
+    aliases table and a log per lane."""
+    table = "\n".join([f"# LANES.md {EM} test 4's register (T243)", "",
+                       "| lane | session id | workstation / env / user | started (UTC) "
+                       "| objects owned | handoff path | state |",
+                       "|---|---|---|---|---|---|---|", *(w_row(lane) for lane in lanes), ""])
+    files = {LANES_MD: table, "lanes/aliases.tsv": "# old\tnew\tutc\n",
+             "lanes/log/README.md": "# the object logs\n"}
+    for lane in lanes:
+        files[f"lanes/log/{lane}.md"] = f"# lane {lane} {EM} object log (Amendment 7)\n"
+    return files
+
+
+def import_files(c: "Clone", files: Dict[str, str]) -> int:
+    """AT-LR006's first step on a clone of `tmpl` (T222f's `Clone.imported`):
+    one `import` entry creating `files`, each with its last LF."""
+    sw = c.switch()
+    assert (sw["mode"], sw["marker_state"], c.head()) == ("files", "absent", -1), (
+        f"a clone of {W_TEMPLATE} is not at files, marker absent, with an empty journal: {sw}, head {c.head()}")
+    edits, rows = [], []
+    for path in sorted(files):
+        lines = files[path].rstrip("\n").split("\n")
+        edits.append({"ord": len(edits) + 1, "op": "create", "path": path})
+        edits += [{"ord": len(edits) + 1 + k, "op": "append", "path": path, "new_text": text}
+                  for k, text in enumerate(lines)]
+        rows.append({"path": path, "present": True, "final_newline": True,
+                     "sha256": sha256(rendered(lines, True))})
+    return c.committed({"journal": c.journal("import", "import", OPERATOR, git_commit=GIT_COMMIT,
+                                             git_tree=GIT_TREE),
+                        "not_after": c.not_after(), "edits": edits, "files": rows})
+
+
+def run_git(cwd, *args: str, env: dict) -> str:
+    proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, env=env,
+                          check=False)
+    assert proc.returncode == 0, f"git {' '.join(args)} in {cwd}: {proc.stderr}{proc.stdout}"
+    return proc.stdout
+
+
+_STAMP = r'''#!/usr/bin/env python3
+# T243's stamp: each psql call's start time and argv, then T203's shim.
+import json, os, sys, time
+HERE = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(HERE, "stamps.log"), "a", encoding="utf-8") as log:
+    log.write(json.dumps({"t": time.time(), "argv": sys.argv[1:]}) + "\n")
+shim = os.path.join(HERE, "shim", "psql")
+os.execv(shim, [shim] + sys.argv[1:])
+'''
+
+_LAUNCHER = r'''#!/usr/bin/env python3
+# T243's start barrier: wait on the FIFO, then become the writer.
+import os, sys
+ready, fifo, argv = sys.argv[1], sys.argv[2], sys.argv[3:]
+open(ready, "w").close()
+fd = os.open(fifo, os.O_RDONLY)
+open(ready + ".go", "w").close()
+os.close(fd)
+os.execvp(argv[0], argv)
+'''
+
+_GH = r'''#!/usr/bin/env python3
+# AT-D8's fake gh (T243): each call logged with its body; nothing answered.
+import json, os, sys
+HERE = os.path.dirname(os.path.abspath(__file__))
+body = sys.stdin.read() if not sys.stdin.isatty() else ""
+with open(os.path.join(HERE, "gh.log"), "a", encoding="utf-8") as log:
+    log.write(json.dumps({"argv": sys.argv[1:], "stdin": body}) + "\n")
+'''
+
+
+class Barrier:
+    """TP:886-888: N launchers wait on one FIFO, released together."""
+
+    def __init__(self, root: Path, count: int) -> None:
+        self.fifo, self.ready, self.count = root / "start.fifo", root / "ready", count
+        os.mkfifo(str(self.fifo))
+        self.ready.mkdir()
+
+    def _seen(self, suffix: str) -> int:
+        return sum(1 for p in self.ready.iterdir() if p.name.endswith(suffix) == (suffix == ".go"))
+
+    def release(self) -> float:
+        deadline = time.monotonic() + 60
+        while self._seen("") < self.count:
+            assert time.monotonic() < deadline, f"only {self._seen('')} of {self.count} launchers wait"
+            time.sleep(0.05)
+        fd = os.open(str(self.fifo), os.O_WRONLY)
+        released = time.monotonic()
+        while self._seen(".go") < self.count:
+            assert time.monotonic() < deadline + 30, f"only {self._seen('.go')} launchers passed"
+            time.sleep(0.01)
+        os.close(fd)
+        return released
+
+
+class Writer:
+    """One `lanes-edit.sh` run: its psql directory, and its outcome."""
+
+    def __init__(self, name: str, lane: str, proc: subprocess.Popen, psql_dir: Path) -> None:
+        self.name, self.lane, self.proc, self.psql_dir = name, lane, proc, psql_dir
+        self.started, self.ended = time.monotonic(), None
+        self.out = self.err = ""
+        self._thread = threading.Thread(target=self._wait, daemon=True)
+        self._thread.start()
+
+    def _wait(self) -> None:
+        self.out, self.err = self.proc.communicate()
+        self.ended = time.monotonic()
+
+    def wait(self, timeout: float = 150) -> int:
+        self._thread.join(timeout)
+        assert not self._thread.is_alive(), f"{self.name} ({self.lane}) did not end in {timeout} s"
+        return self.proc.returncode
+
+    @property
+    def code(self) -> int:
+        return self.proc.returncode
+
+    def _jsonl(self, name: str) -> List[dict]:
+        path = self.psql_dir / name
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+
+    def calls(self) -> List[dict]:
+        """The shim's calls that carry a request, in order."""
+        return [e for e in self._jsonl("shim/" + PSQL_SHIM_LOG) if e.get("kind") != "version"]
+
+    def commit_calls(self) -> List[dict]:
+        return [e for e in self.calls() if "commit_write" in (e.get("stdin") or "")]
+
+    def snapshot_calls(self) -> List[dict]:
+        return [e for e in self.calls() if "commit_write" not in (e.get("stdin") or "")
+                and "find_write" not in (e.get("stdin") or "")]
+
+    def ends(self) -> Dict[int, dict]:
+        return {e["call"]: e for e in self._jsonl("shim/" + PSQL_SHIM_ENDS) if "call" in e}
+
+    def stamps(self) -> List[dict]:
+        """Each request's start time, paired in order with the shim's log."""
+        times = [s["t"] for s in self._jsonl("stamps.log") if s["argv"] != ["--version"]]
+        return [dict(call, t=t) for call, t in zip(self.calls(), times)]
+
+    def write_ids(self) -> List[str]:
+        """Each commit call's write id, `commit_write`'s second argument."""
+        found = []
+        for call in self.commit_calls():
+            m = re.search(r"commit_write\(\s*-?[0-9]+\s*,\s*'(" + UUID_RE + ")'", call.get("stdin") or "")
+            assert m, f"{self.name}'s commit call carries no write id: {(call.get('stdin') or '')[:300]}"
+            found.append(m.group(1))
+        return found
+
+    def seq_said(self) -> Optional[int]:
+        m = SEQ_SAID.search(self.out)
+        return int(m.group(1)) if m else None
+
+
+class Estate:
+    """Test 4's workstation over one clone at `primary` (see the section's
+    head)."""
+
+    def __init__(self, root: Path, c: Clone, lanes: Sequence[str] = W_LANES,
+                 repos: str = REPOS_T0) -> None:
+        self.root, self.c = root, c
+        self.files = estate_files(lanes)
+        import_files(c, self.files)
+        assert c.to_primary() == 1, "test 4's cutover is not at seq 1 (AT-4's fixture)"
+        home = root / "home"
+        (home / ".agents").mkdir(parents=True)
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("GIT_", "PG", "LANES_", "TMUX", "RULE6_", "FAKE_PSQL", "CLAUDE_",
+                                    "PROJECTS_ROOT", "XDG_"))}
+        env.update(HOME=str(home), GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+                   GIT_AUTHOR_NAME="T243 estate", GIT_AUTHOR_EMAIL="t243@example.invalid",
+                   GIT_COMMITTER_NAME="T243 estate", GIT_COMMITTER_EMAIL="t243@example.invalid",
+                   LC_ALL="C")
+        self.env = env
+        self.origin = root / "origin.git"
+        run_git(root, "init", "-q", "--bare", "-b", "main", str(self.origin), env=env)
+        seed = root / "seed"
+        run_git(root, "clone", "-q", str(self.origin), str(seed), env=env)
+        for path, text in {**self.files, REPOS_PATH: repos}.items():
+            (seed / path).parent.mkdir(parents=True, exist_ok=True)
+            (seed / path).write_bytes(text.encode("utf-8"))
+        run_git(seed, "add", "-A", env=env)
+        run_git(seed, "commit", "-q", "-m", "T0: test 4's register", env=env)
+        run_git(seed, "push", "-q", "origin", "main", env=env)
+        self.seed = seed
+        self.bindir = root / "bin"
+        flipped_copy(LANES_INDEX, self.bindir, True)
+        for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
+            shutil.copy2(str(REPO / name), str(self.bindir / name))
+        self.lanes_edit = self.bindir / "lanes-edit.sh"
+        conf = root / "lanes-index.conf"
+        conf.write_text(f"mode=primary\nregister_url={c.db.url(WRITER_LOGIN)}\n"
+                        f"reader_url={c.db.url()}\n", encoding="utf-8")
+        conf.chmod(0o600)
+        self.gh_dir = root / "gh"
+        self.gh_dir.mkdir()
+        (self.gh_dir / "gh").write_text(_GH, encoding="utf-8")
+        (self.gh_dir / "gh").chmod(0o755)
+        (self.gh_dir / "tmux").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        (self.gh_dir / "tmux").chmod(0o755)
+        self.launcher = root / "launch.py"
+        self.launcher.write_text(_LAUNCHER, encoding="utf-8")
+        self.state = root / "state"
+        for d in ("state", "config", "tmp"):
+            (root / d).mkdir(exist_ok=True)
+        path = os.pathsep.join(p for p in env.get("PATH", "").split(os.pathsep)
+                               if p and not os.path.exists(os.path.join(p, "lanes-index"))
+                               and not os.path.exists(os.path.join(p, "psql")))
+        env.update(TMPDIR=str(root / "tmp"), XDG_STATE_HOME=str(self.state),
+                   XDG_CONFIG_HOME=str(root / "config"), CLAUDE_CONFIG_DIR=str(home / ".claude"),
+                   LANES_WORKSTATION=W_WS, LANES_HOST="eagle", LANES_OS="linux",
+                   LANES_CONTAINER="none", LANES_IN_CONTAINER="0", LANES_INDEX_CONFIG=str(conf),
+                   PATH=str(self.gh_dir) + os.pathsep + path)
+        self._n = itertools.count(1)
+        self.writers: List[Writer] = []
+
+    # -------------------------------------------------- the workstation's parts
+    def checkout(self, name: str, origin: Optional[Path] = None) -> Tuple[Path, Path]:
+        """A clone of the origin, and the protocol root naming it."""
+        where = self.root / f"co-{name}"
+        run_git(self.root, "clone", "-q", str(origin or self.origin), str(where), env=self.env)
+        agents = self.root / f"agents-{name}"
+        agents.mkdir()
+        (agents / "workspace.yaml").write_text(f"repository: {origin or self.origin}\npath: {where}\n",
+                                               encoding="utf-8")
+        return where, agents
+
+    def psql_dir(self, name: str, arms: Sequence[dict] = ()) -> Path:
+        where = self.root / f"psql-{name}"
+        (where / "shim").mkdir(parents=True)
+        (where / "psql").write_text(_STAMP, encoding="utf-8")
+        (where / "psql").chmod(0o755)
+        (where / "shim" / "psql").write_text(PSQL_SHIM, encoding="utf-8")
+        (where / "shim" / "psql").chmod(0o755)
+        (where / "shim" / PSQL_SHIM_CONTROL).write_text(
+            json.dumps({"psql": self.c.db.psql_bin, "arms": list(arms)}), encoding="utf-8")
+        return where
+
+    def push_alias(self) -> None:
+        """T1: a person's commit adding X's repository as an alias of O's,
+        pushed by a third clone (AT-C10's fixture)."""
+        (self.seed / REPOS_PATH).write_text(REPOS_T1, encoding="utf-8")
+        run_git(self.seed, "commit", "-q", "-am", "T1: alias oldname/r9 for opensoft/r9", env=self.env)
+        run_git(self.seed, "push", "-q", "origin", "main", env=self.env)
+
+    def mirror_at_t0(self) -> Path:
+        """A second origin frozen at T0, for a clone kept behind the alias."""
+        frozen = self.root / "origin-t0.git"
+        run_git(self.root, "clone", "-q", "--bare", str(self.origin), str(frozen), env=self.env)
+        return frozen
+
+    # -------------------------------------------------- running writers
+    def launch(self, lane: str, argv: Sequence[str], arms: Sequence[dict] = (), extra: dict = None,
+               barrier: Optional[Barrier] = None, origin: Optional[Path] = None) -> Writer:
+        name = f"{next(self._n):02d}-{lane}"
+        where, agents = self.checkout(name, origin)
+        psql = self.psql_dir(name, arms)
+        env = dict(self.env)
+        env.update(LANES_LANE=lane, LANES_SESSION=session_of(lane), LANES_REPO=str(where),
+                   AGENT_PROTOCOL_ROOT=str(agents), PATH=str(psql) + os.pathsep + self.env["PATH"])
+        env.update(extra or {})
+        command = ["bash", str(self.lanes_edit), *argv]
+        if barrier is not None:
+            command = [sys.executable, "-I", str(self.launcher), str(barrier.ready / name),
+                       str(barrier.fifo), *command]
+        proc = subprocess.Popen(command, cwd=str(where), env=env, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8",
+                                errors="replace", start_new_session=True)
+        writer = Writer(name, lane, proc, psql)
+        self.writers.append(writer)
+        return writer
+
+    def run(self, lane: str, argv: Sequence[str], **options) -> Writer:
+        writer = self.launch(lane, argv, **options)
+        writer.wait()
+        return writer
+
+    def gh_calls(self) -> List[dict]:
+        log = self.gh_dir / "gh.log"
+        return [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines() if l] if log.exists() else []
+
+    # -------------------------------------------------- the register's reads
+    def rows(self, query: str) -> list:
+        return self.c.json(f"SELECT coalesce(json_agg(t), '[]'::json) FROM ({query}) t;")
+
+    def journal_after(self, seq: int = 1) -> list:
+        return self.rows(f"SELECT seq, write_id::text AS write_id, verb, lane FROM {REGISTER}.journal "
+                         f"WHERE seq > {seq} ORDER BY seq")
+
+    def has_write(self, write_id: str) -> bool:
+        return self.c.value(f"SELECT count(*) FROM {REGISTER}.journal WHERE write_id = '{write_id}';") != "0"
+
+    def claimed(self, *objects: str) -> list:
+        """The live `CLAIMED` holds on `objects`, (object, lane)."""
+        names = ", ".join(f"'{o}'" for o in objects)
+        return [(r["object"], r["lane"]) for r in self.rows(
+            f"SELECT object, lane FROM {REGISTER}.object_holds WHERE object IN ({names}) "
+            f"AND verb = 'CLAIMED' AND superseded_by IS NULL ORDER BY object, lane")]
+
+    def log_lines(self, verb: str, obj: str) -> int:
+        return int(self.c.value(f"SELECT count(*) FROM {REGISTER}.log_lines WHERE verb = '{verb}' "
+                                f"AND object = '{obj}';"))
+
+    def utc(self, minutes_ago: float = 0) -> str:
+        return self.c.value("SELECT to_char((clock_timestamp() - make_interval(secs => "
+                            f"{minutes_ago * 60})) AT TIME ZONE 'UTC', "
+                            "'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"');")
+
+    def open_slots(self, lane: str) -> List[List]:
+        return [[r["slot_kind"], r["repo_key"], r["pr"]] for r in self.rows(
+            f"SELECT slot_kind, repo_key, pr FROM {REGISTER}.main_slots WHERE lane = '{lane}' "
+            "ORDER BY line_id")]
+
+    def hold_row_locked(self) -> subprocess.Popen:
+        """The test's admin session holding the head row `FOR UPDATE` in an
+        open transaction, as AT-D9's F3 row does."""
+        admin = self.c.db.session(appname="t243-admin")
+        admin.stdin.write(f"BEGIN;\nSELECT seq FROM {REGISTER}.register_head FOR UPDATE;\n")
+        admin.stdin.flush()
+        said = admin.stdout.readline().strip()
+        assert said.isdigit(), f"the admin session did not lock the head row: {said!r}"
+        return admin
+
+    @staticmethod
+    def unlock(admin: subprocess.Popen) -> None:
+        admin.stdin.write("ROLLBACK;\n")
+        admin.stdin.close()
+        admin.wait(timeout=30)
+
+    def waits_on_lock(self, write_id: str) -> bool:
+        """D19's barrier: the backend whose query carries `write_id` waits on
+        a lock, polled at 0.1 s steps under one 1.5 s ceiling."""
+        deadline = time.monotonic() + 1.5
+        while time.monotonic() < deadline:
+            if self.c.value("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' "
+                            f"AND query LIKE '%{write_id}%';") != "0":
+                return True
+            time.sleep(0.1)
+        return False
+
+
+@pytest.fixture()
+def estates(pg_cluster, tmp_path):
+    """Test 4's estates, each on a clone of `tmpl` of its own."""
+    made: List[str] = []
+    alive: List[Estate] = []
+
+    def make(**options) -> Estate:
+        name = f"t243_{next(_NAMES)}"
+        pg_cluster.psql(f"CREATE DATABASE {name} TEMPLATE {W_TEMPLATE};")
+        made.append(name)
+        found = pg_cluster.psql(f"SELECT to_regclass('{REGISTER}.register_head') IS NOT NULL;", dbname=name)
+        assert found.stdout.strip() == "t", (
+            f"{W_TEMPLATE} holds no {REGISTER} schema: lane 2's T227 builds it by the bootstrap")
+        pg_cluster.psql(f"REVOKE ALL ON DATABASE {name} FROM PUBLIC;\n"
+                        f"GRANT CONNECT ON DATABASE {name} TO {CONNECT_TO};\n")
+        root = tmp_path / f"estate-{len(made)}"
+        root.mkdir()
+        alive.append(Estate(root, Clone(pg_cluster, name), **options))
+        return alive[-1]
+
+    yield make
+    for e in alive:
+        for w in e.writers:
+            if w.ended is None and w.proc.poll() is None:
+                os.killpg(w.proc.pid, 9)
+    for name in made:
+        pg_cluster.drop_database(name)
+
+
+def hold_point(fifo: Path, writer: Writer, timeout: float = 90):
+    """`fifo` opened for writing once `writer`'s call is held on it (the
+    shim's `hold`), bounded: a writer that never reaches the call fails the
+    case and never hangs it. Closing the handle lets the call go."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return os.fdopen(os.open(str(fifo), os.O_WRONLY | os.O_NONBLOCK), "wb")
+        except OSError as error:
+            if error.errno != errno.ENXIO:
+                raise
+        assert writer.ended is None, (
+            f"{writer.name} exited {writer.code} before its commit call was held: {writer.err[-400:]}")
+        assert time.monotonic() < deadline, f"{writer.name}'s commit call was not held in {timeout} s"
+        time.sleep(0.05)
+
+
+CLIENT = pytest.mark.skipif(shutil.which("bash") is None or shutil.which("git") is None,
+                            reason="the lane tooling is bash over git")
+WINDOW = {"mode": "window", "match": "commit_write", "ms": 200}
+
+
+def claim(obj: str, *more: str) -> List[str]:
+    return ["claim", obj, "--home", KEY, *more]
+
+
+def burst(e: Estate, objects: Sequence[str], window_ms: int, extra: dict = None) -> Tuple[List[Writer], float]:
+    """Writers on `objects`, one lane each, released together; returns them,
+    and the drain from the release to the last exit."""
+    barrier = Barrier(e.root, len(objects))
+    arms = [dict(WINDOW, ms=window_ms)]
+    writers = [e.launch(lane, claim(obj, "--no-github"), arms=arms, barrier=barrier, extra=extra)
+               for lane, obj in zip(BURST, objects)]
+    released = barrier.release()
+    for w in writers:
+        w.wait()
+    return writers, max(w.ended for w in writers) - released
+
+
+def record(name: str, **figures) -> None:
+    """A figure recorded beside the result, never asserted (TP:7556-7559)."""
+    print(f"[T243 {name}] " + ", ".join(f"{k}={v}" for k, v in figures.items()))
+
+
+@CLIENT
+def test_two_claimants_one_claimed_and_the_other_exits_2(estates):
+    """AT-4 (a): two lanes claim O through the barrier, W = 200 ms. One
+    `CLAIMED`, in the journal and the line store; exits {0, 2}; the journal
+    grew by one; the loser's write id is absent; no `CLAIM-LOST`; the winner
+    prints `register seq <n>`, its entry's seq, and the claim comment its
+    tail posts through the fake `gh` cites the same `<n>`."""
+    e = estates()
+    barrier = Barrier(e.root, 2)
+    writers = [e.launch(lane, claim(OBJ), arms=[WINDOW], barrier=barrier) for lane in (LA, LB)]
+    barrier.release()
+    codes = sorted(w.wait() for w in writers)
+    assert codes == [0, 2], [(w.lane, w.code, w.err[-400:]) for w in writers]
+    win, lose = sorted(writers, key=lambda w: w.code)
+    grew = e.journal_after()
+    assert [(r["verb"], r["lane"]) for r in grew] == [("claim", win.lane)], grew
+    assert e.claimed(OBJ) == [(OBJ, win.lane)]
+    assert e.log_lines("CLAIMED", OBJ) == 1
+    assert all(not e.has_write(w) for w in lose.write_ids()), "the loser's write id is in the journal"
+    assert e.c.value(f"SELECT count(*) FROM {REGISTER}.doc_lines WHERE text LIKE '%CLAIM-LOST%';") == "0"
+    seq = grew[0]["seq"]
+    assert win.seq_said() == seq, f"the winner printed {win.seq_said()}, its entry is seq {seq}: {win.out!r}"
+    cites = [g for g in e.gh_calls() if f"register seq {seq}" in json.dumps(g)]
+    assert cites, f"no claim comment through gh cites register seq {seq}: {e.gh_calls()}"
+
+
+@CLIENT
+def test_the_later_hold_exits_2_and_prints_the_earlier_line(estates):
+    """AT-4 (b): two `HOLD`s on one repository's `main`, through the barrier.
+    The journal grew by one, the first writer's `HOLD`; it exits 0; the
+    second exits 2, writes nothing, and its stderr carries the earlier line
+    verbatim with its register seq (D18)."""
+    e = estates()
+    texts = {lane: f"HOLD {EM} lane {lane} ({W_WS}), {e.utc()}: {KEY} main for T243's case (b)"
+             for lane in (LA, LB)}
+    barrier = Barrier(e.root, 2)
+    writers = [e.launch(lane, ["append-line", texts[lane]], arms=[WINDOW], barrier=barrier)
+               for lane in (LA, LB)]
+    barrier.release()
+    for w in writers:
+        w.wait()
+    grew = e.journal_after()
+    assert len(grew) == 1, grew
+    first = next(w for w in writers if w.lane == grew[0]["lane"])
+    later = next(w for w in writers if w is not first)
+    assert (first.code, later.code) == (0, 2), [(w.lane, w.code, w.err[-400:]) for w in writers]
+    assert texts[first.lane] in later.err, f"the later HOLD's stderr lacks the earlier line: {later.err!r}"
+    assert re.search(rf"\bseq {grew[0]['seq']}\b", later.err), f"no register seq in {later.err!r}"
+    assert all(not e.has_write(w) for w in later.write_ids())
+
+
+@CLIENT
+def test_ten_writers_released_together_all_commit_in_order(estates):
+    """AT-4 (c), section 4.1's oracle: ten writers on ten free objects, W =
+    200 ms, `LANES_REGISTER_DEADLINE_S` unset (D7's 30 s). All exit 0, none
+    75 or 69; seqs 2 to 11, no gap and no repeat; ten distinct write ids; one
+    `CLAIMED` per object; the head reads 11. The drain is asserted under 60 s
+    and recorded beside D7's 30 s, with each writer's attempts."""
+    e = estates()
+    objects = [f"{KEY}#{100 + k}" for k in range(10)]
+    writers, drain = burst(e, objects, 200)
+    assert [w.code for w in writers] == [0] * 10, [(w.lane, w.code, w.err[-300:]) for w in writers]
+    grew = e.journal_after()
+    assert [r["seq"] for r in grew] == list(range(2, 12)), grew
+    assert len({r["write_id"] for r in grew}) == 10
+    assert e.claimed(*objects) == sorted(zip(objects, BURST))
+    assert e.c.head() == 11
+    assert drain < TWICE_D7_S, f"the burst drained in {drain:.1f} s, past twice D7's {D7_S} s"
+    record("burst", drain_s=round(drain, 2), margin_vs_30s=round(D7_S / max(drain, 0.01), 2),
+           attempts={w.lane: len(w.snapshot_calls()) for w in writers})
+
+
+@CLIENT
+def test_a_write_that_cannot_get_its_turn_exits_75_register_busy(estates):
+    """AT-4 (d): two writers on distinct objects, W = 2 s, deadline 1 s. One
+    exits 0, the other 75; the busy writer's write id is absent; its stderr
+    says nothing was written and a retry in seconds is safe (P231-233)."""
+    e = estates()
+    barrier = Barrier(e.root, 2)
+    writers = [e.launch(lane, claim(obj, "--no-github"), arms=[dict(WINDOW, ms=2000)], barrier=barrier,
+                        extra={"LANES_REGISTER_DEADLINE_S": "1"})
+               for lane, obj in ((LA, f"{KEY}#51"), (LB, f"{KEY}#52"))]
+    barrier.release()
+    assert sorted(w.wait() for w in writers) == [0, 75], [(w.lane, w.code, w.err[-400:]) for w in writers]
+    busy = next(w for w in writers if w.code == 75)
+    assert all(not e.has_write(w) for w in busy.write_ids())
+    said = busy.err.lower()
+    assert all(word in said for word in BUSY_WORDS), f"the busy text lacks {BUSY_WORDS}: {busy.err!r}"
+    assert len(e.journal_after()) == 1
+
+
+@CLIENT
+def test_the_default_deadline_is_30_s_for_a_write_that_never_gets_its_turn(estates):
+    """AT-4 (h): `LANES_REGISTER_DEADLINE_S` unset; the admin session holds
+    the head row `FOR UPDATE` for the whole case, so each commit call gets
+    55P03 at its `lock_timeout`, a lost turn. The writer exits 75, its write
+    ids absent, its stderr carrying the busy text with "attempts in 30 s";
+    it exits no earlier than 29 s after its launch (timing rule 3) and under
+    2 x (30 + 8 + 8) = 92 s, and no snapshot call starts more than 60 s after
+    the first (timing rule 2). Both times are recorded against 46 s and
+    30 s."""
+    e = estates()
+    admin = e.hold_row_locked()
+    try:
+        w = e.run(LA, claim(f"{KEY}#61", "--no-github"))
+    finally:
+        e.unlock(admin)
+    took = w.ended - w.started
+    assert w.code == 75, f"exit {w.code}, not 75: {w.err[-600:]}"
+    assert w.write_ids() and all(not e.has_write(x) for x in w.write_ids())
+    assert "register busy" in w.err.lower() and f"attempts in {D7_S} s" in w.err, w.err
+    assert took >= D7_S - 1, f"it exited {took:.1f} s after its launch, before D7's {D7_S} s less 1 s"
+    assert took < 2 * (D7_S + 8 + 8), f"it exited {took:.1f} s after its launch, past 92 s"
+    starts = [s["t"] for s in w.stamps() if "commit_write" not in (s.get("stdin") or "")]
+    spread = max(starts) - min(starts) if starts else 0.0
+    assert spread <= TWICE_D7_S, f"a snapshot call started {spread:.1f} s after the first"
+    record("default-deadline", exit_s=round(took, 2), vs_46s=round(46 - took, 2),
+           snapshot_spread_s=round(spread, 2), vs_30s=round(D7_S - spread, 2), attempts=len(starts))
+
+
+#: AT-4 (f), with lane 3's text for T243 (#165 6772120103, "T243 (:2232)";
+#: 6771569269): each case's lines before, the line `append-line` sends, and
+#: what it must do: refused with 2 and nothing written, or committed with 0,
+#: taking or freeing what Q17 (B) says (`main_slots` for the writer's lane).
+NO_REPO = {
+    "hold-no-repo": ([], "HOLD {em} lane {lane} ({ws}), {utc}: for a frozen window", 2, None),
+    "landing-no-repo": ([], "LANDING {em} lane {lane}, session {sid}@{ws}, {utc}, PR #{pr}", 2, None),
+    "take-no-utc": ([], "HOLD {em} lane {lane} ({ws}): {key} main for a frozen window", 2, None),
+    "free-text": ([], "NOTE {em} lane {lane}: the register's free text (T243)", 0, []),
+    "landed-no-repo": (["LANDING {em} lane {lane}, session {sid}@{ws}, {utc}, PR #{pr} into {key} main"],
+                       "LANDED {em} lane {lane}, session {sid}@{ws}, {utc}, PR #{pr} {arrow} abc1234", 0, []),
+    "hold-released-no-repo": (["HOLD {em} lane {lane} ({ws}), {utc}: {key} main for a frozen window"],
+                              "HOLD RELEASED {em} lane {lane} ({ws}), {utc}", 0, [["hold", KEY, None]]),
+    "landing-no-pr": ([], "LANDING {em} lane {lane}, session {sid}@{ws}, {utc}, into {key} main", 0, []),
+}
+
+
+@CLIENT
+@pytest.mark.parametrize("case", list(NO_REPO))
+def test_a_hold_line_that_names_no_repository_is_refused_with_2(estates, case):
+    """AT-4 (f) (`design.md` S6): on primary, `append-line` with a line
+    matching `HOLD ` or `LANDING ` from which no repository can be read exits
+    2 and writes nothing, and so does a take whose UTC cannot be read (U3;
+    its client half is AT-F13 (b)). A line of another shape is written as free
+    text. Lane 3's text (6771569269): a `LANDED` naming no repository commits
+    0 and frees its pair in `main_slots`; a `HOLD RELEASED` naming none and a
+    `LANDING` naming no PR commit 0 and take or free nothing."""
+    e = estates()
+    before_lines, text, code, slots = NO_REPO[case]
+
+    def spell(form: str) -> str:
+        return form.format(em=EM, arrow=ARROW, lane=LA, ws=W_WS, sid=session_of(LA), utc=e.utc(),
+                           pr=PR, key=KEY)
+
+    for line_form in before_lines:
+        assert e.run(LA, ["append-line", spell(line_form)]).code == 0
+    if before_lines:
+        assert e.open_slots(LA) == [[("landing" if "LANDING" in before_lines[0] else "hold"), KEY,
+                                     PR if "LANDING" in before_lines[0] else None]], e.open_slots(LA)
+    head, state = e.c.head(), e.c.state()
+    w = e.run(LA, ["append-line", spell(text)])
+    assert w.code == code, f"[{case}] exit {w.code}, not {code}: {w.err[-600:]}"
+    if code == 2:
+        assert e.c.state() == state, f"[{case}] the refusal changed the register"
+        assert w.commit_calls() == [], f"[{case}] a commit call was sent"
+        return
+    assert e.c.head() == head + 1
+    said = e.rows(f"SELECT kind, slot_role FROM {REGISTER}.register_lines WHERE seq = {head + 1}")
+    role = "close" if case == "landed-no-repo" else None
+    assert len(said) == 1 and said[0]["slot_role"] == role, f"[{case}] {said}, its slot_role not {role}"
+    assert e.open_slots(LA) == slots, f"[{case}] main_slots for {LA}: {e.open_slots(LA)}, not {slots}"
+
+
+#: Q17 (B)'s table (lane 1's `REGISTER_SLOTS`, T118): each kind's line, the
+#: line before it that it pairs with, and whether `main` is taken after it.
+KINDS = {
+    "hold": ([], "HOLD", True),
+    "hold-refresh": ([], "HOLD (refresh)", False),
+    "hold-run-id": ([], "HOLD (run id)", False),
+    "hold-released": (["HOLD"], "HOLD RELEASED", False),
+    "hold-withdrawn": (["HOLD"], "HOLD WITHDRAWN", False),
+    "hold-expired": (["HOLD"], "HOLD EXPIRED", False),
+    "queued-hold": ([], "QUEUED-HOLD", False),
+    "landing": ([], "LANDING", True),
+    "landed": (["LANDING"], "LANDED", False),
+    "landing-expired": (["LANDING"], "LANDING EXPIRED", False),
+    "landing-withdrawn": ([], "LANDING WITHDRAWN", False),
+}
+
+
+def kind_line(e: Estate, kind: str, lane: str, minutes_ago: float = 0) -> str:
+    utc = e.utc(minutes_ago)
+    if kind.startswith("LANDING") or kind == "LANDED":
+        tail = f" {ARROW} abc1234" if kind == "LANDED" else ""
+        return f"{kind} {EM} lane {lane}, session {session_of(lane)}@{W_WS}, {utc}, PR #{PR} into {KEY} main{tail}"
+    return f"{kind} {EM} lane {lane} ({W_WS}), {utc}: {KEY} main for T243's table"
+
+
+@CLIENT
+@pytest.mark.parametrize("kind", list(KINDS))
+def test_each_line_kind_takes_or_releases_main_as_q17_b_says(estates, kind):
+    """After each kind's line, `main_slots` shows `main` taken or released as
+    Q17 (B)'s table says, and another lane's `HOLD` then exits 0 or 2 to
+    match. `LANDING EXPIRED` is written by AT-F13's form over a `LANDING`
+    composed with a UTC 31 minutes back (TP:975-980)."""
+    e = estates()
+    before, name, taken = KINDS[kind]
+    for pair in before:
+        ago = 31 if name == "LANDING EXPIRED" else 0
+        assert e.run(LA, ["append-line", kind_line(e, pair, LA, ago)]).code == 0
+    if name == "LANDING EXPIRED":
+        argv = ["append-line", "--landing-expired", LA, "--pr", str(PR), "--repo", KEY,
+                "--word", "Release the stale LANDING (Recommended)", "--word-where",
+                "lane openRepoTools-2's session", "--word-utc", e.utc(1)]
+        w = e.run(LB, argv)
+    else:
+        w = e.run(LA, ["append-line", kind_line(e, name, LA)])
+    assert w.code == 0, f"[{kind}] exit {w.code}: {w.err[-600:]}"
+    slots = e.open_slots(LA)
+    assert bool(slots) == taken, f"[{kind}] main_slots for {LA}: {slots}"
+    other = e.run(LC, ["append-line", kind_line(e, "HOLD", LC)])
+    assert other.code == (2 if taken else 0), f"[{kind}] another lane's HOLD exited {other.code}: {other.err[-400:]}"
+
+
+@CLIENT
+def test_claim_prints_its_register_seq(estates):
+    """Q19 (A), GB section 4.3 (R29): `claim` prints `register seq <n>`, its
+    entry's seq, the first write after the cutover, 2."""
+    e = estates()
+    w = e.run(LA, claim(OBJ, "--no-github"))
+    assert w.code == 0, w.err[-600:]
+    grew = e.journal_after()
+    assert [(r["seq"], r["verb"]) for r in grew] == [(2, "claim")], grew
+    assert w.seq_said() == 2, f"claim printed {w.out!r}"
+
+
+@CLIENT
+def test_a_serialization_failure_is_retried_never_reported_as_69(estates):
+    """AT-4 (e): in case (a)'s race the loser's first commit call fails (its
+    snapshot predates the winner's commit), and the loser re-runs from the
+    pre-check and exits 2, never 69 or 75; its write ids are absent."""
+    e = estates()
+    barrier = Barrier(e.root, 2)
+    writers = [e.launch(lane, claim(OBJ, "--no-github"), arms=[WINDOW], barrier=barrier) for lane in (LA, LB)]
+    barrier.release()
+    for w in writers:
+        w.wait()
+    lose = next((w for w in writers if w.code != 0), None)
+    assert lose is not None and lose.code == 2, [(w.lane, w.code, w.err[-400:]) for w in writers]
+    assert not {69, 75} & {w.code for w in writers}, [w.code for w in writers]
+    calls = lose.commit_calls()
+    assert calls, "the loser made no commit call: its snapshot did not predate the winner's commit"
+    first = lose.ends().get(calls[0]["call"], {})
+    assert first.get("psql") not in (None, 0), f"the loser's first commit call did not fail: {first}"
+    assert len(lose.snapshot_calls()) >= 2, "the loser did not re-read after its failed commit"
+    assert all(not e.has_write(x) for x in lose.write_ids())
+
+
+def _objects_named(e: Estate) -> Dict[str, Path]:
+    objects = e.state / "openRepoTools" / "register-images" / "objects"
+    return {p.name: p for p in objects.iterdir()} if objects.exists() else {}
+
+
+@CLIENT
+def test_the_image_cache_stays_content_addressed_under_the_burst_and_a_corrupt_object_is_refetched(estates):
+    """AT-4 (g): in the state directory the burst's writers shared, every
+    object is named by the sha256 of its bytes and no temporary file is left;
+    `head` never decreases in the samples taken during the burst and ends no
+    higher than the journal's head; its manifest lists only present objects.
+    An object corrupted under its name is not used: the next write exits 0,
+    and its render is byte-identical to a full render."""
+    e = estates()
+    cache = e.state / "openRepoTools" / "register-images"
+    samples: List[int] = []
+    stop = threading.Event()
+
+    def sample() -> None:
+        while not stop.is_set():
+            try:
+                samples.append(int((cache / "head").read_text().strip()))
+            except (OSError, ValueError):
+                pass
+            time.sleep(0.05)
+
+    sampler = threading.Thread(target=sample, daemon=True)
+    sampler.start()
+    try:
+        writers, _ = burst(e, [f"{KEY}#{200 + k}" for k in range(10)], 200)
+    finally:
+        stop.set()
+        sampler.join(5)
+    assert [w.code for w in writers] == [0] * 10
+    named = _objects_named(e)
+    assert named, f"the burst left no object under {cache}"
+    for name, path in named.items():
+        assert re.fullmatch(r"[0-9a-f]{64}", name), f"a file that is not an object is left: {name}"
+        assert sha256(path.read_bytes()) == name, f"{name} is not named by its bytes"
+    assert samples == sorted(samples), f"register-images/head went back: {samples}"
+    head = int((cache / "head").read_text().strip())
+    assert head <= e.c.head()
+    listed = [line.split("\t")[1] for line in (cache / "seq" / str(head)).read_text().splitlines() if line]
+    assert set(listed) <= set(named), f"manifest {head} lists absent objects: {set(listed) - set(named)}"
+
+    victim = named[listed[0]]
+    victim.write_bytes(victim.read_bytes() + b"corrupt\n")
+    _, lines = e.c.file(LANES_MD)
+    text = f"NOTE {EM} lane {LA}: written after the corrupt object (T243)"
+    w = e.run(LA, ["append-line", text])
+    assert w.code == 0, f"the write after the corruption exited {w.code}: {w.err[-600:]}"
+    nl, after = e.c.file(LANES_MD)
+    assert after == [*lines, text]
+    digest = e.c.value(f"SELECT sha256 FROM {REGISTER}.files WHERE path = '{LANES_MD}';")
+    assert digest == sha256(rendered(after, bool(nl))), "the render after the corruption is not a full render's"
+
+
+@CLIENT
+@pytest.mark.parametrize("order", ["alias-holder-first", "behind-the-alias-first"])
+def test_an_alias_edit_racing_a_claim_cannot_let_two_claims_of_one_object_pass(estates, order):
+    """AT-C10, both orders. [alias-holder-first]: A, at T0, claims O and is
+    held at its commit call; T1 adds X as O's alias; B claims X and commits;
+    A, released, loses its turn, and its next snapshot's pre-check refuses it
+    with 2: one commit call from A. [behind-the-alias-first]: A, at T0,
+    claims X and commits; after T1, B claims O and is refused LR005
+    `claim-spellings` on its commit call, its write id absent."""
+    e = estates()
+    if order == "alias-holder-first":
+        fifo = e.root / "hold-a.fifo"
+        os.mkfifo(str(fifo))
+        a = e.launch(LA, claim(OBJ, "--no-github"),
+                     arms=[{"mode": "hold", "match": "commit_write", "call": 1, "fifo": str(fifo)}])
+        held = hold_point(fifo, a)
+        e.push_alias()
+        b = e.run(LB, claim(OBJ_X, "--no-github"))
+        held.close()
+        a.wait()
+        assert (a.code, b.code) == (2, 0), [(w.lane, w.code, w.err[-400:]) for w in (a, b)]
+        assert e.claimed(OBJ, OBJ_X) == [(OBJ, LB)]
+        assert len(a.commit_calls()) == 1, "A made a second commit call"
+        assert a.ends()[a.commit_calls()[0]["call"]].get("psql") not in (None, 0)
+    else:
+        a = e.run(LA, claim(OBJ_X, "--no-github"))
+        assert a.code == 0, a.err[-600:]
+        e.push_alias()
+        b = e.run(LB, claim(OBJ, "--no-github"))
+        assert b.code == 2, f"B exited {b.code}: {b.err[-600:]}"
+        assert "LR005" in b.err and "claim-spellings" in b.err, b.err
+        assert b.commit_calls(), "B's refusal came before its commit call, not from the spelling check"
+        assert all(not e.has_write(x) for x in b.write_ids())
+        assert e.claimed(OBJ, OBJ_X) == [(OBJ_X, LA)]
+    assert e.c.value(f"SELECT count(*) FROM {REGISTER}.object_holds WHERE object = '{OBJ_X}' "
+                     f"AND lane = '{LB}';") == "0"
+
+
+@CLIENT
+@pytest.mark.parametrize("tip", ["same-tip", "behind-the-alias"])
+def test_two_spellings_of_one_object_claimed_at_once_leave_one_claimed_and_exit_2(estates, tip):
+    """AT-D19: L1 claims O and L2 claims X, each held at its first commit
+    call after both snapshots read `n`; the admin session holds the head row;
+    L1's call is released and waits on the lock, then L2's; the admin rolls
+    back, so L1 takes the head row first. L1 exits 0 and prints `register
+    seq <n+1>`; L2's first commit fails, it re-reads and exits 2, never 69
+    or 75, its stderr naming L1's claim; the journal grew by one; L1's
+    `object_holds` row carries O as typed, the key O and the alias X; one
+    live `CLAIMED` holds O and no line holds X."""
+    e = estates()
+    origin_l2 = e.mirror_at_t0() if tip == "behind-the-alias" else None
+    e.push_alias()
+    n = e.c.head()
+    fifos = {lane: e.root / f"hold-{lane}.fifo" for lane in (LA, LB)}
+    for f in fifos.values():
+        os.mkfifo(str(f))
+    arms = {lane: [{"mode": "hold", "match": "commit_write", "call": 1, "fifo": str(fifos[lane])}]
+            for lane in (LA, LB)}
+    l1 = e.launch(LA, claim(OBJ, "--no-github"), arms=arms[LA])
+    l2 = e.launch(LB, claim(OBJ_X, "--no-github"), arms=arms[LB], origin=origin_l2)
+    holds = {LA: hold_point(fifos[LA], l1), LB: hold_point(fifos[LB], l2)}  # both snapshots read n
+    admin = e.hold_row_locked()
+    try:
+        holds[LA].close()
+        assert e.waits_on_lock(l1.write_ids()[0]), "L1's commit never waited on the head row"
+        holds[LB].close()
+        assert e.waits_on_lock(l2.write_ids()[0]), "L2's commit never waited on the head row"
+    finally:
+        e.unlock(admin)
+    l1.wait()
+    l2.wait()
+    assert (l1.code, l2.code) == (0, 2), [(w.lane, w.code, w.err[-400:]) for w in (l1, l2)]
+    assert l1.seq_said() == n + 1
+    assert l2.ends()[l2.commit_calls()[0]["call"]].get("psql") not in (None, 0)
+    assert len(l2.snapshot_calls()) >= 2, "L2 did not re-read at n+1"
+    assert LA in l2.err, f"L2's refusal does not name L1's claim: {l2.err!r}"
+    assert [r["lane"] for r in e.journal_after(n)] == [LA]
+    spellings = e.c.value(f"SELECT spellings::text FROM {REGISTER}.object_holds WHERE object = '{OBJ}' "
+                          f"AND lane = '{LA}';")
+    assert all(s in spellings for s in (OBJ, OBJ_X)), spellings
+    assert all(not e.has_write(x) for x in l2.write_ids())
+    assert e.claimed(OBJ, OBJ_X) == [(OBJ, LA)]
+    assert e.log_lines("CLAIMED", OBJ_X) == 0
+    if tip == "behind-the-alias":
+        assert "LR005" in l2.err and "claim-spellings" in l2.err, l2.err
+
+
+@CLIENT
+def test_the_claim_behind_the_alias_is_refused_by_lr005_on_its_spellings(estates):
+    """AT-D19 [behind-the-alias], by itself: L1 at the tip with the alias
+    claims O and commits; L2, at the tip before the alias, claims X. Neither
+    the verb's check nor `one_live_claim` sees L1's claim, so the refusal is
+    LR005 `claim-spellings` on L2's last commit call: exit 2, its write id
+    absent, one live `CLAIMED` on O."""
+    e = estates()
+    frozen = e.mirror_at_t0()
+    e.push_alias()
+    l1 = e.run(LA, claim(OBJ, "--no-github"))
+    assert l1.code == 0, l1.err[-600:]
+    l2 = e.run(LB, claim(OBJ_X, "--no-github"), origin=frozen)
+    assert l2.code == 2, f"L2 exited {l2.code}: {l2.err[-600:]}"
+    assert "LR005" in l2.err and "claim-spellings" in l2.err, l2.err
+    calls = l2.commit_calls()
+    assert calls and l2.ends()[calls[-1]["call"]].get("psql") not in (None, 0), "no refused commit call"
+    assert all(not e.has_write(x) for x in l2.write_ids())
+    assert e.claimed(OBJ, OBJ_X) == [(OBJ, LA)]
+
+
+@CLIENT
+def test_the_burst_window_is_effective_a_short_deadline_sends_writers_busy(estates):
+    """Section 4.1's companion: the same burst with a 1 s deadline. At least
+    one writer exits 75, none exits 69, and each busy writer's write ids are
+    absent from the journal."""
+    e = estates()
+    writers, drain = burst(e, [f"{KEY}#{300 + k}" for k in range(10)], 200,
+                           extra={"LANES_REGISTER_DEADLINE_S": "1"})
+    codes = [w.code for w in writers]
+    assert 75 in codes and 69 not in codes, codes
+    assert set(codes) <= {0, 75}, codes
+    for w in writers:
+        if w.code == 75:
+            assert all(not e.has_write(x) for x in w.write_ids()), f"{w.lane} busy, yet written"
+    record("window-effective", busy=codes.count(75), drain_s=round(drain, 2))
