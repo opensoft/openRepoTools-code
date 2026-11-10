@@ -6142,6 +6142,7 @@ pw_snapshot() {
         pw_snap_end 69 "\`lanes-index register snapshot\` exited 0 with an answer this lanes-edit.sh cannot read (not format=1, a key twice or missing, or not switch=primary with marker=present), which is a failed read" ;;
     2)
       if [ "$PW_FIRST_DONE" = 0 ] && [ "$WR_PLAN" = reuse ] && [ "$ps_det" = generation ]; then
+        pw_run_dir_done
         wr_refuse_other_generation
       fi
       pw_snap_end 2 "\`lanes-index register snapshot\` refused this write (exit 2${ps_det:+, $ps_det}), above" ;;
@@ -6151,6 +6152,7 @@ pw_snapshot() {
       pw_snap_end 69 "\`lanes-index register snapshot\` exited ${ps_rc}: the register could not be read" ;;
   esac
   if [ "$PW_FIRST_DONE" = 0 ]; then
+    [ -n "$PW_S_FOUND" ] || pw_runs_purge
     if ! wr_id_settle "$PW_DIR/snapshot"; then
       case "$WR_PLAN" in
         reuse|env)
@@ -6322,9 +6324,142 @@ pw_abandon_all() {
 }
 
 # THE OUTCOME KNOWN, the record goes with this run's claims (Y:5193–5198), or
-# only this run's claim where the record is not this write's own.
+# only this run's claim where the record is not this write's own. The record
+# removed, the attempt directories its `call` lines name go with it
+# (`pw_call_dirs_remove`).
 pw_record_done() {
-  if [ "$PW_REC_OURS" = 1 ]; then wr_record_remove || wr_claim_release; else wr_claim_release; fi
+  if [ "$PW_REC_OURS" = 1 ] && wr_record_remove; then
+    pw_call_dirs_remove
+  else
+    wr_claim_release
+  fi
+}
+
+# ---- THE ATTEMPT DIRECTORIES (Y:5177, Y:5183; lane openRepoTools-3, #165
+# 6769061039, T415's question 5). At its end, once every child has ended, the
+# run removes its own `<d>/<run>/` (`pw_run_dir_done`), except that an attempt
+# directory a kept `call` line names keeps `snapshot`, `files` and
+# `preimages`, which a rerun that takes the record over reads (Y:5177).
+# Whoever removes a record removes the attempt directories its `call` lines
+# name (`pw_call_dirs_remove`). A run that writes a record first removes each
+# `<run>/` under `register-writes/` that is older than the record's maximum age
+# and that no record's `call` line names (`pw_runs_purge`), as the done marks
+# are purged (Y:5183); that also takes a run that ended by a refusal inside
+# T412's functions, before its own end could remove it. Only a 0700 directory of
+# this uid, at its place under `<state>/register-writes/`, is ever removed
+# (`pw_wdir_ok`).
+
+# A `<d>/<run>/` (run) or `<d>/<run>/<k>/` (attempt) under this run's
+# `<state>/register-writes/`: `<d>` 64 lower hex, `<run>` 32, `<k>` digits;
+# each level a directory, not a link, of this uid; the directory itself 0700.
+pw_wdir_ok() {   # <dir> <run | attempt>
+  local wo_w="$WR_STATE/register-writes" wo_rel="" wo_d="" wo_r="" wo_k=0
+  case "${1-}" in "$wo_w/"?*) : ;; *) return 1 ;; esac
+  wo_rel="${1#"$wo_w/"}"
+  case "${2-}:$wo_rel" in
+    run:*/*/*|attempt:*/*/*/*|*/) return 1 ;;
+    run:?*/?*) wo_d="${wo_rel%/*}"; wo_r="${wo_rel#*/}" ;;
+    attempt:?*/?*/?*) wo_d="${wo_rel%%/*}"; wo_r="${wo_rel#*/}"; wo_k="${wo_r#*/}"; wo_r="${wo_r%/*}" ;;
+    *) return 1 ;;
+  esac
+  wr_is_hex64 "$wo_d" || return 1
+  case "$wo_r" in *[!0123456789abcdef]*) return 1 ;; esac
+  [ "${#wo_r}" -eq 32 ] || return 1
+  case "$wo_k" in ''|*[!0123456789]*) return 1 ;; esac
+  [ ! -L "$wo_w" ] && [ ! -L "$wo_w/$wo_d" ] && [ ! -L "$wo_w/$wo_d/$wo_r" ] || return 1
+  [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && reg_scratch_mode_700 "$1"
+}
+
+# The attempt directories named by `call` lines, one a line, from WR_CALLS or
+# a record's `call=` lines: the fifth field and the rest of the line.
+pw_calls_dirs() {   # <call lines, one a line, without `call=`>
+  local cd_l="" cd_x=""
+  while IFS= read -r cd_l; do
+    [ -n "$cd_l" ] || continue
+    IFS=' ' read -r cd_x cd_x cd_x cd_x cd_l <<<"$cd_l"
+    [ -z "$cd_l" ] || printf '%s\n' "$cd_l"
+  done <<<"${1-}"
+}
+
+# THE RECORD REMOVED: the attempt directories its `call` lines named, this
+# run's and those of a run whose record it took over, whose `<run>/` and then
+# `<d>/` go where each is left empty.
+pw_call_dirs_remove() {
+  local cr_d=""
+  while IFS= read -r cr_d; do
+    [ -n "$cr_d" ] || continue
+    pw_wdir_ok "$cr_d" attempt || continue
+    rm -rf -- "$cr_d" 2>/dev/null
+    if pw_wdir_ok "${cr_d%/*}" run; then
+      rmdir -- "${cr_d%/*}" 2>/dev/null && rmdir -- "${cr_d%/*/*}" 2>/dev/null
+    fi
+  done <<CR_EOF
+$(pw_calls_dirs "$WR_CALLS")
+CR_EOF
+  return 0
+}
+
+# THE RUN'S END, every child ended: its own `<run>/` goes, but for the attempt
+# directories that the `call` lines still held name, which keep only
+# `snapshot`, `files` and `preimages` (Y:5177).
+pw_run_dir_done() {
+  local rd_kept="" rd_a="" rd_e=""
+  [ -n "$PW_RUN_DIR" ] && pw_wdir_ok "$PW_RUN_DIR" run || return 0
+  rd_kept="$WR_NL$(pw_calls_dirs "$WR_CALLS")$WR_NL"
+  for rd_a in "$PW_RUN_DIR"/* "$PW_RUN_DIR"/.[!.]* "$PW_RUN_DIR"/..?*; do
+    [ -e "$rd_a" ] || [ -L "$rd_a" ] || continue
+    case "$rd_kept" in
+      *"$WR_NL$rd_a$WR_NL"*)
+        if pw_wdir_ok "$rd_a" attempt; then
+          for rd_e in "$rd_a"/* "$rd_a"/.[!.]* "$rd_a"/..?*; do
+            [ -e "$rd_e" ] || [ -L "$rd_e" ] || continue
+            case "${rd_e##*/}" in snapshot|files|preimages) continue ;; esac
+            rm -rf -- "$rd_e" 2>/dev/null
+          done
+          continue
+        fi ;;
+    esac
+    rm -rf -- "$rd_a" 2>/dev/null
+  done
+  # `<run>/`, then `<d>/`, each where left empty. A run of the same command
+  # making its own `<run>/` meanwhile loses nothing: `wr_dir_0700` makes the
+  # whole path with `mkdir -p`.
+  rmdir -- "$PW_RUN_DIR" 2>/dev/null && rmdir -- "${PW_RUN_DIR%/*}" 2>/dev/null
+  return 0
+}
+
+# THE OLD RUNS' DIRECTORIES, purged before a record is written (Y:5183's rule
+# for the marks): each `<d>/<run>/` older, by its mtime, than the record's
+# maximum age that no record's `call` line names, then its `<d>/` where left
+# empty. A record that cannot be read could name any of them, so then nothing
+# is purged.
+pw_runs_purge() {
+  local pp_w="$WR_STATE/register-writes" pp_p="$WR_STATE/register-pending"
+  local pp_named="$WR_NL" pp_f="" pp_l="" pp_c="" pp_r="" pp_t="" pp_now="" pp_max=""
+  [ -d "$pp_w" ] && [ ! -L "$pp_w" ] || return 0
+  for pp_f in "$pp_p"/*; do
+    [ -e "$pp_f" ] || continue
+    case "${pp_f##*/}" in *.take.*) continue ;; esac
+    [ -f "$pp_f" ] && [ -r "$pp_f" ] || return 0
+    pp_c=""
+    while IFS= read -r pp_l || [ -n "$pp_l" ]; do
+      case "$pp_l" in call=*) pp_c="$pp_c${pp_l#call=}$WR_NL" ;; esac
+      pp_l=""
+    done < "$pp_f"
+    pp_named="$pp_named$(pw_calls_dirs "$pp_c")$WR_NL"
+  done
+  pp_now="$(date -u +%s)"; pp_max="$(wr_max_age_s)"
+  wr_is_count "$pp_now" || return 0
+  for pp_r in "$pp_w"/*/*; do
+    [ "$pp_r" != "$PW_RUN_DIR" ] || continue
+    pw_wdir_ok "$pp_r" run || continue
+    pp_t="$(wr_file_mtime "$pp_r")"
+    [ -n "$pp_t" ] && [ "$(( pp_now - pp_t ))" -gt "$pp_max" ] || continue
+    case "$pp_named" in *"$WR_NL$pp_r/"*) continue ;; esac
+    rm -rf -- "$pp_r" 2>/dev/null
+    rmdir -- "${pp_r%/*}" 2>/dev/null || :
+  done
+  return 0
 }
 
 # THE DECIDING ATTEMPT'S OUTPUT, REPLAYED (F14; FR-024; Y:2546–2550): its
@@ -6348,6 +6483,7 @@ pw_end() {   # <code> <message, or empty> [<attempt dir whose output is replayed
   pw_record_done
   [ -z "${3-}" ] || pw_replay "$3"
   [ -z "$PW_RELAY" ] || printf '%s\n' "$PW_RELAY" >&2
+  pw_run_dir_done
   [ -n "$2" ] || exit "$1"
   die "$2" "$1"
 }
@@ -6367,6 +6503,7 @@ pw_doubt_end() {   # <the end's code> <its message, or empty> [<attempt dir>]
     IFS=' ' read -r dd_b dd_c dd_n dd_f dd_d <<<"$dd_l"
     if [ -z "$dd_max" ] || [ "$dd_n" -gt "$dd_max" ]; then dd_max="$dd_n"; fi
   done <<<"$WR_CALLS"
+  pw_run_dir_done
   die "write $WR_ID of register generation $WR_GEN may be in the register: its pending record, $WR_STATE/register-pending/$WR_D, holds a commit call that may have committed, so this run's end (exit $1) is not that write's answer until the call is looked up. This lanes-edit.sh makes no such lookup yet: the record is kept, and a rerun settles the write by its id and never writes it twice. Look it up: lanes-index journal --write-id $WR_ID --not-after $dd_max --generation $WR_GEN --lane $(printf '%q' "$WR_LANE") --verb $(printf '%q' "$WR_VERB") --args-sha256 $WR_D. Or run it again: $(wr_rerun_text "$WR_ID" "$WR_GEN")" 75
 }
 
@@ -6378,7 +6515,8 @@ pw_doubt_end() {   # <the end's code> <its message, or empty> [<attempt dir>]
 pw_found_end() {   # <seq> <how it was found>
   pw_abandon_all
   note "write $WR_ID is in the register at seq $1, committed by an earlier attempt or run ($2); this run sent no second commit of it. Its after-COMMIT steps did not run in this run, and may be owed: those of lanes-edit.sh $WR_VERB. Do by hand any that did not run."
-  wr_record_remove || wr_claim_release
+  if wr_record_remove; then pw_call_dirs_remove; else wr_claim_release; fi
+  pw_run_dir_done
   exit 0
 }
 
@@ -6493,9 +6631,11 @@ pw_committed() {   # <seq>
   if ! pw_seam_out_read "$PW_DIR"; then
     note "write $WR_ID committed at seq $1, at attempt ${PW_K}, but its child's seam.out does not say tail (it is ${PW_SEAM_OUT}; the child exited ${PW_RC}), so the child never took the commit, and the verb's after-COMMIT steps did not run, and may be owed: those of lanes-edit.sh $WR_VERB. Do by hand any that did not run."
     pw_record_done
+    pw_run_dir_done
     exit 0
   fi
   pw_record_done
+  pw_run_dir_done
   exit "$PW_RC"
 }
 
@@ -6538,6 +6678,7 @@ pw_child_end() {
     pw_abandon_all
     pw_record_done
     pw_replay "$PW_DIR"
+    pw_run_dir_done
     exit 0
   fi
   pw_end "$PW_RC" "" "$PW_DIR"
