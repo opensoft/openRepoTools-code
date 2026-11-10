@@ -6645,6 +6645,706 @@ def cmd_register_commit(args: list[str]) -> int:
     return _register_commit_end(store, ident, entry, code, seq, err, failure)
 
 
+# THE JOURNAL (feature 007, opensoft/openRepoTools#165; contract §3.4 and
+# §3.6; FR-016; design.md "The in-doubt rule (F3, D8)"). `lanes-index
+# journal` has three forms:
+#
+# - `--write-id …`, the in-doubt lookup. The client waits first, on its own
+#   estimate of the database's clock (F3; lane 4's answer 36 for a record
+#   taken over), then makes `find_write`'s tries, each under D9's lookup row,
+#   inside a CLOSED 10 s window from that wait's end: start to start at least
+#   1 s apart, and never before the last try ended (lane 4's answer 40), on
+#   the monotonic clock. Its codes are its own table (CO-3), never
+#   `register commit`'s: LR007 is 2, and every other SQLSTATE is 3.
+# - `--since <m>`, the renderer's read of the journal's history.
+# - `--last --path <p> --grep <key> [--at <n> --generation <g>]`, the rank
+#   `swapped_lanes` reads: git's `-S` pickaxe over the journal (C7), at the
+#   door's `n` under `--at` (C8).
+
+#: `journal --write-id`'s code for each SQLSTATE under `psql`'s exit 3, its
+#: own table and never `register commit`'s (contract §3.4's exits; CO-3):
+#: LR007 is 2, and its DETAIL token, `generation` or `another-write`, decides
+#: the pending record's fate (Y:5241). LR011, and every SQLSTATE not named
+#: here, is 3, since none of them settles the write.
+REGISTER_LOOKUP_EXITS = {"LR007": EXIT_REFUSED}
+
+#: The SQLSTATE a lookup try ends on WITHOUT AN ANSWER (Y:5250-5253): 55P03,
+#: the head row's lock not granted within the try's `lock_timeout`, whose
+#: holder may be this write's own orphan. Like a failed connect and a try cut
+#: by `T_L`, it is tried again while a new try can start inside the window.
+#: LR011 and LR007 are answers, and are never tried again.
+REGISTER_LOOKUP_RETRIED = frozenset({"55P03"})
+
+#: `R`, the window every try starts inside, from the end of the client's own
+#: wait (Y:5247). It is closed: a try may start at its 10 s mark (Y:5279).
+REGISTER_LOOKUP_WINDOW_S = 10.0
+#: The least time from one try's start to the next one's (lane 4's answer 40).
+REGISTER_LOOKUP_SPACING_S = 1.0
+#: The client calls once its estimate puts `<n>` at most this far ahead
+#: (Y:5236), so `find_write`'s own wait of at most 3 s covers the estimate's
+#: one-second grain.
+REGISTER_LOOKUP_AHEAD_S = 2
+
+#: Contract §3.4's stderr line where no try took the head row's lock.
+_REGISTER_LOOKUP_NO_LOCK = "journal: no try took the head row's lock within 10 s"
+
+_REGISTER_JOURNAL_USAGE = (
+    f"{PROG} journal --write-id <uuid> --not-after <epoch s> --generation <uuid> "
+    f"--lane <lane> --verb <verb> --args-sha256 <hex> [--clock <epoch s> --clock-age <s>]",
+    f"{PROG} journal --since <m>",
+    f"{PROG} journal --last --path <log> --grep <key> [--at <n> --generation <uuid>]")
+#: The flags that take a value, in any of the three forms.
+_REGISTER_JOURNAL_VALUED = ("--write-id", "--not-after", "--generation", "--lane", "--verb",
+                            "--args-sha256", "--clock", "--clock-age", "--since", "--path",
+                            "--grep", "--at")
+_REGISTER_LOOKUP_NEEDS = ("--write-id", "--not-after", "--generation", "--lane", "--verb",
+                          "--args-sha256")
+#: Whole epoch seconds, as `clock=` and `not_after=` print them (contract §3.2).
+_REGISTER_EPOCH_RE = re.compile(r"0|[1-9][0-9]{0,10}")
+#: Whole seconds of age, never below 0 (lane 4's answer 36).
+_REGISTER_AGE_RE = re.compile(r"0|[1-9][0-9]{0,9}")
+#: A journal seq as a bound: -1, an empty journal's head, or a seq.
+_REGISTER_SEQ_ARG_RE = re.compile(r"-1|0|[1-9][0-9]{0,17}")
+
+
+def _register_journal_args(args: list[str]) -> tuple[str, dict] | None:
+    """`journal`'s argv (contract §3.4, §3.6), in one of its three forms, each
+    flag at most once, as `--flag <value>` or `--flag=<value>`: (the form,
+    `write-id`, `since` or `last`, and the flags' values). None for `-h`;
+    `_RegisterUsage`, 64 before anything is read, for anything else that is
+    not one of the forms."""
+    values: dict = {}
+    last = False
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("-h", "--help"):
+            return None
+        if arg == "--last":
+            if last:
+                raise _RegisterUsage("journal: --last is given twice")
+            last = True
+            i += 1
+            continue
+        flag, eq, value = arg.partition("=")
+        if flag not in _REGISTER_JOURNAL_VALUED:
+            raise _RegisterUsage(f"journal: unknown argument '{arg}'")
+        if not eq:
+            if i + 1 >= len(args):
+                raise _RegisterUsage(f"journal: {flag} needs a value")
+            value = args[i + 1]
+        i += 1 if eq else 2
+        if flag in values:
+            raise _RegisterUsage(f"journal: {flag} is given twice")
+        values[flag] = value
+    if "--write-id" in values and not last:
+        form, needed = "write-id", _REGISTER_LOOKUP_NEEDS
+        allowed = set(needed) | {"--clock", "--clock-age"}
+    elif "--since" in values and not last:
+        form, needed, allowed = "since", ("--since",), {"--since"}
+    elif last:
+        form, needed = "last", ("--path", "--grep")
+        allowed = {"--path", "--grep", "--at", "--generation"}
+    else:
+        raise _RegisterUsage("journal takes one of three forms: --write-id …, --since <m>, "
+                             "or --last --path <log> --grep <key>")
+    extra = sorted(set(values) - allowed)
+    if extra:
+        raise _RegisterUsage(f"journal --{form}: {', '.join(extra)} is not part of this form")
+    missing = [flag for flag in needed if flag not in values]
+    if missing:
+        raise _RegisterUsage(f"journal --{form} needs {', '.join(missing)}")
+    if form == "write-id":
+        for flag in ("--write-id", "--generation"):
+            if not UUID_FULL_RE.fullmatch(values[flag]):
+                raise _RegisterUsage(f"journal: {flag} is not a uuid")
+        if not _REGISTER_SHA256_RE.fullmatch(values["--args-sha256"]):
+            raise _RegisterUsage("journal: --args-sha256 is not 64 lower-case hex")
+        for flag in ("--lane", "--verb"):
+            if not _REGISTER_WORD_RE.fullmatch(values[flag]):
+                raise _RegisterUsage(f"journal: {flag} is empty, or holds white space")
+        # `--clock` AND `--clock-age` GO TOGETHER (contract §3.4): a run's last
+        # snapshot's, or a taken-over record's (lane 4's answer 36), or neither.
+        if ("--clock" in values) != ("--clock-age" in values):
+            raise _RegisterUsage("journal: --clock and --clock-age go together")
+        for flag in ("--not-after", "--clock"):
+            if flag in values and not _REGISTER_EPOCH_RE.fullmatch(values[flag]):
+                raise _RegisterUsage(f"journal: {flag} is not whole epoch seconds")
+        if "--clock-age" in values and not _REGISTER_AGE_RE.fullmatch(values["--clock-age"]):
+            raise _RegisterUsage("journal: --clock-age is not whole seconds, 0 or more")
+    elif form == "since":
+        if not _REGISTER_SEQ_ARG_RE.fullmatch(values["--since"]):
+            raise _RegisterUsage("journal: --since is not a seq")
+    else:
+        if not values["--path"] or re.search(r"[\x00-\x1f\x7f]", values["--path"]):
+            raise _RegisterUsage("journal: --path is empty, or holds a control character")
+        if not values["--grep"]:
+            raise _RegisterUsage("journal: --grep is empty")
+        # `--at` NEEDS `--generation` (C8; contract §3.6), as `register
+        # snapshot --at` does (§3.2): 64 without it. Neither means anything
+        # alone.
+        if ("--at" in values) != ("--generation" in values):
+            raise _RegisterUsage("journal --last: --at and --generation go together")
+        if "--at" in values:
+            if not _REGISTER_SEQ_ARG_RE.fullmatch(values["--at"]):
+                raise _RegisterUsage("journal: --at is not a seq")
+            if not UUID_FULL_RE.fullmatch(values["--generation"]):
+                raise _RegisterUsage("journal: --generation is not a uuid")
+    return form, values
+
+
+def _register_sleep_until(when: float) -> None:
+    """Sleep until the monotonic clock reads `when`; at once where it has."""
+    while True:
+        left = when - time.monotonic()
+        if left <= 0:
+            return
+        time.sleep(left)
+
+
+def register_lookup_request(schema: str, ident: dict, not_after: int) -> list[str]:
+    """The lookup as ONE request (contract §2.3 and §3.4; Y:5235): `BEGIN`, at
+    the default READ COMMITTED; the one `find_write` call with the write's six
+    values; the found seq's `journal_files` rows as §3.2's canonical rows,
+    sorted, read in the SAME transaction (Y:5300), after the call, so its
+    snapshot is taken under the head row's lock; then `ROLLBACK`. Under
+    `-A -t` the call prints its seq bare, or an empty line for NULL, and COPY
+    prints the rows unchanged."""
+    write = _pg_quote(ident["write_id"])
+    return ["BEGIN",
+            f"SELECT {schema}.find_write({write}, {_pg_quote(register_epoch_utc(not_after))}, "
+            f"{_pg_quote(ident['generation'])}, {_pg_quote(ident['lane'])}, "
+            f"{_pg_quote(ident['verb'])}, {_pg_quote(ident['args_sha256'])})",
+            "COPY (SELECT path, CASE WHEN present THEN '1' ELSE '0' END, coalesce(sha256, '-') "
+            f"FROM {schema}.journal_files WHERE seq = (SELECT seq FROM {schema}.journal "
+            f"WHERE write_id = {write}) ORDER BY path) TO STDOUT",
+            "ROLLBACK"]
+
+
+def register_lookup_answer(out: str) -> tuple | None:
+    """A lookup's stdout, read: `(seq, rows)` where `find_write` found the
+    write, its rows each `[path, present, sha256]` (§3.2's canonical values);
+    `(None, [])` where it returned NULL, absent with the lock held; None
+    where the answer cannot be read."""
+    lines = out.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    if not any(lines):
+        return None, []
+    if not re.fullmatch(r"[0-9]+", lines[0]):
+        return None
+    rows = []
+    for line in lines[1:]:
+        if not line:
+            continue
+        row = [_pg_unescape(field) for field in line.split("\t")]
+        if (len(row) != 3 or not row[0] or row[1] not in ("0", "1")
+                or (row[1] == "1") != bool(_REGISTER_SHA256_RE.fullmatch(row[2] or ""))
+                or (row[1] == "0" and row[2] != "-")):
+            return None
+        rows.append(row)
+    return int(lines[0]), rows
+
+
+def _register_lookup_try(store: PostgresStore, ident: dict,
+                         not_after: int) -> tuple[str, tuple | None, PsqlFailed | None,
+                                                  RegisterError | None]:
+    """One try of the lookup: (how it ended, the answer, the failure, the
+    refusal). It ended:
+
+    - `found` or `absent`: `find_write` answered;
+    - `refused`: `psql`'s exit 3 with a SQLSTATE that is an answer (LR007,
+      LR011, any other but 55P03);
+    - `again`: with no answer, so it is tried again while a new try can start
+      inside the window (Y:5250): a failed connect or a lost connection (exit
+      2), the timer `T_L`, a 55P03, and every other end that names no
+      SQLSTATE - exit 1, a signal, an exit 3 with none, or an answer that
+      cannot be read;
+    - `unsent`: never handed to a `psql` that could take it - none on PATH,
+      or one too old - which no later try would change."""
+    try:
+        out = store.request(register_lookup_request(store.schema, ident, not_after), "lookup")
+    except PsqlFailed as failure:
+        if not failure.ran and not failure.timer_expired:
+            return "unsent", None, failure, None
+        err = register_definitive_error(failure)
+        if err is None or err.sqlstate in REGISTER_LOOKUP_RETRIED:
+            return "again", None, failure, err
+        return "refused", None, failure, err
+    except StoreUnusable as exc:
+        return "unsent", None, PsqlFailed(exc.kind, exc.detail, ran=False), None
+    answer = register_lookup_answer(out)
+    if answer is None:
+        shown = re.sub(r"[^\x20-\x7e]", "?", out.strip())[:80]
+        return "again", None, PsqlFailed(
+            "unreadable", f"the answer was {shown!r}, not a seq with its file rows",
+            psql_exit=0), None
+    return ("absent" if answer[0] is None else "found"), answer, None, None
+
+
+def _register_lookup_end(ident: dict, kind: str, answer: tuple | None,
+                         failure: PsqlFailed | None, err: RegisterError | None,
+                         tries: int) -> int:
+    """What the lookup's last try prints, and its code (contract §3.4's exits;
+    §2.6's stderr): found and absent on stdout, 0; LR007's `ERROR:` and
+    `DETAIL:` lines, 2; and 3, the pending record kept, for LR011, any other
+    SQLSTATE, a call never sent, and no try that took the lock."""
+    write = ident["write_id"]
+    kept = (f"write {write} stays in doubt: keep its pending record, and look it up again "
+            f"under the same id")
+    if kind == "found":
+        seq, rows = answer
+        say(f"found {seq}")
+        for row in rows:
+            say("file=" + "\t".join(row))
+        return EXIT_OK
+    if kind == "absent":
+        say("absent")
+        return EXIT_OK
+    if kind == "refused":
+        code = REGISTER_LOOKUP_EXITS.get(err.sqlstate, EXIT_IN_DOUBT)
+        register_say_error(err)
+        if code == EXIT_REFUSED:
+            note(f"journal: write {write} is refused by the register ({err.sqlstate}"
+                 + (f" {err.detail}" if err.detail else "") + "): under this id it cannot "
+                 "commit in this database; check the mirror for it")
+        elif err.sqlstate == "LR011":
+            note(f"journal: the lookup of write {write} was too early (LR011), so it proves "
+                 f"nothing: {kept}")
+        else:
+            note(f"journal: the lookup of write {write} was refused with {err.sqlstate}, "
+                 f"which settles nothing: {kept}")
+        return code
+    if kind == "unsent":
+        note(f"journal: the lookup of write {write} {register_psql_end(failure)}: {kept}")
+        return EXIT_IN_DOUBT
+    note(_REGISTER_LOOKUP_NO_LOCK)
+    note(f"journal: write {write}: {tries} {'try' if tries == 1 else 'tries'}, the last of "
+         f"which {register_psql_end(failure)}" + (f" ({err.sqlstate})" if err else "")
+         + f"; {kept}")
+    return EXIT_IN_DOUBT
+
+
+def _register_journal_lookup(values: dict, started: float) -> int:
+    """`journal --write-id …` (contract §3.4; Y:5235-5255): the client's own
+    wait, then `find_write`'s tries inside the window.
+
+    A refused configuration is 3, the pending record kept, R09's TLS refusal
+    included, since the lookup proved nothing (CO-3); Q6(c)'s refusal of
+    `mode=primary` alone is 2, as on every command (Y:2452)."""
+    ident = {"write_id": _register_lower(values["--write-id"]),
+             "generation": _register_lower(values["--generation"]),
+             "lane": values["--lane"], "verb": values["--verb"],
+             "args_sha256": values["--args-sha256"]}
+    not_after = int(values["--not-after"])
+    try:
+        cfg = load_config()
+        store = PostgresStore(cfg, "register_writer")
+    except PrimaryNotBuilt as exc:
+        note(f"REFUSED: {exc}")
+        return EXIT_REFUSED
+    except Refusal as exc:
+        note(f"REFUSED: {exc}")
+        note(f"journal: nothing was looked up, so write {ident['write_id']} stays in doubt: "
+             f"keep its pending record")
+        return EXIT_IN_DOUBT
+    # 1. THE CLIENT WAITS FIRST, on its own estimate of the database's clock:
+    # `--clock` + `--clock-age` + the seconds since this command started, on
+    # the monotonic clock. It calls once that puts `<n>` at most 2 s ahead
+    # (Y:5236). The estimate only lags the database, so the wait only grows,
+    # and an early estimate costs at most LR011 (lane 4's answer 36). The wait
+    # is at most `C` + 2 s (contract §3.4), so a clock far behind `<n>` ends
+    # in LR011's 3, never in a wait with no end. With no clock, it calls at
+    # once.
+    if "--clock" in values:
+        ahead = (not_after - REGISTER_LOOKUP_AHEAD_S - int(values["--clock"])
+                 - int(values["--clock-age"]))
+        _register_sleep_until(started + min(max(ahead, 0), store.bounds("commit")[1] + 2))
+    # 2. THE WINDOW opens where that wait ends (Y:5247), and closes 10 s on.
+    # A try that ends with no answer is made again: at least 1 s after the
+    # last one STARTED, never before it ENDED, and only where that is still
+    # inside the window, its 10 s mark included (lane 4's answer 40).
+    opened = time.monotonic()
+    closes = opened + REGISTER_LOOKUP_WINDOW_S
+    start, tries = opened, 0
+    while True:
+        _register_sleep_until(start)
+        began = time.monotonic()
+        tries += 1
+        kind, answer, failure, err = _register_lookup_try(store, ident, not_after)
+        ended = time.monotonic()
+        if kind != "again":
+            break
+        start = max(began + REGISTER_LOOKUP_SPACING_S, ended)
+        if start > closes:
+            break
+    return _register_lookup_end(ident, kind, answer, failure, err, tries)
+
+
+def _register_read_failed(what: str, failure: StoreUnusable) -> int:
+    """A failed read of `journal --since` or `--last`: 69 (contract §2.7),
+    with the database's `ERROR:` and `DETAIL:` lines first where it refused
+    (§2.6)."""
+    if isinstance(failure, PsqlFailed):
+        register_say_error(register_definitive_error(failure))
+        note(f"{what}: the read {register_psql_end(failure)}; nothing is answered")
+    else:
+        note(f"{what}: {failure.kind}: {failure.detail}; nothing is answered")
+    return EXIT_UNAVAILABLE
+
+
+def _register_one(rows: list, what: str) -> str:
+    """The one value of a one-row, one-column answer, or `StoreUnusable`."""
+    if len(rows) != 1 or len(rows[0]) != 1 or rows[0][0] is None:
+        raise StoreUnusable("unreadable", f"the answer holds no one {what}")
+    return rows[0][0]
+
+
+def _register_bool(value) -> bool | None:
+    """A boolean as COPY's text form writes it: `t`, `f`, or NULL."""
+    if value is None:
+        return None
+    if value not in ("t", "f"):
+        raise ValueError(f"{value!r} is not a boolean")
+    return value == "t"
+
+
+def register_since_queries(since: int) -> list[str]:
+    """`journal --since <m>`'s reads, in one snapshot (contract §3.6): the
+    generation, the head, then every entry above `m` with its edits and its
+    files, in seq order."""
+    return ["SELECT generation FROM register_switch WHERE id = 1",
+            "SELECT seq FROM register_head WHERE id = 1",
+            "SELECT seq, extract(epoch FROM utc)::bigint, author, operator, message "
+            f"FROM journal WHERE seq > {since} ORDER BY seq",
+            "SELECT seq, ord, op, path, line_no, old_sha256, new_text, to_path "
+            f"FROM journal_edits WHERE seq > {since} ORDER BY seq, ord",
+            "SELECT seq, path, CASE WHEN present THEN '1' ELSE '0' END, coalesce(sha256, '-') "
+            f"FROM journal_files WHERE seq > {since} ORDER BY seq, path"]
+
+
+def register_since_lines(answers: list) -> list[str]:
+    """`journal --since`'s stdout (contract §3.6): `format=1`, `generation=`,
+    `n=`, then one `entry=<JSON>` line per entry, compact and pure ASCII, with
+    the keys `seq`, `utc` (epoch seconds), `author`, `operator`, `message`,
+    `edits` (`journal_edits`' rows, Y:1598's shape) and `files` (`[path,
+    present, sha256]`, §3.2's canonical values: `1` or `0`, and `-` where the
+    path is not present). `StoreUnusable` where an answer cannot be read."""
+    if len(answers) != 5:
+        raise StoreUnusable("unreadable", f"{len(answers)} answers, not 5")
+    generations, heads, entries, edit_rows, file_rows = answers
+    generation = _register_one(generations, "generation")
+    if not _REGISTER_UUID_RE.fullmatch(generation):
+        raise StoreUnusable("unreadable", "the switch's generation is not a uuid")
+    try:
+        head = int(_register_one(heads, "head"))
+        edits: dict = {}
+        for row in edit_rows:
+            seq, ordinal, op, path, line_no, old_sha256, new_text, to_path = row
+            edits.setdefault(int(seq), []).append(
+                {"ord": int(ordinal), "op": op, "path": path,
+                 "line_no": None if line_no is None else int(line_no),
+                 "old_sha256": old_sha256, "new_text": new_text, "to_path": to_path})
+        files: dict = {}
+        for row in file_rows:
+            seq, path, present, sha256 = row
+            files.setdefault(int(seq), []).append([path, present, sha256])
+        lines = ["format=1", f"generation={generation}", f"n={head}"]
+        for row in entries:
+            seq, utc, author, operator, message = row
+            entry = {"seq": int(seq), "utc": int(utc), "author": author,
+                     "operator": _register_bool(operator), "message": message,
+                     "edits": edits.get(int(seq), []), "files": files.get(int(seq), [])}
+            lines.append("entry=" + json.dumps(entry, ensure_ascii=True,
+                                               separators=(",", ":")))
+    except (ValueError, TypeError) as exc:
+        raise StoreUnusable("unreadable", f"a row cannot be read ({exc})")
+    return lines
+
+
+def _register_journal_since(since: int) -> int:
+    """`journal --since <m>` (contract §3.6): one REPEATABLE READ READ ONLY
+    snapshot, as REGISTER-WRITER, the renderer's role (Y:3459), with D9's
+    renderer row. Exits 0; 69 for a failed read; 2 for a refused
+    configuration, Q6(c)'s included (Y:2452)."""
+    try:
+        cfg = load_config()
+        store = PostgresStore(cfg, "register_writer")
+    except Refusal as exc:
+        note(f"REFUSED: {exc}")
+        return EXIT_REFUSED
+    try:
+        lines = register_since_lines(
+            store._query_many(register_since_queries(since), snapshot=True, row="render"))
+    except StoreUnusable as failure:
+        return _register_read_failed("journal --since", failure)
+    for line in lines:
+        say(line)
+    return EXIT_OK
+
+
+def register_last_queries(path: str, at: int | None) -> list[str]:
+    """`journal --last`'s reads, in one snapshot (contract §3.6): the head;
+    the generation; the import entries' seqs; and the edits and the
+    `journal_files` rows of `path` and of every path whose history reaches it
+    by renames (`src`), at or below `--at`'s `n` where it is given.
+
+    `src`'s first row carries `COLLATE "C"`, the collation of
+    `journal_edits.path`, which a recursive query's two halves must share."""
+    bound = "" if at is None else f" AND e.seq <= {at}"
+    src = (f"WITH RECURSIVE src(p) AS (SELECT CAST({_pg_quote(path)} AS text) COLLATE \"C\" "
+           "UNION SELECT e.path FROM journal_edits e JOIN src ON e.to_path = src.p "
+           f"WHERE e.op = 'rename'{bound}) ")
+    return ["SELECT seq FROM register_head WHERE id = 1",
+            "SELECT generation FROM register_switch WHERE id = 1",
+            "SELECT seq FROM journal WHERE kind = 'import'"
+            + ("" if at is None else f" AND seq <= {at}") + " ORDER BY seq",
+            src + "SELECT e.seq, e.ord, e.op, e.path, e.line_no, e.old_sha256, e.new_text, "
+            f"e.to_path FROM journal_edits e WHERE e.path IN (SELECT p FROM src){bound} "
+            "ORDER BY e.seq, e.ord",
+            src + "SELECT f.seq, f.path, f.present, f.sha256, f.final_newline FROM journal_files f "
+            "WHERE f.path IN (SELECT p FROM src)"
+            + ("" if at is None else f" AND f.seq <= {at}") + " ORDER BY f.seq, f.path"]
+
+
+def register_last_rows(answers: list) -> tuple:
+    """`journal --last`'s answers, read: (the head, the generation, the
+    import seqs, the edits as (seq, ord, op, path, line_no, old_sha256,
+    new_text, to_path), the files as (seq, path, present, sha256,
+    final_newline)). `StoreUnusable` where one cannot be read."""
+    if len(answers) != 5:
+        raise StoreUnusable("unreadable", f"{len(answers)} answers, not 5")
+    heads, generations, import_rows, edit_rows, file_rows = answers
+    generation = _register_one(generations, "generation")
+    if not _REGISTER_UUID_RE.fullmatch(generation):
+        raise StoreUnusable("unreadable", "the switch's generation is not a uuid")
+    try:
+        head = int(_register_one(heads, "head"))
+        imports = [int(row[0]) for row in import_rows]
+        edits = []
+        for row in edit_rows:
+            seq, ordinal, op, path, line_no, old_sha256, new_text, to_path = row
+            edits.append((int(seq), int(ordinal), op, path,
+                          None if line_no is None else int(line_no), old_sha256, new_text,
+                          to_path))
+        files = []
+        for row in file_rows:
+            seq, path, present, sha256, final_newline = row
+            files.append((int(seq), path, _register_bool(present), sha256,
+                          _register_bool(final_newline)))
+    except (ValueError, TypeError, IndexError) as exc:
+        raise StoreUnusable("unreadable", f"a row cannot be read ({exc})")
+    return head, generation, imports, edits, files
+
+
+class RegisterReplayError(Exception):
+    """The journal's edits of a path do not replay: an edit that cannot apply
+    to the image the edits before it left, a line whose text is not the
+    edit's `old_sha256`, or an image whose digest is not its `journal_files`
+    row's. `journal --last` then answers nothing (69), never a wrong rank."""
+
+
+def _register_image(state: list) -> bytes:
+    """A replayed file's bytes, as `render_file` renders it: its lines joined
+    by LF, and one LF more where `final_newline` holds and it has a line."""
+    lines, final_newline = state[0], state[1]
+    return ("\n".join(lines) + ("\n" if final_newline and lines else "")).encode(
+        "utf-8", "surrogateescape")
+
+
+def _register_replay_edit(state: dict, edit: tuple, hits) -> None:
+    """Apply one `journal_edits` row to the replayed files, as
+    `commit_write`'s step 6 applies it. Each file is [its lines, its
+    final_newline, the key's count in it]; `hits` counts the key in a line."""
+    seq, ordinal, op, path, line_no, old_sha256, new_text, to_path = edit
+    where = f"seq {seq} edit {ordinal} ({op} {path})"
+    image = state.get(path)
+    if op == "create":
+        if image is not None:
+            raise RegisterReplayError(f"{where}: the file exists")
+        state[path] = [[], True, 0]
+        return
+    if image is None:
+        raise RegisterReplayError(f"{where}: the file does not exist")
+    lines = image[0]
+    if op == "append":
+        if new_text is None or (line_no is not None and line_no != len(lines) + 1):
+            raise RegisterReplayError(f"{where}: not an append at line {len(lines) + 1}")
+        lines.append(new_text)
+        image[2] += hits(new_text)
+    elif op in ("replace", "delete"):
+        if line_no is None or not 1 <= line_no <= len(lines):
+            raise RegisterReplayError(f"{where}: there is no line {line_no}")
+        old = lines[line_no - 1]
+        if hashlib.sha256(old.encode("utf-8", "surrogateescape")).hexdigest() != old_sha256:
+            raise RegisterReplayError(f"{where}: line {line_no} is not its old_sha256")
+        image[2] -= hits(old)
+        if op == "delete":
+            del lines[line_no - 1]
+        elif new_text is None:
+            raise RegisterReplayError(f"{where}: a replace with no new text")
+        else:
+            lines[line_no - 1] = new_text
+            image[2] += hits(new_text)
+    elif op == "rename":
+        # The file moves whole. Its new path may be one this replay does not
+        # follow, whose own edits it was not sent, so whatever it held there
+        # is overwritten: only `src`'s paths are replayed exactly.
+        if not to_path:
+            raise RegisterReplayError(f"{where}: a rename with no to_path")
+        state[to_path] = state.pop(path)
+    elif op == "remove":
+        del state[path]
+    else:
+        raise RegisterReplayError(f"{where}: an op this replay does not know")
+
+
+def register_pickaxe(path: str, key: str, edits: list, files: list,
+                     imports: list) -> int | None:
+    """`journal --last`'s match (C7): the newest entry whose edits change the
+    number of times `key` occurs, AS A FIXED STRING, in `path`, or None where
+    no entry does. `key` is never a regex.
+
+    That is git's `-S` pickaxe as `swapped_lanes`' rank reads it
+    (`code/lanes-edit.sh:9087`, pin 2a057a6d): the count is taken in the
+    file's bytes before and after each entry, non-overlapping from the left
+    as git's `contains()` counts, so an edit that keeps the count does not
+    match. A file an entry removes or renames away counts 0 after it, and one
+    it renames in counts what it brings, since git's pathspec sees no rename.
+
+    The images come from the journal alone: every imported line is a
+    `create` or `append` edit, so the journal renders any seq from the import
+    on (Y:5319; the kinds table's `import` row), and an import starts from no
+    files. `edits` and `files` are `journal_edits`' and `journal_files`' rows
+    of `path` and of every path whose history reaches it by renames, as
+    `register_last_rows` reads them; `imports` the import entries' seqs.
+    Every replace and delete is checked against its `old_sha256`, and
+    `path`'s image at the end against its last digest, so a replay that went
+    wrong raises `RegisterReplayError` and never gives a rank."""
+    needle = os.fsencode(key)
+    # A KEY ACROSS LINES is counted in the whole file; any other key's count
+    # is the sum of its lines', kept as each edit applies.
+    whole = b"\n" in needle
+
+    def hits(text: str) -> int:
+        return 0 if whole else text.encode("utf-8", "surrogateescape").count(needle)
+
+    def occurs(state: dict) -> int:
+        image = state.get(path)
+        if image is None:
+            return 0
+        return _register_image(image).count(needle) if whole else image[2]
+
+    edits_at: dict = {}
+    for edit in edits:
+        edits_at.setdefault(edit[0], []).append(edit)
+    files_at: dict = {}
+    for row in files:
+        files_at.setdefault(row[0], []).append(row)
+    marks = set(imports)
+    state: dict = {}
+    found = None
+    for seq in sorted(set(edits_at) | set(files_at) | marks):
+        before = occurs(state)
+        if seq in marks:
+            state.clear()
+        for edit in sorted(edits_at.get(seq, []), key=lambda e: e[1]):
+            _register_replay_edit(state, edit, hits)
+        for _seq, row_path, present, _sha256, final_newline in files_at.get(seq, []):
+            if present and final_newline is not None and row_path in state:
+                state[row_path][1] = final_newline
+        if occurs(state) != before:
+            found = seq
+    # THE PROOF: `path`'s image at the end is its last `journal_files` row's
+    # since the latest import, or absent where it has none.
+    floor = max(marks) if marks else None
+    last = None
+    for row in files:
+        if row[1] == path and (floor is None or row[0] >= floor) and (
+                last is None or row[0] >= last[0]):
+            last = row
+    image = state.get(path)
+    if last is None or not last[2]:
+        if image is not None:
+            raise RegisterReplayError(f"{path} is present after the replay, and its last "
+                                      f"journal_files row says it is not")
+    elif image is None or hashlib.sha256(_register_image(image)).hexdigest() != last[3]:
+        raise RegisterReplayError(f"{path} does not replay to its digest at seq {last[0]}")
+    return found
+
+
+def _register_journal_last(values: dict) -> int:
+    """`journal --last --path <p> --grep <key> [--at <n> --generation <g>]`
+    (contract §3.6; C7, C8): one REPEATABLE READ READ ONLY snapshot, as
+    READER, with D9's reader row. It prints `format=1`, `n=` - `--at`'s `n`,
+    or the journal's own head - and `seq=<k>` where an entry at or below `n`
+    matches (`register_pickaxe`); with none, no `seq=` line, and the caller
+    keeps 999999999. Under `--at`, a generation that differs, or an `n`
+    above the head, ends 69 (lane 5's NIT, #165 6741787745). Exits as
+    `journal --since`: 0, 69, 2 and 64."""
+    path, key = values["--path"], values["--grep"]
+    at = int(values["--at"]) if "--at" in values else None
+    try:
+        cfg = load_config()
+        store = PostgresStore(cfg, "register_reader")
+    except Refusal as exc:
+        note(f"REFUSED: {exc}")
+        return EXIT_REFUSED
+    try:
+        head, generation, imports, edits, files = register_last_rows(
+            store._query_many(register_last_queries(path, at), snapshot=True, row="read"))
+    except StoreUnusable as failure:
+        return _register_read_failed("journal --last", failure)
+    n = head
+    if at is not None:
+        wanted = _register_lower(values["--generation"])
+        if wanted != generation:
+            note(f"journal --last: --generation {wanted} is not the register's, {generation}: "
+                 f"its n= is another register generation's; nothing is answered")
+            return EXIT_UNAVAILABLE
+        if at > head:
+            note(f"journal --last: --at {at} is above the journal's head, {head}; nothing is "
+                 f"answered")
+            return EXIT_UNAVAILABLE
+        n = at
+    try:
+        seq = register_pickaxe(path, key, edits, files, imports)
+    except RegisterReplayError as exc:
+        note(f"journal --last: the journal does not replay {path}: {exc}; nothing is answered")
+        return EXIT_UNAVAILABLE
+    say("format=1")
+    say(f"n={n}")
+    if seq is not None:
+        say(f"seq={seq}")
+    return EXIT_OK
+
+
+def cmd_journal(args: list[str]) -> int:
+    """`lanes-index journal` (contract §3.4 and §3.6; FR-016; L1-A12): the
+    in-doubt lookup by write id, `--since`'s history and `--last`'s pickaxe.
+    The argv comes first, 64 before anything is read; then the form's own
+    configuration, store and reads. `started` is read before anything else,
+    so the lookup's estimate leaves out only the interpreter's own start: a
+    lag, which only lengthens the client's wait."""
+    started = time.monotonic()
+    try:
+        parsed = _register_journal_args(args)
+    except _RegisterUsage as exc:
+        note(str(exc))
+        for line in _REGISTER_JOURNAL_USAGE:
+            note(f"usage: {line}")
+        return EXIT_USAGE
+    if parsed is None:
+        say(USAGE)
+        return EXIT_OK
+    form, values = parsed
+    if form == "write-id":
+        return _register_journal_lookup(values, started)
+    if form == "since":
+        return _register_journal_since(int(values["--since"]))
+    return _register_journal_last(values)
+
+
 # ============================================================ local status
 
 def _status_path() -> str:
@@ -7882,6 +8582,8 @@ def main(argv: list[str]) -> int:
         return cmd_login(args)
     if verb == "register" and args[:1] == ["commit"]:
         return cmd_register_commit(args[1:])
+    if verb == "journal":
+        return cmd_journal(args)
     # A SUBCOMMAND THIS BUILD DOES NOT HAVE, one of 007's not built yet among
     # them, is usage before any argument is read: it does nothing and says so,
     # and the 64 is what F8 reads from a `lanes-index` too old to have a verb.
