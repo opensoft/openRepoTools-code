@@ -540,6 +540,19 @@
 #      by (`reg_scratch_take`); and, under the flag, a pathspec that differs
 #      from HEAD in the attempt's scratch tree before the verb has edited it,
 #      an internal error and never a capture (`reg_scratch_dirty`).
+#      AND FEATURE 007'S SEAM (T414; Y:5060, Y:5097; `cp_seam`), in an
+#      attempt's child under the flag, each an internal error refused before
+#      `ready`, so that reach sends nothing: a staged path outside the write's
+#      pathspecs (with `LOG_RENAMED_FROM`) or outside the register's render
+#      set; a status other than A, M or D; a second register write in one
+#      run, after the first's `committed`; no `seam.fifo`, or one that cannot
+#      be opened on fd 5, or no real stdout and stderr on fds 3 and 4; a file
+#      of the attempt's directory that cannot be written, or a `ready` there
+#      already; and `commit`'s publish act, which T420 keeps out of the
+#      attempt loop (ERR-06; R16). Likewise: a staged set that git cannot
+#      list, or lists in a form the seam cannot read; a blob id that is not
+#      40 hex digits; and a case-only rename that is not one D line and one A
+#      line.
 #  64  usage — a caller's bad arguments to one of the reads Amendment 11 added
 #      (`window-lane`, `lane-dir`, `lane-profile`, `last-session`, `forks`,
 #      `duplicate-holder` (issue #39), `workstation`, `fetch-age`, `lanes`,
@@ -679,11 +692,14 @@
 #      parent sent `abandon`, or its parent is gone, or the seam's cap passed
 #      with no answer (twice D + 30 s, 120 s at D7's 30 s; the variable
 #      LANES_REGISTER_SEAM_CAP_S sets it for tests), or the parent's line
-#      was neither `committed <seq>` nor `abandon`. `seam.out` then reads
-#      `none`, and but for `abandon` one line on the real stderr says
-#      "attempt <k> of write <id> stopped waiting at the seam (<why>);
-#      nothing after the seam ran". Only that child exits it, and only its
-#      parent, the primary write path (T415), reads it.
+#      was neither `committed <seq>` nor `abandon`, or `seam.out` could not
+#      be written as `tail`. `seam.out` then reads `none`, unless it could
+#      not be written at all, and but for `abandon` one line on the real
+#      stderr says "attempt <k> of write <id> stopped waiting at the seam
+#      (<why>); nothing after the seam ran". Only that child exits it. Its
+#      parent, the primary write path (T415), acts on `seam.out`, never on
+#      this code (Y:5007): `none` sends the run to a replay, and the code is
+#      never passed on.
 #
 # --no-sweep is accepted and changes nothing. It named the default of the
 #   capture that came in on 2026-09-09 after 0d84d34/a1f2438 swept another
@@ -3595,7 +3611,12 @@ EOF
 #      (Y:5059). The index is compared with HEAD whole, so a staged path that
 #      no pathspec names is refused below, never taken for nothing.
 #   2. A second register write in one run exits 2 (Y:5097, F21): one run, one
-#      journal entry. A no-op is no write, and still answers 0.
+#      journal entry. The scratch tree is not committed after `committed`, so
+#      the first write stays staged, and any later reach, a no-op included,
+#      finds it there and exits 2 (lane openRepoTools-3, #165 6755641373).
+#      Only an edit that put every staged path back as HEAD has it would be
+#      nothing staged, and answer 0 at 1; no verb makes one on primary
+#      (Y:5095).
 #   3. Every staged path is one of this write's pathspecs or
 #      `LOG_RENAMED_FROM`, and in Q18(A)'s render set, or 2 naming it with
 #      nothing sent (Y:5060); and its status is `A`, `M` or `D`, or 2.
@@ -3688,11 +3709,13 @@ cp_seam() {
   local cs_sts cs_ps cs_bs cs_ns
   cs_sts=(); cs_ps=(); cs_bs=(); cs_ns=()
   cs_tab="$(printf '\t')"
-  # `commit` IS REFUSED ON PRIMARY BEFORE ANY ATTEMPT (D10; Y:5073; T420), so
-  # its publish act never reaches an attempt's child, and nothing is ever
-  # pushed from a scratch tree.
+  # `commit`'S PUBLISH ACT IS AN INTERNAL ERROR HERE (ERR-06; R16). On primary
+  # only `commit`'s carry form is refused; its publish act runs outside the
+  # attempt loop, and T420 keeps it there. Were it to reach the seam, it would
+  # find nothing staged and answer 0, and `commit` would report a publish it
+  # never made; so it exits 2, and nothing is ever pushed from a scratch tree.
   [ "$CP_PUBLISH_AHEAD" != 1 ] ||
-    die "refusing \`commit\`'s publish act in an attempt's child under LANES_REGISTER_SCRATCH: on primary \`commit\` is refused before any attempt (D10), so this is an internal error. Nothing was sent." 2
+    die "refusing \`commit\`'s publish act in an attempt's child under LANES_REGISTER_SCRATCH: on primary that act runs outside the attempt loop (ERR-06), so this is an internal error. Nothing was sent." 2
   # ---- 1. NOTHING STAGED (Y:5059).
   cs_raw="$(git -C "$LANES_REPO" -c "$CP_EXACT" -c core.quotepath=false diff --cached --no-renames --raw --no-abbrev HEAD)" ||
     die "git could not list what this write stages in the attempt's scratch tree, ${LANES_REPO}, under LANES_REGISTER_SCRATCH: an internal error. Nothing was sent." 2
