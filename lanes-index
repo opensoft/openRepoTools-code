@@ -812,8 +812,9 @@ def cmd_mode(args: list[str]) -> int:
 #      check 10's words (ops:453);
 #   6. unless the FETCHED `origin/<branch>` holds a `lanes/STORE` that says
 #      `store=primary` and names, as `database=`, the label the switch and
-#      `register_label=` both give (D21). A fetch that fails refuses too: a
-#      ref not fetched proves nothing about origin.
+#      `register_label=` both give (D21; design.md D22, "`ready` and `set-mode`
+#      check that `lanes/STORE` names this database"). A fetch that fails
+#      refuses too: a ref not fetched proves nothing about origin.
 #
 # SETTING `index` refuses only on usage (ops:473; exit-codes.md:190), with one
 # ground added by lane 3's ruling 1 (opensoft/openRepoTools#165 6769217709): a
