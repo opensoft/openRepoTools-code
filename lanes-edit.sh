@@ -9065,10 +9065,25 @@ DHPLINE
           # reported the lane's own process tree as a duplicate pair: the lane
           # never got its 8, and `lane-end`'s refusal of that pair sent a
           # person to "the OTHER pid", its wrapper, which is the lane's too.
+          # BUT ONLY WHEN NO OTHER CHILD OF IT VERIFIED for this transcript:
+          # a wrapper over the lane's own session AND a second holder of the
+          # same transcript is a duplicate inside the lane's own tree, and
+          # dropping that pair answered 8, "no duplicate holder is live",
+          # while the second holder ran. No retire act can end it without
+          # ending the lane's own session through its wrapper, and this read
+          # cannot say it is not there, so it is a read that could not answer:
+          # 1, naming both pids.
           dhp_is_comp_host=0
           for dhp_c in $dhp_kids; do
             case "$dhp_comp" in *" $dhp_c "*) dhp_is_comp_host=1; break ;; esac
-            [ -n "$dhp_legit" ] && [ "$dhp_c" = "$dhp_legit" ] && { dhp_is_comp_host=1; break; }
+            if [ -n "$dhp_legit" ] && [ "$dhp_c" = "$dhp_legit" ]; then
+              for dhp_v in $dhp_verified; do
+                [ "$dhp_v" != "$dhp_legit" ] || continue
+                SESSION_FILES_ERR="pid $dhp_pid wraps lane $dhp_l's own live session (pid $dhp_legit) AND pid $dhp_v, which resumes the same transcript $dhp_id: a second holder inside the lane's own process tree, which no retire act can end without ending the lane's own session through its wrapper"
+                return 1
+              done
+              dhp_is_comp_host=1; break
+            fi
           done
           if [ "$dhp_is_comp_host" = 0 ]; then
             dhp_out="${dhp_out}${dhp_pid}${US}${dhp_child}${US}${dhp_id}

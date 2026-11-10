@@ -579,7 +579,11 @@ FAKE
 # `FAKE_PGREP_F_RC` and `FAKE_PGREP_P_RC` make `pgrep -f` and `pgrep -P` exit
 # with that status, saying so on stderr; `FAKE_PS_FAIL_PID` makes `ps -p` of
 # that one pid print its record AND exit 3, the "failed with output" shape that
-# is never the ordinary "it already exited". Unset, nothing changes.
+# is never the ordinary "it already exited". `FAKE_PS_FAIL_ARGS_PID` does the
+# same for that pid's `ps -o args=` read ALONE — the form the child check asks
+# a candidate's children with — and leaves its `ps -o pid=,ppid=,args=` read
+# answering, so a case can reach the child check rather than stop at the
+# candidate read before it. Unset, nothing changes.
 cat > "$SANDBOX/fakebin/pgrep" <<'FAKE'
 #!/usr/bin/env bash
 case "${1-}" in
@@ -602,6 +606,7 @@ cat > "$SANDBOX/fakebin/ps" <<'FAKE'
 # The supervised child is a real sandbox process. Its stat read must report
 # real zombie/active state; the older signature fixtures still use records.
 case "$*" in *"-o stat="*) exec /bin/ps "$@" ;; esac
+fake_argv=" $* "
 target=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -611,7 +616,13 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$target" ] || exit 1
 line="$(printf '%s\n' "${FAKE_PS_RECORDS:-}" | awk -F'\t' -v p="$target" '$1 == p { print; exit }')"
-if [ -n "${FAKE_PS_FAIL_PID:-}" ] && [ "$target" = "$FAKE_PS_FAIL_PID" ]; then
+fake_fail=0
+if [ -n "${FAKE_PS_FAIL_PID:-}" ] && [ "$target" = "$FAKE_PS_FAIL_PID" ]; then fake_fail=1; fi
+case "$fake_argv" in
+  *" -o args= "*)
+    if [ -n "${FAKE_PS_FAIL_ARGS_PID:-}" ] && [ "$target" = "$FAKE_PS_FAIL_ARGS_PID" ]; then fake_fail=1; fi ;;
+esac
+if [ "$fake_fail" = 1 ]; then
   [ -z "$line" ] || printf '%s\n' "$line" | awk -F'\t' '{printf "%s %s %s\n", $1, $2, $3}'
   printf 'ps: simulated failure\n' >&2
   exit 3
@@ -5562,7 +5573,10 @@ is   "…and exactly one row: the child is never read as a second parent" "$(pri
 # than misses: `pgrep -f` (the candidates), `pgrep -P` (a candidate's
 # children), and `ps -p` of the parent and of the child, each printing the
 # record and then exiting 3. Every one is 1 and names nothing, and
-# `lane-end --retire` over the first stops before any signal is sent.
+# `lane-end --retire` over the first stops before any signal is sent. The
+# child's case fails ONLY its `ps -o args=` read: `$DUP_CHILD` is a `pgrep -f`
+# candidate too, and failing every `ps` of it would stop at its own candidate
+# read first and never reach the child check this case is for.
 run env FAKE_PGREP_F_RC=3 FAKE_PGREP_F_PIDS="$FAKE_PGREP_F_M" FAKE_PS_RECORDS="$FAKE_PS_M" FAKE_PGREP_CHILDREN="$FAKE_PGREP_CHILDREN_M" \
   "$E" duplicate-holder repoM-1
 is    "a pgrep -f that FAILS (exit 3) is 1, never the 8 that means none is live" "$rc" 1
@@ -5576,7 +5590,7 @@ run env FAKE_PS_FAIL_PID="$DUP_PARENT" FAKE_PGREP_F_PIDS="$FAKE_PGREP_F_M" FAKE_
   "$E" duplicate-holder repoM-1
 is    "a ps -p that prints the PARENT's record and still fails is 1, never 'it already exited'" "$rc" 1
 is    "…and lists nothing" "$out" ""
-run env FAKE_PS_FAIL_PID="$DUP_CHILD" FAKE_PGREP_F_PIDS="$FAKE_PGREP_F_M" FAKE_PS_RECORDS="$FAKE_PS_M" FAKE_PGREP_CHILDREN="$FAKE_PGREP_CHILDREN_M" \
+run env FAKE_PS_FAIL_ARGS_PID="$DUP_CHILD" FAKE_PGREP_F_PIDS="$FAKE_PGREP_F_M" FAKE_PS_RECORDS="$FAKE_PS_M" FAKE_PGREP_CHILDREN="$FAKE_PGREP_CHILDREN_M" \
   "$E" duplicate-holder repoM-1
 is    "a ps -p that prints the CHILD's record and still fails is 1 as well" "$rc" 1
 is    "…and lists nothing" "$out" ""
@@ -5644,6 +5658,31 @@ is    "…and lane-end --retire on that wrapper finds nothing to retire: 8, neve
 hasnt "…never reporting a retirement" "$err" "RETIRED lane repoM-1's duplicate holder"
 is    "…and the wrapper and the lane's own session are both still running" \
       "$(kill -0 "$DUP_PARENT" 2>/dev/null && kill -0 "$LIVE_PID" 2>/dev/null && echo both-alive)" "both-alive"
+# …BUT A SECOND HOLDER UNDER THAT SAME WRAPPER IS NOT THE LANE'S (the review of
+# #111's first fix). `$DUP_PARENT` (W) now wraps BOTH `$LIVE_PID` (L, the
+# lane's own) and `$DUP_CHILD` (D), which resumes the same transcript.
+# Dropping the pair for L answered 8, "nothing of any kind is live", while D
+# ran; and W cannot be retired without ending L. The read cannot answer
+# this: 1, naming both, and `lane-end --retire` on D refuses with the
+# helper's own words and terms nothing.
+FAKE_PS_WLD="$(printf '%s\t%s\t%s\n%s\t%s\t%s\n%s\t%s\t%s' \
+  "$DUP_PARENT" 1             "claude --session-id $MLIVE_ID --fork-session --resume /nonexistent/projects/$MLIVE_ID.jsonl" \
+  "$LIVE_PID"   "$DUP_PARENT" "claude --session-id $MLIVE_ID --fork-session --resume /nonexistent/projects/$MLIVE_ID.jsonl" \
+  "$DUP_CHILD"  "$DUP_PARENT" "claude --session-id $MLIVE_ID --fork-session --resume /nonexistent/projects/$MLIVE_ID.jsonl")"
+FAKE_PGREP_F_WLD="$(printf '%s\n%s\n%s' "$LIVE_PID" "$DUP_PARENT" "$DUP_CHILD")"
+FAKE_PGREP_CHILDREN_WLD="$(printf '%s\t%s\n%s\t%s' "$LIVE_PID" "$DUP_PARENT" "$DUP_CHILD" "$DUP_PARENT")"
+run env FAKE_PGREP_F_PIDS="$FAKE_PGREP_F_WLD" FAKE_PS_RECORDS="$FAKE_PS_WLD" FAKE_PGREP_CHILDREN="$FAKE_PGREP_CHILDREN_WLD" \
+  "$E" duplicate-holder repoM-1
+is    "a wrapper over the lane's own pid AND a second holder of its transcript is 1, never the 8 that means none is live" "$rc" 1
+has   "…naming the wrapper, the lane's own pid and the second holder" "$err" "pid $DUP_PARENT wraps lane repoM-1's own live session (pid $LIVE_PID) AND pid $DUP_CHILD"
+is    "…and lists nothing" "$out" ""
+run env FAKE_PGREP_F_PIDS="$FAKE_PGREP_F_WLD" FAKE_PS_RECORDS="$FAKE_PS_WLD" FAKE_PGREP_CHILDREN="$FAKE_PGREP_CHILDREN_WLD" \
+  "$END" repoM-1 --retire "$DUP_CHILD"
+is    "…and lane-end --retire on the second holder is 1, never 'nothing of any kind is live'" "$rc" 1
+has   "…relaying the helper's own words" "$err" "wraps lane repoM-1's own live session (pid $LIVE_PID)"
+hasnt "…never 'nothing of any kind is live'" "$err" "nothing of any kind is live"
+is    "…and the wrapper, the lane's own session and the second holder are all still running" \
+      "$(kill -0 "$DUP_PARENT" 2>/dev/null && kill -0 "$LIVE_PID" 2>/dev/null && kill -0 "$DUP_CHILD" 2>/dev/null && echo all-alive)" "all-alive"
 
 # Copilot round 8, PR #61: being IN the global fork-session fence only proves
 # a child is SOME `--fork-session` process, not THIS parent's transcript's —

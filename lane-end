@@ -3126,9 +3126,13 @@ FORKS
   # is the old helper: it is said, marked (`dh_skipped`), and the act goes on
   # to the session-record read below, which is older and can still prove a
   # duplicate. Any other 2, and a 2 whose words could not be captured, is the
-  # failure it always was. A read that was skipped never ends as "nothing is
-  # live" (#110, at the foot of this act). `LE_TMP` is what `cleanup` removes
-  # on every way out.
+  # failure it always was, with the helper's own words relayed above it. A
+  # read that was skipped never ends as "nothing is live" (#110, at the foot of
+  # this act). `LE_TMP` is what `cleanup` removes on every way out.
+  # DEFENSIVE, AND SAID SO: no `lanes-edit.sh` that has shipped reaches the
+  # skip today. `seam_refuse` above asks `managed-projection` first, which
+  # came after `duplicate-holder` (and after `transcript-holders`), and it
+  # dies 1 on a helper that lacks it.
   dh_rc=8; dh_rows=""; dh_skipped=""
   if [ -z "$fk_sid" ]; then
     dh_rc=0
@@ -3144,7 +3148,8 @@ FORKS
       2:*"unknown subcommand 'duplicate-holder'"*)
         note "this \`lanes-edit.sh\` has no \`duplicate-holder\` (exit 2), so the process table cannot be searched here for a duplicate holder of lane $LANE's own transcript; the session records are still read. Install the one beside this script (\`openRepoTools --install\`)."
         dh_rc=8; dh_rows=""; dh_skipped=1 ;;
-      *) die "$LANES_EDIT duplicate-holder $LANE failed (exit $dh_rc). That is NOT 'no duplicate holder is live', and this script will not name an act against a process it could not prove is one. Run it by hand to see what it says, then re-run." 1 ;;
+      *) [ -z "$dh_err" ] || printf '%s\n' "$dh_err" >&2
+         die "$LANES_EDIT duplicate-holder $LANE failed (exit $dh_rc). That is NOT 'no duplicate holder is live', and this script will not name an act against a process it could not prove is one. Run it by hand to see what it says, then re-run." 1 ;;
     esac
   fi
 
