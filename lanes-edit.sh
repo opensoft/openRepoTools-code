@@ -673,6 +673,17 @@
 #      control root, or a directory above it, that this process cannot search
 #      — or a link on the way it cannot follow — leaves stat as silent as a
 #      name that is gone, and the message says so rather than "is there".
+#  75  EX_TEMPFAIL — FEATURE 007'S SEAM (T414; Y:5005–5006, Y:5013): an
+#      attempt's child, under LANES_REGISTER_SCRATCH, stopped at the seam and
+#      ran nothing after it, and its buffered output was not replayed. Its
+#      parent sent `abandon`, or its parent is gone, or the seam's cap passed
+#      with no answer (twice D + 30 s, 120 s at D7's 30 s; the variable
+#      LANES_REGISTER_SEAM_CAP_S sets it for tests), or the parent's line
+#      was neither `committed <seq>` nor `abandon`. `seam.out` then reads
+#      `none`, and but for `abandon` one line on the real stderr says
+#      "attempt <k> of write <id> stopped waiting at the seam (<why>);
+#      nothing after the seam ran". Only that child exits it, and only its
+#      parent, the primary write path (T415), reads it.
 #
 # --no-sweep is accepted and changes nothing. It named the default of the
 #   capture that came in on 2026-09-09 after 0d84d34/a1f2438 swept another
@@ -3416,6 +3427,14 @@ commit_publish() {
     [ -z "$cp_byte" ] || die "$(bytecode_refusal_text "$cp_byte")" 2
     git -C "$LANES_REPO" -c "$CP_EXACT" add -- ${cp_add[@]+"${cp_add[@]}"} || die "git add failed" 6
   fi
+  # FEATURE 007, T414 — UNDER THE INTERNAL FLAG THE PUBLISH HALF IS THE SEAM
+  # (D4; Y:5054–5062). Everything above, the content checks and the `git add`,
+  # stays (Y:5056); everything below, the commit, the push and the replay, is
+  # never reached by an attempt's child (`cp_seam`, below the function).
+  if [ -n "$REG_SCRATCH" ]; then
+    cp_seam
+    return $?
+  fi
   # NOTHING STAGED IS NOTHING TO PUSH — FOR EVERY WRITE BUT THE PUBLISH ACT.
   # A repeated `set-row-state` whose line is already there stays the no-op it
   # always was and reaches no network. S3 refuses every write over an
@@ -3561,6 +3580,275 @@ EOF
     die "the push of $cp_sha was refused with origin/$LANES_BRANCH unmoved, so this is no lost race and a replay would meet the same refusal; the commit is local and kept on HEAD: $cp_sha $msg" 6
   fi
   cp_replay "$cp_sha" "$msg"
+}
+
+# ================================================= FEATURE 007: THE SEAM ====
+#
+# `commit_publish`'s PRIMARY BRANCH (T414; D4; FR-019; Y:4998–5013 and
+# Y:5054–5097; lane openRepoTools-4's plan, §2.2 and §3.6). On primary each
+# attempt runs the verb as a CHILD of this file under `LANES_REGISTER_SCRATCH`
+# (T413), on a scratch tree at the snapshot's seq. The child stops HERE, after
+# the verb's edit and its `git add`, and hands the change set to its parent,
+# whose one `lanes-index register commit` call decides it (T415). In order:
+#
+#   1. Nothing staged is no change: 0 with no handshake, as files mode's no-op
+#      (Y:5059). The index is compared with HEAD whole, so a staged path that
+#      no pathspec names is refused below, never taken for nothing.
+#   2. A second register write in one run exits 2 (Y:5097, F21): one run, one
+#      journal entry. A no-op is no write, and still answers 0.
+#   3. Every staged path is one of this write's pathspecs or
+#      `LOG_RENAMED_FROM`, and in Q18(A)'s render set, or 2 naming it with
+#      nothing sent (Y:5060); and its status is `A`, `M` or `D`, or 2.
+#   4. The attempt's directory gets the files contract §3.3 reads:
+#      `changes.tsv`, from `git diff --cached --no-renames --raw --no-abbrev
+#      HEAD` (`--no-abbrev`, since Y:5061's form abbreviates the ids; a
+#      missing side is git's 40 zeros); `renames.tsv` where the verb made a
+#      case-only rename (O5); `images/<path>` from the index for every `A` and
+#      `M`; `msg`, `$msg` verbatim; and `files`, the canonical rows, whose
+#      sha256 is the `call` line's `<files>` (§3.2's one digest rule). Then
+#      `ready`, last.
+#   5. The handshake (Y:4999–5007). The parent made `seam.fifo`; it is opened
+#      read-write on fd 5 BEFORE `ready`, so the open cannot block and a line
+#      the parent writes once it sees `ready` is held in the pipe until it is
+#      read. Turns of `read -t 1 -u 5`; after a turn with no message the
+#      parent is tested with `pid_start_of` against `parent.pid`, whose 2 is
+#      live (R49), as is a shell with no such function yet (`wr_claim_live`'s
+#      `untested`); and the cap, `wr_seam_cap_s` (Y:5001).
+#   6. `committed <s>`: `seam.out` is `tail`, fds 1 and 2 go back to 3 and 4,
+#      the buffered `out.1` and then `out.2` are replayed, `REGISTER_SEQ` is
+#      set, lane 5's `reg_flush` (T505) drops the read family, and 0 is
+#      returned, so the verb's code after the seam runs once, after COMMIT
+#      (Y:5011).
+#   7. `abandon`: `seam.out` is `none`, and the child exits 75 without its
+#      tail, its buffered output discarded (Y:5013). The parent gone, the cap
+#      passed, or a line that is neither message: `none`, Y:5006's one line on
+#      fd 4, and 75 without the tail (`cp_seam_stop`).
+#
+# The parent's part, the loop, `mkfifo` and the child's start with its real
+# stdout and stderr on fds 3 and 4 and its own on `out.1` and `out.2`, is
+# T415's. `rename-lane`'s handoff commit is the parent's, after `committed`
+# and outside the flag (R18), so it never reaches this seam.
+#
+# THE SEQ THIS RUN'S ONE WRITE COMMITTED AT, set only by the seam on
+# `committed` and never from the environment: `claim`'s and `rename-lane`'s
+# `register seq` lines read it (Q19(A)), and a second reach is refused by it.
+REGISTER_SEQ=""
+# Q18(A)'s render set, as the schema's `journal_edits` check spells it
+# (Y:1145–1146): `lanes/LANES.md`, `lanes/aliases.tsv`, and one level of
+# `lanes/archive/<name>.md` and `lanes/log/<name>.md`, but never
+# `lanes/log/README.md`. `lanes/STORE`, `lanes/repos.tsv` and the handoffs are
+# outside it (Y:5050). 0 in it, 1 not.
+cp_seam_render_path() {   # <path, relative to the scratch tree>
+  case "${1-}" in
+    lanes/log/README.md) return 1 ;;
+    lanes/LANES.md|lanes/aliases.tsv) return 0 ;;
+    lanes/archive/*/*|lanes/log/*/*) return 1 ;;
+    lanes/archive/?*.md|lanes/log/?*.md) return 0 ;;
+  esac
+  return 1
+}
+# Forty lower-case hex digits: a blob id as `--no-abbrev` prints it.
+cp_seam_is_hex40() {   # <value>
+  case "${1-}" in ''|*[!0123456789abcdef]*) return 1 ;; esac
+  [ "${#1}" -eq 40 ]
+}
+# `seam.out`, ONCE AND UNDER NOCLOBBER (Y:5005), in a subshell so that the
+# verb's tail never runs under `set -C`. 1 where it is there already or cannot
+# be made.
+cp_seam_out() {   # tail | none
+  ( set -C; printf '%s\n' "$1" > "$REG_SCRATCH/seam.out" ) 2>/dev/null
+}
+# A FILE OF THE ATTEMPT'S DIRECTORY THAT COULD NOT BE WRITTEN, before `ready`:
+# no commit call can be made from it, so it is an internal error, 2.
+cp_seam_unwritable() {   # <what>
+  die "could not write $1 in this attempt's directory, ${REG_SCRATCH}, under LANES_REGISTER_SCRATCH, so its change set cannot be handed to its parent: an internal error. Nothing was sent." 2
+}
+# THE CHILD STOPS WAITING (Y:5006): `seam.out` is `none`, one line goes to the
+# real stderr on fd 4, and the child exits 75 with nothing after the seam run
+# and its buffered output left unreplayed. `<id>` is the snapshot's
+# `write_id=` (contract §3.2), the one place the directory names it.
+cp_seam_stop() {   # <why>
+  local css_l="" css_id=""
+  cp_seam_out none || :
+  if [ -f "$REG_SCRATCH/snapshot" ] && [ -r "$REG_SCRATCH/snapshot" ]; then
+    while IFS= read -r css_l || [ -n "$css_l" ]; do
+      case "$css_l" in write_id=*) css_id="${css_l#write_id=}"; break ;; esac
+      css_l=""
+    done 2>/dev/null < "$REG_SCRATCH/snapshot"
+  fi
+  printf 'lanes-edit: attempt %s of write %s stopped waiting at the seam (%s); nothing after the seam ran\n' \
+    "${REG_SCRATCH##*/}" "${css_id:-unknown}" "$1" 2>/dev/null >&4 || :
+  exit 75
+}
+cp_seam() {
+  local cs_tab="" cs_raw="" cs_l="" cs_meta="" cs_p="" cs_q="" cs_sm="" cs_dm="" cs_b="" cs_n="" \
+        cs_st="" cs_x="" cs_i=0 cs_known=0 cs_extra="" cs_out="" cs_bad="" cs_ren="${LOG_RENAMED_FROM:-}" \
+        cs_to="" cs_ton=0 cs_fromd=0 cs_tsv="" cs_rows="" cs_img="" cs_h="" cs_d="$REG_SCRATCH" \
+        cs_pl="" cs_ptok="" cs_tok="" cs_prc=0 cs_cap="" cs_t0=0 cs_msg="" cs_s=""
+  local cs_sts cs_ps cs_bs cs_ns
+  cs_sts=(); cs_ps=(); cs_bs=(); cs_ns=()
+  cs_tab="$(printf '\t')"
+  # `commit` IS REFUSED ON PRIMARY BEFORE ANY ATTEMPT (D10; Y:5073; T420), so
+  # its publish act never reaches an attempt's child, and nothing is ever
+  # pushed from a scratch tree.
+  [ "$CP_PUBLISH_AHEAD" != 1 ] ||
+    die "refusing \`commit\`'s publish act in an attempt's child under LANES_REGISTER_SCRATCH: on primary \`commit\` is refused before any attempt (D10), so this is an internal error. Nothing was sent." 2
+  # ---- 1. NOTHING STAGED (Y:5059).
+  cs_raw="$(git -C "$LANES_REPO" -c "$CP_EXACT" -c core.quotepath=false diff --cached --no-renames --raw --no-abbrev HEAD)" ||
+    die "git could not list what this write stages in the attempt's scratch tree, ${LANES_REPO}, under LANES_REGISTER_SCRATCH: an internal error. Nothing was sent." 2
+  if [ -z "$cs_raw" ]; then
+    note "nothing staged for ${CP_PATHS[*]} — no commit made"
+    return 0
+  fi
+  # ---- 2. ONE RUN, ONE ENTRY (Y:5097).
+  [ -z "$REGISTER_SEQ" ] ||
+    die "a second register write in one run; the first committed at seq ${REGISTER_SEQ}; nothing more was sent." 2
+  # ---- 3. THE PATHS AND THEIR STATUS (Y:5060). `core.quotepath=false` leaves
+  # a path as it is unless it holds a control character, a quote or a
+  # backslash; git then quotes it, and the quoted form is in no render set.
+  while IFS= read -r cs_l; do
+    [ -n "$cs_l" ] || continue
+    cs_meta="${cs_l%%"$cs_tab"*}"; cs_p="${cs_l#*"$cs_tab"}"
+    cs_sm=""; cs_dm=""; cs_b=""; cs_n=""; cs_st=""; cs_x=""
+    IFS=' ' read -r cs_sm cs_dm cs_b cs_n cs_st cs_x <<<"$cs_meta" || :
+    case "$cs_l" in
+      :*"$cs_tab"?*) [ -n "$cs_st" ] && [ -z "$cs_x" ] ;;
+      *) false ;;
+    esac || die "git listed a line this seam cannot read, $(printf '%q' "$cs_l"), in the attempt's scratch tree under LANES_REGISTER_SCRATCH: an internal error. Nothing was sent." 2
+    cs_sts+=("$cs_st"); cs_ps+=("$cs_p"); cs_bs+=("$cs_b"); cs_ns+=("$cs_n")
+  done <<CS_EOF
+$cs_raw
+CS_EOF
+  for cs_p in ${cs_ps[@]+"${cs_ps[@]}"}; do
+    cs_known=0
+    for cs_q in ${CP_PATHS[@]+"${CP_PATHS[@]}"} ${cs_ren:+"$cs_ren"}; do
+      if [ "$cs_p" = "$cs_q" ]; then cs_known=1; fi
+    done
+    [ "$cs_known" = 1 ] || cs_extra="$cs_extra $cs_p"
+    cp_seam_render_path "$cs_p" || cs_out="$cs_out $cs_p"
+  done
+  if [ -n "$cs_extra" ] || [ -n "$cs_out" ]; then
+    cs_x=""
+    [ -z "$cs_extra" ] || cs_x="it stages${cs_extra}, which this write's pathspecs (${CP_PATHS[*]}${cs_ren:+ and }${cs_ren}) do not name"
+    [ -z "$cs_out" ] || cs_x="${cs_x}${cs_x:+; and }it stages${cs_out}, outside the register's render set (lanes/LANES.md, lanes/log/<lane>.md but for lanes/log/README.md, lanes/aliases.tsv and lanes/archive/<name>.md)"
+    die "refusing to send this write from the attempt's scratch tree under LANES_REGISTER_SCRATCH: ${cs_x}. It is an internal error, never a commit (Y:5060). Nothing was sent." 2
+  fi
+  cs_i=0
+  while [ "$cs_i" -lt "${#cs_ps[@]}" ]; do
+    case "${cs_sts[$cs_i]}" in
+      A|M|D)
+        if ! cp_seam_is_hex40 "${cs_bs[$cs_i]}" || ! cp_seam_is_hex40 "${cs_ns[$cs_i]}"; then
+          cs_bad="$cs_bad ${cs_ps[$cs_i]} (blob ids ${cs_bs[$cs_i]} and ${cs_ns[$cs_i]})"
+        fi ;;
+      *) cs_bad="$cs_bad ${cs_ps[$cs_i]} (status ${cs_sts[$cs_i]})" ;;
+    esac
+    cs_i=$((cs_i + 1))
+  done
+  [ -z "$cs_bad" ] ||
+    die "refusing to send this write from the attempt's scratch tree under LANES_REGISTER_SCRATCH: it stages${cs_bad}, and changes.tsv carries only A, M or D with two 40-hex blob ids (contract §3.3). It is an internal error, never a commit. Nothing was sent." 2
+  # THE CASE-ONLY RENAME (Amendment 15; O5): the old path's D line and its one
+  # new spelling's A line, which `renames.tsv` pairs.
+  if [ -n "$cs_ren" ]; then
+    cs_i=0
+    while [ "$cs_i" -lt "${#cs_ps[@]}" ]; do
+      cs_p="${cs_ps[$cs_i]}"
+      if [ "$cs_p" = "$cs_ren" ]; then
+        [ "${cs_sts[$cs_i]}" != D ] || cs_fromd=1
+      elif [ "${cs_sts[$cs_i]}" = A ] && [ "$(lc "$cs_p")" = "$(lc "$cs_ren")" ]; then
+        cs_to="$cs_p"; cs_ton=$((cs_ton + 1))
+      fi
+      cs_i=$((cs_i + 1))
+    done
+    if [ "$cs_fromd" != 1 ] || [ "$cs_ton" != 1 ]; then
+      die "refusing to send this write's case-only rename of ${cs_ren} from the attempt's scratch tree under LANES_REGISTER_SCRATCH: renames.tsv pairs that path's D line with one A line of its new spelling (contract §3.3, O5), and the index does not hold exactly that pair. It is an internal error, never a commit. Nothing was sent." 2
+    fi
+  fi
+  # ---- 4. THE FILES, THEN `ready`. The FIFO and the real fds are asked for
+  # first, so that a child its parent did not start for the handshake writes
+  # no `ready` at all.
+  [ -p "$cs_d/seam.fifo" ] ||
+    die "refusing to wait at the seam: this attempt's directory, ${cs_d}, holds no seam.fifo, the FIFO its parent makes for the handshake (Y:4999), under LANES_REGISTER_SCRATCH: an internal error. Nothing was sent." 2
+  if ! { : >&3; } 2>/dev/null || ! { : >&4; } 2>/dev/null; then
+    die "refusing to wait at the seam: this attempt's child has no real stdout and stderr on fds 3 and 4 (Y:4998), so nothing it buffered could be replayed, under LANES_REGISTER_SCRATCH: an internal error. Nothing was sent." 2
+  fi
+  cs_i=0
+  while [ "$cs_i" -lt "${#cs_ps[@]}" ]; do
+    cs_p="${cs_ps[$cs_i]}"; cs_st="${cs_sts[$cs_i]}"; cs_n="${cs_ns[$cs_i]}"
+    cs_tsv="${cs_tsv}${cs_st}${cs_tab}${cs_p}${cs_tab}${cs_bs[$cs_i]}${cs_tab}${cs_n}${WR_NL}"
+    if [ "$cs_st" = D ]; then
+      cs_rows="${cs_rows}${cs_p}${cs_tab}0${cs_tab}-${WR_NL}"
+    else
+      cs_img="$cs_d/images/$cs_p"
+      mkdir -p -- "${cs_img%/*}" 2>/dev/null || cp_seam_unwritable "images/${cs_p%/*}/"
+      git -C "$LANES_REPO" cat-file blob "$cs_n" > "$cs_img" || cp_seam_unwritable "images/${cs_p}"
+      cs_h="$(wr_sha256_stdin < "$cs_img")" || cp_seam_unwritable "the sha256 of images/${cs_p}"
+      cs_rows="${cs_rows}${cs_p}${cs_tab}1${cs_tab}${cs_h}${WR_NL}"
+    fi
+    cs_i=$((cs_i + 1))
+  done
+  printf '%s' "$cs_tsv" > "$cs_d/changes.tsv" || cp_seam_unwritable changes.tsv
+  if [ -n "$cs_ren" ]; then
+    printf '%s\t%s\n' "$cs_ren" "$cs_to" > "$cs_d/renames.tsv" || cp_seam_unwritable renames.tsv
+  fi
+  printf '%s' "$msg" > "$cs_d/msg" || cp_seam_unwritable msg
+  # Every path is free of control characters (above), so a whole-row sort is
+  # the sort by path, bytewise, that §3.2's canonical rows take.
+  printf '%s' "$cs_rows" | LC_ALL=C sort > "$cs_d/files" || cp_seam_unwritable files
+  exec 5<>"$cs_d/seam.fifo" ||
+    die "refusing to wait at the seam: this attempt's seam.fifo, in ${cs_d}, could not be opened read-write on fd 5 (Y:4999), under LANES_REGISTER_SCRATCH: an internal error. Nothing was sent." 2
+  ( set -C; : > "$cs_d/ready" ) 2>/dev/null ||
+    die "refusing to wait at the seam: this attempt's ready, in ${cs_d}, is there already or cannot be made, so its parent cannot be told when this change set is whole, under LANES_REGISTER_SCRATCH: an internal error. Nothing was sent." 2
+  # ---- 5. THE HANDSHAKE (Y:4999–5007). The parent's start token is the
+  # second field of `parent.pid`'s first line, whose first field T413 checked
+  # is `$PPID`; with none, its pid alone is tested.
+  if [ -f "$cs_d/parent.pid" ] && [ -r "$cs_d/parent.pid" ]; then
+    { IFS= read -r cs_pl || :; } 2>/dev/null < "$cs_d/parent.pid"
+  fi
+  IFS=" $cs_tab" read -r cs_x cs_ptok cs_q <<<"$cs_pl" || :
+  cs_cap="$(wr_seam_cap_s)"
+  cs_t0="$SECONDS"
+  while :; do
+    cs_msg=""
+    if IFS= read -r -t 1 -u 5 cs_msg; then
+      break
+    fi
+    cs_tok=""; cs_prc=0
+    cs_tok="$(pid_start_of "$PPID" 2>/dev/null)" || cs_prc=$?
+    case "$cs_prc" in
+      1) cp_seam_stop "its parent, pid ${PPID}, is gone" ;;
+      0) if [ -n "$cs_ptok" ] && [ "$cs_tok" != "$cs_ptok" ]; then
+           cp_seam_stop "its parent, pid ${PPID}, is gone, and that pid is another process now"
+         fi ;;
+    esac
+    [ $((SECONDS - cs_t0)) -lt "$cs_cap" ] || cp_seam_stop "the seam's cap of ${cs_cap} s passed"
+  done
+  case "$cs_msg" in
+    abandon)
+      cp_seam_out none || :
+      exit 75 ;;
+    "committed "*)
+      cs_s="${cs_msg#committed }"
+      wr_is_count "$cs_s" || cp_seam_stop "its parent's message is $(printf '%q' "$cs_msg"), which is neither committed <seq> nor abandon" ;;
+    *)
+      cp_seam_stop "its parent's message is $(printf '%q' "$cs_msg"), which is neither committed <seq> nor abandon" ;;
+  esac
+  cp_seam_out tail || cp_seam_stop "its seam.out could not be written as tail"
+  # ---- 6. COMMITTED (Y:5011): the real fds back, the buffered output in its
+  # order, the seq, and the read family dropped, so that the tail's reads take
+  # D17's path.
+  exec 5>&-
+  exec 1>&3 2>&4 3>&- 4>&-
+  [ ! -f "$cs_d/out.1" ] || cat -- "$cs_d/out.1"
+  [ ! -f "$cs_d/out.2" ] || cat -- "$cs_d/out.2" >&2
+  REGISTER_SEQ="$cs_s"
+  reg_flush
+  # THE RENAME IS IN THE ENTRY, as files mode's index commit leaves it: the
+  # old path is no longer a pathspec of anything after the seam.
+  if [ -n "$cs_ren" ]; then
+    CP_PATHS=(${cp_add[@]+"${cp_add[@]}"})
+    LOG_RENAMED_FROM=""
+  fi
+  return 0
 }
 
 # THIS WRITE'S OWN COMMIT, KNOWN BY WHAT IT IS AND NOT BY READING HEAD AFTER
