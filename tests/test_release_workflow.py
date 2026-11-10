@@ -4699,7 +4699,9 @@ FINGERPRINT_LINES = (
 #: output files; its count line naming its bin directory; the check that all
 #: sixteen were placed there; a second `--install` into that bin directory,
 #: with the check that it found all sixteen already installed and unchanged,
-#: so that the placing loop's other arm runs under 3.2 as well (#278); and
+#: so that the placing loop's other arm runs under 3.2 as well (#278), both
+#: counting only lines of exactly the contract's form (`exact`,
+#: opensoft/openRepoTools#352, item 4); and
 #: refusals that name that bash. The skip line, the receipt's 28 rows and the
 #: link's fingerprint are the offline --install's own.
 MACOS_RERUN_LINES = (
@@ -4756,8 +4758,18 @@ MACOS_RERUN_LINES = (
      ['    echo "::error::--install under /bin/bash $version printed this line '
       '$seen times, not once: $line"']),
     ([],
-     ['placed="$(grep -cF -e ": installed at $bin_dir/" '
-      '"$RUNNER_TEMP/install-bin-bash.out" || true)"',
+     ['# exact <said> <after> <file>: how many lines of <file> are',
+      '# `<command>: <said> $bin_dir/<command><after>` and nothing more,',
+      '# one command named on both sides (the contract\'s form)',
+      'exact() {',
+      '  said="$1" after="$2" dir="$bin_dir" awk \'',
+      '    { at = index($0, ": " ENVIRON["said"] " " ENVIRON["dir"] "/")',
+      '      name = substr($0, 1, at - 1)',
+      '      if (at > 1 && $0 == name ": " ENVIRON["said"] " " ENVIRON["dir"] "/" '
+      'name ENVIRON["after"]) n++ }',
+      '    END { print n + 0 }\' "$3"',
+      '}',
+      'placed="$(exact "installed at" "" "$RUNNER_TEMP/install-bin-bash.out")"',
       'if [ "$placed" -ne 16 ]; then',
       '  echo "::error::--install under /bin/bash $version placed $placed '
       'commands in $bin_dir, not all 16"',
@@ -4777,9 +4789,8 @@ MACOS_RERUN_LINES = (
       'exited $status"',
       '  exit 1',
       'fi',
-      'unchanged="$(grep -F -e ": already installed at $bin_dir/" '
-      '"$RUNNER_TEMP/install-bin-bash-again.out" | grep -cF \' (unchanged)\' '
-      '|| true)"',
+      'unchanged="$(exact "already installed at" " (unchanged)" '
+      '"$RUNNER_TEMP/install-bin-bash-again.out")"',
       'if [ "$unchanged" -ne 16 ]; then',
       '  echo "::error::the second --install under /bin/bash $version found '
       '$unchanged commands already installed and unchanged in $bin_dir, not '
@@ -5075,6 +5086,104 @@ def test_release_install_check_the_macos_rerun_places_the_sixteen_commands_in_a_
     assert sorted((p.name, p.lstat().st_ino, p.lstat().st_mtime_ns,
                    p.lstat().st_ctime_ns) for p in pipx_bin.iterdir()) == pipx_s, (
         "the rerun touched pipx's bin directory")
+
+
+#: A STAND-IN FOR `openRepoTools --install`, pipx's link's target in
+#: `RERUN_LINES`' cases: run with the rerun's `env -i`, it prints the skip
+#: line, sixteen lines of the run's form for `command-01` to `command-16`,
+#: but the case's own last line (`@LAST@`, a format of `name` and `bin`), and
+#: the count line, and writes a receipt of 28 rows. Its first run is the one
+#: that finds no receipt yet.
+FAKE_INSTALL = r'''#!@PYTHON@ -I
+import os
+bin_dir = os.environ["OPENREPOTOOLS_BIN_DIR"]
+receipt = os.path.join(os.environ["HOME"], ".local", "share", "openRepoTools",
+                       "installed.tsv")
+second = os.path.exists(receipt)
+print(f"openRepoTools: left to pipx at {bin_dir}/openRepoTools (a link into pipx's "
+      "openrepotools environment); update it with `pipx upgrade openrepotools`, then "
+      "run `openRepoTools --install` again")
+forms = ("{name}: installed at {bin}/{name}",
+         "{name}: already installed at {bin}/{name} (unchanged)")
+last = @LAST@[second]
+for at in range(1, 17):
+    form = last if at == 16 and last else forms[second]
+    print(form.format(name=f"command-{at:02}", bin=bin_dir))
+print(f"openRepoTools: 16 of 17 placed in {bin_dir}, and 1 left to pipx")
+os.makedirs(os.path.dirname(receipt), exist_ok=True)
+with open(receipt, "w", encoding="utf-8") as handle:
+    handle.write("a\tb\tc\td\n" * 28)
+'''
+
+#: THE RERUN'S TWO COUNTS TAKE THE CONTRACT'S LINES ALONE
+#: (opensoft/openRepoTools#352, item 4): `(the first run's last line, the
+#: second run's last line, each a format of `name` and `bin` or None for the
+#: run's own form, the one `::error::` line the step must print, or None
+#: where it passes)`. `{version}` is `APPLE_BIN_BASH`'s, and `{bin}` the
+#: rerun's bin directory. A placed line that names another file at the end of
+#: its path, and an unchanged line with more after ` (unchanged)`, each held
+#: the substring the counts once matched, so 16 passed; each is no line of
+#: the contract's form, so 15 are counted and the step refuses.
+RERUN_LINES = {
+    "sixteen-lines-of-the-contract-s-form-each-run": (None, None, None),
+    "a-placed-line-naming-another-file": (
+        "{name}: installed at {bin}/another-file", None,
+        "::error::--install under /bin/bash {version} placed 15 commands in {bin}, "
+        "not all 16"),
+    "an-unchanged-line-with-more-after-it": (
+        None, "{name}: already installed at {bin}/{name} (unchanged) (mode restored "
+        "to 755)",
+        "::error::the second --install under /bin/bash {version} found 15 commands "
+        "already installed and unchanged in {bin}, not all 16"),
+}
+
+
+@NEEDS_UPSTREAM
+@NEEDS_BASH
+@WINDOWS_SKIP
+@pytest.mark.parametrize("which", RERUN_LINES)
+def test_release_install_check_the_macos_rerun_counts_only_the_contract_s_lines(
+        tmp_path, which):
+    """THE macOS RERUN, RUN with pipx's link pointing at `FAKE_INSTALL` and the
+    rerun's `/bin` `APPLE_BIN_BASH`'s (opensoft/openRepoTools#352, item 4): the
+    contract asks for sixteen lines `<file>: installed at <its bin
+    directory>/<file>` from the first `--install`, and sixteen `<file>: already
+    installed at <its bin directory>/<file> (unchanged)` from the second. With
+    exactly those the step passes. A line naming another file at the end of
+    its path, or with more after ` (unchanged)`, is not one of them, so the
+    step exits 1 with the one `::error::` line that names 15."""
+    first, second, refusal = RERUN_LINES[which]
+    workflow = release()
+    reruns = [s for s in install_steps(workflow) if condition_kind(s.get("if")) == "macos"
+              and SENTINEL.search(run_text(s))]
+    assert len(reruns) == 1, [label(s) for s in reruns]
+    apple_bin = tmp_path / "apple-bin"
+    apple_bin.mkdir()
+    (apple_bin / "bash").write_text(
+        APPLE_BIN_BASH.replace("@BASH@", shlex.quote(shutil.which("bash"))),
+        encoding="utf-8")
+    (apple_bin / "bash").chmod(0o755)
+    rerun = dict(reruns[0],
+                 run=run_text(reruns[0]).replace('PATH="/bin:', f'PATH="{apple_bin}:'))
+    fake = tmp_path / "fake-install"
+    fake.write_text(FAKE_INSTALL.replace("@PYTHON@", sys.executable)
+                    .replace("@LAST@", repr((first, second))), encoding="utf-8")
+    fake.chmod(0o755)
+    pipx_bin = tmp_path / "pipx-bin"
+    pipx_bin.mkdir()
+    (pipx_bin / "openRepoTools").symlink_to(fake)
+    runner = Runner(tmp_path / "work", workflow, "install", {"PIPX_BIN_DIR": str(pipx_bin)})
+    done = runner.run(rerun)
+    bin_dir = Path(runner.env["RUNNER_TEMP"]) / "bin-bin-bash"
+    errors = [line for line in (done.stdout + done.stderr).splitlines()
+              if line.startswith("::error::")]
+    if refusal is None:
+        assert done.returncode == 0, transcript(done)
+        assert errors == [], transcript(done)
+    else:
+        assert done.returncode == 1, transcript(done)
+        assert errors == [refusal.format(version="3.2.57(1)-release", bin=bin_dir)], (
+            transcript(done))
 
 
 @NEEDS_UPSTREAM
