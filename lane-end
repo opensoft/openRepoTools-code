@@ -253,12 +253,16 @@
 #   row it retires. On a SQL register the commit refuses with 2 a write one of
 #   whose scopes another act changed after the base; in files mode both
 #   variables are ignored.
-#   act-begin's own 69, 75 or 3 (the register could not be read, so every write
-#   of the act would be refused too) ends this command before anything is
-#   written, with that code, and so does a walk that fails with one of them. Any
-#   other failure of act-begin is said and the run goes on with no base, which a
-#   SQL register then refuses at the first write; any other failure of the walk
-#   is said, and the run goes on with the base dropped and every expectation kept.
+#   ONE READING FOR A FAILED `act-begin` OR WALK (lane 3's A2, #165 6774499606,
+#   for every act from T428 to T432). 69, 75 and 3, from `act-begin` or the
+#   walk, are G1's first arm, unchanged: the register could not be read, so
+#   every write of the act would be refused too, and this command ends before
+#   anything is written, with that code. `act-begin`'s 2 comes from a helper
+#   older than T410, which reads neither variable (Y:5596): the act goes on with
+#   `LANES_ACT` unset and every `LANES_EXPECT` kept. Everything else refuses
+#   before the first write with exit 1, naming the verb and its code:
+#   `act-begin`'s 1 or 64, an exit 0 with no line or with a malformed one, and
+#   any walk code other than 0, 69, 75 and 3.
 #   W13 is covered by `set -e`: a refused or in-doubt write ends this command
 #   with the writer's own code. W14 does it by hand: the object-log line is the
 #   one write this command used to NOTE and carry on past, and on primary a
@@ -266,20 +270,37 @@
 #   words (the writer's rerun where the code is 3, whose note says what D8 says,
 #   in T433's form), prints the handoff fragment, and then exits with the
 #   writer's code: W13 has already committed the ending, and the fragment is read
-#   from the log, so it is right whatever W14 did.
+#   from the log, so it is right whatever W14 did. After W14's 2 under a seq
+#   base no hand command is printed for it: the writer's stderr is kept and this
+#   command says to run it again from its start (Y:5587, Y:5601); under `@files`
+#   or after `act-begin`'s 2, the hand command stands (Y:5596) (lane 3's REV-ACT
+#   Q4, #165 6774499606).
 #
 # EXIT
 #   0  done
 #   1  environment — no register, no writer, `lanes-edit.sh lane-objects`
 #      failed (which is NOT the same as the lane having no object log), or the
 #      close-out gate could not be read (no `lane-worktrees`, or an exit that
-#      is none of its three)
+#      is none of its three). And feature 007's refusals before the first
+#      write (A2): `act-begin` answered 1, 64 or another code that is no base,
+#      or exited 0 with no line or a malformed one; or `canon-lane --walk`
+#      exited with a code other than 0, 69, 75 and 3. Each names the verb and
+#      its code, and nothing was written
 #   2  refusal — bad arguments, no row (or two), something still in flight, or
 #      the close-out gate: the lane's trees, branches, scratch, caches or
 #      residue still on disk, or the sweep refusing the lane
 #   8  nothing there. `--retire-dormant`: no lane of that repository is
 #      recorded, or none of its rows is DORMANT. `--retire <pid|uuid>`: nothing
 #      of any kind is live for the lane
+#   69, 75, 3  `act-begin` or `canon-lane --walk` could not read the register,
+#      so every write of the act would be refused too: nothing was written, and
+#      the helper's words are above (G1; T403's set)
+#   W13's or W14's code  the writer's own, its words above. W13 (`set-row-state
+#      ENDED|RETIRED`) ends this command under `set -e`, before W14 and the
+#      fragment; W14 (`log ENDED|RETIRED`) ends it once the handoff fragment
+#      has printed in full on stdout, W13 having committed. On primary a 2 is a
+#      scope another act changed after the base (an expectation), and a 3 a
+#      commit that may or may not have landed (D8; the writer's rerun is above)
 #   130, 143  stopped by INT or TERM (128 plus the signal): the run ends where
 #      the signal found it and removes its temporary file, never resumes
 #
@@ -707,38 +728,75 @@ done
 # carries its own as a prefix. A stray `LANES_ACT` or `LANES_EXPECT` in the
 # environment is dropped first: the act starts clean, `act-begin` never sees
 # another act's base, and the gate's writes could not pick up an expectation.
-#   0       the base, exported. A 0 that printed nothing is no base (below).
+#   ONE READING FOR EVERY ANSWER (lane 3's A2, #165 6774499606, for every act
+#   from T428 to T432; it replaces the go-on lane 3's batch 2 accepted here):
+#   0       the base, exported, where it is ONE line of the form `act_parse`
+#           reads (`le_act_shaped`, below). A 0 with no line, or with a
+#           malformed one, is no base the verb gives: refused with 1, below.
 #   69      no base could be read on primary, or `lanes-index mode` answered 78:
 #           every write of this act would be refused as well, so this command
 #           ends here with the verb's own code, nothing written ("pass the
 #           code", Y:5722). The verb's words are above. 75 and 3 are spelled
 #           beside it as the other two codes a read of the register can say
-#           (T403's set), though `act-begin` has none of its own.
-#   other   no base is taken, and this command says so and goes on as it did
-#           before feature 007. That is 2, which a `lanes-edit.sh` that
-#           predates `act-begin` spends on an unknown subcommand, as it does on
-#           `canon-lane` and `lanes` (the 15(d) test of the lane suite runs
-#           this command over one); `act-begin` itself, without `--rebase`, has
-#           no 2 to give. It is also 1 (no act id could be minted), 64, or
-#           anything a helper stub answers. It cannot write unchecked: on a SQL
-#           register a write that names an expectation and has no base is
-#           refused with 2 before anything is sent (Y:5597-5601), and off it
-#           both variables are ignored.
+#           (T403's set), though `act-begin` has none of its own (G1's first
+#           arm, unchanged).
+#   2       a helper older than T410, which spends 2 on an unknown subcommand,
+#           as it does on `canon-lane` and `lanes` (the 15(d) test of the lane
+#           suite runs this command over one), and reads neither variable
+#           (Y:5596): this command says so, and the act goes on with
+#           `LANES_ACT` unset and every `LANES_EXPECT` kept. `act-begin`
+#           itself, without `--rebase`, has no 2 to give.
+#   other   1 (no act id could be minted), 64, or anything else a stand-in
+#           answers: refused before the first write with 1, naming the verb
+#           and its code. Nothing has been written at either call site.
+#
+# le_act_shaped <line> — 0 where <line> is `act-begin`'s one line as
+# `act_parse` (`lanes-edit.sh`, T410) reads it: 32 lower-case hex digits, an
+# `@`, then `files`, or a seq of 1 to 18 digits with no leading zero (or `0`), a
+# colon and a lower-case uuid. A second line, a space or an upper-case digit
+# fails it, so no base is exported that every write would refuse anyway.
+le_act_shaped() {
+  las_v="${1-}"
+  case "$las_v" in *@*) : ;; *) return 1 ;; esac
+  las_id="${las_v%%@*}"; las_rest="${las_v#*@}"
+  case "$las_id" in '' | *[!0123456789abcdef]*) return 1 ;; esac
+  [ "${#las_id}" -eq 32 ] || return 1
+  [ "$las_rest" != files ] || return 0
+  case "$las_rest" in *:*) : ;; *) return 1 ;; esac
+  las_seq="${las_rest%%:*}"; las_gen="${las_rest#*:}"
+  case "$las_seq" in
+    0) : ;;
+    [123456789]*)
+      case "$las_seq" in *[!0123456789]*) return 1 ;; esac
+      [ "${#las_seq}" -le 18 ] || return 1 ;;
+    *) return 1 ;;
+  esac
+  # `act_parse`'s own pattern, a glob on purpose: eight, four, four, four and
+  # twelve lower-case hex digits, spelled out so no locale widens the range.
+  las_h='[0123456789abcdef]'
+  # shellcheck disable=SC2254
+  case "$las_gen" in
+    $las_h$las_h$las_h$las_h$las_h$las_h$las_h$las_h-$las_h$las_h$las_h$las_h-$las_h$las_h$las_h$las_h-$las_h$las_h$las_h$las_h-$las_h$las_h$las_h$las_h$las_h$las_h$las_h$las_h$las_h$las_h$las_h$las_h) return 0 ;;
+  esac
+  return 1
+}
 le_act_begin() {
   lab_rc=0; lab_out=""
   unset LANES_ACT LANES_EXPECT
   lab_out="$("$LANES_EDIT" act-begin)" || lab_rc=$?
   case "$lab_rc" in
     0)
-      if [ -n "$lab_out" ]; then
-        LANES_ACT="$lab_out"; export LANES_ACT
-      else
-        note "\`$LANES_EDIT act-begin\` exited 0 and printed no base, so this run takes none. A write of this act that names an expectation is refused on a SQL register with no base (2, nothing sent); in files mode both variables are ignored."
-      fi ;;
+      [ -n "$lab_out" ] ||
+        die "\`$LANES_EDIT act-begin\` exited 0 and printed no line, which is no base, so this act refuses before its first write rather than go on without the base it was owed (lane 3's A2). Nothing was written." 1
+      le_act_shaped "$lab_out" ||
+        die "\`$LANES_EDIT act-begin\` exited 0 and printed \"$lab_out\", which is not one line of <act-id>@files or <act-id>@<seq>:<generation>, so this act has no base and refuses before its first write (lane 3's A2). Nothing was written." 1
+      LANES_ACT="$lab_out"; export LANES_ACT ;;
     69 | 75 | 3)
       die "\`$LANES_EDIT act-begin\` exited $lab_rc (its words are above), so this act has no base, and every write of it would be refused as well. This command refuses rather than go on without one. Nothing was written." "$lab_rc" ;;
+    2)
+      note "\`$LANES_EDIT act-begin\` exited 2, so this run takes no base: that is a \`lanes-edit.sh\` older than feature 007's acts, which reads neither \`LANES_ACT\` nor \`LANES_EXPECT\` (Y:5596). The act goes on with \`LANES_ACT\` unset, and each write below still names its expectations (lane 3's A2)." ;;
     *)
-      note "\`$LANES_EDIT act-begin\` exited $lab_rc, so this run takes no base: a \`lanes-edit.sh\` that predates feature 007's acts exits 2 here. Its writes still name their expectations, which a SQL register refuses with 2 (nothing sent) where there is no base, and which files mode and an older helper do not read." ;;
+      die "\`$LANES_EDIT act-begin\` exited $lab_rc (its words are above), which is no base, no 2 from a helper older than feature 007's acts, and none of a read's 69, 75 and 3, so this act refuses before its first write (lane 3's A2). Nothing was written." 1 ;;
   esac
 }
 
@@ -1055,25 +1113,42 @@ fi
 # primary base, where the keys are read (files mode ignores both variables,
 # Y:5596, and an act with no base has none), and only where `canon-lane`
 # answered: a run that carried on with the typed name decided on that name
-# alone. A walk that fails is `act-begin`'s failure of the same code is (G2,
-# G1, as `le_act_begin` does it): 69, 75 and 3 end this command with that code,
-# nothing written; any other code is said, and the run goes on with the act's
-# base dropped (`LANES_ACT` unset) and every expectation kept, never dropped
-# (Y:5587), which a SQL register refuses with 2 at the first write (Y:5599).
+# alone.
+# A WALK THAT FAILS IS READ AS ONE (lane 3's A2, #165 6774499606, which
+# replaces G2's go-on): 69, 75 and 3 end this command with that code, nothing
+# written (G1's first arm); any other code refuses before the first write with
+# 1, naming the verb and its code, because a key left out is a change a write
+# would not see (Y:5624) and a base kept without its keys under-checks
+# (Y:5587). A `lanes-edit.sh` with no `--walk` (before T411) answers 64 here.
+# THE WALK'S OWN WORDS ARE KEPT and relayed whenever it fails, as `act-begin`'s
+# are (REV-LSLE): in `LE_TMP`, assigned from the `mktemp` itself so that
+# `cleanup` knows it on every exit, and cleared once read, before the
+# `lane-objects` read's capture takes that name. On a 0 they are only
+# `canon-lane`'s notes again,
+# which the read above has already said in its own words.
 le_walk=""
 case "${LANES_ACT:-}" in
   '' | *@files) : ;;
   *)
     if [ "$cl_rc" = 0 ]; then
-      lw_rc=0
-      le_walk="$("$LANES_EDIT" canon-lane --walk "$le_typed" 2>/dev/null)" || lw_rc=$?
+      lw_rc=0; lw_err=""
+      LE_TMP="$(mktemp "${TMPDIR:-/tmp}/lane-end-walk.XXXXXX" 2>/dev/null || printf '')"
+      le_walk="$("$LANES_EDIT" canon-lane --walk "$le_typed" 2>"${LE_TMP:-/dev/null}")" || lw_rc=$?
+      if [ -n "$LE_TMP" ]; then
+        lw_err="$(cat -- "$LE_TMP" 2>/dev/null || :)"
+        rm -f -- "$LE_TMP"; LE_TMP=""
+      fi
+      lw_words="(no words of the helper's could be kept: run it to see them)"
+      if [ "$lw_rc" != 0 ] && [ -n "$lw_err" ]; then
+        printf '%s\n' "$lw_err" >&2
+        lw_words="(its words are above)"
+      fi
       case "$lw_rc" in
         0) : ;;
         69 | 75 | 3)
-          die "\`$LANES_EDIT canon-lane --walk $le_typed\` exited $lw_rc, so the names lane $LANE's spelling was found through could not be read, and every write of this act would be refused as well. This command refuses rather than go on without them. Run it to see the helper's words. Nothing was written." "$lw_rc" ;;
+          die "\`$LANES_EDIT canon-lane --walk $le_typed\` exited $lw_rc $lw_words, so the names lane $LANE's spelling was found through could not be read, and every write of this act would be refused as well. This command refuses rather than go on without them. Nothing was written." "$lw_rc" ;;
         *)
-          le_walk=""; unset LANES_ACT
-          note "\`$LANES_EDIT canon-lane --walk $le_typed\` exited $lw_rc, so the names lane $LANE's spelling was found through are NOT known, and a key left out is a change a write would not see (Y:5622): this run takes no base, and each write below still names the expectations it has. A SQL register refuses it with 2 (nothing sent); files mode and an older helper do not read them. A \`lanes-edit.sh\` with no \`--walk\` exits 64 here." ;;
+          die "\`$LANES_EDIT canon-lane --walk $le_typed\` exited $lw_rc $lw_words, so the names lane $LANE's spelling was found through are NOT known, and a key left out is a change a write would not see (Y:5624). This act refuses before its first write rather than go on without them (lane 3's A2). Nothing was written." 1 ;;
       esac
     fi ;;
 esac
@@ -2683,8 +2758,10 @@ fi
 
 # ------------------------------------------- the lane's own object log line
 
-# Amendment 7. Written after the row, and it never fails the end of a lane:
-# a lane that cannot write its log has still ended, and says that it could not.
+# Amendment 7. Written after the row: a lane that cannot write its log has
+# still ended, since W13 committed that, and says that it could not. Since
+# feature 007 this command then exits with the writer's code, once the handoff
+# fragment has printed (T430, below).
 # THE EVENT LINE FOLLOWS THE GRAMMAR, AND ITS FREE TEXT CARRIES NO ` — ` (R21).
 # The line reads
 #   ENDED — lane X, session u@W, T, lane:X — forced; open: <object list>
@@ -2718,6 +2795,12 @@ fi
 # is 3 that is the writer's own rerun line (D8, Y:468-469; T417's), which this
 # command does not repeat in a hint of its own; the note says what D8 says for a
 # 3, in T433's form, both sentences (lane 3's G3).
+# NO HAND COMMAND AFTER A 2 UNDER A SEQ BASE (lane 3's REV-ACT Q4, #165
+# 6774499606): a hand command without this act's two variables writes
+# unchecked, which Y:5587 forbids, and one with them would only refuse again.
+# So the writer's stderr is kept and the note says to run this command again
+# from its start (Y:5601). Under `@files`, or after `act-begin`'s 2 (no base),
+# today's hand command stands (Y:5596), and so it does for every other code.
 w14_rc=0
 if (( dry_run )); then
   plan "lanes-edit.sh log $lane_verb lane:$LANE --text \"$lane_text\""
@@ -2730,8 +2813,14 @@ else
       3)
         note "the lane's object log line ($lane_verb) may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun (off primary), the commit is local and may already be on origin." ;;
       *)
-        note "the lane's object log was NOT written ($lane_verb). Write it by hand:"
-        note "  LANES_LANE=$LANE $LANES_EDIT log $lane_verb lane:$LANE --text \"$lane_text\"" ;;
+        w14_seq=0
+        case "${LANES_ACT:-}" in '' | *@files) : ;; *) w14_seq=1 ;; esac
+        if [ "$w14_rc" = 2 ] && [ "$w14_seq" = 1 ]; then
+          note "the lane's object log line ($lane_verb) was NOT written: the writer refused it with 2 under this act's base (its words are above). No hand command is printed for it, since one without this act's base and expectations would write unchecked, and one with them would only be refused again. Run this \`lane-end\` again from its start, as it was typed: it takes a new base and reads again what it rests on."
+        else
+          note "the lane's object log was NOT written ($lane_verb). Write it by hand:"
+          note "  LANES_LANE=$LANE $LANES_EDIT log $lane_verb lane:$LANE --text \"$lane_text\""
+        fi ;;
     esac
   fi
 fi
