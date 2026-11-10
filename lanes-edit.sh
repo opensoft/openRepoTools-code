@@ -4270,17 +4270,26 @@ wr_max_age_s() {
   fi
 }
 
-# How long a claim from another host or container counts as live: 120 s, "the
-# seam's cap" (Y:5220), which is 2 x (D + 30 s) at D7's 30 s and which
-# `LANES_REGISTER_SEAM_CAP_S` sets for tests (Y:5001), read in base 10, so a
-# leading zero is neither octal nor an arithmetic error in `wr_claim_capped`'s
-# `$(( ))`: `08` is 8 s (#165 6770820384, T415's 4).
+# THE SEAM'S CAP, 2 x (D + 30 s), 120 s at D7's 30 s (Y:5001), where D is D7's
+# deadline: 30 s, or `LANES_REGISTER_DEADLINE_S` for tests (Y:2632-2644), read
+# as T415's `pw_deadline_s` reads it. DEC-25 keeps this one cap: it is also how
+# long a claim that cannot be tested here counts as live, another host's among
+# them (Y:5220) (lane openRepoTools-3, #165 6774499606, T415 (1)).
+# `LANES_REGISTER_SEAM_CAP_S` sets the cap itself, for tests (Y:5001). Each is
+# read in base 10, so a leading zero is neither octal nor an arithmetic error
+# in `wr_claim_capped`'s `$(( ))`: `08` is 8 s (#165 6770820384, T415's 4). A
+# value that is not a count of at most 18 digits (`wr_is_count`) is not read,
+# so twice D + 30 stays inside the shell's arithmetic.
 wr_seam_cap_s() {
+  local sc_d=30
   if wr_is_count "${LANES_REGISTER_SEAM_CAP_S:-}"; then
     printf '%s\n' "$((10#$LANES_REGISTER_SEAM_CAP_S))"
-  else
-    printf '120\n'
+    return 0
   fi
+  if wr_is_count "${LANES_REGISTER_DEADLINE_S:-}"; then
+    sc_d="$((10#$LANES_REGISTER_DEADLINE_S))"
+  fi
+  printf '%s\n' "$(( 2 * (sc_d + 30) ))"
 }
 
 # A 0700 directory this uid owns, made where it is missing (Y:5172, Y:5180: "in
@@ -4430,10 +4439,11 @@ wr_utc_of_epoch() {   # <epoch seconds>
     date -u -j -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || :
 }
 
-# A CLAIM WHOSE OWNER CANNOT BE TESTED HERE is live for the seam's cap, 120 s
-# (`wr_seam_cap_s`), and dead after it: Y:5220 for a claim from another host or
-# container, "since its pid cannot be tested here", and DEC-25 for the two of
-# this host that cannot be tested either. The cap runs from the later of
+# A CLAIM WHOSE OWNER CANNOT BE TESTED HERE is live for the seam's cap,
+# 2 x (D + 30 s), 120 s at D7's 30 s (`wr_seam_cap_s`; Y:5001), and dead after
+# it: Y:5220 for a claim from another host or container, "since its pid cannot
+# be tested here", and DEC-25 for the two of this host that cannot be tested
+# either. The cap runs from the later of
 # `<from>`, the claim's own time, and the record's `updated_utc`; where neither
 # can be read, from the claim file's mtime; where even that cannot be read, the
 # claim is live. WR_LIVE_WHY is `<why>`, and WR_LIVE_UNTIL the epoch second from
