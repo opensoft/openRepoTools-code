@@ -20130,7 +20130,7 @@ pw_rl_move() {   # <seq> <the child's attempt dir> [rerun]
 # `--no-renames`. A refused push replays the act by S4's `exec`. A handoff
 # already moved and stamped is 0 with nothing written. It exits.
 rl_move_act() {
-  local ma_l="" ma_c="" ma_from="" ma_to="" ma_st="" ma_old="" ma_new="" ma_seq="" ma_p="" ma_rc=0 \
+  local ma_l="" ma_c="" ma_from="" ma_to="" ma_st="" ma_old="" ma_new="" ma_seq="" ma_p="" ma_rc=0 ma_rerun=0 \
         ma_creal="" ma_real="" ma_hf="" ma_ht="" ma_msg="" ma_what=""
   [ -f "$RL_MOVE" ] && [ -r "$RL_MOVE" ] ||
     die "refusing rename-lane's handoff act: the move its parent named, $RL_MOVE, cannot be read, an internal error of the primary write path. Nothing was written." 2
@@ -20163,7 +20163,7 @@ rl_move_act() {
   # A RERUN'S MOVE NAMES NO CHECKOUT (`rl_rerun`): its parent's own `<c>`, the
   # `LANES_REPO` it started this act with (`pw_rl_move … rerun`). A move after
   # `committed` always names one, and its parent refuses it without.
-  [ -n "$ma_c" ] || ma_c="$LANES_REPO"
+  [ -n "$ma_c" ] || { ma_c="$LANES_REPO"; ma_rerun=1; }
   ma_real="$( CDPATH=''; cd -P -- "$LANES_REPO" 2>/dev/null && pwd -P )" || ma_real=""
   ma_creal="$( CDPATH=''; cd -P -- "$ma_c" 2>/dev/null && pwd -P )" || ma_creal=""
   [ -n "$ma_real" ] && [ "$ma_real" = "$ma_creal" ] ||
@@ -20179,6 +20179,17 @@ rl_move_act() {
     note "the handoff is at $ma_to with its stamp already, so there is nothing to move or stamp: $ma_st"
     release_lock
     exit 0
+  fi
+  # FEATURE 007, T422 — A RERUN OWES ONLY THE MOVE ITS FIRST RUN LEFT (Y:3449–
+  # 3451; lane 3, #165 batch 6, Q29). Read at origin's tip, after S3: where no
+  # `<from>` is there and no file is at `<to>` either, nothing is owed. The
+  # first run's own words, 0, and no hand steps.
+  if [ "$ma_rerun" = 1 ] && { [ -z "$ma_hf" ] || { [ ! -e "$ma_hf" ] && [ ! -L "$ma_hf" ]; }; }; then
+    if [ ! -e "$ma_ht" ] && [ ! -L "$ma_ht" ]; then
+      note "the handoff the row names is not at $ma_ht, so nothing was moved or stamped and the row's handoff column is left exactly as it is. If it turns up, rename it — ${ma_from:-$ma_to} → $ma_to — and stamp it: $ma_st"
+      release_lock
+      exit 0
+    fi
   fi
   ma_p="${ma_hf:-$ma_ht}"
   [ ! -L "$ma_p" ] ||
