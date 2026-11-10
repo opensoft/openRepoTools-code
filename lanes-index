@@ -1606,6 +1606,305 @@ class SyncLock:
             self.handle = None
 
 
+# ===================================================== the one push (group C)
+#
+# ONE PUSH FUNCTION SERVES THE RENDERER, `cutover`, `cutover --after-loss` AND
+# `rollback` (feature 007's T320: D23; S2's "The push"; the phase plan's "The
+# push URL"; FR-045; `contracts/render-commit.md` section 3).
+#
+# - THE REFSPEC is `<tip>:refs/heads/main`, never forced, bounded by
+#   `LANES_GIT_TIMEOUT` as `lanes-edit.sh`'s `git_net` bounds a push.
+# - WITH `render_key=` (Q21(b)(B)) it pushes to an explicit
+#   `ssh://git@github.com/<owner>/<repo>.git`, `<owner>/<repo>` being
+#   `_norm_repo` of the checkout's own `git remote get-url origin`, which must
+#   equal `source_of`'s: so the push names the repository that was fetched. A
+#   deploy key authenticates only over SSH, and `git push origin` would use the
+#   checkout's HTTPS remote and the lane's own credentials, which the ruleset
+#   refuses. A non-GitHub origin is refused with 2.
+# - WITHOUT `render_key=` (Q21(b)(A), and the bare-origin fixtures) it pushes to
+#   `origin` as it stands.
+# - NOTHING IS WRITTEN TO THE CHECKOUT'S CONFIGURATION: no `set-url`, no
+#   `pushurl`. A push to a URL moves no `refs/remotes/origin/main`, so the
+#   READ-BACK fetches `origin` and checks `merge-base --is-ancestor`.
+# - SECURITY-SENSITIVE: the key bypasses the ruleset on the render set and
+#   `lanes/STORE`, so its file is named only in the push's own environment, a
+#   dict built for that one `git push` and the `ssh` it starts. It is never put
+#   in `os.environ`, in git's argument list or in the read-back's environment,
+#   so no session, and no other child of this one, inherits it ("A
+#   server-side gate protects the rendered paths and `lanes/STORE`").
+
+#: The one branch the render commits and the operator entries' commits go to
+#: (contract section 3, Y:2867): `refs/heads/main` on origin, whatever
+#: `LANES_BRANCH` says.
+RENDER_BRANCH = "main"
+
+#: `<owner>/<repo>` as GitHub spells one: what `_norm_repo` must leave of a
+#: GitHub origin before the push may name it.
+GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$")
+
+
+def git_timeout_s() -> int | None:
+    """`LANES_GIT_TIMEOUT`, read as `lanes-edit.sh`'s `git_net` reads it: the
+    budget in whole seconds, 60 where it is unset or empty, and no bound where
+    it is 0 or not a whole number."""
+    raw = os.environ.get("LANES_GIT_TIMEOUT") or "60"
+    if re.fullmatch(r"[0-9]+", raw) and int(raw) > 0:
+        return int(raw)
+    return None
+
+
+def render_git_env() -> dict:
+    """The environment every git call of the renderer and of the push starts
+    from (Y:5776): the caller's own, with every inherited `GIT_*` variable
+    removed, so an inherited `GIT_DIR`, `GIT_INDEX_FILE`, `GIT_SSH_COMMAND`,
+    `GIT_CONFIG_*` or `GIT_ASKPASS` reaches none of them. Nothing here is
+    interactive, so git never prompts on a terminal."""
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
+def render_push_env(render_key: str) -> dict:
+    """The push's own environment (D23; Y:5799). Without `render_key=` it is
+    `render_git_env()`'s. With it, the key is named in `GIT_SSH_COMMAND` with
+    `IdentitiesOnly=yes` and `BatchMode=yes`; `SSH_AUTH_SOCK` is removed, so
+    no agent key is offered first; and `GIT_CONFIG_GLOBAL=/dev/null` with
+    `GIT_CONFIG_NOSYSTEM=1`, so no global or system `url.*.insteadOf` turns the
+    URL back into HTTPS. The dict is this one child's: the key is in no other
+    environment."""
+    import shlex
+    env = render_git_env()
+    if render_key:
+        env.pop("SSH_AUTH_SOCK", None)
+        env["GIT_SSH_COMMAND"] = (f"ssh -i {shlex.quote(os.path.abspath(render_key))} "
+                                  f"-o IdentitiesOnly=yes -o BatchMode=yes")
+        env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+        env["GIT_CONFIG_NOSYSTEM"] = "1"
+    return env
+
+
+class GitRun:
+    """One bounded git call: its exit status (None where it could not be
+    started), its output, and whether its time ran out."""
+
+    __slots__ = ("rc", "out", "err", "timed_out")
+
+    def __init__(self, rc, out: str, err: str, timed_out: bool):
+        self.rc = rc
+        self.out = out
+        self.err = err
+        self.timed_out = timed_out
+
+    def last_line(self) -> str:
+        lines = [line for line in self.err.strip().splitlines() if line.strip()]
+        return _redact_url(lines[-1].strip()) if lines else "no message"
+
+
+def _run_bounded(argv: list, env: dict, timeout: float | None) -> GitRun:
+    """Run `argv` in a process group of its own, bounded by `timeout` seconds.
+
+    AT THE BOUND THE WHOLE GROUP IS ENDED, as `timeout -k 5` ends `git_net`'s:
+    TERM, then KILL five seconds later, so an `ssh` under a hung `git push`
+    does not outlive it. An interrupt of this process ends the group too."""
+    import signal
+    try:
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, env=env, start_new_session=True)
+    except OSError as exc:
+        return GitRun(None, "", f"{argv[0]} could not be run: {exc}", False)
+    timed_out = False
+    out, err = b"", b""
+    try:
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.killpg(proc.pid, sig)
+                except OSError:
+                    pass
+                try:
+                    out, err = proc.communicate(timeout=5)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+            else:
+                for pipe in (proc.stdout, proc.stderr):
+                    if pipe is not None:
+                        pipe.close()
+                proc.wait()
+    except BaseException:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        proc.wait()
+        raise
+    return GitRun(proc.returncode, (out or b"").decode("utf-8", "replace"),
+                  (err or b"").decode("utf-8", "replace"), timed_out)
+
+
+def render_git(checkout: str, *args: str, env: dict | None = None,
+               timeout: float | None = None) -> GitRun:
+    """`git -C <checkout> <args>` in `render_git_env()`, or in `env` where the
+    caller built one, bounded by `timeout`."""
+    return _run_bounded(["git", "-C", checkout, *args],
+                        render_git_env() if env is None else env, timeout)
+
+
+def _redact_url(text: str) -> str:
+    """`text` with the user part of every http(s) URL in it masked: an origin
+    such as `https://<user>:<token>@github.com/...` is a credential, and a
+    refusal or a recorded failure must not carry it."""
+    return re.sub(r"(https?://)[^/@\s]+@", r"\1***@", text)
+
+
+def render_push_url(checkout: str, render_key: str) -> str:
+    """Where the push goes: `origin` without `render_key=`; with it, the
+    explicit `ssh://git@github.com/<owner>/<repo>.git` (Y:2868-2871; Y:5798).
+
+    Refused with 2 (`Refusal`), with nothing pushed: an origin that cannot be
+    read; an origin that is not a GitHub repository; and an `<owner>/<repo>`
+    that is not `source_of`'s (GitHub's names are compared without case)."""
+    if not render_key:
+        return "origin"
+    got = render_git(checkout, "remote", "get-url", "origin")
+    url = got.out.strip()
+    if got.rc != 0 or not url:
+        raise Refusal(f"render_key= is set, and {checkout} has no `origin` to name the "
+                      f"repository the push goes to: {got.last_line()}")
+    repo = _norm_repo(url)
+    bare = url[:-4] if url.endswith(".git") else url
+    if repo == bare or not GITHUB_REPO_RE.match(repo) or repo.split("/")[1] in (".", ".."):
+        raise Refusal(f"render_key= is set, and the origin of {checkout}, {_redact_url(url)}, "
+                      f"is not a GitHub repository: the renderer identity is a deploy key, "
+                      f"which pushes only to ssh://git@github.com/<owner>/<repo>.git (D23). "
+                      f"Nothing was pushed")
+    source = source_of(checkout)
+    if source.lower() != f"register:{repo}".lower():
+        raise Refusal(f"render_key= is set, and the origin of {checkout} names {repo}, which is "
+                      f"not this workstation's register, {source[len('register:'):]} "
+                      f"(source_of): the push must name the repository that was fetched. "
+                      f"Nothing was pushed")
+    return f"ssh://git@github.com/{repo}.git"
+
+
+class PushResult:
+    """What `render_push` found. `outcome` is one of:
+
+    - `pushed`: the read-back's fetch of origin carries `tip` on `main`. That
+      includes a push that timed out but landed, and a `tip` that was already
+      there: a second push of the same sha is a no-op (Y:2889-2891).
+    - `rejected`: git refused the push as not a fast-forward, and origin's
+      `main` does not carry `tip`: a lost race, which moved no ref. The
+      read-back's fetch IS the refetch, so `origin_tip` is origin's `main` as
+      it now stands. The renderer counts origin carrying `t` or more as pushed,
+      and otherwise rebuilds, six push attempts in all (T322).
+    - `failed`: the push failed otherwise (authentication, the network, the
+      ruleset or a hook on the server, its time), and the read-back proves
+      origin's `main` does not carry `tip`.
+    - `unconfirmed`: the read-back could not answer (its fetch failed or timed
+      out), or the push said it landed and origin's `main` does not carry it.
+      `cutover` and `rollback` exit 3, and their rerun reads origin back
+      before it acts (Y:3157-3159); the renderer records it and ends.
+
+    `destination` is `origin` or the SSH URL, which carries no credential;
+    `detail` is one line for a record; `origin_tip` is origin's `main` after
+    the read-back's fetch, or "" where that fetch failed."""
+
+    __slots__ = ("outcome", "destination", "push_rc", "timed_out", "origin_tip", "detail")
+
+    def __init__(self, outcome: str, destination: str, push_rc, timed_out: bool,
+                 origin_tip: str, detail: str):
+        self.outcome = outcome
+        self.destination = destination
+        self.push_rc = push_rc
+        self.timed_out = timed_out
+        self.origin_tip = origin_tip
+        self.detail = detail
+
+    def __repr__(self) -> str:
+        return (f"PushResult(outcome={self.outcome!r}, destination={self.destination!r}, "
+                f"push_rc={self.push_rc!r}, timed_out={self.timed_out!r}, "
+                f"origin_tip={self.origin_tip!r}, detail={self.detail!r})")
+
+
+def render_readback(checkout: str, tip: str) -> tuple:
+    """S4's read-back: fetch `origin main` into `refs/remotes/origin/main`,
+    bounded by `LANES_GIT_TIMEOUT`, and ask `merge-base --is-ancestor` whether
+    it carries `tip`. Returns (answered, carried, origin's tip, why): where
+    the fetch did not answer, `answered` is False and nothing is known."""
+    fetched = render_git(checkout, "-c", "gc.auto=0", "-c", "maintenance.auto=false",
+                         "fetch", "--no-tags", "-q", "origin",
+                         f"+refs/heads/{RENDER_BRANCH}:refs/remotes/origin/{RENDER_BRANCH}",
+                         timeout=git_timeout_s())
+    if fetched.rc != 0:
+        why = (f"timed out after {git_timeout_s()} s" if fetched.timed_out
+               else f"exited {fetched.rc}: {fetched.last_line()}")
+        return False, False, "", f"the read-back's fetch of origin {RENDER_BRANCH} {why}"
+    head = render_git(checkout, "rev-parse", "--verify", "-q",
+                      f"refs/remotes/origin/{RENDER_BRANCH}^{{commit}}")
+    origin_tip = head.out.strip()
+    if head.rc != 0 or not SHA_RE.match(origin_tip):
+        return False, False, "", f"origin has no {RENDER_BRANCH} after the read-back's fetch"
+    carried = render_git(checkout, "merge-base", "--is-ancestor", tip, origin_tip)
+    if carried.rc not in (0, 1):
+        return False, False, origin_tip, (f"merge-base --is-ancestor exited {carried.rc}: "
+                                          f"{carried.last_line()}")
+    return True, carried.rc == 0, origin_tip, ""
+
+
+def render_push(checkout: str, tip: str, render_key: str = "") -> PushResult:
+    """THE ONE PUSH (T320): push `tip` to origin's `main` from `checkout`, as a
+    fast-forward only, then read it back. It writes nothing to the checkout's
+    configuration, and moves no HEAD, index or working tree.
+
+    `render_key` is `render_key=`'s path, or "" (Q21(b)(A)). A key file that
+    is not a private regular file, and a destination `render_push_url`
+    refuses, are a `Refusal` (2) with nothing pushed. Everything else is a
+    `PushResult`, which each caller maps to its own end."""
+    if not SHA_RE.match(tip):
+        raise ValueError(f"render_push needs a full commit sha, not {tip!r}")
+    if render_key:
+        _check_private_file(render_key, "the renderer's deploy-key file (`render_key=`)")
+    destination = render_push_url(checkout, render_key)
+    pushed = render_git(checkout, "push", "--no-verify", "--porcelain", destination,
+                        f"{tip}:refs/heads/{RENDER_BRANCH}",
+                        env=render_push_env(render_key), timeout=git_timeout_s())
+    # `--porcelain` gives one line per ref, `!` for a ref that was not
+    # updated: `[rejected]` is git's own refusal of a push that is not a fast-
+    # forward, and `[remote rejected]` the server's, a ruleset or a hook.
+    summary = ""
+    for line in pushed.out.splitlines():
+        fields = line.split("\t")
+        if len(fields) >= 3 and fields[0] == "!":
+            summary = fields[2].strip()
+    if pushed.timed_out:
+        how = f"the push timed out after {git_timeout_s()} s"
+    elif pushed.rc is None:
+        how = f"the push could not be started: {pushed.last_line()}"
+    elif pushed.rc == 0:
+        how = "the push exited 0"
+    else:
+        how = f"the push exited {pushed.rc}: {_redact_url(summary) or pushed.last_line()}"
+    answered, carried, origin_tip, why = render_readback(checkout, tip)
+    if answered and carried:
+        outcome = "pushed"
+    elif not answered:
+        outcome = "unconfirmed"
+        how = f"{how}; {why}"
+    elif pushed.rc == 0 and not pushed.timed_out:
+        outcome = "unconfirmed"
+        how = f"{how}, and origin's {RENDER_BRANCH} does not carry {tip}"
+    elif summary.startswith("[rejected]"):
+        outcome = "rejected"
+    else:
+        outcome = "failed"
+    return PushResult(outcome, destination, pushed.rc, pushed.timed_out, origin_tip,
+                      f"{outcome} to {destination}: {how}")
+
+
 # ================================================================ the acts
 
 def resolve_source(requested: str | None, root: str) -> str:
