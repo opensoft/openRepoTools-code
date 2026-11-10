@@ -1748,6 +1748,7 @@ CREATE TABLE object_holds (                    -- each lane's LAST line per obje
   CHECK (NOT exempt OR mode = 'files'));
 CREATE UNIQUE INDEX one_live_claim ON object_holds (object)   -- Rule 1's net under claim's own check
   WHERE NOT exempt AND superseded_by IS NULL AND verb IN ('CLAIMED', 'TAKEOVER');
+CREATE INDEX object_holds_by_line ON object_holds (file, ordinal);  -- step 6 finds a line's holds (ERR-48)
 
 CREATE VIEW holds AS                           -- holders_of (code/lanes-index:1013-1036)
   SELECT object, lane_key, lane, verb, utc_ts, file, ordinal, seq, mode FROM object_holds
