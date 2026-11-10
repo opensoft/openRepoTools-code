@@ -6408,25 +6408,50 @@ pw_keep() {
 # (T418) come here, before the message. The child then replays its own buffered
 # output and runs the verb's tail once, after COMMIT; the parent reaps it,
 # removes the record (T418 writes the done mark first) and exits the child's
-# code. A child that did not take the message as `tail` (its `seam.out` reads
-# `none`: it stopped at its cap, or its parent's line was lost) leaves the tail
-# unrun, which T418 replays; meanwhile the run names it as owed and ends with 0,
-# since the write committed.
+# code. A child whose `seam.out` is not exactly `tail` (`pw_seam_out_read`) did
+# not take the message: it stopped at its cap, or its parent's line was lost.
+# That `seam.out` is `none`, the tail did not run, and the run goes to T418's
+# replay (Y:5007, Y:5339, Y:5342); until T418, the run names the tail as owed and
+# ends with 0, since the write committed.
 pw_committed() {   # <seq>
-  local pm_out=""
   pw_abandon_kept
   pw_send "$PW_DIR" "committed $1" || :
   PW_RC=0
   wait "$PW_CHILD" || PW_RC=$?
   PW_CHILD=""
-  { IFS= read -r pm_out || :; } < "$PW_DIR/seam.out" 2>/dev/null
-  if [ "$pm_out" != tail ]; then
-    note "write $WR_ID committed at seq $1, at attempt ${PW_K}, but its child did not take the message at its seam (seam.out reads ${pm_out:-nothing}; it exited ${PW_RC}), so the verb's after-COMMIT steps did not run, and may be owed: those of lanes-edit.sh $WR_VERB. Do by hand any that did not run."
+  if ! pw_seam_out_read "$PW_DIR"; then
+    note "write $WR_ID committed at seq $1, at attempt ${PW_K}, but its child's seam.out does not say tail (it is ${PW_SEAM_OUT}; the child exited ${PW_RC}), so the child never took the commit, and the verb's after-COMMIT steps did not run, and may be owed: those of lanes-edit.sh $WR_VERB. Do by hand any that did not run."
     pw_record_done
     exit 0
   fi
   pw_record_done
   exit "$PW_RC"
+}
+
+# `seam.out` AFTER `committed <s>` (Y:5007, Y:5339, Y:5342): the parent reads
+# only a `seam.out` holding exactly `tail` as the tail run; an absent, empty or
+# other one is `none`, and the run goes to T418's replay (lane
+# openRepoTools-3, #165 6767463594, question 4). Exactly `tail` is the one line
+# `cp_seam_out` writes, `tail` and its newline, in a regular file, so that no
+# other content is ever taken for a tail that ran. It is read to 16 bytes at
+# most, and a FIFO or a link there is never opened. 0 where it says `tail`; 1
+# otherwise, with PW_SEAM_OUT naming what was there instead.
+PW_SEAM_OUT=""
+pw_seam_out_read() {   # <attempt dir>
+  local so_f="$1/seam.out" so_b=""
+  PW_SEAM_OUT="absent"
+  if [ -L "$so_f" ]; then PW_SEAM_OUT="a symbolic link"; return 1; fi
+  [ -e "$so_f" ] || return 1
+  if [ ! -f "$so_f" ]; then PW_SEAM_OUT="not a regular file"; return 1; fi
+  if [ ! -r "$so_f" ]; then PW_SEAM_OUT="unreadable"; return 1; fi
+  so_b="$(head -c 16 -- "$so_f" 2>/dev/null; printf .)"; so_b="${so_b%.}"
+  case "$so_b" in
+    "tail$WR_NL") PW_SEAM_OUT=tail; return 0 ;;
+    '') PW_SEAM_OUT="empty" ;;
+    "none$WR_NL") PW_SEAM_OUT="none" ;;
+    *) PW_SEAM_OUT="neither tail nor none" ;;
+  esac
+  return 1
 }
 
 # THE CHILD ENDED BEFORE `ready` (Y:5015): the verb's own refusal, or a no-op
