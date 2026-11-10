@@ -908,7 +908,8 @@
 #   LANES_INDEX=off    no `lanes-index sync` after a write, and `--index` reads
 #                      the sources (Amendment 14). It never turns a read ON:
 #                      only a typed `--index` does. It never skips a writer's
-#                      `lanes-index mode` question (feature 007)
+#                      `lanes-index mode` question, nor, on primary, the
+#                      renderer's fork after a write commits (feature 007)
 #
 # Dependencies: bash, git, coreutils. No sed/awk substitution on the payload —
 # every edit is computed with bash string operations, so `/`, `&`, `\` and `|`
@@ -4500,9 +4501,23 @@ cp_archive_steps() {
 # that did both (a `STARTED` that landed and moved the snapshot) makes both
 # forks; `lanes-index` runs one sync at a time per workstation, and a second
 # that finds the lock held leaves the holder a mark naming its source.
+#
+# ON PRIMARY THE REGISTER'S NUDGE IS SUPPRESSED, AND THE INVENTORY'S STAYS
+# (feature 007, T416; FR-027; Y:2976–2979 and Y:5380, S2's nudge). There the
+# register is the database and its files are the renderer's mirror, so a
+# register `sync` would re-index the mirror into the store it came from: a
+# process whose mode is `primary` (`REG_MODE`, the writers' one answer, which
+# an attempt's child also holds) drops the register's flag here, and makes the
+# inventory's fork as before. On primary the register's nudge is replaced by
+# the renderer's fork after `committed` (`pw_render_fork`), which no
+# `LANES_INDEX=off` skips. Only a push sets the register's flag (`cp_pushed`),
+# and an attempt's child never reaches one (Y:5042), so this is the rule for
+# any push a primary process makes. Any other mode, or none asked, is today's
+# nudge, unchanged.
 index_nudge() {
   in_reg="${LANES_INDEX_NUDGE:-0}"; in_inv="${LANES_INDEX_NUDGE_INV:-0}"
   LANES_INDEX_NUDGE=0; LANES_INDEX_NUDGE_INV=0
+  [ "${REG_MODE:-}" != primary ] || in_reg=0
   [ "${LANES_INDEX:-}" = off ] && return 0
   in_bin="$(command -v lanes-index 2>/dev/null || :)"
   [ -n "$in_bin" ] || return 0
