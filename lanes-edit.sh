@@ -22577,12 +22577,11 @@ fi
 # publish act (T420), or `write-handoff`. After `reg_mode_ask` answers
 # `primary` nothing between it and the arm can abort, so a 1 here means only
 # that `pw_run` was entered and returned or was abandoned. An attempt's child
-# runs this file afresh, so its `REG_PW` is 0.
-# FEATURE 007, T422 — BUT NOT `rename-lane`'s HANDOFF ACT (R18): its `primary`
-# is its parent's answer, by assignment (`RL_MOVE`, above), it asked nothing
-# and never met the attempt loop, and its commit in the lane's checkout is its
-# whole job.
-if [ "$REG_PW" = 1 ] && [ -z "$RL_MOVE" ]; then
+# runs this file afresh, so its `REG_PW` is 0. So does `rename-lane`'s
+# handoff act (T422; R18): `REG_ASK=0` skips the question and the arm, so it
+# never sets `REG_PW` and needs no exemption of its own here (lane
+# openRepoTools-3, #165 6774499606, A1; #165 6778890211, T422 (2)).
+if [ "$REG_PW" = 1 ]; then
   die "\`lanes-index mode\` answered primary, and \`$cmd\` left the register's attempt loop without ending, which is an internal error of this lanes-edit.sh. Whether it reached the register is not known: a write already made reads as found when the command is run again. \`$cmd\` wrote no files instead." 69
 fi
 
