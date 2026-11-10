@@ -1385,6 +1385,12 @@ unset LANES__REPLAY_PID LANES__ATTEMPT LANES__CLAIM_FROM LANES__CLAIM_DEAD LANES
 #     `sidecar_lock_dir` answers the path the parent wrote into `<dir>/lock`,
 #     each at its own site below.
 REG_SCRATCH=""; REG_SCRATCH_CLOCK=""; REG_SCRATCH_UTC=""; REG_SCRATCH_RUN=""
+# T504's store variable (`sql`, `files` or `mirror`; empty reads as files),
+# defined here so that `set -u` holds before T504 lands (lane openRepoTools-3,
+# #165 6774499606, T423 (2): whichever of T414 and T504 lands first defines
+# it). In a child the seam's `committed` step is the only place that sets it,
+# to `sql`.
+REG_STORE=""
 # A FAULT UNDER AN HONOURED FLAG. `die` is defined below the resolver, so it is
 # said here in `die`'s own form: one line on stderr, the code under
 # `LANES_DEBUG`, exit 2.
@@ -3650,7 +3656,9 @@ EOF
 #      `untested`); and the cap, `wr_seam_cap_s` (Y:5001).
 #   6. `committed <s>`: `seam.out` is `tail`, fds 1 and 2 go back to 3 and 4,
 #      the buffered `out.1` and then `out.2` are replayed, `REGISTER_SEQ` is
-#      set, lane 5's `reg_flush` (T505) drops the read family, and 0 is
+#      set, `REG_STORE` is set to `sql` (T504's variable: nothing else in a
+#      child sets it, so `committed` alone opens the tail's reads to D17's
+#      path), lane 5's `reg_flush` (T505) drops the read family, and 0 is
 #      returned, so the verb's code after the seam runs once, after COMMIT
 #      (Y:5011).
 #   7. `abandon`: `seam.out` is `none`, and the child exits 75 without its
@@ -3878,6 +3886,7 @@ CS_EOF
   [ ! -f "$cs_d/out.1" ] || cat -- "$cs_d/out.1"
   [ ! -f "$cs_d/out.2" ] || cat -- "$cs_d/out.2" >&2
   REGISTER_SEQ="$cs_s"
+  REG_STORE=sql
   reg_flush
   # THE RENAME IS IN THE ENTRY, as files mode's index commit leaves it: the
   # old path is no longer a pathspec of anything after the seam.
