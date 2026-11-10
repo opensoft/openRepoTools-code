@@ -6,8 +6,8 @@ section 4.4; T220), and lane 1's T106 case (R-F9-3)
 LANE 1'S T106 ALONE, `test_postgres_store_register_roles_connect_by_their_own_
 url_with_one_joined_request` (R-F9-3; lane 1, #165 6752661856), needs no
 engine. It loads `lanes-index` in process, as `test_lanes_index.py`'s
-`load_indexer` does, puts T203's register fake `psql` first on `PATH` behind
-this module's `--version` wrapper, sets an inherited `PGHOSTADDR`,
+`load_indexer` does, puts T203's register fake `psql` first on `PATH`, which
+answers `psql --version` itself (T203b), sets an inherited `PGHOSTADDR`,
 `PGSSLMODE=disable`, `PGOPTIONS` and `PGTARGETSESSIONATTRS`, and makes one
 `request(statements, row)` call of two statements through
 `PostgresStore(cfg, role)`, then one `_query_many(..., snapshot=True, row=...)`
@@ -16,12 +16,12 @@ call on the same store. It fails until lane 1's T106 lands: at `a2073eae`
 register role. Its `[J3]` word is `sql_register_bounds and
 postgres_store_register_roles`.
 
-- THE `--version` WRAPPER (`VERSION_WRAPPER`): T106 asks `psql --version` once
-  per process (L1v4.10:152), and T203's fake as built does not answer it. The
-  wrapper answers `psql (PostgreSQL) 16.4`, logs the probe apart, and hands
-  every other call to the fake, whose log then holds only the calls that
-  carry a request. Lane 2's T203b gives the fake that answer; this wrapper
-  goes once it is in.
+- THE `--version` PROBE: T106 asks `psql --version` once per process
+  (L1v4.10:152). T203b's fake answers it itself, `psql (PostgreSQL) 16.4`,
+  and logs it as an entry of its own kind (`"kind": "version"`, no `call`),
+  so the calls that carry a request are the entries with no such `kind`.
+  This module's own `--version` wrapper, which T220 carried until T203b was
+  in, is gone (T220d; F10's item 25).
 
 D9'S PHASE-N ROWS are real-engine tests, on `tests/pgcluster.py`'s `pg`. The
 test plan names the rows but gives them no ids, so each row has a word that
@@ -47,6 +47,18 @@ commands, and lane 5's guard through `lanes-edit.sh guard`, from T203's
 flipped copy where the path reads on primary. They fail until L1-A2, L1-A13,
 L1-A15, L1-A18 and L5-A3 land, on T227's template and T228's logins; until
 T228 a path's login is made here, in the row's group role.
+
+THE GUARD'S TWO ROWS' SESSION (T203c's `guard_session`; T220d): today's guard
+reads this workstation's session records after its workspace and tmux checks
+and before any register read, and refuses 2 where none is live in its window.
+So each guard row, `guard` and `answer-2`, is given a live session record
+and a stand-in `tmux` by `guard_session(home, bin, checkout)` (the checkout
+under `$HOME/projects`), its `env()` and its `hook_input()`, torn down by
+`request.addfinalizer(session.close)`; and the case's base environment is
+`guard_strip_env(os.environ)`, which takes `PROJECTS_ROOT` and
+`AGENT_PROTOCOL_ROOT` out beside the lane's, the harness's, tmux's and
+libpq's. No register row names the session here, so each row takes
+`guard_session`'s own session id.
 
 THE TIMING WRAPPER (`TIMING_PSQL`): T203's shim records neither a call's
 start time nor its stderr, so F4's oracle, "the call ending with 57014 ... no
@@ -107,20 +119,6 @@ ROLES = {
                         "t220_reader"),
 }
 
-VERSION_WRAPPER = r'''#!/usr/bin/env python3
-# T220's `psql --version` wrapper: the version T106 asks for once per process
-# (L1v4.10:152), logged apart; every other call goes to T203's register fake.
-import os, sys
-here = os.path.dirname(os.path.abspath(__file__))
-if sys.argv[1:] == ["--version"]:
-    with open(os.path.join(here, "psql-version.log"), "a", encoding="utf-8") as handle:
-        handle.write("--version\n")
-    sys.stdout.write("psql (PostgreSQL) 16.4\n")
-    sys.exit(0)
-fake = os.path.join(here, "register-fake-psql")
-os.execv(fake, [fake] + sys.argv[1:])
-'''
-
 
 def load_indexer():
     """`lanes-index` as a module, fresh, as `test_lanes_index.py` loads it.
@@ -166,9 +164,9 @@ def test_postgres_store_register_roles_connect_by_their_own_url_with_one_joined_
     store_role, row, url_key, pass_key, login = ROLES[role]
     bindir = tmp_path / "bin"
     bindir.mkdir()
-    for name, text in (("register-fake-psql", REGISTER_FAKE_PSQL), ("psql", VERSION_WRAPPER)):
-        (bindir / name).write_text(text, encoding="utf-8")
-        (bindir / name).chmod(0o755)
+    # T203b: the fake answers `psql --version` itself, so it is `psql`.
+    (bindir / "psql").write_text(REGISTER_FAKE_PSQL, encoding="utf-8")
+    (bindir / "psql").chmod(0o755)
     passfiles = {"register_passfile": _private(tmp_path / "writer.pgpass"),
                  "reader_passfile": _private(tmp_path / "reader.pgpass")}
     config = _private(tmp_path / "conf" / "lanes-index.conf", "\n".join([
@@ -201,7 +199,7 @@ def test_postgres_store_register_roles_connect_by_their_own_url_with_one_joined_
                            f"{row!r}) raised {error!r}")
 
     records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
-    calls = [r for r in records if r["argv"] != ["--version"]]
+    calls = [r for r in records if r.get("kind") != "version"]
     assert len(calls) == 1, f"one psql call carries the request: {len(calls)}"
     call = calls[0]
     assert "refused" not in call, call["refused"]
@@ -234,7 +232,7 @@ def test_postgres_store_register_roles_connect_by_their_own_url_with_one_joined_
                            f"snapshot=True, row={row!r}) raised {error!r}")
     assert requests == [row], f"one request carries the snapshot: {requests}"
     records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
-    calls = [r for r in records if r["argv"] != ["--version"]]
+    calls = [r for r in records if r.get("kind") != "version"]
     assert len(calls) == 2, f"one more psql call carries the snapshot: {len(calls) - 1}"
     assert "refused" not in calls[1], calls[1]["refused"]
     parts = [part.strip() for part in calls[1]["stdin"].strip().rstrip(";").split("\\;")]
@@ -245,9 +243,8 @@ def test_postgres_store_register_roles_connect_by_their_own_url_with_one_joined_
     # CLI4.10:234 (L1v4.10:151): #160's `\echo` marker goes as a `COPY`.
     marker = r"COPY (SELECT E'\x1eLANES-INDEX-NEXT') TO STDOUT"
     assert marker in parts[begin[0]:], f"the COPY marker follows the BEGIN: {parts}"
-    probes = bindir / "psql-version.log"
-    assert not probes.exists() or len(probes.read_text().splitlines()) <= 1, \
-        "psql --version is asked once per process"
+    probes = [r for r in records if r.get("kind") == "version"]
+    assert len(probes) <= 1, f"psql --version is asked once per process: {len(probes)}"
 
 
 # ====================================================== D9's rows (real engine)
@@ -346,12 +343,6 @@ sys.stderr.buffer.write(proc.stderr)
 sys.exit(proc.returncode)
 '''
 
-#: FAKE `tmux` for the guard's rows: the window is the lane.
-FAKE_TMUX = """#!/bin/sh
-case "$*" in *display-message*) printf '%s\\n' "${T220_WINDOW:-repoA-2}" ;; esac
-exit 0
-"""
-
 #: D9'S PHASE-N ROWS (AT-D9's table; the block's T220): the word that leads
 #: each id; how the path runs; the group role its login is in; its expected
 #: exit; the design's bound on the elapsed time in s; whether that bound is
@@ -391,10 +382,11 @@ class Bench:
     `lanes-edit.sh` beside T203's flipped `lanes-index` (the copy rule, CLI4.5
     section 6), a configuration naming the endpoint the fault gives, a login
     of the row's group where it needs one, and the timing wrapper first on
-    `PATH`."""
+    `PATH`. For the guard's two rows it also makes a live session record and
+    a stand-in `tmux` (`guard_session`, T203c) when the row is run."""
 
     def __init__(self, pg, tmp_path: Path, request):
-        from sql_register_helpers import flipped_copy
+        from sql_register_helpers import flipped_copy, guard_strip_env
         self.pg, self.root = pg, tmp_path
         self.bin = tmp_path / "bin"
         self.bin.mkdir()
@@ -404,8 +396,6 @@ class Bench:
                 shutil.copy2(REPO / name, tmp_path / "tool" / name)
         (self.bin / "psql").write_text(TIMING_PSQL, encoding="utf-8")
         (self.bin / "psql").chmod(0o755)
-        (self.bin / "tmux").write_text(FAKE_TMUX, encoding="utf-8")
-        (self.bin / "tmux").chmod(0o755)
         self.timing = self.bin / "psql-timing.log"
         self.passfile = _private(tmp_path / "conf" / "pgpass")
         self.origin = tmp_path / "origin.git"
@@ -415,8 +405,11 @@ class Bench:
         # guard returns 0 before reading anything (line W4a's T215b).
         self.wip = tmp_path / "projects" / "wip"
         self.wip.parent.mkdir(parents=True)
-        env = {k: v for k, v in os.environ.items()
-               if not k.startswith(("LANES_", "CLAUDE_", "TMUX", "PG"))}
+        # THE BASE ENVIRONMENT, T203c's: the lane's, the harness's, tmux's and
+        # libpq's variables out, and `PROJECTS_ROOT` and `AGENT_PROTOCOL_ROOT`
+        # with them (F10's item 28), which would move the guard's scope test
+        # and `workspace.yaml` away from this bench's `$HOME`.
+        env = guard_strip_env(os.environ)
         env.update(HOME=str(tmp_path), XDG_STATE_HOME=str(tmp_path / "state"),
                    XDG_CONFIG_HOME=str(tmp_path / "config"), TMPDIR=str(tmp_path),
                    LANES_WORKSTATION="Eagle", LANES_NO_GITHUB="1", LANES_REPO=str(self.wip),
@@ -442,6 +435,18 @@ class Bench:
         self.c = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(self.wip), env=env,
                                 capture_output=True, text=True, check=True).stdout.strip()
         self.request = request
+        self.session = None
+
+    def guard_session(self):
+        """The guard rows' live session (T203c): a record on this workstation
+        for a live pid, and a stand-in `tmux` that answers the guard's window
+        queries, written to this bench's `bin`, for the checkout under
+        `$HOME/projects`. Made once, torn down when the test ends."""
+        from sql_register_helpers import guard_session
+        if self.session is None:
+            self.session = guard_session(self.root, self.bin, self.wip)
+            self.request.addfinalizer(self.session.close)
+        return self.session
 
     def login(self, group: str) -> str:
         """A login of `group`, made here until T228's logins exist."""
@@ -468,15 +473,14 @@ class Bench:
         index = [sys.executable, str(self.copy)]
         if row in ("guard", "answer-2"):
             argv = ["bash", str(tool / "lanes-edit.sh"), "guard"]
-            env.update(TMUX="/tmp/t220,1,0", TMUX_PANE="%1", T220_WINDOW="repoA-2")
-            # The hook's JSON is compact, as the harness sends it: the guard's
-            # `jstr` reads `"cwd":"<dir>"` with no blank after the colon. No
-            # live session record is written, so today's guard stops at its
-            # session-record check, clause (d), before any register read.
-            stdin = json.dumps({"hook_event_name": "UserPromptSubmit",
-                                "session_id": str(uuid.uuid4()), "cwd": str(self.wip),
-                                "prompt": "2" if row == "answer-2" else "hello"},
-                               separators=(",", ":"))
+            # THE SESSION (T203c): a live record in the window `repoA-2` and a
+            # stand-in `tmux`, so that the guard gets past its session-record
+            # check, clause (d), to its register read. The hook's JSON is
+            # compact, as the harness sends it: the guard's `jstr` reads
+            # `"cwd":"<dir>"` with no blank after the colon.
+            session = self.guard_session()
+            env = session.env(env)
+            stdin = session.hook_input("2" if row == "answer-2" else "hello")
         elif row == "reader":
             argv = index + ["register", "read", "--prefetch", "--cache",
                             str(self.root / "cache" / "reg"), "--files", "register,aliases"]
@@ -777,13 +781,13 @@ def test_import_and_reconcile_set_their_bounds_at_connect(tmp_path):
     `lock_timeout=2000` and `statement_timeout=300s` at connect, under a
     330 s client timer; `reconcile` carries its row's bounds, 1000 ms and
     10 s, at connect (AT-D9's table; T106's `PGOPTIONS`, Y:1573). No engine:
-    T203's register fake, behind the `--version` wrapper, records each call."""
+    T203's register fake, which answers `psql --version` itself (T203b),
+    records each call."""
     from sql_register_helpers import REGISTER_FAKE_PSQL
     bindir = tmp_path / "bin"
     bindir.mkdir()
-    for name, text in (("register-fake-psql", REGISTER_FAKE_PSQL), ("psql", VERSION_WRAPPER)):
-        (bindir / name).write_text(text, encoding="utf-8")
-        (bindir / name).chmod(0o755)
+    (bindir / "psql").write_text(REGISTER_FAKE_PSQL, encoding="utf-8")
+    (bindir / "psql").chmod(0o755)
     passfile = _private(tmp_path / "conf" / "pgpass")
     url = "postgresql://t220_fp@127.0.0.1:55432/register_db"
     config = _private(tmp_path / "conf" / "lanes-index.conf", "\n".join([
@@ -817,7 +821,7 @@ def test_import_and_reconcile_set_their_bounds_at_connect(tmp_path):
         subprocess.run([sys.executable, str(INDEXER), *argv], capture_output=True, text=True,
                        env=env, cwd=str(wip), timeout=120, stdin=subprocess.DEVNULL)
         calls = [json.loads(l) for l in log.read_text().splitlines()] if log.exists() else []
-        calls = [c for c in calls if c["argv"] != ["--version"]]
+        calls = [c for c in calls if c.get("kind") != "version"]
         assert calls, f"{argv[0]} made no psql call"
         for call in calls:
             assert call["connect_timeout"] == str(C), (argv[0], call["connect_timeout"])
