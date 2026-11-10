@@ -5989,9 +5989,13 @@ pw_attempt_dir() {
 # never by position"), through `cat -v`, so a NUL or a carriage return cannot
 # vanish from a value. Readable is: `format=1` (§2.8), each key once, a
 # lower-case UUID for `generation=` and `write_id=`, whole seconds for `n=`,
-# `clock=` and `not_after=`, and `switch=primary` with `marker=present`, which
-# a snapshot that answers 0 must read (§3.2's check 4). 1 otherwise: a failed
-# read, 69.
+# `clock=` and `not_after=`, and, where `found=` is absent, `switch=primary`
+# with `marker=present`, which a snapshot that answers 0 must then read (§3.2's
+# check 4). A `found=` answer ends at §3.2's check 2, before the switch is
+# checked, so its `switch=` and `marker=` are not read: "a write that is in the
+# journal is never told 69 because a rollback has since moved the switch"
+# (Y:4996; Y:2518; lane openRepoTools-4's review REV415, M1). 1 otherwise: a
+# failed read, 69.
 pw_snap_read() {   # <the snapshot's stdout, in a file>
   local sr_out="" sr_line="" sr_key="" sr_val="" sr_seen=" " sr_fmt="" sr_sw="" sr_mk=""
   PW_S_GEN=""; PW_S_WID=""; PW_S_FOUND=""; PW_S_N=""; PW_S_CLOCK=""; PW_S_NOT_AFTER=""
@@ -6019,7 +6023,8 @@ pw_snap_read() {   # <the snapshot's stdout, in a file>
       not_after) PW_S_NOT_AFTER="$sr_val" ;;
     esac
   done
-  [ "$sr_fmt" = 1 ] && [ "$sr_sw $sr_mk" = "primary present" ] || return 1
+  [ "$sr_fmt" = 1 ] || return 1
+  [ -n "$PW_S_FOUND" ] || [ "$sr_sw $sr_mk" = "primary present" ] || return 1
   wr_is_uuid "$PW_S_GEN" && wr_is_uuid "$PW_S_WID" || return 1
   wr_is_count "$PW_S_N" && wr_is_count "$PW_S_CLOCK" && wr_is_count "$PW_S_NOT_AFTER" || return 1
   [ -z "$PW_S_FOUND" ] || wr_is_count "$PW_S_FOUND" || return 1
