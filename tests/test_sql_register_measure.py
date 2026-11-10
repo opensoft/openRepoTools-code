@@ -1,0 +1,1116 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Feature 007's test 9, the measured cost of one write and what a lane feels
+(AT-9; the test plan's section 5; opensoft/openRepoTools#165).
+
+THIS MODULE TODAY holds lane 2's T226 part (L2-N8, phase N):
+
+  * `test_one_write_cost_is_recorded_and_every_write_commits[<path>-<store>]`
+    (M1 and M2), at the fixture's settings and durable: `[new-psql-<store>]`,
+    200 writes through a new `psql` process each; `[design-<store>]`, M1 in
+    the design's form (Q7 (A'')), a `register snapshot` call and a `register
+    commit` call, each a `lanes-index` process, cold once and 20 warm; and
+    `[session-<store>]`, 200 writes in one session under `\\timing`;
+  * `test_a_tls_and_scram_connect_on_loopback_is_timed_and_verified` (M12's
+    CI row), on T229's TLS cluster;
+  * lane 3's `--last` cost rows (#165 6755922262; F10-OWED item 35):
+    `test_journal_last_is_explained_per_statement_and_timed_against_t_r[<log>]`,
+    on a clone of `tmpl_imported` for its largest log and for a renamed log,
+    then with the journal grown 2x and 5x; and
+    `test_swapped_with_several_candidates_is_timed_beside_its_journal_last_calls`.
+
+T226's guard parts, M5b's `test_todays_direct_guard_is_timed_in_its_four_parts`
+and M10's `test_the_guards_register_parse_is_timed_on_a_real_sized_register_beside_todays_six_reads_through_git`,
+are in `tests/test_sql_register_guard.py`, which a later line writes once
+T203c's session-record helper is built.
+
+EACH CASE ASSERTS CORRECTNESS ONLY (section 5.4): every timed write
+committed, so the journal grew by exactly n and each `write_id` appears once;
+every call exited 0 with the answer it must give. Its figures go to the
+job's log and to `$GITHUB_STEP_SUMMARY` where that is set, each row naming
+the host, the store, the path, the statistic and n, and the link (the RTT,
+TLS, and the path's connections and Query messages from M13), never into a
+CI threshold. Statistics are section 5.3's: the first call apart as cold,
+then median and p95 by nearest rank, min-max and n over the warm calls.
+
+THE REGISTER, "against an import", in T210's form (lane 2's
+`test_sql_register_render.py`, whose helpers are copied below, since each
+task owns one file): a files-mode estate at commit C with a bare origin,
+loaded by AT-LR006's route (TP:4610-4615) as `lanes_register_writer`:
+`commit_write` with an `import` entry of C's render set, a `cutover` entry
+writing D21's five `lanes/STORE` fields, then `record_marker`, so the switch
+is `primary` with the marker `present`. The `--last` rows clone
+`tmpl_imported` instead (T227; N2's form in `test_sql_register_order.py`),
+since lane 3 asks for them there, and bring the clone to `primary` the same
+way.
+
+A WRITE HERE IS ONE APPENDED LOG LINE (a `log NOTED` line), sent as the
+commit call sends it (contract section 2.3; lane 1's
+`register_commit_request` at `refs/l1/T112`): one request on stdin,
+`BEGIN ISOLATION LEVEL SERIALIZABLE \\; SELECT lanes_register.commit_write(n,
+'<write id>', <client>, '<generation>', '<entry>'::jsonb) \\; COMMIT;`, with
+section 2.2's argv and D9's commit row in `PGOPTIONS`. Its entry carries the
+edit and the `files` row, the image's digest computed here, and no
+structured rows, which `commit_write` takes as empty lists.
+
+REAL ENGINE. Every case depends on `pg_engine` (T205), so without
+PostgreSQL 16 each skips with T205's banner. They fail until lane 1's T107
+(L1-A6, the schema and `commit_write`), T111 (L1-A9, `register snapshot`),
+T112 (L1-A10, `register commit`) and T114 (L1-A12, `journal --last`), lane
+5's L5-A3 and L5-A5 (T506's `swapped` on primary), and lane 2's T227 (the
+bootstrap's template and `tmpl_imported`), T228 and T229 (the TLS cluster)
+land. `lanes-index` runs as T203's flipped copy, `RENDER_GIT_HALF = True`,
+so `mode=primary` loads (open point 3), and connects as two logins of this
+module's own, members of the writer and the reader groups, by the cluster's
+trust.
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import time
+import uuid
+from pathlib import Path
+
+import pytest
+
+import pgcluster
+from conftest import REPO, WINDOWS_SKIP
+from pgcluster import Database
+from sql_register_helpers import LANES_INDEX, RENDER_GIT_HALF_LINE, flipped_copy
+
+pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
+    shutil.which("bash") is None or shutil.which("git") is None,
+    reason="the lane tooling is bash over git")]
+
+LANES_EDIT = REPO / "lanes-edit.sh"
+
+#: The register's schema, `register_schema=`'s default (contract section 2.5).
+SCHEMA = "lanes_register"
+WRITER, READER = "lanes_register_writer", "lanes_register_reader"
+#: The logins `lanes-index` and this module's own calls connect as. Made
+#: once per cluster, members of the writer and the reader groups, with no
+#: password.
+LOGIN_WRITER, LOGIN_READER = "t226_register_writer", "t226_register_reader"
+#: T227's template with test 7's register imported, and the database-level
+#: grants a clone does not copy (section 1.4; N2's `CONNECT_TO`).
+IMPORTED = "tmpl_imported"
+CONNECT_TO = "lanes_register_writer, lanes_register_reader, lanes_indexer"
+
+WS = "Eagle"
+AUTHOR = "T226 measure <t226@example.invalid>"
+OPERATOR = "repoA-2"
+MARKER_COMMIT = "e" * 40
+STORE_UTC = "2026-11-09T10:00:00Z"
+
+#: The register's punctuation, spelled by code point so no raw character
+#: enters this file: the em dash, the middle dot of a state cell, the arrow.
+EM, DOT, ARROW = chr(0x2014), chr(0x00B7), chr(0x2192)
+
+SID_A1 = "aaaaaaaa-0001-4000-8000-00000000a001"
+SID_A2 = "aaaaaaaa-0003-4000-8000-00000000a003"
+SID_Z1 = "eeeeeeee-0001-4000-8000-00000000e001"
+TIP = "0123456789abcdef0123456789abcdef01234567"
+
+RENDER_SET = re.compile(r"^lanes/(LANES\.md|aliases\.tsv|archive/[^/]+\.md"
+                        r"|log/(?!README\.md$)[^/]+\.md)$")
+LOG_PATH = re.compile(r"^lanes/log/(?!README\.md$)[^/]+\.md$")
+STORE_PATH = "lanes/STORE"
+
+#: Section 2.2's one argv for every register call (F10-OWED item 4), and
+#: D9's rows as `PGOPTIONS` (lane 1's `REGISTER_BOUNDS` at `refs/l1/T114`,
+#: CLI412:250-255): the commit's, and the reader's for `journal --last`.
+PSQL_REGISTER_ARGV = ("--no-psqlrc", "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1",
+                      "-v", "VERBOSITY=verbose", "-v", "SHOW_CONTEXT=never")
+COMMIT_OPTIONS = "-c lock_timeout=2000 -c statement_timeout=5000"
+READ_STATEMENT_MS = 3000
+#: `T_r` = `N_a`*`c` + 4 s (CLI412:255): 6 s at `c` = 2 and one address,
+#: the URL's `connect_timeout` default (CLI412:296).
+T_R_S = 1 * 2 + 4
+
+N_WRITES = 200       # M1 and M2: at least 200 writes (section 5.3; R1)
+N_WARM = 20          # M7, M12 and act 3's rows: 20 warm runs and the first
+
+def _row(lane: str, sid: str, state: str, started: str = "2026-10-01T00:00Z") -> str:
+    return (f"| `{lane}` | harness `{sid}` | Eagle / test / brett | {started} | none "
+            f"| handoffs/{lane}.md | {state} |")
+
+
+#: AT-1's fixture register at C ("Fixture"): three lanes, one of them
+#: archived; `aliases.tsv` entries; a lane with `HOLD`, `LANDING` and
+#: `LANDED` lines; a log with `WORD` lines whose UTC carries milliseconds
+#: (Q4(d)(i)). `lanes/repos.tsv` and `lanes/log/README.md` are outside the
+#: render set, and `register snapshot --tree` takes them from the checkout.
+SEED = {
+    "lanes/LANES.md": "\n".join([
+        f"# LANES.md {EM} test 1's fixture register",
+        "",
+        "| lane | session id | workstation / env / user | started (UTC) | objects owned "
+        "| handoff path | state |",
+        "|---|---|---|---|---|---|---|",
+        _row("repoA-1", SID_A1, f"LIVE {DOT} 2026-10-01T01:00:00Z {DOT} working"),
+        _row("repoA-2", SID_A2, f"PAUSED {DOT} 2026-10-01T02:00:00Z {DOT} parked"),
+        "",
+        f"HOLD {EM} lane repoA-1 (Eagle), window w, 2026-10-01T03:00:00Z: opensoft/repoA main "
+        f"{TIP} for a frozen window",
+        f"LANDING {EM} lane repoA-1, session {SID_A1}@Eagle, 2026-10-01T03:10:00Z, PR #7 into "
+        f"opensoft/repoA main",
+        f"LANDED {EM} lane repoA-1, session {SID_A1}@Eagle, 2026-10-01T03:15:00Z, PR #7 into "
+        f"opensoft/repoA main {ARROW} abc1234",
+        ""]),
+    "lanes/aliases.tsv": "# old\tnew\tutc\nrepoOld-1\trepoA-2\t2026-09-30T00:00:00Z\n",
+    "lanes/archive/LANES-retired.md": "\n".join([
+        "# retired rows (Amendment 19(d))", "",
+        _row("repoZ-1", SID_Z1, f"RETIRED {DOT} 2026-09-02T00:00:00Z {DOT} retired"),
+        ""]),
+    "lanes/log/repoA-1.md": "\n".join([
+        f"# lane repoA-1 {EM} object log (lane-collision-protocol Amendment 7)",
+        f"STARTED {EM} lane repoA-1, session {SID_A1}@Eagle, 2026-10-01T00:00:00Z, "
+        f"lane:repoA-1 {ARROW} home opensoft/repoA; dir /work/repoA1",
+        ""]),
+    "lanes/log/repoA-2.md": "\n".join([
+        f"# lane repoA-2 {EM} object log (lane-collision-protocol Amendment 7)",
+        f"STARTED {EM} lane repoA-2, session {SID_A2}@Eagle, 2026-10-01T02:00:00Z, "
+        f"lane:repoA-2 {ARROW} home opensoft/repoA; dir /work/repoA2",
+        f"NOTED {EM} lane repoA-2, session {SID_A2}@Eagle, 2026-10-01T02:10:00.123Z, "
+        f"lane:repoA-2 {EM} a stamp with milliseconds",
+        f"NOTED {EM} lane repoA-2, session {SID_A2}@Eagle, 2026-10-01T02:11:00.456Z, "
+        f"lane:repoA-2 {EM} another",
+        ""]),
+    "lanes/log/README.md": "# the object logs\n",
+    "lanes/repos.tsv": "# alias\towner/repo\nrepoA\topensoft/repoA\n",
+}
+
+
+# ------------------------------------------------------------------ the estate
+def git(cwd: Path, *args: str, env: dict | None = None) -> str:
+    proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True,
+                          env=env, check=False)
+    assert proc.returncode == 0, f"git {' '.join(args)} in {cwd}: {proc.stderr}{proc.stdout}"
+    return proc.stdout
+
+
+def git_env(home: Path) -> dict:
+    """A git with no person's configuration in it, and an identity of its own."""
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("GIT_", "PG", "LANES_", "TMUX"))}
+    env.update(HOME=str(home), GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+               GIT_AUTHOR_NAME="T226 estate", GIT_AUTHOR_EMAIL="t226@example.invalid",
+               GIT_COMMITTER_NAME="T226 estate", GIT_COMMITTER_EMAIL="t226@example.invalid",
+               LC_ALL="C")
+    return env
+
+
+class Estate:
+    """A bare origin and the lane's checkout at C: SEED (or `files`) committed
+    and pushed to `main`. `register snapshot --checkout` reads
+    `lanes/repos.tsv` and `lanes/log/README.md` from its `origin/main`."""
+
+    def __init__(self, root: Path, files: dict = None):
+        self.root = root
+        self.home = root / "home"
+        self.home.mkdir(parents=True, exist_ok=True)
+        self.env = git_env(self.home)
+        self.origin = root / "origin.git"
+        self.checkout = root / "checkout"
+        git(root, "init", "-q", "--bare", "-b", "main", str(self.origin), env=self.env)
+        git(root, "clone", "-q", str(self.origin), str(self.checkout), env=self.env)
+        self.files = dict(files if files is not None else SEED)
+        for path, text in self.files.items():
+            target = self.checkout / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(text.encode("utf-8"))
+        git(self.checkout, "add", "-A", env=self.env)
+        git(self.checkout, "commit", "-q", "-m", "C: the fixture register", env=self.env)
+        git(self.checkout, "push", "-q", "origin", "main", env=self.env)
+        self.c = git(self.checkout, "rev-parse", "HEAD", env=self.env).strip()
+        self.lanes_tree = git(self.checkout, "rev-parse", f"{self.c}:lanes", env=self.env).strip()
+
+    def render_set(self) -> dict:
+        """C's render set, {path: bytes}."""
+        return {p: t.encode("utf-8") for p, t in self.files.items() if RENDER_SET.match(p)}
+
+    def state(self) -> tuple:
+        """What a write through the storage layer never changes in the
+        checkout: HEAD, `status --porcelain=v1 -uall`, the index's digest and
+        `origin/main`."""
+        index = self.checkout / ".git" / "index"
+        return (git(self.checkout, "rev-parse", "HEAD", env=self.env),
+                git(self.checkout, "status", "--porcelain=v1", "-uall", env=self.env),
+                hashlib.sha256(index.read_bytes()).hexdigest() if index.exists() else "-",
+                git(self.checkout, "rev-parse", "origin/main", env=self.env))
+
+
+# ------------------------------------------------------------------ the SQL side
+def psql(db, script: str, role: str = None) -> subprocess.CompletedProcess:
+    """One `psql` as the fixture's superuser, as `role` where one is named,
+    with the commit call's settings, so a refusal's first stderr line is
+    `ERROR:  <SQLSTATE>: <message>`."""
+    head = "\\set VERBOSITY verbose\n\\set SHOW_CONTEXT never\nSET client_encoding = 'UTF8';\n"
+    if role:
+        head += f"SET ROLE {role};\n"
+    return subprocess.run([db.psql_bin, "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1"],
+                          input=head + script, capture_output=True, encoding="utf-8",
+                          errors="replace", env=db.env(appname="t226"), timeout=120, check=False)
+
+
+def sql(db, script: str, role: str = None) -> str:
+    proc = psql(db, script, role)
+    assert proc.returncode == 0, (f"psql{' as ' + role if role else ''} exited "
+                                  f"{proc.returncode}: {proc.stderr.strip()}\n{script}")
+    return proc.stdout.strip()
+
+
+def rows(db, query: str) -> list:
+    """`query`'s rows as JSON objects, read in the register's schema."""
+    out = sql(db, f"SET search_path TO {SCHEMA};\n"
+                  f"SELECT coalesce(json_agg(t), '[]'::json) FROM ({query}) t;")
+    return json.loads(out.splitlines()[-1])
+
+
+def head(db) -> int:
+    return rows(db, "SELECT seq FROM register_head")[0]["seq"]
+
+
+def _lines(data: bytes) -> list:
+    text = data.decode("utf-8")
+    assert text.endswith("\n"), "every fixture file ends with a newline"
+    return text[:-1].split("\n")
+
+
+def _entry(kind: str, verb: str, journal: dict = None, **parts) -> dict:
+    body = {"kind": kind, "verb": verb, "lane": OPERATOR, "workstation": WS, "author": AUTHOR,
+            "message": f"t226: {kind}"}
+    body.update(journal or {})
+    return {"journal": body, "not_after": "2100-01-01T00:00:00Z", **parts}
+
+
+def _creates(files: dict) -> tuple:
+    """Each of `files` ({path: bytes}) created, then its lines appended, and
+    each path's digest as it renders: the edits and the `files` rows."""
+    edits, ordinal = [], 0
+    for path in sorted(files):
+        ordinal += 1
+        edits.append({"ord": ordinal, "op": "create", "path": path})
+        for text in _lines(files[path]):
+            ordinal += 1
+            edits.append({"ord": ordinal, "op": "append", "path": path, "new_text": text})
+    return edits, [{"path": p, "present": True, "sha256": hashlib.sha256(files[p]).hexdigest(),
+                    "final_newline": True} for p in sorted(files)]
+
+
+def _commit_call(db, base: int, body: dict) -> int:
+    """The commit call as the writer sends it, as `lanes_register_writer`
+    (section 1.3's step 3; AT-LR006's fixture), and the seq it committed."""
+    gen = rows(db, "SELECT generation FROM register_switch")[0]["generation"]
+    version = rows(db, "SELECT version FROM schema_version")[0]["version"]
+    literal = json.dumps(body, ensure_ascii=True).replace("'", "''")
+    out = sql(db, f"BEGIN ISOLATION LEVEL SERIALIZABLE;\n"
+                  f"SELECT {SCHEMA}.commit_write({base}, '{uuid.uuid4()}'::uuid, {version}, "
+                  f"'{gen}'::uuid, '{literal}'::jsonb);\nCOMMIT;", WRITER)
+    return int(out.splitlines()[-1])
+
+
+def import_to_primary(db, estate: Estate) -> int:
+    """AT-LR006's route (TP:4610-4615) over C: an `import` entry of C's render
+    set, a `cutover` entry, then `record_marker`, by the documented functions
+    as `lanes_register_writer`. Returns the import's seq."""
+    edits, files = _creates(estate.render_set())
+    imported = _commit_call(db, head(db), _entry(
+        "import", "import", {"git_commit": estate.c, "git_tree": estate.lanes_tree},
+        edits=edits, files=files))
+    store = "".join(f"{line}\n" for line in (
+        "store=primary", "database=t226", f"import={estate.c}",
+        f"lanes-tree={estate.lanes_tree}", f"utc={STORE_UTC}")).encode("utf-8")
+    edits, files = _creates({STORE_PATH: store})
+    cut = _commit_call(db, imported, _entry("cutover", "cutover", edits=edits, files=files))
+    version = rows(db, "SELECT version FROM schema_version")[0]["version"]
+    marker = sql(db, f"SELECT {SCHEMA}.record_marker({version}, {cut}, '{MARKER_COMMIT}', "
+                     f"'{WS}');", WRITER)
+    assert marker.splitlines()[-1] == "present", f"record_marker answered {marker!r}"
+    assert rows(db, "SELECT mode, marker_state FROM register_switch") == \
+        [{"mode": "primary", "marker_state": "present"}]
+    return imported
+
+
+# ------------------------------------------------------------------ lanes-index
+def require_the_constant() -> None:
+    """The flipped copy needs Q6(c)'s constant (lane 1's T105, L1-A4): an
+    assertion, so a case without it fails by saying so."""
+    assert len(RENDER_GIT_HALF_LINE.findall(LANES_INDEX.read_bytes())) == 1, (
+        f"{LANES_INDEX} holds no single `RENDER_GIT_HALF = ...` line, Q6(c)'s build constant "
+        f"(L1-A4, lane 1's T105), so no copy can be flipped to load mode=primary")
+
+
+def flipped(tmp_path: Path, name: str = "bin") -> Path:
+    """T203's flipped copy, `RENDER_GIT_HALF = True`, so `mode=primary` loads,
+    with `lanes-edit.sh` beside it (the copy rule, CLI4.5 section 6)."""
+    require_the_constant()
+    copy = flipped_copy(LANES_INDEX, tmp_path / name, True)
+    shutil.copy2(str(LANES_EDIT), str(copy.parent / "lanes-edit.sh"))
+    return copy
+
+
+def ensure_logins(db) -> None:
+    """The writer's and the reader's login, once per cluster (roles are
+    cluster-wide), members of their groups, with no password."""
+    for login, group in ((LOGIN_WRITER, WRITER), (LOGIN_READER, READER)):
+        sql(db, f"DO $l$ BEGIN CREATE ROLE {login} LOGIN IN ROLE {group}; "
+                f"EXCEPTION WHEN duplicate_object THEN NULL; END $l$;")
+
+
+def primary_config(path: Path, register_url: str, reader_url: str,
+                   passfile: Path | None = None) -> Path:
+    """A 0600 `lanes-index.conf` with `mode=primary` and the register's two
+    URLs (contract section 2.5), outside every work tree."""
+    lines = ["mode=primary", f"register_url={register_url}", f"reader_url={reader_url}"]
+    if passfile is not None:
+        lines += [f"register_passfile={passfile}", f"reader_passfile={passfile}"]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+    return path
+
+
+def index_env(tmp_path: Path, conf: Path, home: Path, **extra) -> dict:
+    """The environment `lanes-index` runs in: no inherited `PG*`, `LANES_*`,
+    `GIT_*` or `TMUX*` (#160's run-wide `LANES_INDEX=off` among them), this
+    case's configuration, state directory and git identity."""
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("PG", "LANES_", "GIT_", "TMUX"))}
+    env.update(git_env(home))
+    env.update(LANES_INDEX_CONFIG=str(conf), XDG_STATE_HOME=str(tmp_path / "state"), LC_ALL="C")
+    env.update(extra)
+    return env
+
+
+def run_index(copy: Path, args, env: dict, cwd: Path = None) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, str(copy), *[str(a) for a in args]],
+                          capture_output=True, encoding="utf-8", errors="replace", env=env,
+                          timeout=120, cwd=str(cwd) if cwd else None, check=False,
+                          stdin=subprocess.DEVNULL)
+
+
+def keys(stdout: str) -> dict:
+    """A `key=value` output's keys, each its first value (section 3.2)."""
+    found = {}
+    for line in stdout.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key not in found:
+            found[key] = value
+    return found
+
+
+def utc_of(epoch: int) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
+
+
+def _canonical_rows(changes: list, images: dict) -> str:
+    """Section 3.2's canonical rows for every path in `changes.tsv`, sorted by
+    path bytewise, each LF-ended: `<path>` TAB `1` TAB `<sha256>`, or `0` and
+    `-` for a path the write removes."""
+    out = []
+    for path in sorted({c[1] for c in changes}, key=lambda p: p.encode("utf-8")):
+        if path in images:
+            out.append(f"{path}\t1\t{hashlib.sha256(images[path]).hexdigest()}\n")
+        else:
+            out.append(f"{path}\t0\t-\n")
+    return "".join(out)
+
+
+class PrimaryRegister:
+    """C imported and brought to `primary`, a flipped copy, and the
+    configuration that reaches the test's database as this module's logins."""
+
+    def __init__(self, pg, tmp_path: Path, files: dict = None):
+        self.pg = pg
+        self.estate = Estate(tmp_path / "estate", files)
+        self.imported = import_to_primary(pg, self.estate)
+        ensure_logins(pg)
+        self.copy = flipped(tmp_path)
+        (tmp_path / "conf").mkdir()
+        conf = primary_config(tmp_path / "conf" / "lanes-index.conf", pg.url(LOGIN_WRITER),
+                              pg.url(LOGIN_READER))
+        self.env = index_env(tmp_path, conf, self.estate.home)
+
+
+# ------------------------------------------------------------------ the fake writer
+def _edit_log_noted(lane: str, sid: str, words: str):
+    """`log NOTED`'s line on `lane`'s log, as an edit of the scratch tree."""
+    def edit(tree: Path, utc: str) -> dict:
+        line = f"NOTED {EM} lane {lane}, session {sid}@{WS}, {utc}, lane:{lane} {EM} {words}"
+        path = tree / "lanes" / "log" / f"{lane}.md"
+        path.write_bytes(path.read_bytes() + line.encode("utf-8") + b"\n")
+        return {"line": line, "renames": {}}
+    return edit
+
+
+def _edit_rename_log(old: str, new: str):
+    """A log renamed whole (`renames.tsv`, contract section 3.3; the verb's
+    `LOG_RENAMED_FROM`, Y:5060): a `D` and an `A` line in `changes.tsv`."""
+    def edit(tree: Path, utc: str) -> dict:
+        (tree / new).parent.mkdir(parents=True, exist_ok=True)
+        os.replace(str(tree / old), str(tree / new))
+        return {"line": None, "renames": {old: new}}
+    return edit
+
+
+def fake_write(copy: Path, env: dict, checkout: Path, root: Path, lane: str, verb: str,
+               edit, message: str) -> dict:
+    """One attempt of the storage layer's write entry, as T210's
+    `projection_entry` makes it (contract sections 3.2 and 3.3): `register
+    snapshot --write-id new ... --tree <root>/tree --checkout <c>`; on 0
+    alone, the edit, the attempt directory (with `renames.tsv` where the
+    edit renamed) and `register commit`. Returns each call, the code (the
+    snapshot's where it did not answer 0, else the commit's) and the
+    snapshot's fields."""
+    args_sha256 = hashlib.sha256(json.dumps([lane, verb, message]).encode("utf-8")).hexdigest()
+    root.mkdir(parents=True, exist_ok=True)
+    out = {"snapshot": None, "commit": None, "code": None, "fields": {}, "line": None}
+    snap = run_index(copy, ["register", "snapshot", "--write-id", "new", "--lane", lane,
+                            "--verb", verb, "--args-sha256", args_sha256,
+                            "--tree", root / "tree", "--checkout", checkout], env)
+    out["snapshot"] = snap
+    if snap.returncode != 0:
+        out["code"] = snap.returncode
+        return out
+    fields = out["fields"] = keys(snap.stdout)
+    tree = root / "tree"
+    (root / "snapshot").write_text(snap.stdout, encoding="utf-8")
+    done = edit(tree, utc_of(int(fields["clock"])))
+    out["line"] = done["line"]
+    git(tree, "add", "-A", "--", "lanes", env=env)
+    changes = []
+    for raw in git(tree, "diff", "--cached", "--no-renames", "--raw", "--no-abbrev", "HEAD",
+                   env=env).splitlines():
+        meta, path = raw.split("\t", 1)
+        parts = meta.split()
+        changes.append((parts[4], path, parts[2], parts[3]))
+    assert changes, "the edit staged a change"
+    (root / "changes.tsv").write_text(
+        "".join(f"{s}\t{p}\t{o}\t{n}\n" for s, p, o, n in changes), encoding="utf-8")
+    if done["renames"]:
+        (root / "renames.tsv").write_text(
+            "".join(f"{a}\t{b}\n" for a, b in done["renames"].items()), encoding="utf-8")
+    images = {}
+    for status, path, _old, _new in changes:
+        if status in ("A", "M"):
+            images[path] = (tree / path).read_bytes()
+            target = root / "images" / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(images[path])
+    (root / "files").write_text(_canonical_rows(changes, images), encoding="utf-8")
+    (root / "msg").write_text(message, encoding="utf-8")
+    (root / "author").write_text(AUTHOR + "\n", encoding="utf-8")
+    (root / "not_after").write_text(fields["not_after"] + "\n", encoding="utf-8")
+    commit = run_index(copy, ["register", "commit", "--write-id", fields["write_id"],
+                              "--generation", fields["generation"], "--lane", lane,
+                              "--verb", verb, "--args-sha256", args_sha256,
+                              "--workstation", WS, root], env)
+    out["commit"] = commit
+    out["code"] = commit.returncode
+    return out
+
+
+# ------------------------------------------------------------------ the writes
+def sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def images_of(db, paths) -> dict:
+    """`render_file` (lane 1's T107) of each of `paths`, {path: bytes}."""
+    wanted = ", ".join("'" + p.replace("'", "''") + "'" for p in paths)
+    return {r["path"]: base64.b64decode(r["b64"]) for r in rows(
+        db, f"SELECT path, encode(render_file(path), 'base64') AS b64 FROM files "
+            f"WHERE path IN ({wanted}) ORDER BY path")}
+
+
+class Appends:
+    """Writes of appended log lines, each built as AT-LR006 builds an entry:
+    the edits and each touched path's `files` row, whose digest is the image
+    `render_file` gives after the write, tracked here from the images read
+    at the start. `base` is the head each next write is sent against."""
+
+    def __init__(self, db, paths) -> None:
+        self.db = db
+        self.images = images_of(db, paths)
+        missing = sorted(set(paths) - set(self.images))
+        assert not missing, f"no such file in the register: {missing}"
+        switch = rows(db, "SELECT generation FROM register_switch")[0]
+        self.generation = switch["generation"]
+        self.version = rows(db, "SELECT version FROM schema_version")[0]["version"]
+        self.base = head(db)
+        self.write_ids: list = []
+
+    def entry(self, lane: str, path: str, texts) -> dict:
+        edits = []
+        for text in texts:
+            assert "\n" not in text and "\r" not in text
+            edits.append({"ord": len(edits) + 1, "op": "append", "path": path, "new_text": text})
+            self.images[path] += text.encode("utf-8") + b"\n"
+        args = sha256(json.dumps([lane, "log", list(texts)]).encode("utf-8"))
+        return _entry("write", "log", {"lane": lane, "args_sha256": args}, edits=edits,
+                      files=[{"path": path, "present": True, "sha256": sha256(self.images[path]),
+                              "final_newline": True}])
+
+    def statements(self, entry: dict) -> list:
+        """The commit call's three statements for the next write (lane 1's
+        `register_commit_request`), and the base moved on by one."""
+        write_id = str(uuid.uuid4())
+        self.write_ids.append(write_id)
+        literal = json.dumps(entry, ensure_ascii=True, separators=(",", ":")).replace("'", "''")
+        sent = ["BEGIN ISOLATION LEVEL SERIALIZABLE",
+                f"SELECT {SCHEMA}.commit_write({self.base}, '{write_id}', {self.version}, "
+                f"'{self.generation}', '{literal}'::jsonb)",
+                "COMMIT"]
+        self.base += 1
+        return sent
+
+
+def one_call(db, statements: list) -> subprocess.CompletedProcess:
+    """One commit call through a new `psql` process: ONE request, the
+    statements joined by `\\;`, as the writer's login with D9's commit row."""
+    env = db.env(LOGIN_WRITER, appname="t226-commit")
+    env["PGOPTIONS"] = COMMIT_OPTIONS
+    return subprocess.run([db.psql_bin, *PSQL_REGISTER_ARGV], input=" \\; ".join(statements) + ";\n",
+                          capture_output=True, encoding="utf-8", errors="replace", env=env,
+                          timeout=60, check=False)
+
+
+def in_one_session(db, writes: list, timing: bool = False) -> subprocess.CompletedProcess:
+    """`writes` (each the commit call's three statements) in ONE `psql`
+    session as the writer's login, each statement its own Query, under
+    `\\timing` where asked (M2: it leaves out the client)."""
+    script = ["\\timing on"] if timing else []
+    for statements in writes:
+        script += [s + ";" for s in statements]
+    env = db.env(LOGIN_WRITER, appname="t226-session")
+    return subprocess.run([db.psql_bin, "--no-psqlrc", "-X", "-A", "-t", "-v", "ON_ERROR_STOP=1"],
+                          input="\n".join(script) + "\n", capture_output=True, encoding="utf-8",
+                          errors="replace", env=env, timeout=1800, check=False)
+
+
+def committed_once(db, before: int, write_ids: list) -> None:
+    """Section 5.3's correctness alongside: the journal grew by exactly n
+    above `before`, and each of the writes' ids appears once."""
+    n = len(write_ids)
+    assert head(db) == before + n, f"the head is {head(db)}, not {before} + {n}"
+    grown = rows(db, f"SELECT count(*) AS n, count(DISTINCT write_id) AS d FROM journal "
+                     f"WHERE seq > {before}")[0]
+    assert grown == {"n": n, "d": n}, f"the journal grew by {grown}, not {n} distinct writes"
+    ids = ", ".join(f"'{w}'" for w in write_ids)
+    found = rows(db, f"SELECT count(*) AS n FROM journal WHERE write_id IN ({ids})")[0]["n"]
+    assert found == n, f"{found} of the {n} write ids are in the journal"
+
+
+# ------------------------------------------------------------------ the record
+def _stats(samples: list) -> dict:
+    """Section 5.3's statistics: median and p95 by nearest rank, min-max, n."""
+    ordered = sorted(samples)
+    rank = lambda p: ordered[max(0, -(-p * len(ordered) // 100) - 1)]  # noqa: E731
+    return {"median": rank(50), "p95": rank(95), "min": ordered[0], "max": ordered[-1],
+            "n": len(ordered)}
+
+
+def figure(measure: str, store: str, path: str, times_ms: list, link: str,
+           cold: bool = True) -> str:
+    """One recorded row (section 5.4): the host, the store, the path, the
+    statistic and n, and the link."""
+    warm = _stats(times_ms[1:] if cold else times_ms)
+    first = f"cold {times_ms[0]:.2f} ms" if cold else "-"
+    return (f"| {measure} | {platform.node()}, {store} | {path} | {first} | median "
+            f"{warm['median']:.2f} ms, p95 {warm['p95']:.2f} ms, {warm['min']:.2f}-"
+            f"{warm['max']:.2f} ms, n={warm['n']} | {link} |")
+
+
+def record(lines: list) -> None:
+    """The job's log, and `$GITHUB_STEP_SUMMARY` where it is set."""
+    print("\n" + "\n".join(lines))
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+
+
+def timed(run) -> tuple:
+    """`run()` bracketed on the monotonic clock, exec to exit: (ms, its value)."""
+    start = time.monotonic_ns()
+    value = run()
+    return (time.monotonic_ns() - start) / 1e6, value
+
+
+def needs(request, name: str, owner: str):
+    """A fixture another task provides, looked up only once the engine is
+    there, so a case without PostgreSQL 16 skips with T205's banner, and one
+    with it fails by saying which task it waits for."""
+    try:
+        return request.getfixturevalue(name)
+    except pytest.FixtureLookupError:
+        pytest.fail(f"no fixture `{name}`: {owner} provides it", pytrace=False)
+
+
+def setting(db, name: str) -> str:
+    return sql(db, f"SHOW {name};").splitlines()[-1]
+
+
+# ------------------------------------------------------------------ the stores
+@pytest.fixture()
+def durable_db(pg_engine, pg_template_sql, monkeypatch):
+    """Test 8's stoppable cluster started with the defaults (section 5.1:
+    `fsync`, `synchronous_commit` and `full_page_writes` on): T205's
+    `Cluster`, its `FAST` settings left out for this start alone, its own
+    template from `pg_template_sql`, and one database cloned from it."""
+    monkeypatch.setattr(pgcluster, "FAST", ())
+    cluster = pgcluster._started(pg_engine, pg_template_sql)
+    monkeypatch.undo()
+    patch = pytest.MonkeyPatch()
+    patch.setenv("PATH", pgcluster._engine_first(pg_engine.bindir, os.environ.get("PATH", os.defpath)))
+    try:
+        name = cluster.new_database()
+        yield Database(cluster, name)
+    finally:
+        patch.undo()
+        cluster.destroy()
+
+
+STORES = {"fixture": "pg", "durable": "durable_db"}
+#: The store's settings the figure names, as each store must show them.
+STORE_SETTINGS = {"fixture": "off", "durable": "on"}
+
+
+# ============================================================ T226: M1 and M2 (phase N)
+
+@pytest.mark.parametrize("store", list(STORES))
+@pytest.mark.parametrize("path", ["new-psql", "design", "session"])
+def test_one_write_cost_is_recorded_and_every_write_commits(pg_engine, request, tmp_path, path,
+                                                            store):
+    """M1 and M2 (section 5.1), at the fixture's settings and durable: 200
+    writes, each one appended log line on a register brought to `primary`.
+
+    `[new-psql-<store>]` is M1 as R1 measured it: each write one commit
+    call through a new `psql` process. `[design-<store>]` is M1 in the
+    design's form under Q7 (A''): a `register snapshot` call and a `register
+    commit` call, each a `lanes-index` process with its own Python start,
+    cold once and 20 warm (act 3's count, section 5.3; 200 would add minutes
+    to the job). `[session-<store>]` is M2: the 200 writes in one `psql`
+    session, each write's time the sum of its three statements' `\\timing`.
+
+    The oracle: each call exits 0 and answers the seq it committed; the
+    journal grew by exactly n and each `write_id` appears once; the store
+    shows the settings its id names. The figures are recorded, never
+    asserted."""
+    db = request.getfixturevalue(STORES[store])
+    reg = PrimaryRegister(db, tmp_path)
+    for name in ("fsync", "synchronous_commit", "full_page_writes"):
+        assert setting(db, name) == STORE_SETTINGS[store], (
+            f"the {store} store runs {name}={setting(db, name)}")
+    log = "lanes/log/repoA-1.md"
+    writes = Appends(db, [log])
+    before = writes.base
+    lines = []
+    texts = [f"NOTED {EM} lane repoA-1, session {SID_A1}@{WS}, 2026-11-10T00:00:00Z, "
+             f"lane:repoA-1 {EM} t226 {path} {store} write {k}" for k in range(N_WRITES)]
+    if path == "new-psql":
+        times = []
+        for k, text in enumerate(texts):
+            sent = writes.statements(writes.entry("repoA-1", log, [text]))
+            ms, proc = timed(lambda: one_call(db, sent))
+            assert (proc.returncode, proc.stdout.strip()) == (0, str(before + k + 1)), (
+                f"write {k}: exit {proc.returncode}: {proc.stderr.strip()[-600:]}")
+            times.append(ms)
+        committed_once(db, before, writes.write_ids)
+        lines.append(figure("M1", f"{store} cluster, Unix socket", "one commit call, new `psql`",
+                            times, "rtt=0, tls=none, c=1, q=1"))
+    elif path == "design":
+        design_before, totals = head(db), []
+        for k in range(1 + N_WARM):
+            ms, done = timed(lambda: fake_write(
+                reg.copy, reg.env, reg.estate.checkout, tmp_path / "attempts" / str(k), "repoA-1",
+                "log", _edit_log_noted("repoA-1", SID_A1, f"t226 design write {k}"),
+                f"lanes-edit.sh log: t226 design write {k}"))
+            assert done["code"] == 0, (done["snapshot"].stderr,
+                                       done["commit"] and done["commit"].stderr)
+            assert done["commit"].stdout.split() == ["committed", str(design_before + k + 1)], (
+                done["commit"].stdout)
+            totals.append(ms)
+        assert head(db) == design_before + 1 + N_WARM, "each design-form write committed once"
+        assert rows(db, f"SELECT count(DISTINCT write_id) AS d FROM journal WHERE seq > "
+                        f"{design_before}")[0]["d"] == 1 + N_WARM
+        lines.append(figure("M1", f"{store} cluster, Unix socket",
+                            "the design's write: `register snapshot` + `register commit`",
+                            totals, "rtt=0, tls=none, c=2, q=2"))
+    else:
+        batch = [writes.statements(writes.entry("repoA-1", log, [text])) for text in texts]
+        proc = in_one_session(db, batch, timing=True)
+        assert proc.returncode == 0, proc.stderr.strip()[-800:]
+        out = proc.stdout.splitlines()
+        seqs = [line for line in out if line.isdigit()]
+        stamps = [float(m.group(1)) for m in map(re.compile(r"^Time: ([0-9.]+) ms").match, out) if m]
+        assert seqs == [str(before + k + 1) for k in range(N_WRITES)], "each write answered its seq"
+        assert len(stamps) == 3 * N_WRITES, f"{len(stamps)} timings, not three per write"
+        committed_once(db, before, writes.write_ids)
+        per_write = [sum(stamps[3 * k:3 * k + 3]) for k in range(N_WRITES)]
+        lines.append(figure("M2", f"{store} cluster, Unix socket", "one write in a held session",
+                            per_write, "rtt=0, tls=none, c=0, q=3"))
+    record(lines)
+
+
+# ============================================================ T226: M12 (phase N)
+
+def test_a_tls_and_scram_connect_on_loopback_is_timed_and_verified(pg_engine, request):
+    """M12's CI row (section 5.1; section 5.6): `psql -X -A -t -c 'SELECT 1'`
+    against T229's TLS cluster on loopback TCP, with `sslmode=verify-full`
+    and SCRAM, exec to exit, cold once and 20 warm; each answers `1`. It is
+    verified once: a connect that requires SCRAM (`PGREQUIREAUTH`, libpq 16)
+    succeeds, and `pg_stat_ssl` for its own backend says TLS, whose version is
+    recorded beside the time (on T229's cluster, `TLSv1.3`). X changed no
+    oracle: it asserts TLS in use, never the figure."""
+    tls = needs(request, "tls_cluster", "lane 2's T229 (section 5.6's TLS cluster)")
+    env = tls.client_env()
+    argv = [tls.tool("psql"), "-X", "-A", "-t", "-c", "SELECT 1"]
+    times = []
+    for _ in range(1 + N_WARM):
+        ms, proc = timed(lambda: subprocess.run(argv, capture_output=True, text=True, env=env,
+                                                timeout=60, check=False))
+        assert (proc.returncode, proc.stdout.strip()) == (0, "1"), proc.stderr
+        times.append(ms)
+    check = dict(env, PGREQUIREAUTH="scram-sha-256")
+    said = subprocess.run([tls.tool("psql"), "-X", "-A", "-t", "-F", "|", "-c",
+                           "SELECT ssl, version FROM pg_stat_ssl WHERE pid = pg_backend_pid()"],
+                          capture_output=True, text=True, env=check, timeout=60, check=False)
+    assert said.returncode == 0, f"a connect that requires SCRAM failed: {said.stderr}"
+    ssl, version = said.stdout.strip().split("|")
+    assert ssl == "t", f"pg_stat_ssl says the connect is not TLS: {said.stdout!r}"
+    record([figure("M12", "TLS cluster, loopback TCP", "`psql -c 'SELECT 1'`, a new connect",
+                   times, f"rtt=0 (loopback), tls={version}, scram, c=1, q=1")])
+
+
+# ============================================================ T226: lane 3's `--last` cost rows
+
+#: `journal --last`'s five reads, in `register_last_queries`' order
+#: (`refs/l1/T114`, `lanes-index:7086-7108`).
+LAST_READS = ("the head", "the generation", "the import seqs",
+              "the edits of the path's rename closure", "the journal_files rows of the closure")
+
+
+def _lanes_index_module():
+    """`lanes-index` loaded as a module, as T207's stub loads it for
+    `classify`, so this module calls lane 1's own functions."""
+    loader = importlib.machinery.SourceFileLoader("lanes_index_t226", str(LANES_INDEX))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def last_statements(path: str) -> list:
+    """`journal --last`'s reads as lane 1's code builds them,
+    `register_last_queries(path, None)`, so what is explained is what is
+    sent."""
+    make = getattr(_lanes_index_module(), "register_last_queries", None)
+    assert make is not None, ("lanes-index has no `register_last_queries`: lane 1's T114 "
+                              "(L1-A12, `journal --last`) builds it")
+    statements = make(path, None)
+    assert len(statements) == len(LAST_READS), statements
+    return statements
+
+
+@pytest.fixture()
+def imported_clone(pg_cluster):
+    """One clone of `tmpl_imported` (T227), with section 1.4's two
+    database-level statements, dropped `WITH (FORCE)` at the end (N2's
+    `clones`)."""
+    found = pg_cluster.psql(f"SELECT datname FROM pg_database WHERE datname = '{IMPORTED}';").stdout.split()
+    assert found == [IMPORTED], f"no {IMPORTED} on the session cluster: lane 2's T227 builds it"
+    name = f"t226_last_{uuid.uuid4().hex[:8]}"
+    pg_cluster.psql(f"CREATE DATABASE {name} TEMPLATE {IMPORTED};")
+    try:
+        pg_cluster.psql(f"REVOKE ALL ON DATABASE {name} FROM PUBLIC;\n"
+                        f"GRANT CONNECT ON DATABASE {name} TO {CONNECT_TO};\n")
+        yield Database(pg_cluster, name)
+    finally:
+        pg_cluster.drop_database(name)
+
+
+def imported_to_primary(db) -> int:
+    """The clone's import brought to `primary` by AT-LR006's route: a
+    `cutover` entry writing D21's five `lanes/STORE` fields over the import,
+    then `record_marker`, as T210's `import_to_primary` does. Returns the
+    cutover's seq."""
+    switch = rows(db, "SELECT mode, marker_state FROM register_switch")[0]
+    assert (switch["mode"], switch["marker_state"]) == ("files", "absent"), switch
+    last = rows(db, "SELECT seq, git_commit, git_tree FROM journal WHERE kind = 'import' "
+                    "ORDER BY seq DESC LIMIT 1")
+    assert last and last[0]["seq"] == head(db), f"{IMPORTED}'s head is not its import"
+    imp = last[0]
+    store = "".join(f"{line}\n" for line in (
+        "store=primary", "database=t226", f"import={imp['git_commit']}",
+        f"lanes-tree={imp['git_tree']}", f"utc={STORE_UTC}")).encode("utf-8")
+    edits, files = _creates({STORE_PATH: store})
+    cut = _commit_call(db, imp["seq"], _entry("cutover", "cutover", edits=edits, files=files))
+    version = rows(db, "SELECT version FROM schema_version")[0]["version"]
+    marker = sql(db, f"SELECT {SCHEMA}.record_marker({version}, {cut}, '{MARKER_COMMIT}', "
+                     f"'{WS}');", WRITER)
+    assert marker.splitlines()[-1] == "present", f"record_marker answered {marker!r}"
+    return cut
+
+
+def lane_logs(db) -> list:
+    return [r["path"] for r in rows(
+        db, "SELECT path FROM files WHERE path LIKE 'lanes/log/%' AND path <> 'lanes/log/README.md' "
+            "ORDER BY path")]
+
+
+def largest_log(db) -> str:
+    """The register's longest lane log, by its lines."""
+    found = rows(db, "SELECT f.path, count(d.line_id) AS n FROM files f LEFT JOIN doc_lines d "
+                     "ON d.path = f.path WHERE f.path LIKE 'lanes/log/%' AND f.path <> "
+                     "'lanes/log/README.md' GROUP BY f.path ORDER BY n DESC, f.path LIMIT 1")
+    assert found, f"{IMPORTED} holds no lane log"
+    return found[0]["path"]
+
+
+def journal_size(db) -> dict:
+    return rows(db, "SELECT (SELECT count(*) FROM journal) AS entries, "
+                    "(SELECT count(*) FROM journal_edits) AS edits")[0]
+
+
+def explained(db, statements: list) -> list:
+    """Each statement under `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`, as
+    the reader's login, in one REPEATABLE READ READ ONLY transaction with the
+    schema on `search_path`, as `_query_many` reads (lane 1's
+    `lanes-index:2227-2262` at T114): each plan's server time, buffers and
+    rows. No D9 bound is set here, so a statement past 3000 ms is measured,
+    and the timed `journal --last` below meets the bound itself."""
+    script = [f'SET search_path TO "{SCHEMA}";', "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;"]
+    script += [f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {statement};" for statement in statements]
+    script.append("COMMIT;")
+    proc = subprocess.run([db.psql_bin, "--no-psqlrc", "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1"],
+                          input="\n".join(script) + "\n", capture_output=True, encoding="utf-8",
+                          errors="replace", env=db.env(LOGIN_READER, appname="t226-explain"),
+                          timeout=600, check=False)
+    assert proc.returncode == 0, f"EXPLAIN as {LOGIN_READER}: {proc.stderr.strip()[-800:]}"
+    plans, text, at, decoder = [], proc.stdout, 0, json.JSONDecoder()
+    while True:
+        while at < len(text) and text[at].isspace():
+            at += 1
+        if at >= len(text):
+            break
+        value, at = decoder.raw_decode(text, at)
+        plans.append(value[0])
+    assert len(plans) == len(statements), f"{len(plans)} plans for {len(statements)} statements"
+    return [{"execution_ms": p["Execution Time"], "planning_ms": p["Planning Time"],
+             "hit": p["Plan"].get("Shared Hit Blocks", 0), "read": p["Plan"].get("Shared Read Blocks", 0),
+             "rows": p["Plan"].get("Actual Rows")} for p in plans]
+
+
+def grow_to(db, target_edits: int, logs: list, batch: int, tag: str) -> int:
+    """Writes of `batch` appended lines each, round robin over `logs`, in
+    one session, until `journal_edits` holds at least `target_edits` rows.
+    No line holds the measured key. Returns the writes made."""
+    have, appends, writes, k = journal_size(db)["edits"], Appends(db, logs), [], 0
+    while have < target_edits:
+        path = logs[k % len(logs)]
+        lane = path[len("lanes/log/"):-len(".md")]
+        texts = [f"NOTED {EM} lane {lane}, session {SID_A1}@{WS}, 2026-11-10T00:00:00Z, "
+                 f"lane:{lane} {EM} t226 growth {tag} {k}.{i}" for i in range(batch)]
+        writes.append(appends.statements(appends.entry(lane, path, texts)))
+        have += batch
+        k += 1
+    if writes:
+        before = head(db)
+        proc = in_one_session(db, writes)
+        assert proc.returncode == 0, f"growth write: {proc.stderr.strip()[-800:]}"
+        committed_once(db, before, appends.write_ids)
+    return len(writes)
+
+
+@pytest.mark.parametrize("log", ["largest-log", "renamed-log"])
+def test_journal_last_is_explained_per_statement_and_timed_against_t_r(pg_engine, imported_clone,
+                                                                        tmp_path, log):
+    """Lane 3's `--last` cost rows (#165 6755922262; F10-OWED item 35), on a
+    clone of `tmpl_imported` brought to `primary`:
+
+      * `[largest-log]`: the register's longest log, with one line holding
+        the case's key appended by one write, so the match is that write's
+        seq;
+      * `[renamed-log]`: the same, then that log renamed whole through
+        `register commit`'s `renames.tsv`, so `journal --last` reads the
+        new path's rename closure, and the match is the rename's seq (a
+        file renamed in counts what it brings, C7 as lane 1's
+        `register_pickaxe` reads it).
+
+    At the clone's own size, then with `journal_edits` grown to 2x and 5x
+    its rows by writes of appended lines round robin over every lane log:
+    each of the five reads' server time by `EXPLAIN (ANALYZE, BUFFERS)`, as
+    the reader's login; and `journal --last --path <p> --grep <key>`'s wall
+    time, exec to exit, cold once and 20 warm, beside `T_r`. Each run exits
+    0 and prints `format=1`, `n=<head>` and `seq=<the match>`. The figures
+    are recorded, never asserted; each statement's share of the read row's
+    3000 ms is printed beside it, so a statement that nears it is seen
+    (lane 3: indexes on `journal_edits (path)` and `(to_path) WHERE op =
+    'rename'` go into migration 1, T107)."""
+    db = imported_clone
+    imported_to_primary(db)
+    ensure_logins(db)
+    estate = Estate(tmp_path / "estate", {p: SEED[p] for p in ("lanes/repos.tsv", "lanes/log/README.md")})
+    copy = flipped(tmp_path)
+    (tmp_path / "conf").mkdir()
+    conf = primary_config(tmp_path / "conf" / "lanes-index.conf", db.url(LOGIN_WRITER),
+                          db.url(LOGIN_READER))
+    env = index_env(tmp_path, conf, estate.home)
+    target = largest_log(db)
+    lane = target[len("lanes/log/"):-len(".md")]
+    key = f"t226-last-key-{uuid.uuid4().hex[:12]}"
+    appends = Appends(db, [target])
+    proc = one_call(db, appends.statements(appends.entry(lane, target, [
+        f"NOTED {EM} lane {lane}, session {SID_A1}@{WS}, 2026-11-10T00:00:00Z, lane:{lane} {EM} {key}"])))
+    assert proc.returncode == 0, proc.stderr
+    match, measured = int(proc.stdout.strip()), target
+    if log == "renamed-log":
+        measured = f"lanes/log/{lane}-t226-renamed.md"
+        done = fake_write(copy, env, estate.checkout, tmp_path / "rename", lane, "rename-lane",
+                          _edit_rename_log(target, measured),
+                          f"lanes-edit.sh rename-lane: t226 renames {target}")
+        assert done["code"] == 0, (done["snapshot"].stderr, done["commit"] and done["commit"].stderr)
+        match = int(done["commit"].stdout.split()[1])
+        assert rows(db, f"SELECT count(*) AS n FROM journal_edits WHERE seq = {match} AND op = "
+                        f"'rename' AND path = '{target}' AND to_path = '{measured}'")[0]["n"] == 1
+    statements = last_statements(measured)
+    base = journal_size(db)["edits"]
+    batch = max(1, base // 1000)
+    lines = []
+    for size, factor in (("1x", 1), ("2x", 2), ("5x", 5)):
+        if factor > 1:
+            grow_to(db, factor * base, lane_logs(db), batch, f"{log}-{size}")
+        grown = journal_size(db)
+        where = (f"tmpl_imported clone, {size}: {grown['entries']} entries, {grown['edits']} "
+                 f"edits, Unix socket")
+        for what, plan in zip(LAST_READS, explained(db, statements)):
+            lines.append(f"| --last | {platform.node()}, {where} | {log} `{measured}`: {what} | "
+                         f"server {plan['execution_ms']:.2f} ms, planning {plan['planning_ms']:.2f} ms "
+                         f"| buffers hit {plan['hit']}, read {plan['read']}; rows {plan['rows']} | "
+                         f"{100 * plan['execution_ms'] / READ_STATEMENT_MS:.1f} % of "
+                         f"{READ_STATEMENT_MS} ms |")
+        n, times = head(db), []
+        for _ in range(1 + N_WARM):
+            ms, proc = timed(lambda: run_index(copy, ["journal", "--last", "--path", measured,
+                                                      "--grep", key], env))
+            assert proc.returncode == 0, f"journal --last exited {proc.returncode}: {proc.stderr}"
+            assert proc.stdout.splitlines() == ["format=1", f"n={n}", f"seq={match}"], proc.stdout
+            times.append(ms)
+        lines.append(figure("--last", where, f"{log} `journal --last`, exec to exit", times,
+                            f"rtt=0, tls=none, c=1, q=1; T_r={T_R_S} s (CLI412:255)"))
+    record(lines)
+
+
+# ------------------------------------------------------------------ `swapped`
+CANDIDATES = [f"repoC-{k}" for k in range(1, 7)]
+
+#: The wrapper that stands where `lanes-edit.sh` finds `lanes-index`,
+#: beside it (the copy rule, CLI4.5 section 6): it logs each call's argv and
+#: hands it to the flipped copy, so each `journal --last` is counted.
+CALL_LOG_WRAPPER = r'''#!/usr/bin/env python3
+import os, sys
+here = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(here, "lanes-index.calls"), "a", encoding="utf-8") as handle:
+    handle.write("\t".join(sys.argv[1:]) + "\n")
+real = os.path.join(here, "lanes-index.real")
+os.execv(sys.executable, [sys.executable, real] + sys.argv[1:])
+'''
+
+
+def _sid(k: int) -> str:
+    return f"cccccccc-{k:04d}-4000-8000-{k:012d}"
+
+
+def _candidate_log(lane: str, k: int) -> str:
+    return "\n".join([
+        f"# lane {lane} {EM} object log (lane-collision-protocol Amendment 7)",
+        f"STARTED {EM} lane {lane}, session {_sid(k)}@{WS}, 2026-10-02T00:00:00Z, "
+        f"lane:{lane} {ARROW} home opensoft/repoC; dir /work/{lane}", ""])
+
+
+def _paused(lane: str, k: int) -> str:
+    """A swap's PAUSED line, in the payload `swapped_candidates` reads
+    (`lanes-edit.sh:9519` at the base): `swap; window ...; workstation ...;
+    dir ...; profile ...; agent ...; transcript ...`."""
+    return (f"PAUSED {EM} lane {lane}, session {_sid(k)}@{WS}, 2026-11-10T0{k}:00:00Z, "
+            f"lane:{lane} {EM} swap; window w{k}; workstation {WS}; dir /work/{lane}; "
+            f"profile p{k}; agent a{k}; transcript t{k}")
+
+
+def test_swapped_with_several_candidates_is_timed_beside_its_journal_last_calls(pg_engine, pg, tmp_path):
+    """Lane 3's third `--last` row (#165 6755922262): `lanes-edit.sh swapped
+    <ws>` with one, three and six swapped lanes, exec to exit, cold once and
+    ten warm, in files mode (one `git log -S` pickaxe per candidate,
+    `swapped_lanes` at the base) and on primary (one `journal --last` per
+    candidate, T506). Each candidate's PAUSED line is one write, committed in
+    the register and pushed to the estate's origin in the same order, so
+    both modes rank alike.
+
+    The oracle: every run exits 0 and lists the candidates most recently
+    paused first, the same in both modes; on primary, each run makes exactly
+    one `journal --last` call per candidate, naming its log. That last
+    assertion is red until lane 5's T506 (L5-A5) reads `swapped`'s rank
+    through `journal --last`."""
+    files = dict(SEED)
+    for k, lane in enumerate(CANDIDATES, 1):
+        files[f"lanes/log/{lane}.md"] = _candidate_log(lane, k)
+    reg = PrimaryRegister(pg, tmp_path, files)
+    bin_dir = reg.copy.parent
+    os.replace(str(reg.copy), str(bin_dir / "lanes-index.real"))
+    wrapper = bin_dir / "lanes-index"
+    wrapper.write_text(CALL_LOG_WRAPPER, encoding="utf-8")
+    wrapper.chmod(0o755)
+    calls = bin_dir / "lanes-index.calls"
+    checkout = reg.estate.checkout
+    base_env = {k: v for k, v in reg.env.items() if k != "LANES_INDEX_CONFIG"}
+    base_env.update(LANES_REPO=str(checkout), LANES_BRANCH="main", LANES_WORKSTATION=WS)
+    modes = {"files": base_env, "primary": dict(base_env, LANES_INDEX_CONFIG=reg.env["LANES_INDEX_CONFIG"])}
+    lines, paused = [], 0
+    for count in (1, 3, 6):
+        while paused < count:
+            lane = CANDIDATES[paused]
+            path = f"lanes/log/{lane}.md"
+            text = _paused(lane, paused + 1)
+            appends = Appends(pg, [path])
+            proc = one_call(pg, appends.statements(appends.entry(lane, path, [text])))
+            assert proc.returncode == 0, proc.stderr
+            target = checkout / path
+            target.write_bytes(target.read_bytes() + text.encode("utf-8") + b"\n")
+            git(checkout, "commit", "-q", "-am", f"{lane}: PAUSED", env=reg.estate.env)
+            git(checkout, "push", "-q", "origin", "main", env=reg.estate.env)
+            paused += 1
+        expected = list(reversed(CANDIDATES[:count]))
+        for mode, env in modes.items():
+            times = []
+            for _ in range(11):
+                calls.write_text("", encoding="utf-8")
+                ms, proc = timed(lambda: subprocess.run(
+                    ["bash", str(bin_dir / "lanes-edit.sh"), "swapped", WS], capture_output=True,
+                    encoding="utf-8", errors="replace", env=env, cwd=str(checkout), timeout=120,
+                    check=False))
+                assert proc.returncode == 0, f"swapped in {mode} mode: {proc.stderr}"
+                listed = [line.split("\t", 1)[0] for line in proc.stdout.splitlines() if line]
+                assert listed == expected, f"{mode} mode listed {listed}, not {expected}"
+                if mode == "primary":
+                    lasts = [c.split("\t") for c in calls.read_text(encoding="utf-8").splitlines()
+                             if c.startswith("journal\t--last")]
+                    paths = sorted(c[c.index("--path") + 1] for c in lasts)
+                    assert paths == sorted(f"lanes/log/{lane}.md" for lane in expected), (
+                        f"swapped on primary made {len(lasts)} `journal --last` call(s), not one "
+                        f"per candidate: lane 5's T506 (L5-A5) reads the rank through it")
+                times.append(ms)
+            lines.append(figure("--last", f"{mode} mode, {count} candidate(s), local bare origin",
+                                f"`lanes-edit.sh swapped {WS}`, exec to exit", times,
+                                f"rtt=0, tls=none; {count} pickaxe(s)"))
+    record(lines)
