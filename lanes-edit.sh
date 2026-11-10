@@ -23523,10 +23523,11 @@ EOF
   # once. The note, the pane and the wait run only where the seam said
   # `committed` (`rh_after_committed`); a replay (T418) types into no pane but
   # still waits; and each poll reads the register at its head (`reg_flush`),
-  # with no fetch. A run that finds its request committed and runs none of this
-  # tail exits 2, not 0, naming the tail it did not run (T418's
-  # `pw_tail_said`), and the register's own 69, 75 and 3 are the primary
-  # branch's (T415, T417).
+  # with no fetch. Its notes, the PLAN lines included, say the register, not
+  # the pushed or published log (lane openRepoTools-3, #165 6770688147, T423
+  # Q5). A run that finds its request committed and runs none of this tail
+  # exits 2, not 0, naming the tail it did not run (T418's `pw_tail_said`),
+  # and the register's own 69, 75 and 3 are the primary branch's (T415, T417).
   request-handoff)
     lane="${1-}"; [ -n "$lane" ] || die "usage: request-handoff <lane> [--wait <s>] [--session <uuid>] [--force \"<why>\"] [--dry-run]" 64
     shift
@@ -23703,15 +23704,27 @@ EOF
     [ -n "$rh_mywin" ] || rh_mywin=none
     rh_pay="by host $LANES_HOST_NAME; container $LANES_CONTAINER_NAME; window $rh_mywin; wait ${rh_wait}s"
     rh_type="/handoff --exit requested by $rh_uuid@$LANES_HOST_NAME/$LANES_CONTAINER_NAME"
+    # FEATURE 007, T423 — ON PRIMARY THE NOTES SAY THE REGISTER (lane
+    # openRepoTools-3, #165 6770688147, T423 Q5; texts say only what is true).
+    # There the request is one register transaction, and this run pushes and
+    # publishes no log, so every note below, the PLAN lines included, names
+    # the register where files mode names the pushed or published log. Keyed
+    # on the flag, `REG_SCRATCH`, as T421's words are: on primary only an
+    # attempt's child runs this arm, a dry run included (T415). Files mode
+    # keeps its words.
+    rh_log="the pushed log"; rh_plog="the published log"; rh_first="committed and pushed FIRST"
+    if [ -n "$REG_SCRATCH" ]; then
+      rh_log="the register"; rh_plog="the register"; rh_first="committed to the register FIRST"
+    fi
     if [ "$rh_dry" = 1 ]; then
       note "PLAN: $(binding_facts "$lane" "$rh_host" "$rh_cont" "$rh_win" "$rh_utc" "$rh_bsess" "$rh_wstate") ($rh_here)"
-      note "PLAN: $SELF log HANDOFF-REQUESTED lane:$lane → \"$rh_pay\"   (as session $rh_uuid), committed and pushed FIRST"
+      note "PLAN: $SELF log HANDOFF-REQUESTED lane:$lane → \"$rh_pay\"   (as session $rh_uuid), $rh_first"
       if [ "$rh_wstate" = live ]; then
         note "PLAN: tmux send-keys into ${rh_win##* } — $rh_type"
       else
-        note "PLAN: nothing is typed into a pane — this tmux server says the bound window is $rh_wstate, and the request travels through the pushed log alone"
+        note "PLAN: nothing is typed into a pane — this tmux server says the bound window is $rh_wstate, and the request travels through $rh_log alone"
       fi
-      note "PLAN: then poll the published log every ${LANES_POLL_SECONDS:-15}s for ${rh_wait}s for a PAUSED, ENDED or RETIRED newer than the request; an empty wait REFUSES and names --force"
+      note "PLAN: then poll $rh_plog every ${LANES_POLL_SECONDS:-15}s for ${rh_wait}s for a PAUSED, ENDED or RETIRED newer than the request; an empty wait REFUSES and names --force"
       exit 0
     fi
     rh_wrote="$(utc_now)"
@@ -23741,19 +23754,19 @@ EOF
       guard_type "${rh_win##* }" "$rh_type" || rh_trc=$?
       case "$rh_trc" in
         0) rh_typed=yes; note "typed into ${rh_win##* }: $rh_type" ;;
-        9) note "the bound pane is running something other than \`claude\`, so nothing was typed into it (M1's own condition): the request is in the pushed log and is read at that session's next prompt." ;;
-        8) note "the bound pane's current command could not be read, so nothing was typed into it — fail closed (M1). The request is in the pushed log." ;;
-        *) note "tmux would not take the keys for ${rh_win##* }, so nothing was typed. The request is in the pushed log and is read at that session's next prompt." ;;
+        9) note "the bound pane is running something other than \`claude\`, so nothing was typed into it (M1's own condition): the request is in $rh_log and is read at that session's next prompt." ;;
+        8) note "the bound pane's current command could not be read, so nothing was typed into it — fail closed (M1). The request is in $rh_log." ;;
+        *) note "tmux would not take the keys for ${rh_win##* }, so nothing was typed. The request is in $rh_log and is read at that session's next prompt." ;;
       esac
     else
-      note "the bound window is $rh_wstate from here, so no pane was typed into: the request travels through the pushed log, which is why it is written first."
+      note "the bound window is $rh_wstate from here, so no pane was typed into: the request travels through $rh_log, which is why it is written first."
     fi
 
     # ---- THE WAIT (clause (c)), AND ITS EMPTY END (clause (e)).
     rh_poll="${LANES_POLL_SECONDS:-15}"
     case "$rh_poll" in ''|*[!0-9]*|0) rh_poll=15 ;; esac
     rh_deadline=$(( $(date -u +%s) + rh_wait ))
-    [ "$rh_wait" = 0 ] || note "waiting up to ${rh_wait}s for lane $lane to be released (polling the published log every ${rh_poll}s) …"
+    [ "$rh_wait" = 0 ] || note "waiting up to ${rh_wait}s for lane $lane to be released (polling $rh_plog every ${rh_poll}s) …"
     while : ; do
       rh_left=$(( rh_deadline - $(date -u +%s) ))
       if [ "$rh_left" -le 0 ]; then break; fi
