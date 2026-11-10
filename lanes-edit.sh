@@ -23516,6 +23516,17 @@ EOF
   # EXIT CODES, this file's family: 0 THE LANE IS FREE — bind it · 2 the wait
   # ended with nothing, or the request was refused · 8 the lane was already free
   # · 1 a read failed, which is never "the lane is free" · 64 usage.
+  #
+  # ON PRIMARY (feature 007, T423; Y:5090, Y:5153, Y:5326; spec:257–259) the
+  # write is one register transaction made from an attempt's child (T415), and
+  # the arm's code after `write_event` is the write's after-COMMIT tail, run
+  # once. The note, the pane and the wait run only where the seam said
+  # `committed` (`rh_after_committed`); a replay (T418) types into no pane but
+  # still waits; and each poll reads the register at its head (`reg_flush`),
+  # with no fetch. A run that finds its request committed and runs none of this
+  # tail exits 2, not 0, naming the tail it did not run (T418's
+  # `pw_tail_said`), and the register's own 69, 75 and 3 are the primary
+  # branch's (T415, T417).
   request-handoff)
     lane="${1-}"; [ -n "$lane" ] || die "usage: request-handoff <lane> [--wait <s>] [--session <uuid>] [--force \"<why>\"] [--dry-run]" 64
     shift
