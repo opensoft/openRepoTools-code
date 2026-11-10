@@ -6477,7 +6477,7 @@ run "$START" --dry-run opsXfactory 5
 is   "…and with nothing provable it REFUSES with 2, not the 1 that printed [exited]" "$rc" 2
 has  "…saying nothing was started" "$err" "nothing was started"
 has  "…naming the one act that RECORDS the directory, filled in" "$err" "lane-start --dir <path> opsXfactory 5"
-has  "…and what it tried, so the refusal is readable" "$err" "project.yaml legs of opensoft/OpsxFactory"
+has  "…and what it tried, so the refusal is readable" "$err" "project.yaml legs of opensoft/opsXfactory"
 hasnt "…and it never guesses the same-named checkout with the wrong origin" "$err" "cd $HOME/projects/imposter"
 # RUNG 5 — THE ESTATE'S `project.yaml` LEGS, which are a DECLARATION rather
 # than a search: the leg's `path` is resolved against the manifest's own
