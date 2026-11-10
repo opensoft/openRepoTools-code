@@ -623,11 +623,25 @@ def _re_fault(env: ReadyEnvironment, fault: str) -> subprocess.CompletedProcess:
         bench.env.pop("LANES_WORKSTATION", None)
         return env.ready("--expect", "index")
     if fault == "outage-declared":
-        proc = subprocess.run([sys.executable, str(bench.copy), "outage", "declare",
-                               "--until", "2099-01-01T00:00:00Z", "--why", "t218 fault"],
-                              capture_output=True, text=True, timeout=120, cwd=str(bench.wip),
-                              env=dict(bench.env, LANES_INDEX_CONFIG=str(env.config)),
-                              stdin=subprocess.DEVNULL)
+        # THE DECLARATION IS BRETT'S WORD, written only where the database does
+        # not answer from this host (operations.md section 2.5), so the declare
+        # runs with the configuration's port closed (`:1/`), and the file is
+        # restored for `ready`, which reads the live database. The estate has
+        # no mirror with a `Register-Seq` (its origin holds the seed commit
+        # alone), so the declare cannot read `m` after a fetch and is given
+        # `--mirror-seq 0` (F11), the `import_seq` of this module's own cases.
+        good = env.config.read_text(encoding="utf-8")
+        env.config.write_text(good.replace(f":{env.cluster.port}/", ":1/"), encoding="utf-8")
+        try:
+            proc = subprocess.run([sys.executable, str(bench.copy), "outage", "declare",
+                                   "--until", "2099-01-01T00:00:00Z", "--why", "t218 fault",
+                                   "--mirror-seq", "0"],
+                                  capture_output=True, text=True, timeout=120,
+                                  cwd=str(bench.wip),
+                                  env=dict(bench.env, LANES_INDEX_CONFIG=str(env.config)),
+                                  stdin=subprocess.DEVNULL)
+        finally:
+            env.config.write_text(good, encoding="utf-8")
         assert proc.returncode == 0, f"outage declare (T121) did not declare:\n{_said(proc)}"
         return env.ready("--expect", "index")
     if fault == "expect-primary-switch-files":
