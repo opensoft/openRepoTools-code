@@ -567,7 +567,10 @@
 #      AND FEATURE 007'S PRIMARY BRANCH (T415; FR-018; Y:2459, Y:5014,
 #      Y:5603–5605; the contract's §3.2 and §3.3), the parent's, each with
 #      nothing written: a write that names no lane, or whose lane's own
-#      checkout is not there to read (`pw_checkout`; D12: no clone); a hand
+#      checkout is not there to read (`pw_checkout`; D12: no clone); an unset,
+#      empty or out-of-class LANES_LANE (`pw_lane_given`); LANES_NO_GIT=1,
+#      since on primary the write is its commit (`pw_no_git_refuse`), but
+#      for `request-handoff`, whose refusal there is 64 (below); a hand
 #      edit of a rendered file pending in that checkout (`pw_hand_edit_refuse`);
 #      no author identity there (`pw_author_read`); an act whose generation is
 #      not the snapshot's, or whose base is past it (`pw_act_at_snapshot`); a
@@ -586,7 +589,10 @@
 #      contract because its four callers sit in front of a launch as those do. IT WAS IN NO TABLE AT ALL until this round (F-X16), while
 #      being the code the contract gives every one of those reads.
 #      Amendment 23's `lane-checkout` and `refresh-workspace` spend it too.
-#      So does feature 007's `act-begin` (T410).
+#      So does feature 007's `act-begin` (T410). And feature 007's primary
+#      branch (T415) refuses `request-handoff` with it, with nothing sent,
+#      where it names no lane (`pw_checkout`) and under LANES_NO_GIT=1
+#      (`pw_no_git_refuse`): its callers read its 2 as "still bound".
 #
 #  66  EX_NOINPUT — AMENDMENT 16(e)'s ALIAS TABLE COULD NOT BE READ, and
 #      `canon-lane` is the one verb that spends it. `lanes/aliases.tsv` is what
@@ -792,6 +798,12 @@
 #      nothing was written; a retry in seconds is safe", where every attempt
 #      lost its turn by D7's deadline, 30 s from the first attempt's start
 #      (LANES_REGISTER_DEADLINE_S sets it for tests), with the write's rerun.
+#      Likewise an attempt whose child is still short of `ready` twice D +
+#      30 s after its start (LANES_REGISTER_READY_CAP_S sets it for tests),
+#      or 1 s before a kept child's seam cap where that comes first: every
+#      kept child gets `abandon`, the child and every process under it get
+#      TERM, then KILL 1 s later where TERM did not end them, its output is
+#      not shown, and nothing was sent by that attempt.
 #      Where a commit call of the write may have committed, that 75 comes
 #      only after F3's lookup answered "absent" with the lock held (T417).
 #
@@ -1432,8 +1444,14 @@ LANES_ROUTED="${LANES__CHECKOUT_LANE:-}"   # the lane, in the re-run process onl
 # carried (`reg_mode_ask`; lane 5's answer 11, #165 6746507353). Empty: not
 # asked. Consumers test `= primary` only. Never exported: `LANES__MODE` is the
 # carry. `REG_ASK` is set by the write guard's arm at the dispatcher.
+# `REG_PW` is T415's marker that this process entered the register's attempt
+# loop: 0 here, whatever the environment says, never exported and never read
+# from it, and set to 1 only by the primary arm, immediately before `pw_run`.
+# The guard after that arm tests it and nothing else (lane openRepoTools-3,
+# #165 6774499606, A1).
 REG_MODE=""
 REG_ASK=0
+REG_PW=0
 if [ -n "${LANES__MODE:-}" ] &&
    { [ "${LANES__PID:-}" = "$$" ] || [ "${LANES__REPLAY_PID:-}" = "$$" ]; }; then
   case "$LANES__MODE" in index|primary|files) REG_MODE="$LANES__MODE" ;; esac
@@ -1528,6 +1546,12 @@ REG_SCRATCH=""; REG_SCRATCH_CLOCK=""; REG_SCRATCH_UTC=""; REG_SCRATCH_RUN=""
 # afresh, and `guard_type` types into no pane. 0 otherwise, whatever the
 # environment says.
 REG_REPLAY=0
+# T504's store variable (`sql`, `files` or `mirror`; empty reads as files),
+# defined here so that `set -u` holds before T504 lands (lane openRepoTools-3,
+# #165 6774499606, T423 (2): whichever of T414 and T504 lands first defines
+# it). In a child the seam's `committed` step is the only place that sets it,
+# to `sql`.
+REG_STORE=""
 # A FAULT UNDER AN HONOURED FLAG. `die` is defined below the resolver, so it is
 # said here in `die`'s own form: one line on stderr, the code under
 # `LANES_DEBUG`, exit 2.
@@ -3794,7 +3818,9 @@ EOF
 #      `untested`); and the cap, `wr_seam_cap_s` (Y:5001).
 #   6. `committed <s>`: `seam.out` is `tail`, fds 1 and 2 go back to 3 and 4,
 #      the buffered `out.1` and then `out.2` are replayed, `REGISTER_SEQ` is
-#      set, lane 5's `reg_flush` (T505) drops the read family, and 0 is
+#      set, `REG_STORE` is set to `sql` (T504's variable: nothing else in a
+#      child sets it, so `committed` alone opens the tail's reads to D17's
+#      path), lane 5's `reg_flush` (T505) drops the read family, and 0 is
 #      returned, so the verb's code after the seam runs once, after COMMIT
 #      (Y:5011).
 #   7. `abandon`: `seam.out` is `none`, and the child exits 75 without its
@@ -4022,6 +4048,7 @@ CS_EOF
   [ ! -f "$cs_d/out.1" ] || cat -- "$cs_d/out.1"
   [ ! -f "$cs_d/out.2" ] || cat -- "$cs_d/out.2" >&2
   REGISTER_SEQ="$cs_s"
+  REG_STORE=sql
   reg_flush
   # THE RENAME IS IN THE ENTRY, as files mode's index commit leaves it: the
   # old path is no longer a pathspec of anything after the seam.
@@ -4972,7 +4999,7 @@ WR_STATE=""; WR_D=""; WR_LANE=""; WR_SESSION=""; WR_VERB=""; WR_CMDLINE=""
 WR_ARGS=()
 WR_PLAN=""; WR_SNAP_ARGS=()
 WR_ID=""; WR_GEN=""; WR_DATABASE=""; WR_CREATED_UTC=""; WR_UPDATED_UTC=""
-WR_ATTEMPTS=0; WR_CALLS=""; WR_TAIL=""
+WR_ATTEMPTS=0; WR_CALLS=""; WR_TAIL=""; WR_TOOK_TAIL=""
 WR_CLAIM=""; WR_CLAIM_K=-1; WR_CLAIM_PID=""; WR_CLAIM_START=""
 WR_CLAIM_HOST=""; WR_CLAIM_CONTAINER=""; WR_CLAIM_UTC=""
 WR_HERE_HOST=""; WR_HERE_CONTAINER=""
@@ -5060,24 +5087,36 @@ wr_digest() {   # <lane> <session> <verb> [<arg>...]
 wr_host_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 # A record's and a done mark's maximum age, 15 minutes (Y:5183, Y:5207).
-# `LANES_REGISTER_PENDING_MAX_AGE_S` sets it for tests.
+# `LANES_REGISTER_PENDING_MAX_AGE_S` sets it for tests, read and printed in base
+# 10 as `wr_seam_cap_s` is, so `08` is 8 s in every compare and every message
+# that names it (#165 6770820384, T415's 4).
 wr_max_age_s() {
   if wr_is_count "${LANES_REGISTER_PENDING_MAX_AGE_S:-}"; then
-    printf '%s\n' "$LANES_REGISTER_PENDING_MAX_AGE_S"
+    printf '%s\n' "$((10#$LANES_REGISTER_PENDING_MAX_AGE_S))"
   else
     printf '900\n'
   fi
 }
 
-# How long a claim from another host or container counts as live: 120 s, "the
-# seam's cap" (Y:5220), which is 2 x (D + 30 s) at D7's 30 s and which
-# `LANES_REGISTER_SEAM_CAP_S` sets for tests (Y:5001).
+# THE SEAM'S CAP, 2 x (D + 30 s), 120 s at D7's 30 s (Y:5001), where D is D7's
+# deadline: 30 s, or `LANES_REGISTER_DEADLINE_S` for tests (Y:2632-2644), as
+# T415's `pw_deadline_s` reads it, the one reader of D (T415's merge of T412).
+# DEC-25 keeps this one cap: it is also how
+# long a claim that cannot be tested here counts as live, another host's among
+# them (Y:5220) (lane openRepoTools-3, #165 6774499606, T415 (1)).
+# `LANES_REGISTER_SEAM_CAP_S` sets the cap itself, for tests (Y:5001). Each is
+# read in base 10, so a leading zero is neither octal nor an arithmetic error
+# in `wr_claim_capped`'s `$(( ))`: `08` is 8 s (#165 6770820384, T415's 4). A
+# value that is not a count of at most 18 digits (`wr_is_count`) is not read,
+# so twice D + 30 stays inside the shell's arithmetic.
 wr_seam_cap_s() {
+  local sc_d=30
   if wr_is_count "${LANES_REGISTER_SEAM_CAP_S:-}"; then
-    printf '%s\n' "$LANES_REGISTER_SEAM_CAP_S"
-  else
-    printf '120\n'
+    printf '%s\n' "$((10#$LANES_REGISTER_SEAM_CAP_S))"
+    return 0
   fi
+  sc_d="$(pw_deadline_s)"
+  printf '%s\n' "$(( 2 * (sc_d + 30) ))"
 }
 
 # A 0700 directory this uid owns, made where it is missing (Y:5172, Y:5180: "in
@@ -5227,10 +5266,11 @@ wr_utc_of_epoch() {   # <epoch seconds>
     date -u -j -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || :
 }
 
-# A CLAIM WHOSE OWNER CANNOT BE TESTED HERE is live for the seam's cap, 120 s
-# (`wr_seam_cap_s`), and dead after it: Y:5220 for a claim from another host or
-# container, "since its pid cannot be tested here", and DEC-25 for the two of
-# this host that cannot be tested either. The cap runs from the later of
+# A CLAIM WHOSE OWNER CANNOT BE TESTED HERE is live for the seam's cap,
+# 2 x (D + 30 s), 120 s at D7's 30 s (`wr_seam_cap_s`; Y:5001), and dead after
+# it: Y:5220 for a claim from another host or container, "since its pid cannot
+# be tested here", and DEC-25 for the two of this host that cannot be tested
+# either. The cap runs from the later of
 # `<from>`, the claim's own time, and the record's `updated_utc`; where neither
 # can be read, from the claim file's mtime; where even that cannot be read, the
 # claim is live. WR_LIVE_WHY is `<why>`, and WR_LIVE_UNTIL the epoch second from
@@ -5574,9 +5614,14 @@ wr_done_read() {   # <write id>
 # host's clock on every write, a `call=` line's included (T412; open point 36).
 # The done marks past their age go first (Y:5183). 1, with nothing written,
 # where this run no longer owns the record, a value would break its line, or
-# the file cannot be written.
+# the file cannot be written; and where the record this run took over holds
+# `tail` (WR_TOOK_TAIL): a takeover rewrites nothing in such a record, since
+# its `pid` is the run that wrote `tail` (Y:5179, Y:5342; lane
+# openRepoTools-3, #165 6774499606, T412 (1)). So no `call=` line is added to
+# it, and no call is sent for it.
 wr_record_write() {
   local rw_dir rw_now rw_tmp rw_body rw_v rw_l
+  [ -z "$WR_TOOK_TAIL" ] || return 1
   wr_claim_owns || return 1
   wr_done_purge
   rw_dir="$(wr_pending_dir)" || return 1
@@ -5666,10 +5711,15 @@ wr_record_remove() {
 # THE RECORD TAKEN OVER (Y:5206): its id, generation, `call=` lines, `tail`,
 # `attempts`, `created_utc` and `database` become this run's. Its `pid`,
 # `pid_start`, `host` and `container` become this run's claim's when it is next
-# written (Y:5185).
+# written (Y:5185) -- but only where it holds no `tail`. A record that holds
+# `tail` is never rewritten (Y:5342; lane openRepoTools-3, #165 6774499606,
+# T412 (1)): WR_TOOK_TAIL keeps its value, `wr_record_write` writes nothing
+# while it does, and the record stays as found, its `pid`, `host` and
+# `container` those of the run that wrote `tail` (Y:5179), for T418's done
+# mark. Only its removal (`wr_record_remove`) is left to this run.
 wr_record_take_over() {
   WR_ID="$WR_REC_WRITE_ID"; WR_GEN="$WR_REC_GENERATION"
-  WR_CALLS="$WR_REC_CALLS"; WR_TAIL="$WR_REC_TAIL"
+  WR_CALLS="$WR_REC_CALLS"; WR_TAIL="$WR_REC_TAIL"; WR_TOOK_TAIL="$WR_REC_TAIL"
   WR_CREATED_UTC="$WR_REC_CREATED_UTC"; WR_DATABASE="$WR_REC_DATABASE"
   WR_ATTEMPTS="$WR_REC_ATTEMPTS"
   wr_is_count "$WR_ATTEMPTS" || WR_ATTEMPTS=0
@@ -5829,7 +5879,7 @@ wr_id_plan() {
   local ip_e ip_g ip_f ip_rc ip_n
   ip_e="${LANES_WRITE_ID:-}"; ip_g="${LANES_WRITE_GENERATION:-}"
   ip_f="$WR_STATE/register-pending/$WR_D"
-  WR_ID=""; WR_GEN=""; WR_CALLS=""; WR_TAIL=""; WR_ATTEMPTS=0
+  WR_ID=""; WR_GEN=""; WR_CALLS=""; WR_TAIL=""; WR_TOOK_TAIL=""; WR_ATTEMPTS=0
   WR_CREATED_UTC=""; WR_DATABASE=""
   wr_record_read "$ip_f"; ip_rc=$?
   if [ "$ip_rc" = 2 ]; then
@@ -5880,8 +5930,10 @@ wr_id_plan() {
 # AFTER THE FIRST SNAPSHOT ANSWERED 0 (contract §3.2): its stdout, in a file,
 # gives the generation and the write id, minted or echoed, so the record is
 # written now, after that snapshot and before any commit call (Y:5192) -- unless
-# the snapshot found the write in the register (`found=`), which is the tail's
-# case (T418) and writes no record here.
+# the snapshot found the write in the register (`found=`), or the record taken
+# over holds `tail` (WR_TOOK_TAIL), which is never rewritten (Y:5342; lane
+# openRepoTools-3, #165 6774499606, T412 (1)). Both are the tail's case (T418),
+# and write no record here.
 #
 #   new     the minted id; the record is new
 #   reuse, env
@@ -5934,6 +5986,7 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
     *) return 1 ;;
   esac
   [ -n "$is_found" ] && return 0
+  [ -z "$WR_TOOK_TAIL" ] || return 0
   wr_record_write
 }
 
@@ -5949,7 +6002,8 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
 #
 # THE PARENT'S STEPS, in order (lane openRepoTools-4's plan, §3.7; T415's line):
 #   (a) before the first attempt: the lane's checkout `<c>` (`pw_checkout`,
-#       R17), the writer's own lane (`pw_lane_given`), a pending hand edit in
+#       R17), the writer's own lane (`pw_lane_given`), LANES_NO_GIT=1
+#       (`pw_no_git_refuse`), a pending hand edit in
 #       `<c>` (`pw_hand_edit_refuse`), the client's act checks 1–4
 #       (`act_checks`, T410), the author (`pw_author_read`), the write id, the
 #       claim and the record's plan (T412's `wr_` functions), and the run's
@@ -5957,7 +6011,9 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
 #   (b) each attempt: its directory and `parent.pid` (`pw_attempt_dir`), the
 #       snapshot (`pw_snapshot`), the act's checks at it (`pw_act_at_snapshot`),
 #       the files `register commit` reads (`pw_attempt_files`), and the child
-#       (`pw_child_start`, `pw_child_wait`);
+#       (`pw_child_start`, `pw_child_wait`), stopped, with every process under
+#       it, where it never reaches `ready` or a kept child's seam cap is 1 s
+#       away (`pw_child_hung_end`, `pw_child_tree`);
 #   (c) the commit call and the decision on its answer (`pw_commit`,
 #       `pw_decide`);
 #   (d) a 69 at the first snapshot (`pw_first_69`);
@@ -5985,6 +6041,7 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
 PW_LANE=""; PW_C=""; PW_AUTHOR=""; PW_D_S=30; PW_T0=0; PW_RUN=""; PW_RUN_DIR=""
 PW_LOCK=""; PW_REC_OURS=0; PW_PURGED=0
 PW_K=0; PW_DIR=""; PW_CHILD=""; PW_KEPT=""; PW_FIRST_DONE=0; PW_RELAY=""; PW_RC=0
+PW_CAP_S=120; PW_CHILD_T0=0; PW_READY_T=0; PW_SEAM_CAP_S=120; PW_KEPT_END=""; PW_KEPT_K=""
 PW_S_GEN=""; PW_S_WID=""; PW_S_FOUND=""; PW_S_N=""; PW_S_CLOCK=""; PW_S_NOT_AFTER=""
 PW_L_CLOCK=""; PW_L_END=""; PW_LK_CLK=(); PW_LK=""; PW_LK_SEQ=""; PW_LK_TOKEN=""; PW_LK_N=""
 PW_LK_WHY=""; PW_LK_OUT=""; PW_LK_ERR=""
@@ -5997,6 +6054,21 @@ pw_deadline_s() {
     printf '%s\n' "$((10#$LANES_REGISTER_DEADLINE_S))"
   else
     printf '30\n'
+  fi
+}
+
+# THE BOUND ON A CHILD THAT HAS NOT REACHED `ready` (lane openRepoTools-3, #165
+# 6770820384, T415's question 3; #165 6774499606, T415 (1)): twice D + 30 s
+# from the child's start, 120 s at D7's 30 s, the default of Y:5001's cap. Its
+# own test setting is `LANES_REGISTER_READY_CAP_S`, read in base 10.
+# `LANES_REGISTER_SEAM_CAP_S`, the seam's cap, never sets it, so a test that
+# ages a claim out with a short seam cap does not also bound its own write's
+# child (review REV415b, S2). Its caller has PW_D_S.
+pw_child_cap_s() {
+  if wr_is_count "${LANES_REGISTER_READY_CAP_S:-}"; then
+    printf '%s\n' "$((10#$LANES_REGISTER_READY_CAP_S))"
+  else
+    printf '%s\n' "$((2 * (PW_D_S + 30)))"
   fi
 }
 
@@ -6081,6 +6153,26 @@ pw_lane_given() {
   die "refusing to write on primary: ${pl_why}. Every register call of a write carries the writer's own lane, LANES_LANE as given, and it keys the write's claim and pending record (Y:5171), so a write without one is refused before its claim. Nothing was sent. Run it again with your own lane: LANES_LANE=<lane> ${pl_cmd}" 2
 }
 
+# `LANES_NO_GIT=1` ON PRIMARY (lane openRepoTools-3, #165 6770688147, T421's
+# question 2 and T423's question 3; T415's line at B12b). The flag means "edit
+# only, no commit/push" (ENVIRONMENT, above), and on primary the write IS its
+# commit: the child's `commit_publish` returns 0 before the seam, so the run
+# would end 0 with nothing written. So it refuses 2 here, beside
+# `pw_lane_given`, before its claim and its first snapshot, naming the flag.
+# Nothing is sent. `request-handoff`'s refusal is 64, as for its missing lane
+# (`pw_checkout`): its callers read its 2 as "still bound" (`lane`:1253,
+# `lane-start`:2875) (lane 3, #165 6774499606, T415 (4); review REV415b, NIT 6). A dry run meets it too, since a dry run takes the write's
+# whole path and refuses wherever the real write would (lane 3, #165
+# 6770820384, T415's question 2). `commit` never reaches the loop (T420), so it
+# is unchanged; T421's and T423's guards stay as backstops.
+pw_no_git_refuse() {
+  local pg_w="" pg_cmd="lanes-edit.sh" pg_rc=2
+  [ "$NO_GIT" = 1 ] || return 0
+  [ "$cmd" != request-handoff ] || pg_rc=64
+  for pg_w in ${ORIG_ARGV[@]+"${ORIG_ARGV[@]}"}; do pg_cmd="$pg_cmd $(printf '%q' "$pg_w")"; done
+  die "refusing to write on primary: LANES_NO_GIT=1 is set, which means edit only, with no commit and no push. On primary a write is its commit to the register, so under it this run would end 0 having written nothing. Nothing was sent. Unset it and run the command again: env -u LANES_NO_GIT ${pg_cmd}" "$pg_rc"
+}
+
 # A PENDING HAND EDIT IN `<c>` (Y:2459–2464; Amendment 23's S3 step 4). The verb
 # runs on a scratch tree, so the lane's checkout is the one place a hand edit of
 # a rendered file can be seen, and on primary it is never carried or committed:
@@ -6088,7 +6180,11 @@ pw_lane_given() {
 # primary, before anything is sent. The render set is the seam's
 # (`cp_seam_render_path`); `lanes/STORE`, `repos.tsv` and the handoffs are not
 # in it. The recovery's two commands quote the checkout and each path with
-# `printf '%q'`, so each can be pasted as it is (review REV415, N4).
+# `printf '%q'`, so each can be pasted as it is (review REV415, N4). Its
+# restore is `git restore --source=HEAD --staged --worktree`, as T420's
+# `commit_hand_edit_refuse` gives it, not `checkout HEAD --`, which fails for a
+# staged new file that HEAD lacks (lane 3, #165 6774499606, T420 5(a); review
+# REV420b, N3). The restore deletes such a file, so reading it stays first.
 pw_hand_edit_refuse() {
   local ph_hits="" ph_p="" ph_l="" ph_q="" ph_c=""
   ph_hits="$(LANES_REPO="$PW_C" cs_pending_of lanes/LANES.md lanes/aliases.tsv lanes/log lanes/archive)"
@@ -6104,7 +6200,7 @@ PH_EOF
   ph_c="$(printf '%q' "$PW_C")"
   note "RECOVERY, in $PW_C:"
   note "  read it:      git -C $ph_c diff HEAD --$ph_q"
-  note "  restore it:   git -C $ph_c checkout HEAD --$ph_q"
+  note "  restore it:   git -C $ph_c restore --source=HEAD --staged --worktree --$ph_q"
   note "  then make the change through its verb, and run this write again"
   die "refusing to write on primary: lane ${PW_LANE}'s checkout, $PW_C, holds an uncommitted edit of$ph_l, which the register renders. On primary the register is the database and that file is its rendering, so a hand edit there is never committed, carried or swept into a write (Y:2459). Nothing was sent." 2
 }
@@ -6495,8 +6591,9 @@ pw_attempt_files() {
 # real stdout and stderr are kept on fds 3 and 4 BEFORE its own move to the
 # attempt's `out.1` and `out.2`, since redirections apply left to right (lane
 # 3, #165 6755641373, T414's question 2). An asynchronous command's stdin is
-# /dev/null.
+# /dev/null. Its start, in `SECONDS`, starts its bound (`pw_child_wait`).
 pw_child_start() {
+  PW_CHILD_T0="$SECONDS"
   LANES_REGISTER_SCRATCH="$PW_DIR" "${BASH:-bash}" "$RESOLVED" ${ORIG_ARGV[@]+"${ORIG_ARGV[@]}"} \
     3>&1 4>&2 1>"$PW_DIR/out.1" 2>"$PW_DIR/out.2" &
   PW_CHILD=$!
@@ -6504,18 +6601,118 @@ pw_child_start() {
 
 # THE CHILD REACHES `ready`, or ends first. 0 at `ready`, where it waits on fd
 # 5; 1 where it ended before it, with its code in PW_RC and PW_CHILD cleared.
+# A child still short of `ready` more than PW_CAP_S seconds after its start is
+# stopped, and the run ends (`pw_child_hung_end`). `SECONDS` has a one-second
+# grain, so the test is "more than": never before the bound, at most 1 s after.
+# AND THE WAIT ENDS FIRST WHERE A KEPT CHILD'S SEAM CAP IS 1 s AWAY (lane
+# openRepoTools-3, #165 6774499606, T415 (3); Y:5004: "A live parent never
+# meets the cap"; review REV415b, NIT 3): at PW_KEPT_END - 1 (`pw_keep`), where
+# that comes before the bound, the run ends the same way, and every kept child
+# gets `abandon` before its cap can pass. PW_READY_T is `SECONDS` as read just
+# before the last look that found no `ready`, so it is never after the child's
+# own seam wait starts, and its cap never ends before PW_READY_T + its cap.
 pw_child_wait() {
-  PW_RC=0
-  while [ ! -e "$PW_DIR/ready" ]; do
+  local cw_now=""
+  PW_RC=0; PW_READY_T="$PW_CHILD_T0"
+  while cw_now="$SECONDS"; [ ! -e "$PW_DIR/ready" ]; do
+    PW_READY_T="$cw_now"
     if ! kill -0 "$PW_CHILD" 2>/dev/null; then
       [ ! -e "$PW_DIR/ready" ] || return 0
       wait "$PW_CHILD" || PW_RC=$?
       PW_CHILD=""
       return 1
     fi
+    if [ -n "$PW_KEPT_END" ] && [ "$SECONDS" -ge $((PW_KEPT_END - 1)) ]; then
+      pw_child_hung_end kept || return 1
+    fi
+    if [ $((SECONDS - PW_CHILD_T0)) -gt "$PW_CAP_S" ]; then
+      [ ! -e "$PW_DIR/ready" ] || return 0
+      pw_child_hung_end bound || return 1
+    fi
     sleep 0.05 2>/dev/null || sleep 1
   done
   return 0
+}
+
+# EVERY PROCESS UNDER THE CHILD (lane openRepoTools-3, #165 6774499606, T415
+# (2); review REV415b, S1): its children by `pgrep -P`, then theirs, a
+# generation at a time, one pid a line. The child shares this process's group
+# and `setsid` is barred (#165 6755005268), so a command it runs in the
+# foreground, a `git`, a `lanes-index` read or a lock wait, would outlive a
+# KILL of the child alone and keep the caller's stdout and stderr open on its
+# fds 3 and 4. Empty where it has none or `pgrep` is missing; `pgrep` runs in a
+# `$( )` of this shell, so it is never under the child itself.
+pw_child_tree() {
+  local ct_gen="$PW_CHILD" ct_next="" ct_all="" ct_d=0
+  while [ -n "$ct_gen" ] && [ "$ct_d" -lt 64 ]; do
+    ct_next="$(pgrep -P "$ct_gen" 2>/dev/null)" || ct_next=""
+    case "$ct_next" in *[!0-9$WR_NL]*) ct_next="" ;; esac
+    [ -n "$ct_next" ] || break
+    ct_all="${ct_all}${ct_all:+$WR_NL}${ct_next}"
+    ct_gen="${ct_next//$WR_NL/,}"
+    ct_d=$((ct_d + 1))
+  done
+  [ -z "$ct_all" ] || printf '%s\n' "$ct_all"
+}
+
+# A CHILD THAT NEVER REACHES `ready` (lane openRepoTools-3, #165 6770820384,
+# T415's question 3; T415's line at B12b; review REV415, N3): past its bound,
+# PW_CAP_S seconds from its start (Y:5001), or 1 s before a kept child's seam
+# cap where that comes first (#165 6774499606, T415 (3)). Every kept child gets
+# `abandon` FIRST, so none meets its cap while the child below is stopped
+# (Y:5026). Then the processes under the child are listed (`pw_child_tree`),
+# the child gets TERM, and they get it with the child; whatever is left of
+# them 1 s later gets KILL, the child listed again first (#165 6774499606,
+# T415 (2)). The child is reaped and none of its output is replayed. The run
+# ends as at D7's deadline: 75, nothing sent by that attempt, naming the
+# attempt and why it was stopped, with the write's rerun. Where the pending
+# record holds a `call` line, F3's lookup comes first (`pw_end`,
+# `pw_doubt_end`; Y:5020, Y:5024). No commit call was made for this attempt,
+# since the parent makes one only at `ready`; a child that reached `ready` just
+# before its TERM ends by it at the seam all the same.
+# A CHILD THAT ENDED ON ITS OWN between the wait's `kill -0` and the TERM, so
+# that the TERM finds no such process, is not stopped: its code is taken with
+# `wait`, PW_CHILD is cleared, and 1 sends the run to `pw_child_end`, its own
+# end (Y:5016; review REV415b, NIT 5). Nothing is signalled then.
+pw_child_hung_end() {   # bound | kept
+  local ch_n=0 ch_how="TERM" ch_w="" ch_b="" ch_tree="" ch_p="" ch_t=0 ch_kids=""
+  local ch_kk="$PW_KEPT_K"
+  ch_t=$((SECONDS - PW_CHILD_T0))
+  pw_abandon_kept
+  ch_tree="$(pw_child_tree)"
+  if ! kill -TERM "$PW_CHILD" 2>/dev/null; then
+    PW_RC=0
+    wait "$PW_CHILD" 2>/dev/null || PW_RC=$?
+    PW_CHILD=""
+    return 1
+  fi
+  for ch_p in $ch_tree; do kill -TERM "$ch_p" 2>/dev/null || :; done
+  while kill -0 "$PW_CHILD" 2>/dev/null && [ "$ch_n" -lt 20 ]; do
+    if sleep 0.05 2>/dev/null; then ch_n=$((ch_n + 1)); else sleep 1; ch_n=20; fi
+  done
+  ch_tree="${ch_tree}${ch_tree:+$WR_NL}$(pw_child_tree)"
+  if kill -0 "$PW_CHILD" 2>/dev/null; then
+    kill -KILL "$PW_CHILD" 2>/dev/null || :
+    ch_how="TERM, then KILL 1 s later"
+  fi
+  for ch_p in $ch_tree; do
+    if kill -0 "$ch_p" 2>/dev/null; then kill -KILL "$ch_p" 2>/dev/null || :; fi
+  done
+  wait "$PW_CHILD" 2>/dev/null || :
+  PW_CHILD=""
+  [ -z "$ch_tree" ] || ch_kids=", and every process it had started got the same"
+  [ -n "$WR_CALLS" ] || ch_w=", and nothing was written"
+  if [ "$1" = kept ]; then
+    pw_end 75 "attempt ${PW_K}'s child had not reached the seam ${ch_t} s after its start, and attempt ${ch_kk}'s child, kept at its seam after a commit call in doubt, was within 1 s of the seam's cap of ${PW_SEAM_CAP_S} s, so the run ended first (Y:5004): every kept child got \`abandon\`, attempt ${PW_K}'s child was stopped with ${ch_how}${ch_kids}, and its output is not shown. Nothing was sent by that attempt${ch_w}. $(pw_rerun_line)"
+  fi
+  # The bound as it was set (review REV415b, NIT 4): the test setting where it
+  # is in force, else the default's formula with this run's D.
+  if wr_is_count "${LANES_REGISTER_READY_CAP_S:-}"; then
+    ch_b="LANES_REGISTER_READY_CAP_S=${LANES_REGISTER_READY_CAP_S}"
+  else
+    ch_b="2 × (D + 30) s, D = ${PW_D_S} s"
+  fi
+  pw_end 75 "attempt ${PW_K}'s child did not reach the seam within ${PW_CAP_S} s of its start, the bound on a child short of \`ready\` (${ch_b}), so it was stopped with ${ch_how}${ch_kids}, and its output is not shown. Nothing was sent by that attempt${ch_w}. $(pw_rerun_line)"
 }
 
 # ONE MESSAGE TO A CHILD AT THE SEAM (Y:5007): the FIFO opened read-write, so
@@ -6546,7 +6743,7 @@ pw_abandon_kept() {
   done <<PA_EOF
 $PW_KEPT
 PA_EOF
-  PW_KEPT=""
+  PW_KEPT=""; PW_KEPT_END=""; PW_KEPT_K=""
 }
 
 # EVERY KEPT CHILD, AND THE ATTEMPT'S OWN, GET `abandon` before any end but 0
@@ -7542,9 +7739,17 @@ pw_decide() {
 }
 
 # A COMMIT CALL IN DOUBT (Y:5014): nothing is sent to its child, which stays at
-# its seam, kept, and the call keeps its line in the record.
+# its seam, kept, and the call keeps its line in the record. When its seam cap
+# passes is kept too, in this process's `SECONDS`: the child's cap, PW_SEAM_CAP_S
+# (`wr_seam_cap_s`, the child's own), counts from its seam wait, which starts
+# after PW_READY_T (`pw_child_wait`). PW_KEPT_END is the earliest such end, and
+# PW_KEPT_K its attempt (lane openRepoTools-3, #165 6774499606, T415 (3)).
 pw_keep() {
+  local pk_end=$((PW_READY_T + PW_SEAM_CAP_S))
   PW_KEPT="${PW_KEPT}${PW_KEPT:+$WR_NL}$PW_CHILD $PW_DIR"
+  if [ -z "$PW_KEPT_END" ] || [ "$pk_end" -lt "$PW_KEPT_END" ]; then
+    PW_KEPT_END="$pk_end"; PW_KEPT_K="$PW_K"
+  fi
   PW_CHILD=""
 }
 
@@ -7627,11 +7832,14 @@ pw_run() {   # <the verb's arguments>
   # ---- (a) BEFORE THE FIRST ATTEMPT.
   pw_checkout ${1+"$@"}
   pw_lane_given
+  pw_no_git_refuse
   pw_hand_edit_refuse
   act_checks
   pw_author_read
   wr_begin
   PW_D_S="$(pw_deadline_s)"
+  PW_CAP_S="$(pw_child_cap_s)"
+  PW_SEAM_CAP_S="$((10#$(wr_seam_cap_s)))"
   wr_claim_take "$(( $(date -u +%s) + PW_D_S ))" || pr_rc=$?
   [ "$pr_rc" = 0 ] || pw_owner_live_end
   wr_id_plan
@@ -21872,6 +22080,7 @@ if [ "$REG_ASK" = 1 ]; then
     primary)
       [ "$cmd" != commit ] ||
         die "this lanes-edit.sh has no SQL write path: \`lanes-index mode\` answered primary, which only a lanes-index newer than this lanes-edit.sh answers. \`$cmd\` wrote nothing, and wrote no files instead. Install the lanes-edit.sh that ships with that lanes-index." 69
+      REG_PW=1
       pw_run ${1+"$@"} ;;
   esac
 fi
@@ -21879,9 +22088,16 @@ fi
 # REV415, S2). `pw_run` ends this process on every path. But where an expansion
 # fails inside it, an arithmetic error for one, bash abandons the whole `if`
 # above and goes on after its `fi`, into the routing and the verb's files-mode
-# arm. So a writer whose mode question answered `primary`, outside an attempt's
-# child, refuses here with 69, having written no files.
-if [ "$REG_MODE" = primary ] && [ -z "$REG_SCRATCH" ]; then
+# arm. So a process that entered the attempt loop refuses here with 69, having
+# written no files. ONE MARKER IS TESTED, AND NOTHING ELSE (lane
+# openRepoTools-3, #165 6774499606, A1): `REG_PW`, set just before `pw_run`.
+# Keyed on the mode, this guard would also stop a process that never entered
+# the loop: a reader once T504 opens the register above here, `commit`'s
+# publish act (T420), or `write-handoff`. After `reg_mode_ask` answers
+# `primary` nothing between it and the arm can abort, so a 1 here means only
+# that `pw_run` was entered and returned or was abandoned. An attempt's child
+# runs this file afresh, so its `REG_PW` is 0.
+if [ "$REG_PW" = 1 ]; then
   die "\`lanes-index mode\` answered primary, and \`$cmd\` left the register's attempt loop without ending, which is an internal error of this lanes-edit.sh. Whether it reached the register is not known: a write already made reads as found when the command is run again. \`$cmd\` wrote no files instead." 69
 fi
 
