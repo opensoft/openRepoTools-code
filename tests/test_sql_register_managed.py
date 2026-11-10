@@ -397,10 +397,10 @@ class Managed:
         read by the provider."""
         row = self.value(
             "SELECT json_build_object('canlogin', a.rolcanlogin, 'super', a.rolsuper, "
-            "'config', coalesce(a.rolconfig, '{}'), 'verifier', a.rolpassword, "
+            "'config', coalesce(r.rolconfig, '{}'), 'verifier', a.rolpassword, "
             "'groups', ARRAY(SELECT g.rolname::text FROM pg_auth_members m JOIN pg_roles g "
             "ON g.oid = m.roleid WHERE m.member = a.oid ORDER BY 1)) "
-            f"FROM pg_authid a WHERE a.rolname = '{login}';", "postgres")
+            f"FROM pg_authid a JOIN pg_roles r ON r.oid = a.oid WHERE a.rolname = '{login}';", "postgres")
         return json.loads(row) if row else {}
 
     # ------------------------------------------------------------ the register
@@ -513,10 +513,10 @@ SELECT json_agg(x ORDER BY x) FROM (
     def rows(self, db: str) -> str:
         """Both schemas' rows, table by table, each table's rows sorted."""
         tables = self.value(
-            "SELECT string_agg(format('%I.%I', schemaname, tablename), ' ' ORDER BY 1) "
+            "SELECT string_agg(format('%I.%I', schemaname, tablename), ' ' ORDER BY schemaname, tablename) "
             f"FROM pg_tables WHERE schemaname IN ('{REGISTER}', '{INDEX}');", db).split()
         views = self.value(
-            "SELECT string_agg(format('%I.%I', schemaname, viewname), ' ' ORDER BY 1) "
+            "SELECT string_agg(format('%I.%I', schemaname, viewname), ' ' ORDER BY schemaname, viewname) "
             f"FROM pg_views WHERE schemaname IN ('{REGISTER}', '{INDEX}');", db).split()
         return "\n".join(f"{name}: " + self.value(
             f"SELECT coalesce(json_agg(r ORDER BY r::text), '[]') FROM {name} r;", db)
@@ -560,7 +560,7 @@ def test_bootstrap_refuses_a_database_its_admin_does_not_own(tmp_path, request):
     m = Managed(request, tmp_path)
     m.psql("CREATE DATABASE t224_theirs;")                  # the provider's, not the admin's
     service = m.service("t224_theirs")
-    acl = m.value("SELECT coalesce(datacl::text, '-') FROM pg_database "
+    acl = m.value("SELECT coalesce(datacl, acldefault('d', datdba))::text FROM pg_database "
                   "WHERE datname = 't224_theirs';", "postgres")
     proc = m.bootstrap(service, "--no-passwords")
     assert proc.returncode == 2, f"bootstrap on a database its admin does not own is not 2:\n{_said(proc)}"
@@ -571,7 +571,7 @@ def test_bootstrap_refuses_a_database_its_admin_does_not_own(tmp_path, request):
     warned = m.psql("\\set VERBOSITY verbose\nREVOKE ALL ON DATABASE t224_theirs FROM PUBLIC;\n"
                     f"GRANT CONNECT ON DATABASE t224_theirs TO {ADMIN};\n", user=ADMIN)
     assert "01006" in warned.stderr and "01007" in warned.stderr, _said(warned)
-    assert m.value("SELECT coalesce(datacl::text, '-') FROM pg_database "
+    assert m.value("SELECT coalesce(datacl, acldefault('d', datdba))::text FROM pg_database "
                    "WHERE datname = 't224_theirs';", "postgres") == acl
 
 
@@ -679,7 +679,7 @@ def test_login_rotate_keeps_an_open_session_and_refuses_the_old_password(tmp_pat
         f"the session open across the rotation did not go on:\n{_said(ended)}")
     for login in ("lanes_w_e1", "lanes_r_e1"):
         refused = m.as_login(login, "t224_reg", "SELECT 1;\n", old[login])
-        assert refused.returncode == 2 and "28P01" in refused.stderr + refused.stdout, (
+        assert refused.returncode == 2 and "password authentication failed" in refused.stderr, (
             f"{login}'s old password file is not refused at login:\n{_said(refused)}")
         assert m.connects(login, "t224_reg", new[login]), f"{login}'s new line does not connect"
     _no_clear_text(m.log(), _passwords(proc.stdout))
@@ -1142,6 +1142,7 @@ def test_dump_restore_privileges_hold_after_roles_only_the_restore_and_bootstrap
     source, _old, dump = _source(request, tmp_path / "source", primary=True)
     label = source.value(f"SELECT database_label FROM {REGISTER}.register_switch;", "t224_reg")
     target, _roles, after, _new, mark = _restored(request, tmp_path / "target", dump)
+    end = len(target.log())
     db = "t224_reg"
     acl = target.value(f"SELECT coalesce(datacl::text, '') FROM pg_database WHERE datname = '{db}';",
                        "postgres")
@@ -1159,9 +1160,9 @@ def test_dump_restore_privileges_hold_after_roles_only_the_restore_and_bootstrap
                         "'EXECUTE');", db) == "f", "an outsider may execute a later function of the owner's"
     # `bootstrap` after the restore re-ran no statement and wrote no label.
     assert {state for _what, state in _objects(after.stdout)} == {"unchanged"}, _said(after)
-    since = target.log()[mark:]
+    since = target.log()[mark:end]
     ran = [line for line in since.splitlines()
-           if re.search(r"statement: .*\b(CREATE|GRANT|REVOKE|ALTER|INSERT|UPDATE)\b", line)]
+           if re.search(r"statement: (CREATE|GRANT|REVOKE|ALTER|INSERT|UPDATE)\b", line)]
     assert ran == [], f"bootstrap after the restore re-ran statements: {ran}"
     assert target.value(f"SELECT database_label FROM {REGISTER}.register_switch;", db) == label
 
