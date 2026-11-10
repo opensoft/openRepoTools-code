@@ -5994,9 +5994,13 @@ pid_alive() {
 #   1  not live: no such process, or a zombie, which has already exited.
 #   2  its start could not be read. EVERY CALLER READS 2 AS LIVE, never as dead
 #      (R49): a wrong "dead" lets a claim or a bind be stolen, and a wrong
-#      "live" only waits. An argument that is not a pid is a 2 as well, never a
-#      1 (the contract's open point 15, read fail-closed): nothing about such a
-#      process can be read, and a 1 would call it dead.
+#      "live" only waits. An argument that is not a well-formed pid — empty,
+#      `0`, a leading `0`, a non-digit, or more than 10 digits — is a 2 as
+#      well, never a 1: nothing about such a process can be read, and a 1
+#      would call it dead (lane 3's ruling on the contract's point 15, as
+#      narrowed, opensoft/openRepoTools#165 6747528875 and 6747722621). `1` is
+#      read like any pid, since in a container it is a real process; "above 1"
+#      is the bind record's own rule, which the guard applies before any call.
 #
 # SELF-CONTAINED ON PURPOSE: it calls no helper of this file, so lane 4's
 # pending record and a test can take the function as it stands. `0` and a
@@ -11721,9 +11725,14 @@ guard_offer_file() {   # <session uuid>
 # opensoft/openRepoTools#165 6746215510, point 1), and every rewrite is a
 # temporary file in `offers/` and `mv -f` (point 2). The `.bind.*` files live as
 # long as the bind: whatever removes the record, or rewrites it to `mode=allow`,
-# removes them too (point 13).
+# removes them too (point 13), and that removal also takes any facts file an
+# outer left, as after case 9 (lane 3's ruling on the facts file's two
+# removers, opensoft/openRepoTools#165 6747528875). Case 11 alone drops the
+# record and leaves `<uuid>.bind.*` for the next removal to sweep: it is the one
+# removal that can meet a live outer, whose `.out` is never unlinked under it.
 
-# THE RECORD AND ITS ATTEMPTS' FILES, removed together (point 13).
+# THE RECORD AND ITS ATTEMPTS' FILES, `.out` and `.facts`, removed together
+# (point 13).
 guard_offer_drop() {   # <offer file>
   [ -n "${1-}" ] || return 0
   rm -f -- "$1" "$1".bind.* 2>/dev/null
@@ -13284,22 +13293,35 @@ guard_bind_outer() {   # <session uuid>
   # place of `"$RESOLVED" guard-bind --body`.
   gbo_body="${LANES_BIND_BODY:-}"
   unset LANES_BIND_BODY
-  # ITS OWN START, WHICH IS WHAT MAKES ITS PID A LIVENESS TEST. Where it cannot
-  # be read it is left EMPTY, never a word: an empty `pidstart` is one the guard
-  # cannot compare, and so reads as live while the pid is (R49), where a word
-  # would read as another process's and so as a reused pid.
-  gbo_ps="$(pid_start_of "$$" 2>/dev/null || :)"
+  # ITS OWN START, WHICH IS WHAT MAKES ITS PID A LIVENESS TEST. `pidstart` is
+  # written ONLY where `pid_start_of $$` exits 0; where it cannot be read the
+  # outer writes `pid` alone, never an empty or guessed start (lane 3's ruling
+  # on the contract's point 15, opensoft/openRepoTools#165 6747528875). The
+  # guard reads a record without a well-formed `pid` AND `pidstart` as having
+  # no pid: running until `deadline_epoch`, then stale with no session test.
+  gbo_ps=""; gbo_psrc=0
+  gbo_ps="$(pid_start_of "$$" 2>/dev/null)" || gbo_psrc=$?
+  gbo_pid=("pid=$$")
+  [ "$gbo_psrc" != 0 ] || [ -z "$gbo_ps" ] || gbo_pid+=("pidstart=$gbo_ps")
+  # THE ATTEMPT'S OUTPUT FILE, as the hook named it, for the outcome's words.
+  gbo_outf="${GBR_OUT:-$gbo_f.bind.$gbo_k.out}"
   gbo_bs="$(guard_bind_bound_s "$gbo_f")"
   GBO_BD=no
   command -v timeout >/dev/null 2>&1 && GBO_BD=yes
   gbo_now="$(date -u '+%s %Y-%m-%dT%H:%M:%SZ')"
   gbo_ep="${gbo_now%% *}"
   if ! guard_bind_rewrite "$gbo_f" "pid pidstart" "started_utc=${gbo_now#* }" "bound_s=$gbo_bs" \
-       "bounded=$GBO_BD" "deadline_epoch=$((gbo_ep + gbo_bs + 5))" "pid=$$" "pidstart=$gbo_ps"; then
+       "bounded=$GBO_BD" "deadline_epoch=$((gbo_ep + gbo_bs + 5))" "${gbo_pid[@]}"; then
     note "guard-bind: the record at $gbo_f could not be rewritten with this outer's pid, so the bind was NOT run. The guard reads a binding record with no pid as running until its deadline, and then restores the offer."
     return 1
   fi
   note "guard-bind: attempt $gbo_k for transcript $gbo_u, pid $$, bound ${gbo_bs} s (bounded=$GBO_BD), started ${gbo_now#* }."
+  # THE BODY'S FACTS FILE IS ITS OWN TO MAKE (point 16(a)): the body creates it,
+  # empty, before its first step, so a file missing at the end means the body
+  # never ran. Any file at that name from before this outer is removed first,
+  # so the file read at the end can only be this body's.
+  gbo_facts="$gbo_f.bind.$gbo_k.facts"
+  rm -f -- "$gbo_facts" 2>/dev/null || :
 
   gbo_cmd=("$RESOLVED" guard-bind --body "$gbo_u")
   [ -z "$gbo_body" ] || gbo_cmd=("$gbo_body" "$gbo_u")
@@ -13333,22 +13355,36 @@ guard_bind_outer() {   # <session uuid>
     gbo_prev="$gbo_st"
   done
   gbo_rc="$gbo_st"
+  gbo_end="$(date -u +%s)"
+  # HOW IT ENDED (lane 3's ruling on the contract's point 16(b), refining point
+  # 11, opensoft/openRepoTools#165 6747528875): STOPPED BY A SIGNAL wherever the
+  # trap fired; STOPPED BY ITS BOUND only where `timeout` returned 124 or 137 at
+  # or after `bound_s` - 10 s from the start, with the trap not fired; every
+  # other end is the body's own. The code alone cannot tell them apart: a
+  # `KILL` from another process inside the bound is 137 too.
+  gbo_tcode=0
+  [ "$GBO_BD" = yes ] && { [ "$gbo_rc" = 124 ] || [ "$gbo_rc" = 137 ]; } && gbo_tcode=1
   gbo_how=self
   if [ "$GBO_TRAPS" -gt 0 ]; then gbo_how=signal
-  elif [ "$GBO_BD" = yes ] && { [ "$gbo_rc" = 124 ] || [ "$gbo_rc" = 137 ]; }; then gbo_how=bound
+  elif [ "$gbo_tcode" = 1 ] && [ "$((gbo_end - gbo_ep))" -ge "$((gbo_bs - 10))" ]; then gbo_how=bound
   fi
-  if [ "$gbo_how" != self ] && [ "$gbo_swept" = 0 ]; then
+  # THE SWEEP FOLLOWS `timeout`'s CODE, or the trap, and not the name the end
+  # is given (R47, ERR-10; tasks.md T502): a 124 or 137 inside the bound may be
+  # `timeout` itself killed, with the body still running in its group, and
+  # nothing else would stop that group now.
+  if [ "$gbo_swept" = 0 ] && { [ "$GBO_TRAPS" -gt 0 ] || [ "$gbo_tcode" = 1 ]; }; then
     gbo_swept=1
     guard_bind_sweep "$GBO_CPID"
   fi
 
-  # THE OUTCOME (Y:5486–5488; lane 3's ruling, points 3, 6 and 11). Where the
-  # body ended on its own, its facts file gives `why` and the `note=` lines;
-  # where the bound or a signal stopped it, the `why` is Y:5488's and the facts,
-  # if any, are not read: what it wrote is not known.
-  gbo_facts="$gbo_f.bind.$gbo_k.facts"
-  gbo_fwhy=""; gbo_fnotes=()
+  # THE OUTCOME (Y:5486–5488; lane 3's ruling, points 3, 6 and 11, and its
+  # point 16, #165 6747528875). Where the body ended on its own, its facts file
+  # gives `why` and the `note=` lines; where the bound or a signal stopped it,
+  # the `why` is Y:5488's and the facts, if any, are not read: what it wrote is
+  # not known.
+  gbo_fhave=0; gbo_fwhy=""; gbo_fnotes=()
   if [ "$gbo_how" = self ] && [ -f "$gbo_facts" ]; then
+    gbo_fhave=1
     gbo_seenwhy=0
     while IFS= read -r gbo_l || [ -n "$gbo_l" ]; do
       case "$gbo_l" in
@@ -13362,13 +13398,18 @@ guard_bind_outer() {   # <session uuid>
     signal) gbo_out=(mode=bind-failed "rc=$gbo_rc" "why=stopped by a signal; what it wrote is not known") ;;
     bound)  gbo_out=(mode=bind-failed "rc=$gbo_rc" "why=stopped by its bound; what it wrote is not known") ;;
     *)
-      if [ "$gbo_rc" = 0 ]; then
+      if [ "$gbo_rc" = 0 ] && [ "$gbo_fhave" = 1 ]; then
         gbo_out=(mode=bound rc=0 ${gbo_fnotes[@]+"${gbo_fnotes[@]}"})
+      elif [ "$gbo_rc" = 0 ]; then
+        # POINT 16(d): 0 AND NO FACTS FILE. A missing file never passes as
+        # "nothing owed": the record ends `bound` with one `note=` naming the
+        # attempt's output, which is the only account left.
+        gbo_out=(mode=bound rc=0 "note=$(guard_bind_oneline "whatever the bind's body left undone is not known: it ended 0 and gave no account of the acts it still owes; its output is $gbo_outf")")
       else
-        # OPEN POINT 16, READ FAIL-CLOSED: a body that ended on its own and
-        # gave no `why` (one that crashed, or a seam's stub) is not taken to
-        # have written nothing. Its output is in the attempt's file.
-        [ -n "$gbo_fwhy" ] || gbo_fwhy="the bind's body exited $gbo_rc and left no account of what it did, so what it wrote is not known; its output is in ${GBR_OUT:-the output file of this attempt}"
+        # POINT 16(c): THE BODY ENDED ON ITS OWN, NONZERO, WITH NO `why=` LINE
+        # (one that crashed, or a seam's stub). Lane 3's words, verbatim; the
+        # output file, kept after a failure (Y:5487), is the only record left.
+        [ -n "$gbo_fwhy" ] || gbo_fwhy="the bind's body ended with exit $gbo_rc and gave no reason; what it wrote is not known; its output is $gbo_outf"
         gbo_out=(mode=bind-failed "rc=$gbo_rc" "why=$(guard_bind_oneline "$gbo_fwhy")")
       fi ;;
   esac
@@ -13419,6 +13460,11 @@ guard_bind_body() {   # <session uuid>
   fi
   gbb_from="$GBR_FROM"; gbb_to="$GBR_TO"; gbb_out="$GBR_OUT"
   gbb_facts="$gbb_f.bind.$GBR_BIND.facts"
+  # ITS FACTS FILE, EMPTY, BEFORE ITS FIRST STEP (lane 3's ruling on the
+  # contract's point 16(a), opensoft/openRepoTools#165 6747528875): the outer
+  # then reads a missing file as a body that never ran, and never as one that
+  # owes nothing.
+  guard_bind_facts "$gbb_facts" || :
   gbb_start="$(guard_lane_start)"
   [ -n "$gbb_start" ] || gbb_start=lane-start
   # WHERE `lane-start`'s OWN WORDS BEGIN in the attempt's output file, so that
@@ -13487,7 +13533,9 @@ guard_bind_body() {   # <session uuid>
   if ! guard_bound_check "$gbb_to"; then
     gbb_notes+=("note=lane $gbb_to's session cell does not end on $G_ID: run LANES_LANE=$gbb_to lanes-edit.sh append-session-id $gbb_to \"<the session cell's last id>\" \"→ harness $G_ID (transcript uuid)\"")
   fi
-  guard_bind_facts "$gbb_facts" ${gbb_notes[@]+"${gbb_notes[@]}"} || :
+  # AN ACCOUNT THAT COULD NOT BE WRITTEN IS NOT LEFT LOOKING LIKE "NOTHING OWED":
+  # the empty file goes, and the outer then records its point 16(d) note.
+  guard_bind_facts "$gbb_facts" ${gbb_notes[@]+"${gbb_notes[@]}"} || rm -f -- "$gbb_facts" 2>/dev/null || :
   return 0
 }
 
