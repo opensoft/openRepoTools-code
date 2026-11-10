@@ -1792,7 +1792,7 @@ def test_a_database_that_does_not_answer_is_2_inside_4_5_s(estate, case):
         elif case.startswith("3-"):
             holder = est.pg.session()
             closers.append(holder.kill)
-            holder.stdin.write("BEGIN; LOCK TABLE register_head IN ACCESS EXCLUSIVE MODE;\n")
+            holder.stdin.write("BEGIN; LOCK TABLE lanes_register.register_head IN ACCESS EXCLUSIVE MODE;\n")
             holder.stdin.flush()
         else:
             ports = [_silent_listener(h) for h in ("127.0.0.1", "127.0.0.2")]
