@@ -189,10 +189,25 @@ class Estate:
         self._git("-C", str(self.wip), "fetch", "-q", "origin")
 
     def unreachable_origin(self) -> None:
-        """The checkout's `origin` names a path with nothing there: its fetch
-        fails, and its `origin/main` stays as last fetched."""
-        self._git("-C", str(self.wip), "remote", "set-url", "origin",
-                  str(self.root / "no-origin.git"))
+        """Origin's directory is renamed aside: the checkout's `origin` and
+        `workspace.yaml` still name it, so `lanes-edit.sh workspace-root`
+        still finds the checkout, but a fetch fails, and `origin/main` stays
+        as last fetched. The case checks both before it runs `set-mode`."""
+        self.origin.rename(self.root / "origin-aside.git")
+        root = subprocess.run(["bash", str(self.copy.parent / "lanes-edit.sh"), "workspace-root"],
+                              capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                              env=dict(self.env, LANES_NO_FETCH="1", LANES_INDEX="off"))
+        assert root.returncode == 0 and root.stdout.strip() == str(self.wip), (
+            f"the fault is not the fetch alone: workspace-root no longer finds the checkout:\n"
+            f"{_said(root)}")
+        fetch = subprocess.run(["git", "-C", str(self.wip), "fetch", "-q", "origin", "main"],
+                               capture_output=True, text=True, env=self.env,
+                               stdin=subprocess.DEVNULL)
+        assert fetch.returncode != 0, "the fault is not a failing fetch: the fetch succeeded"
+
+    def reachable_origin(self) -> None:
+        """Origin's directory back where the checkout's `origin` names it."""
+        (self.root / "origin-aside.git").rename(self.origin)
 
     # ------------------------------------------------------------------ switch
     def switch(self, mode: str, marker: str, label: str, set_seq: int = 7) -> None:
@@ -287,7 +302,7 @@ def test_set_mode_primary_refuses_before_the_marker_is_present_or_names_another_
     other = estate.config("index", name="control")
     estate.switch("primary", "present", LABEL)
     if case.get("unreachable"):
-        estate._git("-C", str(estate.wip), "remote", "set-url", "origin", str(estate.origin))
+        estate.reachable_origin()
     estate.marker(_store(LABEL))
     estate.fetch()
     proc = estate.set_mode("primary", other)
