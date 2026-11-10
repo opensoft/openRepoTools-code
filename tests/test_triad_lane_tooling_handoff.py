@@ -1287,6 +1287,102 @@ def test_t018_single_repository_handoff_and_reconcile_are_c45a452s_byte_for_byte
             raise AssertionError(f"the single-repository output of '{key}' moved:\n{diff}")
 
 
+# ================================================ #117: the READY line's count
+
+#: A `git` that is the real one except for the one call `FAKE_GIT_FAIL` names,
+#: which fails as a read git cannot complete does - the injection
+#: `tests/test_lifecycle_fail_open_113_114_115.py` makes. Unset, it is the real
+#: git.
+FAILING_GIT = """#!/bin/sh
+if [ -n "${FAKE_GIT_FAIL:-}" ]; then
+  case " $* " in
+    *" $FAKE_GIT_FAIL "*)
+      printf 'fatal: injected failure of: git %s\\n' "$*" >&2
+      exit 128 ;;
+  esac
+fi
+exec @REAL@ "$@"
+"""
+
+#: The READY block's separator, built rather than typed.
+DASH = chr(0x2014)
+
+
+def ready_inventory(proc: subprocess.CompletedProcess) -> str:
+    """The READY block's one `inventory:` line."""
+    found = [ln for ln in proc.stdout.splitlines() if ln.startswith("  inventory: ")]
+    assert len(found) == 1, proc.stdout + proc.stderr
+    return found[0]
+
+
+def plain_lanes(tmp_path: Path, *lanes: str) -> tuple:
+    """A single repository with no `project.yaml`, `lanes` on it, and two
+    trees of each lane under its `.lane-worktrees` root: (bench, checkout,
+    {lane: [tree a, tree b]})."""
+    b = Bench(tmp_path / "bench", REPO)
+    b.origin("plain")
+    s = b.projects / "plain"
+    b.git("clone", "-q", b.remotes / "plain.git", s)
+    b.commit(s, "seed", {"README.md": "plain\n"})
+    b.git("push", "-q", "origin", "main", cwd=s)
+    b.lanes("opensoft/plain", s, *lanes)
+    trees = {lane: [leg_tree(b, s, b.projects / ".lane-worktrees" / lane / name, f"{lane}-{name}")
+                    for name in ("a", "b")] for lane in lanes}
+    return b, s, trees
+
+
+def test_117_the_ready_line_counts_the_trees_recorded_where_an_observation_refused(tmp_path):
+    """opensoft/openRepoTools#117 part 1. The READY line said `<polled>
+    worktree(s) recorded`, counting a tree before its inventory entry was
+    known to be written: a tree whose observation refused files no sidecar,
+    yet it was counted, so the summary named entries `lane-trees` did not
+    have. It now counts the entries written and says `N of M polled` where the
+    two differ; where every polled tree was recorded it says exactly what it
+    always said, the line the T018 goldens hold."""
+    b, s, trees = plain_lanes(tmp_path, "plain-1", "plain-2")
+
+    # EVERY TREE POLLED IS RECORDED: the golden's line, byte for byte.
+    proc = handoff(b, "plain-1", s, "every tree recorded")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert ready_inventory(proc) == \
+        f"  inventory: 2 worktree(s) recorded {DASH} lanes-edit.sh lane-trees plain-1"
+    assert sorted(inventory(b, "plain-1")) == sorted(str(t) for t in trees["plain-1"])
+
+    # AN OBSERVATION THAT REFUSED: `lane-tree-now` fails, nothing is filed.
+    real = shutil.which("git")
+    assert real
+    (b.fake / "git").write_text(FAILING_GIT.replace("@REAL@", shlex.quote(real)))
+    (b.fake / "git").chmod(0o755)
+    refused = trees["plain-2"][1]
+    proc = handoff(b, "plain-2", s, "a refused observation",
+                   env={"FAKE_GIT_FAIL": f"-C {refused} status --short"})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert f"the observation of {refused} could not be made" in proc.stderr, proc.stderr
+    assert ready_inventory(proc) == \
+        f"  inventory: 1 of 2 polled worktree(s) recorded {DASH} lanes-edit.sh lane-trees plain-2"
+    assert sorted(inventory(b, "plain-2")) == [str(trees["plain-2"][0])]
+
+
+def test_117_the_ready_line_counts_the_trees_recorded_where_a_write_was_refused(tmp_path):
+    """opensoft/openRepoTools#117 part 1, its other half: a tree whose
+    `set-lane-tree` was refused - here its record is of a schema this helper
+    does not write, so it is not replaced - files no sidecar of this handoff's,
+    and is not counted as one."""
+    b, s, trees = plain_lanes(tmp_path, "plain-3")
+    held = trees["plain-3"][1]
+    made = b.tool("lanes-edit.sh", "set-lane-tree", "plain-3", str(held), "--checkout", str(s))
+    assert made.returncode == 0, made.stderr
+    root = field(b.tool("lanes-edit.sh", "lane-reconcile", "plain-3").stdout, "ROOT")[0]
+    tid = made.stdout.strip()
+    (Path(root) / "trees" / f"{tid}.yaml").write_text(f"schema: 2\ntree: {tid}\npath: {held}\n")
+    proc = handoff(b, "plain-3", s, "a refused write")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert f"the worktree inventory entry for {held} could not be written" in proc.stderr, \
+        proc.stderr
+    assert ready_inventory(proc) == \
+        f"  inventory: 1 of 2 polled worktree(s) recorded {DASH} lanes-edit.sh lane-trees plain-3"
+
+
 # ===================================================================== capture
 
 def capture(tools: Path, golden: Path) -> None:

@@ -15632,10 +15632,20 @@ tree_id_for() {   # <absolute worktree path>
 # ONE TREE'S SIDECAR. Every field is an OBSERVATION and none of them is truth
 # about git: `lane-reconcile` recomputes all of them and reports the
 # difference, which is the whole of design decision 6.
-lane_tree_put() {   # <root> <lane> <path> <checkout> <branch> <head> <upstream> <dirty> <unpushed> <writer> <gen> <op>
+#
+# AND WHICH REPOSITORY IT IS, WHERE GIT ANSWERS FOR ONE (opensoft/openRepoTools
+# #116): `repo`, the path's git common directory, physical (`git_common_real`),
+# which the caller reads before it takes the lock. The five fields after it
+# say what is checked out at the path and not whose checkout it is, so an
+# independent clone on the same branch at the same commit read exactly as the
+# tree recorded. It is OPTIONAL: a path git does not answer in records none, a
+# record without one (every record a released helper wrote) is still a whole
+# record (`lane_sidecar_schema_ok` asks for no `repo`), and `lane_reconcile`
+# compares only a record that carries one.
+lane_tree_put() {   # <root> <lane> <path> <checkout> <branch> <head> <upstream> <dirty> <unpushed> <writer> <gen> <op> [<repo>]
   ltp_root="$1"; ltp_lane="$2"; ltp_path="$3"; ltp_co="$4"; ltp_branch="$5"
   ltp_head="$6"; ltp_up="$7"; ltp_dirty="$8"; ltp_unp="$9"; shift 9
-  ltp_writer="${1-}"; ltp_gen="${2-}"; ltp_op="${3-}"
+  ltp_writer="${1-}"; ltp_gen="${2-}"; ltp_op="${3-}"; ltp_repo="${4-}"
   ltp_id="$(tree_id_for "$ltp_path")"
   [ -n "$ltp_id" ] || return 1
   { printf 'schema: %s\n'    "$LANE_STATE_SCHEMA"
@@ -15643,6 +15653,7 @@ lane_tree_put() {   # <root> <lane> <path> <checkout> <branch> <head> <upstream>
     printf 'tree: %s\n'      "$ltp_id"
     printf 'path: %s\n'      "$(lane_sidecar_value "$ltp_path")"
     printf 'checkout: %s\n'  "$(lane_sidecar_value "${ltp_co:-unknown}")"
+    [ -z "$ltp_repo" ] || printf 'repo: %s\n' "$(lane_sidecar_value "$ltp_repo")"
     printf 'branch: %s\n'    "$(lane_sidecar_value "${ltp_branch:-unknown}")"
     printf 'head: %s\n'      "$(lane_sidecar_value "${ltp_head:-unknown}")"
     printf 'upstream: %s\n'  "$(lane_sidecar_value "${ltp_up:-none}")"
@@ -16128,11 +16139,39 @@ LRC_BIND
       # by what the sidecar last SAW there, and metadata can reconstruct no
       # file's contents: a tree that held uncommitted or unpublished work is
       # POSSIBLE LOSS and is never claimed to be rebuildable.
+      #
+      # AND A REGISTRATION GIT STILL HOLDS FOR IT IS SAID ON THE SAME ROW
+      # (opensoft/openRepoTools#117). The sweep below skips every path a sidecar
+      # names, so such a tree was `missing` or `possible-loss` and never
+      # `stale-registration`: the `git worktree prune` the estate's `resume`
+      # refuses without was never named. And where the record spells the path
+      # through a symlink, git's physical spelling was not in the seen set and
+      # the one tree was named twice. So the registrations of the checkout it
+      # was recorded under, and then of the lane's `dir`, are asked for it here
+      # under both spellings: the recorded one, and its parent's physical one
+      # (`path_real`, since a path that is gone has no physical spelling of its
+      # own and `lane_real_path` returns it unchanged). Where one holds it, the
+      # prune is named on this row and that spelling joins the seen set, so the
+      # sweep names the tree no second time. A read that fails here names no
+      # prune: the sweep reads the lane's `dir` and its legs again, and says so.
+      lrc_gp="$(path_real "$lrc_p")"; lrc_prune=""; lrc_gtried=""
+      for lrc_gco in "${lrc_co:-}" "${lrc_dir:-}"; do
+        case "$lrc_gco" in /*) : ;; *) continue ;; esac
+        [ -d "$lrc_gco" ] && [ "$lrc_gco" != "$lrc_gtried" ] || continue
+        lrc_gtried="$lrc_gco"
+        if git -C "$lrc_gco" worktree list --porcelain 2>/dev/null </dev/null \
+             | LRC_P="worktree $lrc_p" LRC_GP="worktree $lrc_gp" \
+               awk '$0 == ENVIRON["LRC_P"] || $0 == ENVIRON["LRC_GP"] { f = 1 } END { exit f ? 0 : 1 }'; then
+          lrc_prune="; git still registers it in $lrc_gco: \`git -C $lrc_gco worktree prune\` is a person's act"
+          lrc_seen="$lrc_seen $lrc_gp "
+          break
+        fi
+      done
       case "${lrc_d:-0}${lrc_np:-0}" in
-        00) printf 'TREE%s%s%smissing%s%s%swas branch %s head %s; clean and published at %s; the estate parked record and `resume <Name>` are the only rebuild\n' \
-              "$US" "$lrc_id" "$US" "$US" "$lrc_p" "$US" "$lrc_b" "$lrc_h" "$lrc_ob" ;;
-        *)  printf 'TREE%s%s%spossible-loss%s%s%swas branch %s head %s with %s dirty and %s unpushed at %s; NOTHING here can reconstruct uncommitted files — do not recreate this path\n' \
-              "$US" "$lrc_id" "$US" "$US" "$lrc_p" "$US" "$lrc_b" "$lrc_h" "$lrc_d" "$lrc_np" "$lrc_ob" ;;
+        00) printf 'TREE%s%s%smissing%s%s%swas branch %s head %s; clean and published at %s; the estate parked record and `resume <Name>` are the only rebuild%s\n' \
+              "$US" "$lrc_id" "$US" "$US" "$lrc_p" "$US" "$lrc_b" "$lrc_h" "$lrc_ob" "$lrc_prune" ;;
+        *)  printf 'TREE%s%s%spossible-loss%s%s%swas branch %s head %s with %s dirty and %s unpushed at %s; NOTHING here can reconstruct uncommitted files — do not recreate this path%s\n' \
+              "$US" "$lrc_id" "$US" "$US" "$lrc_p" "$US" "$lrc_b" "$lrc_h" "$lrc_d" "$lrc_np" "$lrc_ob" "$lrc_prune" ;;
       esac
       lrc_recover=$((lrc_recover + 1))
       continue
@@ -16148,6 +16187,37 @@ LRC_BIND
     lrc_nu="$(printf '%s' "$lrc_now" | awk -F"$US" '{print $3}')"
     lrc_nd="$(printf '%s' "$lrc_now" | awk -F"$US" '{print $4}')"
     lrc_nn="$(printf '%s' "$lrc_now" | awk -F"$US" '{print $5}')"
+    # AND IT IS STILL THE REPOSITORY THE RECORD IS ABOUT (opensoft/openRepoTools
+    # #116). The five fields just read say what is checked out at the path, never
+    # whose checkout it is: an independent clone on the same branch at the same
+    # commit (a re-clone, another checkout moved onto the path, a restored
+    # backup) read exactly as the tree recorded, so it was `ok`, and a recovery
+    # relaunched a writer into a repository the record is not about. So the git
+    # common directory the record was filed with (`repo`, read from the sidecar
+    # itself, because `lane-trees`' row keeps the shape its readers and the T018
+    # goldens hold) is compared with git's answer NOW, and a different one is
+    # `wrong-repository`: nothing else of the record is compared against that
+    # tree, it wants recovery, and it is left exactly as it is. NOT the recorded
+    # `checkout`: for a lane with no legs that is the lane's `dir`, even for a
+    # tree of another repository. A record with no `repo` is not compared, and
+    # an identity git cannot give now is a read that failed, never a match.
+    lrc_rrepo="$(lane_sidecar_field "$lrc_root/trees/$lrc_id.yaml" repo 2>/dev/null || :)"
+    if [ -n "$lrc_rrepo" ]; then
+      lrc_nrepo="$(git_common_real "$lrc_p" 2>/dev/null </dev/null)"
+      if [ -z "$lrc_nrepo" ]; then
+        printf 'TREE%s%s%sunreadable%s%s%sgit answers in this path and which repository it is could not be read, so NOTHING is assumed about it: it was recorded as a checkout of the repository at %s, branch %s head %s with %s dirty and %s unpushed at %s; read it by hand (git -C %s rev-parse --git-common-dir) before relaunching a writer onto it\n' \
+          "$US" "$lrc_id" "$US" "$US" "$lrc_p" "$US" "$lrc_rrepo" "$lrc_b" "$lrc_h" "${lrc_d:-0}" "${lrc_np:-0}" "$lrc_ob" "$lrc_p"
+        lrc_recover=$((lrc_recover + 1))
+        continue
+      fi
+      if [ "$lrc_nrepo" != "$lrc_rrepo" ]; then
+        printf 'TREE%s%s%swrong-repository%s%s%sit was recorded as a checkout of the repository at %s (branch %s head %s at %s) and git answers for the repository at %s there now (branch %s head %s), so it is not the tree its record is about and nothing else of that record is compared against it; it is left exactly as it is: find where the recorded tree went before relaunching a writer onto this path\n' \
+          "$US" "$lrc_id" "$US" "$US" "$lrc_p" "$US" "$lrc_rrepo" "$lrc_b" "$lrc_h" "$lrc_ob" "$lrc_nrepo" \
+          "$lrc_nb" "$lrc_nh"
+        lrc_recover=$((lrc_recover + 1))
+        continue
+      fi
+    fi
     lrc_class=ok
     [ "${lrc_nd:-0}" -gt 0 ] && lrc_class=dirty
     # `unpushed` IS A COUNT OR IT IS THE WORD `unknown`, and the word is what a
@@ -22305,6 +22375,12 @@ EOF
     # is the whole workstation's (design decision 14, and the same argument that
     # keeps `lane-reconcile` out of it): what must be serialized is the compare
     # and the write, not the reading of a repository.
+    #
+    # SO THE REPOSITORY IS READ HERE TOO, before the lock (#116): the path's git
+    # common directory, which the record keeps as `repo` and `lane-reconcile`
+    # compares with git's answer then. A path git does not answer in has none,
+    # and its record carries none.
+    slt_repo="$(git_common_real "$slt_path" 2>/dev/null </dev/null)"
     sidecar_lock_use; acquire_lock   # the workstation's sidecar lock, and no other (Amendment 23 S2)
     if [ -n "$slt_g" ] || [ -n "$slt_op" ]; then
       if ! lane_sidecar_schema_ok "$slt_root/lane-state.yaml"; then
@@ -22344,7 +22420,7 @@ EOF
       die "the worktree $slt_path was NOT recorded for lane $lane: its sidecar under $slt_root/trees is not a record this helper can read ($LSS_WHY), and a record it cannot read is one it cannot safely replace. Nothing was written. Upgrade this workstation's lanes-edit.sh if a newer tooling wrote it; if you know what wrote that file, move it aside by hand and re-run." 1
     fi
     if lane_tree_put "$slt_root" "$lane" "$slt_path" "$slt_co" "$slt_b" "$slt_h" \
-         "$slt_u" "$slt_d" "$slt_n" "$slt_w" "$slt_g" "$slt_op"; then
+         "$slt_u" "$slt_d" "$slt_n" "$slt_w" "$slt_g" "$slt_op" "$slt_repo"; then
       release_lock
       LANES_INDEX_NUDGE_INV=1   # opensoft/openRepoTools#161: `cleanup` nudges the indexer
       printf '%s\n' "$(tree_id_for "$slt_path")"
