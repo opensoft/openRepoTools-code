@@ -572,14 +572,24 @@ FAKE
 # `FAKE_PGREP_*` variable gets the honest "nothing found" answer — `pgrep -f`
 # exits 1, `ps -p` exits 1 — rather than a peek at whatever is really running
 # on the runner.
+#
+# AND EACH CAN FAIL AS A READ FAILS, not only miss (opensoft/openRepoTools#112).
+# Both used to answer 0 or 1 and nothing else, so the branches that read any
+# other status as a process table that could NOT be read had no case at all.
+# `FAKE_PGREP_F_RC` and `FAKE_PGREP_P_RC` make `pgrep -f` and `pgrep -P` exit
+# with that status, saying so on stderr; `FAKE_PS_FAIL_PID` makes `ps -p` of
+# that one pid print its record AND exit 3, the "failed with output" shape that
+# is never the ordinary "it already exited". Unset, nothing changes.
 cat > "$SANDBOX/fakebin/pgrep" <<'FAKE'
 #!/usr/bin/env bash
 case "${1-}" in
   -f)
+    [ -z "${FAKE_PGREP_F_RC:-}" ] || { printf 'pgrep: simulated failure\n' >&2; exit "$FAKE_PGREP_F_RC"; }
     out="$(printf '%s\n' "${FAKE_PGREP_F_PIDS:-}" | awk 'NF')"
     [ -n "$out" ] || exit 1
     printf '%s\n' "$out" ;;
   -P)
+    [ -z "${FAKE_PGREP_P_RC:-}" ] || { printf 'pgrep: simulated failure\n' >&2; exit "$FAKE_PGREP_P_RC"; }
     out="$(printf '%s\n' "${FAKE_PGREP_CHILDREN:-}" | awk -F'\t' -v pp="${2-}" '$2 == pp { print $1 }')"
     [ -n "$out" ] || exit 1
     printf '%s\n' "$out" ;;
@@ -601,6 +611,11 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$target" ] || exit 1
 line="$(printf '%s\n' "${FAKE_PS_RECORDS:-}" | awk -F'\t' -v p="$target" '$1 == p { print; exit }')"
+if [ -n "${FAKE_PS_FAIL_PID:-}" ] && [ "$target" = "$FAKE_PS_FAIL_PID" ]; then
+  [ -z "$line" ] || printf '%s\n' "$line" | awk -F'\t' '{printf "%s %s %s\n", $1, $2, $3}'
+  printf 'ps: simulated failure\n' >&2
+  exit 3
+fi
 [ -n "$line" ] || exit 1
 printf '%s\n' "$line" | awk -F'\t' '{printf "%s %s %s\n", $1, $2, $3}'
 FAKE
@@ -5541,6 +5556,38 @@ hasnt "…but never repoM-1's OWN live pid, excluded over live_holder" "$out" "$
 # on its own turn as a second, headless "parent" of nothing.
 is   "…and exactly one row: the child is never read as a second parent" "$(printf '%s\n' "$out" | grep -c .)" 1
 
+# A PROCESS TABLE THAT COULD NOT BE READ IS NEVER "NONE IS LIVE"
+# (opensoft/openRepoTools#112). The same fixture, with each of the four reads
+# `duplicate_holder_pids` makes failing in turn the way a read fails rather
+# than misses: `pgrep -f` (the candidates), `pgrep -P` (a candidate's
+# children), and `ps -p` of the parent and of the child, each printing the
+# record and then exiting 3. Every one is 1 and names nothing, and
+# `lane-end --retire` over the first stops before any signal is sent.
+run env FAKE_PGREP_F_RC=3 FAKE_PGREP_F_PIDS="$FAKE_PGREP_F_M" FAKE_PS_RECORDS="$FAKE_PS_M" FAKE_PGREP_CHILDREN="$FAKE_PGREP_CHILDREN_M" \
+  "$E" duplicate-holder repoM-1
+is    "a pgrep -f that FAILS (exit 3) is 1, never the 8 that means none is live" "$rc" 1
+has   "…in the words that stop a reader believing there is none" "$err" "That is NOT 'no duplicate holder is live'"
+is    "…and lists nothing" "$out" ""
+run env FAKE_PGREP_P_RC=3 FAKE_PGREP_F_PIDS="$FAKE_PGREP_F_M" FAKE_PS_RECORDS="$FAKE_PS_M" FAKE_PGREP_CHILDREN="$FAKE_PGREP_CHILDREN_M" \
+  "$E" duplicate-holder repoM-1
+is    "a pgrep -P that FAILS on a candidate's children is 1, never a row whose child slot only looks empty" "$rc" 1
+is    "…and lists nothing" "$out" ""
+run env FAKE_PS_FAIL_PID="$DUP_PARENT" FAKE_PGREP_F_PIDS="$FAKE_PGREP_F_M" FAKE_PS_RECORDS="$FAKE_PS_M" FAKE_PGREP_CHILDREN="$FAKE_PGREP_CHILDREN_M" \
+  "$E" duplicate-holder repoM-1
+is    "a ps -p that prints the PARENT's record and still fails is 1, never 'it already exited'" "$rc" 1
+is    "…and lists nothing" "$out" ""
+run env FAKE_PS_FAIL_PID="$DUP_CHILD" FAKE_PGREP_F_PIDS="$FAKE_PGREP_F_M" FAKE_PS_RECORDS="$FAKE_PS_M" FAKE_PGREP_CHILDREN="$FAKE_PGREP_CHILDREN_M" \
+  "$E" duplicate-holder repoM-1
+is    "a ps -p that prints the CHILD's record and still fails is 1 as well" "$rc" 1
+is    "…and lists nothing" "$out" ""
+run env FAKE_PGREP_F_RC=3 FAKE_PGREP_F_PIDS="$FAKE_PGREP_F_M" FAKE_PS_RECORDS="$FAKE_PS_M" FAKE_PGREP_CHILDREN="$FAKE_PGREP_CHILDREN_M" \
+  "$END" repoM-1 --retire "$DUP_PARENT"
+is    "lane-end --retire over a process table that could not be read is 1" "$rc" 1
+has   "…naming the read that failed" "$err" "duplicate-holder repoM-1 failed (exit 1)"
+hasnt "…never reporting a retirement" "$err" "RETIRED lane repoM-1's duplicate holder"
+is    "…and the pair it was asked about is still running" \
+      "$(kill -0 "$DUP_PARENT" 2>/dev/null && kill -0 "$DUP_CHILD" 2>/dev/null && echo both-alive)" "both-alive"
+
 # AMENDMENT 8 RULING (g)'s COMPANION IS NEVER A DUPLICATE (Copilot on 05d7889,
 # PR #61). The SAME process pair, but now the harness has written a `kind: bg`
 # record for $DUP_PARENT carrying repoM-1's own id in the SAME profile as the
@@ -5574,6 +5621,29 @@ run env FAKE_PGREP_F_PIDS="$FAKE_PGREP_F_M" FAKE_PS_RECORDS="$FAKE_PS_M" FAKE_PG
 is    "a wrapper whose CHILD is the lane's bg companion is the companion's host, never a duplicate: 8" "$rc" 8
 hasnt "…never naming the wrapper" "$out" "$DUP_PARENT"
 rm -f "$sessions_dir/$DUP_CHILD-repoM1-companion.json"
+
+# AND A WRAPPER WHOSE CHILD IS THE LANE'S OWN LIVE PID IS THE LANE'S OWN TREE
+# (opensoft/openRepoTools#111). Here `$LIVE_PID`, repoM-1's own session (the
+# pid `live_holder` names), is `$DUP_PARENT`'s child. The lane's own pid was
+# fenced only as a CANDIDATE, so the pair came back as a duplicate, and
+# `lane-end --retire` on the wrapper refused it for holding the lane's own pid
+# and sent the person to "the OTHER pid", the wrapper itself. No duplicate is
+# live here: 8, and nothing is termed.
+FAKE_PS_OWN="$(printf '%s\t%s\t%s\n%s\t%s\t%s' \
+  "$DUP_PARENT" 1             "claude --session-id $MLIVE_ID --fork-session --resume /nonexistent/projects/$MLIVE_ID.jsonl" \
+  "$LIVE_PID"   "$DUP_PARENT" "claude --session-id $MLIVE_ID --fork-session --resume /nonexistent/projects/$MLIVE_ID.jsonl")"
+FAKE_PGREP_F_OWN="$(printf '%s\n%s' "$LIVE_PID" "$DUP_PARENT")"
+FAKE_PGREP_CHILDREN_OWN="$(printf '%s\t%s' "$LIVE_PID" "$DUP_PARENT")"
+run env FAKE_PGREP_F_PIDS="$FAKE_PGREP_F_OWN" FAKE_PS_RECORDS="$FAKE_PS_OWN" FAKE_PGREP_CHILDREN="$FAKE_PGREP_CHILDREN_OWN" \
+  "$E" duplicate-holder repoM-1
+is    "a wrapper whose CHILD is the lane's own live pid is the lane's own process tree, never a duplicate: 8" "$rc" 8
+hasnt "…never naming the wrapper" "$out" "$DUP_PARENT"
+run env FAKE_PGREP_F_PIDS="$FAKE_PGREP_F_OWN" FAKE_PS_RECORDS="$FAKE_PS_OWN" FAKE_PGREP_CHILDREN="$FAKE_PGREP_CHILDREN_OWN" \
+  "$END" repoM-1 --retire "$DUP_PARENT"
+is    "…and lane-end --retire on that wrapper finds nothing to retire: 8, never a refusal sending the person to the wrapper" "$rc" 8
+hasnt "…never reporting a retirement" "$err" "RETIRED lane repoM-1's duplicate holder"
+is    "…and the wrapper and the lane's own session are both still running" \
+      "$(kill -0 "$DUP_PARENT" 2>/dev/null && kill -0 "$LIVE_PID" 2>/dev/null && echo both-alive)" "both-alive"
 
 # Copilot round 8, PR #61: being IN the global fork-session fence only proves
 # a child is SOME `--fork-session` process, not THIS parent's transcript's —
@@ -11465,6 +11535,63 @@ run env PATH="$A17PATH" FAKE_TMUX_WINDOW="tfsess:@74" CLAUDE_PROFILE_NAME=team-0
 is    "a helper that predates transcript-holders (exit 2) carries on, as dup_check does" "$rc" 0
 has   "…saying the read is not known here" "$err" "has no \`transcript-holders\` (exit 2)"
 has   "…and the transcript is followed" "$err" "moved into $HOME/.claude/projects/$tf_slug"
+
+# THE RETIRE ACT repoLV-1's REFUSAL ABOVE NAMES, OVER A HELPER THAT PREDATES ONE
+# OF ITS READS (opensoft/openRepoTools#109, #110). `$LIVE_PID`'s record in t2
+# carries repoLV-1's own transcript and is named for another lane, so it is no
+# window's lane session: a live duplicate BY SESSION RECORD, which
+# `transcript-holders` proves and `lane-end --retire` names and never kills. A
+# helper that has never heard of a verb answers it 2 in the dispatcher's own
+# words; `oldhelper` is that helper for each verb in `$OLD_HELPER_LACKS`, and
+# `DH_RC` makes its `duplicate-holder` refuse in other words, with that status.
+cat > "$SANDBOX/oldhelper" <<'WRAP'
+#!/usr/bin/env bash
+for oh_v in ${OLD_HELPER_LACKS-}; do
+  if [ "${1-}" = "$oh_v" ]; then
+    printf "lanes-edit: unknown subcommand '%s' (verify-row|set-row-state|…)\n" "$oh_v" >&2
+    exit 2
+  fi
+done
+case "${1-}" in
+  duplicate-holder)
+    if [ -n "${DH_RC:-}" ]; then printf 'lanes-edit: simulated refusal\n' >&2; exit "$DH_RC"; fi ;;
+esac
+exec "$REAL_LANES_EDIT" "$@"
+WRAP
+chmod +x "$SANDBOX/oldhelper"
+run "$END" repoLV-1 --retire "$LIVE_PID"
+is    "lane-end --retire names a live duplicate by session record over the current helper" "$rc" 0
+has   "…as one" "$err" "pid $LIVE_PID IS a live DUPLICATE of lane repoLV-1's own transcript"
+run env REAL_LANES_EDIT="$E" LANES_EDIT="$SANDBOX/oldhelper" OLD_HELPER_LACKS=duplicate-holder \
+    "$END" repoLV-1 --retire "$LIVE_PID"
+is    "a helper that predates duplicate-holder (2, in its own words) falls to the session-record read: 0" "$rc" 0
+has   "…saying the process table could not be searched" "$err" "has no \`duplicate-holder\` (exit 2)"
+has   "…and naming the duplicate that read proves" "$err" "pid $LIVE_PID IS a live DUPLICATE of lane repoLV-1's own transcript"
+hasnt "…never as a read that failed" "$err" "failed (exit 2)"
+# …while a 2 in ANY OTHER WORDS is still a read that failed: the two kinds of 2
+# are told apart by the helper's words, never by its status.
+run env REAL_LANES_EDIT="$E" LANES_EDIT="$SANDBOX/oldhelper" DH_RC=2 \
+    "$END" repoLV-1 --retire "$LIVE_PID"
+is    "a duplicate-holder that refuses 2 in other words is a read that failed: 1" "$rc" 1
+has   "…naming it" "$err" "duplicate-holder repoLV-1 failed (exit 2)"
+hasnt "…never naming the duplicate" "$err" "IS a live DUPLICATE"
+# A READ THAT DID NOT RUN IS NOT "NOTHING" (#110): with the session records
+# never read, the duplicate cannot be proved, and neither 8 ("nothing of any
+# kind is live") nor 2 ("none of this lane's") is known.
+run env REAL_LANES_EDIT="$E" LANES_EDIT="$SANDBOX/oldhelper" OLD_HELPER_LACKS=transcript-holders \
+    "$END" repoLV-1 --retire "$LIVE_PID"
+is    "a helper that predates transcript-holders is 1, never the 8 of 'nothing is live'" "$rc" 1
+has   "…saying the session records were not read" "$err" "has no \`transcript-holders\` (exit 2)"
+has   "…and that a read that did not run is not 'nothing'" "$err" "A read that did not run is not 'nothing'"
+hasnt "…never 'nothing of any kind is live'" "$err" "nothing of any kind is live"
+hasnt "…nor that no second live session record carries the transcript" "$err" "no second live session record carries"
+run env REAL_LANES_EDIT="$E" LANES_EDIT="$SANDBOX/oldhelper" OLD_HELPER_LACKS="duplicate-holder transcript-holders" \
+    "$END" repoLV-1 --retire "$LIVE_PID"
+is    "a helper that predates both reads is 1 too" "$rc" 1
+has   "…naming both reads that did not run" "$err" "has no \`duplicate-holder\` and no \`transcript-holders\` (exit 2, above), so the process table and the session records went unread"
+hasnt "…never as a process table that failed" "$err" "failed (exit 2)"
+hasnt "…nor that no duplicate holder is in the process table" "$err" "is in the process table either"
+is    "…and \$LIVE_PID is still running: this act names, and never kills" "$(kill -0 "$LIVE_PID" 2>/dev/null && echo alive)" "alive"
 
 # `--dry-run` MOVES NOTHING (Copilot round 1 on openRepoTools#47). This search
 # runs long before the dry-run exit at the foot of the command, and a run whose

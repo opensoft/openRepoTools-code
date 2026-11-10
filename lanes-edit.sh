@@ -9057,9 +9057,18 @@ DHPLINE
           # `bg-pty-host` wrapper's, so EVERY child `pgrep -P` listed is asked
           # — named or not — and a match drops the whole pair. Terming the
           # wrapper ends the companion with it.
+          #
+          # A WRAPPER WHOSE CHILD IS THE LANE'S OWN LIVE SESSION IS THE LANE'S
+          # OWN TREE, and its pair is dropped the same way
+          # (opensoft/openRepoTools#111). `dhp_legit` was fenced only as a
+          # candidate above, so the lane's own pid as a candidate's CHILD
+          # reported the lane's own process tree as a duplicate pair: the lane
+          # never got its 8, and `lane-end`'s refusal of that pair sent a
+          # person to "the OTHER pid", its wrapper, which is the lane's too.
           dhp_is_comp_host=0
           for dhp_c in $dhp_kids; do
             case "$dhp_comp" in *" $dhp_c "*) dhp_is_comp_host=1; break ;; esac
+            [ -n "$dhp_legit" ] && [ "$dhp_c" = "$dhp_legit" ] && { dhp_is_comp_host=1; break; }
           done
           if [ "$dhp_is_comp_host" = 0 ]; then
             dhp_out="${dhp_out}${dhp_pid}${US}${dhp_child}${US}${dhp_id}
