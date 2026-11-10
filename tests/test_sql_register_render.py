@@ -1399,14 +1399,16 @@ def test_the_render_read_with_start_returns_the_images_and_a_bad_start_costs_one
     which reads only the entries after `c` (`register_render_queries(k,
     since=c)`), and `start` is left as it was.
 
-    A START IT CANNOT TRUST IS A MISS, NOT AN ERROR: a cached image of an
-    untouched path that is wrong (a cache from a reused seq), a cached image
-    that an edit does not apply on, a path the cache lacks, a `start` of
-    another form and a `c` above `k` each return the right images, by a full
-    read as the last request, and a failed proof costs exactly two requests,
-    the first read since `c` and the second the full read. An import among
-    entries `c+1` to `k` sets `start` aside, so even a wrong cache is no
-    miss there, one request. Only the full read's failure ends in
+    A START IT CANNOT TRUST IS A MISS, NOT AN ERROR, AND THE COUNT SAYS
+    WHICH KIND (lane 1, #165 6769176187, for the cache-forward commit
+    `e4d28a5`): a `start` of another form, or a `c` above `k`, is refused
+    before any request and costs exactly ONE, the full read; a cached image
+    of an untouched path that is wrong (a cache from a reused seq), a cached
+    image that an edit does not apply on, and a path the cache lacks are
+    found after the read since `c` and cost exactly TWO, that read and then
+    the full one. Each returns the right images, the full read last. An
+    import among entries `c+1` to `k` sets `start` aside, so even a wrong
+    cache is no miss there, one request. Only the full read's failure ends in
     `RenderRefused`, after the two requests; a dead connection (`PsqlFailed`)
     is raised as it is, after one, and is never tried twice. And
     `register_cache_state` misses (None) on an image that is empty, is not
@@ -1499,8 +1501,9 @@ def test_the_render_read_with_start_returns_the_images_and_a_bad_start_costs_one
         answer, sent = read(at, start=start)
         assert isinstance(answer, dict) and answer == journal.images_at[at], (
             f"the images after {what}")
-        assert 1 <= len(sent) <= 2 and sent[-1] == full(at), (
-            f"{what}: the last request must be the full read; sent {kinds(at, sent)}")
+        assert sent == [full(at)], (
+            f"{what}: a start of another form, or a `c` above `k`, is refused before any "
+            f"request and costs exactly one, the full read; sent {kinds(at, sent)}")
 
     # AN IMPORT AMONG ENTRIES `c+1` TO `k` SETS `start` ASIDE: EVEN A WRONG CACHE IS NO MISS.
     again = RenderJournal(RENDER_REIMPORT)
