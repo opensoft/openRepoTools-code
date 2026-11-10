@@ -10781,6 +10781,55 @@ BEGIN {
 }
 END { for (k in ST) printf "%s%c%s%c%s%c%s%c%s%c\n", ST[k], 31, L[k], 31, P[k], 31, U[k], 31, R[k], 31 }'
 
+# FEATURE 007, T425 — RULE 6 ON PRIMARY: A `LANDING EXPIRED` CLOSES THE LANDING
+# IT NAMES (F13; Y:5120–5138; lane 3's R45). On primary the register releases a
+# LANDING past Rule 6's thirty minutes on Brett's word, by the line
+# `append-line --landing-expired` composes (below the file's functions), and
+# the database closes that LANDING's slot. Unchanged, this program would go on
+# listing the released LANDING, marked STALE, and a script that gates on `who
+# --landing` would block where `main` is free. One flag fixes that on primary.
+#
+# THE FLAG, `RULE6_PRIMARY`: a shell variable, never exported, set empty here,
+# beside the program, so an inherited value never counts (it is unset first,
+# so a value in the environment is neither read nor passed on). One helper,
+# `rule6_primary_on`, sets it to 1 and appends `RULE6_EXPIRED_AWK` to
+# `RULE6_AWK`, once. R45's one line at the dispatcher calls it, where this
+# process's one mode answer is primary (see there). Off primary `RULE6_AWK` is
+# byte-identical to the program above, so files mode, index mode and an
+# unconfigured workstation read Rule 6 exactly as before, and after a rollback
+# to files `who --landing` lists a released LANDING again, marked STALE.
+#
+# THE BRANCH, `RULE6_EXPIRED_AWK`, is Y:5127–5137 verbatim. It pairs as
+# `LANDED` pairs, by lane and PR, the repository through the same alias table
+# (`canon`); the lane is the `for lane` name, compared exactly. Unlike
+# `LANDED`, it closes only the holder's open LANDING for that PR and that
+# repository: it never falls back to the group's latest LANDING, and prints no
+# `UNPAIRED` row. A line it cannot pair closes nothing, so the reader errs
+# toward blocked. It does not test the window, which F13's check did at the
+# commit. A later LANDING by the holder on that PR and repository opens again,
+# as after `LANDED`, and `who_landing` lists only LANDING rows, so an `EXPIRED`
+# row is never printed. The program above never reads such a line: its rule is
+# `^(LANDING|LANDED) — `, and `LANDING EXPIRED — ` has a word between.
+unset RULE6_PRIMARY; RULE6_PRIMARY=""
+RULE6_EXPIRED_AWK='
+/^LANDING EXPIRED — / {
+  line = $0
+  if (!match(line, /for lane [A-Za-z0-9._-]+/)) next
+  lane = substr(line, RSTART + 9, RLENGTH - 9)
+  pr = ""; repo = ""
+  if (match(line, /PR #[0-9]+/))                      pr   = substr(line, RSTART + 4, RLENGTH - 4)
+  if (match(line, /into [A-Za-z0-9\/._-]+ main/))     repo = canon(substr(line, RSTART + 5, RLENGTH - 10))
+  if (pr == "" || repo == "") next
+  k = lane "\037" pr "\037" tolower(repo)
+  if ((k in ST) && ST[k] == "LANDING") { ST[k] = "EXPIRED"; O[k] = NR }
+  next
+}'
+rule6_primary_on() {
+  [ -z "$RULE6_PRIMARY" ] || return 0
+  RULE6_PRIMARY=1
+  RULE6_AWK="$RULE6_AWK$RULE6_EXPIRED_AWK"
+}
+
 # Rule 6's window, in minutes. A LANDING past it with no LANDED is still a
 # line somebody wrote and is still listed — but it is marked, because reporting
 # a 253-day-old LANDING as a live merge hold with nothing to say it is not one
@@ -20908,8 +20957,22 @@ esac
 # `commit` keeps phase 1's 69 until T420 gives it its primary form (T415's line:
 # "no state between T415 and T420 runs it in the loop"). `index` and `files`
 # run the verb as it runs today.
+if [ "$REG_ASK" = 1 ]; then reg_mode_ask; fi
+# FEATURE 007, T425 — R45'S ONE LINE (Y:5121; Q-L5-4, answered; lane 4's
+# block, T425 and T426). Here, after the doors and before the arms, the one
+# mode answer this process holds sets the awk variables that read the
+# register as primary reads it: `rule6_primary_on`, Rule 6 with `LANDING
+# EXPIRED` (T425), and T426 adds `key()`'s to this same line. The writers'
+# branch takes it before `pw_run` below, so the ask above is split from its
+# arm; an attempt's child takes it from `reg_scratch_take`'s `REG_MODE`
+# (`REG_ASK` is 0 there), since it asks no mode and its file at the
+# snapshot's seq is primary's; and a reader takes it from lane 5's `reg_open`
+# (T504), which runs above this line. It cannot be set where `REG_MODE` is:
+# `reg_scratch_take` runs before `RULE6_AWK` is assigned, which would
+# overwrite the append, and inside `who_landing`'s pipeline a variable set is
+# lost. Off primary it sets nothing, and the programs are today's.
+[ "$REG_MODE" != primary ] || rule6_primary_on
 if [ "$REG_ASK" = 1 ]; then
-  reg_mode_ask
   case "$REG_MODE" in
     primary)
       [ "$cmd" != commit ] ||
