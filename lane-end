@@ -3114,13 +3114,42 @@ FORKS
   # moment. `LANES_NO_FETCH=1` skips the fetch `forks` just made for the same
   # checkout, so this reads the ref that call already brought current rather
   # than paying for it, and possibly disagreeing with it, twice.
-  dh_rc=8; dh_rows=""
+  #
+  # A HELPER THAT PREDATES `duplicate-holder` IS NOT A PROCESS TABLE THAT
+  # FAILED (opensoft/openRepoTools#109). A `lanes-edit.sh` that has never heard
+  # of a verb answers it 2, and its own contract for these reads (its note on
+  # Amendment 11 clause (h)'s reads) is that a caller falls to its next rung
+  # there, and that the two kinds of 2 are told apart by the helper's WORDS:
+  # `duplicate-holder` spends 2 on a refusal of its own too (Amendment 15's
+  # `canon-lane`). So the read's stderr is kept, as `lane_register_follow`
+  # keeps `lane-checkout`'s, and only "unknown subcommand 'duplicate-holder'"
+  # is the old helper: it is said, marked (`dh_skipped`), and the act goes on
+  # to the session-record read below, which is older and can still prove a
+  # duplicate. Any other 2, and a 2 whose words could not be captured, is the
+  # failure it always was, with the helper's own words relayed above it. A
+  # read that was skipped never ends as "nothing is live" (#110, at the foot of
+  # this act). `LE_TMP` is what `cleanup` removes on every way out.
+  # DEFENSIVE, AND SAID SO: no `lanes-edit.sh` that has shipped reaches the
+  # skip today. `seam_refuse` above asks `managed-projection` first, which
+  # came after `duplicate-holder` (and after `transcript-holders`), and it
+  # dies 1 on a helper that lacks it.
+  dh_rc=8; dh_rows=""; dh_skipped=""
   if [ -z "$fk_sid" ]; then
     dh_rc=0
-    dh_rows="$(LANES_NO_FETCH=1 "$LANES_EDIT" duplicate-holder "$LANE" 2>/dev/null)" || dh_rc=$?
-    case "$dh_rc" in
-      0 | 8) : ;;
-      *) die "$LANES_EDIT duplicate-holder $LANE failed (exit $dh_rc). That is NOT 'no duplicate holder is live', and this script will not name an act against a process it could not prove is one. Run it by hand to see what it says, then re-run." 1 ;;
+    LE_TMP="$(mktemp "${TMPDIR:-/tmp}/lane-end-retire.XXXXXX" 2>/dev/null || printf '')"
+    dh_rows="$(LANES_NO_FETCH=1 "$LANES_EDIT" duplicate-holder "$LANE" 2>"${LE_TMP:-/dev/null}")" || dh_rc=$?
+    dh_err=""
+    if [ -n "$LE_TMP" ]; then
+      dh_err="$(cat -- "$LE_TMP" 2>/dev/null)" || dh_err=""
+      rm -f -- "$LE_TMP"; LE_TMP=""
+    fi
+    case "$dh_rc:$dh_err" in
+      0:* | 8:*) : ;;
+      2:*"unknown subcommand 'duplicate-holder'"*)
+        note "this \`lanes-edit.sh\` has no \`duplicate-holder\` (exit 2), so the process table cannot be searched here for a duplicate holder of lane $LANE's own transcript; the session records are still read. Install the one beside this script (\`openRepoTools --install\`)."
+        dh_rc=8; dh_rows=""; dh_skipped=1 ;;
+      *) [ -z "$dh_err" ] || printf '%s\n' "$dh_err" >&2
+         die "$LANES_EDIT duplicate-holder $LANE failed (exit $dh_rc). That is NOT 'no duplicate holder is live', and this script will not name an act against a process it could not prove is one. Run it by hand to see what it says, then re-run." 1 ;;
     esac
   fi
 
@@ -3463,7 +3492,7 @@ DUPES
   # carrying that id is the duplicate.
   dup_pid=""; dup_kind=""; dup_where=""; dup_prof=""
   dup_own=""; dup_rows=""; dup_id=""
-  dup_comp=""; dup_comp_kind=""; dup_comp_prof=""
+  dup_comp=""; dup_comp_kind=""; dup_comp_prof=""; thh_skipped=""
   # `dup_other` IS NOT `dup_rows`'S OWN EMPTINESS (Copilot round 8, PR #61
   # follow-up, caught by this suite rather than by review): `lane-end` is a
   # plain script, never itself a bound claude session, so `transcript_holders`
@@ -3491,11 +3520,15 @@ DUPES
       # status, a different read from `duplicate-holder`'s above, and reusing
       # that name here would step on a value `dh_rc` no longer needs by this
       # point but a later reader of this block could mistake for it.
+      # A 2 IS SAID AND MARKED (`thh_skipped`, opensoft/openRepoTools#110):
+      # the act goes on, so a target the other reads proved is still
+      # answered, but a read that did not run never ends as "nothing".
       thh_rc=0
       dup_rows="$("$LANES_EDIT" transcript-holders "$dup_id" 2>/dev/null)" || thh_rc=$?
       case "$thh_rc" in
         0 | 8) : ;;
-        2) note "this \`lanes-edit.sh\` has no \`transcript-holders\` (exit 2), so a duplicate of lane $LANE's own transcript cannot be looked for here. Install the one beside this script (\`openRepoTools --install\`)." ;;
+        2) note "this \`lanes-edit.sh\` has no \`transcript-holders\` (exit 2), so a duplicate of lane $LANE's own transcript cannot be looked for here. Install the one beside this script (\`openRepoTools --install\`)."
+           dup_rows=""; thh_skipped=1 ;;
         *) die "$LANES_EDIT transcript-holders $dup_id exited $thh_rc, so whether '$retire_target' is a live duplicate of lane $LANE's own transcript could NOT be read — which is not 'it is not one'." 1 ;;
       esac
       if [ "$thh_rc" = 0 ]; then
@@ -3665,7 +3698,7 @@ DUPES
         for dr_c in $dr_children; do dr_c_said="$dr_c_said, pid $dr_c (child)"; done
         note "  pid $dr_parent (bg-pty-host)$dr_c_said  transcript $dr_uuid"
       done
-    else
+    elif [ -z "$dh_skipped" ]; then
       note "no live duplicate holder of lane $LANE's transcript is in the process table either (Amendment 18(h), opensoft/openRepoTools#39); \`$LANES_EDIT duplicate-holder $LANE\` is the read that names them."
     fi
     if [ -n "$dup_rows" ]; then
@@ -3674,7 +3707,7 @@ DUPES
         [ -n "${dr_pid:-}" ] || continue
         note "  pid $dr_pid  ${dr_kind:-interactive}  $dr_where  profile $dr_prof"
       done
-    else
+    elif [ -z "$thh_skipped" ]; then
       note "and no second live session record carries lane $LANE's own transcript ${dup_id:-(none recorded)} either (Amendment 18(h))."
     fi
     # 8 IS KEPT FOR "THERE IS NOTHING OF ANY KIND", which is the code this act
@@ -3688,6 +3721,21 @@ DUPES
     # transcript), kept as three because each is built on a different kind of
     # evidence and this workstation is not the only place any one of them can
     # fail to see what another does.
+    #
+    # AND A READ THAT DID NOT RUN IS NEITHER (opensoft/openRepoTools#110). A
+    # helper that predates `duplicate-holder` or `transcript-holders` was said
+    # above and the act went on, so a target the reads that DID run proved is
+    # answered there. What reaches here is a target none of them proved, with
+    # one population never looked in, and so neither "nothing of any kind is
+    # live" (8) nor "it is none of this lane's" (2) is known: a read that did
+    # not run is not "nothing to report" (Amendment 7(d)). The "either" notes
+    # above are not printed for it, and this is 1, a read that failed.
+    if [ -n "$dh_skipped$thh_skipped" ]; then
+      dup_verbs=""; dup_unread=""
+      [ -z "$dh_skipped" ] || { dup_verbs="\`duplicate-holder\`"; dup_unread="the process table"; }
+      [ -z "$thh_skipped" ] || { dup_verbs="${dup_verbs:+$dup_verbs and no }\`transcript-holders\`"; dup_unread="${dup_unread:+$dup_unread and }the session records"; }
+      die "this \`lanes-edit.sh\` has no $dup_verbs (exit 2, above), so $dup_unread went unread. A read that did not run is not 'nothing': whether '$retire_target' is a live duplicate of lane $LANE's own transcript is NOT known, so nothing is named. Install the \`lanes-edit.sh\` beside this script (\`openRepoTools --install\`), then re-run." 1
+    fi
     if [ -z "$fk_rows" ] && [ -z "${dh_rows:-}" ] && [ -z "$dup_other" ]; then
       die "nothing of any kind is live for lane $LANE on this workstation, so there is nothing to retire: no FORK of its transcript (an id the row does not record, ratified decision 8(e)), no live DUPLICATE HOLDER of the id it does in the process table (Amendment 18(h), opensoft/openRepoTools#39), and no live DUPLICATE of it by session record either (Amendment 18(h))." 8
     fi
