@@ -1033,13 +1033,28 @@ jobs:
                       at = entry.header_offset + LOCAL_HEADER.size + skip + entry.compress_size
                       directory += 46 + len(encoded) + len(entry.extra) + len(entry.comment)
                   length = raw.seek(0, os.SEEK_END)
+                  # zipfile reads the directory as one buffer and cuts its last
+                  # record's name, extra field and comment at the buffer's end,
+                  # so what `directory` sums is what zipfile kept, and not what
+                  # the records declare: walk the directory's own bytes, in
+                  # zipfile's order (the directory's), and read each record's
+                  # three lengths where it declares them
+                  raw.seek(at)
+                  table, walked, lengths = raw.read(directory), 0, True
+                  for entry in everything:
+                      named = len(entry.orig_filename.encode(
+                          "utf-8" if entry.flag_bits & 0x800 else "cp437"))
+                      lengths = (lengths and table[walked + 28:walked + 34]
+                                 == struct.pack("<3H", named, 0, 0))
+                      walked += 46 + named
                   raw.seek(max(length - END_RECORD.size, 0))
                   tail = raw.read(END_RECORD.size)
               end = END_RECORD.unpack(tail) if len(tail) == END_RECORD.size else None
               count = len(everything)
               if (end != (b"PK\x05\x06", 0, 0, count, count, directory, at, 0)
                       or length != at + directory + END_RECORD.size or start_dir != at
-                      or any(entry.extra or entry.comment for entry in everything)):
+                      or any(entry.extra or entry.comment for entry in everything)
+                      or not lengths):
                   found.append(f"the wheel's {length - at} bytes after its last member are not "
                                "exactly its central directory, with no extra field and no "
                                "comment, then its end record, with no comment")
@@ -1071,6 +1086,12 @@ jobs:
               wheel = zipfile.ZipFile(sys.argv[1])
           except (OSError, zipfile.BadZipFile) as error:
               sys.exit(f"::error::{sys.argv[1]} cannot be read as a wheel: {error}")
+          except UnicodeDecodeError as error:
+              sys.exit(f"::error::{sys.argv[1]} names a member whose name is flagged UTF-8 and is "
+                       f"not UTF-8, so it cannot be read as a wheel: {error}")
+          except NotImplementedError as error:
+              sys.exit(f"::error::{sys.argv[1]} declares a version needed to extract that zipfile "
+                       f"does not read ({error}), so it cannot be read as a wheel")
           with wheel:
               everything = wheel.infolist()
               total = sum(e.file_size for e in everything)
@@ -1117,7 +1138,13 @@ jobs:
                   for problem in problems:
                       print(f"::error::{problem}")
                   sys.exit(1)
-              problems.extend(unaccounted(sys.argv[1], everything, wheel.start_dir))
+              try:
+                  problems.extend(unaccounted(sys.argv[1], everything, wheel.start_dir))
+              except (OSError, ValueError, OverflowError) as error:
+                  # a record whose offset is not a place in the file (a negative
+                  # one, as zipfile corrects it, or one past what a seek takes)
+                  problems.append("the wheel cannot be walked as its central directory "
+                                  f"declares ({type(error).__name__}: {error})")
 
 
               def read(name):

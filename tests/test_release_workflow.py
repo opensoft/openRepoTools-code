@@ -2665,6 +2665,29 @@ def a_directory_entry_holding_bytes(path: Path, members: dict, info: str) -> str
     return f"openrepotools/ is a directory entry in the wheel, and holds {len(HIDDEN)} bytes"
 
 
+def a_last_record_length_with_no_bytes_behind_it(
+        at: int, make: Callable[[int], int]) -> Callable[[Path, dict, str], str]:
+    """The last central directory record's name length (`at` 28), extra field
+    length (30) or comment length (32) made `make` of its name's length, and
+    not one byte added. `zipfile` reads the directory as one buffer and cuts
+    that record's fields at the buffer's end, so it reads each such wheel as
+    the one built: the record's name whole, no extra field, no comment. The
+    end record and every offset stay as they were, so the bytes the layout
+    check finds after its last member are the wheel's own."""
+    def relay(path: Path, members: dict, info: str) -> str:
+        write_wheel(path, members, info)
+        data = bytearray(path.read_bytes())
+        last = central_records(bytes(data))[-1]
+        (named,) = struct.unpack_from("<H", data, last + 28)
+        struct.pack_into("<H", data, last + at, make(named))
+        path.write_bytes(bytes(data))
+        (directory,) = struct.unpack_from("<I", data, data.rindex(b"PK\x05\x06") + 16)
+        return (f"the wheel's {len(data) - directory} bytes after its last member are not "
+                "exactly its central directory, with no extra field and no comment, then "
+                "its end record, with no comment")
+    return relay
+
+
 LAID_OUT_WRONG = {
     "bytes-past-a-deflated-member-s-declared-size":
         bytes_past_its_size(zipfile.ZIP_DEFLATED),
@@ -2677,6 +2700,12 @@ LAID_OUT_WRONG = {
     "bytes-between-two-members": bytes_before_it,
     "bytes-after-the-end-record": bytes_after_the_end_record,
     "a-directory-entry-that-holds-bytes": a_directory_entry_holding_bytes,
+    "a-last-central-record-whose-name-is-22-bytes-longer":
+        a_last_record_length_with_no_bytes_behind_it(28, lambda named: named + 22),
+    "a-last-central-record-with-a-4-byte-extra-field-that-holds-none":
+        a_last_record_length_with_no_bytes_behind_it(30, lambda named: 4),
+    "a-last-central-record-with-a-9-byte-comment-that-holds-none":
+        a_last_record_length_with_no_bytes_behind_it(32, lambda named: 9),
 }
 
 
@@ -2688,15 +2717,123 @@ def test_release_build_the_wheel_check_refuses_a_wheel_not_laid_out_as_it_declar
     follow-up 5): bytes past a deflated and a stored member's declared size, a
     local header whose size or method is not its central entry's, a NUL byte
     in a member's name, bytes between two members or after the end record,
-    and a directory entry that holds bytes. `zipfile` reads every member of
-    each at its CRC, so the refusal is the layout check's alone: the step
-    exits 1, with no traceback, and its one `::error::` line is the case's."""
+    a directory entry that holds bytes, and a last central directory record
+    whose name, extra field or comment length reaches past its bytes. `zipfile`
+    reads every member of each at its CRC, so the refusal is the layout
+    check's alone: the step exits 1, with no traceback, and its one
+    `::error::` line is the case's."""
     release_ = wheel_release("1.1.0")
     members, info = wheel_members(release_)
     wheel = tmp_path / "dist" / "openrepotools-1.1.0-py3-none-any.whl"
     problem = LAID_OUT_WRONG[which](wheel, members, info)
     with zipfile.ZipFile(wheel) as zipped:
         assert zipped.testzip() is None, f"the case is wrong: zipfile cannot read {wheel}"
+    done = run_heredoc(named(release(), "build", WHEEL_CHECK_STEP), tmp_path, [wheel],
+                       release_values(release_), cwd=REPO)
+    out = done.stdout + done.stderr
+    assert done.returncode == 1, transcript(done)
+    assert "Traceback (most recent call last)" not in out, transcript(done)
+    errors = [line for line in out.splitlines() if line.startswith("::error::")]
+    assert errors == [f"::error::{problem}"], transcript(done)
+
+
+#: A WHEEL THE CHECK CANNOT WALK OR OPEN (opensoft/openRepoTools#352, the
+#: review of follow-up 5, SHOULD 2 and NIT 3). Each case writes the wheel as
+#: built at a path with one thing changed and returns the one problem the
+#: check must name, where it once ended in a traceback with no `::error::`
+#: line: a directory entry that `zipfile` puts at a negative offset (the
+#: layout check's `seek` raised), a member name flagged UTF-8 that is not
+#: UTF-8, and a version needed to extract above the 6.3 `zipfile` reads
+#: (`zipfile` raised as it opened the wheel).
+def a_directory_entry_at_a_negative_offset(path: Path, members: dict, info: str) -> str:
+    """`openrepotools/`, an empty directory entry allowed above `LAID_OUT`,
+    where `zipfile` puts it at offset -1000: the end record's offset of the
+    central directory 1000 bytes too far, each file's own offset moved on by
+    as many (so `zipfile`'s correction for bytes before the archive puts each
+    back where it is), and the directory entry's left at 0. Every file reads."""
+    members["openrepotools/"] = (b"", stat.S_IFDIR | 0o755)
+    write_wheel(path, members, info)
+    data = bytearray(path.read_bytes())
+    moved = 1000
+    for record in central_records(bytes(data)):
+        (named,) = struct.unpack_from("<H", data, record + 28)
+        if bytes(data[record + 46:record + 46 + named]) != b"openrepotools/":
+            (offset,) = struct.unpack_from("<I", data, record + 42)
+            struct.pack_into("<I", data, record + 42, offset + moved)
+        else:
+            struct.pack_into("<I", data, record + 42, 0)
+    end = data.rindex(b"PK\x05\x06")
+    (directory,) = struct.unpack_from("<I", data, end + 16)
+    struct.pack_into("<I", data, end + 16, directory + moved)
+    path.write_bytes(bytes(data))
+    with zipfile.ZipFile(path) as zipped:
+        assert [e.header_offset for e in zipped.infolist()
+                if e.filename == "openrepotools/"] == [-moved], "the case is wrong"
+        for entry in zipped.infolist():
+            if not entry.filename.endswith("/"):
+                zipped.read(entry)  # raises on a file it cannot read, or a bad CRC
+    try:
+        with open(path, "rb") as probe:
+            probe.seek(-moved)
+    except (OSError, ValueError, OverflowError) as error:
+        why = f"{type(error).__name__}: {error}"
+    else:
+        raise AssertionError("the case is wrong: a seek to a negative offset is allowed")
+    return f"the wheel cannot be walked as its central directory declares ({why})"
+
+
+def a_name_flagged_utf8_that_is_not(path: Path, members: dict, info: str) -> str:
+    """`LAID_OUT`'s name with its 0xFF byte for the `c` of `cli.py`, and the
+    UTF-8 flag (bit 11) set, in both of its headers: `zipfile` decodes the
+    central directory's name as UTF-8 as it opens the wheel."""
+    write_wheel(path, members, info)
+    data = bytearray(path.read_bytes())
+    header, record = headers_of(data, LAID_OUT, path.name)
+    for flag, name in ((header + 6, header + 30), (record + 8, record + 46)):
+        (flags,) = struct.unpack_from("<H", data, flag)
+        struct.pack_into("<H", data, flag, flags | 0x800)
+        data[name + len("openrepotools/")] = 0xFF
+    path.write_bytes(bytes(data))
+    with pytest.raises(UnicodeDecodeError) as raised:
+        zipfile.ZipFile(path)
+    return (f"{path} names a member whose name is flagged UTF-8 and is not UTF-8, so it "
+            f"cannot be read as a wheel: {raised.value}")
+
+
+def a_version_to_extract_above_6_3(path: Path, members: dict, info: str) -> str:
+    """`LAID_OUT`'s central directory record with a version needed to extract
+    of 6.4, which `zipfile` refuses as it opens the wheel."""
+    write_wheel(path, members, info)
+    data = bytearray(path.read_bytes())
+    data[central_record(data, LAID_OUT, path.name) + 6] = 64
+    path.write_bytes(bytes(data))
+    with pytest.raises(NotImplementedError) as raised:
+        zipfile.ZipFile(path)
+    return (f"{path} declares a version needed to extract that zipfile does not read "
+            f"({raised.value}), so it cannot be read as a wheel")
+
+
+CANNOT_WALK_OR_OPEN = {
+    "a-directory-entry-at-a-negative-offset": a_directory_entry_at_a_negative_offset,
+    "a-member-name-flagged-utf-8-that-is-not-utf-8": a_name_flagged_utf8_that_is_not,
+    "a-version-needed-to-extract-above-6-3": a_version_to_extract_above_6_3,
+}
+
+
+@NEEDS_UPSTREAM
+@pytest.mark.parametrize("which", CANNOT_WALK_OR_OPEN)
+def test_release_build_the_wheel_check_names_a_wheel_it_cannot_walk_or_open(
+        tmp_path, which):
+    """STEP 13 ON A WHEEL IT CANNOT WALK OR OPEN (opensoft/openRepoTools#352,
+    the review of follow-up 5): a directory entry at a negative offset, a
+    member name flagged UTF-8 that is not UTF-8, and a version needed to
+    extract above 6.3. The step exits 1, with no traceback, and its one
+    `::error::` line is the case's: before, each ended in a traceback with no
+    `::error::` line at all."""
+    release_ = wheel_release("1.1.0")
+    members, info = wheel_members(release_)
+    wheel = tmp_path / "dist" / "openrepotools-1.1.0-py3-none-any.whl"
+    problem = CANNOT_WALK_OR_OPEN[which](wheel, members, info)
     done = run_heredoc(named(release(), "build", WHEEL_CHECK_STEP), tmp_path, [wheel],
                        release_values(release_), cwd=REPO)
     out = done.stdout + done.stderr
