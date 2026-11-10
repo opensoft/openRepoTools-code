@@ -567,7 +567,9 @@
 #      AND FEATURE 007'S PRIMARY BRANCH (T415; FR-018; Y:2459, Y:5014,
 #      Y:5603–5605; the contract's §3.2 and §3.3), the parent's, each with
 #      nothing written: a write that names no lane, or whose lane's own
-#      checkout is not there to read (`pw_checkout`; D12: no clone); a hand
+#      checkout is not there to read (`pw_checkout`; D12: no clone); an unset,
+#      empty or out-of-class LANES_LANE (`pw_lane_given`); LANES_NO_GIT=1,
+#      since on primary the write is its commit (`pw_no_git_refuse`); a hand
 #      edit of a rendered file pending in that checkout (`pw_hand_edit_refuse`);
 #      no author identity there (`pw_author_read`); an act whose generation is
 #      not the snapshot's, or whose base is past it (`pw_act_at_snapshot`); a
@@ -5923,6 +5925,23 @@ pw_lane_given() {
   die "refusing to write on primary: ${pl_why}. Every register call of a write carries the writer's own lane, LANES_LANE as given, and it keys the write's claim and pending record (Y:5171), so a write without one is refused before its claim. Nothing was sent. Run it again with your own lane: LANES_LANE=<lane> ${pl_cmd}" 2
 }
 
+# `LANES_NO_GIT=1` ON PRIMARY (lane openRepoTools-3, #165 6770688147, T421's
+# question 2 and T423's question 3; T415's line at B12b). The flag means "edit
+# only, no commit/push" (ENVIRONMENT, above), and on primary the write IS its
+# commit: the child's `commit_publish` returns 0 before the seam, so the run
+# would end 0 with nothing written. So it refuses 2 here, beside
+# `pw_lane_given`, before its claim and its first snapshot, naming the flag.
+# Nothing is sent. A dry run meets it too, since a dry run takes the write's
+# whole path and refuses wherever the real write would (lane 3, #165
+# 6770820384, T415's question 2). `commit` never reaches the loop (T420), so it
+# is unchanged; T421's and T423's guards stay as backstops.
+pw_no_git_refuse() {
+  local pg_w="" pg_cmd="lanes-edit.sh"
+  [ "$NO_GIT" = 1 ] || return 0
+  for pg_w in ${ORIG_ARGV[@]+"${ORIG_ARGV[@]}"}; do pg_cmd="$pg_cmd $(printf '%q' "$pg_w")"; done
+  die "refusing to write on primary: LANES_NO_GIT=1 is set, which means edit only, with no commit and no push. On primary a write is its commit to the register, so under it this run would end 0 having written nothing. Nothing was sent. Unset it and run the command again: env -u LANES_NO_GIT ${pg_cmd}" 2
+}
+
 # A PENDING HAND EDIT IN `<c>` (Y:2459–2464; Amendment 23's S3 step 4). The verb
 # runs on a scratch tree, so the lane's checkout is the one place a hand edit of
 # a rendered file can be seen, and on primary it is never carried or committed:
@@ -6698,6 +6717,7 @@ pw_run() {   # <the verb's arguments>
   # ---- (a) BEFORE THE FIRST ATTEMPT.
   pw_checkout ${1+"$@"}
   pw_lane_given
+  pw_no_git_refuse
   pw_hand_edit_refuse
   act_checks
   pw_author_read
