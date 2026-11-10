@@ -24,6 +24,13 @@ Test modules import it from `tests/`, as three modules import
   argv_prefix, …)`: the contract's stub `lanes-index`, as CLI4.5 §6 states
   it, and the outcomes a test injects into it (T207). `contract_stub`'s
   docstring is its manual.
+- `guard_session(home, directory, cwd, ...)`, `guard_strip_env(...)` and
+  `GUARD_ENV_STRIP`: what a case gives `lanes-edit.sh guard` before it runs
+  it, so that the guard gets past its session-record check to its register
+  read (T203c): a live session record on this workstation, a stand-in `tmux`
+  that answers the guard's window queries, the compact hook JSON, and the
+  environment with the variables that would steer the guard elsewhere taken
+  out. `guard_session`'s docstring is its manual.
 
 THE FAKE-`psql` HOST RULE (lane 1's L1v4.5:525; #165 6741670709 item 9): the
 fake and the shim are made for configurations whose `register_url=` names a
@@ -42,7 +49,8 @@ makes it executable and puts `<dir>` first on `PATH`. Its environment:
 - `FAKE_PSQL_LOG` (required) names its log: one JSON object per call, in call
   order, with `FAKE_PSQL`'s fields, `url`, `passfile`, `pgpassword` and
   `stdin`, and these besides:
-  - `call`, the call's number in this log, from 1;
+  - `call`, the call's number in this log, from 1, counting only the calls
+    that carry a request: a `psql --version` call is not counted (below);
   - `argv`, the whole argument list (P1475): what each path sends is the
     test's to assert, and the fake asserts no `VERBOSITY` for the calls the
     design leaves unnamed (the test plan's open point 29);
@@ -60,6 +68,19 @@ makes it executable and puts `<dir>` first on `PATH`. Its environment:
   refused: the call is logged with `refused`, and the fake exits 1. No
   register path puts a connection string in an argument list (Y:3491; CLI4.5
   §2.2 and §6).
+- `psql --version`, a call whose whole argument list is `--version`, is a
+  call of its own kind. Lane 1's T106 runs it once per process on a register
+  path, before it sends anything, and refuses a `psql` older than 15 with 69,
+  naming its version, with nothing sent (L1v4.10:152; lane 1, #165
+  6752661856). The fake reads no stdin for it and answers `psql (PostgreSQL)
+  16.4` (`PSQL_VERSION_LINE`) with exit 0, unless a `version` rule in
+  `FAKE_PSQL_ANSWERS` answers it. Its log entry is
+  `{"kind": "version", "url": …, "passfile": …, "pgpassword": …, "argv":
+  ["--version"], "connect_timeout": …, "options": …, "service": …, "pg":
+  {…}}`, with no `call` and no `stdin`. So the calls that carry a request are
+  the entries with no `kind`, a case counting them leaves the probe out
+  (`e.get("kind") != "version"`), and their `call` numbers are the ones a
+  test without the probe sees.
 - `FAKE_PSQL_ANSWERS` (optional) names a JSON file: a list of answers, each
   taught for the calls it names. The first that names a call answers it:
   - it names calls by `call` (that call alone), `from` (every call from that
@@ -68,7 +89,13 @@ makes it executable and puts `<dir>` first on `PATH`. Its environment:
   - it answers with `sleep` (seconds, before anything else: a hang past the
     caller's timer), then `stdout` and `stderr`, then `signal` (a name, such
     as `KILL`, that the fake sends itself: a death by a signal) or `exit`
-    (default 0).
+    (default 0);
+  - a rule with `"kind": "version"` names the `psql --version` calls, every
+    one, and only them: it takes no `call`, `from` or `match`, and answers
+    as any rule does. Every other rule names only the calls that carry a
+    request. So T257's `[snapshot-psql-14]` teaches `{"kind": "version",
+    "stdout": "psql (PostgreSQL) 14.11\\n"}`, and a `--version` that hangs or
+    fails is taught with `sleep` or `exit`.
 
   So the 69 refusal is `{"call": 1, "exit": 2}`; the retry's shape is
   `{"match": "commit_write", "exit": 3, "stderr": "ERROR:  40001: could not
@@ -86,6 +113,13 @@ control file:
 
 - `psql` (optional): the real `psql` to hand calls to; otherwise the first
   `psql` on `PATH` that is not the shim.
+- `version` (optional): the line the shim answers `psql --version` with,
+  `psql (PostgreSQL) 16.4` (`PSQL_VERSION_LINE`) where it is absent, such as
+  `"psql (PostgreSQL) 14.11"` for T257's `[snapshot-psql-14]`. A call whose
+  whole argument list is `--version` (lane 1's T106 probe, once per process
+  on a register path: L1v4.10:152) is answered by the shim itself, that line
+  and exit 0, and is never handed on: it reads no stdin, no arm applies to it,
+  and it is not counted in `call`, `from` or the state.
 - `arms`: a list, each arm a mode and the calls it applies to. An arm names
   calls by `call` (call k alone), `from` (every call from call k on) or
   `match` (a text the call's script carries, such as `find_write` for a
@@ -129,11 +163,16 @@ The shim writes, beside itself, `psql-shim.log`, one JSON object per call
 when the call starts: `call`, `argv`, `stdin`, `sent` (the script as handed
 on), `arms` (the modes applied), and the fake's `url`, `passfile`,
 `pgpassword` and `pg`; `psql-shim.ends`, one line per call that ended, with
-the codes; and its counters in `psql-shim.state`. A control file it cannot
-read, an arm it does not know, or an arm that cannot apply to the call it
-names (a `before` on a call with no `COMMIT`, an `edit-entry` field that is
+the codes; and its counters in `psql-shim.state`. A `psql --version` call's
+entry in `psql-shim.log` is its own kind, `{"kind": "version", "argv":
+["--version"], "url": …, "passfile": …, "pgpassword": …, "pg": {…}}`, with
+no `call`, and it writes nothing to `psql-shim.ends` or the state, so the
+calls that carry a request are the entries with no `kind`. A control file it
+cannot read, an arm it does not know, or an arm that cannot apply to the call
+it names (a `before` on a call with no `COMMIT`, an `edit-entry` field that is
 not there) ends the call with exit 1 and `psql-shim: …` on stderr, recorded
-in the log as `error`, sending nothing.
+in the log as `error`, sending nothing; on a `--version` call, so does a
+control file it cannot read or a `version` that is not a string.
 
 STANDARD LIBRARY ONLY, AND NOTHING FROM THE SUITE: no `conftest`, no pytest,
 so the module loads the same way under pytest and under a task's
@@ -146,6 +185,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -170,6 +211,11 @@ PSQL_SHIM_ENDS = "psql-shim.ends"
 #: The shim's ten modes (the test plan's section 3.2).
 PSQL_SHIM_MODES = ("window", "before", "after", "timer", "fail-call", "fail-match",
                    "edit-entry", "no-reconnect", "hold", "fork")
+
+#: WHAT BOTH `psql`s ANSWER `psql --version` WITH, unless a test names another
+#: (the fake's `version` rule, the shim's `version` key): a `psql` lane 1's
+#: T106 accepts, 15 or later (L1v4.10:152). Each script holds this text too.
+PSQL_VERSION_LINE = "psql (PostgreSQL) 16.4"
 
 
 def flipped_copy(source, dest, value) -> Path:
@@ -234,14 +280,19 @@ REGISTER_FAKE_PSQL = r'''#!/usr/bin/env python3
 # PGCONNECT_TIMEOUT, PGOPTIONS, PGSERVICE and every PG* variable it received.
 # A test may teach it an answer per call (FAKE_PSQL_ANSWERS); otherwise it
 # answers as FAKE_PSQL does. No database exists. It asserts no VERBOSITY.
+# `psql --version` (lane 1's T106 probe) is a call of its own kind: answered
+# DEFAULT_VERSION, or by a {"kind": "version"} rule, logged with
+# "kind": "version" and never counted in `call`.
 import fcntl, json, os, signal, sys, time
 
+DEFAULT_VERSION = "psql (PostgreSQL) 16.4"
 log = os.environ["FAKE_PSQL_LOG"]
 answers = os.environ.get("FAKE_PSQL_ANSWERS", "")
 vfile = os.environ.get("FAKE_PSQL_VERSION_FILE", "")
 version = open(vfile).read().strip() if vfile else "1"
 args = sys.argv[1:]
-stdin = sys.stdin.read()
+asks_version = args == ["--version"]
+stdin = "" if asks_version else sys.stdin.read()
 env = os.environ
 url = ""
 if any(env.get(k) for k in ("PGHOST", "PGPORT", "PGDATABASE", "PGUSER")):
@@ -259,11 +310,15 @@ refused = [a for a in args if a == "--dbname" or a.startswith("--dbname=") or
            "postgresql://" in a or "postgres://" in a]
 if refused:
     record["refused"] = "a connection string or -d in the arguments: %s" % json.dumps(refused)
+if asks_version:
+    record = dict({"kind": "version"}, **{k: v for k, v in record.items() if k != "stdin"})
 with open(log, "a+", encoding="utf-8") as handle:
     fcntl.flock(handle, fcntl.LOCK_EX)
     handle.seek(0)
-    call = sum(1 for _ in handle) + 1
-    record = dict({"call": call}, **record)
+    # `call` counts the calls that carry a request: never a --version entry.
+    call = sum(1 for line in handle if not line.startswith('{"kind": "version"')) + 1
+    if not asks_version:
+        record = dict({"call": call}, **record)
     handle.write(json.dumps(record) + "\n")
 if refused:
     sys.stderr.write("psql: error: the fake refuses %s\n" % record["refused"])
@@ -271,11 +326,17 @@ if refused:
 
 
 def taught():
+    # A {"kind": "version"} rule names every --version call and only them;
+    # every other rule names only the calls that carry a request.
     if not answers:
         return None
     with open(answers, encoding="utf-8") as handle:
         rules = json.load(handle)
     for rule in rules:
+        if (rule.get("kind") == "version") != asks_version:
+            continue
+        if asks_version:
+            return rule
         if "call" in rule and rule["call"] != call:
             continue
         if "from" in rule and call < rule["from"]:
@@ -298,6 +359,9 @@ if rule is not None:
         os.kill(os.getpid(), getattr(signal, "SIG" + rule["signal"]))
         time.sleep(5)
     sys.exit(int(rule.get("exit", 0)))
+if asks_version:
+    sys.stdout.write(DEFAULT_VERSION + "\n")
+    sys.exit(0)
 if vfile and "CREATE TABLE IF NOT EXISTS" in stdin:
     with open(vfile, "w") as handle:
         handle.write("1\n")
@@ -354,9 +418,12 @@ PSQL_SHIM = r'''#!/usr/bin/env -S python3 -I
 # `python3 -I` script, standard library only, in front of the REAL psql, armed
 # per test by psql-shim.json beside it. Its modes: window, before, after,
 # timer, fail-call, fail-match, edit-entry, no-reconnect, hold and fork.
+# `psql --version` (lane 1's T106 probe) it answers itself, DEFAULT_VERSION or
+# the control file's `version`, logged with "kind": "version" and never counted.
 # tests/sql_register_helpers.py's docstring is its manual.
 import fcntl, json, os, re, signal, subprocess, sys, time
 
+DEFAULT_VERSION = "psql (PostgreSQL) 16.4"
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONTROL = os.path.join(HERE, "psql-shim.json")
 LOG = os.path.join(HERE, "psql-shim.log")
@@ -500,8 +567,42 @@ def text(data):
     return data.decode("utf-8", "surrogateescape")
 
 
+def version(args):
+    # `psql --version`, as lane 1's T106 asks it once per process (L1v4.10:152):
+    # answered here, never handed on; no arm applies to it, it reads no stdin,
+    # and it is not counted in the state or written to the ends.
+    record = {"kind": "version", "argv": args}
+    record.update(connection())
+    error, line = "", DEFAULT_VERSION
+    try:
+        try:
+            with open(CONTROL, encoding="utf-8") as handle:
+                control = json.load(handle)
+        except FileNotFoundError:
+            control = {}
+        except ValueError as exc:
+            raise ShimError("the control file is not JSON: %s" % exc)
+        if not isinstance(control, dict):
+            raise ShimError("the control file is not a JSON object")
+        line = control.get("version", DEFAULT_VERSION)
+        if not isinstance(line, str):
+            raise ShimError("`version` is not a string: %s" % json.dumps(line))
+    except ShimError as exc:
+        error = str(exc)
+        record["error"] = error
+    append(LOG, record)
+    if error:
+        sys.stderr.write("psql-shim: %s\n" % error)
+        return 1
+    sys.stdout.write(line + "\n")
+    sys.stdout.flush()
+    return 0
+
+
 def main():
     args = sys.argv[1:]
+    if args == ["--version"]:
+        return version(args)
     raw = sys.stdin.buffer.read()
     script = text(raw)
     record = {"argv": args, "stdin": script}
@@ -685,6 +786,7 @@ OUTCOMES = os.path.join(HERE, "lanes-index.outcomes")
 RENDERS = os.path.join(HERE, "lanes-index.render")
 REGISTER = os.path.join(HERE, "lanes-index.register")
 LOCK = os.path.join(HERE, "lanes-index.lock")
+SETS = os.path.join(HERE, "lanes-index.sets")
 
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -1120,25 +1222,41 @@ def resolve(key, files):
     return hits
 
 
+def row(text):
+    # A `.head` row's present flag and digest: `1` and its sha256, or `0` and
+    # `-` where the path is absent at `n` (CLI4.10:699 and :703).
+    return ("0", "-") if text is None else ("1", sha(text))
+
+
+def logs_at(files):
+    return sorted(path for path in files if path.startswith("lanes/log/"))
+
+
 def write_members(cache, members, files, head_rows, absent):
+    # Each member at `n`, and its `.head` rows: one per path it names, present
+    # or not (CLI4.10:699, :703). `logs` is `--all`'s set of logs, one row per
+    # log it holds at `n`, its text cached or not (CLI4.11:703, S-a).
     for member in members:
         if member == "register":
-            text = files.get("lanes/LANES.md", b"")
-            put(cache + ".register", text.rstrip(b"\n") + b"\n")
-            if "lanes/LANES.md" in files:
-                head_rows["lanes/LANES.md"] = sha(text)
+            text = files.get("lanes/LANES.md")
+            put(cache + ".register", (text or b"").rstrip(b"\n") + b"\n")
+            head_rows["lanes/LANES.md"] = row(text)
         elif member == "paths":
+            # Never `lanes/STORE` (CLI4.11:680): the stub's register holds the
+            # render set alone.
             put(cache + ".paths", "".join(path + "\n" for path in sorted(files)).encode())
         elif member == "archive":
             names = sorted(path for path in files if path.startswith("lanes/archive/"))
             put(cache + ".archive", b"".join(files[path] for path in names))
             for path in names:
-                head_rows[path] = sha(files[path])
+                head_rows[path] = row(files[path])
         elif member == "aliases":
             text = files.get("lanes/aliases.tsv")
             put(cache + ".aliases", text if text else b"# no lane aliases\n")
-            if text is not None:
-                head_rows["lanes/aliases.tsv"] = sha(text)
+            head_rows["lanes/aliases.tsv"] = row(text)
+        elif member == "logs":
+            for path in logs_at(files):
+                head_rows[path] = row(files[path])
         else:
             key = member[len("log:"):]
             hits = resolve(key, files)
@@ -1150,17 +1268,40 @@ def write_members(cache, members, files, head_rows, absent):
             if not LANE_CLASS.match(key):
                 continue
             if hits:
-                head_rows[hits[0]] = sha(text)
+                head_rows[hits[0]] = row(text)
             elif key not in absent:
                 absent.append(key)
 
 
-def write_head(cache, state, n, head_rows, absent):
+def write_head(cache, state, n, head_rows, absent, logs_set):
     lines = ["format=1", "n=%d" % n, "generation=%s" % state["generation"], "c=%d" % C,
              "n_a=%d" % N_A, "w_s_ms=%d" % W_S_MS]
-    lines += ["file=%s\t1\t%s" % (path, head_rows[path]) for path in sorted(head_rows)]
+    lines += ["file=%s\t%s\t%s" % ((path,) + head_rows[path]) for path in sorted(head_rows)]
     lines += ["absent=%s" % key for key in absent]
-    put(cache + ".head", "".join(line + "\n" for line in lines).encode())
+    data = "".join(line + "\n" for line in lines).encode()
+    put(cache + ".head", data)
+    # Whether this family holds `--all`'s set of logs: the stub's own record,
+    # beside the stub, never in the family, and true only for this `.head`.
+    try:
+        with open(SETS, encoding="utf-8") as handle:
+            sets = json.load(handle)
+    except FileNotFoundError:
+        sets = {}
+    sets[os.path.abspath(cache)] = {"head": sha(data), "logs": bool(logs_set)}
+    with open(SETS + ".tmp", "w", encoding="utf-8") as handle:
+        json.dump(sets, handle)
+    os.replace(SETS + ".tmp", SETS)
+
+
+def holds_logs(cache):
+    try:
+        with open(SETS, encoding="utf-8") as handle:
+            record = json.load(handle).get(os.path.abspath(cache))
+        with open(cache + ".head", "rb") as handle:
+            current = sha(handle.read())
+    except (OSError, ValueError):
+        return False
+    return bool(record and record["head"] == current and record["logs"])
 
 
 def read_head(cache):
@@ -1173,8 +1314,8 @@ def read_head(cache):
     for line in text:
         key, _eq, value = line.partition("=")
         if key == "file":
-            path, _present, digest = value.split("\t")
-            head["rows"][path] = digest
+            path, present, digest = value.split("\t")
+            head["rows"][path] = (present, digest)
         elif key == "absent":
             head["absent"].append(value)
         else:
@@ -1184,10 +1325,8 @@ def read_head(cache):
 
 def members_of(o, files):
     if "--all" in o:
-        logs = sorted(path[len("lanes/log/"):-len(".md")] for path in files
-                      if path.startswith("lanes/log/"))
-        return ["register", "paths", "archive", "aliases"] + [
-            "log:" + name for name in logs if LANE_CLASS.match(name)]
+        return ["register", "paths", "archive", "aliases", "logs"] + [
+            "log:" + name for name in all_logs(files)]
     members = o["--files"].split(",")
     for member in members:
         if member in ("register", "paths", "archive", "aliases"):
@@ -1197,6 +1336,12 @@ def members_of(o, files):
         usage("--files takes register, paths, archive, aliases and log:<key> for a key in "
               "check_lane_name's class, not %s" % member)
     return members
+
+
+def all_logs(files):
+    # `--all`'s logs: each `lanes/log/<File>.md` whose `<File>` is in the class.
+    names = [path[len("lanes/log/"):-len(".md")] for path in logs_at(files)]
+    return [name for name in names if LANE_CLASS.match(name)]
 
 
 def cached_members(cache):
@@ -1246,6 +1391,11 @@ def read(args):
     return lambda: read_run(o, form)
 
 
+def two_logs(key):
+    raise Exit(69, "mode primary\n", "lanes-index: register read: two logs differ from %s "
+               "only by case\n" % key)
+
+
 def read_run(o, form):
     cache = o["--cache"]
     with Locked() as state:
@@ -1262,8 +1412,7 @@ def read_run(o, form):
             files = images(at)
             key = o["--lane"]
             if len(resolve(key, files)) > 1:
-                raise Exit(69, "mode primary\n", "lanes-index: register read: two logs differ "
-                           "from %s only by case\n" % key)
+                two_logs(key)
             write_members(cache, ["log:" + key], files, {}, [])
             return Exit(0, "mode primary\n")
         files = images(n)
@@ -1276,41 +1425,74 @@ def read_run(o, form):
                     members.append("log:" + o["--lane"])
             head_rows, absent = {}, []
             write_members(cache, members, files, head_rows, absent)
-            write_head(cache, state, n, head_rows, absent)
+            write_head(cache, state, n, head_rows, absent, "logs" in members)
             return Exit(0, "mode primary\n")
-        members = members_of(o, files) if "--files" in o else []
-        keys = [m[len("log:"):] for m in members if m.startswith("log:")]
-        if "--log-key" in o:
-            keys.append(o["--log-key"])
-        for key in keys:
-            if len(resolve(key, files)) > 1:
-                raise Exit(69, "mode primary\n", "lanes-index: register read: two logs differ "
-                           "from %s only by case\n" % key)
-        since = int(o["--since"])
-        before = images(since) if state["first"] <= since <= n else {}
-        changed = sorted({row.split("\t")[0] for entry in state["journal"].values()
-                          if since < entry["seq"] <= n for row in entry["files"]})
-        head = read_head(cache)
-        whole = (head is None or head.get("n") != str(since)
-                 or head.get("generation") != state["generation"])
-        if not whole:
-            whole = any(path in head["rows"] for path in changed)
-            if os.path.exists(cache + ".paths"):
-                whole = whole or any((path in before) != (path in files) for path in changed)
-            whole = whole or any(resolve(key, files) for key in head["absent"])
-        if whole:
-            head_rows, absent = {}, []
-            write_members(cache, cached_members(cache) + [m for m in members], files,
-                          head_rows, absent)
-        else:
-            head_rows, absent = dict(head["rows"]), list(head["absent"])
-            write_members(cache, members, files, head_rows, absent)
-        if "--log-key" in o:
-            write_members(cache, ["log:" + o["--log-key"]], files, {}, [])
-        write_head(cache, state, n, head_rows, absent)
-        out = ["mode primary", "n=%d" % n] + ["changed=%s" % path for path in changed]
-        out.append("refetched=%d" % (1 if whole else 0))
-        return Exit(0, "".join(line + "\n" for line in out))
+        return form_3(o, cache, state, n, files)
+
+
+def form_3(o, cache, state, n, files):
+    # Form 3 as draft 4.10 and 4.11 state it (CLI4.10:730-733; CLI4.11:673):
+    # the CACHED paths changed in (n, n'] by their digests at n'; 69 only for
+    # a key the call asked for; a cached member that now matches two logs is
+    # dropped from the family.
+    asked = members_of(o, files) if "--files" in o else []
+    if "--log-key" in o:
+        asked.append("log:" + o["--log-key"])
+    asked_keys = [m[len("log:"):] for m in asked if m.startswith("log:")]
+    for key in asked_keys:
+        if len(resolve(key, files)) > 1:
+            two_logs(key)
+    since = int(o["--since"])
+    head = read_head(cache)
+    logs_set = holds_logs(cache)
+    cached = cached_members(cache)
+    whole = (head is None or head.get("n") != str(since)
+             or head.get("generation") != state["generation"]
+             or not state["first"] <= since <= n)
+    changed = set()
+    if not whole:
+        before = images(since)
+        moved = set(before) ^ set(files)
+        for path, kept in head["rows"].items():
+            if row(files.get(path)) != kept:
+                changed.add(path)
+        if "paths" in cached:
+            changed |= moved
+        if "archive" in cached:
+            changed |= {path for path in moved if path.startswith("lanes/archive/")}
+        if logs_set:
+            changed |= {path for path in moved if path.startswith("lanes/log/")}
+        for key in head["absent"]:
+            changed.update(resolve(key, files))
+    dropped = []
+    for member in cached:
+        key = member[len("log:"):]
+        if member.startswith("log:") and key not in asked_keys and len(resolve(key, files)) > 1:
+            try:
+                with open(cache + ".logpath." + key, encoding="utf-8") as handle:
+                    dropped.append((key, handle.read().strip()))
+            except OSError:
+                dropped.append((key, ""))
+            for name in (".log.", ".logpath."):
+                if os.path.exists(cache + name + key):
+                    os.remove(cache + name + key)
+    gone = {key for key, _path in dropped}
+    refetch = whole or bool(changed)
+    if refetch:
+        family = [m for m in cached if not (m.startswith("log:") and m[len("log:"):] in gone)]
+        if logs_set:
+            family += ["logs"] + ["log:" + name for name in all_logs(files)]
+        head_rows, absent = {}, []
+        write_members(cache, family + asked, files, head_rows, absent)
+    else:
+        head_rows = {path: kept for path, kept in head["rows"].items()
+                     if path not in {old for _key, old in dropped}}
+        absent = [key for key in head["absent"] if key not in gone]
+        write_members(cache, asked, files, head_rows, absent)
+    write_head(cache, state, n, head_rows, absent, logs_set)
+    out = ["mode primary", "n=%d" % n] + ["changed=%s" % path for path in sorted(changed)]
+    out.append("refetched=%d" % (1 if refetch else 0))
+    return Exit(0, "".join(line + "\n" for line in out))
 
 
 def render(args):
@@ -1456,18 +1638,38 @@ def contract_stub(directory, register=None) -> Path:
       `REGISTER_SLOTS` (T118) where it has them, and `parse_register_line`,
       so the stub holds no second classifier (CLI4.5:633). A test teaches
       other fields with `stub_outcome`.
-    - §3.6's four forms of `register read`, each form's argv (an empty
-      `--lane=` 64 in forms 2 and 4; `--lane` and `--log-key` only in the `=`
-      form): the first stdout line `mode primary`; the cache family written by
-      temp file and rename beside `--cache <file>`, `.head` last, with its
-      `file=` rows for the texts cached and an `absent=` row for a log that
-      resolves to none; a key outside `check_lane_name`'s class as
-      `.log.%<hex>`; two logs that differ only by case written by no form, and
-      69 in forms 3 and 4; form 3's `n=`, `changed=` and `refetched=` lines
-      and its refetch rules; form 4's `.head` checks (69 where it is missing,
-      names another generation, or `--at` is outside the journal), its one log
-      at `--at`, and no `.head`. `.outage`, `.direct` and the guard's "too
-      late" are injected.
+    - §3.6's four forms of `register read`, as contract draft 4.10 and
+      draft 4.11 state them (lane 1, #165 6752925109), each form's argv (an
+      empty `--lane=` 64 in forms 2 and 4; `--lane` and `--log-key` only in
+      the `=` form): the first stdout line `mode primary`; the cache family
+      written by temp file and rename beside `--cache <file>`, `.head` last;
+      a key outside `check_lane_name`'s class as `.log.%<hex>`, never cached;
+      two logs that differ only by case written by no form; form 4's `.head`
+      checks (69 where it is missing, names another generation, or `--at` is
+      outside the journal), its one log at `--at`, and no `.head`.
+      `.outage`, `.direct` and the guard's "too late" are injected.
+      - `.head`'s rows (CLI4.10:699, :703; CLI4.11:703, S-a): a `file=` row
+        for every path a member names at `n`, present or not, `1` and its
+        digest or `0` and `-`; a set member (`archive`, and `--all`'s logs)
+        one row per file it holds at `n`, its text cached or not, a log
+        outside the class or one of a case pair included; a `log:<key>` that
+        resolves to no log an `absent=` row instead.
+      - `.paths` never holds `lanes/STORE` (CLI4.11:680): the register holds
+        the render set alone.
+      - Form 3 (CLI4.10:730-733): the cached paths changed in `(n, n′]` by
+        their digests at `n′` (a row whose digest differs or is absent, a
+        path created or removed against a cached `.paths` or under a cached
+        set member, an `absent=` key that now resolves), printed as `n=<n′>`,
+        one `changed=<path>` per path, sorted, and `refetched=0` or `1`;
+        where any is found, or `.head` is missing or names another `n` or
+        generation, the whole family rewritten at `n′`, `.head` last;
+        otherwise the members `--files` names, with their rows added. It
+        exits 69 only for a key it was asked for, by `--files` or
+        `--log-key=`; a cached member that now matches two logs is dropped
+        from the family, its `.log.<key>` and `.logpath.<key>` removed
+        (CLI4.11:673, N-g). Whether a family holds `--all`'s set of logs is
+        the stub's own record, `lanes-index.sets` beside the stub, true only
+        for the `.head` it wrote with it.
     - §3.7 `render --checkout <c>`: one JSON line per call in
       `<directory>/lanes-index.render`, its argv and its environment (the
       value of a variable whose name holds TOKEN, SECRET, PASSWORD, PASSWD or
@@ -1530,3 +1732,282 @@ def stub_outcome(directory, argv_prefix, exit=None, stdout=None, stderr=None, co
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(outcomes), encoding="utf-8")
     os.replace(tmp, path)
+
+
+# ------------------------------------------------ the guard's session (T203c)
+#
+# WHY: lane 5's T507 prefetch reads the register AFTER the guard's own
+# checks, and each of them refuses with 2 (lane 5, #165 6755266457; F10's
+# items 27 and 28). In `guard_run` at `a2073eae` (`lanes-edit.sh:10922`), in
+# order: the subagent and `cwd` reads of the hook's JSON (`jstr`, which reads
+# only the compact `"key":"value"`); the scope test against
+# `${PROJECTS_ROOT:-$HOME/projects}` (`:10939`), which returns 0 outside it;
+# the workspace check (`LANES_REPO`, `LANES_DIR`, `LANES_FILE`, `:10948`); the
+# tmux checks (`here_context`'s `display-message -p
+# '#{session_name}:#{window_id}'` and `'#{pane_pid}'`, `:10954`, then `'#W'`,
+# `:10964`); and this workstation's session records, `transcript_holders
+# "$G_ID"` (`:10986`), which needs a live record whose `sessionId` is the
+# hook's `session_id` and whose window is this one, or it refuses "no live
+# session record in THIS window" (`:11010`). Only then comes the register's
+# text (`register_text`, `:11049`), the guard's first register read. Lane 5's
+# `refs/l5/T502` changes the offer site, not these checks.
+
+#: THE VARIABLES THAT WOULD STEER THE GUARD AWAY FROM A CASE'S OWN ESTATE, by
+#: the prefixes of their names: the lane's own (`LANES_`, among them
+#: `LANES_REPO` and `LANES_INDEX_CONFIG`), the harness's (`CLAUDE_`, among
+#: them `CLAUDE_CODE_SESSION_ID` and `CLAUDE_NO_LANE`), tmux's, libpq's and
+#: the fake's; `PROJECTS_ROOT`, which moves the scope test's root off
+#: `$HOME/projects` so the guard returns 0 before any read (T220c's note,
+#: F10's item 28); and `AGENT_PROTOCOL_ROOT`, which moves `workspace.yaml` off
+#: `$HOME/.agents` (`lanes-edit.sh:785`).
+GUARD_ENV_STRIP = ("LANES_", "CLAUDE_", "TMUX", "PG", "FAKE_PSQL", "PROJECTS_ROOT",
+                   "AGENT_PROTOCOL_ROOT")
+
+#: The stand-in's window, in the form the suite's session records carry
+#: (`testsess:@1.%1`, `tests/test_supervised_restart_regressions.py`), and
+#: `TMUX_PANE` as T215's and T220's benches set it; the window's name is the
+#: lane's, `repoA-2` there.
+GUARD_WINDOW = "repoA-2"
+GUARD_TMUX_SESSION = "testsess"
+GUARD_WINDOW_ID = "@1"
+GUARD_PANE = "%1"
+#: The stand-in's call log, beside it.
+GUARD_TMUX_LOG = "tmux.log"
+
+#: THE STAND-IN `tmux`, in the form of T215's and T220's `FAKE_TMUX` (a
+#: `#!/bin/sh` that answers `display-message` as the lane's window and exits
+#: 0 to the rest), with each query the guard makes answered as a real tmux
+#: answers it, and every call logged. The `@…@` words are filled in, each
+#: quoted for the shell, by `guard_session`.
+_GUARD_TMUX = r'''#!/bin/sh
+# A STAND-IN tmux (feature 007, T203c): it logs every call, each argument
+# ended by US (0x1f), one call per line, and answers display-message as the
+# lane's window does. A target that is not that window gets tmux's own
+# "can't find window" and 1. Every other command is answered with nothing
+# and 0.
+{ for a in "$@"; do printf '%s\037' "$a"; done; printf '\n'; } >> @LOG@
+[ "${1-}" = display-message ] || exit 0
+target=""; prev=""; fmt=""
+for a in "$@"; do
+  [ "$prev" = -t ] && target="$a"
+  prev="$a"; fmt="$a"
+done
+case "$target" in
+  ''|@ID@|@SESSION@:@ID@|@PANE@|@SESSION@:@ID@.@PANE@) ;;
+  *) printf "can't find window: %s\n" "$target" >&2; exit 1 ;;
+esac
+case "$fmt" in
+  '#{session_name}:#{window_id}') printf '%s\n' @SESSION@:@ID@ ;;
+  '#{session_name}') printf '%s\n' @SESSION@ ;;
+  '#{window_id}') printf '%s\n' @ID@ ;;
+  '#{pane_id}') printf '%s\n' @PANE@ ;;
+  '#{pane_pid}') printf '%s\n' @PID@ ;;
+  *) printf '%s\n' @WINDOW@ ;;
+esac
+exit 0
+'''
+
+#: THE SESSION'S LIVE PROCESS: it reads its stdin to the end, so it lives
+#: until `GuardSession.close` closes that pipe, or the test's process dies.
+_GUARD_HOLDER = "import sys; sys.stdin.buffer.read()"
+
+
+def _sh(value) -> str:
+    """`value` quoted for the shell, as one word."""
+    return "'" + str(value).replace("'", "'\\''") + "'"
+
+
+def _proc_start(pid) -> str:
+    """The start token the guard compares, field 22 of `/proc/<pid>/stat`,
+    cut after the last `) ` as `pid_alive` cuts it (`lanes-edit.sh:5154`).
+    Empty where there is no `/proc`, where `pid_alive` asks `kill -0` alone."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return stat.rsplit(") ", 1)[1].split()[19]
+
+
+def guard_strip_env(environ=None, strip=()) -> dict:
+    """A copy of `environ` (`os.environ` where it is None) without each
+    variable whose name begins with a prefix in `GUARD_ENV_STRIP`, or in
+    `strip`, a module's own (T215's `T215_`, for one)."""
+    prefixes = tuple(GUARD_ENV_STRIP) + tuple(strip)
+    source = os.environ if environ is None else environ
+    return {k: v for k, v in source.items() if not k.startswith(prefixes)}
+
+
+class GuardSession:
+    """A live session for a guard case, made by `guard_session`, whose
+    docstring is its manual."""
+
+    def __init__(self, home, directory, cwd, window, session_id, name, name_source,
+                 status, proc_start):
+        self.home, self.directory, self.cwd = Path(home), Path(directory), Path(cwd)
+        self.window, self.session_id = window, session_id
+        self.target = f"{GUARD_TMUX_SESSION}:{GUARD_WINDOW_ID}.{GUARD_PANE}"
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.holder = subprocess.Popen([sys.executable, "-I", "-c", _GUARD_HOLDER],
+                                       stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL, start_new_session=True)
+        self.pid = self.holder.pid
+        self.proc_start = _proc_start(self.pid) if proc_start is None else str(proc_start)
+        self.tmux_env = f"{self.directory / 'tmux-server'},{self.pid},0"
+        self.tmux_log = self.directory / GUARD_TMUX_LOG
+        self.tmux = self.directory / "tmux"
+        words = {"@LOG@": _sh(self.tmux_log), "@SESSION@": _sh(GUARD_TMUX_SESSION),
+                 "@ID@": _sh(GUARD_WINDOW_ID), "@PANE@": _sh(GUARD_PANE),
+                 "@PID@": _sh(self.pid), "@WINDOW@": _sh(window)}
+        text = _GUARD_TMUX
+        for word, value in words.items():
+            text = text.replace(word, value)
+        self.tmux.write_text(text, encoding="utf-8")
+        self.tmux.chmod(0o755)
+        sessions = self.home / ".claude" / "sessions"
+        sessions.mkdir(parents=True, exist_ok=True)
+        self.record = sessions / f"{self.pid}.json"
+        self.record.write_text(json.dumps(
+            {"pid": self.pid, "sessionId": session_id, "cwd": str(self.cwd),
+             "procStart": self.proc_start, "tmux": self.target, "name": name,
+             "nameSource": name_source, "status": status, "kind": "interactive"},
+            separators=(",", ":")) + "\n", encoding="utf-8")
+        self.record.chmod(0o600)
+
+    def env(self, base, **extra) -> dict:
+        """`base`, a case's environment for the guard (see `guard_strip_env`),
+        with this session's window, `TMUX` and `TMUX_PANE`, and the stand-in's
+        directory first on `PATH` where it is not already. An `extra` value
+        of None removes that variable, as `TMUX=None` takes the session out
+        of any window; any other sets it."""
+        env = dict(base)
+        env.update(TMUX=self.tmux_env, TMUX_PANE=GUARD_PANE)
+        path = env.get("PATH", os.defpath)
+        if path.split(os.pathsep)[0] != str(self.directory):
+            env["PATH"] = os.pathsep.join([str(self.directory), path])
+        for key, value in extra.items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[key] = value
+        return env
+
+    def hook_input(self, prompt="hello", cwd=None) -> str:
+        """The hook's JSON for this session, compact as the harness sends it,
+        since the guard's `jstr` reads `"<key>":"<value>"` with no blank after
+        the colon: `hook_event_name`, `session_id`, `cwd` (this session's,
+        unless given) and `prompt`, in T215's and T220's order."""
+        return json.dumps({"hook_event_name": "UserPromptSubmit",
+                           "session_id": self.session_id,
+                           "cwd": str(self.cwd if cwd is None else cwd), "prompt": prompt},
+                          separators=(",", ":"))
+
+    def tmux_calls(self) -> list:
+        """Every call the stand-in `tmux` took, in order, each its list of
+        arguments."""
+        if not self.tmux_log.exists():
+            return []
+        return [line.split("\x1f")[:-1]
+                for line in self.tmux_log.read_text(encoding="utf-8",
+                                                     errors="replace").splitlines()]
+
+    def close(self) -> None:
+        """End the session's process. Its record stays, naming a dead pid, so
+        the guard reads it as not live; the files stay for the test's
+        `tmp_path`. Safe to call twice."""
+        holder = self.holder
+        if holder.stdin is not None and not holder.stdin.closed:
+            try:
+                holder.stdin.close()
+            except OSError:
+                pass
+        if holder.poll() is None:
+            try:
+                holder.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                holder.kill()
+                holder.wait(timeout=10)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
+def guard_session(home, directory, cwd, *, window=GUARD_WINDOW, session_id=None, name=None,
+                  name_source="user", status="busy", proc_start=None) -> GuardSession:
+    """Give a guard case a live session, so that `lanes-edit.sh guard` gets
+    past its session-record check to its register read, and return it as a
+    `GuardSession`.
+
+    - `home`: the `HOME` the guard runs with. The record is written under it.
+    - `directory`: a directory the case puts first on `PATH` (its `bin`); the
+      stand-in `tmux` and its log are written there, replacing any `tmux`
+      the case wrote before.
+    - `cwd`: the lane's checkout, the hook's `cwd`. It must be under
+      `<home>/projects`, or the guard's scope test returns 0 before any read
+      (T215b, T220c), and a `ValueError` says so.
+    - `window`: the window's name, the lane's (`GUARD_WINDOW`, `repoA-2`).
+    - `session_id`: the hook's `session_id` and the record's `sessionId`, in
+      lower case as the harness writes it (another is a `ValueError`); a new
+      uuid4 where None, so a case that writes a register row naming the
+      session passes its own.
+    - `name` and `name_source`: the record's `name` (the window's where None)
+      and `nameSource` (`user`, as `/rename` or `--name` gives it).
+    - `status`: the record's `status` (`busy`; `ended`, `exited`, `dead` or
+      `stopped` makes it not live).
+    - `proc_start`: the record's `procStart`; the live process's own start
+      token where None. Any other value forges a recycled pid, so the record
+      is not live.
+
+    WHAT IT WRITES:
+
+    - THE LIVE PROCESS: a child of the test (`GuardSession.pid`, `.holder`)
+      in a session of its own, a Python that reads its stdin to the end, so
+      it lives until `close()` or the test's process ends.
+    - THE RECORD, `<home>/.claude/sessions/<pid>.json`, mode 0600, one line
+      of compact JSON in the suite's record form: `pid`, `sessionId`, `cwd`,
+      `procStart`, `tmux` (`testsess:@1.%1`), `name`, `nameSource`, `status`
+      and `kind` (`interactive`). The guard's `transcript_holders` finds it
+      by `"sessionId":"<id>"`, reads it live by `pid_alive` (`kill -0`, then
+      field 22 of `/proc/<pid>/stat` equal to `procStart`), and here because
+      its `tmux` target names the window the stand-in answers for.
+    - THE STAND-IN, `<directory>/tmux`, logging each call to
+      `<directory>/tmux.log` (`tmux_calls()` reads it). `display-message
+      -p` answers `'#{session_name}:#{window_id}'` with `testsess:@1`,
+      `'#{session_name}'` with `testsess`, `'#{window_id}'` with `@1`,
+      `'#{pane_id}'` with `%1`, `'#{pane_pid}'` with the live pid, and any
+      other format (`'#W'` among them) with `window`, as T215's and T220's
+      `FAKE_TMUX` answers every one. A `-t` naming another window gets
+      "can't find window" and 1. Every other command: nothing, and 0.
+
+    WHAT IT RETURNS: the `GuardSession`, with `session_id`, `window`, `pid`,
+    `proc_start`, `record`, `tmux`, `tmux_log`, `target`, `home`,
+    `directory` and `cwd`, and:
+
+    - `env(base, **extra)`: `base` with `TMUX` (`<directory>/tmux-server,
+      <pid>,0`), `TMUX_PANE` (`%1`) and `directory` first on `PATH`. Make
+      `base` with `guard_strip_env(os.environ, strip=(<the module's own
+      prefixes>,))`, then set `HOME` to `home` and the case's own variables
+      (`LANES_REPO`, `LANES_INDEX_CONFIG`, `LANES_LANE`, ...);
+    - `hook_input(prompt="hello", cwd=None)`: the compact hook JSON, for the
+      guard's stdin;
+    - `tmux_calls()`: the stand-in's calls.
+
+    TEARDOWN: `close()` (or a `with` block, or
+    `request.addfinalizer(session.close)`) ends the live process; the record
+    then names a dead pid, which the guard reads as no live session, and its
+    files stay in the case's `tmp_path`. Without a `close()`, the process
+    still ends when the test's process does, at the end of its stdin."""
+    home, cwd = os.path.abspath(home), os.path.abspath(cwd)
+    projects = os.path.join(home, "projects")
+    if not (cwd + os.sep).startswith(projects + os.sep):
+        raise ValueError(f"guard_session: the checkout {cwd} is not under {projects}, so the "
+                         f"guard's scope test would return 0 before any read")
+    session_id = str(uuid.uuid4()) if session_id is None else str(session_id)
+    if session_id != session_id.lower():
+        raise ValueError(f"guard_session: the session id {session_id} is not in lower case; "
+                         f"the guard lower-cases the hook's and greps the records for it")
+    return GuardSession(home, directory, cwd, window, session_id,
+                        window if name is None else name, name_source, status, proc_start)
