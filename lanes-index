@@ -600,7 +600,7 @@ def _check_register_connections(cfg: dict, path: str, named_store: str, mapped: 
                                  f"`reader_url=` in {path}, beside its `register_url=`,")
 
 
-def load_config() -> dict:
+def load_config(text: str | None = None) -> dict:
     """The per-workstation configuration, refused on any of clause (c)'s grounds,
     and on 007's (FR-001, FR-011; contracts/config.md section 4): `mode=` that
     is not `index` or `primary`; `mode=primary` naming `store=sqlite`, or with
@@ -616,7 +616,11 @@ def load_config() -> dict:
     `PrimaryNotBuilt` (Q6(c), FR-003), after the file's own checks and each
     key's, and before the rules across keys, so `mode=primary` with
     `store=sqlite`, with no `register_url=` or with a URL R09 would refuse is
-    Q6(c)'s refusal until the constant is set."""
+    Q6(c)'s refusal until the constant is set.
+
+    `text`, where given, is read in place of the file's content, and every
+    check of the file itself still applies to the file: `set-mode` (T120)
+    loads the configuration it would write, before it writes it."""
     path, named = config_path()
     cfg = {"path": path, "present": False, "store": "", "url": "", "passfile": "",
            "reader_url": "", "reader_passfile": "", "sqlite": "", "schema": "lanes_index",
@@ -647,8 +651,10 @@ def load_config() -> dict:
                 f"(Amendment 14(c)). Move it to "
                 f"${{XDG_CONFIG_HOME:-$HOME/.config}}/openRepoTools/lanes-index.conf")
         try:
-            with open(path, encoding="utf-8") as handle:
-                lines = handle.read().splitlines()
+            if text is None:
+                with open(path, encoding="utf-8") as handle:
+                    text = handle.read()
+            lines = text.splitlines()
         except (OSError, UnicodeDecodeError) as exc:
             raise Refusal(f"the configuration {path} cannot be read: {exc}")
         known = ("store", "url", "passfile", "reader_url", "reader_passfile", "sqlite", "schema",
@@ -744,6 +750,552 @@ def cmd_mode(args: list[str]) -> int:
         note(f"REFUSED: {exc}")
         return EXIT_REFUSED
     say(cfg["mode"])
+    return EXIT_OK
+
+
+# ======================================================== the flip: set-mode
+#
+# `lanes-index set-mode primary|index [--config <path>]` (operations.md §2.4,
+# ops:462-475; T120, FR-054): the setter beside `lanes-index mode` (D3), which
+# only prints the mode. It rewrites ONLY the `mode=` line, adding one where
+# none exists, by a temp file in the same directory and a rename, and the file
+# keeps its mode (proposal.md:626-627). Brett runs it once per host, from the
+# host, since a bench's mount of the host's configuration is read-only
+# (proposal.md:620-622). Where the file already says the mode asked for, it
+# writes nothing.
+#
+# SETTING `primary` refuses with 2 and writes nothing (ops:467-472), in this
+# order, so nothing is sent or fetched that a refusal before it makes moot:
+#   1. while this build carries Q6(c)'s refusal (`RENDER_GIT_HALF` False), with
+#      test 14's text, before the configuration is even read (F8);
+#   2. where `load_config` refuses the configuration as it would be written,
+#      at `mode=primary`: `store=sqlite` and no `register_url=` among its
+#      grounds (proposal.md:162-163); and where it names no `register_label=`,
+#      the label this host knows its database by (design.md D21);
+#   3. where it would write, and the file cannot be rewritten from here: a
+#      read-only mount, or a directory or file this account cannot write
+#      (proposal.md:621-622);
+#   4. unless the switch reads `primary` with the marker `present`, read in
+#      ONE request as the READER on D9's `read` row (ops:405): `lock_timeout`
+#      1000 ms, `statement_timeout` 3000 ms and a client timer of `N_a`·`c` +
+#      4 s, never below 6 s. A database that cannot be reached, or refuses the
+#      read, is 69 instead (ops:472);
+#   5. where `register_label=` is not the switch's `database_label`, in ready's
+#      check 10's words (ops:453);
+#   6. unless the FETCHED `origin/<branch>` holds a `lanes/STORE` that says
+#      `store=primary` and names, as `database=`, the label the switch and
+#      `register_label=` both give (D21; design.md D22, "`ready` and `set-mode`
+#      check that `lanes/STORE` names this database"). A fetch that fails
+#      refuses too: a ref not fetched proves nothing about origin.
+#
+# SETTING `index` refuses only where the file cannot be rewritten, or where the
+# configuration as it would be written is refused on its own grounds
+# (Amendment 14(c), 007's keys), never for the database or the switch: the
+# rollback and the disaster path need it with the database down (ops:473). A
+# `mode=primary` this build refuses (Q6(c)) is no ground, since the flip to
+# `index` is its way out. After the write, where the configuration names the
+# register, it reads the switch as `primary` does, and warns where it still
+# reads `primary`: this workstation's writers then refuse with 69 under the
+# marker (r3a/REPORT.md:317). A read that fails is a note, never a refusal.
+
+#: The marker's path on `origin/<branch>` (D21).
+SET_MODE_MARKER_PATH = "lanes/STORE"
+
+#: `LANES_GIT_TIMEOUT`'s default, in seconds: the bound `lanes-edit.sh`'s
+#: `git_net` gives a git call that touches the network, here the fetch.
+SET_MODE_GIT_TIMEOUT_DEFAULT = 60
+
+_SET_MODE_USAGE = f"""\
+{PROG} set-mode index|primary [--config <path>]
+
+Rewrites only the mode= line of this workstation's lanes-index.conf, or of the
+file --config names, by a temp file in the same directory and a rename; the
+file keeps its mode (operations.md section 2.4). Run it from the host: a
+bench's mount of the configuration is read-only.
+
+  primary   Only where this build carries the renderer's git half (Q6(c)), the
+            register's switch reads primary with the marker present, and the
+            fetched origin/<branch> has a lanes/STORE with store=primary that
+            names this database: the label register_label= and the switch
+            both give.
+  index     With the database up or down. It warns where the switch still
+            reads primary: this workstation's writers then refuse with 69
+            under the marker.
+  --config  The file to rewrite; by default $LANES_INDEX_CONFIG, else
+            ${{XDG_CONFIG_HOME:-~/.config}}/openRepoTools/lanes-index.conf.
+
+Exit: 0 written, or already so · 2 refused, nothing written · 64 usage ·
+69 the database cannot be reached, or refused the read of its switch."""
+
+
+class _SetModeUsage(Exception):
+    """A `set-mode` command line that is not its usage: exit 64, before
+    anything is read."""
+
+
+def _set_mode_args(args: list[str]) -> tuple[str, str | None] | None:
+    """`set-mode`'s command line: the mode, `index` or `primary`, and
+    `--config <path>` or `--config=<path>`, made absolute; None for `--help`.
+    No mode, a second one, a word that is not a mode, an unknown flag, and a
+    `--config` with no value or given twice are `_SetModeUsage`."""
+    mode = None
+    config = None
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("-h", "--help"):
+            return None
+        name, eq, value = arg.partition("=")
+        if name == "--config":
+            if not eq:
+                if i + 1 >= len(args):
+                    raise _SetModeUsage("set-mode: --config needs a path")
+                i += 1
+                value = args[i]
+            if not value:
+                raise _SetModeUsage("set-mode: --config needs a path")
+            if config is not None:
+                raise _SetModeUsage("set-mode: --config is given twice")
+            config = os.path.abspath(value)
+        elif arg in ("index", "primary"):
+            if mode is not None:
+                raise _SetModeUsage("set-mode takes one mode, and was given two")
+            mode = arg
+        elif arg.startswith("-"):
+            raise _SetModeUsage(f"set-mode: unknown argument '{arg}'")
+        else:
+            raise _SetModeUsage(f"set-mode: '{arg}' is not a mode: it is `index` or `primary`")
+        i += 1
+    if mode is None:
+        raise _SetModeUsage("set-mode needs the mode: `index` or `primary`")
+    return mode, config
+
+
+def set_mode_text(text: str, mode: str) -> tuple[str, str | None, int]:
+    """`text`, a configuration's content, with ONLY its `mode=` line set to
+    `mode=<mode>`: the new content; the old value as `load_config` reads it,
+    or None where the file has no `mode=` line; and the number of lines
+    rewritten, 0 where one was added.
+
+    Its lines are `load_config`'s, `str.splitlines`'s, each kept with its own
+    line break. A line `load_config` reads as the key `mode` becomes
+    `mode=<mode>` before its own break; where a file repeats the key, every
+    such line does, and the last is the old value, as `load_config` keeps the
+    last. Where there is none, one is added after the last line that ends in a
+    break, with that line's break, CRLF or LF, or first where no line ends in
+    one, so every other byte stays where it was."""
+    out: list[str] = []
+    breaks: list[str] = []
+    old = None
+    count = 0
+    for raw in text.splitlines(keepends=True):
+        body = (raw.splitlines() or [""])[0]
+        line = body.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, value = (part.strip() for part in line.split("=", 1))
+            if key == "mode":
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                    value = value[1:-1]
+                old = value
+                count += 1
+                raw = f"mode={mode}" + raw[len(body):]
+                body = f"mode={mode}"
+        out.append(raw)
+        breaks.append(raw[len(body):])
+    if not count:
+        at = len(out) if not out or breaks[-1] else len(out) - 1
+        brk = "\r\n" if at and breaks[at - 1] == "\r\n" else "\n"
+        out.insert(at, f"mode={mode}{brk}")
+    return "".join(out), old, count
+
+
+def _set_mode_file(path: str, named: str,
+                   form: str) -> tuple[str, bytes | None, os.stat_result | None]:
+    """The configuration to rewrite: its real path, symlinks resolved, so a
+    symlink keeps pointing at the file every reader reads; its bytes; and its
+    `stat`. Where nothing is at the default path, (path, None, None): no file
+    there is `index` (FR-002). A path that was NAMED, by `named`, and is not
+    there, one that is not a regular file, and one that cannot be read are
+    refused (2)."""
+    nothing = "nothing was written"
+    if not os.path.lexists(path):
+        if named:
+            raise Refusal(f"{form}: {named} names {path}, which does not exist; {nothing}")
+        return path, None, None
+    real = os.path.realpath(path)
+    try:
+        st = os.stat(real)
+        if not stat.S_ISREG(st.st_mode):
+            raise Refusal(f"{form}: the configuration {path} is not a regular file; {nothing}")
+        with open(real, "rb") as handle:
+            data = handle.read()
+    except OSError as exc:
+        raise Refusal(f"{form}: the configuration {path} cannot be read "
+                      f"({exc.strerror or exc}); {nothing}")
+    return real, data, st
+
+
+def _set_mode_refuse_unwritable(real: str, path: str, form: str) -> None:
+    """A file this process cannot rewrite, refused (2) before anything is sent
+    (ops:470): its directory or the file on a read-only mount, as a bench's
+    mount of the host's configuration is (Q23(a); proposal.md:621-622), or a
+    directory or file this account cannot write."""
+    directory = os.path.dirname(real)
+    read_only = False
+    for where in (directory, real):
+        try:
+            read_only = read_only or bool(os.statvfs(where).f_flag & os.ST_RDONLY)
+        except (OSError, AttributeError):
+            pass
+    if read_only:
+        why = f"{directory} is on a read-only mount"
+    elif not os.access(directory, os.W_OK | os.X_OK):
+        why = f"its directory {directory} cannot be written by this account"
+    elif not os.access(real, os.W_OK):
+        why = f"the file {real} cannot be written by this account"
+    else:
+        return
+    raise Refusal(f"{form}: {path} cannot be rewritten from here: {why}, as on a bench, "
+                  f"whose mount of the host's configuration is read-only. Flip it from the "
+                  f"host (operations.md §2.4; proposal.md:621-622); nothing was written")
+
+
+def _set_mode_load(text: str, form: str) -> dict:
+    """`load_config` of the configuration AS IT WOULD BE WRITTEN, `text`,
+    with every check of the file itself; a refusal is 2, naming `form`."""
+    try:
+        return load_config(text=text)
+    except Refusal as exc:
+        raise Refusal(f"{form}: the configuration as it would be written is refused: {exc}; "
+                      f"nothing was written")
+
+
+def _set_mode_psql_end(exc: StoreUnusable) -> str:
+    """How a read of the switch ended, with nothing secret in it (contract
+    §2.6): the timer, nothing sent, or `psql`'s exit and first stderr line."""
+    if isinstance(exc, PsqlFailed):
+        if exc.timer_expired:
+            return f"no answer within its client timer: {exc.detail}"
+        if not exc.ran:
+            return f"nothing was sent: {exc.detail}"
+        return f"psql exited {exc.psql_exit}: {exc.first_line or exc.detail}"
+    return f"nothing was sent: {exc.detail}"
+
+
+def set_mode_read_switch(cfg: dict) -> dict | None:
+    """THE SWITCH, as `set-mode` reads it (ops:405, ops:468): ONE request as
+    this engineer's READER login (`PostgresStore(cfg, "register_reader")`) on
+    D9's `read` row, `SELECT mode, marker_state, database_label, set_seq` of
+    `<register_schema>.register_switch`'s one row. Returns those four as
+    `mode`, `marker`, `label` and `set_seq`, or None where the database
+    answered with anything but one row whose mode and marker the schema
+    allows. A read that did not complete, whatever ended it, is
+    `RegisterUnavailable` (69), naming how it ended."""
+    store = PostgresStore(cfg, "register_reader")
+    query = (f'SELECT mode, marker_state, database_label, set_seq '
+             f'FROM "{store.schema}".register_switch WHERE id = 1')
+    try:
+        answers = store._query_many([query], row="read")
+    except StoreUnusable as exc:
+        raise RegisterUnavailable(_set_mode_psql_end(exc))
+    rows = answers[0] if len(answers) == 1 else []
+    if len(rows) != 1 or len(rows[0]) != 4:
+        return None
+    mode, marker, label, set_seq = rows[0]
+    if (mode not in ("files", "primary") or label is None
+            or marker not in ("absent", "adding", "present", "removing")):
+        return None
+    return {"mode": mode, "marker": marker, "label": label, "set_seq": set_seq}
+
+
+def _set_mode_fetch(root: str, form: str) -> None:
+    """`git fetch -q origin <branch>` in the workspace checkout `root`, as
+    `lanes-edit.sh` fetches it, bounded by `LANES_GIT_TIMEOUT` as its
+    `git_net` reads it: 60 s where it is unset or empty, and no bound where it
+    is 0 or not a whole number. A fetch that fails or runs out of time is
+    refused (2): a ref not fetched proves nothing about origin."""
+    raw = os.environ.get("LANES_GIT_TIMEOUT", "")
+    timeout = (float(SET_MODE_GIT_TIMEOUT_DEFAULT) if raw == "" else
+               float(raw) if re.fullmatch(r"[0-9]+", raw) and int(raw) > 0 else None)
+    what = f"`git fetch origin {branch()}` in {root}"
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    try:
+        proc = subprocess.run(["git", "-c", "gc.auto=0", "-c", "maintenance.auto=false",
+                               "-C", root, "fetch", "-q", "origin", branch()],
+                              capture_output=True, check=False, stdin=subprocess.DEVNULL,
+                              env=env, timeout=timeout)
+        why = "" if proc.returncode == 0 else f"exited {proc.returncode}"
+        err = proc.stderr
+    except subprocess.TimeoutExpired:
+        why, err = f"did not end within {timeout:g} s (LANES_GIT_TIMEOUT)", b""
+    except OSError as exc:
+        why, err = f"could not be run: {exc}", b""
+    if not why:
+        return
+    lines = [line for line in err.decode("utf-8", "replace").splitlines() if line.strip()]
+    first = next((line for line in lines if line.startswith(("fatal:", "error:"))),
+                 lines[-1] if lines else "")
+    if first:
+        why += ": " + re.sub(r"(://)[^/\s@]*@", r"\1", first.strip())
+    raise Refusal(f"{form}: {what} {why}. `set-mode primary` reads {SET_MODE_MARKER_PATH} on the "
+                  f"FETCHED origin/{branch()}, and a ref not fetched proves nothing about "
+                  f"origin (operations.md §2.4); nothing was written")
+
+
+def set_mode_marker_fields(data: bytes) -> dict:
+    """`lanes/STORE`'s fields (D21: `store=`, `database=`, `import=`,
+    `lanes-tree=` and `utc=`), each line `key=value`, split at its first `=`.
+    `ValueError` where it is not UTF-8, a line that is not empty is not
+    `key=value`, or a key is on more than one line. Values are kept exactly,
+    since `cutover` writes them (T327)."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError("it is not UTF-8")
+    fields: dict = {}
+    for number, line in enumerate(text.split("\n"), 1):
+        if line == "":
+            continue
+        key, eq, value = line.partition("=")
+        if not eq or not key:
+            raise ValueError(f"its line {number} is not `key=value`")
+        if key in fields:
+            raise ValueError(f"`{key}=` is on more than one line")
+        fields[key] = value
+    return fields
+
+
+def set_mode_origin_marker(label: str, form: str) -> str:
+    """`origin/<branch>`'s `lanes/STORE`, after a fetch, in the workspace
+    repository's checkout as `sync` finds it (`lanes-edit.sh workspace-root`;
+    Amendment 9(a)): it must say `store=primary` and `database=<label>`, or
+    the flip is refused (2; ops:468). Returns the fetched tip it read."""
+    nothing = "nothing was written"
+    ref = f"origin/{branch()}"
+    try:
+        root = workspace_root()
+    except StoreUnusable as exc:
+        raise Refusal(f"{form}: the workspace repository cannot be found ({exc.detail}), so the "
+                      f"fetched {ref} cannot be read for {SET_MODE_MARKER_PATH}; {nothing}")
+    _set_mode_fetch(root, form)
+    try:
+        tip = tip_of(root)
+        listing = git(root, "ls-tree", "-z", tip, "--", SET_MODE_MARKER_PATH).stdout
+        entries = [entry for entry in listing.split("\0") if entry]
+        meta = entries[0].partition("\t")[0].split() if entries else []
+        blob = (cat_blobs(root, [meta[2]]).get(meta[2])
+                if len(meta) == 3 and meta[1] == "blob" else None)
+    except StoreUnusable as exc:
+        raise Refusal(f"{form}: the fetched {ref} cannot be read in {root} ({exc.detail}); "
+                      f"{nothing}")
+    at = f"the fetched {ref}, at {tip[:12]},"
+    if not entries:
+        raise Refusal(f"{form}: {at} has no {SET_MODE_MARKER_PATH}: the cutover's marker is not "
+                      f"on origin, and a flip before the cutover makes every write refuse "
+                      f"(Q20 (A), proposal.md:1772-1773); {nothing}")
+    if blob is None:
+        raise Refusal(f"{form}: {at} has a {SET_MODE_MARKER_PATH} that is not a file this "
+                      f"checkout can read; {nothing}")
+    try:
+        fields = set_mode_marker_fields(blob)
+    except ValueError as exc:
+        raise Refusal(f"{form}: {at} has a {SET_MODE_MARKER_PATH} that cannot be read: {exc} "
+                      f"(D21); {nothing}")
+    if fields.get("store") != "primary":
+        said = f"`store={fields['store']}`" if "store" in fields else "no `store=`"
+        raise Refusal(f"{form}: {at} has a {SET_MODE_MARKER_PATH} that says {said}, not "
+                      f"`store=primary` (D21); {nothing}")
+    if fields.get("database") != label:
+        said = (f"`database={fields['database']}`" if "database" in fields
+                else "no `database=`")
+        raise Refusal(f"{form}: {at} has a {SET_MODE_MARKER_PATH} naming {said}, not this "
+                      f"database, `{label}`, as the switch and register_label= name it: "
+                      f"origin's marker is another database's (design.md D22); {nothing}")
+    return tip
+
+
+def _set_mode_write(real: str, before: bytes, after: bytes, st: os.stat_result,
+                    form: str) -> None:
+    """`after` as `real`, by a temp file in its directory and a rename, with
+    `real`'s own mode bits and owner, so a 0600 file stays 0600. The file is
+    read again right before the rename: one that changed since it was read is
+    refused (2). Any failure leaves the file as it was and no temp file
+    behind, and is refused (2)."""
+    directory = os.path.dirname(real)
+    tmp = ""
+    fd = -1
+    try:
+        for attempt in range(100):
+            candidate = os.path.join(directory, f".{os.path.basename(real)}.set-mode."
+                                                f"{os.getpid()}.{attempt}.tmp")
+            try:
+                fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600)
+            except FileExistsError:
+                continue
+            tmp = candidate
+            break
+        else:
+            raise FileExistsError(f"no free temp file name beside {real}")
+        os.fchmod(fd, st.st_mode & 0o777)
+        own = os.fstat(fd)
+        if (own.st_uid, own.st_gid) != (st.st_uid, st.st_gid):
+            os.fchown(fd, st.st_uid, st.st_gid)
+        with os.fdopen(fd, "wb") as handle:
+            fd = -1
+            handle.write(after)
+            handle.flush()
+            os.fsync(handle.fileno())
+        with open(real, "rb") as handle:
+            if handle.read() != before:
+                raise Refusal(f"{form}: {real} changed while it was read; run it again; "
+                              f"nothing was written")
+        os.replace(tmp, real)
+        tmp = ""
+    except OSError as exc:
+        raise Refusal(f"{form}: {real} could not be rewritten ({exc.strerror or exc}); "
+                      f"nothing was written, and no temp file is left")
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    # The rename itself, to disk, where the directory can be opened for it.
+    try:
+        dir_fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(dir_fd)
+
+
+def _set_mode_index_switch(cfg: dict) -> None:
+    """After `set-mode index` has written, the switch, where the
+    configuration names the register's two logins: a warning on stderr where
+    it still reads `primary` (ops:473; r3a/REPORT.md:317), and a note where it
+    could not be read. Neither changes the exit."""
+    if not (cfg.get("register_url") and cfg.get("reader_url")):
+        return
+    after = ("Where it still reads `primary`, this workstation's writers now refuse with 69 "
+             "under the marker (r3a/REPORT.md:317)")
+    try:
+        switch = set_mode_read_switch(cfg)
+    except (RegisterUnavailable, Refusal) as exc:
+        note(f"set-mode index: the switch was not read ({exc}). {after}")
+        return
+    if switch is None:
+        note(f"set-mode index: the database answered, and not with one switch row. {after}")
+        return
+    if switch["mode"] == "primary":
+        note(f"WARNING: the register's switch still reads `primary`, with the marker "
+             f"`{switch['marker']}` (database {switch['label']}): this workstation's writers "
+             f"now meet the marker and refuse with 69 until the rollback removes it "
+             f"(operations.md §2.4, §2.3's step 5; r3a/REPORT.md:317)")
+
+
+def cmd_set_mode(args: list[str]) -> int:
+    """`lanes-index set-mode index|primary [--config <path>]` (operations.md
+    §2.4; T120): 0, written, or the file already says the mode; 2, a refusal,
+    with nothing written; 64, usage, before anything is read; 69, setting
+    `primary` only, the database cannot be reached or refused the read of its
+    switch. `set-mode index` is never 69."""
+    try:
+        parsed = _set_mode_args(args)
+    except _SetModeUsage as exc:
+        note(f"{exc} - see {PROG} set-mode --help")
+        return EXIT_USAGE
+    if parsed is None:
+        say(_SET_MODE_USAGE)
+        return EXIT_OK
+    mode, config = parsed
+    try:
+        return _set_mode(mode, config)
+    except Refusal as exc:
+        note(f"REFUSED: {exc}")
+        return EXIT_REFUSED
+    except RegisterUnavailable as exc:
+        note(f"set-mode {mode}: the register's database cannot be reached, or refused the read "
+             f"of its switch ({exc}); nothing was written")
+        return EXIT_UNAVAILABLE
+
+
+def _set_mode(mode: str, config: str | None) -> int:
+    form = f"set-mode {mode}"
+    nothing = "nothing was written"
+    # Q6(c)'S REFUSAL FIRST (ops:469; F8): before the configuration is read, so
+    # a build that refuses `mode=primary` sends nothing and fetches nothing, and
+    # prints test 14's text, as every other subcommand refuses it.
+    if mode == "primary" and not RENDER_GIT_HALF:
+        raise PrimaryNotBuilt(MODE_PRIMARY_REFUSED_TEXT)
+    if config is not None:
+        os.environ["LANES_INDEX_CONFIG"] = config
+    path, named = config_path()
+    real, before, st = _set_mode_file(
+        path, ("--config" if config is not None else "LANES_INDEX_CONFIG") if named else "",
+        form)
+    if before is None:
+        if mode == "primary":
+            raise Refusal(f"{form}: there is no configuration at {path}, and `mode=primary` "
+                          f"needs `register_url=`, `reader_url=` and `register_label=` "
+                          f"(contracts/config.md); {nothing}")
+        say(f"set-mode: {path}: index -> index: no configuration file is there, which is "
+            f"`index` (FR-002); {nothing}")
+        return EXIT_OK
+    try:
+        text = before.decode("utf-8")
+    except UnicodeDecodeError:
+        raise Refusal(f"{form}: the configuration {path} is not UTF-8 text, so it cannot be "
+                      f"rewritten line for line; {nothing}")
+    after_text, old, count = set_mode_text(text, mode)
+    was = "index" if old is None else old
+    changed = was != mode
+    if not changed:
+        after_text = text
+    cfg = _set_mode_load(after_text, form)
+    if mode == "primary" and not cfg["register_label"]:
+        raise Refusal(f"{form}: {path} names no `register_label=`, the label of the database "
+                      f"its register_url= reaches, so it cannot show that origin's "
+                      f"{SET_MODE_MARKER_PATH} names this database (D21; ops:468); {nothing}")
+    if changed:
+        _set_mode_refuse_unwritable(real, path, form)
+    if mode == "primary":
+        switch = set_mode_read_switch(cfg)
+        if switch is None:
+            raise Refusal(f"{form}: the database answered, and not with one row of its "
+                          f"switch, so the switch cannot be shown at `primary` with the marker "
+                          f"`present` (ops:468); {nothing}")
+        if (switch["mode"], switch["marker"]) != ("primary", "present"):
+            raise Refusal(f"{form}: the register's switch reads `{switch['mode']}` with the "
+                          f"marker `{switch['marker']}` (set_seq {switch['set_seq']}), not "
+                          f"`primary` with the marker `present`: a flip before the cutover "
+                          f"makes every write refuse (Q20 (A), proposal.md:1772-1773; "
+                          f"operations.md §2.4); {nothing}")
+        if cfg["register_label"] != switch["label"]:
+            raise Refusal(f"{form}: register_label={cfg['register_label']}, but the switch "
+                          f"names {switch['label']}: {path} is not pointed whole at the "
+                          f"database its register_url= reaches (ready's check 10; "
+                          f"operations.md §2.3); {nothing}")
+        set_mode_origin_marker(switch["label"], form)
+    shown = path if real == os.path.abspath(path) else f"{path} (the file {real})"
+    was_shown = was if was in ("index", "primary") else repr(was)
+    if not changed:
+        say(f"set-mode: {shown}: {was_shown} -> {mode}: the file says so already; {nothing}")
+    else:
+        _set_mode_write(real, before, after_text.encode("utf-8"), st, form)
+        how = ("" if count == 1 else
+               " (it had no `mode=` line, which is `index`; one was added)" if count == 0 else
+               f" ({count} `mode=` lines, each rewritten; the last was the one read)")
+        say(f"set-mode: {shown}: {was_shown} -> {mode}{how}")
+    if mode == "index":
+        _set_mode_index_switch(cfg)
     return EXIT_OK
 
 
@@ -8683,6 +9235,8 @@ def main(argv: list[str]) -> int:
         return cmd_register_classify(args[1:])
     if verb == "bootstrap":
         return cmd_bootstrap(args)
+    if verb == "set-mode":
+        return cmd_set_mode(args)
     if verb == "login":
         return cmd_login(args)
     # A SUBCOMMAND THIS BUILD DOES NOT HAVE, one of 007's not built yet among
