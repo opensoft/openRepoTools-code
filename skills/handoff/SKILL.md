@@ -677,9 +677,16 @@ if [[ -z "$ws_missing" && -z "$act_down" ]]; then
   # `alias:<n>` for every name `canon-lane --walk` prints for the name it gave
   # `canon-lane`. The walk is asked on a primary base only, where the keys are read:
   # in files mode both variables are ignored, and a helper predating feature 007
-  # has no `--walk`. A walk that fails is `act-begin`'s failure with the same code:
-  # 69, 75 and 3 stop the writes, and any other end refuses, because a key left out
-  # is a change the write would not see.
+  # has no `--walk`. A walk that exits 69, 75 or 3 is `act-begin`'s failure with the
+  # same code (G2): the writes stop, as `act-begin`'s own 69, 75 and 3 stop them.
+  # EVERY OTHER END REFUSES, exit 1, and that includes a 2, which is NOT
+  # `act-begin`'s 2: there the helper predates feature 007 and the writes go on. The
+  # walk is asked only after `act-begin` took a primary base, so the helper has
+  # `act-begin`, and a 2 from `canon-lane --walk` is `canon-lane`'s own refusal (it
+  # spends 2 on two rows that differ only by case, Amendment 15(d), and on a name it
+  # will not take), or a helper with no `--walk`. Neither gave the names, a key left
+  # out is a change the write would not see, and an empty walk refuses the same way:
+  # refusing is the safer arm for the walk.
   act_scope_add "row:$lane"; act_scope_add "bind:$lane"; act_scope_add "alias:$lane"
   case "$act_line" in
     ""|*@files) : ;;
