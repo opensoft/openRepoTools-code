@@ -60,8 +60,9 @@ register) and T228 (`lanes_w_fx`). A clone of `tmpl` with no register is
 refused by the fixture's own assertion. Without PostgreSQL 16 each skips.
 
 THE MODULE ALSO HOLDS, each at its own section below: T244's test 12 (AT-12)
-and section 4.3's rival (phase W, the client's writers on a real register,
-through the shim).
+and section 4.3's rival, and T245's D8 and AT-F34 (phase W, the client's
+writers on a real register, through the shim), with T245's texts for 3, which
+read the scripts and run with no engine.
 
 PHASE W'S WORKSTATION IS T243's: `Estate`, its `estates` fixture, and the
 logging tools of T248 are imported from `test_sql_register_order`, as
@@ -86,7 +87,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import pytest
 
 from pgcluster import SUPERUSER, TEMPLATE, Database
-from test_sql_register_order import (CLIENT, EM, LA, LB, LC, OBJ, UUID_RE, Estate, Writer,  # noqa: F401
+from test_sql_register_order import (CLIENT, EM, LA, LB, LC, OBJ, UUID_RE, Barrier, Estate, Writer,  # noqa: F401
                                      claim, estates, hold_point, kind_line, loggers, session_of,
                                      tool_calls)
 
@@ -931,3 +932,742 @@ def test_a_lookup_never_mistakes_a_rivals_row_for_the_lost_write(estates):
     assert set(w.write_ids()) == {mine}, "the lost write's retry took another id"
     ids = [r["write_id"] for r in e.journal_after()]
     assert ids.count(mine) == 1 and ids.count(theirs) == 1, ids
+
+
+# ============================================================ PHASE W: D8 and AT-F34 (T245)
+#
+# THE PENDING RECORD'S RERUN AND THE TAIL, ONCE (AT-D8, TP:3265-3528; AT-F34,
+# TP:6941-7036), on T244's workstation and shim. The record is
+# `<state>/openRepoTools/register-pending/<d>`, `key=value` lines with one
+# `call=<base> <clock> <not_after> <files> <dir>` line per commit call that
+# may have committed; its claim files are `<d>.take.<k>`; the done mark is
+# `<state>/openRepoTools/register-done/<write_id>`. Every kill is sent on a
+# FIFO signal, never after a sleep: the shim's `timer` joined to a FIFO
+# blocks once the real `psql` has returned, and the test kills the run's
+# process group there, so the row has landed and the writer cannot print.
+#
+# THE TAKEOVER (Q-L2-6; R26, lane 4's answer to 36): on this host a run that
+# takes a killed run's record over waits past that call's `not_after`,
+# whether its own snapshot passes or fails, on the record's clock when it
+# has none of its own; `[snapshot-fails]` holds it. A record from another
+# host keeps "calls at once" (T246's `[too-early]`).
+#
+# `found`'s two lines (R-F13-2, R-F13-7; F13b-OWED items 11 and 15): every
+# `found` answer the shim and the fakes give here carries `workstation=` and
+# `utc=` after its seq line, as lane 1's T114-fu3 prints them (`found <seq>`,
+# `workstation=<name>`, `utc=<epoch s>`, then the `file=` rows), and AT-F34's
+# no-record reruns choose Y:5347's text for this host or another by
+# `workstation=`, naming the entry's UTC from `utc=`.
+#
+# They FAIL UNTIL L4-B2, L4-B5 and L4-B6 land; `[snapshot-fails]` until lane
+# 4's T417 and lane 1's T114 take the record's clock (Q-L1-1); the texts for 3
+# until lane 4's T417, T433 and T434; and the `found` lines until lane 1's
+# T114 and lane 5's T111 print them. Without PostgreSQL 16 each skips, except
+# the texts for 3, which read the scripts and run here.
+
+DONE = Path("openRepoTools") / "register-done"
+CALL_LINE = re.compile(r"^-?[0-9]+ \S+ \S+ [0-9a-f]{64} /\S+$")
+NO_RECONNECT = {"mode": "no-reconnect", "as": "before", "match": "commit_write", "call": 1}
+#: D8's text for 3 (R29; GB §4.3; W:459-460, W:5647-5649; R2's S5), byte for byte.
+D8_TEXT_3 = "may not be written; run the printed `LANES_WRITE_ID` rerun, which writes it once or finds it"
+_KILLS = itertools.count(1)
+
+
+def killed(e: Estate, lane: str, argv: Sequence[str], **options) -> Tuple[Writer, str]:
+    """AT-D8's killed write: the first commit call's real `psql` returns,
+    the shim blocks on its FIFO, and the test kills the run's group there."""
+    gate = fifo(e, f"killed-{next(_KILLS)}")
+    arms = [*options.pop("arms", ()), {"mode": "timer", "match": "commit_write", "call": 1, "fifo": str(gate)}]
+    w = e.launch(lane, argv, arms=arms, **options)
+    held = hold_point(gate, w)
+    os.killpg(w.proc.pid, signal.SIGKILL)
+    held.close()
+    w.wait()
+    write_id = w.write_ids()[0]
+    assert e.has_write(write_id), "the killed call's row has not landed"
+    return w, write_id
+
+
+def exit3(e: Estate, lane: str, argv: Sequence[str], **options) -> Tuple[Writer, str, str]:
+    """A run ended 3 by `no-reconnect`: the writer, its id and generation,
+    read from its report."""
+    w = e.run(lane, argv, arms=[NO_RECONNECT], **options)
+    assert w.code == 3, f"exit {w.code}, not 3: {w.err[-800:]}"
+    ids, gens = WRITE_ID_SAID.findall(w.err), GENERATION_SAID.findall(w.err)
+    assert ids and gens, f"the report names no LANES_WRITE_ID rerun: {w.err[-800:]}"
+    return w, ids[-1], gens[-1]
+
+
+def the_record(e: Estate) -> dict:
+    """The one pending record: its path, its first value of each key, and
+    its `call` lines."""
+    records = pending(e)
+    assert len(records) == 1, f"{len(records)} pending records"
+    fields: Dict[str, str] = {}
+    calls: List[str] = []
+    for line in records[0].read_text(encoding="utf-8").splitlines():
+        key, eq, value = line.partition("=")
+        if eq and key == "call":
+            calls.append(value)
+        elif eq:
+            fields.setdefault(key, value)
+    return {"path": records[0], "fields": fields, "calls": calls}
+
+
+def take_files(e: Estate) -> List[str]:
+    where = e.state / PENDING
+    return sorted(p.name for p in where.glob("*.take.*")) if where.is_dir() else []
+
+
+def mark_of(e: Estate, write_id: str) -> Path:
+    return e.state / DONE / write_id
+
+
+def comments(where: Path) -> List[dict]:
+    return [c for c in tool_calls(where, "gh") if "comment" in " ".join(c["argv"])]
+
+
+def sidecars(e: Estate) -> Path:
+    root = e.root / "lane-state"
+    for lane in (LA, LB, LC):
+        (root / lane).mkdir(parents=True, exist_ok=True)
+        (root / lane / "lane-state.yaml").write_text(f"lane: {lane}\nstate: RUNNING\ngeneration: 1\n",
+                                                     encoding="utf-8")
+    return root
+
+
+def generation_of(root: Path, lane: str) -> str:
+    for line in (root / lane / "lane-state.yaml").read_text(encoding="utf-8").splitlines():
+        if line.startswith("generation:"):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+def tail_rerun(e: Estate, lane: str, argv: Sequence[str], where: Path, extra: Optional[dict] = None):
+    """AT-D8's tail oracle around a killed write: no effect before the rerun;
+    the rerun exits 0 with one row; the record wrote `tail=sent`, then
+    `tail=done`, and is removed; the mark holds `done`; a second rerun under
+    the id runs nothing. Returns the rerun and the id."""
+    _, write_id = killed(e, lane, argv, first=[where], extra=extra)
+    before = len(tool_calls(where))
+    again = e.run(lane, argv, first=[where], extra=extra)
+    assert again.code == 0, f"the rerun exited {again.code}: {again.err[-800:]}"
+    assert [r["write_id"] for r in e.journal_after()].count(write_id) == 1
+    assert pending(e) == [] and take_files(e) == []
+    assert "done" in mark_of(e, write_id).read_text(encoding="utf-8")
+    after = len(tool_calls(where))
+    third = e.run(lane, argv, first=[where], extra=dict(extra or {}, LANES_WRITE_ID=write_id))
+    assert third.code == 0 and len(tool_calls(where)) == after, "a second rerun ran the tail again"
+    return again, write_id, before
+
+
+# ------------------------------------------------------------ D8: the record
+@CLIENT
+def test_a_committed_write_leaves_no_pending_record(estates):
+    """After a committed write no record and no claim file remains, and the
+    done mark does: 0600 in a 0700 directory, holding the id, the seq and
+    the `tail` value, `done`."""
+    e = estates()
+    w = e.run(LA, note(LA, "committed"))
+    assert w.code == 0, w.err[-800:]
+    write_id = one_entry(e, w)
+    assert pending(e) == [] and take_files(e) == []
+    mark = mark_of(e, write_id)
+    assert mark.stat().st_mode & 0o777 == 0o600 and mark.parent.stat().st_mode & 0o777 == 0o700
+    text = mark.read_text(encoding="utf-8")
+    assert write_id in text and str(e.journal_after()[-1]["seq"]) in text and "done" in text, text
+
+
+@CLIENT
+def test_a_plain_rerun_reuses_the_pending_write_id_once_and_says_so(estates):
+    """After exit 3 the record names the id and holds the call's `call` line
+    (base, clock, `not_after`, the `files` digest, the attempt directory),
+    and no other key says the write is in doubt. A plain rerun says on
+    stderr that it reuses the id, exits 0, leaves one row and removes the
+    record; a second plain rerun is a new write, under a new id."""
+    e = estates()
+    argv = note(LA, "plain rerun")
+    _, write_id, _ = exit3(e, LA, argv)
+    rec = the_record(e)
+    assert rec["fields"].get("write_id", "").lower() == write_id
+    assert len(rec["calls"]) == 1 and CALL_LINE.match(rec["calls"][0]), rec["calls"]
+    again = e.run(LA, argv)
+    assert again.code == 0, again.err[-800:]
+    assert write_id in again.err and "reus" in again.err.lower(), again.err[-800:]
+    assert [r["write_id"] for r in e.journal_after()].count(write_id) == 1
+    assert pending(e) == []
+    third = e.run(LA, argv)
+    assert third.code == 0 and set(third.write_ids()) and write_id not in third.write_ids()
+
+
+@CLIENT
+def test_a_write_killed_by_an_outer_timer_is_retried_under_its_own_id(estates):
+    """A write killed after its call returned prints nothing; its plain
+    rerun reuses the id, exits 0, and leaves one row."""
+    e = estates()
+    argv = note(LA, "killed")
+    _, write_id = killed(e, LA, argv)
+    again = e.run(LA, argv)
+    assert again.code == 0, again.err[-800:]
+    assert set(again.write_ids()) <= {write_id}
+    assert [r["write_id"] for r in e.journal_after()].count(write_id) == 1
+
+
+@CLIENT
+def test_a_rerun_with_other_arguments_does_not_take_the_pending_id(estates):
+    """A rerun with other arguments is a write of its own: it never sends
+    the pending id, and the record stays."""
+    e = estates()
+    _, write_id, _ = exit3(e, LA, note(LA, "first arguments"))
+    other = e.run(LA, note(LA, "other arguments"))
+    assert other.code == 0, other.err[-800:]
+    assert write_id not in other.write_ids()
+    assert the_record(e)["fields"].get("write_id", "").lower() == write_id
+
+
+@CLIENT
+def test_lanes_write_id_wins_over_a_pending_record(estates):
+    """`LANES_WRITE_ID`, set explicitly, wins over the record of the same
+    command line."""
+    e = estates()
+    argv = note(LA, "explicit id")
+    _, pending_id, generation = exit3(e, LA, argv)
+    mine = str(uuid.uuid4())
+    w = e.run(LA, argv, extra={"LANES_WRITE_ID": mine, "LANES_WRITE_GENERATION": generation})
+    assert w.code == 0, w.err[-800:]
+    assert set(w.write_ids()) == {mine} and pending_id not in w.write_ids()
+
+
+@CLIENT
+@pytest.mark.parametrize("case", ["absent", "found"])
+def test_status_lists_and_resolves_pending_records(estates, case):
+    """`lanes-index status` lists each pending record and reports whether
+    its id is in the journal: [absent], the first call lost before it
+    landed; [found], after it."""
+    e = estates()
+    arm = dict(NO_RECONNECT, **{"as": "before" if case == "absent" else "after"})
+    w = e.run(LA, note(LA, f"status {case}"), arms=[arm])
+    assert w.code == 3, w.err[-800:]
+    write_id = WRITE_ID_SAID.findall(w.err)[-1]
+    env = dict(e.env, PATH=os.pathsep.join([str(e.psql_dir(f"status-{case}")), e.env["PATH"]]))
+    status = subprocess.run([str(e.bindir / "lanes-index"), "status"], capture_output=True, text=True,
+                            env=env, check=False, timeout=120)
+    assert write_id in status.stdout, status.stdout[-800:]
+    line = next(l for l in status.stdout.splitlines() if write_id in l)
+    if case == "found":
+        assert str(e.journal_after()[-1]["seq"]) in line, line
+    else:
+        assert "absent" in line or "not in the journal" in line, line
+
+
+# ------------------------------------------------------------ D8: each verb's tail
+@CLIENT
+def test_a_rerun_that_finds_its_write_committed_runs_the_verbs_after_commit_tail(estates):
+    """`rename-lane`'s tail: `lane_state_rename` moves the old control root
+    to the new name once; the handoff file at the new path holds one
+    `RENAMED from <old>` line; the fake `gh` logs one comment per held claim
+    (none here)."""
+    e = estates()
+    where, root = loggers(e), sidecars(e)
+    new = "repoA-9"
+    extra = {"LANES_LANE_STATE_ROOT": str(root)}
+    again, _, _ = tail_rerun(e, LA, ["rename-lane", LA, new, "T245", "--no-github"], where, extra)
+    assert (root / new).is_dir() and not (root / LA).exists()
+    handoffs = list(e.root.glob(f"co-*/handoffs/{new}.md"))
+    assert handoffs and all(h.read_text(encoding="utf-8").count(f"RENAMED from {LA}") <= 1 for h in handoffs)
+    assert comments(where) == []
+
+
+@CLIENT
+@pytest.mark.parametrize("verb", ["RESUMED", "ENDED", "RESUMED-moved-since"])
+def test_the_after_commit_tail_of_log_runs_once_when_a_rerun_finds_the_write(estates, verb):
+    """`log`'s tail for a verb `lane_state_follow` moves: the sidecar goes
+    from g to g+1 once. [RESUMED-moved-since]: another act moved the lane
+    since the kill, the replay's fence refuses, the sidecar stays as that act
+    left it, a note says the lifecycle moved under the line, exit 0."""
+    e = estates()
+    where, root = loggers(e), sidecars(e)
+    extra = {"LANES_LANE_STATE_ROOT": str(root)}
+    argv = ["log", verb.split("-")[0], f"lane:{LA}", f"T245 {verb}"]
+    _, write_id = killed(e, LA, argv, first=[where], extra=extra)
+    assert generation_of(root, LA) == "1", "the tail ran before the rerun"
+    if verb == "RESUMED-moved-since":
+        (root / LA / "lane-state.yaml").write_text(f"lane: {LA}\nstate: RUNNING\ngeneration: 7\n",
+                                                   encoding="utf-8")
+    again = e.run(LA, argv, first=[where], extra=extra)
+    assert again.code == 0, again.err[-800:]
+    assert [r["write_id"] for r in e.journal_after()].count(write_id) == 1
+    if verb == "RESUMED-moved-since":
+        assert generation_of(root, LA) == "7" and "moved" in again.err, again.err[-800:]
+    else:
+        assert generation_of(root, LA) == "2"
+
+
+@CLIENT
+def test_the_after_commit_tail_of_release_runs_once_when_a_rerun_finds_the_write(estates):
+    """`release`: its one comment, once, after the rerun finds the write."""
+    e = estates()
+    where = loggers(e)
+    assert e.run(LA, claim(OBJ, "--no-github")).code == 0
+    tail_rerun(e, LA, ["release", OBJ, "T245", "--home", OBJ.split("#")[0]], where)
+    assert len(comments(where)) == 1, comments(where)
+
+
+@CLIENT
+def test_the_after_commit_tail_of_request_handoff_types_once_in_the_kept_child_and_polls(estates):
+    """`request-handoff`: the kept child ran the tail, so the fake `tmux`
+    logs one `send-keys`, and the poll reads and ends the run; the request is
+    in the register once. Run with `--wait 2` and `LANES_POLL_SECONDS=1`."""
+    e = estates()
+    where = loggers(e)
+    w = e.run(LA, ["request-handoff", LC, "--session", session_of(LC), "--wait", "2"], arms=[AFTER],
+              first=[where], extra={"LANES_POLL_SECONDS": "1"})
+    assert w.code in (0, 2), w.err[-800:]
+    one_entry(e, w)
+    sent = [c for c in tool_calls(where, "tmux") if "send-keys" in c["argv"]]
+    assert len(sent) == 1, sent
+    assert len(tool_calls(where, "tmux")) > 1, "the poll never read the pane"
+
+
+@CLIENT
+def test_the_after_commit_tail_of_retire_rows_runs_once_when_a_rerun_finds_the_write(estates):
+    """`retire-rows`: each retired lane's sidecar goes through its follow
+    once, with its own pre-image."""
+    e = estates()
+    where, root = loggers(e), sidecars(e)
+    tail_rerun(e, LA, ["retire-rows", LB, LC, "--reason", "T245"], where, {"LANES_LANE_STATE_ROOT": str(root)})
+    assert generation_of(root, LB) == "2" and generation_of(root, LC) == "2"
+
+
+@CLIENT
+def test_the_after_commit_tail_of_start_record_runs_once_when_a_rerun_finds_the_write(estates):
+    """`start-record`: `lane_state_follow` runs once after the lock: one
+    move of the lane's sidecar."""
+    e = estates()
+    where, root = loggers(e), sidecars(e)
+    tail_rerun(e, LA, ["start-record", LA, "--session", session_of(LA)], where,
+               {"LANES_LANE_STATE_ROOT": str(root)})
+    assert generation_of(root, LA) == "2"
+
+
+@CLIENT
+def test_a_rerun_after_a_3_replays_the_verbs_tail_once(estates):
+    """`no-reconnect` ends the first `claim` with 3 (its first call landed),
+    abandoning its kept child, with no comment made. A plain rerun finds the
+    record, its snapshot finds the id, it replays at `s-1` (one `--at` call)
+    and runs the tail: one comment, exit 0."""
+    e = estates()
+    where = loggers(e)
+    argv = claim(OBJ)
+    w = e.run(LA, argv, arms=[dict(NO_RECONNECT, **{"as": "after"})], first=[where])
+    assert w.code == 3 and comments(where) == [], w.err[-800:]
+    again = e.run(LA, argv, first=[where])
+    assert again.code == 0, again.err[-800:]
+    assert len(comments(where)) == 1, comments(where)
+
+
+@CLIENT
+@pytest.mark.parametrize("state", ["sent-child-never-read", "owed-mark"])
+def test_a_sent_record_whose_child_never_read_committed_replays_and_an_owed_mark_runs_no_tail(estates, state):
+    """[sent-child-never-read]: a record holding `tail=sent` while the dead
+    child's `seam.out` says `none`: the owner removes `tail` and replays,
+    one comment, exit 0. [owed-mark]: a mark holding `owed <utc>`; a rerun
+    under `LANES_WRITE_ID` runs no tail, adds no comment, and names the
+    steps as owed again."""
+    e = estates()
+    where = loggers(e)
+    argv = claim(OBJ)
+    _, write_id = killed(e, LA, argv, first=[where])
+    rec = the_record(e)
+    if state == "sent-child-never-read":
+        with rec["path"].open("a", encoding="utf-8") as f:
+            f.write(f"tail=sent {e.journal_after()[-1]['seq']} {e.utc()}\n")
+        for seam in e.state.rglob("seam.out"):
+            seam.write_text("none\n", encoding="utf-8")
+        again = e.run(LA, argv, first=[where])
+        assert again.code == 0 and len(comments(where)) == 1, (again.err[-800:], comments(where))
+    else:
+        mark = mark_of(e, write_id)
+        mark.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        mark.write_text(f"{write_id} {e.journal_after()[-1]['seq']} owed {e.utc()}\n", encoding="utf-8")
+        rec["path"].unlink()
+        again = e.run(LA, argv, first=[where], extra={"LANES_WRITE_ID": write_id})
+        assert again.code == 0 and comments(where) == [] and "owed" in again.err, again.err[-800:]
+
+
+@CLIENT
+@pytest.mark.parametrize("case", ["rename-lane-stops", "rename-lane-differs", "request-handoff-differs"])
+def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_none_of_the_tail(estates, case):
+    """The write is committed either way. [rename-lane-stops]: the handoff
+    file removed, so the replay stops before its write; [rename-lane-differs]:
+    the handoff moved by hand, so the change set differs. Each writes the
+    mark `owed <utc>`, removes the record, prints one WARNING, exits 0 and
+    runs no tail. [request-handoff-differs]: the fake `tmux` reports the
+    holder's window gone; the run exits 2, saying the request is written at
+    seq `<s>` and it did not wait for the release."""
+    e = estates()
+    where, root = loggers(e), sidecars(e)
+    extra = {"LANES_LANE_STATE_ROOT": str(root)}
+    argv = (["request-handoff", LC, "--session", session_of(LC)] if case.startswith("request")
+            else ["rename-lane", LA, "repoA-9", "T245", "--no-github"])
+    _, write_id = killed(e, LA, argv, first=[where], extra=extra)
+    seq = e.journal_after()[-1]["seq"]
+    handoffs = list(e.root.glob(f"co-*/handoffs/{LA}.md"))
+    if case == "rename-lane-stops":
+        for h in handoffs:
+            h.unlink()
+    elif case == "rename-lane-differs":
+        for h in handoffs:
+            h.rename(h.with_name("repoA-9.md"))
+    else:
+        (where / "tmux").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    again = e.run(LA, argv, first=[where], extra=extra)
+    if case.startswith("request"):
+        assert again.code == 2 and f"seq {seq}" in again.err, again.err[-800:]
+    else:
+        assert again.code == 0 and again.err.count("WARNING") == 1, again.err[-800:]
+        assert "owed" in mark_of(e, write_id).read_text(encoding="utf-8")
+        assert (root / LA).is_dir(), "the tail ran"
+    assert pending(e) == []
+
+
+# ------------------------------------------------------------ D8: the takeover, the call lines, the claims
+@CLIENT
+@pytest.mark.parametrize("when", ["before-the-send", "mid-call"])
+@pytest.mark.parametrize("snapshot", ["snapshot-passes", "snapshot-fails"])
+def test_a_run_killed_after_its_call_line_or_mid_call_is_taken_over_in_doubt_and_waits_past_not_after(
+        estates, when, snapshot):
+    """A `claim` killed after its `call` line is written ([before-the-send]:
+    the shim holds the call before `psql`) or mid-call (the admin session
+    holds the head row while the call runs, then rolls back). Another lane
+    then claims the object. A plain rerun takes the record over, in doubt
+    from its start. [snapshot-passes]: its verb refuses at the snapshot with
+    2, sending no commit call, and it exits only after the database's clock
+    has passed the record's `not_after`. [snapshot-fails] (Q-L2-6; R26): the
+    shim fails the takeover's snapshot; with no clock of its own it waits on
+    the record's (`--clock` from the newest `call` line, `--clock-age` from
+    `updated_utc`), makes its lookup and ends by it, never LR011's 3. The
+    journal never holds two rows for the id; the record goes."""
+    e = estates()
+    gate = fifo(e, "commit-1")
+    argv = claim(OBJ, "--no-github")
+    admin = e.hold_row_locked() if when == "mid-call" else None
+    arms = [{"mode": "hold", "match": "commit_write", "call": 1, "fifo": str(gate)}] if admin is None else []
+    w = e.launch(LA, argv, arms=arms)
+    if admin is None:
+        held = hold_point(gate, w)
+    else:
+        until_seen("the shim logging the commit call's start", lambda: w.commit_calls()[:1], w)
+    rec = the_record(e)
+    assert len(rec["calls"]) == 1, "the call line was not written before the send"
+    os.killpg(w.proc.pid, signal.SIGKILL)
+    w.wait()
+    if admin is not None:
+        e.unlock(admin)
+    else:
+        held.close()
+    write_id = rec["fields"]["write_id"].lower()
+    not_after = rec["calls"][0].split()[2]
+    landed = e.has_write(write_id)
+    rival = e.run(LB, argv)
+    arms = [{"mode": "fail-match", "match": SNAPSHOT_TEXT, "call": 1}] if snapshot == "snapshot-fails" else []
+    again = e.run(LA, argv, arms=arms)
+    assert [r["write_id"] for r in e.journal_after()].count(write_id) <= 1
+    if landed:
+        assert (rival.code, again.code) == (2, 0), (rival.err[-300:], again.err[-300:])
+    else:
+        assert rival.code == 0 and again.code == 2, again.err[-800:]
+        assert snapshot == "snapshot-fails" or again.commit_calls() == []
+        assert db_past(e, not_after), "the takeover exited before the record's not_after"
+    assert "LR011" not in again.err
+    assert pending(e) == []
+
+
+@CLIENT
+@pytest.mark.parametrize("case", ["before-the-send", "lost-turn", "refusal", "in-doubt"])
+def test_the_pending_records_call_lines_are_written_before_the_send_and_dropped_only_for_a_call_that_did_not_commit(
+        estates, case):
+    """[before-the-send]: while the shim holds the first commit call, the
+    record already holds its line. [lost-turn]: after a 40001 from a rival's
+    commit, the record read while the next call is held holds one line, the
+    next call's, with base n+1. [refusal]: after a refusal the record is
+    gone. [in-doubt]: after a call in doubt it keeps the line, and the
+    attempt directory keeps `snapshot`, `files` and `preimages`."""
+    e = estates()
+    if case == "before-the-send":
+        gate = fifo(e, "commit-1")
+        w = e.launch(LA, note(LA, case), arms=[{"mode": "hold", "match": "commit_write", "call": 1,
+                                                 "fifo": str(gate)}])
+        held = hold_point(gate, w)
+        assert len(the_record(e)["calls"]) == 1
+        held.close()
+        assert w.wait() == 0
+    elif case == "lost-turn":
+        gates = fifo(e, "commit-1"), fifo(e, "commit-2")
+        w = e.launch(LA, note(LA, case), arms=[
+            {"mode": "hold", "match": "commit_write", "call": 1, "fifo": str(gates[0])},
+            {"mode": "hold", "match": "commit_write", "call": 2, "fifo": str(gates[1])}])
+        first = hold_point(gates[0], w)
+        base = int(the_record(e)["calls"][0].split()[0])
+        assert e.run(LB, note(LB, "the rival")).code == 0
+        first.close()
+        second = hold_point(gates[1], w)
+        calls = the_record(e)["calls"]
+        assert len(calls) == 1 and int(calls[0].split()[0]) == base + 1, calls
+        second.close()
+        assert w.wait() == 0
+    elif case == "refusal":
+        assert e.run(LB, claim(OBJ, "--no-github")).code == 0
+        w = e.run(LA, claim(OBJ, "--no-github"))
+        assert w.code == 2 and pending(e) == []
+    else:
+        w, _, _ = exit3(e, LA, note(LA, case))
+        calls = the_record(e)["calls"]
+        assert len(calls) == 1
+        attempt = Path(calls[0].split()[-1])
+        assert all((attempt / name).is_file() for name in ("snapshot", "files", "preimages")), attempt
+
+
+@CLIENT
+@pytest.mark.parametrize("case", ["take-0", "take-1", "two-reruns"])
+def test_a_pending_record_is_owned_through_numbered_claim_files_and_two_reruns_never_both_take_it(estates, case):
+    """[take-0]: a run with no record creates `<d>.take.0`, read while the
+    shim holds the first commit call, holding the run's pid, start time,
+    host, container and UTC. [take-1]: after a kill a rerun creates
+    `<d>.take.1`. [two-reruns]: two printed reruns under `LANES_WRITE_ID`
+    released together against a dead owner, in 10 rounds: one create of
+    `<d>.take.1` succeeds, one comment and one row each round, both exit 0.
+    After a run's end no record and no claim file remains."""
+    e = estates()
+    if case == "take-0":
+        gate = fifo(e, "commit-1")
+        w = e.launch(LA, note(LA, case), arms=[{"mode": "hold", "match": "commit_write", "call": 1,
+                                                 "fifo": str(gate)}])
+        held = hold_point(gate, w)
+        takes = take_files(e)
+        assert [t.rsplit(".", 1)[1] for t in takes] == ["0"], takes
+        text = (e.state / PENDING / takes[0]).read_text(encoding="utf-8")
+        assert str(w.proc.pid) in text or "pid" in text, text
+        held.close()
+        assert w.wait() == 0
+    elif case == "take-1":
+        argv = note(LA, case)
+        killed(e, LA, argv)
+        assert [t.rsplit(".", 1)[1] for t in take_files(e)] == ["0"]
+        assert e.run(LA, argv).code == 0
+    else:
+        where = loggers(e)
+        for k in range(10):
+            obj = f"opensoft/r9#{100 + k}"
+            argv = claim(obj)
+            _, write_id = killed(e, LA, argv, first=[where])
+            generation = e.c.switch()["generation"]
+            (e.root / f"round-{k}").mkdir()
+            barrier = Barrier(e.root / f"round-{k}", 2)
+            before = len(comments(where))
+            pair = [e.launch(LA, argv, barrier=barrier, first=[where],
+                             extra={"LANES_WRITE_ID": write_id, "LANES_WRITE_GENERATION": generation})
+                    for _ in range(2)]
+            barrier.release()
+            assert [p.wait() for p in pair] == [0, 0], [p.err[-300:] for p in pair]
+            assert len(comments(where)) - before == 1, f"round {k}: {len(comments(where)) - before} comments"
+            assert [r["write_id"] for r in e.journal_after()].count(write_id) == 1
+    assert pending(e) == [] and take_files(e) == []
+
+
+# ------------------------------------------------------------ AT-F34: the tail, once
+def learnt(e: Estate, way: str, where: Path, *, gone: bool = False, script: Optional[Path] = None) -> Writer:
+    """A `claim` whose first commit call committed while in doubt, learnt by
+    [snapshot] (`after`, then the next snapshot), [lr006] (the first call
+    forked and held as AT-F3's orphan, the shim exiting 2 at once; the next
+    commit call held until the orphan has committed, so it gets LR006) or
+    [lookup] (`after`, the next snapshot failed, so AT-F3's lookup finds
+    it). The call that learns it is held; with `gone`, until the kept
+    child's `seam.out` says `none` under `LANES_REGISTER_SEAM_CAP_S=3`."""
+    gate = fifo(e, f"learn-{way}")
+    if way == "lr006":
+        orphan = fifo(e, "orphan")
+        arms = [{"mode": "fork", "match": "commit_write", "call": 1, "fifo": str(orphan), "exit": True},
+                {"mode": "hold", "match": "commit_write", "call": 2, "fifo": str(gate)}]
+    elif way == "snapshot":
+        arms = [AFTER, {"mode": "hold", "match": SNAPSHOT_TEXT, "call": 2, "fifo": str(gate)}]
+    else:
+        arms = [AFTER, {"mode": "fail-match", "match": SNAPSHOT_TEXT, "call": 2},
+                {"mode": "hold", "match": "find_write", "call": 1, "fifo": str(gate)}]
+    extra = {"LANES_REGISTER_SEAM_CAP_S": "3"} if gone else {}
+    w = e.launch(LA, claim(OBJ), first=[where], arms=arms, extra=extra, script=script)
+    held = hold_point(gate, w)
+    if way == "lr006":
+        hold_point(orphan, w).close()
+        until_seen("the orphan's commit", lambda: e.journal_after(), w)
+    if gone:
+        until_seen("the kept child's seam.out saying none", lambda: any(
+            p.read_text(encoding="utf-8").strip() == "none" for p in e.state.rglob("seam.out")), w)
+    held.close()
+    return w
+
+
+@CLIENT
+@pytest.mark.parametrize("way", ["snapshot", "lr006", "lookup"])
+def test_a_call_in_doubt_that_committed_runs_its_tail_once_from_the_kept_child(estates, way):
+    """The call in doubt committed, learnt by [snapshot], [lr006] or
+    [lookup] (`learnt`). The kept child's `seam.out` says `tail` and every
+    other child's `none`; the fake `gh` is called once, after the COMMIT;
+    the mark keeps `done`; exit 0, one row."""
+    e = estates()
+    where = loggers(e)
+    w = learnt(e, way, where)
+    assert w.wait() == 0, w.err[-800:]
+    write_id = one_entry(e, w)
+    seams = sorted(p.read_text(encoding="utf-8").strip() for p in e.state.rglob("seam.out"))
+    assert seams.count("tail") == 1 and set(seams) <= {"tail", "none"}, seams
+    assert len(comments(where)) == 1, comments(where)
+    assert "done" in mark_of(e, write_id).read_text(encoding="utf-8")
+
+
+@CLIENT
+@pytest.mark.parametrize("way", ["snapshot", "lr006", "lookup"])
+def test_with_the_kept_child_gone_a_replay_runs_the_tail_once(estates, way):
+    """The same three, with the cap ending the kept child first. The run
+    replays at `s-1` (lanes-index's `register snapshot --tree <dir> --at
+    <s-1>`, which the shim does not see, so its count is lane 4's to log)
+    and sends no commit call after it; the fake `gh` is called once."""
+    e = estates()
+    where = loggers(e)
+    w = learnt(e, way, where, gone=True)
+    assert w.wait() == 0, w.err[-800:]
+    one_entry(e, w)
+    assert len(comments(where)) == 1, comments(where)
+
+
+@CLIENT
+def test_a_replay_of_request_handoff_types_into_no_pane(estates):
+    """With the kept child gone, `request-handoff`'s replay runs its tail
+    with no `guard_type`: the fake `tmux` logs no `send-keys`, and the poll
+    runs."""
+    e = estates()
+    where = loggers(e)
+    argv = ["request-handoff", LC, "--session", session_of(LC), "--wait", "2"]
+    killed(e, LA, argv, first=[where])
+    before = len(tool_calls(where, "tmux"))
+    again = e.run(LA, argv, first=[where], extra={"LANES_POLL_SECONDS": "1"})
+    assert again.code in (0, 2), again.err[-800:]
+    later = tool_calls(where, "tmux")[before:]
+    assert not [c for c in later if "send-keys" in c["argv"]], later
+    assert later, "the poll never ran"
+
+
+@CLIENT
+def test_a_rerun_that_finds_tail_sent_runs_no_tail_and_writes_the_done_mark(estates):
+    """The record holds `tail=sent` from a run killed after `sent` and
+    before the child's exit. A plain rerun takes it over, finds its id at
+    the snapshot and `tail` sent, runs no tail, writes the mark with `sent`,
+    removes the record, exits 0, and says the steps may have run at the
+    record's UTC in its pid."""
+    e = estates()
+    where = loggers(e)
+    argv = claim(OBJ)
+    _, write_id = killed(e, LA, argv, first=[where])
+    rec = the_record(e)
+    utc = e.utc()
+    with rec["path"].open("a", encoding="utf-8") as f:
+        f.write(f"tail=sent {e.journal_after()[-1]['seq']} {utc}\n")
+    again = e.run(LA, argv, first=[where])
+    assert again.code == 0 and comments(where) == [], again.err[-800:]
+    assert "sent" in mark_of(e, write_id).read_text(encoding="utf-8")
+    assert pending(e) == [] and utc in again.err, again.err[-800:]
+
+
+def replay_copy(e: Estate, control: Path) -> Path:
+    """AT-F34's test copy (TP:6962-6965): a `lanes-edit.sh` whose runs under
+    the seam's scratch flag read `control` once the test writes it: `stops`
+    exits 1 before `ready`, and `differs` adds one more word to the line, so
+    a replay stops or reaches the seam with another change set."""
+    text = e.lanes_edit.read_text(encoding="utf-8")
+    shebang, rest = text.split("\n", 1)
+    quoted = "'" + str(control).replace("'", "'\\''") + "'"
+    hook = (f'if [ -n "${{LANES_REGISTER_SCRATCH:-}}" ] && [ -f {quoted} ]; then\n'
+            f'  case "$(cat {quoted})" in\n'
+            '    stops) echo "T245: the replay stops" >&2; exit 1 ;;\n'
+            '    differs) set -- "$@" "T245 differs" ;;\n'
+            '  esac\nfi\n')
+    copy = e.bindir / "lanes-edit-t245.sh"
+    copy.write_text(shebang + "\n" + hook + rest, encoding="utf-8")
+    copy.chmod(0o755)
+    return copy
+
+
+@CLIENT
+@pytest.mark.parametrize("case", ["stops", "differs"])
+def test_a_replay_that_stops_or_differs_runs_no_tail_and_warns(estates, case):
+    """With the kept child gone and the test copy's control file written,
+    the replay exits 1 before `ready` ([stops]) or reaches the seam with one
+    more word ([differs]). The run exits 0 with one WARNING naming the seq;
+    the fake `gh` is not called, and the record is removed."""
+    e = estates()
+    where = loggers(e)
+    control = e.root / "t245-replay"
+    script = replay_copy(e, control)
+    argv = claim(OBJ)
+    killed(e, LA, argv, first=[where], script=script)
+    seq = e.journal_after()[-1]["seq"]
+    control.write_text(case + "\n", encoding="utf-8")
+    again = e.run(LA, argv, first=[where], script=script)
+    assert again.code == 0 and again.err.count("WARNING") == 1 and str(seq) in again.err, again.err[-800:]
+    assert comments(where) == [] and pending(e) == []
+
+
+@CLIENT
+@pytest.mark.parametrize("case", ["done-mark", "this-host", "other-host"])
+def test_a_run_with_no_record_runs_no_tail_and_names_it(estates, case):
+    """A rerun under `LANES_WRITE_ID` of a write committed and settled, with
+    no record here, exits 0 and runs no tail. [done-mark]: it says what the
+    mark's `tail` says; [this-host]: with the mark removed and
+    `journal.workstation` this host (`found`'s `workstation=`), it says the
+    steps may already have run here, naming the entry's UTC from `utc=`;
+    [other-host]: the write made from ws2, it names ws2 and says to rerun
+    there if that run ended 3."""
+    e = estates()
+    where = loggers(e)
+    argv = claim(OBJ)
+    extra = {"LANES_WORKSTATION": "ws2"} if case == "other-host" else {}
+    w = e.run(LA, argv, first=[where], extra=extra)
+    assert w.code == 0
+    write_id = w.write_ids()[-1]
+    if case != "done-mark":
+        mark_of(e, write_id).unlink()
+    before = len(comments(where))
+    again = e.run(LA, argv, first=[where], extra={"LANES_WRITE_ID": write_id})
+    assert again.code == 0 and len(comments(where)) == before, again.err[-800:]
+    if case == "other-host":
+        assert "ws2" in again.err and "rerun" in again.err, again.err[-800:]
+    elif case == "this-host":
+        assert "may already have run" in again.err, again.err[-800:]
+    else:
+        assert "done" in again.err, again.err[-800:]
+
+
+# ------------------------------------------------------------ GB §4.3: the texts for 3 (runs here)
+#: Each site's file, and the clause it must hold: the writer's exit table's
+#: row 3 primary clause (lane 4's T417, R21); `lane-rename`'s header and
+#: default arm (T433); `lane-worktrees`' note (T434).
+TEXTS_FOR_3 = {"exit-table": "lanes-edit.sh", "lane-rename": "lane-rename", "lane-worktrees": "lane-worktrees"}
+
+
+@pytest.mark.parametrize("site", list(TEXTS_FOR_3))
+def test_the_texts_for_3_say_may_not_be_written_and_relay_the_writers_rerun(site):
+    """On exit 3 on primary each site prints D8's text for 3, byte for byte
+    with its backticks, relays the writer's printed rerun verbatim, and never
+    prints its own hint, "was NOT added" or "NOT WRITTEN". Read from the
+    scripts, with no engine: each must hold D8's text and none of the
+    refused hints, where its exit-3 arm stands."""
+    from sql_register_helpers import REPO
+    path = REPO / TEXTS_FOR_3[site]
+    assert path.is_file(), f"{path.name} is not in the code root"
+    text = path.read_text(encoding="utf-8")
+    forms = [D8_TEXT_3, D8_TEXT_3.replace("`", "\\`")]
+    assert any(form in text for form in forms), f"{path.name} does not hold D8's text for 3: {D8_TEXT_3!r}"
+    for refused in ("was NOT added", "NOT WRITTEN"):
+        near = [m.start() for form in forms for m in re.finditer(re.escape(form), text)]
+        assert not any(refused in text[max(0, k - 400):k + 400] for k in near), (
+            f"{path.name} prints {refused!r} beside D8's text for 3")
