@@ -765,6 +765,10 @@
 #      nothing was written; a retry in seconds is safe", where every attempt
 #      lost its turn by D7's deadline, 30 s from the first attempt's start
 #      (LANES_REGISTER_DEADLINE_S sets it for tests), with the write's rerun.
+#      Likewise an attempt whose child is still short of `ready` twice D +
+#      30 s after its start (LANES_REGISTER_SEAM_CAP_S sets it for tests): the
+#      child gets TERM, then KILL 1 s later where TERM did not end it, its
+#      output is not shown, and nothing was sent by that attempt.
 #      And, until T417's lookup and its exit 3, two ends that send nothing
 #      more and keep the pending record, so a rerun settles the write by its
 #      id: an end while the record holds a commit call that may have
@@ -5818,7 +5822,8 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
 #   (b) each attempt: its directory and `parent.pid` (`pw_attempt_dir`), the
 #       snapshot (`pw_snapshot`), the act's checks at it (`pw_act_at_snapshot`),
 #       the files `register commit` reads (`pw_attempt_files`), and the child
-#       (`pw_child_start`, `pw_child_wait`);
+#       (`pw_child_start`, `pw_child_wait`), stopped where it never reaches
+#       `ready` (`pw_child_hung_end`);
 #   (c) the commit call and the decision on its answer (`pw_commit`,
 #       `pw_decide`);
 #   (d) a 69 at the first snapshot (`pw_first_69`);
@@ -5832,6 +5837,7 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
 PW_LANE=""; PW_C=""; PW_AUTHOR=""; PW_D_S=30; PW_T0=0; PW_RUN=""; PW_RUN_DIR=""
 PW_LOCK=""; PW_REC_OURS=0
 PW_K=0; PW_DIR=""; PW_CHILD=""; PW_KEPT=""; PW_FIRST_DONE=0; PW_RELAY=""; PW_RC=0
+PW_CAP_S=120; PW_CHILD_T0=0
 PW_S_GEN=""; PW_S_WID=""; PW_S_FOUND=""; PW_S_N=""; PW_S_CLOCK=""; PW_S_NOT_AFTER=""
 
 # D7's deadline in whole seconds: 30, or `LANES_REGISTER_DEADLINE_S` for tests
@@ -5842,6 +5848,18 @@ pw_deadline_s() {
     printf '%s\n' "$((10#$LANES_REGISTER_DEADLINE_S))"
   else
     printf '30\n'
+  fi
+}
+
+# THE BOUND ON A CHILD THAT HAS NOT REACHED `ready` (lane openRepoTools-3, #165
+# 6770820384, T415's question 3): Y:5001's cap, twice D + 30 s from the child's
+# start, 120 s at D7's 30 s. `LANES_REGISTER_SEAM_CAP_S` sets it for tests, as
+# it sets that cap (Y:5001; tasks:1133), read in base 10. Its caller has PW_D_S.
+pw_child_cap_s() {
+  if wr_is_count "${LANES_REGISTER_SEAM_CAP_S:-}"; then
+    printf '%s\n' "$((10#$LANES_REGISTER_SEAM_CAP_S))"
+  else
+    printf '%s\n' "$((2 * (PW_D_S + 30)))"
   fi
 }
 
@@ -6279,8 +6297,9 @@ pw_attempt_files() {
 # real stdout and stderr are kept on fds 3 and 4 BEFORE its own move to the
 # attempt's `out.1` and `out.2`, since redirections apply left to right (lane
 # 3, #165 6755641373, T414's question 2). An asynchronous command's stdin is
-# /dev/null.
+# /dev/null. Its start, in `SECONDS`, starts its bound (`pw_child_wait`).
 pw_child_start() {
+  PW_CHILD_T0="$SECONDS"
   LANES_REGISTER_SCRATCH="$PW_DIR" "${BASH:-bash}" "$RESOLVED" ${ORIG_ARGV[@]+"${ORIG_ARGV[@]}"} \
     3>&1 4>&2 1>"$PW_DIR/out.1" 2>"$PW_DIR/out.2" &
   PW_CHILD=$!
@@ -6288,6 +6307,9 @@ pw_child_start() {
 
 # THE CHILD REACHES `ready`, or ends first. 0 at `ready`, where it waits on fd
 # 5; 1 where it ended before it, with its code in PW_RC and PW_CHILD cleared.
+# A child still short of `ready` more than PW_CAP_S seconds after its start is
+# stopped, and the run ends (`pw_child_hung_end`). `SECONDS` has a one-second
+# grain, so the test is "more than": never before the bound, at most 1 s after.
 pw_child_wait() {
   PW_RC=0
   while [ ! -e "$PW_DIR/ready" ]; do
@@ -6297,9 +6319,41 @@ pw_child_wait() {
       PW_CHILD=""
       return 1
     fi
+    if [ $((SECONDS - PW_CHILD_T0)) -gt "$PW_CAP_S" ]; then
+      [ ! -e "$PW_DIR/ready" ] || return 0
+      pw_child_hung_end
+    fi
     sleep 0.05 2>/dev/null || sleep 1
   done
   return 0
+}
+
+# A CHILD THAT NEVER REACHES `ready` (lane openRepoTools-3, #165 6770820384,
+# T415's question 3; T415's line at B12b; review REV415, N3): past its bound,
+# PW_CAP_S seconds from its start (Y:5001), it gets TERM, then KILL 1 s later
+# if it is still there, and is reaped. None of its output is replayed. The run
+# ends as at D7's deadline: 75, nothing sent by that attempt, naming the
+# attempt and the bound, with the write's rerun. Where the pending record
+# holds a `call` line, F3's lookup comes first (`pw_end`, `pw_doubt_end`;
+# Y:5020, Y:5024), and every kept child gets `abandon` before the end
+# (Y:5026). No commit call was made for this attempt, since the parent makes
+# one only at `ready`; a child that reached `ready` just before its TERM ends
+# by it at the seam all the same. Only the child is signalled: it shares this
+# process's group, and a process it started itself is not signalled here.
+pw_child_hung_end() {
+  local ch_n=0 ch_how="TERM" ch_w=""
+  kill -TERM "$PW_CHILD" 2>/dev/null || :
+  while kill -0 "$PW_CHILD" 2>/dev/null && [ "$ch_n" -lt 20 ]; do
+    if sleep 0.05 2>/dev/null; then ch_n=$((ch_n + 1)); else sleep 1; ch_n=20; fi
+  done
+  if kill -0 "$PW_CHILD" 2>/dev/null; then
+    kill -KILL "$PW_CHILD" 2>/dev/null || :
+    ch_how="TERM, then KILL 1 s later"
+  fi
+  wait "$PW_CHILD" 2>/dev/null || :
+  PW_CHILD=""
+  [ -n "$WR_CALLS" ] || ch_w=", and nothing was written"
+  pw_end 75 "attempt ${PW_K}'s child did not reach the seam within ${PW_CAP_S} s of its start, the bound on a child short of \`ready\` (twice D + 30 s, D = ${PW_D_S} s; LANES_REGISTER_SEAM_CAP_S sets it for tests), so it was stopped with ${ch_how}, and its output is not shown. Nothing was sent by that attempt${ch_w}. $(pw_rerun_line)"
 }
 
 # ONE MESSAGE TO A CHILD AT THE SEAM (Y:5007): the FIFO opened read-write, so
@@ -6724,6 +6778,7 @@ pw_run() {   # <the verb's arguments>
   pw_author_read
   wr_begin
   PW_D_S="$(pw_deadline_s)"
+  PW_CAP_S="$(pw_child_cap_s)"
   wr_claim_take "$(( $(date -u +%s) + PW_D_S ))" || pr_rc=$?
   [ "$pr_rc" = 0 ] || pw_owner_live_end
   wr_id_plan
