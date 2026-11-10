@@ -110,9 +110,12 @@ class Bench:
                                     "PROJECTS_", "GH_", "GIT_", "FAKE_", "OPENREPOTOOLS_",
                                     "PYTEST_"))
                and k not in ("AGENT_PROTOCOL_ROOT",)}
+        # A directory holding a tool or a launcher comes off PATH: `lane-handoff` takes the
+        # first of `lclaude`, `pclaude` and `claude-profile` it finds there as its launcher.
         system_path = os.pathsep.join(p for p in env.get("PATH", "/usr/bin:/bin").split(os.pathsep)
                                       if p and not any(os.path.exists(os.path.join(p, n))
-                                                       for n in TOOLS + ("lanes-index",)))
+                                                       for n in TOOLS + ("lanes-index", "lclaude",
+                                                                         "pclaude", "claude-profile")))
         env.update(
             HOME=str(self.home), TMPDIR=str(root / "tmp"),
             PATH=os.pathsep.join([str(self.fake), str(self.bin), system_path]),
