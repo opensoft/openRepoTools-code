@@ -4596,6 +4596,89 @@ $(printf '%s\n' "$ahead_log" | sed -e 's/^/    /')
 		esac
 	fi
 
+	# ---- step 6b: A WORKSPACE REPOSITORY THAT ALREADY CARRIES A REGISTER IS
+	# REFUSED, IN EVERY MODE (feature 007's FR-005; Q14(a), Brett Heap's answer
+	# on opensoft/openRepoTools#165, comment 6710653292).
+	#
+	# The seed places `lanes/LANES.md` and `lanes/log/README.md`, and step 7
+	# adds whichever of the two a tree is missing. On a tree that carries
+	# `lanes/STORE`, the marker of an estate whose register is SQL, that commit
+	# is a stray one under the marker, and it stops the renderer; on a tree that
+	# carries any other file under `lanes/`, it is a commit into a register
+	# somebody already keeps. So this command refuses wherever `lanes/STORE`, or
+	# any file under `lanes/`, exists. It reads no `lanes-index.conf`, no
+	# `mode=` and no `LANES_*` value: the refusal is the same in every mode,
+	# files mode included.
+	#
+	# ASKED OF THE TREE THE SEED COMMIT WOULD BUILD ON, after step 6a's last
+	# question and before step 7 writes a byte, so a refusal costs nothing.
+	# That tree is HEAD's, less the seeds step 6a let through: this command's
+	# own commits ahead of origin's `main`, which a refused push left for a
+	# re-run to push (step 8: "a re-run after that has only to push"). They
+	# carry the template's paths and nothing else, so the tree beneath them is
+	# the one asked. A seed already on origin's `main` is not set aside, and
+	# neither is any commit where origin could not be asked: nothing then says
+	# which seed is still this command's to push.
+	#
+	# A TREE THAT CANNOT BE READ IS A REFUSAL, NEVER AN EMPTY ONE (#49's lesson).
+	# A HEAD with no commit yet, a new repository's, is the one tree read as
+	# empty, because there is no tree.
+	local register_base="" register_parents register_found="" register_label="" register_why
+	local register_left=0
+	if register_base="$(git -C "$checkout" rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null)"; then
+		register_label="HEAD, $(printf '%.7s' "$register_base")"
+		# ONE PARENT OR NONE: `wip_is_own_seed` refuses a merge, so the seeds
+		# step 6a counted are HEAD and the commits straight beneath it.
+		while [ "$register_left" -lt "$seeds_ahead" ] && [ -n "$register_base" ]; do
+			register_parents="$(git -C "$checkout" log -1 --no-show-signature --format=%P \
+				"$register_base" 2>/dev/null)" ||
+				die "could not read the parent of $register_base in $checkout, so this run cannot
+    tell what tree its seed commit would build on, nor whether that tree carries a lane
+    register. NOTHING was committed or pushed, nothing was written into that checkout on
+    this run, and nothing was staged."
+			register_base="$register_parents"
+			register_left=$((register_left + 1))
+		done
+		if [ "$seeds_ahead" -gt 0 ] && [ -n "$register_base" ]; then
+			register_label="$(printf '%.7s' "$register_base"), beneath the seed an earlier run left unpushed"
+		fi
+	elif git -C "$checkout" rev-parse -q --verify HEAD >/dev/null 2>&1; then
+		die "$checkout's HEAD names a commit this run cannot read, so it cannot tell what tree
+    its seed commit would build on, nor whether that tree carries a lane register. NOTHING
+    was committed or pushed, nothing was written into that checkout on this run, and nothing
+    was staged.
+    Check that checkout (\`git status\`, \`git fsck\`), then re-run:
+        openRepoTools wip init"
+	fi
+	if [ -n "$register_base" ]; then
+		wip_quietly git -C "$checkout" ls-tree -r --name-only --full-tree "$register_base" -- lanes/ ||
+			die "could not list what $checkout carries under lanes/ at $register_label, so this
+    run cannot tell whether that tree carries a lane register — and a tree this command could
+    not read is never an empty one. NOTHING was committed or pushed, nothing was written into
+    that checkout on this run, and nothing was staged.
+    What it said:
+$WIP_LAST_ERR"
+		# `lanes/STORE` is named before any other path, because it is the one
+		# that says the register is SQL. A path git had to C-quote is printed
+		# quoted.
+		register_found="$(awk 'NR == 1 { first = $0 } $0 == "lanes/STORE" { store = 1 }
+			END { if (store) print "lanes/STORE"; else if (NR > 0) print first }' "$WIP_LAST_OUT")"
+	fi
+	if [ -n "$register_found" ]; then
+		if [ "$register_found" = "lanes/STORE" ]; then
+			register_why="lanes/STORE marks an estate whose register is SQL, and a seed commit under it
+    would be a stray commit that stops the renderer"
+		else
+			register_why="A file under lanes/ means $target already keeps a lane register, and a
+    seed commit would be a stray commit inside it"
+		fi
+		die "$checkout carries $register_found in the tree a seed commit would build on
+    ($register_label). $register_why. \`wip init\` refuses wherever lanes/STORE, or any file
+    under lanes/, exists, in every mode.
+    NOTHING was committed or pushed, nothing was written into that checkout on this run, and
+    nothing was staged."
+	fi
+
 	# ---- step 7: SEED IT FROM THE TEMPLATE, additively. A repository that
 	# already has a commit on `main` is NOT re-seeded: files the template would
 	# place and that are already there are left exactly as they are, and the
