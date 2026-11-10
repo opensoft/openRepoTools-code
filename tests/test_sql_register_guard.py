@@ -2163,9 +2163,10 @@ def test_the_guards_register_parse_is_timed_on_a_real_sized_register_beside_toda
 # session cluster, so these run on T205's `pg` and here are collected and
 # skipped with T205's banner, but for `serve`'s and `status`'s refusals in
 # files mode, which need no engine and are red today by their own assertions.
-# THE SERVE AND STATUS FORMS (`lanes-index serve`, `status`'s `service` lines,
-# the socket directory named by `status`) are read from T237's text and A7,
-# not from lane 5's socket contract, which this line has not read.
+# THE FORMS ARE LANE 5's SOCKET CONTRACT, draft 8 (`socket-api-d8-563157a7.md`):
+# the fixed path and its five files (sections 2.1 to 2.4), the failure stamp
+# (8.6) and the request's first line (12). `status`'s `service` lines are
+# T512's in `cmd_status` (R44), whose words the contract does not fix.
 
 INDEX = REPO / "lanes-index"
 #: The fallback line, printed once wherever the service was unavailable and
@@ -2179,11 +2180,63 @@ def _index(est: Estate, *args, env=None, timeout=60) -> subprocess.CompletedProc
                           env=env or est.env(), cwd=str(est.wip), timeout=timeout)
 
 
+def _run_dir(est: Estate) -> Path:
+    """The service's one directory, fixed by lane 5's socket contract d8
+    (section 2.1): `${XDG_STATE_HOME:-~/.local/state}/openRepoTools/run/`,
+    holding `register.sock`, `register.lock`, `register.owner`,
+    `register.failed` and `register.log` (section 2.3)."""
+    return Path(est.base["XDG_STATE_HOME"]) / "openRepoTools" / "run"
+
+
 def _service_dir(est: Estate):
-    """The service's socket directory, as `status` names it (`socket=`)."""
-    out = _index(est, "status").stdout
-    found = re.search(r"socket=(\S+)", out)
-    return Path(found.group(1)).parent if found else None
+    """The run directory, where the service's socket is bound."""
+    run = _run_dir(est)
+    return run if (run / "register.sock").exists() else None
+
+
+class _Listener:
+    """A socket of the test's own at the contract's fixed path (section
+    2.1), in a 0700 directory of this uid (section 2.2): it records what a
+    client sends, and either never answers (`hang`) or closes at once."""
+
+    def __init__(self, est: Estate, hang: bool):
+        import socket
+        run = _run_dir(est)
+        run.mkdir(parents=True, exist_ok=True, mode=0o700)
+        run.chmod(0o700)
+        self.path = run / "register.sock"
+        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.server.bind(str(self.path))
+        self.server.listen(8)
+        self.got, self.held, self.stop_ = [], [], threading.Event()
+
+        def serve():
+            self.server.settimeout(0.2)
+            while not self.stop_.is_set():
+                try:
+                    conn, _ = self.server.accept()
+                except OSError:
+                    continue
+                conn.settimeout(1.0)
+                try:
+                    self.got.append(conn.recv(65536))
+                except OSError:
+                    self.got.append(b"")
+                if hang:
+                    self.held.append(conn)
+                else:
+                    conn.close()
+
+        self.thread = threading.Thread(target=serve, daemon=True)
+        self.thread.start()
+
+    def close(self) -> None:
+        self.stop_.set()
+        self.thread.join(1)
+        for conn in self.held:
+            conn.close()
+        self.server.close()
+        self.path.unlink(missing_ok=True)
 
 
 class _Service:
@@ -2241,10 +2294,14 @@ def test_a_service_that_never_answers_falls_back_inside_5_s(estate):
     """AT-10: a socket that accepts and never answers: the hook falls back to
     the direct read and ends inside its 5 s, not killed."""
     est = estate(mode="primary")
-    svc = _Service(est, LANES_REGISTER_SERVE_TEST_HANG="1")
-    hook = est.hook("hello")
-    svc.stop()
+    listener = _Listener(est, hang=True)
+    try:
+        hook = est.hook("hello")
+    finally:
+        listener.close()
+    assert listener.got, "the client never connected to the socket at the fixed path"
     assert not hook.killed and hook.t_exit - hook.t0 < HOOK_TIMEOUT, repr(hook)
+    assert hook.err.count(FALLBACK) == 1, hook.err
 
 
 def test_the_database_unreachable_with_the_service_up_is_2_never_a_cached_ok(estate):
@@ -2269,10 +2326,18 @@ def test_the_services_request_timer_follows_register_rtt_ms(estate, rtt):
     est = estate(mode="primary")
     if rtt != "none":
         _db_config(est, est.pg.url(), register_rtt_ms=150)
+    # EVERY CALL HELD 225 ms: past 200 ms, the timer with no `register_rtt_ms`,
+    # and inside 250 ms, the timer at 150. The contract fixes the timer, not a
+    # `status` key, so the case reads it from the answer.
+    est.shim([{"mode": "window", "ms": 225}])
     svc = _Service(est)
-    out = _index(est, "status").stdout
+    est.hook("hello")
+    hook = est.hook("hello")
     svc.stop()
-    assert re.search(r"request_timer_ms=%d\b" % (250 if rtt != "none" else 200), out), out
+    if rtt == "none":
+        assert FALLBACK in hook.err, hook.err
+    else:
+        assert FALLBACK not in hook.err, hook.err
 
 
 def test_each_service_request_is_one_query(estate):
@@ -2344,9 +2409,14 @@ def test_the_service_reaches_the_database_only_through_psql(estate):
     est.hook("hello")
     svc.stop()
     assert len(est.shim_calls()) > before, "an answer came from the database without psql"
-    nopsql = _index(est, "serve", env=est.env(PATH="/nonexistent"), timeout=30)
-    assert nopsql.returncode == 2 and "no-psql" in nopsql.stdout + nopsql.stderr, nopsql
-    assert not _service_dir(est) or not list(_service_dir(est).glob("*.sock")), "a socket"
+    nopsql = subprocess.run([sys.executable, str(INDEX), "serve"], capture_output=True,
+                            text=True, timeout=30, cwd=str(est.wip),
+                            env=est.env(PATH=os.pathsep.join([os.path.dirname(sys.executable),
+                                                              "/bin"])))
+    stamp = (_run_dir(est) / "register.failed").read_text(encoding="utf-8").split()
+    # THE STAMP HOLDS THE UTC AND THE FIXED CAUSE, AND NO OTHER TEXT (section 8.6).
+    assert nopsql.returncode == 2 and "no-psql" in stamp and len(stamp) == 2, (nopsql, stamp)
+    assert not (_run_dir(est) / "register.sock").exists(), "serve left a socket"
     assert est.hook("hello").code in (0, 2)
 
 
@@ -2390,10 +2460,21 @@ def test_a_service_that_cannot_start_falls_back_to_the_direct_read(estate, case)
         data["version"] = "psql (PostgreSQL) 14.11"
         control.write_text(json.dumps(data), encoding="utf-8")
         done = _index(est, "serve", timeout=30)
-        assert done.returncode == 2 and "no-psql" in done.stdout + done.stderr, done
+        stamp = (_run_dir(est) / "register.failed").read_text(encoding="utf-8").split()
+        assert done.returncode == 2 and "no-psql" in stamp and len(stamp) == 2, (done, stamp)
+        assert not (_run_dir(est) / "register.sock").exists(), "serve left a socket"
         assert not [c for c in est.shim_calls()], "a request was sent past an old psql"
-    hook = est.hook("hello", LANES_REGISTER_SERVE_TEST_FAIL="1" if case == "start-fails"
-                    else None)
+    extra = {}
+    if case == "start-fails":
+        # A STATE PATH PAST 103 BYTES (section 2.1): the client starts nothing
+        # and reads directly, and `serve` refuses it with `path-too-long`.
+        deep = est.root / ("s" * 120)
+        deep.mkdir()
+        extra["XDG_STATE_HOME"] = str(deep)
+        done = _index(est, "serve", env=est.env(**extra), timeout=30)
+        failed = deep / "openRepoTools" / "run" / "register.failed"
+        assert done.returncode == 2 and "path-too-long" in failed.read_text(encoding="utf-8")
+    hook = est.hook("hello", **extra)
     assert hook.code in (0, 2) and not hook.killed, repr(hook)
     if case == "psql-14":
         assert "14" in hook.err, hook.err
@@ -2403,11 +2484,21 @@ def test_the_guards_request_carries_only_file_names(estate):
     """AT-10: the guard's request to the service carries only file names: no
     URL, no password and no row text."""
     est = estate(mode="primary")
-    svc = _Service(est, LANES_REGISTER_SERVE_TEST_LOG=str(est.ctl / "requests.log"))
-    est.hook("hello")
-    svc.stop()
-    text = (est.ctl / "requests.log").read_text(encoding="utf-8")
-    assert text and "postgresql://" not in text and "password" not in text.lower(), text
+    listener = _Listener(est, hang=False)
+    try:
+        est.hook("hello")
+    finally:
+        listener.close()
+    text = b"".join(listener.got).decode("utf-8", "replace")
+    # ITS FORM (the contract's request section): `read 1`; one line per thing
+    # it wants, `file <path>`, `set <prefix>` or `list`; then `end`.
+    lines = text.split("\n")
+    assert lines[0] == "read 1" and "end" in lines, text
+    body = lines[1:lines.index("end")]
+    assert body and all(line == "list" or (line.split(" ")[0] in ("file", "set")
+                                            and line.split(" ", 1)[1].startswith("lanes/"))
+                        for line in body), text
+    assert "postgresql://" not in text and "password" not in text.lower(), text
 
 
 def test_the_guard_answer_time_is_recorded_beside_todays_direct_guard(estate):
@@ -2445,6 +2536,14 @@ def test_the_socket_directory_is_a_0700_directory_of_this_uid_and_never_a_symlin
     import stat as stat_mod
     assert stat_mod.S_ISDIR(st.st_mode) and (st.st_mode & 0o777) == 0o700, oct(st.st_mode)
     assert st.st_uid == os.getuid()
+    # THE REFUSAL'S HALF (section 2.2; ERR-28): a directory that fails the
+    # check is never used: `serve` exits 2 naming it and writes nothing in it.
+    run = _run_dir(est)
+    run.chmod(0o755)
+    before = sorted(p.name for p in run.iterdir())
+    done = _index(est, "serve", timeout=30)
+    assert done.returncode == 2 and str(run) in done.stdout + done.stderr, done
+    assert sorted(p.name for p in run.iterdir()) == before, "serve wrote in a refused directory"
 
 
 def test_a_client_of_another_uid_is_closed_by_so_peercred(estate):
@@ -2468,14 +2567,27 @@ def test_an_owner_file_from_another_namespace_or_boot_is_no_service(estate, case
     service: the client falls back and a new service may start."""
     est = estate(mode="primary")
     svc = _Service(est)
-    owners = list(svc.dir.glob("*owner*"))
-    svc.stop()
-    assert owners, f"no owner file in {svc.dir}"
-    text = owners[0].read_text(encoding="utf-8")
-    key = "pidns" if case == "namespace" else "boot"
-    owners[0].write_text(re.sub(rf"{key}[^=\n]*=.*", f"{key}=other", text), encoding="utf-8")
-    hook = est.hook("hello")
+    owner = svc.dir / "register.owner"
+    text = owner.read_text(encoding="utf-8")
+    # THE CLIENT'S OWN VALUE, REPLACED WHEREVER THE FILE HOLDS IT (section 2.4:
+    # `readlink /proc/self/ns/pid` and `/proc/sys/kernel/random/boot_id`), so
+    # the case needs no line format the contract does not fix.
+    mine = (os.readlink("/proc/self/ns/pid") if case == "namespace" else
+            Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip())
+    assert mine in text, f"register.owner does not hold this {case}: {text}"
+    owner.write_text(text.replace(mine, "pid:[1]" if case == "namespace" else
+                                  "00000000-0000-0000-0000-000000000000"), encoding="utf-8")
+    # A SOCKET THAT ANSWERS (section 2.4, 13.8): the client treats the service
+    # as unavailable, reads directly and starts none.
+    try:
+        hook = est.hook("hello")
+        serves = [int(e.name) for e in Path("/proc").iterdir() if e.name.isdigit()
+                  and _argv(e.name)[-1:] == ["serve"] and int(e.name) != svc.proc.pid
+                  and _stat(e.name).get("sid") != _stat(svc.proc.pid).get("sid")]
+    finally:
+        svc.stop()
     assert hook.err.count(FALLBACK) == 1 and not hook.killed, repr(hook)
+    assert not serves, f"the client started another service: {serves}"
 
 
 @pytest.mark.parametrize("case", ["files", "index", "refusing-build"])
@@ -2511,9 +2623,8 @@ def test_a_stale_socket_is_unlinked_under_the_lock_and_rebound(estate):
     bound again by the next start."""
     est = estate(mode="primary")
     svc = _Service(est)
-    socks = list(svc.dir.glob("*.sock"))
-    assert len(socks) == 1, f"the service bound no one socket in {svc.dir}: {socks}"
-    path, inode = socks[0], os.lstat(socks[0]).st_ino
+    path = svc.dir / "register.sock"
+    inode = os.lstat(path).st_ino
     _kill(svc.proc.pid)
     svc.proc.wait(10)
     assert path.exists(), "a service killed with -9 left no stale socket to test"
@@ -2537,7 +2648,7 @@ def test_the_service_stops_after_its_idle_time_and_unlinks_its_socket(estate, ca
         assert done.returncode == 2, done
         return
     svc = _Service(est, LANES_REGISTER_SERVE_IDLE_STOP_S="2")
-    socks = list(svc.dir.glob("*.sock"))
+    sock = svc.dir / "register.sock"
     assert _until(lambda: svc.proc.poll() is not None, 15), "the service did not stop"
-    assert socks and not [s for s in socks if s.exists()], socks
+    assert not sock.exists(), "the stopped service left its socket"
 
