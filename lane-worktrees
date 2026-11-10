@@ -39,8 +39,9 @@ never removes their archive). The same question is the SELF-CHECK right
 before the removal: anything neither on origin nor in a verified bundle is
 refused, exit 2, and nothing after it is acted on; so is everything after a
 register line that could not be written, or that may not have been (a writer's
-exit 3 on a primary register: the sweep relays the rerun the writer printed,
-which writes the line once or finds it, and never writes it by hand over it).
+exit 3: on a primary register the sweep relays the rerun the writer printed,
+which writes the line once or finds it, and never writes it by hand over it;
+off primary the same 3 is the line's commit left local, and the text says both).
 Untracked files are never pushed
 (the bundle only) unless `--push-untracked`, and untracked git-lfs content,
 which a bundle would carry as a pointer only, keeps its tree; a branch an open
@@ -184,14 +185,22 @@ PROTECTED_BRANCHES = ("main", "master")
 #: The register words a legacy writer may never write (ruling 2026-10-04).
 RESERVED = ("managed owner", "managed binding", "mode=managed", "managed:")
 
-#: D8'S TEXT FOR A WRITER'S EXIT 3 (feature 007, T434; Y:468-469, Y:5700): on a
-#: primary register a write in doubt that cannot settle exits 3, and the
+#: THE TEXT FOR A WRITER'S EXIT 3 (feature 007, T434; Y:468-469, Y:5700), which
+#: is T433's text for 3 (`lane-rename`'s default arm) and carries both of its
+#: meanings (lane 3, opensoft/openRepoTools#165, comment 6767463594, question 9).
+#: On a primary register a write in doubt that cannot settle exits 3, and the
 #: transaction it sent may never have committed. So a 3 is no "NOT WRITTEN", and
 #: the line is never written by hand over it, which could make it twice: the
 #: writer prints a rerun with `LANES_WRITE_ID`, which writes the line once or
 #: finds it already written. The sweep relays that rerun as printed.
 WRITE_IN_DOUBT_TEXT = ("may not be written; run the printed `LANES_WRITE_ID` rerun, which "
                        "writes it once or finds it")
+#: The files-mode meaning of the same 3 (Amendment 23 S4, "PUSHED, NOT
+#: CONFIRMED"), which D8's text beside it does not replace (Y:468 says the row
+#: "gains a primary clause"). This sweep reads no register, so it cannot tell the
+#: two modes apart and says both, as T433 does, in these words.
+WRITE_IN_DOUBT_OFF_PRIMARY_TEXT = ("Where the writer printed no such rerun (off primary), the "
+                                   "commit is local and may already be on origin.")
 
 GIT_NET_TIMEOUT = 180
 GIT_TIMEOUT = 120
@@ -4176,7 +4185,8 @@ class Sweep:
         if proc.returncode == 0:
             line = "NOTED " + utc_now()
         elif in_doubt:
-            line = (f"the register line {WRITE_IN_DOUBT_TEXT} "
+            line = (f"the register line {WRITE_IN_DOUBT_TEXT}. "
+                    f"{WRITE_IN_DOUBT_OFF_PRIMARY_TEXT} "
                     f"(lanes-edit.sh log exited 3: {_first_line(proc.stderr)})")
         else:
             line = (f"NOT WRITTEN (lanes-edit.sh log exited {proc.returncode}: "
@@ -4214,15 +4224,17 @@ class Sweep:
         self.dispositions.append((t.path if t else "-", text, line))
 
     def _relay_rerun(self, t, proc) -> None:
-        """A 3's NOTE (T434; D8): D8's text, then what the writer printed, line
+        """A 3's NOTE (T434; D8; T433's text for 3, both meanings): D8's text and
+        the files-mode sentence after it, then what the writer printed, line
         for line and as printed. Its rerun is a command line to paste, so no
         line of it takes this command's prefix; it names the session that
         swept (`LANES_SESSION`) because `note_line` passed it, and it is never
         this command's own hint, which would be a second write."""
         printed = [ln for ln in (proc.stderr or "").splitlines() if ln.strip()]
-        note(f"the register line for {t.path if t else 'this sweep'} "
-             f"{WRITE_IN_DOUBT_TEXT} (exit 3); "
-             + ("the writer printed:" if printed else "lanes-edit.sh printed no rerun to relay"))
+        note(f"lanes-edit.sh log exited 3: the register line for "
+             f"{t.path if t else 'this sweep'} {WRITE_IN_DOUBT_TEXT}. "
+             f"{WRITE_IN_DOUBT_OFF_PRIMARY_TEXT} "
+             + ("The writer printed:" if printed else "It printed no rerun to relay."))
         for ln in printed:
             sys.stderr.write(ln + "\n")
 
