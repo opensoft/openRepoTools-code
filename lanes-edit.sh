@@ -577,6 +577,13 @@
 #      attempt's output; and a 64 from either call, which this file never
 #      sends: an internal error. The verb's own refusal in an attempt's child,
 #      before `ready`, is the run's end with that child's code and output.
+#      AND FEATURE 007'S D10 ON PRIMARY (T420; FR-026; R16; Y:5820), outside
+#      the attempt loop: `commit`'s carry form, a hand edit of the register,
+#      refused before S3 with nothing written (`commit_carry_refuse`); and
+#      `commit`'s publish act over a queued commit that changes a path under
+#      the register's directory, a divergence from the register, or that is
+#      not a handoff write, refused with nothing pushed and the commits kept
+#      on HEAD (`cp_publish_fence`).
 #  64  usage — a caller's bad arguments to one of the reads Amendment 11 added
 #      (`window-lane`, `lane-dir`, `lane-profile`, `last-session`, `forks`,
 #      `duplicate-holder` (issue #39), `workstation`, `fetch-age`, `lanes`,
@@ -613,10 +620,12 @@
 #      exists, before any routing, clone, fetch or lock, and exit 69 on two
 #      answers: 78, `lanes-index`'s refusal of `mode=primary` while the
 #      renderer's git half is not installed, whose text they repeat (agreement
-#      test 14); and `primary` itself for `commit`, whose primary form is
-#      T420's, and for a form that writes nothing, a dry run, which has no
-#      primary path yet; every other write runs the primary branch (T415).
-#      Never files mode instead.
+#      test 14); and `primary` itself for a form that writes nothing, a dry
+#      run, which has no primary path yet (`pw_checkout`); every other
+#      write runs the primary branch (T415), but `commit`, which T420
+#      exempts from it and which never exits 69 on `primary` (2 for its
+#      carry form, and its publish act outside the loop, R16). Never files
+#      mode instead.
 #      Every other failure of the question — a configuration `lanes-index`
 #      refuses, a `lanes-index` too old to know `mode`, none to run, a crash,
 #      no answer within 2 s — runs the verb in files mode with one warning,
@@ -3377,6 +3386,22 @@ BRT_EOF
 cp_on_primary() {
   [ "$REG_MODE" = primary ] && [ -z "$REG_SCRATCH" ]
 }
+# `commit`'S CARRY FORM ON PRIMARY (T420; D10; FR-026; R16; Y:2459–2464; F16,
+# Y:5820: "`lanes-edit.sh commit` on primary | refused with 2 (D10)"). The
+# register differs from HEAD in the checkout this write goes through, staged
+# or not: the hand edit `commit` exists to carry. On primary it is never
+# committed, carried or pushed. Refused with 2 under the lock, before S3, so
+# nothing is fetched, set aside or written, and the edit stays where it is;
+# `die`'s exit releases the lock. The recovery is the one that works on
+# primary, as T415's `pw_hand_edit_refuse` gives it: read the edit, restore the
+# file, make the change through its verb.
+commit_carry_refuse() {
+  note "RECOVERY, in $LANES_REPO:"
+  note "  read it:      git -C $LANES_REPO diff HEAD -- $LANES_PATH"
+  note "  restore it:   git -C $LANES_REPO checkout HEAD -- $LANES_PATH"
+  note "  then make the change through its verb (set-row-state, replace-in-row, append-line, log …), which writes it through the register"
+  die "refusing \`commit\`'s carry form on primary (feature 007): $LANES_PATH in $LANES_REPO differs from HEAD, a hand edit, and on primary the register is the database and that file is its rendering, so a hand edit of it is never committed, carried or pushed (D10; FR-026; R16). On primary \`commit\` runs only as the publish act, for queued handoff commits, with $LANES_PATH clean. Nothing was written." 2
+}
 
 # #194, AS #214's ADVERSARIAL CHECK HARDENED IT — WHAT `commit` MAY PUBLISH
 # WITH NOTHING STAGED, read from the objects the push will send and nothing
@@ -5871,10 +5896,11 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
 #   (e) D7's deadline and the run's end (`pw_run`, `pw_end`).
 #
 # NOT HERE: the renderer's fork after `committed` (T416); `commit` on primary,
-# which keeps T409's 69 until T420; F3's lookup, which every end but 0 waits for
-# while the pending record holds a `call` line, and its exit 3 (T417); and the
-# tail by match or replay for a write already in the register, the record's
-# `tail` key and the done mark (T418).
+# which T420 exempts from the loop at the dispatcher (R16): its carry form is
+# refused with 2 and its publish act runs outside it; F3's lookup, which every
+# end but 0 waits for while the pending record holds a `call` line, and its
+# exit 3 (T417); and the tail by match or replay for a write already in the
+# register, the record's `tail` key and the done mark (T418).
 PW_LANE=""; PW_C=""; PW_AUTHOR=""; PW_D_S=30; PW_T0=0; PW_RUN=""; PW_RUN_DIR=""
 PW_LOCK=""; PW_REC_OURS=0
 PW_K=0; PW_DIR=""; PW_CHILD=""; PW_KEPT=""; PW_FIRST_DONE=0; PW_RELAY=""; PW_RC=0
@@ -20691,16 +20717,19 @@ esac
 # arm below and never a files-mode write (Y:5034).
 # PHASE 2'S ARM (T415): `primary` runs the write through the register's attempt
 # loop, `pw_run`, which ends this process and never writes the files instead.
-# `commit` keeps phase 1's 69 until T420 gives it its primary form (T415's line:
-# "no state between T415 and T420 runs it in the loop"). `index` and `files`
-# run the verb as it runs today.
+# `commit` IS EXEMPT FROM THE LOOP (T420; R16; review M2; ERR-06). It journals
+# nothing: its carry form, the hand edit of Rule 9(d), is refused with 2 in its
+# arm below (D10), and its publish act, the publish of queued handoff commits,
+# runs as a git act outside the loop, with S3's fetch (R16 (b)) and the fence
+# narrowed to `handoffs/` (`cp_publish_fence`). So it goes on from here to 1a's
+# routing, `lane_checkout_enter` included, since it needs `LANES_LANE`'s
+# checkout (R16 (c)); T415's skip of that routing (R17) is not its. `index` and
+# `files` run the verb as it runs today.
 if [ "$REG_ASK" = 1 ]; then
   reg_mode_ask
   case "$REG_MODE" in
     primary)
-      [ "$cmd" != commit ] ||
-        die "this lanes-edit.sh has no SQL write path: \`lanes-index mode\` answered primary, which only a lanes-index newer than this lanes-edit.sh answers. \`$cmd\` wrote nothing, and wrote no files instead. Install the lanes-edit.sh that ships with that lanes-index." 69
-      pw_run ${1+"$@"} ;;
+      [ "$cmd" = commit ] || pw_run ${1+"$@"} ;;
   esac
 fi
 
@@ -21079,7 +21108,13 @@ Nothing was written." 2
     # A clean register is THE PUBLISH ACT (#194's remedy 1): it writes nothing
     # new, so S3 runs with every row but the unpushed one and no fast-forward,
     # and `commit_publish` publishes the queue (S4, "the publish act").
+    # FEATURE 007, T420 — ON PRIMARY THE CARRY FORM IS REFUSED (D10; FR-026;
+    # R16): the register is the database there and this file is its
+    # rendering, so a hand edit of it is never committed, carried or pushed.
+    # It refuses with 2 before S3, writing nothing, with Y:2459's recovery.
+    # The publish act stays (`cp_publish_fence` narrows it to `handoffs/`).
     if [ "$NO_GIT" != 1 ] && [ -n "$(cs_pending_of "$LANES_PATH")" ]; then
+      if cp_on_primary; then commit_carry_refuse; fi
       checkout_sync commit "${LANES_LANE:-}" carry "$LANES_PATH"
       CP_REPLAY_KEEPS_EDIT=1
     else
