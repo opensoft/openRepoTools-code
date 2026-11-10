@@ -400,6 +400,25 @@ ROWS = {
     # the contract does not state the service's own.
     "service":        dict(group="lanes_register_reader", exit=2, bound=4.5, strict=True,
                            faults=("F1", "F2", "F3"), statement_ms=1500, table="register_head"),
+    # T257's five rows (D9's timeouts table, test plan section 3's AT-D9):
+    # a writer's snapshot, `S` 8 s, 69 at F1; the commit at F2, in doubt then
+    # 3, at least `C` + `S` + `T_L` = 25 s from the commit call's start; the
+    # commit at F3, 55P03 per attempt then 75 at the deadline
+    # (`LANES_REGISTER_DEADLINE_S=3`), at most 3 + 8 + 8 = 19 s; the lookup,
+    # `find_write`, 3 naming the id, its tries inside the 10 s window, each
+    # to `T_L` 9 s; and a whole write, 75 at the deadline. Each `statement_ms`
+    # is the lookup's 6000 ms, a reading for the snapshot and the commit,
+    # whose `statement_timeout` the table this line read does not give.
+    "writer-snapshot":  dict(group="lanes_register_writer", exit=69, bound=8, strict=False,
+                             faults=("F1",), statement_ms=6000, table="register_head"),
+    "writer-commit-f2": dict(group="lanes_register_writer", exit=3, bound=25, strict=False,
+                             faults=("F2",), statement_ms=6000, table="register_head"),
+    "writer-commit-f3": dict(group="lanes_register_writer", exit=75, bound=19, strict=False,
+                             faults=("F3",), statement_ms=None, table="register_head"),
+    "lookup":           dict(group="lanes_register_writer", exit=3, bound=19, strict=False,
+                             faults=("F1",), statement_ms=6000, table="register_head"),
+    "whole-write":      dict(group="lanes_register_writer", exit=75, bound=19, strict=False,
+                             faults=("F1",), statement_ms=None, table=None),
 }
 
 FIRST_CASES = [f"{row}-{fault}" for row, spec in ROWS.items() for fault in spec["faults"]]
@@ -528,6 +547,22 @@ class Bench:
                             "--why", "D9's probe row"]
         elif row == "mode-query":
             argv = index + ["mode"]
+        elif row in ("writer-snapshot", "writer-commit-f2", "writer-commit-f3", "whole-write"):
+            # A WRITER'S WHOLE PATH, `set-row-state` on the bench's lane, whose
+            # snapshot (F1), commit (F2) or lock (F3) meets the fault; the
+            # deadline is D9's test value. A reading: T257's text names the
+            # rows, not the verb that carries them.
+            argv = ["bash", str(tool / "lanes-edit.sh"), "set-row-state", "repoA-2",
+                    "PAUSED - T257's writer row"]
+            env = dict(env, LANES_REGISTER_DEADLINE_S="3", LANES_LANE="repoA-2")
+        elif row == "lookup":
+            # THE LOOKUP'S FORM (AT-F6 case 19): `journal --write-id <id>
+            # --not-after <n> --generation <g> --lane <l> --verb <v>
+            # --args-sha256 <h>`, for a write the database never saw.
+            argv = index + ["journal", "--write-id", str(uuid.uuid4()), "--not-after",
+                            "2999-01-01T00:00:00Z", "--generation", str(uuid.uuid4()),
+                            "--lane", "repoA-2", "--verb", "set-row-state", "--args-sha256",
+                            "0" * 64]
         else:
             raise AssertionError(f"no path for {row}")
         serve = None
