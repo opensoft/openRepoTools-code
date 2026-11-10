@@ -23147,7 +23147,19 @@ EOF
     reg_tail_committed claim   # feature 007, T421: on primary, only after `committed`
 
     # 6. the comment, AFTER the push, citing the commit that carries the line.
-    sha="$(git -C "$LANES_REPO" rev-parse HEAD 2>/dev/null || printf '')"
+    #    FEATURE 007, T421 — ON PRIMARY, `register seq <s>` WHERE THE SHA WAS
+    #    (Q19(A); FR-031; Y:266–267, Y:5076; spec:377–384). In an attempt's
+    #    child HEAD is the scratch tree's snapshot commit, not this write's: the
+    #    write's commit is the mirror's, which the renderer makes later with
+    #    `Register-Seq: <s>` in its trailers. So the comment and the line below
+    #    cite `register seq <s>` in the sha's place, from `REGISTER_SEQ`, which
+    #    only the seam's `committed <s>` sets. A replay's child takes the
+    #    entry's own seq (T418), so a replayed comment cites the same.
+    if [ -n "$REG_SCRATCH" ]; then
+      sha="register seq ${REGISTER_SEQ}"
+    else
+      sha="$(git -C "$LANES_REPO" rev-parse HEAD 2>/dev/null || printf '')"
+    fi
     if [ "$NO_GITHUB" != 1 ]; then
       body="$(printf '%s — lane %s, session %s@%s, %s, for %s\n\nLogged in `%s` at `%s`%s.\n\nThe three reads (lane-collision-protocol Rule 1):\n\n```text\n%s\n```\n' \
                "${takeover_from:+TAKEOVER}${takeover_from:-CLAIMED}" "$lane" "$uuid" "$WS" "$utc" "$obj" \
