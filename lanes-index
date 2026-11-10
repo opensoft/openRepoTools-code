@@ -4956,6 +4956,975 @@ def _outage_clear() -> int:
     return EXIT_OK
 
 
+# ===== the SQL register: `register read`, the readers' and the guard's forms (007, T113)
+#
+# `lanes-index register read` IN CONTRACT §3.6'S FOUR FORMS (feature 007,
+# opensoft/openRepoTools#165; FR-015; T113, which lane 1 handed to lane 5):
+#   1. `--prefetch --cache <file> (--files <set> | --all)`, the readers' prefetch;
+#   2. `--for guard --prefetch --cache <file> --pid <pid> --repo <dir> [--lane=<w>]`,
+#      the guard's prefetch;
+#   3. `--since <n> --cache <file> [--files <set>] [--log-key=<key>]`, the
+#      readers' second read, at the register's head `n'`;
+#   4. `--for guard --at <n> --pid <pid> --cache <file> --lane=<key>`, the
+#      guard's second read, at `n`.
+# Each is ONE REPEATABLE READ READ ONLY snapshot sent as ONE request (contract
+# §2.3), built by `register_read_queries`, the one SQL builder (OP-15). Each
+# snapshot reads the switch and the readers' schema window first. Phase 1's
+# `register read` has only its direct path (Y:4868), so it asks no service,
+# writes no `.direct` and prints no `guard: direct` line, and `.head`'s
+# `w_s_ms=` is 0.
+#
+# THE CACHE FAMILY is §3.6's: `<file>.register`, `.paths`, `.archive`,
+# `.aliases`, `.log.<key>` with `.logpath.<key>`, `.log.%<hex>` with
+# `.logpath.%<hex>` (O18), and `.head`, written last. Each is written whole by
+# a temp file beside it and `os.replace`, as Y:4890's `mv -f`. Forms 1 to 3
+# read at the head from `files` and `doc_lines`; form 4 reads at `n` from
+# `journal_files`, and replays the journal only where the head has moved past
+# `n`. An image comes from T302's cache only where its name is the digest the
+# database gave at the read's seq (D17); every other image is fetched whole in
+# the same request and checked against that digest.
+#
+# WHAT IS NOT HERE: `T0` from the pid, the clamp, the floor, the declaration,
+# `.outage`, form C in `--repo` and the detached whole-file fetch are lane 5's
+# T507 (contract §3.6, R07). Until T507, the guard's cut at `T0` + 3.75 s is
+# counted from this process's own start. T113 still ends "too late to verify",
+# 2, where that cut is passed before the request or reached during it.
+
+#: `check_lane_name`'s class (`lanes-edit.sh`; Y:4956; contract §3.6, O18):
+#: letters, digits, `.`, `_` and `-`, not opening with `.` or `-`.
+_REGISTER_LANE_CLASS_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*")
+
+#: `--files`' members beside `log:<key>` (contract §3.6).
+REGISTER_READ_MEMBERS = ("register", "paths", "archive", "aliases")
+
+#: The render set's set members' prefixes (Y:258-260).
+_REGISTER_ARCHIVE_PREFIX = "lanes/archive/"
+
+#: `EXIT_FAILED`, exit-codes.md §1's name for 1 (#160's failed read or write).
+#: `register read --for guard` is the first register command to exit with it:
+#: a refused configuration there (O14), since 2 means only "too late" under the
+#: guard. Neither the pin nor line R defines it, so T113 does, as §1 asks of
+#: the task that first exits with a code.
+EXIT_FAILED = 1
+
+#: D9's guard row is cut at `T0` + 3.75 s (Y:3518; contract §2.4, B5). Form 4
+#: reads no declaration, so its cut is always this one.
+REGISTER_GUARD_CUT_S = 3.75
+
+#: `T0`'S STAND-IN UNTIL T507: this process's own start. T507's client half
+#: reads `T0` from `--pid` (`/proc/<pid>/stat` against `/proc/uptime`, Y:4263)
+#: and applies the clamp and the floor; T113 ships the cut and its end.
+_REGISTER_READ_STARTED = time.monotonic()
+
+#: `w_s`, the client's wait for the service, in whole ms (contract §2.5, O15):
+#: 0 while this `lanes-index` has no `serve` (Y:4868).
+REGISTER_READ_W_S_MS = 0
+
+#: `.aliases` for an empty or absent table, as `lane_alias_text` caches one
+#: (Y:4150; contract §3.6's table).
+REGISTER_NO_ALIASES = b"# no lane aliases\n"
+
+#: ASCII case, as `log_path_ci`'s `awk tolower` folds a path (C11).
+_REGISTER_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+class RegisterReadUsage(Exception):
+    """`register read`'s usage, 64, raised before the configuration is read."""
+
+
+class RegisterReadFailed(Exception):
+    """A failed read, 69. `cause` is §3.6's `refuse db <cause>` word where the
+    direct read found the switch not `primary` (`switch-files`) or the
+    client outside the readers' window (`schema`), and None otherwise."""
+
+    def __init__(self, why: str, cause: str | None = None):
+        super().__init__(why)
+        self.cause = cause
+
+
+def register_lane_in_class(key: str) -> bool:
+    """Whether `key` is in `check_lane_name`'s class (Y:4956)."""
+    return isinstance(key, str) and _REGISTER_LANE_CLASS_RE.fullmatch(key) is not None
+
+
+def register_log_slot(key: str) -> str:
+    """A key's slot in `.log.<slot>` and `.logpath.<slot>`: the key where it is
+    in the class, else `%<hex>`, the key's bytes in lowercase hex (O18). `%`
+    is outside the class, so no class key names such a file."""
+    return key if register_lane_in_class(key) else "%" + os.fsencode(key).hex()
+
+
+def _register_fold(path: str) -> bytes:
+    """`path`'s bytes with ASCII letters lowered, and nothing else changed."""
+    return os.fsencode(path).lower()
+
+
+def register_log_index(paths) -> dict:
+    """{folded name: [paths]} of the render-set logs among `paths`, for
+    `register_log_path_ci`'s `index`, so a read over every log folds each
+    path once."""
+    index: dict = {}
+    for path in sorted(paths, key=os.fsencode):
+        if path.startswith(LOG_PREFIX) and register_render_path(path):
+            index.setdefault(_register_fold(path), []).append(path)
+    return index
+
+
+def register_log_path_ci(paths, key: str, *, index: dict | None = None) -> list[str]:
+    """THE ONE CASE-INSENSITIVE LOG RESOLUTION (contract §3.6, C11; T511's
+    OP-6, which `serve` reuses): the render-set logs among `paths`, the paths
+    present at the read's seq, whose names equal `lanes/log/<key>.md` but for
+    ASCII case, as `log_path_ci`'s `awk tolower` compares them, sorted
+    bytewise. One is the key's log; none means no log; two or more is C11,
+    two logs that differ only by case, which no form writes. `index`, where
+    given, is `register_log_index(paths)`."""
+    want = _register_fold(f"{LOG_PREFIX}{key}.md")
+    if index is not None:
+        return list(index.get(want, ()))
+    return sorted((path for path in paths
+                   if path.startswith(LOG_PREFIX) and register_render_path(path)
+                   and _register_fold(path) == want), key=os.fsencode)
+
+
+def _register_sql_text(data: bytes) -> str:
+    """`data`, UTF-8 bytes, as an SQL text expression of hex digits alone, so
+    a key's quotes, backslashes and line breaks never reach `psql`'s parser."""
+    return f"convert_from(decode('{data.hex()}', 'hex'), 'UTF8')"
+
+
+def _register_read_filter(texts) -> str:
+    """The `doc_lines` filter for `texts`, a list of `("path", <path>)`,
+    `("prefix", <prefix>)` and `("fold", <folded bytes>)`: `false` for none."""
+    terms = []
+    for kind, value in texts:
+        if kind == "path":
+            terms.append(f"d.path = {_register_sql_text(os.fsencode(value))}")
+        elif kind == "prefix":
+            terms.append(f"starts_with(d.path, {_register_sql_text(os.fsencode(value))})")
+        elif kind == "fold":
+            terms.append(f"translate(d.path, '{_REGISTER_UPPER}', '{_REGISTER_UPPER.lower()}') "
+                         f"= {_register_sql_text(value)}")
+        else:
+            raise ValueError(f"no register read text of kind {kind!r}")
+    return " OR ".join(terms) if terms else "false"
+
+
+def register_read_queries(*, texts=(), held=(), at: int | None = None) -> list[str]:
+    """THE ONE SQL BUILDER OF `register read` (contract §3.6; T511's OP-15,
+    which the service sends on its held connection): the SELECTs of one
+    REPEATABLE READ READ ONLY snapshot, each SELECT only, naming its tables
+    through the store's `search_path`.
+
+    At the head (forms 1 to 3, `at` None), four:
+    1. `schema_version`, first, as every reader checks it (Y:2334);
+    2. the switch's mode and generation, and the head's seq;
+    3. `files`: every rendered path at the head, with its digest and
+       `final_newline`;
+    4. `doc_lines`: the lines of the paths `texts` names, in path and line
+       order, but those whose digest is in `held`, the digests T302's cache
+       holds, which are read from the cache instead (D17).
+
+    At `at` = `n` (form 4), seven, with `L`, the latest import at or below
+    `n`, and the head read in the same snapshot:
+    1. `schema_version`;
+    2. the mode, the generation, the head's seq, and `L`;
+    3. each `lanes/log/` path's latest `journal_files` row from `L` to `n`;
+    4. `doc_lines` of the paths `texts` names, only where the head is `n`;
+    5. to 7. `journal`, `journal_edits` and `journal_files` from `L` to `n`,
+       in `REGISTER_RENDER_COLUMNS`' order, only where the head is past `n`,
+       for `register_images`' replay.
+    `at` is a whole number, which its caller parsed."""
+    version = "SELECT version, writers_from, readers_from FROM schema_version WHERE id = 1"
+    where = _register_read_filter(texts)
+    if at is None:
+        digests = sorted(digest for digest in held if _IMAGE_DIGEST_RE.fullmatch(digest))
+        unheld = (" AND f.sha256 NOT IN (" + ", ".join(f"'{digest}'" for digest in digests) + ")"
+                  if digests else "")
+        return [
+            version,
+            "SELECT s.mode, s.generation, h.seq FROM register_switch s, register_head h "
+            "WHERE s.id = 1 AND h.id = 1",
+            "SELECT f.path, f.sha256, f.final_newline FROM files f ORDER BY f.path",
+            f"SELECT d.path, d.text FROM doc_lines d JOIN files f ON f.path = d.path "
+            f"WHERE ({where}){unheld} ORDER BY d.path, d.line_no",
+        ]
+    n = int(at)
+    latest = (f"(SELECT i.seq FROM journal i WHERE i.kind = 'import' AND i.seq <= {n} "
+              f"ORDER BY i.seq DESC LIMIT 1)")
+    head = "(SELECT hh.seq FROM register_head hh WHERE hh.id = 1)"
+    return [
+        version,
+        f"SELECT s.mode, s.generation, h.seq, {latest} FROM register_switch s, register_head h "
+        f"WHERE s.id = 1 AND h.id = 1",
+        f"SELECT DISTINCT ON (f.path) f.path, f.present, f.sha256, f.final_newline "
+        f"FROM journal_files f WHERE starts_with(f.path, '{LOG_PREFIX}') AND f.seq >= {latest} "
+        f"AND f.seq <= {n} ORDER BY f.path, f.seq DESC",
+        f"SELECT d.path, d.text FROM doc_lines d WHERE ({where}) AND {head} = {n} "
+        f"ORDER BY d.path, d.line_no",
+        f"SELECT j.seq, j.kind FROM journal j WHERE j.seq >= {latest} AND j.seq <= {n} "
+        f"AND {head} > {n} ORDER BY j.seq",
+        f"SELECT e.seq, e.ord, e.op, e.path, e.line_no, e.old_sha256, e.new_text, e.to_path "
+        f"FROM journal_edits e WHERE e.seq >= {latest} AND e.seq <= {n} AND {head} > {n} "
+        f"ORDER BY e.seq, e.ord",
+        f"SELECT f.seq, f.path, f.present, f.sha256, f.final_newline FROM journal_files f "
+        f"WHERE f.seq >= {latest} AND f.seq <= {n} AND {head} > {n} ORDER BY f.seq, f.path",
+    ]
+
+
+def _register_read_snapshot(answers: list, *, at: int | None = None) -> dict:
+    """`register_read_queries`' answers, checked: the readers' window, then
+    the switch, each a failed read (69) with its `refuse db` cause (contract
+    §3.6, T511's OP-4). Returns `mode`, `generation`, `head`, with `at` also
+    `latest`, the latest import at or below `n`; `listing`, {path: (sha256,
+    final_newline)} of the paths present (`lanes/STORE` left out, contract
+    draft 4.13's :681); `lines`, {path: [text, ...]}; and with `at`, `replay`,
+    the rows for `register_images`."""
+    expected = 4 if at is None else 7
+    if len(answers) != expected:
+        raise RegisterReadFailed(f"psql answered {len(answers)} of the {expected} reads of one "
+                                 f"register read")
+    rows = answers[0]
+    if len(rows) != 1 or len(rows[0]) != 3:
+        raise RegisterReadFailed("the register's schema_version row could not be read")
+    try:
+        version, writers_from, readers_from = (int(value) for value in rows[0])
+    except (TypeError, ValueError):
+        raise RegisterReadFailed("the register's schema_version row is not three numbers")
+    refusal = register_version_refusal(version, writers_from, readers_from, write=False)
+    if refusal:
+        raise RegisterReadFailed(refusal, cause="schema")
+    rows = answers[1]
+    if len(rows) != 1 or len(rows[0]) != (3 if at is None else 4):
+        raise RegisterReadFailed("the register's switch and head could not be read")
+    mode, generation = rows[0][0], (rows[0][1] or "").lower()
+    if mode != "primary":
+        raise RegisterReadFailed(
+            f"the register's switch is `{mode}`, not `primary`: the register's text is the "
+            f"files' again, and this read is a failed read (Y:2338, Y:4084)", cause="switch-files")
+    if not UUID_FULL_RE.match(generation):
+        raise RegisterReadFailed("the register's generation could not be read")
+    try:
+        head = int(rows[0][2])
+        latest = None if at is None or rows[0][3] is None else int(rows[0][3])
+    except (TypeError, ValueError):
+        raise RegisterReadFailed("the register's head could not be read")
+    listing = {}
+    for row in answers[2]:
+        if at is None:
+            if len(row) != 3:
+                raise RegisterReadFailed("a `files` row of the register could not be read")
+            path, digest, final_newline = row
+        else:
+            if len(row) != 4:
+                raise RegisterReadFailed("a `journal_files` row of the register could not be read")
+            path, present, digest, final_newline = row
+            if present != "t":
+                continue
+        if path == "lanes/STORE" or not register_render_path(path):
+            continue
+        if not isinstance(digest, str) or _IMAGE_DIGEST_RE.fullmatch(digest) is None \
+                or final_newline not in ("t", "f"):
+            raise RegisterReadFailed(f"the register's digest of {path!r} could not be read")
+        listing[path] = (digest, final_newline == "t")
+    lines: dict = {}
+    for row in answers[3]:
+        if len(row) != 2 or row[1] is None:
+            raise RegisterReadFailed("a `doc_lines` row of the register could not be read")
+        lines.setdefault(row[0], []).append(row[1])
+    snap = {"mode": mode, "generation": generation, "head": head, "latest": latest,
+            "listing": listing, "lines": lines}
+    if at is not None:
+        try:
+            snap["replay"] = (_render_rows(answers[4], "journal"),
+                              _render_rows(answers[5], "journal_edits"),
+                              _render_rows(answers[6], "journal_files"))
+        except RenderRefused as exc:
+            raise RegisterReadFailed(str(exc))
+    return snap
+
+
+def _register_read_image(snap: dict, held: dict, path: str, fetched: dict) -> bytes:
+    """The image of `path`, present in `snap`'s listing: T302's object where
+    `held` has the digest the database gave (D17), else its bytes from the
+    snapshot's `doc_lines`, which must hash to that digest. An image fetched
+    whole is added to `fetched`, for `image_cache_put`."""
+    digest, final_newline = snap["listing"][path]
+    data = held.get(digest)
+    if data is not None:
+        return data
+    data = register_image_bytes(snap["lines"].get(path, []), final_newline)
+    if hashlib.sha256(data).hexdigest() != digest:
+        raise RegisterReadFailed(f"the register's lines of {path} do not hash to the digest it "
+                                 f"gave for that file, {digest}")
+    fetched[path] = data
+    return data
+
+
+def _register_read_held(candidates: dict, wanted) -> dict:
+    """{digest: bytes} of T302's objects for the paths `wanted(path)` takes
+    among `candidates`, {path: digest}: each through `image_cache_get`, which
+    re-hashes it, so only an object whose name is its digest is held."""
+    held: dict = {}
+    for path, digest in candidates.items():
+        if digest in held or not wanted(path):
+            continue
+        data = image_cache_get(digest)
+        if data is not None:
+            held[digest] = data
+    return held
+
+
+def _register_read_shell_text(data: bytes) -> bytes:
+    """A file as `printf '%s\\n' "$(git show ...)"` caches it: its trailing
+    line feeds dropped, then one (`register_text_checked`, Y:4149)."""
+    return data.rstrip(b"\n") + b"\n"
+
+
+def _register_read_row_path(path: str) -> str:
+    if _RENDER_CONTROL_RE.search(path):
+        raise RegisterReadFailed(f"the path {path!r} holds a control character, so it cannot be "
+                                 f"a line of the cache family")
+    return path
+
+
+def _register_read_family(snap: dict, held: dict, *, members, keys, all_logs: bool) -> dict:
+    """The members' files at the snapshot's seq (contract §3.6's table), with
+    `.head`'s rows: {"files": {suffix: bytes}, "rows": {path: digest or None},
+    "absent": {key}, "ambiguous": {key}, "images": {path: bytes}, "fetched":
+    {path: bytes}}. A `file=` row is given for every path a member names,
+    present or not, and for every file a set member holds, its text cached or
+    not; a `log:<key>` that resolves to no log gives an `absent=` row; a key
+    that resolves to two logs (C11) is `ambiguous` and gets no `.log` file."""
+    listing = snap["listing"]
+    out = {"files": {}, "rows": {}, "absent": set(), "ambiguous": set(), "images": {},
+           "fetched": {}}
+
+    def image(path: str) -> bytes:
+        if path not in out["images"]:
+            out["images"][path] = _register_read_image(snap, held, path, out["fetched"])
+        return out["images"][path]
+
+    def row(path: str) -> None:
+        out["rows"][_register_read_row_path(path)] = listing[path][0] if path in listing else None
+
+    files = out["files"]
+    if "register" in members:
+        row(REGISTER_PATH)
+        files["register"] = _register_read_shell_text(
+            image(REGISTER_PATH) if REGISTER_PATH in listing else b"")
+    if "paths" in members:
+        files["paths"] = b"".join(os.fsencode(_register_read_row_path(path)) + b"\n"
+                                  for path in sorted(listing, key=os.fsencode))
+    if "archive" in members:
+        archive = sorted((path for path in listing if path.startswith(_REGISTER_ARCHIVE_PREFIX)),
+                         key=os.fsencode)
+        for path in archive:
+            row(path)
+        files["archive"] = b"".join(image(path) for path in archive)
+    if "aliases" in members:
+        row(ALIASES_PATH)
+        body = (image(ALIASES_PATH) if ALIASES_PATH in listing else b"").rstrip(b"\n")
+        files["aliases"] = body + b"\n" if body else REGISTER_NO_ALIASES
+    wanted = set(keys)
+    if all_logs:
+        for path in listing:
+            if path.startswith(LOG_PREFIX):
+                row(path)
+                name = path[len(LOG_PREFIX):-len(".md")]
+                if register_lane_in_class(name):
+                    wanted.add(name)
+    index = register_log_index(listing)
+    for key in sorted(wanted, key=os.fsencode):
+        found = register_log_path_ci(listing, key, index=index)
+        for path in found:
+            row(path)
+        if len(found) > 1:
+            out["ambiguous"].add(key)
+        elif not found:
+            out["absent"].add(key)
+            files[f"log.{key}"], files[f"logpath.{key}"] = b"", b""
+        else:
+            files[f"log.{key}"] = image(found[0])
+            files[f"logpath.{key}"] = os.fsencode(found[0]) + b"\n"
+    return out
+
+
+def _register_read_texts(members, keys, *, all_logs: bool = False) -> list:
+    """`register_read_queries`' `texts` for these members and log keys."""
+    texts = []
+    if "register" in members:
+        texts.append(("path", REGISTER_PATH))
+    if "aliases" in members:
+        texts.append(("path", ALIASES_PATH))
+    if "archive" in members:
+        texts.append(("prefix", _REGISTER_ARCHIVE_PREFIX))
+    if all_logs:
+        texts.append(("prefix", LOG_PREFIX))
+    for key in sorted(keys, key=os.fsencode):
+        folded = _register_fold(f"{LOG_PREFIX}{key}.md")
+        try:
+            folded.decode("utf-8")
+        except UnicodeDecodeError:
+            continue        # no path is such a key's: it resolves to no log
+        texts.append(("fold", folded))
+    return texts
+
+
+def _register_read_wanted(members, keys, *, all_logs: bool = False):
+    """The predicate `_register_read_texts`' filter is, on a path."""
+    folds = {_register_fold(f"{LOG_PREFIX}{key}.md") for key in keys}
+
+    def wanted(path: str) -> bool:
+        return ((path == REGISTER_PATH and "register" in members)
+                or (path == ALIASES_PATH and "aliases" in members)
+                or (path.startswith(_REGISTER_ARCHIVE_PREFIX) and "archive" in members)
+                or (path.startswith(LOG_PREFIX) and (all_logs or _register_fold(path) in folds)))
+    return wanted
+
+
+def _register_read_put(cache: str, suffix: str, data: bytes) -> None:
+    """`<cache>.<suffix>`, written whole by a temp file beside it and
+    `os.replace`, as Y:4890's `mv -f`. The temp file's `%` is outside the
+    class, so it is never read as a member. Raises `OSError`."""
+    target = f"{cache}.{suffix}"
+    temp = f"{cache}.%tmp-{os.getpid()}-{os.urandom(4).hex()}"
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        os.replace(temp, target)
+    except BaseException:
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        raise
+
+
+def _register_read_drop(cache: str, suffix: str) -> None:
+    try:
+        os.unlink(f"{cache}.{suffix}")
+    except FileNotFoundError:
+        pass
+
+
+def _register_read_head_bytes(snap: dict, cfg: dict, rows: dict, absent) -> bytes:
+    """`.head` (contract §3.6): `format=1`, `n`, `generation`, `c`, `n_a`,
+    `w_s_ms`, then one `file=` row per path in §3.2's canonical form and one
+    `absent=` row per key, each sorted bytewise. `c` is the larger of the two
+    URLs' `connect_timeout=` (O15), and `n_a` is `register_addresses=`."""
+    bounds = [int(pg_url_env(cfg[key]).get("PGCONNECT_TIMEOUT", CONNECT_TIMEOUT_DEFAULT))
+              for key in ("register_url", "reader_url") if cfg.get(key)]
+    out = ["format=1", f"n={snap['head']}", f"generation={snap['generation']}",
+           f"c={max(bounds or [CONNECT_TIMEOUT_DEFAULT])}",
+           f"n_a={int(cfg.get('register_addresses') or 1)}", f"w_s_ms={REGISTER_READ_W_S_MS}"]
+    for path in sorted(rows, key=os.fsencode):
+        digest = rows[path]
+        out.append(f"file={path}\t1\t{digest}" if digest else f"file={path}\t0\t-")
+    out += [f"absent={key}" for key in sorted(absent, key=os.fsencode)]
+    return ("\n".join(out) + "\n").encode("utf-8")
+
+
+def register_read_parse_head(data: bytes) -> dict | None:
+    """`.head`'s text as {"n": int, "generation": str, "rows": {path: digest
+    or None}, "absent": {key}}, or None where it is out of form, so what it
+    cached cannot be dated (contract §3.6, form 3)."""
+    try:
+        text = data.decode("utf-8")
+    except (AttributeError, UnicodeDecodeError):
+        return None
+    if not text.endswith("\n"):
+        return None
+    head: dict = {"rows": {}, "absent": set()}
+    for line in text[:-1].split("\n"):
+        key, sep, value = line.partition("=")
+        if not sep:
+            return None
+        if key == "file":
+            parts = value.split("\t")
+            if len(parts) != 3 or parts[0] in head["rows"]:
+                return None
+            path, present, digest = parts
+            if present == "1" and _IMAGE_DIGEST_RE.fullmatch(digest):
+                head["rows"][path] = digest
+            elif present == "0" and digest == "-":
+                head["rows"][path] = None
+            else:
+                return None
+        elif key == "absent":
+            head["absent"].add(value)
+        elif key in ("format", "n", "generation", "c", "n_a", "w_s_ms") and key not in head:
+            head[key] = value
+        else:
+            return None
+    if head.get("format") != "1" or not re.fullmatch(r"-?[0-9]+", head.get("n", "")) \
+            or not UUID_FULL_RE.match(head.get("generation", "")):
+        return None
+    head["n"], head["generation"] = int(head["n"]), head["generation"].lower()
+    return head
+
+
+def _register_read_cached(cache: str) -> tuple[set, set]:
+    """The members the family at `cache` holds, by their files (contract
+    §3.6, form 3): `register`, `paths`, `archive` and `aliases`, and each
+    `.log.<key>`'s key in the class. A `.log.%<hex>` is never cached (O18)."""
+    folder, base = os.path.split(os.path.abspath(cache))
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return set(), set()
+    members = {member for member in REGISTER_READ_MEMBERS if f"{base}.{member}" in names}
+    stem = f"{base}.log."
+    keys = {name[len(stem):] for name in names
+            if name.startswith(stem) and register_lane_in_class(name[len(stem):])}
+    return members, keys
+
+
+def _register_read_args(args: list[str]) -> dict | None:
+    """`register read`'s argv as one of §3.6's four forms, or None for
+    `--help`. Raises `RegisterReadUsage`, 64, for anything else.
+
+    `--lane` and `--log-key` take their value only in the `=` form, and the
+    value is everything after the first `=`, verbatim (L1-D1). Every other
+    flag with a value takes it as `--flag <value>` or `--flag=<value>`, so
+    `--at -1` and `--since -1` are numbers, never flags."""
+    opts: dict = {"prefetch": False, "all": False}
+    valued = {"--cache": "cache", "--files": "files", "--for": "for", "--pid": "pid",
+              "--repo": "repo", "--since": "since", "--at": "at"}
+    equals_only = {"--lane": "lane", "--log-key": "log_key"}
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("-h", "--help"):
+            return None
+        if arg in ("--prefetch", "--all"):
+            if opts[arg[2:]]:
+                raise RegisterReadUsage(f"{arg} is given twice")
+            opts[arg[2:]] = True
+            i += 1
+            continue
+        name, eq, value = arg.partition("=")
+        if name in equals_only:
+            if not eq:
+                raise RegisterReadUsage(
+                    f"{name} takes its value only as {name}=<key>, so that a key beginning "
+                    f"with `-` is never read as a flag (L1-D1)")
+            if equals_only[name] in opts:
+                raise RegisterReadUsage(f"{name}= is given twice")
+            opts[equals_only[name]] = value
+            i += 1
+            continue
+        if name in valued:
+            if not eq:
+                if i + 1 >= len(args):
+                    raise RegisterReadUsage(f"{name} needs a value")
+                value = args[i + 1]
+            if valued[name] in opts:
+                raise RegisterReadUsage(f"{name} is given twice")
+            if value == "":
+                raise RegisterReadUsage(f"{name} needs a value")
+            opts[valued[name]] = value
+            i += 1 if eq else 2
+            continue
+        raise RegisterReadUsage(f"unknown argument {arg!r}")
+    if "cache" not in opts:
+        raise RegisterReadUsage("every form names its cache, --cache <file>")
+    if opts.get("for", "guard") != "guard":
+        raise RegisterReadUsage(f"--for takes only `guard`, not {opts['for']!r}")
+    guard = "for" in opts
+
+    def only(form: int, allowed) -> None:
+        extra = sorted(k for k in opts if k not in allowed and k not in ("prefetch", "all"))
+        extra += [k for k in ("prefetch", "all") if opts[k] and k not in allowed]
+        if extra:
+            raise RegisterReadUsage(f"form {form} takes no --{extra[0].replace('_', '-')}")
+    if guard and opts["prefetch"]:
+        only(2, ("cache", "for", "pid", "repo", "lane", "prefetch"))
+        opts["form"] = 2
+        for need in ("pid", "repo"):
+            if need not in opts:
+                raise RegisterReadUsage(f"form 2, the guard's prefetch, needs --{need}")
+    elif guard and "at" in opts:
+        only(4, ("cache", "for", "pid", "lane", "at"))
+        opts["form"] = 4
+        for need in ("pid", "lane"):
+            if need not in opts:
+                raise RegisterReadUsage(f"form 4, the guard's second read, needs "
+                                        f"--{need}{'=<key>' if need == 'lane' else ''}")
+    elif guard:
+        raise RegisterReadUsage("--for guard takes --prefetch (form 2) or --at <n> (form 4)")
+    elif opts["prefetch"]:
+        only(1, ("cache", "files", "all", "prefetch"))
+        opts["form"] = 1
+        if ("files" in opts) == opts["all"]:
+            raise RegisterReadUsage("form 1, the readers' prefetch, takes --files <set> or --all")
+    elif "since" in opts:
+        only(3, ("cache", "files", "log_key", "since"))
+        opts["form"] = 3
+        if "files" not in opts and "log_key" not in opts:
+            raise RegisterReadUsage("form 3, the second read, takes --files <set>, "
+                                    "--log-key=<key>, or both")
+    else:
+        raise RegisterReadUsage("register read takes --prefetch, --since <n>, or --for guard")
+    if "pid" in opts and not re.fullmatch(r"[1-9][0-9]{0,9}", opts["pid"]):
+        raise RegisterReadUsage(f"--pid {opts['pid']!r} is not a process id")
+    for flag in ("since", "at"):
+        if flag in opts:
+            if not re.fullmatch(r"-?(0|[1-9][0-9]{0,18})", opts[flag]) \
+                    or not -2 ** 63 <= int(opts[flag]) <= 2 ** 63 - 1:
+                raise RegisterReadUsage(f"--{flag} {opts[flag]!r} is not a seq")
+            opts[flag] = int(opts[flag])
+    if opts.get("lane") == "":
+        raise RegisterReadUsage("--lane= names no key")
+    if "log_key" in opts:
+        if opts["log_key"] == "":
+            raise RegisterReadUsage("--log-key= names no key")
+        if register_lane_in_class(opts["log_key"]):
+            raise RegisterReadUsage("--log-key= names a key outside check_lane_name's class; "
+                                    "a key in it goes in --files as log:<key> (O18)")
+    opts["members"], opts["keys"] = set(), set()
+    for member in (opts["files"].split(",") if "files" in opts else ()):
+        if member in REGISTER_READ_MEMBERS:
+            opts["members"].add(member)
+        elif member.startswith("log:") and register_lane_in_class(member[4:]):
+            opts["keys"].add(member[4:])
+        elif member.startswith("log:") and member[4:]:
+            raise RegisterReadUsage(f"--files names log:{member[4:]!r}, a key outside "
+                                    f"check_lane_name's class, which goes as --log-key=<key> "
+                                    f"(O18)")
+        else:
+            raise RegisterReadUsage(f"--files names {member!r}, which is not register, paths, "
+                                    f"archive, aliases or log:<key>")
+    if opts["all"]:
+        opts["members"].update(REGISTER_READ_MEMBERS)
+    return opts
+
+
+def _register_read_query(store, queries: list, guard: bool) -> list:
+    """The one request, with D9's reader row, or the guard's cut at `T0` +
+    3.75 s (forms 2 and 4)."""
+    if not guard:
+        return store._query_many(queries, snapshot=True, row="read")
+    left = REGISTER_GUARD_CUT_S - (time.monotonic() - _REGISTER_READ_STARTED)
+    if left <= 0:
+        raise PsqlFailed("unreachable", f"the guard's cut, T0 + {REGISTER_GUARD_CUT_S:g} s, has "
+                         f"passed", timer_expired=True, ran=False)
+    return store._query_many(queries, snapshot=True, row="guard", timer=left)
+
+
+def _register_read_finish(cache: str, family: dict, rows: dict, absent, snap: dict,
+                          cfg: dict, drops=()) -> None:
+    """Writes the family's files, drops `drops`, then writes `.head`, last,
+    and gives the images to T302's cache: each image fetched whole by
+    `image_cache_put`, then `image_cache_record` at the read's seq."""
+    for suffix, data in family["files"].items():
+        _register_read_put(cache, suffix, data)
+    for suffix in drops:
+        _register_read_drop(cache, suffix)
+    _register_read_put(cache, "head", _register_read_head_bytes(snap, cfg, rows, absent))
+    for data in family["fetched"].values():
+        image_cache_put(data)
+    if snap["head"] >= 0 and family["images"]:
+        image_cache_record(snap["head"], {path: hashlib.sha256(data).hexdigest()
+                                          for path, data in family["images"].items()})
+
+
+def _register_read_prefetch(store, cfg: dict, opts: dict) -> int:
+    """FORMS 1 AND 2, the prefetch (contract §3.6): the members at the head
+    `n`, then `.head`. Form 2's members are `register`, `aliases` and, with
+    `--lane=<window>` in the class, `log:<window>`; a window outside the
+    class fetches no log and refuses nothing (O18). Two logs that differ
+    from a key only by case write no `.log.<key>`, and refuse nothing here
+    (C11). Prints nothing past the mode line."""
+    cache, guard = opts["cache"], opts["form"] == 2
+    if guard:
+        members, all_logs = {"register", "aliases"}, False
+        keys = {opts["lane"]} if register_lane_in_class(opts.get("lane", "")) else set()
+    else:
+        members, keys, all_logs = opts["members"], opts["keys"], opts["all"]
+    cached = image_cache_head()
+    held = _register_read_held(cached[1] if cached else {},
+                               _register_read_wanted(members, keys, all_logs=all_logs))
+    answers = _register_read_query(store, register_read_queries(
+        texts=_register_read_texts(members, keys, all_logs=all_logs), held=held), guard)
+    snap = _register_read_snapshot(answers)
+    family = _register_read_family(snap, held, members=members, keys=keys, all_logs=all_logs)
+    drops = [f"{kind}.{key}" for key in sorted(family["ambiguous"]) for kind in ("log", "logpath")]
+    _register_read_finish(cache, family, family["rows"], family["absent"], snap, cfg, drops)
+    return EXIT_OK
+
+
+def _register_read_since(store, cfg: dict, opts: dict) -> int:
+    """FORM 3, the readers' second read (contract §3.6): one snapshot at the
+    head `n'`. It finds the cached paths changed in `(n, n']` by their
+    digests at `n'` against `.head`'s rows, a cached `.paths`, a cached
+    `.archive`'s rows and the `absent=` keys, and a cached log member that
+    now matches two logs (N-g). Where nothing cached changed, it writes the
+    members `--files` names and `.head` at `n'` with their rows added; where
+    any did, or `.head` is missing or names another `n` or generation, it
+    rewrites the whole family at `n'`. A `--log-key=` key's pair is written
+    each time and never counted as cached (O18). It prints `n=<n'>`, one
+    `changed=<path>` per path, sorted, and `refetched=0` or `1`. A key the
+    call asks for that matches two logs ends 69 (C11). A refetch keeps the
+    `file=` rows `.head` had for logs still present, so a log that an earlier
+    `--all` rowed without caching its text keeps its row. It does not make
+    `--all`'s set member a member of the family: `.head` does not say that
+    `--all` was read, so a log created since is cached only where a read asks
+    for its key."""
+    cache, since = opts["cache"], opts["since"]
+    asked_members, asked_keys, log_key = opts["members"], opts["keys"], opts.get("log_key")
+    try:
+        with open(f"{cache}.head", "rb") as handle:
+            head = register_read_parse_head(handle.read())
+    except OSError:
+        head = None
+    cached_members, cached_keys = _register_read_cached(cache)
+    members = cached_members | asked_members
+    keys = cached_keys | asked_keys
+    texts_keys = keys | ({log_key} if log_key else set())
+    candidates = dict((image_cache_head() or (0, {}))[1])
+    if head:
+        candidates.update({path: digest for path, digest in head["rows"].items() if digest})
+    held = _register_read_held(candidates, _register_read_wanted(members, texts_keys))
+    answers = _register_read_query(store, register_read_queries(
+        texts=_register_read_texts(members, texts_keys), held=held), False)
+    snap = _register_read_snapshot(answers)
+    listing = snap["listing"]
+    for key in sorted(asked_keys | ({log_key} if log_key else set()), key=os.fsencode):
+        found = register_log_path_ci(listing, key)
+        if len(found) > 1:
+            raise RegisterReadFailed(
+                f"the key {key!r} matches {len(found)} logs that differ only by case, "
+                f"{', '.join(found)}, so no read of it is unambiguous (C11)")
+    ambiguous = {key for key in cached_keys if len(register_log_path_ci(listing, key)) > 1}
+    changed: set = set()
+    dated = (head is not None and head["n"] == since
+             and head["generation"] == snap["generation"])
+    old_paths = None
+    if dated and "paths" in cached_members:
+        try:
+            with open(f"{cache}.paths", "rb") as handle:
+                old_paths = {os.fsdecode(line) for line in handle.read().split(b"\n") if line}
+        except OSError:
+            dated = False
+    if dated:
+        for path, digest in head["rows"].items():
+            if digest != (listing[path][0] if path in listing else None):
+                changed.add(path)
+        if old_paths is not None:
+            changed |= set(listing) ^ old_paths
+        if "archive" in cached_members:
+            changed |= {path for path in listing if path.startswith(_REGISTER_ARCHIVE_PREFIX)
+                        and path not in head["rows"]}
+        for key in head["absent"]:
+            changed.update(register_log_path_ci(listing, key))
+        for key in ambiguous:
+            changed.update(path for path in register_log_path_ci(listing, key)
+                           if path not in head["rows"])
+    for path in changed:
+        _register_read_row_path(path)
+    refetch = not dated or bool(changed)
+    if refetch:
+        family = _register_read_family(snap, held, members=members, keys=keys - ambiguous,
+                                       all_logs=False)
+        rows, absent = family["rows"], family["absent"]
+        for path in head["rows"] if head else ():
+            # S-a (register-cli.md's `.head` notes): a log a set member read
+            # keeps its row, its text cached or not. The family above rows
+            # only the keys it caches, so the rows of the others, which an
+            # earlier `--all` wrote, are carried over at their digests at `n'`.
+            if path.startswith(LOG_PREFIX) and path in listing:
+                rows.setdefault(_register_read_row_path(path), listing[path][0])
+    else:
+        family = _register_read_family(snap, held, members=asked_members, keys=asked_keys,
+                                       all_logs=False)
+        rows = dict(head["rows"])
+        rows.update(family["rows"])
+        absent = head["absent"] | family["absent"]
+    if log_key:
+        found = register_log_path_ci(listing, log_key)
+        slot = register_log_slot(log_key)
+        if found:
+            family["files"][f"log.{slot}"] = _register_read_image(snap, held, found[0],
+                                                                  family["fetched"])
+            family["images"][found[0]] = family["files"][f"log.{slot}"]
+            family["files"][f"logpath.{slot}"] = os.fsencode(found[0]) + b"\n"
+        else:
+            family["files"][f"log.{slot}"], family["files"][f"logpath.{slot}"] = b"", b""
+    drops = [f"{kind}.{key}" for key in sorted(ambiguous) for kind in ("log", "logpath")]
+    _register_read_finish(cache, family, rows, absent, snap, cfg, drops)
+    say(f"n={snap['head']}")
+    for path in sorted(changed, key=os.fsencode):
+        say(f"changed={path}")
+    say(f"refetched={1 if refetch else 0}")
+    return EXIT_OK
+
+
+def _register_read_at(store, cfg: dict, opts: dict) -> int:
+    """FORM 4, the guard's second read (contract §3.6; B1 to B8): `<key>`'s
+    log at `n`, resolved case-insensitively in the images at `n`, never in
+    the mirror, read directly in one snapshot with the guard's row. It takes
+    the generation from `.head`, and ends 69 where `.head` is missing or out
+    of form, the database's generation differs (B3), `n` is above the head,
+    or `n` is below the latest import at or below it, from which alone the
+    journal renders, and where two logs differ from the key only by case
+    (C11). It writes that one log's `.log.<slot>` and `.logpath.<slot>`, each
+    empty where no log resolves, and nothing else: no `.head`, no `.outage`
+    (B4, B8). The image is T302's object where its name is the digest at `n`;
+    else the snapshot's lines, where the head is `n`; else the journal's
+    replay to `n`, `register_images`, all in the one request."""
+    cache, n, key = opts["cache"], opts["at"], opts["lane"]
+    try:
+        with open(f"{cache}.head", "rb") as handle:
+            head = register_read_parse_head(handle.read())
+    except OSError as exc:
+        raise RegisterReadFailed(f"{cache}.head could not be read ({exc.strerror or exc}), so "
+                                 f"form 4 has no generation to read at (B3)")
+    if head is None:
+        raise RegisterReadFailed(f"{cache}.head is out of form, so form 4 has no generation to "
+                                 f"read at (B3)")
+    texts = _register_read_texts((), {key})
+    snap = _register_read_snapshot(_register_read_query(
+        store, register_read_queries(texts=texts, at=n), True), at=n)
+    if snap["generation"] != head["generation"]:
+        raise RegisterReadFailed(f"the register's generation is {snap['generation']}, and "
+                                 f"{cache}.head's is {head['generation']} (B3)")
+    if n > snap["head"]:
+        raise RegisterReadFailed(f"--at {n} is above the register's head, seq {snap['head']} (B3)")
+    if snap["latest"] is None:
+        raise RegisterReadFailed(f"--at {n} is below the generation's first seq: no import is "
+                                 f"at or below it")
+    found = register_log_path_ci(snap["listing"], key)
+    if len(found) > 1:
+        raise RegisterReadFailed(
+            f"the key {key!r} matches {len(found)} logs that differ only by case at seq {n}, "
+            f"{', '.join(found)}, so no read of it is unambiguous (C11)")
+    slot = register_log_slot(key)
+    if not found:
+        data, where = b"", b""
+    else:
+        path = _register_read_row_path(found[0])
+        digest = snap["listing"][path][0]
+        data = image_cache_get(digest)
+        if data is None and snap["head"] == n:
+            data = _register_read_image(snap, {}, path, {})
+        elif data is None:
+            try:
+                data = register_images(*snap["replay"]).get(path)
+            except RenderRefused as exc:
+                raise RegisterReadFailed(f"the journal could not be replayed to seq {n}: {exc}")
+            if data is None or hashlib.sha256(data).hexdigest() != digest:
+                raise RegisterReadFailed(f"the journal's replay to seq {n} gives no image of "
+                                         f"{path} with its digest, {digest}")
+        where = os.fsencode(path) + b"\n"
+    _register_read_put(cache, f"log.{slot}", data)
+    _register_read_put(cache, f"logpath.{slot}", where)
+    return EXIT_OK
+
+
+def _register_read_end(exc: Exception, guard: bool = False) -> int:
+    """A failed read's stderr and exit (contract §2.6, §3.6): the cause
+    first, which the guard quotes (O15). A direct read that found the switch
+    not `primary`, or the client outside the window, opens with `refuse db
+    <cause> -`; a database's refusal with `psql`'s own `ERROR:` and
+    `DETAIL:` lines; anything else with this file's own line.
+
+    Under `--for guard`, a `psql` that the guard's cut stopped, at the time
+    left or before it ran, is "too late to verify", 2, as a cut already
+    passed before the request is (§3.6's exits table, tasks:466, Y:3518's
+    "On expiry", exit-codes.md:246): not a failed read, 69. Every other
+    `PsqlFailed` keeps its 69. It is not T114's `_register_read_failed`
+    (`journal`'s end), which line R defines under that name."""
+    if guard and isinstance(exc, PsqlFailed) and exc.timer_expired:
+        note("too late to verify")
+        return EXIT_REFUSED
+    if isinstance(exc, RegisterReadFailed):
+        if exc.cause:
+            note(f"refuse db {exc.cause} -")
+        note(f"register read: {exc}")
+        return EXIT_UNAVAILABLE
+    if isinstance(exc, PsqlFailed):
+        echoed = _register_psql_lines(exc)
+        note(f"register read: the register could not be read"
+             f"{'' if echoed else ': ' + exc.detail}")
+        code = next((m.group(1) for m in (re.match(r"ERROR:\s+([0-9A-Z]{5}):", line)
+                                           for line in (exc.stderr or "").splitlines()) if m),
+                    None)
+        if exc.psql_exit == 3 and code in ("42P01", "42703"):
+            note(f"register read: a table or column this client reads is missing, so the "
+                 f"register's schema may not be this client's, {REGISTER_SCHEMA_VERSION}: if it "
+                 f"is newer, upgrade the tools; if it is older, the database is behind: run the "
+                 f"bootstrap")
+        return EXIT_UNAVAILABLE
+    if isinstance(exc, StoreUnusable):
+        note(f"register read: the register could not be read: {exc.detail}")
+        return EXIT_UNAVAILABLE
+    note(f"register read: the cache family could not be written ({exc}); the read failed")
+    return EXIT_UNAVAILABLE
+
+
+def cmd_register_read(args: list[str]) -> int:
+    """`lanes-index register read` (contract §3.6; FR-015; T113), in four
+    forms: see this section's head. Its first stdout line is `mode index` or
+    `mode primary`. In `mode index` it exits 0 and reads and writes nothing.
+
+    Exits (§3.6's tables; §2.7):
+    - 0: read, and the family written; or `mode index`;
+    - 69: a failed read: the database unreachable or refusing, a switch not
+      `primary` or a client outside the readers' window (each naming its
+      cause first), an answer it cannot read, its timer outside `--for guard`,
+      a family that could not be written; in forms 3 and 4 a key that matches
+      two logs (C11);
+      in form 4 also a missing `.head`, a generation that differs, an `--at`
+      above the head or below the generation's first seq;
+    - 78: Q6(c)'s refusal of `mode=primary` (`EXIT_CONFIG`), in every form;
+    - 2: a refused configuration, R09's included, in forms 1 and 3; under
+      `--for guard`, only "too late to verify": the cut passed before the
+      request, or reached during the read, which stops `psql`;
+    - 1 (`EXIT_FAILED`): under `--for guard`, a refused configuration (O14);
+    - 64: usage, before the configuration is read, an empty `--lane=`
+      included."""
+    try:
+        opts = _register_read_args(args)
+    except RegisterReadUsage as exc:
+        note(f"register read: {exc} - see {PROG} --help")
+        return EXIT_USAGE
+    if opts is None:
+        say(USAGE)
+        return EXIT_OK
+    guard = opts["form"] in (2, 4)
+    refused = EXIT_FAILED if guard else EXIT_REFUSED    # O14: 2 means only "too late" under the guard
+    try:
+        cfg = load_config()
+    except PrimaryNotBuilt as exc:
+        note(str(exc))
+        return EXIT_CONFIG
+    except Refusal as exc:
+        note(f"REFUSED: {exc}")
+        return refused
+    if cfg["mode"] != "primary":
+        say("mode index")
+        return EXIT_OK
+    try:
+        store = PostgresStore(cfg, "register_reader")
+    except Refusal as exc:
+        note(f"REFUSED: {exc}")
+        return refused
+    say("mode primary")
+    sys.stdout.flush()
+    if guard and time.monotonic() - _REGISTER_READ_STARTED >= REGISTER_GUARD_CUT_S:
+        note("too late to verify")
+        return EXIT_REFUSED
+    try:
+        if opts["form"] in (1, 2):
+            return _register_read_prefetch(store, cfg, opts)
+        if opts["form"] == 3:
+            return _register_read_since(store, cfg, opts)
+        return _register_read_at(store, cfg, opts)
+    except (RegisterReadFailed, StoreUnusable, OSError) as exc:
+        return _register_read_end(exc, guard)
+
+
 # ===== the SQL register: schema, roles, bootstrap and logins (007)
 #
 # THE SQL REGISTER'S SCHEMA, WHICH THE BOOTSTRAP ALONE APPLIES (feature 007,
@@ -13783,6 +14752,8 @@ def main(argv: list[str]) -> int:
         return cmd_outage(args)
     if verb == "register" and args[:1] == ["classify"]:
         return cmd_register_classify(args[1:])
+    if verb == "register" and args[:1] == ["read"]:
+        return cmd_register_read(args[1:])
     if verb == "render":
         return cmd_render(args)
     if verb == "bootstrap":
