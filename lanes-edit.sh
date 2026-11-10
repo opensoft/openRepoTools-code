@@ -4162,13 +4162,16 @@ utc_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 #
 # NOT HERE: the 3 for an owner still live at D7's deadline (Y:5218) is T417's,
 # with the exit-3 rule (review M8). The `tail` key's values, the done mark's
-# writer and the owed texts are T418's ("The tail, once", Y:5289).
+# writer and the owed texts are T418's ("The tail, once", Y:5289). Here, a
+# record taken over that holds `tail` is never rewritten (WR_TOOK_TAIL; Y:5342;
+# lane openRepoTools-3, #165 6774499606, T412 (1)): T418 writes the done mark
+# from it as found, then removes it.
 WR_NL="$(printf '\nx')"; WR_NL="${WR_NL%x}"; WR_CR="$(printf '\r')"
 WR_STATE=""; WR_D=""; WR_LANE=""; WR_SESSION=""; WR_VERB=""; WR_CMDLINE=""
 WR_ARGS=()
 WR_PLAN=""; WR_SNAP_ARGS=()
 WR_ID=""; WR_GEN=""; WR_DATABASE=""; WR_CREATED_UTC=""; WR_UPDATED_UTC=""
-WR_ATTEMPTS=0; WR_CALLS=""; WR_TAIL=""
+WR_ATTEMPTS=0; WR_CALLS=""; WR_TAIL=""; WR_TOOK_TAIL=""
 WR_CLAIM=""; WR_CLAIM_K=-1; WR_CLAIM_PID=""; WR_CLAIM_START=""
 WR_CLAIM_HOST=""; WR_CLAIM_CONTAINER=""; WR_CLAIM_UTC=""
 WR_HERE_HOST=""; WR_HERE_CONTAINER=""
@@ -4720,9 +4723,14 @@ wr_done_purge() {
 # host's clock on every write, a `call=` line's included (T412; open point 36).
 # The done marks past their age go first (Y:5183). 1, with nothing written,
 # where this run no longer owns the record, a value would break its line, or
-# the file cannot be written.
+# the file cannot be written; and where the record this run took over holds
+# `tail` (WR_TOOK_TAIL): a takeover rewrites nothing in such a record, since
+# its `pid` is the run that wrote `tail` (Y:5179, Y:5342; lane
+# openRepoTools-3, #165 6774499606, T412 (1)). So no `call=` line is added to
+# it, and no call is sent for it.
 wr_record_write() {
   local rw_dir rw_now rw_tmp rw_body rw_v rw_l
+  [ -z "$WR_TOOK_TAIL" ] || return 1
   wr_claim_owns || return 1
   wr_done_purge
   rw_dir="$(wr_pending_dir)" || return 1
@@ -4812,10 +4820,15 @@ wr_record_remove() {
 # THE RECORD TAKEN OVER (Y:5206): its id, generation, `call=` lines, `tail`,
 # `attempts`, `created_utc` and `database` become this run's. Its `pid`,
 # `pid_start`, `host` and `container` become this run's claim's when it is next
-# written (Y:5185).
+# written (Y:5185) -- but only where it holds no `tail`. A record that holds
+# `tail` is never rewritten (Y:5342; lane openRepoTools-3, #165 6774499606,
+# T412 (1)): WR_TOOK_TAIL keeps its value, `wr_record_write` writes nothing
+# while it does, and the record stays as found, its `pid`, `host` and
+# `container` those of the run that wrote `tail` (Y:5179), for T418's done
+# mark. Only its removal (`wr_record_remove`) is left to this run.
 wr_record_take_over() {
   WR_ID="$WR_REC_WRITE_ID"; WR_GEN="$WR_REC_GENERATION"
-  WR_CALLS="$WR_REC_CALLS"; WR_TAIL="$WR_REC_TAIL"
+  WR_CALLS="$WR_REC_CALLS"; WR_TAIL="$WR_REC_TAIL"; WR_TOOK_TAIL="$WR_REC_TAIL"
   WR_CREATED_UTC="$WR_REC_CREATED_UTC"; WR_DATABASE="$WR_REC_DATABASE"
   WR_ATTEMPTS="$WR_REC_ATTEMPTS"
   wr_is_count "$WR_ATTEMPTS" || WR_ATTEMPTS=0
@@ -4922,7 +4935,7 @@ wr_id_plan() {
   local ip_e ip_g ip_f ip_rc ip_n
   ip_e="${LANES_WRITE_ID:-}"; ip_g="${LANES_WRITE_GENERATION:-}"
   ip_f="$WR_STATE/register-pending/$WR_D"
-  WR_ID=""; WR_GEN=""; WR_CALLS=""; WR_TAIL=""; WR_ATTEMPTS=0
+  WR_ID=""; WR_GEN=""; WR_CALLS=""; WR_TAIL=""; WR_TOOK_TAIL=""; WR_ATTEMPTS=0
   WR_CREATED_UTC=""; WR_DATABASE=""
   wr_record_read "$ip_f"; ip_rc=$?
   if [ "$ip_rc" = 2 ]; then
@@ -4973,8 +4986,10 @@ wr_id_plan() {
 # AFTER THE FIRST SNAPSHOT ANSWERED 0 (contract §3.2): its stdout, in a file,
 # gives the generation and the write id, minted or echoed, so the record is
 # written now, after that snapshot and before any commit call (Y:5192) -- unless
-# the snapshot found the write in the register (`found=`), which is the tail's
-# case (T418) and writes no record here.
+# the snapshot found the write in the register (`found=`), or the record taken
+# over holds `tail` (WR_TOOK_TAIL), which is never rewritten (Y:5342; lane
+# openRepoTools-3, #165 6774499606, T412 (1)). Both are the tail's case (T418),
+# and write no record here.
 #
 #   new     the minted id; the record is new
 #   reuse, env
@@ -5027,6 +5042,7 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
     *) return 1 ;;
   esac
   [ -n "$is_found" ] && return 0
+  [ -z "$WR_TOOK_TAIL" ] || return 0
   wr_record_write
 }
 
