@@ -2139,7 +2139,9 @@ def image_cache_put(data: bytes) -> str:
       loses the object, which costs a later reader one miss (lane 3's
       review, #165 6755345889). The `utime` does not follow a symlink
       planted there since the read: only the link's own times are set
-      (lane 3's delta check, #165 6755954683).
+      (lane 3's delta check, #165 6755954683). A link planted between the
+      read and the `utime` stays a miss until the next `put` of its digest
+      replaces it (lane 3's delta check, #165 6768006915).
     - A write that fails is skipped. The digest is returned all the same, and
       a later reader misses.
     `data` is `bytes` or a `bytearray`. Anything else raises `TypeError`
@@ -2156,7 +2158,9 @@ def image_cache_put(data: bytes) -> str:
             try:
                 os.utime(target, follow_symlinks=False)
                 return digest
-            except FileNotFoundError:
+            except (FileNotFoundError, NotImplementedError):
+                # NotImplementedError: this platform's utime cannot leave a
+                # link alone, so the object is written again instead.
                 pass
         _image_cache_write(target, data)
     except (OSError, ValueError):
