@@ -79,6 +79,22 @@ Its first statement also stamps the call's begin, with its parent's pid, in
 `psql-begin.log`, before it reads stdin, so a call its caller's timer kills
 is stamped too (T220f).
 
+THE SERVICE ROW'S F4 (T237y; line W3aX's finding on T237x): one guard run
+meets a cold service, which answers `unavailable` until its `psql` has
+connected (socket contract d8:502), and the service's connection is "one
+long-lived `psql` child on pipes" (d8:229), which `TIMING_PSQL`, reading its
+input to the end before it starts the real `psql`, can never run. So
+`[service]`'s case starts `lanes-index serve` once, puts `STREAM_PSQL` first
+on `PATH` in place of `TIMING_PSQL`, and warms the service with guard runs
+until one is answered through it, with no fallback line (d8, section 5.3);
+only then does it make F4's slow statement and run the guard again.
+`STREAM_PSQL` starts the real `psql` at once and hands its input on chunk by
+chunk, stamping each, so the held child runs through it; the 57014 timed is
+the held child's, from the stamp of the request it was handed to its
+`ERROR:  57014` line, at the request's 180 ms (lane 5's answer 3, #165
+comment 6771208498; d8:214), the child known by its own argv's
+`VERBOSITY=sqlstate` (d8:229).
+
 `STATUS`'S TWO ROWS (T220f; lane 3's T220 bullet, #165 comment 6772120103,
 and its ruling 6, 6770600106) time the register's request alone, from its
 start to the exit, never from the command's start: `status` runs #160's half
@@ -386,6 +402,99 @@ sys.stderr.buffer.write(proc.stderr)
 sys.exit(proc.returncode)
 '''
 
+STREAM_PSQL = r'''#!/usr/bin/env python3
+# T237y's streaming wrapper in front of the real psql, for the service row's
+# F4 case. Like TIMING_PSQL it stamps each call's begin in psql-begin.log
+# before anything else, and logs a call that ends in psql-timing.log in
+# TIMING_PSQL's form. Unlike it, it never reads its input to the end first:
+# it starts the real psql at once and hands each chunk of stdin on as it
+# comes, so the service's one long-lived psql child on pipes (d8:229) runs
+# through it. Each chunk handed on is stamped, and each stderr line that
+# names 57014 is logged in psql-stream.log with the stamp of the last chunk
+# handed on before it: the held child's request, timed from its send to the
+# server's answer. SIGINT, which the service sends on a request's expiry
+# (d8:215), and SIGTERM go on to the real psql.
+import time
+begin = time.monotonic()
+import json, os, signal, subprocess, sys, threading
+here = os.path.dirname(os.path.abspath(__file__))
+
+
+def log(name, record):
+    with open(os.path.join(here, name), "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record) + "\n")
+
+
+log("psql-begin.log", {"argv": sys.argv[1:], "ppid": os.getppid(), "begin": begin})
+version = sys.argv[1:] == ["--version"]
+# THE REAL psql: the bench's, or else the first psql on PATH that is not this
+# wrapper, should the service hand its child a reduced environment.
+real = os.environ.get("T220_REAL_PSQL") or next(
+    (os.path.join(d, "psql") for d in os.environ.get("PATH", "").split(os.pathsep)
+     if d and os.path.realpath(d) != os.path.realpath(here)
+     and os.access(os.path.join(d, "psql"), os.X_OK)), "psql")
+proc = subprocess.Popen([real] + sys.argv[1:],
+                        stdin=subprocess.DEVNULL if version else subprocess.PIPE,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+start = time.monotonic()
+for sig in (signal.SIGINT, signal.SIGTERM):
+    signal.signal(sig, lambda number, frame: proc.send_signal(number))
+sent, lock, first = [], threading.Lock(), []
+
+
+def feed():
+    while True:
+        chunk = os.read(0, 65536)
+        if not chunk:
+            break
+        with lock:
+            sent.append(time.monotonic())
+        try:
+            proc.stdin.write(chunk)
+            proc.stdin.flush()
+        except OSError:
+            break
+    try:
+        proc.stdin.close()
+    except OSError:
+        pass
+
+
+def out():
+    while True:
+        chunk = os.read(proc.stdout.fileno(), 65536)
+        if not chunk:
+            break
+        os.write(1, chunk)
+
+
+def err():
+    for line in iter(proc.stderr.readline, b""):
+        now = time.monotonic()
+        os.write(2, line)
+        text = line.decode("utf-8", "replace").strip()
+        if text and not first:
+            first.append(text)
+        if "57014" in text:
+            with lock:
+                request = sent[-1] if sent else start
+            log("psql-stream.log", {"argv": sys.argv[1:], "ppid": os.getppid(),
+                                    "request": request, "error": now, "line": text})
+
+
+if not version:
+    threading.Thread(target=feed, daemon=True).start()
+readers = [threading.Thread(target=out), threading.Thread(target=err)]
+for reader in readers:
+    reader.start()
+code = proc.wait()
+for reader in readers:
+    reader.join()
+log("psql-timing.log", {"argv": sys.argv[1:], "start": start, "end": time.monotonic(),
+                        "exit": code, "first": (first or [""])[0]})
+sys.exit(code if code >= 0 else 128 - code)
+'''
+
 #: D9'S PHASE-N ROWS (AT-D9's table; the block's T220): the word that leads
 #: each id; how the path runs; the group role its login is in; its expected
 #: exit; the design's bound on the elapsed time in s; whether that bound is
@@ -422,15 +531,11 @@ ROWS = {
     # `lock_timeout` 150 ms, set in `PGOPTIONS` just inside the service's
     # 200 ms timer; only the image fetch differs, at 10 s and 1000 ms under an
     # 11 s timer (T237x; lane 5's answer 3, #165 comment 6771208498; d8:214,
-    # d8:244). Its F4 case, `[service]`, reads `TIMING_PSQL`'s per-call log,
-    # which sees one-shot calls only: one guard run meets a cold service,
-    # which answers `unavailable` before its `psql` has connected (d8:502),
-    # and the service's "one long-lived `psql` child on pipes" (d8:229)
-    # cannot run through a wrapper that reads its stdin to the end. So the
-    # 57014 that case times is the guard's direct read, at the guard's
-    # 1500 ms, and at 180 ms it fails by its timing assertion until the case
-    # warms the service and times the held child's request (T237x's open
-    # question).
+    # d8:244). Its F4 case, `[service]`, warms the service first, then times
+    # the held child's request through `STREAM_PSQL`, which streams (T237y,
+    # `_service_57014`): `TIMING_PSQL` reads its stdin to the end before it
+    # starts the real `psql`, so the held child (d8:229) never ran through it,
+    # and T237w's case timed the guard's direct read (T237x's finding).
     "service":        dict(group="lanes_register_reader", exit=2, bound=4.5, strict=True,
                            faults=("F1", "F2", "F3"), statement_ms=180, table="register_head"),
     # T257's five rows (D9's timeouts table, test plan section 3's AT-D9):
@@ -548,8 +653,11 @@ class Bench:
             f"reader_url={url}", f"reader_passfile={self.passfile}",
             "register_label=register-test", f"register_schema={SCHEMA}", ""]))
 
-    def run(self, row: str, config: Path, *, stdin: str | None = None) -> tuple:
-        """Run `row`'s path; return (the process, its elapsed seconds)."""
+    def run(self, row: str, config: Path, *, stdin: str | None = None,
+            service: subprocess.Popen | None = None) -> tuple:
+        """Run `row`'s path; return (the process, its elapsed seconds). The
+        `service` row starts `lanes-index serve` for this run alone, unless the
+        caller passes the one it holds (T237y)."""
         env = dict(self.env, LANES_INDEX_CONFIG=str(config), LANES_LANE="repoA-2")
         tool = self.copy.parent
         index = [sys.executable, str(self.copy)]
@@ -603,17 +711,8 @@ class Bench:
         else:
             raise AssertionError(f"no path for {row}")
         serve = None
-        if row == "service":
-            # THE ONE SOCKET PATH (socket contract d8, section 2.1).
-            sock = Path(env.get("XDG_STATE_HOME", str(Path(env["HOME"]) / ".local" / "state"))) \
-                / "openRepoTools" / "run" / "register.sock"
-            serve = subprocess.Popen(index + ["serve"], env=env, cwd=str(self.wip),
-                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.DEVNULL, start_new_session=True)
-            end = time.monotonic() + 10
-            while not sock.exists() and time.monotonic() < end and serve.poll() is None:
-                time.sleep(0.05)
-            assert sock.exists(), f"lanes-index serve bound no socket at {sock}: {serve.poll()}"
+        if row == "service" and service is None:
+            serve = self.start_service(env)
         try:
             # `subprocess.run`'s form, with the command's pid and its exit
             # stamp kept for `request_elapsed` (T220f).
@@ -633,11 +732,7 @@ class Bench:
             return proc, self.exited - start
         finally:
             if serve is not None:
-                serve.terminate()
-                try:
-                    serve.wait(10)
-                except subprocess.TimeoutExpired:
-                    serve.kill()
+                self.stop_service(serve)
 
     def calls(self) -> list:
         if not self.timing.exists():
@@ -672,6 +767,48 @@ class Bench:
         begins = [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines() if l] \
             if log.exists() else []
         return [b for b in begins if b["ppid"] == self.pid and b["argv"] == REGISTER_ARGV]
+
+    def guard_env(self, config: Path) -> dict:
+        """The guard rows' environment for `config`, as `run` makes it: the
+        bench's, the configuration, the lane, and the live session's."""
+        env = dict(self.env, LANES_INDEX_CONFIG=str(config), LANES_LANE="repoA-2")
+        return self.guard_session().env(env)
+
+    def start_service(self, env: dict) -> subprocess.Popen:
+        """`lanes-index serve` on `env`, returned once its socket is bound at
+        the one socket path (socket contract d8, section 2.1)."""
+        sock = Path(env.get("XDG_STATE_HOME", str(Path(env["HOME"]) / ".local" / "state"))) \
+            / "openRepoTools" / "run" / "register.sock"
+        serve = subprocess.Popen([sys.executable, str(self.copy), "serve"], env=env,
+                                 cwd=str(self.wip), stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+        end = time.monotonic() + 10
+        while not sock.exists() and time.monotonic() < end and serve.poll() is None:
+            time.sleep(0.05)
+        if not sock.exists():
+            self.stop_service(serve)
+        assert sock.exists(), f"lanes-index serve bound no socket at {sock}: {serve.poll()}"
+        return serve
+
+    @staticmethod
+    def stop_service(serve: subprocess.Popen) -> None:
+        serve.terminate()
+        try:
+            serve.wait(10)
+        except subprocess.TimeoutExpired:
+            serve.kill()
+
+    def stream(self) -> None:
+        """`STREAM_PSQL` first on `PATH` in place of `TIMING_PSQL` (T237y)."""
+        (self.bin / "psql").write_text(STREAM_PSQL, encoding="utf-8")
+        (self.bin / "psql").chmod(0o755)
+
+    def streamed(self) -> list:
+        """`STREAM_PSQL`'s 57014 lines, each with its request's send stamp."""
+        log = self.bin / "psql-stream.log"
+        return [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines() if l] \
+            if log.exists() else []
 
 
 def _record(row: str, elapsed: float, bound: float, rule: str) -> None:
@@ -779,16 +916,68 @@ def _slow_statement(pg, table: str, group: str, seconds: float) -> None:
             f"CREATE POLICY t220_slow ON {table} FOR ALL TO {group} USING (t220_slow());\n")
 
 
+#: The guard's line where the service did not answer (socket contract d8,
+#: section 5.3), and the warm-up's guard runs at most (T237y).
+FALLBACK_LINE = "guard: direct (service unavailable)"
+WARM_RUNS = 20
+
+
+def _service_57014(bench: Bench, spec: dict, user: str) -> None:
+    """`[service]`'s F4 (T237y; line W3aX's finding on T237x): the guard
+    through a WARM service, whose held child's request meets 57014 at the
+    request's 180 ms `statement_timeout` (lane 5's answer 3, #165 comment
+    6771208498; d8:214). `lanes-index serve` is started once, with
+    `STREAM_PSQL` first on `PATH`, so its "one long-lived `psql` child on
+    pipes" (d8:229) runs through a wrapper that hands each request on as it
+    comes; guard runs warm it, up to `WARM_RUNS`, until one is answered
+    through the service, with no `FALLBACK_LINE` (a cold service answers
+    `unavailable` until its `psql` has connected, d8:502); only then is F4's
+    slow statement made and the guard run once more. The held child, known
+    by its own argv's `VERBOSITY=sqlstate` (d8:229), prints `ERROR:  57014`
+    no earlier than 180 ms after its request was handed to it (timing rule 3)
+    and under twice it (timing rule 2), and the guard exits 2. It fails until
+    L5-S1 (lane 5's T511 to T513) and L5-A3 land."""
+    config = bench.config("localhost", bench.pg.port, user)
+    statement_s = spec["statement_ms"] / 1000
+    bench.stream()
+    serve = bench.start_service(bench.guard_env(config))
+    try:
+        proc, warm = None, False
+        for _ in range(WARM_RUNS):
+            proc, _ = bench.run("service", config, service=serve)
+            if FALLBACK_LINE not in proc.stdout + proc.stderr:
+                warm = True
+                break
+            time.sleep(0.25)
+        assert warm, (f"service: no guard run of {WARM_RUNS} was answered through the "
+                      f"service: {proc.returncode}: {proc.stderr}")
+        _slow_statement(bench.pg, spec["table"], spec["group"], 4 * statement_s + 5)
+        proc, _ = bench.run("service", config, service=serve)
+    finally:
+        bench.stop_service(serve)
+    held = [s for s in bench.streamed() if "VERBOSITY=sqlstate" in s["argv"]]
+    assert held, f"service: the held child met no 57014: {bench.streamed()}"
+    took = held[0]["error"] - held[0]["request"]
+    assert statement_s <= took < 2 * statement_s, \
+        f"service: the held child's 57014 {took:.3f} s after its request"
+    assert proc.returncode == spec["exit"], f"service: {proc.returncode}: {proc.stderr}"
+    _record("service-F4", took, statement_s, "timing rules 2 and 3, the held child's request")
+
+
 @pytest.mark.parametrize("row", SLOW_ROWS)
 def test_a_slow_statement_meets_57014_before_the_client_timer(pg, tmp_path, request, row):
     """F4, on every phase-N row that sets a `statement_timeout`: the call
     ends with 57014, the server's bound and not the client timer, no earlier
     than the path's `statement_timeout` after the call's start (timing rule
     3) and under twice it (timing rule 2), and the path exits with its row's
-    outcome (AT-D9, "Oracle")."""
+    outcome (AT-D9, "Oracle"). `[service]` times the warm service's held
+    child, through `STREAM_PSQL` (T237y, `_service_57014`)."""
     spec = ROWS[row]
     bench = Bench(pg, tmp_path, request)
     user = bench.login(spec["group"])
+    if row == "service":
+        _service_57014(bench, spec, user)
+        return
     statement_s = spec["statement_ms"] / 1000
     _slow_statement(pg, spec["table"], spec["group"], 4 * statement_s + 5)
     proc, elapsed = bench.run(row, bench.config("localhost", pg.port, user))
