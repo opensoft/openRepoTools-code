@@ -23712,8 +23712,20 @@ EOF
     # 12's M1). It is an OPTIMISATION of the same-host case and never the
     # request: a session that never reads it answers at its hook's next read of
     # the pushed line instead.
+    #
+    # FEATURE 007, T423 — A REPLAY TYPES INTO NO PANE (Y:5326; Y:2688, "the
+    # typing, no; the poll, yes"). A replay (T418) runs this verb again at
+    # `s−1` only to reach the seam with the committed entry's change set, and
+    # the pane it reads may hold another session by now, so a second
+    # `/handoff --exit` would be typed into whatever runs there. So in a replay
+    # the arm does not call `guard_type` at all, and says so in its own words;
+    # `guard_type`'s own refusal in a replay (T418) stays as the backstop for
+    # every caller. The wait below still runs, since it only reads.
     rh_typed=no
-    if [ "$rh_wstate" = live ]; then
+    if [ "$REG_REPLAY" = 1 ]; then
+      rh_typed="no, a replay types into no pane"
+      note "this run replays the request the register holds at seq ${REGISTER_SEQ}, and a replay types into no pane: lane ${lane}'s bound pane may hold another session by now, and a request is never typed after the fact (Y:5326). The request travels in the register, as it does where no pane is live, and is read at that session's next prompt."
+    elif [ "$rh_wstate" = live ]; then
       rh_trc=0
       guard_type "${rh_win##* }" "$rh_type" || rh_trc=$?
       case "$rh_trc" in
