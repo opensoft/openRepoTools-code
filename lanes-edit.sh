@@ -7203,10 +7203,15 @@ PT_EOF
 #   2. it makes a FRESH run segment, `<d>/<nonce>/1/`, never the committing
 #      run's (Y:5156, Y:5326; lane openRepoTools-3, #165 6755005268, T413's
 #      question 4), with `parent.pid`, `seam.fifo` and `lock` as any attempt's;
-#   3. `lanes-index register snapshot --tree <dir>/tree --at <s−1>` with the
-#      write's five identity flags, of which only the generation is checked
-#      under `--at` (the contract's §3.2), builds the scratch tree at the
-#      entry's base, since the commit moved the head from `s−1` to `s`;
+#   3. `lanes-index register snapshot --tree <dir>/tree --checkout <c> --at
+#      <s−1>` with the write's five identity flags, of which only the
+#      generation is checked under `--at` (the contract's §3.2), builds the
+#      scratch tree at the entry's base, since the commit moved the head from
+#      `s−1` to `s`. `--checkout` goes with `--tree`, as §3.2's argv groups
+#      them: `repos_blob` is only a blob id, so its bytes come from `<c>`'s
+#      objects, and `lanes/log/README.md` from `<c>`'s `origin/main` (Y:5049);
+#      Y:5318's form is shorthand (lane openRepoTools-3, #165 6770688147, T418
+#      item 4);
 #   4. the attempt's `snapshot` is that answer with the COMMITTING call's
 #      `clock=`, its `call` line's `<clock>` (Y:5322; #165 6755005268, T413's
 #      question 3), so the replay's lines carry that call's UTC; and its
