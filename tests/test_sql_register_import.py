@@ -22,7 +22,10 @@ adds:
   `lanes/log/RepoD-1.md`), and a lane with no log file (`repoC-1`);
 - for `main_slots`' pairing, `LANDING` and `LANDED` lines naming one
   repository under two spellings (`opensoft/repoE`, `OpenSoft/RepoE`) and
-  closing takes out of order.
+  closing takes out of order; and, committed on C by the `main_slots` case
+  alone, a `LANDED` naming no repository after its lane's `LANDING`s for
+  one PR on two repositories (`REPOLESS_LANDED`; T211g; lane 3, #165
+  comment 6771569269).
 
 THE PARITY TEST, `test_register_classify_parity_holds_on_every_line` (R04;
 CLI4.10 section 3.5, CLI4.10:629-638; R-F9-9), needs no engine: it feeds
@@ -159,6 +162,25 @@ REGISTER_TEXT = "\n".join([
     EXPIRED_NO_HOLDER,
     "",
 ])
+
+#: THE `main_slots` CASE'S OWN LINES (T211g; lane 3, #165 comment 6771569269,
+#: and T211's text at B12b :1917): a `LANDED` naming no repository, in the
+#: real register's form (its verb, lane, UTC, PR and merge sha, with no
+#: `into <repository> main`), after its lane's `LANDING`s for one PR on two
+#: repositories. Files mode's Rule 6 pairs it by lane and PR alone and closes
+#: the newer `LANDING` still open, opensoft/repoG's, so opensoft/repoF's
+#: stays open (`RULE6_AWK`, R24); lane 3 rules that `main_slots` pairs it
+#: the same way. Committed on C by that case alone, since before lane 1's
+#: T112 follow-up the import of such a line ends 23514 and loads nothing.
+EM, ARROW = chr(0x2014), chr(0x2192)
+REPOLESS_LANDED = [
+    f"LANDING {EM} lane repoA-1, session {UUID_A1}@Eagle, 2026-10-01T05:10:00Z, PR #16 into "
+    f"opensoft/repoF main",
+    f"LANDING {EM} lane repoA-1, session {UUID_A1}@Eagle, 2026-10-01T05:11:00Z, PR #16 into "
+    f"opensoft/repoG main",
+    f"LANDED {EM} lane repoA-1, 2026-10-01T05:15:00Z, PR #16 {ARROW} "
+    f"5f16a5f16a5f16a5f16a5f16a5f16a5f16a5f16a",
+]
 
 #: `WORD` lines whose UTC carries milliseconds (Q4(d)(i)): kept verbatim, and
 #: flagged.
@@ -741,13 +763,30 @@ def test_main_slots_pairing_equals_files_mode_rule_6_on_imported_history(pg, tmp
     name one repository under two spellings and close takes out of order,
     the open landing takes `main_slots` lists, with their places, equal
     those files mode's Rule 6 pairing leaves open on the same files (AT-7,
-    "Tests"; lane 1's point 3, comment 6710770304)."""
+    "Tests"; lane 1's point 3, comment 6710770304).
+
+    Its fixture also holds a `LANDED` naming no repository after its lane's
+    `LANDING`s for one PR on two repositories (`REPOLESS_LANDED`, committed
+    on C; T211g; lane 3, #165 comment 6771569269): Rule 6 closes the newer,
+    opensoft/repoG's, and leaves opensoft/repoF's open, and `main_slots`
+    must agree. It fails until lane 1's T112 follow-up, in T115's import:
+    before it the import ends 23514 on migration 1's slot CHECKs and loads
+    nothing (lane 1, 6771151979), and with lane 1's fix alone, no slot for
+    the line, `main_slots` keeps both open; lane 3's pairing (6771569269,
+    point 2) closes repoG's."""
     reg = FixtureRegister(tmp_path / "e")
-    proc = reg.import_at(pg, reg.c)
+    register = reg.blob(reg.c, "lanes/LANES.md") + "".join(
+        f"{line}\n" for line in REPOLESS_LANDED).encode("utf-8")
+    c = reg.commit({"lanes/LANES.md": register},
+                   "a LANDED naming no repository after two LANDINGs of one PR")
+    files = _rule6_open(reg, c)
+    assert ("repoA-1", 16, "opensoft/repof") in files and \
+        ("repoA-1", 16, "opensoft/repog") not in files, \
+        f"Rule 6 closes the newer LANDING of the LANDED with no repository: {files}"
+    proc = reg.import_at(pg, c)
     assert proc.returncode == 0, proc.stderr
     slots = _rows(pg, "SELECT lane, pr, lower(repo_key) AS repo, line_id FROM main_slots "
                       "WHERE slot_kind = 'landing' ORDER BY line_id")
-    files = _rule6_open(reg, reg.c)
     assert files, "the fixture leaves landings open"
     assert [(s["lane"], s["pr"]) for s in slots] == [(t[0], t[1]) for t in files]
     for s, t in zip(slots, files):
