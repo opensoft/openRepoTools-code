@@ -5809,7 +5809,8 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
 #
 # THE PARENT'S STEPS, in order (lane openRepoTools-4's plan, §3.7; T415's line):
 #   (a) before the first attempt: the lane's checkout `<c>` (`pw_checkout`,
-#       R17), the writer's own lane (`pw_lane_given`), a pending hand edit in
+#       R17), the writer's own lane (`pw_lane_given`), LANES_NO_GIT=1
+#       (`pw_no_git_refuse`), a pending hand edit in
 #       `<c>` (`pw_hand_edit_refuse`), the client's act checks 1–4
 #       (`act_checks`, T410), the author (`pw_author_read`), the write id, the
 #       claim and the record's plan (T412's `wr_` functions), and the run's
