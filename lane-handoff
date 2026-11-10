@@ -1774,6 +1774,7 @@ if [ -z "$lane" ]; then
     or name the lane here: $prog --lane <lane>" 2 ;;
 	esac
 fi
+lane_typed="$lane"   # the name as the rung gave it, for `canon-lane --walk` (T429, below)
 # ONE NAME UNDER ANY CASE, AND BEFORE ANYTHING IS RENAMED OR WRITTEN
 # (Amendment 15; Copilot round 2 on openRepoTools#47). Every rung above answers
 # with a spelling of its own — the tmux window's name, a record's lane field,
@@ -1793,7 +1794,6 @@ fi
 # about to create — so a well-formed `--lane` this register has never carried
 # reaches the writes below and is named there, by the row read that cannot find
 # a handoff and by the row flip that finds no state cell to replace.
-lane_typed="$lane"   # the name as the rung gave it, for `canon-lane --walk` (T429, below)
 sread lane_canon "'this lane has no row'" canon-lane "$lane"
 if [ -n "$lane_canon" ] && [ "$lane_canon" != "$lane" ]; then
 	step "lane $lane → $lane_canon (Amendment 15: the register row's spelling is canonical)"
