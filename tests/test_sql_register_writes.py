@@ -76,6 +76,12 @@ PSQL_ARGV = ["--no-psqlrc", "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-v
 WRITER_LOGIN = "lanes_w_t210"
 SECRET = "t210-never-printed-0b5e"
 
+#: The session `request-handoff --force` writes its `PAUSED` for (`--session`).
+#: Without it the verb refuses with 2, naming no uuid (`lanes-edit.sh`'s
+#: `requester_uuid`, at a2073eae:10691), before it reaches any SQL, so a case
+#: that expects the write's own refusal or 69 would fail by that usage refusal.
+SID_REQUESTER = "bbbbbbbb-0007-4000-8000-00000000b007"
+
 
 def test_the_storage_layer_entry_exits_69_when_the_database_is_unreachable(tmp_path):
     """The storage-layer entry, called as AT-1's part N calls it, against a
@@ -226,7 +232,8 @@ WRITE_VERBS = {
     "release": (["release", "opensoft/repoA#7", "test 2", "--no-github"], "repoA-1"),
     "rename-lane": (["rename-lane", "repoA-2", "repoA-3", "test 2", "--no-github"], "repoA-2"),
     "replace-in-row": (["replace-in-row", "repoA-2", "parked", "parked for test 2"], "repoA-2"),
-    "request-handoff": (["request-handoff", "repoA-1", "--force", "test 2"], "repoA-2"),
+    "request-handoff": (["request-handoff", "repoA-1", "--force", "test 2", "--session",
+                         SID_REQUESTER], "repoA-2"),
     "retire-rows": (["retire-rows", "repoA-4", "--reason", "test 2"], "repoA-2"),
     "set-row-state": (["set-row-state", "repoA-2", f"PAUSED {DOT} test 2"], "repoA-2"),
 }
