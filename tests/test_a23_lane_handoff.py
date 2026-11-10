@@ -29,6 +29,7 @@ handoff there and its unlocked commit in W is what each case sees at the base.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -40,7 +41,7 @@ from conftest import REPO
 from test_a23_lane_start import (HANDOFF, SIBLING_WORDS, _assert_nothing_unpublished, _other_repository,
                                  _racing_git, _sibling_handoff, _with_cell,
                                  _cell, _edit, _origin, _peer, _peer_push, _published, _started, _tip)
-from test_a23_lane_start_read import assert_W_moved_only_by_fast_forward
+from test_a23_lane_start_read import W_reflog, assert_W_moved_only_by_fast_forward
 from test_lane_start_row_stamp import LANE, Sandbox, pytestmark, short_root  # noqa: F401
 
 WHY = "a test handoff"
@@ -486,3 +487,76 @@ def test_a_why_with_a_tab_is_a_space_in_the_subject(tmp_path, short_root):
     published = _published(box, cell)
     assert published.endswith("\n---\n\n" + HANDOFF), published
     assert _origin(box, "log", "-1", "--format=%s", "main", "--", cell).strip() == SUBJECT
+
+
+# ------------------------------------- a closed lane (opensoft/openRepoTools#118)
+
+def _closed(tmp_path: Path, short_root: Path) -> tuple[Sandbox, Path, str]:
+    """A started lane that `lane-end`'s own line has closed: its log's last
+    lane-kind line is an ENDED and its lifecycle reads CLOSED, with the handoff
+    a peer wrote still in the lane's checkout."""
+    box, checkout, cell, _before = _ready(tmp_path, short_root)
+    row = next(r for r in _published(box, "lanes/LANES.md").splitlines()
+               if r.startswith(f"| `{LANE}`"))
+    minted = re.search(r"harness `([0-9a-f-]{36})`", row)
+    assert minted, row
+    ended = _edit(box, "log", "ENDED", f"lane:{LANE}", "finished",
+                  env=dict(box.env, LANES_LANE=LANE, LANES_SESSION=minted.group(1)))
+    assert ended.returncode == 0, ended.stderr
+    _assert_nothing_unpublished(box, checkout)
+    return box, checkout, cell
+
+
+def _held(box: Sandbox, checkout: Path, cell: str) -> dict:
+    """Every place a handoff writes, as one comparable value: the published
+    register, the lane's object log and the commits behind them, W's reflog,
+    the lane's checkout (its head, its changed files and the handoff file), the
+    lifecycle snapshot, and the restart intent."""
+    read = dict(box.env, LANES_NO_FETCH="1")
+    return {
+        "origin": _tip(box),
+        "register": _published(box, "lanes/LANES.md"),
+        "log": _published(box, f"lanes/log/{LANE}.md"),
+        "W": W_reflog(box),
+        "checkout head": box.git("-C", str(checkout), "rev-parse", "HEAD"),
+        "checkout status": box.git("-C", str(checkout), "status", "--porcelain"),
+        "handoff": (checkout / cell).read_text(encoding="utf-8"),
+        "lifecycle": _edit(box, "lane-state", LANE, env=read).stdout,
+        "restart intent": _edit(box, "restart-intent", LANE, env=read).returncode,
+    }
+
+
+@pytest.mark.parametrize("mode", [(), ("--restart",)], ids=["plain", "restart"])
+def test_118_a_closed_lane_is_refused_before_any_write(tmp_path, short_root, mode):
+    """opensoft/openRepoTools#118, Brett Heap's "Refuse, as --late does
+    (Recommended)": `lane-handoff` on a lane whose last lane-kind line is an
+    ENDED took its lifecycle from CLOSED to SWAPPING, wrote a PAUSED after the
+    ENDED and finished at SWAPPED. It now exits 2 with `--late`'s own words, and
+    writes nothing: no commit, no changed file, no log line, no lifecycle
+    transition and, under `--restart`, no restart intent."""
+    box, checkout, cell = _closed(tmp_path, short_root)
+    before = _held(box, checkout, cell)
+    assert "state\tCLOSED" in before["lifecycle"], before["lifecycle"]
+    assert before["log"].splitlines()[-1].startswith("ENDED"), before["log"]
+
+    result = _handoff(box, *mode)
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert f"lane {LANE}'s last lane-kind line is ENDED (at " in result.stderr, result.stderr
+    assert ("the lane is closed, and a handoff after it would reopen a lane nobody is in"
+            in result.stderr), result.stderr
+    assert "Nothing was renamed and nothing was written" in result.stderr, result.stderr
+    assert "handoff refreshed" not in result.stderr and "lifecycle:" not in result.stderr
+    assert _held(box, checkout, cell) == before
+
+
+def test_118_a_lane_started_again_after_its_close_is_handed_off_as_before(tmp_path, short_root):
+    """The refusal reads the log's last lane-kind line, which is the lane's
+    state: a lane that `lane-start` reopened after its ENDED has a STARTED or
+    RESUMED last, and is handed off whatever its snapshot said in between."""
+    box, _checkout, _cell = _closed(tmp_path, short_root)
+    again = box.start("--fresh", window_name=LANE)
+    assert again.returncode == 0, again.stderr
+
+    result = _handoff(box)
+    assert result.returncode == 0, result.stderr
+    assert "the lane is closed" not in result.stderr, result.stderr

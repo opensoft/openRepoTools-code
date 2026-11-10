@@ -98,6 +98,15 @@
 # resumed, it refuses — and the honest record of the state that session now
 # holds is its own next handoff.
 #
+# A CLOSED LANE IS REFUSED BY EVERY OTHER MODE TOO (opensoft/openRepoTools#118).
+# The `ENDED` or `RETIRED` refusal above is not `--late`'s alone: a plain
+# handoff, `--restart`, `--exit` and `--in-process` run on a lane whose last
+# lane-kind line is one of those two exit 2 with the same words
+# (`refuse_a_closed_lane`), before the restart intent is reserved, the window is
+# renamed or a byte is written. Each would otherwise take a terminal lane from
+# CLOSED to SWAPPING and append a PAUSED after its ENDED. `--late` makes the
+# check after its own `--at` checks, so its order of refusals is what it was.
+#
 # EXIT CODES, this toolset's and the family's:
 #
 #   0  the handoff was written (and the pane respawned or exited, where asked)
@@ -1489,6 +1498,14 @@ $sr_why" 2 ;;
 # a fence another act moved, a snapshot that cannot be written — each of them
 # costs the LIFECYCLE and never the record. The handoff carries on and says
 # what it could not keep, exactly as it does for a dropped sub-field.
+#
+# THE ONE HANDOFF THIS COMMAND REFUSES FOR WHAT THE LANE IS, and the lifecycle
+# is not what refuses it: a lane whose log's last lane-kind line is `ENDED` or
+# `RETIRED` is closed, and `refuse_a_closed_lane` (below, right after the
+# managed-ledger seam's refusal) exits 2 on it before anything is written, this
+# lifecycle included
+# (opensoft/openRepoTools#118). `R-A11-11` is a swap that is OWED, and a
+# handoff on a closed lane is owed by nobody.
 lc_on=""; lc_gen=""; lc_op=""; lc_state=""; lc_inventory_missed=""
 
 lifecycle_begin() {
@@ -1740,6 +1757,56 @@ seam_refuse() {   # <lane> <the act>
 # managed lane.
 seam_refuse "$lane" "a handoff"
 
+# A CLOSED LANE IS NOT HANDED OFF (opensoft/openRepoTools#118). A lane is
+# closed when its log's LAST lane-kind line, in file order, is an `ENDED` or a
+# `RETIRED`: the late rule at the head of this file, where that line is the
+# lane's state, and the two lines `lane-end` and `retire-rows` write. A handoff
+# run on such a lane took its lifecycle from CLOSED to SWAPPING, polled it,
+# recorded an inventory, appended a PAUSED after the ENDED and finished at
+# SWAPPED: a terminal lane reopened by a `/handoff` typed in a pane that is
+# still there. Brett Heap's answer, relayed by lane 3 on opensoft/openRepoTools#165:
+# "Refuse, as --late does (Recommended)".
+#
+# ONE READ AND ONE REFUSAL, `--late`'s own: the `--late` block below calls these
+# two functions as well, so the two modes cannot come to read a closed lane
+# differently. The read is `lane-last`, the published object log. The lifecycle
+# below reads `lane-state` instead, the snapshot `lane_state_follow` made of the
+# same lines. The log is the lane's state and the snapshot is derived from it,
+# so a lane that a later STARTED or RESUMED reopened is never refused here
+# whatever its snapshot still says, and a closed lane with no snapshot is.
+last_line=""; last_verb=""; last_utc=""; ll_rc=0
+read_last_lane_line() {   # sets last_line, last_verb, last_utc; returns 1 (ll_rc is the status) where the read failed
+	last_line=""; last_verb=""; last_utc=""; ll_rc=0
+	last_line="$("$LANES_EDIT" lane-last "$lane" 2>/dev/null)" || ll_rc=$?
+	case "$ll_rc" in
+	0) : ;;
+	8) last_line="" ;;
+	*) last_line=""; return 1 ;;
+	esac
+	last_verb="$(printf '%s' "$last_line" | awk -F'\t' '{print $1}')"
+	last_utc="$(printf '%s' "$last_line" | awk -F'\t' '{print $2}')"
+	return 0
+}
+refuse_a_closed_lane() {   # <the write the act would make after the close> [<more words>]
+	case "$last_verb" in
+	ENDED | RETIRED)
+		die "lane $lane's last lane-kind line is $last_verb (at $last_utc): the lane is closed, and $1 after it would reopen a lane nobody is in.${2-}" 2 ;;
+	esac
+	return 0
+}
+# `--late` makes the same check after its own `--at` checks, so its order of
+# refusals is what it was. Every other mode makes it here, before the restart
+# intent is reserved, the window is renamed or a byte is written. A read that
+# FAILED is not a closed lane and not an open one (Amendment 7(d)): it is said,
+# and the swap goes on as the lifecycle's own failed reads let it (`R-A11-11`).
+if [ "$do_late" != 1 ]; then
+	if read_last_lane_line; then
+		refuse_a_closed_lane "a handoff" " Nothing was renamed and nothing was written: no PAUSED, no row, no handoff file, no lifecycle transition (this lane's lifecycle reads CLOSED, and a handoff would take it to SWAPPING), no inventory and no restart. If the lane is to run again, start it first (lane-start), then hand off."
+	else
+		note "lane $lane's last lane-kind line could not be read (\`$LANES_EDIT lane-last $lane\` exited $ll_rc), so this handoff cannot tell whether the lane is closed and does not check. The swap itself goes on (\`R-A11-11\`): a refusal needs a closed lane established, and a read that failed establishes nothing."
+	fi
+fi
+
 # A plain preservation writer cannot modify an in-flight restart's input.
 # This read precedes window, row and log writes; publication checks it again
 # under the helper mutex, together with the prior handoff checksum.
@@ -1925,23 +1992,15 @@ if [ "$do_late" = 1 ]; then
 	fi
 	# THE LANE'S LAST LANE-KIND LINE, read from the published log exactly as
 	# every state reader reads it: FILE ORDER decides which is last.
-	last_line=""; ll_rc=0
-	last_line="$("$LANES_EDIT" lane-last "$lane" 2>/dev/null)" || ll_rc=$?
-	case "$ll_rc" in
-	0) : ;;
-	8) last_line="" ;;
-	*) die "\`$LANES_EDIT lane-last $lane\` failed (exit $ll_rc). That is NOT 'this lane has no lane-kind line', and a late PAUSED written on an answer nobody got could pause a lane that is running (Amendment 7(d))." 1 ;;
-	esac
-	last_verb="$(printf '%s' "$last_line" | awk -F'\t' '{print $1}')"
-	last_utc="$(printf '%s' "$last_line" | awk -F'\t' '{print $2}')"
+	read_last_lane_line ||
+		die "\`$LANES_EDIT lane-last $lane\` failed (exit $ll_rc). That is NOT 'this lane has no lane-kind line', and a late PAUSED written on an answer nobody got could pause a lane that is running (Amendment 7(d))." 1
 	case "$last_verb" in
 	'')
 		die "lane $lane has no STARTED or RESUMED in its object log, so there is no binding for a late PAUSED to close. A lane that never started is not a lane that failed to swap." 2 ;;
 	PAUSED)
 		die "lane $lane's last lane-kind line is already a PAUSED (at $last_utc): the record this act writes is already there, and a second one records nothing. If that PAUSED is wrong, the log is append-only and no later line corrects it — say so in the handoff instead." 2 ;;
-	ENDED | RETIRED)
-		die "lane $lane's last lane-kind line is $last_verb (at $last_utc): the lane is closed, and a PAUSED after it would reopen a lane nobody is in." 2 ;;
 	esac
+	refuse_a_closed_lane "a PAUSED"
 	if ! [ "$last_utc" '<' "$late_at" ]; then
 		die "lane $lane's last lane-kind line is $last_verb at $last_utc, which is AT OR AFTER the $late_at this late record claims: the relaunch is already recorded, and this log is APPEND-ONLY, so a PAUSED appended now would be the lane's last line and would make a lane that is RUNNING read as paused. Nothing was written.
     The act, in order: run \`$prog --late --at <when the old session ended>\` from a SHELL, and only then start the lane (\`pclaude <profile>\`).
