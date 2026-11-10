@@ -555,6 +555,8 @@ class ReadyEnvironment:
             "11 always fails on a Unix socket; tests/pgcluster.py has no tls_cluster yet")
         self.bench = ReadyBench(root)
         self.cluster = request.getfixturevalue("tls_cluster")
+        self.bench.env["PATH"] = os.pathsep.join([str(self.cluster.bindir), str(self.bench.tools),
+                                                  os.environ.get("PATH", os.defpath)])
         # T229's API (line FX): a database of its own, bootstrapped with
         # `--label LABEL`, and `configuration()` naming it, its logins
         # `lanes_w_fx` and `lanes_r_fx`, and its label as `register_label=`.
@@ -629,6 +631,8 @@ def _re_fault(env: ReadyEnvironment, fault: str) -> subprocess.CompletedProcess:
         assert proc.returncode == 0, f"outage declare (T121) did not declare:\n{_said(proc)}"
         return env.ready("--expect", "index")
     if fault == "expect-primary-switch-files":
+        env.config.write_text(env.config.read_text(encoding="utf-8").replace(
+            "mode=index", "mode=primary"), encoding="utf-8")
         bench.marker(_store(LABEL))
         return env.ready("--expect", "primary")
     if fault == "expect-primary-origin-another":
@@ -636,11 +640,13 @@ def _re_fault(env: ReadyEnvironment, fault: str) -> subprocess.CompletedProcess:
                   "marker_state = 'present', import_commit = repeat('a', 40), "
                   "import_tree = repeat('b', 40), import_seq = 0, marker_seq = 1, "
                   "marker_commit = repeat('c', 40) WHERE id = 1")
+        env.config.write_text(env.config.read_text(encoding="utf-8").replace(
+            "mode=index", "mode=primary"), encoding="utf-8")
         bench.marker(_store(OTHER))
         return env.ready("--expect", "primary")
     if fault == "version-window":
-        env.admin("UPDATE lanes_register.schema_window SET writers_from = version + 1, "
-                  "readers_from = version + 1")
+        env.admin("UPDATE lanes_register.schema_version SET version = version + 1, "
+                  "writers_from = version + 1, readers_from = version + 1 WHERE id = 1")
         return env.ready("--expect", "index")
     raise AssertionError(f"no RE fault {fault}")
 
