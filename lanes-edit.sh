@@ -6635,10 +6635,25 @@ CR_EOF
 
 # THE RUN'S END, every child ended: its own `<run>/` goes, but for the attempt
 # directories that the `call` lines still held name, which keep only
-# `snapshot`, `files` and `preimages` (Y:5177).
+# `snapshot`, `files` and `preimages` (Y:5177). WHERE NO `<run>/` WAS MADE, F3's
+# lookup (`pw_lookup`) kept its two answer files in `<d>/` itself, and they go
+# here, then `<d>/` where that leaves it empty: no remover of T415's reaches
+# them, and `<d>/` could never be removed after them (lane openRepoTools-3,
+# #165 6774499606, T418 item 3: REV418b NIT-1). Both readers of those files,
+# `pw_tail`'s `pw_entry_rows` and `pw_doubt_end`'s `cat`, have finished with
+# them by every end that comes here.
 pw_run_dir_done() {
-  local rd_kept="" rd_a="" rd_e=""
-  [ -n "$PW_RUN_DIR" ] && pw_wdir_ok "$PW_RUN_DIR" run || return 0
+  local rd_kept="" rd_a="" rd_e="" rd_d="$WR_STATE/register-writes/$WR_D" rd_gone=0
+  if [ -z "$PW_RUN_DIR" ]; then
+    wr_is_hex64 "$WR_D" || return 0
+    for rd_a in "$PW_LK_OUT" "$PW_LK_ERR"; do
+      [ -n "$rd_a" ] && [ "${rd_a%/*}" = "$rd_d" ] || continue
+      rm -f -- "$rd_a" 2>/dev/null && rd_gone=1
+    done
+    [ "$rd_gone" = 0 ] || rmdir -- "$rd_d" 2>/dev/null || :
+    return 0
+  fi
+  pw_wdir_ok "$PW_RUN_DIR" run || return 0
   rd_kept="$WR_NL$(pw_calls_dirs "$WR_CALLS")$WR_NL"
   for rd_a in "$PW_RUN_DIR"/* "$PW_RUN_DIR"/.[!.]* "$PW_RUN_DIR"/..?*; do
     [ -e "$rd_a" ] || [ -L "$rd_a" ] || continue
