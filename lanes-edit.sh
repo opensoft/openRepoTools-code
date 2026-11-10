@@ -544,9 +544,10 @@
 #      first word; a `LANES_LANE` that is not that word, byte for byte; a
 #      first word that is not the row's own spelling, byte for byte, an
 #      alias's new name included, which under `LANES_ROUTE_WRITES=1` is
-#      refused before anything is cloned; and a `LANES_SESSION` that is not a
-#      transcript uuid. A cell append whose anchor does not hold is no
-#      refusal: it is left out and said, and the write goes on.
+#      refused before anything is cloned where W's fetch answers; and a
+#      `LANES_SESSION` that is not a transcript uuid. A cell append whose
+#      anchor does not hold is no refusal: it is left out and said, and the
+#      write goes on.
 #  64  usage — a caller's bad arguments to one of the reads Amendment 11 added
 #      (`window-lane`, `lane-dir`, `lane-profile`, `last-session`, `forks`,
 #      `duplicate-holder` (issue #39), `workstation`, `fetch-age`, `lanes`,
@@ -17993,14 +17994,18 @@ lane_checkout_enter() {   # <write_lane_of's status> <its lane, or empty>
   #     2, naming it; one that is `<L>` is the lane the write goes through.
   #   * A FETCH THAT FAILED OR DID NOT RUN IS NO ANSWER (R22), as at the gate:
   #     the write goes on, and the arm decides in the lane's checkout, after its
-  #     own fetch, as it did before this ruling.
+  #     own fetch, as it did before this ruling. UNDER `LANES_NO_FETCH=1` THERE
+  #     IS NO FETCH TO ASK AFTER, so the router does not ask again (REV427b,
+  #     N2): that too is no answer, and the no-fetch refusal below, or the arm
+  #     in an existing checkout, decides.
   # Both are asked whether the lane's checkout exists or not, so a routed call
   # gets this answer from the router, never from the checkout's copy.
   if [ "$cmd" = start-record ] && sr_argv_adds_row && [ "$SRA_ROW_GIVEN" = 1 ]; then
     sr_row_names_lane "$SRA_ROW" "$lcn_lane"
   fi
   lcn_c="$(canon_lane "$lcn_lane")" || exit $?
-  if [ "$cmd" = start-record ] && [ "$lcn_c" != "$lcn_lane" ] && ! sr_argv_adds_row; then
+  if [ "$cmd" = start-record ] && [ "$lcn_c" != "$lcn_lane" ] &&
+     [ "${LANES_NO_FETCH:-0}" != 1 ] && ! sr_argv_adds_row; then
     log_sync
     if [ "$LOG_SYNC_FETCH" = yes ]; then
       lcn_c="$(canon_lane "$lcn_lane")" || exit $?
@@ -18802,7 +18807,7 @@ Nothing was written." 2
   #   not that word; a first word that is not the row's own spelling, byte for
   #   byte, an alias's new name included (6767463594, question 6), which
   #   under LANES_ROUTE_WRITES=1 the router refuses before anything is cloned
-  #   (6770733371, new question (a)); a
+  #   where W's fetch answers (6770733371, new question (a)); a
   #   LANES_SESSION that is not a transcript uuid; S3's refusals; each with
   #   nothing written · 3 pushed, not confirmed · 4 the lock · 5 an edit's
   #   proof · 6 S4's commit, kept and named · 69 on primary, at T409's ask
