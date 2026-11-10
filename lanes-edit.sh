@@ -587,7 +587,8 @@
 #      AND FEATURE 007'S `rename-lane` ON PRIMARY (T422; Q13(a); Y:5092;
 #      R18), each with nothing sent: in an attempt's child, before the seam,
 #      a handoff the row names that is not under `handoffs/` in the lane's
-#      checkout, or has a pending change there (`rl_move_refuse_checks`), a
+#      checkout, has a cache or bytecode part in its path, or has a pending
+#      change there (`rl_move_refuse_checks`), a
 #      lane checkout that is not there (`rl_handoff_repo`), and a write that
 #      returned with no `committed <seq>` (`rl_after_committed`); and in the
 #      handoff act its parent runs after COMMIT (`rl_move_act`), with the
@@ -19857,18 +19858,31 @@ rl_handoff_repo() {   # <the old name, as the row spells it>
     die "refusing to rename lane $1 in an attempt's child under LANES_REGISTER_SCRATCH: its own register checkout, ${rl_hrepo:-<no workspace>}, is not here, and on primary the handoff its row names is read there before anything is sent, and moved and stamped there after the register commits (Q13(a); Y:5092). Its parent requires that checkout before the first attempt, so this is an internal error of the write path. Nothing was sent." 2
 }
 
-# THE TWO REFUSALS ONLY PRIMARY MAKES, before the seam (Y:5092), for a handoff
+# THE REFUSALS ONLY PRIMARY MAKES, before the seam (Y:5092), for a handoff
 # the row names and `<c>` holds (`rl_h_touch`): each path under `handoffs/`,
 # since the move's push on primary sends nothing else (T420's backstop;
-# spec:183–185; R16 (d)); and no pending change to either path in `<c>`,
-# which the move's own S3 step 4 would refuse after COMMIT. 2, nothing sent.
+# spec:183–185; R16 (d)); no cache, bytecode or environment component in
+# either path, the set #162 keeps out of every workspace commit
+# (`bytecode_in_pathspec`), which the move's own commit would refuse after
+# COMMIT, so a handoff that cannot be moved and stamped refuses before
+# anything is sent (Y:5138; lane 4's REV422c N1); and no pending change to
+# either path in `<c>`, which the move's own S3 step 4 would refuse after
+# COMMIT. 2, nothing sent.
 rl_move_refuse_checks() {
-  rmr_p=""; rmr_hits=""
+  rmr_p=""; rmr_hits=""; rmr_c=""
   for rmr_p in "$rl_h_rel" "$rl_h_rel_new"; do
     case "$rmr_p" in
       handoffs/?*) : ;;
       *) die "lane $rl_old's row names the handoff '$rl_hcell', which is $rmr_p in its checkout $rl_hrepo and not a file under handoffs/. On primary the register commits this rename first, and the handoff's move and Rule 3 stamp follow as a git commit in that checkout, whose push sends only changes under handoffs/ (Q13(a); D10; spec:183–185), so this move could never be published. Move that handoff under handoffs/<estate>/ in a commit of its own, point the row's handoff column at it (replace-in-row), and re-run. Nothing was sent." 2 ;;
     esac
+    rmr_c="$(printf '%s\n' "$rmr_p" | LC_ALL=C awk '{ n = split($0, part, "/")
+      for (i = 1; i <= n; i++)
+        if (part[i] == "__pycache__" || part[i] == ".pytest_cache" || part[i] == ".mypy_cache" ||
+            part[i] == ".ruff_cache" || part[i] == "node_modules" || part[i] == ".venv" ||
+            part[i] == "venv" || part[i] == "site-packages") { print part[i]; exit }
+      if ($0 ~ /\.py[co]$/) print $0 }')"
+    [ -z "$rmr_c" ] ||
+      die "lane $rl_old's row names the handoff '$rl_hcell', which is $rmr_p in its checkout $rl_hrepo, a path with a cache, bytecode or environment part ($rmr_c) that no workspace commit carries (opensoft/openRepoTools#162). On primary the register commits this rename first, and the handoff's move and Rule 3 stamp follow as a git commit in that checkout, which would refuse it after COMMIT, so this move could never be made (Y:5138). Move that handoff to a path without one in a commit of its own, point the row's handoff column at it (replace-in-row), and re-run. Nothing was sent." 2
   done
   [ "$NO_GIT" != 1 ] || return 0
   rmr_hits="$(LANES_REPO="$rl_hrepo" cs_pending_of "$rl_h_rel" "$rl_h_rel_new" | tr '\n' ' ')"
@@ -19955,7 +19969,7 @@ rl_move_write() {
 # THE STEPS FOR A MOVE OWED, one sentence (lane 3, #165 6774499606, T422 (6)).
 # Y:5331 has `<owed>` name "the command that does each step by hand", and the
 # rerun is that command (`rl_rerun`). First, S6.3's archive of what `<c>`
-# holds above origin, and the reset to origin. Then
+# holds above origin, and the reset to origin, with S6.3's STOP line. Then
 # any person's commit in that archive goes out by `commit`, the publish act,
 # from `<new>`'s checkout, where `LANES_LANE=<new>` routes it: made first
 # where it is not there, and the commit put on it by `cherry-pick`
@@ -19969,7 +19983,7 @@ rl_move_hand_steps() {   # <checkout> <old> <new>
   local hs_nc=""
   hs_nc="$(lane_checkout_path "$3" 2>/dev/null)" || hs_nc=""
   [ -n "$hs_nc" ] || hs_nc="<W>-lanes/$3"
-  printf '(1) in %s, archive what it holds above origin/%s and reset to it (S6.3): list it with git -C %s cherry -v refs/remotes/origin/%s HEAD, and where it lists any commit, git -C %s push origin HEAD:refs/heads/archive/%s-stranded-%s, then git -C %s reset --keep refs/remotes/origin/%s; (2) where lane %s'"'"'s checkout, %s, is not there yet, make it: %s lane-checkout %s --create (the publish act routes there, and so does the rerun once W resolves %s to %s); then, for each commit step (1) listed that a person made, never the move'"'"'s own handoff(%s@...): RENAMED commit, put it there and publish it: git -C %s cherry-pick <sha>, then the publish act, LANES_LANE=%s %s commit "<what it is>"; (3) run lane-rename %s %s again, which writes no register line and makes only the move and the stamp. Never `commit` on the move, and never a raw git push of it' \
+  printf '(1) in %s, archive what it holds above origin/%s and reset to it (S6.3): list it with git -C %s cherry -v refs/remotes/origin/%s HEAD; if any + line is not your own write, STOP and take it to the lane its subject names, and never reset, stash or overwrite a peer'"'"'s work; otherwise, where it lists any commit, git -C %s push origin HEAD:refs/heads/archive/%s-stranded-%s, then git -C %s reset --keep refs/remotes/origin/%s; (2) where lane %s'"'"'s checkout, %s, is not there yet, make it: %s lane-checkout %s --create (the publish act routes there, and so does the rerun once W resolves %s to %s); then, for each commit step (1) listed that a person made, never the move'"'"'s own handoff(%s@...): RENAMED commit, put it there and publish it: git -C %s cherry-pick <sha>, then the publish act, LANES_LANE=%s %s commit "<what it is>"; (3) run lane-rename %s %s again, which writes no register line and makes only the move and the stamp. Never `commit` on the move, and never a raw git push of it' \
     "$1" "$LANES_BRANCH" "$1" "$LANES_BRANCH" "$1" "$3" "$(date -u +%Y%m%dT%H%MZ)" "$1" "$LANES_BRANCH" \
     "$3" "$hs_nc" "$SELF" "$3" "$2" "$3" "$3" "$hs_nc" "$3" "$SELF" "$2" "$3"
 }
@@ -20068,10 +20082,10 @@ rl_rerun() {   # <the typed old name>
   if ! { printf 'checkout=\nfrom=%s\nto=%s\nstamp=%s\nold=%s\nnew=%s\nseq=%s\n' \
            "$rr_from" "$rr_cell" "$rr_st" "$rr_loo" "$rr_lon" "$rr_seq" \
            > "$REG_SCRATCH/rl-move.tmp" && mv -f -- "$REG_SCRATCH/rl-move.tmp" "$REG_SCRATCH/rl-move"; } 2>/dev/null; then
-    note "WARNING: lane $1 is lane $rr_lon in the register already (seq ${rr_seq}), so this run wrote no register line; its handoff's move could not be handed to the parent that makes it ($REG_SCRATCH/rl-move could not be written), so it is NOT made: the row's handoff column names ${rr_cell}. The move is owed: $(rl_move_hand_steps "$(lane_checkout_path "$rr_loo" 2>/dev/null || printf '%s' '<c>')" "$rr_loo" "$rr_lon")."
+    note "WARNING: lane $1 is lane $rr_lon in the register already (seq ${rr_seq}), so this run wrote no register line; its handoff's move could not be handed to the parent that makes it ($REG_SCRATCH/rl-move could not be written), so it is NOT made: the row's handoff column names ${rr_cell}. The move is owed: $(rl_move_hand_steps "$(lane_checkout_path "$rr_lon" 2>/dev/null || printf '%s' '<c>')" "$rr_loo" "$rr_lon")."
     exit 0
   fi
-  note "lane $1 is lane $rr_lon in the register already (its RENAMED line is in the snapshot at seq ${rr_seq}), so this run writes no register line and makes only the handoff's move and Rule 3 stamp, in the lane's checkout, after this attempt and outside the flag (Y:3449–3451): ${rr_from:+$rr_from → }$rr_cell"
+  note "lane $1 is lane $rr_lon in the register already (its RENAMED line is in the snapshot at seq ${rr_seq}), so this run writes no register line; the handoff's move and Rule 3 stamp, where still owed, are made in the lane's checkout after this attempt, outside the flag (Y:3449–3451): ${rr_from:+$rr_from → }$rr_cell"
   exit 0
 }
 
