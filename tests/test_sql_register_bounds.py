@@ -409,7 +409,12 @@ class Bench:
         self.timing = self.bin / "psql-timing.log"
         self.passfile = _private(tmp_path / "conf" / "pgpass")
         self.origin = tmp_path / "origin.git"
-        self.wip = tmp_path / "wip"
+        # THE LANE'S CHECKOUT IS UNDER `$HOME/projects` (HOME is `tmp_path`
+        # below), so that the guard's scope test (`under_projects_root`,
+        # clause (e)) lets the prompt through to its reads; outside it the
+        # guard returns 0 before reading anything (line W4a's T215b).
+        self.wip = tmp_path / "projects" / "wip"
+        self.wip.parent.mkdir(parents=True)
         env = {k: v for k, v in os.environ.items()
                if not k.startswith(("LANES_", "CLAUDE_", "TMUX", "PG"))}
         env.update(HOME=str(tmp_path), XDG_STATE_HOME=str(tmp_path / "state"),
@@ -423,6 +428,12 @@ class Bench:
                        check=True, env=env)
         subprocess.run(["git", "clone", "-q", str(self.origin), str(self.wip)], check=True,
                        env=env, capture_output=True)
+        # THE WORKSPACE, as `test_lanes_index.py` names it (Amendment 9(a)):
+        # `lanes-edit.sh workspace-root` answers with `path:`, the checkout
+        # (line W4a's T215b).
+        (tmp_path / ".agents").mkdir()
+        (tmp_path / ".agents" / "workspace.yaml").write_text(
+            f"repository: {self.origin}\npath: {self.wip}\n", encoding="utf-8")
         (self.wip / "lanes" / "log").mkdir(parents=True)
         (self.wip / "lanes" / "LANES.md").write_text("# LANES.md\n", encoding="utf-8")
         for argv in (["add", "-A"], ["commit", "-q", "-m", "C"], ["push", "-q", "origin", "main"]):
@@ -458,9 +469,14 @@ class Bench:
         if row in ("guard", "answer-2"):
             argv = ["bash", str(tool / "lanes-edit.sh"), "guard"]
             env.update(TMUX="/tmp/t220,1,0", TMUX_PANE="%1", T220_WINDOW="repoA-2")
+            # The hook's JSON is compact, as the harness sends it: the guard's
+            # `jstr` reads `"cwd":"<dir>"` with no blank after the colon. No
+            # live session record is written, so today's guard stops at its
+            # session-record check, clause (d), before any register read.
             stdin = json.dumps({"hook_event_name": "UserPromptSubmit",
                                 "session_id": str(uuid.uuid4()), "cwd": str(self.wip),
-                                "prompt": "2" if row == "answer-2" else "hello"})
+                                "prompt": "2" if row == "answer-2" else "hello"},
+                               separators=(",", ":"))
         elif row == "reader":
             argv = index + ["register", "read", "--prefetch", "--cache",
                             str(self.root / "cache" / "reg"), "--files", "register,aliases"]
