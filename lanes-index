@@ -1523,7 +1523,10 @@ def register_images(journal, edits, files, *, start=None) -> dict:
     final_newline)})`, the render set's state at seq `c`, as
     `register_cache_state` reads it back from cached images. Given `start`:
     - `journal` holds only the entries `c+1` to `k`, in seq order with no
-      gap, and none where `c` is `k`. The import-first check is dropped;
+      gap, and none where `c` is `k`; or, where an import is among them,
+      the entries from the latest import to `k`, as
+      `register_render_queries(k, since=c)` reads them. The import-first
+      check is dropped;
     - `edits` holds only those entries' rows;
     - `files` holds those entries' rows AND the rows from the latest import
       to `c`, as `register_render_queries(k, since=c)` reads them. The rows
@@ -1651,16 +1654,21 @@ def register_render_queries(k: int, *, since=None) -> list:
 
     WITH `since=c` (lane 1's cache signature, #165 6755040818, which lane 3
     accepted in 6755051914), the third and the fourth read only the entries
-    `c+1` to `k`, for `register_images`' `start`. The digest query, the
-    fifth, is unchanged: `journal_files`' rows from the latest import to
-    `k`, so every path's latest digest at or below `k` is read, and a path
-    untouched since `c` is proven by the same row as a path touched since.
-    `c` is a whole number, which its caller checked."""
+    `c+1` to `k`, for `register_images`' `start`, AND NONE BEFORE THE LATEST
+    IMPORT (lane 3's NIT, #165 6768006915): their span is the full read's,
+    `seq >= <latest import>`, with `seq > c` added. So where an import is
+    among `c+1` to `k`, they begin at the latest one, and the entries before
+    it, which `register_images` would pass over, are not read. The digest
+    query, the fifth, is unchanged: `journal_files`' rows from the latest
+    import to `k`, so every path's latest digest at or below `k` is read,
+    and a path untouched since `c` is proven by the same row as a path
+    touched since. `c` is a whole number, which its caller checked."""
     latest = "(SELECT i.seq FROM journal i WHERE i.kind = 'import' ORDER BY i.seq DESC LIMIT 1)"
 
     def span(alias: str, *, entries: bool = False) -> str:
         if entries and since is not None:
-            return f"{alias}.seq > {int(since)} AND {alias}.seq <= {int(k)}"
+            return (f"{alias}.seq >= {latest} AND {alias}.seq > {int(since)} "
+                    f"AND {alias}.seq <= {int(k)}")
         return f"{alias}.seq >= {latest} AND {alias}.seq <= {int(k)}"
 
     return [
@@ -1721,12 +1729,16 @@ def register_render_read(store, k: int, *, start=None, row: str = "render") -> t
 
     `row` IS D9'S ROW for the read (lane 1's cache signature, #165
     6755040818, which lane 3 accepted in 6755051914): `render`, as `render
-    --images` has it, or `read` or `guard`, T113's. Those two run as
-    REGISTER-READER, so their `store` is a `PostgresStore(cfg,
+    --images` has it, or `read` or `guard`, T113's. `read` runs as
+    REGISTER-READER, so its `store` is a `PostgresStore(cfg,
     "register_reader")`: `PostgresStore.bounds` refuses a row of the other
-    role. The guard's row is cut by its caller's timer, which this
-    signature does not carry, so `bounds` refuses `guard` with `ValueError`
-    until T113 settles that. Any other `row` raises `ValueError` here.
+    role. Any other `row` raises `ValueError` here.
+
+    `guard` IS REFUSED UP FRONT, with `ValueError`, before any request (lane
+    3's ruling on lane 1's doubt 2, #165 6768006915). D9's guard row is cut
+    by its caller's timer, at T0 + 3.75 s (Y:3518), which no task has yet,
+    and a miss's two requests cannot fit that cut. No timer keyword is
+    added until a task needs one.
 
     WITH `start`, `(c, {path: (lines, final_newline)})`, the state at seq `c`
     that `register_cache_state` read back from the cache, it returns THE
@@ -1765,6 +1777,10 @@ def register_render_read(store, k: int, *, start=None, row: str = "render") -> t
     contract §2.3's one request per call does not allow."""
     if row not in ("render", "read", "guard"):
         raise ValueError(f"the render read takes D9's render, read or guard row, not {row!r}")
+    if row == "guard":
+        raise ValueError("D9's guard row is cut by its caller, at T0 + 3.75 s (Y:3518): it "
+                         "needs its caller's timer, which no task has yet, so the render read "
+                         "refuses it")
     if start is None:
         return _register_render_rows(store, k, None, row)
     try:
@@ -1780,8 +1796,9 @@ def register_render_read(store, k: int, *, start=None, row: str = "render") -> t
 def _register_render_rows(store, k: int, since, row: str) -> tuple:
     """`register_render_read`'s one request and its checks, with D9's `row`:
     `(journal, edits, files)`, typed, from the latest import to `k`; or,
-    with `since=c`, the entries `c+1` to `k` and their edits, beside every
-    `journal_files` row from the latest import to `k`."""
+    with `since=c`, the entries from `c+1`, or from the latest import where
+    it is above `c`, to `k`, and their edits, beside every `journal_files`
+    row from the latest import to `k`."""
     answers = store._query_many(register_render_queries(k, since=since), snapshot=True,
                                 row=row)
     if len(answers) != 5:
@@ -1812,9 +1829,9 @@ def _register_render_rows(store, k: int, since, row: str) -> tuple:
             raise RenderRefused(f"the journal's entries from seq {latest} to seq {k} were not "
                                 f"all read")
     elif (((journal[0][0], journal[-1][0]) if journal else None)
-          != ((since + 1, k) if since < k else None)):
-        raise RenderRefused(f"the journal's entries from seq {since + 1} to seq {k} were not "
-                            f"all read")
+          != ((max(since + 1, latest), k) if since < k else None)):
+        raise RenderRefused(f"the journal's entries from seq {max(since + 1, latest)} to seq "
+                            f"{k} were not all read")
     return (journal, _render_rows(answers[3], "journal_edits"),
             _render_rows(answers[4], "journal_files"))
 
