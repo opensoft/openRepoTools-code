@@ -7897,7 +7897,8 @@ start_record_tail() {
 # reads `--add-row`) is not the flag. It also leaves the word after `--add-row`,
 # the row, in SRA_ROW with SRA_ROW_GIVEN=1, for the router's test of it (lane 3,
 # #165 6770733371, new question (a)); an `--add-row` with no word after it
-# leaves SRA_ROW_GIVEN=0, and the arm refuses that call in its usage words.
+# leaves SRA_ROW_GIVEN=0, `write_lane_of` does not route that call, and the arm
+# refuses it in its usage words.
 sr_argv_adds_row() {
   SRA_ROW=""; SRA_ROW_GIVEN=0
   sra_i=0; sra_n=${#ORIG_ARGV[@]}
@@ -17733,10 +17734,13 @@ write_lane_of() {   # <verb> <its arguments…>
     # arm reads no row, and `lane_checkout_enter` refuses it before anything
     # is cloned (#165 6770733371, new question (a)); where its fetch of W was
     # no answer, the arm refuses it in the lane's checkout, before the lock
-    # (#165 6767463594, question 6).
+    # (#165 6767463594, question 6). An `--add-row` with no row after it is the
+    # arm's usage refusal too, so it is not routed either (REV427b, N1), as a
+    # missing `<L>` is not, and nothing is cloned for it.
     start-record)
       case "${1-}" in ''|-*) return 1 ;; esac
       [ "${LANES_LANE-}" = "$1" ] && valid_uuid "${LANES_SESSION-}" || return 1
+      if sr_argv_adds_row && [ "$SRA_ROW_GIVEN" = 0 ]; then return 1; fi
       printf '%s\n' "$1" ;;
     append-line)
       [ -n "${1-}" ] || return 1
