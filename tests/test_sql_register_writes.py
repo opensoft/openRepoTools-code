@@ -44,12 +44,14 @@ per-verb cases (T241) read them back by digest.
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -82,6 +84,67 @@ SECRET = "t210-never-printed-0b5e"
 #: `requester_uuid`, at a2073eae:10691), before it reaches any SQL, so a case
 #: that expects the write's own refusal or 69 would fail by that usage refusal.
 SID_REQUESTER = "bbbbbbbb-0007-4000-8000-00000000b007"
+
+#: What `_masked_path` keeps off a case's `PATH`: an installed `lanes-index`,
+#: a real `psql`, and every `pg_` client that `postgresql-16` puts beside it.
+_MASKED_NAMES = ("psql", "lanes-index")
+_MASKED_PREFIX = "pg_"
+#: `_masked_path`'s mirrors, built once per process: each masked directory's
+#: real path, to its mirror under the one `l2-pathmask-` directory.
+_PATH_MIRRORS: dict = {}
+_PATH_MIRROR_ROOT: list = []
+
+
+def _masked_path() -> str:
+    """The caller's PATH with every directory kept, in its place, and each one
+    that holds a masked name swapped for a mirror of it without them. A real
+    `psql` or `pg_` client, or an installed `lanes-index`, is never what a
+    case runs; but dropping the directory that holds one drops what sits
+    beside it. On a GitHub runner, `postgresql-16`'s client package puts
+    `psql` in `/usr/bin` together with `git` and `bash`, and `/bin` links
+    there, so a filter that drops the directory leaves a case no `git` or
+    `bash` to run. The mirror is a directory of symlinks, one per entry, each
+    to the original entry's absolute path, the masked names left out. It is
+    built once per process, keyed by the directory's real path, under one
+    temporary directory that an `atexit` handler removes. A directory that
+    holds no masked name passes through unchanged, so where no `PATH`
+    directory holds one, the PATH is what the old filter gave; empty entries
+    are left out, as that filter left them."""
+    kept = []
+    for part in os.environ.get("PATH", "").split(os.pathsep):
+        if not part:
+            continue
+        real = os.path.realpath(part)
+        if real not in _PATH_MIRRORS:
+            try:
+                names = os.listdir(real)
+            except OSError:
+                names = []
+            if not any(_is_masked(name) for name in names):
+                kept.append(part)
+                continue
+            _PATH_MIRRORS[real] = _path_mirror(real, names)
+        kept.append(_PATH_MIRRORS[real])
+    return os.pathsep.join(kept)
+
+
+def _is_masked(name: str) -> bool:
+    return name in _MASKED_NAMES or name.startswith(_MASKED_PREFIX)
+
+
+def _path_mirror(real: str, names: list) -> str:
+    """`real`'s mirror: a new directory under the one `l2-pathmask-`
+    directory, holding a symlink to each entry of `real` but the masked."""
+    if not _PATH_MIRROR_ROOT:
+        root = tempfile.mkdtemp(prefix="l2-pathmask-")
+        atexit.register(shutil.rmtree, root, ignore_errors=True)
+        _PATH_MIRROR_ROOT.append(root)
+    mirror = tempfile.mkdtemp(prefix=(os.path.basename(real) or "root") + "-",
+                              dir=_PATH_MIRROR_ROOT[0])
+    for name in names:
+        if not _is_masked(name):
+            os.symlink(os.path.join(real, name), os.path.join(mirror, name))
+    return mirror
 
 
 def test_the_storage_layer_entry_exits_69_when_the_database_is_unreachable(tmp_path):
@@ -553,7 +616,7 @@ def test_an_image_holding_a_cr_or_a_nul_is_refused_with_2_and_nothing_sent(tmp_p
                           f"postgresql://{WRITER_LOGIN}@{host}:5432/lanes_t241",
                           f"postgresql://lanes_r_t241@{host}:5432/lanes_t241", passfile)
     env = index_env(tmp_path, conf, estate.home, **fake)
-    env["PATH"] = str(tmp_path / "fakebin") + os.pathsep + _sanitized_path()
+    env["PATH"] = str(tmp_path / "fakebin") + os.pathsep + _masked_path()
 
     write_id, generation = str(uuid.uuid4()), str(uuid.uuid4())
     args_sha256 = hashlib.sha256(b"t241 " + bad.encode("ascii")).hexdigest()
