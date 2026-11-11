@@ -7949,7 +7949,7 @@ sr_argv_adds_row() {
         if [ $((sra_i + 1)) -lt "$sra_n" ]; then
           if [ "$SRA_ADDS" = 1 ]; then SRA_ROW="${ORIG_ARGV[$((sra_i + 1))]}"; SRA_ROW_GIVEN=1; fi
         else
-          [ -n "$SRA_BAD" ] || SRA_BAD=row-short
+          [ -n "$SRA_BAD" ] || SRA_BAD="row-short"
         fi
         sra_i=$((sra_i + 2)) ;;
       --log)
@@ -7965,11 +7965,11 @@ sr_argv_adds_row() {
         sra_i=$((sra_i + 4)) ;;
       --append-cell)
         SRA_CELLS=$((SRA_CELLS + 1))
-        [ $((sra_i + 3)) -lt "$sra_n" ] || [ -n "$SRA_BAD" ] || SRA_BAD=cell-short
+        [ $((sra_i + 3)) -lt "$sra_n" ] || [ -n "$SRA_BAD" ] || SRA_BAD="cell-short"
         sra_i=$((sra_i + 4)) ;;
       --state)
         SRA_STATES=$((SRA_STATES + 1))
-        [ $((sra_i + 1)) -lt "$sra_n" ] || [ -n "$SRA_BAD" ] || SRA_BAD=state-short
+        [ $((sra_i + 1)) -lt "$sra_n" ] || [ -n "$SRA_BAD" ] || SRA_BAD="state-short"
         sra_i=$((sra_i + 2)) ;;
       *) [ -n "$SRA_BAD" ] || { SRA_BAD=stray; SRA_BAD_WORD="${ORIG_ARGV[$sra_i]}"; }; sra_i=$((sra_i + 1)) ;;
     esac
