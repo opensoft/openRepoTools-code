@@ -31,7 +31,8 @@ ENTRIES "WRITTEN THROUGH THE WRITE PATH" (TP:1055-1056) come two ways:
   these cases tests the renderer, never the writer or the fork;
 - by `lanes-edit.sh log NOTED` on `primary` through T203's flipped copy,
   whose fork starts the renderer (lane 4's T415 and T416, L4-B13), where
-  the oracle is about writers and forks (T270b's cases, at the end).
+  the oracle is about writers and forks (the writer- and fork-side cases,
+  at the end).
 
 TEST 5'S `git` WRAPPER (TP:1059-1082; open point 8, TP:8792-8812) is first
 on the `PATH` of every `lanes-index` and `lanes-edit.sh` run here. It logs
@@ -45,7 +46,10 @@ FIFO (re-armed per call, `times` bounding it); `kill`, SIGKILL to the
 renderer's process group, after leaving `<GIT_INDEX_FILE>.lock` where
 `index_lock` asks, as git inside `read-tree` leaves it; `fail`, exit 1;
 `reject`, git's non-fast-forward refusal with exit 1, N times, then
-disarmed; `stall`, a sleep before the real git. `redirect` sends a
+disarmed; `stall`, a sleep before the real git. `render_only` limits an
+arm to the calls of a `lanes-index render --checkout`, by the command line
+of the process above the call (`ps -ww -o command=`), which the log keeps
+as `render`, true or false. `redirect` sends a
 `fetch` or `push` of a GitHub URL to the bare origin in its place.
 Section 3.2's `psql` shim is beside it, handing every call to the
 engine's own `psql` by its path.
@@ -66,7 +70,7 @@ push, the lock and its handshake, the pass, its bounds); line R holds them
 at `refs/l1/V-round4`. `test_six_lost_races_leave_the_last_write_for_the_
 next_write_or_reconcile`, which T325's verify selects by `reconcile`, also
 fails until T325, at its own assertion: until then `reconcile` on `primary`
-is T117's read-only check. The cases whose writes fork the renderer (T270b)
+is T117's read-only check. The cases whose writes fork the renderer, at the end,
 also fail until lane 4's T415 and T416 (L4-B13). Every case is RE: without
 PostgreSQL 16 it skips with T205's banner.
 
@@ -350,6 +354,17 @@ def started(pid):
     return " ".join(out.split())
 
 
+def is_render(pid):
+    """Whether the process above the call is a `lanes-index render
+    --checkout`, by its command line; only that answer is kept."""
+    try:
+        out = subprocess.run(["ps", "-ww", "-o", "command=", "-p", str(pid)],
+                             capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return " render --checkout " in " %s " % " ".join(out.split())
+
+
 def log(record):
     with open(LOG, "a", encoding="utf-8") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
@@ -375,12 +390,14 @@ def take(index, times):
         return True
 
 
-def applies(arm, sub, args, here):
+def applies(arm, sub, args, here, render):
     if arm.get("sub") != sub:
         return False
     if arm.get("where") and os.path.realpath(arm["where"]) != here:
         return False
     if arm.get("has") and arm["has"] not in args:
+        return False
+    if arm.get("render_only") and not render:
         return False
     return True
 
@@ -393,10 +410,11 @@ def main():
     here = where(args)
     parent = os.getppid()
     record = {"sub": sub, "argv": args, "pid": os.getpid(), "renderer": parent,
-              "renderer_start": started(parent), "where": here,
+              "renderer_start": started(parent), "render": is_render(parent), "where": here,
               "env": {key: os.environ.get(key) for key in ENV_KEYS}, "t0": time.time()}
     for index, arm in enumerate(control.get("arms", [])):
-        if not applies(arm, sub, args, here) or not take(index, arm.get("times", -1)):
+        if (not applies(arm, sub, args, here, record["render"])
+                or not take(index, arm.get("times", -1))):
             continue
         do = arm["do"]
         if do == "hold":
@@ -847,6 +865,144 @@ class RenderEstate:
             ended.append(SimpleNamespace(returncode=proc.returncode, stdout=out, stderr=err))
         return ended
 
+    # ------------------------------------------------------------ writes that fork
+    def rearm(self, arms=()) -> None:
+        """The wrapper's arms changed, its log and counts kept."""
+        control = json.loads((self.bin / "git-wrapper.json").read_text(encoding="utf-8"))
+        control["arms"] = list(arms)
+        (self.bin / "git-wrapper.json").write_text(json.dumps(control), encoding="utf-8")
+
+    def edit(self, lc, *args: str, env: dict | None = None,
+             timeout: float = 300) -> subprocess.CompletedProcess:
+        """`lanes-edit.sh <args>` in the lane's checkout, as its lane, through
+        the flipped copy's `lanes-edit.sh`, with the `mode=primary`
+        configuration: a write on `primary`, which forks the renderer (lane
+        4's T415 and T416)."""
+        return subprocess.run(["bash", str(self.copy.parent / "lanes-edit.sh"), *args],
+                              cwd=str(lc.clone), env=self.lane_env(lc, None, env),
+                              capture_output=True, text=True, timeout=timeout,
+                              stdin=subprocess.DEVNULL, check=False)
+
+    def write(self, lc, text: str, env: dict | None = None,
+              timeout: float = 300) -> subprocess.CompletedProcess:
+        """One `log NOTED lane:<L> <text>` from the lane's checkout."""
+        return self.edit(lc, "log", "NOTED", f"lane:{lc.lane}", text, env=env, timeout=timeout)
+
+    def entries(self) -> int:
+        """The wrapper log's length, the mark a wait starts after."""
+        return len(_jsonl(self.bin / "git-wrapper.log"))
+
+    def render_calls(self, after: int = 0) -> list:
+        """The calls a `lanes-index render --checkout` made, logged after the
+        mark `after`, each once."""
+        entries = _jsonl(self.bin / "git-wrapper.log")[after:]
+        ran = {e["pid"] for e in entries if e.get("outcome") == "ran"}
+        return [e for e in entries if e.get("render")
+                and (e.get("outcome") == "ran" or e["pid"] not in ran)]
+
+    def wait_lag_0(self, lc, what: str) -> None:
+        """OPEN POINT 8'S FIRST WAIT: `status` every 100 ms until its lag is
+        0, under 30 s."""
+        deadline = time.monotonic() + CEILING
+        while True:
+            if self.lag(lc) == 0:
+                return
+            if time.monotonic() > deadline:
+                shown = self.status(lc)
+                pytest.fail(f"{what}: the lag is not 0 within {CEILING:g} s:\n{shown.stdout}"
+                            f"{shown.stderr[-800:]}", pytrace=False)
+            time.sleep(POLL)
+
+    def wait_renders_exit(self, after: int, what: str) -> list:
+        """OPEN POINT 8'S SECOND WAIT: under 30 s, a render's call logged
+        after the mark `after` (every pass begins with a fetch), then the
+        exit of every renderer pid logged after it, a re-fork's included:
+        `os.pidfd_open` where it exists, else `os.kill(pid, 0)` beside the
+        start time logged, a pid whose start time no longer matches counting
+        as exited. Returns the renderer pids."""
+        deadline = time.monotonic() + CEILING
+        while not self.render_calls(after):
+            if time.monotonic() > deadline:
+                pytest.fail(f"{what}: no render's call was logged within {CEILING:g} s",
+                            pytrace=False)
+            time.sleep(POLL)
+        seen: dict = {}
+        while True:
+            for call in self.render_calls(after):
+                seen.setdefault(call["renderer"], call["renderer_start"])
+            live = [pid for pid, start in seen.items() if not _exited(pid, start)]
+            if not live:
+                again = {c["renderer"] for c in self.render_calls(after)}
+                if again <= set(seen):
+                    return sorted(seen)
+                continue
+            if time.monotonic() > deadline:
+                pytest.fail(f"{what}: renderer pids {live} did not exit within {CEILING:g} s",
+                            pytrace=False)
+            time.sleep(POLL)
+
+
+def _exited(pid: int, start: str) -> bool:
+    """Whether `pid`, which started at `start` (`ps -o lstart=`), is gone."""
+    if hasattr(os, "pidfd_open"):
+        try:
+            fd = os.pidfd_open(pid)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            fd = None
+        if fd is not None:
+            import select
+            try:
+                poller = select.poll()
+                poller.register(fd, select.POLLIN)
+                if poller.poll(0):
+                    return True
+            finally:
+                os.close(fd)
+    else:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            pass
+    now = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True,
+                         text=True, check=False).stdout
+    return " ".join(now.split()) != start
+
+
+def _until(predicate, seconds: float) -> bool:
+    """`predicate()` polled every 100 ms until it holds, or `seconds` pass;
+    its last answer."""
+    deadline = time.monotonic() + seconds
+    while not predicate():
+        if time.monotonic() > deadline:
+            return bool(predicate())
+        time.sleep(POLL)
+    return True
+
+
+def _held_fd(fifo: Path, what: str, seconds: float = 120) -> int:
+    """The FIFO's write end, once the wrapper or the shim holds a call on
+    it; the case fails, naming `what`, where none does in time."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            return os.open(str(fifo), os.O_WRONLY | os.O_NONBLOCK)
+        except OSError:
+            time.sleep(0.05)
+    pytest.fail(f"{what}: nothing was held on {fifo.name} within {seconds:g} s", pytrace=False)
+
+
+def _wrote(proc, what: str) -> None:
+    assert proc.returncode == 0, (
+        f"{what} on primary did not exit 0 (lane 4's T415 and T416, L4-B13):\n{_said(proc)}")
+
+
+#: Test 7's seed's session of `L1`'s row (pgcluster's `_test7_seed`).
+UUID_L1 = "eeeeeeee-0002-4000-8000-00000000e002"
+
 
 def _estate(request, tmp_path: Path, **kw) -> RenderEstate:
     """A `RenderEstate` on `pg_imported`, or `pg` where `stage` is `empty`."""
@@ -870,15 +1026,40 @@ def _assert_rendered(est: RenderEstate, old: str, seqs: list, origin: Path | Non
     journal = {row["seq"]: row for row in est.journal(min(seqs) - 1)}
     for sha, (k,), message in gained:
         entry = journal[k]
-        assert message.rstrip("\n") == f"{entry['message']}\n\n{'Register-Seq'}: {k}", (
+        assert message.rstrip("\n") == _with_trailer(entry["message"], k), (
             f"the commit for seq {k} carries {message!r}, not the journal's message "
-            f"{entry['message']!r} with Register-Seq: {k} after one blank line")
+            f"{entry['message']!r} with Register-Seq: {k} (T322's form)")
         ident = est.identity(sha, origin)
         assert ident == {"author": entry["author"], "author_epoch": entry["epoch"],
                          "committer": entry["author"], "committer_epoch": entry["epoch"]}, (
             f"the commit for seq {k} has {ident}, not the journal's author {entry['author']} "
             f"as author and committer, both at {entry['epoch']} (D15)")
     return [sha for sha, _c, _m in gained]
+
+
+#: A line of a trailer block, `Token: value` (F29; B14 tasks:1504).
+TRAILER_LINE = re.compile(r"[A-Za-z0-9-]+: .*")
+
+
+def _with_trailer(message: str, k: int) -> str:
+    """T322'S FORM (B14 tasks:1504), with no final LF: the entry's message,
+    its blank last lines dropped, then `Register-Seq: <k>` as the last line
+    of its final trailer block, where it has two paragraphs or more and every
+    line of the last is `Token: value`; otherwise as a new last paragraph
+    after one blank line."""
+    lines = message.split("\n")
+    while lines and not lines[-1].strip(" \t"):
+        lines.pop()
+    paragraphs, current = [], []
+    for line in lines:
+        if line.strip(" \t"):
+            current.append(line)
+        elif current:
+            paragraphs.append(current)
+            current = []
+    paragraphs.append(current)
+    block = len(paragraphs) >= 2 and all(TRAILER_LINE.fullmatch(line) for line in paragraphs[-1])
+    return "\n".join(lines) + ("\n" if block else "\n\n") + f"Register-Seq: {k}"
 
 
 def _no_rewrite(est: RenderEstate) -> None:
@@ -1438,3 +1619,313 @@ def test_six_lost_races_leave_the_last_write_for_the_next_write_or_reconcile(req
         f"through T322's pass): origin carries {est.commits_after(old)}\n{_said(proc)}")
     _assert_rendered(est, old, seqs)
     assert est.lag(one) == 0, f"the lag is not 0 after reconcile:\n{est.status(one).stdout}"
+
+
+# =================================================================== writes that fork
+#: THE WRITER- AND FORK-SIDE CASES: each write is `lanes-edit.sh log NOTED`
+#: (or lane-start's stamp) on `primary` from a lane's checkout, through the
+#: flipped copy, and its fork starts the renderer. Each fails until lane 4's
+#: T415 and T416 (L4-B13), with T320 to T323. Every wait for a forked render
+#: is open point 8's.
+
+
+def test_a_renderer_killed_between_commit_and_push_blocks_nothing(request, tmp_path):
+    """AT-5's kill (TP:1103-1115; P319-346; concern 3, ADV-C6): `L1`'s write
+    forks a render that the wrapper kills by SIGKILL just before its push.
+    Read after the renderer's exit (open point 8's second wait): `L1`'s
+    HEAD, index digest and `status --porcelain` are as before the render.
+    Then, with no other command between, `L1`'s next write forks a render
+    that pushes every missing seq in order, and `L1`'s next handoff commit,
+    lane-handoff's commit block, exits 0 and is pushed. A second kill, then
+    a write, then lane-start's stamp (`append-session-id`), which exits 0
+    and is rendered. Fails until L4-B13 and T320 to T322."""
+    est = _estate(request, tmp_path)
+    one = est.checkout("L1", L1)
+    old = est.origin_tip()
+    before = est.snapshot(one)
+    est.arm([{"sub": "push", "do": "kill", "render_only": True, "where": str(one.clone),
+              "times": 1}])
+    mark = est.entries()
+    _wrote(est.write(one, "a write whose render is killed before its push"), "log NOTED")
+    est.wait_renders_exit(mark, "the killed render")
+    assert [c for c in est.render_calls(mark) if c["outcome"] == "killed"], (
+        "the wrapper killed no render at its push")
+    assert est.snapshot(one) == before, "the killed render moved L1's HEAD, index or status"
+    assert _lock_is_free(one.git_dir / "lanes-render.lock"), "the render lock is still held"
+    # The next write, then lane-handoff's commit block, with nothing between.
+    est.rearm()
+    _wrote(est.write(one, "the next write after the kill"), "the next log NOTED")
+    est.wait_lag_0(one, "the next write's render")
+    _assert_rendered(est, old, list(range(est.n + 1, est.head() + 1)))
+    handoff = f"handoffs/{L1}.md"
+    (one.clone / "handoffs").mkdir(exist_ok=True)
+    (one.clone / handoff).write_text("# a handoff, after the killed render\n", encoding="utf-8")
+    env = dict(est.plain_env, HOME=str(one.home))
+    for argv in (["add", "--", handoff],
+                 ["commit", "-q", "-m", f"handoff({L1}@{WS}): PAUSED, t270", "-m",
+                  f"Lane: {L1}", "--", handoff],
+                 ["pull", "--rebase", "-q", "origin", "main"], ["push", "-q", "origin", "main"]):
+        est.git(one.clone, *argv, env=env)
+    assert handoff in est.origin_git("ls-tree", "-r", "--name-only", "refs/heads/main",
+                                     "handoffs/").split(), "the handoff commit was not pushed"
+    # The second case: a kill, a write, then lane-start's stamp.
+    est.rearm([{"sub": "push", "do": "kill", "render_only": True, "where": str(one.clone),
+                "times": 1}])
+    mark = est.entries()
+    _wrote(est.write(one, "a second write whose render is killed"), "log NOTED")
+    est.wait_renders_exit(mark, "the second killed render")
+    est.rearm()
+    _wrote(est.write(one, "the write after the second kill"), "log NOTED")
+    stamp = est.edit(one, "append-session-id", L1, f"harness `{UUID_L1}`", " (t270)")
+    _wrote(stamp, "lane-start's stamp, append-session-id")
+    est.wait_lag_0(one, "the stamp's render")
+
+
+def _held_burst(est: RenderEstate, one) -> SimpleNamespace:
+    """AT-5's HELD RENDERER (TP:1116-1125): `L1`'s render held at its push
+    (the hold re-armed for each push) while four more writes from `L1` each
+    exit 0; then the hold is disarmed and released, and both of open point
+    8's waits run. Returns what the case reads."""
+    fifo = est.root / "held.fifo"
+    os.mkfifo(str(fifo), 0o600)
+    old = est.origin_tip()
+    est.arm([{"sub": "push", "do": "hold", "render_only": True, "fifo": str(fifo),
+              "where": str(one.clone)}])
+    mark = est.entries()
+    _wrote(est.write(one, "the first write of a burst"), "log NOTED")
+    fd = _held_fd(fifo, "the first write's render, at its push")
+    rerun = one.git_dir / "lanes-render.rerun"
+    try:
+        holder = {c["renderer"] for c in est.render_calls(mark) if c["outcome"] == "held"}
+        waited = []
+        for n in range(2, 6):
+            start = time.monotonic()
+            _wrote(est.write(one, f"write {n} of a burst, while the render is held",
+                             timeout=120), f"write {n}")
+            waited.append(time.monotonic() - start)
+
+        def forks() -> dict:
+            return {c["renderer"]: c["renderer_start"] for c in est.render_calls(mark)
+                    if c["renderer"] not in holder}
+        # A detached fork may start after its write returns: wait, the hold
+        # standing, until the four have run a git call and exited, or 30 s.
+        _until(lambda: len(forks()) >= 4 and all(_exited(p, s) for p, s in forks().items()),
+               CEILING)
+        forks_live = [pid for pid, start in forks().items() if not _exited(pid, start)]
+        marked = rerun.exists()
+        est.rearm()
+    finally:
+        os.close(fd)
+    est.wait_lag_0(one, "the burst's last write")
+    est.wait_renders_exit(mark, "the burst's renders")
+    assert _lock_is_free(one.git_dir / "lanes-render.lock"), "the render lock is still held"
+    pushes = [c for c in est.render_calls(mark) if c["sub"] == "push" and c["outcome"] == "ran"]
+    return SimpleNamespace(old=old, holder=holder, marked=marked, forks=forks(),
+                           forks_live=forks_live, waited=waited, pushes=pushes,
+                           rerun_left=rerun.exists())
+
+
+def test_a_held_renderer_delays_no_writer_beyond_the_fork(request, tmp_path):
+    """AT-5's held renderer (TP:1116-1120, :1240-1241): with `L1`'s render
+    held at its push, four more writes from `L1` each exit 0 while it is
+    held, so no fork waited; each fork that found the lock held left
+    `lanes-render.rerun` in the checkout's git directory and had exited
+    while the hold still stood (D14). Fails until L4-B13 and T320 to T322."""
+    est = _estate(request, tmp_path)
+    one = est.checkout("L1", L1)
+    seen = _held_burst(est, one)
+    assert len(seen.holder) == 1, f"not one held render: {seen.holder}"
+    assert seen.marked, "no fork that found the lock held left lanes-render.rerun"
+    assert seen.forks, "no fork of the four writes ran `render --checkout`"
+    assert not seen.forks_live, (
+        f"forks {seen.forks_live} that found the lock held had not exited while it was held")
+
+
+def test_a_burst_from_one_lane_gives_at_most_two_renders(request, tmp_path):
+    """[L4-3], qualified (TP:1028-1030, :1121-1125, :1242): the held
+    renderer's burst of five writes. Once the lag is 0 and every renderer
+    has exited, at most two renders made commits, the wrapper's log
+    counting their pushes, and origin carries the burst's last seq, each
+    seq once, in order. Fails until L4-B13 and T320 to T323."""
+    est = _estate(request, tmp_path)
+    one = est.checkout("L1", L1)
+    seen = _held_burst(est, one)
+    assert 1 <= len(seen.pushes) <= 2, (
+        f"{len(seen.pushes)} pushes for a burst that arrived within one pass, not at most two: "
+        f"{[_push_tip(p)[:12] for p in seen.pushes]}")
+    _assert_rendered(est, seen.old, list(range(est.n + 1, est.head() + 1)))
+
+
+def test_the_last_write_of_a_burst_is_rendered_with_no_later_write(request, tmp_path):
+    """S2 (TP:1031): five writes from `L1` in a row, no hold, and no later
+    write. Within open point 8's waits the lag reaches 0 and every renderer
+    exits; origin carries every seq of the burst, its last included, in
+    order. Fails until L4-B13 and T320 to T323."""
+    est = _estate(request, tmp_path)
+    one = est.checkout("L1", L1)
+    old = est.origin_tip()
+    est.arm()
+    for n in range(1, 6):
+        _wrote(est.write(one, f"burst write {n}, with no later write"), f"write {n}")
+    est.wait_lag_0(one, "the burst's last write")
+    est.wait_renders_exit(0, "the burst's renders")
+    _assert_rendered(est, old, list(range(est.n + 1, est.head() + 1)))
+
+
+@pytest.mark.parametrize("fail", ["fetch", "push"])
+def test_a_failed_render_shows_its_lag_and_the_next_render_catches_up(request, tmp_path, fail):
+    """AT-5's failed render (TP:1134-1149): every render's `fetch` (or
+    `push`) fails. After the write, open point 8's second wait: SQL holds
+    the seq and `status` shows a lag of 1; `last_error` and its time are set
+    by the failed pass, and `diverged_sha` stays NULL; in the push case each
+    push follows a fetch, six pushes at most; and after the renderer's exit
+    no pass follows it, no render's `fetch` or `push` until the next write.
+    Released, the next write's render leaves both seqs on origin in order,
+    and a lag of 0. Fails until L4-B13 and T320 to T323."""
+    est = _estate(request, tmp_path)
+    one = est.checkout("L1", L1)
+    old = est.origin_tip()
+    est.arm([{"sub": fail, "do": "fail", "render_only": True, "where": str(one.clone)}])
+    mark = est.entries()
+    _wrote(est.write(one, f"a write whose render's {fail} fails"), "log NOTED")
+    est.wait_renders_exit(mark, f"the render whose {fail} fails")
+    k = est.head()
+    assert k == est.n + 1 and est.origin_tip() == old, "the failed render pushed"
+    assert est.lag(one) == 1, f"status does not show a lag of 1:\n{est.status(one).stdout}"
+    mirror = est.mirror()
+    assert mirror["last_error"] and mirror["last_error_utc"], (
+        f"the failed pass recorded nothing: {mirror}")
+    assert mirror["diverged_sha"] is None, f"a divergence was recorded: {mirror}"
+    calls = est.render_calls(mark)
+    if fail == "push":
+        pushes = [i for i, c in enumerate(calls) if c["sub"] == "push"]
+        assert 1 <= len(pushes) <= 6, f"{len(pushes)} pushes, not one to six"
+        for i in pushes:
+            assert any(c["sub"] == "fetch" for c in calls[:i]), "a push with no fetch before it"
+    ended = est.entries()
+    est.rearm()
+    assert not [c for c in est.render_calls(ended) if c["sub"] in ("fetch", "push")], (
+        "a pass followed the failed one (F15: a pass that pushed nothing ends the renderer)")
+    _wrote(est.write(one, "the next write, after the release"), "the next log NOTED")
+    est.wait_lag_0(one, "the next write's render")
+    _assert_rendered(est, old, [k, k + 1])
+
+
+def test_a_renderer_hands_over_once_after_16_passes(request, tmp_path):
+    """PC-3's handover (TP:1046-1049, :1210-1215): a stream of 17 writes
+    from `L1`, one per pass, each made while that pass is held at its push
+    (the hold re-arms for each push). No renderer process makes more than 16
+    passes (a pass begins with its fetch), a second process follows once,
+    and the last write reaches origin. Fails until L4-B13 and T320 to T323."""
+    est = _estate(request, tmp_path)
+    one = est.checkout("L1", L1)
+    old = est.origin_tip()
+    fifo = est.root / "pass.fifo"
+    os.mkfifo(str(fifo), 0o600)
+    est.arm([{"sub": "push", "do": "hold", "render_only": True, "fifo": str(fifo),
+              "where": str(one.clone)}])
+    _wrote(est.write(one, "stream write 1"), "write 1")
+    for n in range(2, 18):
+        fd = _held_fd(fifo, f"pass {n - 1}'s push")
+        try:
+            _wrote(est.write(one, f"stream write {n}", timeout=120), f"write {n}")
+        finally:
+            os.close(fd)
+    fd = _held_fd(fifo, "the last pass's push")
+    est.rearm()
+    os.close(fd)
+    est.wait_lag_0(one, "the stream's last write")
+    est.wait_renders_exit(0, "the stream's renders")
+    # Each pass renders one write and pushes it once (nothing rejects here),
+    # so a renderer's pushes count its passes that made progress.
+    passes: dict = {}
+    for call in est.render_calls(0):
+        if call["sub"] == "push" and call["outcome"] == "ran":
+            passes[call["renderer"]] = passes.get(call["renderer"], 0) + 1
+    assert passes and max(passes.values()) <= 16, f"a renderer made more than 16 passes: {passes}"
+    assert len(passes) == 2, (
+        f"{len(passes)} renderer processes pushed, not the first and one that follows it: "
+        f"{passes}")
+    _assert_rendered(est, old, list(range(est.n + 1, est.n + 18)))
+
+
+def test_no_rerun_mark_is_left_and_the_last_write_is_rendered_after_a_burst(request, tmp_path):
+    """D14's handshake (TP:1219-1221): after each of two bursts of 10 forks
+    from `L1`, both halves of the `flock` handshake leave no
+    `lanes-render.rerun`, and origin carries the last seq. Fails until
+    L4-B13 and T320 to T323."""
+    est = _estate(request, tmp_path)
+    one = est.checkout("L1", L1)
+    old = est.origin_tip()
+    est.arm()
+    for burst in (1, 2):
+        mark = est.entries()
+        for n in range(1, 11):
+            _wrote(est.write(one, f"burst {burst}, fork {n}"), f"burst {burst}, write {n}")
+        est.wait_lag_0(one, f"burst {burst}")
+        est.wait_renders_exit(mark, f"burst {burst}'s renders")
+        assert not (one.git_dir / "lanes-render.rerun").exists(), (
+            f"burst {burst} left lanes-render.rerun")
+        assert est.commits_after(old)[-1][1] == [est.head()], (
+            f"origin does not carry burst {burst}'s last seq {est.head()}")
+    _assert_rendered(est, old, list(range(est.n + 1, est.head() + 1)))
+
+
+def test_a_write_that_commits_as_the_render_lets_go_is_rendered_with_no_later_write(request,
+                                                                                    tmp_path):
+    """Commit I's "A write that commits as the render lets go" (TP:1084-1090,
+    :1126-1133; S2's two halves of `SyncLock`'s handshake): `L1`'s first
+    write forks a render, and the `psql` shim holds that render's second
+    pass, one-shot, once the real `psql` has returned its read of the head,
+    which holds no entry after `m`. A second write from `L1` commits and
+    exits 0; its fork finds the lock held, leaves `lanes-render.rerun`, and
+    exits. The case releases the shim and makes no later write: the second
+    write's seq reaches origin, `status` shows a lag of 0, and no
+    `lanes-render.rerun` is left. Fails until L4-B13 and T320 to T323."""
+    est = _estate(request, tmp_path)
+    one = est.checkout("L1", L1)
+    old = est.origin_tip()
+    fifo = est.root / "lets-go.fifo"
+    os.mkfifo(str(fifo), 0o600)
+    est.arm(shim_arms=[{"mode": "timer", "fifo": str(fifo),
+                        "match": "FROM register_head h, register_switch s", "call": 2}])
+    mark = est.entries()
+    _wrote(est.write(one, "the first write; its render lets go"), "write 1")
+    fd = _held_fd(fifo, "the render's second pass, after its read of the head")
+    try:
+        _wrote(est.write(one, "the write that commits as the render lets go", timeout=120),
+               "write 2")
+        assert _until(lambda: (one.git_dir / "lanes-render.rerun").exists(), CEILING), (
+            "the second write's fork found the lock held and left no lanes-render.rerun")
+    finally:
+        os.close(fd)
+    est.wait_lag_0(one, "the write that commits as the render lets go")
+    est.wait_renders_exit(mark, "the renders")
+    _assert_rendered(est, old, [est.n + 1, est.n + 2])
+    assert not (one.git_dir / "lanes-render.rerun").exists(), "lanes-render.rerun is left"
+
+
+# =================================================================== AT-C8
+def test_a_render_forked_from_a_no_fetch_verb_still_renders(request, tmp_path):
+    """AT-C8 (C172-184; TP:3173-3196): `log NOTED` run with
+    `LANES_NO_FETCH=1` from `L1`'s checkout on a primary estate. Its render
+    commit reaches origin and `status` reports a lag of 0 (open point 8's
+    first wait); the wrapper's log shows the renderer's own fetch, made with
+    the variable absent from its environment, and no render's call made
+    with it set (D12). Fails until L4-B13 and T320 to T322."""
+    est = _estate(request, tmp_path)
+    one = est.checkout("L1", L1)
+    old = est.origin_tip()
+    est.arm()
+    _wrote(est.write(one, "a write under LANES_NO_FETCH=1", env={"LANES_NO_FETCH": "1"}),
+           "log NOTED under LANES_NO_FETCH=1")
+    est.wait_lag_0(one, "the no-fetch write's render")
+    est.wait_renders_exit(0, "the no-fetch write's render")
+    _assert_rendered(est, old, [est.n + 1])
+    renders = est.render_calls(0)
+    fetches = [c for c in renders if c["sub"] == "fetch"]
+    assert fetches and all(c["env"]["LANES_NO_FETCH"] is None for c in fetches), (
+        f"the renderer made no fetch of its own with LANES_NO_FETCH absent: "
+        f"{[(c['argv'], c['env']['LANES_NO_FETCH']) for c in fetches]}")
+    assert not [c["argv"] for c in renders if c["env"]["LANES_NO_FETCH"] is not None], (
+        "a render's git call inherited LANES_NO_FETCH")
