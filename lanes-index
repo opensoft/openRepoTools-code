@@ -15655,6 +15655,497 @@ def _render_checkout_main(args: list) -> int:
         return 1
 
 
+# ========================== S2's two ways out of a divergence (group C, T324)
+#
+# `render --revert <sha>` AND `import --single <sha>` (feature 007's T324: S2's
+# "The two ways out of a divergence", Y:2979-3004; D16; FR-047; §1.3's kinds
+# table, Y:1543-1544). Each runs on a person's word, from the operator lane's
+# checkout with `LANES_LANE=` that lane (AT-6's fixture), only while the switch
+# is `primary`, as ONE journal entry made through `register commit`'s own
+# attempt directory, so it keeps a writer's commit bounds and its exits (D9's
+# rows, Y:3582-3583):
+#
+# 1. THE OPERATOR'S INPUTS, as lane 1's loader (T115) reads them: the
+#    configuration, the lane, the workstation, the checkout (never W) and the
+#    author, each a refusal (2) where it cannot be had. As `render --checkout`
+#    does (D12), no inherited `GIT_*` and no `LANES_NO_FETCH` reaches anything
+#    after that, and every git call this process starts carries F29's pins
+#    (`render_git_env`).
+# 2. THE GIT HALF, as T322's pass recognises a divergence: `render_readback`'s
+#    fetch of origin `main`, on which `<sha>` must be; the pass's first read
+#    (`_render_read_head`: the head `h`, the switch, the resolved strays and
+#    the recorded `diverged_sha`); and `m` and its commit `R` by form C past
+#    the resolved strays. `<sha>` must be the recorded divergence, or `R`
+#    where `m` is above `h` (R2's N6), or the oldest stray after `R`
+#    (`render_strays_after`): a way out never resolves a commit the renderer
+#    would not stop at, since a resolved commit's `Register-Seq` no longer
+#    counts. A `<sha>` already resolved is refused, but for a rerun that finds
+#    its own entry.
+# 3. ATTEMPTS, under D7's deadline (`rollback_deadline_s`), each one writer's
+#    attempt: `register snapshot --write-id ... --tree <attempt>/tree
+#    --checkout <c>` run in this process, its stdout the attempt's `snapshot`;
+#    the attempt's files; `read_attempt_dir`; the entry by
+#    `register_commit_entry` with the stray's kind and `<sha>` as its
+#    `git_commit`; and one commit call. A lost turn, or a call in doubt, takes a
+#    fresh snapshot under the same write id, which finds the entry where it
+#    committed. Once any commit call was in doubt, an end but 0 waits for F3's
+#    lookup (`register_lookup`), as a writer's does (D8): found is 0, absent
+#    the code the last attempt earned, and no answer 3, naming the write id
+#    and the rerun, `LANES_WRITE_ID=<id> LANES_WRITE_GENERATION=<g>`.
+# 4. THE RENDER THAT FOLLOWS, in this process, in the operator lane's
+#    checkout, through `render --checkout`'s lock, pass and push (T321 to
+#    T323), with the renderer's rows. The way out exits 0 once its entry
+#    stands; the render's own end is the renderer's, recorded for `status`.
+#
+# The entry is `stray-revert` (no edits; its `journal_files` name the stray's
+# render-set paths at SQL's head, Y:1544) or `stray-import` (the stray's line
+# edits on the render set, Y:1543). Either clears `diverged at` inside
+# `commit_write` and names `<sha>` in `git_commit`, which makes it a resolved
+# stray for every later pass (Y:2894-2896).
+
+#: Each way out's command line, the flag that names the stray, and its verb
+#: in the journal, by the entry's kind.
+STRAY_FORMS = {"stray-revert": ("render --revert", "--revert", "render-revert"),
+               "stray-import": ("import --single", "--single", "import-single")}
+
+_STRAY_USAGE = f"""\
+{PROG} render --revert <sha>   journal the revert of a stray commit, then render
+{PROG} import --single <sha>   load a stray commit's line edits as one write, then render
+
+S2's two ways out of a divergence (D16), each on a person's word. <sha> is the
+stray commit's full sha: the one `{PROG} status` prints as `diverged at <sha>`,
+or the one the renderer would stop at now. Each journals ONE entry through
+register commit's commit call, while the switch reads primary, which records
+the stray as resolved and clears `diverged at`; then it renders in the
+operator lane's checkout. The revert's entry has no edits, so its render puts
+SQL's state back over the stray. The single-write import loads the stray's
+line edits on the render set, and refuses where they no longer apply to SQL's
+images; the revert is then the way out, and the runbook prefers it (PC-4).
+
+Run it as the operator lane, with LANES_LANE=<lane>, in that lane's checkout:
+LANES_REPO, else the one `lanes-edit.sh lane-checkout <lane>` names, never W.
+An end in doubt prints its rerun, LANES_WRITE_ID=<id>
+LANES_WRITE_GENERATION=<generation> before the same command, which writes the
+entry once or finds it (D8).
+
+Exit: 0 the entry stands, committed or found by a rerun · 2 refused, nothing
+written · 3 in doubt: run the printed rerun · 64 usage · 69 the register
+cannot be read, or refused · 75 register busy at D7's deadline, nothing
+written."""
+
+
+class _StrayUsage(Exception):
+    """A way out's command line that is not its one form: 64, before anything
+    is read."""
+
+
+class _StrayEnd(Exception):
+    """An end of a way out but 0 that is not a refusal of its own: its code and
+    its line."""
+
+    def __init__(self, code: int, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def _stray_args(args: list[str], flag: str) -> str | None:
+    """`render --revert <sha>` or `import --single <sha>`'s argv after the
+    subcommand: `flag` once, as `flag <sha>` or `flag=<sha>`, with the stray's
+    full sha, 40 hex digits, read in lower case, and nothing else. None for
+    `-h` or `--help` anywhere; `_StrayUsage` for anything else."""
+    if any(arg in ("-h", "--help") for arg in args):
+        return None
+    sha = None
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        name, eq, value = arg.partition("=")
+        if name != flag:
+            raise _StrayUsage(f"unknown argument '{arg}'")
+        if not eq:
+            value = args[i + 1] if i + 1 < len(args) else ""
+            i += 1
+        i += 1
+        if sha is not None:
+            raise _StrayUsage(f"{flag} is given twice")
+        if not re.fullmatch(r"[0-9A-Fa-f]{40}", value):
+            raise _StrayUsage(f"{flag} takes the stray commit's full sha, 40 hex digits")
+        sha = value.lower()
+    if sha is None:
+        raise _StrayUsage(f"{flag} <sha> is needed")
+    return sha
+
+
+def cmd_render_revert(args: list[str]) -> int:
+    """`lanes-index render --revert <sha>`: S2's renderer's revert (above)."""
+    return _stray_command(args, "stray-revert")
+
+
+def _stray_command(args: list[str], kind: str) -> int:
+    """A way out's exits, by the contract's constants (exit-codes.md §3.5 and
+    §5: 3 for its commit call in doubt; 69 for its other calls, or 3 where an
+    earlier commit call of the same entry was in doubt; and `register
+    commit`'s 0, 2, 69 and 75)."""
+    form, flag, _verb = STRAY_FORMS[kind]
+    try:
+        sha = _stray_args(args, flag)
+    except _StrayUsage as exc:
+        note(f"{form}: {exc} - see {PROG} {form} --help")
+        return EXIT_USAGE
+    if sha is None:
+        say(_STRAY_USAGE)
+        return EXIT_OK
+    try:
+        return _stray_way_out(kind, sha)
+    except Refusal as exc:
+        note(f"REFUSED: {exc}")
+        return EXIT_REFUSED
+    except _StrayEnd as exc:
+        note(str(exc))
+        return exc.code
+    except StoreUnusable as exc:
+        note(f"{form}: the register could not be read ({exc.kind}: {exc.detail}); nothing was "
+             f"written")
+        return EXIT_UNAVAILABLE
+
+
+def _stray_rerun(form: str) -> tuple | None:
+    """D8'S RERUN: `LANES_WRITE_ID` and `LANES_WRITE_GENERATION`, as an end in
+    doubt prints them, `(write id, generation)` in lower case; None where
+    `LANES_WRITE_ID` is unset, empty or `new`. Anything else is refused (2):
+    the snapshot would read it as another write's id."""
+    write_id = os.environ.get("LANES_WRITE_ID", "")
+    if write_id in ("", "new"):
+        return None
+    generation = os.environ.get("LANES_WRITE_GENERATION", "")
+    if not (_SNAPSHOT_UUID_RE.fullmatch(write_id.lower())
+            and _SNAPSHOT_UUID_RE.fullmatch(generation.lower())):
+        raise Refusal(f"{form}: LANES_WRITE_ID and LANES_WRITE_GENERATION are a rerun's "
+                      f"identity, two UUIDs, as an end in doubt prints them (D8); nothing was "
+                      f"written")
+    return write_id.lower(), generation.lower()
+
+
+def _stray_recognised(form: str, root: str, store, sha: str, rerun: bool) -> bool:
+    """STEP 2, THE GIT HALF (section comment above): whether `sha` is resolved
+    already, which only a rerun may meet, since its own entry may have
+    resolved it; otherwise `sha` is the divergence the renderer recorded or
+    finds now, or a `Refusal` (2) says why it is not. The switch not at
+    `primary`, and a register that cannot be read, are `_StrayEnd` (69), as a
+    writer's snapshot ends on them."""
+    nothing = "nothing was written"
+    answered, carried, tip, why = render_readback(root, sha)
+    if not answered:
+        if tip:
+            raise Refusal(f"{form}: {sha} is not a commit {root} holds after its fetch of origin "
+                          f"{RENDER_BRANCH} ({why}); {nothing}")
+        raise Refusal(f"{form}: {why}, so {sha} cannot be checked against origin; a read that "
+                      f"cannot answer refuses; {nothing}")
+    if not carried:
+        raise Refusal(f"{form}: {sha} is not on origin {RENDER_BRANCH}, whose tip is {tip}: a "
+                      f"stray is a commit origin carries (S2); {nothing}")
+    try:
+        head, mode, skip, diverged, _last_error = _render_read_head(store)
+    except RenderRefused as exc:
+        raise _StrayEnd(EXIT_UNAVAILABLE, f"{form}: the register's head could not be read: "
+                        f"{exc}; {nothing}")
+    if mode != "primary":
+        raise _StrayEnd(EXIT_UNAVAILABLE, f"{form}: the switch reads {mode}: a way out of a "
+                        f"divergence runs only while it reads primary (S2; §1.3's kinds table), "
+                        f"and at files no divergence is recorded or rendered; {nothing}")
+    if sha in skip:
+        if rerun:
+            return True
+        raise Refusal(f"{form}: {sha} is resolved already: a stray-import or stray-revert entry "
+                      f"names it, so no pass counts or stops at it (Y:2894-2896); {nothing}")
+    try:
+        m, carrier = render_register_seq(root, tip, skip, _render_deadline())
+    except StoreUnusable as exc:
+        raise Refusal(f"{form}: origin {RENDER_BRANCH}'s last {REGISTER_SEQ_KEY} could not be "
+                      f"found ({exc.detail}); a read that cannot answer refuses; {nothing}")
+    if sha == diverged:
+        return False
+    if m > head:
+        if sha == carrier:
+            return False
+        found = (f"{carrier}, which carries {REGISTER_SEQ_KEY} {m} above the journal's head "
+                 f"{head} (R2's N6)")
+    else:
+        try:
+            stray = render_strays_after(root, carrier, tip, skip)
+        except StoreUnusable as exc:
+            raise Refusal(f"{form}: the commits after {carrier} could not be read "
+                          f"({exc.detail}); a read that cannot answer refuses; {nothing}")
+        if sha == stray:
+            return False
+        found = (f"{stray}, the oldest commit after {carrier} that changes the render set"
+                 if stray else f"no commit after {carrier}, which carries {REGISTER_SEQ_KEY} {m}, "
+                 f"that changes the render set")
+    raise Refusal(f"{form}: {sha} is not the divergence: the register records "
+                  f"{diverged or 'none'}, and the renderer's check finds {found}. A way out "
+                  f"names the stray `{PROG} status` prints as diverged at, or the one the "
+                  f"renderer would stop at now (S2); {nothing}")
+
+
+def _stray_parent(form: str, root: str, sha: str) -> str:
+    """`sha`'s first parent, which the stray's changes are read against, as the
+    pass reads each commit after `R` (`--diff-merges=first-parent`). A commit
+    with none is refused (2)."""
+    run = render_git(root, "rev-parse", "--verify", "-q", f"{sha}^1^{{commit}}",
+                     env=_render_env(), timeout=git_timeout_s())
+    parent = run.out.strip()
+    if run.rc != 0 or not SHA_RE.match(parent):
+        raise Refusal(f"{form}: {sha} has no first parent to read its changes against; nothing "
+                      f"was written")
+    return parent
+
+
+def _stray_write(attempt: str, name: str, data: bytes) -> None:
+    """One file of the attempt directory, `name` under `attempt`, made 0600
+    and new (`O_EXCL`), its folders made where they are missing."""
+    path = os.path.join(attempt, *name.split("/"))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
+
+
+def _stray_snapshot(attempt: str, ident: dict, rerun: tuple | None,
+                    root: str) -> tuple[int, dict | None, float]:
+    """ONE WRITER'S SNAPSHOT (D9's snapshot row, Y:3583), `register snapshot`
+    itself, run in this process with its stdout the attempt's `snapshot` file:
+    `--write-id new` for a first attempt, or the write's id and generation
+    once it has them, with the lane, the verb and `args_sha256`, and the
+    scratch tree `--tree <attempt>/tree --checkout <c>`. Returns its exit,
+    its keys (`register_attempt_snapshot`), and the `time.monotonic()`
+    instant it ended, which F3's lookup counts the clock's age from."""
+    import contextlib     # used here alone, so the module's imports stay as they were
+    argv = (["--write-id", "new"] if rerun is None
+            else ["--write-id", rerun[0], "--generation", rerun[1]])
+    argv += ["--lane", ident["lane"], "--verb", ident["verb"], "--args-sha256",
+             ident["args_sha256"], "--tree", os.path.join(attempt, "tree"), "--checkout", root]
+    path = os.path.join(attempt, "snapshot")
+    with open(path, "w", encoding="utf-8", newline="") as handle, \
+            contextlib.redirect_stdout(handle):
+        code = cmd_register_snapshot(argv)
+    ended = time.monotonic()
+    if code != EXIT_OK:
+        return code, None, ended
+    with open(path, encoding="utf-8") as handle:
+        return code, register_attempt_snapshot(handle.read()), ended
+
+
+def _stray_way_out(kind: str, sha: str) -> int:
+    """A way out, steps 1 to 4 (section comment above). `kind` is the entry's,
+    `stray-revert` or `stray-import`."""
+    form, _flag, verb = STRAY_FORMS[kind]
+    nothing = "nothing was written"
+    # 1. THE OPERATOR'S INPUTS. D12 and F29 first, as `render --checkout` has
+    # them: `render_git_env()` is this environment with every `GIT_*` and
+    # `LANES_NO_FETCH` taken out and F29's pins put in.
+    pinned = render_git_env()
+    os.environ.clear()
+    os.environ.update(pinned)
+    cfg = load_config()
+    lane = _import_lane(who=form, nothing=nothing)
+    workstation = _import_workstation(who=form, nothing=nothing)
+    if not _REGISTER_WORD_RE.fullmatch(workstation):
+        raise Refusal(f"{form}: this workstation's name {workstation!r} holds white space, and "
+                      f"an entry's workstation is one word, as `register commit "
+                      f"--workstation` takes it; {nothing}")
+    root = _import_checkout(lane, who=form, nothing=nothing)
+    author = _import_author(root, who=form, nothing=nothing)
+    rerun = _stray_rerun(form)
+    store = PostgresStore(cfg, "register_writer")
+    shipped = register_shipped_repos_text()
+    # F10's digest of what makes this write itself: the lane, the verb and the
+    # stray, so a rerun's snapshot and F3's lookup know its entry.
+    args_sha256 = hashlib.sha256("\x00".join((lane, verb, sha)).encode("utf-8")).hexdigest()
+    ident = {"write_id": None, "generation": None, "lane": lane, "verb": verb,
+             "args_sha256": args_sha256, "workstation": workstation}
+    # 2. THE GIT HALF, then what the entry carries, by its kind.
+    resolved = _stray_recognised(form, root, store, sha, rerun is not None)
+    parent = _stray_parent(form, root, sha)
+    plan = _stray_revert_plan(form, root, sha, parent)
+    message = (f"LANES({lane}@{workstation}): {form} of the stray commit {sha} — "
+               + plan["what"] + " (D16, S2)")
+    # 3. THE ATTEMPTS.
+    code, seq = _stray_attempts(form, kind, sha, store=store, root=root, ident=ident,
+                                rerun=rerun, resolved=resolved, plan=plan, message=message,
+                                author=author, shipped=shipped)
+    if code != EXIT_OK:
+        return code
+    # 4. THE RENDER THAT FOLLOWS.
+    say(f"{form}: " + (f"seq {seq}" if seq is not None else "its entry")
+        + f" {plan['done']} {sha} and records it resolved, which clears diverged at (D16); "
+        f"rendering in {root}")
+    sys.stdout.flush()
+    rendered = _render_checkout_main(["--checkout", root])
+    if rendered != EXIT_OK:
+        note(f"{form}: the render ended {rendered}, and the entry stands: `{PROG} status` shows "
+             f"what the renderer recorded and the lag, and the next write's render or "
+             f"`{PROG} reconcile` renders what is left")
+    return EXIT_OK
+
+
+def _stray_revert_plan(form: str, root: str, sha: str, parent: str) -> dict:
+    """WHAT `render --revert`'s ENTRY CARRIES (Y:1544): no edits, so its
+    attempt directory changes nothing; and one `journal_files` row for each
+    render-set path the stray changed against its first parent, SQL's at the
+    head, present with its digest and final newline or absent: the paths the
+    renderer restores. The paths are read with T322's `render_tree_set`."""
+    try:
+        before, after = render_tree_set(root, parent), render_tree_set(root, sha)
+    except RenderBuildFailed as exc:
+        raise Refusal(f"{form}: {sha}'s render set could not be read ({exc}); nothing was "
+                      f"written")
+    paths = sorted((path for path in set(before) | set(after)
+                    if before.get(path) != after.get(path)), key=lambda p: p.encode("utf-8"))
+
+    def finish(entry: dict, view: RegisterView) -> None:
+        rows = []
+        for path in paths:
+            view.before(path)       # read through the view, so LR004's re-read compares it
+            data = view.tree_bytes(path)
+            lines = None if data is None else register_image_lines(data)
+            if data is not None and lines is None:
+                raise RegisterAttemptRefused(f"tree/'s {path} is not UTF-8")
+            rows.append({"path": path, "present": data is not None,
+                         "sha256": None if data is None else hashlib.sha256(data).hexdigest(),
+                         "final_newline": None if lines is None else lines[1]})
+        entry["files"] = rows
+
+    return {"attempt": lambda attempt, ident, n: _stray_revert_attempt(attempt, ident),
+            "finish": finish, "paths": paths,
+            "what": "SQL's state is rendered back over it",
+            "done": "journals the revert of"}
+
+
+def _stray_revert_attempt(attempt: str, ident: dict) -> dict:
+    """THE REVERT'S ONE CALL TO `register commit`'s ATTEMPT READ, with its
+    change set EMPTY ON PURPOSE, made explicit here and nowhere else: "an entry
+    with no edits" (Y:2989-2991; B14 tasks:1526), so a 0-byte `changes.tsv`
+    and `files` and no `images/`, which `read_attempt_dir` reads as no change.
+    A marker that `register commit` may come to require of a deliberate empty
+    change set (lane 4's question 88, #165 6808439918, which lane 3 is ruling)
+    is one line here. Returns `read_attempt_dir`'s attempt."""
+    _stray_write(attempt, "changes.tsv", b"")
+    _stray_write(attempt, "files", b"")
+    return read_attempt_dir(attempt, ident, None)
+
+
+def _stray_attempts(form: str, kind: str, sha: str, *, store, root: str, ident: dict,
+                    rerun: tuple | None, resolved: bool, plan: dict, message: str,
+                    author: str, shipped: str | None) -> tuple:
+    """STEP 3, THE ATTEMPTS (section comment above): `(code, seq)`, the seq
+    the entry stands at where the code is 0 and it is known. Each attempt's
+    files are in a directory of their own, removed with the rest when the
+    attempts end."""
+    import tempfile     # used here alone, so the module's imports stay as they were
+    limit = rollback_deadline_s()
+    deadline = time.monotonic() + limit
+    doubt, not_after, clock = False, 0, None
+    work = tempfile.mkdtemp(prefix="lanes-index-stray-")
+    try:
+        number = 0
+        while True:
+            number += 1
+            attempt = os.path.join(work, str(number))
+            os.mkdir(attempt, 0o700)
+            seq = None
+            try:
+                code, snap, ended = _stray_snapshot(attempt, ident, rerun, root)
+                if code != EXIT_OK:
+                    note(f"{form}: attempt {number}'s snapshot ended {code}"
+                         + ("; an earlier commit call was in doubt" if doubt
+                            else "; nothing was written"))
+                    break
+                rerun = (snap["write_id"], snap["generation"])
+                ident.update(write_id=rerun[0], generation=rerun[1])
+                clock = ((int(snap["clock"]), 0), ended)
+                if snap.get("found"):
+                    seq = int(snap["found"])
+                    say(f"already {seq}")
+                    note(f"{form}: write {rerun[0]} is in the journal at seq {seq}, committed by "
+                         f"an earlier attempt or run")
+                    return EXIT_OK, seq
+                if resolved:
+                    raise Refusal(f"{form}: {sha} is resolved already, and this rerun's write "
+                                  f"{rerun[0]} is not in the journal: another entry resolved "
+                                  f"it (Y:2894-2896); nothing was written")
+                _stray_write(attempt, "msg", message.encode("utf-8"))
+                _stray_write(attempt, "author", (author + "\n").encode("utf-8"))
+                _stray_write(attempt, "not_after", (snap["not_after"] + "\n").encode("ascii"))
+                # THE CHANGE SET, BY THE ENTRY'S KIND, AND `read_attempt_dir`.
+                att = plan["attempt"](attempt, ident, int(snap["n"]))
+                entry, view = _register_build_entry(att, ident, shipped, kind=kind,
+                                                    git_commit=sha)
+                plan["finish"](entry, view)
+                not_after = max(not_after, att["not_after"])
+                code, seq, err, failure = _register_commit_call(store, att, ident, entry)
+                if err is not None and err.sqlstate == "LR004":
+                    code = _register_commit_lr004(store, att, ident, entry, view, err)
+                elif code == EXIT_IN_DOUBT:
+                    note(f"{form}: the commit call of write {rerun[0]} "
+                         f"{register_psql_end(failure)}, so whether it committed is not known")
+                else:
+                    code = _register_commit_end(store, ident, entry, code, seq, err, failure)
+            except Refusal as exc:
+                note(f"REFUSED: {exc}")
+                code = EXIT_REFUSED
+            except (StoreUnusable, OSError, KeyError, ValueError) as exc:
+                note(f"{form}: attempt {number} could not be made ({exc}); nothing was sent")
+                code = EXIT_UNAVAILABLE
+            if code == EXIT_IN_DOUBT:
+                doubt = True
+            if code == EXIT_OK:
+                return EXIT_OK, seq
+            if code in (EXIT_BUSY, EXIT_IN_DOUBT) and time.monotonic() < deadline:
+                note(f"{form}: attempt {number} ended {code}; a fresh snapshot under write "
+                     f"{rerun[0]} follows, within D7's {limit} s")
+                continue
+            break
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    if doubt:
+        code, seq = _stray_after_doubt(form, store, ident, not_after, clock, code)
+        if code == EXIT_OK:
+            return EXIT_OK, seq
+    if code == EXIT_IN_DOUBT:
+        note(f"{form}: write {ident['write_id']} stays in doubt: whether its entry committed is "
+             f"not known. Run it again under the same id, which writes it once or finds it "
+             f"(D8): LANES_WRITE_ID={ident['write_id']} "
+             f"LANES_WRITE_GENERATION={ident['generation']} {PROG} {form} {sha}")
+    elif kind == "stray-import" and code == EXIT_REFUSED:
+        note(f"{form}: {sha} is not loaded; its way out is `{PROG} render --revert {sha}` "
+             f"(PC-4)")
+    return code, None
+
+
+def _stray_after_doubt(form: str, store, ident: dict, not_after: int, clock: tuple,
+                       code: int) -> tuple:
+    """F3'S LOOKUP AFTER A DOUBT (D8; Y:5272-5300), before any end but 0:
+    `(code, seq)`. Found is 0, with the lookup's lines; absent, with the head
+    row's lock held past every call's `not_after`, is the code the last
+    attempt earned, and 75, a lost turn with nothing written, where that
+    attempt was itself the one in doubt (LR008's reading, Y:5294); LR007 is 2;
+    and no answer is 3."""
+    (db_clock, age), started = clock
+    kind, answer, failure, err, ends = register_lookup(store, ident, not_after,
+                                                       (db_clock, age), started)
+    if kind == "found":
+        _register_lookup_end(ident, kind, answer, failure, err, ends)
+        note(f"{form}: the lookup finds write {ident['write_id']} at seq {answer[0]}: its entry "
+             f"committed")
+        return EXIT_OK, answer[0]
+    if kind == "absent":
+        note(f"{form}: the lookup finds write {ident['write_id']} absent, with the head row's "
+             f"lock held past its not_after, so no call of it can still commit; nothing was "
+             f"written")
+        return (EXIT_BUSY if code == EXIT_IN_DOUBT else code), None
+    return _register_lookup_end(ident, kind, answer, failure, err, ends), None
+
+
 # ================================================================ the acts
 
 def resolve_source(requested: str | None, root: str) -> str:
@@ -18814,6 +19305,7 @@ the forms contracts/register-cli.md fixes; <id> is a write's identity,
 {PROG} journal  --last --path <log> --grep <key> [--at <n> --generation <uuid>]
 {PROG} render   --images --at <k> --out <dir>
 {PROG} render   --checkout <c>
+{PROG} render   --revert <sha>
 {PROG} import   --at <C> [--dry-run | --after-loss]
 {PROG} cutover  [--import <C>] [--after-loss | --marker-first]
 {PROG} rollback [--hold-marker]
@@ -18876,8 +19368,8 @@ unknown subcommand does, and does nothing.
               classifier, and the readers' and the guard's `register read`.
   journal     The in-doubt lookup by write id; `--since` and `--last` read.
   render      `--images`, the render set at a seq; `--checkout`, the renderer
-              fork, which answers "git half not installed" until phase 3,
-              when `--until` and `--revert <sha>` join it.
+              fork; `--revert <sha>`, S2's way out of a divergence that
+              journals an entry with no edits naming the stray, then renders.
   import, cutover, rollback, outage
               The operator's acts (operations.md sections 2.2 to 2.5), each
               from the operator lane's own checkout.
@@ -18939,6 +19431,10 @@ def main(argv: list[str]) -> int:
     # `ready` (T119), the operator tools' readiness check, to its own parser.
     if verb == "ready":
         return cmd_ready(args)
+    # FEATURE 007'S `render --revert <sha>` (T324), S2's renderer's revert: its
+    # own parser, which takes no other flag, `--checkout` included.
+    if verb == "render" and any(a == "--revert" or a.startswith("--revert=") for a in args):
+        return cmd_render_revert(args)
     # FEATURE 007'S `render --checkout <c>` (T321): its own parser, ahead of
     # #160's argument loop. Any other `render` form is not this one's.
     if verb == "render" and any(a == "--checkout" or a.startswith("--checkout=") for a in args):
