@@ -7333,7 +7333,7 @@ pw_lookup_3() {   # <the end's code>
   l3_look="lanes-index journal --write-id $WR_ID --not-after ${PW_LK_N:-<n>} --generation $WR_GEN --lane $(printf '%q' "$WR_LANE") --verb $(printf '%q' "$WR_VERB") --args-sha256 $WR_D"
   l3_re="$(wr_rerun_text "$WR_ID" "$WR_GEN")"
   wr_claim_release || :
-  die "cannot confirm whether register write $WR_ID committed; nothing else was written. A commit call of it may have committed, and F3's lookup could not settle it: ${l3_why}. On primary this write may not be written: run the printed LANES_WRITE_ID rerun, which writes it once or finds it. Its pending record, ${l3_rec}, is kept. This run's end was exit ${1}, which is not that write's answer while the call is in doubt. Look it up: ${l3_look}. Or run it again: ${l3_re}" 3
+  die "cannot confirm whether register write $WR_ID committed; nothing else was written. A commit call of it may have committed, and F3's lookup could not settle it: ${l3_why}. On primary this write may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Its pending record, ${l3_rec}, is kept. This run's end was exit ${1}, which is not that write's answer while the call is in doubt. Look it up: ${l3_look}. Or run it again: ${l3_re}" 3
 }
 
 # A WRITE ALREADY IN THE REGISTER (a snapshot's `found=`, or the commit's
