@@ -10225,6 +10225,71 @@ def register_files_rows(changes: dict, images: dict) -> bytes:
     return "".join(rows).encode("utf-8")
 
 
+#: GIT'S SCISSORS LINE: the comment string, one space and wt-status.c's
+#: `cut_line`, alone on its line, as `git commit --cleanup=scissors` writes it
+#: and as `wt_status_locate_end` finds it at the message's start or after any
+#: LF. git reads no trailer from that line on, so `%(trailers)` never reaches
+#: a `Register-Seq` appended after it. The comment string is `#` unless
+#: `core.commentChar` names another, so any prefix without white space counts.
+_REGISTER_SCISSORS_RE = re.compile(r"[^\s]+ -{24} >8 -{24}")
+#: A trailer line as git's `%(trailers)` reads one: a token of letters,
+#: digits and `-` (F29, Y:5964), then any blanks, then the `:` separator.
+_REGISTER_TRAILER_LINE_RE = re.compile(r"([A-Za-z0-9-]+)[ \t]*:")
+
+
+def register_message_unrenderable(message: str) -> str | None:
+    """Why `message` cannot be a render commit's message, or None (B13, lane
+    3's ruling on `register commit`, opensoft/openRepoTools#165 6779518728:
+    "`register commit` refuses with 2, before it journals, a message holding
+    a scissors line or whose final trailer block already holds a
+    `Register-Seq`"; render-commit.md §1). The render appends `Register-Seq:
+    <k>` to the message's final trailer block, or after one blank line as a
+    new last paragraph, and form C must read `<k>` back alone.
+
+    1. A SCISSORS LINE (`_REGISTER_SCISSORS_RE`) anywhere, the subject
+       included: git reads no trailer after it, so form C reads nothing.
+    2. A `Register-Seq` ALREADY IN THE FINAL TRAILER BLOCK: form C would read
+       two values. The final trailer block is the message's last paragraph,
+       its trailing blank lines dropped, where that paragraph is not the
+       first, which git reads as the title ("A subject alone never counts as
+       trailers", Y:5965), and where every line of it is a trailer line
+       (`_REGISTER_TRAILER_LINE_RE`) or a continuation, which begins with a
+       blank. A paragraph is ended by a line of blanks alone, as git's
+       `is_blank_line` reads one. The token is matched in any case, as
+       `%(trailers:key=Register-Seq)` matches it.
+
+    A `Register-Seq` anywhere else is passed: the render starts a new last
+    paragraph, which form C reads alone."""
+    lines = message.split("\n")
+    for number, line in enumerate(lines, 1):
+        if _REGISTER_SCISSORS_RE.fullmatch(line):
+            return (f"msg line {number} is a scissors line, git's cut line "
+                    f"`{'-' * 24} >8 {'-' * 24}` after a comment character (`#` by default), "
+                    f"after which git reads no trailer, so form C could never read this "
+                    f"write's Register-Seq from its render commit (render-commit.md §1)")
+    blank = [line.strip(" \t") == "" for line in lines]
+    end = len(lines)
+    while end and blank[end - 1]:
+        end -= 1
+    title_end = next((at for at in range(end) if blank[at]), end)
+    start = end
+    while start > title_end and not blank[start - 1]:
+        start -= 1
+    if start <= title_end:
+        return None
+    block = lines[start:end]
+    if not all(_REGISTER_TRAILER_LINE_RE.match(line) or (at and line[:1] in (" ", "\t"))
+               for at, line in enumerate(block)):
+        return None
+    for at, line in enumerate(block):
+        match = _REGISTER_TRAILER_LINE_RE.match(line)
+        if match and match.group(1).lower() == "register-seq":
+            return (f"msg's final trailer block already holds a Register-Seq, at its line "
+                    f"{start + at + 1}, so its render commit would carry two and form C would "
+                    f"not read this write's seq alone (render-commit.md §1)")
+    return None
+
+
 def read_attempt_dir(directory: str, ident: dict, env_act: dict | None) -> dict:
     """The attempt directory `register commit` takes as its argument (contract
     §3.3): only the names its table lists are read (CO-1), and each check that
@@ -10378,6 +10443,11 @@ def read_attempt_dir(directory: str, ident: dict, env_act: dict | None) -> dict:
     if message == "" or "\r" in message or "\0" in message:
         raise RegisterAttemptRefused("msg is empty, or holds a carriage return or a NUL, which "
                                      "journal.message cannot hold")
+    # A MESSAGE NO RENDER COMMIT CAN CARRY: refused here, before the store is
+    # opened and so before anything is journaled (B13, #165 6779518728).
+    unrenderable = register_message_unrenderable(message)
+    if unrenderable:
+        raise RegisterAttemptRefused(unrenderable)
     author = text("author", read("author"))
     author = author[:-1] if author.endswith("\n") else author
     if not _REGISTER_AUTHOR_RE.fullmatch(author):
