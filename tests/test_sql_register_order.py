@@ -2053,7 +2053,8 @@ def acted(act: str, *scopes: str) -> dict:
 # repoA-1 PAUSED here, repoA-2 LIVE here, repoA-3 LIVE on Falcon, repoH-1
 # PAUSED here long ago, and no repoZ-1. It is imported into a clone of `tmpl`
 # that `Clone.to_primary` brings to `primary`, with the flipped `lanes-index`
-# beside `lanes-edit.sh` and `mode=primary` configured, as test 4's estate is.
+# beside `lanes-edit.sh`, `mode=primary` configured, and its `PATH` masked
+# (`_masked_path`, its own bin spared its `lanes-index`), as test 4's estate is.
 # Readings: each act's argv (N1's arms at `2a057a6d`, with `--no-launch` for
 # W1, `lane-end --retire-dormant` and `lane --request-handoff`); the write's
 # commit call, found by a text its entry's JSON carries (its verb, or its
@@ -2178,9 +2179,8 @@ class ActWorld(Sandbox):
         conf.write_text(f"mode=primary\nregister_url={c.db.url(WRITER_LOGIN)}\nreader_url={c.db.url()}\n",
                         encoding="utf-8")
         conf.chmod(0o600)
-        path = os.pathsep.join(p for p in self.env["PATH"].split(os.pathsep)
-                               if p and not os.path.exists(os.path.join(p, "psql"))
-                               and (p == str(self.bin) or not os.path.exists(os.path.join(p, "lanes-index"))))
+        # Its own bin keeps the flipped copy's `lanes-index` (T243e's `_masked_path`).
+        path = _masked_path(self.env["PATH"], spared={str(self.bin): ("lanes-index",)})
         self.env.pop("LANES_INDEX", None)
         self.env.update(PATH=path, LANES_INDEX_CONFIG=str(conf), LANES_EDIT=str(self.bin / "lanes-edit.sh"),
                         XDG_STATE_HOME=str(root / "state"), FAKE_CC_PATH=str(self.resolved),
