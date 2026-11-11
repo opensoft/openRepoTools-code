@@ -778,7 +778,16 @@ LCC
 LS_TMP=""
 LS_REF_TMP=""   # the routing reads' copy of a ref's register (T428), while it lives
 cleanup() { [ -n "${LS_TMP:-}" ] && rm -f -- "$LS_TMP"; [ -n "${LS_REF_TMP:-}" ] && rm -f -- "$LS_REF_TMP"; return 0; }
-trap cleanup EXIT INT TERM
+# A SIGNAL ENDS THE RUN, AND `cleanup` RUNS ON THE WAY OUT (REV-ACT2 N2;
+# `lane-end`'s form, #138 item 6). `cleanup` returns rather than exits, so the
+# one trap `cleanup EXIT INT TERM` ran it and then RESUMED the script at the
+# next command: after a ^C or a TERM the act carried on, and a child killed
+# with 130 or 143 was read as a verb that failed, which A2 ends with 1. The
+# codes are the shell's own, 128 plus the signal, and the EXIT trap does the
+# removing once.
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 note() { printf '%s: %s\n' "$prog" "$*" >&2; }
 step() { printf '%s: %s\n' "$prog" "$*" >&2; }
