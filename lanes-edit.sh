@@ -4655,7 +4655,7 @@ reg_flush() {
 # refetches the whole family. Where anything cached changed in `(n, n']`, form 3
 # rewrites the whole family at `n'`, so the family stays one snapshot. It is
 # made in the prefetch's call form, with no timer around it (contract 2.4). The
-# guard's second read, form 4, is T507's.
+# guard's second read is form 4 (`reg_guard_second_read`, T507).
 #
 # A FAILED SECOND READ (C3, B9) - any end but 0 with `mode primary` - is the
 # class's failed read, never the files instead. The site returns 69 and never
@@ -4723,7 +4723,13 @@ reg_fail_again() {
 # #165 6780364102); with no copy kept, it waits beside the cache (`.rmirror`)
 # for `cleanup`. A decide or projection arm's refusal (`reg_fail_end`) carries
 # what failed, and where no arm ended by its class, `cleanup` notes it.
+# IN THE GUARD CLASS NOTHING IS RECORDED (feature 007, T507; tasks.md T507,
+# B4): the read site returns 69 and the guard ends as its own rules say, a
+# failed log read noted and never refused. A `.rfail` there would make every
+# later `.register` and `.aliases` read in the hook answer 69 after one noted
+# form-4 failure, so the guard would refuse over a read that only advises.
 reg_fail() {   # <what failed> <the cause, for the mirror line>
+  [ "${REG_CLASS:-}" != guard ] || return 69
   if [ ! -e "$SE_CACHE_FILE.rfail" ]; then
     if [ "${REG_CLASS:-}" = mirror ]; then
       rfl_line="$(reg_mirror_line "$2" 2>&1)"
@@ -4781,6 +4787,15 @@ reg_exit() {   # <rc> <code>
 }
 reg_second_read() {   # <--files set, or empty> <--log-key= key, or empty>
   if [ -e "$SE_CACHE_FILE.rfail" ]; then reg_fail_again; return; fi
+  if [ "${REG_CLASS:-}" = guard ]; then
+    case "${1-}" in
+      "") reg_guard_second_read "${2-}" ;;
+      log:*,* | *,*) return 69 ;;
+      log:*) reg_guard_second_read "${1#log:}" ;;
+      *) return 69 ;;
+    esac
+    return
+  fi
   rsr_n="$(reg_head_n)"
   rsr_ask="--since $rsr_n${1:+ --files $1}${2:+ --log-key=$2}"
   rsr_bin="$(lanes_index_bin)"
@@ -4803,6 +4818,33 @@ reg_second_read() {   # <--files set, or empty> <--log-key= key, or empty>
   [ "$rsr_rc" != 0 ] || rsr_said="it answered no mode primary line${rsr_said:+; $rsr_said}"
   reg_fail "the register could not be read: its second read, \`lanes-index register read $rsr_ask\`, exited $rsr_rc${rsr_said:+ ($rsr_said)}, and a read that failed is never answered from the files instead (feature 007, T505; C3)" "${rsr_why:-lanes-index printed no cause (exit $rsr_rc)}"
 }
+# FEATURE 007, T507 - THE GUARD'S SECOND READ, form 4 (contract 3.6; B9; O17;
+# L1-D1): `lanes-index register read --for guard --at <n> --pid $$ --cache
+# "$SE_CACHE_FILE" --lane=<key>`, for one log, the key as `lane_log_events`
+# received it, in the class or outside it. `<n>` is `.head`'s `n=`, the
+# prefetch's, never form 3's `n'`, and 0 where `.head` is absent: form 4 then
+# ends 69 in `lanes-index`, and no fresh read stands in for it. It takes no
+# `--repo` (it runs no form C), always reads directly, and is cut at `T0` +
+# 3.75 s whatever a declaration says (B4, B5, B7). Made in the prefetch's call
+# form, with no timer around it (contract 2.4). ITS ENDS (B4, lane 3's ruling,
+# #165 6738474549): 0 with `mode primary` is a read the caller then checks for
+# the log's files; every other end, "too late" (2), 69, 78, 1, 64 or a crash,
+# is a log that could not be read, 69, which the guard notes and never refuses
+# for, and nothing is recorded (`reg_fail`).
+reg_guard_second_read() {   # <key>
+  rgs_k="${1-}"
+  [ -n "$rgs_k" ] || return 69
+  rgs_bin="$(lanes_index_bin)"
+  [ -n "$rgs_bin" ] || return 69
+  rgs_n="$(reg_head_n)"
+  rgs_o="$SE_CACHE_FILE.door-out.${BASHPID:-$$}"; rgs_e="$SE_CACHE_FILE.door-err.${BASHPID:-$$}"
+  rgs_rc=0
+  ( "$rgs_bin" register read --for guard --at "$rgs_n" --pid "$$" --cache "$SE_CACHE_FILE" "--lane=$rgs_k" </dev/null >"$rgs_o" 2>"$rgs_e"; exit "$?" ) 2>/dev/null || rgs_rc=$?
+  rgs_first="$(head -n 1 -- "$rgs_o" 2>/dev/null || :)"
+  rm -f -- "$rgs_o" "$rgs_e"
+  if [ "$rgs_rc" = 0 ] && [ "$rgs_first" = "mode primary" ]; then return 0; fi
+  return 69
+}
 # 0 where every named member is cached, or the second read brought them; 1
 # read the mirror; 69 a failed read.
 reg_member() {   # <member>...
@@ -4812,6 +4854,11 @@ reg_member() {   # <member>...
     [ -f "$SE_CACHE_FILE.$rme_m" ] || rme_want="${rme_want:+$rme_want,}$rme_m"
   done
   [ -n "$rme_want" ] || return 0
+  # IN THE GUARD CLASS A MEMBER NOT CACHED IS 69, WITH NO SECOND READ (feature
+  # 007, T507; C9): form 2 always writes `.register` and `.aliases`, so a miss
+  # is a cache that is not whole, and `.paths` is no member of the guard's.
+  # Form 4 reads a log alone (`reg_log`).
+  [ "${REG_CLASS:-}" != guard ] || return 69
   reg_second_read "$rme_want" ""
 }
 # The logs `.paths` lists, the paths directly under the log prefix, in its
@@ -4832,12 +4879,15 @@ reg_log_hits() {   # <key>
 # failed read; otherwise form 3 `--files log:<key>` brings it. A key outside the
 # class is asked each time as `--log-key=<key>`, never counted as cached, and is
 # read from `.log.%<hex>`. A log is there where its `.logpath` names a file.
+# IN THE GUARD CLASS (feature 007, T507; tasks.md T507, C9) `.paths` is never
+# consulted: a log not cached, or a key outside the class, is one form-4 read
+# (`reg_second_read`), never form 3.
 reg_log() {   # <key>
   if [ -e "$SE_CACHE_FILE.rfail" ]; then reg_fail_again; return; fi
   rlg_k="${1-}"
   if reg_in_class "$rlg_k"; then
     if [ ! -f "$SE_CACHE_FILE.log.$rlg_k" ]; then
-      if [ -f "$SE_CACHE_FILE.paths" ]; then
+      if [ "${REG_CLASS:-}" != guard ] && [ -f "$SE_CACHE_FILE.paths" ]; then
         rlg_hits=""
         rlg_hits="$(reg_log_hits "$rlg_k")" || { reg_fail "the register could not be read: its cached .paths could not be read" "the cache family could not be read"; return; }
         rlg_n="$(printf '%s' "$rlg_hits" | grep -c . || :)"
@@ -5904,6 +5954,10 @@ lane_log_events() {   # <lane> [checked]
       parse_log_stream "$(sed -n -e 1p "$SE_CACHE_FILE.logpath.$lev_s")" < "$SE_CACHE_FILE.log.$lev_s"
       return
     fi
+    # IN THE GUARD CLASS EVERY OTHER END IS PASSED ON (feature 007, T507; B4):
+    # a log form 4 could not read is a log that could not be read, never
+    # `log_path_ci`'s or git's answer instead.
+    [ "${REG_CLASS:-}" != guard ] || return "$lev_m"
     [ "$lev_m" != 69 ] || return 69
   fi
   ll_rel="$(log_path_ci "$1")" || { [ "$?" != 69 ] || return 69; return 2; }
@@ -13602,8 +13656,14 @@ guard_run() {   # <the hook's JSON, on stdin already read>
   # one name for two questions in one function is the kind of thing that only
   # stays harmless until somebody moves a block. It pairs with `gr_sarc`, the
   # session-name read below.
+  # ON PRIMARY A FAILED READ IS 69 (feature 007, T507): the prefetch's family is
+  # not whole, and the guard refuses rather than read it as "no lane".
   gr_warc=0
   gr_hits="$(rows_named_ci_alias "$G_WINNAME" 2>/dev/null)" || gr_warc=$?
+  if [ "$gr_warc" = 69 ]; then
+    guard_refuse "the register could not be read from the guard's register read at seq $(reg_head_n) (its cache beside $SE_CACHE_FILE is not whole), so whether this window's name '$G_WINNAME' names a lane could not be established — and an indeterminate read refuses (Amendment 12(d); feature 007, T507). $(guard_bypass)"
+    return 2
+  fi
   if [ "$gr_warc" = 5 ]; then
     guard_refuse "${LANES_ALIASES_PATH:-lanes/aliases.tsv} could not be read ($(lane_alias_err)), so whether this window's name '$G_WINNAME' is a FORMER name of a lane could not be established — and an indeterminate read refuses (Amendment 12(d), Amendment 16(e)). $(guard_bypass)"
     return 2
@@ -13643,6 +13703,10 @@ guard_run() {   # <the hook's JSON, on stdin already read>
 
   gr_sarc=0
   gr_snhits="$(rows_named_ci_alias "$G_NAME" 2>/dev/null)" || gr_sarc=$?
+  if [ "$gr_sarc" = 69 ]; then
+    guard_refuse "the register could not be read from the guard's register read at seq $(reg_head_n) (its cache beside $SE_CACHE_FILE is not whole), so whether this session's name '${G_NAME:-none}' names a lane could not be established — and an indeterminate read refuses (Amendment 12(d); feature 007, T507). $(guard_bypass)"
+    return 2
+  fi
   if [ "$gr_sarc" = 5 ]; then
     guard_refuse "${LANES_ALIASES_PATH:-lanes/aliases.tsv} could not be read ($(lane_alias_err)), so whether this session's name '${G_NAME:-none}' is a FORMER name of a lane could not be established — and an indeterminate read refuses (Amendment 12(d), Amendment 16(e)). $(guard_bypass)"
     return 2
