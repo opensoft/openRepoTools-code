@@ -13,7 +13,8 @@ splitting. A batch may contain fewer than two PRs; never count a singleton as a
 successful two-PR test. No checkbox is enabled; entry requires a queue command
 from a repository writer. Eligibility and labels alone do not enqueue anything.
 
-The only eligible files are `.github/ci/task-set-delivery.md` and this reference.
+The documentation queue's only eligible files are
+`.github/ci/task-set-delivery.md` and this reference.
 Every original PR must be open, non-draft and same-repository, have a head under
 `ci/batch-pilot/` and the manual `batch-pilot-reviewed` label, and target main or
 an immediate predecessor under that prefix with `Depends-On: #N` in its body.
@@ -64,3 +65,37 @@ the final landed commit's tree with that tested candidate tree, not just its
 commit message or a clean working directory. Record each member's merge result.
 A singleton, partial landing, changed base, failed candidate or retry must be
 reported explicitly rather than described as a clean two-PR batch.
+
+## Authorized real-code batch: PRs #35 and #36
+
+The separate manual queue `openrepotools-real-code-35-36` accepts only these
+same-repository, open, non-draft PRs targeting `main`:
+
+- #35, `fix/exit-refusals-keep-their-words`, changing only `lane-handoff` and
+  `tests/test_a23_lane_handoff.py`.
+- #36, `fix/a14-three-nudge-race`, changing only `tests/test_lane_helpers.sh`.
+
+Brett authorized this two-member real-code test on 2026-11-11. The documentation
+queue is unchanged. This exception does not admit #32, arbitrary `fix/` branches,
+other files, release changes or automatic merges. Both PRs and their combined
+candidate retain all four full CI gates. Batches are at most two, with a
+60-second fill window, one candidate at a time and no automatic retries/splits.
+
+Before requesting this queue, verify Codex review and full CI at exact heads
+`447b51b93d762d2b89ae1bd175811d1907010ca2` (#35) and
+`63a47bdcc98ebb63bb253ea2e2d449d94eb4bdba` (#36), plus current bases, diff paths
+and review threads. The queue's PR-number/branch/path filters are service gates;
+these head hashes are operator checks, not supported SHA conditions. Stop if
+either head changes: do not rewrite an active lane's branch to force admission.
+
+The writer's manual queue commands attest that preflight was completed; no new
+review label is needed for this exact pair. Mergify cancels a waiting command
+or dequeues a queued member when its head changes. Request the named queue on
+both independent PRs in quick succession so they can form one batch. Do not
+retarget them, invent a dependency or register a native stack merely to batch.
+Check actual two-member membership before accepting the result; a singleton
+is not this test. Record candidate/landed trees and CI evidence as above.
+
+Preserve lanes 1–5, existing sessions and #32. No ruleset bypass, app-access,
+paid upgrade, release or assembly-pin change is authorized. A later general
+code queue or fast-only CI rollout needs its own scoped change and evidence.
