@@ -263,7 +263,7 @@ if [ "$rc" != 0 ]; then
 	2) note "nothing was renamed here either: the window still carries '${win_name:-none}' and no pane was typed into." ;;
 	3) note "the write exited 3 (the writer's own code, above). This window was NOT touched. On primary the rename may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun (off primary), the commit is local and may already be on origin." ;;
 	75) note "the write exited 75 (the writer's own code, above): the register is busy, and this rename lost its turn with nothing written. This window was NOT touched. A retry in seconds is safe." ;;
-	69) note "the write exited 69 (the writer's own code, above): the register could not be reached, or refused the write, and nothing was written. This window was NOT touched. Stop and tell Brett; a retry is safe once the register can be reached." ;;
+	69) note "the write exited 69 (the writer's own code, above): the register could not be reached, or refused the write, and nothing was written. This window was NOT touched. Stop and tell Brett." ;;
 	*) note "the write exited $rc (the writer's own code, above). This window was NOT touched — read what it said before re-running." ;;
 	esac
 	exit "$rc"
