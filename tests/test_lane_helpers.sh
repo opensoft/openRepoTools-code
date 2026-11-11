@@ -16381,8 +16381,9 @@ section "== Amendment 14: the derived index is never read by an act =="
 #   control      exactly as every case above ran: `LANES_INDEX=off` and no
 #                indexer on PATH;
 #   unreachable  OFFLINE NO-READ — an indexer installed on PATH and configured
-#                at a Postgres nobody can reach (a fake `psql` that logs and
-#                refuses), so every write's nudge DOES reach for it;
+#                at a Postgres nobody can reach (a fake `psql` that logs who
+#                called it and refuses), so every write's nudge DOES reach for
+#                it;
 #   poisoned     POISONED INDEX — a real sync of this register into SQLite,
 #                then WRONG rows: a forged hold, forged owners, forged states,
 #                forged narrative. Unreachability cannot prove an act does not
@@ -16400,7 +16401,7 @@ A14_PSQL_LOG="$SANDBOX/a14-psql.log"
 : > "$A14_PSQL_LOG"
 cat > "$A14_FAKE/psql" <<FAKE
 #!/bin/sh
-printf '%s\n' "\$*" >> "$A14_PSQL_LOG"
+printf 'psql %s %s\n' "\${A14_CALLER:-other}" "\$*" >> "$A14_PSQL_LOG"
 echo 'psql: error: connection to server at "lanes-index.invalid" failed' >&2
 exit 2
 FAKE
@@ -16412,6 +16413,70 @@ chmod 600 "$A14_CONF/unreachable.conf"
 A14_DB="$SANDBOX/a14state/lanes-index.sqlite"
 printf 'sqlite=%s\n' "$A14_DB" > "$A14_CONF/poisoned.conf"
 chmod 600 "$A14_CONF/poisoned.conf"
+
+# NO SYNC A LEG FORKED MAY OUTLIVE IT (opensoft/openRepoTools#165, lane 4's
+# batch 6 Q18; T430's run-1110d-1: "set-lane-state ... its nudge DID reach for
+# that store", expected [0], got [1]). `lanes-index` runs ONE sync at a time per
+# workstation, on a lock in its state directory, and a sync that finds the lock
+# held leaves a mark and RETURNS 0 BEFORE it opens any store. A write's nudge is
+# that sync, forked detached by the write's exit trap and waited for by nobody,
+# so one still running when the next leg began made the next leg's nudge return
+# without reaching for its store. Two legs forked one each:
+#
+#   unreachable  the sync logs `psql` and runs on - the refusal, the status
+#                file, the marks it was left - and `a14_wait_psql` returns at
+#                the FIRST line a sync wrote, with the sync alive and the lock
+#                held.
+#   poisoned     the leg had no indexer of its own on PATH, so a host with one
+#                installed (every lane workstation; a clean CI runner has none)
+#                forked a real sync into the poisoned store from every write,
+#                waited for by nobody - and a sync mends the rows it was left
+#                to prove wrong: it deletes the forged inventory row and
+#                rewrites the rows a write changed.
+#
+# So each leg now has an indexer of its own, first on its PATH:
+#
+#   unreachable  a wrapper that logs `start` and `done` for every `sync` (with or
+#                without `--source inventory`: that is a write's nudge) and
+#                runs the real script by its own path ($A14_BIN, unchanged) with
+#                A14_CALLER=sync in its environment, which the fake `psql` logs
+#                (`psql sync`; any other caller is `psql other`). That is what
+#                `a14_wait_nudges` waits on, bounded, before the snapshot goes
+#                back. Every other subcommand (`export`, and any mode
+#                question or register read a later tree adds) execs that script
+#                with no log line: it is not a nudge, and counted as one it
+#                would let a write leg's "one began" prove only that
+#                `lanes-index` ran. No lock is probed: a probe that took it
+#                would make the nudge it is waiting for drop its sync.
+#   poisoned     a wrapper that ends a `sync` at once - it takes no lock and
+#                opens no store - and hands every other subcommand to the real
+#                script, so a read of the poisoned store is still a read of the
+#                poisoned store (the suite's own bin directory holds no
+#                `lanes-index`, so on a clean runner this leg had no indexer on
+#                its PATH: an act that read the index would still have differed
+#                from the control leg on stderr, "index missing" against "index
+#                off", but what it read was not the poisoned content, which is
+#                what this leg exists to make it read).
+A14_NUDGE="$SANDBOX/a14nudge"; A14_QUIET="$SANDBOX/a14quiet"
+A14_NUDGE_LOG="$SANDBOX/a14-nudge.log"
+mkdir -p "$A14_NUDGE" "$A14_QUIET"
+: > "$A14_NUDGE_LOG"
+cat > "$A14_NUDGE/lanes-index" <<WRAP
+#!/bin/sh
+[ "\${1-}" = sync ] || exec "$A14_BIN/lanes-index" "\$@"
+printf 'start %s\n' "\$\$" >> "$A14_NUDGE_LOG"
+A14_CALLER=sync "$A14_BIN/lanes-index" "\$@"
+a14_rc=\$?
+printf 'done %s %s\n' "\$\$" "\$a14_rc" >> "$A14_NUDGE_LOG"
+exit "\$a14_rc"
+WRAP
+chmod 755 "$A14_NUDGE/lanes-index"
+cat > "$A14_QUIET/lanes-index" <<QUIET
+#!/bin/sh
+[ "\${1-}" = sync ] && exit 0
+exec "$A14_BIN/lanes-index" "\$@"
+QUIET
+chmod 755 "$A14_QUIET/lanes-index"
 
 # THE POISONED STORE BEGINS AS A TRUE ONE: a note the index will carry, a sync
 # of this whole register, and then the rows are made wrong.
@@ -16527,12 +16592,52 @@ a14_restore() {
 }
 # A WRITE'S NUDGE RUNS DETACHED and may still be reading this checkout when the
 # snapshot goes back: wait for its one line in the fake `psql`'s log (bounded),
-# which is also the proof that it reached for the store at all.
-a14_wait_psql() {   # <lines before>
+# which is also the proof that it reached for the store at all. That line is the
+# sync's FIRST act on the store, not its last, so it is not the wait that lets
+# the snapshot go back: `a14_wait_nudges` is.
+#
+# IT COUNTS A SYNC'S PSQL CALLS AND NOTHING ELSE (the lines the fake `psql`
+# logged as `psql sync`), and so does the count it is given. The nudge is the
+# only thing this wait is about, and once T504's register prefetch or T409's
+# mode question reaches `psql` too, a call that was not a sync's would satisfy
+# the wait before the nudge had reached its store. The read leg's "reached for
+# no store at all" still counts every line, whoever wrote it.
+a14_psql_syncs() {   # the lines in the fake `psql`'s log that a sync wrote
+  awk '$2 == "sync" { n++ } END { print n + 0 }' "$A14_PSQL_LOG"
+}
+a14_wait_psql() {   # <sync lines before, from a14_psql_syncs>
   a14_w=0
   while [ "$a14_w" -lt 150 ]; do
-    [ "$(awk 'END { print NR + 0 }' "$A14_PSQL_LOG")" -gt "$1" ] && return 0
+    [ "$(a14_psql_syncs)" -gt "$1" ] && return 0
     sleep 0.1; a14_w=$((a14_w + 1))
+  done
+  return 1
+}
+# THE SYNCS THE UNREACHABLE LEG FORKED, counted from the wrapper's log: how many
+# began and how many ended, on one line. The wrapper logs a `sync` and nothing
+# else, so this counts nudges and not every call the indexer received.
+a14_nudge_counts() {
+  awk '$1 == "start" { s++ } $1 == "done" { d++ } END { print s + 0, d + 0 }' "$A14_NUDGE_LOG"
+}
+# EVERY SYNC THAT BEGAN HAS ENDED, so none is left holding the index's lock or
+# reading the checkout when the snapshot goes back and the next leg runs. Bounded
+# at 300 polls, each a 0.1 s sleep and an `awk` run: about 32 s on an idle host
+# and about 49 s measured under heavy load (load 137 to 144 on 32 cores), a
+# generous bound on a sync that has already reached for its store and is only
+# winding down. Answered like `a14_wait_psql`: 0, or 1 with the syncs still
+# open. A leg that must have forked one (a write) also waits for one to have
+# BEGUN since the leg's start, so a wrapper that was never on PATH is a failure
+# and not a quiet pass. No lock is looked at: only the wrapper's own log, which
+# a sync appends to at its first line and its last.
+a14_wait_nudges() {   # <syncs begun before the leg> <1 where the leg must have begun one>
+  a14_n=0
+  while [ "$a14_n" -lt 300 ]; do
+    a14_ct="$(a14_nudge_counts)"
+    a14_nb="${a14_ct% *}"; a14_ne="${a14_ct#* }"
+    if [ "$a14_nb" -eq "$a14_ne" ] && { [ "$2" != 1 ] || [ "$a14_nb" -gt "$1" ]; }; then
+      return 0
+    fi
+    sleep 0.1; a14_n=$((a14_n + 1))
   done
   return 1
 }
@@ -16542,8 +16647,10 @@ a14_three() {   # <label> <write: 0|1> <command…>
   run "$@"
   a14_c_rc="$rc"; a14_c_out="$(a14_norm "$out")"; a14_c_err="$(a14_norm "$err")"
   a14_restore
-  a14_before="$(awk 'END { print NR + 0 }' "$A14_PSQL_LOG")"
-  run env -u LANES_INDEX PATH="$A14_BIN:$A14_FAKE:$PATH" LANES_INDEX_CONFIG="$A14_CONF/unreachable.conf" "$@"
+  a14_before="$(a14_psql_syncs)"
+  a14_before_all="$(awk 'END { print NR + 0 }' "$A14_PSQL_LOG")"
+  a14_begun="$(a14_nudge_counts)"; a14_begun="${a14_begun% *}"
+  run env -u LANES_INDEX PATH="$A14_NUDGE:$A14_BIN:$A14_FAKE:$PATH" LANES_INDEX_CONFIG="$A14_CONF/unreachable.conf" "$@"
   is   "$a14_label: the same exit with an indexer configured at a store nobody can reach" "$rc" "$a14_c_rc"
   is   "…the same stdout" "$(a14_norm "$out")" "$a14_c_out"
   is   "…the same stderr" "$(a14_norm "$err")" "$a14_c_err"
@@ -16552,10 +16659,18 @@ a14_three() {   # <label> <write: 0|1> <command…>
     is "…and its nudge DID reach for that store, after the write had answered" "$?" 0
   else
     is "…and, being no write, it reached for no store at all" \
-       "$(awk 'END { print NR + 0 }' "$A14_PSQL_LOG")" "$a14_before"
+       "$(awk 'END { print NR + 0 }' "$A14_PSQL_LOG")" "$a14_before_all"
   fi
+  # THE STATUS IS TAKEN BEFORE THE DESCRIPTION IS BUILT: the `$( )` in it would
+  # otherwise be the `$?` the assertion reads. On a timeout the counts say
+  # whether a sync was stuck (begun, not ended) or never began (begun no more
+  # than before this leg).
+  a14_wait_nudges "$a14_begun" "$a14_write"; a14_nrc=$?
+  a14_nsay=""
+  [ "$a14_nrc" = 0 ] || a14_nsay=" (syncs begun and ended, from the wrapper's log: $(a14_nudge_counts); begun before this leg: ${a14_begun})"
+  is "…and every sync it forked had ended before the snapshot went back, none left holding the index's lock${a14_nsay}" "$a14_nrc" 0
   a14_restore
-  run env -u LANES_INDEX LANES_INDEX_CONFIG="$A14_CONF/poisoned.conf" "$@"
+  run env -u LANES_INDEX PATH="$A14_QUIET:$PATH" LANES_INDEX_CONFIG="$A14_CONF/poisoned.conf" "$@"
   is   "$a14_label: the same exit over a POISONED index" "$rc" "$a14_c_rc"
   is   "…the same stdout" "$(a14_norm "$out")" "$a14_c_out"
   is   "…the same stderr" "$(a14_norm "$err")" "$a14_c_err"
