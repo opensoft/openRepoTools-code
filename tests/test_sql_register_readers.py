@@ -446,8 +446,14 @@ class Primary:
 
     def files_edit(self, *args, env: dict | None = None, **kw) -> subprocess.CompletedProcess:
         """The same read in files mode: the checkout's own `lanes-edit.sh`,
-        no configuration, no door."""
-        return self.e.run("bash", LANES_EDIT, *args, env=env, **kw)
+        no configuration, no door. `XDG_CONFIG_HOME` is empty, so the
+        configuration falls to the estate's empty `$HOME/.config`: the
+        estate's own names the folder the door's `mode=primary` file is in,
+        which lane 1's T113 refuses there with 78 (T217m; lane 5's triage,
+        #165 6782743644: `window-lane` answered 69, not the mirror's 8)."""
+        merged = {"XDG_CONFIG_HOME": ""}
+        merged.update(env or {})
+        return self.e.run("bash", LANES_EDIT, *args, env=merged, **kw)
 
     def script(self, name: str, *args, env: dict | None = None, **kw):
         return self.e.run("bash", self.bin / name, *args, env=self.env(env), **kw)
@@ -2046,19 +2052,23 @@ def test_the_read_mirror_variable_lowers_each_read_that_names_the_lane_on_primar
     lowers each read whose row in the class table sets `REG_MIRROR_VAR=1`,
     `window-lane` and `swapped` among them, to a mirror read on primary: with
     the store unreachable each prints the `read: mirror` line and exits as
-    files mode does. Every other arm ignores the variable: a decide arm
-    still refuses 69."""
+    files mode does. Every other arm ignores the variable, `who` and
+    `lane-last` among them (B14 tasks:737): `lane-last`, a read that names
+    the lane and no row of the table, still refuses 69 (T217m; lane 5's
+    triage, #165 6782743644: `register-row`, the arm here before, is one of
+    the table's)."""
     table = CLASS_FUNCTION.search(LANES_EDIT.read_text(encoding="utf-8"))
     assert table, "lanes-edit.sh has no read door class table (reg_class_of)"
     marked = {arm for row in MIRROR_ROW.findall(table.group(1)) for arm in row.split("|")}
     assert {"window-lane", "swapped"} <= marked, marked
+    assert "lane-last" not in marked, marked
     primary.door.unreachable()
     for argv in (("window-lane", "Eagle", "@1"), ("swapped",)):
         files = primary.files_edit(*argv)
         result = primary.edit(*argv, env={"LANES_READ_MIRROR": "1"})
         assert MIRROR_LINE.search(result.stderr), (argv, result.stderr[-1500:])
         assert result.returncode == files.returncode, (argv, result.returncode, files.returncode)
-    other = primary.edit("register-row", "repoA-1", env={"LANES_READ_MIRROR": "1"})
+    other = primary.edit("lane-last", "repoA-1", env={"LANES_READ_MIRROR": "1"})
     assert other.returncode == 69, (other.returncode, other.stderr[-1500:])
     assert not MIRROR_LINE.search(other.stderr), other.stderr[-1500:]
 
