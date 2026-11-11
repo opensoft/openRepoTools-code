@@ -597,6 +597,18 @@ ROWS = {
                              faults=("F1",), statement_ms=6000, table="register_head"),
     "whole-write":      dict(group="lanes_register_writer", exit=75, bound=19, strict=False,
                              faults=("F3",), statement_ms=None, table="register_head"),
+    # T257g'S CACHE MISS (F13c's T257 bullet, R-F13c-18; lane 3's batch 7,
+    # #165 6780364102, text change 18 and its ruling on T111's SHOULD-2,
+    # option (b)): `register snapshot` misses the image cache, F2 is armed
+    # once its first request ends, and its second request, the whole fetch
+    # (Y:2515-2516), runs under what is left of `S` from the first request's
+    # start, so the command ends 69 within `S`, 8 s (`_snapshot_miss`). It
+    # runs on the imported register at `primary` (`Operator`): a snapshot
+    # reads the switch first (its check 4), and a miss fetches from the
+    # import. Its F4 is `writer-snapshot`'s, so it takes no id of the second
+    # function (`SLOW_ROWS`).
+    "snapshot-miss":    dict(group=None, exit=69, bound=8, strict=False,
+                             faults=("F2",), statement_ms=5000, table="register_head"),
     # T278'S SIX ROWS (AT-D9's table, TP:3600-3608; "The operator rows run the
     # real commands", TP:3627-3641): the operator's commands on test 7's
     # fixture register (`Operator`, below), each at F1, timed from the
@@ -666,7 +678,8 @@ WHOLE_WRITE = dict(deadline_s=3, t_write_s=62.5 + 3 * N_A * C)
 HEAD_HELD_F3 = ("writer-commit-f3", "whole-write")
 
 FIRST_CASES = [f"{row}-{fault}" for row, spec in ROWS.items() for fault in spec["faults"]]
-SLOW_ROWS = [row for row, spec in ROWS.items() if spec["statement_ms"] and row != "import"]
+SLOW_ROWS = [row for row, spec in ROWS.items()
+             if spec["statement_ms"] and row not in ("import", "snapshot-miss")]
 
 
 class Bench:
@@ -970,6 +983,9 @@ def test_each_database_path_exits_inside_its_bound(pg, tmp_path, request, case):
     spec = ROWS[row]
     if row in OPERATOR_ROWS:
         _operator_row(pg, tmp_path, request, row, fault)
+        return
+    if row == "snapshot-miss":
+        _snapshot_miss(pg, tmp_path, request, fault)
         return
     bench = Bench(pg, tmp_path, request)
     user = bench.login(spec["group"]) if spec["group"] else "lanes_test"
@@ -2550,6 +2566,71 @@ def _operator_57014(pg, tmp_path: Path, request, row: str) -> None:
     assert statement_s <= took < 2 * statement_s, f"{row}: 57014 after {took:.2f} s"
     assert proc.returncode == spec["f4_exit"], f"{row}: {proc.returncode}: {proc.stderr}"
     _record(f"{row}-F4", took, statement_s, "timing rules 2 and 3")
+
+
+#: T257g: the image cache's head planted above the register's head, through
+#: the flipped copy's own `image_cache_put` and `image_cache_record` (lane 1's
+#: cache, design Y:4963), run in the operator's environment, so the cache is
+#: the one `state_dir()` names for the command. A head above `k` is a miss
+#: once the snapshot's request answers (`_register_snapshot_start`; lane 3's
+#: ruling, #165 6746004829). Prints the cache's head as read back.
+MISS_CACHE = r'''
+import importlib.util, sys
+from importlib.machinery import SourceFileLoader
+copy, seq, path, text = sys.argv[1:5]
+loader = SourceFileLoader("lanes_index_t257g", copy)
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(module)
+module.image_cache_record(int(seq), {path: module.image_cache_put(text.encode("utf-8"))})
+head = module.image_cache_head()
+print(head[0] if head else "none")
+'''
+
+
+def _snapshot_miss(pg, tmp_path: Path, request, fault: str) -> None:
+    """`[snapshot-miss-F2]` (T257g; F13c's T257 bullet, R-F13c-18; lane 3's
+    batch 7, #165 6780364102, text change 18 and its ruling on T111's
+    SHOULD-2, option (b)): a writer's `register snapshot --write-id new
+    ... --tree <dir> --checkout <c>` (contract section 3.2) on the imported
+    register at `primary` misses the image cache, whose head is planted
+    above the register's (`MISS_CACHE`). F2 is armed once the first request
+    has ended, so that request reaches the cluster and the second, the whole
+    fetch (Y:2515-2516), meets the relay, silent after the startup.
+    `bounds` cuts that request's client timer to what is left of `S` from
+    the first request's start (lane 1's cut, #165 6783051626), so the
+    command sends both requests and ends 69 within `S`, 8 s, from the first
+    request's start (timing rule 2). It fails until lane 1's cut in T106 and
+    T111's use of it are on line R."""
+    spec = ROWS["snapshot-miss"]
+    case = f"snapshot-miss-{fault}"
+    op = Operator(pg, tmp_path, request, "primary")
+    head = int(op.state()[1])
+    planted = subprocess.run([sys.executable, "-c", MISS_CACHE, str(op.copy), str(head + 5),
+                              "lanes/LANES.md", "# LANES.md\n"], capture_output=True, text=True,
+                             env=op.env, cwd=str(op.reg.wip), timeout=120,
+                             stdin=subprocess.DEVNULL)
+    assert planted.stdout.strip() == str(head + 5), \
+        f"{case}: the cache's head was not planted at {head + 5}: {planted.stdout}{planted.stderr}"
+    relay = StartupRelay(f"{pg.host}/.s.PGSQL.{pg.port}",
+                         armed=lambda: any(c.get("snapshot") for c in op.calls()))
+    argv = ["register", "snapshot", "--write-id", "new", "--lane", op.lane,
+            "--verb", WRITE["verb"], "--args-sha256", WRITE["args_sha256"],
+            "--tree", str(tmp_path / "snapshot-tree"), "--checkout", str(op.reg.wip)]
+    try:
+        proc, _ = op.run(argv, op.config("127.0.0.1", relay.port))
+    finally:
+        relay.close()
+    assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {proc.stderr}"
+    first = [c for c in op.calls() if c.get("snapshot")]
+    assert first and first[0]["exit"] == 0, \
+        f"{case}: the first request never reached the cluster: {op.calls()}"
+    requests = op.begins()
+    assert len(requests) == 2, \
+        f"{case}: the miss's second request was not sent: {len(requests)} requests: {proc.stderr}"
+    assert relay.silenced, f"{case}: the second request never met F2"
+    elapsed = op.exited - requests[0]["begin"]
+    assert elapsed < 2 * spec["bound"], f"{case}: {elapsed:.2f} s against {spec['bound']} s"
+    _record(case, elapsed, spec["bound"], "timing rule 2, from the first request's start")
 
 
 def test_a_rollback_whose_first_call_expires_rereads_the_switch(pg, tmp_path, request):
