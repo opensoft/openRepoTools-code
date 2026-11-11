@@ -7391,24 +7391,44 @@ pw_tail_found() {   # <seq>
 # snapshot: it sends nothing and runs no tail (Y:5298), and leaves the record
 # as found, as Y:5215 does for another generation; only its own claim goes
 # (`wr_refuse`). Its text names the seq the record's `tail` says, which
-# `wr_record_read` has checked is one of Y:5179's two forms (lane
-# openRepoTools-3, #165 6780753157, Q34), then gives Y:5211-5213's effect
-# check, the steps that may be owed (Y:5214) and `LANES_WRITE_ID=new`. With
-# `found=` the
-# path is `pw_tail`'s, to the done mark (`pw_tail_found`), with the record's
-# pid (`pw_tail_writer`); another generation stays T412's
+# `wr_record_read` has checked is one of Y:5179's two forms (Q34), then gives
+# Y:5211-5213's effect check and the steps that may be owed (Y:5214).
+#
+# WHERE THE EFFECT IS NOT THERE, THE WAIT (lane openRepoTools-3, #165
+# 6780753157, Q46): the same command again, with no LANES_WRITE_ID, after this
+# record's `updated_utc` plus its maximum age (`wr_max_age_s`,
+# LANES_REGISTER_PENDING_MAX_AGE_S), which it prints in UTC. That rerun is
+# Y:5207's aged plan, `wr_record_aged` being read before any takeover
+# (`wr_id_plan`): it writes anew under a record of its own. A plain rerun
+# before then takes this record over and is refused here again. It never
+# offers LANES_WRITE_ID=new: that replaces only a record of another
+# generation (Y:5215), so T412's fresh plan refuses it for this one.
+#
+# With `found=` the path is `pw_tail`'s, to the done mark (`pw_tail_found`),
+# with the record's pid (`pw_tail_writer`); another generation stays T412's
 # `wr_refuse_other_generation`.
 pw_took_tail_refuse() {
-  local tr_s="" tr_w="" tr_utc="" tr_owed="" tr_steps=""
+  local tr_s="" tr_w="" tr_utc="" tr_steps="" tr_max="" tr_t="" tr_at="" tr_when=""
   tr_w="${WR_TOOK_TAIL%% *}"; tr_utc="${WR_TOOK_TAIL##* }"
   tr_s="${WR_TOOK_TAIL#* }"; tr_s="${tr_s%% *}"
-  tr_owed="$(wr_owed_text "$WR_REC_VERB")"
   case "$tr_w" in
-    sent) tr_steps="its after-COMMIT steps may have run at ${tr_utc}: ${tr_owed}. Do by hand any that did not run." ;;
+    sent) tr_steps="its after-COMMIT steps may have run at ${tr_utc}: $(wr_owed_text "$WR_REC_VERB"). Do by hand any that did not run." ;;
     done) tr_steps="its after-COMMIT steps ran at ${tr_utc}." ;;
   esac
+  tr_max="$(wr_max_age_s)"; tr_t="$(epoch_of "$WR_REC_UPDATED_UTC")"
+  if wr_is_count "$tr_t"; then tr_at="$(wr_utc_of_epoch "$((tr_t + tr_max))")"; fi
+  tr_when="once this record is more than ${tr_max} s, its maximum age, past its updated_utc, ${WR_REC_UPDATED_UTC}"
+  [ -z "$tr_at" ] || tr_when="after ${tr_at}, when this record is more than ${tr_max} s, its maximum age, past its updated_utc, ${WR_REC_UPDATED_UTC}"
   pw_run_dir_done
-  wr_refuse "the pending record of this command, $WR_STATE/register-pending/$WR_D, holds write ${WR_REC_WRITE_ID} made at ${WR_REC_CREATED_UTC} against register generation ${WR_REC_GENERATION}, and its tail, ${WR_TOOK_TAIL}, says that write committed at seq ${tr_s}; but this register does not hold it: this run's first snapshot did not find it. A register restored from a backup carries the lost database's generation until its cutover (Y:1518), and a damaged record reads the same. Nothing was sent, no after-COMMIT step was run, and the record is left as it is. Look for its effect in the register as it stands: lanes-edit.sh history ${WR_REC_LANE} --since ${WR_REC_CREATED_UTC} for a log line, or lanes-edit.sh register-row ${WR_REC_LANE} for a row. If it is there, ${tr_steps} If it is not there, run the same command with LANES_WRITE_ID=new, which mints a new id and replaces this record: $(wr_rerun_new_text)"
+  wr_refuse "the pending record of this command, $WR_STATE/register-pending/$WR_D, holds write ${WR_REC_WRITE_ID} made at ${WR_REC_CREATED_UTC} against register generation ${WR_REC_GENERATION}, and its tail, ${WR_TOOK_TAIL}, says that write committed at seq ${tr_s}; but this register does not hold it: this run's first snapshot did not find it. A register restored from a backup carries the lost database's generation until its cutover (Y:1518), and a damaged record reads the same. Nothing was sent, no after-COMMIT step was run, and the record is left as it is. Look for its effect in the register as it stands: lanes-edit.sh history ${WR_REC_LANE} --since ${WR_REC_CREATED_UTC} for a log line, or lanes-edit.sh register-row ${WR_REC_LANE} for a row. If it is there, ${tr_steps} If it is not there, run the same command again, with no LANES_WRITE_ID, ${tr_when}: that rerun writes anew under a record of its own (Y:5207), and one before then takes this record over and is refused again: $(wr_rerun_plain_text)"
+}
+
+# THE SAME COMMAND WITH NO `LANES_WRITE_ID` (Y:5207; lane openRepoTools-3, #165
+# 6780753157, Q46), with the lane and the session this run's digest took, so
+# that it meets this record (`wr_digest`).
+wr_rerun_plain_text() {
+  printf 'LANES_LANE=%s LANES_SESSION=%s %s\n' \
+    "$(printf '%q' "$WR_LANE")" "$(printf '%q' "$WR_SESSION")" "$WR_CMDLINE"
 }
 
 # THE STEPS THAT MAY BE OWED, in words: the verb's row of F14's table
