@@ -84,3 +84,32 @@ queue_rules:
       - check-success=@github-actions/tests
       - check-success=@github-actions/tests-no-submodule
       - check-success=@github-actions/package
+
+  # General manual entry for reviewed independent code PRs; never auto-enqueue.
+  # The writer verifies exact-head Codex review and merge authority before the
+  # named command. This is operator attestation, not a service-enforced SHA gate.
+  - name: openrepotools-code
+    batch_size: 2
+    batch_max_wait_time: 60 seconds
+    batch_max_failure_resolution_attempts: 0
+    max_checks_retries: 0
+    checks_timeout: 90 minutes
+    merge_method: merge
+    queue_conditions:
+      - -draft
+      - -closed
+      - -from-fork
+      - base=main
+      - 'head~=^(?!release/|verify/|mergify/|ci/batch-pilot/)[A-Za-z0-9][A-Za-z0-9._/-]*\Z'
+      - '#files>=1'
+      - -files=src/openrepotools/_release.py
+      - '-files~=^(?!(?:(?:claude-current|claude-restart-check|lane|lane-end|lane-handoff|lane-rename|lane-start|lane-worktrees|lanes|lanes-edit[.]sh|lanes-index|link-estates|openRepoTools|park|resume|status|repos[.]tsv|README[.]md)|(?:tests|src|commands|skills|features)/[A-Za-z0-9_.+/-]+)\Z)'
+      - check-success=@github-actions/guard-launch-mode
+      - check-success=@github-actions/tests
+      - check-success=@github-actions/tests-no-submodule
+      - check-success=@github-actions/package
+    merge_conditions:
+      - check-success=@github-actions/guard-launch-mode
+      - check-success=@github-actions/tests
+      - check-success=@github-actions/tests-no-submodule
+      - check-success=@github-actions/package

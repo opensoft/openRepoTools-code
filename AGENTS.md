@@ -39,9 +39,12 @@ section adds only what standing in this leg changes.
   in that worktree's `features/<NNN-feature>/openspec/`; a full proposal never
   is, and goes to the spec leg.
 
-## CI-only task-set pilot (Claude and Codex)
+## Shared task-set workflow (Claude and Codex)
 
 Read [the shared code-local instructions](.github/ci/task-set-delivery.md) before
 planning task-set PRs or interpreting `ci-pilot` results. Claude reads this same
-file through CLAUDE.md; keep one instruction source for both agents. This is an
-advisory pilot: all existing full checks and assembly rules remain in force.
+file through CLAUDE.md; keep one instruction source for both agents. The
+classifier remains advisory. The separately approved manual code queue and its
+operator procedure are in that reference's batching runbook; all existing full
+checks, merge authority and assembly rules remain in force. Never infer a queue
+command, lane takeover or fast-only CI from classification or a profile launch.
