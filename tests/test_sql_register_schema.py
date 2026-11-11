@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The register's schema at the engine (#165, L2-N6): AT-MIR's phase-N cases,
-AT-VER, AT-LR010, the one-number rule and `register snapshot`'s own output.
+"""The register's schema at the engine (#165, L2-N6 and L2-W4): AT-MIR's phase-N
+cases, AT-VER, AT-LR010, the one-number rule, `register snapshot`'s own output,
+and AT-SET, AT-SPL and AT-LR4.
 
 WHAT IT CHECKS, by the test plan's entries and lane 2's task T221:
 
@@ -40,6 +41,15 @@ WHAT IT CHECKS, by the test plan's entries and lane 2's task T221:
     a lane's hold on an object and sends no hold on it: the tables equal the
     import's derivation, step 7 re-marks `superseded_by` and stamps no `seq` or
     `mode`, and step 5a's `objects:` keys name every lane holding the object.
+  * T231 (L2-W4, in phase N by R1's M3): AT-SET, `set_seq` and the marker's
+    states, moved only by `commit_write` and `record_marker`, LR002 while
+    `adding` or `removing`, the rollback's entry, each kind against each state,
+    `switch_to_files`, the re-import form's abort, `restore_prior`, LR004 for
+    an operator entry outside `lanes/STORE`, and the switch's checks; AT-SPL, a
+    claim's spellings; and AT-LR4, LR004 by the shim's `edit-entry` mode on
+    `register commit`'s own call, LR004's one re-read (R02), `not_after`, the
+    operator flag and a file with no final newline. Its section's head says
+    which lane 1 task each part drives.
 
 REAL ENGINE. Every case but the one-number rule and DEC-23's test asks for
 `pg`, one database cloned from the session's template, so its fixture closure
@@ -49,12 +59,15 @@ fail, since the schema is not there. Without PostgreSQL 16 they skip with
 T205's banner. DEC-23's two rendering ids take `pg_cluster` by
 `request.getfixturevalue`, so they skip the same way, but that function's
 closure does not hold `pg_engine`; its name holds neither word of the launch
-job's filter, so T200's check is unaffected.
+job's filter, so T200's check is unaffected. T231's three T116 cases take
+`pg_cluster` itself, so their closure holds `pg_engine`, and bootstrap a
+database of their own with a scratch `register_schema=`.
 
 A REGISTER ON `primary` with the marker `present` is reached as AT-LR006's
 fixture reaches it (the test plan at 4610-4615): by the documented functions as
 `lanes_register_writer`, `commit_write` with an `import` entry, then with a
-`cutover` entry, then `record_marker`. No case runs `lanes-index cutover`.
+`cutover` entry, then `record_marker`. Only T231's three T116 cases run
+`lanes-index cutover`, against a scratch schema of their own.
 
 THE ROLES. The test's own `psql` connects as the fixture's superuser and takes
 each role by `SET ROLE`, so a case needs no login of its own except where
@@ -64,6 +77,7 @@ writer and the reader groups, and connect by the cluster's trust.
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import os
@@ -79,8 +93,8 @@ import pytest
 
 from conftest import REPO, git
 from pgcluster import Database
-from sql_register_helpers import (LANES_INDEX, REGISTER_FAKE_PSQL, RENDER_GIT_HALF_LINE,
-                                  flipped_copy)
+from sql_register_helpers import (LANES_INDEX, PSQL_SHIM, PSQL_SHIM_CONTROL, PSQL_SHIM_LOG,
+                                  REGISTER_FAKE_PSQL, RENDER_GIT_HALF_LINE, flipped_copy)
 
 SCHEMA = "lanes_register"
 OWNER, WRITER, READER = "lanes_register_owner", "lanes_register_writer", "lanes_register_reader"
@@ -188,16 +202,16 @@ def mirror_row(db) -> dict:
     return rows[0]
 
 
-def window(db) -> dict:
-    return json.loads(sql(db, f"SELECT to_jsonb(v) FROM {SCHEMA}.schema_version v;"))
+def window(db, schema: str = SCHEMA) -> dict:
+    return json.loads(sql(db, f"SELECT to_jsonb(v) FROM {schema}.schema_version v;"))
 
 
-def generation(db) -> str:
-    return sql(db, f"SELECT generation FROM {SCHEMA}.register_switch;")
+def generation(db, schema: str = SCHEMA) -> str:
+    return sql(db, f"SELECT generation FROM {schema}.register_switch;")
 
 
-def head(db) -> int:
-    return int(sql(db, f"SELECT seq FROM {SCHEMA}.register_head;"))
+def head(db, schema: str = SCHEMA) -> int:
+    return int(sql(db, f"SELECT seq FROM {schema}.register_head;"))
 
 
 def record_mirror_state(db, ws, sha, error, role=WRITER) -> subprocess.CompletedProcess:
@@ -207,10 +221,15 @@ def record_mirror_state(db, ws, sha, error, role=WRITER) -> subprocess.Completed
 
 
 # ------------------------------------------------------------------ the entries
-def rendered(lines) -> str:
-    """The sha256 of a file of `lines`, LF-ended, as `render_file` renders it."""
-    data = "".join(line + "\n" for line in lines).encode("utf-8")
-    return hashlib.sha256(data).hexdigest()
+def file_bytes(lines, final_newline: bool = True) -> bytes:
+    """A file of `lines` as `render_file` renders it: LF-joined, with a final
+    LF where `final_newline` (`journal_files.final_newline`, AT-LR4)."""
+    return ("\n".join(lines) + ("\n" if final_newline and lines else "")).encode("utf-8")
+
+
+def rendered(lines, final_newline: bool = True) -> str:
+    """The sha256 of a file of `lines`, as `render_file` renders it."""
+    return hashlib.sha256(file_bytes(lines, final_newline)).hexdigest()
 
 
 def line_sha(text: str) -> str:
@@ -225,9 +244,10 @@ def entry(kind: str, verb: str, **parts) -> dict:
     return {"journal": journal, "not_after": NOT_AFTER, **parts}
 
 
-def import_entry(files: dict, **rows) -> dict:
+def import_entry(files: dict, no_newline=(), **rows) -> dict:
     """An import of `files` (path to its lines): each created, then its lines
-    appended, and each path's digest as it renders."""
+    appended, and each path's digest as it renders; each path in `no_newline`
+    with no final newline (AT-LR4's fixture file)."""
     edits, ord_ = [], 0
     for path in sorted(files):
         ord_ += 1
@@ -237,8 +257,9 @@ def import_entry(files: dict, **rows) -> dict:
             edits.append({"ord": ord_, "op": "append", "path": path, "new_text": text})
     return entry("import", "import", journal={"git_commit": COMMIT_C, "git_tree": TREE_C},
                  edits=edits,
-                 files=[{"path": p, "present": True, "sha256": rendered(files[p]),
-                         "final_newline": True} for p in sorted(files)], **rows)
+                 files=[{"path": p, "present": True,
+                         "sha256": rendered(files[p], p not in no_newline),
+                         "final_newline": p not in no_newline} for p in sorted(files)], **rows)
 
 
 def cutover_entry() -> dict:
@@ -251,20 +272,21 @@ def cutover_entry() -> dict:
 
 
 def commit_call(db, base: int, body: dict, *, write_id: str = None, client: int = None,
-                gen: str = None, role: str = WRITER, appname: str = "t221") -> subprocess.CompletedProcess:
+                gen: str = None, role: str = WRITER, appname: str = "t221",
+                schema: str = SCHEMA) -> subprocess.CompletedProcess:
     """The commit call as the writer sends it (section 1.3's step 3; AT-LR006's
-    fixture): one SERIALIZABLE transaction around `commit_write`."""
+    fixture): one SERIALIZABLE transaction around `commit_write`, in `schema`."""
     write_id = write_id or str(uuid.uuid4())
-    client = window(db)["version"] if client is None else client
-    gen = gen or generation(db)
+    client = window(db, schema)["version"] if client is None else client
+    gen = gen or generation(db, schema)
     literal = json.dumps(body, ensure_ascii=True).replace("'", "''")
     return psql(db, f"BEGIN ISOLATION LEVEL SERIALIZABLE;\n"
-                    f"SELECT {SCHEMA}.commit_write({base}, '{write_id}'::uuid, {client}, "
+                    f"SELECT {schema}.commit_write({base}, '{write_id}'::uuid, {client}, "
                     f"'{gen}'::uuid, '{literal}'::jsonb);\nCOMMIT;\n", role, appname)
 
 
-def committed(db, base: int, body: dict, what: str) -> int:
-    proc = commit_call(db, base, body)
+def committed(db, base: int, body: dict, what: str, schema: str = SCHEMA) -> int:
+    proc = commit_call(db, base, body, schema=schema)
     assert proc.returncode == 0, f"{what}: commit_write refused it: {proc.stderr.strip()}"
     return int(proc.stdout.strip().splitlines()[-1])
 
@@ -1577,3 +1599,1026 @@ def test_commit_write_derives_step_6s_deletes_so_the_tables_equal_the_imports_de
         assert {"objects:lane-a", "objects:lane-b"} <= keys, (
             f"{case}: the entry's journal_scopes are {sorted(keys)}; step 5a should add objects: "
             f"for every lane holding o1, objects:lane-a and objects:lane-b, so the flip is reported")
+
+
+# =================================================================== T231: AT-SET, AT-SPL, AT-LR4
+#: T231 (R1's M3; FR-059): AT-SET, AT-SPL and AT-LR4 in phase N, each case on
+#: lane 1's code alone. Its readings are in each function's docstring; the
+#: three the whole task rests on:
+#:
+#:   * T107'S CASES (`set_seq_is_minus`, `the_marker_moves`, `a_write_is_refused`,
+#:     `the_rollbacks_entry_sets`, `no_kind_commits_in`, `switch_to_files_aborts`,
+#:     `an_operator_entry`, `the_switch_checks`) drive `commit_write`,
+#:     `record_marker` and `switch_to_files` as REGISTER-WRITER, by AT-LR006's
+#:     route, so they pass on T107 alone. The rollback's entry is the operator
+#:     entry that removes `lanes/STORE`, sent by a direct call, since no task
+#:     before T304 sends one.
+#:   * T116'S CASES (`set_seq_after_a_cutover`, `the_reimport_forms`,
+#:     `restore_prior_is`) run `lanes-index cutover` itself against a scratch
+#:     schema (`register_schema=`, DEC-23), which it alone accepts while
+#:     `RENDER_GIT_HALF` is False; the import before it is the entry
+#:     `import --at` sends, by a direct call, as `root_seq` gives an after-loss
+#:     import its `m`.
+#:   * T112'S CASES write through `lanes-index register snapshot --tree` and
+#:     `register commit` from T203's flipped copy, with the shim's `edit-entry`
+#:     mode on the commit call, so each fails until T111 is on line R as well
+#:     as T112 (line R at merge10 has no `register snapshot`). Where the shim
+#:     cannot make the rewrite (it neither adds a key nor sends an operator
+#:     entry), the case is a direct call, and says so.
+
+#: The scratch name T116's cases bootstrap (any `register_schema=` but the default).
+T231_SCHEMA = "t231_scratch"
+#: An after-loss import's root `m` (any seq past the first import's 0).
+REIMPORT_M = 7
+#: The author the operator's git names (D15), through git's own variables.
+OPERATOR_GIT = {"GIT_AUTHOR_NAME": "T231 operator", "GIT_AUTHOR_EMAIL": "t231@example.invalid",
+                "GIT_COMMITTER_NAME": "T231 operator",
+                "GIT_COMMITTER_EMAIL": "t231@example.invalid",
+                "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+
+
+def switch_of(db, schema: str = SCHEMA) -> dict:
+    """The switch row, whole."""
+    return json.loads(sql(db, f"SELECT to_jsonb(s) FROM {schema}.register_switch s;"))
+
+
+def pair_of(db, schema: str = SCHEMA) -> tuple:
+    switch = switch_of(db, schema)
+    return switch["mode"], switch["marker_state"]
+
+
+def journal_of(db, schema: str = SCHEMA) -> list:
+    """Each journal entry's seq, kind and generated `operator` flag, by seq."""
+    return json.loads(sql(db, f"SELECT coalesce(jsonb_agg(jsonb_build_array(j.seq, j.kind, "
+                              f"j.operator) ORDER BY j.seq), '[]') FROM {schema}.journal j;"))
+
+
+def marker_call(db, seq: int, schema: str = SCHEMA) -> subprocess.CompletedProcess:
+    """`record_marker(client, seq, commit, ws)` as REGISTER-WRITER, as each
+    read-back would call it (S4)."""
+    return psql(db, f"SELECT {schema}.record_marker({window(db, schema)['version']}, {seq}, "
+                    f"'{MARKER_COMMIT}', '{WS}');", WRITER)
+
+
+def abort_call(db, seq: int, schema: str = SCHEMA) -> subprocess.CompletedProcess:
+    """`switch_to_files(client, cutover_seq, lane, ws)` as REGISTER-WRITER (F2)."""
+    return psql(db, f"SELECT {schema}.switch_to_files({window(db, schema)['version']}, {seq}, "
+                    f"'{LANE}', '{WS}');", WRITER)
+
+
+def rollback_entry(**parts) -> dict:
+    """The rollback's first transaction's entry (Q4(b)(iii)): the operator entry
+    that removes `lanes/STORE` (D24), its one files row absent."""
+    parts.setdefault("edits", [{"ord": 1, "op": "remove", "path": "lanes/STORE"}])
+    parts.setdefault("files", [{"path": "lanes/STORE", "present": False}])
+    return entry("rollback", "rollback", **parts)
+
+
+def appended(lines: list, text: str) -> dict:
+    """A write that appends `text` to `lanes/LANES.md`, whose lines are `lines`."""
+    return entry("write", "log", journal={"args_sha256": ARGS_SHA256},
+                 edits=[{"ord": 1, "op": "append", "path": "lanes/LANES.md", "new_text": text}],
+                 files=[{"path": "lanes/LANES.md", "present": True,
+                         "sha256": rendered([*lines, text]), "final_newline": True}])
+
+
+def three_writes(db, n: int) -> int:
+    """AT-SET's three writes after the cutover's `n`; returns the head `k`."""
+    lines = list(DEFAULT_FILES["lanes/LANES.md"])
+    for i in (1, 2, 3):
+        text = f"t231: write {i}"
+        n = committed(db, n, appended(lines, text), f"write {i}")
+        lines.append(text)
+    return n
+
+
+def store_of(db, schema: str = SCHEMA) -> dict:
+    """`lanes/STORE`'s `files` row and its `doc_lines`, line ids included, read
+    in one snapshot with the switch row: what `restore_prior` holds."""
+    return json.loads(sql(db, (
+        f"SELECT jsonb_build_object('switch', (SELECT to_jsonb(s) FROM {schema}.register_switch s), "
+        f"'file', (SELECT to_jsonb(f) FROM {schema}.files f WHERE f.path = 'lanes/STORE'), "
+        f"'lines', (SELECT jsonb_agg(to_jsonb(d) ORDER BY d.line_no) FROM {schema}.doc_lines d "
+        f"WHERE d.path = 'lanes/STORE'));")))
+
+
+def wait_sql(db, count_query: str, what: str, ceiling: float = 5.0) -> None:
+    """Poll `count_query` in 0.05 s steps under `ceiling` until it counts one
+    row or more. No sleep stands in for a barrier."""
+    end = time.monotonic() + ceiling
+    while time.monotonic() < end:
+        if sql(db, count_query) != "0":
+            return
+        time.sleep(0.05)
+    pytest.fail(f"{what}: not seen within {ceiling} s")
+
+
+# ------------------------------------------------------------------ T116's scratch schema
+def scratch_register(cluster, where: Path) -> Database:
+    """An empty database of the session cluster, bootstrapped by `lanes-index
+    bootstrap` with `register_schema=` T231's scratch name (DEC-23), the switch
+    labelled `t221` by `BOOTSTRAP`. The caller drops it."""
+    db = fresh_database(cluster, "t231")
+    try:
+        where.mkdir(parents=True)
+        env = admin_env(where, db)
+        env["LANES_INDEX_CONFIG"] = str(bootstrap_conf(where / "boot",
+                                                       f"register_schema={T231_SCHEMA}\n"))
+        proc = run_index(LANES_INDEX, BOOTSTRAP, env)
+        assert proc.returncode == 0, f"the scratch schema's bootstrap:\n{shown(proc)}"
+        ensure_logins(db)
+    except BaseException:
+        cluster.drop_database(db.name)
+        raise
+    return db
+
+
+def cutover_run(where: Path, db, label: str, *args: str) -> subprocess.CompletedProcess:
+    """`lanes-index cutover <args>` as the operator lane (F12): `LANES_LANE`,
+    this workstation, git's author, and a configuration naming the scratch
+    schema and `register_label=` `label` (N4), its URLs the cluster's socket
+    (the fake-`psql` host rule, L1v4.5:525)."""
+    where.mkdir(parents=True, exist_ok=True)
+    conf = where / "lanes-index.conf"
+    query = f"?connect_timeout={CONNECT_TIMEOUT}"
+    conf.write_text(f"mode=index\nregister_url={db.url(LOGIN_WRITER)}{query}\n"
+                    f"reader_url={db.url(LOGIN_READER)}{query}\n"
+                    f"register_schema={T231_SCHEMA}\nregister_label={label}\n", encoding="utf-8")
+    conf.chmod(0o600)
+    env = index_env(where, conf, LANES_LANE=LANE, LANES_WORKSTATION=WS, **OPERATOR_GIT)
+    return run_index(LANES_INDEX, ["cutover", *args], env, cwd=where)
+
+
+# ------------------------------------------------------------------ T112's writer
+#: AT-LR4's fixture (TP:4523-4546): `lanes/LANES.md`, whose line 2 the write
+#: replaces, and a file with no final newline, `lanes/aliases.tsv`.
+LR4_OLD, LR4_NEW = "t231: the line the write replaces", "t231: the line it becomes"
+LR4_ALIASES = ["# old\tnew\tutc", f"Lane-Old\t{LANE}\t2026-11-09T10:00:00Z"]
+LR4_FILES = {"lanes/LANES.md": ["# Lanes", LR4_OLD], "lanes/aliases.tsv": LR4_ALIASES}
+LR4_NO_NEWLINE = ("lanes/aliases.tsv",)
+#: The checkout's own files, which the scratch tree takes from origin (contract section 3.2).
+CHECKOUT_FILES = {"lanes/repos.tsv": "# alias\towner/repo\nr9\topensoft/r9\n",
+                  "lanes/log/README.md": "# Logs\n"}
+
+
+def estate_checkout(root: Path, files: dict) -> Path:
+    """A lane checkout with `refs/remotes/origin/main` holding `files`, which
+    `register snapshot --tree --checkout` reads `lanes/repos.tsv` and
+    `lanes/log/README.md` from."""
+    origin, work = root / "origin.git", root / "work"
+    git("init", "-q", "--bare", "-b", "main", str(origin), cwd=root)
+    git("init", "-q", "-b", "main", str(work), cwd=root)
+    for rel, text in files.items():
+        path = work / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(text.encode("utf-8"))
+    git("add", "lanes", cwd=work)
+    git("-c", "user.name=T231", "-c", "user.email=t231@example.invalid", "commit", "-q", "-m",
+        "the lane checkout", cwd=work)
+    git("remote", "add", "origin", str(origin), cwd=work)
+    git("push", "-q", "origin", "main", cwd=work)
+    git("fetch", "-q", "origin", cwd=work)
+    return work
+
+
+def git_bytes(cwd: Path, *args: str) -> bytes:
+    proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, check=False)
+    assert proc.returncode == 0, f"git {' '.join(args)} in {cwd}: {proc.stderr!r}"
+    return proc.stdout
+
+
+def blob_id(data: bytes) -> str:
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+class Writer:
+    """Phase N's writer (T231's bullet): `register snapshot --tree --checkout`
+    and `register commit`, from T203's flipped copy with a `mode=primary`
+    configuration on the cluster's socket, through the shim (section 3.2) in
+    front of the real `psql`, armed by `arm`. Each attempt directory is
+    T101's format, built as T253's case builds it (contract section 3.3)."""
+
+    def __init__(self, db, root: Path, checkout: dict = None, shipped: str = "# alias\towner/repo\n"):
+        self.db, self.root = db, root
+        root.mkdir(parents=True, exist_ok=True)
+        self.copy = flipped(root)
+        self.shim = root / "shim"
+        self.shim.mkdir()
+        (self.shim / "psql").write_text(PSQL_SHIM, encoding="utf-8")
+        (self.shim / "psql").chmod(0o755)
+        self.arm([])
+        self.work = estate_checkout(root, checkout or CHECKOUT_FILES)
+        (root / "shipped-repos.tsv").write_text(shipped, encoding="utf-8")
+        self.env = index_env(root, config(root, db), LANES_WORKSTATION=WS,
+                             LANES_REPOS_TSV_SHIPPED=str(root / "shipped-repos.tsv"),
+                             PATH=f"{self.shim}{os.pathsep}{os.environ.get('PATH', os.defpath)}",
+                             **OPERATOR_GIT)
+
+    def arm(self, arms: list) -> None:
+        (self.shim / PSQL_SHIM_CONTROL).write_text(
+            json.dumps({"psql": self.db.psql_bin, "arms": arms}), encoding="utf-8")
+
+    def calls(self) -> list:
+        """The shim's entries that carried a request, in call order."""
+        log = self.shim / PSQL_SHIM_LOG
+        if not log.exists():
+            return []
+        entries = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        return [e for e in entries if e.get("kind") != "version"]
+
+    def index(self, *args: str) -> subprocess.CompletedProcess:
+        return run_index(self.copy, list(args), self.env, cwd=self.work)
+
+    def snapshot_args(self, lane: str, verb: str, args_sha: str) -> list:
+        return ["register", "snapshot", "--write-id", "new", "--lane", lane, "--verb", verb,
+                "--args-sha256", args_sha]
+
+    def attempt(self, name: str, path: str, change, lane: str = LANE, verb: str = "log") -> dict:
+        """One attempt: the snapshot at `n` with its scratch tree, then `path`'s
+        image as `change(old bytes)` makes it."""
+        att = self.root / name
+        att.mkdir()
+        args_sha = hashlib.sha256(f"{lane}\0{verb}\0{name}".encode("utf-8")).hexdigest()
+        snap = self.index(*self.snapshot_args(lane, verb, args_sha), "--tree", str(att / "tree"),
+                          "--checkout", str(self.work))
+        assert snap.returncode == 0, (
+            f"register snapshot --tree (T111) for the attempt {name}:\n{shown(snap)}")
+        keys = dict(line.partition("=")[::2] for line in snap.stdout.splitlines() if "=" in line)
+        (att / "snapshot").write_text(snap.stdout, encoding="utf-8")
+        old = git_bytes(att / "tree", "cat-file", "blob", f"HEAD:{path}")
+        new = change(old)
+        image = att / "images" / path
+        image.parent.mkdir(parents=True)
+        image.write_bytes(new)
+        (att / "changes.tsv").write_text(f"M\t{path}\t{blob_id(old)}\t{blob_id(new)}\n",
+                                         encoding="utf-8")
+        (att / "files").write_text(f"{path}\t1\t{hashlib.sha256(new).hexdigest()}\n",
+                                   encoding="utf-8")
+        (att / "msg").write_text(f"LANES({lane}@{WS}): {verb} {EM_DASH} T231's case\n",
+                                 encoding="utf-8")
+        (att / "author").write_text(f"{AUTHOR}\n", encoding="utf-8")
+        (att / "not_after").write_text(keys["not_after"] + "\n", encoding="utf-8")
+        return {"dir": att, "keys": keys, "lane": lane, "verb": verb, "args_sha": args_sha,
+                "path": path, "old": old, "image": new}
+
+    def commit_args(self, att: dict) -> list:
+        keys = att["keys"]
+        return ["register", "commit", "--write-id", keys["write_id"], "--generation",
+                keys["generation"], "--lane", att["lane"], "--verb", att["verb"],
+                "--args-sha256", att["args_sha"], "--workstation", WS, str(att["dir"])]
+
+    def commit(self, att: dict) -> subprocess.CompletedProcess:
+        return self.index(*self.commit_args(att))
+
+    def commit_calls(self) -> list:
+        return [c for c in self.calls() if "commit_write(" in c.get("sent", "")]
+
+    def after_commit(self) -> list:
+        """The calls after the first commit call: LR004's one re-read, and no other."""
+        calls = self.calls()
+        firsts = [i for i, c in enumerate(calls) if "commit_write(" in c.get("sent", "")]
+        return calls[firsts[0] + 1:] if firsts else []
+
+
+def lr4_writer(db, tmp_path: Path) -> tuple:
+    """AT-LR4's register: `LR4_FILES` imported, `lanes/aliases.tsv` with no final
+    newline, brought to `primary` with the marker `present` by AT-LR006's route,
+    and the writer whose attempt replaces `lanes/LANES.md`'s line 2."""
+    n = bring_to_primary(db, LR4_FILES, no_newline=LR4_NO_NEWLINE)
+    return n, Writer(db, tmp_path / "writer")
+
+
+def lr4_change(old: bytes) -> bytes:
+    text = old.decode("utf-8")
+    assert f"\n{LR4_OLD}\n" in text, text
+    return text.replace(f"\n{LR4_OLD}\n", f"\n{LR4_NEW}\n").encode("utf-8")
+
+
+def lr4_edit(**changed) -> dict:
+    """The replace `register_commit_entry` sends for the write (lanes-index:10887-10892 at merge10)."""
+    return {"ord": 1, "op": "replace", "path": "lanes/LANES.md", "line_no": 2,
+            "old_sha256": line_sha(LR4_OLD), "new_text": LR4_NEW, "to_path": None, **changed}
+
+
+def lr4_body(**parts) -> dict:
+    """The write's entry by hand, for a direct call: the same edit and files row."""
+    lines = ["# Lanes", LR4_NEW]
+    return entry("write", "log", journal={"args_sha256": ARGS_SHA256}, edits=[lr4_edit()],
+                 files=[{"path": "lanes/LANES.md", "present": True, "sha256": rendered(lines),
+                         "final_newline": True}], **parts)
+
+
+def ended_with(proc: subprocess.CompletedProcess, code: str) -> bool:
+    """Whether `register commit`'s stderr carries psql's `ERROR:  <code>:` line
+    (contract section 2.6, `register_say_error`)."""
+    return bool(re.search(rf"^ERROR:\s+{code}:", proc.stderr, re.M))
+
+
+# =================================================================== AT-SET
+def test_set_seq_is_minus_1_after_the_bootstrap(pg):
+    """After the bootstrap: `mode = 'files'`, the marker `absent`, `set_seq = -1`,
+    and the head -1, with no `marker_seq`, no `restore_prior` and no journal."""
+    switch = switch_of(pg)
+    assert (switch["mode"], switch["marker_state"], switch["set_seq"]) == ("files", "absent", -1), switch
+    assert switch["marker_seq"] is None and switch["restore_prior"] is None, switch
+    assert head(pg) == -1
+    assert journal_of(pg) == []
+
+
+@pytest.mark.parametrize("case", ["first", "after-loss"])
+def test_set_seq_after_a_cutover_is_the_cutovers_own_seq(pg_cluster, tmp_path, case):
+    """`set_seq` is the cutover's own seq: 1 after the first import at 0, and
+    `m+1` after an after-loss import at `m` and `cutover --import <M>
+    --after-loss`, whose transaction also gives the switch a generation other
+    than the bootstrap's (F10, F18). The cutover is `lanes-index cutover`
+    (T116) against T231's scratch schema; the import is the entry `import --at`
+    sends, by a direct call, with `root_seq` `m` for the after-loss form. After
+    it: the switch `primary` with the marker `adding` at `marker_seq` = the
+    head = `set_seq`, and `journal.operator` true for that seq alone."""
+    db = scratch_register(pg_cluster, tmp_path / "scratch")
+    try:
+        bootstrap_generation = generation(db, T231_SCHEMA)
+        m = 0 if case == "first" else REIMPORT_M
+        body = import_entry(DEFAULT_FILES) if case == "first" else import_entry(
+            DEFAULT_FILES, root_seq=REIMPORT_M)
+        assert committed(db, -1, body, "the import", T231_SCHEMA) == m
+        args = ["--import", COMMIT_C] + (["--after-loss"] if case == "after-loss" else [])
+        proc = cutover_run(tmp_path / "operator", db, STORE_LABEL, *args)
+        assert proc.returncode == 0, f"cutover {' '.join(args)}:\n{shown(proc)}"
+        switch = switch_of(db, T231_SCHEMA)
+        assert switch["set_seq"] == m + 1, f"set_seq is {switch['set_seq']}, not {m + 1}: {switch}"
+        assert head(db, T231_SCHEMA) == m + 1 and switch["marker_seq"] == m + 1, switch
+        assert (switch["mode"], switch["marker_state"]) == ("primary", "adding"), switch
+        assert [seq for seq, _kind, operator in journal_of(db, T231_SCHEMA) if operator] == [m + 1]
+        if case == "first":
+            assert switch["generation"] == bootstrap_generation, switch
+        else:
+            assert switch["generation"] != bootstrap_generation, (
+                f"the after-loss cutover kept the bootstrap's generation {bootstrap_generation}")
+    finally:
+        pg_cluster.drop_database(db.name)
+
+
+def test_the_marker_moves_only_through_commit_write_and_record_marker(pg):
+    """The marker's four states move only as section 1.3's kinds table says:
+    the import leaves `files`/`absent` and `set_seq` -1; the cutover at 1 sets
+    `primary`/`adding`, `marker_seq` and `set_seq` 1, and `journal.operator` is
+    true for seq 1 only; `record_marker` at another seq is LR002 and changes
+    nothing; REGISTER-WRITER's own `UPDATE` of the switch is 42501;
+    `record_marker` at 1 reads `present` and `marker_commit` holds the
+    confirmed commit, and again at 1 is LR002; a write then commits and leaves
+    the switch as it was; the rollback's entry at `k+1` sets
+    `files`/`removing`; `record_marker` at `k+1` reads `absent`."""
+    def unchanged(proc, code, what):
+        before = switch_of(pg)
+        refused(proc(), code, what)
+        assert switch_of(pg) == before, f"{what} changed the switch"
+
+    boot = switch_of(pg)
+    imported = committed(pg, head(pg), import_entry(DEFAULT_FILES), "the import")
+    assert imported == 0 and switch_of(pg) == boot, "the import moved the switch"
+    cut = committed(pg, imported, cutover_entry(), "the cutover")
+    switch = switch_of(pg)
+    assert (switch["mode"], switch["marker_state"], switch["marker_seq"], switch["set_seq"]) == (
+        "primary", "adding", cut, cut) and cut == 1, switch
+    assert switch["marker_commit"] is None, switch
+    assert journal_of(pg) == [[0, "import", False], [1, "cutover", True]]
+    unchanged(lambda: marker_call(pg, 0), "LR002", "record_marker at seq 0, not the cutover's")
+    unchanged(lambda: psql(pg, f"BEGIN READ WRITE;\nUPDATE {SCHEMA}.register_switch SET "
+                               f"marker_state = 'present', marker_commit = '{MARKER_COMMIT}' "
+                               f"WHERE id = 1;\nCOMMIT;\n", WRITER),
+              "42501", "REGISTER-WRITER's own UPDATE of the switch")
+    confirmed = marker_call(pg, cut)
+    assert confirmed.returncode == 0 and confirmed.stdout.strip() == "present", confirmed.stderr
+    switch = switch_of(pg)
+    assert (switch["mode"], switch["marker_state"], switch["marker_commit"],
+            switch["set_seq"]) == ("primary", "present", MARKER_COMMIT, cut), switch
+    unchanged(lambda: marker_call(pg, cut), "LR002", "record_marker again at the confirmed seq")
+    present = switch_of(pg)
+    k = committed(pg, cut, a_write(pg), "a write")
+    assert switch_of(pg) == present, "a write moved the switch"
+    back = committed(pg, k, rollback_entry(), "the rollback's entry")
+    switch = switch_of(pg)
+    assert (switch["mode"], switch["marker_state"], switch["marker_seq"], switch["set_seq"]) == (
+        "files", "removing", back, back) and back == k + 1, switch
+    assert [seq for seq, _kind, operator in journal_of(pg) if operator] == [cut, back]
+    gone = marker_call(pg, back)
+    assert gone.returncode == 0 and gone.stdout.strip() == "absent", gone.stderr
+    assert pair_of(pg) == ("files", "absent")
+
+
+def test_a_write_is_refused_lr002_while_the_marker_is_adding_or_removing(pg):
+    """While the marker is `adding` (a cutover not yet confirmed) and while it
+    is `removing` (a rollback's entry not yet confirmed), a write's commit call
+    fails with LR002, naming the switch and the marker, and every table is
+    unchanged; between them, the confirmed marker lets a write commit. The
+    writer's 69 for LR002 is `register commit`'s exit table (T112), which this
+    case does not run, so it passes on T107 alone."""
+    imported = committed(pg, head(pg), import_entry(DEFAULT_FILES), "the import")
+    cut = committed(pg, imported, cutover_entry(), "the cutover")
+    for marker in ("adding", "removing"):
+        assert pair_of(pg)[1] == marker
+        before = state(pg)
+        message = refused(commit_call(pg, head(pg), a_write(pg)), "LR002",
+                          f"a write while the marker is {marker}")
+        assert marker in message, message
+        assert state(pg) == before, f"a write refused LR002 while {marker} changed the register"
+        if marker == "adding":
+            assert marker_call(pg, cut).stdout.strip() == "present"
+            k = committed(pg, cut, a_write(pg), "the control: a write once the marker is present")
+            committed(pg, k, rollback_entry(), "the rollback's entry")
+
+
+def test_the_rollbacks_entry_sets_files_removing_and_its_own_seq(pg):
+    """After the import, the cutover, `record_marker` and three writes, at the
+    head `k`: the rollback's first transaction, `commit_write` with a `rollback`
+    entry as REGISTER-WRITER, read in one snapshot: `mode = 'files'`, the marker
+    `removing`, the head and `set_seq` `k+1`, and the entry at `k+1` the
+    operator entry that removes `lanes/STORE`. After `record_marker` at `k+1`,
+    the marker reads `absent` and `set_seq` stays `k+1`."""
+    k = three_writes(pg, bring_to_primary(pg))
+    assert committed(pg, k, rollback_entry(), "the rollback's entry") == k + 1
+    seen = json.loads(sql(pg, (
+        f"SELECT jsonb_build_object('switch', to_jsonb(s), 'head', h.seq, 'entry', to_jsonb(j), "
+        f"'edits', (SELECT jsonb_agg(jsonb_build_array(e.op, e.path) ORDER BY e.ord) "
+        f"FROM {SCHEMA}.journal_edits e WHERE e.seq = h.seq), "
+        f"'store', EXISTS (SELECT 1 FROM {SCHEMA}.files f WHERE f.path = 'lanes/STORE')) "
+        f"FROM {SCHEMA}.register_switch s, {SCHEMA}.register_head h "
+        f"LEFT JOIN {SCHEMA}.journal j ON j.seq = h.seq;")))
+    switch = seen["switch"]
+    assert (switch["mode"], switch["marker_state"]) == ("files", "removing"), switch
+    assert seen["head"] == k + 1 and switch["set_seq"] == k + 1 and switch["marker_seq"] == k + 1, seen
+    assert (seen["entry"]["kind"], seen["entry"]["operator"]) == ("rollback", True), seen["entry"]
+    assert seen["edits"] == [["remove", "lanes/STORE"]] and seen["store"] is False, seen
+    confirmed = marker_call(pg, k + 1)
+    assert confirmed.returncode == 0 and confirmed.stdout.strip() == "absent", confirmed.stderr
+    switch = switch_of(pg)
+    assert (switch["mode"], switch["marker_state"], switch["set_seq"]) == ("files", "absent", k + 1)
+
+
+@pytest.mark.parametrize("case", ["held", "in-turn"])
+def test_the_rollbacks_entry_makes_an_older_writer_snapshot_fail_lr001_or_40001_then_69(
+        pg, tmp_path, case):
+    """A writer whose snapshot is older than the rollback's entry (section 1.3,
+    "The signals a writer gets"), the writer being `register snapshot --tree`
+    and `register commit` (T111, T112):
+
+      * `[held]`: the rollback's first transaction holds the head row
+        uncommitted; the writer's commit call starts; the case polls until a
+        backend running `commit_write` shows `wait_event_type = 'Lock'`, as
+        AT-D19 stages it; the rollback commits. The commit gets 40001, so
+        `register commit` exits 75, a lost turn;
+      * `[in-turn]`: the snapshot is read before the rollback's transaction and
+        the commit call starts after it commits: LR001, the head having moved
+        to `k+1`, so 75.
+
+    Either way the new attempt's snapshot reads the switch at `files` and
+    exits 69, and nothing but the rollback's entry was written."""
+    k = three_writes(pg, bring_to_primary(pg))
+    writer = Writer(pg, tmp_path / "writer")
+    att = writer.attempt("older", "lanes/LANES.md", lambda old: old + b"t231: the older writer\n")
+    assert att["keys"]["n"] == str(k), att["keys"]
+    gen, client = generation(pg), window(pg)["version"]
+    body = json.dumps(rollback_entry()).replace("'", "''")
+    if case == "in-turn":
+        assert committed(pg, k, rollback_entry(), "the rollback's entry") == k + 1
+        proc = writer.commit(att)
+        assert proc.returncode == 75 and ended_with(proc, "LR001"), shown(proc)
+    else:
+        rollback = session(pg, "t231-rollback")
+        rollback.stdin.write(f"\\set VERBOSITY verbose\nSET ROLE {WRITER};\n"
+                             f"BEGIN ISOLATION LEVEL SERIALIZABLE;\n"
+                             f"SELECT {SCHEMA}.commit_write({k}, '{uuid.uuid4()}'::uuid, {client}, "
+                             f"'{gen}'::uuid, '{body}'::jsonb);\n")
+        rollback.stdin.flush()
+        wait_for(pg, "t231-rollback", "a.state = 'idle in transaction'", "the rollback held")
+        held = subprocess.Popen([sys.executable, str(writer.copy), *writer.commit_args(att)],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, encoding="utf-8", errors="replace",
+                                env=writer.env, cwd=str(writer.work))
+        try:
+            wait_sql(pg, "SELECT count(*) FROM pg_stat_activity a WHERE a.datname = "
+                         "current_database() AND a.application_name <> 't231-rollback' "
+                         "AND a.query LIKE '%commit_write(%' AND a.wait_event_type = 'Lock'",
+                     "the writer's commit call waiting on the head row")
+            _, err = rollback.communicate("COMMIT;\n", timeout=60)
+            assert rollback.returncode == 0, f"the rollback's transaction failed: {err}"
+            out, err = held.communicate(timeout=60)
+        finally:
+            if held.poll() is None:
+                held.kill()
+                held.communicate()
+        proc = subprocess.CompletedProcess(held.args, held.returncode, out, err)
+        assert proc.returncode == 75 and ended_with(proc, "40001"), shown(proc)
+    assert (head(pg), pair_of(pg)) == (k + 1, ("files", "removing"))
+    assert [row[1] for row in journal_of(pg)][-2:] == ["write", "rollback"], journal_of(pg)
+    again = writer.index(*writer.snapshot_args(LANE, "log", att["args_sha"]))
+    assert again.returncode == 69, f"the new attempt's snapshot:\n{shown(again)}"
+
+
+KINDS = ("import", "cutover", "write", "stray-import", "stray-revert", "rollback")
+STATES = {"files-absent": ("files", "absent"), "primary-adding": ("primary", "adding"),
+          "primary-present": ("primary", "present"), "files-removing": ("files", "removing")}
+#: Section 1.3's kinds table: where each kind commits (the after-loss
+#: cutover's `primary`/`present` row is the restore form's, T116's).
+COMMITS_IN = {("import", "files-absent"), ("cutover", "files-absent"),
+              ("write", "primary-present"), ("stray-import", "primary-present"),
+              ("stray-revert", "primary-present"), ("rollback", "primary-present")}
+
+
+def kind_entry(kind: str) -> dict:
+    """One well-formed entry of each kind, as its writer sends it."""
+    if kind == "import":
+        return import_entry(DEFAULT_FILES)
+    if kind == "cutover":
+        return cutover_entry()
+    if kind == "write":
+        return appended(DEFAULT_FILES["lanes/LANES.md"], "t231: a write")
+    if kind == "stray-import":
+        lines = [*DEFAULT_FILES["lanes/LANES.md"], "t231: a stray line"]
+        return entry("stray-import", "import --single", journal={"git_commit": SHA_B},
+                     edits=[{"ord": 1, "op": "append", "path": "lanes/LANES.md",
+                             "new_text": lines[-1]}],
+                     files=[{"path": "lanes/LANES.md", "present": True, "sha256": rendered(lines),
+                             "final_newline": True}])
+    if kind == "stray-revert":
+        return entry("stray-revert", "render --revert", journal={"git_commit": SHA_B})
+    return rollback_entry()
+
+
+def reach(db, state_name: str, kind: str) -> None:
+    """The switch at `state_name`, by AT-LR006's route and the rollback's
+    entry; for a cutover at `files`/`absent`, the import it follows first."""
+    if state_name == "files-absent" and kind == "cutover":
+        committed(db, head(db), import_entry(DEFAULT_FILES), "the import the cutover follows")
+    elif state_name == "primary-adding":
+        committed(db, committed(db, head(db), import_entry(DEFAULT_FILES), "the import"),
+                  cutover_entry(), "the cutover")
+    elif state_name == "primary-present":
+        bring_to_primary(db)
+    elif state_name == "files-removing":
+        committed(db, bring_to_primary(db), rollback_entry(), "the rollback's entry")
+    assert pair_of(db) == STATES[state_name]
+
+
+@pytest.mark.parametrize("case", [f"{kind}-{name}" for kind in KINDS for name in STATES])
+def test_no_kind_commits_in_a_state_its_kinds_table_row_refuses(pg, case):
+    """For each kind and each state of the switch, a commit call commits only
+    where section 1.3's kinds table allows it, and otherwise raises LR002 with
+    the journal's count and the head unchanged. So besides the import's
+    baseline, nothing is journaled while the switch is not `primary` except the
+    two operator entries (D24)."""
+    name = "-".join(case.split("-")[-2:])
+    kind = case[:-len(name) - 1]
+    reach(pg, name, kind)
+    base, count = head(pg), len(journal_of(pg))
+    proc = commit_call(pg, base, kind_entry(kind))
+    if (kind, name) in COMMITS_IN:
+        assert proc.returncode == 0, f"{kind} at {name} is refused: {proc.stderr.strip()}"
+        assert int(proc.stdout.strip().splitlines()[-1]) == (0 if base == -1 else base + 1)
+        assert len(journal_of(pg)) == count + 1
+        return
+    refused(proc, "LR002", f"{kind} at {name}")
+    assert (head(pg), len(journal_of(pg))) == (base, count), f"{kind} at {name} wrote"
+
+
+def test_switch_to_files_aborts_only_an_unconfirmed_cutover(pg):
+    """With the cutover at seq 1 not yet confirmed, `switch_to_files(version, 1,
+    lane, ws)` deletes seq 1 and its rows, sets the head to 0 and the switch to
+    `files` with the marker `absent`, and `set_seq` to 0, the abort's base. With
+    nothing to abort, and with the marker `present`, it fails with LR002 and
+    changes nothing."""
+    imported = committed(pg, head(pg), import_entry(DEFAULT_FILES), "the import")
+    cut = committed(pg, imported, cutover_entry(), "the cutover")
+    proc = abort_call(pg, cut)
+    assert proc.returncode == 0 and proc.stdout.strip() == str(imported), proc.stderr
+    switch = switch_of(pg)
+    assert (switch["mode"], switch["marker_state"], switch["set_seq"], switch["marker_seq"]) == (
+        "files", "absent", imported, None), switch
+    assert head(pg) == imported and journal_of(pg) == [[0, "import", False]]
+    left = sql(pg, f"SELECT (SELECT count(*) FROM {SCHEMA}.journal_edits WHERE seq = {cut}) + "
+                   f"(SELECT count(*) FROM {SCHEMA}.journal_files WHERE seq = {cut}) + "
+                   f"(SELECT count(*) FROM {SCHEMA}.files WHERE path = 'lanes/STORE') + "
+                   f"(SELECT count(*) FROM {SCHEMA}.doc_lines WHERE path = 'lanes/STORE');")
+    assert left == "0", f"the abort left {left} rows of seq {cut} or lanes/STORE"
+    before = state(pg)
+    refused(abort_call(pg, cut), "LR002", "switch_to_files with no cutover to abort")
+    assert state(pg) == before
+    again = committed(pg, imported, cutover_entry(), "the cutover again")
+    assert marker_call(pg, again).stdout.strip() == "present"
+    before = state(pg)
+    refused(abort_call(pg, again), "LR002", "switch_to_files with the marker present")
+    assert state(pg) == before, "switch_to_files with the marker present changed the register"
+
+
+def test_the_reimport_forms_abort_leaves_label_and_generation(pg_cluster, tmp_path):
+    """The re-import form's abort (the third database; lane 3, comment
+    6710770304): after an after-loss import at `m` and `lanes-index cutover
+    --import <M> --after-loss` (T116) at `m+1`, `switch_to_files` at `m+1`
+    sets `files` with the marker `absent`, `set_seq` `m`, and `lanes/STORE`
+    gone, and leaves the `database_label` and the `generation` its cutover set.
+    So a commit call carrying the lost database's generation, as a pending
+    record made against it would, still fails with LR007."""
+    db = scratch_register(pg_cluster, tmp_path / "scratch")
+    try:
+        lost = generation(db, T231_SCHEMA)
+        m = REIMPORT_M
+        assert committed(db, -1, import_entry(DEFAULT_FILES, root_seq=m), "the re-import",
+                         T231_SCHEMA) == m
+        proc = cutover_run(tmp_path / "operator", db, STORE_LABEL, "--import", COMMIT_C,
+                           "--after-loss")
+        assert proc.returncode == 0, shown(proc)
+        cut = switch_of(db, T231_SCHEMA)
+        assert cut["set_seq"] == m + 1 and cut["generation"] != lost, cut
+        proc = abort_call(db, m + 1, T231_SCHEMA)
+        assert proc.returncode == 0 and proc.stdout.strip() == str(m), proc.stderr
+        switch = switch_of(db, T231_SCHEMA)
+        assert (switch["mode"], switch["marker_state"], switch["set_seq"]) == (
+            "files", "absent", m), switch
+        assert (switch["database_label"], switch["generation"]) == (
+            cut["database_label"], cut["generation"]), (
+            f"the abort changed the label or the generation its cutover set: {cut} -> {switch}")
+        assert head(db, T231_SCHEMA) == m
+        assert sql(db, f"SELECT count(*) FROM {T231_SCHEMA}.files WHERE path = 'lanes/STORE';") == "0"
+        proc = commit_call(db, m, import_entry(DEFAULT_FILES), gen=lost, schema=T231_SCHEMA)
+        refused(proc, "LR007", "a commit call carrying the lost database's generation")
+        assert re.search(r"^DETAIL:\s+generation\s*$", proc.stderr, re.M), proc.stderr
+        assert head(db, T231_SCHEMA) == m
+    finally:
+        pg_cluster.drop_database(db.name)
+
+
+def test_restore_prior_is_set_by_the_restore_form_and_cleared_by_record_marker(pg_cluster,
+                                                                              tmp_path):
+    """The restore form (a database restored at `b`, here the scratch database
+    at its head after the first cutover is confirmed): after `lanes-index
+    cutover --after-loss` (T116) with another `register_label=` (N4),
+    `restore_prior` holds the switch row and `lanes/STORE`'s `files` row and
+    lines as they were; `record_marker` clears it. A second restore form's
+    abort, `switch_to_files`, puts them back with their old `line_id`s, the
+    switch row whole, and `set_seq` the value before that cutover. As the admin
+    under `SET ROLE lanes_register_owner`, setting `restore_prior` while the
+    marker is not `adding` fails with 23514 (`register_switch_check4`)."""
+    db = scratch_register(pg_cluster, tmp_path / "scratch")
+    try:
+        imported = committed(db, -1, import_entry(DEFAULT_FILES), "the import", T231_SCHEMA)
+        proc = cutover_run(tmp_path / "first", db, STORE_LABEL, "--import", COMMIT_C)
+        assert proc.returncode == 0, shown(proc)
+        assert marker_call(db, imported + 1, T231_SCHEMA).stdout.strip() == "present"
+        for n, label in enumerate((f"{STORE_LABEL}-restored", f"{STORE_LABEL}-restored-2"), 1):
+            b = head(db, T231_SCHEMA)                   # the restored backup's head
+            before = store_of(db, T231_SCHEMA)
+            assert before["file"] and before["lines"], before
+            proc = cutover_run(tmp_path / f"restore-{n}", db, label, "--after-loss")
+            assert proc.returncode == 0, shown(proc)
+            switch = switch_of(db, T231_SCHEMA)
+            assert (switch["mode"], switch["marker_state"], switch["set_seq"],
+                    switch["database_label"]) == ("primary", "adding", b + 1, label), switch
+            assert switch["restore_prior"] == before, (
+                f"restore_prior is not the switch row and lanes/STORE's rows as they were:\n"
+                f"want {json.dumps(before, sort_keys=True)[:2000]}\n"
+                f"got  {json.dumps(switch['restore_prior'], sort_keys=True)[:2000]}")
+            if n == 1:
+                assert marker_call(db, b + 1, T231_SCHEMA).stdout.strip() == "present"
+                assert switch_of(db, T231_SCHEMA)["restore_prior"] is None, "record_marker kept it"
+                continue
+            proc = abort_call(db, b + 1, T231_SCHEMA)
+            assert proc.returncode == 0 and proc.stdout.strip() == str(b), proc.stderr
+            after = store_of(db, T231_SCHEMA)
+            assert after == before, (
+                f"the restore form's abort did not put back the switch row and lanes/STORE:\n"
+                f"want {json.dumps(before, sort_keys=True)[:2000]}\n"
+                f"got  {json.dumps(after, sort_keys=True)[:2000]}")
+            assert head(db, T231_SCHEMA) == b and after["switch"]["set_seq"] == before["switch"]["set_seq"]
+        proc = psql(db, f"UPDATE {T231_SCHEMA}.register_switch SET restore_prior = '{{}}'::jsonb "
+                        f"WHERE id = 1;", OWNER)
+        refused(proc, "23514", "restore_prior set while the marker is present")
+        assert "register_switch_check4" in proc.stderr, proc.stderr
+    finally:
+        pg_cluster.drop_database(db.name)
+
+
+@pytest.mark.parametrize("case", ["cutover", "rollback"])
+def test_an_operator_entry_with_a_row_outside_lanes_store_is_refused_lr004_at_commit(pg, case):
+    """Lane 3's ruling on lane 1's point 1 (comment 6710770304): a cutover entry,
+    and a rollback entry, with an extra `files` row outside `lanes/STORE`, are
+    each refused at their commit with LR004 (ruling 1), and the journal's count
+    and the head are unchanged, so no such entry stays for a later abort to meet
+    with 23503. The entry is the test's own, by a direct call: the shim's
+    `edit-entry` stands in for no operator command here, since only T116's
+    cutover sends one, and this case is T107's."""
+    extra = {"path": "lanes/LANES.md", "present": True,
+             "sha256": rendered(DEFAULT_FILES["lanes/LANES.md"]), "final_newline": True}
+    if case == "cutover":
+        base = committed(pg, head(pg), import_entry(DEFAULT_FILES), "the import")
+        body = cutover_entry()
+    else:
+        base = bring_to_primary(pg)
+        body = rollback_entry()
+    body["files"] = [*body["files"], extra]
+    before = state(pg)
+    message = refused(commit_call(pg, base, body), "LR004", f"a {case} entry with a LANES.md row")
+    assert "outside lanes/STORE" in message, message
+    assert state(pg) == before, f"a refused {case} entry changed the register"
+
+
+def test_the_switch_checks_refuse_a_bad_set_seq_and_a_mode_marker_mismatch(pg):
+    """As the admin under `SET ROLE lanes_register_owner`, on a switch at
+    `files`/`absent` after a confirmed rollback: an `UPDATE` setting `set_seq`
+    to -2 fails with 23514, and so does one setting `primary` with the marker
+    `absent` (the switch's checks); the row is unchanged. The control: the
+    owner's `UPDATE` of `set_seq` to -1, rolled back, is not refused."""
+    back = committed(pg, bring_to_primary(pg), rollback_entry(), "the rollback's entry")
+    assert marker_call(pg, back).stdout.strip() == "absent"
+    before = switch_of(pg)
+    control = psql(pg, f"BEGIN;\nUPDATE {SCHEMA}.register_switch SET set_seq = -1 WHERE id = 1;\n"
+                       f"ROLLBACK;\n", OWNER)
+    assert control.returncode == 0, f"the owner's UPDATE, the control: {control.stderr}"
+    for change in ("set_seq = -2", "mode = 'primary'"):
+        proc = psql(pg, f"UPDATE {SCHEMA}.register_switch SET {change} WHERE id = 1;", OWNER)
+        refused(proc, "23514", f"the owner's UPDATE setting {change}")
+        assert "register_switch" in proc.stderr, proc.stderr
+        assert switch_of(pg) == before, f"the refused UPDATE ({change}) changed the switch"
+
+
+# =================================================================== AT-SPL
+#: AT-SPL's fixture (TP:4297-4298): aliases X and Y mapping to O in
+#: `lanes/repos.tsv`, here repositories, so a claim's object `<repo>#12` takes
+#: D19's spellings (`register_object_spellings`).
+SPL_REPOS = "# alias\towner/repo\nx9\topensoft/o9\ny9\topensoft/o9\n"
+SPL_O, SPL_X, SPL_Y = "opensoft/o9#12", "x9#12", "y9#12"
+SPL_LANES = {"Lane-S1": "aaaaaaaa-0231-4000-8000-00000000a231",
+             "Lane-S2": "bbbbbbbb-0231-4000-8000-00000000b231"}
+SPL_FILES = {"lanes/LANES.md": ["# Lanes"],
+             **{f"lanes/log/{lane}.md": [f"# lane {lane} {EM_DASH} object log"] for lane in SPL_LANES}}
+
+
+def spl_line(verb: str, lane: str, obj: str) -> bytes:
+    """A log line in `parse_log_line`'s grammar (lanes-index at merge10)."""
+    return (f"{verb} {EM_DASH} lane {lane}, session {SPL_LANES[lane]}@{WS}, "
+            f"2026-11-10T12:00:00Z, {obj}\n").encode("utf-8")
+
+
+def spl_write(writer: Writer, name: str, verb: str, lane: str, obj: str) -> subprocess.CompletedProcess:
+    att = writer.attempt(name, f"lanes/log/{lane}.md", lambda old: old + spl_line(verb, lane, obj),
+                         lane=lane, verb=verb.lower())
+    return writer.commit(att)
+
+
+def holds_on(db, lane_key: str) -> list:
+    return json.loads(sql(db, f"SELECT coalesce(jsonb_agg(to_jsonb(h)), '[]') FROM "
+                              f"{SCHEMA}.object_holds h WHERE h.lane_key = {sql_text(lane_key)};"))
+
+
+@pytest.mark.parametrize("case", ["as-alias", "as-key"])
+def test_a_claim_records_its_spelling_its_key_and_its_aliases(pg, tmp_path, case):
+    """L1's claim typed as X, or as O, through the writer (`register snapshot
+    --tree` and `register commit`): its `object_holds` row has `object = O`,
+    and `spellings`, compared as a set, holds {X, O, Y}."""
+    bring_to_primary(pg, SPL_FILES)
+    writer = Writer(pg, tmp_path / "writer", {**CHECKOUT_FILES, "lanes/repos.tsv": SPL_REPOS})
+    proc = spl_write(writer, "claim", "CLAIMED", "Lane-S1", SPL_X if case == "as-alias" else SPL_O)
+    assert proc.returncode == 0, shown(proc)
+    rows = holds_on(pg, "lane-s1")
+    assert len(rows) == 1, rows
+    assert rows[0]["object"] == SPL_O, f"the claim's row has object {rows[0]['object']!r}, not {SPL_O!r}"
+    assert set(rows[0]["spellings"] or ()) == {SPL_X, SPL_O, SPL_Y}, rows[0]
+
+
+def test_a_released_claims_spellings_block_nothing(pg, tmp_path):
+    """After L1 claims O and releases it, L2's claim of X commits, with no LR005
+    `claim-spellings`, and its row holds the same set {X, O, Y}."""
+    bring_to_primary(pg, SPL_FILES)
+    writer = Writer(pg, tmp_path / "writer", {**CHECKOUT_FILES, "lanes/repos.tsv": SPL_REPOS})
+    for name, verb, lane, obj in (("claim", "CLAIMED", "Lane-S1", SPL_O),
+                                  ("release", "RELEASED", "Lane-S1", SPL_O),
+                                  ("claim-2", "CLAIMED", "Lane-S2", SPL_X)):
+        proc = spl_write(writer, name, verb, lane, obj)
+        assert "claim-spellings" not in proc.stderr, shown(proc)
+        assert proc.returncode == 0, f"{name}:\n{shown(proc)}"
+    rows = holds_on(pg, "lane-s2")
+    assert len(rows) == 1 and rows[0]["verb"] == "CLAIMED", rows
+    assert set(rows[0]["spellings"] or ()) == {SPL_X, SPL_O, SPL_Y}, rows[0]
+
+
+# =================================================================== AT-LR4
+#: Each rewrite of the write's entry (TP:4564-4583), as an `edit-entry` arm's
+#: `field` and `value` (no `value`: the field removed). The shim names a field
+#: by a dotted path that never enters a list, so a rewrite of one edit or one
+#: files row sends the whole list, as `register_commit_entry` builds it.
+#: `operator-no-edit` and `root-seq-on-a-non-empty-journal` are direct calls:
+#: the first by the test plan's words, and the second since the shim adds no key.
+LR4_CASES = ("digest-not-hex-equal", "edit-old-sha256", "path-not-in-files", "write-edits-store",
+             "operator-no-edit", "no-journal-object", "journal-value-not-string-or-null",
+             "list-key-not-array", "raw-not-the-lines-text", "root-seq-on-a-non-empty-journal",
+             "write-without-args-sha256")
+LR4_DIRECT = ("operator-no-edit", "root-seq-on-a-non-empty-journal")
+
+
+def lr4_arm(case: str, image: bytes) -> dict:
+    files_row = {"path": "lanes/LANES.md", "present": True,
+                 "sha256": hashlib.sha256(image).hexdigest(), "final_newline": True}
+    other = "f" * 64 if files_row["sha256"] != "f" * 64 else "e" * 64
+    arms = {
+        "digest-not-hex-equal": {"field": "files", "value": [{**files_row, "sha256": other}]},
+        "edit-old-sha256": {"field": "edits",
+                            "value": [lr4_edit(old_sha256=line_sha("t231: not the line"))]},
+        "path-not-in-files": {"field": "files", "value": []},
+        "write-edits-store": {"field": "edits", "value": [lr4_edit(
+            path="lanes/STORE", line_no=1, old_sha256=line_sha(STORE_LINES[0]))]},
+        "no-journal-object": {"field": "journal"},
+        "journal-value-not-string-or-null": {"field": "journal.message", "value": 231},
+        "list-key-not-array": {"field": "lanes", "value": {}},
+        "raw-not-the-lines-text": {"field": "lanes", "value": [
+            {"path": "lanes/LANES.md", "line_no": 2, "raw": "t231: not the line's text",
+             "lane_key": LANE.lower(), "lane": LANE, "archived": False, "owner": None}]},
+        "write-without-args-sha256": {"field": "journal.args_sha256"},
+    }
+    return {"mode": "edit-entry", "match": "commit_write", **arms[case]}
+
+
+def lr4_refused(pg, writer: Writer, att: dict, before: dict, code: str, what: str) -> None:
+    """AT-LR4's oracle on `register commit`: one commit call, rewritten; its
+    code on stderr; LR004's one re-read from SQL after it and no resend (R02),
+    or none for another code, which is 69 at once; 69; nothing written."""
+    proc = writer.commit(att)
+    assert proc.returncode == 69, f"{what}:\n{shown(proc)}"
+    assert ended_with(proc, code), f"{what}: no `ERROR:  {code}:` line:\n{shown(proc)}"
+    commits = writer.commit_calls()
+    assert len(commits) == 1, f"{what}: {len(commits)} commit calls, not one (R02)"
+    assert commits[0]["arms"] == ["edit-entry"], commits[0]
+    after = writer.after_commit()
+    if code == "LR004":
+        assert len(after) == 1 and "render_file(" in after[0]["sent"], (
+            f"{what}: LR004's re-read is not one call after the commit call: {after}")
+    else:
+        assert after == [], f"{what}: {code} is 69 at once, with no re-read: {after}"
+    assert state(pg) == before, f"{what}: the register changed"
+
+
+@pytest.mark.parametrize("case", LR4_CASES)
+def test_lr004_on_an_edit_or_proof_that_does_not_apply_leaves_everything_unchanged(
+        pg, tmp_path, case):
+    """Each rewrite of the write's entry ends with LR004 (23514 for
+    `write-without-args-sha256`, so 69 at once); `register_head.seq`, `journal`,
+    `journal_edits`, `journal_files`, `files` and `doc_lines` equal their values
+    before (every table of section 1.2 is compared). The write replaces
+    `lanes/LANES.md`'s line 2, so `edit-old-sha256` has an `old_sha256` to
+    rewrite. `operator-no-edit` (a `rollback` entry with no edit and no other
+    row) and `root-seq-on-a-non-empty-journal` are direct calls, LR004 each."""
+    n, writer = lr4_writer(pg, tmp_path) if case not in LR4_DIRECT else (
+        bring_to_primary(pg, LR4_FILES, no_newline=LR4_NO_NEWLINE), None)
+    before = state(pg)
+    if case in LR4_DIRECT:
+        body = entry("rollback", "rollback") if case == "operator-no-edit" else lr4_body(root_seq=0)
+        message = refused(commit_call(pg, n, body), "LR004", case)
+        assert ("with no edit" if case == "operator-no-edit" else "root_seq") in message, message
+        assert state(pg) == before, f"{case}: the register changed"
+        return
+    att = writer.attempt("rewritten", "lanes/LANES.md", lr4_change)
+    writer.arm([lr4_arm(case, att["image"])])
+    lr4_refused(pg, writer, att, before, "23514" if case == "write-without-args-sha256" else "LR004",
+                case)
+
+
+def test_lr004_reloads_once_then_exits_69(pg, tmp_path):
+    """Armed for every commit call (R02; R-F10-35; lane 3, #165 6756017599): the
+    writer's one commit call meets LR004; its "reload" is the one re-read of the
+    bases from SQL; with equal bases it sends nothing again and exits 69, naming
+    the entry and LR004's own message (B10 tasks:424); nothing is written. A
+    moved head after the re-read (75) and a differing base's 69 have no case
+    here (R-F13-2)."""
+    _n, writer = lr4_writer(pg, tmp_path)
+    before = state(pg)
+    att = writer.attempt("every-call", "lanes/LANES.md", lr4_change)
+    writer.arm([{**lr4_arm("digest-not-hex-equal", att["image"]), "from": 1}])
+    proc = writer.commit(att)
+    assert proc.returncode == 69, shown(proc)
+    assert ended_with(proc, "LR004"), shown(proc)
+    commits, after = writer.commit_calls(), writer.after_commit()
+    assert len(commits) == 1, f"{len(commits)} commit calls: LR004 is never sent again (R02)"
+    assert len(after) == 1 and "render_file(" in after[0]["sent"], (
+        f"not one re-read of the bases from SQL after the commit call: {after}")
+    write_id = att["keys"]["write_id"]
+    assert f"LR004 on write {write_id}" in proc.stderr, shown(proc)
+    assert "equals SQL's" in proc.stderr and "proof: lanes/LANES.md renders" in proc.stderr, (
+        f"the 69 does not name the entry and LR004's own message:\n{shown(proc)}")
+    assert state(pg) == before, "a write refused LR004 changed the register"
+
+
+@pytest.mark.parametrize("case", ["missing", "not-a-string", "not-a-time"])
+def test_an_entry_without_a_valid_not_after_is_refused(pg, tmp_path, case):
+    """Lane 1's v2.3 (TP:4536-4541): an entry with no `not_after`, and one whose
+    `not_after` is not a string, are each LR004; one whose `not_after` is not a
+    time is 22007, so 69 at once. On an operator entry first, a `rollback` entry
+    by a direct call, then on a `write` entry through `register commit`, whose
+    `not_after` the shim rewrites."""
+    rewrite = {"missing": {}, "not-a-string": {"value": 1893456000},
+               "not-a-time": {"value": "not a time"}}[case]
+    code = "22007" if case == "not-a-time" else "LR004"
+    n, writer = lr4_writer(pg, tmp_path)
+    before = state(pg)
+    operator = rollback_entry()
+    if case == "missing":
+        del operator["not_after"]
+    else:
+        operator["not_after"] = rewrite["value"]
+    refused(commit_call(pg, n, operator), code, f"a rollback entry whose not_after is {case}")
+    assert state(pg) == before, f"a rollback entry whose not_after is {case} changed the register"
+    att = writer.attempt("not-after", "lanes/LANES.md", lr4_change)
+    writer.arm([{"mode": "edit-entry", "match": "commit_write", "field": "not_after", **rewrite}])
+    lr4_refused(pg, writer, att, before, code, f"a write entry whose not_after is {case}")
+
+
+def test_an_import_carries_not_after_of_its_330_s_timer_plus_2_s(pg, tmp_path):
+    """An import's `not_after` (phase N; D9's `import` row; lane 1's v2.6):
+    `lanes-index import --at <C>` (T115) of a fixture register, through the
+    shim, whose log holds each of its commit calls' entries: each entry's
+    `not_after` is more than 300 s after the import's journal row's `utc`, and
+    at most 332 s after it, both on the database's clock. `utc` is whole seconds
+    (its CHECK), so "at most 332 s" is read as less than 333 s. A writer's bound
+    would put it at most 10 s after."""
+    work, commit = workspace_at(tmp_path, [])
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    (shim / "psql").write_text(PSQL_SHIM, encoding="utf-8")
+    (shim / "psql").chmod(0o755)
+    (shim / PSQL_SHIM_CONTROL).write_text(json.dumps({"psql": pg.psql_bin, "arms": []}),
+                                          encoding="utf-8")
+    env = index_env(tmp_path, config(tmp_path, pg, mode="index"), LANES_REPO=str(work),
+                    LANES_WORKSTATION=WS,
+                    PATH=f"{shim}{os.pathsep}{os.environ.get('PATH', os.defpath)}")
+    proc = run_index(LANES_INDEX, ["import", "--at", commit], env, cwd=work)
+    assert proc.returncode == 0, shown(proc)
+    log = [json.loads(line) for line in
+           (shim / PSQL_SHIM_LOG).read_text(encoding="utf-8").splitlines()]
+    sent = [e["sent"] for e in log if e.get("kind") != "version" and "commit_write(" in e["sent"]]
+    assert sent, "the shim's log holds no commit call of the import"
+    utc = float(sql(pg, f"SELECT extract(epoch FROM utc) FROM {SCHEMA}.journal "
+                        f"WHERE kind = 'import' ORDER BY seq DESC LIMIT 1;"))
+    for text in sent:
+        found = re.findall(r'"not_after"\s*:\s*"([^"]+)"', text)
+        assert len(found) == 1, f"the commit call carries {len(found)} not_after: {text[:600]}"
+        stamp = found[0].replace("Z", "+00:00")
+        epoch = datetime.datetime.fromisoformat(stamp).timestamp()
+        assert 300 < epoch - utc < 333, (
+            f"the import's not_after {found[0]} is {epoch - utc:.1f} s after its journal "
+            f"row's utc, not more than 300 s and at most 332 s (330 s timer plus 2 s)")
+
+
+@pytest.mark.parametrize("case", ["write-edits-store", "operator-edits-other",
+                                  "operator-edits-nothing"])
+def test_the_operator_flag_rules_refuse_lr004(pg, tmp_path, case):
+    """The operator flag's rules (F2, D24): a `write` entry that edits
+    `lanes/STORE`, through `register commit` with the shim's rewrite; an
+    operator entry, a `rollback`, that edits a path besides `lanes/STORE`; and
+    one that edits nothing, each by a direct call. Each is LR004, and nothing is
+    written."""
+    if case == "write-edits-store":
+        _n, writer = lr4_writer(pg, tmp_path)
+        before = state(pg)
+        att = writer.attempt("store", "lanes/LANES.md", lr4_change)
+        writer.arm([lr4_arm("write-edits-store", att["image"])])
+        lr4_refused(pg, writer, att, before, "LR004", case)
+        return
+    n = bring_to_primary(pg)
+    lines = [*DEFAULT_FILES["lanes/LANES.md"], "t231: an operator's line"]
+    if case == "operator-edits-other":
+        body = rollback_entry(edits=[{"ord": 1, "op": "remove", "path": "lanes/STORE"},
+                                     {"ord": 2, "op": "append", "path": "lanes/LANES.md",
+                                      "new_text": lines[-1]}])
+        want = "edits lanes/STORE alone"
+    else:
+        body = rollback_entry(edits=[], files=[])
+        want = "with no edit"
+    before = state(pg)
+    message = refused(commit_call(pg, n, body), "LR004", case)
+    assert want in message, message
+    assert state(pg) == before, f"{case}: the register changed"
+
+
+def test_a_file_without_a_final_newline_renders_back_byte_identical(pg, tmp_path):
+    """The fixture's `lanes/aliases.tsv` has no final newline. As imported it
+    renders back byte for byte (`render_file`), and the scratch tree `register
+    snapshot --tree` builds holds it so; a write through `register commit` that
+    replaces its last line keeps it so: `journal_files.final_newline` is false
+    at that seq, and it renders back as the write's image, with no final LF."""
+    _n, writer = lr4_writer(pg, tmp_path)
+    path = "lanes/aliases.tsv"
+    imported = file_bytes(LR4_ALIASES, final_newline=False)
+    shown_now = sql(pg, f"SELECT encode({SCHEMA}.render_file('{path}'), 'hex');", WRITER)
+    assert bytes.fromhex(shown_now) == imported, f"{path} renders as {bytes.fromhex(shown_now)!r}"
+    new_row = f"Lane-Old\t{LANE}\t2026-11-10T10:00:00Z"
+    att = writer.attempt("no-newline", path, lambda old: old.replace(
+        LR4_ALIASES[-1].encode("utf-8"), new_row.encode("utf-8")))
+    assert att["old"] == imported, f"the scratch tree's {path} is {att['old']!r}, not {imported!r}"
+    assert not att["image"].endswith(b"\n"), att["image"]
+    proc = writer.commit(att)
+    assert proc.returncode == 0 and re.fullmatch(r"committed ([0-9]+)\n", proc.stdout), shown(proc)
+    seq = int(proc.stdout.split()[1])
+    row = sql(pg, f"SELECT final_newline FROM {SCHEMA}.journal_files WHERE seq = {seq} "
+                  f"AND path = '{path}';")
+    assert row == "f", f"journal_files.final_newline at seq {seq} is {row!r}, not false"
+    shown_now = sql(pg, f"SELECT encode({SCHEMA}.render_file('{path}'), 'hex');", WRITER)
+    assert bytes.fromhex(shown_now) == att["image"], (
+        f"{path} renders as {bytes.fromhex(shown_now)!r}, not the write's {att['image']!r}")
