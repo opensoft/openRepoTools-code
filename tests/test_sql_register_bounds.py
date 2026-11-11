@@ -399,6 +399,8 @@ TIMING_PSQL = r'''#!/usr/bin/env python3
 # can be armed after the snapshot's end and an attempt's start found (T257f),
 # and which of the register's write functions it called (T278). Each request
 # is also stamped in psql-sent.log once read, before the real psql connects.
+# Each logged call names its parent's pid too, the command that made it, so a
+# missed snapshot's second request is told from a new attempt's (T257i).
 import time
 begin = time.monotonic()
 import json, os, subprocess, sys
@@ -421,8 +423,8 @@ proc = subprocess.run([real] + sys.argv[1:], input=data, capture_output=True)
 end = time.monotonic()
 err = proc.stderr.decode("utf-8", "replace")
 with open(os.path.join(here, "psql-timing.log"), "a", encoding="utf-8") as handle:
-    handle.write(json.dumps({"argv": sys.argv[1:], "start": start, "end": end,
-                             "exit": proc.returncode,
+    handle.write(json.dumps({"argv": sys.argv[1:], "ppid": os.getppid(),
+                             "start": start, "end": end, "exit": proc.returncode,
                              "first": (err.strip().splitlines() or [""])[0],
                              "snapshot": b"REPEATABLE READ" in data,
                              "calls": [k for k in KINDS if k.encode() + b"(" in data]}) + "\n")
@@ -583,7 +585,9 @@ ROWS = {
     # deadline, and the run stays under `T_write` (`WHOLE_WRITE`). And the
     # commit's F2 is armed only once the timing log shows the snapshot's end
     # (TP:3586-3589), so the snapshot reaches the cluster and the commit
-    # meets the relay. A writer's F3 is the head row held `FOR UPDATE`
+    # meets the relay; since T257i, at the commit's own send, so a missed
+    # snapshot's second request reaches it too (lane 1's cut, #165
+    # 6783051626). A writer's F3 is the head row held `FOR UPDATE`
     # (`_hold_head`; TP:3560-3561, "for a writer's commit, the head row held
     # `FOR UPDATE`"), which a snapshot's plain read does not wait on, so the
     # snapshot answers and each attempt's commit meets 55P03.
@@ -873,6 +877,14 @@ class Bench:
         return [json.loads(l) for l in self.timing.read_text(encoding="utf-8").splitlines()
                 if l and json.loads(l)["argv"] != ["--version"]]
 
+    def sent(self) -> list:
+        """`TIMING_PSQL`'s send stamps, as `Operator.sent` reads them: each
+        request read, with the write functions it calls, before its `psql`
+        connects (T257i)."""
+        log = self.bin / "psql-sent.log"
+        return [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines() if l] \
+            if log.exists() else []
+
     def request_elapsed(self) -> float:
         """`status`'s time (T220f; lane 3's T220 bullet, #165 comment
         6772120103): from the register's request's start to the command's
@@ -1006,9 +1018,12 @@ def test_each_database_path_exits_inside_its_bound(pg, tmp_path, request, case):
             listener = SilentListener()
             config = bench.config("127.0.0.1", listener.port, user)
         elif fault == "F2":
-            # THE COMMIT'S F2 IS ARMED AFTER THE SNAPSHOT'S END (T257f;
-            # TP:3586-3589): the relay passes the snapshot's connection whole.
-            armed = (lambda: any(c.get("snapshot") for c in bench.calls())) \
+            # THE COMMIT'S F2 IS ARMED AT THE COMMIT'S OWN SEND (T257i; T257f
+            # armed it after the snapshot's end, TP:3586-3589): the relay
+            # passes each snapshot request whole, a missed snapshot's second
+            # request among them, which lane 1's cut sends under what is left
+            # of `S` (#165 6783051626) and which F2 would end 69, not 3.
+            armed = (lambda: any("commit_write" in s["calls"] for s in bench.sent())) \
                 if row == "writer-commit-f2" else None
             listener = StartupRelay(f"{pg.host}/.s.PGSQL.{pg.port}", armed=armed)
             config = bench.config("127.0.0.1", listener.port, user)
@@ -1028,17 +1043,27 @@ def test_each_database_path_exits_inside_its_bound(pg, tmp_path, request, case):
     else:
         assert proc.returncode != 0, f"{case}: the path ended without its read"
     if row == "writer-commit-f2":
-        # The snapshot before the commit reached the cluster, and the commit's
-        # connection met the armed relay (TP:3589).
-        snapshots = [c for c in bench.calls() if c.get("snapshot")]
-        assert snapshots and snapshots[0]["exit"] == 0, \
-            f"{case}: the snapshot before the commit never reached the cluster: {bench.calls()}"
-        assert listener.silenced, f"{case}: no call met F2 after the snapshot's end"
+        # Every snapshot request sent before the commit's, a miss's second
+        # among them, reached the cluster and ended 0, and the commit's
+        # connection met the armed relay (TP:3589; T257i).
+        sends = [s["sent"] for s in bench.sent() if "commit_write" in s["calls"]]
+        assert sends, f"{case}: the write sent no commit call: {bench.sent()}"
+        snapshots = [c for c in bench.calls() if c.get("snapshot") and c["start"] < sends[0]]
+        assert snapshots and all(c["exit"] == 0 for c in snapshots), \
+            f"{case}: a snapshot request before the commit failed: {bench.calls()}"
+        assert listener.silenced, f"{case}: no call met F2 at the commit's send"
     if row == "whole-write":
         # ITS OWN CELL (T257f): no attempt, each begun by its snapshot call,
         # starts after the deadline, asserted at twice it (timing rule 2); the
         # time runs from the first attempt's start, and stays under `T_write`.
-        starts = [c["start"] for c in bench.calls() if c.get("snapshot")]
+        # An attempt's start is its process's first snapshot request: a
+        # missed snapshot's second request, in the same process, starts no
+        # attempt (T257i; lane 1's cut, #165 6783051626).
+        firsts: dict = {}
+        for c in bench.calls():
+            if c.get("snapshot"):
+                firsts.setdefault(c.get("ppid"), c["start"])
+        starts = sorted(firsts.values())
         assert starts, f"{case}: the write made no attempt"
         late = [round(s - starts[0], 2) for s in starts
                 if s - starts[0] >= 2 * WHOLE_WRITE["deadline_s"]]
