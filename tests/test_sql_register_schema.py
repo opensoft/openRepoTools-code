@@ -2532,8 +2532,9 @@ def test_an_entry_without_a_valid_not_after_is_refused(pg, tmp_path, case):
 
 def test_an_import_carries_not_after_of_its_330_s_timer_plus_2_s(pg, tmp_path):
     """An import's `not_after` (phase N; D9's `import` row; lane 1's v2.6):
-    `lanes-index import --at <C>` (T115) of a fixture register, through the
-    shim, whose log holds each of its commit calls' entries: each entry's
+    `lanes-index import --at <C>` (T115) of a fixture register, as the operator
+    lane (`LANES_LANE`, D24), through the shim, whose log holds each of its
+    commit calls' entries: each entry's
     `not_after` is more than 300 s after the import's journal row's `utc`, and
     at most 332 s after it, both on the database's clock. `utc` is whole seconds
     (its CHECK), so "at most 332 s" is read as less than 333 s. A writer's bound
@@ -2546,7 +2547,7 @@ def test_an_import_carries_not_after_of_its_330_s_timer_plus_2_s(pg, tmp_path):
     (shim / PSQL_SHIM_CONTROL).write_text(json.dumps({"psql": pg.psql_bin, "arms": []}),
                                           encoding="utf-8")
     env = index_env(tmp_path, config(tmp_path, pg, mode="index"), LANES_REPO=str(work),
-                    LANES_WORKSTATION=WS,
+                    LANES_LANE=LANE, LANES_WORKSTATION=WS, **OPERATOR_GIT,
                     PATH=f"{shim}{os.pathsep}{os.environ.get('PATH', os.defpath)}")
     proc = run_index(LANES_INDEX, ["import", "--at", commit], env, cwd=work)
     assert proc.returncode == 0, shown(proc)
