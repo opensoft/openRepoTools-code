@@ -4426,7 +4426,7 @@ reg_open() {   # <arm> [<its arguments>...]
   esac
   case "$REG_MODE" in index|primary|files) LANES__MODE="$REG_MODE"; export LANES__MODE ;; esac
   if [ -n "$RO_FAILED" ]; then reg_read_failed "$RO_FAILED" "$RO_WHY"; return 0; fi
-  if [ "$REG_MODE" = primary ]; then REG_STORE=sql; return 0; fi
+  if [ "$REG_MODE" = primary ]; then REG_STORE=sql; reg_err_keep; return 0; fi
   REG_STORE=files
   reg_marker_check
   return 0
@@ -4676,22 +4676,43 @@ reg_fail_again() {
   if [ "${REG_CLASS:-}" = mirror ]; then return 1; fi
   return 69
 }
-# WHAT IT SAYS IS SAID ONCE, BY THE MAIN SHELL: a site often runs in a
-# substitution whose stderr is dropped (`register_lanes 2>/dev/null`) or kept
+# WHAT IT SAYS IS SAID ONCE, ON THE PROCESS'S OWN STDERR: a site often runs in
+# a substitution whose stderr is dropped (`register_lanes 2>/dev/null`) or kept
 # in a file nobody replays, and a line said there reaches nobody. So the mirror
-# line is kept beside the cache (`.rmirror`) and `cleanup` says it; a decide or
-# projection arm's refusal (`reg_fail_end`) carries what failed; and where no
-# arm ended by its class, `cleanup` notes what failed.
+# line goes to the copy of the main shell's stderr the door kept
+# (`reg_err_keep`), at the switch and so before the mirror's first read (lane 3,
+# #165 6780364102); with no copy kept, it waits beside the cache (`.rmirror`)
+# for `cleanup`. A decide or projection arm's refusal (`reg_fail_end`) carries
+# what failed, and where no arm ended by its class, `cleanup` notes it.
 reg_fail() {   # <what failed> <the cause, for the mirror line>
   if [ ! -e "$SE_CACHE_FILE.rfail" ]; then
     if [ "${REG_CLASS:-}" = mirror ]; then
-      reg_mirror_line "$2" 2> "$SE_CACHE_FILE.rmirror" || :
+      rfl_line="$(reg_mirror_line "$2" 2>&1)"
+      if [ -z "$REG_ERR_FD" ] ||
+         ! eval 'printf "%s\n" "$rfl_line" >&'"$REG_ERR_FD" 2>/dev/null; then
+        printf '%s\n' "$rfl_line" > "$SE_CACHE_FILE.rmirror" 2>/dev/null || :
+      fi
       reg_flush
       state_events_flush
     fi
     printf '%s\n%s\n' "$1" "$2" > "$SE_CACHE_FILE.rfail" 2>/dev/null || :
   fi
   reg_fail_again
+}
+# THE MAIN SHELL'S STDERR, KEPT FOR THE MIRROR LINE: run by the door on primary,
+# in the main shell, for a mirror-class arm only. The first descriptor of 8 down
+# to 3 that is not open is made a copy of stderr, so no descriptor this process
+# was handed is touched; with none free, `REG_ERR_FD` stays empty.
+REG_ERR_FD=""
+reg_err_keep() {
+  [ "${REG_CLASS:-}" = mirror ] || return 0
+  for rek_n in 8 7 6 5 4 3; do
+    if ! { : >&"$rek_n"; } 2>/dev/null; then
+      eval "exec $rek_n>&2" && REG_ERR_FD="$rek_n"
+      return 0
+    fi
+  done
+  return 0
 }
 # 0 where a failed second read is recorded in this process and the class does
 # not read the mirror: a caller whose pipeline loses the 69 asks this.
@@ -10680,6 +10701,12 @@ lanes_rows() {
       lr_unread_paths="$(sed -n -e 's/^lanes-edit: unreadable log: \(.*\) — git could not read it.*$/\1/p' -e 's/^lanes-edit: unreadable log: \(.*\) — the file could not be read.*$/\1/p' -e 's/^lanes-edit: unreadable log: \(.*\) — another log differs from it only by case.*$/\1/p' -e 's/^lanes-edit: unreadable log: \(.*\) — the register.s second read did not bring it.*$/\1/p' "$SE_WARN_FILE" 2>/dev/null)"
       lr_unread=" $(printf '%s\n' "$lr_unread_paths" | awk 'NF { n = $0; sub(/^.*\//, "", n); sub(/\.md$/, "", n); print tolower(n) }' | tr '\n' ' ')"
       lr_unlisted="$(sed -n -e '/^lanes-edit: unlisted logs: /p' "$SE_WARN_FILE" 2>/dev/null)"
+      # ON PRIMARY EACH LOG OF A CASE PAIR IS NAMED, once, by its own note
+      # (feature 007, T505 Q4): the events' build said it into the warnings,
+      # and this listing's read of them dropped its stderr.
+      if [ "${REG_STORE:-}" = sql ]; then
+        sed -n -e '/^lanes-edit: unreadable log: .* — another log differs from it only by case/p' "$SE_WARN_FILE" >&2 2>/dev/null || :
+      fi
     else
       lr_unread_ok=0
     fi
