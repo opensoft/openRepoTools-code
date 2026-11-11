@@ -1419,12 +1419,16 @@ LANES_ROUTED="${LANES__CHECKOUT_LANE:-}"   # the lane, in the re-run process onl
 # asked. Consumers test `= primary` only. Never exported: `LANES__MODE` is the
 # carry. `REG_ASK` is set by the write guard's arm at the dispatcher.
 # `REG_PW` is T415's marker that this process entered the register's attempt
-# loop: 0 here, whatever the environment says, never exported and never read
-# from it, and set to 1 only by the primary arm, immediately before `pw_run`.
+# loop: 0 here, whatever the environment says, and never read from it. It is
+# never exported either: a `REG_PW` that came in exported is unset first,
+# since an assignment alone keeps the export, and the arm's 1 would then
+# reach the attempt's child (review REV415c, N4). It is set to 1 only by the
+# primary arm, immediately before `pw_run`.
 # The guard after that arm tests it and nothing else (lane openRepoTools-3,
 # #165 6774499606, A1).
 REG_MODE=""
 REG_ASK=0
+unset REG_PW
 REG_PW=0
 if [ -n "${LANES__MODE:-}" ] &&
    { [ "${LANES__PID:-}" = "$$" ] || [ "${LANES__REPLAY_PID:-}" = "$$" ]; }; then
