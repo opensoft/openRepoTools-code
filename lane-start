@@ -315,8 +315,10 @@
 #      69, 75 and 3. A resume's refused `start-record` is a note, and the
 #      launch goes on. Under a seq base that note, after any code but 3,
 #      prints no rerun of its own and names `lane-start --no-launch` with
-#      this run's arguments, run in the launched session's window as its
-#      first act (lane 3's Q39 and Q41, #165 6780753157).
+#      this run's own arguments, run in the launched session's window as its
+#      first act (lane 3's Q39 and Q41, #165 6780753157): its lane words,
+#      `--dir`, `--estate`, `--agent` and `--bind`, as typed, and no other
+#      option, nor `--` and what follows it (Q64, #165 6807881675).
 #
 # ENVIRONMENT
 #   PROJECTS_ROOT        default ~/projects
@@ -844,8 +846,9 @@ bind_sid=""
 request_handoff=0; force_why=""; handoff_wait=300
 positional=(); pass=()
 # THIS RUN'S ARGUMENTS AS THEY WERE GIVEN, before the loop below takes them:
-# the `--no-launch` act a resume's arm names under a seq base is this act with
-# the same arguments (`ls_q41_line`; lane 3's Q41, #165 6780753157).
+# the `--no-launch` act a resume's arm names under a seq base is this act
+# with its own arguments among them, as typed (`ls_q41_line`; lane 3's Q41,
+# #165 6780753157, and Q64, #165 6807881675).
 LS_ARGV=("$@")
 
 while [ $# -gt 0 ]; do
@@ -1444,24 +1447,48 @@ LS_Q4="No command is printed for it here, since one run by hand without this lau
 # as its first act: the act without its launch (`--no-launch`, the first act
 # INSIDE a running session). A 3 keeps the writer's rerun (G3), in `LS_D8`.
 # A new row's arms die, and `LS_Q4`'s "from its start" stands for them, a
-# 69 or 75 included. Under `@files` today's texts stand. The line is this
-# run's own arguments (`LS_ARGV`), each one word by `quoted`, so it reads
-# back as typed; a `--no-launch` among them is not given twice, and nothing
-# after `--`, nor a flag's own value, is taken for one.
+# 69 or 75 included. Under `@files` today's texts stand.
+#
+# "THE SAME ARGUMENTS" ARE THE ACT'S OWN (lane 3's Q64, #165 6807881675):
+# the run's lane words, `--dir`, `--estate`, `--agent` and `--bind`, as
+# typed. Amendment 7(b)'s first act, `ls_defer_agent`'s line below, is the
+# precedent. The line is built from `LS_ARGV`, each word kept one word by
+# `quoted`, so it reads back as typed. Every other option is dropped with
+# its value, in either spelling, since each shapes only the launch or
+# answers what the first run settled: `--fresh` would take the new-session
+# branch again, and defer W7 and the stamp again; `--operation` is the
+# supervisor's launch's; `--request-handoff`, `--force` and `--wait` are
+# answers already acted on, and `--force` is never automatic; `--confirm`
+# and `--yes` are the window question the launch took; `--dry-run` writes
+# nothing; and a `--no-launch` is not given twice. `--` and what follows it
+# go to claude, and this act launches nothing, so they are dropped too.
+#
+# THE WALK IS THE PARSER'S ABOVE. A two-token flag takes the next word
+# whatever it is, so `--dir --` keeps `--` as the directory, and `--force
+# --dir` drops `--dir` as the why. Only `--agent`, `--operation`, `--bind`,
+# `--force`, `--wait`, `--dir` and `--estate` take a value, and only they
+# have a `=` spelling. The parser refuses any other word that starts with
+# `-`, or exits on `--help`, before this line can run, so `-*` here is a
+# dropped flag, and a word without one is a lane word. A flag added to the
+# parser is added here too.
+# The patterns are quoted so that the hygiene test's reading of option arms
+# (`_value_flag_arms`, `tests/test_repo_hygiene.py`) reads the parser's,
+# not these: unquoted, this walk's arm stood in for seven of them.
 ls_q41_line() {
-  local a dd=0 val=0
+  local a val=0 skip=0
   local -a nl
   nl=(--no-launch)
   for a in ${LS_ARGV[@]+"${LS_ARGV[@]}"}; do
-    if (( ! dd )) && (( ! val )); then
-      case "$a" in
-        --no-launch) continue ;;
-        --) dd=1 ;;
-        --agent | --operation | --bind | --force | --wait | --dir | --estate) val=1; nl+=("$a"); continue ;;
-      esac
-    fi
-    val=0
-    nl+=("$a")
+    if (( skip )); then skip=0; continue; fi
+    if (( val )); then val=0; nl+=("$a"); continue; fi
+    case "$a" in
+      "--agent" | "--bind" | "--dir" | "--estate") val=1; nl+=("$a") ;;
+      "--agent="* | "--bind="* | "--dir="* | "--estate="*) nl+=("$a") ;;
+      "--operation" | "--force" | "--wait") skip=1 ;;
+      "--") break ;;
+      -*) ;;
+      *) nl+=("$a") ;;
+    esac
   done
   printf '%s %s' "$prog" "$(quoted "${nl[@]}")"
 }
