@@ -5891,14 +5891,19 @@ def _outage_clear() -> int:
 # read at the head from `files` and `doc_lines`; form 4 reads at `n` from
 # `journal_files`, and replays the journal only where the head has moved past
 # `n`. An image comes from T302's cache only where its name is the digest the
-# database gave at the read's seq (D17); every other image is fetched whole in
-# the same request and checked against that digest.
+# database gave at the read's seq (D17); in forms 1 and 3 every other image is
+# fetched whole in the same request and checked against that digest, and in
+# forms 2 and 4 by the detached fetch below.
 #
 # THE GUARD'S CLIENT HALF is lane 5's T507 (contract §3.6, R07), under lane 1's
 # review: `T0` from `--pid`, the clamp, the declared cap and its floor
-# (`register_guard_t0`, `register_guard_declared`, `cmd_register_read`). T113
-# ends "too late to verify", 2, where the cut is passed before the request or
-# reached during it.
+# (`register_guard_t0`, `register_guard_declared`, `cmd_register_read`); form
+# C and `.outage` on form 2's 69 under a declaration that counts
+# (`register_guard_outage`); and the whole files the guard's forms read from
+# T302's cache, else from a detached `register guard-fetch`
+# (`register_guard_whole_files`), so their own request reads no file's
+# lines. T113 ends "too late to verify", 2, where the cut is passed before the
+# request or reached during it.
 
 #: `check_lane_name`'s class (`lanes-edit.sh`; Y:4956; contract §3.6, O18):
 #: letters, digits, `.`, `_` and `-`, not opening with `.` or `-`.
@@ -6668,6 +6673,161 @@ def register_guard_outage(opts: dict, declared: dict) -> None:
              f"({exc.strerror or exc})")
 
 
+#: A PATH THE WHOLE-FILE FETCH NAMES AS AN SQL LITERAL: letters, digits, `.`,
+#: `_`, `/` and `-`, which read alike under either `standard_conforming_strings`.
+#: Any other path is named by `_register_sql_text`'s hex form.
+_REGISTER_FETCH_PLAIN_RE = re.compile(r"[A-Za-z0-9._/-]+")
+
+
+def register_guard_fetch_queries(paths) -> list[str]:
+    """THE WHOLE-FILE FETCH'S ONE REQUEST (lane 3's ruling, #165 6783977598,
+    item (3)): `register_read_queries`' head form for `paths` alone, so that
+    `_register_read_snapshot` checks it as it checks a read: `schema_version`,
+    the switch and the head, then `files` and `doc_lines` of `paths`, in one
+    REPEATABLE READ READ ONLY snapshot. A plain path is named by its own SQL
+    literal (`_REGISTER_FETCH_PLAIN_RE`), so the request names the files it
+    fetches, as a log of it shows; any other by its hex form."""
+    names = ", ".join(f"'{path}'" if _REGISTER_FETCH_PLAIN_RE.fullmatch(path)
+                      else _register_sql_text(os.fsencode(path))
+                      for path in sorted(paths, key=os.fsencode))
+    return [
+        "SELECT version, writers_from, readers_from FROM schema_version WHERE id = 1",
+        "SELECT s.mode, s.generation, h.seq FROM register_switch s, register_head h "
+        "WHERE s.id = 1 AND h.id = 1",
+        f"SELECT f.path, f.sha256, f.final_newline FROM files f WHERE f.path IN ({names}) "
+        f"ORDER BY f.path",
+        f"SELECT d.path, d.text FROM doc_lines d WHERE d.path IN ({names}) "
+        f"ORDER BY d.path, d.line_no",
+    ]
+
+
+def register_guard_fetch_answer(out: bytes, code) -> dict:
+    """The whole-file fetch's answer on its pipe (`cmd_register_guard_fetch`):
+    `format=1`, then `n=<its head>`, one `image=<path as hex>\\t<sha256>\\t<length>`
+    line per image followed by its bytes, and `end`; or `failed=<cause or
+    ->\\t<why>`. Returns {path: bytes}. A failed fetch is `RegisterReadFailed`
+    with the fetch's `refuse db` cause, where it read the switch not
+    `primary` (`switch-files`) or the client outside the window (`schema`);
+    an answer that cannot be read is one too."""
+    at = 0
+
+    def line() -> str:
+        nonlocal at
+        end = out.find(b"\n", at)
+        if end < 0:
+            raise RegisterReadFailed(f"the whole-file fetch ended {code} with an answer cut "
+                                     f"short")
+        text, at = out[at:end].decode("utf-8", "replace"), end + 1
+        return text
+
+    if line() != "format=1":
+        raise RegisterReadFailed(f"the whole-file fetch ended {code} with no answer this "
+                                 f"read can parse")
+    first = line()
+    if first.startswith("failed="):
+        cause, _, why = first[len("failed="):].partition("\t")
+        raise RegisterReadFailed(f"the whole-file fetch failed: {why}",
+                                 cause=None if cause == "-" else cause)
+    if not re.fullmatch(r"n=-?[0-9]+", first):
+        raise RegisterReadFailed("the whole-file fetch's answer names no head")
+    images: dict = {}
+    while True:
+        text = line()
+        if text == "end":
+            return images
+        match = re.fullmatch(r"image=((?:[0-9a-f]{2})+)\t([0-9a-f]{64})\t([0-9]{1,12})", text)
+        if match is None:
+            raise RegisterReadFailed("the whole-file fetch's answer holds a line this read "
+                                     "cannot parse")
+        size = int(match.group(3))
+        data, at = out[at:at + size], at + size
+        if len(data) != size:
+            raise RegisterReadFailed(f"the whole-file fetch ended {code} with an image cut "
+                                     f"short")
+        images[os.fsdecode(bytes.fromhex(match.group(1)))] = data
+
+
+def register_guard_fetch(opts: dict, paths: list) -> dict:
+    """THE DETACHED WHOLE-FILE FETCH (SVC-8, "A whole file is never lost to
+    the line", B14 design :4277-4283; lane 3's ruling, #165 6783977598, item
+    (3); contract §2.4's `guard-fetch` row): `paths`' images, which T302's
+    cache does not hold at the read's digests, fetched by a NEW `lanes-index
+    register guard-fetch` process, never by the guard's read's own `psql`.
+    It is started as `guard-bind` is, in a session of its own (`setsid`)
+    with the hook's descriptors closed: stdin and stderr `/dev/null`, every
+    other descriptor closed, and stdout a pipe of its own to this read. It
+    reads as READER on the `guard-fetch` row, whose timer, `N_a`·`c` + 15 s,
+    bounds it; it puts each image in T302's cache and records them at its
+    head, then hands the bytes back on its pipe. This read waits for it only
+    until its own cut, `opts["cut"]`: a fetch the cut leaves runs on,
+    detached, and fills the cache, so the next prompt reads the file from
+    there. Returns {path: bytes} as the fetch read them, at its own head;
+    the caller takes each only where its digest is the read's at `n`. The
+    cut is a `PsqlFailed` with `timer_expired`, as a cut request is."""
+    argv = [sys.executable or "python3", os.path.abspath(__file__), "register", "guard-fetch"]
+    for path in paths:
+        argv += ["--path-hex", os.fsencode(path).hex()]
+    try:
+        child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL, close_fds=True,
+                                 start_new_session=True)
+    except OSError as exc:
+        raise RegisterReadFailed(f"the whole-file fetch could not be started: {exc}")
+    try:
+        out, _ = child.communicate(timeout=max(0.0, opts["cut"] - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        raise PsqlFailed("unreachable", f"the whole-file fetch (pid {child.pid}) had not ended "
+                         f"by the guard's cut; it runs on, detached, and fills the image "
+                         f"cache", timer_expired=True)
+    return register_guard_fetch_answer(out, child.returncode)
+
+
+def register_guard_whole_files(opts: dict, wants: dict, held: dict) -> None:
+    """THE GUARD'S WHOLE FILES, in forms 2 and 4 (B9): each image of `wants`,
+    {path: its digest at the read's `n`}, that `held` lacks is put into
+    `held` by that digest: from T302's cache where it holds an object of
+    that name (D17), else from the detached fetch (`register_guard_fetch`),
+    where the image the fetch read has that digest. An image the fetch did
+    not give, or gave with another digest, since the register moved between
+    the read and the fetch and changed that file, is a failed read: the
+    fetch has put the new one in the cache for the next prompt."""
+    missing = {}
+    for path, digest in wants.items():
+        if digest in held:
+            continue
+        data = image_cache_get(digest)
+        if data is None:
+            missing[path] = digest
+        else:
+            held[digest] = data
+    if not missing:
+        return
+    fetched = register_guard_fetch(opts, sorted(missing, key=os.fsencode))
+    for path in sorted(missing, key=os.fsencode):
+        data = fetched.get(path)
+        if data is None or hashlib.sha256(data).hexdigest() != missing[path]:
+            raise RegisterReadFailed(
+                f"the whole-file fetch gave no image of {path} with the digest this read's seq "
+                f"gave it, {missing[path]}: the register moved between them, or the file is "
+                f"gone")
+        held[missing[path]] = data
+
+
+def _register_guard_wants(snap: dict, members, keys) -> dict:
+    """{path: digest} of the images form 2's family reads at the snapshot's
+    seq (`_register_read_family`'s `register`, `aliases` and `log:<key>`):
+    each present path a member names, and each key's log where exactly one
+    resolves (C11)."""
+    listing = snap["listing"]
+    paths = [path for member, path in (("register", REGISTER_PATH), ("aliases", ALIASES_PATH))
+             if member in members]
+    for key in keys:
+        found = register_log_path_ci(listing, key)
+        if len(found) == 1:
+            paths.append(found[0])
+    return {_register_read_row_path(path): listing[path][0] for path in paths if path in listing}
+
+
 def _register_read_query(store, queries: list, cut: float | None) -> list:
     """The one request, with D9's reader row (`cut` None: forms 1 and 3), or
     with the guard's row cut at `cut`, a `time.monotonic()` instant (forms 2
@@ -6704,7 +6864,9 @@ def _register_read_prefetch(store, cfg: dict, opts: dict) -> int:
     `--lane=<window>` in the class, `log:<window>`; a window outside the
     class fetches no log and refuses nothing (O18). Two logs that differ
     from a key only by case write no `.log.<key>`, and refuse nothing here
-    (C11). Prints nothing past the mode line."""
+    (C11). Form 2's request reads no file's lines: each image is T302's
+    object, else the detached whole-file fetch's (`register_guard_whole_files`).
+    Prints nothing past the mode line."""
     cache, guard = opts["cache"], opts["form"] == 2
     if guard:
         members, all_logs = {"register", "aliases"}, False
@@ -6714,9 +6876,14 @@ def _register_read_prefetch(store, cfg: dict, opts: dict) -> int:
     cached = image_cache_head()
     held = _register_read_held(cached[1] if cached else {},
                                _register_read_wanted(members, keys, all_logs=all_logs))
-    answers = _register_read_query(store, register_read_queries(
-        texts=_register_read_texts(members, keys, all_logs=all_logs), held=held), opts.get("cut"))
+    # THE GUARD'S REQUEST CARRIES NO WHOLE FILE (B14 design :4277-4283): its
+    # images come from T302's cache, else from the detached fetch.
+    texts = () if guard else _register_read_texts(members, keys, all_logs=all_logs)
+    answers = _register_read_query(store, register_read_queries(texts=texts, held=held),
+                                   opts.get("cut"))
     snap = _register_read_snapshot(answers)
+    if guard:
+        register_guard_whole_files(opts, _register_guard_wants(snap, members, keys), held)
     family = _register_read_family(snap, held, members=members, keys=keys, all_logs=all_logs)
     drops = [f"{kind}.{key}" for key in sorted(family["ambiguous"]) for kind in ("log", "logpath")]
     _register_read_finish(cache, family, family["rows"], family["absent"], snap, cfg, drops)
@@ -6840,8 +7007,9 @@ def _register_read_at(store, cfg: dict, opts: dict) -> int:
     (C11). It writes that one log's `.log.<slot>` and `.logpath.<slot>`, each
     empty where no log resolves, and nothing else: no `.head`, no `.outage`
     (B4, B8). The image is T302's object where its name is the digest at `n`;
-    else the snapshot's lines, where the head is `n`; else the journal's
-    replay to `n`, `register_images`, all in the one request."""
+    else, where the head is `n`, the detached whole-file fetch's (B9;
+    `register_guard_whole_files`); else the journal's replay to `n`,
+    `register_images`, whose rows come in the one request."""
     cache, n, key = opts["cache"], opts["at"], opts["lane"]
     try:
         with open(f"{cache}.head", "rb") as handle:
@@ -6852,9 +7020,8 @@ def _register_read_at(store, cfg: dict, opts: dict) -> int:
     if head is None:
         raise RegisterReadFailed(f"{cache}.head is out of form, so form 4 has no generation to "
                                  f"read at (B3)")
-    texts = _register_read_texts((), {key})
     snap = _register_read_snapshot(_register_read_query(
-        store, register_read_queries(texts=texts, at=n), opts["cut"]), at=n)
+        store, register_read_queries(at=n), opts["cut"]), at=n)
     if snap["generation"] != head["generation"]:
         raise RegisterReadFailed(f"the register's generation is {snap['generation']}, and "
                                  f"{cache}.head's is {head['generation']} (B3)")
@@ -6874,10 +7041,13 @@ def _register_read_at(store, cfg: dict, opts: dict) -> int:
     else:
         path = _register_read_row_path(found[0])
         digest = snap["listing"][path][0]
-        data = image_cache_get(digest)
-        if data is None and snap["head"] == n:
-            data = _register_read_image(snap, {}, path, {})
-        elif data is None:
+        if snap["head"] == n:
+            held: dict = {}
+            register_guard_whole_files(opts, {path: digest}, held)
+            data = held[digest]
+        else:
+            data = image_cache_get(digest)
+        if data is None:
             try:
                 data = register_images(*snap["replay"]).get(path)
             except RenderRefused as exc:
@@ -7015,6 +7185,94 @@ def cmd_register_read(args: list[str]) -> int:
         if counts and code == EXIT_UNAVAILABLE:
             register_guard_outage(opts, opts["declared"])
         return code
+
+
+def cmd_register_guard_fetch(args: list[str]) -> int:
+    """`lanes-index register guard-fetch --path-hex <hex> ...`, THE GUARD'S
+    DETACHED WHOLE-FILE FETCH, which `register_guard_fetch` starts in a
+    session of its own for the images its read lacks; not for people (B14
+    design :4277-4283; lane 3's ruling, #165 6783977598, item (3)). Each
+    `--path-hex` is a render-set path's bytes in hex. It reads them in one
+    snapshot at the head, as READER on `reader_url=`, with D9's `guard-fetch`
+    row, whose own timer, `N_a`·`c` + 15 s, bounds it; puts each image whose
+    bytes hash to the digest the snapshot gave in T302's cache with
+    `image_cache_put`, and records them at its head with `image_cache_record`;
+    and only then answers on stdout, the pipe its starter reads
+    (`register_guard_fetch_answer`'s form). A starter that has gone, cut by
+    its line, leaves the cache filled all the same. It writes nothing beside
+    any `--cache`. Exits 0 answered, or `mode index`; 69 a failed read; 78
+    Q6(c)'s refusal; 2 a refused configuration; 64 usage: each but 0 with a
+    `failed=` answer."""
+
+    def answer(data: bytes) -> None:
+        view = memoryview(data)
+        try:
+            while view:
+                view = view[os.write(1, view):]
+        except OSError:
+            pass    # its starter has gone: the cache is filled all the same
+
+    def failed(code: int, why: str, cause: str | None = None) -> int:
+        answer(f"format=1\nfailed={cause or '-'}\t{' '.join(why.split())}\n".encode("utf-8"))
+        return code
+
+    paths: list = []
+    i = 0
+    while i < len(args):
+        name, eq, value = args[i].partition("=")
+        if name != "--path-hex" or (not eq and i + 1 >= len(args)):
+            return failed(EXIT_USAGE, f"register guard-fetch takes --path-hex <hex> only, not "
+                                      f"{args[i]!r}")
+        if not eq:
+            value = args[i + 1]
+        i += 1 if eq else 2
+        try:
+            path = os.fsdecode(bytes.fromhex(value))
+        except ValueError:
+            return failed(EXIT_USAGE, f"--path-hex {value!r} is not a path in hex")
+        if not register_render_path(path) or _RENDER_CONTROL_RE.search(path) or path in paths:
+            return failed(EXIT_USAGE, f"--path-hex names {path!r}, which is not a render-set "
+                                      f"path, or is named twice")
+        paths.append(path)
+    if not paths:
+        return failed(EXIT_USAGE, "register guard-fetch names no --path-hex")
+    try:
+        cfg = load_config()
+    except PrimaryNotBuilt as exc:
+        return failed(EXIT_CONFIG, str(exc))
+    except Refusal as exc:
+        return failed(EXIT_REFUSED, f"REFUSED: {exc}")
+    if cfg["mode"] != "primary":
+        return failed(EXIT_OK, "this workstation is mode index, so there is nothing to fetch")
+    try:
+        store = PostgresStore(cfg, "register_reader")
+        snap = _register_read_snapshot(store._query_many(register_guard_fetch_queries(paths),
+                                                         snapshot=True, row="guard-fetch"))
+    except Refusal as exc:
+        return failed(EXIT_REFUSED, f"REFUSED: {exc}")
+    except RegisterReadFailed as exc:
+        return failed(EXIT_UNAVAILABLE, str(exc), exc.cause)
+    except StoreUnusable as exc:
+        return failed(EXIT_UNAVAILABLE, f"the register could not be read: {exc.detail}")
+    images, manifest = [], {}
+    for path in sorted(paths, key=os.fsencode):
+        if path not in snap["listing"]:
+            continue
+        digest, final_newline = snap["listing"][path]
+        data = register_image_bytes(snap["lines"].get(path, []), final_newline)
+        if hashlib.sha256(data).hexdigest() != digest:
+            continue        # never cached; its starter reads it as not given
+        image_cache_put(data)
+        manifest[path] = digest
+        images.append((path, digest, data))
+    if manifest and snap["head"] >= 0:
+        image_cache_record(snap["head"], manifest)
+    parts = [b"format=1\n", f"n={snap['head']}\n".encode("ascii")]
+    for path, digest, data in images:
+        parts += [f"image={os.fsencode(path).hex()}\t{digest}\t{len(data)}\n".encode("ascii"),
+                  data]
+    answer(b"".join(parts) + b"end\n")
+    return EXIT_OK
 
 
 # ===== the SQL register: schema, roles, bootstrap and logins (007)
@@ -18957,6 +19215,7 @@ the forms contracts/register-cli.md fixes; <id> is a write's identity,
 {PROG} register read     --for guard --prefetch --cache <file> --pid <pid> --repo <dir>
                               [--lane=<window>]
 {PROG} register read     --for guard --at <n> --pid <pid> --cache <file> --lane=<key>
+{PROG} register guard-fetch --path-hex <hex> ...
 {PROG} journal  <id> --not-after <epoch s> [--clock <epoch s> --clock-age <s>]
 {PROG} journal  --since <m>
 {PROG} journal  --last --path <log> --grep <key> [--at <n> --generation <uuid>]
@@ -19022,6 +19281,8 @@ unknown subcommand does, and does nothing.
               `mode=`, is `index`. A configuration it refuses is 2.
   register    The writers' snapshot and commit, `register classify`'s one
               classifier, and the readers' and the guard's `register read`.
+              `guard-fetch` is the whole-file fetch the guard's read starts
+              detached, into the image cache. Not for people.
   journal     The in-doubt lookup by write id; `--since` and `--last` read.
   render      `--images`, the render set at a seq; `--checkout`, the renderer
               fork, which answers "git half not installed" until phase 3,
@@ -19109,6 +19370,8 @@ def main(argv: list[str]) -> int:
         return cmd_register_classify(args[1:])
     if verb == "register" and args[:1] == ["read"]:
         return cmd_register_read(args[1:])
+    if verb == "register" and args[:1] == ["guard-fetch"]:
+        return cmd_register_guard_fetch(args[1:])
     if verb == "render":
         return cmd_render(args)
     if verb == "bootstrap":
