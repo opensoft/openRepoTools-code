@@ -1322,18 +1322,30 @@ def test_import_and_reconcile_set_their_bounds_at_connect(tmp_path):
     330 s client timer; `reconcile` carries its row's bounds, 1000 ms and
     10 s, at connect (AT-D9's table; T106's `PGOPTIONS`, Y:1573). No engine:
     T203's register fake, which answers `psql --version` itself (T203b),
-    records each call."""
-    from sql_register_helpers import REGISTER_FAKE_PSQL
+    records each call.
+
+    `reconcile`'s row is the register's, on primary (T117: on primary the
+    register's `reconcile` is the mirror's read-only check against SQL; on
+    `mode=index` it is #160's, on the local index, and calls no `psql`). So
+    it runs as `Bench`'s `[reconcile]` rows run it: from T203's flipped copy,
+    with `lanes-edit.sh` beside it, on a `mode=primary` configuration that
+    names the same URLs (T220i)."""
+    from sql_register_helpers import REGISTER_FAKE_PSQL, flipped_copy
     bindir = tmp_path / "bin"
     bindir.mkdir()
     (bindir / "psql").write_text(REGISTER_FAKE_PSQL, encoding="utf-8")
     (bindir / "psql").chmod(0o755)
     passfile = _private(tmp_path / "conf" / "pgpass")
     url = "postgresql://t220_fp@127.0.0.1:55432/register_db"
-    config = _private(tmp_path / "conf" / "lanes-index.conf", "\n".join([
-        "mode=index", f"register_url={url}", f"register_passfile={passfile}",
-        f"reader_url={url}", f"reader_passfile={passfile}", "register_label=register-test",
-        ""]))
+    lines = [f"register_url={url}", f"register_passfile={passfile}", f"reader_url={url}",
+             f"reader_passfile={passfile}", "register_label=register-test", ""]
+    config = _private(tmp_path / "conf" / "lanes-index.conf", "\n".join(["mode=index", *lines]))
+    primary = _private(tmp_path / "conf-primary" / "lanes-index.conf",
+                       "\n".join(["mode=primary", *lines]))
+    copy = flipped_copy(INDEXER, tmp_path / "tool", True)
+    for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
+        if (REPO / name).exists():
+            shutil.copy2(REPO / name, tmp_path / "tool" / name)
     origin, wip = tmp_path / "origin.git", tmp_path / "wip"
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("LANES_", "CLAUDE_", "TMUX", "PG", "FAKE_PSQL"))}
@@ -1364,14 +1376,16 @@ def test_import_and_reconcile_set_their_bounds_at_connect(tmp_path):
                    capture_output=True)
     env.update(LANES_WORKSPACE_ROOT=str(w), LANES_WORKSTATION="Eagle")
     log = tmp_path / "fake.log"
-    for argv, options in (
-            (["import", "--at", c], ("-c lock_timeout=2000", "-c statement_timeout=300000")),
-            (["reconcile"], ("-c lock_timeout=1000", "-c statement_timeout=10000"))):
+    for argv, tool, conf, options in (
+            (["import", "--at", c], INDEXER, config,
+             ("-c lock_timeout=2000", "-c statement_timeout=300000")),
+            (["reconcile"], copy, primary,
+             ("-c lock_timeout=1000", "-c statement_timeout=10000"))):
         if log.exists():
             log.unlink()
-        proc = subprocess.run([sys.executable, str(INDEXER), *argv], capture_output=True,
-                              text=True, env=env, cwd=str(wip), timeout=120,
-                              stdin=subprocess.DEVNULL)
+        proc = subprocess.run([sys.executable, str(tool), *argv], capture_output=True,
+                              text=True, env=dict(env, LANES_INDEX_CONFIG=str(conf)),
+                              cwd=str(wip), timeout=120, stdin=subprocess.DEVNULL)
         calls = [json.loads(l) for l in log.read_text().splitlines()] if log.exists() else []
         calls = [c for c in calls if c.get("kind") != "version"]
         assert calls, f"{argv[0]} made no psql call: {proc.returncode}: {proc.stderr[-400:]}"
