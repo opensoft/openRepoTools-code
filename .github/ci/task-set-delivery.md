@@ -58,3 +58,11 @@ evidence. Never promote the head-owned shadow classifier directly to a gate.
 Leg PRs do not advance the assembled project. After separately authorized leg
 merges, use the existing pin tooling and exact-pin composed checks. Never treat
 code/spec/assembly PRs as a single atomic cross-repository stack.
+
+## Full-CI documentation stack checkpoints
+
+For an authorized manual documentation canary, record each member's head SHA,
+base branch and base SHA before applying its review attestation. The upper
+member names its immediate predecessor in both the PR base and `Depends-On`.
+Every member retains the four full CI gates; a green advisory classifier is
+not a substitute. Keep the branches unchanged while the queue is testing them.
