@@ -11823,13 +11823,18 @@ def _register_last_hold(view: RegisterView, obj: str, key: str, table: tuple) ->
 
 
 def register_commit_entry(att: dict, ident: dict, view: RegisterView,
-                          shipped_repos: str | None = None) -> dict:
+                          shipped_repos: str | None = None, *, kind: str = "write",
+                          git_commit: str | None = None) -> dict:
     """The one `jsonb` entry `commit_write` takes (its head comment, Y:1587-1611;
     contract §3.3), derived from the attempt directory, and from the shipped
     `repos.tsv`'s text, `shipped_repos`, for Rule 6's table:
 
     - `journal`: `kind` `write`, the flags' lane, verb, workstation and
       `args_sha256`, `author`, `msg` verbatim and `repos_blob`;
+      `git_commit` NULL. S2's two ways out of a divergence (T324) pass `kind`
+      `stray-import` or `stray-revert` and the stray's sha as `git_commit`,
+      which the journal's CHECK requires of both (§1.3's kinds table); every
+      other caller leaves both as they were;
     - `not_after`, the snapshot's, as a UTC text;
     - `act`, only inside an act;
     - `edits`, in `ord` order: per path, bytewise, a `remove`, a `create` and
@@ -11850,7 +11855,14 @@ def register_commit_entry(att: dict, ident: dict, view: RegisterView,
     `delete` deletes its line's structured rows, a `remove` those of every
     line of its path, and a `rename` the old path's `object_holds`, moving its
     `log_lines` to the new file and its lane. Step 7 then inserts what this
-    entry sends."""
+    entry sends.
+
+    A LINE'S WORKSTATION, where it names none of its own, is the write's
+    `--workstation` (`register_line_workstation`). Any other kind writes in
+    files mode (`commit_write`'s `v_wmode`): a stray's lines were written by
+    the workstation that pushed it, never by the one that loads it, so its
+    fallback is None, as the import's is (Y:1273)."""
+    fallback = ident["workstation"] if kind == "write" else None
     changes, renames = att["changes"], att["renames"]
     renamed_to = {to: frm for frm, to in renames.items()}
     table = register_repo_table(shipped_repos, view.before(REGISTER_REPOS_PATH))
@@ -11942,13 +11954,13 @@ def register_commit_entry(att: dict, ident: dict, view: RegisterView,
         wrote = sorted(written[REGISTER_PATH])
         walks = [line_no for line_no in wrote if row_name(lines[line_no - 1]) is None
                  and _register_landed_walks(parse_register_line(lines[line_no - 1]))]
-        walked = (register_slot_rows(lines[:walks[-1]], table, ident["workstation"])
+        walked = (register_slot_rows(lines[:walks[-1]], table, fallback)
                   if walks else {})
         for line_no in wrote:
             text = lines[line_no - 1]
             if row_name(text) is None:
                 row = (walked[line_no] if line_no in walked else
-                       _register_slot_row(line_no, text, table, ident["workstation"]))
+                       _register_slot_row(line_no, text, table, fallback))
                 if row is not None:
                     slot_rows.append(row)
 
@@ -12003,9 +12015,9 @@ def register_commit_entry(att: dict, ident: dict, view: RegisterView,
         if row is not None:
             hold_rows.append(row)
 
-    entry = {"journal": {"kind": "write", "verb": ident["verb"], "lane": ident["lane"],
+    entry = {"journal": {"kind": kind, "verb": ident["verb"], "lane": ident["lane"],
                          "workstation": ident["workstation"], "author": att["author"],
-                         "message": att["message"], "git_commit": None, "git_tree": None,
+                         "message": att["message"], "git_commit": git_commit, "git_tree": None,
                          "repos_blob": att["repos_blob"], "args_sha256": ident["args_sha256"]},
              "not_after": register_epoch_utc(att["not_after"])}
     if att["act"] is not None:
@@ -12276,15 +12288,18 @@ def _register_commit_lr004(store: PostgresStore, att: dict, ident: dict, entry: 
     return EXIT_UNAVAILABLE
 
 
-def _register_build_entry(att: dict, ident: dict,
-                          shipped_repos: str | None) -> tuple[dict, RegisterView]:
+def _register_build_entry(att: dict, ident: dict, shipped_repos: str | None, *,
+                          kind: str = "write",
+                          git_commit: str | None = None) -> tuple[dict, RegisterView]:
     """`register_commit_entry` over `tree/`, and the view it read `tree/`
     through, whose reads LR004's re-read compares. A failed read of `tree/` is
     the attempt directory's fault: `RegisterAttemptRefused`, 2, nothing
-    sent."""
+    sent. `kind` and `git_commit` are `register_commit_entry`'s, which only
+    S2's two ways out (T324) change."""
     view = RegisterView(att, att["tree_bases"])
     try:
-        return register_commit_entry(att, ident, view, shipped_repos), view
+        return register_commit_entry(att, ident, view, shipped_repos, kind=kind,
+                                     git_commit=git_commit), view
     except StoreUnusable as exc:
         raise RegisterAttemptRefused(f"tree/ cannot be read ({exc.detail})")
 
@@ -12800,6 +12815,21 @@ def _register_journal_lookup(values: dict, started: float) -> int:
         note(f"journal: nothing was looked up, so write {ident['write_id']} stays in doubt: "
              f"keep its pending record")
         return EXIT_IN_DOUBT
+    clock = (int(values["--clock"]), int(values["--clock-age"])) if "--clock" in values else None
+    kind, answer, failure, err, ends = register_lookup(store, ident, not_after, clock, started)
+    return _register_lookup_end(ident, kind, answer, failure, err, ends)
+
+
+def register_lookup(store: PostgresStore, ident: dict, not_after: int, clock: tuple | None,
+                    started: float) -> tuple:
+    """F3'S LOOKUP (Y:5235-5255), the client's own wait and then `find_write`'s
+    tries inside the window, as `journal --write-id` makes it, for any caller
+    that holds a store: `(kind, answer, failure, err, ends)`, which
+    `_register_lookup_end` reads (`_register_lookup_try`'s first four, and the
+    tally of the tries that gave no answer). `clock` is `(the database's
+    clock, its age in seconds)` as a snapshot last read it, or None; `started`
+    is the `time.monotonic()` instant that age is counted from. S2's two ways
+    out (T324) make it in doubt, as a writer does (D8)."""
     # 1. THE CLIENT WAITS FIRST, on its own estimate of the database's clock:
     # `--clock` + `--clock-age` + the seconds since this command started, on
     # the monotonic clock. It calls once that puts `<n>` at most 2 s ahead
@@ -12808,9 +12838,8 @@ def _register_journal_lookup(values: dict, started: float) -> int:
     # is at most `C` + 2 s (contract §3.4), so a clock far behind `<n>` ends
     # in LR011's 3, never in a wait with no end. With no clock, it calls at
     # once.
-    if "--clock" in values:
-        ahead = (not_after - REGISTER_LOOKUP_AHEAD_S - int(values["--clock"])
-                 - int(values["--clock-age"]))
+    if clock is not None:
+        ahead = not_after - REGISTER_LOOKUP_AHEAD_S - clock[0] - clock[1]
         _register_sleep_until(started + min(max(ahead, 0), store.bounds("commit")[1] + 2))
     # 2. THE WINDOW opens where that wait ends (Y:5247), and closes 10 s on.
     # A try that ends with no answer is made again: at least 1 s after the
@@ -12830,7 +12859,7 @@ def _register_journal_lookup(values: dict, started: float) -> int:
         start = max(began + REGISTER_LOOKUP_SPACING_S, ended)
         if start > closes:
             break
-    return _register_lookup_end(ident, kind, answer, failure, err, ends)
+    return kind, answer, failure, err, ends
 
 
 def _register_read_failed(what: str, failure: StoreUnusable) -> int:
@@ -16987,42 +17016,46 @@ def _import_not_after(clock: float, read_at: float, timer: float) -> str:
     return _dt.datetime.fromtimestamp(now + timer + 2, _dt.timezone.utc).isoformat()
 
 
-def _import_lane() -> str:
+def _import_lane(*, who: str = "import", nothing: str = "nothing was swapped in") -> str:
     """The operator lane, `LANES_LANE` (F12; Amendment 23's S2, "no lane, no
-    write"): the entry's `lane`. Unset, or not a lane's name, is refused (2)."""
+    write"): the entry's `lane`. Unset, or not a lane's name, is refused (2).
+    `who` and `nothing` open and close each refusal: the import's own, or
+    S2's two ways out's (T324), which take the operator lane as it does."""
     lane = os.environ.get("LANES_LANE", "").strip()
     if not lane:
-        raise Refusal("import: LANES_LANE is not set: the import writes for the operator lane, "
-                      "so it runs with LANES_LANE=<operator lane>, through that lane's checkout "
-                      "(D24; Amendment 23's S2, \"no lane, no write\"); nothing was swapped in")
+        raise Refusal(f"{who}: LANES_LANE is not set: the {who} writes for the operator lane, "
+                      f"so it runs with LANES_LANE=<operator lane>, through that lane's checkout "
+                      f"(D24; Amendment 23's S2, \"no lane, no write\"); {nothing}")
     if re.search(r"[\s<>@]", lane) or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in lane):
-        raise Refusal("import: LANES_LANE is not a lane's name: it holds a space, a control "
-                      "character, '<', '>' or '@'; nothing was swapped in")
+        raise Refusal(f"{who}: LANES_LANE is not a lane's name: it holds a space, a control "
+                      f"character, '<', '>' or '@'; {nothing}")
     return lane
 
 
-def _import_workstation() -> str:
+def _import_workstation(*, who: str = "import", nothing: str = "nothing was swapped in") -> str:
     """This workstation's name (Rule 10), the entry's `workstation`, as the
     cutover reads it: `$LANES_WORKSTATION`, else `lanes-edit.sh workstation`.
-    A container with no name, or a name that cannot be read, is refused (2)."""
+    A container with no name, or a name that cannot be read, is refused (2).
+    `who` and `nothing` are `_import_lane`'s."""
     name = os.environ.get("LANES_WORKSTATION", "")
     if not name:
         try:
             name, how = this_workstation()
         except StoreUnusable as exc:
-            raise Refusal(f"import: this workstation's name cannot be read ({exc.detail}); "
-                          f"nothing was swapped in")
+            raise Refusal(f"{who}: this workstation's name cannot be read ({exc.detail}); "
+                          f"{nothing}")
         if how == "container-unset":
-            raise Refusal("import: this is a container and LANES_WORKSTATION is not set, so the "
-                          "import's entry would be stamped with the container's own id "
-                          "(Amendment 11, R-A11-14); nothing was swapped in")
+            raise Refusal(f"{who}: this is a container and LANES_WORKSTATION is not set, so the "
+                          f"{who}'s entry would be stamped with the container's own id "
+                          f"(Amendment 11, R-A11-14); {nothing}")
     if not name.strip() or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in name):
-        raise Refusal("import: this workstation's name is empty or holds a control character; "
-                      "nothing was swapped in")
+        raise Refusal(f"{who}: this workstation's name is empty or holds a control character; "
+                      f"{nothing}")
     return name
 
 
-def _import_checkout(lane: str) -> str:
+def _import_checkout(lane: str, *, who: str = "import",
+                     nothing: str = "nothing was swapped in") -> str:
     """THE OPERATOR LANE'S CHECKOUT (D24, Y:653): `LANES_REPO` where it is set,
     the operator's override that `lanes-edit.sh` honours too, else the
     checkout `lanes-edit.sh lane-checkout <lane>` names, `<W>-lanes/<lane>/`.
@@ -17035,7 +17068,7 @@ def _import_checkout(lane: str) -> str:
     at all: the checkout is `lanes-edit.sh lane-checkout <lane>`'s
     `<W>-lanes/<lane>/`, which that helper derives from `W` and which is
     never `W`, and a `W` that cannot be read refuses there as a lane with no
-    checkout of its own."""
+    checkout of its own. `who` and `nothing` are `_import_lane`'s."""
     named = os.environ.get("LANES_REPO", "")
     if named:
         where = named
@@ -17043,20 +17076,20 @@ def _import_checkout(lane: str) -> str:
         try:
             proc = _helper_run(["lane-checkout", lane], 60, f"lane {lane}'s checkout")
         except StoreUnusable as exc:
-            raise Refusal(f"import: lane {lane}'s checkout cannot be found ({exc.detail}); "
-                          f"nothing was swapped in")
+            raise Refusal(f"{who}: lane {lane}'s checkout cannot be found ({exc.detail}); "
+                          f"{nothing}")
         where = proc.stdout.strip()
         if proc.returncode != 0 or not where:
             why = (proc.stderr.strip().splitlines() or ["no answer"])[0].strip()
-            raise Refusal(f"import: lane {lane} has no checkout of its own (`lanes-edit.sh "
+            raise Refusal(f"{who}: lane {lane} has no checkout of its own (`lanes-edit.sh "
                           f"lane-checkout {lane}` exited {proc.returncode}: {why}). Make it "
                           f"with `lanes-edit.sh lane-checkout {lane} --create`, or name one with "
-                          f"LANES_REPO; the import never reads W (D24); nothing was swapped in")
+                          f"LANES_REPO; the {who} never reads W (D24); {nothing}")
     top = git(where, "rev-parse", "--show-toplevel", check=False)
     root = top.stdout.strip()
     if top.returncode != 0 or not root:
-        raise Refusal(f"import: {where} is not a git checkout, so origin's objects cannot be "
-                      f"read through it; nothing was swapped in")
+        raise Refusal(f"{who}: {where} is not a git checkout, so origin's objects cannot be "
+                      f"read through it; {nothing}")
     if named:
         try:
             w = workspace_root()
@@ -17064,33 +17097,34 @@ def _import_checkout(lane: str) -> str:
             # A read that failed is never an answer (Amendment 7(d)): "W could
             # not be read" is not "LANES_REPO is not W", so it is refused (2).
             why = exc.detail if isinstance(exc, StoreUnusable) else str(exc)
-            raise Refusal(f"import: LANES_REPO is set, and W cannot be read to check that it "
+            raise Refusal(f"{who}: LANES_REPO is set, and W cannot be read to check that it "
                           f"is not W itself ({why}); a read that failed is not an answer "
-                          f"(Amendment 7(d)), so the import reads nothing through {root}; "
-                          f"nothing was swapped in")
+                          f"(Amendment 7(d)), so the {who} reads nothing through {root}; "
+                          f"{nothing}")
         if os.path.realpath(w) == os.path.realpath(root):
-            raise Refusal(f"import: LANES_REPO names W itself ({root}); the import reads "
+            raise Refusal(f"{who}: LANES_REPO names W itself ({root}); the {who} reads "
                           f"origin through the operator lane's own checkout, never W (D24); "
-                          f"nothing was swapped in")
+                          f"{nothing}")
     return root
 
 
-def _import_author(root: str) -> str:
+def _import_author(root: str, *, who: str = "import",
+                   nothing: str = "nothing was swapped in") -> str:
     """The entry's `author`, `Name <email>`: the identity git would record for
     a commit in the operator lane's checkout, `git var GIT_AUTHOR_IDENT`, less
     its date, as the cutover takes its own. Where git names none, it is
-    refused (2), since the journal holds no entry without one."""
+    refused (2), since the journal holds no entry without one. `who` and
+    `nothing` are `_import_lane`'s."""
     try:
         proc = subprocess.run(["git", "-C", root, "var", "GIT_AUTHOR_IDENT"],
                               capture_output=True, encoding="utf-8", errors="replace",
                               check=False, stdin=subprocess.DEVNULL, timeout=30)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise Refusal(f"import: git could not name the import's author ({exc}); nothing was "
-                      f"swapped in")
+        raise Refusal(f"{who}: git could not name the {who}'s author ({exc}); {nothing}")
     match = re.fullmatch(r"([^<>\n]+ <[^<>\n]*>) [0-9]+ [+-][0-9]{4}", proc.stdout.strip())
     if proc.returncode != 0 or not match:
-        raise Refusal(f"import: git names no author in {root}: set user.name and user.email "
-                      f"there; nothing was swapped in")
+        raise Refusal(f"{who}: git names no author in {root}: set user.name and user.email "
+                      f"there; {nothing}")
     return match.group(1)
 
 
