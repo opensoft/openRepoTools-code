@@ -1173,8 +1173,11 @@ RERUN_SITES = {
 }
 
 #: The skill's `(b)` write (`SKILL.md:738-742` at `2a057a6d`), run by its
-#: text with the variables its step 4 has set.
-SKILL_738_LINE = re.compile(r'^"\$L" append-line "PAUSED — lane \$lane, .*$', re.M)
+#: text with the variables its step 4 has set. Code v1.2.0 (slice 3, `98e2ec0`)
+#: names the lane on the write, `LANES_LANE="$lane" "$L" append-line …`
+#: (Amendment 23 S2), so the prefix is optional.
+SKILL_738_LINE = re.compile(r'^(?:LANES_LANE="\$lane" )?"\$L" append-line "PAUSED — lane \$lane, .*$',
+                            re.M)
 
 
 def rerun_argv(arm: Arm, lane: str) -> str:
