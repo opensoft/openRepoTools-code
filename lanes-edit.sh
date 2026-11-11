@@ -658,11 +658,11 @@
 #      the lock and with nothing written, where the one classifier,
 #      `lanes-index register classify`, gives no answer this file can read,
 #      so that it cannot say whether the text is one of the four it refuses
-#      (see 2): no `lanes-index` to run, an exit other than 0 and 2 (the 64
-#      of a `lanes-index` that has no `classify`, a crash, a signal, its 2 s
-#      timer), or an exit 0 without exactly one line of five tab-separated
-#      fields (contract §2.7, "No other code"; §2.8). It never writes the text
-#      unclassified.
+#      (see 2): no `lanes-index` to run or no place to put the question, an
+#      exit other than 0 and 2 (the 64 of a `lanes-index` that has no
+#      `classify`, a crash, a signal, its 2 s timer), or an exit 0 without
+#      exactly one line of five tab-separated fields (contract §2.7, "No
+#      other code"; §2.8). It never writes the text unclassified.
 #   3  PUSHED, NOT CONFIRMED: <sha> (Amendment 23 S4, its one cause). The write
 #      committed and pushed — or its push timed out, and a hung push often
 #      lands — and the read-back could not confirm the commit on origin: the
@@ -2066,8 +2066,10 @@ rename_undo() {
 # at the state-event cache below, so a signal before that line removed what it
 # inherited. Every other path `cleanup`, `rename_undo` and `release_lock`
 # remove is set above, before the trap: `RL_*`, `LANES_IDX_DIR`,
-# `LANES_WT_IDX_DIR`, `LOCK` and `LOCK_HELD`.
-TMPD=""; pbh_tmp=""; rl_htmp=""; SE_CACHE_FILE=""
+# `LANES_WT_IDX_DIR`, `LOCK` and `LOCK_HELD`. `alc_dir`, the classifier's
+# question files (T424), is assigned only in `append_line_primary_refusals`,
+# so it starts empty here too.
+TMPD=""; pbh_tmp=""; rl_htmp=""; SE_CACHE_FILE=""; alc_dir=""
 # `write-handoff`'s ONE LINE ON STDOUT, `<file><TAB><sha256>`, printed by
 # `cleanup` once this process has written the handoff — committed or not, so a
 # refusal after the bytes (S3's for `--prepend` and `--whole`, a push not
@@ -2097,6 +2099,11 @@ cleanup() {
   [ -n "${SE_CACHE_FILE:-}" ] && rm -f -- "$SE_CACHE_FILE" "$SE_CACHE_FILE".* 2>/dev/null
   [ -n "${LANES_IDX_DIR:-}" ] && [ -d "${LANES_IDX_DIR:-}" ] && rm -rf -- "$LANES_IDX_DIR"
   [ -n "${LANES_WT_IDX_DIR:-}" ] && [ -d "${LANES_WT_IDX_DIR:-}" ] && rm -rf -- "$LANES_WT_IDX_DIR"
+  # THE CLASSIFIER'S QUESTION FILES, where a signal stopped the call (T424):
+  # `append_line_primary_refusals` empties `alc_dir` once it has removed them
+  # itself, so this removes only the directory this run's `mktemp` made, by
+  # its name.
+  [ -n "${alc_dir:-}" ] && [ -d "${alc_dir:-}" ] && [ ! -L "${alc_dir:-}" ] && rm -rf -- "$alc_dir"
   # `claim`'s whole reads (706) cross a re-run's `exec`, which runs no EXIT
   # trap, and go when the last run of the claim ends, however it ends.
   [ -z "${CP_CLAIM_READS_FILE:-}" ] || rm -f -- "$CP_CLAIM_READS_FILE"
@@ -2755,16 +2762,18 @@ delete_lines() {   # <line numbers, one per line, any order>
 # THE CLASSIFIER FAILING IS NEVER A PASS. Its own 2, a refused configuration,
 # is relayed as 2. Anything else that is not one answer this file can read
 # exits 69, nothing written (`append_line_classify_failed`): no `lanes-index`
-# to run; an exit other than 0 and 2 (64, which a `lanes-index` with no
-# `classify` gives, a crash, a signal, its timer's 124 or 137); or an exit 0
-# without exactly one LF-ended line of five non-empty tab-separated fields of
-# printable ASCII, whose `<slot_role>` is `take`, `close` or `-` and whose
-# `<utc_ts>` is `-` or whole seconds (contract §2.7, "No other code … as 69
-# for a failed read"; §2.8). Its stdout and stderr go to files, as the mode
-# question's do, so a stand-in that leaves a child behind holds no pipe open
-# here. Its timer is the mode question's, `timeout -k 1 2` where `timeout` is
-# installed, and the call runs unbounded where it is not, as that one does
-# (lane 3's ruling, #165 6754806910; contract §2.4's `mode` row).
+# to run, or no place to put the question; an exit other than 0 and 2 (64,
+# which a `lanes-index` with no `classify` gives, a crash, a signal, its
+# timer's 124 or 137); or an exit 0 without exactly one LF-ended line of five
+# non-empty tab-separated fields of printable ASCII, whose `<slot_role>` is
+# `take`, `close` or `-` and whose `<utc_ts>` is `-` or whole seconds
+# (contract §2.7, "No other code … as 69 for a failed read"; §2.8). Its stdout
+# and stderr go to files, as the mode question's do, so a stand-in that leaves
+# a child behind holds no pipe open here; a signal that stops the call leaves
+# their directory to `cleanup`, which removes it while `alc_dir` holds it. Its
+# timer is the mode question's, `timeout -k 1 2` where `timeout` is installed,
+# and the call runs unbounded where it is not, as that one does (lane 3's
+# ruling, #165 6754806910; contract §2.4's `mode` row).
 append_line_primary_refusals() {   # <text>
   alc_why=""; alc_rc=0; alc_out=""; alc_odd=0; alc_said=""; alc_dir=""; alc_timer=bare
   alc_bin="$(lanes_index_bin)"
@@ -2794,13 +2803,17 @@ append_line_primary_refusals() {   # <text>
       alc_said="$(head -c 1000 -- "$alc_dir/err" 2>/dev/null | tr '\n\r\t' '   ' | tr -d '\000-\037' || :)"
       while [ "${alc_said% }" != "$alc_said" ]; do alc_said="${alc_said% }"; done
       # Every byte a tab, a line feed or printable ASCII, counted before the
-      # answer is read, since bash drops a NUL from it.
+      # answer is read, since bash drops a NUL from it; and read only where
+      # every byte is one of those, so that bash never meets a NUL here and
+      # prints no "ignored null byte" warning before the 69 below.
       alc_odd="$(LC_ALL=C tr -d '\t\n -~' <"$alc_dir/out" 2>/dev/null | wc -c | tr -d ' ')"
-      alc_out="$(cat -- "$alc_dir/out" 2>/dev/null; printf .)"; alc_out="${alc_out%.}"
+      if [ "$alc_odd" = 0 ]; then
+        alc_out="$(cat -- "$alc_dir/out" 2>/dev/null; printf .)"; alc_out="${alc_out%.}"
+      fi
     fi
     if [ -n "$alc_dir" ]; then
       rm -f -- "$alc_dir/in" "$alc_dir/out" "$alc_dir/err"
-      rmdir -- "$alc_dir" 2>/dev/null || :
+      if rmdir -- "$alc_dir" 2>/dev/null; then alc_dir=""; fi
     fi
   fi
   [ -z "$alc_why" ] || append_line_classify_failed "$alc_why"
