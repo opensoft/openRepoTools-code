@@ -1644,6 +1644,25 @@ lifecycle_finish() {   # <what is unfinished, empty when nothing is>
 # dropped first: the act starts clean, and `act-begin` never sees one.
 unset LANES_ACT LANES_EXPECT
 act_base=""; act_rc=0; act_hold=""; act_refuse=""; act_bad=""
+# THE TWO CAPTURE FILES OF THIS SECTION GO ON A SIGNAL TOO (REV-ACT2 N1).
+# `act_errf` (the `act-begin` stderr) and `aw_errf` (the walk's) are made with
+# `mktemp` below, and no EXIT trap exists until the writers' snapshot is made
+# far down: a TERM, INT or HUP in between left either one in `$TMPDIR`. The
+# form is `lane-end`'s (T430, its `cleanup` and the two `exit` traps): the
+# cleanup RETURNS, so a trap that only ran it would resume the script at the
+# next command, and INT, TERM and HUP each `exit` with the shell's own 128 plus
+# the signal (130, 143, 129), the status each already had. The traps are armed
+# only while a capture file can exist and are put back to the default after the
+# `rm`, so every later section runs under exactly the traps it always did.
+act_errf=""; aw_errf=""
+act_tmp_cleanup() { [ -z "${act_errf:-}" ] || rm -f -- "$act_errf"; [ -z "${aw_errf:-}" ] || rm -f -- "$aw_errf"; return 0; }
+act_tmp_arm() {
+	trap act_tmp_cleanup EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+	trap 'exit 129' HUP
+}
+act_tmp_disarm() { trap - EXIT INT TERM HUP; }
 # A2's refusal, said once where it is decided: <the verb and its code>.
 act_refuse_note() {
 	note "$1, so this act REFUSES before its first write, with 1 (A2: \`act-begin\` answers a base, 69, 75, 3 or an old helper's 2, and \`canon-lane --walk\` 0 with a name, 69, 75 or 3; anything else is refused). It refuses by holding: none of the PAUSED record's writes is sent, the handoff file is still written (\`R-A11-11\`), the lane stays SWAPPING, and this command exits 1 once that is done."
@@ -1677,6 +1696,7 @@ act_form() (   # <the line>: 0 where it is a base
 	esac
 	return 1
 )
+act_tmp_arm
 act_errf="$(mktemp "${TMPDIR:-/tmp}/lane-handoff-act.XXXXXX" 2>/dev/null || printf '')"
 act_base="$("$LANES_EDIT" act-begin 2>"${act_errf:-/dev/null}")" || act_rc=$?
 case "$act_rc" in
@@ -1709,6 +1729,8 @@ case "$act_rc" in
 	act_refuse_note "no base was taken: $act_hold" ;;
 esac
 [ -z "$act_errf" ] || rm -f -- "$act_errf"
+act_errf=""
+act_tmp_disarm
 [ -z "$act_base" ] || export LANES_ACT="$act_base"
 
 # ------------------------------------------------- 1. the identity triple
@@ -1868,6 +1890,7 @@ case "$act_base" in
 *)
 	if [ -n "$lane_canon" ]; then
 		aw_rc=0
+		act_tmp_arm
 		aw_errf="$(mktemp "${TMPDIR:-/tmp}/lane-handoff-walk.XXXXXX" 2>/dev/null || printf '')"
 		act_walk="$(LANES_NO_FETCH=1 "$LANES_EDIT" canon-lane --walk "$lane_typed" 2>"${aw_errf:-/dev/null}")" || aw_rc=$?
 		case "$aw_rc" in
@@ -1894,6 +1917,8 @@ case "$act_base" in
 			act_refuse_note "the names lane $lane was found through are NOT known: $act_hold (a \`lanes-edit.sh\` with no \`--walk\` exits 64 here)" ;;
 		esac
 		[ -z "$aw_errf" ] || rm -f -- "$aw_errf"
+		aw_errf=""
+		act_tmp_disarm
 	fi ;;
 esac
 step "lane=$lane${window_ref:+ window=$window_ref} workstation=${ws:-<none>}"
