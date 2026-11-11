@@ -35,7 +35,9 @@ THE FIXTURES:
   * `stoppable_cluster`, a cluster of the test's own, built like the
     session's, for the tests that stop the database: `stop()` is a fast
     shutdown, SIGINT and a wait, and `start_again()` starts it on the same
-    data and socket directories.
+    data and socket directories; `start_again(standby=True)` starts it in
+    recovery, with `standby.signal`, and fails unless `pg_is_in_recovery()`
+    is true, and the next plain start removes the file (T229d).
 
 THE TEMPLATES (T227; the test plan's section 3.1, "The templates"). `tmpl` is
 built on each cluster by P8's bootstrap, `lanes-index bootstrap --no-passwords`
@@ -728,11 +730,32 @@ class Cluster:
             raise ClusterError(f"postgres did not stop in {DEADLINE:.0f} s after SIGINT: "
                                f"{self.log_tail()}") from None
 
-    def start_again(self) -> None:
-        """Start the stopped cluster on the same data and socket directories."""
+    def start_again(self, standby: bool = False) -> None:
+        """Start the stopped cluster on the same data and socket directories.
+        With `standby` (T229d; TP:5382-5387, check 11's restart in recovery;
+        lane 3's batch 11 (1), which corrects batch 7's ruling 2), it starts
+        in recovery: `standby.signal` is written in the data directory, the
+        start polls `postmaster.pid` for `ready`, as every start does, and
+        then fails unless `pg_is_in_recovery()` is true. A hot standby writes
+        `ready`, never `standby`: PostgreSQL 16 writes `standby` only with
+        `hot_standby` off, where no session connects, and a plain start
+        writes `ready` too, so only the query proves the recovery. A start
+        without it removes the file first, so the cluster comes back a
+        primary. T224 only calls it."""
         if self.proc is not None and self.proc.poll() is None:
             raise ClusterError("the cluster is running, so it cannot be started again")
+        signal_file = self.root / "data" / "standby.signal"
+        if standby:
+            signal_file.write_text("", encoding="utf-8")
+        elif signal_file.exists():
+            signal_file.unlink()
         self.launch()
+        if standby:
+            answer = self.psql("SELECT pg_is_in_recovery();", check=False)
+            if answer.returncode != 0 or answer.stdout.strip() != "t":
+                said = answer.stdout.strip() or answer.stderr.strip() or "nothing"
+                raise ClusterError(f"the start with standby.signal is ready but not in recovery: "
+                                   f"pg_is_in_recovery() answered {said!r}: {self.log_tail()}")
 
     def new_database(self, template: str = TEMPLATE) -> str:
         """`CREATE DATABASE t_<n> TEMPLATE <template>`, then, where the
@@ -1165,14 +1188,16 @@ class TLSCluster(Cluster):
         self.settings = ["ssl=on", f"ssl_cert_file={served}", f"ssl_key_file={self.tls['key']}",
                          "ssl_min_protocol_version=TLSv1.3", "password_encryption=scram-sha-256"]
 
-    def start_again(self, leaf_only: Optional[bool] = None) -> None:
-        """The start option T229 names: start the stopped cluster again on the
-        same directories and port, serving the leaf alone where `leaf_only`
-        is True, or the chain again where it is False."""
+    def start_again(self, leaf_only: Optional[bool] = None, standby: bool = False) -> None:
+        """The start options T229 names: start the stopped cluster again on
+        the same directories and port, serving the leaf alone where
+        `leaf_only` is True, or the chain again where it is False; and, with
+        `standby`, in recovery, `Cluster.start_again`'s (T229d; T224's
+        `[in-recovery]`)."""
         if leaf_only is not None:
             self.leaf_only = leaf_only
             self._tls_settings()
-        super().start_again()
+        super().start_again(standby=standby)
 
     def launch(self) -> None:
         """The start, with a new free port where another process took the
