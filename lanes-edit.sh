@@ -7799,9 +7799,12 @@ pw_took_tail_refuse() {
 
 # THE SAME COMMAND WITH NO `LANES_WRITE_ID` (Y:5207; lane openRepoTools-3, #165
 # 6780753157, Q46), with the lane and the session this run's digest took, so
-# that it meets this record (`wr_digest`).
+# that it meets this record (`wr_digest`). It leads with `LANES_WRITE_ID=
+# LANES_WRITE_GENERATION=`, so that a value exported in the shell it is run
+# from is not kept in force: an empty value reads as unset (`wr_begin`,
+# `wr_id_plan`) (review REV-W8b, N2).
 wr_rerun_plain_text() {
-  printf 'LANES_LANE=%s LANES_SESSION=%s %s\n' \
+  printf 'LANES_WRITE_ID= LANES_WRITE_GENERATION= LANES_LANE=%s LANES_SESSION=%s %s\n' \
     "$(printf '%q' "$WR_LANE")" "$(printf '%q' "$WR_SESSION")" "$WR_CMDLINE"
 }
 
