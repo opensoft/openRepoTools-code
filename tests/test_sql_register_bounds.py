@@ -1055,7 +1055,12 @@ def test_each_database_path_exits_inside_its_bound(pg, tmp_path, request, case):
     else:
         assert proc.returncode != 0, f"{case}: the path ended without its read"
     if row == "reader":
-        assert proc.stdout == "", "a reader's 69 has nothing on stdout"
+        # NOTHING PAST THE MODE LINE (T220j; lane 3, #165 6807694145: "the
+        # contract stands"): `register read` prints its `mode` line first in
+        # every form (4.18:758-760; B14 tasks:454), so a refused reader's
+        # "nothing on stdout" (TP:3603) is its `mode primary` line alone.
+        assert proc.stdout == "mode primary\n", \
+            f"a reader's 69 prints its mode line and nothing more: {proc.stdout!r}"
     if row == "answer-2":
         assert "BINDING" in proc.stdout + proc.stderr
     if row == "mode-query":
