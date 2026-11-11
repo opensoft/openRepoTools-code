@@ -2472,12 +2472,17 @@ def test_the_client_refuses_an_acts_stale_base_with_2_at_the_snapshot(estates, c
 def test_the_commits_act_backstops_are_lr007_act_generation_and_lr004(clones, case):
     """The client's checks bypassed by a direct commit call (T223's
     `Clone`): an act of another generation gets LR007 `act-generation`, a
-    base past the head LR004; nothing is written."""
+    base past the head LR004; nothing is written. `commit_write` checks an
+    act's generation and base only where it lists an expectation (step 3b,
+    `IF cardinality(v_expect) > 0`), before it compares any scope, so each
+    act lists one: the writer's own row. (The hold line derives no scope.)"""
     c = primary(clones)
     entry = c.append(L1, *hold(c, L1))
     head, gen = c.head(), c.switch()["generation"]
-    entry["act"] = ({"id": "c" * 32, "base": head, "generation": str(uuid.uuid4())} if case == "generation"
-                    else {"id": "c" * 32, "base": head + 5, "generation": gen})
+    expect = [f"row:{L1.lower()}"]
+    entry["act"] = ({"id": "c" * 32, "base": head, "generation": str(uuid.uuid4()), "expect": expect}
+                    if case == "generation"
+                    else {"id": "c" * 32, "base": head + 5, "generation": gen, "expect": expect})
     if case == "generation":
         c.refused(entry, "LR007", "act-generation")
     else:
