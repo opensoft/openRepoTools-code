@@ -117,8 +117,8 @@ HELPER = REPO / ".github" / "ci" / "ci_shards.py"
 CHECKOUT = "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
 SETUP_PYTHON = "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065"
 
-#: THE TRIGGERS. Only `push.branches` moves, from `[main]`.
-PULL_REQUEST = {"types": ["opened", "synchronize", "reopened", "labeled"]}
+#: Full CI follows PR creation/code updates, not label-only metadata changes.
+PULL_REQUEST = {"types": ["opened", "synchronize", "reopened"]}
 PUSH = {"branches": ["main", "release/v*"]}
 SCHEDULE = [{"cron": "17 4 * * *"}]
 
@@ -915,10 +915,9 @@ def test_tests_yml_push_runs_on_main_and_every_release_branch(workflow):
 
 
 @NEEDS_UPSTREAM
-def test_tests_yml_its_other_triggers_are_unchanged(workflow):
-    """`pull_request` with `labeled` beside GitHub's three defaults, the
-    nightly cron at 04:17 UTC and `workflow_dispatch`, and no trigger
-    besides those and `push`."""
+def test_tests_yml_triggers_keep_full_ci_except_label_only_events(workflow):
+    """GitHub's three PR defaults, the nightly cron at 04:17 UTC and
+    `workflow_dispatch`, and no trigger besides those and `push`."""
     on = workflow.get("on")
     assert isinstance(on, dict), "tests.yml has no `on:` mapping"
     assert sorted(on) == sorted(["pull_request", "push", "schedule",
@@ -926,6 +925,29 @@ def test_tests_yml_its_other_triggers_are_unchanged(workflow):
     assert on["pull_request"] == PULL_REQUEST, on["pull_request"]
     assert on["schedule"] == SCHEDULE, on["schedule"]
     assert on["workflow_dispatch"] is None, on["workflow_dispatch"]
+
+
+@NEEDS_UPSTREAM
+def test_tests_yml_label_events_do_not_start_or_replace_full_checks(workflow):
+    """Mergify's `queued` label must not start another full run or publish
+    skipped replacement gates. All labels use the same `labeled` event."""
+    types = workflow["on"]["pull_request"]["types"]
+    assert {"labeled", "unlabeled"}.isdisjoint(types), types
+
+
+@NEEDS_UPSTREAM
+@pytest.mark.parametrize("action", ["opened", "synchronize", "reopened"])
+def test_tests_yml_pr_changes_and_candidates_keep_unfiltered_full_ci(workflow, action):
+    """No path/base filter, draft/candidate exception or queued-label job
+    condition may turn code updates into a reduced or skipped full run."""
+    trigger = workflow["on"]["pull_request"]
+    assert set(trigger) == {"types"}, trigger
+    assert action in trigger["types"], trigger
+    for job_id, job in jobs_of(workflow).items():
+        if job_id in SHARD_JOBS:
+            assert job.get("if") == ALWAYS, job
+        else:
+            assert "if" not in job, job
 
 
 @NEEDS_UPSTREAM

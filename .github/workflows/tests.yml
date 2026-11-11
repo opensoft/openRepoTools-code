@@ -53,16 +53,16 @@ name: tests
 # copy), and `LICENSE`, which the wheel carries, both from T006's `code-0001`,
 # the first commit after the split.
 
-# `pull_request` names `labeled` beside GitHub's own three defaults
-# (`opened`, `synchronize`, `reopened`). It was put there so that the
-# coordinator applying `ready` to an already-open PR would reach `tests-macos`'s
-# `if:`; that job is gone, so no job here reads a label any more, and `labeled`
-# stays as it was. `on:` is shared by the whole workflow and no job has a
-# condition that skips it (the two `if: ${{ always() }}` below make a gate job
-# run even when its shards fail, never skip), so EVERY TRIGGER RUNS ALL FOUR
-# JOBS, `guard-launch-mode`, `tests`, `tests-no-submodule` and `package`, and
-# so does ANY label landing on a PR. `tests` and `tests-no-submodule` are each
-# a gate over a matrix of shard jobs (the comment above `tests-shard`).
+# `pull_request` keeps GitHub's three defaults: `opened`, `synchronize`,
+# `reopened`. The obsolete `labeled` trigger belonged to the removed macOS
+# job; no job here reads labels now. Mergify adding `queued` (or any other
+# label) must not start duplicate full CI or publish skipped replacement gates.
+# Every PR code update still runs full CI, even while queued, on any base and
+# for draft merge candidates: no path, branch, draft or label filter is added.
+# `on:` is shared by the whole workflow and no job has a condition that skips
+# it (the two `if: ${{ always() }}` below run gates even when shards fail).
+# EVERY TRIGGER RUNS ALL FOUR JOBS: `guard-launch-mode`, `tests`,
+# `tests-no-submodule` and `package`. The two test gates aggregate shard jobs.
 # `push` covers `main` and every `release/v*` branch (#228): the release
 # workflow builds only a commit whose push or dispatch run of those four is
 # green, and a patch release's commit is on its release branch, not on main.
@@ -70,7 +70,7 @@ name: tests
 # is UTC.
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
+    types: [opened, synchronize, reopened]
   push:
     branches: [main, 'release/v*']
   schedule:
