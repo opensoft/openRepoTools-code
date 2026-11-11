@@ -600,7 +600,9 @@
 #      (`pw_no_git_refuse`), a pending hand edit of a rendered file in that
 #      checkout (`pw_hand_edit_refuse`), and no author identity there
 #      (`pw_author_read`) (Q35; lane openRepoTools-3, #165 6807881675, batch c
-#      Q67). Its callers read its 2 as "still bound". A lane name out of class
+#      Q67); and, in an attempt's child, its write returned to the arm without
+#      `committed`, before any of its tail (`rh_after_committed`, T423; batch c
+#      Q75). Its callers read its 2 as "still bound". A lane name out of class
 #      keeps files mode's 2, the act's checks keep Y:5643's 2, and the
 #      register's refusals keep the contract's 2 (register-cli.md:334).
 #
@@ -16129,13 +16131,17 @@ binding_facts() {   # <lane> <host> <container> <window> <utc> <session> <window
 # and a seam that found nothing staged. Either way this child made no commit
 # call, so what follows the write in the arm, the pane, the wait, and the words
 # that say a request was written or a binding forced, would act on a line that
-# is not in the register. The child ends 2 here instead, before any of it, and
-# its parent takes that as a child that ended before `ready`: no commit call,
-# and the child's output and code are the run's end (Y:5016). Off the flag
+# is not in the register. The child ends here instead, before any of it, with
+# `pw_pre_rc`'s 64, as T415's `pw_no_git_refuse` does: nothing was sent and
+# nothing is known about the binding (Q35; lane openRepoTools-3, #165
+# 6807881675, batch c Q75). B14 tasks:1286's "Exit 2 where none of its tail
+# ran" stays for the binding's 2 after `committed`; this is not that 2. Its
+# parent takes it as a child that ended before `ready`: no commit call, and
+# the child's output and code are the run's end (Y:5016). Off the flag
 # `REG_SCRATCH` is empty, and this returns at once.
 rh_after_committed() {   # <what the write was: the request, or the forced release>
   [ -z "$REG_SCRATCH" ] || [ -n "$REGISTER_SEQ" ] ||
-    die "request-handoff's ${1-write} returned in an attempt's child under LANES_REGISTER_SCRATCH without its seam's \`committed\` (LANES_NO_GIT=1 in this environment, or nothing staged), so this child made no commit call. Nothing after the seam runs: no pane is typed into, nothing is waited for, and nothing is said to be written (FR-024; Y:5011). It is an internal error of the write path. Nothing was sent." 2
+    die "request-handoff's ${1-write} returned in an attempt's child under LANES_REGISTER_SCRATCH without its seam's \`committed\` (LANES_NO_GIT=1 in this environment, or nothing staged), so this child made no commit call. Nothing after the seam runs: no pane is typed into, nothing is waited for, and nothing is said to be written (FR-024; Y:5011). It is an internal error of the write path. Nothing was sent." "$(pw_pre_rc)"
 }
 
 # The UTC of the lane's last `STARTED` or `RESUMED` — Amendment 18(b)'s BINDING,
