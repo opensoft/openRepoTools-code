@@ -55,3 +55,12 @@ session's instructions.
 
 Configuration/schema tests prove only preparation. Live batching, access,
 coverage, failure recovery and CI-saving acceptance require separate evidence.
+
+## Evidence for a two-PR result
+
+Keep the original member heads and bases, Mergify's actual member order, the
+combined candidate commit and tree, and its full CI run URL and attempt. Compare
+the final landed commit's tree with that tested candidate tree, not just its
+commit message or a clean working directory. Record each member's merge result.
+A singleton, partial landing, changed base, failed candidate or retry must be
+reported explicitly rather than described as a clean two-PR batch.
