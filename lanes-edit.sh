@@ -730,8 +730,9 @@
 #                      dropped, with the LANES_REPO/DIR/FILE they came beside
 #   LANES__MODE        INTERNAL — a writer's answer to `lanes-index mode`,
 #                      exported by this file so that the same re-run asks
-#                      nothing again; taken only beside a LANES__PID equal to
-#                      `$$`, and dropped otherwise (feature 007). Never set it
+#                      nothing again; taken only beside a `LANES__PID` or
+#                      `LANES__REPLAY_PID` equal to `$$`, and dropped otherwise
+#                      (feature 007). Never set it
 #   LANES_INDEX_CONFIG `lanes-index`'s configuration file, which only
 #                      `lanes-index` parses. Where it is set and non-empty, or
 #                      a file exists at its default path, a writer asks
@@ -1729,8 +1730,10 @@ rename_undo() {
 # at the state-event cache below, so a signal before that line removed what it
 # inherited. Every other path `cleanup`, `rename_undo` and `release_lock`
 # remove is set above, before the trap: `RL_*`, `LANES_IDX_DIR`,
-# `LANES_WT_IDX_DIR`, `LOCK` and `LOCK_HELD`.
-TMPD=""; pbh_tmp=""; rl_htmp=""; SE_CACHE_FILE=""
+# `LANES_WT_IDX_DIR`, `LOCK` and `LOCK_HELD`. `rmq_dir`, the mode question's
+# answer files (T409), is assigned only in `reg_mode_query`, so it starts empty
+# here too.
+TMPD=""; pbh_tmp=""; rl_htmp=""; SE_CACHE_FILE=""; rmq_dir=""
 # `write-handoff`'s ONE LINE ON STDOUT, `<file><TAB><sha256>`, printed by
 # `cleanup` once this process has written the handoff — committed or not, so a
 # refusal after the bytes (S3's for `--prepend` and `--whole`, a push not
@@ -1760,6 +1763,10 @@ cleanup() {
   [ -n "${SE_CACHE_FILE:-}" ] && rm -f -- "$SE_CACHE_FILE" "$SE_CACHE_FILE".* 2>/dev/null
   [ -n "${LANES_IDX_DIR:-}" ] && [ -d "${LANES_IDX_DIR:-}" ] && rm -rf -- "$LANES_IDX_DIR"
   [ -n "${LANES_WT_IDX_DIR:-}" ] && [ -d "${LANES_WT_IDX_DIR:-}" ] && rm -rf -- "$LANES_WT_IDX_DIR"
+  # THE MODE QUESTION'S ANSWER FILES, where a signal stopped the question
+  # (T409): `reg_mode_query` empties `rmq_dir` once it has removed them itself,
+  # so this removes only the directory this run's `mktemp` made, by its name.
+  [ -n "${rmq_dir:-}" ] && [ -d "${rmq_dir:-}" ] && [ ! -L "${rmq_dir:-}" ] && rm -rf -- "$rmq_dir"
   # `claim`'s whole reads (706) cross a re-run's `exec`, which runs no EXIT
   # trap, and go when the last run of the claim ends, however it ends.
   [ -z "${CP_CLAIM_READS_FILE:-}" ] || rm -f -- "$CP_CLAIM_READS_FILE"
@@ -4177,7 +4184,8 @@ reg_config_present() {
 # its file. `exit "$?"` keeps the subshell a subshell: bash 5 runs a lone
 # command in `( )`, or `( …; )`, in place, which would put the notice back
 # here. Its one cost: bash's message for a redirection that fails goes to
-# /dev/null too, and `$rmq_dir` is a fresh `mktemp`.
+# /dev/null too, and `$rmq_dir` is a fresh `mktemp`. A signal that stops the
+# question leaves it to `cleanup`, which removes it while `rmq_dir` holds it.
 reg_mode_query() {
   rmq_bin="$(lanes_index_bin)"
   if [ -z "$rmq_bin" ]; then
@@ -4201,7 +4209,7 @@ reg_mode_query() {
   # lines joined, control characters dropped, at most 1000 bytes.
   rmq_said="$(head -c 1000 -- "$rmq_dir/err" 2>/dev/null | tr '\n\r\t' '   ' | tr -d '\000-\037' || :)"
   while [ "${rmq_said% }" != "$rmq_said" ]; do rmq_said="${rmq_said% }"; done
-  rm -rf -- "$rmq_dir"
+  rm -rf -- "$rmq_dir"; rmq_dir=""
   case "${rmq_rc}:${rmq_timer}" in
     0:*)
       case "$rmq_out" in
