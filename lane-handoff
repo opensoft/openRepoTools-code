@@ -3129,6 +3129,25 @@ fi
 if [ "$do_restart" = 1 ] || [ "$do_exit" = 1 ]; then
 	[ "$record_written" = 1 ] ||
 		die "the lane's PAUSED record was NOT written, so this pane is left exactly as it is: a pane is never respawned over an unrecorded lane, and a session is never ended without one (Amendment 17(f)). Fix the write above and re-run." 2
+	# THE MODE WORD NAMES THE FLAG THAT IS 1 (opensoft/openRepoTools#355). Both
+	# flags are always `0` or `1`, never empty, so a `${flag:+word}` fires for
+	# both and the message named `respawnend`, which is no mode. `--restart` and
+	# `--exit` are refused together above, so exactly one of them is 1 here.
+	#
+	# THE TWO GATES BELOW SPEAK IN THE SAME MODE WORDS (lane openRepoTools-3's
+	# review 6778792731 on opensoft/openRepoTools#165). Both fire under `--exit`
+	# as under `--restart`, and each said "respawning" and "replaced" to a lane
+	# whose session was about to be ended, not respawned. `--restart`'s words
+	# are exactly what they were.
+	if [ "$do_exit" = 1 ]; then
+		tmux_act_word=end
+		gate_act=ending; gate_act_on="its session"; gate_gone=ended
+		gate_stale="leave the new session to be started with"
+	else
+		tmux_act_word=respawn
+		gate_act=respawning; gate_act_on=it; gate_gone=replaced
+		gate_stale="hand it"
+	fi
 	# AND THE RECORD IS THREE WRITES, NOT ONE (Copilot rounds 1 and 2 on
 	# openRepoTools#47). The object-log line above is the first of them; the
 	# ROW is what every other lane and every launcher reads this lane's state
@@ -3141,14 +3160,9 @@ if [ "$do_restart" = 1 ] || [ "$do_exit" = 1 ]; then
 	# this command may create and then kill the only process that could fix it,
 	# so both are gates, and each names the act that clears it.
 	[ -z "$row_write_refused" ] ||
-		die "the lane's PAUSED line is written and the ROW WAS NOT FLIPPED (the note above says why), so this pane is left exactly as it is: respawning it would leave the register reading RUNNING for a session that has just been replaced, and every other lane reads the row. Flip it and re-run, or restart by hand:  $restart_cmd" 2
+		die "the lane's PAUSED line is written and the ROW WAS NOT FLIPPED (the note above says why), so this pane is left exactly as it is: ${gate_act} ${gate_act_on} would leave the register reading RUNNING for a session that has just been ${gate_gone}, and every other lane reads the row. Flip it and re-run, or restart by hand:  $restart_cmd" 2
 	[ "$handoff_written" = 1 ] ||
-		die "the lane's PAUSED line is written and the HANDOFF WAS NOT REFRESHED (the note above says why), so this pane is left exactly as it is: the top block of that file is what the new session is started with, and respawning now would hand it the block of a handoff this act has replaced. Put the block printed above at the head of the handoff, then re-run — or restart by hand once you have:  $restart_cmd" 2
-	# THE MODE WORD NAMES THE FLAG THAT IS 1 (opensoft/openRepoTools#355). Both
-	# flags are always `0` or `1`, never empty, so a `${flag:+word}` fires for
-	# both and the message named `respawnend`, which is no mode. `--restart` and
-	# `--exit` are refused together above, so exactly one of them is 1 here.
-	if [ "$do_exit" = 1 ]; then tmux_act_word=end; else tmux_act_word=respawn; fi
+		die "the lane's PAUSED line is written and the HANDOFF WAS NOT REFRESHED (the note above says why), so this pane is left exactly as it is: the top block of that file is what the new session is started with, and ${gate_act} now would ${gate_stale} the block of a handoff this act has replaced. Put the block printed above at the head of the handoff, then re-run — or restart by hand once you have:  $restart_cmd" 2
 	have_tmux ||
 		die "the record is written, and there is no tmux here to $tmux_act_word this pane with. Do it by hand — the record is the part that mattered." 2
 	# THE PANE, from the LIVE RECORD's own `tmux` field — `<session>:<@id>.%<pane>`
@@ -3169,7 +3183,7 @@ if [ "$do_exit" = 1 ]; then
 	if tmux send-keys -t "$target" '/exit' Enter 2>/dev/null; then
 		say "  /exit typed into $target (Amendment 18(d): the session ends where the handoff was requested from elsewhere)"
 	else
-		die "the record is written and `/exit` could NOT be typed into $target. Type it in the lane's own pane yourself." 2
+		die "the record is written and \`/exit\` could NOT be typed into $target. Type it in the lane's own pane yourself." 2
 	fi
 	exit 0
 fi
