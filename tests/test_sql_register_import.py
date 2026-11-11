@@ -1245,6 +1245,8 @@ def test_the_cutover_aborts_when_main_moved_under_lanes(pg, tmp_path):
     assert reg.origin_tree(moved) != reg.tree(reg.c)
     proc = reg.cutover()
     assert proc.returncode == aborted, f"exit {proc.returncode}: {proc.stderr}"
+    assert moved[:7] in proc.stderr, \
+        f"the abort names the moved tip (exit-codes.md section 4): {proc.stderr}"
     assert reg.origin_tip() == moved, "the aborted cutover pushed nothing"
     assert "lanes/STORE" not in reg.origin_git("ls-tree", "-r", "--name-only", moved, "lanes/")
     assert _seqs(pg) == [(0, "import")], "switch_to_files deletes seq 1"

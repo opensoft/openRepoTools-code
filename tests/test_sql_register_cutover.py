@@ -651,6 +651,7 @@ def test_an_unconfirmed_operator_push_exits_3_and_its_rerun_reads_origin_first(p
         assert (switch["mode"], switch["marker_state"]) == ("primary", "adding"), switch
         assert list(reg.seqs_on_origin().values()) == [["1"]], "the push was made"
         head = imp._head(pg)
+        f2.arm()                # disarmed: a fetch of the write's own is no failure of this case
         wrote = reg.write("a write while the marker is adding")
         assert wrote.returncode == imp.load_indexer().EXIT_UNAVAILABLE, wrote.stderr
         assert "LR002" in wrote.stderr, wrote.stderr
