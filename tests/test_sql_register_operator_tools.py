@@ -59,6 +59,11 @@ A MARKER NAMING NO `database=` (R-F13c-21; T218h): `[marker-names-no-database]`'
 origin holds a `lanes/STORE` with no `database=` line, and the refusal must also
 say lane 1's words for it (T120 follow-up 2, `1a50506`, #165 6780516820, on lane
 3's ruling 5 in 6778959652). It fails until that follow-up lands.
+
+A FILE THAT ALREADY SAYS THE MODE (R-F13c-23; T218i): with the file and its
+directory unwritable, `set-mode primary|index` on a file already saying that
+mode exits 0 and writes nothing, since an unwritable file refuses 2 only where
+a write is needed (lane 3's batch 7, "OTd's reading", #165 6780364102).
 """
 
 from __future__ import annotations
@@ -422,6 +427,51 @@ def test_the_flip_refuses_a_configuration_it_cannot_write(tmp_path, what, mode):
         assert str(config) in proc.stderr, (
             f"set-mode index wrote a configuration load_config still refuses, and printed no "
             f"note naming it on stderr:\n{_said(proc)}")
+
+
+#: The end of `set-mode`'s line where the file already says the mode (R-F13c-23).
+SAYS_SO_ALREADY = ": the file says so already; nothing was written"
+
+
+@pytest.mark.parametrize("mode", ["primary", "index"])
+def test_set_mode_primary_or_index_on_an_unwritable_file_that_already_says_it_exits_0_and_writes_nothing(
+        tmp_path, mode):
+    """A FILE THAT ALREADY SAYS THE MODE (R-F13c-23; lane 3's batch 7, "OTd's
+    reading", #165 6780364102; B13 tasks:581 and :585; NOTES question 38;
+    T218i). A configuration file and its directory that this account cannot
+    write, the file already saying the mode `set-mode` is asked for, in the
+    estate a flip to `primary` needs (the switch at `primary` with the marker
+    `present`, origin's `lanes/STORE` naming LABEL, fetched): `set-mode`
+    exits 0, its line ends `: the file says so already; nothing was written`,
+    and the file is unchanged, since an unwritable file refuses 2 only where a
+    write is needed. It fails until lane 1's T120 lands."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("as root every file can be written: the case needs an unprivileged account")
+    estate = Estate(tmp_path)
+    estate.switch("primary", "present", LABEL)
+    estate.marker(_store(LABEL))
+    estate.fetch()
+    config = estate.config(mode)
+    saved = [(target, stat.S_IMODE(target.stat().st_mode)) for target in (config, config.parent)]
+    config.chmod(0o400)
+    config.parent.chmod(0o500)
+    try:
+        assert not os.access(config, os.W_OK) and not os.access(config.parent, os.W_OK), (
+            "the configuration or its directory is still writable: the case's fault is not there")
+        before = _state(config)
+        proc = estate.set_mode(mode, config)
+        assert proc.returncode == 0, (
+            f"[{mode}] set-mode {mode} on an unwritable file that already says it does not exit 0:\n"
+            f"{_said(proc)}")
+        assert any(line.endswith(SAYS_SO_ALREADY) for line in proc.stdout.splitlines()), (
+            f"[{mode}] no line of set-mode's ends {SAYS_SO_ALREADY!r}:\n{_said(proc)}")
+        assert _state(config) == before, (
+            f"[{mode}] set-mode changed the file or its directory:\n{_said(proc)}")
+        assert _mode_lines(config) == [f"mode={mode}"]
+        assert estate.passfile.read_bytes() == estate.passfile_bytes
+    finally:
+        for target, mode_bits in reversed(saved):
+            target.chmod(mode_bits)
 
 
 # =========================================================== the readiness check
