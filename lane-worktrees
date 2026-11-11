@@ -4200,7 +4200,10 @@ class Sweep:
             # the writer's own rerun, never a line written over it.
             self.halt = self.halt or ("the register line may not have been written (exit 3); "
                                       "nothing more is acted on until the printed "
-                                      "`LANES_WRITE_ID` rerun has written it once or found it")
+                                      "`LANES_WRITE_ID` rerun has written it once or found it, "
+                                      "or, where the writer printed no such rerun (off primary), "
+                                      "until its commit is on origin, which the next write's S3 "
+                                      "finds by content (Amendment 23 S4)")
             self._relay_rerun(t, proc)
         elif proc.returncode != 0:
             self.failed += 1
