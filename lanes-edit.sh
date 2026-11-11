@@ -4559,8 +4559,8 @@ reg_read_failed() {   # <what failed> <the cause, for the mirror line>
 # refusal names how old that fetch is. 1, absent, says nothing and changes
 # nothing. 0, present, and 2, a tip git could not read, which is a failed read
 # and never "no marker" (ERR-47), end by class alike (Y:4948): decide 69 with
-# Amendment 22's text; mirror reads on with its line; projection 1. The guard's
-# is T507's. Where the workspace check did not run (`$LANES_REPO` or
+# Amendment 22's text; mirror reads on with its line; projection 1; the guard
+# 2, with the same text, returned (T507). Where the workspace check did not run (`$LANES_REPO` or
 # `$LANES_DIR` empty), nothing is read: an empty `git -C` reads the current
 # directory, and the arm's own read answers (lane 5, #165 6746507353, item 10).
 reg_marker_check() {
@@ -4594,6 +4594,16 @@ reg_marker_check() {
       REG_STORE=mirror ;;
     projection)
       die "$rmc_where. This workstation reads in $rmc_mode, where the files are only the register's mirror, so whether the managed ledger owns lane ${RO_LANE:-?} is UNKNOWN: \`$cmd\` answers 1 (feature 007, F17; FR-004)." 1 ;;
+    # THE GUARD'S (T507; W:4896; tasks.md T507): 2, the hook's one refusal,
+    # printed by `guard_refuse` and returned to `guard_run`, never `die`, whose
+    # 69 or 1 the `guard` arm would report as the guard's own failure.
+    guard)
+      if [ "$rmc_rc" = 0 ]; then
+        guard_refuse "this estate's register is SQL; configure \`mode=primary\` (Amendment 22; feature 007, F17; FR-004): $rmc_where. This workstation reads in $rmc_mode, where the files are only the register's mirror, so the triple is not verified from them."
+      else
+        guard_refuse "$rmc_where. This workstation reads in $rmc_mode, so whether this estate's register is SQL could not be read, and an indeterminate read refuses (Amendment 12(d); feature 007, F17). $(guard_bypass)"
+      fi
+      return 2 ;;
     *)
       note "$rmc_where. This workstation reads in $rmc_mode, where the files are only the register's mirror, so \`$cmd\`, a read that decides, refuses and answers nothing (feature 007, F17; FR-004)."
       if [ "$rmc_rc" = 0 ]; then die "this estate's register is SQL; configure \`mode=primary\`" 69; fi
@@ -13603,6 +13613,14 @@ guard_run() {   # <the hook's JSON, on stdin already read>
   # below takes the cache family it wrote at one `n`; a refusal it has printed
   # is this prompt's 2.
   reg_guard_prefetch || return 2
+  # F17 OFF PRIMARY (feature 007, T507; W:4896; tasks.md T507): in files mode,
+  # with no configuration or after a prefetch that failed, and in `mode index`,
+  # the marker read on the ref the guard reads; under `lanes/STORE`, or where
+  # that read failed, 2 (`reg_marker_check`). Never on primary, and never on
+  # the mirror path, where the marker is the estate's own.
+  case "$REG_MODE" in
+    files|index) reg_marker_check || return 2 ;;
+  esac
 
   # ---- THE REGISTER'S TEXT, TESTED POSITIVELY, ONCE, BEFORE THE ROW IS READ
   # (openRepoTools#60). `register_text` prefers `origin/<branch>` and falls back
