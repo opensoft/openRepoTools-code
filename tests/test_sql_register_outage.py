@@ -45,10 +45,14 @@ the one a register row names (`{session}`), in the window `repoA-2`, and the
 stand-in `tmux` it writes to the estate's `bin`; the case's `env()` and
 `hook_input()` come from it. The hook's JSON is compact, as the harness sends
 it, since the guard's `jstr` reads `"cwd":"<dir>"` with no blank after the
-colon. A case that takes the session out of any window (`TMUX=None`: AT-P3's)
-has no session record at all, as its text says. An estate has no `request`,
-so `_end_guard_sessions`, an autouse fixture, ends each session with the
-test, as `request.addfinalizer(session.close)` would. The estate's base
+colon. A case that takes the session out of any window (`TMUX=None`) has no
+session record at all: AT-P3's `CLAUDE_NO_LANE=1` and `status` cases, as its
+text says, and AT-D20's write case. AT-P3's guard refusal runs in the window
+with a live record: the guard refuses 2 before any read without one, so only
+a lane session reaches the prefetch and the direct read it asserts (lane 3's
+T507 ruling (1), #165 6783977598). An estate has no `request`, so
+`_end_guard_sessions`, an autouse fixture, ends each session with the test,
+as `request.addfinalizer(session.close)` would. The estate's base
 environment is `guard_strip_env(os.environ, strip=("T215_",))`, which takes
 `PROJECTS_ROOT` and `AGENT_PROTOCOL_ROOT` out beside the lane's, the
 harness's, tmux's, libpq's and the fake's variables (F10's items 27, 28).
@@ -1105,19 +1109,28 @@ def _names_the_store(out: str) -> bool:
 
 
 def test_the_guards_outage_refusal_names_the_store_the_cause_and_both_ways_out(tmp_path):
-    """AT-P3: with `mode=primary`, the database stopped, no tmux window and
-    no session record, the guard tries its direct read and exits 2; its
-    refusal names the store, without credentials, and the cause, and
-    carries both ways out, `lanes-index status` and `lanes-index rollback`
-    from a shell or a `CLAUDE_NO_LANE=1` session."""
+    """AT-P3: with `mode=primary` and the database stopped, the guard tries
+    its direct read and exits 2; its refusal names the store, without
+    credentials, and the cause, and carries both ways out, `lanes-index
+    status` and `lanes-index rollback` from a shell or a `CLAUDE_NO_LANE=1`
+    session.
+
+    The guard runs in the lane's window with a live session record (T203c's
+    `guard_session`), as this module's other guard cases do. The guard keeps
+    its order: with no window, or no session record, it refuses 2 before
+    any read, and T507's prefetch comes after the session-record check (B8
+    item 40; lane 5, #165 6755266457). So only a lane session reaches the
+    prefetch and the direct read this case asserts (lane 3's T507 ruling
+    (1), #165 6783977598)."""
     estate = Estate(tmp_path, [_render(1)])
     estate.passfile.write_text(f"127.0.0.1:55432:register_db:t215_login:{SECRET}\n",
                                encoding="utf-8")
     config = estate.config()
-    result = estate.guard(config, TMUX=None, TMUX_PANE=None, LANES_LANE=None)
+    result = estate.guard(config)
     out = result["out"]
     assert not result["killed"], "the hook was killed at 5 s, and the prompt passed"
-    assert estate.psql_starts(), "the guard made no direct read: the fake psql has no call"
+    assert estate.psql_starts(), (
+        f"the guard made no direct read: the fake psql has no call: {out[-600:]}")
     assert result["exit"] == 2, f"the guard exited {result['exit']}"
     assert _names_the_store(out), f"the refusal names no store: {out[-600:]}"
     assert SECRET not in out and "t215_login:" not in out, "the refusal carries a credential"
