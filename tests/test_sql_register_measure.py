@@ -1143,18 +1143,21 @@ def test_swapped_with_several_candidates_is_timed_beside_its_journal_last_calls(
 #: register writes each makes. The argv are read from `lanes-edit.sh`'s usage
 #: at the base; "a landing's five writes" is lane 2's reading of Rule 6's
 #: landing (the take, its log line, the close, its log line, the release),
-#: for lane 4 to confirm against its [L4-c] section.
+#: for lane 4 to confirm against its [L4-c] section. A landing's object is
+#: an `owner/repo#<n>` key, one of the forms `lanes-edit.sh`'s `canon_object`
+#: takes (`owner/repo#<n>`, `#<n>`, `lane:<name>` and the OpenSpec form),
+#: which has no `pr:` form.
 VERBS = {
     "log-noted": ([["log", "NOTED", "lane:repoA-1", "t255 measured note {k}"]], 1),
     "claim": ([["claim", "opensoft/repoA#{k}", "--no-github"]], 1),
     "landing": ([
         ["append-line", f"LANDING {EM} lane repoA-1, session {SID_A1}@{WS}, {{utc}}, PR #{{k}} into "
                         f"opensoft/repoA main"],
-        ["log", "LANDING", "pr:opensoft/repoA#{k}", "t255 landing {k}"],
+        ["log", "LANDING", "opensoft/repoA#{k}", "t255 landing {k}"],
         ["append-line", f"LANDED {EM} lane repoA-1, session {SID_A1}@{WS}, {{utc}}, PR #{{k}} into "
                         f"opensoft/repoA main {ARROW} abc1234"],
-        ["log", "CLOSED", "pr:opensoft/repoA#{k}", "merged abc1234"],
-        ["release", "pr:opensoft/repoA#{k}", "landed", "--no-github"]], 5),
+        ["log", "CLOSED", "opensoft/repoA#{k}", "merged abc1234"],
+        ["release", "opensoft/repoA#{k}", "landed", "--no-github"]], 5),
     "lane-start-dry-run": ([["@lane-start", "--dry-run", "repoA", "1"]], 0),
 }
 MODES = ("files", "primary")
