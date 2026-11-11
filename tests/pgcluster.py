@@ -30,6 +30,8 @@ THE FIXTURES:
   * `pg`, one database per test, `CREATE DATABASE t_<n> TEMPLATE tmpl`, then
     section 1.4's two database-level statements, and dropped `WITH (FORCE)`
     at its teardown;
+  * `pg_imported`, the same from `tmpl_imported`, the imported register: a
+    case that clones it fails, saying why, where the session has none;
   * `stoppable_cluster`, a cluster of the test's own, built like the
     session's, for the tests that stop the database: `stop()` is a fast
     shutdown, SIGINT and a wait, and `start_again()` starts it on the same
@@ -52,10 +54,14 @@ ALLOW_CONNECTIONS false`. A clone does not copy `pg_database.datacl`, so each
 clone runs section 1.4's `REVOKE ALL ON DATABASE` and `GRANT CONNECT`, with
 `-v db=` its name; the first run prints what a clone's `datacl` held before
 them (open point 12). On the session cluster, `tmpl_imported` is cloned from
-`tmpl`, with test 7's fixture register (T211's `FixtureRegister`) imported by
-`lanes-index import --at` (lane 1's T115, L1-A13). Until that imports, there is
-no `tmpl_imported`, the run's foot says why, and the cases that clone it fail;
-a bootstrap that fails fails each real-engine test, saying so.
+`tmpl`, with test 7's fixture register imported by `lanes-index import --at
+<C>` (lane 1's T115, L1-A13), as the operator lane does it (T227b): the
+register, AT-7's, is built on a repository of the fixture's own (a bare origin,
+the operator lane's checkout that `LANES_REPO` names, and W, a view that is
+never it), and the import runs as `lanes_w_fx` while the switch reads `files`
+with the marker `absent`. Where it does not import, there is no
+`tmpl_imported`, the run's foot says why, and the cases that clone it fail; a
+bootstrap that fails fails each real-engine test, saying so.
 
 The binaries' directory goes first on `PATH` while a cluster is up, so the
 code under test runs the `psql` of the server it talks to, and every
@@ -131,6 +137,7 @@ _SWEPT: List[str] = []
 #: THE CODE UNDER TEST'S `lanes-index`, which the template's build runs.
 REPO = Path(__file__).resolve().parent.parent
 LANES_INDEX = REPO / "lanes-index"
+LANES_EDIT = REPO / "lanes-edit.sh"
 
 #: THE TEMPLATES (T227): the imported template's name, and the bootstrap's
 #: inputs. The label is the one the import, outage and bounds modules name in
@@ -154,6 +161,7 @@ ADMIN_ENV_DROPPED = ("LANES_", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "AGENT_PROTO
                      "PROJECTS_", "TMUX", "CLAUDE_")
 _DATACL: List[str] = []
 _IMPORTED: List[str] = []
+_IMPORTED_AT: List[str] = []
 
 #: THE FIXTURE'S LOGINS (T228): the engineer `login add` is run for, and the
 #: three logins it and `login add --dump-job` make. Every session a test runs
@@ -418,6 +426,9 @@ class Cluster:
         self.label: Optional[str] = None
         #: Why there is no `tmpl_imported`, where it was asked for and is not.
         self.imported_problem: Optional[str] = None
+        #: The repository `tmpl_imported` was imported from (T227b), once it
+        #: is: its origin, the operator lane's checkout, W and C. Read only.
+        self.imported_register: Optional["ImportedRegister"] = None
         #: The fixture's logins' passwords, as `login add` printed them once
         #: (T228). Kept in memory for `passfile()`, never printed.
         self.passwords: Dict[str, str] = {}
@@ -628,43 +639,61 @@ class Cluster:
         return proc.stdout
 
     def build_imported(self) -> None:
-        """`tmpl_imported`: a clone of `tmpl`, with section 1.4's two
-        statements, and test 7's fixture register imported into it by
-        `lanes-index import --at <C>` as T211 runs it (its `FixtureRegister`,
-        on the cluster's socket as the superuser), then closed to
-        connections. Where any step fails, there is no `tmpl_imported`, and
-        `imported_problem` says why: the session goes on, and only the cases
-        that clone it fail."""
+        """`tmpl_imported` (T227b): a clone of `tmpl`, with section 1.4's two
+        statements, into which test 7's fixture register is imported by
+        `lanes-index import --at <C>` as the operator lane runs it (lane 1's
+        T115): from an `ImportedRegister` of the cluster's own, through the
+        operator lane's checkout (`LANES_REPO`, never W), with the switch at
+        `files` and the marker `absent`, as the writer login `lanes_w_fx` on
+        the cluster's socket (the superuser where the template has no
+        logins). Then seq 0 must be the one `import` entry, at C, with the
+        switch unchanged, and the database is closed to connections. Where
+        any step fails, there is no `tmpl_imported`, and `imported_problem`
+        says why: the session goes on, and only the cases that clone it
+        fail."""
+        register, user = None, (FX_WRITER if FX_WRITER in self.passwords else SUPERUSER)
         if self.label is None:
             self.imported_problem = "tmpl was not built by the bootstrap, so it holds no register"
         else:
-            try:
-                from test_sql_register_import import FixtureRegister
-            except ImportError as exc:
-                self.imported_problem = (f"test 7's fixture register, T211's FixtureRegister in "
-                                         f"tests/test_sql_register_import.py, cannot be loaded: {exc}")
-        if self.imported_problem is None:
             self.psql(f"CREATE DATABASE {IMPORTED} TEMPLATE {TEMPLATE};")
             self.psql(DATABASE_LEVEL, variables={"db": IMPORTED})
-            path = os.environ.get("PATH", os.defpath)
-            os.environ["PATH"] = _engine_first(self.bindir, path)   # the import's `psql`
             try:
-                register = FixtureRegister(self.root / "imported")
-                proc = register.import_at(Database(self, IMPORTED), register.c)
+                register = ImportedRegister(self.root / "imported", self.bindir)
+                proc = register.import_at(self, IMPORTED, user)
                 if proc.returncode != 0:
-                    self.imported_problem = (f"`lanes-index import --at {register.c}` exited "
-                                             f"{proc.returncode} (lane 1's T115, L1-A13, builds "
-                                             f"it): {_tail(proc)}")
-            except Exception as exc:          # the register's own build: git, lanes-edit.sh
-                self.imported_problem = f"test 7's fixture register was not built: {exc!r}"[:1200]
-            finally:
-                os.environ["PATH"] = path
+                    self.imported_problem = (f"`lanes-index import --at {register.c}` as {user} "
+                                             f"exited {proc.returncode} (lane 1's T115, L1-A13, "
+                                             f"builds it): {_tail(proc)}")
+                else:
+                    self.imported_problem = self._imported_check(register.c)
+            except (ClusterError, OSError, subprocess.SubprocessError) as exc:
+                self.imported_problem = f"test 7's fixture register was not built: {exc}"[:1200]
             if self.imported_problem is not None:
                 self.drop_database(IMPORTED)
         if self.imported_problem is not None:
             _IMPORTED.append(self.imported_problem)
             return
+        self.imported_register = register
+        _IMPORTED_AT.append(f"test 7's register at {register.c}, by `lanes-index import --at` "
+                            f"as {user}")
         self.psql(f"ALTER DATABASE {IMPORTED} WITH IS_TEMPLATE true ALLOW_CONNECTIONS false;")
+
+    def _imported_check(self, commit: str) -> Optional[str]:
+        """What the clones of `tmpl_imported` rest on (AT-LR006's route, AT-7's
+        "Success"): one journal entry, seq 0, an `import` at `commit`; the
+        head at 0; the switch at `files` with the marker `absent`. None, or
+        what differs."""
+        said = self.psql(
+            "SELECT concat_ws('|', (SELECT string_agg(seq || ':' || kind || ':' || "
+            "coalesce(git_commit, '-'), ',' ORDER BY seq) FROM lanes_register.journal), "
+            "(SELECT seq::text FROM lanes_register.register_head), "
+            "(SELECT mode || ':' || marker_state FROM lanes_register.register_switch));",
+            dbname=IMPORTED).stdout.strip()
+        wanted = f"0:import:{commit}|0|files:absent"
+        if said != wanted:
+            return (f"`lanes-index import --at {commit}` exited 0, and {IMPORTED} reads "
+                    f"{said!r} (journal|head|switch), not {wanted!r}")
+        return None
 
     def prepare(self) -> None:
         """Between `initdb` and the first start: nothing here; T229's TLS and
@@ -762,6 +791,265 @@ class Database:
         return subprocess.Popen([self.psql_bin, "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1"],
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, env=self.env(user, appname))
+
+
+# ------------------------------------------------------------ test 7's fixture register (T227b)
+#: TEST 7'S FIXTURE REGISTER, WHICH `tmpl_imported` HOLDS (T227b; the test
+#: plan's AT-7, "Fixture", and section 3.1, where "the imported register" is
+#: test 7's fixture register after a successful `import --at`): a files-mode
+#: workspace repository at C on a bare origin, holding AT-7's additions
+#: (`WORD` lines with milliseconds, the six HOLD-shaped kinds, a `HOLD` and a
+#: `LANDING` with no UTC and a `LANDING` whose stamp does not parse, a
+#: `LANDING EXPIRED` with no `for lane`, an archived lane, aliases,
+#: `lanes/repos.tsv` and `lanes/log/README.md` outside the render set, a log
+#: whose name differs from its lane's in case, and a lane with no log).
+def _test7_seed() -> Dict[str, str]:
+    """C'S FILES BEFORE THE OPERATOR'S WRITE (T227b): T211's `SEED`, copied
+    from `tests/test_sql_register_import.py` at line W3a's `4bfef75c` byte
+    for byte (its lines 97-104, 112-115, 118-164 and 185-226), so that the
+    template holds test 7's register on a branch without that module. Each
+    copy must stay equal to the other until one imports it from here."""
+    UUID_A1 = "aaaaaaaa-0001-4000-8000-00000000a001"
+    UUID_A2 = "aaaaaaaa-0003-4000-8000-00000000a003"
+    UUID_B1 = "bbbbbbbb-0001-4000-8000-00000000b001"
+    UUID_C1 = "dddddddd-0001-4000-8000-00000000d001"
+    UUID_D1 = "dddddddd-0002-4000-8000-00000000d002"
+    UUID_W1 = "eeeeeeee-0002-4000-8000-00000000e002"
+    UUID_Z1 = "eeeeeeee-0001-4000-8000-00000000e001"
+    TIP_A = "0123456789abcdef0123456789abcdef01234567"
+
+    def _row(lane: str, ids: str, state: str, started: str = "2026-10-01T00:00Z",
+             ws: str = "Eagle / test / brett", objects: str = "none") -> str:
+        return (f"| `{lane}` | harness {ids} | {ws} | {started} | {objects} | handoffs/{lane}.md "
+                f"| {state} |")
+
+    #: THE TAKES AT-7 PUTS IN THE REGISTER, each named for the case that reads it.
+    TAKE_LINES = {
+        "hold-no-utc": f"HOLD — lane repoA-2 (Eagle), window w: opensoft/repoH main {TIP_A} for a "
+                       f"window with no stamp",
+        "landing-no-utc": f"LANDING — lane repoA-1, session {UUID_A1}@Eagle, PR #11 into "
+                          f"opensoft/repoL main",
+        "bad-stamp": f"LANDING — lane repoA-1, session {UUID_A1}@Eagle, 2026-13-45T99:99Z, PR #12 "
+                     f"into opensoft/repoS main",
+    }
+    #: The `LANDING EXPIRED` shape with no `for lane`: it names repoA-2's open
+    #: take, PR #9 on opensoft/repoE, and must release nothing (U3; F13).
+    EXPIRED_NO_HOLDER = (f"LANDING EXPIRED — lane repoA-1, session {UUID_A1}@Eagle, "
+                         f"2026-10-01T05:00:00Z, PR #9 into opensoft/repoE main")
+
+    REGISTER_TEXT = "\n".join([
+        "# LANES.md — the import's fixture register",
+        "",
+        "| lane | session id | workstation / env / user | started (UTC) | objects owned | handoff path | state |",
+        "|---|---|---|---|---|---|---|",
+        _row("repoA-1", f"`{UUID_A1}`", "PAUSED · 2026-10-01T01:00:00Z · parked for the night"),
+        _row("repoA-2", f"`{UUID_A2}`", "LIVE · 2026-10-01T02:00:00Z · the operator lane"),
+        _row("repoC-1", f"`{UUID_C1}`", "ENDED · 2026-09-01T00:00:00Z · a row with no log",
+             started="2026-09-01"),
+        _row("repoD-1", f"`{UUID_D1}`", "LIVE · 2026-10-02T00:00:00Z · its log is RepoD-1.md"),
+        _row("repoW-1", f"`{UUID_W1}`", "LIVE · 2026-10-02T00:00:00Z · its log has WORD lines"),
+        "",
+        f"LANDING — lane repoA-1, session {UUID_A1}@Eagle, 2026-10-01T02:00:00Z, PR #7 into opensoft/repoA main",
+        f"LANDED — lane repoA-1, session {UUID_A1}@Eagle, 2026-10-01T02:05:00Z, PR #7 into opensoft/repoA main → abc1234",
+        f"HOLD — lane repoA-2 (Eagle), window w, 2026-10-01T03:00:00Z: opensoft/repoA main {TIP_A} for a frozen window",
+        f"HOLD (refresh) — lane repoA-2 (Eagle), window w, 2026-10-01T03:10:00Z: opensoft/repoA main {TIP_A}",
+        "HOLD (run id) — lane repoA-2 (Eagle), window w, 2026-10-01T03:11:00Z: opensoft/repoA main run 4242",
+        f"HOLD RELEASED — lane repoA-2 (Eagle), 2026-10-01T03:30:00Z: opensoft/repoA main {TIP_A}",
+        f"HOLD — lane repoA-1 (Eagle), window w, 2026-10-01T03:35:00Z: opensoft/repoB main {TIP_A} for a check",
+        "HOLD WITHDRAWN — lane repoA-1 (Eagle), 2026-10-01T03:40:00Z: opensoft/repoB main",
+        f"HOLD — lane repoA-1 (Eagle), window w, 2026-10-01T03:42:00Z: opensoft/repoX main {TIP_A} for a check",
+        "HOLD EXPIRED — lane repoA-1 (Eagle), 2026-10-01T03:45:00Z: opensoft/repoX main",
+        "QUEUED-HOLD — lane repoA-2 (Eagle), 2026-10-01T03:50:00Z: opensoft/repoB main",
+        f"LANDING WITHDRAWN — lane repoA-1, session {UUID_A1}@Eagle, 2026-10-01T03:55:00Z, PR #8 into opensoft/repoA main",
+        f"LANDING — lane repoA-2, session {UUID_A2}@Eagle, 2026-10-01T04:00:00Z, PR #9 into opensoft/repoE main",
+        f"LANDING — lane repoA-1, session {UUID_A1}@Eagle, 2026-10-01T04:01:00Z, PR #10 into OpenSoft/RepoE main",
+        f"LANDED — lane repoA-1, session {UUID_A1}@Eagle, 2026-10-01T04:05:00Z, PR #10 into OpenSoft/RepoE main → def5678",
+        TAKE_LINES["hold-no-utc"],
+        TAKE_LINES["landing-no-utc"],
+        TAKE_LINES["bad-stamp"],
+        EXPIRED_NO_HOLDER,
+        "",
+    ])
+
+    #: `WORD` lines whose UTC carries milliseconds (Q4(d)(i)): kept verbatim, and
+    #: flagged.
+    WORD_LINES = [
+        f"NOTED — lane repoW-1, session {UUID_W1}@Eagle, 2026-10-02T00:10:00.123Z, lane:repoW-1 — a stamp with milliseconds",
+        f"NOTED — lane repoW-1, session {UUID_W1}@Eagle, 2026-10-02T00:11:00.456Z, lane:repoW-1 — another",
+    ]
+
+    #: C's files, before the `lanes-edit.sh` write on top. `lanes/repos.tsv` and
+    #: `lanes/log/README.md` are outside the render set (Q18 (A)).
+    SEED = {
+        "lanes/LANES.md": REGISTER_TEXT,
+        "lanes/log/README.md": "# the object logs\n",
+        "lanes/repos.tsv": "# alias\towner/repo\nrepoE\topensoft/repoE\n",
+        "lanes/log/repoA-1.md": "\n".join([
+            "# lane repoA-1 — object log (lane-collision-protocol Amendment 7)",
+            f"STARTED — lane repoA-1, session {UUID_A1}@Eagle, 2026-10-01T00:00:00Z, lane:repoA-1 → home opensoft/repoA; dir /work/repoA1; profile team-01a",
+            f"OPENED — lane repoA-1, session {UUID_A1}@Eagle, 2026-10-01T01:30:00Z, opensoft/repoA#7",
+            ""]),
+        "lanes/log/repoA-2.md": "\n".join([
+            "# lane repoA-2 — object log (lane-collision-protocol Amendment 7)",
+            f"STARTED — lane repoA-2, session {UUID_A2}@Eagle, 2026-10-01T02:00:00Z, lane:repoA-2 → home opensoft/repoA; dir /work/repoA2; profile team-01b",
+            ""]),
+        "lanes/log/repoB-1.md": "\n".join([
+            "# lane repoB-1 — object log (lane-collision-protocol Amendment 7)",
+            f"STARTED — lane repoB-1, session {UUID_B1}@Eagle, 2026-10-01T00:30:00Z, lane:repoB-1 → home opensoft/repoB; dir /work/repoB; profile team-02a",
+            ""]),
+        "lanes/log/RepoD-1.md": "\n".join([
+            "# lane repoD-1 — object log (lane-collision-protocol Amendment 7)",
+            f"STARTED — lane repoD-1, session {UUID_D1}@Eagle, 2026-10-02T00:00:00Z, lane:repoD-1 → home opensoft/repoD; dir /work/repoD",
+            "a line no parser reads, in a log whose name differs from its lane's in case",
+            ""]),
+        "lanes/log/repoW-1.md": "\n".join([
+            "# lane repoW-1 — object log (lane-collision-protocol Amendment 7)",
+            f"STARTED — lane repoW-1, session {UUID_W1}@Eagle, 2026-10-02T00:00:00Z, lane:repoW-1 → home opensoft/repoW; dir /work/repoW",
+            *WORD_LINES,
+            ""]),
+        "lanes/aliases.tsv": "# old\tnew\tutc\nrepoOld-1\trepoA-2\t2026-09-30T00:00:00Z\n",
+        "lanes/archive/LANES-retired.md": "\n".join([
+            "# retired rows (Amendment 19(d))", "",
+            _row("repoZ-1", f"`{UUID_Z1}`", "RETIRED · 2026-09-02T00:00:00Z · retired"),
+            ""]),
+    }
+    return SEED
+
+TEST7_SEED: Dict[str, str] = _test7_seed()
+#: The operator lane the import runs as, and its files-mode write on top of
+#: the seed, so C's tip is bytes `lanes-edit.sh` wrote (T211's `OPERATOR` and
+#: `FixtureRegister`).
+TEST7_OPERATOR = "repoA-2"
+TEST7_NOTE = ("log", "NOTED", f"lane:{TEST7_OPERATOR}", "the import's fixture, at C")
+
+#: What the register's commands never inherit from the run: the lane
+#: tooling's, the agents', the configuration's and libpq's variables.
+_REGISTER_ENV_DROPPED = ("LANES_", "CLAUDE_", "WORKBENCHES_", "TMUX", "XDG_", "PG",
+                         "AGENT_PROTOCOL_ROOT", "PROJECTS_")
+
+
+def _without_indexer(path: str) -> str:
+    """`path` without any directory that holds a `lanes-index`: an installed
+    indexer is never what the fixture runs."""
+    return os.pathsep.join(part for part in path.split(os.pathsep)
+                           if part and not os.path.exists(os.path.join(part, "lanes-index")))
+
+
+class ImportedRegister:
+    """TEST 7'S FIXTURE REGISTER ON A REPOSITORY OF THE FIXTURE'S OWN (T227b),
+    built in `root` as T211's `FixtureRegister` builds C, from nothing of the
+    person's: a bare origin, `origin.git`; the operator lane's checkout, a
+    clone of it at `home/projects/wip`, which `LANES_REPO` names (D24, Y:653);
+    W, `ro/wip`, a view of that clone, which `workspace.yaml` names, so
+    `LANES_REPO` is never W; `TEST7_SEED` committed and pushed by git alone;
+    then the operator lane's `lanes-edit.sh log NOTED`, committed and pushed
+    by the files-mode verb. `c` is origin's tip then, C.
+
+    `import_at` runs lane 1's `lanes-index import --at <C>` (T115) as the
+    operator lane, `LANES_LANE=repoA-2`, from that checkout, with origin
+    fetched first, through a configuration naming one database of the
+    cluster by its socket. The cases that clone `tmpl_imported` read this
+    repository only; a case that pushes or edits works on a copy of its
+    own."""
+
+    def __init__(self, root: Path, bindir: Path) -> None:
+        self.root, self.bindir = root, bindir
+        self.home = root / "home"
+        self.agents = self.home / ".agents"
+        self.origin = root / "origin.git"
+        self.wip = self.home / "projects" / "wip"
+        self.ws = root / "ro" / "wip"
+        self.fakebin, self.conf = root / "fakebin", root / "conf"
+        for directory in (self.agents, self.fakebin, self.conf, root / "state", root / "config",
+                          root / "tmp"):
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        (self.fakebin / "tmux").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        (self.fakebin / "tmux").chmod(0o755)
+        env = {k: v for k, v in os.environ.items() if not k.startswith(_REGISTER_ENV_DROPPED)}
+        env.update(
+            HOME=str(self.home), AGENT_PROTOCOL_ROOT=str(self.agents), TMPDIR=str(root / "tmp"),
+            XDG_STATE_HOME=str(root / "state"), XDG_CONFIG_HOME=str(root / "config"),
+            CLAUDE_CONFIG_DIR=str(self.home / ".claude"), LANES_WORKSTATION="Eagle",
+            LANES_HOST="eagle", LANES_OS="linux", LANES_CONTAINER="none",
+            LANES_IN_CONTAINER="0", LANES_NO_GITHUB="1", LANES_EDIT=str(LANES_EDIT),
+            GIT_AUTHOR_NAME="lanes-index tests", GIT_AUTHOR_EMAIL="test@example.invalid",
+            GIT_COMMITTER_NAME="lanes-index tests", GIT_COMMITTER_EMAIL="test@example.invalid",
+            PATH=os.pathsep.join([str(self.fakebin), _engine_first(
+                bindir, _without_indexer(env.get("PATH", os.defpath)))]))
+        self.env = env
+        self._run_ok(["git", "init", "-q", "--bare", "-b", "main", str(self.origin)])
+        self._run_ok(["git", "clone", "-q", str(self.origin), str(self.wip)])
+        for path, text in TEST7_SEED.items():
+            sha = self.git("hash-object", "-w", "--stdin", data=text.encode("utf-8"))
+            self.git("-c", "core.ignorecase=false", "update-index", "--add", "--cacheinfo",
+                     f"100644,{sha},{path}")
+        self.git("-c", "core.ignorecase=false", "commit", "-q", "-m", "seed the register")
+        self.git("push", "-q", "origin", "main")
+        self.git("-c", "core.ignorecase=false", "checkout", "-q", "-f", "HEAD")
+        self.ws.mkdir(parents=True)
+        (self.ws / ".git").write_text(f"gitdir: {os.path.realpath(self.wip / '.git')}\n",
+                                      encoding="utf-8")
+        (self.ws / "lanes").symlink_to(self.wip / "lanes")
+        (self.agents / "workspace.yaml").write_text(
+            f"repository: {self.origin}\npath: {self.ws}\n", encoding="utf-8")
+        self.env["LANES_REPO"] = str(self.wip)
+        self._run_ok(["bash", str(LANES_EDIT), *TEST7_NOTE], LANES_LANE=TEST7_OPERATOR)
+        self.c = self.git("rev-parse", "origin/main")
+
+    def run(self, argv: List[str], cwd: Optional[Path] = None, timeout: float = 120,
+            **env: str) -> subprocess.CompletedProcess:
+        return subprocess.run(argv, cwd=str(cwd or self.root), env=dict(self.env, **env),
+                              stdin=DEVNULL, capture_output=True, text=True, timeout=timeout,
+                              check=False)
+
+    def _run_ok(self, argv: List[str], **env: str) -> str:
+        proc = self.run(argv, **env)
+        if proc.returncode != 0:
+            raise ClusterError(f"{' '.join(argv[:3])} exited {proc.returncode} building test 7's "
+                               f"fixture register: {_tail(proc)}")
+        return proc.stdout.strip()
+
+    def git(self, *args: str, data: Optional[bytes] = None) -> str:
+        """git in the operator lane's checkout: its stdout, stripped."""
+        proc = subprocess.run(["git", *args], cwd=str(self.wip), env=self.env, input=data,
+                              capture_output=True, timeout=120, check=False)
+        if proc.returncode != 0:
+            raise ClusterError(f"git {' '.join(args[:2])} exited {proc.returncode} building test "
+                               f"7's fixture register: "
+                               f"{proc.stderr.decode('utf-8', 'replace').strip()[-400:]}")
+        return proc.stdout.decode("utf-8", "replace").strip()
+
+    def configuration(self, cluster: "Cluster", database: str, user: str) -> Path:
+        """The operator's 0600 configuration, outside every work tree:
+        `mode=index`, `register_url=` as `user` and `reader_url=` as the
+        fixture's reader (or `user` without logins) on the cluster's socket,
+        each with a password file, the switch's label and the schema."""
+        def passfile(login: str) -> Path:
+            if login in cluster.passwords:
+                return cluster.passfile(login)
+            empty = self.conf / "empty.pgpass"
+            empty.write_text("", encoding="utf-8")
+            empty.chmod(0o600)
+            return empty
+        reader = FX_READER if FX_READER in cluster.passwords else user
+        db = Database(cluster, database)
+        path = self.conf / "lanes-index.conf"
+        path.write_text("\n".join([
+            "mode=index", f"register_url={db.url(user)}", f"register_passfile={passfile(user)}",
+            f"reader_url={db.url(reader)}", f"reader_passfile={passfile(reader)}",
+            f"register_label={cluster.label}", "register_schema=lanes_register", ""]),
+            encoding="utf-8")
+        path.chmod(0o600)
+        return path
+
+    def import_at(self, cluster: "Cluster", database: str,
+                  user: str = FX_WRITER) -> subprocess.CompletedProcess:
+        """`lanes-index import --at <C>` into `database`, as the operator lane
+        through its checkout, as `user`."""
+        config = self.configuration(cluster, database, user)
+        return self.run([sys.executable, str(LANES_INDEX), "import", "--at", self.c],
+                        cwd=self.wip, timeout=400, LANES_INDEX_CONFIG=str(config),
+                        LANES_LANE=TEST7_OPERATOR)
 
 
 # ------------------------------------------------------------ section 5.6's clusters (T229)
@@ -1114,6 +1402,8 @@ def pytest_terminal_summary(terminalreporter) -> None:
     for why in _IMPORTED:
         terminalreporter.write_line(f"real-engine: no {IMPORTED}, so the cases that clone it "
                                     f"fail: {why}")
+    for what in _IMPORTED_AT:
+        terminalreporter.write_line(f"real-engine: {IMPORTED} holds {what}")
 
 
 def _started(found: Probe, template_sql, imported: bool = False, kind=None, **options) -> Cluster:
@@ -1164,6 +1454,22 @@ def pg_cluster(pg_engine, pg_template_sql):
 @_fixture()
 def pg(pg_cluster):
     name = pg_cluster.new_database()
+    yield Database(pg_cluster, name)
+    pg_cluster.drop_database(name)
+
+
+@_fixture()
+def pg_imported(pg_cluster):
+    """One database per test cloned from `tmpl_imported` (T227b), test 7's
+    register at seq 0 and the switch at `files` with the marker `absent`,
+    with section 1.4's two statements, and dropped at the end. Where the
+    session cluster has no `tmpl_imported`, the case fails at its setup,
+    naming why. `pg_cluster.imported_register` is the repository it was
+    imported from."""
+    if pg_cluster.imported_register is None:
+        pytest.fail(f"no {IMPORTED} on the session cluster, so this case cannot clone it: "
+                    f"{pg_cluster.imported_problem}", pytrace=False)
+    name = pg_cluster.new_database(template=IMPORTED)
     yield Database(pg_cluster, name)
     pg_cluster.drop_database(name)
 
