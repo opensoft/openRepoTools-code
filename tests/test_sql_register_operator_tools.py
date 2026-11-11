@@ -686,7 +686,14 @@ def _re_fault(env: ReadyEnvironment, fault: str) -> subprocess.CompletedProcess:
         env.admin("GRANT INSERT ON lanes_register.journal TO lanes_register_reader")
         return env.ready("--expect", "index")
     if fault == "workstation-unset":
+        # A CONTAINER WITH NO NAME is check 6's FAIL: `lanes-edit.sh
+        # workstation`'s container rung (Amendment 11, R-A11-14). Outside a
+        # container its hostname rung answers, and check 6 is ok, so the case
+        # forces the container rung by `LANES_IN_CONTAINER=1`, the seam
+        # `lanes_in_container` names; a GitHub VM has no `/.dockerenv` (lane
+        # 1's triage, group 5, #165 comment 6807494089).
         bench.env.pop("LANES_WORKSTATION", None)
+        bench.env["LANES_IN_CONTAINER"] = "1"
         return env.ready("--expect", "index")
     if fault == "outage-declared":
         # THE DECLARATION IS BRETT'S WORD, written only where the database does
