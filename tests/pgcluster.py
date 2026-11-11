@@ -96,6 +96,7 @@ from __future__ import annotations
 import os
 import queue
 import re
+import select
 import shutil
 import signal
 import socket
@@ -1370,6 +1371,167 @@ def delayed_loopback(target_port: int, delay_s: float) -> DelayedLoopback:
     way: `with delayed_loopback(port, 0.075) as relay:` connect to
     `relay.port`."""
     return DelayedLoopback(target_port, delay_s)
+
+
+class SilentAfterStartup:
+    """THE SILENT-AFTER-STARTUP RELAY (T229c; lane 3's batch 8, "Lane 2's
+    relay: T229 builds it", #165 6780753157; TP:7682-7684): D9's F2, "a
+    relay that forwards to the cluster's socket until the startup completes,
+    then goes silent" (TP:3557-3558), which AT-F7's silent host, the
+    service's timer and the guard's `[2-service-down]` connect through too.
+    Standard library only. It listens on 127.0.0.1 at a free port, `port`,
+    and connects each client to `target_port` on 127.0.0.1, or, with
+    `socket_dir`, to a cluster's Unix socket,
+    `<socket_dir>/.s.PGSQL.<target_port>`, which the session's cluster alone
+    has.
+
+    It forwards both ways, untouched, until the startup completes, at the
+    server's first ReadyForQuery (`Z`, length 5); from then on it forwards
+    nothing either way and holds both sockets, reading and dropping what
+    reaches it, so neither end sees the other's bytes or its close until
+    `close()`. A close before then reaches the other end. `silenced` holds
+    the monotonic time each connection went silent, taken before the
+    ReadyForQuery is passed on. The startup's end is read in the server's
+    plain bytes, so a TLS stream, whose ReadyForQuery is encrypted, never
+    goes silent: connect without TLS (PostgreSQL answers an SSLRequest on a
+    Unix socket with `N`). It is T257's `StartupRelay` (line W3a,
+    `tests/test_sql_register_bounds.py`) taken over, so that once T257 and
+    the guard call this, one copy exists."""
+
+    READY = re.compile(rb"Z\x00\x00\x00\x05[ITE]")
+
+    def __init__(self, target_port: int, socket_dir=None) -> None:
+        self.target_port = int(target_port)
+        self.socket_dir = None if socket_dir is None else str(socket_dir)
+        self.lock = threading.Lock()
+        self.sockets: set = set()
+        self.silenced: List[float] = []
+        self.threads: List[threading.Thread] = []
+        self.done = False
+        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(16)
+        self.port = self.listener.getsockname()[1]
+        self._spawn(self._accept, "accept")
+
+    def _spawn(self, target, name: str, *args) -> None:
+        thread = threading.Thread(target=target, args=args, daemon=True,
+                                  name=f"silent-after-startup-{self.port}-{name}")
+        with self.lock:
+            self.threads = [t for t in self.threads if t.is_alive()] + [thread]
+        thread.start()
+
+    def _upstream(self) -> socket.socket:
+        if self.socket_dir is None:
+            upstream = socket.create_connection(("127.0.0.1", self.target_port), timeout=10)
+        else:
+            upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            upstream.settimeout(10)
+            try:
+                upstream.connect(f"{self.socket_dir}/.s.PGSQL.{self.target_port}")
+            except OSError:
+                upstream.close()
+                raise
+        upstream.settimeout(None)
+        return upstream
+
+    def _accept(self) -> None:
+        while True:
+            try:
+                client, _ = self.listener.accept()
+            except OSError:
+                return
+            try:
+                upstream = self._upstream()
+            except OSError:
+                client.close()
+                continue
+            with self.lock:
+                if self.done:
+                    client.close()
+                    upstream.close()
+                    return
+                self.sockets.update((client, upstream))
+            self._spawn(self._pump, "pump", client, upstream)
+
+    def _pump(self, client: socket.socket, server: socket.socket) -> None:
+        seen, silent, ends = b"", False, [client, server]
+        while ends and not self.done:
+            try:
+                ready, _, _ = select.select(ends, [], [], 0.2)
+            except (OSError, ValueError):
+                return
+            for end in ready:
+                try:
+                    data = end.recv(65536)
+                except OSError:
+                    data = b""
+                if silent:
+                    if not data:
+                        ends.remove(end)            # held: its close reaches nobody
+                    continue
+                if not data:
+                    return self._drop(client, server)
+                if end is server:
+                    seen = (seen + data)[-64:]
+                    if self.READY.search(seen):
+                        silent = True
+                        self.silenced.append(time.monotonic())
+                try:
+                    (client if end is server else server).sendall(data)
+                except OSError:
+                    return self._drop(client, server)
+
+    def _drop(self, *ends: socket.socket) -> None:
+        """A close before the startup completes reaches the other end."""
+        with self.lock:
+            self.sockets.difference_update(ends)
+        for end in ends:
+            self._shut(end)
+            end.close()
+
+    @staticmethod
+    def _shut(end) -> None:
+        try:
+            end.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def alive(self) -> List[str]:
+        """The relay's threads still running."""
+        with self.lock:
+            return [t.name for t in self.threads if t.is_alive()]
+
+    def close(self, wait: float = 10.0) -> None:
+        """End the relay: no new connection, and every held socket closed."""
+        with self.lock:
+            self.done = True
+            ends, threads = list(self.sockets), list(self.threads)
+            self.sockets.clear()
+        self._shut(self.listener)
+        self.listener.close()
+        for end in ends:
+            self._shut(end)
+        end_by = time.monotonic() + wait
+        for thread in threads:
+            thread.join(max(0.0, end_by - time.monotonic()))
+        for end in ends:
+            end.close()
+
+    def __enter__(self) -> "SilentAfterStartup":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+def silent_after_startup(target_port: int, socket_dir=None) -> SilentAfterStartup:
+    """T229c's relay in front of `target_port` on 127.0.0.1, or of the Unix
+    socket `<socket_dir>/.s.PGSQL.<target_port>`: `with
+    silent_after_startup(port) as relay:` connect to 127.0.0.1 at
+    `relay.port`; the session's cluster is
+    `silent_after_startup(pg.port, socket_dir=pg.host)`."""
+    return SilentAfterStartup(target_port, socket_dir)
 
 
 # ------------------------------------------------------------ pytest
