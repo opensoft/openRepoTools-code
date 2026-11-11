@@ -3910,6 +3910,17 @@ wip_quietly() {   # <command> [args…] — 0 or 1, stderr in $WIP_LAST_ERR, std
 	return 1
 }
 
+# Step 6b's one reading of a listing (`git ls-tree -r --name-only`) for the SQL
+# register's marker: 0 where it names `lanes/STORE` as a file, a link or a
+# gitlink, or as a DIRECTORY, whose listing under -r is its children
+# (`lanes/STORE/…`, which git prints inside quotes when a child's name needs
+# C-quoting). Both of step 6b's reads, HEAD's tree and a fetched origin `main`'s,
+# ask it, so neither can take a directory for something else than the marker.
+wip_listing_names_marker() {   # <listing file> — 0 only where the marker is listed
+	awk '$0 == "lanes/STORE" || index($0, "lanes/STORE/") == 1 || index($0, "\"lanes/STORE/") == 1 { found = 1; exit }
+		END { exit !found }' "$1"
+}
+
 wip_admin_block() {
 	local target="$1" org="$2" team="$3"
 	say ""
@@ -4635,11 +4646,28 @@ $(printf '%s\n' "$ahead_log" | sed -e 's/^/    /')
 	# could not be asked: nothing then says which seed is still this command's
 	# to push.
 	#
+	# THE MARKER IS ALSO ASKED OF ORIGIN'S `main`, where this checkout holds the
+	# commit step 6a asked `ls-remote` for (`remote_head`): a checkout BEHIND a
+	# `main` it has fetched, and that `main` carries `lanes/STORE`. Step 6a lets
+	# it through, because nothing is ahead of `main`, and HEAD's tree carries no
+	# marker yet, so the seed would be committed locally and its push refused as
+	# a non-fast-forward, with the text that sends a person to an administrator.
+	# That one read asks the marker's rule only, never the seed's, since a seed
+	# built on HEAD's tree is not the one that would land on `main`'s. A
+	# `remote_head` this checkout does not hold is not asked here, and neither is
+	# one step 6a could not get: step 6a's own `rev-list` refuses the one, and
+	# the push is the probe for the other.
+	#
 	# A TREE THAT CANNOT BE READ IS A REFUSAL, NEVER AN EMPTY ONE (#49's lesson).
 	# A HEAD with no commit yet, a new repository's, is the one tree read as
 	# empty, because there is no tree.
+	#
+	# `GIT_ICASE_PATHSPECS` is cleared for each listing: with it set, `ls-tree`
+	# dies on its `lanes/` pathspec ("pathspec magic not supported by this
+	# command: 'icase'"), which would refuse every run of a person whose shell
+	# sets it, where origin's command joins.
 	local register_base="" register_parents register_found="" register_label=""
-	local register_left=0 register_seed="" register_lacks=""
+	local register_left=0 register_seed="" register_lacks="" remote_marker=""
 	if register_base="$(git -C "$checkout" rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null)"; then
 		register_label="HEAD, $(printf '%.7s' "$register_base")"
 		# ONE PARENT OR NONE: `wip_is_own_seed` refuses a merge, so the seeds
@@ -4666,7 +4694,7 @@ $(printf '%s\n' "$ahead_log" | sed -e 's/^/    /')
         openRepoTools wip init"
 	fi
 	if [ -n "$register_base" ]; then
-		wip_quietly git -C "$checkout" ls-tree -r --name-only --full-tree "$register_base" -- lanes/ ||
+		wip_quietly env -u GIT_ICASE_PATHSPECS git -C "$checkout" ls-tree -r --name-only --full-tree "$register_base" -- lanes/ ||
 			die "could not list what $checkout carries under lanes/ at $register_label, so this
     run cannot tell whether that tree carries a lane register — and a tree this command could
     not read is never an empty one. NOTHING was committed or pushed, nothing was written into
@@ -4674,10 +4702,14 @@ $(printf '%s\n' "$ahead_log" | sed -e 's/^/    /')
     What it said:
 $WIP_LAST_ERR"
 		# `lanes/STORE` is named before any other path, because it is the one
-		# that says the register is SQL. A path git had to C-quote is printed
-		# quoted.
-		register_found="$(awk 'NR == 1 { first = $0 } $0 == "lanes/STORE" { store = 1 }
-			END { if (store) print "lanes/STORE"; else if (NR > 0) print first }' "$WIP_LAST_OUT")"
+		# that says the register is SQL, and a directory there counts as the
+		# marker (`wip_listing_names_marker`). A path git had to C-quote is
+		# printed quoted.
+		if wip_listing_names_marker "$WIP_LAST_OUT"; then
+			register_found="lanes/STORE"
+		else
+			register_found="$(awk 'NR == 1 { print; exit }' "$WIP_LAST_OUT")"
+		fi
 		# AND WHICH OF THE SEED'S OWN `lanes/` PATHS THAT TREE LACKS, asked of
 		# the same listing, so the second rule reads nothing the first did not.
 		# A path the tree carries as a directory counts as carried, as it does
@@ -4691,9 +4723,36 @@ $WIP_LAST_ERR"
 				register_lacks="${register_lacks:+$register_lacks and }$rel"
 		done
 	fi
+	# THE SECOND READ, ORIGIN'S `main`: asked where HEAD's tree carries no
+	# marker, this checkout holds the commit step 6a asked for, and that commit
+	# is not the tree already read (a HEAD at `main`, or a seed on it). Only the
+	# marker's rule is asked of it.
+	if [ "$register_found" != "lanes/STORE" ] && [ -n "$remote_head" ] &&
+		[ "$remote_head" != "$register_base" ] &&
+		git -C "$checkout" rev-parse -q --verify "$remote_head^{commit}" >/dev/null 2>&1; then
+		wip_quietly env -u GIT_ICASE_PATHSPECS git -C "$checkout" ls-tree -r --name-only --full-tree "$remote_head" -- lanes/ ||
+			die "could not list what $checkout carries under lanes/ at $target's main
+    ($(printf '%.7s' "$remote_head")), a commit it holds, so this run cannot tell whether the
+    main its seed commit would be pushed to carries lanes/STORE — and a tree this command
+    could not read is never an empty one. NOTHING was committed or pushed, nothing was
+    written into that checkout on this run, and nothing was staged.
+    What it said:
+$WIP_LAST_ERR"
+		if wip_listing_names_marker "$WIP_LAST_OUT"; then
+			remote_marker="$(printf '%.7s' "$remote_head")"
+		fi
+	fi
 	if [ "$register_found" = "lanes/STORE" ]; then
 		die "$checkout carries lanes/STORE in the tree a seed commit would build on
     ($register_label). lanes/STORE marks an estate whose register is SQL, and a seed commit
+    under it would be a stray commit that stops the renderer. The rule that refused is the
+    marker's: \`wip init\` refuses wherever lanes/STORE exists, in every mode.
+    NOTHING was committed or pushed, nothing was written into that checkout on this run, and
+    nothing was staged."
+	elif [ -n "$remote_marker" ]; then
+		die "$target's main ($remote_marker) carries lanes/STORE, in a commit $checkout
+    holds, and a seed commit made now would be pushed to that main, whatever this checkout's
+    own HEAD carries. lanes/STORE marks an estate whose register is SQL, and a seed commit
     under it would be a stray commit that stops the renderer. The rule that refused is the
     marker's: \`wip init\` refuses wherever lanes/STORE exists, in every mode.
     NOTHING was committed or pushed, nothing was written into that checkout on this run, and
