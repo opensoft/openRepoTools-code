@@ -1429,6 +1429,41 @@ Nothing was started. If that process is a leftover of an earlier attempt, retire
 	exit $?
 fi
 
+# THE FIVE CAPTURE FILES OF THE READS BELOW GO ON A SIGNAL TOO (REV-W9i N2).
+# `sread` (`sr_err`: its read, and its 69's re-read), `lifecycle_begin`
+# (`lcb_err`: `lane-state`, and `set-lane-state … SWAPPING`) and `seam_refuse`
+# (`sm_err`) each send a call's stderr to a file made with `mktemp`, and a
+# TERM, INT or HUP during the call left it in `$TMPDIR`. The form is T429's
+# for `act_errf` and `aw_errf` (REV-ACT2 N1): the cleanup removes each file by
+# its own variable and RETURNS, so INT, TERM and HUP each `exit` with the
+# shell's own 128 plus the signal (130, 143, 129); the traps are armed only
+# while a file can exist; and each variable is emptied once the normal path
+# has removed its file. ONE THING DIFFERS, because some of these reads run
+# where an EXIT trap is already set: `--restart`'s `restart_prepare_cleanup`
+# (`sread` on `window-session` and `last-session`, and `lifecycle_begin`), and
+# the writers' `cleanup` (`sread` on `register-row`). So the armed EXIT trap
+# runs that one too, and disarming puts back the traps that were there, never
+# the default: `lh_exit_trap` holds the EXIT trap in force, set where each is
+# set below, and both of those set INT and TERM to `exit 130` and `exit 143`
+# and leave HUP alone. Every section still runs under the traps it always did.
+sr_err=""; lcb_err=""; sm_err=""; lh_exit_trap=""
+rd_tmp_cleanup() { [ -z "${sr_err:-}" ] || rm -f -- "$sr_err"; [ -z "${lcb_err:-}" ] || rm -f -- "$lcb_err"; [ -z "${sm_err:-}" ] || rm -f -- "$sm_err"; return 0; }
+rd_tmp_arm() {
+	trap 'rd_tmp_cleanup; eval "$lh_exit_trap"' EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+	trap 'exit 129' HUP
+}
+rd_tmp_disarm() {
+	if [ -n "$lh_exit_trap" ]; then
+		trap "$lh_exit_trap" EXIT
+		trap 'exit 130' INT
+		trap 'exit 143' TERM
+		trap - HUP
+	else
+		trap - EXIT INT TERM HUP
+	fi
+}
 
 # EVERY READ OF THE REGISTER GOES THROUGH ONE FENCE, and Amendment 7(d) is the
 # whole of it: `0` an answer, `8` NO ANSWER and `2` a helper predating the read
@@ -1477,16 +1512,20 @@ fi
 sread() {   # sread <var> "<what the failure is NOT>" <verb> [args…]
 	sr_var="$1"; sr_not="$2"; shift 2
 	sr_out=""; sr_rc=0
+	rd_tmp_arm
 	sr_err="$(mktemp "${TMPDIR:-/tmp}/lane-handoff-sread.XXXXXX" 2>/dev/null || printf '')"
 	sr_out="$(LANES_NO_FETCH=1 "$LANES_EDIT" "$@" 2>"${sr_err:-/dev/null}")" || sr_rc=$?
 	if [ -n "$sr_err" ]; then
 		if [ "$sr_rc" -ne 69 ] && grep -e '^read: mirror at ' -- "$sr_err" >&2; then mirror_read=1; fi
 		rm -f -- "$sr_err"
 	fi
+	sr_err=""
+	rd_tmp_disarm
 	case "$sr_rc" in
 	0) : ;;
 	69)
 		sr_rc=0; sr_why=""; mirror_read=1
+		rd_tmp_arm
 		sr_err="$(mktemp "${TMPDIR:-/tmp}/lane-handoff-sread.XXXXXX" 2>/dev/null || printf '')"
 		sr_out="$(LANES_READ_MIRROR=1 LANES_NO_FETCH=1 "$LANES_EDIT" "$@" 2>"${sr_err:-/dev/null}")" || sr_rc=$?
 		if [ -n "$sr_err" ]; then
@@ -1494,6 +1533,8 @@ sread() {   # sread <var> "<what the failure is NOT>" <verb> [args…]
 			sr_why="$(cat -- "$sr_err" 2>/dev/null || :)"
 			rm -f -- "$sr_err"
 		fi
+		sr_err=""
+		rd_tmp_disarm
 		case "$sr_rc" in
 		0) : ;;
 		8) sr_out="" ;;
@@ -1567,9 +1608,12 @@ lifecycle_begin() {
 	# 39322387035). The reader had stopped listening; the read had not failed.
 	# So the status below is `lane-state`'s own, from a command nothing can end
 	# early, and the state is parsed out of what it printed afterwards.
+	rd_tmp_arm
 	lcb_err="$(mktemp "${TMPDIR:-/tmp}/lane-handoff-lstate.XXXXXX" 2>/dev/null || printf '')"
 	lcb_raw="$(LANES_READ_MIRROR=1 LANES_NO_FETCH=1 "$LANES_EDIT" lane-state "$lane" 2>"${lcb_err:-/dev/null}")" || lcb_rc=$?
 	mirror_label_forward "$lcb_err"
+	lcb_err=""
+	rd_tmp_disarm
 	case "$lcb_rc" in
 	0 | 8) : ;;
 	*)
@@ -1591,11 +1635,14 @@ lifecycle_begin() {
 		note "lane $lane is still recorded SWAPPING from operation ${lcb_old:-unknown}, which never finished: this handoff SUPERSEDES it with a new generation, and that is what refuses the old finalizer if it ever returns. Nothing of that operation is undone here."
 	fi
 	lcb_out=""; lcb_src=0
+	rd_tmp_arm
 	lcb_err="$(mktemp "${TMPDIR:-/tmp}/lane-handoff-lstate.XXXXXX" 2>/dev/null || printf '')"
 	lcb_out="$(LANES_READ_MIRROR=1 LANES_NO_FETCH=1 "$LANES_EDIT" set-lane-state "$lane" SWAPPING \
 		--expect "$lcb_now" --owner "${uuid:-none}" --agent "$agent" \
 		--profile "${profile_name:-none}" --kind "$handoff_kind" 2>"${lcb_err:-/dev/null}")" || lcb_src=$?
 	mirror_label_forward "$lcb_err"
+	lcb_err=""
+	rd_tmp_disarm
 	case "$lcb_src" in
 	0)
 		lc_gen="$(printf '%s\n' "$lcb_out" | awk -F"\t" '$1 == "generation" { print $2; exit }')"
@@ -1807,9 +1854,12 @@ step "lane=$lane${window_ref:+ window=$window_ref} workstation=${ws:-<none>}"
 # refusal texts, the codes, and what a files-mode run prints.
 seam_refuse() {   # <lane> <the act>
 	sr_out=""; sr_rc=0
+	rd_tmp_arm
 	sm_err="$(mktemp "${TMPDIR:-/tmp}/lane-handoff-seam.XXXXXX" 2>/dev/null || printf '')"
 	sr_out="$(LANES_READ_MIRROR=1 "$LANES_EDIT" managed-projection "$1" 2>"${sm_err:-/dev/null}")" || sr_rc=$?
 	mirror_label_forward "$sm_err"
+	sm_err=""
+	rd_tmp_disarm
 	case "$sr_rc" in
 	0) die "lane $1 is owned by the managed ledger (owner ${sr_out:-unnamed}), and $2 is a legacy lane act, refused here, before the window is renamed and before a byte is written: no PAUSED, no row, no handoff file, no lifecycle transition, no inventory, and no restart. Brett Heap's ruling of 2026-10-04: \"managed ledger owns enrolled lanes; #97 owns legacy\". Act on this lane through the managed ledger." 2 ;;
 	8) : ;;
@@ -1864,7 +1914,8 @@ if [ "$do_restart" = 1 ]; then
     --operation "$operation" --generation "$ri_gen" --mode preservation-only \
     --reason 'reserved before preservation writes' >/dev/null ||
       die "another restart owns this lane, or its reservation could not be written; an ordinary context clear never supersedes an operation in flight. No handoff, row, log or window was changed. Read it: $prog --restart-status --lane $lane" 2
-  trap restart_prepare_cleanup EXIT
+  lh_exit_trap='restart_prepare_cleanup'   # what `rd_tmp_disarm` puts back
+  trap "$lh_exit_trap" EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
 fi
@@ -2071,7 +2122,8 @@ writers_tmp="$(mktemp "${TMPDIR:-/tmp}/lane-handoff-writers.XXXXXX" 2>/dev/null 
 [ -n "$writers_tmp" ] ||
 	die "could not create a temporary file under ${TMPDIR:-/tmp} to snapshot this lane's writers into, and the WRITERS section is what the next session counts against \`ListAgents\` (Amendment 17 Addendum 1 (i)). Nothing was written, nothing was renamed and no pane was touched. Free some space, or set TMPDIR to somewhere writable, and re-run." 2
 cleanup() { [ -n "${writers_tmp:-}" ] && rm -f -- "$writers_tmp"; return 0; }
-trap 'cleanup; if [ "$do_restart" = 1 ]; then restart_prepare_cleanup; fi' EXIT
+lh_exit_trap='cleanup; if [ "$do_restart" = 1 ]; then restart_prepare_cleanup; fi'   # what `rd_tmp_disarm` puts back
+trap "$lh_exit_trap" EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
