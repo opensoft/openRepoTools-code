@@ -59,6 +59,8 @@ def matches(condition, context):
     value = context[attribute]
     if counted:
         value, wanted = len(value), int(wanted)
+    elif attribute == "number":
+        wanted = int(wanted)
     if operator is None:
         assert isinstance(value, bool)
         result = value
@@ -77,8 +79,8 @@ def matches(condition, context):
     return not result if negative else result
 
 
-def admitted(config, context):
-    return all(matches(c, context) for c in config["queue_rules"][0]["queue_conditions"])
+def admitted(config, context, index=0):
+    return all(matches(c, context) for c in config["queue_rules"][index]["queue_conditions"])
 
 
 def test_manual_mergify_queue_is_bounded_and_has_no_automatic_admission(config):
@@ -86,7 +88,8 @@ def test_manual_mergify_queue_is_bounded_and_has_no_automatic_admission(config):
     assert config["merge_queue"] == {
         "mode": "serial", "max_parallel_checks": 1, "queue_controls_comment": False,
         "reset_on_external_merge": "always", "skip_intermediate_results": False}
-    assert len(config["queue_rules"]) == 1
+    assert [q["name"] for q in config["queue_rules"]] == [
+        "openrepotools-docs-pilot", "openrepotools-real-code-35-36"]
     queue = config["queue_rules"][0]
     assert queue["name"] == "openrepotools-docs-pilot"
     assert queue["batch_size"] == 2
@@ -189,3 +192,66 @@ def test_manual_mergify_queue_references_exist_and_shared_agents_find_them():
     assert "batching-pilot.md" in (REPO / REFERENCES[0]).read_text()
     assert ".github/ci/task-set-delivery.md" in (REPO / "AGENTS.md").read_text()
     assert "Read AGENTS.md." in (REPO / "CLAUDE.md").read_text()
+
+
+@pytest.fixture(params=[35, 36])
+def real_ready(request):
+    number = str(request.param)
+    return {"number": request.param, "draft": False, "closed": False, "from-fork": False,
+            "base": "main", "head": {"35": "fix/exit-refusals-keep-their-words",
+            "36": "fix/a14-three-nudge-race"}[number],
+            "files": {"35": ["lane-handoff", "tests/test_a23_lane_handoff.py"],
+            "36": ["tests/test_lane_helpers.sh"]}[number],
+            "check-success": sorted(CHECKS)}
+
+
+def test_real_code_queue_is_manual_bounded_and_retains_full_ci(config, real_ready):
+    queue = config["queue_rules"][1]
+    assert admitted(config, real_ready, 1)
+    assert not admitted(config, real_ready)  # Docs scope is not widened.
+    assert queue["batch_size"] == 2
+    assert queue["batch_max_wait_time"] == "60 seconds"
+    assert queue["max_checks_retries"] == 0
+    assert queue["batch_max_failure_resolution_attempts"] == 0
+    assert queue["checks_timeout"] == "90 minutes"
+    assert queue["merge_method"] == "merge"
+    assert queue.get("allow_queue_branch_edit", False) is False
+    expected = {"check-success=" + check for check in CHECKS}
+    assert expected <= {c for c in queue["queue_conditions"] if isinstance(c, str)}
+    assert set(queue["merge_conditions"]) == expected
+
+
+@pytest.mark.parametrize("attribute,value", [("number", 32), ("number", 37),
+    ("head", "fix/other-lane"), ("base", "release/v1.2"), ("base", "fix/predecessor"),
+    ("draft", True), ("closed", True), ("from-fork", True), ("files", [])])
+def test_real_code_queue_rejects_unapproved_identity_or_state(config, real_ready, attribute, value):
+    real_ready[attribute] = value
+    assert not admitted(config, real_ready, 1)
+
+
+@pytest.mark.parametrize("path", [".mergify.yml", ".github/workflows/tests.yml",
+    ".github/workflows/release.yml", "lane-start", "lane-handoff\n",
+    "tests/test_lane_helpers.sh.evil", "tests/test_a23_lane_handoff.py\n"])
+def test_real_code_queue_rejects_mixed_paths(config, real_ready, path):
+    real_ready["files"].append(path)
+    assert not admitted(config, real_ready, 1)
+
+
+def test_real_code_queue_cannot_swap_the_two_pr_numbers(config, real_ready):
+    real_ready["number"] = 36 if real_ready["number"] == 35 else 35
+    assert not admitted(config, real_ready, 1)
+
+
+@pytest.mark.parametrize("gate", sorted(CHECKS))
+@pytest.mark.parametrize("outcome", ["missing", "pending", "skipped", "neutral", "failure", "cancelled"])
+def test_real_code_queue_every_gate_must_succeed(config, real_ready, gate, outcome):
+    real_ready["check-success"].remove(gate)
+    real_ready["check-" + outcome] = [gate]
+    assert not admitted(config, real_ready, 1)
+    assert not all(matches(c, real_ready) for c in config["queue_rules"][1]["merge_conditions"])
+
+
+@pytest.mark.parametrize("attribute", ["number", "head", "base", "files", "check-success"])
+def test_real_code_queue_missing_context_cannot_grant_scope(config, real_ready, attribute):
+    del real_ready[attribute]
+    assert not admitted(config, real_ready, 1)

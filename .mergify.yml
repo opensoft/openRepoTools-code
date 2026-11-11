@@ -43,3 +43,44 @@ queue_rules:
       - check-success=@github-actions/tests
       - check-success=@github-actions/tests-no-submodule
       - check-success=@github-actions/package
+
+  # One user-authorized real-code batch, not a general lane queue.
+  # The operator verifies these exact reviewed heads before requesting queue:
+  # #35 447b51b93d762d2b89ae1bd175811d1907010ca2
+  # #36 63a47bdcc98ebb63bb253ea2e2d449d94eb4bdba
+  # These comments are receipts, not service-enforced SHA conditions.
+  - name: openrepotools-real-code-35-36
+    batch_size: 2
+    batch_max_wait_time: 60 seconds
+    batch_max_failure_resolution_attempts: 0
+    max_checks_retries: 0
+    checks_timeout: 90 minutes
+    merge_method: merge
+    queue_conditions:
+      - -draft
+      - -closed
+      - -from-fork
+      - base=main
+      - or:
+          - and:
+              - number=35
+              - head=fix/exit-refusals-keep-their-words
+              - '#files=2'
+              - files=lane-handoff
+              - files=tests/test_a23_lane_handoff.py
+              - '-files~=^(?!(lane-handoff|tests/test_a23_lane_handoff[.]py)\Z)'
+          - and:
+              - number=36
+              - head=fix/a14-three-nudge-race
+              - '#files=1'
+              - files=tests/test_lane_helpers.sh
+              - '-files~=^(?!tests/test_lane_helpers[.]sh\Z)'
+      - check-success=@github-actions/guard-launch-mode
+      - check-success=@github-actions/tests
+      - check-success=@github-actions/tests-no-submodule
+      - check-success=@github-actions/package
+    merge_conditions:
+      - check-success=@github-actions/guard-launch-mode
+      - check-success=@github-actions/tests
+      - check-success=@github-actions/tests-no-submodule
+      - check-success=@github-actions/package
