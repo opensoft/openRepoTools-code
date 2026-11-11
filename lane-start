@@ -268,10 +268,12 @@
 #      this launch could not take: `act-begin` exiting 2 (a helper with no
 #      `start-record`), 1, 64 or any code but 0, 69, 75 and 3, or exiting 0
 #      with no line or a malformed one; `act-begin --rebase` the same, its 2
-#      being one of Y:5595's three refusals, with its words kept (#165
-#      6779688808, Q23); or a failed `canon-lane --walk`: any code but 0,
-#      69, 75 and 3 (its 64, a helper with no `--walk`; its 66, an alias
-#      table it could not read), or an exit 0 that prints no name. Each
+#      being one of Y:5595's three refusals of its own (a malformed
+#      `LANES_ACT`, a `files` base on primary, or a changed generation),
+#      with its words kept (#165 6779688808, Q23; REV-ACT2 N3); or a failed
+#      `canon-lane --walk`: any code but 0, 69, 75 and 3 (its 64, a helper
+#      with no `--walk`; its 66, an alias table it could not read), or an
+#      exit 0 that prints no name. Each
 #      names the verb and its code. Nothing is renamed or written, save the
 #      `request-handoff` line a `--rebase` follows, which stands.
 #   2  refusal — an ARGUMENT ERROR, and one further case this amendment adds: a
