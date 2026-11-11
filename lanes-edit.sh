@@ -3650,14 +3650,14 @@ EOF
 #   5. The handshake (Y:4999–5007). The parent made `seam.fifo`; it is opened
 #      read-write on fd 5 BEFORE `ready`, so the open cannot block and a line
 #      the parent writes once it sees `ready` is held in the pipe until it is
-#      read. Turns of `read -t 1 -u 5`; after a turn with no message the
-#      parent is tested with `pid_start_of` against `parent.pid`, whose 2 is
-#      live (R49), as is a shell with no such function yet (`wr_claim_live`'s
-#      `untested`); and the cap, `wr_seam_cap_s` (Y:5001). A turn that times
-#      out part way through the parent's line keeps what it read: bash's
-#      `read -t` leaves that partial input in its variable, and it is joined
-#      to the next turn's read, so a line split across two turns is read
-#      whole (W7-T422's finding: `committed 8` was read as `ommitted 8`).
+#      read. Turns of `read -t 1 -n 1 -u 5`, one byte each, build the line;
+#      after a turn with no byte, and at most once a second while bytes come
+#      with no newline, the parent is tested with `pid_start_of` against
+#      `parent.pid`, whose 2 is live (R49), as is a shell with no such
+#      function yet (`wr_claim_live`'s `untested`); and the cap,
+#      `wr_seam_cap_s` (Y:5001). One byte a read keeps a line whole across a
+#      timeout on bash 3.2 too, which drops a timed-out read's partial input
+#      (W7-T422's finding: `committed 8` was read as `ommitted 8`).
 #   6. `committed <s>`: `seam.out` is `tail`, fds 1 and 2 go back to 3 and 4,
 #      the buffered `out.1` and then `out.2` are replayed, `REGISTER_SEQ` is
 #      set, `REG_STORE` is set to `sql` (T504's variable: nothing else in a
@@ -3730,7 +3730,8 @@ cp_seam() {
   local cs_tab="" cs_raw="" cs_l="" cs_meta="" cs_p="" cs_q="" cs_sm="" cs_dm="" cs_b="" cs_n="" \
         cs_st="" cs_x="" cs_i=0 cs_known=0 cs_extra="" cs_out="" cs_bad="" cs_ren="${LOG_RENAMED_FROM:-}" \
         cs_to="" cs_ton=0 cs_fromd=0 cs_tsv="" cs_rows="" cs_img="" cs_h="" cs_d="$REG_SCRATCH" \
-        cs_pl="" cs_ptok="" cs_tok="" cs_prc=0 cs_cap="" cs_t0=0 cs_msg="" cs_s="" cs_buf=""
+        cs_pl="" cs_ptok="" cs_tok="" cs_prc=0 cs_cap="" cs_t0=0 cs_msg="" cs_s="" cs_buf="" \
+        cs_c="" cs_tt=0
   local cs_sts cs_ps cs_bs cs_ns
   cs_sts=(); cs_ps=(); cs_bs=(); cs_ns=()
   cs_tab="$(printf '\t')"
@@ -3856,19 +3857,32 @@ CS_EOF
   IFS=" $cs_tab" read -r cs_x cs_ptok cs_q <<<"$cs_pl" || :
   cs_cap="$(wr_seam_cap_s)"
   cs_t0="$SECONDS"
-  # A TURN THAT TIMES OUT KEEPS ITS PARTIAL INPUT (W7-T422's finding; Y:4999–
-  # 5007). bash's `read -t` saves what it read before the timeout in its
-  # variable and returns more than 128, so the bytes of a line the timeout cut
-  # are kept in `cs_buf` and joined to the next read that ends at the newline.
-  # A timeout that read nothing adds nothing. The parent and cap tests between
-  # turns are unchanged.
+  cs_tt="$SECONDS"
+  # ONE BYTE A READ, SO A TIMEOUT NEVER CUTS A LINE (W7-T422's finding;
+  # Y:4999–5007). Where a `read -t` times out part way through a line, bash 4
+  # and later keep the partial input in its variable, but bash 3.2 returns 1
+  # with the variable empty and the bytes it took from the FIFO lost: there,
+  # a `committed 8` cut after its `c` was read as `ommitted 8`. So each read
+  # takes one byte (`-n 1`) into `cs_c`, and `cs_buf` builds the line from
+  # every byte a read returns; a timeout ends a turn between two reads. A
+  # read that succeeds empty is the newline; `IFS=` keeps a space, which
+  # would otherwise read as that empty. What a timed-out read leaves in `cs_c` is kept, as a later
+  # bash may leave part of a multibyte character there. The parent and cap
+  # tests run after a turn that times out, and at most once a second while
+  # bytes come with no newline.
   while :; do
-    cs_msg=""
-    if IFS= read -r -t 1 -u 5 cs_msg; then
-      cs_msg="${cs_buf}${cs_msg}"
-      break
+    cs_c=""
+    if IFS= read -r -t 1 -n 1 -u 5 cs_c; then
+      if [ -z "$cs_c" ]; then
+        cs_msg="$cs_buf"
+        break
+      fi
+      cs_buf="${cs_buf}${cs_c}"
+      [ "$SECONDS" != "$cs_tt" ] || continue
+    else
+      cs_buf="${cs_buf}${cs_c}"
     fi
-    cs_buf="${cs_buf}${cs_msg}"
+    cs_tt="$SECONDS"
     cs_tok=""; cs_prc=0
     cs_tok="$(pid_start_of "$PPID" 2>/dev/null)" || cs_prc=$?
     case "$cs_prc" in
