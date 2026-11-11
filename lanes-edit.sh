@@ -6544,6 +6544,11 @@ pw_pids_kill() {   # <list>
 # its start could not be read, is tested by `kill -0` as before (review
 # REV415c, N1). The second listing is taken only while the child still runs
 # as itself, so a pid it has left is never walked.
+# WHAT THE LISTINGS CANNOT SEE (review REV415c, N2): a process forked after
+# the first listing whose parent then dies is moved to init, or to a
+# subreaper, and the second listing walks only from the child, so it escapes
+# both and gets no signal. The window is milliseconds. One the child starts
+# after its TERM is found by the second listing only, and gets KILL alone.
 # The child is reaped and none of its output is replayed. The run
 # ends as at D7's deadline: 75, nothing sent by that attempt, naming the
 # attempt and why it was stopped, with the write's rerun. Where the pending
