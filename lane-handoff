@@ -1504,8 +1504,11 @@ $sr_why" 2 ;;
 # `RETIRED` is closed, and `refuse_a_closed_lane` (below, right after the
 # managed-ledger seam's refusal) exits 2 on it before anything is written, this
 # lifecycle included
-# (opensoft/openRepoTools#118). `R-A11-11` is a swap that is OWED, and a
-# handoff on a closed lane is owed by nobody.
+# (opensoft/openRepoTools#118). A read of that line that FAILED exits 1 there,
+# before anything is written, as `--late` does: the lane is neither established
+# open nor established closed (Amendment 7(d)). `R-A11-11` is a swap that is
+# OWED: a handoff on a closed lane is owed by nobody, and one on a lane nobody
+# could read is not known to be.
 lc_on=""; lc_gen=""; lc_op=""; lc_state=""; lc_inventory_missed=""
 
 lifecycle_begin() {
@@ -1797,14 +1800,15 @@ refuse_a_closed_lane() {   # <the write the act would make after the close> [<mo
 # `--late` makes the same check after its own `--at` checks, so its order of
 # refusals is what it was. Every other mode makes it here, before the restart
 # intent is reserved, the window is renamed or a byte is written. A read that
-# FAILED is not a closed lane and not an open one (Amendment 7(d)): it is said,
-# and the swap goes on as the lifecycle's own failed reads let it (`R-A11-11`).
+# FAILED is not a closed lane and not an open one (Amendment 7(d)): it dies 1
+# here, before any write, as `--late` does on the same failed read, and the
+# handoff never goes on. It is not exit 2, which claims the lane is closed, and
+# `R-A11-11` does not carry the swap past it: that rule keeps a swap that is
+# OWED, and a read that failed cannot show that this one is.
 if [ "$do_late" != 1 ]; then
-	if read_last_lane_line; then
-		refuse_a_closed_lane "a handoff" " Nothing was renamed and nothing was written: no PAUSED, no row, no handoff file, no lifecycle transition (this lane's lifecycle reads CLOSED, and a handoff would take it to SWAPPING), no inventory and no restart. If the lane is to run again, start it first (lane-start), then hand off."
-	else
-		note "lane $lane's last lane-kind line could not be read (\`$LANES_EDIT lane-last $lane\` exited $ll_rc), so this handoff cannot tell whether the lane is closed and does not check. The swap itself goes on (\`R-A11-11\`): a refusal needs a closed lane established, and a read that failed establishes nothing."
-	fi
+	read_last_lane_line ||
+		die "\`$LANES_EDIT lane-last $lane\` failed (exit $ll_rc). That is NOT 'this lane is open', and a handoff on an answer nobody got could reopen a closed lane (Amendment 7(d)). Nothing was renamed and nothing was written." 1
+	refuse_a_closed_lane "a handoff" " Nothing was renamed and nothing was written: no PAUSED, no row, no handoff file, no lifecycle transition (this lane's lifecycle reads CLOSED, and a handoff would take it to SWAPPING), no inventory and no restart. If the lane is to run again, start it first (lane-start), then hand off."
 fi
 
 # A plain preservation writer cannot modify an in-flight restart's input.
