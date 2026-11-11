@@ -5532,14 +5532,18 @@ lower_into() {   # <string>
 # `id=`, `base=`, `generation=`, and one `expect=<scope>` per scope), or exits 2
 # naming the variable, with nothing sent. They are the client's checks of
 # Y:5597–5601, which the primary branch makes before its first snapshot:
-#   act_parse [--primary | --rebase] <value>
+#   act_parse <plain | --primary | --rebase> <value>
 #                                   1, a malformed `LANES_ACT`; and, with
 #                                   `--primary`, 4, a `files` base (Y:5601's
 #                                   text, word for word). `--rebase` refuses a
 #                                   `files` base too, with `act-begin
 #                                   --rebase`'s own text, since that is a read
 #                                   and no write (lane 3's ruling on T410's
-#                                   question 7, #165 6754294841)
+#                                   question 7, #165 6754294841). The mode
+#                                   word is always given, `plain` for neither,
+#                                   so a value that is itself `--primary` or
+#                                   `--rebase` is read as the value, and the
+#                                   refusal quotes it (REV-W9e N1)
 #   expect_parse <expect> <act>     2, a `LANES_EXPECT` with no `LANES_ACT`;
 #                                   3, a scope outside the six forms, `*` and
 #                                   `row:*` included (Y:5587's text, word for
@@ -5554,11 +5558,9 @@ ACT_NL='
 '
 ACT_ID=""; ACT_BASE=""; ACT_GEN=""; ACT_LINES=""
 
-act_parse() (   # [--primary | --rebase] <LANES_ACT's value>
+act_parse() (   # <plain | --primary | --rebase> <LANES_ACT's value>
   set -f
-  ap_on=""
-  case "${1-}" in --primary|--rebase) ap_on="$1"; shift ;; esac
-  ap_v="${1-}"; ap_ok=1; ap_seq=""; ap_gen=""
+  ap_on="${1-}"; ap_v="${2-}"; ap_ok=1; ap_seq=""; ap_gen=""
   ap_h='[0123456789abcdef]'
   ap_id="${ap_v%%@*}"; ap_rest="${ap_v#*@}"
   case "$ap_v" in *@*) : ;; *) ap_ok=0 ;; esac
@@ -5644,7 +5646,7 @@ act_checks() {
   ACT_ID=""; ACT_BASE=""; ACT_GEN=""; ACT_LINES=""
   ack_act=""; ack_expect=""
   if [ -n "${LANES_ACT:-}" ]; then
-    ack_act="$(act_parse "$LANES_ACT")" || exit $?
+    ack_act="$(act_parse plain "$LANES_ACT")" || exit $?
   fi
   ack_expect="$(expect_parse "${LANES_EXPECT-}" "${LANES_ACT-}")" || exit $?
   [ -n "$ack_act" ] || return 0
@@ -5729,7 +5731,7 @@ act_snapshot() {
     "primary present") : ;;
     *) die "act-begin took no base: the register's switch reads switch=${as_switch} with marker=${as_marker}, not primary with the marker present. Every write of this act would be refused with 69 as well." 69 ;;
   esac
-  act_parse "00000000000000000000000000000000@${AS_N}:${AS_GEN}" >/dev/null 2>&1 ||
+  act_parse plain "00000000000000000000000000000000@${AS_N}:${AS_GEN}" >/dev/null 2>&1 ||
     die "act-begin took no base: \`lanes-index register snapshot\` exited 0 and answered n=${AS_N} and generation=${AS_GEN}, which make no base (a seq of 1 to 18 digits and a lower-case uuid), so act-begin reads it as a failed read." 69
   return 0
 }
@@ -5760,7 +5762,7 @@ act_begin() {   # <1 for --rebase, else 0>
   if [ "$1" = 1 ]; then
     [ -n "${LANES_ACT:-}" ] ||
       die "act-begin --rebase keeps the act's id, and LANES_ACT is unset or empty, so there is no act to re-base: run act-begin without --rebase to begin one. Nothing was sent." 2
-    ab_parsed="$(act_parse "$LANES_ACT")" || exit $?
+    ab_parsed="$(act_parse plain "$LANES_ACT")" || exit $?
     act_fields "$ab_parsed"
     ab_id="$ACT_ID"
   else
