@@ -1317,15 +1317,21 @@ def _path_m7(reg, root: Path):
 
 
 def _path_m9(reg, root: Path):
-    """M9's path: answer 2's bind, `lane-start --no-launch --bind`, then the
-    guard's `set-row-state` on the lane it leaves (section 5.1). The argv is
-    read from section 5.1's M9 row, for lane 4 to confirm."""
+    """M9's path: answer 2's bind, `lane-start --no-launch --bind <uuid>
+    repoA 2`, then the guard's `set-row-state` on the lane it leaves (section
+    5.1), as `_bind_run` runs them: the body's argv (`_bind_argv`), from
+    SID_BIND's live session in a window named `BIND_TO` (`_window`). The
+    case builds `[m9]`'s register with `_bind_seed`, so the lane's log
+    records a `dir` that exists."""
     estate = VerbEstate(reg.pg, root, "primary", reg)
-    estate.env["LANES_BIND_BOUND_S"] = "500"
-    for argv in (["@lane-start", "--no-launch", "--bind", "repoA", "2"],
-                 ["set-row-state", "repoA-1", f"PAUSED {DOT} t255 m9"]):
-        proc = estate.run(argv)
-        assert proc.returncode == 0, f"`{' '.join(argv)}`: {(proc.stdout + proc.stderr)[-600:]}"
+    estate.env.update(LANES_BIND_BOUND_S=str(BOUND_S), LANES_SESSION=SID_BIND)
+    session = _window(estate, root, BIND_TO, SID_BIND)
+    try:
+        for argv in (_bind_argv(), ["set-row-state", "repoA-1", f"PAUSED {DOT} t255 m9"]):
+            proc = estate.run(argv)
+            assert proc.returncode == 0, f"`{' '.join(argv)}`: {(proc.stdout + proc.stderr)[-600:]}"
+    finally:
+        session.close()
 
 
 def _path_m10(reg, root: Path):
@@ -1388,7 +1394,8 @@ def test_each_paths_connections_and_queries_are_counted(pg_engine, request, tmp_
     counting = needs(request, "counting_cluster", "lane 2's T229 (section 5.6's counting cluster)")
     db = Database(counting, counting.new_database())
     try:
-        reg = PrimaryRegister(db, tmp_path)
+        reg = PrimaryRegister(db, tmp_path, _bind_seed(tmp_path / "estate" / "checkout")
+                              if path == "m9" else None)
         log = Path(counting.root) / "server.log"
         offset = log.stat().st_size
         M13_PATHS[path](reg, tmp_path)
