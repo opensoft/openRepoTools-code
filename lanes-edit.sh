@@ -5847,7 +5847,14 @@ wr_owed_text() {   # <verb>
       # them, `lanes-edit.sh rename-lane <old> <new>` run again, never
       # `lane-rename`, whose arm reads that verb's 2 as "already landed" and
       # ends 0 (REV422c S3; lane openRepoTools-3, #165 6780753157, Q44 with
-      # Q42).
+      # Q42). It is printed with `LANES_LANE=<new>`, as step (2) of T422's
+      # hand steps prints its `commit`, because on primary `pw_run` refuses 2
+      # before its claim where LANES_LANE is unset (`pw_lane_given`), so the
+      # command as printed must carry the writer's lane to make the move
+      # (REV-W8b S1; REV422c S2, "the hand steps work as printed"). The lane
+      # the rerun writes is its `<old>` argument, which W resolves to `<new>`
+      # (`pw_checkout`); LANES_LANE names the writer and keys its claim
+      # (Y:5171).
       for ow_a in ${WR_ARGS[@]+"${WR_ARGS[@]}"}; do
         if [ "$ow_skip" = 1 ]; then ow_skip=0; continue; fi
         case "$ow_a" in
@@ -5857,8 +5864,8 @@ wr_owed_text() {   # <verb>
         esac
       done
       ow_od="${ow_od:-<old>}"; ow_n="${ow_n:-<new>}"
-      printf "lane %s's lifecycle directory moved to its new name (lane_state_rename): read it with lanes-edit.sh lane-reconcile %s; the RENAMED comment on each object the lane holds, unless --no-github was given: gh issue comment <number> --repo <owner/repo>, or gh pr comment, on each; and its handoff's move and RENAMED stamp in its checkout: run lanes-edit.sh rename-lane %s %s again\n" \
-        "$ow_n" "$ow_n" "$ow_od" "$ow_n" ;;
+      printf "lane %s's lifecycle directory moved to its new name (lane_state_rename): read it with lanes-edit.sh lane-reconcile %s; the RENAMED comment on each object the lane holds, unless --no-github was given: gh issue comment <number> --repo <owner/repo>, or gh pr comment, on each; and its handoff's move and RENAMED stamp in its checkout: run LANES_LANE=%s lanes-edit.sh rename-lane %s %s again\n" \
+        "$ow_n" "$ow_n" "$ow_n" "$ow_od" "$ow_n" ;;
     retire-rows)
       for ow_a in ${WR_ARGS[@]+"${WR_ARGS[@]}"}; do
         if [ "$ow_skip" = 1 ]; then ow_skip=0; continue; fi
