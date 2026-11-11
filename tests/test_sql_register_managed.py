@@ -35,10 +35,10 @@ Each password line the run prints goes into a 0600 file under the test's
 the test starts itself and destroys at its teardown.
 
 CHECK 11 runs on section 5.6's TLS cluster, T229's `tls_cluster`, which
-`tests/pgcluster.py` does not give yet: each id fails by `TlsEnvironment`'s
-own assertion until T229 lands, and skips with T205's banner where there is
-no engine. What this module reads of that fixture, from F12b's T229 text and
-not from a contract, is `TlsEnvironment`'s docstring.
+`tests/pgcluster.py` gives since this line merged line FX at T229d: each id
+skips with T205's banner where there is no engine. What this module reads
+of that fixture, from F12b's T229 text and not from a contract, is
+`TlsEnvironment`'s docstring.
 
 THE NO-ENGINE CASE is `login`'s refusals: each is refused before any
 connection, so the register's fake `psql` (T203) stands in for the server and
@@ -675,6 +675,12 @@ def test_ready_check_12_passes_the_logins_the_step_made(tmp_path, request):
     assert proc.returncode == (2 if failed else 0), (
         f"ready's exit does not follow its checks ({failed} failed):\n{_said(proc)}")
     assert 12 not in failed
+    # Check 11 fails on this case's Unix socket by TP:5382-5384's own oracle
+    # (`[unix-socket]`), so the exit's 2 arm is always the one exercised
+    # (lane 3's batch 11 (3), its optional assertion).
+    assert 11 in failed, (
+        f"check 11 does not fail on this case's Unix socket, so the exit's 2 arm is not "
+        f"exercised:\n{_said(proc)}")
 
 
 def test_login_rotate_keeps_an_open_session_and_refuses_the_old_password(tmp_path, request):
@@ -950,9 +956,9 @@ def test_a_restore_from_the_providers_copy_keeps_the_roles_and_takes_new_passwor
 # ============================================================ check 11
 class TlsEnvironment:
     """Check 11's environment on section 5.6's TLS cluster, T229's
-    `tls_cluster`, which `tests/pgcluster.py` does not give yet. Until it
-    does, each id fails here by its own assertion on an engine bench, and
-    skips with T205's banner where `pg_engine` finds none.
+    `tls_cluster`, which `tests/pgcluster.py` gives since this line merged
+    line FX at T229d. Each id skips with T205's banner where `pg_engine`
+    finds none.
 
     LINE FX'S PLANNED NAMES (the coordinator, 16:50Z), NOT A CONTRACT: a
     `TLSCluster` with `root_cert`, `database_name`, `url(user)`,
@@ -965,9 +971,10 @@ class TlsEnvironment:
     `pgcluster.Cluster` (`root`, `bindir`, `stop`, `start_again`), its Unix
     socket at `root`; and its two start options are
     `start_again(leaf_only=True)`, the leaf served without the intermediate
-    (T230's `[leaf-only]`), and `start_again(standby=True)`, whose readiness
-    poll takes `standby` in place of `ready` (the test plan's
-    `[in-recovery]`)."""
+    (T230's `[leaf-only]`), and `start_again(standby=True)`, T229d's, which
+    writes `standby.signal`, polls for `ready` as every start does, and
+    fails the start unless `pg_is_in_recovery()` is true (the test plan's
+    `[in-recovery]`; lane 3's batch 11 (1))."""
 
     NEEDS = ("configuration", "root_cert", "root", "bindir", "stop", "start_again")
 
@@ -1023,17 +1030,12 @@ class TlsEnvironment:
                      "--release", "0.0.0-t224", "--env", "t224"], env, self.root, pty_run=False)
 
     def restart(self, **option: bool) -> None:
-        import inspect
-        accepted = inspect.signature(self.tls.start_again).parameters
-        for name in option:
-            assert name in accepted, (
-                f"T229's tls_cluster.start_again takes no {name}= option"
-                + (": T229's text names no standby start, so [in-recovery] fails until lane 3 "
-                   "rules who builds it (T229, or this module's own standby)"
-                   if name == "standby" else ""))
+        """Stop the TLS cluster and start it again with T229's start option,
+        `leaf_only=` (T230's `[leaf-only]`) or `standby=True`
+        (`[in-recovery]`). The option is only passed on: T229d's
+        `start_again(standby=True)` writes `standby.signal` and proves the
+        recovery itself (lane 3's batch 7, ruling 2, and batch 11 (1))."""
         self.tls.stop()
-        if option.get("standby"):
-            (Path(self.tls.root) / "data" / "standby.signal").touch()
         self.tls.start_again(**option)
 
 
