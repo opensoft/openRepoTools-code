@@ -248,14 +248,24 @@ os.execv(STORE, [STORE] + args)
 #: 6). `ARM_FAKE_VERB`, where set, is one
 #: more verb the wrapper answers itself, 0 with `ARM_FAKE_OUT`: a scenario's
 #: fact a sandbox cannot make, such as a live session in this window, which
-#: `window-session` reads from a live process's record.
+#: `window-session` reads from a live process's record. `ARM_VERB` may name
+#: several verbs joined by `|`, for a write one build makes as its own verb
+#: and another carries in a call of another verb (`lane-start`'s writes in
+#: `start-record`'s one call, lane 4's T428). `ARM_ACT_BASE`, where set, is
+#: the base the wrapper answers `act-begin` with, 0, logging each such call
+#: to `ARM_LOG.act`: an act's seq base, which only primary prints.
 ARM_EDIT = r'''#!/usr/bin/env bash
 # THE ARMS' WRAPPER (T217; the test plan's AT-C5 fixture).
 if [ -n "${ARM_FAKE_VERB-}" ] && [ "${1-}" = "$ARM_FAKE_VERB" ]; then
   printf '%s\n' "${ARM_FAKE_OUT-}"
   exit 0
 fi
-if [ "${1-}" = "${ARM_VERB-}" ]; then
+if [ -n "${ARM_ACT_BASE-}" ] && [ "${1-}" = act-begin ]; then
+  printf '%s\n' "$*" >> "$ARM_LOG.act"
+  printf '%s\n' "$ARM_ACT_BASE"
+  exit 0
+fi
+if [[ "|${ARM_VERB-}|" == *"|${1-}|"* ]]; then
   arm_rest="${*:2}"
   # shellcheck disable=SC2053
   if [ -z "${ARM_MATCH-}" ] || [[ "$arm_rest" == $ARM_MATCH ]]; then
@@ -1231,6 +1241,106 @@ def test_an_expectation_2_at_lane_starts_last_write_dies(tmp_path):
     assert result.returncode == 2, (result.returncode, result.stderr[-3000:])
     assert "LR010" in result.stderr, result.stderr[-2000:]
     assert not launched(world), "the agent ran after the 2"
+
+
+# ------------------------------- the `--no-launch` act under a seq base (Q41)
+#: An act's base on primary, `<act-id>@<seq>:<generation>` (Y:5577), which the
+#: arms' wrapper answers `act-begin` with (`ARM_ACT_BASE`): a seq base, not
+#: `@files`, so `lane-start` prints no hand command of its own for a write.
+NO_LAUNCH_ACT_BASE = f"{'a1' * 16}@41:{RERUN_GENERATION}"
+#: The writer's own words, which the act keeps on stderr.
+NO_LAUNCH_WRITER_SAYS = "lanes-edit: the T217 writer's own words for its failed write"
+#: A transcript id the lane's last PAUSED record names, here and not in the
+#: row's cell: a resume restores it (W3).
+NO_LAUNCH_RESTORED = "aaaaaaaa-0010-4000-8000-00000000a010"
+
+#: `lane-start`'s writes W2 to W6 (lane 4's names, `lane-start` at T428
+#: `e35b06ed`; lane 3's batch 8, Q39 and Q41) and a resume's `start-record`:
+#: each a run whose write fails, matched by the write's own words. Where no
+#: transcript uuid is knowable each write is its own verb, on the base and at
+#: T428; where one is, T428 carries W2 to W6 in `start-record`'s one call
+#: ("W4, carried by the one call at 5b"), so W3's and W4's runs, which know
+#: one, name both verbs (`ARM_VERB`'s `|`). The table's `base` is lane 4's
+#: line at T428 (lane 4's T428 report 6, `83ad8df`). `NO_LAUNCH_TRANSCRIPTS`
+#: puts a transcript where `lane-start` looks for one.
+NO_LAUNCH_WRITES = {
+    # W2: the window's live session, appended to the cell (`--agent claude` with nothing to
+    # resume here, so no uuid is knowable and the append is its own verb).
+    "w2": Arm("lane-start", ("repoA", "1"), "append-session-id|start-record", "4533",
+              match="*the harness minted*", fake=("window-session", WINDOW_RECORD)),
+    # W3: the transcript the lane's last PAUSED record names, restored to the cell.
+    "w3": Arm("lane-start", ("repoA", "1"), "append-session-id|start-record", "4568",
+              match="*restored from the lane*", fake=("lane-transcript", NO_LAUNCH_RESTORED)),
+    # W4: the id `lane-start` mints for a new session, stamped on the cell.
+    "w4": Arm("lane-start", ("repoA", "1"), "append-session-id|start-record", "4619",
+              match="*lane-start minted*"),
+    # W5: another agent's own id, appended to the cell (`codex`, whose id is unknowable).
+    "w5": Arm("lane-start", ("repoA", "2", "--agent", "codex"), "append-session-id|start-record",
+              "4755", match="*launched codex*", fake=("lane-transcript", "codex-session-7")),
+    # W6: the row's state cell.
+    "w6": Arm("lane-start", ("repoA", "2", "--agent", "codex"), "set-row-state|start-record",
+              "4709", match="*LIVE*"),
+    # A resume's one write: the row's own last transcript is here, so it resumes by id and
+    # `start-record` carries the state and the RESUMED line (W6, W7).
+    "resume": Arm("lane-start", ("repoA", "1"), "start-record", "4986", match="* --state *"),
+}
+NO_LAUNCH_TRANSCRIPTS = {"w3": NO_LAUNCH_RESTORED, "resume": UUID_A1B}
+NO_LAUNCH_CASES = [pytest.param(write, code, id=f"lane-start-{write}-{code}")
+                   for write in NO_LAUNCH_WRITES for code in (69, 75)]
+
+
+@pytest.mark.parametrize("write,code", NO_LAUNCH_CASES)
+def test_a_carry_on_act_names_lane_start_no_launch_on_a_69_or_75_under_a_seq_base(
+        tmp_path, write, code):
+    """`lane-start`'s `--no-launch` act under a seq base (R-F13c-23; lane 3's
+    batch 8, #165 6780753157, Q39, Q41 and text change 6): at W2 to W6, and at
+    a resume's `start-record`, a write that exits 69 or 75 under the act's seq
+    base keeps the writer's stderr, prints no rerun of its own, never says to
+    run the act again from its start, launches as today, and names `lane-start
+    --no-launch <the same arguments>` as the launched session's first act: the
+    act's note for the write, then that line. Where no transcript uuid is
+    knowable, Amendment 7(b)'s own `--no-launch` line prints later as well, so
+    the act is asked for right after the write's note (lane 4's T428 report 6,
+    its question 3). A 3 keeps relaying the writer's rerun
+    (`test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3`). The ids
+    name the writes, not TP:2951's sites (NOTES question 38). FAILS UNTIL lane
+    4's T428 takes Q41 (`83ad8df`), and its act base (T428 (a))."""
+    arm = NO_LAUNCH_WRITES[write]
+    world = arm_world(tmp_path, arm)
+    if write in NO_LAUNCH_TRANSCRIPTS:
+        here = (Path(world.env["CLAUDE_CONFIG_DIR"]) / "projects"
+                / re.sub(r"[^A-Za-z0-9]", "-", str(world.lane_dir)))
+        here.mkdir(parents=True, exist_ok=True)
+        (here / f"{NO_LAUNCH_TRANSCRIPTS[write]}.jsonl").write_text('{"type":"user"}\n',
+                                                                     encoding="utf-8")
+    env = world.arm_env(arm.verb, code, match=arm.match, nth=arm.nth, stderr=NO_LAUNCH_WRITER_SAYS)
+    env.update({"ARM_FAKE_VERB": arm.fake[0], "ARM_FAKE_OUT": arm.fake[1]} if arm.fake else {})
+    env["ARM_ACT_BASE"] = NO_LAUNCH_ACT_BASE
+    result = world.run(arm.script, *arm.argv, env=env)
+    lines = result.stderr.splitlines()
+    acts = Path(f"{world.arm_log}.act")
+    assert acts.exists() and acts.read_text(encoding="utf-8").strip(), (
+        write, code, "the act took no seq base: lane-start asked no act-begin",
+        result.returncode, result.stderr[-3000:])
+    assert world.reached(), (write, code, arm.verb, "the write was never reached: fix the case's "
+                             "scenario", result.returncode, result.stderr[-3000:])
+    assert NO_LAUNCH_WRITER_SAYS in lines, (write, code, "the writer's stderr was not kept",
+                                            result.stderr[-3000:])
+    verb = world.reached()[0].split(" ", 1)[0]
+    hints = own_hints(result.stderr, verb)
+    assert not hints, (write, code, "a rerun of the act's own", hints)
+    assert not re.search(r"again from its start", result.stderr), (
+        write, code, "the act says to run it again from its start, a second launch",
+        result.stderr[-3000:])
+    assert launched(world), (write, code, "the launch did not go on", result.returncode,
+                             result.stderr[-3000:])
+    # THE ACT IT NAMES: the first two of `lane-start`'s lines after the writer's are the
+    # write's note and the act, `lane-start --no-launch` with this run's own arguments.
+    named = " ".join(("lane-start", "--no-launch", *arm.argv))
+    after = [line for line in lines[lines.index(NO_LAUNCH_WRITER_SAYS) + 1:]
+             if line.startswith("lane-start: ")][:2]
+    assert any(re.search(rf"(?:^|\s){re.escape(named)}\s*$", line) for line in after), (
+        write, code, f"the write's note does not name `{named}`", after, result.stderr[-3000:])
 
 
 # ------------------------------------------------ the read door's other cases
