@@ -1340,7 +1340,9 @@ def _path_m10(reg, root: Path):
     `register read --for guard --prefetch --cache <file> --pid <pid> --repo
     <dir> [--lane=<window>]` (CLI412:661; lane 1's T113, called by T507's
     `guard_run`). How the caller's cut at `T0 + 3.75 s` reaches it is T507's,
-    so none is set here."""
+    so none is set here. The cache file's directory is made first: the read
+    writes the file's family beside it and makes no directory."""
+    (root / "m10").mkdir(parents=True, exist_ok=True)
     proc = run_index(reg.copy, ["register", "read", "--for", "guard", "--prefetch", "--cache",
                                 root / "m10" / "cache", "--pid", os.getpid(), "--repo",
                                 reg.estate.checkout, "--lane=repoA-1"], reg.env)
