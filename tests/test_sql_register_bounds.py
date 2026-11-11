@@ -34,7 +34,8 @@ same two functions. The faults (AT-D9, "Fixture"):
 - F2, a relay to the cluster's socket that goes silent once the startup has
   completed, at the server's first ReadyForQuery (`StartupRelay`);
 - F3, an `ALTER TABLE` in an open transaction of the test's own session on
-  the table the path reads;
+  the table the path reads, or, for a writer's commit, the head row held
+  `FOR UPDATE` (`_hold_head`; T257f);
 - F4, a slow statement the test creates in its own database: a row-level
   security policy that sleeps, for the path's group role. F4 is the second
   function's, `test_a_slow_statement_meets_57014_before_the_client_timer`.
@@ -333,12 +334,21 @@ class SilentListener:
 class StartupRelay(SilentListener):
     """F2: a relay on loopback to the cluster's Unix socket that forwards
     until the startup completes, at the server's first ReadyForQuery
-    (`Z`, length 5), then goes silent, holding both ends open."""
+    (`Z`, length 5), then goes silent, holding both ends open.
+
+    `armed`, where given, is asked at each connection's accept (T257f;
+    TP:3586-3589, "A row that follows a healthy call ... The test arms the
+    fault once the shim's log shows the earlier call's end, so the call
+    before it reaches the cluster"): a connection accepted while it answers
+    False is relayed whole and never goes silent. Asked at the accept, it
+    has no race with the caller: the timing wrapper logs a call's end before
+    it hands the call's answer back. `silenced` counts the connections that
+    went silent."""
 
     READY = re.compile(rb"Z\x00\x00\x00\x05[ITE]")
 
-    def __init__(self, unix_path: str):
-        self.unix_path = unix_path
+    def __init__(self, unix_path: str, armed=None):
+        self.unix_path, self.armed, self.silenced = unix_path, armed, 0
         super().__init__()
 
     def _accept(self):
@@ -348,12 +358,14 @@ class StartupRelay(SilentListener):
                 conn, _ = self.sock.accept()
             except OSError:
                 continue
+            fault = self.armed is None or bool(self.armed())
             upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             upstream.connect(self.unix_path)
             self.held += [conn, upstream]
-            threading.Thread(target=self._pump, args=(conn, upstream), daemon=True).start()
+            threading.Thread(target=self._pump, args=(conn, upstream, fault),
+                             daemon=True).start()
 
-    def _pump(self, client, server):
+    def _pump(self, client, server, fault=True):
         seen, silent = b"", False
         while not self.done:
             ready, _, _ = select.select([client, server], [], [], 0.2)
@@ -369,8 +381,9 @@ class StartupRelay(SilentListener):
                 if end is server:
                     seen = (seen + data)[-64:]
                     (client.sendall(data))
-                    if self.READY.search(seen):
+                    if fault and self.READY.search(seen):
                         silent = True
+                        self.silenced += 1
                 else:
                     server.sendall(data)
 
@@ -381,6 +394,9 @@ TIMING_PSQL = r'''#!/usr/bin/env python3
 # object per call in psql-timing.log beside it. Its first statement stamps
 # the call's begin, written with its parent's pid to psql-begin.log before
 # it reads stdin, so a call its caller's timer kills is stamped too (T220f).
+# Each logged call also says whether its request was a writer's snapshot, the
+# one request that opens REPEATABLE READ (contract section 2.3), so a fault
+# can be armed after the snapshot's end and an attempt's start found (T257f).
 import time
 begin = time.monotonic()
 import json, os, subprocess, sys
@@ -397,7 +413,8 @@ err = proc.stderr.decode("utf-8", "replace")
 with open(os.path.join(here, "psql-timing.log"), "a", encoding="utf-8") as handle:
     handle.write(json.dumps({"argv": sys.argv[1:], "start": start, "end": end,
                              "exit": proc.returncode,
-                             "first": (err.strip().splitlines() or [""])[0]}) + "\n")
+                             "first": (err.strip().splitlines() or [""])[0],
+                             "snapshot": b"REPEATABLE READ" in data}) + "\n")
 sys.stdout.buffer.write(proc.stdout)
 sys.stderr.buffer.write(proc.stderr)
 sys.exit(proc.returncode)
@@ -545,20 +562,40 @@ ROWS = {
     # commit at F3, 55P03 per attempt then 75 at the deadline
     # (`LANES_REGISTER_DEADLINE_S=3`), at most 3 + 8 + 8 = 19 s; the lookup,
     # `find_write`, 3 naming the id, its tries inside the 10 s window, each
-    # to `T_L` 9 s; and a whole write, 75 at the deadline. Each `statement_ms`
-    # is the lookup's 6000 ms, a reading for the snapshot and the commit,
-    # whose `statement_timeout` the table this line read does not give.
+    # to `T_L` 9 s; and a whole write, 75 at the deadline.
+    #
+    # LANE 3'S BATCH 7, ask (1) on T257a (T257f; #165, its analysis's
+    # "R-F13-1, T257a's four readings"): the snapshot's and the commit's
+    # `statement_timeout` is 5000 ms (CLI:250-251), the lookup's 6000 ms
+    # (CLI:252). `whole-write` runs at F3, since F1 ends the first snapshot
+    # with 69 (TP:3596), with its own cell: no attempt starts after the
+    # deadline, and the run stays under `T_write` (`WHOLE_WRITE`). And the
+    # commit's F2 is armed only once the timing log shows the snapshot's end
+    # (TP:3586-3589), so the snapshot reaches the cluster and the commit
+    # meets the relay. A writer's F3 is the head row held `FOR UPDATE`
+    # (`_hold_head`; TP:3560-3561, "for a writer's commit, the head row held
+    # `FOR UPDATE`"), which a snapshot's plain read does not wait on, so the
+    # snapshot answers and each attempt's commit meets 55P03.
     "writer-snapshot":  dict(group="lanes_register_writer", exit=69, bound=8, strict=False,
-                             faults=("F1",), statement_ms=6000, table="register_head"),
+                             faults=("F1",), statement_ms=5000, table="register_head"),
     "writer-commit-f2": dict(group="lanes_register_writer", exit=3, bound=25, strict=False,
-                             faults=("F2",), statement_ms=6000, table="register_head"),
+                             faults=("F2",), statement_ms=5000, table="register_head"),
     "writer-commit-f3": dict(group="lanes_register_writer", exit=75, bound=19, strict=False,
                              faults=("F3",), statement_ms=None, table="register_head"),
     "lookup":           dict(group="lanes_register_writer", exit=3, bound=19, strict=False,
                              faults=("F1",), statement_ms=6000, table="register_head"),
     "whole-write":      dict(group="lanes_register_writer", exit=75, bound=19, strict=False,
-                             faults=("F1",), statement_ms=None, table=None),
+                             faults=("F3",), statement_ms=None, table="register_head"),
 }
+
+#: The whole write's own cell (TP's "a whole write" row; T257f): at
+#: `LANES_REGISTER_DEADLINE_S=3`, no attempt starts after the deadline, and
+#: from the first attempt's start the run takes at most the deadline + `S` +
+#: `C` = 3 + 8 + 8 = 19 s (`ROWS`' bound, asserted at twice it), and in no
+#: case over `T_write` = 62.5 + 3 * `N_a` * `c` s, 68.5 s here.
+WHOLE_WRITE = dict(deadline_s=3, t_write_s=62.5 + 3 * N_A * C)
+#: The rows whose F3 is the head row held `FOR UPDATE`, a writer's commit's.
+HEAD_HELD_F3 = ("writer-commit-f3", "whole-write")
 
 FIRST_CASES = [f"{row}-{fault}" for row, spec in ROWS.items() for fault in spec["faults"]]
 SLOW_ROWS = [row for row, spec in ROWS.items() if spec["statement_ms"] and row != "import"]
@@ -868,10 +905,14 @@ def test_each_database_path_exits_inside_its_bound(pg, tmp_path, request, case):
             listener = SilentListener()
             config = bench.config("127.0.0.1", listener.port, user)
         elif fault == "F2":
-            listener = StartupRelay(f"{pg.host}/.s.PGSQL.{pg.port}")
+            # THE COMMIT'S F2 IS ARMED AFTER THE SNAPSHOT'S END (T257f;
+            # TP:3586-3589): the relay passes the snapshot's connection whole.
+            armed = (lambda: any(c.get("snapshot") for c in bench.calls())) \
+                if row == "writer-commit-f2" else None
+            listener = StartupRelay(f"{pg.host}/.s.PGSQL.{pg.port}", armed=armed)
             config = bench.config("127.0.0.1", listener.port, user)
         else:
-            session = _hold(pg, spec["table"])
+            session = _hold_head(pg) if row in HEAD_HELD_F3 else _hold(pg, spec["table"])
             config = bench.config(quote(str(pg.host), safe=""), pg.port, user)
         if row == "mode-query":
             config.write_text(config.read_text().replace("mode=primary", "mode=index"))
@@ -885,6 +926,27 @@ def test_each_database_path_exits_inside_its_bound(pg, tmp_path, request, case):
         assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {proc.stderr}"
     else:
         assert proc.returncode != 0, f"{case}: the path ended without its read"
+    if row == "writer-commit-f2":
+        # The snapshot before the commit reached the cluster, and the commit's
+        # connection met the armed relay (TP:3589).
+        snapshots = [c for c in bench.calls() if c.get("snapshot")]
+        assert snapshots and snapshots[0]["exit"] == 0, \
+            f"{case}: the snapshot before the commit never reached the cluster: {bench.calls()}"
+        assert listener.silenced, f"{case}: no call met F2 after the snapshot's end"
+    if row == "whole-write":
+        # ITS OWN CELL (T257f): no attempt, each begun by its snapshot call,
+        # starts after the deadline, asserted at twice it (timing rule 2); the
+        # time runs from the first attempt's start, and stays under `T_write`.
+        starts = [c["start"] for c in bench.calls() if c.get("snapshot")]
+        assert starts, f"{case}: the write made no attempt"
+        late = [round(s - starts[0], 2) for s in starts
+                if s - starts[0] >= 2 * WHOLE_WRITE["deadline_s"]]
+        assert not late, f"{case}: attempts started after the deadline: {late}"
+        elapsed = bench.exited - starts[0]
+        assert elapsed < WHOLE_WRITE["t_write_s"], \
+            f"{case}: {elapsed:.2f} s, over T_write's {WHOLE_WRITE['t_write_s']} s"
+        _record(f"{case}-T_write", elapsed, WHOLE_WRITE["t_write_s"],
+                f"T_write, from the first attempt's start, {len(starts)} attempts")
     if row == "reader":
         assert proc.stdout == "", "a reader's 69 has nothing on stdout"
     if row == "answer-2":
@@ -902,7 +964,8 @@ def test_each_database_path_exits_inside_its_bound(pg, tmp_path, request, case):
     else:
         assert elapsed < 2 * spec["bound"], f"{case}: {elapsed:.2f} s against {spec['bound']} s"
         _record(case, elapsed, spec["bound"], "timing rule 2" + (
-            ", from the register request's start" if row == "status" else ""))
+            ", from the register request's start" if row == "status" else
+            ", from the first attempt's start" if row == "whole-write" else ""))
 
 
 def _slow_statement(pg, table: str, group: str, seconds: float) -> None:
