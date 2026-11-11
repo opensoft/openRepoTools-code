@@ -771,6 +771,14 @@ class ArmWorld(Sandbox):
         self.codex_log = root / "codex.log"
         _write(self.bin / "arm-edit", ARM_EDIT)
         _write(self.fakebin / "codex", f'#!/usr/bin/env bash\nprintf "codex %s\\n" "$*" >> "{self.codex_log}"\n')
+        # THE LAUNCHER (`lane`'s `launcher()`, `$PCLAUDE` first, else `lclaude`, `pclaude` or
+        # `claude-profile` on PATH): a fake that logs and exits 0, off PATH. The sandbox scrubs
+        # `PCLAUDE`, so without it a GitHub runner refuses "no launcher on PATH" and a
+        # workstation would exec its own installed launcher (AN11a's latent defect).
+        self.launcher_log = root / "launcher.log"
+        self.env["PCLAUDE"] = str(_write(
+            root / "launcher" / "pclaude",
+            f'#!/usr/bin/env bash\nprintf "pclaude %s\\n" "$*" >> "{self.launcher_log}"\nexit 0\n'))
         # `$PROJECTS_ROOT/repoA`, repoA's default directory: where a noted
         # `lane-dir` failure carries a resume on to, so the launch goes on.
         self.default_dir = self.home / "projects" / "repoA"
