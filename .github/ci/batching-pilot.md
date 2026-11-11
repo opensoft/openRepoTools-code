@@ -23,8 +23,12 @@ native stack objects, cross forks/repositories or queue more than two members.
 
 Both original PRs and the combined candidate must pass GitHub Actions'
 `guard-launch-mode`, `tests`, `tests-no-submodule` and `package` gates. Existing
-tests.yml already runs on arbitrary PR bases, including draft batch candidates;
-it is unchanged. This stage runs **full CI per PR plus full batch CI**, not
+tests.yml runs on PR opening, code updates and reopening on arbitrary bases,
+including draft batch candidates. Label-only events (including Mergify adding
+`queued`) do not start another full run or publish skipped replacement checks;
+a code update still runs all gates even when that PR is labeled `queued`.
+Main/release-branch pushes, nightly and manual runs are unchanged. This stage
+runs **full CI per PR plus full batch CI**, not
 fast-only PR CI. `verify` feedback and `ci-pilot` observations replace no gate.
 The advisory classifier is not read by Mergify and grants no admission.
 

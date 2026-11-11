@@ -116,7 +116,7 @@ def test_manual_mergify_queue_requires_full_checks_on_pr_and_candidate(config):
 def test_manual_mergify_queue_uses_existing_full_ci_on_every_pr_base(reader):
     workflow = reader(REPO / ".github/workflows/tests.yml")
     assert set(workflow["on"]["pull_request"]) == {"types"}
-    assert {"opened", "synchronize", "reopened"} <= set(workflow["on"]["pull_request"]["types"])
+    assert set(workflow["on"]["pull_request"]["types"]) == {"opened", "synchronize", "reopened"}
     assert workflow["on"]["push"]["branches"] == ["main", "release/v*"]
     assert "schedule" in workflow["on"] and "workflow_dispatch" in workflow["on"]
     assert GATES <= set(workflow["jobs"])
