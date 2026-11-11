@@ -5430,7 +5430,8 @@ def mirror_fetch(root: str, timeout: float | None) -> None:
 def mirror_register_seq(root: str, deadline: float | None = None, *,
                         skip: frozenset[str] | set[str] | None = None,
                         passed: list | None = None,
-                        tip: str | None = None) -> tuple[int, str]:
+                        tip: str | None = None,
+                        max_pages: int | None = None) -> tuple[int, str]:
     """`m`, the newest `Register-Seq` on `origin/<branch>` in the checkout
     `root` AS LAST FETCHED, and the commit that carries it. Nothing here
     fetches: `mirror_fetch` does, where its caller wants the fetch.
@@ -5461,7 +5462,26 @@ def mirror_register_seq(root: str, deadline: float | None = None, *,
     `tip`, where given, is the commit the walk starts from in place of
     `origin/<branch>`'s tip: `import --at <M> --after-loss` (T115) takes `M`'s
     newest `Register-Seq` (D22), and checks itself that `M` is on origin.
-    Without it, the walk is what it always was."""
+    Without it, the walk is what it always was.
+
+    `max_pages`, where given, is how many pages the walk reads before it
+    gives up, and is the guard's form C (SVC-12's condition 3, B14 design
+    :4501-4511: "exactly one `git log --first-parent -n 200` ... refuses 2 if
+    none of the 200 carries one"): the guard calls
+    `mirror_register_seq(root, deadline, max_pages=1, tip=<the commit it
+    records as mirror_tip=>)` (opensoft/openRepoTools#165 6783860030,
+    question 5). With `max_pages=n`, `n` full pages with no value that counts
+    answer `no-seq`, with no further `git log` call, so a trailer more than
+    `n` pages down is not found; a page that ends the line sooner answers as
+    it always has. `max_pages` below 1, or not an `int` (a `bool` is not
+    one), raises `ValueError` before any git call. `None`, the default, pages
+    until it finds a trailer or reaches the end of the line, as the renderer
+    does and as `status`, `reconcile`, `outage declare` and `import
+    --after-loss` need."""
+    if max_pages is not None and (isinstance(max_pages, bool) or not isinstance(max_pages, int)
+                                  or max_pages < 1):
+        raise ValueError(f"max_pages must be None or a whole number of 1 or more, "
+                         f"not {max_pages!r}")
     if tip is None:
         tip = tip_of(root)
         ref = f"origin/{branch()}"
@@ -5470,6 +5490,7 @@ def mirror_register_seq(root: str, deadline: float | None = None, *,
     resolved = frozenset(skip or ())
     over: list = []
     walked = 0
+    pages = 0
     while True:
         left = None if deadline is None else deadline - time.monotonic()
         out_of_time = (f"the walk of {ref}'s first-parent line for a Register-Seq ran out "
@@ -5516,6 +5537,18 @@ def mirror_register_seq(root: str, deadline: float | None = None, *,
                                     f"({walked + commits} read)")
             raise StoreUnusable("no-seq", f"no commit on {ref}'s first-parent line carries a "
                                 f"Register-Seq ({walked + commits} read)")
+        pages += 1
+        if max_pages is not None and pages >= max_pages:
+            counts, strays = "", ""
+            if over:
+                counts = " that counts"
+                strays = (f"; {len(over)} resolved "
+                          f"{'stray' if len(over) == 1 else 'strays'} passed over")
+            raise StoreUnusable("no-seq", f"none of the first {walked + commits} commits on "
+                                f"{ref}'s first-parent line carries a Register-Seq{counts}: "
+                                f"the limit of {max_pages} page{'' if max_pages == 1 else 's'} "
+                                f"of {MIRROR_SEQ_PAGE} commits was reached "
+                                f"(SVC-12's condition 3{strays})")
         walked += commits
 
 
