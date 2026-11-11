@@ -15781,6 +15781,12 @@ def cmd_render_revert(args: list[str]) -> int:
     return _stray_command(args, "stray-revert")
 
 
+def cmd_import_single(args: list[str]) -> int:
+    """`lanes-index import --single <sha>`: S2's single-write import (above),
+    lane 3's U7."""
+    return _stray_command(args, "stray-import")
+
+
 def _stray_command(args: list[str], kind: str) -> int:
     """A way out's exits, by the contract's constants (exit-codes.md §3.5 and
     §5: 3 for its commit call in doubt; 69 for its other calls, or 3 where an
@@ -15966,7 +15972,8 @@ def _stray_way_out(kind: str, sha: str) -> int:
     # 2. THE GIT HALF, then what the entry carries, by its kind.
     resolved = _stray_recognised(form, root, store, sha, rerun is not None)
     parent = _stray_parent(form, root, sha)
-    plan = _stray_revert_plan(form, root, sha, parent)
+    plan = (_stray_revert_plan(form, root, sha, parent) if kind == "stray-revert"
+            else _stray_single_plan(form, root, sha, parent))
     message = (f"LANES({lane}@{workstation}): {form} of the stray commit {sha} — "
                + plan["what"] + " (D16, S2)")
     # 3. THE ATTEMPTS.
@@ -16034,6 +16041,121 @@ def _stray_revert_attempt(attempt: str, ident: dict) -> dict:
     return read_attempt_dir(attempt, ident, None)
 
 
+def _stray_single_plan(form: str, root: str, sha: str, parent: str) -> dict:
+    """WHAT `import --single`'s ENTRY CARRIES (Y:1543; B14 tasks:1527): the
+    stray's line edits on the render set, as one write.
+
+    - LANE 1'S LOADER READS BOTH COMMITS (`_import_source`, T115), from
+      origin's objects in the operator lane's checkout: the stray and its first
+      parent, each on origin, each render-set file UTF-8 with no CR and no
+      NUL, under a path with no control character, or a refusal (2). Each
+      render-set path whose bytes differ between them is one of the stray's
+      changes.
+    - AT EACH ATTEMPT, each change is applied to SQL's image at the head, as
+      the scratch tree holds it (`_stray_apply`), and the attempt directory
+      carries the images that leaves; `register commit` then derives the
+      entry's edits and rows from them as for any write, step 6's derived
+      deletes included (ERR-48). Where SQL's image is the parent's, those
+      edits are the stray's own (AT-6: "Its line edits equal the stray
+      commit's diff"); a line inserted before a file's end rewrites every
+      later line, ERR-48's recorded limitation.
+    - WHERE ONE NO LONGER APPLIES, it is refused (2), nothing sent, naming
+      `render --revert <sha>` as the way out (PC-4)."""
+    before = _import_source(root, parent, fetch=False)["data"]
+    after = _import_source(root, sha, fetch=False)["data"]
+    paths = sorted((path for path in set(before) | set(after)
+                    if before.get(path) != after.get(path)), key=lambda p: p.encode("utf-8"))
+
+    def attempt(directory: str, ident: dict, n: int) -> dict:
+        tree = os.path.join(directory, "tree")
+        changes: dict = {}
+        images: dict = {}
+        for path in paths:
+            where = os.path.join(tree, *path.split("/"))
+            sql = None
+            if os.path.isfile(where) and not os.path.islink(where):
+                with open(where, "rb") as handle:
+                    sql = handle.read()
+            status, data = _stray_apply(form, sha, n, path, before.get(path), after.get(path),
+                                        sql)
+            changes[path] = (status,
+                             _REGISTER_ZERO_BLOB if sql is None else _register_blob_id(sql),
+                             _REGISTER_ZERO_BLOB if data is None else _register_blob_id(data))
+            if data is not None:
+                images[path] = data
+        _stray_write(directory, "changes.tsv",
+                     "".join(f"{status}\t{path}\t{base}\t{new}\n"
+                             for path, (status, base, new) in changes.items()).encode("utf-8"))
+        for path, data in images.items():
+            _stray_write(directory, "images/" + path, data)
+        _stray_write(directory, "files", register_files_rows(changes, images))
+        return read_attempt_dir(directory, ident, None)
+
+    return {"attempt": attempt, "finish": lambda entry, view: None, "paths": paths,
+            "what": "its line edits on the render set, loaded as one write",
+            "done": f"loads, as one write, the line edits on {len(paths)} render-set "
+                    f"path{'' if len(paths) == 1 else 's'} of"}
+
+
+def _stray_apply(form: str, sha: str, n: int, path: str, base: bytes | None,
+                 new: bytes | None, sql: bytes | None) -> tuple:
+    """ONE OF THE STRAY'S CHANGES, APPLIED TO SQL'S IMAGE AT `n`, as
+    `commit_write`'s step 6 applies an entry's edits: `(status, bytes)`, the
+    status as `changes.tsv` takes it and the image it leaves, None where the
+    path goes. `base` and `new` are the path's bytes at the stray's first
+    parent and at the stray, None where absent; `sql` is SQL's. The edits are
+    `register_line_edits(base, new)`, as `register commit` would derive them
+    from those two images: each `replace` or `delete` at its line, in the
+    image the edits before it left, must find there the text the parent had;
+    each `append` must be at the image's end; a final newline the stray
+    changes must be the parent's in SQL's image; a path the stray adds must be
+    absent from SQL; and one it removes must be the parent's, byte for byte,
+    since a `remove` takes every line. Anything else no longer applies, a
+    `Refusal` (2) naming the edit and the revert."""
+    where = (f"{form}: {sha}'s line edits no longer apply to SQL's images at seq {n} "
+             f"(B14 tasks:1527)")
+    way_out = f"its way out is `{PROG} render --revert {sha}` (PC-4); nothing was written"
+    if base is None:
+        if sql is not None:
+            raise Refusal(f"{where}: it adds {path}, which SQL holds; {way_out}")
+        return "A", new
+    if new is None:
+        if sql != base:
+            raise Refusal(f"{where}: it removes {path}, which SQL "
+                          + ("does not hold" if sql is None else
+                             "holds other than the stray's parent did, so lines it never "
+                             "removed would go")
+                          + f"; {way_out}")
+        return "D", None
+    if sql is None:
+        raise Refusal(f"{where}: it edits {path}, which SQL does not hold; {way_out}")
+    old, edited, held = (register_image_lines(data) for data in (base, new, sql))
+    if old is None or edited is None or held is None:
+        raise Refusal(f"{where}: {path} is not UTF-8 on one side; {way_out}")
+    lines, final_newline = list(held[0]), held[1]
+    ops, _written = register_line_edits(old[0], edited[0])
+    for number, (op, line_no, text, replacement) in enumerate(ops, 1):
+        if op == "append":
+            if line_no != len(lines) + 1:
+                raise Refusal(f"{where}: its edit {number} of {path} appends at line {line_no}, "
+                              f"and SQL's {path} has {len(lines)} lines; {way_out}")
+            lines.append(replacement)
+        elif not 1 <= line_no <= len(lines) or lines[line_no - 1] != text:
+            raise Refusal(f"{where}: its edit {number} of {path} is a {op} at line {line_no}, "
+                          f"and SQL's line there is not the one the stray's parent held; "
+                          f"{way_out}")
+        elif op == "replace":
+            lines[line_no - 1] = replacement
+        else:
+            del lines[line_no - 1]
+    if old[1] != edited[1]:
+        if final_newline != old[1]:
+            raise Refusal(f"{where}: it changes whether {path} ends with a newline, and SQL's "
+                          f"{path} does not end as the stray's parent did; {way_out}")
+        final_newline = edited[1]
+    return "M", register_image_bytes(lines, final_newline)
+
+
 def _stray_attempts(form: str, kind: str, sha: str, *, store, root: str, ident: dict,
                     rerun: tuple | None, resolved: bool, plan: dict, message: str,
                     author: str, shipped: str | None) -> tuple:
@@ -16090,6 +16212,14 @@ def _stray_attempts(form: str, kind: str, sha: str, *, store, root: str, ident: 
                          f"{register_psql_end(failure)}, so whether it committed is not known")
                 else:
                     code = _register_commit_end(store, ident, entry, code, seq, err, failure)
+                    if kind == "stray-import" and err is not None and err.sqlstate in (
+                            "LR005", "LR010"):
+                        # A STRAY THE REGISTER'S RULES REFUSE, a revived pair of
+                        # live claims among them (`one-live-claim`, with its
+                        # `held-by=` line above), cannot be loaded as one write
+                        # (lane 3, #165 6778890211; T107's `edge-two-live`).
+                        note(f"{form}: {sha} is not loaded; its way out is `{PROG} render "
+                             f"--revert {sha}` (B14 tasks:1527; PC-4)")
             except Refusal as exc:
                 note(f"REFUSED: {exc}")
                 code = EXIT_REFUSED
@@ -16116,9 +16246,6 @@ def _stray_attempts(form: str, kind: str, sha: str, *, store, root: str, ident: 
              f"not known. Run it again under the same id, which writes it once or finds it "
              f"(D8): LANES_WRITE_ID={ident['write_id']} "
              f"LANES_WRITE_GENERATION={ident['generation']} {PROG} {form} {sha}")
-    elif kind == "stray-import" and code == EXIT_REFUSED:
-        note(f"{form}: {sha} is not loaded; its way out is `{PROG} render --revert {sha}` "
-             f"(PC-4)")
     return code, None
 
 
@@ -19307,6 +19434,7 @@ the forms contracts/register-cli.md fixes; <id> is a write's identity,
 {PROG} render   --checkout <c>
 {PROG} render   --revert <sha>
 {PROG} import   --at <C> [--dry-run | --after-loss]
+{PROG} import   --single <sha>
 {PROG} cutover  [--import <C>] [--after-loss | --marker-first]
 {PROG} rollback [--hold-marker]
 {PROG} outage   declare --until <UTC> --why <words> [--mirror-seq <m>]
@@ -19372,7 +19500,9 @@ unknown subcommand does, and does nothing.
               journals an entry with no edits naming the stray, then renders.
   import, cutover, rollback, outage
               The operator's acts (operations.md sections 2.2 to 2.5), each
-              from the operator lane's own checkout.
+              from the operator lane's own checkout. `import --single <sha>`
+              and `render --revert <sha>` are S2's two ways out of a
+              divergence: see `{PROG} import --single --help`.
   bootstrap, login, ready, set-mode
               The operator tools (operations.md section 2.4).
   serve       The register service (SVC-3), on `mode=primary` only.
@@ -19445,6 +19575,10 @@ def main(argv: list[str]) -> int:
         return cmd_cutover(args)
     if verb == "rollback":
         return cmd_rollback(args)
+    # `import --single <sha>` (T324), S2's single-write import: its own parser,
+    # ahead of T115's, which takes no other flag beside it.
+    if verb == "import" and any(a == "--single" or a.startswith("--single=") for a in args):
+        return cmd_import_single(args)
     if verb == "import":
         return cmd_import(args)
     if verb == "mode":
