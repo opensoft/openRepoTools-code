@@ -92,7 +92,8 @@
 #
 # EXIT CODES, in this family's convention (clause (f)'s, which excludes 3
 # because `lanes-edit.sh` already spends it on an unpushed commit and a code
-# that means two things is a code a caller cannot act on):
+# that means two things is a code a caller cannot act on), except a 3 passed
+# on from `lanes-edit.sh`:
 #
 #   0  the lane was reached — this process replaced by the launcher, or the
 #      attach performed — or the listing printed, or the pick declined
@@ -103,9 +104,12 @@
 #   1  a read failed, which is never "there are no lanes" (Amendment 7(d)); or
 #      a request's base that is not one: `act-begin`'s 1 or 64, or an exit 0
 #      whose line is empty or is not `<act-id>@files` or
-#      `<act-id>@<seq>:<generation>` (lane 3's A2). `act-begin`'s 69, 75 and 3
-#      pass as they are; its 2, a `lanes-edit.sh` older than the verb, is no
-#      exit at all: the request goes on with `LANES_ACT` empty (A2)
+#      `<act-id>@<seq>:<generation>` (lane 3's A2). `act-begin`'s 2, a
+#      `lanes-edit.sh` older than the verb, is no exit at all: the request goes
+#      on with `LANES_ACT` empty (A2)
+#   69, 75 or 3: the register's own code, passed on from `act-begin` or from the
+#      request's write (its 3 carries T433's text); every other failed read is
+#      still 1, and so is every other code of the write but 0, 8 and 2
 #   64 usage — an unknown option, or a flag with no value
 #
 #   $LANES_EDIT      the register's reader (default: lanes-edit.sh beside this)
@@ -193,7 +197,8 @@ stdin is not a terminal. `f` at the question opens a NEW lane at the next free
 position; `q` picks none.
 
 Exit: 0 reached, listed or declined · 8 nothing to pick · 2 refused ·
-1 a read failed, or a request's base is not one · 64 usage.
+1 a read failed, or a request's base is not one · 69, 75 or 3: the register's
+own code, passed on · 64 usage.
 
   $LANES_EDIT   the register's reader   (default: lanes-edit.sh beside this file)
   $PCLAUDE      the launcher            (default: lclaude, else pclaude, else claude-profile)
@@ -1176,13 +1181,17 @@ go_elsewhere() {
 		# A2: the act goes on, with no base and every expectation kept. Said once,
 		# on stderr, because a base that was not taken is a fact the person may
 		# want; it is not a refusal, and it is not today's "nothing was written".
+		# The helper's stderr is not redirected, so an older helper's own
+		# `unknown subcommand 'act-begin'` refusal stands just above this note,
+		# and the note says that line is expected (REV-W9e N2).
 		ge_act=""
 		note "\`$LANES_EDIT act-begin\` exited 2, so this request takes no base: this workstation's
     \`lanes-edit.sh\` is older than feature 007's acts and reads neither \`LANES_ACT\`
-    nor \`LANES_EXPECT\` (Y:5596). That is not a failure and nothing is wrong with
-    the register. The request goes on with \`LANES_ACT\` empty, and its write still
-    names its expectation, \`bind:$R_LANE\` (lane 3's A2). \`openRepoTools --install\`
-    brings this workstation up to date." ;;
+    nor \`LANES_EXPECT\` (Y:5596). An \`unknown subcommand 'act-begin'\` line just
+    above is that older helper's, and is expected. That is not a failure and
+    nothing is wrong with the register. The request goes on with \`LANES_ACT\`
+    empty, and its write still names its expectation, \`bind:$R_LANE\` (lane 3's
+    A2). \`openRepoTools --install\` brings this workstation up to date." ;;
 	69 | 75 | 3)
 		die "no base could be taken for the request: \`$LANES_EDIT act-begin\` exited $ge_act_rc, the
     register's own code, which is passed on. Every write of this act would be
