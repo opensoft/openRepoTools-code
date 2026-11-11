@@ -2372,16 +2372,24 @@ def holds_on(db, lane_key: str) -> list:
 
 @pytest.mark.parametrize("case", ["as-alias", "as-key"])
 def test_a_claim_records_its_spelling_its_key_and_its_aliases(pg, tmp_path, case):
-    """L1's claim typed as X, or as O, through the writer (`register snapshot
-    --tree` and `register commit`): its `object_holds` row has `object = O`,
-    and `spellings`, compared as a set, holds {X, O, Y}."""
+    """L1's claim line, naming X or O, through the writer (`register snapshot
+    --tree` and `register commit`): its `object_holds` row keeps its line's
+    object, and `spellings`, compared as a set, holds {X, O, Y}.
+
+    `claim` canonicalises a claim typed as X and writes its line naming O
+    (Y:3402-3403), so that row has `object = O` (TP:4303). Phase N sends the
+    line itself, and `[as-alias]`'s line names X, a line `claim` never writes:
+    its row keeps `object = X`, its line's object (Y:1224, Y:1252), with the
+    same set. `[as-key]`'s line names O (lane 3's batch 11 (2))."""
     bring_to_primary(pg, SPL_FILES)
     writer = Writer(pg, tmp_path / "writer", {**CHECKOUT_FILES, "lanes/repos.tsv": SPL_REPOS})
-    proc = spl_write(writer, "claim", "CLAIMED", "Lane-S1", SPL_X if case == "as-alias" else SPL_O)
+    line_object = SPL_X if case == "as-alias" else SPL_O
+    proc = spl_write(writer, "claim", "CLAIMED", "Lane-S1", line_object)
     assert proc.returncode == 0, shown(proc)
     rows = holds_on(pg, "lane-s1")
     assert len(rows) == 1, rows
-    assert rows[0]["object"] == SPL_O, f"the claim's row has object {rows[0]['object']!r}, not {SPL_O!r}"
+    assert rows[0]["object"] == line_object, (
+        f"the claim's row has object {rows[0]['object']!r}, not its line's {line_object!r}")
     assert set(rows[0]["spellings"] or ()) == {SPL_X, SPL_O, SPL_Y}, rows[0]
 
 
