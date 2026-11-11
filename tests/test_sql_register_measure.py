@@ -1174,16 +1174,16 @@ class VerbEstate:
     the twin on its own local bare origin (AT-9's fixture: the files-mode
     figure is a lower bound of today's cost)."""
 
-    def __init__(self, db, root: Path, mode: str, reg=None):
+    def __init__(self, db, root: Path, mode: str, reg=None, files: dict = None):
         self.mode, self.db = mode, db
         if mode == "primary":
-            self.reg = reg or PrimaryRegister(db, root)
+            self.reg = reg or PrimaryRegister(db, root, files)
             self.estate, self.bin = self.reg.estate, self.reg.copy.parent
             if (REPO / "lane-start").exists():
                 shutil.copy2(str(REPO / "lane-start"), str(self.bin / "lane-start"))
             env = dict(self.reg.env)
         else:
-            self.reg, self.estate = None, Estate(root / "estate")
+            self.reg, self.estate = None, Estate(root / "estate", files)
             self.bin = root / "bin"
             self.bin.mkdir(parents=True)
             for name in ("lanes-edit.sh", "lanes-index", "lane-start"):
@@ -1526,6 +1526,30 @@ def test_each_shape_on_a_delayed_relay_is_recorded(pg_engine, request, shape, rt
 BOUND_S = 500
 #: The session that answers 2 and binds, and the lane it leaves.
 SID_BIND = "bbbbbbbb-0009-4000-8000-00000000b009"
+#: The lane answer 2 binds, whose name the guard gives the window before the
+#: bind (`guard_answer`'s rename), and its `lane-start` arguments as the
+#: guard's `lane_start_args` prints them.
+BIND_TO, BIND_ARGS = "repoA-2", ("repoA", "2")
+
+
+def _bind_argv() -> list:
+    """The body's bind, `lane-start --no-launch --bind "$G_ID" <args>` (B14
+    tasks:677; design W:5444; the guard's call in `lanes-edit.sh`): `--bind`
+    takes the transcript uuid of the session live in the window, then the
+    lane's arguments."""
+    return ["@lane-start", "--no-launch", "--bind", SID_BIND, *BIND_ARGS]
+
+
+def _bind_seed(checkout: Path) -> dict:
+    """SEED with `BIND_TO`'s log recording `checkout` as its `dir`, so the
+    bind finds a directory that exists where `lane-start` looks for it (its
+    rung 3, the lane's log), with the guard's own arguments. SEED's
+    `dir /work/repoA2` exists on no host."""
+    files = dict(SEED)
+    log = f"lanes/log/{BIND_TO}.md"
+    assert files[log].count("; dir /work/repoA2\n") == 1, files[log]
+    files[log] = files[log].replace("; dir /work/repoA2\n", f"; dir {checkout}\n")
+    return files
 
 
 def _bind_run(db, root: Path, mode: str) -> tuple:
@@ -1535,18 +1559,24 @@ def _bind_run(db, root: Path, mode: str) -> tuple:
     guard's own path. Returns (the bind's ms, `set-row-state`'s ms, the
     register writes on primary or the origin's new commits in files mode,
     and the head or the commit count before the bind).
-    The argv are read from section 5.1's M9 row, for lane 4 to confirm."""
-    estate = VerbEstate(db, root, mode)
+    The bind's argv is the body's (`_bind_argv`), run from SID_BIND's live
+    session in a window named `BIND_TO` (`_window`), on an estate whose log
+    records a `dir` that exists (`_bind_seed`)."""
+    estate = VerbEstate(db, root, mode, files=_bind_seed(root / "estate" / "checkout"))
     estate.env.update(LANES_BIND_BOUND_S=str(BOUND_S), LANES_SESSION=SID_BIND,
                       CLAUDE_CODE_SESSION_ID=SID_BIND)
-    before = head(db) if mode == "primary" else estate.origin_commits()
-    spent = []
-    for argv in (["@lane-start", "--no-launch", "--bind", "repoA", "2"],
-                 ["set-row-state", "repoA-1", f"PAUSED {DOT} answer 2 bound this session to repoA-2"]):
-        ms, proc = timed(lambda: estate.run(argv))
-        assert proc.returncode == 0, (f"{mode}: `{' '.join(argv)}` exited {proc.returncode}: "
-                                      f"{(proc.stdout + proc.stderr)[-600:]}")
-        spent.append(ms)
+    session = _window(estate, root, BIND_TO, SID_BIND)
+    try:
+        before = head(db) if mode == "primary" else estate.origin_commits()
+        spent = []
+        for argv in (_bind_argv(),
+                     ["set-row-state", "repoA-1", f"PAUSED {DOT} answer 2 bound this session to repoA-2"]):
+            ms, proc = timed(lambda: estate.run(argv))
+            assert proc.returncode == 0, (f"{mode}: `{' '.join(argv)}` exited {proc.returncode}: "
+                                          f"{(proc.stdout + proc.stderr)[-600:]}")
+            spent.append(ms)
+    finally:
+        session.close()
     grown = (head(db) if mode == "primary" else estate.origin_commits()) - before
     return spent[0], spent[1], grown, before
 
