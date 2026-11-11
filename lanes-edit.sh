@@ -4665,9 +4665,10 @@ reg_head_n() {   # `.head`'s `n=`, or 0 where `.head` is absent or names none
   if [ -f "$SE_CACHE_FILE.head" ]; then
     rhn_n="$(sed -n -e 's/^n=//p' "$SE_CACHE_FILE.head" 2>/dev/null | head -n 1)"
   fi
+  # A SEQUENCE IS NEVER NEGATIVE (lane 3's review of T505, NIT-2): `-5`, like
+  # any `n=` that is not digits, names no head, so the second read asks from 0.
   case "$rhn_n" in
-    [0-9]* | -[0-9]*) case "${rhn_n#-}" in *[!0-9]*) rhn_n=0 ;; esac ;;
-    *) rhn_n=0 ;;
+    "" | *[!0-9]*) rhn_n=0 ;;
   esac
   printf '%s\n' "$rhn_n"
 }
@@ -5883,6 +5884,12 @@ lane_log_events() {   # <lane> [checked]
   # index answers first.
   if [ -z "$LANES_IDX_DIR" ] && [ "${REG_STORE:-}" = sql ]; then
     lev_m=0; lev_s="$(reg_log "${1-}")" || lev_m=$?
+    # A CACHED LOG THAT WILL NOT OPEN IS A FAILED READ, 69, never the
+    # redirect's 1 (lane 3's review of T505, NIT-1); the mirror class reads
+    # the mirror instead, as for any failed read.
+    if [ "$lev_m" = 0 ] && [ -n "$lev_s" ] && ! { : < "$SE_CACHE_FILE.log.$lev_s"; } 2>/dev/null; then
+      reg_fail "the register could not be read: its cached .log.$lev_s could not be opened" "the cache family could not be read" || lev_m=$?
+    fi
     if [ "$lev_m" = 0 ]; then
       [ -n "$lev_s" ] || return 0
       parse_log_stream "$(sed -n -e 1p "$SE_CACHE_FILE.logpath.$lev_s")" < "$SE_CACHE_FILE.log.$lev_s"
