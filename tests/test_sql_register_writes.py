@@ -256,6 +256,16 @@ LATE_WRITES = {
 #: AT-3's line, which a writer prints where the switch is not `primary`.
 NOT_PRIMARY_LINE = "this estate's register is SQL; configure `mode=primary`"
 
+#: EACH WRITE LANE'S OWN CHECKOUT, `<c>` (T241e; B14 tasks:1142's T415
+#: bullets; R17). On primary a write reads its pending hand edits, its author
+#: and the snapshot's `repos.tsv` from the checkout of the lane it writes for,
+#: `<W>-lanes/<lane>`, and refuses with nothing sent where that is not there
+#: (2, or 64 for `request-handoff`), since a clone would be D12's fetch. The
+#: lanes these writes are for (`lanes-edit.sh`'s `write_lane_of`): repoA-1 and
+#: repoA-2, as `LANES_LANE` or a verb's `<lane>`, and repoA-3, `add-row`'s new
+#: row. `PrimaryWorkstation` makes `<c>` for each, unless a case asks for none.
+WRITE_LANES = ("repoA-1", "repoA-2", "repoA-3")
+
 
 class PrimaryWorkstation:
     """A `mode=primary` workstation for `lanes-edit.sh`'s writes: the
@@ -263,10 +273,11 @@ class PrimaryWorkstation:
     flipped copy with `lanes-edit.sh` beside it, and a `lanes-index.conf`
     whose `register_url=` and `reader_url=` name `urls`, or a fresh, empty
     socket directory, with a 0600 `register_passfile=`. `fakebin` is first on
-    `PATH`."""
+    `PATH`. Each lane in `checkouts` gets `<c>`, its own checkout, a clone of
+    origin made after the case's prep (`WRITE_LANES` by default)."""
 
     def __init__(self, tmp_path: Path, urls: tuple = None, fakebin: Path = None,
-                 prep: dict = None):
+                 prep: dict = None, checkouts: tuple = WRITE_LANES):
         self.fakebin = fakebin or tmp_path / "fakebin"
         self.fakebin.mkdir(parents=True, exist_ok=True)
         self.estate, self.env, _source = workspace(tmp_path / "ws", self.fakebin)
@@ -289,6 +300,8 @@ class PrimaryWorkstation:
                                    self.passfile)
         self.env.update(LANES_INDEX_CONFIG=str(self.conf))
         self.env.pop("LANES_INDEX", None)
+        for lane in checkouts:
+            self.make_lane_checkout(lane)
 
     def _prep(self, files: dict) -> None:
         """`files` written over the checkout, committed and pushed, so the
@@ -637,12 +650,11 @@ def test_request_handoff_refuses_64_never_2_on_primary(tmp_path, refusal):
     Q35; `[missing-lane]` passes before it, since main's arm already refuses
     a missing lane 64, and holds that code against a 2."""
     argv, lane, extra, with_checkout, names = REQUEST_HANDOFF_64[refusal]
-    ws = PrimaryWorkstation(tmp_path)
+    ws = PrimaryWorkstation(tmp_path,
+                            checkouts=(REQUEST_HANDOFF_LANE,) if with_checkout else ())
     fake = fake_psql_dir(ws.fakebin, answers=unreachable_answers(ws.dead))
     ws.env.update(fake)
     checkout = ws.lane_checkout(REQUEST_HANDOFF_LANE)
-    if with_checkout:
-        ws.make_lane_checkout(REQUEST_HANDOFF_LANE)
     before = ws.git_state()
     proc = ws.run(argv, lane, **extra)
     assert proc.returncode != 2, (
