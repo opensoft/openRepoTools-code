@@ -598,7 +598,8 @@
 #      link, not a regular file, untracked, or whose new path is taken. The
 #      act's code is said in one WARNING, never the run's (`pw_rl_move`),
 #      a rerun's act included, and the move is then owed. And a rerun's
-#      child whose snapshot gives no seq (`rl_rerun`).
+#      child whose snapshot gives no seq, or one where the row's handoff
+#      cell has a cache or bytecode part in either path (`rl_rerun`).
 #  64  usage — a caller's bad arguments to one of the reads Amendment 11 added
 #      (`window-lane`, `lane-dir`, `lane-profile`, `last-session`, `forks`,
 #      `duplicate-holder` (issue #39), `workstation`, `fetch-age`, `lanes`,
@@ -20087,31 +20088,41 @@ rl_handoff_repo() {   # <the old name, as the row spells it>
     die "refusing to rename lane $1 in an attempt's child under LANES_REGISTER_SCRATCH: its own register checkout, ${rl_hrepo:-<no workspace>}, is not here, and on primary the handoff its row names is read there before anything is sent, and moved and stamped there after the register commits (Q13(a); Y:5092). Its parent requires that checkout before the first attempt, so this is an internal error of the write path. Nothing was sent." 2
 }
 
+# ONE HANDOFF PATH AGAINST THE SET #162 KEEPS OUT OF EVERY WORKSPACE COMMIT
+# (`bytecode_in_pathspec`'s, asked of the path's own parts), and its refusal
+# before the seam: 2, nothing sent. The one copy of the set and the words,
+# for a first run (`rl_move_refuse_checks`; lane 4's REV422c N1) and for the
+# rerun (`rl_rerun`; REV-W8b N4), so the two refuse alike.
+rl_cache_part_refuse() {   # <the row's lane> <its handoff cell> <the path> <its checkout>
+  local cpr_c=""
+  cpr_c="$(printf '%s\n' "$3" | LC_ALL=C awk '{ n = split($0, part, "/")
+    for (i = 1; i <= n; i++)
+      if (part[i] == "__pycache__" || part[i] == ".pytest_cache" || part[i] == ".mypy_cache" ||
+          part[i] == ".ruff_cache" || part[i] == "node_modules" || part[i] == ".venv" ||
+          part[i] == "venv" || part[i] == "site-packages") { print part[i]; exit }
+    if ($0 ~ /\.py[co]$/) print $0 }')"
+  [ -z "$cpr_c" ] ||
+    die "lane $1's row names the handoff '$2', which is $3 in its checkout $4, a path with a cache, bytecode or environment part ($cpr_c) that no workspace commit carries (opensoft/openRepoTools#162). On primary the register commits this rename first, and the handoff's move and Rule 3 stamp follow as a git commit in that checkout, which would refuse it after COMMIT, so this move could never be made (Y:5138). Move that handoff to a path without one in a commit of its own, point the row's handoff column at it (replace-in-row), and re-run. Nothing was sent." 2
+}
+
 # THE REFUSALS ONLY PRIMARY MAKES, before the seam (Y:5092), for a handoff
 # the row names and `<c>` holds (`rl_h_touch`): each path under `handoffs/`,
 # since the move's push on primary sends nothing else (T420's backstop;
 # spec:183–185; R16 (d)); no cache, bytecode or environment component in
-# either path, the set #162 keeps out of every workspace commit
-# (`bytecode_in_pathspec`), which the move's own commit would refuse after
-# COMMIT, so a handoff that cannot be moved and stamped refuses before
-# anything is sent (Y:5138; lane 4's REV422c N1); and no pending change to
-# either path in `<c>`, which the move's own S3 step 4 would refuse after
-# COMMIT. 2, nothing sent.
+# either path (`rl_cache_part_refuse`), the set #162 keeps out of every
+# workspace commit (`bytecode_in_pathspec`), which the move's own commit
+# would refuse after COMMIT, so a handoff that cannot be moved and stamped
+# refuses before anything is sent (Y:5138; lane 4's REV422c N1); and no
+# pending change to either path in `<c>`, which the move's own S3 step 4
+# would refuse after COMMIT. 2, nothing sent.
 rl_move_refuse_checks() {
-  rmr_p=""; rmr_hits=""; rmr_c=""
+  rmr_p=""; rmr_hits=""
   for rmr_p in "$rl_h_rel" "$rl_h_rel_new"; do
     case "$rmr_p" in
       handoffs/?*) : ;;
       *) die "lane $rl_old's row names the handoff '$rl_hcell', which is $rmr_p in its checkout $rl_hrepo and not a file under handoffs/. On primary the register commits this rename first, and the handoff's move and Rule 3 stamp follow as a git commit in that checkout, whose push sends only changes under handoffs/ (Q13(a); D10; spec:183–185), so this move could never be published. Move that handoff under handoffs/<estate>/ in a commit of its own, point the row's handoff column at it (replace-in-row), and re-run. Nothing was sent." 2 ;;
     esac
-    rmr_c="$(printf '%s\n' "$rmr_p" | LC_ALL=C awk '{ n = split($0, part, "/")
-      for (i = 1; i <= n; i++)
-        if (part[i] == "__pycache__" || part[i] == ".pytest_cache" || part[i] == ".mypy_cache" ||
-            part[i] == ".ruff_cache" || part[i] == "node_modules" || part[i] == ".venv" ||
-            part[i] == "venv" || part[i] == "site-packages") { print part[i]; exit }
-      if ($0 ~ /\.py[co]$/) print $0 }')"
-    [ -z "$rmr_c" ] ||
-      die "lane $rl_old's row names the handoff '$rl_hcell', which is $rmr_p in its checkout $rl_hrepo, a path with a cache, bytecode or environment part ($rmr_c) that no workspace commit carries (opensoft/openRepoTools#162). On primary the register commits this rename first, and the handoff's move and Rule 3 stamp follow as a git commit in that checkout, which would refuse it after COMMIT, so this move could never be made (Y:5138). Move that handoff to a path without one in a commit of its own, point the row's handoff column at it (replace-in-row), and re-run. Nothing was sent." 2
+    rl_cache_part_refuse "$rl_old" "$rl_hcell" "$rmr_p" "$rl_hrepo"
   done
   [ "$NO_GIT" != 1 ] || return 0
   rmr_hits="$(LANES_REPO="$rl_hrepo" cs_pending_of "$rl_h_rel" "$rl_h_rel_new" | tr '\n' ' ')"
@@ -20273,7 +20284,7 @@ rl_state_rename() {   # <the old name's control root> <new lane>
 rl_rerun() {   # <the typed old name>
   local rr_l="" rr_rest="" rr_ln="" rr_s="" rr_o="" rr_u="" rr_t="" rr_on="" rr_oo="" rr_lu="" rr_lt="" \
         rr_lon="" rr_loo="" rr_log="" rr_n="" rr_row="" rr_cell="" rr_base="" rr_dir="" rr_bl="" rr_sl="" \
-        rr_ol="" rr_keep="" rr_from="" rr_seq="" rr_st="" rr_want_n="" rr_want_o=""
+        rr_ol="" rr_keep="" rr_from="" rr_seq="" rr_st="" rr_want_n="" rr_want_o="" rr_c="" rr_p=""
   [ -n "$REG_SCRATCH" ] && [ "$REG_REPLAY" != 1 ] || return 0
   rr_log="$(log_file_for "$rl_old")"
   [ -f "$rr_log" ] && [ ! -L "$rr_log" ] || return 0
@@ -20317,6 +20328,17 @@ rl_rerun() {   # <the typed old name>
     # and left the column as it was, so no move was owed.
     *"$rr_ol") return 0 ;;
   esac
+  # N1's REFUSAL, BEFORE THE SEAM (REV-W8b N4): a cell edited since the
+  # rename to a path with a cache, bytecode or environment part would hand
+  # the parent a move whose commit #162 refuses, whose WARNING prints step
+  # (3), this rerun, and so on round again. Either path refuses 2 here, in
+  # N1's words, with nothing sent. This child looks at no checkout, so,
+  # unlike N1's, the check reads the cell's paths alone, whether or not a
+  # file is at either.
+  rr_c="$(lane_checkout_path "$rr_lon" 2>/dev/null)" || rr_c=""
+  for rr_p in ${rr_from:+"$rr_from"} "$rr_cell"; do
+    rl_cache_part_refuse "$rl_old" "$rr_cell" "$rr_p" "${rr_c:-<c>}"
+  done
   rr_st="RENAMED from $rr_loo by $rr_lu (lane $rr_lon) at $rr_lt"
   rr_l=""
   while IFS= read -r rr_l || [ -n "$rr_l" ]; do
