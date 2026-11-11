@@ -453,19 +453,27 @@ def test_a_login_in_a_group_role_keeps_the_floors_of_its_role(pg, role):
     assert seen == [[k, BASE_UNITS[v], "user"] for k, v in sorted(floors.items())], seen
 
 
-def test_the_bootstrap_holds_no_admin_session_once_it_exits(pg):
+def test_the_bootstrap_holds_no_admin_session_once_it_exits(stoppable_cluster):
     """The admin is the one member of the owner, holding it and the indexer
     WITH INHERIT TRUE, SET TRUE (§1.4); no client session of it is left
     besides the test's own; and the cluster holds no role the bootstrap and
-    the login step did not make."""
-    require_roles(pg, *BOOTSTRAP_ROLES, *FIXTURE_LOGINS)
-    members = rows(pg, (
+    the login step did not make.
+
+    On a cluster of the test's own, whose template is bootstrapped and given
+    the fixture's logins as every cluster's is (T227, T228): roles are
+    cluster-wide, and on the session cluster other modules' cases leave
+    logins of their own (render's `ensure_logins` makes
+    `t210_register_reader` and `t210_register_writer`), so the role count
+    there depends on which cases ran before this one."""
+    own = stoppable_cluster
+    require_roles(own, *BOOTSTRAP_ROLES, *FIXTURE_LOGINS)
+    members = rows(own, (
         "SELECT DISTINCT member::regrole::text FROM pg_auth_members "
         f"WHERE roleid = {_literal(OWNER)}::regrole;"))
     assert len(members) == 1, f"{OWNER}'s members are {members}: §1.4 grants it to the admin alone"
     admin = members[0][0]
     for role in (OWNER, INDEXER):
-        held = rows(pg, (
+        held = rows(own, (
             "SELECT count(*) FROM pg_auth_members "
             f"WHERE roleid = {_literal(role)}::regrole AND member = {_literal(admin)}::regrole "
             "AND inherit_option AND set_option;"))
@@ -473,7 +481,7 @@ def test_the_bootstrap_holds_no_admin_session_once_it_exits(pg):
 
     end = time.monotonic() + 3.0
     while True:
-        left = rows(pg, (
+        left = rows(own, (
             "SELECT pid, application_name FROM pg_stat_activity "
             f"WHERE usename = {_literal(admin)} AND backend_type = 'client backend' "
             "AND pid <> pg_backend_pid();"))
@@ -482,7 +490,7 @@ def test_the_bootstrap_holds_no_admin_session_once_it_exits(pg):
         time.sleep(0.1)
     assert left == [], f"{admin} still holds sessions after the bootstrap exited: {left}"
 
-    others = {r[0] for r in rows(pg, (
+    others = {r[0] for r in rows(own, (
         "SELECT rolname FROM pg_roles WHERE rolname !~ '^pg_' AND oid <> 10 "
         f"AND rolname <> {_literal(admin)};"))}
     assert others == set(BOOTSTRAP_ROLES) | set(FIXTURE_LOGINS), \
