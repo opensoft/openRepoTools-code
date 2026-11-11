@@ -1780,9 +1780,15 @@ cleanup() {
   if [ "$LOCK_HELD" = 1 ]; then release_lock; fi
   [ -n "${RL_SNAP:-}" ] && [ -d "${RL_SNAP:-}" ] && rm -rf -- "$RL_SNAP"
   [ -n "${TMPD:-}" ] && [ -d "${TMPD:-}" ] && rm -rf -- "$TMPD"
-  # FEATURE 007, T505 - the mirror line a failed second read could only keep,
-  # its own stderr being /dev/null (`reg_fail`), is said here, once.
-  if [ -n "${SE_CACHE_FILE:-}" ] && [ -s "$SE_CACHE_FILE.rmirror" ]; then cat -- "$SE_CACHE_FILE.rmirror" >&2 2>/dev/null || :; fi
+  # FEATURE 007, T505 - A FAILED SECOND READ IS SAID HERE, ONCE (`reg_fail`):
+  # the mirror line it kept, or, where no arm ended by its class, what failed.
+  if [ -n "${SE_CACHE_FILE:-}" ]; then
+    if [ -s "$SE_CACHE_FILE.rmirror" ]; then
+      cat -- "$SE_CACHE_FILE.rmirror" >&2 2>/dev/null || :
+    elif [ -s "$SE_CACHE_FILE.rfail" ] && [ ! -e "$SE_CACHE_FILE.rfend" ]; then
+      note "$(sed -n -e 1p "$SE_CACHE_FILE.rfail" 2>/dev/null)"
+    fi
+  fi
   [ -n "${SE_CACHE_FILE:-}" ] && rm -f -- "$SE_CACHE_FILE" "$SE_CACHE_FILE".* 2>/dev/null
   [ -n "${LANES_IDX_DIR:-}" ] && [ -d "${LANES_IDX_DIR:-}" ] && rm -rf -- "$LANES_IDX_DIR"
   [ -n "${LANES_WT_IDX_DIR:-}" ] && [ -d "${LANES_WT_IDX_DIR:-}" ] && rm -rf -- "$LANES_WT_IDX_DIR"
@@ -4667,27 +4673,20 @@ reg_fail_again() {
   if [ "${REG_CLASS:-}" = mirror ]; then return 1; fi
   return 69
 }
-# WHAT IT SAYS IS SAID ONCE, AND NEVER INTO /dev/null: a site often runs in a
-# substitution whose stderr is dropped (`register_lanes 2>/dev/null`), and a
-# line said there reaches nobody. Where this shell's stderr is `/dev/null`, the
-# line is kept beside the cache instead (`.rmirror`, or the flag's third line),
-# and the main shell says it: `cleanup` the mirror line, `reg_fail_end` the
-# failure in its refusal.
+# WHAT IT SAYS IS SAID ONCE, BY THE MAIN SHELL: a site often runs in a
+# substitution whose stderr is dropped (`register_lanes 2>/dev/null`) or kept
+# in a file nobody replays, and a line said there reaches nobody. So the mirror
+# line is kept beside the cache (`.rmirror`) and `cleanup` says it; a decide or
+# projection arm's refusal (`reg_fail_end`) carries what failed; and where no
+# arm ended by its class, `cleanup` notes what failed.
 reg_fail() {   # <what failed> <the cause, for the mirror line>
   if [ ! -e "$SE_CACHE_FILE.rfail" ]; then
-    rfl_said=said
-    [ ! /dev/stderr -ef /dev/null ] || rfl_said=pending
     if [ "${REG_CLASS:-}" = mirror ]; then
-      rfl_line="$(reg_mirror_line "$2" 2>&1)"
-      if [ "$rfl_said" = said ]; then printf '%s\n' "$rfl_line" >&2
-      else printf '%s\n' "$rfl_line" > "$SE_CACHE_FILE.rmirror" 2>/dev/null || :
-      fi
+      reg_mirror_line "$2" 2> "$SE_CACHE_FILE.rmirror" || :
       reg_flush
       state_events_flush
-    elif [ "$rfl_said" = said ]; then
-      note "$1"
     fi
-    printf '%s\n%s\n%s\n' "$1" "$2" "$rfl_said" > "$SE_CACHE_FILE.rfail" 2>/dev/null || :
+    printf '%s\n%s\n' "$1" "$2" > "$SE_CACHE_FILE.rfail" 2>/dev/null || :
   fi
   reg_fail_again
 }
@@ -4701,17 +4700,13 @@ reg_read_lost() {
 # the caller goes on as it always did.
 reg_fail_end() {   # <rc>
   [ "${1-}" = 69 ] && [ "${REG_STORE:-}" = sql ] || return 0
-  rfe_dflt="the register's second read failed"; rfe_what="$rfe_dflt"; rfe_why=""
+  rfe_dflt="the register's second read failed"; rfe_what=""; rfe_why=""
   if [ -f "$SE_CACHE_FILE.rfail" ]; then
-    if [ "$(sed -n -e 3p "$SE_CACHE_FILE.rfail" 2>/dev/null)" = said ]; then
-      rfe_what="$rfe_dflt, as said above"
-    else
-      rfe_what="$(sed -n -e 1p "$SE_CACHE_FILE.rfail" 2>/dev/null)"
-      rfe_what="${rfe_what:-$rfe_dflt}"
-    fi
+    rfe_what="$(sed -n -e 1p "$SE_CACHE_FILE.rfail" 2>/dev/null)"
     rfe_why="$(sed -n -e 2p "$SE_CACHE_FILE.rfail" 2>/dev/null)"
   fi
-  reg_read_failed "$rfe_what" "${rfe_why:-$rfe_dflt}"
+  : > "$SE_CACHE_FILE.rfend" 2>/dev/null || :
+  reg_read_failed "${rfe_what:-$rfe_dflt}" "${rfe_why:-$rfe_dflt}"
   return 0
 }
 # `... || reg_exit $? <code>`: exits <code> as the caller always did, unless
@@ -4755,6 +4750,118 @@ reg_member() {   # <member>...
   done
   [ -n "$rme_want" ] || return 0
   reg_second_read "$rme_want" ""
+}
+# The logs `.paths` lists, the paths directly under the log prefix, in its
+# bytewise order, which is `git ls-tree`'s.
+reg_log_paths() {
+  awk -v p="$LANES_LOG_PREFIX" 'index($0, p) == 1 && index(substr($0, length(p) + 1), "/") == 0' "$SE_CACHE_FILE.paths"
+}
+# The paths `.paths` lists whose names equal <key>'s log but for case, folded
+# as `log_path_ci` folds them (C11).
+reg_log_hits() {   # <key>
+  awk -v want="$(log_path_for "$1")" 'BEGIN { w = tolower(want) } tolower($0) == w' "$SE_CACHE_FILE.paths"
+}
+# A KEY'S LOG IN THE FAMILY (tasks:757; O18; C11): its slot on stdout where the
+# key has a log at `n`, nothing where it has none; 0, 1 the mirror, or 69. A
+# key in the class is read from `.log.<key>`. Where that is not cached and
+# `.paths` is, `.paths` says first whether there is a log to ask for: none is no
+# log, with no second read, and two that differ only by case are the class's
+# failed read; otherwise form 3 `--files log:<key>` brings it. A key outside the
+# class is asked each time as `--log-key=<key>`, never counted as cached, and is
+# read from `.log.%<hex>`. A log is there where its `.logpath` names a file.
+reg_log() {   # <key>
+  if [ -e "$SE_CACHE_FILE.rfail" ]; then reg_fail_again; return; fi
+  rlg_k="${1-}"
+  if reg_in_class "$rlg_k"; then
+    if [ ! -f "$SE_CACHE_FILE.log.$rlg_k" ]; then
+      if [ -f "$SE_CACHE_FILE.paths" ]; then
+        rlg_hits=""
+        rlg_hits="$(reg_log_hits "$rlg_k")" || { reg_fail "the register could not be read: its cached .paths could not be read" "the cache family could not be read"; return; }
+        rlg_n="$(printf '%s' "$rlg_hits" | grep -c . || :)"
+        [ "$rlg_n" != 0 ] || return 0
+        if [ "$rlg_n" -gt 1 ]; then
+          reg_fail "lane $rlg_k has $rlg_n object logs in the register whose names differ only by case: $(printf '%s\n' "$rlg_hits" | tr '\n' ' ')- one lane is ONE lane under any case and its log is ONE file (Amendment 15), so no read of it is unambiguous (feature 007, C11)" "two logs differ from $rlg_k only by case"
+          return
+        fi
+      fi
+      reg_second_read "log:$rlg_k" "" || return
+    fi
+    rlg_s="$rlg_k"
+  else
+    reg_second_read "" "$rlg_k" || return
+    rlg_s="$(reg_slot "$rlg_k")"
+  fi
+  if [ ! -f "$SE_CACHE_FILE.log.$rlg_s" ]; then
+    reg_fail "the register could not be read: its second read exited 0 and wrote no .log file for lane $rlg_k" "the second read wrote no log"
+    return
+  fi
+  [ -s "$SE_CACHE_FILE.logpath.$rlg_s" ] || return 0
+  printf '%s\n' "$rlg_s"
+}
+# `remote_log_events` ON PRIMARY (tasks:753; lane 3, #165 6778890211, T505 Q4):
+# each log `.paths` lists, from its `.log.<stem>`, through `parse_log_stream`
+# unchanged, in `.paths`' order. A log with no `.log.<stem>` is asked once: one
+# form 3 for every in-class stem not in a case pair, and `--log-key=` for each
+# stem outside the class. Neither log of a case pair (C11) is asked: each is
+# named by today's `unreadable log:` note, which `lanes_rows` and
+# `worktree_rows` fence, and a named read of that lane still ends 69. 0 with the
+# events; 1 the mirror; 69 a failed read, whose build `state_events` never
+# caches. The events are kept aside until every read is made, so a read that
+# fails part-way prints none of them.
+reg_remote_log_events() {
+  reg_member paths || return
+  rre_nl=$'\n'
+  rre_list=""
+  rre_list="$(reg_log_paths)" || { reg_fail "the register could not be read: its cached .paths could not be read" "the cache family could not be read"; return; }
+  rre_pairs="$(printf '%s\n' "$rre_list" | awk 'NF { k = tolower($0); c[k]++; p[++n] = $0; f[n] = k } END { for (i = 1; i <= n; i++) if (c[f[i]] > 1) print p[i] }')"
+  rre_in=""
+  while IFS= read -r rre_p; do
+    [ -n "$rre_p" ] || continue
+    case "$rre_nl$rre_pairs$rre_nl" in *"$rre_nl$rre_p$rre_nl"*) continue ;; esac
+    rre_s="${rre_p##*/}"; rre_s="${rre_s%.md}"
+    reg_in_class "$rre_s" || continue
+    [ -f "$SE_CACHE_FILE.log.$rre_s" ] || rre_in="${rre_in:+$rre_in,}log:$rre_s"
+  done <<RRE_EOF
+$rre_list
+RRE_EOF
+  if [ -n "$rre_in" ]; then
+    reg_second_read "$rre_in" "" || return
+    # A REFETCH MAY HAVE MOVED THE FAMILY TO `n'`, so the list is read again.
+    rre_list="$(reg_log_paths)" || { reg_fail "the register could not be read: its cached .paths could not be read" "the cache family could not be read"; return; }
+    rre_pairs="$(printf '%s\n' "$rre_list" | awk 'NF { k = tolower($0); c[k]++; p[++n] = $0; f[n] = k } END { for (i = 1; i <= n; i++) if (c[f[i]] > 1) print p[i] }')"
+  fi
+  rre_t="$SE_CACHE_FILE.rre.${BASHPID:-$$}"
+  if ! : > "$rre_t"; then
+    reg_fail "the register could not be read: no file could be made beside the cache to hold its events" "no file for the events"
+    return
+  fi
+  while IFS= read -r rre_p; do
+    [ -n "$rre_p" ] || continue
+    case "${rre_p##*/}" in README.md) continue ;; esac
+    case "$rre_nl$rre_pairs$rre_nl" in
+      *"$rre_nl$rre_p$rre_nl"*)
+        note "unreadable log: $rre_p — another log differs from it only by case, so neither is read (feature 007, C11)"
+        continue ;;
+    esac
+    rre_s="${rre_p##*/}"; rre_s="${rre_s%.md}"
+    if reg_in_class "$rre_s"; then
+      rre_slot="$rre_s"
+    else
+      rre_rc=0; reg_second_read "" "$rre_s" || rre_rc=$?
+      if [ "$rre_rc" != 0 ]; then rm -f -- "$rre_t"; return "$rre_rc"; fi
+      rre_slot="$(reg_slot "$rre_s")"
+    fi
+    if [ ! -f "$SE_CACHE_FILE.log.$rre_slot" ]; then
+      note "unreadable log: $rre_p — the register's second read did not bring it, so none of its lines are in this read (feature 007)"
+      continue
+    fi
+    parse_log_stream "$rre_p" < "$SE_CACHE_FILE.log.$rre_slot" >> "$rre_t"
+  done <<RRE_EOF
+$rre_list
+RRE_EOF
+  cat -- "$rre_t"
+  rm -f -- "$rre_t"
+  return 0
 }
 
 # Prints, to stdout, a comma-joined, de-duplicated list of the lane(s) whose
@@ -5032,6 +5139,25 @@ log_files_named_ci() {   # <lane> — every existing log file for it, whatever i
 # that half (Copilot round 4).
 log_path_ci() {   # <lane> — 0 with the ONE path, 2 where two differ only by case
   lpc_exact="$(log_path_for "$1")"
+  # FEATURE 007, T505 - ON PRIMARY, `.paths`, case-insensitively, with the same
+  # 2 for two logs that differ only by case and never this checkout's files
+  # (tasks:752); a failed read is 69. Under `--index` the index answers first.
+  if [ -z "$LANES_IDX_DIR" ] && [ "${REG_STORE:-}" = sql ]; then
+    lpc_m=0; reg_member paths || lpc_m=$?
+    if [ "$lpc_m" = 0 ]; then
+      lpc_hits="$(reg_log_hits "$1")" || return 69
+      lpc_n="$(printf '%s' "$lpc_hits" | grep -c . || :)"
+      if [ "$lpc_n" -gt 1 ]; then
+        note "lane $1 has $lpc_n object logs in the register at seq $(reg_head_n) whose names differ only by case: $(printf '%s\n' "$lpc_hits" | tr '\n' ' ')"
+        note "one lane is ONE lane under any case and its log is ONE file (Amendment 15), so no read of it is unambiguous and nothing here picks one of them. Merge them by hand into $lpc_exact, oldest lines first, remove the others in the same commit (Amendment 15(d)), and re-run."
+        return 2
+      fi
+      if [ "$lpc_n" = 1 ]; then printf '%s\n' "$lpc_hits"; return 0; fi
+      printf '%s\n' "$lpc_exact"
+      return 0
+    fi
+    [ "$lpc_m" != 69 ] || return 69
+  fi
   # AMENDMENT 14 — UNDER `--index` THE INDEX'S LOG LIST STANDS IN FOR
   # `origin`'s tree, and nothing else in this function changes.
   if [ -n "$LANES_IDX_DIR" ] || have_remote_ref; then
@@ -5494,6 +5620,12 @@ remote_log_events() {
     cat -- "$LANES_IDX_DIR/events"
     return 0
   fi
+  # FEATURE 007, T505 - ON PRIMARY, `.paths` and `.log.*` (`reg_remote_log_events`).
+  if [ "${REG_STORE:-}" = sql ]; then
+    rl_m=0; reg_remote_log_events || rl_m=$?
+    [ "$rl_m" != 0 ] || return 0
+    [ "$rl_m" != 69 ] || return 69
+  fi
   [ "$NO_GIT" = 1 ] && { log_events; return 0; }
   git -C "$LANES_REPO" rev-parse --verify -q "origin/$LANES_BRANCH" >/dev/null 2>&1 || { log_events; return 0; }
   # A LOG THE TREE NAMES AND `show` CANNOT READ IS SAID, by path (#138 item
@@ -5563,7 +5695,14 @@ state_events() {
     # rename: a reader then sees either the empty file (and builds its own) or
     # the finished one, never half of it.
     se_t="$SE_CACHE_FILE.${BASHPID:-$$}"
-    remote_log_events > "$se_t" 2> "$se_t.warn"
+    se_rc=0; remote_log_events > "$se_t" 2> "$se_t.warn" || se_rc=$?
+    # A FAILED BUILD IS NEVER CACHED (feature 007, T505 Q4): on primary its 69
+    # is passed on, with what it said, and the next read asks again.
+    if [ "$se_rc" = 69 ]; then
+      cat -- "$se_t.warn" >&2 2>/dev/null || :
+      rm -f -- "$se_t" "$se_t.warn"
+      return 69
+    fi
     mv -f -- "$se_t.warn" "$SE_WARN_FILE" 2>/dev/null || rm -f -- "$se_t.warn"
     mv -f -- "$se_t" "$SE_CACHE_FILE" 2>/dev/null || { state_events_warn; cat -- "$se_t"; rm -f -- "$se_t"; return 0; }
   fi
@@ -5613,7 +5752,21 @@ state_events_flush() {
 # binding reads answer over a log git cannot read, which #290 lists for a
 # ruling rather than changing beside a named read.
 lane_log_events() {   # <lane> [checked]
-  ll_rel="$(log_path_ci "$1")" || return 2
+  # FEATURE 007, T505 - ON PRIMARY, `.log.<key>` before `log_path_ci` (tasks:751,
+  # :757), through `parse_log_stream` with the file its `.logpath` names, so
+  # `unreadable:` warnings name the log as the mirror read does (W:4906). No
+  # log at `n` is no lines and 0; a failed read is 69. Under `--index` the
+  # index answers first.
+  if [ -z "$LANES_IDX_DIR" ] && [ "${REG_STORE:-}" = sql ]; then
+    lev_m=0; lev_s="$(reg_log "${1-}")" || lev_m=$?
+    if [ "$lev_m" = 0 ]; then
+      [ -n "$lev_s" ] || return 0
+      parse_log_stream "$(sed -n -e 1p "$SE_CACHE_FILE.logpath.$lev_s")" < "$SE_CACHE_FILE.log.$lev_s"
+      return
+    fi
+    [ "$lev_m" != 69 ] || return 69
+  fi
+  ll_rel="$(log_path_ci "$1")" || { [ "$?" != 69 ] || return 69; return 2; }
   if [ -n "$LANES_IDX_DIR" ]; then
     # A LOG THE INDEX DOES NOT HOLD IS A LOG `origin` DID NOT HOLD at the
     # indexed commit: no lines, exactly as a `git show` of a missing path.
@@ -5652,7 +5805,17 @@ lane_log_events() {   # <lane> [checked]
   fi
 }
 lane_log_exists() {
-  lle_rel="$(log_path_ci "$1")" || return 2
+  lle_rel="$(log_path_ci "$1")" || { [ "$?" != 69 ] || return 69; return 2; }
+  # FEATURE 007, T505 - ON PRIMARY, `.paths` (tasks:752): a case pair's 2 from
+  # `log_path_ci` stays 2, and a failed read is 69, never 1 (T505 Q3).
+  if [ -z "$LANES_IDX_DIR" ] && [ "${REG_STORE:-}" = sql ]; then
+    lle_m=0; reg_member paths || lle_m=$?
+    if [ "$lle_m" = 0 ]; then
+      lle_g=0; command grep -Fqx -- "$lle_rel" "$SE_CACHE_FILE.paths" 2>/dev/null || lle_g=$?
+      case "$lle_g" in 0) return 0 ;; 1) return 1 ;; *) return 69 ;; esac
+    fi
+    [ "$lle_m" != 69 ] || return 69
+  fi
   if [ -n "$LANES_IDX_DIR" ]; then
     command grep -Fqx -- "$lle_rel" "$LANES_IDX_DIR/logs" 2>/dev/null
   elif have_remote_ref; then
@@ -6024,6 +6187,7 @@ lane_objects() {
   case "$lo_ex" in
     0) : ;;
     2) return 2 ;;
+    69) return 69 ;;                            # feature 007, T505 Q3
     *) return 8 ;;
   esac
   # AMENDMENT 15 — THE LANE FIELD OF A LOG LINE IS MATCHED CASE-INSENSITIVELY,
@@ -6206,13 +6370,13 @@ superseded_by() {   # <object> <lane> <that lane's own last verb on it>
 # `#n`, cross_repo_warn, same_project, who's CROSS-REPO note — resolves BOTH
 # sides, and resolving here is what makes that true of all of them at once.
 home_of_lane() {
-  lane_log_exists "$1" || return 1
+  lane_log_exists "$1" || { [ "$?" != 69 ] || return 69; return 1; }   # feature 007, T505 Q3
   hol_h="$(lane_log_events "$1" | awk -v sep="$US" '
     BEGIN { FS = sep }
     $3 == "STARTED" || $3 == "RESUMED" {
       if (match($8, /home [^ ;]+/)) h = substr($8, RSTART + 5, RLENGTH - 5)
     }
-    END { if (h != "" && h != "unknown") print h; else exit 1 }')" || return 1
+    END { if (h != "" && h != "unknown") print h; else exit 1 }')" || { ! reg_read_lost || return 69; return 1; }
   [ -n "$hol_h" ] || return 1
   hol_c="$(alias_lookup "$hol_h" 2>/dev/null || :)"
   printf '%s\n' "${hol_c:-$hol_h}"
@@ -6244,9 +6408,21 @@ known_lanes() {
     done < "$LANES_IDX_DIR/logs"
     return 0
   fi
-  if [ "$PIN_LOGS" = 1 ] || have_remote_ref; then
+  # FEATURE 007, T505 - ON PRIMARY, `.paths`' logs, with the same strip
+  # (tasks:752); `PIN_LOGS` stays first. A failed read is 69, with nothing
+  # printed.
+  kl_sql=0
+  if [ "$PIN_LOGS" != 1 ] && [ "${REG_STORE:-}" = sql ]; then
+    kl_m=0; reg_member paths || kl_m=$?
+    [ "$kl_m" != 69 ] || return 69
+    [ "$kl_m" != 0 ] || kl_sql=1
+  fi
+  if [ "$PIN_LOGS" = 1 ] || [ "$kl_sql" = 1 ] || have_remote_ref; then
     kl_list=""; kl_rc=0
     if [ "$PIN_LOGS" = 1 ]; then kl_list="$PIN_LOGS_TEXT"
+    elif [ "$kl_sql" = 1 ]; then
+      kl_list="$(reg_log_paths && printf x)" || return 69
+      kl_list="${kl_list%x}"
     else
       kl_list="$(git -C "$LANES_REPO" ls-tree --name-only "origin/$LANES_BRANCH" -- "$LANES_LOG_PREFIX" 2>/dev/null && printf x)" || kl_rc=1
       kl_list="${kl_list%x}"
@@ -8561,7 +8737,9 @@ who_lane() {
 $wl_fk
 EOF
   fi
-  if ! lane_log_exists "$wl_lane"; then
+  wl_le=0; lane_log_exists "$wl_lane" || wl_le=$?
+  [ "$wl_le" != 69 ] || return 69               # feature 007, T505 Q3
+  if [ "$wl_le" != 0 ]; then
     printf 'no log for %s; see its row'"'"'s state cell\n' "$wl_lane"
     return 8
   fi
@@ -10316,6 +10494,8 @@ lanes_register_index() {   # [--local] [--cells]
 # — never to override a home that disagrees with it, which is the case
 # `openRepoTools#28` says must be SAID rather than filed twice.
 lanes_rows() {
+  lr_argv=(${1+"$@"}); lr_rf0=0          # feature 007, T505: for a mirror read begun part-way
+  [ -z "$SE_CACHE_FILE" ] || [ ! -e "$SE_CACHE_FILE.rfail" ] || lr_rf0=1
   lr_repo=""; lr_dir=""; lr_ws="$WS"; lr_here=0; lr_all=0; lr_one=""; lr_prefix=""
   lr_closed=0
   while [ $# -gt 0 ]; do
@@ -10373,6 +10553,7 @@ lanes_rows() {
     # not "no lane".
     lr_kl=""
     lr_kl="$(known_lanes 2>/dev/null)" || lr_klrc=$?
+    [ "$lr_klrc" != 69 ] || return 69             # feature 007, T505 Q3
     lr_names="$( { register_lanes 2>/dev/null || :; printf '%s\n' "$lr_kl"; } | awk -v sep="$US" 'NF && !seen[tolower($0)]++ { print tolower($0) sep $0 }')"
   fi
   # ONE PASS OVER EVERY LANE'S EVENTS, NOT ONE READ PER LANE PER FIELD.
@@ -10401,10 +10582,22 @@ lanes_rows() {
       lr_ev="$PIN_LANE_LOG_TEXT"; lr_evrc="$PIN_LANE_LOG_RC"
     else
       lr_ev="$(lane_log_events "$lr_one" checked 2>/dev/null)" || lr_evrc=$?
+      [ "$lr_evrc" != 69 ] || return 69           # feature 007, T505 Q3
     fi
     lr_facts="$(printf '%s\n' "$lr_ev" | lane_row_facts)"
   else
     lr_facts="$(state_events 2>/dev/null | lane_row_facts)"
+  fi
+  # ON PRIMARY A FAILED READ THESE PIPELINES LOST IS TOLD BY ITS FLAG (feature
+  # 007, T505 Q3): the register's rows and the events are no listing then.
+  ! reg_read_lost || return 69
+  # AND A MIRROR READ THAT BEGAN PART-WAY IS READ AGAIN WHOLE (feature 007,
+  # T505; lane 3, #165 6780364102): the listing is then the mirror's alone,
+  # never the register's lanes beside the mirror's events.
+  if [ "$lr_rf0" = 0 ] && [ "${REG_STORE:-}" = sql ] && [ "${REG_CLASS:-}" = mirror ] &&
+     [ -e "$SE_CACHE_FILE.rfail" ]; then
+    lanes_rows ${lr_argv[@]+"${lr_argv[@]}"}
+    return
   fi
   # AND A PUBLISHED LOG THAT COULD NOT BE READ IS NOT A LANE WITH NO LOG (#138
   # item 11). A lane absent from the facts is DORMANT below, and a log whose
@@ -10419,7 +10612,7 @@ lanes_rows() {
   lr_unread=" "; lr_unread_ok=1; lr_unread_paths=""; lr_unlisted=""
   if [ -z "$lr_one" ] && [ -z "$LANES_IDX_DIR" ]; then
     if [ -n "$SE_WARN_FILE" ]; then
-      lr_unread_paths="$(sed -n -e 's/^lanes-edit: unreadable log: \(.*\) — git could not read it.*$/\1/p' -e 's/^lanes-edit: unreadable log: \(.*\) — the file could not be read.*$/\1/p' "$SE_WARN_FILE" 2>/dev/null)"
+      lr_unread_paths="$(sed -n -e 's/^lanes-edit: unreadable log: \(.*\) — git could not read it.*$/\1/p' -e 's/^lanes-edit: unreadable log: \(.*\) — the file could not be read.*$/\1/p' -e 's/^lanes-edit: unreadable log: \(.*\) — another log differs from it only by case.*$/\1/p' -e 's/^lanes-edit: unreadable log: \(.*\) — the register.s second read did not bring it.*$/\1/p' "$SE_WARN_FILE" 2>/dev/null)"
       lr_unread=" $(printf '%s\n' "$lr_unread_paths" | awk 'NF { n = $0; sub(/^.*\//, "", n); sub(/\.md$/, "", n); print tolower(n) }' | tr '\n' ' ')"
       lr_unlisted="$(sed -n -e '/^lanes-edit: unlisted logs: /p' "$SE_WARN_FILE" 2>/dev/null)"
     else
@@ -17462,8 +17655,12 @@ worktree_rows() {   # [<canonical lane> [register-unread]]
   wr_partial=""
   wr_unlisted="the object logs under origin/$LANES_BRANCH:$LANES_LOG_PREFIX could not be listed"
   wr_reg_ok=1; wr_evrc=0; wr_lp=""; wr_unread_lanes=" "; wr_binding_unread=0
+  # FEATURE 007, T505 Q3 - ON PRIMARY A FAILED READ IS 69, passed on before
+  # the `PARTIAL` line reads any other code: it is no listing at all.
   if [ -z "$wr_one" ]; then
-    if ! register_text_checked >/dev/null 2>&1; then
+    wr_rtc=0; register_text_checked >/dev/null 2>&1 || wr_rtc=$?
+    [ "$wr_rtc" != 69 ] || return 69
+    if [ "$wr_rtc" != 0 ]; then
       wr_partial="the register $LANES_PATH could not be read"
       wr_reg_ok=0
     fi
@@ -17471,11 +17668,21 @@ worktree_rows() {   # [<canonical lane> [register-unread]]
     # each read that succeeds here is the text every read of the listing below
     # is handed, as the register's is its cache. `x` keeps the text's last
     # newline through the substitution.
-    wr_pin=""
-    if wr_pin="$(archive_text 2>/dev/null && printf x)"; then
+    wr_pin=""; wr_atc=0
+    wr_pin="$(archive_text 2>/dev/null && printf x)" || wr_atc=$?
+    [ "$wr_atc" != 69 ] || return 69
+    if [ "$wr_atc" = 0 ]; then
       PIN_ARCHIVE_TEXT="${wr_pin%x}"; PIN_ARCHIVE=1
     else
       wr_partial="${wr_partial:+$wr_partial; }the archive $LANES_ARCH_PATH could not be read"
+    fi
+    # ON PRIMARY THE LOG LIST IS PINNED FROM `.paths`, as `known_lanes` reads
+    # it, never `git ls-tree` (feature 007, T505 Q5; tasks:752).
+    wr_sql=0
+    if [ "${REG_STORE:-}" = sql ]; then
+      wr_m=0; reg_member paths || wr_m=$?
+      [ "$wr_m" != 69 ] || return 69
+      [ "$wr_m" != 0 ] || wr_sql=1
     fi
     # `known_lanes`' OWN TWO READS, which print what they could, because the
     # listing unions them with the register. The published list answers 1
@@ -17484,7 +17691,11 @@ worktree_rows() {   # [<canonical lane> [register-unread]]
     # whether each was made is asked here, for the `PARTIAL` line. WITH NO
     # `origin`, A DIRECTORY THAT IS THERE IS ASKED AS THE TREES' IS BELOW: `ls`
     # lists an `r--` one, whose files no glob can then open (N1 of the review).
-    if have_remote_ref; then
+    if [ "$wr_sql" = 1 ]; then
+      wr_pin=""
+      wr_pin="$(reg_log_paths && printf x)" || return 69
+      PIN_LOGS_TEXT="${wr_pin%x}"; PIN_LOGS=1
+    elif have_remote_ref; then
       wr_pin=""
       if wr_pin="$(git -C "$LANES_REPO" ls-tree --name-only "origin/$LANES_BRANCH" -- "$LANES_LOG_PREFIX" 2>/dev/null && printf x)"; then
         PIN_LOGS_TEXT="${wr_pin%x}"; PIN_LOGS=1
@@ -17500,6 +17711,7 @@ worktree_rows() {   # [<canonical lane> [register-unread]]
     [ "${2-}" != register-unread ] || wr_reg_ok=0
     wr_ev=""
     wr_ev="$(lane_log_events "$wr_one" checked 2>/dev/null)" || wr_evrc=$?
+    [ "$wr_evrc" != 69 ] || return 69             # feature 007, T505 Q3
     PIN_LANE_LOG_TEXT="$wr_ev"; PIN_LANE_LOG_RC="$wr_evrc"; PIN_LANE_LOG=1
     [ "$wr_evrc" = 0 ] || wr_lp="$(log_path_ci "$wr_one" 2>/dev/null || log_path_for "$wr_one")"
   fi
@@ -17515,13 +17727,14 @@ worktree_rows() {   # [<canonical lane> [register-unread]]
   # PARTIAL line below says where this read found those reads failed too.
   case "$wr_lrc" in
     0) : ;;
+    69) return 69 ;;                              # feature 007, T505 Q3
     8|1) [ -n "$wr_partial" ] || return "$wr_lrc" ;;
     *) return 1 ;;
   esac
   if [ -z "$wr_one" ] && [ "$wr_lrc" = 0 ]; then
     wr_ulogs=""; wr_urc=0; wr_ulist=""
     if [ -n "$SE_WARN_FILE" ] && [ -f "$SE_WARN_FILE" ]; then
-      wr_ulogs="$(sed -n -e 's/^lanes-edit: unreadable log: \(.*\) — git could not read it.*$/\1/p' -e 's/^lanes-edit: unreadable log: \(.*\) — the file could not be read.*$/\1/p' "$SE_WARN_FILE" 2>/dev/null)" || wr_urc=1
+      wr_ulogs="$(sed -n -e 's/^lanes-edit: unreadable log: \(.*\) — git could not read it.*$/\1/p' -e 's/^lanes-edit: unreadable log: \(.*\) — the file could not be read.*$/\1/p' -e 's/^lanes-edit: unreadable log: \(.*\) — another log differs from it only by case.*$/\1/p' -e 's/^lanes-edit: unreadable log: \(.*\) — the register.s second read did not bring it.*$/\1/p' "$SE_WARN_FILE" 2>/dev/null)" || wr_urc=1
       # THE EVENTS' OWN LIST OF THE LOGS (SHOULD-1(a)): where it failed, no
       # lane has the `dir` its trees are found under.
       wr_ulist="$(sed -n -e '/^lanes-edit: unlisted logs: /p' "$SE_WARN_FILE" 2>/dev/null)" || wr_urc=1
@@ -21305,7 +21518,7 @@ EOF
       case "$hi_rc" in
         0) : ;;
         2) exit 2 ;;
-        *) die "history could not read lane $lane's log (exit $hi_rc). That is NOT 'this lane has written no narrative' — a read that failed is never an answer (Amendment 7(d))." 1 ;;
+        *) reg_fail_end "$hi_rc"; die "history could not read lane $lane's log (exit $hi_rc). That is NOT 'this lane has written no narrative' — a read that failed is never an answer (Amendment 7(d))." 1 ;;
       esac
       hi_out="$(printf '%s\n' "$hi_lines" | awk -F"$US" -v since="$hi_since" '
         function pad(u) { return (length(u) == 17) ? substr(u, 1, 16) ":00Z" : u }
@@ -21371,6 +21584,7 @@ EOF
     lane="$(canon_lane "$lane")" || reg_exit $? 2          # Amendment 15: one name under any case
     ll_lines=""; ll_rc=0
     ll_lines="$(lane_log_events "$lane")" || ll_rc=$?
+    [ "$ll_rc" = 0 ] || reg_fail_end "$ll_rc"          # feature 007, T505 Q3: the arm ends by class
     [ "$ll_rc" = 0 ] || die "lane-last could not read lane $lane's log (exit $ll_rc). That is NOT 'this lane has no lane-kind line' (Amendment 7(d))." 1
     ll_out="$(printf '%s\n' "$ll_lines" | awk -F"$US" -v OFS='	' '
       $3 == "STARTED" || $3 == "PAUSED" || $3 == "RESUMED" || $3 == "ENDED" || $3 == "RETIRED" {
@@ -21605,7 +21819,7 @@ EOF
       0)  : ;;
       8)  exit 8 ;;
       64) die "usage: lanes [--repo <owner/repo>] [--dir <path>] [--prefix <repo>] [--ws <workstation>] [--here] [--all] [--closed] [--fetch] [--index]" 64 ;;
-      *)  die "the lane listing could not be read (exit $lns_rc)" 1 ;;
+      *)  reg_fail_end "$lns_rc"; die "the lane listing could not be read (exit $lns_rc)" 1 ;;
     esac
     [ -n "$lns_out" ] || exit 8
     printf '%s\n' "$lns_out"
@@ -23363,7 +23577,7 @@ EOF
       case "$wt_rc" in
         0) : ;;
         8) exit 8 ;;
-        *) die "the lane listing the inventory is read through could not be read (exit $wt_rc). That is NOT 'no worktree is inventoried' (Amendment 7(d))." 1 ;;
+        *) reg_fail_end "$wt_rc"; die "the lane listing the inventory is read through could not be read (exit $wt_rc). That is NOT 'no worktree is inventoried' (Amendment 7(d))." 1 ;;
       esac
       printf '%s\n' "$wt_out"
     fi
