@@ -16137,11 +16137,13 @@ binding_facts() {   # <lane> <host> <container> <window> <utc> <session> <window
 # 6807881675, batch c Q75). B14 tasks:1286's "Exit 2 where none of its tail
 # ran" stays for the binding's 2 after `committed`; this is not that 2. Its
 # parent takes it as a child that ended before `ready`: no commit call, and
-# the child's output and code are the run's end (Y:5016). Off the flag
+# the child's output and code are the run's end (Y:5016). It is a backstop that
+# no input reaches now, since T415's `pw_no_git_refuse` refuses LANES_NO_GIT=1
+# in the parent before its claim (review REV-W9f, N2). Off the flag
 # `REG_SCRATCH` is empty, and this returns at once.
 rh_after_committed() {   # <what the write was: the request, or the forced release>
   [ -z "$REG_SCRATCH" ] || [ -n "$REGISTER_SEQ" ] ||
-    die "request-handoff's ${1-write} returned in an attempt's child under LANES_REGISTER_SCRATCH without its seam's \`committed\` (LANES_NO_GIT=1 in this environment, or nothing staged), so this child made no commit call. Nothing after the seam runs: no pane is typed into, nothing is waited for, and nothing is said to be written (FR-024; Y:5011). It is an internal error of the write path. Nothing was sent." "$(pw_pre_rc)"
+    die "request-handoff's ${1-write} returned in an attempt's child under LANES_REGISTER_SCRATCH without its seam's \`committed\` (LANES_NO_GIT=1 in this environment, though the parent's \`pw_no_git_refuse\` refuses that flag before its claim, or nothing staged), so this child made no commit call. Nothing after the seam runs: no pane is typed into, nothing is waited for, and nothing is said to be written (FR-024; Y:5011). It is an internal error of the write path. Nothing was sent." "$(pw_pre_rc)"
 }
 
 # The UTC of the lane's last `STARTED` or `RESUMED` — Amendment 18(b)'s BINDING,
