@@ -13211,6 +13211,27 @@ guard_lane_start() {
   command -v lane-start 2>/dev/null || printf ''
 }
 
+# FEATURE 007, T507 - SVC-8's BUDGET LINES, ONE SET OF CONSTANTS (the design's
+# SVC-8 budget table; tasks.md T507). Each is a time after `T0`, the hook's own
+# start, which the guard hands `lanes-index` as `--pid $$`:
+#   START   the parse's start line: a register read has ended by then, or it is
+#           cut, and `lanes-index` answers "too late to verify" (form 2's cap,
+#           and form 4's cut whatever a declaration says; under an unexpired
+#           declaration the direct read is capped 0.1 s earlier, so the mirror
+#           path has started by this line);
+#   MIRROR  the parses and the decision, or the mirror path's reads and parse,
+#           are done: the 0.5 s reserve, which lane 2 measured;
+#   LAST    the guard has printed its answer and exited, 0.1 s inside the
+#           test's "under 4.5 s".
+# LAST is below the installer's `GUARD_TIMEOUT=5` (`openRepoTools`), which the
+# hook string keeps, and a test holds it there. The reserves are measured
+# shares, not bounds bash can enforce (it has no clock finer than `SECONDS`), so
+# nothing below times itself against them: the cut runs inside `lanes-index`
+# (contract 2.4). One line each, at column 0, as the test reads them.
+GUARD_BUDGET_START_MS=3750
+GUARD_BUDGET_MIRROR_MS=4250
+GUARD_BUDGET_LAST_MS=4400
+
 # ------------------------------------------------------- the triple, printed
 #
 # EVERY REFUSAL PRINTS THE THREE NAMES AS THEY STAND, and prints them ONCE
@@ -13279,6 +13300,108 @@ guard_refuse() {
   note "$1"
   [ -n "${2-}" ] && note "run: $2"
   return 2
+}
+
+# FEATURE 007, T507 - THE GUARD'S ONE PREFETCH, form 2 (contract 3.6; tasks.md
+# T507; the design's SVC-8): `lanes-index register read --for guard --prefetch
+# --cache "$SE_CACHE_FILE" --pid $$ --repo "$LANES_REPO" --lane=<window>`, made
+# once, after the guard's session-record check and before its first register
+# read, with no git read ahead of it (lane 3's T507 rulings (1) and (2), #165
+# 6783977598). `$$` is the hook's own pid, whose start is `T0`, inside `(
+# guard_run )` and any `$( )` alike. `--lane=` is left out where the window has
+# no name, since an empty one is 64 (L1-D1). Only on a configured workstation
+# (`reg_config_present`, D3): with none, nothing is started and the mode is
+# files. It is made in the door's call form (`reg_prefetch`): stdout and stderr
+# in files beside the cache, and no timer around it, since the cut runs inside
+# `lanes-index` (contract 2.4). It sets `REG_MODE`, and `REG_STORE` for the
+# read sites, and maps form 2's exits (W:4291-4299; contract 3.6's table):
+#   0, `mode primary`  REG_STORE=sql: the guard's reads take the family it
+#                      wrote at one `n` (`.register`, `.aliases`,
+#                      `.log.<window>`; C9), and a log it did not cache is one
+#                      form-4 read (`reg_second_read`)
+#   0, `mode index`    today's guard, on the files
+#   69                 the store's failed read (`reg_guard_outage`)
+#   2                  "too late to verify": refused, 2
+#   78                 Q6(c)'s refusal of `mode=primary`: refused, 2
+#   any other          1 among them (a refused configuration cannot be told
+#                      from a crash's 1, O14), 64, a signal, or a 0 it cannot
+#                      read: one warning, then files mode
+# A refusal is printed here, by `guard_refuse`, and returns 2 for `guard_run`
+# to pass on; every other end is 0, and `REG_MODE` says which way to read on.
+reg_guard_prefetch() {
+  REG_STORE=files; RG_WHY=""; RG_SAID=""
+  if ! reg_config_present; then REG_MODE=files; return 0; fi
+  rgp_bin="$(lanes_index_bin)"
+  if [ -z "$rgp_bin" ]; then
+    reg_guard_files "could not be run: there is no lanes-index beside $SCRIPT_DIR/lanes-edit.sh or on PATH"
+    return 0
+  fi
+  if [ -z "$SE_CACHE_FILE" ]; then
+    reg_guard_files "could not be asked: no cache file could be made under ${TMPDIR:-/tmp} to hold its answer"
+    return 0
+  fi
+  rgp_argv=(register read --for guard --prefetch --cache "$SE_CACHE_FILE" --pid "$$" --repo "$LANES_REPO")
+  [ -z "$G_WINNAME" ] || rgp_argv+=("--lane=$G_WINNAME")
+  rgp_rc=0
+  ( "$rgp_bin" "${rgp_argv[@]}" </dev/null >"$SE_CACHE_FILE.door-out" 2>"$SE_CACHE_FILE.door-err"; exit "$?" ) 2>/dev/null || rgp_rc=$?
+  rgp_out="$(cat -v -- "$SE_CACHE_FILE.door-out" 2>/dev/null; printf .)"; rgp_out="${rgp_out%.}"
+  # WHAT IT SAID: its first line, the cause (contract 3.6: under `--for guard`
+  # a 69's first stderr line is the cause the guard quotes), and all of it as
+  # one line for a refusal or a warning, control characters dropped, at most
+  # 1000 bytes, as `reg_prefetch` keeps them.
+  RG_WHY="$(head -n 1 -- "$SE_CACHE_FILE.door-err" 2>/dev/null | head -c 300 | tr -d '\000-\037' || :)"
+  RG_SAID="$(head -c 1000 -- "$SE_CACHE_FILE.door-err" 2>/dev/null | tr '\n\r\t' '   ' | tr -d '\000-\037' || :)"
+  while [ "${RG_SAID% }" != "$RG_SAID" ]; do RG_SAID="${RG_SAID% }"; done
+  rm -f -- "$SE_CACHE_FILE.door-out" "$SE_CACHE_FILE.door-err"
+  case "$rgp_rc" in
+    0)
+      case "$rgp_out" in
+        "mode primary"|"mode primary"$'\n') REG_MODE=primary; REG_STORE=sql; return 0 ;;
+        "mode index"|"mode index"$'\n') REG_MODE=index; reg_flush; return 0 ;;
+      esac
+      reg_guard_files "exited 0 without answering one line, mode index or mode primary"
+      return 0 ;;
+    69)
+      REG_MODE=primary
+      reg_guard_outage
+      return ;;
+    2)
+      REG_MODE=primary
+      guard_refuse "it is too late in the hook's 5 s to verify the triple: the guard's register read would have started at or past its start line, T0 + ${GUARD_BUDGET_START_MS} ms, or was cut there (\`lanes-index register read --for guard --prefetch\` exited 2${RG_SAID:+: $RG_SAID}). A triple that cannot be verified is not a triple that agrees, so this prompt is refused, and the next one is read afresh (Amendment 12(d); feature 007, SVC-8)."
+      return 2 ;;
+    78)
+      REG_MODE=refused
+      guard_refuse "the register could not be read: \`lanes-index register read --for guard --prefetch\` exited 78, EX_CONFIG, so lanes-index refuses this workstation's mode=primary in this build${RG_SAID:+ ($RG_SAID)}, and the ROW cannot be read nor the triple verified (Amendment 12(d); feature 007, Q6(c)). Install the lanes-edit.sh and lanes-index that ship together. $(guard_bypass)"
+      return 2 ;;
+  esac
+  reg_guard_files "exited $rgp_rc${RG_SAID:+ ($RG_SAID)}"
+  return 0
+}
+
+# A PREFETCH THAT FAILED, which is not a failed read: one warning line naming
+# it, then files mode, as on a workstation with no configuration (W:4299;
+# F8). Whatever a call that failed may have left beside the cache is dropped
+# first, so files mode never reads it.
+reg_guard_files() {   # <why>
+  note "WARNING: \`lanes-index register read --for guard --prefetch\` $1, so the guard reads in files mode, as on a workstation with no lanes-index configuration (feature 007, D3)."
+  REG_MODE=files; REG_STORE=files
+  reg_flush
+}
+
+# FORM 2's 69, THE STORE'S FAILED READ (W:4294; contract 3.6): the guard
+# refuses 2 with S3's outage text.
+reg_guard_outage() {
+  reg_guard_s3 ""
+  return 2
+}
+
+# S3'S OUTAGE TEXT (Y:4343, Y:4475; contract 3.6): the store, the cause and the
+# two ways out, as one refusal. The store is named as `lanes-index` named it,
+# its whole stderr quoted with the cause first: this file never parses the
+# configuration (D3), so it names the store no other way. <why> says why no
+# declaration opened the mirror path, where one was in place.
+reg_guard_s3() {   # [<why the mirror path did not open>]
+  guard_refuse "the register's SQL store did not answer the guard's read, so the ROW cannot be read and the triple cannot be verified, and an indeterminate read refuses (Amendment 12(d); feature 007, S3). \`lanes-index register read --for guard --prefetch\` exited 69: ${RG_SAID:-it printed no cause}.${1:+ $1} The two ways out, each from a shell or a \`CLAUDE_NO_LANE=1\` session: \`lanes-index status\`, which says whether this workstation reaches the database and what is in place for it; or, on Brett's word, \`lanes-index rollback\`, which takes the estate back to the files. $(guard_bypass)"
 }
 
 # ============================== `guard` ==============================
@@ -13418,6 +13541,15 @@ guard_run() {   # <the hook's JSON, on stdin already read>
     case "$gr_tgt" in *.%*) gr_pane="${gr_tgt##*.}" ;; esac
   fi
 
+  # ---- FEATURE 007, T507 - THE GUARD'S ONE PREFETCH (`reg_guard_prefetch`),
+  # HERE: after the session-record check, so a session with no window or no
+  # record has been refused before any read (lane 3's T507 ruling (1), #165
+  # 6783977598), and before the guard's FIRST register read, the text test
+  # below, with no git read ahead of it (ruling (2)). On primary every read
+  # below takes the cache family it wrote at one `n`; a refusal it has printed
+  # is this prompt's 2.
+  reg_guard_prefetch || return 2
+
   # ---- THE REGISTER'S TEXT, TESTED POSITIVELY, ONCE, BEFORE THE ROW IS READ
   # (openRepoTools#60). `register_text` prefers `origin/<branch>` and falls back
   # to this checkout's file, and where both come back empty — a file this
@@ -13437,8 +13569,14 @@ guard_run() {   # <the hook's JSON, on stdin already read>
   # render the first read below would have made, moved here — `GIT_TRACE` counts
   # one `git show` of the register per prompt with this test and without it. It
   # is streamed and not captured: `$( )` of the same megabyte measured ~30 ms.
+  # ON PRIMARY (feature 007, T507) the text is the prefetch's `.register`, and
+  # the refusal names that read, never git or this checkout's file.
   if ! register_text 2>/dev/null | awk 'NF { t = 1 } END { exit !t }'; then
-    guard_refuse "the register's TEXT could not be read — neither \`origin/$LANES_BRANCH:$LANES_PATH\` nor $LANES_FILE rendered a line — so the ROW cannot be read and the triple cannot be verified. A register that could not be read is not a register with no row for this lane, and an indeterminate read refuses (Amendment 12(d)). $(guard_bypass)"
+    if [ "${REG_STORE:-}" = sql ]; then
+      guard_refuse "the register's TEXT could not be read from the guard's register read at seq $(reg_head_n) — $LANES_PATH rendered no line from the cache beside $SE_CACHE_FILE, or that cache is not whole — so the ROW cannot be read and the triple cannot be verified. A register that could not be read is not a register with no row for this lane, and an indeterminate read refuses (Amendment 12(d); feature 007, T507). $(guard_bypass)"
+    else
+      guard_refuse "the register's TEXT could not be read — neither \`origin/$LANES_BRANCH:$LANES_PATH\` nor $LANES_FILE rendered a line — so the ROW cannot be read and the triple cannot be verified. A register that could not be read is not a register with no row for this lane, and an indeterminate read refuses (Amendment 12(d)). $(guard_bypass)"
+    fi
     return 2
   fi
 
