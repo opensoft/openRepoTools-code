@@ -2850,10 +2850,14 @@ cs_refuse() {   # <what> <why> [<recovery line>…]
   die "refusing to $csr_what in $LANES_REPO: $csr_why. Nothing was written." 2
 }
 # The pathspecs among <pathspec>… that differ from HEAD, staged or not. Exact
-# and in the C locale, because they are compared as strings.
-cs_pending_of() {   # <pathspec>…
+# and in the C locale, because they are compared as strings. With
+# `--no-renames` first, a rename among them is listed as both its paths, not
+# its new path alone (review REV415c, N3); without it, as before.
+cs_pending_of() {   # [--no-renames] <pathspec>…
+  local cpo_r=""
+  if [ "${1-}" = --no-renames ]; then cpo_r="--no-renames"; shift; fi
   [ "$#" -gt 0 ] || return 0
-  LC_ALL=C git -C "$LANES_REPO" -c "$CP_EXACT" -c core.quotePath=false diff --name-only HEAD -- "$@" 2>/dev/null || :
+  LC_ALL=C git -C "$LANES_REPO" -c "$CP_EXACT" -c core.quotePath=false diff ${cpo_r:+"$cpo_r"} --name-only HEAD -- "$@" 2>/dev/null || :
 }
 # A PENDING HAND EDIT OF THE REGISTER REFUSES EVERY WRITER BUT `commit` (S3
 # step 4, ratified choice 9). A lane's session and its subagents share this
@@ -6054,9 +6058,13 @@ pw_no_git_refuse() {
 # `commit_hand_edit_refuse` gives it, not `checkout HEAD --`, which fails for a
 # staged new file that HEAD lacks (lane 3, #165 6774499606, T420 5(a); review
 # REV420b, N3). The restore deletes such a file, so reading it stays first.
+# The files are listed with `--no-renames`, so a `git mv` of a rendered file
+# names both its paths, and one restore undoes it; without it, rename
+# detection named the new path alone, and the old one's deletion was left for
+# a second refusal (review REV415c, N3).
 pw_hand_edit_refuse() {
   local ph_hits="" ph_p="" ph_l="" ph_q="" ph_c=""
-  ph_hits="$(LANES_REPO="$PW_C" cs_pending_of lanes/LANES.md lanes/aliases.tsv lanes/log lanes/archive)"
+  ph_hits="$(LANES_REPO="$PW_C" cs_pending_of --no-renames lanes/LANES.md lanes/aliases.tsv lanes/log lanes/archive)"
   while IFS= read -r ph_p; do
     [ -n "$ph_p" ] || continue
     cp_seam_render_path "$ph_p" || continue
