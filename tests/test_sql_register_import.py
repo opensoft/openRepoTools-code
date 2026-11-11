@@ -863,12 +863,24 @@ def test_main_slots_pairing_equals_files_mode_rule_6_on_imported_history(pg, tmp
         assert s["repo"].endswith(t[2].split("/")[-1]), (s, t)
 
 
+#: The verbs whose log line gives `bind:L` (design.md:1493 at spec#17
+#: `8523aa0c`, the `bind:L` row: "a line of `lanes/log/L.md` whose verb ... is
+#: `STARTED`, `RESUMED`, `PAUSED`, `ENDED`, `RETIRED` or `RENAMED`"), as SQL's
+#: `line_scopes` gives it. A `NOTED`, `RULED` or `HANDOFF-REQUESTED` line on a
+#: `lane:` object gives none (design.md:5666; test-plan.md:4983-4986; lane 1's
+#: triage, group 2, #165 comment 6807494089).
+BIND_VERBS = ("STARTED", "RESUMED", "PAUSED", "ENDED", "RETIRED", "RENAMED")
+
+
 def _build_records_scopes(mod, path: str, text: str) -> set:
     """The scopes `build_records`' own reads give one line in Python (the
     test plan's S7 agreement test): a row's lane by `row_name` in
-    `LANES.md` or the archive, an archived row's normalized key, a lane-kind
-    log line's lane by `parse_log_line` in the log `file_lane` names, an
-    alias line's first two fields, and every uuid `UUID_RE` finds."""
+    `LANES.md` or the archive, an archived row's normalized key, a
+    lane-kind log line's lane by `parse_log_line` in the log `file_lane`
+    names, where its object is `lane:...` and its verb is one of
+    `BIND_VERBS` (so the fixture's `NOTED` lines in `repoA-2` and
+    `repoW-1` give no `bind:`), an alias line's first two fields, and
+    every uuid `UUID_RE` finds."""
     scopes = set()
     if path in ("lanes/LANES.md", "lanes/archive/LANES-retired.md"):
         name = mod.row_name(text)
@@ -885,7 +897,8 @@ def _build_records_scopes(mod, path: str, text: str) -> set:
                 scopes |= {"alias:" + parts[0].strip().lower(), "alias:" + parts[1].strip().lower()}
     elif path.startswith("lanes/log/"):
         parsed = mod.parse_log_line(text)
-        if parsed and str(parsed.get("object", "")).startswith("lane:"):
+        if (parsed and str(parsed.get("object", "")).startswith("lane:")
+                and parsed.get("verb") in BIND_VERBS):
             scopes.add("bind:" + mod.file_lane(path).lower())
     return scopes
 
