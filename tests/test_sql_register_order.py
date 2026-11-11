@@ -72,6 +72,7 @@ import pytest
 from pgcluster import SUPERUSER, Database
 from sql_register_helpers import (LANES_INDEX, PSQL_SHIM, PSQL_SHIM_CONTROL, PSQL_SHIM_ENDS,
                                   PSQL_SHIM_LOG, REPO, flipped_copy)
+from test_lane_start_claude_current import Sandbox
 
 REGISTER = "lanes_register"
 IMPORTED = "tmpl_imported"
@@ -1730,14 +1731,15 @@ def test_seam_out_is_written_once_before_the_child_acts(estates, decision):
 # `act-begin`, exports `LANES_ACT=<id>@<n>:<generation>`, and each write
 # carries `LANES_EXPECT="<scope> ..."`; the commit refuses with LR009, the
 # writer with 2, `expectation: <scope> changed at seq <k> by <lane>/<verb>`,
-# when an entry of another act touched a listed scope after the base. On
-# test 4's estate (T243's `Estate`); the act's write is held at its commit
-# call by the shim while a rival from a second session commits. The writes
-# here are `append-line` of a row-shaped line (`row:<L>`) and `log`
-# (`objects:<L>`), a reading of lane 1's derived keys. The three conditions
-# and the launches are read from lane 4's tools' text (a reading: their
-# flows are T428-T432's). They FAIL UNTIL L1-A6, L4-A2 (T410), L4-B3 and
-# L4-B14 land; without PostgreSQL 16 the RE cases skip.
+# when an entry of another act touched a listed scope after the base. The two
+# race functions run lane 4's acts to each write of its tables, on a world of
+# their own (T252b, below). The other cases run on test 4's estate (T243's
+# `Estate`), where the writes are `append-line` of a row-shaped line
+# (`row:<L>`) and `log` (`objects:<L>`), a reading of lane 1's derived keys.
+# The three conditions and the launches are read from lane 4's tools' text (a
+# reading: their flows are T428-T432's, and lane 3's batch 7 asks that they
+# run the flows). They FAIL UNTIL L1-A6, L4-A2 (T410), L4-B3 and L4-B14 land;
+# without PostgreSQL 16 the RE cases skip.
 
 ACT_RE = re.compile(r"^[0-9a-f]{32}@[1-9][0-9]*:" + UUID_RE + r"$|^[0-9a-f]{32}@0:" + UUID_RE + r"$")
 
@@ -1761,50 +1763,294 @@ def acted(act: str, *scopes: str) -> dict:
     return {"LANES_ACT": act, "LANES_EXPECT": " ".join(scopes)}
 
 
-def raced(e: Estate, scope: str, rival_scope: Optional[str]) -> Tuple[Writer, Optional[Writer], str]:
-    """The act's write held at its commit call while a rival from a second
-    session (no act) commits on `rival_scope`; then released."""
-    act = act_begin(e)
-    fifo = e.root / f"hold-{len(e.writers)}.fifo"
+# ---------------------------------------- the race, on each write of lane 4's tables (T252b)
+#
+# TP:5848-5853 parametrise the race "for each write of lane 4's tables", and
+# lane 3's batch 7 (ruling 5) takes one id per write and drops `[row|objects]`,
+# since T233's group A cases hold the commit's half. So each case runs the act,
+# lane 4's own tool, to that write on a workstation at `primary`; the shim
+# holds that write's commit call; a rival from a second session commits; and
+# the hold is let go (TP:5854-5856). The rival writes the lane's own `PAUSED`
+# in its log, as a forced release does (Y:5675): a lane-kind line, `bind:<L>`,
+# which every write of the tables lists (Y:5640-5680), W1's new lane aside,
+# whose rival is a row line for it, `row:<L>`. The held case's rival writes
+# the same line for another lane, which no write of the act lists.
+#
+# THE WORLD is `test_lane_start_claude_current`'s `Sandbox` (fake `tmux`,
+# `claude` and `gh`) holding the register N1's arms run on (lane 2's T217):
+# repoA-1 PAUSED here, repoA-2 LIVE here, repoA-3 LIVE on Falcon, repoH-1
+# PAUSED here long ago, and no repoZ-1. It is imported into a clone of `tmpl`
+# that `Clone.to_primary` brings to `primary`, with the flipped `lanes-index`
+# beside `lanes-edit.sh` and `mode=primary` configured, as test 4's estate is.
+# Readings: each act's argv (N1's arms at `2a057a6d`, with `--no-launch` for
+# W1, `lane-end --retire-dormant` and `lane --request-handoff`); the write's
+# commit call, found by a text its entry's JSON carries (its verb, or its
+# line's kind, lane or state); the skill's step-4 block, the fenced block of
+# its section 4 that opens with `act-begin`; and the guard's child, run as
+# T502 writes its body, `guard-bind --body <uuid>`, whose record's path T502
+# owns.
+#
+# They FAIL UNTIL L1-A6, L4-A2 (T410, T411), L4-B3, L4-B5 and L4-B14 (T428 to
+# T432) land; the skill's id also until T431's block, and the guard's until
+# T502's `guard-bind` and T510's expectations on its `set-row-state`. Without
+# PostgreSQL 16 each skips.
+
+#: The em dash as the entry's ASCII JSON spells it.
+EM_JSON = json.dumps(EM)[1:-1]
+#: The world's lanes (N1's arms) and their sessions.
+R_PAUSED, R_HERE, R_FAR, R_DORMANT, R_NEW = "repoA-1", "repoA-2", "repoA-3", "repoH-1", "repoZ-1"
+R_SID = {R_PAUSED: "aaaaaaaa-0002-4000-8000-00000000a002", R_HERE: "aaaaaaaa-0003-4000-8000-00000000a003",
+         R_FAR: "aaaaaaaa-0253-4000-8000-00000000a253", R_DORMANT: "aaaaaaaa-0254-4000-8000-00000000a254",
+         R_NEW: "aaaaaaaa-0255-4000-8000-00000000a255"}
+#: For each lane, a lane that none of its acts' writes lists (the held case).
+R_OTHER = {R_PAUSED: R_FAR, R_HERE: R_FAR, R_FAR: R_HERE, R_DORMANT: R_FAR, R_NEW: R_FAR}
+
+
+def verb_is(verb: str) -> str:
+    return f'"verb":"{verb}"'
+
+
+def lane_line(kind: str, lane: str) -> str:
+    return f"{kind} {EM_JSON} lane {lane}"
+
+
+class ActWrite:
+    """One write of lane 4's tables: the act that makes it (`tool`, `argv`),
+    the lane it writes, its commit call (`match`, a text its entry carries,
+    the first commit call that carries it), the rival's line (`bind`, the
+    lane's `PAUSED`; `row`, a row line), and the act's exit where lane 4's
+    arm names one for a refused write (`code`; else only never 0)."""
+
+    def __init__(self, tool: str, argv: Tuple[str, ...], lane: str, match: str, rival: str = "bind",
+                 code: Optional[int] = None, env: Optional[dict] = None) -> None:
+        self.tool, self.argv, self.lane, self.match = tool, argv, lane, match
+        self.rival, self.code, self.env = rival, code, env or {}
+
+
+_HANDOFF = ("--lane", R_HERE, "T252b's race")
+#: TP:5848-5853's list, in its order: `lane-start`'s W1, W8 and `start-record`
+#: (W2 to W7); `lane-handoff`'s late `log PAUSED --utc`, W9, W11 and W12;
+#: `lane-end`'s W13, W14 and `retire-rows`; the handoff skill's step-4 writes;
+#: the guard's answer 2, its child's `set-row-state` on the lane left; and
+#: `lane`'s `request-handoff`. The codes: `start-record`'s and W1's 2 die 2
+#: (T428, "any 2 dies"); W8's arm passes the code (T428); `:2817` keeps 2
+#: (T429); W13 under `set -e` and W14's note arm exit with the writer's code
+#: (T430); `lane`'s arm keeps 1 for a 2 (T432).
+ACT_WRITES = {
+    "lane-start-w1-add-row": ActWrite("lane-start", ("repoZ", "1", "--no-launch"), R_NEW,
+                                      verb_is("add-row"), rival="row", code=2),
+    "lane-start-w8-request-handoff": ActWrite("lane-start", ("repoA", "3", "--request-handoff", "--dir",
+                                                             "{lane_dir}"), R_FAR,
+                                              verb_is("request-handoff"), code=2),
+    "lane-start-start-record": ActWrite("lane-start", ("repoA", "1"), R_PAUSED, verb_is("start-record"),
+                                        code=2),
+    "lane-handoff-late-paused": ActWrite("lane-handoff", ("--late", "--at", "{utc}", *_HANDOFF), R_HERE,
+                                         lane_line("PAUSED", R_HERE), code=2),
+    "lane-handoff-w9-log-paused": ActWrite("lane-handoff", _HANDOFF, R_HERE, lane_line("PAUSED", R_HERE)),
+    "lane-handoff-w11-append-line": ActWrite("lane-handoff", _HANDOFF, R_HERE, verb_is("append-line")),
+    "lane-handoff-w12-set-row-state": ActWrite("lane-handoff", _HANDOFF, R_HERE, verb_is("set-row-state")),
+    "lane-end-w13-set-row-state": ActWrite("lane-end", (R_HERE,), R_HERE, verb_is("set-row-state"), code=2),
+    "lane-end-w14-log-ended": ActWrite("lane-end", (R_HERE,), R_HERE, lane_line("ENDED", R_HERE), code=2),
+    "lane-end-retire-rows": ActWrite("lane-end", ("--retire-dormant", "30", "--yes", "--reason=T252b's race"),
+                                     R_DORMANT, verb_is("retire-rows"), env={"LANES_LANE": R_HERE}),
+    "skill-step-4-writes": ActWrite("skill", (), R_HERE, lane_line("PAUSED", R_HERE)),
+    "guard-answer-2-child": ActWrite("guard", ("guard-bind", "--body", R_SID[R_PAUSED]), R_HERE,
+                                     verb_is("set-row-state"), env={"LANES_LANE": R_PAUSED}),
+    "lane-request-handoff": ActWrite("lane", (R_FAR, "--request-handoff"), R_FAR, verb_is("request-handoff"),
+                                     code=1),
+}
+
+
+class ActWorld(Sandbox):
+    """A workstation at `primary` whose lanes' acts run their own tools (see
+    the section's head)."""
+
+    def __init__(self, root: Path, c: "Clone") -> None:
+        super().__init__(root)
+        self.c = c
+        for name in ("lane-end", "lane", "lane-handoff", "lanes"):
+            shutil.copy2(str(REPO / name), str(self.bin / name))
+            (self.bin / name).chmod(0o755)
+        self.resolver()
+        seat = "Eagle / test / brett"
+        rows = [(R_PAUSED, seat, "2026-10-01T00:00Z", f"PAUSED {DOT} 2026-10-01T01:00:00Z {DOT} parked"),
+                (R_HERE, seat, "2026-10-01T02:00Z", f"LIVE {DOT} 2026-10-01T02:00:00Z {DOT} working"),
+                (R_FAR, "Falcon / test / brett", "2026-10-01T02:30Z",
+                 f"LIVE {DOT} 2026-10-01T02:30:00Z {DOT} working elsewhere"),
+                (R_DORMANT, seat, "2026-10-01T03:00Z", f"PAUSED {DOT} 2026-10-01T03:30:00Z {DOT} parked")]
+        lanes = self.wip / "lanes"
+        (lanes / "log").mkdir(exist_ok=True)
+        with open(lanes / "LANES.md", "a", encoding="utf-8") as handle:
+            for lane, ws, utc, state in rows:
+                handle.write(f"| `{lane}` | harness `{R_SID[lane]}` | {ws} | {utc} | none "
+                             f"| handoffs/{lane}.md | {state} |\n")
+        for lane, ws, utc, state in rows:
+            host = ws.split(" ")[0]
+            text = (f"STARTED {EM} lane {lane}, session {R_SID[lane]}@{host}, {utc[:-1]}:00Z, "
+                    f"lane:{lane} {ARROW} home opensoft/repoA; dir {self.lane_dir}; profile team-01a\n")
+            if state.startswith("PAUSED"):
+                text += (f"PAUSED {EM} lane {lane}, session {R_SID[lane]}@{host}, {state.split(' ')[2]}, "
+                         f"lane:{lane} {ARROW} dir {self.lane_dir}; profile team-01a; agent claude; "
+                         f"transcript {R_SID[lane]}\n")
+            (lanes / "log" / f"{lane}.md").write_text(text, encoding="utf-8")
+        self.git("-C", str(self.wip), "add", "-A")
+        self.git("-C", str(self.wip), "commit", "-q", "-m", "T252b's register")
+        self.git("-C", str(self.wip), "push", "-q", "origin", "main")
+        self.git("-C", str(self.ws), "pull", "-q", "--ff-only")
+        import_files(c, {str(p.relative_to(self.wip)): p.read_text(encoding="utf-8")
+                         for p in sorted(lanes.rglob("*.md"))})
+        assert c.to_primary() == 1, "T252b's cutover is not at seq 1"
+        flipped_copy(LANES_INDEX, self.bin, True)
+        conf = self.home / ".config" / "openRepoTools" / "lanes-index.conf"
+        conf.parent.mkdir(parents=True, exist_ok=True)
+        conf.write_text(f"mode=primary\nregister_url={c.db.url(WRITER_LOGIN)}\nreader_url={c.db.url()}\n",
+                        encoding="utf-8")
+        conf.chmod(0o600)
+        path = os.pathsep.join(p for p in self.env["PATH"].split(os.pathsep)
+                               if p and not os.path.exists(os.path.join(p, "psql"))
+                               and (p == str(self.bin) or not os.path.exists(os.path.join(p, "lanes-index"))))
+        self.env.pop("LANES_INDEX", None)
+        self.env.update(PATH=path, LANES_INDEX_CONFIG=str(conf), LANES_EDIT=str(self.bin / "lanes-edit.sh"),
+                        XDG_STATE_HOME=str(root / "state"), FAKE_CC_PATH=str(self.resolved),
+                        LANES_HOST="eagle", LANES_OS="linux", LANES_CONTAINER="none", LANES_IN_CONTAINER="0")
+        self._n = itertools.count(1)
+        self.writers: List[Writer] = []
+
+    def psql_dir(self, name: str, arms: Sequence[dict] = ()) -> Path:
+        return Estate.psql_dir(self, name, arms)  # the same stamp and shim as test 4's
+
+    def launch(self, name: str, command: Sequence[str], lane: str, arms: Sequence[dict] = (),
+               extra: Optional[dict] = None) -> Writer:
+        psql = self.psql_dir(f"{next(self._n):02d}-{name}", arms)
+        env = dict(self.env, LANES_LANE=lane, LANES_SESSION=R_SID[lane])
+        env.update(extra or {})
+        env["PATH"] = str(psql) + os.pathsep + env["PATH"]
+        proc = subprocess.Popen(list(command), cwd=str(self.lane_dir), env=env, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8",
+                                errors="replace", start_new_session=True)
+        writer = Writer(name, lane, proc, psql)
+        self.writers.append(writer)
+        return writer
+
+    def act(self, write: ActWrite, arms: Sequence[dict]) -> Writer:
+        """The act that makes `write`, run by its own tool."""
+        if write.tool == "skill":
+            block = skill_step_4_block()
+            return self.launch("skill", ["bash", "-c", block], write.lane, arms, write.env)
+        if write.tool == "guard":
+            return self.launch("guard", ["bash", str(self.bin / "lanes-edit.sh"), *write.argv], write.lane,
+                               arms, write.env)
+        utc = self.c.value("SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"');")
+        argv = [a.format(lane_dir=self.lane_dir, utc=utc) for a in write.argv]
+        return self.launch(write.tool, [str(self.bin / write.tool), *argv], write.lane, arms, write.env)
+
+    def rival(self, kind: str, lane: str) -> Writer:
+        """A second session's write: `bind`, the lane's own `PAUSED` in its
+        log (lane-handoff's W9 form); `row`, a row line for the lane."""
+        edit = ["bash", str(self.bin / "lanes-edit.sh")]
+        if kind == "bind":
+            argv = ["log", "PAUSED", f"lane:{lane}", ARROW, "T252b's rival", "the rival's release"]
+        else:
+            argv = ["append-line", f"| `{lane}` | harness `{R_SID[lane]}` | Eagle / test / brett "
+                                   f"| 2026-11-01T00:00Z | none | handoffs/{lane}.md | T252b's rival row |"]
+        w = self.launch("rival", [*edit, *argv], lane)
+        w.wait()
+        return w
+
+
+def skill_step_4_block() -> str:
+    """The handoff skill's step-4 block that opens with `act-begin` (T431;
+    Y:5678), the first fenced `bash` block of its section 4 that holds it."""
+    text = (REPO / "skills" / "handoff" / "SKILL.md").read_text(encoding="utf-8")
+    section = text.split("\n## 4.", 1)[-1].split("\n## 5.", 1)[0]
+    blocks = re.findall(r"```(?:bash|sh)\n(.*?)```", section, re.S)
+    found = [b for b in blocks if "act-begin" in b]
+    assert found, "skills/handoff/SKILL.md's step 4 has no block that opens with act-begin (T431)"
+    return found[0]
+
+
+@pytest.fixture()
+def act_worlds(pg_cluster, tmp_path):
+    """T252b's worlds, each on a clone of `tmpl` of its own."""
+    made: List[str] = []
+    alive: List[ActWorld] = []
+
+    def make() -> ActWorld:
+        name = f"t252_{next(_NAMES)}"
+        pg_cluster.psql(f"CREATE DATABASE {name} TEMPLATE {W_TEMPLATE};")
+        made.append(name)
+        found = pg_cluster.psql(f"SELECT to_regclass('{REGISTER}.register_head') IS NOT NULL;", dbname=name)
+        assert found.stdout.strip() == "t", (
+            f"{W_TEMPLATE} holds no {REGISTER} schema: lane 2's T227 builds it by the bootstrap")
+        pg_cluster.psql(f"REVOKE ALL ON DATABASE {name} FROM PUBLIC;\n"
+                        f"GRANT CONNECT ON DATABASE {name} TO {CONNECT_TO};\n")
+        alive.append(ActWorld(tmp_path / f"world-{len(made)}", Clone(pg_cluster, name)))
+        return alive[-1]
+
+    yield make
+    for world in alive:
+        for w in world.writers:
+            if w.ended is None and w.proc.poll() is None:
+                os.killpg(w.proc.pid, 9)
+    for name in made:
+        pg_cluster.drop_database(name)
+
+
+def race(world: ActWorld, write: ActWrite, rival_lane: str) -> Tuple[Writer, Writer, List[str]]:
+    """The act run to `write`, its commit call held while the rival commits
+    on `rival_lane`; then let go. Returns the act, the rival, and the held
+    write's ids."""
+    fifo = world.root / "hold.fifo"
     os.mkfifo(str(fifo))
-    w = e.launch(LA, act_write(e, scope, tag="act"), extra=acted(act, f"{scope}:{LA.lower()}"),
-                 arms=[{"mode": "hold", "match": "commit_write", "call": 1, "fifo": str(fifo)}])
-    held = hold_point(fifo, w)
-    rival = None
-    if rival_scope:
-        rival = e.run(LA, act_write(e, rival_scope, tag="rival"),
-                      extra={"LANES_SESSION": "dddddddd-0252-4000-8000-00000000d252"})
-        assert rival.code == 0, f"the rival exited {rival.code}: {rival.err[-400:]}"
+    act = world.act(write, [{"mode": "hold", "match": write.match, "call": 1, "fifo": str(fifo)}])
+    held = hold_point(fifo, act)
+    rival = world.rival(write.rival, rival_lane)
+    assert rival.code == 0, f"the rival exited {rival.code}: {rival.err[-400:]}"
     held.close()
-    w.wait()
-    return w, rival, act
+    act.wait(240)
+    calls = [c.get("stdin") or "" for c in act.commit_calls() if write.match in (c.get("stdin") or "")]
+    ids = [m.group(1) for m in (re.search(r"commit_write\(\s*-?[0-9]+\s*,\s*'(" + UUID_RE + ")'", s)
+                                for s in calls[:1]) if m]
+    assert ids, f"the held commit call carries no write id: {calls[:1]}"
+    return act, rival, ids
 
 
 @CLIENT
-@pytest.mark.parametrize("scope", ["row", "objects"])
-def test_an_act_whose_scope_changed_before_its_commit_writes_nothing(estates, scope):
-    """The rival commits on the act's scope after its base: the act's commit
-    refuses, the writer exits 2 with `expectation: <scope> changed at seq
-    <k> by <lane>/<verb>`, and the journal grew only by the rival's entry."""
-    e = estates()
-    w, rival, _ = raced(e, scope, scope)
-    grew = e.journal_after(1)
-    assert w.code == 2, f"exit {w.code}: {w.err[-600:]}"
-    assert len(grew) == 1, grew
-    said = f"expectation: {scope}:{LA.lower()} changed at seq {grew[0]['seq']} by {LA}/"
-    assert said in w.err, f"{said!r} is not in {w.err!r}"
-    assert all(not e.has_write(x) for x in w.write_ids())
+@pytest.mark.parametrize("write", list(ACT_WRITES))
+def test_an_act_whose_scope_changed_before_its_commit_writes_nothing(act_worlds, write):
+    """TP:5854-5862: the act runs to `write`, held at its commit call; a rival
+    from a second session commits on one of its scopes. On release the act's
+    commit refuses with 2 and `expectation: <scope> changed at seq <k> by
+    <lane>/<verb>`, naming the rival's seq, lane and verb; the held write is
+    not in the journal; and the act exits with the code lane 4's arm gives,
+    never 0."""
+    world = act_worlds()
+    w = ACT_WRITES[write]
+    act, rival, ids = race(world, w, w.lane)
+    k = max(int(r["seq"]) for r in world.c.json(
+        f"SELECT coalesce(jsonb_agg(q), '[]'::jsonb) FROM (SELECT seq FROM {REGISTER}.journal "
+        f"WHERE write_id = ANY(ARRAY{rival.write_ids()}::uuid[])) q;"))
+    scope = f"{'bind' if w.rival == 'bind' else 'row'}:{w.lane.lower()}"
+    verb = "log" if w.rival == "bind" else "append-line"
+    said = f"expectation: {scope} changed at seq {k} by {w.lane}/{verb}"
+    assert said in act.err + act.out, f"[{write}] {said!r} is not in {act.err[-900:]!r}"
+    assert all(world.c.value(f"SELECT count(*) FROM {REGISTER}.journal WHERE write_id = '{x}';") == "0"
+               for x in ids), f"[{write}] the held write is in the journal"
+    if w.code is not None:
+        assert act.code == w.code, f"[{write}] the act exited {act.code}, not {w.code}: {act.err[-600:]}"
+    assert act.code != 0, f"[{write}] the act exited 0 after its write was refused: {act.err[-600:]}"
 
 
 @CLIENT
-@pytest.mark.parametrize("case", ["row-no-rival", "objects-no-rival", "row-rival-on-another-scope"])
-def test_an_act_whose_scopes_held_commits(estates, case):
-    """Without a rival, or with a rival that touches no listed scope, the
-    act's write commits."""
-    e = estates()
-    scope = case.split("-")[0]
-    w, _, _ = raced(e, scope, "objects" if case == "row-rival-on-another-scope" else None)
-    assert w.code == 0, f"[{case}] exit {w.code}: {w.err[-600:]}"
+@pytest.mark.parametrize("write", list(ACT_WRITES))
+def test_an_act_whose_scopes_held_commits(act_worlds, write):
+    """TP:5863-5864: with a rival that touches no scope the write lists,
+    another lane's `PAUSED` (or row line), the held write commits."""
+    world = act_worlds()
+    w = ACT_WRITES[write]
+    _, _, ids = race(world, w, R_OTHER[w.lane])
+    assert all(world.c.value(f"SELECT count(*) FROM {REGISTER}.journal WHERE write_id = '{x}';") == "1"
+               for x in ids), f"[{write}] the held write {ids} did not commit"
 
 
 @CLIENT
