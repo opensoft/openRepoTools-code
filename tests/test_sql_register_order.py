@@ -45,7 +45,9 @@ T228 (`lanes_w_fx`) land. Without PostgreSQL 16 each skips.
 
 THE MODULE ALSO HOLDS, each at its own section below, in this order: T243's
 test 4, C10, D19 and section 4.1 (phase W, the client's writers on a real
-register); T248's AT-F14 (phase W); T252's AT-F5 group B (phase W); and, last,
+register); T248's AT-F14 (phase W); T233's AT-F5 group A (phase N, the act's
+client half, its off-primary and walk cases with no engine); T252's AT-F5
+group B (phase W); and, last,
 T232's AT-LR5 and AT-LR009 (phase N, `commit_write` called directly on this
 section's `Clone`, as here), whose rollback steps fail until T304.
 """
@@ -72,7 +74,7 @@ import pytest
 from pgcluster import SUPERUSER, Database
 from sql_register_helpers import (LANES_INDEX, PSQL_SHIM, PSQL_SHIM_CONTROL, PSQL_SHIM_ENDS,
                                   PSQL_SHIM_LOG, REPO, flipped_copy)
-from test_lane_start_claude_current import Sandbox
+from test_lane_start_claude_current import Sandbox, _write
 
 REGISTER = "lanes_register"
 IMPORTED = "tmpl_imported"
@@ -769,9 +771,10 @@ class Estate:
     head)."""
 
     def __init__(self, root: Path, c: Clone, lanes: Sequence[str] = W_LANES,
-                 repos: str = REPOS_T0) -> None:
+                 repos: str = REPOS_T0, aliases: str = "") -> None:
         self.root, self.c = root, c
         self.files = estate_files(lanes)
+        self.files["lanes/aliases.tsv"] += aliases
         import_files(c, self.files)
         assert c.to_primary() == 1, "test 4's cutover is not at seq 1 (AT-4's fixture)"
         home = root / "home"
@@ -1725,6 +1728,213 @@ def test_seam_out_is_written_once_before_the_child_acts(estates, decision):
         assert said.strip() in ("tail", "none") and said.count("\n") <= 1, f"{path}: {said!r}"
 
 
+# ============================================================ PHASE N: AT-F5 group A, the act's client half (T233)
+#
+# AT-F5 (TP:5818-5946; Y:5567-5624): lane 4's L4-A2, group A, which is T410's
+# `act-begin` with `--rebase` and the client's checks on `LANES_ACT` and
+# `LANES_EXPECT`, and T411's `canon-lane --walk`. They are written to the
+# test plan's text and B14's T410 and T411 bullets: L4-A2 is in no bundle
+# lane 4 has shared (its share folder holds T409, T413 and T419 only), and
+# neither verb is in line R's merge10.
+#
+# Off primary, and `canon-lane --walk`, they run in files mode with no engine,
+# on `test_lane_start_claude_current`'s `Sandbox` (`LANES_INDEX=off`) with a
+# `psql` first on `PATH` that only logs its calls, so they are red at the base
+# by their own assertions. The others run on test 4's estate at `primary`
+# (T243's `Estate`), each writer with its own `psql` log, and skip without
+# PostgreSQL 16. Every case FAILS UNTIL L4-A2 (lane 4's T410 and T411) and
+# L1-A9 land.
+
+WALK_A, WALK_B = "repoWA-1", "repoWB-1"
+#: The walk's alias lines on test 4's estate: `a` to `b`, `b` to `c` (LC, which has a row).
+WALK_ALIASES = f"{WALK_A}\t{WALK_B}\t2026-10-01T00:00:00Z\n{WALK_B}\t{LC}\t2026-10-01T00:00:00Z\n"
+_ACT_ID = re.compile(r"^([0-9a-f]{32})@")
+
+
+class FilesBox(Sandbox):
+    """A files-mode workstation (`Sandbox`) with rows of its own, an alias
+    table, and a `psql` that logs each call and answers nothing."""
+
+    def __init__(self, root: Path, rows: Sequence[str] = (), aliases: Sequence[Tuple[str, str]] = ()) -> None:
+        super().__init__(root)
+        self.psql_log = root / "psql.log"
+        _write(self.fakebin / "psql", f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "{self.psql_log}"\nexit 2\n')
+        lanes = self.wip / "lanes"
+        with open(lanes / "LANES.md", "a", encoding="utf-8") as handle:
+            for lane in rows:
+                handle.write(f"| `{lane}` | harness `{session_of(lane)}` | Eagle / test / brett "
+                             f"| 2026-10-01T00:00Z | none | handoffs/{lane}.md "
+                             f"| LIVE {DOT} 2026-10-01T00:00:00Z {DOT} working |\n")
+        if aliases:
+            (lanes / "aliases.tsv").write_text(
+                "# old\tnew\tutc\n" + "".join(f"{old}\t{new}\t2026-10-01T00:00:00Z\n" for old, new in aliases),
+                encoding="utf-8")
+        if rows or aliases:
+            self.git("-C", str(self.wip), "add", "-A")
+            self.git("-C", str(self.wip), "commit", "-q", "-m", "T233's register")
+            self.git("-C", str(self.wip), "push", "-q", "origin", "main")
+            self.git("-C", str(self.ws), "pull", "-q", "--ff-only")
+
+    def edit(self, *argv: str, env: Optional[dict] = None) -> subprocess.CompletedProcess:
+        full = dict(self.env, **(env or {}))
+        return subprocess.run([str(self.bin / "lanes-edit.sh"), *argv], env=full, cwd=str(self.lane_dir),
+                              capture_output=True, text=True, timeout=120, check=False,
+                              stdin=subprocess.DEVNULL)
+
+    def psql_calls(self) -> List[str]:
+        return self.psql_log.read_text(encoding="utf-8").splitlines() if self.psql_log.exists() else []
+
+
+def test_act_begin_prints_its_base_and_touches_no_database_off_primary(tmp_path):
+    """Off primary `act-begin` prints `<act-id>@files`, the id 32 lower-case
+    hex digits, new for every act, and touches no database: the `psql` on
+    `PATH` is never called (TP:5828-5830; Y:5571-5575; T410)."""
+    box = FilesBox(tmp_path / "box")
+    first, second = box.edit("act-begin"), box.edit("act-begin")
+    for r in (first, second):
+        assert r.returncode == 0, f"act-begin exited {r.returncode}: {r.stderr[-600:]}"
+        assert re.fullmatch(r"[0-9a-f]{32}@files\n", r.stdout), f"act-begin printed {r.stdout!r}"
+    assert first.stdout != second.stdout, "two acts were given one id"
+    assert box.psql_calls() == [], f"act-begin off primary called psql: {box.psql_calls()}"
+
+
+#: `canon-lane --walk`'s cases (TP:5866-5873): the rows, the alias lines, the
+#: typed name, and the names the walk prints.
+WALKS = {
+    "two-hops": ((LC,), ((WALK_A, WALK_B), (WALK_B, LC)), WALK_A, [WALK_A, WALK_B, LC]),
+    "no-alias": ((LC,), (), LC, [LC]),
+    "refused": (("repoWR-1", "RepoWR-1"), (), "repoWR-1", []),
+}
+
+
+@pytest.mark.parametrize("case", list(WALKS))
+def test_canon_lane_walk_prints_each_hop_with_canon_lanes_exit_code(tmp_path, case):
+    """[two-hops]: alias lines lead `a` to `b` and `b` to `c`, which has a
+    row; `canon-lane --walk a` prints `a`, `b` and `c`, one per line, the typed
+    name first, and exits as `canon-lane a` does. [no-alias]: the lane alone.
+    [refused]: where `canon-lane` refuses (two rows that differ only by case,
+    its 2), the walk exits with the same code and prints nothing on stdout
+    (T411)."""
+    rows, aliases, typed, names = WALKS[case]
+    box = FilesBox(tmp_path / "box", rows, aliases)
+    plain = box.edit("canon-lane", typed)
+    walk = box.edit("canon-lane", "--walk", typed)
+    assert (plain.returncode != 0) == (case == "refused"), f"[{case}] canon-lane exited {plain.returncode}"
+    assert walk.returncode == plain.returncode, (
+        f"[{case}] the walk exited {walk.returncode}, canon-lane {plain.returncode}: {walk.stderr[-600:]}")
+    assert walk.stdout.splitlines() == names, f"[{case}] the walk printed {walk.stdout!r}, not {names}"
+    if case == "refused":
+        # The refusal is canon-lane's own (its two-rows note), not a refusal of the flag.
+        assert "differ only by case" in walk.stderr, f"[{case}] not canon-lane's refusal: {walk.stderr[-600:]}"
+
+
+@CLIENT
+@pytest.mark.parametrize("case", ["present", "switch-at-files", "snapshot-fails"])
+def test_act_begin_on_primary_prints_id_seq_and_generation(estates, case):
+    """[present]: on primary `act-begin` prints 32 lower-case hex digits, `@`,
+    the head seq with no leading zero, `:` and the switch's generation as a
+    lower-case uuid, and the shim's log holds its one snapshot call.
+    [switch-at-files] (the cutover aborted by `switch_to_files`) and
+    [snapshot-fails] (the shim fails the call): exit 69, nothing on stdout
+    (TP:5874-5878; T410)."""
+    e = estates()
+    arms = []
+    if case == "switch-at-files":
+        aborted = e.c.call(ABORT_SQL, client=e.c.client(), seq=e.c.head(), lane=OPERATOR, ws=WS)
+        assert aborted.returncode == 0 and e.c.switch()["mode"] == "files", aborted.stderr
+    elif case == "snapshot-fails":
+        arms = [{"mode": "fail-call", "call": 1}]
+    w = e.run(LA, ["act-begin"], arms=arms)
+    if case != "present":
+        assert (w.code, w.out) == (69, ""), f"[{case}] exit {w.code}, stdout {w.out!r}: {w.err[-600:]}"
+        return
+    gen = e.c.switch()["generation"]
+    assert w.code == 0, f"exit {w.code}: {w.err[-600:]}"
+    assert re.fullmatch(r"[0-9a-f]{32}@" + str(e.c.head()) + ":" + re.escape(gen) + r"\n", w.out), (
+        f"act-begin printed {w.out!r}, not <id>@{e.c.head()}:{gen}")
+    assert len(w.calls()) == 1, f"act-begin made {len(w.calls())} calls, not its one snapshot"
+
+
+@CLIENT
+def test_act_begin_rebase_keeps_the_id_and_takes_the_new_base(estates):
+    """`act-begin`; a rival touches one of the act's scopes; `act-begin
+    --rebase` prints the same id with the head seq then and the switch's
+    generation; the act's write on that scope commits; a second rival entry
+    after the new base on the same scope still refuses it with 2
+    (TP:5850-5858; Y:5591-5595; T410)."""
+    e = estates()
+    act = act_begin(e)
+    scope = f"objects:{LA.lower()}"
+    other = {"LANES_SESSION": "dddddddd-0233-4000-8000-00000000d233"}
+    assert e.run(LA, act_write(e, "objects", tag="rival-1"), extra=other).code == 0
+    rebased = e.run(LA, ["act-begin", "--rebase"], extra={"LANES_ACT": act})
+    gen = e.c.switch()["generation"]
+    assert rebased.code == 0, f"--rebase exited {rebased.code}: {rebased.err[-600:]}"
+    assert rebased.out == f"{_ACT_ID.match(act).group(1)}@{e.c.head()}:{gen}\n", (
+        f"--rebase printed {rebased.out!r}; the act was {act}, the head is {e.c.head()}")
+    new = rebased.out.strip()
+    w = e.run(LA, act_write(e, "objects", tag="after-rebase"), extra=acted(new, scope))
+    assert w.code == 0, f"the act's write after its rebase exited {w.code}: {w.err[-600:]}"
+    assert e.run(LA, act_write(e, "objects", tag="rival-2"), extra=other).code == 0
+    late = e.run(LA, act_write(e, "objects", tag="after-rival-2"), extra=acted(new, scope))
+    assert late.code == 2 and f"expectation: {scope} changed" in late.err, (late.code, late.err[-600:])
+
+
+@CLIENT
+@pytest.mark.parametrize("case", ["malformed", "files-base", "generation-changed"])
+def test_act_begin_rebase_refuses_with_2(estates, case):
+    """`act-begin --rebase` refuses with 2, printing nothing and writing
+    nothing, where `LANES_ACT` is malformed (the old `<id>@<seq>`), where its
+    base is `files` on primary, and where its generation is not the switch's
+    (TP:5859-5861; T410)."""
+    e = estates()
+    act = {"malformed": f"{'a' * 32}@{e.c.head()}", "files-base": f"{'a' * 32}@files",
+           "generation-changed": f"{'a' * 32}@{e.c.head()}:{uuid.uuid4()}"}[case]
+    state = e.c.state()
+    w = e.run(LA, ["act-begin", "--rebase"], extra={"LANES_ACT": act})
+    assert (w.code, w.out) == (2, ""), f"[{case}] exit {w.code}, stdout {w.out!r}: {w.err[-600:]}"
+    assert e.c.state() == state
+
+
+#: The client's checks before the first snapshot (TP:5879-5887; Y:5597-5605):
+#: each case's `LANES_ACT` and `LANES_EXPECT` pairs, `None` for unset, and the
+#: variable the refusal names. `{act}` is a well-formed base from `act-begin`.
+BAD_ACTS = {
+    "malformed": ([(f"{'a' * 32}@1", "objects:{lane}"), (f"{'a' * 32}@1:{'A' * 8}-0000-4000-8000-{'0' * 12}", ""),
+                   ("{id}@01:{gen}", "")], "LANES_ACT"),
+    "expect-without-act": ([(None, "objects:{lane}"), ("", "objects:{lane}")], "LANES_EXPECT"),
+    "bad-scope": ([("{act}", "*"), ("{act}", "row:*"), ("{act}", "lane:{lane}")], "LANES_EXPECT"),
+    "files-base": ([("{id}@files", "objects:{lane}")], "LANES_ACT"),
+}
+
+
+@CLIENT
+@pytest.mark.parametrize("case", list(BAD_ACTS))
+def test_the_client_refuses_a_bad_act_with_2_before_any_call(estates, case):
+    """On primary a write whose `LANES_ACT` is malformed (the old form, an
+    upper-case uuid, a seq with a leading zero), whose `LANES_EXPECT` is set
+    with no `LANES_ACT`, whose scope is outside the six forms (`*` and `row:*`
+    among them), or whose base is `files` (the text naming `<id>@files`)
+    exits 2 naming the variable, with the shim's log empty and nothing
+    written (TP:5879-5887; T410)."""
+    e = estates()
+    act = act_begin(e)
+    ident, gen = _ACT_ID.match(act).group(1), e.c.switch()["generation"]
+    pairs, variable = BAD_ACTS[case]
+    for raw_act, raw_expect in pairs:
+        state = e.c.state()
+        extra = {"LANES_EXPECT": raw_expect.format(lane=LA.lower())}
+        if raw_act is not None:
+            extra["LANES_ACT"] = raw_act.format(act=act, id=ident, gen=gen)
+        w = e.run(LA, act_write(e, "objects", tag=case), extra=extra)  # unset: the estate never carries it
+        assert w.code == 2, f"[{case}] {extra}: exit {w.code}: {w.err[-600:]}"
+        assert variable in w.err, f"[{case}] {extra}: the refusal does not name {variable}: {w.err[-600:]}"
+        if case == "files-base":
+            assert f"{ident}@files" in w.err, w.err[-600:]
+        assert w.calls() == [], f"[{case}] {extra}: a call was made: {w.calls()}"
+        assert e.c.state() == state, f"[{case}] {extra}: the register changed"
+
+
 # ============================================================ PHASE W: AT-F5 group B, acts racing (T252)
 #
 # F5 (D5; lane 4's section, "The acts and their expectations"): an act runs
@@ -2144,18 +2354,22 @@ def test_lanes_act_is_unset_before_a_launch(launch):
 
 @CLIENT
 def test_an_act_that_decided_on_canon_lane_is_refused_by_a_row_added_on_its_walk(estates):
-    """`a` leads to `b` and `b` to `c`, which has a row: an act that decided
-    on `canon-lane a` lists `row:` and `alias:` for each of the three, so a
-    rival row-shaped line for `b` after the base refuses its write with 2,
-    LR009 naming `row:b`."""
-    e = estates()
+    """Alias lines lead `a` to `b` and `b` to `c`, which has a row: an act that
+    decided on `canon-lane a` takes the names from `canon-lane --walk a` and
+    lists `row:` and `alias:` for each (Y:5624), so a rival `add-row` for `b`
+    after the base refuses its write with 2, LR009 naming `row:b`
+    (TP:5871-5873; lane 3's batch 7, ask 3)."""
+    e = estates(aliases=WALK_ALIASES)
     act = act_begin(e, LC)
-    walk = [LA.lower(), LB.lower(), LC.lower()]
-    expect = [f"{kind}:{name}" for name in walk for kind in ("row", "alias")]
-    rival = e.run(LB, act_write(e, "row", lane=LB, tag="walk"))
-    assert rival.code == 0, rival.err[-400:]
+    walked = e.run(LC, ["canon-lane", "--walk", WALK_A])
+    names = walked.out.split()
+    assert walked.code == 0 and names == [WALK_A, WALK_B, LC], (
+        f"canon-lane --walk {WALK_A} exited {walked.code} and printed {walked.out!r}: {walked.err[-400:]}")
+    expect = [f"{kind}:{name.lower()}" for name in names for kind in ("row", "alias")]
+    rival = e.run(WALK_B, ["add-row", w_row(WALK_B)])
+    assert rival.code == 0, f"the rival add-row exited {rival.code}: {rival.err[-400:]}"
     w = e.run(LC, act_write(e, "objects", lane=LC, tag="walk"), extra=acted(act, *expect))
-    assert w.code == 2 and f"expectation: row:{LB.lower()} changed" in w.err, (w.code, w.err[-600:])
+    assert w.code == 2 and f"expectation: row:{WALK_B.lower()} changed" in w.err, (w.code, w.err[-600:])
 
 
 @CLIENT
