@@ -10286,9 +10286,33 @@ DHPLINE
           # `bg-pty-host` wrapper's, so EVERY child `pgrep -P` listed is asked
           # — named or not — and a match drops the whole pair. Terming the
           # wrapper ends the companion with it.
+          #
+          # A WRAPPER WHOSE CHILD IS THE LANE'S OWN LIVE SESSION IS THE LANE'S
+          # OWN TREE, and its pair is dropped the same way
+          # (opensoft/openRepoTools#111). `dhp_legit` was fenced only as a
+          # candidate above, so the lane's own pid as a candidate's CHILD
+          # reported the lane's own process tree as a duplicate pair: the lane
+          # never got its 8, and `lane-end`'s refusal of that pair sent a
+          # person to "the OTHER pid", its wrapper, which is the lane's too.
+          # BUT ONLY WHEN NO OTHER CHILD OF IT VERIFIED for this transcript:
+          # a wrapper over the lane's own session AND a second holder of the
+          # same transcript is a duplicate inside the lane's own tree, and
+          # dropping that pair answered 8, "no duplicate holder is live",
+          # while the second holder ran. No retire act can end it without
+          # ending the lane's own session through its wrapper, and this read
+          # cannot say it is not there, so it is a read that could not answer:
+          # 1, naming both pids.
           dhp_is_comp_host=0
           for dhp_c in $dhp_kids; do
             case "$dhp_comp" in *" $dhp_c "*) dhp_is_comp_host=1; break ;; esac
+            if [ -n "$dhp_legit" ] && [ "$dhp_c" = "$dhp_legit" ]; then
+              for dhp_v in $dhp_verified; do
+                [ "$dhp_v" != "$dhp_legit" ] || continue
+                SESSION_FILES_ERR="pid $dhp_pid wraps lane $dhp_l's own live session (pid $dhp_legit) AND pid $dhp_v, which resumes the same transcript $dhp_id: a second holder inside the lane's own process tree, which no retire act can end without ending the lane's own session through its wrapper"
+                return 1
+              done
+              dhp_is_comp_host=1; break
+            fi
           done
           if [ "$dhp_is_comp_host" = 0 ]; then
             dhp_out="${dhp_out}${dhp_pid}${US}${dhp_child}${US}${dhp_id}
@@ -20789,8 +20813,14 @@ EOF
     # 6. the comment, AFTER the push, citing the commit that carries the line.
     sha="$(git -C "$LANES_REPO" rev-parse HEAD 2>/dev/null || printf '')"
     if [ "$NO_GITHUB" != 1 ]; then
+      # The comment opens with its own verb, as Rule 1 spells it: `TAKEOVER —
+      # lane <name>, …` for a takeover and `CLAIMED — lane <name>, …` for a
+      # claim. The lane taken over from is `takeover_from`, and it is named by
+      # the `Logged in` line below, never by the first word
+      # (opensoft/openRepoTools#346).
+      if [ -n "$takeover_from" ]; then comment_verb=TAKEOVER; else comment_verb=CLAIMED; fi
       body="$(printf '%s — lane %s, session %s@%s, %s, for %s\n\nLogged in `%s` at `%s`%s.\n\nThe three reads (lane-collision-protocol Rule 1):\n\n```text\n%s\n```\n' \
-               "${takeover_from:+TAKEOVER}${takeover_from:-CLAIMED}" "$lane" "$uuid" "$WS" "$utc" "$obj" \
+               "$comment_verb" "$lane" "$uuid" "$WS" "$utc" "$obj" \
                "$(log_path_for "$lane")" "${sha:-unknown}" "$takeover_reason_phrase" "$reads_posted")"
       url="$(gh_comment "$obj" "$body" 2>/dev/null || :)"
       if [ -n "$url" ]; then

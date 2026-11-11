@@ -1929,11 +1929,17 @@ def cmd_register_classify(args: list[str]) -> int:
 #: one component that ends `.md`, so no image path leaves `<dir>`.
 _RENDER_SET_RE = re.compile(r"lanes/(?:LANES\.md|aliases\.tsv|(?:archive|log)/[^/]+\.md)")
 
-#: A control character, U+0000-U+001F or U+007F: an image whose path holds one
-#: cannot be a `file=` row of one line and three fields, and ends 69 where it
-#: would be written (lane 3's review of T301, SHOULD-2). Only an image at `k`
-#: is refused for it, never a row the replay passes over.
-_RENDER_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+#: A character that breaks a line for some reader: a control character,
+#: U+0000-U+001F or U+007F, or U+0085, U+2028 or U+2029, which Python's
+#: `str.splitlines()` splits on as it does on U+001C-U+001E, and bash's `read`
+#: does not. An image whose path holds one cannot be a `file=` or `image=` row
+#: of one line and three fields, and ends 69 where it would be written (lane
+#: 3's review of T301, SHOULD-2; the three since lane 5's NIT 3,
+#: opensoft/openRepoTools#165 6779760684, which T111's `workstation=` and
+#: `file=` checks refuse by it too). Only an image at `k` is refused for it,
+#: never a row the replay passes over. The one pattern for every image path:
+#: the images' writer, `register read`'s rows and the import's paths.
+_RENDER_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
 
 #: The columns `register_images` takes, in each row's order: `journal`'s, and
 #: `journal_edits`' and `journal_files`' as T107's migration names them.
@@ -2411,14 +2417,22 @@ def register_render_read(store, k: int, *, start=None, row: str = "render") -> t
     return register_images(*_register_render_rows(store, k, None, row))
 
 
-def _register_render_rows(store, k: int, since, row: str) -> tuple:
+def _register_render_rows(store, k: int, since, row: str, *,
+                          first_request_at: float | None = None) -> tuple:
     """`register_render_read`'s one request and its checks, with D9's `row`:
     `(journal, edits, files)`, typed, from the latest import to `k`; or,
     with `since=c`, the entries from `c+1`, or from the latest import where
     it is above `c`, to `k`, and their edits, beside every `journal_files`
-    row from the latest import to `k`."""
+    row from the latest import to `k`.
+
+    `register snapshot`'s second request on a cache miss is this call with
+    the `snapshot` row and `first_request_at`, the `time.monotonic()` reading
+    taken right before the snapshot's first request: `PostgresStore.bounds`
+    cuts it to what is left of `S` from then, and raises `PsqlFailed`, 69,
+    where nothing is left (lane 3's ruling on SHOULD-2 of lane 1's review of
+    T111, opensoft/openRepoTools#165 6780364102, "Lane 1" item (1))."""
     answers = store._query_many(register_render_queries(k, since=since), snapshot=True,
-                                row=row)
+                                row=row, first_request_at=first_request_at)
     if len(answers) != 5:
         raise RenderRefused(f"psql answered {len(answers)} of the 5 reads of one render")
     version_rows, head_rows = answers[0], answers[1]
@@ -2463,8 +2477,10 @@ def register_write_images(out_dir: str, images: dict) -> list:
 
     - EACH PATH IS CHECKED FIRST, before anything is written. It must be a
       render-set path, so it cannot leave `<out_dir>`. It must hold no control
-      character, U+0000-U+001F or U+007F, so its row stays one line (SHOULD-2).
-      Either failure raises `RenderRefused`.
+      character, U+0000-U+001F or U+007F, and no U+0085, U+2028 or U+2029
+      (`_RENDER_CONTROL_RE`), so its row stays one line to every reader
+      (SHOULD-2; lane 5's NIT 3, #165 6779760684). Either failure raises
+      `RenderRefused`.
     - THE TREE IS BUILT APART, in a `tempfile.mkdtemp` directory beside
       `<out_dir>`, on its filesystem. Each image is written whole to a temp
       file there, then `os.link`ed to its path, and the temp file is
@@ -2485,8 +2501,8 @@ def register_write_images(out_dir: str, images: dict) -> list:
         if not register_render_path(path):
             raise RenderRefused(f"{path!r} is not a render-set path")
         if _RENDER_CONTROL_RE.search(path):
-            raise RenderRefused(f"the image {path!r} holds a control character in its path, "
-                                f"so it cannot be a file= row")
+            raise RenderRefused(f"the image {path!r} holds a control character or a line "
+                                f"separator in its path, so it cannot be a file= row")
     target_dir = os.path.abspath(out_dir)
     parent = os.path.dirname(target_dir)
     os.makedirs(parent, exist_ok=True)
@@ -3162,6 +3178,781 @@ def image_cache_collect() -> None:
         os.close(lock)
 
 
+# ===== the SQL register: `register snapshot` (007)
+#
+# THE WRITERS' SNAPSHOT (feature 007, opensoft/openRepoTools#165; T111; contract
+# §3.2; design Y:2509-2516, Y:4985-4989 and Y:5044-5052). One REPEATABLE READ
+# READ ONLY read, sent as ONE request (contract §2.3), as REGISTER-WRITER with
+# D9's `snapshot` row: the switch with its marker state and generation, the
+# head `n`, the database's clock in whole seconds (D13), and the write id's
+# entry where it is found. `--tree <dir> --checkout <c>` also builds the
+# scratch tree at `n`, or at `--at <k>`, and `--files <set>` or `--all` with
+# `--out <dir>` writes those images at `n` (contract §3.6, O3). It writes no
+# register.
+#
+# THE CHECKS, in lane 1's order, which `commit_write` keeps under the head
+# row's lock (contract §3.2's table; Y:2518), each ending the call at once:
+#   1. a `--generation` that is not the switch's: 2, LR007 `generation`,
+#      whatever the switch reads and whether or not the journal holds the id;
+#   2. the write id found with this run's lane, verb and `args_sha256`: 0,
+#      with `found=`, then the entry's `workstation=` and `utc=` (draft
+#      4.15), then that seq's `file=` rows, and no tree is built;
+#   2'. the write id found for another write: 2, LR007 `another-write`;
+#   3. `REGISTER_SCHEMA_VERSION` outside the writers' window: 69, naming both
+#      numbers and the remedy;
+#   4. the switch not `primary` with the marker `present`: 69, with
+#      Amendment 22's S1 ("No fallback writes").
+# Under `--at` only the generation is checked, of the identity and the
+# switch, and the version still is (`_register_snapshot`'s docstring).
+#
+# THE IMAGES come through T302's cache, in the callers' order that lane 3
+# accepted (#165 6755051914) and T302's task line records: `image_cache_head`;
+# `image_cache_get` for each digest of its manifest, re-hashed, where any miss
+# is a full replay; `register_cache_state`; the read with `start`; then
+# `image_cache_put` and `image_cache_record`, last. The read with `start`
+# rides the snapshot's own request: T301's `register_render_queries` is sent
+# in it with no bound but the head, which every statement of one REPEATABLE
+# READ snapshot sees alike, so a write's attempt stays one `psql` call (Y:2509).
+# A miss, which Y:2509 answers by fetching "the files whole", costs one more
+# request, a full replay at that same `n`, whose images must equal the first
+# request's digests at `n`, or the call ends 69.
+
+#: The upper bound of the snapshot's render rows when it reads at the head:
+#: every entry of one snapshot is at or below its head, so a `bigint`'s
+#: largest value reads them all, and the head bounds them.
+_SNAPSHOT_SEQ_MAX = 2 ** 63 - 1
+
+#: The flags that take a value, each at most once.
+_SNAPSHOT_VALUE_FLAGS = ("--write-id", "--generation", "--lane", "--verb", "--args-sha256",
+                         "--tree", "--checkout", "--at", "--files", "--out")
+
+#: The identity a write passes after `--write-id` (contract §3.2).
+_SNAPSHOT_IDENTITY = ("--lane", "--verb", "--args-sha256")
+
+#: `args_sha256`, as the journal's CHECK takes it (design §1.2).
+_SNAPSHOT_ARGS_SHA_RE = re.compile(r"[0-9a-f]{64}")
+
+#: A UUID as `uuid`'s text output spells it, lower case: the write id and the
+#: generation the snapshot prints, and so the ones a caller passes back.
+_SNAPSHOT_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+#: The variables that name a repository's location, which git reads before
+#: `-C` (git rev-parse --local-env-vars, with the config ones): dropped before
+#: the checkout is read and before the scratch tree is built, as T112 drops
+#: them before it reads `tree/`.
+_SNAPSHOT_GIT_LOCAL_VARS = (
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR",
+    "GIT_NAMESPACE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_GRAFT_FILE",
+    "GIT_REPLACE_REF_BASE", "GIT_NO_REPLACE_OBJECTS", "GIT_QUARANTINE_PATH",
+    "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_TEMPLATE_DIR")
+
+#: The scratch tree's one commit, made by this command and by no person.
+_SNAPSHOT_TREE_IDENTITY = ("lanes-index", "lanes-index@invalid")
+
+
+class _SnapshotUsage(Exception):
+    """A `register snapshot` command line that is none of its forms: 64,
+    before the configuration is read and before any connection."""
+
+
+class SnapshotUnavailable(Exception):
+    """A snapshot read that failed after the request answered, outside the
+    image builder: an answer that cannot be read, an `--at <k>` above the
+    head, or a checkout or a scratch tree that could not be read or built.
+    It exits `EXIT_UNAVAILABLE`, 69 (contract §3.2's exits: "any failed
+    read"), with nothing written."""
+
+
+def _register_snapshot_dir_problem(flag: str, path: str) -> str | None:
+    """Why `path`, a `<dir>` that must not exist or must be an empty
+    directory, is usage, or None. A symbolic link is refused, since the
+    finished tree is renamed onto `<dir>`, as `render --images` refuses one
+    (lane 3's ruling, #165 6754819099, choice 2)."""
+    if not os.path.lexists(path):
+        return None
+    if os.path.islink(path) or not os.path.isdir(path):
+        what = "a symbolic link" if os.path.islink(path) else "not a directory"
+        return f"{flag} {path} exists and is {what}: <dir> must not exist, or must be empty"
+    try:
+        present = os.listdir(path)
+    except OSError as exc:
+        return f"{flag} {path} cannot be listed ({exc.strerror or exc}): <dir> must not exist"
+    if present:
+        return f"{flag} {path} is not empty: <dir> must not exist, or must be empty"
+    return None
+
+
+def _register_snapshot_args(args: list[str]) -> dict | None:
+    """`register snapshot`'s argv (contract §3.2, and §3.6 for `--files`),
+    checked whole before anything is read; None for `--help`. Raises
+    `_SnapshotUsage` for any line that is not one of these forms:
+
+    - `act-begin`'s: no identity flag;
+    - a new write's: `--write-id new --lane --verb --args-sha256`;
+    - a write's own: all five, `--write-id <uuid> --generation <uuid> --lane
+      --verb --args-sha256` (`--write-id <uuid>` without `--generation` is
+      usage: O4, ratified by R08);
+    - under `--at <k>`: `--generation <uuid>` alone, or all five (O13);
+      `--at` without `--generation` is usage;
+    - each of those with `--tree <dir> --checkout <c>`, the two together;
+    - the image cache's: `--files <set>` or `--all`, with `--out <dir>`, and
+      no other flag.
+
+    Each flag takes its value as the next argument or after `=`, once. A
+    `<dir>` that exists and is not an empty directory is usage, and so is a
+    `--checkout` that is not a directory."""
+    opts: dict = {flag: None for flag in _SNAPSHOT_VALUE_FLAGS}
+    opts["--all"] = False
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("-h", "--help"):
+            return None
+        if arg == "--all":
+            if opts["--all"]:
+                raise _SnapshotUsage("--all is given twice")
+            opts["--all"] = True
+            i += 1
+            continue
+        name = arg.split("=", 1)[0]
+        if name not in _SNAPSHOT_VALUE_FLAGS:
+            raise _SnapshotUsage(f"unknown argument '{arg}'")
+        value = arg.split("=", 1)[1] if "=" in arg else (args[i + 1] if i + 1 < len(args)
+                                                        else "")
+        if not value:
+            raise _SnapshotUsage(f"{name} needs a value")
+        if opts[name] is not None:
+            raise _SnapshotUsage(f"{name} is given twice")
+        opts[name] = value
+        i += 1 if "=" in arg else 2
+    write_id, generation, at = opts["--write-id"], opts["--generation"], opts["--at"]
+    identity = [flag for flag in _SNAPSHOT_IDENTITY if opts[flag] is not None]
+    if opts["--files"] is not None or opts["--all"]:
+        others = [flag for flag in _SNAPSHOT_VALUE_FLAGS
+                  if flag not in ("--files", "--out") and opts[flag] is not None]
+        if opts["--files"] is not None and opts["--all"]:
+            raise _SnapshotUsage("--files and --all are two forms: give one")
+        if others:
+            raise _SnapshotUsage(f"--files and --all take only --out <dir>, not "
+                                 f"{', '.join(others)} (contract §3.6)")
+        if opts["--out"] is None:
+            raise _SnapshotUsage("--files <set> and --all need --out <dir>")
+        if opts["--files"] is not None:
+            wanted = opts["--files"].split(",")
+            bad = [path for path in wanted if not register_render_path(path)]
+            if bad:
+                raise _SnapshotUsage(f"--files names {bad[0]!r}, which is not a render-set "
+                                     f"path; <set> is render-set paths, comma-separated")
+            opts["--files"] = sorted(set(wanted), key=lambda p: p.encode("utf-8"))
+        problem = _register_snapshot_dir_problem("--out", opts["--out"])
+        if problem:
+            raise _SnapshotUsage(problem)
+        return opts
+    if opts["--out"] is not None:
+        raise _SnapshotUsage("--out goes with --files <set> or --all; the scratch tree is "
+                             "--tree <dir> --checkout <c>")
+    if (opts["--tree"] is None) != (opts["--checkout"] is None):
+        raise _SnapshotUsage("--tree <dir> and --checkout <lane checkout> go together")
+    for flag, value in (("--write-id", write_id), ("--generation", generation)):
+        if value is not None and value != "new" and not _SNAPSHOT_UUID_RE.fullmatch(value):
+            raise _SnapshotUsage(f"{flag} {value!r} is not a UUID in lower case")
+    if generation == "new":
+        raise _SnapshotUsage("--generation new is not a generation; a new write passes "
+                             "--write-id new alone")
+    sha = opts["--args-sha256"]
+    if sha is not None and not _SNAPSHOT_ARGS_SHA_RE.fullmatch(sha):
+        raise _SnapshotUsage(f"--args-sha256 {sha!r} is not 64 lower-case hex")
+    if at is not None:
+        if not re.fullmatch(r"[0-9]+", at) or int(at) > _SNAPSHOT_SEQ_MAX:
+            raise _SnapshotUsage(f"--at {at!r} is not a seq, a whole number of at least 0")
+        opts["--at"] = at = int(at)
+        if generation is None:
+            raise _SnapshotUsage("--at <k> needs --generation <uuid>, alone or with the "
+                                 "write's other four identity flags (contract §3.2, O13)")
+        if write_id == "new":
+            raise _SnapshotUsage("--at <k> reads history for a write already found, so it "
+                                 "takes no --write-id new")
+        if (write_id is None) != (not identity) or (write_id and len(identity) != 3):
+            raise _SnapshotUsage("under --at, --generation <uuid> goes alone or with all four "
+                                 "of --write-id, --lane, --verb and --args-sha256")
+    elif write_id is None:
+        if generation is not None or identity:
+            raise _SnapshotUsage("an identity flag needs --write-id: <uuid> with all five, "
+                                 "or new with --lane, --verb and --args-sha256")
+    elif write_id == "new":
+        if generation is not None:
+            raise _SnapshotUsage("--write-id new takes no --generation: the snapshot mints "
+                                 "the id, and prints the generation")
+        if len(identity) != 3:
+            raise _SnapshotUsage("--write-id new needs --lane, --verb and --args-sha256")
+    else:
+        if generation is None:
+            raise _SnapshotUsage("--write-id <uuid> needs --generation <uuid>: a printed rerun "
+                                 "carries LANES_WRITE_GENERATION (contract §3.2, O4)")
+        if len(identity) != 3:
+            raise _SnapshotUsage("--write-id <uuid> needs --lane, --verb and --args-sha256")
+    if opts["--tree"] is not None:
+        problem = _register_snapshot_dir_problem("--tree", opts["--tree"])
+        if problem:
+            raise _SnapshotUsage(problem)
+        if not os.path.isdir(opts["--checkout"]):
+            raise _SnapshotUsage(f"--checkout {opts['--checkout']} is not a directory")
+    return opts
+
+
+def register_snapshot_queries(*, write_id: str | None = None, images: bool = False,
+                              at: int | None = None, since: int | None = None,
+                              entry_blob: bool = False) -> list[str]:
+    """The snapshot's SELECTs, for ONE REPEATABLE READ READ ONLY request, in
+    this order, each through the store's `search_path`:
+    1. `schema_version`'s version and floors (design §1.5);
+    2. the switch: its mode, marker state and generation;
+    3. the head;
+    4. the database's clock, in whole seconds (D13), truncated as
+       `journal.utc` is;
+    5. with `write_id`, a UUID this file checked: that id's journal entry,
+       its seq, lane, verb and `args_sha256`, then its `workstation` and its
+       `utc` in epoch seconds, which a found entry prints (contract §3.2,
+       draft 4.15: Y:1114 and Y:1106; lane 3's ruling, #165 6770688147, T418
+       item 1), truncated as the clock is, though the journal's CHECK keeps
+       `utc` in whole seconds;
+    6. with `write_id`: that entry's `journal_files` rows, in the same
+       transaction (Y:5300);
+    7. with `entry_blob` and `at`: the `repos_blob` of the entry at `at + 1`,
+       the one whose base is `at`;
+    8. with `images`: T301's `register_render_queries` but its first, the head
+       and the latest import, the journal, its edits and its digests, bounded
+       by `at`, or by the head where `at` is None, and with `since` for the
+       cache's seq."""
+    queries = [
+        "SELECT version, writers_from, readers_from FROM schema_version WHERE id = 1",
+        "SELECT mode, marker_state, generation FROM register_switch WHERE id = 1",
+        "SELECT seq FROM register_head WHERE id = 1",
+        "SELECT floor(extract(epoch FROM clock_timestamp()))::bigint",
+    ]
+    if write_id is not None:
+        quoted = _pg_quote(write_id)
+        queries.append(f"SELECT j.seq, j.lane, j.verb, j.args_sha256, j.workstation, "
+                       f"floor(extract(epoch FROM j.utc))::bigint FROM journal j "
+                       f"WHERE j.write_id = {quoted}::uuid")
+        queries.append(f"SELECT f.path, f.present, f.sha256 FROM journal_files f "
+                       f"JOIN journal j ON j.seq = f.seq WHERE j.write_id = {quoted}::uuid "
+                       f"ORDER BY f.path")
+    if entry_blob and at is not None:
+        queries.append(f"SELECT j.repos_blob FROM journal j WHERE j.seq = {int(at)} + 1")
+    if images:
+        bound = _SNAPSHOT_SEQ_MAX if at is None else int(at)
+        queries += register_render_queries(bound, since=since)[1:]
+    return queries
+
+
+def _register_snapshot_start(at: int | None) -> tuple | None:
+    """The cache's state for `start`, `(c, {path: (lines, final_newline)})`,
+    in lane 1's callers' order: `image_cache_head`, then `image_cache_get` for
+    each digest its manifest names, re-hashed by the get, then
+    `register_cache_state`. None, a full replay, where there is no head,
+    where its manifest names no render-set path, where any object misses,
+    where the state cannot be read back, or where `at` is given and the
+    cache's seq is above it: a head above `k` is never brought forward
+    (lane 3's ruling, #165 6746004829). Without `at`, a head above `n` is
+    found once the request answers, and is a miss there."""
+    head = image_cache_head()
+    if head is None:
+        return None
+    c, manifest = head
+    if at is not None and c > at:
+        return None
+    images = {}
+    for path, digest in manifest.items():
+        if not register_render_path(path):
+            continue
+        data = image_cache_get(digest)
+        if data is None:
+            return None
+        images[path] = data
+    if not images:
+        return None
+    state = register_cache_state(images)
+    return None if state is None else (c, state)
+
+
+def _register_snapshot_digests(files: list, k: int) -> dict:
+    """Each render-set path's latest digest at or below `k`, among the typed
+    `journal_files` rows from the latest import, as the proof reads them:
+    {path: sha256} for the paths present at `k`."""
+    proved: dict = {}
+    for seq, path, present, sha256, _final_newline in sorted(files, key=lambda row: row[0]):
+        if seq > k:
+            continue
+        proved[path] = sha256 if present else None
+    return {path: sha256 for path, sha256 in proved.items()
+            if sha256 is not None and register_render_path(path)}
+
+
+def _register_snapshot_images(store, answers: list, k: int, start, *,
+                              first_request_at: float | None = None) -> dict:
+    """The render set's images at `k`, `{path: bytes}`, each proven, from the
+    four render answers of the snapshot's own request
+    (`register_snapshot_queries`' item 8) and the cache's `start`:
+    - with `start` at `c` <= `k`, and the entries read being `c+1` to `k`,
+      `register_images(..., start=start)`;
+    - where that raises `RenderRefused`, or `c` is above `k`: A MISS. One
+      more request, `_register_render_rows(store, k, None, "snapshot",
+      first_request_at=first_request_at)`, the full replay from the latest
+      import, as `register_render_read` makes it on a miss, with D9's snapshot
+      row. Its images must equal the first request's digests at `k`, path for
+      path, since seq `k` may have been reused between the two (lane 3's
+      ruling, #165 6754819099, choice 6). `first_request_at` is the
+      `time.monotonic()` reading `register snapshot` took right before its
+      first request: `PostgresStore.bounds` cuts this request to what is left
+      of `S` from then, and with nothing left sends nothing and raises
+      `PsqlFailed` (lane 1's rulings, #165 6783051626);
+    - without `start`, the request already read the full rows, and they are
+      replayed with no second request.
+    A journal with no import, a `k` before the latest import, rows that do
+    not replay, and a full replay that does not match raise `RenderRefused`,
+    69. A `psql` that does not answer raises `PsqlFailed`."""
+    head_rows, journal_rows, edit_rows, file_rows = answers
+    if len(head_rows) != 1 or len(head_rows[0]) != 2:
+        raise RenderRefused("the register's head row could not be read")
+    latest = _render_int(head_rows[0][1], "the latest import's seq", null=True)
+    if latest is None:
+        raise RenderRefused("the journal holds no import, so no seq can be rendered from it")
+    if k < latest:
+        raise RenderRefused(f"seq {k} is before the latest import, seq {latest}: the journal "
+                            f"renders only from that import's baseline on")
+    journal = _render_rows(journal_rows, "journal")
+    edits = _render_rows(edit_rows, "journal_edits")
+    files = _render_rows(file_rows, "journal_files")
+    span = (journal[0][0], journal[-1][0]) if journal else None
+    if start is None:
+        if span != (latest, k):
+            raise RenderRefused(f"the journal's entries from seq {latest} to seq {k} were not "
+                                f"all read")
+        return register_images(journal, edits, files)
+    c = start[0]
+    # Line R's reader starts at the latest import where that is above c + 1.
+    first = max(c + 1, latest)
+    if c <= k and span == ((first, k) if c < k else None):
+        try:
+            return register_images(journal, edits, files, start=start)
+        except RenderRefused:
+            pass        # A MISS: the files are fetched whole, below
+    images = register_images(*_register_render_rows(store, k, None, "snapshot",
+                                                    first_request_at=first_request_at))
+    want = _register_snapshot_digests(files, k)
+    got = {path: hashlib.sha256(data).hexdigest() for path, data in images.items()}
+    if got != want:
+        differ = sorted(set(got) ^ set(want) | {p for p in got if got[p] != want.get(p)})
+        raise RenderRefused(f"the register changed between this snapshot's read and its full "
+                            f"read at seq {k}: {differ[0]} differs")
+    return images
+
+
+def _register_snapshot_git_env(*, build: bool = False) -> dict:
+    """git's environment for the checkout's read and the tree's build:
+    `_SNAPSHOT_GIT_LOCAL_VARS` dropped. For the build, no system or global
+    configuration either, so no person's filter, hook path, signing or
+    default branch reaches the scratch tree, and the commit's identity and
+    date are this command's."""
+    env = {k: v for k, v in os.environ.items()
+           if k not in _SNAPSHOT_GIT_LOCAL_VARS and not k.startswith(("GIT_CONFIG_KEY_",
+                                                                       "GIT_CONFIG_VALUE_"))}
+    if build:
+        env["GIT_CONFIG_NOSYSTEM"] = "1"
+        env["GIT_CONFIG_GLOBAL"] = os.devnull
+        env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
+def _register_snapshot_git(where: str, *args: str, env: dict, data: bytes | None = None,
+                           build: bool = False) -> bytes:
+    """One git call in `where`, its stdout as bytes, or `SnapshotUnavailable`
+    naming it. In the scratch tree (`build`), the default attributes and
+    excludes files are named away, since `GIT_CONFIG_GLOBAL` leaves them."""
+    argv = ["git"]
+    if build:
+        argv += ["-c", f"core.attributesFile={os.devnull}", "-c",
+                 f"core.excludesFile={os.devnull}", "-c", "core.fsmonitor=false"]
+    argv += ["-C", where, *args]
+    try:
+        proc = subprocess.run(argv, input=data, capture_output=True, check=False, env=env,
+                              stdin=None if data is not None else subprocess.DEVNULL)
+    except OSError as exc:
+        raise SnapshotUnavailable(f"git could not be run: {exc}")
+    if proc.returncode != 0:
+        why = (proc.stderr.decode("utf-8", "replace").strip().splitlines() or ["no message"])
+        raise SnapshotUnavailable(f"git {args[0]} in {where} exited {proc.returncode}: {why[-1]}")
+    return proc.stdout
+
+
+def _register_git_blob_id(data: bytes) -> str:
+    """A blob's git id, the sha1 of `blob <size>` NUL and its bytes."""
+    return hashlib.sha1(b"blob %d\x00" % len(data) + data).hexdigest()
+
+
+def _register_snapshot_checkout(checkout: str, entry_blob) -> dict:
+    """What the scratch tree takes from the lane checkout (contract §3.2;
+    Y:5050): `{path: bytes}` for `lanes/repos.tsv` and `lanes/log/README.md`,
+    each where it is there.
+    - `lanes/log/README.md` is always `refs/remotes/origin/<branch>`'s, as last
+      fetched, where that commit holds it as a regular file.
+    - `lanes/repos.tsv` is that commit's too, where `entry_blob` is None; the
+      blob `entry_blob` names, read from the checkout's objects, where it is a
+      blob id (`--at`); and absent where `entry_blob` is `""` (`--at`, on an
+      entry that recorded no `repos_blob`).
+    A checkout with no such commit, an entry of another kind than a regular
+    file, or a blob not in its objects raises `SnapshotUnavailable`."""
+    env = _register_snapshot_git_env()
+    ref = f"refs/remotes/origin/{branch()}"
+    try:
+        tip = _register_snapshot_git(checkout, "rev-parse", "--verify", "-q",
+                                     f"{ref}^{{commit}}", env=env).decode("ascii", "replace")
+    except SnapshotUnavailable:
+        tip = ""
+    tip = tip.strip()
+    if not SHA_RE.match(tip):
+        raise SnapshotUnavailable(f"{checkout} has no {ref} to take lanes/repos.tsv and "
+                                  f"lanes/log/README.md from")
+    listing = _register_snapshot_git(checkout, "ls-tree", "-z", tip, "--", "lanes/repos.tsv",
+                                     "lanes/log/README.md", env=env)
+    entries = {}
+    for record in listing.split(b"\x00"):
+        if not record:
+            continue
+        head, _, path = record.partition(b"\t")
+        mode, kind, oid = head.decode("ascii", "replace").split(" ")
+        if kind != "blob" or mode not in ("100644", "100755"):
+            raise SnapshotUnavailable(f"{path.decode('utf-8', 'replace')} at {ref} in "
+                                      f"{checkout} is not a regular file (mode {mode})")
+        entries[path.decode("utf-8")] = oid
+    if entry_blob is not None:
+        entries.pop("lanes/repos.tsv", None)
+        if entry_blob:
+            entries["lanes/repos.tsv"] = entry_blob
+    out = {}
+    for path, oid in sorted(entries.items()):
+        data = _register_snapshot_git(checkout, "cat-file", "blob", oid, env=env)
+        if _register_git_blob_id(data) != oid:
+            raise SnapshotUnavailable(f"{checkout}'s blob {oid} for {path} does not hash to "
+                                      f"its id")
+        out[path] = data
+    return out
+
+
+def register_snapshot_tree(tree_dir: str, files: dict, *, seq: int, clock: int) -> None:
+    """THE SCRATCH TREE (contract §3.2; Y:5048-5052): `files`, `{path:
+    bytes}`, the render set's images at `seq` with what the checkout gave,
+    written at `<tree_dir>/<path>`, then `git init`, one commit of them, and
+    `refs/remotes/origin/<branch>` pointing at it, with HEAD on
+    `refs/heads/<branch>` at the same commit and the index equal to it.
+
+    - NEVER A HARDLINK (FR-020; Y:5052): each file is written whole, from
+      bytes, into a file of its own made with `O_EXCL`, never linked to a
+      work-tree file or into the image cache.
+    - The tree is built apart, in a `tempfile.mkdtemp` directory beside
+      `<tree_dir>`, and renamed onto it, so `<tree_dir>` is as it was on any
+      end but a return, as `register_write_images` builds `render --images`'s.
+    - git runs with no system or global configuration and no template, so no
+      hook, filter or signing a person configured runs here, and the commit
+      is made by plumbing (`write-tree`, `commit-tree`, `update-ref`), which
+      runs no hook. Its author and committer are this command, at the
+      database's clock.
+    Raises `SnapshotUnavailable` or `OSError`."""
+    import tempfile     # used here alone, so the module's imports stay as they were
+    target = os.path.abspath(tree_dir)
+    parent = os.path.dirname(target)
+    os.makedirs(parent, exist_ok=True)
+    mask = os.umask(0)
+    os.umask(mask)
+    mode = (stat.S_IMODE(os.stat(target).st_mode) if os.path.isdir(target)
+            else 0o777 & ~mask)
+    build = tempfile.mkdtemp(prefix=f".{os.path.basename(target)}.tree-", dir=parent)
+    env = _register_snapshot_git_env(build=True)
+    name, email = _SNAPSHOT_TREE_IDENTITY
+    env.update(GIT_AUTHOR_NAME=name, GIT_AUTHOR_EMAIL=email, GIT_COMMITTER_NAME=name,
+               GIT_COMMITTER_EMAIL=email, GIT_AUTHOR_DATE=f"@{clock} +0000",
+               GIT_COMMITTER_DATE=f"@{clock} +0000")
+    head_ref = f"refs/heads/{branch()}"
+    try:
+        _register_snapshot_git(build, "init", "-q", "--template=", env=env, build=True)
+        _register_snapshot_git(build, "symbolic-ref", "HEAD", head_ref, env=env, build=True)
+        for path in sorted(files, key=lambda p: p.encode("utf-8")):
+            where = os.path.join(build, *path.split("/"))
+            os.makedirs(os.path.dirname(where), exist_ok=True)
+            fd = os.open(where, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(files[path])
+        _register_snapshot_git(build, "add", "-A", "--", ".", env=env, build=True)
+        tree = _register_snapshot_git(build, "write-tree", env=env,
+                                      build=True).decode("ascii").strip()
+        commit = _register_snapshot_git(
+            build, "commit-tree", tree, env=env, build=True,
+            data=f"lanes-index register snapshot: the render set at seq {seq}\n".encode(
+                "ascii")).decode("ascii").strip()
+        for ref in (head_ref, f"refs/remotes/origin/{branch()}"):
+            _register_snapshot_git(build, "update-ref", ref, commit, env=env, build=True)
+        os.chmod(build, mode)
+        os.rename(build, target)
+    except BaseException:
+        shutil.rmtree(build, ignore_errors=True)
+        raise
+
+
+def _register_snapshot_lr007(token: str, message: str) -> int:
+    """Check 1's or check 2''s refusal, in §2.6's shape for the snapshot's
+    two client checks: `ERROR:  LR007: <message>`, `DETAIL:  <token>`, then
+    this file's own line. Exit 2, with nothing on stdout."""
+    sys.stderr.write(f"ERROR:  LR007: {message}\nDETAIL:  {token}\n")
+    note("register snapshot: refused; nothing was written")
+    return EXIT_REFUSED
+
+
+def _register_snapshot_one_row(rows: list, width: int, what: str) -> list:
+    if len(rows) != 1 or len(rows[0]) != width:
+        raise SnapshotUnavailable(f"the register's {what} could not be read")
+    return rows[0]
+
+
+def _register_snapshot(store, opts: dict) -> int:
+    """`register snapshot` once its argv is a form and its store is made: the
+    one request, the checks, the images, the tree or the images' directory,
+    then stdout. Raises `PsqlFailed`, `StoreUnusable`, `RenderRefused` and
+    `SnapshotUnavailable`, each 69 to its caller.
+
+    UNDER `--at <k>` (contract §3.2, [P]) it checks only the generation, of
+    the identity and the switch: no write-id check and no switch check, since
+    it reads history for a write already found. The version window is still
+    checked (check 3), since a client outside it may not read the schema at
+    all (design §1.5, Y:2338). A `k` above the head is 69, as `render
+    --images`' is. `n=` prints `k`, the seq the snapshot and its tree are at,
+    and `repos.tsv` is the `repos_blob` of the entry at `k + 1`, the entry
+    whose base is `k`, which a replay at `s - 1` replays (Y:5318-5321): absent
+    where that entry recorded none, and the checkout's `origin/<branch>`'s
+    where no entry follows `k`, as at the head."""
+    write_id, generation, at = opts["--write-id"], opts["--generation"], opts["--at"]
+    tree_dir, wanted = opts["--tree"], opts["--files"]
+    images_wanted = tree_dir is not None or wanted is not None or opts["--all"]
+    look_up = write_id if write_id not in (None, "new") and at is None else None
+    start = _register_snapshot_start(at) if images_wanted else None
+    queries = register_snapshot_queries(write_id=look_up, images=images_wanted, at=at,
+                                        since=start[0] if start else None,
+                                        entry_blob=tree_dir is not None)
+    first_request_at = time.monotonic()
+    answers = store._query_many(queries, snapshot=True, row="snapshot")
+    if len(answers) != len(queries):
+        raise SnapshotUnavailable(f"psql answered {len(answers)} of the {len(queries)} reads "
+                                  f"of one snapshot")
+    version, writers_from, readers_from = (
+        _render_int(v, "schema_version") for v in
+        _register_snapshot_one_row(answers[0], 3, "schema_version row"))
+    mode, marker, switch_generation = _register_snapshot_one_row(answers[1], 3, "switch row")
+    if (mode not in ("files", "primary")
+            or marker not in ("absent", "adding", "present", "removing")
+            or not isinstance(switch_generation, str)
+            or not _SNAPSHOT_UUID_RE.fullmatch(switch_generation)):
+        raise SnapshotUnavailable(f"the register's switch row reads {mode!r}, {marker!r}, "
+                                  f"{switch_generation!r}")
+    head = _render_int(_register_snapshot_one_row(answers[2], 1, "head row")[0],
+                       "register_head.seq")
+    clock = _render_int(_register_snapshot_one_row(answers[3], 1, "clock")[0],
+                        "the database clock")
+    at_next = 4 + (2 if look_up else 0)
+    # CHECK 1: the generation, whatever the switch reads and whether or not
+    # the journal holds the id (Y:4986; S-3).
+    if generation is not None and generation != switch_generation:
+        if write_id not in (None, "new"):
+            message = (f"write {write_id} belongs to register generation {generation}, not "
+                       f"{switch_generation}")
+        else:
+            message = (f"this run's register generation {generation} is not the switch's, "
+                       f"{switch_generation}")
+        return _register_snapshot_lr007("generation", message)
+    printed_id = write_id
+    found = None
+    if write_id == "new":
+        import uuid     # used here alone, so the module's imports stay as they were
+        printed_id = str(uuid.uuid4())
+    elif look_up:
+        # CHECKS 2 AND 2': the write id, with this run's lane, verb and
+        # arguments, or another write's (Y:4987).
+        entry = answers[4]
+        if len(entry) > 1 or (entry and len(entry[0]) != 6):
+            raise SnapshotUnavailable(f"the journal's entry of write {write_id} could not "
+                                      f"be read")
+        if entry:
+            seq, lane, verb, args_sha256, workstation, utc = entry[0]
+            seq = _render_int(seq, "journal.seq")
+            if (lane, verb, args_sha256) != (opts["--lane"], opts["--verb"],
+                                             opts["--args-sha256"]):
+                return _register_snapshot_lr007(
+                    "another-write", f"write {write_id} is seq {seq}, another write's (F10)")
+            # The entry's `workstation=` and `utc=` (draft 4.15), each one
+            # line. The journal's CHECK refuses only an empty workstation, so
+            # a name holding a control character or any other line break
+            # (`_RENDER_CONTROL_RE`) can be stored; it cannot be one line, and
+            # is a failed read, as a `file=` path holding one is.
+            utc = _render_int(utc, "journal.utc")
+            if (not isinstance(workstation, str) or not workstation
+                    or _RENDER_CONTROL_RE.search(workstation)):
+                raise SnapshotUnavailable(f"seq {seq}'s journal.workstation {workstation!r} "
+                                          f"cannot be a workstation= line")
+            found = [seq, workstation, utc, []]
+            for row in answers[5]:
+                if len(row) != 3:
+                    raise SnapshotUnavailable(f"seq {seq}'s journal_files rows could not be "
+                                              f"read")
+                path, present, sha256 = row
+                present = _render_bool(present, "journal_files.present")
+                if (not isinstance(path, str) or _RENDER_CONTROL_RE.search(path)
+                        or (present and not (isinstance(sha256, str)
+                                             and _IMAGE_DIGEST_RE.fullmatch(sha256)))):
+                    raise SnapshotUnavailable(f"seq {seq}'s journal_files row {path!r} "
+                                              f"cannot be a file= row")
+                found[3].append(f"{path}\t{1 if present else 0}\t{sha256 if present else '-'}")
+            found[3].sort(key=lambda r: r.split("\t", 1)[0].encode("utf-8"))
+    if found is None:
+        # CHECK 3: the version, after the write id, as `commit_write` checks it
+        # (Y:1419's step order; §2.8).
+        refusal = register_version_refusal(version, writers_from, readers_from, write=True)
+        if refusal:
+            note(f"register snapshot: {refusal}; nothing was written")
+            return EXIT_UNAVAILABLE
+        # CHECK 4: the switch (Y:4988), never under `--at`.
+        if at is None and (mode, marker) != ("primary", "present"):
+            note(f"register snapshot: the register's switch is {mode} with the marker "
+                 f"{marker}, not primary with the marker present: a register write goes to "
+                 f"SQL in one transaction or refuses, and is never made in the files instead "
+                 f"(Amendment 22's S1, \"No fallback writes\"); nothing was written")
+            return EXIT_UNAVAILABLE
+        if at is not None and at > head:
+            raise SnapshotUnavailable(f"seq {at} is above the head, seq {head}")
+    n = head if at is None else at
+    repos_blob = None
+    out_rows = None
+    if found is None and images_wanted:
+        images = _register_snapshot_images(store, answers[-4:], n, start,
+                                           first_request_at=first_request_at)
+        if tree_dir is not None:
+            entry_blob = None
+            if at is not None:
+                rows = answers[at_next]
+                if rows:
+                    blob = _register_snapshot_one_row(rows, 1, f"seq {at + 1}'s repos_blob")[0]
+                    if blob is not None and not SHA_RE.match(blob):
+                        raise SnapshotUnavailable(f"seq {at + 1}'s repos_blob reads {blob!r}")
+                    entry_blob = blob or ""
+            given = _register_snapshot_checkout(opts["--checkout"], entry_blob)
+            for path in images:
+                if _RENDER_CONTROL_RE.search(path):
+                    raise RenderRefused(f"the image {path!r} holds a control character in its "
+                                        f"path")
+            register_snapshot_tree(tree_dir, {**images, **given}, seq=n, clock=clock)
+            if "lanes/repos.tsv" in given:
+                repos_blob = _register_git_blob_id(given["lanes/repos.tsv"])
+        else:
+            chosen = images if opts["--all"] else {p: images[p] for p in wanted if p in images}
+            out_rows = register_write_images(opts["--out"], chosen)
+            out_rows += [f"{p}\t0\t-" for p in (wanted or ()) if p not in images]
+            out_rows.sort(key=lambda r: r.split("\t", 1)[0].encode("utf-8"))
+        manifest = {path: image_cache_put(data) for path, data in images.items()}
+        image_cache_record(n, manifest)
+    _options, commit_timer = store.bounds("commit")
+    say("format=1")
+    say(f"generation={switch_generation}")
+    if printed_id is not None:
+        say(f"write_id={printed_id}")
+    if found is not None:
+        found_seq, found_ws, found_utc, found_rows = found
+        say(f"found={found_seq}")
+        say(f"workstation={found_ws}")
+        say(f"utc={found_utc}")
+        for row in found_rows:
+            say(f"file={row}")
+    say(f"switch={mode}")
+    say(f"marker={marker}")
+    say(f"n={n}")
+    say(f"clock={clock}")
+    say(f"not_after={clock + int(-(-commit_timer // 1)) + 2}")
+    say(f"schema={version}")
+    if repos_blob is not None:
+        say(f"repos_blob={repos_blob}")
+    say(f"c={store.connect_timeout}")
+    say(f"n_a={store.addresses}")
+    for row in out_rows or ():
+        say(f"image={row}")
+    return EXIT_OK
+
+
+def cmd_register_snapshot(args: list[str]) -> int:
+    """`lanes-index register snapshot` (contract §3.2, and §3.6 for `--files`
+    and `--all`; T111), in the forms `_register_snapshot_args` reads.
+
+    STDOUT: one `key=value` per line, LF-ended, in §3.2's order: `format=1`,
+    `generation=`, `write_id=` (echoed, or minted for `--write-id new`;
+    absent for `act-begin` and for `--generation` alone under `--at`),
+    `found=`, then its entry's `workstation=` (`journal.workstation`) and
+    `utc=` (`journal.utc`, in epoch seconds), then its seq's `file=` rows
+    (all only where check 2 found the id; contract §3.2, draft 4.15),
+    `switch=`, `marker=`, `n=`, `clock=`, `not_after=` (the clock plus the
+    commit's client timer `C` plus 2 s), `schema=`, `repos_blob=` (only with
+    `--tree`, where the tree holds `lanes/repos.tsv`), `c=` (`register_url=`'s
+    `connect_timeout=`) and `n_a=` (`register_addresses=`). With `--files` or
+    `--all`, one `image=<path>` TAB `<present>` TAB `<sha256>` row per path
+    follows, sorted by path, bytewise. Nothing is printed on any end but 0.
+
+    EXITS (contract §3.2; §3.6 for `--files`):
+    - 0: read; or check 2 found the write, with no tree built;
+    - 2: checks 1 and 2', each with §2.6's two lines; a refused
+      configuration, Q6(c)'s refusal of `mode=primary` included;
+    - 64: usage, before the configuration is read and before any connection;
+    - 69: checks 3 and 4; a database it cannot reach, its timer `S` included;
+      a 55P03 or any other refusal (Y:2627); any failed read, a found
+      entry whose workstation cannot be one line included, an `--at <k>`
+      above the head, a `k` it cannot render, a checkout it cannot read, and
+      a tree or images it could not write, with `<dir>` as it was."""
+    try:
+        opts = _register_snapshot_args(args)
+    except _SnapshotUsage as exc:
+        note(f"register snapshot: {exc} - see {PROG} --help")
+        return EXIT_USAGE
+    if opts is None:
+        say(USAGE)
+        return EXIT_OK
+    try:
+        cfg = load_config()
+        store = PostgresStore(cfg, "register_writer")
+    except Refusal as exc:
+        note(f"REFUSED: {exc}")
+        return EXIT_REFUSED
+    try:
+        return _register_snapshot(store, opts)
+    except PsqlFailed as exc:
+        echoed = _register_psql_lines(exc)
+        note(f"register snapshot: the register could not be read"
+             f"{'' if echoed else ': ' + exc.detail}; nothing was written")
+        code = next((m.group(1) for m in (re.match(r"ERROR:\s+([0-9A-Z]{5}):", line)
+                                           for line in (exc.stderr or "").splitlines()) if m),
+                    None)
+        if exc.psql_exit == 3 and code in ("42P01", "42703"):
+            note(f"register snapshot: a table or column this client reads is missing, so the "
+                 f"register's schema may not be this client's, {REGISTER_SCHEMA_VERSION}: if "
+                 f"it is newer, upgrade the tools; if it is older, the database is behind: "
+                 f"run the bootstrap")
+        return EXIT_UNAVAILABLE
+    except StoreUnusable as exc:
+        note(f"register snapshot: the register could not be read: {exc.detail}; nothing was "
+             f"written")
+        return EXIT_UNAVAILABLE
+    except RenderRefused as exc:
+        note(f"register snapshot: {exc}; nothing was written")
+        return EXIT_UNAVAILABLE
+    except (SnapshotUnavailable, OSError) as exc:
+        note(f"register snapshot: {exc}; nothing was written")
+        return EXIT_UNAVAILABLE
+
+
 # ======================================================== the records built
 
 TABLE_COLUMNS = {
@@ -3755,6 +4546,16 @@ REGISTER_BOUNDS = {
     "lookup": (2000, 6000, 9, "register_writer"),       # `journal --write-id`, each try: T_L (Y:3524)
     "read": (1000, 3000, 6, "register_reader"),         # `register read` forms 1, 3; `journal --last`: T_r (Y:3526)
     "guard": (1000, 1500, None, "register_reader"),     # `register read --for guard`, forms 2, 4 (Y:3518)
+    # THE GUARD'S WHOLE-FILE FETCH (lane 3's ruling, opensoft/openRepoTools#165
+    # 6783977598, item (3), on lane 5's question 3, 6783860030): the detached
+    # `lanes-index` call the guard starts for the whole file its cut read would
+    # lose (design W:4290-4300) is a call of its own, never the cut read's
+    # `psql`, which that read's own timer ends. READER, so on `reader_url=`:
+    # connect `c`, `lock_timeout` 1000 ms, `statement_timeout` 14000 ms, and a
+    # client timer of `N_a`·`c` + 15 s, which is this row's rule, `N_a`·`c` + the
+    # statement bound + 1 s, and is 17 s at `c` = 2 and `N_a` = 1. The guard
+    # row's 1500 ms would cut the very fetch this call exists to finish.
+    "guard-fetch": (1000, 14000, 17, "register_reader"),
     "render": (1000, 10000, 15, None),                  # `journal --since`, `render`; `reconcile` (Y:3527)
     "status": (1000, 5000, 8, "register_reader"),       # `status` (Y:3528)
     "rollback": (5000, 10000, 15, "register_writer"),   # `rollback`, each call (Y:3529)
@@ -4064,13 +4865,28 @@ class PostgresStore:
         if major is None or major < PSQL_MIN_MAJOR:
             raise PsqlTooOld(version, major is not None)
 
-    def bounds(self, row: str, timer: float | None = None) -> tuple[str, float]:
+    def bounds(self, row: str, timer: float | None = None, *,
+               first_request_at: float | None = None) -> tuple[str, float]:
         """D9's `row` for one call of this register role: its `PGOPTIONS`,
         `-c lock_timeout=<ms> -c statement_timeout=<ms>`, and its client timer
         in s, `N_a`·`c` + the statement bound + 1 s and never below the row's
         figure (`REGISTER_BOUNDS`). Only the guard's caller passes `timer`, its
         cut at `T0 + 3.75 s`; every other row sets its own. A row of the other
-        role is refused: a read never connects with the writer's credential."""
+        role is refused: a read never connects with the writer's credential.
+
+        THE SECOND REQUEST OF A MISSED SNAPSHOT (lane 3's ruling on SHOULD-2 of
+        lane 1's review of T111, opensoft/openRepoTools#165 6780364102, "Lane
+        1" item (1): "`bounds` cuts the second request of a missed snapshot to
+        what is left of `S` from its first request's start, and ends 69 where
+        nothing is left. `T_write`, `bound_s` and D7 do not change."). On the
+        `snapshot` row alone, `first_request_at` is the `time.monotonic()`
+        reading its caller took right before the snapshot's first request.
+        The timer returned is then `S` less the time since that reading, never
+        more than `S`, so the two requests together end by `S` from the first
+        one's start. Where nothing is left, nothing is sent: `PsqlFailed`,
+        with `timer_expired` and not `ran`, as the timer's other ends raise it,
+        which `register snapshot` ends 69. Every other row refuses
+        `first_request_at`, and the snapshot's first request passes none."""
         if not self.register:
             raise ValueError("only the register's roles carry D9's bounds; #160's index "
                              "paths keep theirs")
@@ -4079,6 +4895,9 @@ class PostgresStore:
         lock_ms, statement_ms, least_s, role = REGISTER_BOUNDS[row]
         if role and role != self.role:
             raise ValueError(f"D9's {row} row is run as {role}, and this store is {self.role}")
+        if first_request_at is not None and row != "snapshot":
+            raise ValueError(f"only D9's snapshot row is cut to what is left of its first "
+                             f"request's timer, and this call is the {row} row")
         options = f"-c lock_timeout={lock_ms} -c statement_timeout={statement_ms}"
         if least_s is None:
             if timer is None:
@@ -4087,9 +4906,18 @@ class PostgresStore:
         if timer is not None:
             raise ValueError(f"D9's {row} row sets its own client timer; only the guard's "
                              f"caller cuts one")
-        return options, max(least_s, self.addresses * self.connect_timeout + statement_ms / 1000 + 1)
+        own = max(least_s, self.addresses * self.connect_timeout + statement_ms / 1000 + 1)
+        if first_request_at is None:
+            return options, own
+        left = own - max(0.0, time.monotonic() - first_request_at)
+        if left <= 0:
+            raise PsqlFailed("unreachable", f"the snapshot's client timer S, {own:g} s from its "
+                             f"first request's start, has run out, so its second request was "
+                             f"not sent", timer_expired=True, ran=False)
+        return options, left
 
-    def request(self, statements: list[str], row: str, *, timer: float | None = None) -> str:
+    def request(self, statements: list[str], row: str, *, timer: float | None = None,
+                first_request_at: float | None = None) -> str:
         """ONE REQUEST PER CALL (FR-012; contract §2.3; Y:5876): `statements`
         joined by `psql`'s `\\;` into one simple-protocol Query on stdin,
         `A \\; B \\; C;`, so the call costs the connect and one round trip,
@@ -4098,18 +4926,21 @@ class PostgresStore:
 
         Each statement is one SQL statement with no `;` of its own outside a
         literal, no `--` comment and no `psql` meta-command; a trailing `;` is
-        dropped. Returns `psql`'s stdout; a failure is `PsqlFailed`."""
+        dropped. Returns `psql`'s stdout; a failure is `PsqlFailed`.
+        `first_request_at` is a missed snapshot's second request's, which
+        `bounds` cuts (#165 6780364102)."""
         if not self.register:
             raise ValueError("only the register's roles send a register request")
         parts = [statement.strip().rstrip(";").rstrip() for statement in statements]
         if not parts or not all(parts):
             raise ValueError("a register request is one or more statements, none of them empty")
-        options, timer = self.bounds(row, timer)
+        options, timer = self.bounds(row, timer, first_request_at=first_request_at)
         return self._run(" \\; ".join(parts) + ";\n", timer=timer, register=True,
                          options=options)
 
     def _query_many(self, queries: list[str], snapshot: bool = False, *,
-                    row: str | None = None, timer: float | None = None) -> list[list[list]]:
+                    row: str | None = None, timer: float | None = None,
+                    first_request_at: float | None = None) -> list[list[list]]:
         """Several SELECTs in ONE connection, each answered as TEXT-format COPY
         rows; a marker line no COPY row can be (one field, a control
         character) separates them. With `snapshot`, in ONE read-only
@@ -4120,7 +4951,11 @@ class PostgresStore:
         the marker sent as `REGISTER_MARKER_COPY`, whose row is the line
         `\\echo` prints, so the output is byte-identical and the parse below is
         #160's, unchanged. `row` names D9's bounds; `timer` is the guard's
-        cut."""
+        cut; `first_request_at` is a missed snapshot's second request's, which
+        `bounds` cuts to what is left of `S` (#165 6780364102)."""
+        if first_request_at is not None and row is None:
+            raise ValueError("first_request_at cuts a register row's timer, and this read "
+                             "names no row")
         marker = "\x1eLANES-INDEX-NEXT"
         parts = [f"SET search_path TO \"{self.schema}\";"]
         if snapshot:
@@ -4134,7 +4969,8 @@ class PostgresStore:
             out = self._run("\n".join(parts) + "\n")
         else:
             out = self.request([REGISTER_MARKER_COPY if part.startswith("\\echo") else part
-                                for part in parts], row, timer=timer)
+                                for part in parts], row, timer=timer,
+                               first_request_at=first_request_at)
         results, current = [], []
         for line in out.split("\n"):
             if line == marker:
@@ -4594,7 +5430,8 @@ def mirror_fetch(root: str, timeout: float | None) -> None:
 def mirror_register_seq(root: str, deadline: float | None = None, *,
                         skip: frozenset[str] | set[str] | None = None,
                         passed: list | None = None,
-                        tip: str | None = None) -> tuple[int, str]:
+                        tip: str | None = None,
+                        max_pages: int | None = None) -> tuple[int, str]:
     """`m`, the newest `Register-Seq` on `origin/<branch>` in the checkout
     `root` AS LAST FETCHED, and the commit that carries it. Nothing here
     fetches: `mirror_fetch` does, where its caller wants the fetch.
@@ -4625,7 +5462,26 @@ def mirror_register_seq(root: str, deadline: float | None = None, *,
     `tip`, where given, is the commit the walk starts from in place of
     `origin/<branch>`'s tip: `import --at <M> --after-loss` (T115) takes `M`'s
     newest `Register-Seq` (D22), and checks itself that `M` is on origin.
-    Without it, the walk is what it always was."""
+    Without it, the walk is what it always was.
+
+    `max_pages`, where given, is how many pages the walk reads before it
+    gives up, and is the guard's form C (SVC-12's condition 3, B14 design
+    :4501-4511: "exactly one `git log --first-parent -n 200` ... refuses 2 if
+    none of the 200 carries one"): the guard calls
+    `mirror_register_seq(root, deadline, max_pages=1, tip=<the commit it
+    records as mirror_tip=>)` (opensoft/openRepoTools#165 6783860030,
+    question 5). With `max_pages=n`, `n` full pages with no value that counts
+    answer `no-seq`, with no further `git log` call, so a trailer more than
+    `n` pages down is not found; a page that ends the line sooner answers as
+    it always has. `max_pages` below 1, or not an `int` (a `bool` is not
+    one), raises `ValueError` before any git call. `None`, the default, pages
+    until it finds a trailer or reaches the end of the line, as the renderer
+    does and as `status`, `reconcile`, `outage declare` and `import
+    --after-loss` need."""
+    if max_pages is not None and (isinstance(max_pages, bool) or not isinstance(max_pages, int)
+                                  or max_pages < 1):
+        raise ValueError(f"max_pages must be None or a whole number of 1 or more, "
+                         f"not {max_pages!r}")
     if tip is None:
         tip = tip_of(root)
         ref = f"origin/{branch()}"
@@ -4634,6 +5490,7 @@ def mirror_register_seq(root: str, deadline: float | None = None, *,
     resolved = frozenset(skip or ())
     over: list = []
     walked = 0
+    pages = 0
     while True:
         left = None if deadline is None else deadline - time.monotonic()
         out_of_time = (f"the walk of {ref}'s first-parent line for a Register-Seq ran out "
@@ -4680,6 +5537,18 @@ def mirror_register_seq(root: str, deadline: float | None = None, *,
                                     f"({walked + commits} read)")
             raise StoreUnusable("no-seq", f"no commit on {ref}'s first-parent line carries a "
                                 f"Register-Seq ({walked + commits} read)")
+        pages += 1
+        if max_pages is not None and pages >= max_pages:
+            counts, strays = "", ""
+            if over:
+                counts = " that counts"
+                strays = (f"; {len(over)} resolved "
+                          f"{'stray' if len(over) == 1 else 'strays'} passed over")
+            raise StoreUnusable("no-seq", f"none of the first {walked + commits} commits on "
+                                f"{ref}'s first-parent line carries a Register-Seq{counts}: "
+                                f"the limit of {max_pages} page{'' if max_pages == 1 else 's'} "
+                                f"of {MIRROR_SEQ_PAGE} commits was reached "
+                                f"(SVC-12's condition 3{strays})")
         walked += commits
 
 
@@ -5323,8 +6192,8 @@ def _register_read_shell_text(data: bytes) -> bytes:
 
 def _register_read_row_path(path: str) -> str:
     if _RENDER_CONTROL_RE.search(path):
-        raise RegisterReadFailed(f"the path {path!r} holds a control character, so it cannot be "
-                                 f"a line of the cache family")
+        raise RegisterReadFailed(f"the path {path!r} holds a control character or a line "
+                                 f"separator, so it cannot be a line of the cache family")
     return path
 
 
@@ -9904,7 +10773,13 @@ def register_psql_end(failure: PsqlFailed) -> str:
 
 #: The paths a write may stage (contract §3.3; Y:5060, the seam's path check,
 #: again): the render set, as `journal_edits`' and `files`' CHECKs name it,
-#: less `lanes/STORE`, which only the two operator entries edit (D24).
+#: less `lanes/STORE`, which only the two operator entries edit (D24). Like
+#: those CHECKs, whose `[^/]+` admits every character but `/`, the pattern
+#: takes any character in a file name. A path holding a control character,
+#: U+0085, U+2028 or U+2029 is refused beside it, by
+#: `register_path_unrenderable` (`_RENDER_CONTROL_RE`), and not by narrowing
+#: the pattern, so the pattern stays the CHECKs' mirror and the refusal can say
+#: why (line R, opensoft/openRepoTools#165 6783185080).
 REGISTER_WRITE_PATH_RE = re.compile(
     r"lanes/(LANES\.md|aliases\.tsv|archive/[^/]+\.md|log/[^/]+\.md)")
 #: Where a rename may move a file: `journal_edits.to_path`'s CHECK.
@@ -10182,6 +11057,88 @@ def register_files_rows(changes: dict, images: dict) -> bytes:
     return "".join(rows).encode("utf-8")
 
 
+def register_path_unrenderable(path: str, where: str) -> str | None:
+    """Why `path`, staged or renamed in an attempt directory, cannot be
+    written, or None (line R, lane 3's assignment, opensoft/openRepoTools#165
+    6783185080; the characters, lane 5's NIT 3, 6779760684): it holds a
+    character `_RENDER_CONTROL_RE` matches, a control character, U+0085,
+    U+2028 or U+2029. No render of the register can write such a path as one
+    `file=` row, and `register_write_images` and `register read` refuse it, so
+    a write that stored it would leave a seq that nothing could render. The
+    path is named with `!r`, so each such character shows as an escape.
+    `where` opens the refusal, and names the file and the path's place in it."""
+    if not _RENDER_CONTROL_RE.search(path):
+        return None
+    return (f"{where} {path!r}, which holds a control character, U+0085, U+2028 or U+2029, "
+            f"so no render of the register can write its image as one file= row, and the "
+            f"register stores no such path")
+
+
+#: GIT'S SCISSORS LINE: the comment string, one space and wt-status.c's
+#: `cut_line`, alone on its line, as `git commit --cleanup=scissors` writes it
+#: and as `wt_status_locate_end` finds it at the message's start or after any
+#: LF. git reads no trailer from that line on, so `%(trailers)` never reaches
+#: a `Register-Seq` appended after it. The comment string is `#` unless
+#: `core.commentChar` names another, so any prefix without white space counts.
+_REGISTER_SCISSORS_RE = re.compile(r"[^\s]+ -{24} >8 -{24}")
+#: A trailer line as git's `%(trailers)` reads one: a token of letters,
+#: digits and `-` (F29, Y:5964), then any blanks, then the `:` separator.
+_REGISTER_TRAILER_LINE_RE = re.compile(r"([A-Za-z0-9-]+)[ \t]*:")
+
+
+def register_message_unrenderable(message: str) -> str | None:
+    """Why `message` cannot be a render commit's message, or None (B13, lane
+    3's ruling on `register commit`, opensoft/openRepoTools#165 6779518728:
+    "`register commit` refuses with 2, before it journals, a message holding
+    a scissors line or whose final trailer block already holds a
+    `Register-Seq`"; render-commit.md §1). The render appends `Register-Seq:
+    <k>` to the message's final trailer block, or after one blank line as a
+    new last paragraph, and form C must read `<k>` back alone.
+
+    1. A SCISSORS LINE (`_REGISTER_SCISSORS_RE`) anywhere, the subject
+       included: git reads no trailer after it, so form C reads nothing.
+    2. A `Register-Seq` ALREADY IN THE FINAL TRAILER BLOCK: form C would read
+       two values. The final trailer block is the message's last paragraph,
+       its trailing blank lines dropped, where that paragraph is not the
+       first, which git reads as the title ("A subject alone never counts as
+       trailers", Y:5965), and where every line of it is a trailer line
+       (`_REGISTER_TRAILER_LINE_RE`) or a continuation, which begins with a
+       blank. A paragraph is ended by a line of blanks alone, as git's
+       `is_blank_line` reads one. The token is matched in any case, as
+       `%(trailers:key=Register-Seq)` matches it.
+
+    A `Register-Seq` anywhere else is passed: the render starts a new last
+    paragraph, which form C reads alone."""
+    lines = message.split("\n")
+    for number, line in enumerate(lines, 1):
+        if _REGISTER_SCISSORS_RE.fullmatch(line):
+            return (f"msg line {number} is a scissors line, git's cut line "
+                    f"`{'-' * 24} >8 {'-' * 24}` after a comment character (`#` by default), "
+                    f"after which git reads no trailer, so form C could never read this "
+                    f"write's Register-Seq from its render commit (render-commit.md §1)")
+    blank = [line.strip(" \t") == "" for line in lines]
+    end = len(lines)
+    while end and blank[end - 1]:
+        end -= 1
+    title_end = next((at for at in range(end) if blank[at]), end)
+    start = end
+    while start > title_end and not blank[start - 1]:
+        start -= 1
+    if start <= title_end:
+        return None
+    block = lines[start:end]
+    if not all(_REGISTER_TRAILER_LINE_RE.match(line) or (at and line[:1] in (" ", "\t"))
+               for at, line in enumerate(block)):
+        return None
+    for at, line in enumerate(block):
+        match = _REGISTER_TRAILER_LINE_RE.match(line)
+        if match and match.group(1).lower() == "register-seq":
+            return (f"msg's final trailer block already holds a Register-Seq, at its line "
+                    f"{start + at + 1}, so its render commit would carry two and form C would "
+                    f"not read this write's seq alone (render-commit.md §1)")
+    return None
+
+
 def read_attempt_dir(directory: str, ident: dict, env_act: dict | None) -> dict:
     """The attempt directory `register commit` takes as its argument (contract
     §3.3): only the names its table lists are read (CO-1), and each check that
@@ -10237,6 +11194,9 @@ def read_attempt_dir(directory: str, ident: dict, env_act: dict | None) -> dict:
             raise RegisterAttemptRefused(
                 f"changes.tsv stages {path!r}, which is outside the render set: lanes/LANES.md, "
                 f"lanes/aliases.tsv, lanes/archive/*.md and lanes/log/<lane>.md")
+        unrenderable = register_path_unrenderable(path, "changes.tsv stages")
+        if unrenderable:
+            raise RegisterAttemptRefused(unrenderable)
         if path in changes:
             raise RegisterAttemptRefused(f"changes.tsv names {path} twice")
         if not _REGISTER_BLOB_RE.fullmatch(base) or not _REGISTER_BLOB_RE.fullmatch(new):
@@ -10257,6 +11217,11 @@ def read_attempt_dir(directory: str, ident: dict, env_act: dict | None) -> dict:
             if len(parts) != 2:
                 raise RegisterAttemptRefused(f"renames.tsv line {number} is not <from> TAB <to>")
             frm, to = parts
+            for side, moved in (("<from>", frm), ("<to>", to)):
+                unrenderable = register_path_unrenderable(
+                    moved, f"renames.tsv line {number}'s {side} is")
+                if unrenderable:
+                    raise RegisterAttemptRefused(unrenderable)
             if changes.get(frm, ("",))[0] != "D" or changes.get(to, ("",))[0] != "A":
                 raise RegisterAttemptRefused(f"renames.tsv line {number}: {frm} must be a D line "
                                              f"and {to} an A line in changes.tsv")
@@ -10335,6 +11300,11 @@ def read_attempt_dir(directory: str, ident: dict, env_act: dict | None) -> dict:
     if message == "" or "\r" in message or "\0" in message:
         raise RegisterAttemptRefused("msg is empty, or holds a carriage return or a NUL, which "
                                      "journal.message cannot hold")
+    # A MESSAGE NO RENDER COMMIT CAN CARRY: refused here, before the store is
+    # opened and so before anything is journaled (B13, #165 6779518728).
+    unrenderable = register_message_unrenderable(message)
+    if unrenderable:
+        raise RegisterAttemptRefused(unrenderable)
     author = text("author", read("author"))
     author = author[:-1] if author.endswith("\n") else author
     if not _REGISTER_AUTHOR_RE.fullmatch(author):
@@ -13119,6 +14089,1543 @@ def sync_register_on_primary(requested: str | None) -> int:
     return EXIT_OK
 
 
+# ===================================================== the one push (group C)
+#
+# ONE PUSH FUNCTION SERVES THE RENDERER, `cutover`, `cutover --after-loss` AND
+# `rollback` (feature 007's T320: D23; S2's "The push"; the phase plan's "The
+# push URL"; FR-045; `contracts/render-commit.md` section 3).
+#
+# - THE REFSPEC is `<tip>:refs/heads/main`, never forced, bounded by
+#   `LANES_GIT_TIMEOUT` as `lanes-edit.sh`'s `git_net` bounds a push.
+# - WITH `render_key=` (Q21(b)(B)) it pushes to an explicit
+#   `ssh://git@github.com/<owner>/<repo>.git`, `<owner>/<repo>` being
+#   `_norm_repo` of the checkout's own `git remote get-url origin`, which must
+#   equal `source_of`'s: so the push names the repository that was fetched. A
+#   deploy key authenticates only over SSH, and `git push origin` would use the
+#   checkout's HTTPS remote and the lane's own credentials, which the ruleset
+#   refuses. A non-GitHub origin is refused with 2.
+# - WITHOUT `render_key=` (Q21(b)(A), and the bare-origin fixtures) it pushes to
+#   `origin` as it stands.
+# - NOTHING IS WRITTEN TO THE CHECKOUT'S CONFIGURATION: no `set-url`, no
+#   `pushurl`. A push to a URL moves no `refs/remotes/origin/main`, so the
+#   READ-BACK fetches `origin` and checks `merge-base --is-ancestor`.
+# - SECURITY-SENSITIVE: the key bypasses the ruleset on the render set and
+#   `lanes/STORE`, so its file is named only in the push's own environment, a
+#   dict built for that one `git push` and the `ssh` it starts. It is never put
+#   in `os.environ`, in git's argument list or in the read-back's environment,
+#   so no session, and no other child of this one, inherits it ("A
+#   server-side gate protects the rendered paths and `lanes/STORE`").
+
+#: The one branch the render commits and the operator entries' commits go to
+#: (contract section 3, Y:2867): `refs/heads/main` on origin, whatever
+#: `LANES_BRANCH` says.
+RENDER_BRANCH = "main"
+
+#: `<owner>/<repo>` as GitHub spells one: what `_norm_repo` must leave of a
+#: GitHub origin before the push may name it.
+GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$")
+
+
+def git_timeout_s() -> int | None:
+    """`LANES_GIT_TIMEOUT`, read as `lanes-edit.sh`'s `git_net` reads it: the
+    budget in whole seconds, 60 where it is unset or empty, and no bound where
+    it is 0 or not a whole number."""
+    raw = os.environ.get("LANES_GIT_TIMEOUT") or "60"
+    if re.fullmatch(r"[0-9]+", raw) and int(raw) > 0:
+        return int(raw)
+    return None
+
+
+def _render_child_env() -> dict:
+    """The caller's own environment, with every inherited `GIT_*` variable
+    removed, so an inherited `GIT_DIR`, `GIT_INDEX_FILE`, `GIT_SSH_COMMAND`,
+    `GIT_CONFIG_*` or `GIT_ASKPASS` reaches no child, and with
+    `LANES_NO_FETCH` dropped (D12; T321): the renderer never consults it, and
+    no child of its inherits it. Nothing here is interactive, so git never
+    prompts on a terminal. The re-fork's environment (`render_refork`), and
+    the start of `render_git_env`'s."""
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("GIT_") and key != "LANES_NO_FETCH"}
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
+def render_git_env() -> dict:
+    """The environment every git call of the renderer and of the push starts
+    from (Y:5776): `_render_child_env()`'s, with F29's pin against replaced
+    commits, which would move `m` or answer a read-back for a commit origin
+    never received, made whole HERE, so T320's read-back (`render_readback`)
+    has it too (SHOULD-1 of lane 3's review of T322):
+    - `GIT_NO_REPLACE_OBJECTS=1`: no `refs/replace/*`;
+    - `GIT_GRAFT_FILE=/dev/null`: no `<git-dir>/info/grafts`, which
+      `GIT_NO_REPLACE_OBJECTS` does not cover in git 2.43. Git advises on
+      every graft file it opens, `/dev/null` included, so
+      `advice.graftFileDeprecated=false` is set beside it, as
+      `GIT_CONFIG_COUNT` (git 2.31 or later)."""
+    env = _render_child_env()
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    env["GIT_GRAFT_FILE"] = "/dev/null"
+    env["GIT_CONFIG_COUNT"] = "1"
+    env["GIT_CONFIG_KEY_0"] = "advice.graftFileDeprecated"
+    env["GIT_CONFIG_VALUE_0"] = "false"
+    return env
+
+
+def render_push_env(render_key: str) -> dict:
+    """The push's own environment (D23; Y:5799). Without `render_key=` it is
+    `render_git_env()`'s. With it, the key is named in `GIT_SSH_COMMAND` with
+    `IdentitiesOnly=yes` and `BatchMode=yes`, Y:5799's form, and then
+    `-F /dev/null -o ControlMaster=no -o ControlPath=none`: no `~/.ssh/config`
+    or `/etc/ssh/ssh_config` can rename the host, add a key or a proxy, or
+    share the key's connection through a control master (MUST-2 of lane 3's
+    review of T320). `SSH_AUTH_SOCK` is removed, so no agent key is offered
+    first, and so are `SSH_ASKPASS`, `SSH_ASKPASS_REQUIRE` and
+    `SSH_SK_PROVIDER` (NIT-3); and `GIT_CONFIG_GLOBAL=/dev/null` with
+    `GIT_CONFIG_NOSYSTEM=1`, so no global or system `url.*.insteadOf` turns the
+    URL back into HTTPS. The dict is this one child's: the key is in no other
+    environment."""
+    import shlex
+    env = render_git_env()
+    if render_key:
+        for name in ("SSH_AUTH_SOCK", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE", "SSH_SK_PROVIDER"):
+            env.pop(name, None)
+        env["GIT_SSH_COMMAND"] = (f"ssh -i {shlex.quote(os.path.abspath(render_key))} "
+                                  f"-o IdentitiesOnly=yes -o BatchMode=yes -F /dev/null "
+                                  f"-o ControlMaster=no -o ControlPath=none")
+        env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+        env["GIT_CONFIG_NOSYSTEM"] = "1"
+    return env
+
+
+class GitRun:
+    """One bounded git call: its exit status (None where it could not be
+    started), its output, and whether its time ran out."""
+
+    __slots__ = ("rc", "out", "err", "timed_out")
+
+    def __init__(self, rc, out: str, err: str, timed_out: bool):
+        self.rc = rc
+        self.out = out
+        self.err = err
+        self.timed_out = timed_out
+
+    #: git's boilerplate around the line that says what went wrong, and its
+    #: `warning:` lines, which come before a `fatal:` that says it: never the
+    #: line kept (SHOULD-3 of lane 3's review of T320; NIT-a of the render
+    #: re-review).
+    BOILERPLATE = re.compile(r"fatal: Could not read from remote repository\.?"
+                             r"|Please make sure you have the correct access rights"
+                             r"|and the repository exists\.?|hint:.*|warning:.*|To \S+")
+
+    def last_line(self) -> str:
+        """The FIRST USEFUL line of stderr, URLs masked: git's boilerplate (the
+        "Could not read from remote repository" lines, `hint:` and `warning:`
+        lines and a push's `To <url>` line) is passed over, so "Permission
+        denied (publickey)", git's own refusal or the `fatal:` line behind a
+        `warning:` is the line kept. Where nothing else is left, the first
+        line, git's "fatal: ..." itself."""
+        lines = [line.strip() for line in self.err.splitlines() if line.strip()]
+        useful = [line for line in lines if not self.BOILERPLATE.fullmatch(line)]
+        kept = useful[0] if useful else (lines[0] if lines else "")
+        return _redact_url(kept) if kept else "no message"
+
+
+def _run_bounded(argv: list, env: dict, timeout: float | None) -> GitRun:
+    """Run `argv` in a process group of its own, bounded by `timeout` seconds.
+
+    AT THE BOUND THE WHOLE GROUP IS ENDED, as `timeout -k 5` ends `git_net`'s:
+    TERM, then KILL five seconds later, so an `ssh` under a hung `git push`
+    does not outlive it. An interrupt of this process ends the group too."""
+    import signal
+    try:
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, env=env, start_new_session=True)
+    except OSError as exc:
+        return GitRun(None, "", f"{argv[0]} could not be run: {exc}", False)
+    timed_out = False
+    out, err = b"", b""
+    try:
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.killpg(proc.pid, sig)
+                except OSError:
+                    pass
+                try:
+                    out, err = proc.communicate(timeout=5)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+            else:
+                for pipe in (proc.stdout, proc.stderr):
+                    if pipe is not None:
+                        pipe.close()
+                proc.wait()
+    except BaseException:
+        if proc.returncode is None:     # NIT-1: never a group whose leader was reaped
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+        proc.wait()
+        raise
+    return GitRun(proc.returncode, (out or b"").decode("utf-8", "replace"),
+                  (err or b"").decode("utf-8", "replace"), timed_out)
+
+
+def render_git(checkout: str, *args: str, env: dict | None = None,
+               timeout: float | None = None) -> GitRun:
+    """`git -C <checkout> <args>` in `render_git_env()`, or in `env` where the
+    caller built one, bounded by `timeout`."""
+    return _run_bounded(["git", "-C", checkout, *args],
+                        render_git_env() if env is None else env, timeout)
+
+
+def _redact_url(text: str) -> str:
+    """`text` with the user part of every http(s) URL in it masked: an origin
+    such as `https://<user>:<token>@github.com/...` is a credential, and a
+    refusal or a recorded failure must not carry it."""
+    return re.sub(r"(https?://)[^/@\s]+@", r"\1***@", text)
+
+
+def render_push_url(checkout: str, render_key: str) -> str:
+    """Where the push goes: `origin` without `render_key=`; with it, the
+    explicit `ssh://git@github.com/<owner>/<repo>.git` (Y:2868-2871; Y:5798).
+
+    Refused with 2 (`Refusal`), with nothing pushed: an origin that cannot be
+    read; an origin that is not a GitHub repository; and an `<owner>/<repo>`
+    that is not `source_of`'s (GitHub's names are compared without case)."""
+    if not render_key:
+        return "origin"
+    got = render_git(checkout, "remote", "get-url", "origin")
+    url = got.out.strip()
+    if got.rc != 0 or not url:
+        raise Refusal(f"render_key= is set, and {checkout} has no `origin` to name the "
+                      f"repository the push goes to: {got.last_line()}")
+    repo = _norm_repo(url)
+    bare = url[:-4] if url.endswith(".git") else url
+    if repo == bare or not GITHUB_REPO_RE.match(repo) or repo.split("/")[1] in (".", ".."):
+        if _redact_url(url) != url:
+            # NIT-2: say what is wrong with it: a URL that carries a user
+            # part, a credential, masked here.
+            raise Refusal(f"render_key= is set, and the origin of {checkout}, "
+                          f"{_redact_url(url)}, carries credentials in its URL: the renderer "
+                          f"identity is a deploy key, which pushes only to "
+                          f"ssh://git@github.com/<owner>/<repo>.git, named from a plain origin "
+                          f"URL (D23). Nothing was pushed")
+        raise Refusal(f"render_key= is set, and the origin of {checkout}, {_redact_url(url)}, "
+                      f"is not a GitHub repository: the renderer identity is a deploy key, "
+                      f"which pushes only to ssh://git@github.com/<owner>/<repo>.git (D23). "
+                      f"Nothing was pushed")
+    source = source_of(checkout)
+    if source.lower() != f"register:{repo}".lower():
+        raise Refusal(f"render_key= is set, and the origin of {checkout} names {repo}, which is "
+                      f"not this workstation's register, {source[len('register:'):]} "
+                      f"(source_of): the push must name the repository that was fetched. "
+                      f"Nothing was pushed")
+    return f"ssh://git@github.com/{repo}.git"
+
+
+class PushResult:
+    """What `render_push` found. `outcome` is one of:
+
+    - `pushed`: the read-back's fetch of origin carries `tip` on `main`. That
+      includes a push that timed out but landed, and a `tip` that was already
+      there: a second push of the same sha is a no-op (Y:2889-2891).
+    - `rejected`: git refused the push as not a fast-forward, and origin's
+      `main` does not carry `tip`: a lost race, which moved no ref. The
+      read-back's fetch IS the refetch, so `origin_tip` is origin's `main` as
+      it now stands. The renderer counts origin carrying `t` or more as pushed,
+      and otherwise rebuilds, six push attempts in all (T322).
+    - `failed`: the push failed otherwise (authentication, the network, the
+      ruleset or a hook on the server), and the read-back proves origin's
+      `main` does not carry `tip`.
+    - `unconfirmed`: the read-back could not answer (its fetch failed or timed
+      out); or the push said it landed, or its time ran out, and origin's
+      `main` does not carry it: a server can still apply an update after the
+      client is killed (SHOULD-1 of lane 3's review of T320).
+      `cutover` and `rollback` exit 3, and their rerun reads origin back
+      before it acts (Y:3157-3159); the renderer records it and ends.
+
+    `destination` is `origin` or the SSH URL, which carries no credential;
+    `detail` is one line for a record; `origin_tip` is origin's `main` after
+    the read-back's fetch, or "" where that fetch failed."""
+
+    __slots__ = ("outcome", "destination", "push_rc", "timed_out", "origin_tip", "detail")
+
+    def __init__(self, outcome: str, destination: str, push_rc, timed_out: bool,
+                 origin_tip: str, detail: str):
+        self.outcome = outcome
+        self.destination = destination
+        self.push_rc = push_rc
+        self.timed_out = timed_out
+        self.origin_tip = origin_tip
+        self.detail = detail
+
+    def __repr__(self) -> str:
+        return (f"PushResult(outcome={self.outcome!r}, destination={self.destination!r}, "
+                f"push_rc={self.push_rc!r}, timed_out={self.timed_out!r}, "
+                f"origin_tip={self.origin_tip!r}, detail={self.detail!r})")
+
+
+def render_readback(checkout: str, tip: str) -> tuple:
+    """S4's read-back: fetch `origin main` into `refs/remotes/origin/main`,
+    bounded by `LANES_GIT_TIMEOUT`, and ask `merge-base --is-ancestor` whether
+    it carries `tip`. Returns (answered, carried, origin's tip, why): where
+    the fetch did not answer, `answered` is False and nothing is known. Its
+    fetch writes no `FETCH_HEAD`, as the pass's own does not (NIT-7 of lane
+    3's review of T322): `lanes-edit.sh` reads that file's age as the
+    checkout's own fetch."""
+    fetched = render_git(checkout, "-c", "gc.auto=0", "-c", "maintenance.auto=false",
+                         "fetch", "--no-tags", "--no-write-fetch-head",
+                         "--no-recurse-submodules", "-q", "origin",
+                         f"+refs/heads/{RENDER_BRANCH}:refs/remotes/origin/{RENDER_BRANCH}",
+                         timeout=git_timeout_s())
+    if fetched.rc != 0:
+        why = (f"timed out after {git_timeout_s()} s" if fetched.timed_out
+               else f"exited {fetched.rc}: {fetched.last_line()}")
+        return False, False, "", f"the read-back's fetch of origin {RENDER_BRANCH} {why}"
+    head = render_git(checkout, "rev-parse", "--verify", "-q",
+                      f"refs/remotes/origin/{RENDER_BRANCH}^{{commit}}")
+    origin_tip = head.out.strip()
+    if head.rc != 0 or not SHA_RE.match(origin_tip):
+        return False, False, "", f"origin has no {RENDER_BRANCH} after the read-back's fetch"
+    carried = render_git(checkout, "merge-base", "--is-ancestor", tip, origin_tip)
+    if carried.rc not in (0, 1):
+        return False, False, origin_tip, (f"merge-base --is-ancestor exited {carried.rc}: "
+                                          f"{carried.last_line()}")
+    return True, carried.rc == 0, origin_tip, ""
+
+
+def _render_push_config_check(checkout: str, url: str, env: dict) -> None:
+    """MUST-1 of lane 3's review of T320: with `render_key=`, the checkout's
+    own configuration (its `.git/config`, a worktree's, and any file an
+    `include.path` names), which `GIT_CONFIG_GLOBAL` does not cover, must not
+    redirect or widen the deploy key's push. Read in the push's own
+    environment, `env`, which the caller hands over without the key's
+    `GIT_SSH_COMMAND` (NIT-3 of lane 3's review of T322), before the push,
+    each is a `Refusal` (2), nothing pushed:
+    - a `url.<base>.insteadOf` or `url.<base>.pushInsteadOf` whose value is a
+      prefix of the push URL `url`, which would send the key elsewhere;
+    - any key that begins `remote.<url>.`, such as a `pushurl`, which would
+      do the same, compared without case;
+    - a configuration that cannot be read."""
+    def unread(run: GitRun) -> Refusal:
+        return Refusal(f"render_key= is set, and the configuration of {checkout} cannot be "
+                       f"read (`git config` exited {run.rc}: {run.last_line()}), so it cannot "
+                       f"be shown not to redirect the deploy key's push. Nothing was pushed")
+
+    rewrites = render_git(checkout, "config", "-z", "--get-regexp",
+                          r"^url\..*\.(push)?insteadof$", env=env, timeout=git_timeout_s())
+    if rewrites.rc not in (0, 1) or rewrites.timed_out:
+        raise unread(rewrites)
+    for record in rewrites.out.split("\x00"):
+        key, newline, value = record.partition("\n")
+        if newline and url.startswith(value):
+            raise Refusal(f"render_key= is set, and the configuration of {checkout} has "
+                          f"{_redact_url(key)} = {_redact_url(value)}, which rewrites the push "
+                          f"URL {url}: the deploy key's push would go elsewhere. Nothing was "
+                          f"pushed")
+    listed = render_git(checkout, "config", "-z", "--name-only", "--list", env=env,
+                        timeout=git_timeout_s())
+    if listed.rc != 0 or listed.timed_out:
+        raise unread(listed)
+    prefix = f"remote.{url}.".lower()
+    for key in listed.out.split("\x00"):
+        if key.lower().startswith(prefix):
+            raise Refusal(f"render_key= is set, and the configuration of {checkout} has "
+                          f"{_redact_url(key)}, which configures the push URL {url} as a "
+                          f"remote: the deploy key's push could go elsewhere or take more. "
+                          f"Nothing was pushed")
+
+
+def render_push(checkout: str, tip: str, render_key: str = "") -> PushResult:
+    """THE ONE PUSH (T320): push `tip` to origin's `main` from `checkout`, as a
+    fast-forward only, then read it back. It writes nothing to the checkout's
+    configuration, and moves no HEAD, index or working tree.
+
+    `render_key` is `render_key=`'s path, or "" (Q21(b)(A)). A key file that
+    is not a private regular file, and a destination `render_push_url`
+    refuses, and with the key a checkout configuration that would redirect
+    or widen the push (`_render_push_config_check`), are a `Refusal` (2) with
+    nothing pushed. The push never takes tags or submodules along
+    (`push.followTags=false`, `push.recurseSubmodules=no`), and is never
+    signed (`push.gpgSign=false`, NIT-2 of lane 3's review of T322).
+    Everything else is a `PushResult`, which each caller maps to its own
+    end."""
+    if not SHA_RE.match(tip):
+        raise ValueError(f"render_push needs a full commit sha, not {tip!r}")
+    if render_key:
+        _check_private_file(render_key, "the renderer's deploy-key file (`render_key=`)")
+    destination = render_push_url(checkout, render_key)
+    env = render_push_env(render_key)
+    if render_key:
+        _render_push_config_check(checkout, destination,
+                                  {key: value for key, value in env.items()
+                                   if key != "GIT_SSH_COMMAND"})
+    pushed = render_git(checkout, "-c", "push.followTags=false", "-c", "push.recurseSubmodules=no",
+                        "-c", "push.gpgSign=false",
+                        "push", "--no-verify", "--porcelain", destination,
+                        f"{tip}:refs/heads/{RENDER_BRANCH}", env=env, timeout=git_timeout_s())
+    # `--porcelain` gives one line per ref, `!` for a ref that was not
+    # updated: `[rejected]` is git's own refusal of a push that is not a fast-
+    # forward, and `[remote rejected]` the server's, a ruleset or a hook.
+    summary = ""
+    for line in pushed.out.splitlines():
+        fields = line.split("\t")
+        if len(fields) >= 3 and fields[0] == "!":
+            summary = fields[2].strip()
+    if pushed.timed_out:
+        how = f"the push timed out after {git_timeout_s()} s"
+    elif pushed.rc is None:
+        how = f"the push could not be started: {pushed.last_line()}"
+    elif pushed.rc == 0:
+        how = "the push exited 0"
+    else:
+        how = f"the push exited {pushed.rc}: {_redact_url(summary) or pushed.last_line()}"
+    answered, carried, origin_tip, why = render_readback(checkout, tip)
+    if answered and carried:
+        outcome = "pushed"
+    elif not answered:
+        outcome = "unconfirmed"
+        how = f"{how}; {why}"
+    elif pushed.timed_out or pushed.rc == 0:
+        outcome = "unconfirmed"
+        how = (f"{how}, and origin's {RENDER_BRANCH} does not carry {tip}"
+               + (" yet: the server may still apply it" if pushed.timed_out else ""))
+    elif summary.startswith("[rejected]"):
+        outcome = "rejected"
+    else:
+        outcome = "failed"
+    return PushResult(outcome, destination, pushed.rc, pushed.timed_out, origin_tip,
+                      f"{outcome} to {destination}: {how}")
+
+
+# ===================================== `render --checkout <c>`'s lock (group C)
+#
+# ONE RENDER AT A TIME PER CHECKOUT, AND NO FORK WAITS (feature 007's T321:
+# D14; S2's first bullet; FR-044; the phase plan's "The render lock").
+#
+# - THE LOCK is `fcntl.flock(LOCK_EX | LOCK_NB)` on `<git-dir>/lanes-render.lock`
+#   of the checkout `<c>`, in `SyncLock`'s form: never the lane's write lock,
+#   and never a `mkdir` mutex. The kernel releases a `flock` when its holder
+#   dies, even by SIGKILL, where a `mkdir` mutex would stay behind and the
+#   checkout would render nothing again ([L4-4]).
+# - THE FILE IS OPENED CLOSE-ON-EXEC, so a `git push` that outlives a killed
+#   renderer does not keep the lock.
+# - BOTH HALVES OF `SyncLock`'s HANDSHAKE (`cmd_sync`): a fork that finds the
+#   lock held writes `<git-dir>/lanes-render.rerun`, tries the lock once more,
+#   and exits; the holder, after it releases, looks for a mark once more and
+#   takes the lock back for it. Without the second half, a write that commits
+#   between the holder's last look and its release is never rendered ([L4-3]).
+# - `LANES_NO_FETCH` IS NEVER CONSULTED (D12): `render --checkout` drops it
+#   from its own environment first, and `render_git_env` from every child's.
+
+RENDER_LOCK_NAME = "lanes-render.lock"
+RENDER_RERUN_NAME = "lanes-render.rerun"
+
+
+class RenderLock:
+    """The render lock of one checkout's git directory, and its rerun mark."""
+
+    def __init__(self, git_dir: str):
+        self.path = os.path.join(git_dir, RENDER_LOCK_NAME)
+        self.rerun = os.path.join(git_dir, RENDER_RERUN_NAME)
+        self.fd = None
+
+    def acquire(self) -> bool:
+        """Take the lock at once, or answer False: it never waits. The file is
+        opened close-on-exec and never through a symbolic link. An error that
+        is not "held" (a git directory this account cannot write) raises."""
+        import errno
+        import fcntl
+        if self.fd is not None:
+            return True
+        fd = os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            os.close(fd)
+            if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
+                return False
+            raise
+        self.fd = fd
+        return True
+
+    def release(self) -> None:
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+    def mark_rerun(self) -> None:
+        """Leave the mark that asks the holder to render again. A mark that
+        cannot be written is said: the write it stands for then waits for the
+        next render."""
+        try:
+            fd = os.open(self.rerun, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_CLOEXEC
+                         | os.O_NOFOLLOW, 0o600)
+            try:
+                os.write(fd, (utc_now() + "\n").encode("ascii"))
+            finally:
+                os.close(fd)
+        except OSError as exc:
+            note(f"render: the rerun mark {self.rerun} could not be written "
+                 f"({exc.strerror or exc}); the next render renders this write")
+
+    def has_rerun(self) -> bool:
+        return os.path.lexists(self.rerun)
+
+    def clear_rerun(self) -> None:
+        """Take the mark away. One that cannot be removed raises, since the
+        holder would otherwise take the lock back for it for ever."""
+        try:
+            os.unlink(self.rerun)
+        except FileNotFoundError:
+            pass
+
+
+def render_git_dir(checkout: str) -> str:
+    """The git directory of `<c>`, the lane's checkout, which holds the lock:
+    per checkout, a linked worktree's own. Anything else is refused with 2."""
+    got = render_git(checkout, "rev-parse", "--absolute-git-dir")
+    git_dir = got.out.strip()
+    if got.rc != 0 or not git_dir or not os.path.isdir(git_dir):
+        raise Refusal(f"render --checkout {checkout} names no git checkout: {got.last_line()}")
+    return git_dir
+
+
+# ===================================== `render --checkout <c>`'s pass (group C)
+#
+# THE RENDERER'S PASS (feature 007's T322: S2's "A pass"; D15; D16; FR-044;
+# contracts/render-commit.md), run by the holder of `<c>`'s render lock:
+#
+# 1. FETCH `origin main`, bounded by `LANES_GIT_TIMEOUT`, and take origin's
+#    tip AS A SHA: every later git act of the pass reads that sha, never the
+#    ref, which the lane's own fetch may move meanwhile. A failed fetch is
+#    recorded with the mirror state (D16), and nothing is pushed.
+# 2. READ THE REGISTER ONCE (D9's `render` row, one snapshot): the schema
+#    window, the head `h` and the switch, and the `git_commit` of every
+#    `stray-import` and `stray-revert` entry, the RESOLVED STRAYS. It reads
+#    after the fetch, so `h` is at least every seq the fetched origin carries.
+# 3. FIND `m` by form C, paged with `--skip`, 200 commits a page, never with
+#    `--grep`, the whole walk bounded by `LANES_GIT_TIMEOUT`: the first
+#    non-empty `Register-Seq` of a commit that is no resolved stray (lane 3's
+#    T117 ruling 5, through the skip set of `render_register_seq`). Run out of
+#    time, or no trailer on the whole line: recorded, nothing pushed.
+#    AT `files` THE PASS ENDS HERE: it renders nothing and records no
+#    divergence, since nothing at `files` can clear one (lane 3's ruling on
+#    T322's open point 2). Every later step is at `primary`.
+# 4. CHECK FOR A DIVERGENCE, each recorded as `diverged at <sha>` through
+#    `record_mirror_state`, nothing pushed: an `m` above `h` at its commit
+#    `R` (R2's N6); a commit after `R` that changes a render-set path and is
+#    no resolved stray; and a render set at `R` that is not the images at
+#    `m`.
+# 5. THE TARGET, `t = min(h, m + 64, o - 1)`, `o` the first entry after `m`
+#    that `journal.operator` flags (PC-3). Where `m + 1` is one, nothing is
+#    rendered (F2): its command owns it.
+# 6. BUILD `m+1 .. t` with T301's image builder, under the private index
+#    `<git-dir>/lanes-render.index` and `commit-tree --no-gpg-sign`, each
+#    message composed here (D15), each commit read back by form C, which must
+#    read its `k`, and PUSH through `render_push` (T320): a rejection
+#    refetches, N6 is checked again, origin carrying `t` or more counts as
+#    pushed, and otherwise the pass rebuilds on origin's new tip, six
+#    attempts in all.
+#
+# IT NEVER TOUCHES A HEAD, AN INDEX OR A WORKING TREE OF THE CHECKOUT. Its git
+# calls read objects and refs, write objects, `refs/remotes/origin/main` (the
+# fetch, and T320's read-back) and its own `lanes-render.*` files; it writes
+# no `FETCH_HEAD`. Every git call starts from `render_git_env()`, which pins
+# out replace refs and grafts (F29), with `TZ=UTC` added.
+
+#: Form C's page, in commits (Y:2843).
+RENDER_PAGE = 200
+#: PC-3: the seqs one pass renders at most, `t <= m + 64`.
+RENDER_BATCH = 64
+#: Amendment 23 S4 item 5's bound on a writer: six push attempts in all.
+RENDER_PUSH_ATTEMPTS = 6
+#: The pass's private index, in the checkout's git directory (Y:2855).
+RENDER_INDEX_NAME = "lanes-render.index"
+#: The build's private directory for the blobs and messages it hands git,
+#: beside the index, and cleared with it (NIT-4 of lane 3's review of T322).
+RENDER_WORK_NAME = "lanes-render.tmp"
+#: The trailer that ties a commit to its seq (contract section 2).
+REGISTER_SEQ_KEY = "Register-Seq"
+#: A line of a trailer block as F29 names one (Y:5964): `Token: value`, the
+#: token of letters, digits and `-`.
+_RENDER_TRAILER_LINE_RE = re.compile(r"[A-Za-z0-9-]+: .*")
+#: `journal.author`'s form, its CHECK's: a name, one space, an email in `<>`.
+_RENDER_AUTHOR_RE = re.compile(r"([^<>]+) <([^<>]*)>")
+#: F29's pins for the build's git calls (contract section 1): blob bytes,
+#: the encoding header and the signature, with no gc and no split or sparse
+#: index in the way of the private index, and none of the lane's own hooks,
+#: such as `post-index-change`, run by a build (NIT-5 of lane 3's review of
+#: T322).
+_RENDER_BUILD_PINS = ("-c", "core.autocrlf=false", "-c", "i18n.commitEncoding=UTF-8",
+                      "-c", "commit.gpgSign=false", "-c", "gc.auto=0",
+                      "-c", "maintenance.auto=false", "-c", "core.splitIndex=false",
+                      "-c", "core.sparseCheckout=false", "-c", "core.precomposeUnicode=false",
+                      "-c", "core.hooksPath=/dev/null")
+#: Form C's pins (Y:2843-2847), on the walk and on the build's read-back of
+#: each commit: no signature output, `:` as the only trailer separator, `#`
+#: as the comment character, which also marks git's scissors line, and the
+#: output in UTF-8 (NIT-1 of lane 3's review of T322): a checkout's own
+#: `core.commentChar` or `i18n.logOutputEncoding` would hide every trailer.
+_RENDER_WALK_PINS = ("-c", "log.showSignature=false", "-c", "trailer.separators=:",
+                     "-c", "core.commentChar=#", "-c", "i18n.logOutputEncoding=UTF-8")
+
+
+class RenderPass:
+    """What one pass did. `outcome` is one of:
+
+    - `rendered`: origin's `main` now carries `t` or more, by this pass's
+      push or by another renderer's (Y:2885-2886). The one PROGRESS outcome
+      (F15): `reached`, origin's last `Register-Seq` after it, is above
+      `found`, where the pass found it;
+    - `nothing-missing`: `m` is at the head;
+    - `operator-next`: `m + 1` is an operator entry, which its command
+      pushes (F2);
+    - `at-files`: the switch is at `files`, where the pass renders nothing
+      and records no divergence, since nothing at `files` can clear one
+      (lane 3's ruling on T322's open point 2);
+    - `diverged`: `diverged at <sha>` was recorded (D16);
+    - `fetch-failed`: the fetch of `origin main` failed or timed out;
+    - `walk-failed`: form C ran out of time, found no `Register-Seq`, or
+      found one that is not a seq;
+    - `build-failed`: a git call of the build failed;
+    - `push-failed`: `render_push` answered `failed` or `unconfirmed`;
+    - `six-rejections`: six push attempts were rejected, and origin does not
+      carry `t`;
+    - `read-failed`: the register could not be read, or its rows do not
+      replay (D10).
+
+    `rc` is the exit the pass leaves: 0 for the first four, 69 for
+    `read-failed` (Y:3527, "the render ends; the lag stays"), and 1 for the
+    rest, which end the renderer with what it found recorded."""
+
+    __slots__ = ("outcome", "rc", "found", "reached", "target", "tip", "detail")
+
+    def __init__(self, outcome: str, detail: str, *, found=None, reached=None, target=None,
+                 tip: str = ""):
+        self.outcome = outcome
+        self.rc = (0 if outcome in ("rendered", "nothing-missing", "operator-next", "at-files")
+                   else EXIT_UNAVAILABLE if outcome == "read-failed" else 1)
+        self.found = found
+        self.reached = reached
+        self.target = target
+        self.tip = tip
+        self.detail = detail
+
+    @property
+    def progressed(self) -> bool:
+        """F15's progress: the pass moved origin's last `Register-Seq` past
+        where it found it."""
+        return (self.outcome == "rendered" and self.found is not None
+                and self.reached is not None and self.reached > self.found)
+
+    def __repr__(self) -> str:
+        return (f"RenderPass(outcome={self.outcome!r}, rc={self.rc}, found={self.found!r}, "
+                f"reached={self.reached!r}, target={self.target!r}, tip={self.tip!r}, "
+                f"detail={self.detail!r})")
+
+
+class RenderBuildFailed(Exception):
+    """A git call of the build failed: nothing was pushed."""
+
+
+def render_store(cfg: dict):
+    """The register the pass reads and records in: this engineer's
+    REGISTER-WRITER login, with D9's `render` row on each call (Y:3527)."""
+    return PostgresStore(cfg, "register_writer")
+
+
+def _render_env(**extra: str) -> dict:
+    """`render_git_env()`, which already pins out replace refs and grafts,
+    with F29's other environment pin, the UTC zone, and `extra`."""
+    env = render_git_env()
+    env["TZ"] = "UTC"
+    env.update(extra)
+    return env
+
+
+def _render_deadline():
+    timeout = git_timeout_s()
+    return None if timeout is None else time.monotonic() + timeout
+
+
+def _render_left(deadline):
+    return None if deadline is None else deadline - time.monotonic()
+
+
+def _render_in_container() -> bool:
+    """`lanes-edit.sh`'s `lanes_in_container` (ecd1bce :926-932):
+    `LANES_IN_CONTAINER` at 1 or 0 forces the answer (its test seam, which
+    nothing else sets), and otherwise `/.dockerenv` or `/run/.containerenv`
+    says this is a container."""
+    seam = os.environ.get("LANES_IN_CONTAINER", "")
+    if seam in ("0", "1"):
+        return seam == "1"
+    return os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+
+
+def _render_workstation() -> str | None:
+    """The name `record_mirror_state` files a divergence's finder under,
+    `found_by_ws`, taken as `lanes-edit.sh`'s `lanes_workstation_pair` takes
+    it (ecd1bce :935-944; SHOULD-3 of lane 3's review of T322):
+    `LANES_WORKSTATION`, as the writer that forked the renderer has it; else,
+    outside a container, this host's short name, `hostname -s`'s, the host
+    name cut at its first dot; else None, filed as NULL, which `found_by_ws`'s
+    CHECK allows: a container's own host name is its id, a name no reader
+    can match (Amendment 11, R-A11-14), and `_render_record` says so on
+    stderr. Nothing is asked of `lanes-edit.sh`, whose helper environment
+    would give a child `LANES_NO_FETCH` (D12)."""
+    seam = os.environ.get("LANES_WORKSTATION", "")
+    if seam:
+        return seam
+    if _render_in_container():
+        return None
+    name = os.uname().nodename
+    return name.split(".", 1)[0] or name or "unknown"
+
+
+def _render_one_line(text: str, limit: int = 500) -> str:
+    """`text` as one printable line for `mirror_state.last_error`: control
+    characters become spaces, URLs keep no user part, and it is cut at
+    `limit` characters."""
+    flat = " ".join(_redact_url(re.sub(r"[\x00-\x1f\x7f]", " ", text)).split())
+    return flat if len(flat) <= limit else flat[:limit - 3] + "..."
+
+
+def render_register_seq(checkout: str, tip: str, skip=frozenset(),
+                        deadline: float | None = None) -> tuple[int, str]:
+    """`m` and its commit `R`: the first non-empty `Register-Seq` on `tip`'s
+    first-parent line, by form C in pages (Y:2843-2847): `git log
+    --first-parent -n 200 --skip <s>
+    --format='%H%x00%(trailers:key=Register-Seq,valueonly)'`, never with
+    `--grep`, `deadline` (a `time.monotonic()` instant) bounding the whole
+    walk. A commit in `skip`, the resolved strays, does not count: its
+    `Register-Seq` is passed over (Y:2848-2850; lane 3's T117 ruling 5).
+
+    THE SHAPE OF LANE 1'S `mirror_register_seq` (T117), with the skip set
+    that ruling gives it and the tip as a sha: it returns `(m, R)`, and
+    raises `StoreUnusable` of kind `unread` (git failed, or the deadline
+    passed) or `no-seq` (no commit that counts carries one, or the newest
+    that does carries one that is not a seq). Within one commit the first
+    value is taken, as the guard's form C takes it."""
+    start = 0
+    while True:
+        left = _render_left(deadline)
+        out_of_time = (f"the walk of origin {RENDER_BRANCH}'s first-parent line for a "
+                       f"{REGISTER_SEQ_KEY} ran out of time after {start} commits "
+                       f"(LANES_GIT_TIMEOUT)")
+        if left is not None and left <= 0:
+            raise StoreUnusable("unread", out_of_time)
+        run = render_git(checkout, *_RENDER_WALK_PINS, "log", "--first-parent",
+                         "-n", str(RENDER_PAGE), "--skip", str(start),
+                         f"--format=%H%x00%(trailers:key={REGISTER_SEQ_KEY},valueonly)",
+                         tip, "--", env=_render_env(), timeout=left)
+        if run.timed_out:
+            raise StoreUnusable("unread", out_of_time)
+        if run.rc != 0:
+            raise StoreUnusable("unread", f"`git log` of {tip} exited {run.rc}: "
+                                f"{run.last_line()}")
+        commits, commit, passed_over = 0, "", False
+        for line in run.out.split("\n"):
+            if "\x00" in line:
+                commits += 1
+                commit, _, line = line.partition("\x00")
+                passed_over = commit in skip
+            value = line.strip()
+            if not commit or not value or passed_over:
+                continue
+            if not re.fullmatch(r"[0-9]+", value) or int(value) > 2 ** 63 - 1:
+                raise StoreUnusable("no-seq", f"commit {commit}, the newest on origin "
+                                    f"{RENDER_BRANCH}'s first-parent line to carry a "
+                                    f"{REGISTER_SEQ_KEY} that counts, carries {value!r}, "
+                                    f"which is not a seq")
+            return int(value), commit
+        if commits < RENDER_PAGE:
+            raise StoreUnusable("no-seq", f"no commit on origin {RENDER_BRANCH}'s first-parent "
+                                f"line carries a {REGISTER_SEQ_KEY} that counts "
+                                f"({start + commits} read, {len(skip)} resolved strays "
+                                f"passed over)")
+        start += commits
+
+
+def render_seq_of(checkout: str, commit: str) -> str:
+    """FORM C ON ONE COMMIT, with the walk's pins and environment: the first
+    non-empty `Register-Seq` value `git log -n 1` reads from `commit`, as
+    `render_register_seq` takes one, or "" where it reads none. The build
+    reads each commit it makes back with it (SHOULD-2 of lane 3's review of
+    T322). Raises `RenderBuildFailed` where git fails or `LANES_GIT_TIMEOUT`
+    runs out."""
+    out = _render_git_ok(render_git(checkout, *_RENDER_WALK_PINS, "log", "-n", "1",
+                                    f"--format=%(trailers:key={REGISTER_SEQ_KEY},valueonly)",
+                                    commit, "--", env=_render_env(), timeout=git_timeout_s()),
+                         f"form C's `git log` of {commit}")
+    return next((line.strip() for line in out.split("\n") if line.strip()), "")
+
+
+def render_strays_after(checkout: str, after: str, tip: str, skip=frozenset()) -> str | None:
+    """The divergence's git half (Y:2928-2930): the oldest commit on `tip`'s
+    first-parent line after `after` (`R`) that changes a render-set path and
+    is no resolved stray, or None. A commit after `R` carries no
+    `Register-Seq` that counts, so none of them is a render commit. Each
+    commit is read against its first parent, a merge included, with no
+    rename detection, so a rename shows both its paths; the render set is
+    filtered in code (`register_render_path`). Raises `StoreUnusable`
+    (`unread`) where git fails or `LANES_GIT_TIMEOUT` runs out. It has form
+    C's pins: git re-encodes all of `--format`'s output to a checkout's own
+    `i18n.logOutputEncoding`, and no `%H` would then be read (NIT-1)."""
+    run = render_git(checkout, *_RENDER_WALK_PINS, "log", "--first-parent",
+                     "--diff-merges=first-parent", "--no-renames", "--raw", "--no-abbrev",
+                     "-z", "--format=%H", f"{after}..{tip}", "--",
+                     env=_render_env(), timeout=git_timeout_s())
+    if run.timed_out or run.rc != 0:
+        raise StoreUnusable("unread", f"the commits after {after} on origin {RENDER_BRANCH} "
+                            f"could not be listed: " + (f"timed out after {git_timeout_s()} s"
+                                                        if run.timed_out else
+                                                        f"exited {run.rc}: {run.last_line()}"))
+    found, commit, path_next = None, "", False
+    for token in run.out.split("\x00"):
+        if path_next:
+            path_next = False
+            if commit and commit not in skip and register_render_path(token):
+                found = commit          # the output runs newest first: keep the oldest
+            continue
+        token = token.lstrip("\n")
+        if token.startswith(":"):
+            path_next = True            # a raw line: its path is the next token
+        elif SHA_RE.match(token):
+            commit = token
+    return found
+
+
+def render_tree_set(checkout: str, commit: str) -> dict:
+    """The render set in `commit`'s tree, `{path: (mode, type, object)}`:
+    the whole tree listed, and filtered in code, since git 2.43's `ls-tree`
+    refuses `:(exclude)` (Y:5775)."""
+    run = render_git(checkout, "ls-tree", "-r", "-z", "--full-tree", commit,
+                     env=_render_env(), timeout=git_timeout_s())
+    if run.timed_out or run.rc != 0:
+        raise RenderBuildFailed(f"`git ls-tree` of {commit} " + (
+            f"timed out after {git_timeout_s()} s" if run.timed_out
+            else f"exited {run.rc}: {run.last_line()}"))
+    entries = {}
+    for record in run.out.split("\x00"):
+        meta, tab, path = record.partition("\t")
+        fields = meta.split()
+        if tab and len(fields) == 3 and register_render_path(path):
+            entries[path] = tuple(fields)
+    return entries
+
+
+def render_blob_sha(data: bytes) -> str:
+    """The blob id git gives `data`, as `hash-object --no-filters` does."""
+    return hashlib.sha1(b"blob %d\x00" % len(data) + data).hexdigest()
+
+
+def render_image_set(images: dict) -> dict:
+    """The images as tree entries: every image is a `100644` blob (F29)."""
+    return {path: ("100644", "blob", render_blob_sha(data)) for path, data in images.items()}
+
+
+def render_message(message: str, k: int) -> str:
+    """D15'S MESSAGE (contract section 1, "The message"): the journal entry's
+    message byte for byte, with `Register-Seq: <k>` in its final trailer
+    block. Composed here; `git interpret-trailers` is never run.
+
+    - Its blank lines at the end are dropped, a line of only spaces and
+      tabs counting as blank, as git reads paragraphs and as lane 1's
+      refusal of a message reads them. Never `str.strip()` with no
+      argument: it also takes NBSP, FF, VT, U+2028, U+001C to U+001F and
+      NEL as blank, which git does not, so a message holding such a line
+      would end every pass in `build-failed` at its seq (render re-review
+      SHOULD-A).
+    - Where the message has two paragraphs or more, and every line of the
+      last is `Token: value` with a token of letters, digits and `-`, the
+      trailer is that paragraph's last line.
+    - Otherwise (a subject alone, which git reads as the title, or a body
+      ending in prose) it is a new last paragraph after one blank line.
+    - The message ends with one LF.
+    So a message that ends with at most one LF is kept whole at the start of
+    the commit's. A message with no text is refused (`RenderRefused`)."""
+    lines = message.split("\n")
+    while lines and not lines[-1].strip(" \t"):
+        lines.pop()
+    if not lines:
+        raise RenderRefused(f"seq {k}'s message holds no text, so no trailer block can follow "
+                            f"a title")
+    paragraphs, current = [], []
+    for line in lines:
+        if line.strip(" \t"):
+            current.append(line)
+        elif current:
+            paragraphs.append(current)
+            current = []
+    paragraphs.append(current)
+    block = (len(paragraphs) >= 2
+             and all(_RENDER_TRAILER_LINE_RE.fullmatch(line) for line in paragraphs[-1]))
+    return "\n".join(lines) + ("\n" if block else "\n\n") + f"{REGISTER_SEQ_KEY}: {k}\n"
+
+
+def _render_ident(author: str, epoch: int, k: int) -> dict:
+    """D15's identity: the journal's author as author and committer, both
+    dated by the entry's commit UTC, `@<epoch> +0000` (F29)."""
+    match = _RENDER_AUTHOR_RE.fullmatch(author or "")
+    if not match:
+        raise RenderRefused(f"seq {k}'s author {author!r} is not `Name <email>`")
+    name, email = match.group(1), match.group(2)
+    date = f"@{epoch} +0000"
+    return {"GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email, "GIT_AUTHOR_DATE": date,
+            "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email,
+            "GIT_COMMITTER_DATE": date}
+
+
+def _render_read_head(store) -> tuple:
+    """THE PASS'S FIRST READ, one request in one snapshot, D9's `render`
+    row: the schema window, `h` and the switch in one read, the resolved
+    strays, and the mirror state's two columns. Returns `(h, mode, skip,
+    diverged_sha, last_error)`. Raises `RenderRefused` where the answer
+    cannot be read or the schema is outside this client's window."""
+    answers = store._query_many([
+        "SELECT version, writers_from, readers_from FROM schema_version WHERE id = 1",
+        "SELECT h.seq, s.mode FROM register_head h, register_switch s "
+        "WHERE h.id = 1 AND s.id = 1",
+        "SELECT j.git_commit FROM journal j WHERE j.kind IN ('stray-import', 'stray-revert') "
+        "AND j.git_commit IS NOT NULL ORDER BY j.seq",
+        "SELECT mir.diverged_sha, mir.last_error FROM mirror_state mir WHERE mir.id = 1",
+    ], snapshot=True, row="render")
+    if len(answers) != 4:
+        raise RenderRefused(f"psql answered {len(answers)} of the pass's 4 reads")
+    version_rows, head_rows, stray_rows, mirror_rows = answers
+    if len(version_rows) != 1 or len(version_rows[0]) != 3:
+        raise RenderRefused("the register's schema_version row could not be read")
+    refusal = register_version_refusal(*(_render_int(v, "schema_version")
+                                         for v in version_rows[0]), write=True)
+    if refusal:
+        raise RenderRefused(refusal)
+    if len(head_rows) != 1 or len(head_rows[0]) != 2 or head_rows[0][1] not in ("files",
+                                                                                "primary"):
+        raise RenderRefused("the register's head and switch could not be read")
+    head, mode = _render_int(head_rows[0][0], "register_head.seq"), head_rows[0][1]
+    skip = frozenset(row[0] for row in stray_rows if row and row[0] and SHA_RE.match(row[0]))
+    diverged, last_error = (mirror_rows[0] + [None, None])[:2] if mirror_rows else (None, None)
+    return head, mode, skip, diverged, last_error
+
+
+def _render_read_entries(store, m: int, upto: int) -> list:
+    """THE ENTRIES AFTER `m`, `m+1 .. upto`, one request in one snapshot:
+    `(seq, kind, operator, author, message, utc)`, the commit UTC in whole
+    seconds since the epoch. `operator` is `journal.operator` (D24; never
+    judged by an entry's edits or its number)."""
+    answers = store._query_many([
+        f"SELECT j.seq, j.kind, j.operator, j.author, j.message, "
+        f"CAST(date_part('epoch', j.utc) AS bigint) FROM journal j "
+        f"WHERE j.seq > {int(m)} AND j.seq <= {int(upto)} ORDER BY j.seq",
+    ], snapshot=True, row="render")
+    rows = answers[0] if len(answers) == 1 else None
+    if rows is None or len(rows) != upto - m or any(len(row) != 6 for row in rows):
+        raise RenderRefused(f"the journal's entries from seq {m + 1} to seq {upto} were not "
+                            f"all read")
+    entries = []
+    for want, row in enumerate(rows, m + 1):
+        seq = _render_int(row[0], "journal.seq")
+        if seq != want or row[2] not in ("t", "f") or row[3] is None or row[4] is None:
+            raise RenderRefused(f"the journal's entry at seq {want} could not be read")
+        entries.append((seq, row[1], row[2] == "t", row[3], row[4],
+                        _render_int(row[5], "journal.utc")))
+    return entries
+
+
+def render_images_span(store, first: int, last: int) -> tuple:
+    """The render set's images at each seq `first .. last`, `{k: {path:
+    bytes}}`, and the journal's `(seq, kind)` rows read, from ONE T301 read
+    (`register_render_read(store, last)`, D9's `render` row) and T301's
+    image builder: the images at `first` by a full replay from the latest
+    import, and each later seq brought forward from the one before,
+    `start=(k-1, register_cache_state(...))`, whose proof is over every
+    image at `k`; a miss there replays in full. Raises
+    `RenderRefused`, `PsqlFailed` or `StoreUnusable`, as T301's read does."""
+    import bisect
+    journal, edits, files = register_render_read(store, last)
+    j_seqs = [row[0] for row in journal]
+    e_seqs = [row[0] for row in edits]
+    f_seqs = [row[0] for row in files]
+    images = {}
+    for k in range(first, last + 1):
+        if k - 1 in images:
+            state = register_cache_state(images[k - 1])
+            if state is not None:
+                try:
+                    images[k] = register_images(
+                        journal[bisect.bisect_left(j_seqs, k):bisect.bisect_right(j_seqs, k)],
+                        edits[bisect.bisect_left(e_seqs, k):bisect.bisect_right(e_seqs, k)],
+                        files[:bisect.bisect_right(f_seqs, k)], start=(k - 1, state))
+                    continue
+                except RenderRefused:
+                    pass        # a miss: the full replay below
+        images[k] = register_images(journal[:bisect.bisect_right(j_seqs, k)],
+                                    edits[:bisect.bisect_right(e_seqs, k)],
+                                    files[:bisect.bisect_right(f_seqs, k)])
+    return images, [(seq, kind) for seq, kind in journal]
+
+
+def _render_record(store, diverged: str | None, error: str | None) -> None:
+    """`record_mirror_state` (D16), one request with D9's `render` row:
+    `diverged` is a stray's sha or None, `error` the pass's why or None,
+    which clears `last_error`. A record that fails is said, and the pass
+    ends as it would have. A divergence filed with no finder, in a container
+    with no `LANES_WORKSTATION`, is said (SHOULD-3 of lane 3's review of
+    T322)."""
+    text = None if error is None else _render_one_line(error)
+    finder = _render_workstation()
+    if diverged is not None and finder is None:
+        note("render: this is a container and LANES_WORKSTATION is not set, so the divergence "
+             "is filed with no finder (found_by_ws NULL), never under the container's own id "
+             "(Amendment 11, R-A11-14). The launcher exports LANES_WORKSTATION")
+    try:
+        store.request([f'SELECT "{store.schema}".record_mirror_state('
+                       f'{_pg_quote(finder)}, {_pg_quote(diverged)}, '
+                       f'{_pg_quote(text)})'], "render")
+    except (StoreUnusable, ValueError) as exc:
+        note(f"render: the mirror state could not be recorded ({exc}); status will not show "
+             f"this pass's end")
+
+
+def _render_git_ok(run: GitRun, what: str) -> str:
+    if run.timed_out or run.rc != 0:
+        raise RenderBuildFailed(f"{what} " + (f"timed out after {git_timeout_s()} s"
+                                              if run.timed_out else
+                                              f"exited {run.rc}: {run.last_line()}"))
+    return run.out
+
+
+def _render_clear(path: str) -> None:
+    """Remove what `path` names, a file, a symbolic link (never followed) or
+    a whole directory; nothing where it is absent. Raises `OSError`."""
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(info.st_mode):
+        shutil.rmtree(path)
+    else:
+        os.unlink(path)
+
+
+def render_build(checkout: str, git_dir: str, parent: str, parent_set: dict, seqs: list,
+                 images: dict, entries: dict) -> str:
+    """BUILD `seqs` on `parent` (Y:2855-2862; contract section 1), and return
+    the last commit. Under the lock, `lanes-render.index`, its `.lock` and
+    the build's directory `lanes-render.tmp` are cleared first: a renderer
+    killed inside `read-tree` or `update-index` leaves that `.lock`, and one
+    killed inside the build leaves that directory. Then, for each `k`:
+
+    - `read-tree <parent>` into the private index (`GIT_INDEX_FILE`);
+    - the blobs that differ from the parent's render set written with
+      `hash-object -w --no-filters`, and staged with `update-index
+      --cacheinfo`, each as `100644`; the render-set paths the images lack
+      removed with `--force-remove`: the render set is then exactly the
+      images at `k`, whatever the parent held;
+    - `write-tree`, then `commit-tree --no-gpg-sign -p <parent>`, with D15's
+      message, author, committer and dates;
+    - FORM C ON THE NEW COMMIT (`render_seq_of`), which must read `k`
+      (SHOULD-2 of lane 3's review of T322): a journal message whose
+      trailers git reads otherwise, one with a scissors line or with a
+      `Register-Seq` already in its final trailer block, would leave a commit
+      at which the next pass finds a false divergence.
+
+    The blobs and the message pass through 0600 files in the 0700 directory
+    `<git-dir>/lanes-render.tmp`, byte for byte, since `render_git` gives git
+    no stdin; the directory is removed when the build ends (NIT-4 of lane
+    3's review of T322). Each blob id git writes is checked against
+    `render_blob_sha`'s. A failure, a file there that cannot be made or
+    written included, raises `RenderBuildFailed`, and nothing is pushed;
+    what it leaves is unreferenced objects."""
+    index = os.path.join(git_dir, RENDER_INDEX_NAME)
+    work = os.path.join(git_dir, RENDER_WORK_NAME)
+    try:
+        for stale in (index, index + ".lock", work):
+            _render_clear(stale)
+    except OSError as exc:
+        raise RenderBuildFailed(f"the build's files left in {git_dir} could not be cleared: "
+                                f"{exc.strerror or exc}") from exc
+    top = _render_git_ok(render_git(checkout, "rev-parse", "--show-toplevel",
+                                    env=_render_env(), timeout=git_timeout_s()),
+                         "`git rev-parse --show-toplevel`").strip()
+    if not top:
+        raise RenderBuildFailed(f"{checkout} has no working tree to stage paths from")
+    staging = _render_env(GIT_INDEX_FILE=index)
+    try:
+        os.mkdir(work, 0o700)
+    except OSError as exc:
+        raise RenderBuildFailed(f"the build's directory {work} could not be made: "
+                                f"{exc.strerror or exc}") from exc
+    try:
+        tip, current = parent, parent_set
+        for k in seqs:
+            want = render_image_set(images[k])
+            changed = sorted(path for path in want if current.get(path) != want[path])
+            removed = sorted(path for path in current if path not in want)
+            _render_git_ok(render_git(top, *_RENDER_BUILD_PINS, "read-tree", tip, env=staging,
+                                      timeout=git_timeout_s()), f"seq {k}'s `git read-tree`")
+            fresh = sorted({want[path][2] for path in changed})
+            if fresh:
+                files = []
+                for number, sha in enumerate(fresh):
+                    data = next(images[k][p] for p in changed if want[p][2] == sha)
+                    blob = os.path.join(work, f"blob-{number}")
+                    fd = os.open(blob, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                    with os.fdopen(fd, "wb") as handle:
+                        handle.write(data)
+                    files.append(blob)
+                written = _render_git_ok(render_git(
+                    top, *_RENDER_BUILD_PINS, "hash-object", "-w", "--no-filters", "--", *files,
+                    env=staging, timeout=git_timeout_s()),
+                    f"seq {k}'s `git hash-object -w`").split()
+                if written != fresh:
+                    raise RenderBuildFailed(f"seq {k}'s blobs were written as {written}, not "
+                                            f"{fresh}")
+            if changed or removed:
+                args = ["update-index", "--add", "--replace"]
+                for path in changed:
+                    args += ["--cacheinfo", f"100644,{want[path][2]},{path}"]
+                if removed:
+                    args += ["--force-remove", "--", *removed]
+                _render_git_ok(render_git(top, *_RENDER_BUILD_PINS, *args, env=staging,
+                                          timeout=git_timeout_s()),
+                               f"seq {k}'s `git update-index`")
+            tree = _render_git_ok(render_git(top, *_RENDER_BUILD_PINS, "write-tree",
+                                             env=staging, timeout=git_timeout_s()),
+                                  f"seq {k}'s `git write-tree`").strip()
+            _seq, _kind, _operator, author, message, epoch = entries[k]
+            text = os.path.join(work, f"message-{k}")
+            fd = os.open(text, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(render_message(message, k).encode("utf-8"))
+            commit = _render_git_ok(render_git(
+                top, *_RENDER_BUILD_PINS, "commit-tree", "--no-gpg-sign", "-p", tip, "-F", text,
+                tree, env=_render_env(GIT_INDEX_FILE=index, **_render_ident(author, epoch, k)),
+                timeout=git_timeout_s()), f"seq {k}'s `git commit-tree`").strip()
+            if not SHA_RE.match(tree) or not SHA_RE.match(commit):
+                raise RenderBuildFailed(f"seq {k}'s tree or commit id could not be read")
+            read = render_seq_of(top, commit)
+            if read != str(k):
+                raise RenderBuildFailed(
+                    f"seq {k}'s commit {commit} reads "
+                    + (f"{REGISTER_SEQ_KEY} {read}" if read else f"no {REGISTER_SEQ_KEY}")
+                    + f" by form C, not {k}: git reads its journal message's trailers "
+                    f"otherwise (such as after a scissors line, or with a {REGISTER_SEQ_KEY} "
+                    f"already in its final trailer block), and the next pass would find a "
+                    f"divergence at it")
+            tip, current = commit, want
+        return tip
+    except OSError as exc:
+        raise RenderBuildFailed(f"a file in the build's directory {work} could not be "
+                                f"written: {exc.strerror or exc}") from exc
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def render_pass(checkout: str, cfg: dict, *, store=None) -> RenderPass:
+    """S2'S PASS in `checkout`, under its render lock (T322; S2's "A pass";
+    D15; D16; FR-044; contracts/render-commit.md): fetch, read the head,
+    find `m`, check for a divergence, take `t`, build `m+1 .. t` and push
+    through `render_push`, six attempts in all. `store` is the register,
+    `render_store(cfg)` where it is not given. Returns a `RenderPass`; a
+    refused configuration, from `render_store` or `render_push`, raises
+    `Refusal` (2) after it is recorded where it can be. Section comment
+    above has the steps."""
+    store = render_store(cfg) if store is None else store
+
+    def stop(outcome: str, detail: str, *, diverged: str | None = None,
+             record: bool = True, **fields) -> RenderPass:
+        if record:
+            _render_record(store, diverged, detail)
+        note(f"render: {outcome}: {detail}")
+        return RenderPass(outcome, detail, **fields)
+
+    # 1. THE FETCH.
+    fetched = render_git(checkout, "-c", "gc.auto=0", "-c", "maintenance.auto=false", "fetch",
+                         "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "-q",
+                         "origin", f"+refs/heads/{RENDER_BRANCH}:refs/remotes/origin/"
+                         f"{RENDER_BRANCH}", env=_render_env(), timeout=git_timeout_s())
+    if fetched.rc != 0:
+        return stop("fetch-failed", f"the fetch of origin {RENDER_BRANCH} " + (
+            f"timed out after {git_timeout_s()} s" if fetched.timed_out
+            else f"exited {fetched.rc}: {fetched.last_line()}") + "; nothing was pushed")
+    resolved = render_git(checkout, "rev-parse", "--verify", "-q",
+                          f"refs/remotes/origin/{RENDER_BRANCH}^{{commit}}", env=_render_env())
+    tip = resolved.out.strip()
+    if resolved.rc != 0 or not SHA_RE.match(tip):
+        return stop("fetch-failed", f"origin has no {RENDER_BRANCH} after the fetch; nothing "
+                    f"was pushed")
+
+    # 2. THE HEAD, THE SWITCH AND THE RESOLVED STRAYS, in one read.
+    try:
+        head, mode, skip, _diverged, last_error = _render_read_head(store)
+    except RenderRefused as exc:
+        return stop("read-failed", f"the register's head could not be read: {exc}")
+    except StoreUnusable as exc:
+        return stop("read-failed", f"the register could not be read: {exc.detail}",
+                    record=False)
+
+    # 3. FIND `m`.
+    try:
+        m, carrier = render_register_seq(checkout, tip, skip, _render_deadline())
+    except StoreUnusable as exc:
+        return stop("walk-failed", f"{exc.detail}; nothing was pushed")
+
+    def above_head(found: int, at: str):
+        """R2's N6 at `found`, `at` its commit: a `Register-Seq` above the
+        journal's head while the switch is at `primary`."""
+        if found > head:
+            return stop("diverged", f"diverged at {at}: it carries {REGISTER_SEQ_KEY} {found}, "
+                        f"above the journal's head {head} while the switch is at primary "
+                        f"(R2's N6); nothing was pushed", diverged=at, found=found)
+        return None
+
+    def diverged_from(found: int, at: str, origin_tip: str):
+        """The git half of the check at `found`, `at` its commit: R2's N6
+        and the strays after it. Reached at `primary` alone."""
+        ended = above_head(found, at)
+        if ended:
+            return ended
+        try:
+            stray = render_strays_after(checkout, at, origin_tip, skip)
+        except StoreUnusable as exc:
+            return stop("walk-failed", f"{exc.detail}; nothing was pushed", found=found)
+        if stray:
+            return stop("diverged", f"diverged at {stray}: it changes the render set after "
+                        f"{at}, which carries {REGISTER_SEQ_KEY} {found}, and is no render "
+                        f"commit; nothing was pushed", diverged=stray, found=found)
+        return None
+
+    def clean(outcome: str, detail: str, **fields) -> RenderPass:
+        """An end that is no failure clears a `last_error` an earlier pass left."""
+        if last_error is not None:
+            _render_record(store, None, None)
+        say(f"{PROG} render: {detail}")
+        return RenderPass(outcome, detail, **fields)
+
+    # AT `files` THE PASS RENDERS NOTHING AND RECORDS NO DIVERGENCE, since
+    # nothing at `files` can clear one (lane 3's ruling on T322's open point
+    # 2). That covers (ii')'s marker-first window, `t <= h < m` (Y:2850).
+    if mode != "primary":
+        return clean("at-files", f"the switch is at {mode}, where nothing is rendered and no "
+                     f"divergence is recorded: origin carries {REGISTER_SEQ_KEY} {m}, and the "
+                     f"journal's head is {head}", found=m, reached=m)
+
+    # 4. THE DIVERGENCE CHECK'S GIT HALF. After it, `m <= h`.
+    ended = diverged_from(m, carrier, tip)
+    if ended:
+        return ended
+
+    # 5. THE TARGET, from the entries after `m`.
+    upto = min(head, m + RENDER_BATCH)
+    try:
+        entries = _render_read_entries(store, m, upto) if upto > m else []
+    except RenderRefused as exc:
+        return stop("read-failed", f"{exc}; nothing was pushed")
+    except StoreUnusable as exc:
+        return stop("read-failed", f"the register could not be read: {exc.detail}",
+                    record=False)
+    operators = [seq for seq, _kind, operator, *_rest in entries if operator]
+    target = min(upto, operators[0] - 1) if operators else upto
+
+    # 4. THE DIVERGENCE CHECK'S IMAGE HALF: the render set at `R` must be the
+    # images at `m`. Then the images up to `t`, from the same read.
+    try:
+        images, read_kinds = render_images_span(store, m, max(m, target))
+    except RenderRefused as exc:
+        return stop("read-failed", f"the journal could not be rendered: {exc}; nothing was "
+                    f"pushed", found=m)
+    except StoreUnusable as exc:
+        return stop("read-failed", f"the register could not be read: {exc.detail}",
+                    record=False, found=m)
+    if [row for row in read_kinds if m < row[0] <= target] != [
+            (seq, kind) for seq, kind, *_rest in entries if seq <= target]:
+        return stop("read-failed", f"the journal's entries {m + 1} to {target} changed between "
+                    f"the pass's reads; nothing was pushed", found=m)
+    try:
+        at_carrier = render_tree_set(checkout, carrier)
+    except RenderBuildFailed as exc:
+        return stop("walk-failed", f"{exc}; nothing was pushed", found=m)
+    if at_carrier != render_image_set(images[m]):
+        return stop("diverged", f"diverged at {carrier}: its render set is not the images at "
+                    f"seq {m}, the {REGISTER_SEQ_KEY} it carries; nothing was pushed",
+                    diverged=carrier, found=m)
+
+    if target <= m:
+        if m >= head:
+            return clean("nothing-missing", f"origin carries {REGISTER_SEQ_KEY} {m}, the "
+                         f"journal's head; nothing to render", found=m, reached=m, target=m)
+        return clean("operator-next", f"seq {m + 1} is an operator entry, which its own command "
+                     f"pushes (F2); nothing rendered past {REGISTER_SEQ_KEY} {m}", found=m,
+                     reached=m, target=target)
+
+    # 6. BUILD AND PUSH, six attempts in all.
+    try:
+        git_dir = render_git_dir(checkout)
+    except Refusal as exc:
+        return stop("build-failed", f"{exc}; nothing was pushed", found=m, target=target)
+    by_seq = {entry[0]: entry for entry in entries}
+    base, base_m, base_set = tip, m, None
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            if base_set is None:
+                base_set = render_tree_set(checkout, base)
+            built = render_build(checkout, git_dir, base, base_set,
+                                 list(range(base_m + 1, target + 1)), images, by_seq)
+        except RenderBuildFailed as exc:
+            return stop("build-failed", f"{exc}; nothing was pushed", found=m, target=target)
+        except RenderRefused as exc:
+            return stop("read-failed", f"{exc}; nothing was pushed", found=m, target=target)
+        try:
+            pushed = render_push(checkout, built, cfg.get("render_key") or "")
+        except Refusal as exc:
+            _render_record(store, None, f"REFUSED: {exc}")
+            raise
+        if pushed.outcome == "pushed":
+            return clean("rendered", f"rendered seqs {base_m + 1} to {target} onto origin "
+                         f"{RENDER_BRANCH} at {built} ({attempts} push attempt"
+                         f"{'s' if attempts > 1 else ''})", found=m, reached=target,
+                         target=target, tip=built)
+        if pushed.outcome != "rejected":
+            return stop("push-failed", f"{pushed.detail}; seqs {base_m + 1} to {target} are not "
+                        f"on origin", found=m, target=target, tip=built)
+        # A LOST RACE: the read-back's fetch was the refetch. Origin carrying
+        # `t` or more counts as pushed; otherwise rebuild on its new tip.
+        base = pushed.origin_tip
+        try:
+            now_m, now_carrier = render_register_seq(checkout, base, skip, _render_deadline())
+        except StoreUnusable as exc:
+            return stop("walk-failed", f"after a rejected push: {exc.detail}", found=m,
+                        target=target)
+        # N6 FIRST (NIT-6 of lane 3's review of T322): a forged trailer that
+        # lands during the race is a divergence, never counted as pushed.
+        ended = above_head(now_m, now_carrier)
+        if ended:
+            return ended
+        if now_m >= target:
+            return clean("rendered", f"origin {RENDER_BRANCH} at {base} already carries "
+                         f"{REGISTER_SEQ_KEY} {now_m}, at or past seq {target}, after "
+                         f"{attempts} push attempt{'s' if attempts > 1 else ''}: counted as "
+                         f"pushed", found=m, reached=now_m, target=target, tip=base)
+        if attempts >= RENDER_PUSH_ATTEMPTS:
+            return stop("six-rejections", f"{RENDER_PUSH_ATTEMPTS} push attempts were rejected, "
+                        f"the last {pushed.detail}; origin carries {REGISTER_SEQ_KEY} {now_m}, "
+                        f"below seq {target}, and the next render resumes", found=m,
+                        reached=now_m, target=target)
+        if now_m < m:
+            return stop("walk-failed", f"after a rejected push, origin's last "
+                        f"{REGISTER_SEQ_KEY} went back from {m} to {now_m} at {now_carrier}; "
+                        f"nothing more was pushed", found=m, target=target)
+        ended = diverged_from(now_m, now_carrier, base)
+        if ended:
+            return ended
+        if now_m != base_m or now_carrier != carrier:
+            try:
+                if render_tree_set(checkout, now_carrier) != render_image_set(images[now_m]):
+                    return stop("diverged", f"diverged at {now_carrier}: its render set is not "
+                                f"the images at seq {now_m}; nothing more was pushed",
+                                diverged=now_carrier, found=m)
+            except RenderBuildFailed as exc:
+                return stop("walk-failed", f"{exc}; nothing more was pushed", found=m)
+        base_m, carrier, base_set = now_m, now_carrier, None
+
+
+# F15, THE PROGRESS BOUND (feature 007's T323; FR-046; PC-3, as research.md
+# takes it): a renderer makes another pass only after a pass that moved
+# origin's last `Register-Seq` past where that pass found it, or once for
+# each rerun mark it finds after it releases. Every other end of a pass is a
+# stop condition, and ends it with nothing on any HEAD: nothing missing; an
+# operator seq next; the switch at `files`; `diverged at`; a fetch,
+# authentication or six-rejection failure (with a walk or build that
+# failed); a failed journal read. After RENDER_PASS_CAP passes it hands over:
+# it releases the lock and re-forks itself once, detached, if its last pass
+# made progress OR it finds a rerun mark after the release (MUST-1 of lane
+# 3's review of T323: T321's handshake promises every write a pass after
+# it), so the last write of a burst is rendered though no write follows, and
+# no process lives unbounded under a steady stream.
+
+#: PC-3: the passes one renderer process makes before it hands over.
+RENDER_PASS_CAP = 16
+
+
+def _render_self_argv(checkout: str) -> list:
+    """The re-fork's command: this file, by the interpreter running it, as
+    `render --checkout <c>`."""
+    return [sys.executable, os.path.realpath(__file__), "render", "--checkout", checkout]
+
+
+def render_refork(checkout: str) -> bool:
+    """THE HANDOVER'S RE-FORK, detached as the writer's fork is (contract
+    section 3.7): a session of its own, stdin, stdout and stderr on
+    /dev/null, no descriptor but those, and `_render_child_env()`'s
+    environment, so no `GIT_*` but `GIT_TERMINAL_PROMPT` and no
+    `LANES_NO_FETCH` reaches it: it is no git call, and `render_git_env`'s
+    pins are for git calls. It is never waited for. Returns whether it
+    started; one that cannot be started is said, and the next fork renders
+    what it would have."""
+    try:
+        subprocess.Popen(_render_self_argv(checkout), stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         env=_render_child_env(), close_fds=True, start_new_session=True)
+    except OSError as exc:
+        note(f"render: the handover's re-fork could not be started ({exc}); the next render "
+             f"renders what is left")
+        return False
+    return True
+
+
+def _render_holding(lock: RenderLock, checkout: str, cfg: dict) -> int:
+    """The holder's side of the handshake, bounded by F15 (T323). Each turn
+    clears the rerun mark, the pass's first act (S2), and runs a pass.
+
+    - A PASS THAT MADE PROGRESS is followed by another, the lock still held.
+    - ANY OTHER END is a stop: the holder releases, looks for a mark once
+      more, and takes the lock back for it, one more pass for each mark it
+      finds after a release. A mark left after the clear, by a fork that
+      found the lock held, is rendered by this process, and never left with
+      nobody due to read it.
+    - AFTER RENDER_PASS_CAP PASSES it releases and ends, re-forking itself
+      once, detached, if its last pass made progress OR, after the release,
+      it finds a rerun mark (MUST-1 of lane 3's review of T323): the mark's
+      write is promised a pass after it (T321), and the re-fork, or a fork
+      that takes the lock before it, clears the mark and renders it.
+    Returns the last pass's exit."""
+    rc = 0
+    passes = 0
+    while True:
+        try:
+            lock.clear_rerun()
+        except OSError as exc:
+            note(f"render: the rerun mark {lock.rerun} cannot be removed "
+                 f"({exc.strerror or exc}); nothing rendered")
+            return 1
+        result = render_pass(checkout, cfg)
+        rc = result.rc
+        passes += 1
+        if passes >= RENDER_PASS_CAP:
+            lock.release()
+            # THE HANDSHAKE'S SECOND HALF holds at the cap too: the mark is
+            # looked for after the release, never before it.
+            marked = lock.has_rerun()
+            if result.progressed or marked:
+                started = render_refork(checkout)
+                why = "its last pass made progress" if result.progressed else "a rerun mark"
+                note(f"render: {passes} passes, the cap: the lock is released and the renderer "
+                     f"{'re-forked' if started else 'not re-forked'} to go on, for {why}")
+            else:
+                note(f"render: {passes} passes, the cap, the last with no progress and no rerun "
+                     f"mark: the lock is released, and nothing is re-forked")
+            return rc
+        if result.progressed:
+            continue
+        lock.release()
+        # THE HANDSHAKE'S SECOND HALF: after the release, never before it.
+        try:
+            again = lock.has_rerun() and lock.acquire()
+        except OSError as exc:
+            note(f"render: the render lock {lock.path} cannot be taken back for a rerun mark "
+                 f"({exc.strerror or exc}); the next render renders it")
+            return rc or 1
+        if not again:
+            return rc
+
+
+def cmd_render_checkout(args: list) -> int:
+    """`lanes-index render --checkout <c>` (contract section 3.7; T321): the
+    renderer that a primary write forks, detached, in the writing lane's
+    checkout `<c>`. One render at a time per checkout, and no fork waits.
+
+    Exits, the holder's being its last pass's (`RenderPass.rc`; T322, T323):
+    - 0: rendered, nothing missing, an operator entry next, or the switch at
+      `files`; or another render holds the lock and renders again for this
+      one;
+    - 1: a stop that is recorded with the mirror state (`diverged at`, a
+      failed fetch, walk, build or push, six rejected pushes), a render lock
+      or rerun mark that cannot be used, or a `StoreUnusable` no pass caught;
+    - 2: a refused configuration (Q6(c)'s refusal of `mode=primary`
+      included, at load, before any answer: C13; a push `render_push`
+      refuses), or a `<c>` that is no git checkout;
+    - 64: usage;
+    - 69: the register could not be read, or its rows do not replay
+      (Y:3527: the render ends, and the lag stays)."""
+    want = f"render --checkout <c> - see {PROG} --help"
+    checkout = None
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("-h", "--help"):
+            say(USAGE)
+            return 0
+        if arg == "--checkout" or arg.startswith("--checkout="):
+            value = arg.split("=", 1)[1] if "=" in arg else (args[i + 1] if i + 1 < len(args)
+                                                            else "")
+            if not value:
+                note(f"--checkout needs the lane's checkout: {want}")
+                return 64
+            if checkout is not None:
+                note(f"--checkout is given twice: {want}")
+                return 64
+            checkout = value
+            i += 1 if "=" in arg else 2
+            continue
+        note(f"unknown argument '{arg}' for render --checkout: {want}")
+        return 64
+    if checkout is None:
+        note(f"render needs --checkout <c>: {want}")
+        return 64
+    # D12 AND Y:5776: `LANES_NO_FETCH` is never consulted, and no inherited
+    # `GIT_*` reaches `load_config`, `source_of` or any child (SHOULD-2 of lane
+    # 3's review of T321): both are gone before anything here reads a
+    # repository or starts a child.
+    for name in [key for key in os.environ if key.startswith("GIT_") or key == "LANES_NO_FETCH"]:
+        os.environ.pop(name, None)
+    cfg = load_config()
+    checkout = os.path.abspath(checkout)
+    lock = RenderLock(render_git_dir(checkout))
+    try:
+        held = lock.acquire()
+        if not held:
+            # THE HANDSHAKE'S FIRST HALF: the mark, then ONE more try. If that
+            # fails too, somebody holds the lock now, after the mark was
+            # written, and the holder looks for marks after it lets go.
+            lock.mark_rerun()
+            held = lock.acquire()
+    except OSError as exc:
+        lock.release()
+        note(f"render --checkout {checkout}: the render lock {lock.path} cannot be taken: "
+             f"{exc.strerror or exc}")
+        return 1
+    if not held:
+        say(f"{PROG} render: another render holds {lock.path}; it renders again before it "
+            f"is done")
+        return 0
+    try:
+        return _render_holding(lock, checkout, cfg)
+    finally:
+        lock.release()
+
+
+def _render_checkout_main(args: list) -> int:
+    try:
+        return cmd_render_checkout(args)
+    except Refusal as exc:
+        note(f"REFUSED: {exc}")
+        return 2
+    except StoreUnusable as exc:
+        note(f"{exc.kind}: {exc.detail}")
+        return 1
+
+
 # ================================================================ the acts
 
 def resolve_source(requested: str | None, root: str) -> str:
@@ -14123,9 +16630,12 @@ def _export_worktrees(out_dir: str, cfg: dict, unusable) -> int:
 # `LANES_LANE=` its name, through its own checkout (D24, Y:653; F12):
 # `LANES_REPO` where the operator names one, as `lanes-edit.sh` honours it,
 # else `lanes-edit.sh lane-checkout <lane>`'s `<W>-lanes/<lane>/`, and never
-# `W`. It takes origin only (Q4(c)(i)): after a fetch (`LANES_NO_FETCH=1`
-# skips it), `C` must be on `origin/<branch>`, and only `C`'s objects are read,
-# never a working tree or a local commit.
+# `W`: a `LANES_REPO` that is `W` is refused (2), and so is one set where `W`
+# cannot be read to tell (a read that failed is never an answer; Amendment
+# 7(d); #165 6781033556), with that read's error named. It takes origin only
+# (Q4(c)(i)): after a fetch (`LANES_NO_FETCH=1` skips it), `C` must be on
+# `origin/<branch>`, and only `C`'s objects are read, never a working tree or
+# a local commit.
 #
 # ITS FOUR STEPS. None holds a transaction across a git act (F23): each
 # database call is one request, and git runs only between them.
@@ -14169,7 +16679,10 @@ def _export_worktrees(out_dir: str, cfg: dict, unusable) -> int:
 #          The structured rows each lane's reads and rules rest on are compared
 #          with #160's: every lane's `lanes` row with `build_records`' record,
 #          and the `holds` view with #160's `holds` rule over `build_records`'
-#          `log_lines`.
+#          `log_lines`. #160 reads only `LANES-retired.md` of the archive, so
+#          a lane whose row is in another archive file is not compared; the
+#          summary line counts those (`import_uncompared`; lane 3's ruling,
+#          #165 6781033556).
 #      Any difference refuses with `EXIT_IMPORT_REFUSED`, 2, naming the first
 #      differing path, and nothing is swapped in. `--dry-run`, the rehearsal's
 #      (ops act 3, step 8), ends here.
@@ -14425,8 +16938,12 @@ def _import(opts: dict) -> int:
                          f"{first_path or 'the counts'}: {first_why}; R3's three-part proof "
                          f"did not hold, so nothing was swapped in (S5)", notes=tuple(more))
     counts = staged["counts"]
+    uncompared = import_uncompared(staged, records)
     summary = (f"{len(source['render'])} paths, {counts['doc_lines']} lines, "
-               f"{counts['lanes']} lanes, {counts['log_lines']} log lines "
+               f"{counts['lanes']} lanes ({uncompared} uncompared in part 3"
+               + (": their row is in an archive file other than LANES-retired.md, which #160 "
+                  "does not read" if uncompared else "")
+               + f"), {counts['log_lines']} log lines "
                f"({counts['unreadable']} unreadable, kept verbatim and flagged), "
                f"{counts['register_lines']} register lines ({counts['slots']} with a slot), "
                f"{counts['object_holds']} holds ({counts['exempt']} exempt); "
@@ -14510,8 +17027,15 @@ def _import_checkout(lane: str) -> str:
     the operator's override that `lanes-edit.sh` honours too, else the
     checkout `lanes-edit.sh lane-checkout <lane>` names, `<W>-lanes/<lane>/`.
     Returns its top directory. Never `W`: a `LANES_REPO` that is `W` is
-    refused (2), where `W` can be read at all; so is a directory that is not
-    a git checkout, or a lane with no checkout of its own."""
+    refused (2); so is a `LANES_REPO` set where `W` cannot be read, since a
+    read that failed is never an answer (Amendment 7(d); lane 3's ruling,
+    opensoft/openRepoTools#165 6781033556): the refusal names that read's
+    error. So is a directory that is not a git checkout, or a lane with no
+    checkout of its own. With `LANES_REPO` unset the import makes no `W` read
+    at all: the checkout is `lanes-edit.sh lane-checkout <lane>`'s
+    `<W>-lanes/<lane>/`, which that helper derives from `W` and which is
+    never `W`, and a `W` that cannot be read refuses there as a lane with no
+    checkout of its own."""
     named = os.environ.get("LANES_REPO", "")
     if named:
         where = named
@@ -14536,9 +17060,15 @@ def _import_checkout(lane: str) -> str:
     if named:
         try:
             w = workspace_root()
-        except StoreUnusable:
-            w = ""
-        if w and os.path.realpath(w) == os.path.realpath(root):
+        except (StoreUnusable, OSError) as exc:
+            # A read that failed is never an answer (Amendment 7(d)): "W could
+            # not be read" is not "LANES_REPO is not W", so it is refused (2).
+            why = exc.detail if isinstance(exc, StoreUnusable) else str(exc)
+            raise Refusal(f"import: LANES_REPO is set, and W cannot be read to check that it "
+                          f"is not W itself ({why}); a read that failed is not an answer "
+                          f"(Amendment 7(d)), so the import reads nothing through {root}; "
+                          f"nothing was swapped in")
+        if os.path.realpath(w) == os.path.realpath(root):
             raise Refusal(f"import: LANES_REPO names W itself ({root}); the import reads "
                           f"origin through the operator lane's own checkout, never W (D24); "
                           f"nothing was swapped in")
@@ -14574,6 +17104,16 @@ def _import_source(root: str, commit: str, *, fetch: bool) -> dict:
                       f"({exc.detail}); nothing was swapped in")
 
 
+def _import_git_why(proc) -> str:
+    """git's failure as a refusal names it: `exited <code>: <its first line on
+    stderr>` (`no message` where it said nothing), with any URL's user and
+    password taken out, as `_mirror_git_error` does."""
+    err = proc.stderr if isinstance(proc.stderr, str) else proc.stderr.decode("utf-8", "replace")
+    lines = [line.strip() for line in err.splitlines() if line.strip()]
+    first = re.sub(r"(://)[^/\s@]*@", r"\1", lines[0]) if lines else "no message"
+    return f"exited {proc.returncode}: {first}"
+
+
 def import_source(root: str, commit: str, *, fetch: bool) -> dict:
     """ORIGIN'S `C`, AND NOTHING ELSE (Q4(c)(i); S5): the render set at
     `commit` as the checkout `root` holds origin's objects.
@@ -14581,14 +17121,17 @@ def import_source(root: str, commit: str, *, fetch: bool) -> dict:
     With `fetch`, `git fetch origin <branch>` first (`mirror_fetch`, bounded
     by `LANES_GIT_TIMEOUT`). `commit` must then be a commit there that
     `origin/<branch>` contains, else `Refusal`: a local or unpushed commit is
-    no source. The repository must be a sha1 one, whose ids the journal's
-    CHECKs take.
+    no source, and a `git merge-base --is-ancestor` that fails to answer (an
+    exit other than 0 and 1, or a 1 with a line on stderr) is refused naming
+    git's exit and its first line on stderr, never read as "not on origin".
+    The repository must be a sha1 one, whose ids the journal's CHECKs take.
 
     Each render-set path's bytes must be a file the register can hold, else
     `Refusal` naming the path, and its line where there is one: UTF-8, read
     strictly; no CR, since a line holds none (`doc_lines`' CHECK) and the
     renderer ends each line with LF alone; no NUL; and a path with no control
-    character.
+    character and no U+0085, U+2028 or U+2029 (`_RENDER_CONTROL_RE`), since no
+    image can be written for one.
 
     Returns `commit`; `tree`, `C:lanes`'s id; `blobs`, `{path: blob id}` of
     the render set and `lanes/repos.tsv`; `render`, the render set's paths
@@ -14603,7 +17146,18 @@ def import_source(root: str, commit: str, *, fetch: bool) -> dict:
                       f"origin's (Q4(c)(i)): fetch, or name origin/{branch()}'s; nothing was "
                       f"swapped in")
     tip = tip_of(root)
-    if not is_ancestor(root, commit, tip):
+    # `git merge-base --is-ancestor`: 0 an ancestor, and 1 with nothing on
+    # stderr not one. Any other exit, or a 1 that says something (git 2.43
+    # answers 1 with `error: Could not read <id>` for an object it cannot
+    # open), is git failing to answer, which is not "not an ancestor" (the nit
+    # of lane 3's ruling, #165 6781033556): the refusal names git's exit and
+    # its first line on stderr.
+    ancestry = git(root, "merge-base", "--is-ancestor", commit, tip, check=False)
+    if ancestry.returncode != 0 and (ancestry.returncode != 1 or ancestry.stderr.strip()):
+        raise Refusal(f"import: git could not tell whether {commit} is on origin/{branch()} "
+                      f"(its tip is {tip}): `git merge-base --is-ancestor` {_import_git_why(ancestry)}"
+                      f"; nothing was swapped in")
+    if ancestry.returncode != 0:
         raise Refusal(f"import: {commit} is not on origin/{branch()} (its tip is {tip}): the "
                       f"import takes origin's commits only, never a local one (Q4(c)(i)); "
                       f"nothing was swapped in")
@@ -14630,8 +17184,8 @@ def import_source(root: str, commit: str, *, fetch: bool) -> dict:
     data, texts, lines, warnings = {}, {}, {}, []
     for path in render:
         if _RENDER_CONTROL_RE.search(path):
-            raise Refusal(f"import: {path!r} holds a control character in its name, so no image "
-                          f"can be written for it; nothing was swapped in")
+            raise Refusal(f"import: {path!r} holds a control character or a line separator in "
+                          f"its name, so no image can be written for it; nothing was swapped in")
         raw = contents.get(blobs[path])
         if raw is None:
             raise Refusal(f"import: {path}'s blob {blobs[path]} cannot be read in {root}; "
@@ -14957,6 +17511,28 @@ def _import_files_holds(records: dict) -> set:
             if rec["verb"] in OPEN_VERBS and not (takeovers.get(obj, set()) - {lk})}
 
 
+def _import_files_lanes(records: dict) -> dict:
+    """#160's `lanes` records that name a row, by the lane's name in lower case,
+    the first of each: what part 3 compares each staged `lanes` row with."""
+    files_lanes: dict = {}
+    for rec in records["lanes"].values():
+        if rec.get("row_file") is not None:
+            files_lanes.setdefault(_register_lower(rec["lane"]), rec)
+    return files_lanes
+
+
+def import_uncompared(staged: dict, records: dict) -> int:
+    """HOW MANY STAGED `lanes` ROWS PART 3 DID NOT COMPARE (lane 3's ruling,
+    opensoft/openRepoTools#165 6781033556, item 3: its count goes in the
+    summary line). #160 reads only `lanes/archive/LANES-retired.md` of the
+    archive, so a lane whose row sits in any other archive file has no record
+    of #160's to compare with: `import_proof` skips it, and this counts the
+    rows it skips, by the rule it skips them by."""
+    files_lanes = _import_files_lanes(records)
+    return sum(1 for key, row in staged["lanes"].items()
+               if key not in files_lanes and row["path"] not in (REGISTER_PATH, ARCHIVE_PATH))
+
+
 def import_proof(source: dict, staged: dict, entry: dict, records: dict,
                  root: str) -> list[tuple[str, str]]:
     """R3'S THREE-PART PROOF of the staged load (design.md S5; ops act 4's
@@ -14979,7 +17555,9 @@ def import_proof(source: dict, staged: dict, entry: dict, records: dict,
        first record with a row for that lane, field by field, where #160
        reads the file the row is in (`lanes/LANES.md`, and of the archive
        `LANES-retired.md` alone); and the staged `holds` view equals #160's
-       `holds` over the files (`_import_files_holds`)."""
+       `holds` over the files (`_import_files_holds`). A lane whose row is in
+       another archive file has no record of #160's and is not compared:
+       `import_uncompared` counts those, for the summary line."""
     import tempfile     # used here alone, so the module's imports stay as they were
     diffs: list = []
     # 1. A blob id per path.
@@ -15047,10 +17625,7 @@ def import_proof(source: dict, staged: dict, entry: dict, records: dict,
         if counts[name] != want:
             diffs.append(("", f"{name}: {counts[name]} staged, {want} sent"))
     # 3. Every lane's answers.
-    files_lanes: dict = {}
-    for rec in records["lanes"].values():
-        if rec.get("row_file") is not None:
-            files_lanes.setdefault(_register_lower(rec["lane"]), rec)
+    files_lanes = _import_files_lanes(records)
     for key, row in staged["lanes"].items():
         rec = files_lanes.get(key)
         if rec is None:
@@ -15672,6 +18247,511 @@ def cutover_abort(store, seq: int, *, lane: str, workstation: str, why: str) -> 
     return EXIT_CUTOVER_ABORTED
 
 
+# ============================================ the rollback (feature 007, T304)
+#
+# `LANES-INDEX ROLLBACK`, STEPS 0 AND 1 (design.md S5's "Rollback, under
+# Q4(b)(iii)", Y:3222-3264, and §1.3's kinds table and divergence gate,
+# Y:1542-1550; operations.md §2.3's step 2, ops:329-336; FR-051, FR-052; D24).
+# The operator lane runs it on Brett's word, with `LANES_LANE=` its name, from
+# a shell or a `CLAUDE_NO_LANE=1` session, in its own checkout (D24). Lane 3's
+# T326 adds the git half: step 0's fresh fetch, at `rollback_step_0_git_half`,
+# and steps 2 to 4 with `--hold-marker`, at `rollback_steps_2_to_4`.
+#
+# EACH TRY, as one loop (ops:331; Y:1550):
+#   - ONE READ (`_ROLLBACK_READS`), one REPEATABLE READ snapshot as the
+#     REGISTER-WRITER under D9's `rollback` row (Y:3529): the version window,
+#     the switch, the head `k`, the kind and write id of the entry at the head,
+#     `mirror_state`'s divergence, and the database's clock, for `not_after`.
+#   - STEP 0'S DATABASE HALF: while `mirror_state.diverged_sha` is set it
+#     refuses, 2, with `diverged at <sha>` and S2's two ways out, nothing
+#     written (F1). Then T326's git half, right before step 1.
+#   - STEP 1, ONE SHORT TRANSACTION, one commit call in the commit's form
+#     (register-cli §2.3): `commit_write(k, <new write id>, ...)` with a
+#     `rollback` entry, whose one edit removes `lanes/STORE` (D24). Under the
+#     head row's lock lane 1's function refuses it with LR012 while a
+#     divergence is recorded (read `FOR SHARE`), moves the head from `k` to
+#     `k+1`, and sets the switch to `files` with the marker `removing`,
+#     `set_seq` and `marker_seq` its own seq. Nothing here adds SQL.
+#   - A LOST TURN, 40001, 40P01, 55P03 or LR001, sends it back to the read,
+#     with the head read afresh as its `k`, until D7's deadline
+#     (`rollback_deadline_s`), where it exits 75 with nothing written and the
+#     switch still `primary` (V3's NIT 2). No read starts after the deadline.
+#
+# ITS START DECLARES THE OUTAGE (D20; ops:334), once step 1 has committed, since
+# T121's `--rollback` form needs the switch at `files`: through T121's own
+# `outage declare --rollback --mirror-seq <k>`, `_outage_declare`, where the
+# configuration's directory can be written, and otherwise, as from a bench's
+# read-only mount, by printing that line for Brett to run on each host.
+#
+# A RERUN that finds the switch at `files`, the marker `removing` and the
+# rollback's own entry last, at `set_seq` = `marker_seq` = the head, declares
+# first, with `k = set_seq - 1`, and goes on from step 2 (Y:3264; ops:336).
+#
+# WHILE `RENDER_GIT_HALF` IS FALSE (Y:4872) it runs only against a scratch
+# schema, a `register_schema=` other than `lanes_register`, and exits 2 on
+# `lanes_register`, unset included, before anything connects.
+#
+# ITS ENDS (contracts/exit-codes.md §3.2): 0 once step 1 has committed, or a
+# rerun found it standing, and the outage is declared or its line printed:
+# steps 2 to 4 are T326's, so nothing is rendered or pushed and the marker
+# stays `removing`; 2 for each refusal, LR012 among them; 69 where the register
+# cannot be read or refuses, the switch and the marker unchanged, and where
+# step 1's call ends with no answer, after one re-read of the switch; 75 at
+# D7's deadline; 64 for usage.
+
+#: D7'S DEADLINE across step 1's tries, in seconds (Y:455-456; ops:331).
+ROLLBACK_DEADLINE_S = 30
+
+#: THE LOST TURNS (Y:1550; ops:331): each sends the rollback back to step 0,
+#: with the head read afresh as its `k`.
+ROLLBACK_LOST_TURNS = frozenset({"40001", "40P01", "55P03", "LR001"})
+
+#: THE ONE READ of each try, in one REPEATABLE READ snapshot, as
+#: REGISTER-WRITER under D9's rollback row.
+_ROLLBACK_READS = (
+    "SELECT version, writers_from, readers_from FROM schema_version WHERE id = 1",
+    "SELECT mode, marker_state, marker_seq, generation, set_seq FROM register_switch "
+    "WHERE id = 1",
+    "SELECT seq FROM register_head WHERE id = 1",
+    "SELECT j.kind, j.write_id FROM journal j JOIN register_head h ON h.id = 1 AND j.seq = h.seq",
+    "SELECT diverged_sha, found_utc, found_by_ws FROM mirror_state WHERE id = 1",
+    "SELECT extract(epoch FROM clock_timestamp())",
+)
+
+_ROLLBACK_USAGE = f"""\
+{PROG} rollback        steps 0 and 1 of the rollback to files mode
+
+Refuses while a divergence is recorded (step 0), then, in one short
+transaction, sets the SQL register's switch to files with the marker removing
+and writes the operator entry that removes lanes/STORE (step 1; operations.md
+section 2.3). A lost turn goes back to step 0 with the head read afresh, until
+D7's deadline. Its start declares the outage through `outage declare --rollback
+--mirror-seq <k>`, or prints that line where the configuration's directory
+cannot be written. Run it as the operator lane, with LANES_LANE=<lane>, from a
+shell or a CLAUDE_NO_LANE=1 session, in that lane's checkout (D24). While this
+build refuses mode=primary, it runs only against a scratch schema
+(register_schema=). Step 0's fresh fetch, the render, --hold-marker and the
+marker's push are lane 3's T326, which this build does not have.
+
+Exit: 0 step 1 committed, or found standing · 2 refused, nothing written ·
+64 usage · 69 the register cannot be read or refused, or a call's timer expired ·
+75 register busy at D7's deadline, nothing written."""
+
+
+class _RollbackUsage(Exception):
+    """A `rollback` command line that is not its usage: 64, before anything is
+    read."""
+
+
+class _RollbackEnd(Exception):
+    """An end of `rollback` but 0 that is not a refusal of its own: its code,
+    its own line, and psql's lines, which go first, verbatim (register-cli
+    §2.6)."""
+
+    def __init__(self, code: int, message: str, psql_lines: tuple = ()):
+        super().__init__(message)
+        self.code = code
+        self.psql_lines = psql_lines
+
+
+class _RollbackLostTurn(Exception):
+    """Step 1's call ended in a lost turn (`ROLLBACK_LOST_TURNS`), with nothing
+    written: back to step 0."""
+
+    def __init__(self, sqlstate: str, psql_lines: tuple):
+        super().__init__(sqlstate)
+        self.sqlstate = sqlstate
+        self.psql_lines = psql_lines
+
+
+def rollback_deadline_s() -> int:
+    """D7's deadline for this run, in whole seconds: `LANES_REGISTER_DEADLINE_S`
+    where it is set to a positive whole number, the seam that sets D7's
+    deadline for tests (design.md S1; the test plan's AT-D9 `rollback` row sets
+    it to 6), and otherwise `ROLLBACK_DEADLINE_S`, 30. Any other value is
+    ignored, and 30 kept."""
+    raw = os.environ.get("LANES_REGISTER_DEADLINE_S", "")
+    if re.fullmatch(r"[0-9]{1,6}", raw) and int(raw) > 0:
+        return int(raw)
+    return ROLLBACK_DEADLINE_S
+
+
+def _rollback_args(args: list[str]) -> dict | None:
+    """The rollback's flags; None for `--help`. `--hold-marker`, step 3's stop
+    for the ruleset, is T326's, and not in this build: T326 parses it here, and
+    `rollback_steps_2_to_4` reads it from the options this returns."""
+    for arg in args:
+        if arg in ("-h", "--help"):
+            return None
+    for arg in args:
+        if arg == "--hold-marker":
+            raise _RollbackUsage("rollback: --hold-marker, step 3's stop for the ruleset, is "
+                                 "lane 3's T326, and not in this build")
+        raise _RollbackUsage(f"rollback: unknown argument '{arg}'")
+    return {}
+
+
+def cmd_rollback(args: list[str]) -> int:
+    """`lanes-index rollback` (above): its exits, by the contract's constants."""
+    try:
+        opts = _rollback_args(args)
+    except _RollbackUsage as exc:
+        note(f"{exc} - see {PROG} rollback --help")
+        return EXIT_USAGE
+    if opts is None:
+        say(_ROLLBACK_USAGE)
+        return EXIT_OK
+    try:
+        return _rollback(opts)
+    except Refusal as exc:
+        note(f"REFUSED: {exc}")
+        return EXIT_REFUSED
+    except _RollbackEnd as exc:
+        for line in exc.psql_lines:
+            sys.stderr.write(line + "\n")
+        note(str(exc))
+        return exc.code
+    except StoreUnusable as exc:
+        note(f"rollback: {exc.kind}: {exc.detail}; the call was not sent")
+        return EXIT_UNAVAILABLE
+
+
+def _rollback(opts: dict) -> int:
+    # BEFORE ANYTHING CONNECTS: the configuration, Q6(c)'s refusal among its
+    # refusals (exit-codes.md §2), and the schema (Y:4872).
+    cfg = load_config()
+    if not RENDER_GIT_HALF and cfg["register_schema"] == REGISTER_TEMPLATE_SCHEMA:
+        raise Refusal(
+            f"rollback: register_schema={REGISTER_TEMPLATE_SCHEMA} is the register itself, and "
+            f"while the renderer's git half is not installed (RENDER_GIT_HALF is False) "
+            f"this build rolls back only a scratch schema (Y:4872): name one with "
+            f"register_schema=; nothing was written")
+    from uuid import uuid4
+    store = PostgresStore(cfg, "register_writer")
+    limit = rollback_deadline_s()
+    deadline = time.monotonic() + limit
+    ident: dict = {}
+    tries = 0
+    while True:
+        st = _rollback_read(store, "nothing was written, and the switch and the marker are "
+                                   "unchanged")
+        # WHOSE ENTRY IT IS (F12; Rule 10; D15), read once, after the first read and
+        # before the rerun path, so that T326's writes on a rerun have it too.
+        if not ident:
+            ident = {"lane": _rollback_lane(), "workstation": _rollback_workstation(),
+                     "author": _rollback_author()}
+        pair = (st["mode"], st["marker"])
+        if pair == ("files", "removing"):
+            if _rollback_own_entry(st):
+                say(f"rollback: seq {st['head']}, this rollback's entry, stands: the switch "
+                    f"reads files with the marker removing, so this rerun declares first and "
+                    f"goes on from step 2 (operations.md §2.3)")
+                return _rollback_after_step_1(cfg, store, opts, ident, st["head"] - 1,
+                                              st["head"])
+            raise _RollbackEnd(EXIT_UNAVAILABLE, f"rollback: the switch reads files with the "
+                               f"marker removing at set_seq {st['set_seq']}, but the head "
+                               f"{st['head']} is not a rollback's entry at that seq, which "
+                               f"this build does not know; nothing was written")
+        if pair == ("primary", "adding"):
+            raise Refusal(f"rollback: a cutover's entry stands unconfirmed at seq "
+                          f"{st['marker_seq']}, the marker adding: its push and read-back "
+                          f"(T327), or its abort, come first; nothing was written")
+        if pair == ("files", "absent"):
+            raise Refusal("rollback: the switch reads files with the marker absent: the "
+                          "register's store is files already, and there is nothing to roll "
+                          "back; nothing was written")
+        if pair != ("primary", "present"):
+            raise _RollbackEnd(EXIT_UNAVAILABLE, f"rollback: the switch reads {st['mode']} with "
+                               f"the marker {st['marker']}, which this build does not know; "
+                               f"nothing was written")
+        k = st["head"]
+        # STEP 0, ITS DATABASE HALF (F1; Y:3227-3228).
+        if st["diverged_sha"]:
+            raise Refusal(
+                f"rollback: diverged at {st['diverged_sha']}, found {st['found_utc']} by "
+                f"{st['found_by_ws']} (mirror_state): a diverged mirror can never be proved "
+                f"current, so the rollback does not start (F1; S5's step 0). Resolve it first "
+                f"by one of S2's two ways out, `{PROG} import --single <sha>` or `{PROG} render "
+                f"--revert <sha>`, while the switch reads primary; nothing was written")
+        # STEP 0, ITS GIT HALF: T326's.
+        rollback_step_0_git_half(cfg, store, k, ident["lane"])
+        # STEP 1.
+        tries += 1
+        write_id = str(uuid4())
+        timer = store.bounds("rollback")[1]
+        # T326: not_after counts from this read, before the git half; a slow fetch ends LR008, 69.
+        not_after = _dt.datetime.fromtimestamp(st["clock"] + timer + 2,
+                                               _dt.timezone.utc).isoformat()
+        entry = rollback_entry(k, not_after=not_after, **ident)
+        try:
+            seq = _rollback_step_1(store, k, st["generation"], write_id, entry)
+        except _RollbackLostTurn as lost:
+            if time.monotonic() >= deadline:
+                raise _RollbackEnd(
+                    EXIT_BUSY, f"rollback: register busy: {tries} tries in "
+                    f"{limit} s, each a lost turn, the last {lost.sqlstate} on "
+                    f"head {k} (D7); nothing was written, and the switch still reads primary; "
+                    f"a rerun starts again at step 0", lost.psql_lines)
+            for line in lost.psql_lines:
+                sys.stderr.write(line + "\n")
+            note(f"rollback: step 1 on head {k} lost its turn ({lost.sqlstate}), with nothing "
+                 f"written: back to step 0, with the head read afresh")
+            continue
+        if seq is None:
+            # NO ANSWER: the switch is unknown, so it is read again before step 2.
+            again = _rollback_read(store, "whether step 1 committed is not known, and a rerun "
+                                          "reads the switch first (D9, Y:3529)")
+            if (again["mode"], again["marker"]) == ("files", "removing") and \
+                    _rollback_own_entry(again) and again["head_write_id"] == write_id:
+                seq = again["head"]
+                note(f"rollback: step 1's call ended with no answer, and the switch read again "
+                     f"finds its entry at seq {seq}")
+            else:
+                raise _RollbackEnd(
+                    EXIT_UNAVAILABLE, f"rollback: step 1's call ended with no answer, and the "
+                    f"switch read again is {again['mode']} with the marker {again['marker']} at "
+                    f"head {again['head']}, not this rollback's entry, so whether its "
+                    f"transaction commits is not known: it may still run on the server. A "
+                    f"rerun reads the switch first, and goes on from this rollback's entry "
+                    f"where it finds one (D9, Y:3529)")
+        else:
+            say(f"rollback: seq {seq} committed: the switch reads files with the marker "
+                f"removing, the head moved from {k} to {seq}, and the operator entry removes "
+                f"{CUTOVER_STORE_PATH} (S5's step 1; D24)")
+        return _rollback_after_step_1(cfg, store, opts, ident, k, seq)
+
+
+def _rollback_read(store, failed: str) -> dict:
+    """One try's read (`_ROLLBACK_READS`), parsed, with the writers' version
+    window checked (§1.5). Every failure is 69, and `failed` says what it
+    leaves: a database that cannot be reached or refuses, a window this
+    client is outside, or an answer this build cannot read."""
+    try:
+        res = store._query_many(list(_ROLLBACK_READS), snapshot=True, row="rollback")
+    except PsqlFailed as exc:
+        err = register_definitive_error(exc)
+        lines = (err.error_line,) + ((err.detail_line,) if err.detail_line else ()) if err else ()
+        raise _RollbackEnd(EXIT_UNAVAILABLE, f"rollback: the register in schema {store.schema} "
+                           f"could not be read (its call {register_psql_end(exc)}); {failed}",
+                           lines)
+    try:
+        if len(res) != len(_ROLLBACK_READS):
+            raise ValueError(len(res))
+        (version,), (switch,), (head,), at_head, (mirror,), (clock,) = res
+        if len(at_head) > 1:
+            raise ValueError("more than one row")
+        st = {"version": int(version[0]), "writers_from": int(version[1]),
+              "readers_from": int(version[2]), "mode": switch[0], "marker": switch[1],
+              "marker_seq": None if switch[2] is None else int(switch[2]),
+              "generation": switch[3], "set_seq": int(switch[4]), "head": int(head[0]),
+              "head_kind": at_head[0][0] if at_head else None,
+              "head_write_id": at_head[0][1] if at_head else None,
+              "diverged_sha": mirror[0], "found_utc": mirror[1], "found_by_ws": mirror[2],
+              "clock": float(clock[0])}
+        if not UUID_FULL_RE.match(st["generation"] or ""):
+            raise ValueError("the switch's generation")
+    except (ValueError, TypeError, IndexError):
+        raise _RollbackEnd(EXIT_UNAVAILABLE, f"rollback: the register's answer to its read is "
+                           f"not in the shape this build reads; {failed}")
+    why = register_version_refusal(st["version"], st["writers_from"], st["readers_from"],
+                                   write=True)
+    if why:
+        raise _RollbackEnd(EXIT_UNAVAILABLE, f"rollback: {why}; {failed}")
+    return st
+
+
+def _rollback_own_entry(st: dict) -> bool:
+    """Whether the head is the rollback's own entry, as step 1 leaves it: a
+    `rollback` entry at the head, which is the switch's `set_seq` and its
+    `marker_seq` (§1.3's kinds table)."""
+    return (st["head_kind"] == "rollback" and st["set_seq"] == st["head"]
+            and st["marker_seq"] == st["head"])
+
+
+def _rollback_lane() -> str:
+    """The operator lane, `LANES_LANE` (D24; F12; Amendment 23's S2, "no
+    lane, no write"): the entry's `lane` and the switch's `set_by_lane`.
+    Unset, or not a lane's name, is refused (2)."""
+    lane = os.environ.get("LANES_LANE", "").strip()
+    if not lane:
+        raise Refusal("rollback: LANES_LANE is not set: the rollback writes for the operator "
+                      "lane, so it runs with LANES_LANE=<operator lane>, in that lane's "
+                      "checkout (D24; Amendment 23's S2, \"no lane, no write\"); nothing was "
+                      "written")
+    if re.search(r"[\s<>@]", lane) or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in lane):
+        raise Refusal("rollback: LANES_LANE is not a lane's name: it holds a space, a control "
+                      "character, '<', '>' or '@'; nothing was written")
+    return lane
+
+
+def _rollback_workstation() -> str:
+    """This workstation's name (Rule 10), the entry's `workstation` and the
+    switch's `set_by_ws`, as the cutover reads it: `$LANES_WORKSTATION`, else
+    `lanes-edit.sh workstation`. A container with no name, or a name that
+    cannot be read, is refused (2) (R-A11-14)."""
+    name = os.environ.get("LANES_WORKSTATION", "")
+    if not name:
+        try:
+            name, how = this_workstation()
+        except StoreUnusable as exc:
+            raise Refusal(f"rollback: this workstation's name cannot be read ({exc.detail}); "
+                          f"nothing was written")
+        if how == "container-unset":
+            raise Refusal("rollback: this is a container and LANES_WORKSTATION is not set, so "
+                          "the switch and the rollback's entry would be stamped with the "
+                          "container's own id (Amendment 11, R-A11-14). Run it with "
+                          "LANES_WORKSTATION set; nothing was written")
+    if not name.strip() or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in name):
+        raise Refusal("rollback: this workstation's name is empty or holds a control "
+                      "character; nothing was written")
+    return name
+
+
+def _rollback_author() -> str:
+    """The entry's `author`, `Name <email>`, which T326's commit removing
+    `lanes/STORE` is made with (D15): `git var GIT_AUTHOR_IDENT` here, less its
+    date, as the cutover reads its own. Where git names none, it is refused
+    (2), since the journal holds no entry without one."""
+    try:
+        proc = subprocess.run(["git", "var", "GIT_AUTHOR_IDENT"], capture_output=True,
+                              encoding="utf-8", errors="replace", check=False,
+                              stdin=subprocess.DEVNULL, timeout=30, env=git_location_free_env())
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Refusal(f"rollback: git could not name the author of the entry ({exc}); nothing "
+                      f"was written")
+    match = re.fullmatch(r"([^<>\n]+ <[^<>\n]*>) [0-9]+ [+-][0-9]{4}", proc.stdout.strip())
+    if proc.returncode != 0 or not match:
+        raise Refusal("rollback: git names no author here (D15): run it in the operator lane's "
+                      "checkout, with user.name and user.email set; nothing was written")
+    return match.group(1)
+
+
+def rollback_entry(k: int, *, lane: str, workstation: str, author: str, not_after: str) -> dict:
+    """THE ROLLBACK'S ENTRY, as `commit_write` takes it (design.md §1.3's entry
+    object and kinds table; D24): `journal` with kind and verb `rollback`; one
+    edit, the `remove` of `lanes/STORE`; its one `files` row, not present;
+    `not_after` (F3). `k` is the head the try read, for its message."""
+    what = (f"rollback — the register's store is files again: {CUTOVER_STORE_PATH} removed "
+            f"after seq {k}")
+    return {"journal": {"kind": "rollback", "verb": "rollback", "lane": lane,
+                        "workstation": workstation, "author": author,
+                        "message": f"LANES({lane}@{workstation}): {what} (D24, S5)"},
+            "not_after": not_after,
+            "edits": [{"ord": 1, "op": "remove", "path": CUTOVER_STORE_PATH}],
+            "files": [{"path": CUTOVER_STORE_PATH, "present": False}]}
+
+
+def _rollback_step_1(store, k: int, generation: str, write_id: str, entry: dict) -> int | None:
+    """STEP 1: one commit call, `commit_write(k, write_id, REGISTER_SCHEMA_VERSION,
+    generation, entry)` in one SERIALIZABLE transaction, as one request under
+    D9's rollback row (Y:3529). Returns the entry's seq, or None where the call
+    was sent and ended with no answer, so whether it committed is not known.
+
+    A lost turn (`ROLLBACK_LOST_TURNS`) is `_RollbackLostTurn`. An LR012 is 2:
+    a divergence recorded meanwhile. Any other SQLSTATE is 69, and so is a call
+    never sent, each with nothing written."""
+    payload = json.dumps(entry, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    call = (f"SELECT {store.schema}.commit_write({int(k)}, {_pg_quote(write_id)}, "
+            f"{REGISTER_SCHEMA_VERSION}, {_pg_quote(generation)}, {_pg_quote(payload)}::jsonb)")
+    try:
+        out = store.request(["BEGIN ISOLATION LEVEL SERIALIZABLE", call, "COMMIT"], "rollback")
+    except PsqlFailed as exc:
+        if not exc.ran:
+            raise _RollbackEnd(EXIT_UNAVAILABLE, f"rollback: step 1's call was not sent "
+                               f"({exc.detail}); nothing was written, and the switch and the "
+                               f"marker are unchanged")
+        err = register_definitive_error(exc)
+        if err is None:
+            note(f"rollback: step 1's call on head {k} {register_psql_end(exc)}")
+            return None
+        lines = (err.error_line,) + ((err.detail_line,) if err.detail_line else ())
+        if err.sqlstate in ROLLBACK_LOST_TURNS:
+            raise _RollbackLostTurn(err.sqlstate, lines)
+        if err.sqlstate == "LR012":
+            raise _RollbackEnd(EXIT_REFUSED, "rollback: REFUSED: the transaction refused the "
+                               "rollback's entry (LR012, above): a divergence was recorded "
+                               "meanwhile, so the rollback does not go on (F1; S5). Resolve it "
+                               f"first by `{PROG} import --single <sha>` or `{PROG} render "
+                               "--revert <sha>`; nothing was written", lines)
+        raise _RollbackEnd(EXIT_UNAVAILABLE, f"rollback: the database refused step 1's "
+                           f"transaction ({err.sqlstate}, above); nothing was written, and the "
+                           f"switch and the marker are unchanged", lines)
+    answer = [line.strip() for line in out.splitlines() if line.strip()]
+    if len(answer) != 1 or not answer[0].isdigit():
+        return None
+    return int(answer[0])
+
+
+def rollback_step_0_git_half(cfg: dict, store, k: int, lane: str) -> None:
+    """THE SEAM FOR T326: STEP 0'S GIT HALF, right before step 1, on every try
+    (Y:3229-3232; ops:331). T326 fetches `origin main` again in the operator
+    lane's checkout and checks it as T322 recognises a divergence, a last
+    `Register-Seq` above the head `k` included; it records one it finds with
+    `record_mirror_state` and refuses with 2, a `Refusal`, nothing written.
+
+    This build has no git half. While `RENDER_GIT_HALF` is False, so on a
+    scratch schema, which no mirror renders, it checks nothing; with the
+    constant set it refuses (2), so that no rollback of the register itself
+    skips its fresh fetch."""
+    if RENDER_GIT_HALF:
+        raise Refusal(f"rollback: step 0's git half, the fresh fetch of origin {branch()} and "
+                      f"its divergence check against head {k}, is lane 3's T326, which this "
+                      f"build does not have; nothing was written")
+
+
+def _rollback_declare(cfg: dict, k: int) -> None:
+    """ITS START DECLARES THE OUTAGE (D20; ops:334, :336): T121's `outage
+    declare --rollback --mirror-seq <k>`, run in this process, which probes
+    the switch at `files` with this rollback's entry at `set_seq` = `k+1`, and
+    writes `register-outage` beside the configuration. Where that directory
+    cannot be written, as on a bench's read-only mount, or the declaration is
+    refused, it prints the line for Brett to run on each host instead; a rerun
+    declares again first."""
+    line = f"{PROG} outage declare --rollback --mirror-seq {k}"
+    directory = os.path.dirname(register_outage_path(cfg))
+    if not os.access(directory, os.W_OK | os.X_OK):
+        note(f"rollback: {directory} cannot be written from here, as on a bench's read-only "
+             f"mount, so the outage is not declared here. Run on each configured "
+             f"workstation, from the host (operations.md §2.3):")
+        say(line)
+        return
+    try:
+        _outage_declare(_outage_args(["declare", "--rollback", "--mirror-seq", str(k)]))
+    except (Refusal, StoreUnusable, _OutageUsage) as exc:
+        note(f"rollback: the outage was not declared here ({exc}). Run on each configured "
+             f"workstation, from the host, or run the rollback again, which declares first "
+             f"(operations.md §2.3):")
+        say(line)
+
+
+def _rollback_after_step_1(cfg: dict, store, opts: dict, ident: dict, k: int, seq: int) -> int:
+    """After step 1, or a rerun that found it standing: the declaration, then
+    steps 2 to 4."""
+    _rollback_declare(cfg, k)
+    return rollback_steps_2_to_4(cfg, store, opts, ident, k, seq)
+
+
+def rollback_steps_2_to_4(cfg: dict, store, opts: dict, ident: dict, k: int, seq: int) -> int:
+    """THE SEAM FOR T326: STEPS 2 TO 4 (Y:3245-3256; ops:337-340), from the
+    first run once step 1 and the declaration are done, and from a rerun that
+    found step 1 standing. `opts` is the parsed command line, where T326's
+    `--hold-marker` belongs (`_rollback_args`), and `ident` the operator
+    lane's `lane`, `workstation` and `author`, read before the rerun path. T326
+    renders to `k` in the operator lane's checkout, stops there under
+    `--hold-marker`, and otherwise pushes seq `seq` (`k+1`) with its read-back
+    and `record_marker`, holding no database transaction across a git act
+    (F23; FR-052).
+
+    This build has neither: it says so and returns 0, as the cutover's T116
+    returns 0 before T327's push. The marker stays `removing`, so every SQL
+    write refuses until a read-back is recorded."""
+    note(f"rollback: step 0's fresh fetch and steps 2 to 4 (the render to seq {k}, "
+         f"--hold-marker's stop for the ruleset, and the push of seq {seq} with its read-back "
+         f"and record_marker) are lane 3's T326, which this build does not have: nothing was "
+         f"rendered or pushed, and the marker stays removing")
+    return EXIT_OK
+
+
 USAGE = f"""\
 {PROG} sync      [--source <s>]              index what LANDED, behind the source
 {PROG} reconcile [--source <s>] [--dry-run]  read the source whole; put the index right
@@ -15734,6 +18814,12 @@ that decides nothing, and never a gate: no lane act reads it or waits on it.
               `lanes --index` and `lanes-edit.sh history --index` - or, with
               `--worktrees`, every inventory source's rows for `lanes --index
               --worktrees`. Not for people.
+  render      `--checkout <c>`: the renderer a primary write forks in the
+              writing lane's checkout <c>. One render at a time per checkout,
+              under an `flock` on <git-dir>/lanes-render.lock: a render that
+              finds it held leaves <git-dir>/lanes-render.rerun and exits 0,
+              and the holder renders again for it before it is done. It
+              never reads LANES_NO_FETCH. Not for people.
 
   --source <s>  `register:<owner/repo>`, which must be this workstation's own
                 and is the default; `inventory` (or `inventory:<Workstation>`,
@@ -15819,16 +18905,24 @@ def main(argv: list[str]) -> int:
     # `ready` (T119), the operator tools' readiness check, to its own parser.
     if verb == "ready":
         return cmd_ready(args)
+    # FEATURE 007'S `render --checkout <c>` (T321): its own parser, ahead of
+    # #160's argument loop. Any other `render` form is not this one's.
+    if verb == "render" and any(a == "--checkout" or a.startswith("--checkout=") for a in args):
+        return _render_checkout_main(args)
     # 007'S SUBCOMMANDS (opensoft/openRepoTools#165): one dispatch line each,
     # ahead of #160's argument loop, to the subcommand's own parser.
     if verb == "cutover":
         return cmd_cutover(args)
+    if verb == "rollback":
+        return cmd_rollback(args)
     if verb == "import":
         return cmd_import(args)
     if verb == "mode":
         return cmd_mode(args)
     if verb == "outage":
         return cmd_outage(args)
+    if verb == "register" and args[:1] == ["snapshot"]:
+        return cmd_register_snapshot(args[1:])
     if verb == "register" and args[:1] == ["classify"]:
         return cmd_register_classify(args[1:])
     if verb == "register" and args[:1] == ["read"]:
