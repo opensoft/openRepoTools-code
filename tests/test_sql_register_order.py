@@ -63,6 +63,7 @@ import itertools
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -2016,10 +2017,12 @@ def test_the_client_refuses_a_bad_act_with_2_before_any_call(estates, case):
 # their own (T252b, below). The other cases run on test 4's estate (T243's
 # `Estate`), where the writes are `append-line` of a row-shaped line
 # (`row:<L>`) and `log` (`objects:<L>`), a reading of lane 1's derived keys.
-# The three conditions and the launches are read from lane 4's tools' text (a
+# `[lane-start-reread]` and the launches are read from lane 4's tools' text (a
 # reading: their flows are T428-T432's, and lane 3's batch 7 asks that they
-# run the flows). They FAIL UNTIL L1-A6, L4-A2 (T410), L4-B3 and L4-B14 land;
-# without PostgreSQL 16 the RE cases skip.
+# run the flows); `[lane-end-gate]` and `[skill-step-4]` run theirs on
+# T252b's world (T252f, at the three conditions below). They FAIL UNTIL
+# L1-A6, L4-A2 (T410), L4-B3 and L4-B14 land; without PostgreSQL 16 the RE
+# cases skip.
 
 ACT_RE = re.compile(r"^[0-9a-f]{32}@[1-9][0-9]*:" + UUID_RE + r"$|^[0-9a-f]{32}@0:" + UUID_RE + r"$")
 
@@ -2387,22 +2390,231 @@ def test_act_variables_change_nothing_in_files_mode(estates):
     assert "files mode, plain" in shown and "files mode, act set" in shown
 
 
-#: The three conditions (Brett's "Accept all three", 6721583757, row 22), each
-#: read from its tool's text: the file, and what it must hold.
+# ---------------------------------------- the three conditions (T252, T252f)
+#
+# Brett's "Accept all three" (6721583757, row 22), as TP:5874-5879 states
+# them and lane 3's batch 12 rules the gate's (#165 6808010497, "Lanes 2 and
+# 4, question 2"; `RULINGS-batch12-analysis-20261111.md` (`b892fb39...`),
+# A3, whose B15 text replaces TP:5877-5879's "so its `NOTED` writes do not
+# refuse W13"). `[lane-start-reread]` is still read from `lane-start`'s
+# text; `[lane-end-gate]` and `[skill-step-4]` run their flows on T252b's
+# world (lane 3's batch 7, item 5).
+#
+# [lane-end-gate]: `lane-end`'s close-out of the world's live lane, on
+# primary, under its `act-begin` base. `LANE_WORKTREES` is a stand-in that
+# logs its argv and `LANES_ACT` and answers the dry run with nothing left,
+# and the shim holds W13's commit call. The gate's `lane-worktrees` ran with
+# the act's `LANES_ACT`, as `sweep <lane> ... --dry-run` (B15's Y:5715: "It
+# is `lane-worktrees sweep <lane> --dry-run --porcelain` and writes
+# nothing"), and at the hold the journal holds no entry after the base: the
+# gate wrote nothing. A second session then writes a `NOTED lane:L` line
+# with no act, as `lane-worktrees sweep --yes` writes one (its `note_line`:
+# `LANES_LANE` and the sweeping session's `LANES_SESSION`). On release,
+# W13 and W14 both commit after it, each carrying the act's `act_id`: a
+# `NOTED lane:L` line yields only `sid:` keys (Y:1493-1496), and neither
+# write lists one.
+#
+# [skill-step-4]: the handoff skill's step-4 block, run as the agent runs a
+# block: the file's first block (`L` and `sread`), then the values steps 1
+# and 2 bound (`window`, `lane`, `ws`, `uuid`, `why`, `kind`), then the
+# block, in one `bash`, with `$L` a logging stand-in for `lanes-edit.sh` and
+# a `tmux` whose window is named for the world's live lane. Step 4 opens
+# with `act-begin` and re-runs the identity's register reads before its
+# first write (TP:5876-5877; Y:5724): for a window with a row these are step
+# 1's `register-row` and `canon-lane`. Where step 1's `lane` is not the lane
+# the window now names, it refuses before its first write: none of its three
+# writes (`SKILL.md:735`, `:743`, `:786`) is sent, and the journal is as it
+# was. With the same lane, the three commit, each carrying the act's
+# `act_id`. Readings: step 1's lane reaches step 4 as `lane`, the name both
+# steps use, and the case makes it differ by giving the agent's `lane` as
+# another lane with a row while the window still names its own.
+#
+# They FAIL UNTIL L1-A6, L4-A2 (T410, T411), L4-B3 and L4-B5 land, and
+# `[lane-end-gate]` until T430, `[skill-step-4]` until T431. Without
+# PostgreSQL 16 each flow skips, after `[skill-step-4]`'s first check, its
+# block opening with `act-begin`, which needs no engine.
+
+#: The three conditions, in the test plan's order: `[lane-start-reread]`'s
+#: tool and what its text must hold; the other two run their flows.
 CONDITIONS = {
     "lane-start-reread": ("lane-start", ("act-begin --rebase",)),
-    "skill-step-4": ("skills/handoff/SKILL.md", ("act-begin",)),
-    "lane-end-gate": ("lane-end", ("LANES_ACT",)),
+    "skill-step-4": None,
+    "lane-end-gate": None,
 }
+#: The second session that writes `[lane-end-gate]`'s `NOTED` line.
+SWEEP_SID = "aaaaaaaa-0256-4000-8000-00000000a256"
+#: The skill's three writes, as `$L`'s first argument names them.
+SKILL_WRITES = ("log", "append-line", "set-row-state")
+
+_ACT_LOGGER = r'''#!/usr/bin/env python3
+# T252f's logging stand-in: its argv, and LANES_ACT and LANES_EXPECT as it
+# saw them (null where unset); then the real tool, where one is named.
+import json, os, sys
+HERE = os.path.dirname(os.path.abspath(__file__))
+REAL = REAL_TOOL
+with open(os.path.join(HERE, "acts.log"), "a", encoding="utf-8") as log:
+    log.write(json.dumps({"argv": sys.argv[1:], "act": os.environ.get("LANES_ACT"),
+                          "expect": os.environ.get("LANES_EXPECT")}) + "\n")
+if REAL:
+    os.execv(REAL, [REAL] + sys.argv[1:])
+'''
+
+_SKILL_TMUX = r'''#!/usr/bin/env bash
+# T252f: this window is named WINDOW_NAME; every other call is the Sandbox's fake.
+case "$*" in
+  "display-message -p #W" | "display-message -p #{window_name}") printf '%s\n' WINDOW_NAME; exit 0 ;;
+esac
+exec FAKE_TMUX "$@"
+'''
+
+
+def act_logger(where: Path, name: str, real: Optional[Path] = None) -> Path:
+    """A logging stand-in named `name` in `where`, logging to `acts.log`
+    beside it: with `real`, it then runs that; without, it prints nothing and
+    exits 0."""
+    where.mkdir(parents=True, exist_ok=True)
+    tool = where / name
+    tool.write_text(_ACT_LOGGER.replace("REAL_TOOL", repr(str(real) if real else None)), encoding="utf-8")
+    tool.chmod(0o755)
+    return tool
+
+
+def act_calls(tool: Path) -> List[dict]:
+    log = tool.parent / "acts.log"
+    return [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines() if l] if log.exists() else []
+
+
+def act_entries(world: ActWorld, after: int) -> List[dict]:
+    """The journal's entries after seq `after`: seq, verb, `act_id` and
+    write id, in seq order."""
+    return world.c.json(f"SELECT coalesce(jsonb_agg(q ORDER BY q.seq), '[]'::jsonb) FROM (SELECT seq, verb, "
+                        f"act_id, write_id::text AS write_id FROM {REGISTER}.journal WHERE seq > {after}) q;")
+
+
+def seq_base(act: Optional[str], who: str, task: str) -> Tuple[str, int]:
+    """`LANES_ACT`'s id and seq, where it is a seq base."""
+    assert act is not None and ACT_RE.match(act), (
+        f"{who} ran with LANES_ACT={act!r}, not the act's <id>@<seq>:<generation> ({task})")
+    ident, rest = act.split("@", 1)
+    return ident, int(rest.split(":", 1)[0])
+
+
+def skill_prelude_block() -> str:
+    """The handoff skill's first block, which sets `L` and defines `sread`
+    for the blocks after it."""
+    text = (REPO / "skills" / "handoff" / "SKILL.md").read_text(encoding="utf-8")
+    head = text.split("\n## 1.", 1)[0]
+    found = [b for b in re.findall(r"```(?:bash|sh)\n(.*?)```", head, re.S) if "sread()" in b]
+    assert found, "skills/handoff/SKILL.md has no block before step 1 that defines sread"
+    return found[0]
+
+
+def lane_end_gate_holds(world: ActWorld) -> None:
+    """`[lane-end-gate]` (see the section's head)."""
+    gate = act_logger(world.root / "gate", "lane-worktrees")
+    fifo = world.root / "hold.fifo"
+    os.mkfifo(str(fifo))
+    act = world.launch("lane-end", [str(world.bin / "lane-end"), R_HERE], R_HERE,
+                       [{"mode": "hold", "match": verb_is("set-row-state"), "call": 1, "fifo": str(fifo)}],
+                       {"LANE_WORKTREES": str(gate)})
+    deadline = time.monotonic() + 120
+    while not act_calls(gate) and act.ended is None:
+        assert time.monotonic() < deadline, "lane-end did not reach its close-out gate in 120 s"
+        time.sleep(0.1)
+    calls = act_calls(gate)
+    assert calls, f"lane-end exited {act.code} before its close-out gate ran: {act.err[-600:]}"
+    ident, base = seq_base(calls[0]["act"], "the close-out gate's lane-worktrees", "T430: the gate inherits it")
+    argv = calls[0]["argv"]
+    assert argv[:2] == ["sweep", R_HERE] and "--dry-run" in argv, (
+        f"the close-out gate is not `lane-worktrees sweep {R_HERE} ... --dry-run`: {argv}")
+    held = hold_point(fifo, act)
+    gained = act_entries(world, base)
+    assert gained == [], f"between the act's base {base} and W13 the journal gained {gained}: the gate wrote"
+    noted = world.launch("sweep-noted", ["bash", str(world.bin / "lanes-edit.sh"), "log", "NOTED", f"lane:{R_HERE}",
+                                         "swept 1 cache or sandbox director(ies): they hold no work and are "
+                                         "rebuilt (T252f's second session)"],
+                         R_HERE, extra={"LANES_SESSION": SWEEP_SID})
+    noted.wait()
+    assert noted.code == 0, f"the second session's NOTED exited {noted.code}: {noted.err[-400:]}"
+    held.close()
+    act.wait(240)
+    assert act.code == 0 and "expectation:" not in act.err, (
+        f"lane-end exited {act.code} after a NOTED lane:{R_HERE} written after its base: {act.err[-900:]}")
+    entries, noted_ids = act_entries(world, base), noted.write_ids()
+    swept = [e for e in entries if e["write_id"] in noted_ids]
+    mine = [e for e in entries if e["act_id"] == ident]
+    assert len(swept) == 1 and swept[0]["act_id"] is None, f"the NOTED line is not one entry of no act: {entries}"
+    assert [e["verb"] for e in mine] == ["set-row-state", "log"], (
+        f"W13 and W14 did not both commit carrying the act's id {ident}: {entries}")
+    assert swept[0]["seq"] < mine[0]["seq"], f"the NOTED line did not commit before W13: {entries}"
+
+
+def skill_step_4(world: ActWorld, prelude: str, block: str, lane: str, tag: str) -> Tuple[Writer, List[dict]]:
+    """Step 4's block, run in the window named for the world's live lane,
+    with step 1's `lane` given: the run, and its `$L` calls."""
+    edit = act_logger(world.root / f"skill-{tag}", "lanes-edit.sh", world.bin / "lanes-edit.sh")
+    tmux_dir = world.root / f"skill-{tag}-tmux"
+    tmux_dir.mkdir()
+    (tmux_dir / "tmux").write_text(_SKILL_TMUX.replace("WINDOW_NAME", R_HERE)
+                                   .replace("FAKE_TMUX", shlex.quote(str(world.fakebin / "tmux"))), encoding="utf-8")
+    (tmux_dir / "tmux").chmod(0o755)
+    bound = [f"L={shlex.quote(str(edit))}", f"window={R_HERE}", f"lane={lane}", f"ws={W_WS}", "ws_missing=''",
+             f"uuid={R_SID[R_HERE]}", "uuid_missing=''", "why='T252f skill case'", "kind=unknown"]
+    run = world.launch(f"skill-{tag}", ["bash", "-c", "\n".join([prelude, *bound, block])], R_HERE,
+                       extra={"PATH": str(tmux_dir) + os.pathsep + world.env["PATH"]})
+    run.wait(240)
+    return run, act_calls(edit)
+
+
+def verbs_of(calls: List[dict]) -> List[str]:
+    return [(c["argv"] or [""])[0] for c in calls]
+
+
+def skill_step_4_holds(world: ActWorld, prelude: str, block: str) -> None:
+    """`[skill-step-4]` (see the section's head)."""
+    head = world.c.head()
+    run, calls = skill_step_4(world, prelude, block, R_PAUSED, "differs")
+    verbs = verbs_of(calls)
+    assert verbs[:1] == ["act-begin"], f"step 4's first call is {verbs[:1]}, not act-begin (T431): {verbs}"
+    assert {"register-row", "canon-lane"} <= set(verbs[1:]), (
+        f"step 4 did not run the identity's register reads again after act-begin (T431): {verbs}")
+    sent = [v for v in verbs if v in SKILL_WRITES]
+    assert run.code != 0 and sent == [] and run.commit_calls() == [], (
+        f"with step 1's lane {R_PAUSED} and the window's {R_HERE}, step 4 exited {run.code} and sent {sent} "
+        f"(T431): {run.err[-600:]}")
+    assert world.c.head() == head, f"the journal grew from {head} though step 1's lane differs"
+    run, calls = skill_step_4(world, prelude, block, R_HERE, "same")
+    verbs = verbs_of(calls)
+    first = next((k for k, v in enumerate(verbs) if v in SKILL_WRITES), len(verbs))
+    assert verbs[:1] == ["act-begin"] and {"register-row", "canon-lane"} <= set(verbs[1:first]), (
+        f"step 4 did not open with act-begin and the identity's reads before its first write (T431): {verbs}")
+    acts = {c["act"] for c, v in zip(calls, verbs) if v in SKILL_WRITES}
+    assert len(acts) == 1, f"step 4's writes ran under LANES_ACT {sorted(map(str, acts))} (T431)"
+    ident, base = seq_base(acts.pop(), "step 4's writes", "T431")
+    entries = act_entries(world, base)
+    assert [(e["verb"], e["act_id"]) for e in entries] == [(v, ident) for v in SKILL_WRITES], (
+        f"step 4's three writes did not all commit carrying the act's id {ident}: {entries}: {run.err[-600:]}")
 
 
 @pytest.mark.parametrize("condition", list(CONDITIONS))
-def test_each_of_the_three_conditions_holds(condition):
+def test_each_of_the_three_conditions_holds(condition, request):
     """[lane-start-reread]: `lane-start` re-bases with `act-begin --rebase`
-    before its second `binding` read; [skill-step-4]: the skill's step 4
-    opens with `act-begin` and re-derives the identity; [lane-end-gate]:
-    `lane-end`'s gate inherits `LANES_ACT`. Read from each tool's text
-    (FP): red until T428, T431 and T430 land."""
+    before its second `binding` read, read from its text (FP): red until
+    T428 lands. [skill-step-4]: the skill's step 4 opens with `act-begin`
+    and re-derives the identity; where `lane` differs from step 1's it sends
+    none of its three writes, and with the same lane the three commit. Its
+    block is found with no engine: red until T431 lands. [lane-end-gate]:
+    `lane-end`'s gate runs with the act's `LANES_ACT` and writes nothing, and
+    a `NOTED lane:L` line that a second session writes after the base
+    refuses neither W13 nor W14 (lane 3's batch 12). Both flows run on
+    T252b's world (see the section's head)."""
+    if condition == "skill-step-4":
+        prelude, block = skill_prelude_block(), skill_step_4_block()
+        skill_step_4_holds(request.getfixturevalue("act_worlds")(), prelude, block)
+        return
+    if condition == "lane-end-gate":
+        lane_end_gate_holds(request.getfixturevalue("act_worlds")())
+        return
     path, needs = CONDITIONS[condition]
     target = REPO / path
     assert target.exists(), f"[{condition}] no {path} in this tree"
