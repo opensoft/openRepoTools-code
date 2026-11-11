@@ -300,8 +300,19 @@ class RegisterHost(Host):
         self.shim_log.write_text("", encoding="utf-8")
 
     def commits(self) -> list:
-        return [entry for entry in self.requests(self.shim_log)
-                if "commit_write" in entry.get("sent", "") or "COMMIT" in entry.get("sent", "")]
+        """The shim's commit calls (AT-LRLABEL's "the shim's log holds no
+        commit call"): each call that carries `commit_write`, the design's
+        commit call (design.md:1469 at spec#17 `8523aa0c`), or a `COMMIT`
+        outside a `READ ONLY` transaction. The cutover's one read, the
+        snapshot read, is `BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY`
+        ... `COMMIT;` (design.md:1420), which writes nothing, so it is not
+        one."""
+        found = []
+        for entry in self.requests(self.shim_log):
+            sent = entry.get("sent", "")
+            if "commit_write" in sent or ("COMMIT" in sent and "READ ONLY" not in sent):
+                found.append(entry)
+        return found
 
 
 @pytest.mark.parametrize("form", ["first", "after-loss"])
