@@ -5897,7 +5897,7 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
 #       the files `register commit` reads (`pw_attempt_files`), and the child
 #       (`pw_child_start`, `pw_child_wait`), stopped, with every process under
 #       it, where it never reaches `ready` or a kept child's seam cap is 1 s
-#       away (`pw_child_hung_end`, `pw_child_tree`);
+#       away (`pw_child_hung_end`, `pw_child_tree`, `pw_pid_start`);
 #   (c) the commit call and the decision on its answer (`pw_commit`,
 #       `pw_decide`);
 #   (d) a 69 at the first snapshot (`pw_first_69`);
@@ -5913,6 +5913,7 @@ PW_LOCK=""; PW_REC_OURS=0
 PW_K=0; PW_DIR=""; PW_CHILD=""; PW_KEPT=""; PW_FIRST_DONE=0; PW_RELAY=""; PW_RC=0
 PW_CAP_S=120; PW_CHILD_T0=0; PW_READY_T=0; PW_SEAM_CAP_S=120; PW_KEPT_END=""; PW_KEPT_K=""
 PW_S_GEN=""; PW_S_WID=""; PW_S_FOUND=""; PW_S_N=""; PW_S_CLOCK=""; PW_S_NOT_AFTER=""
+PW_START="-"; PW_KILLED=0
 
 # D7's deadline in whole seconds: 30, or `LANES_REGISTER_DEADLINE_S` for tests
 # (Y:2632–2641), read in base 10, so a leading zero is neither octal nor an
@@ -6455,6 +6456,75 @@ pw_pids_run() {   # <pid>...
   return 1
 }
 
+# A PROCESS'S START, TO TELL ITS PID FROM A REUSE (review REV415c, N1), in
+# PW_START. Where this host has a `/proc`, field 22 of `/proc/<pid>/stat`, its
+# start in clock ticks since boot, cut after the LAST `) ` as `pid_alive` cuts
+# it, since a comm may hold spaces and brackets. Where it has none (macOS),
+# `ps -o lstart= -p <pid>`, its start to the second, its words joined by `_`.
+# `-` where neither answers, as for a process that has gone. Lane 5's
+# `pid_start_of` (T502) is not in this tree.
+pw_pid_start() {   # <pid>
+  local pp_p="$1" pp_l="" pp_r=""
+  PW_START="-"
+  case "$pp_p" in ''|*[!0-9]*) return 0 ;; esac
+  if [ -r /proc/self/stat ]; then
+    { IFS= read -r pp_l < "/proc/$pp_p/stat"; } 2>/dev/null || pp_l=""
+    pp_r="${pp_l##*) }"
+    if [ -z "$pp_l" ] || [ "$pp_r" = "$pp_l" ]; then return 0; fi
+    # shellcheck disable=SC2086
+    set -- $pp_r
+    [ "$#" -ge 20 ] || return 0
+    case "${20}" in ''|*[!0-9]*) return 0 ;; esac
+    PW_START="${20}"
+  else
+    pp_l="$(ps -o lstart= -p "$pp_p" 2>/dev/null)" || pp_l=""
+    # shellcheck disable=SC2086
+    set -- $pp_l
+    [ "$#" -gt 0 ] || return 0
+    pp_l="$*"
+    PW_START="${pp_l// /_}"
+  fi
+  return 0
+}
+
+# IS <pid> STILL THE PROCESS WHOSE START WAS <start>? (review REV415c, N1): 1
+# where it has gone, its start is now another, or <start> is `-`.
+pw_pid_same() {   # <pid> <start>
+  [ "$2" != - ] || return 1
+  kill -0 "$1" 2>/dev/null || return 1
+  pw_pid_start "$1"
+  [ "$PW_START" = "$2" ]
+}
+
+# IS THE CHILD STILL RUNNING AS ITSELF? (review REV415c, N1): by its start
+# where that was read before the TERM; else by `kill -0` alone, as before, so
+# a host that can read no start still ends a child that outlives its TERM,
+# and the `wait` after it cannot hang.
+pw_child_left() {   # <the child's start, or ->
+  if [ "$1" = - ]; then
+    kill -0 "$PW_CHILD" 2>/dev/null
+  else
+    pw_pid_same "$PW_CHILD" "$1"
+  fi
+}
+
+# KILL TO EACH ONE STILL RUNNING AS ITSELF (review REV415c, N1). <list> is
+# `<pid> <start>` pairs; a pid whose start is now another, or was `-`, is left
+# alone. PW_KILLED counts the KILLs sent.
+pw_pids_kill() {   # <list>
+  PW_KILLED=0
+  # shellcheck disable=SC2086
+  set -- $1
+  while [ "$#" -ge 2 ]; do
+    if pw_pid_same "$1" "$2"; then
+      kill -KILL "$1" 2>/dev/null || :
+      PW_KILLED=$((PW_KILLED + 1))
+    fi
+    shift 2
+  done
+  return 0
+}
+
 # A CHILD THAT NEVER REACHES `ready` (lane openRepoTools-3, #165 6770820384,
 # T415's question 3; T415's line at B12b; review REV415, N3): past its bound,
 # PW_CAP_S seconds from its start (Y:5001), or 1 s before a kept child's seam
@@ -6467,8 +6537,14 @@ pw_pids_run() {   # <pid>...
 # trap runs `cleanup` once its foreground command dies, usually ends at once
 # (review REV415c, S1). Whatever is left then gets KILL, the child listed
 # again first (#165 6774499606, T415 (2)), and the end names TERM, or TERM
-# then KILL, for the child and for them apart. The child is reaped and none
-# of its output is replayed. The run
+# then KILL, for the child and for them apart. Each pid's start is read with
+# it (`pw_pid_start`), and KILL goes only to a pid whose start is still the
+# one read, so a pid reused meanwhile by another process never gets it; a
+# process whose start could not be read gets TERM alone, and the child, where
+# its start could not be read, is tested by `kill -0` as before (review
+# REV415c, N1). The second listing is taken only while the child still runs
+# as itself, so a pid it has left is never walked.
+# The child is reaped and none of its output is replayed. The run
 # ends as at D7's deadline: 75, nothing sent by that attempt, naming the
 # attempt and why it was stopped, with the write's rerun. Where the pending
 # record holds a `call` line, F3's lookup comes first (`pw_end`,
@@ -6480,11 +6556,18 @@ pw_pids_run() {   # <pid>...
 # `wait`, PW_CHILD is cleared, and 1 sends the run to `pw_child_end`, its own
 # end (Y:5016; review REV415b, NIT 5). Nothing is signalled then.
 pw_child_hung_end() {   # bound | kept
-  local ch_n=0 ch_how="TERM" ch_w="" ch_b="" ch_tree="" ch_p="" ch_t=0 ch_kids="" ch_k=0
+  local ch_n=0 ch_how="TERM" ch_w="" ch_b="" ch_tree="" ch_p="" ch_t=0 ch_kids="" \
+        ch_cs="-" ch_ps=""
   local ch_kk="$PW_KEPT_K"
   ch_t=$((SECONDS - PW_CHILD_T0))
   pw_abandon_kept
   ch_tree="$(pw_child_tree)"
+  pw_pid_start "$PW_CHILD"
+  ch_cs="$PW_START"
+  for ch_p in $ch_tree; do
+    pw_pid_start "$ch_p"
+    ch_ps="${ch_ps} ${ch_p} ${PW_START}"
+  done
   if ! kill -TERM "$PW_CHILD" 2>/dev/null; then
     PW_RC=0
     wait "$PW_CHILD" 2>/dev/null || PW_RC=$?
@@ -6496,22 +6579,20 @@ pw_child_hung_end() {   # bound | kept
   while [ "$ch_n" -lt 20 ] && pw_pids_run "$PW_CHILD" $ch_tree; do
     if sleep 0.05 2>/dev/null; then ch_n=$((ch_n + 1)); else sleep 1; ch_n=20; fi
   done
-  ch_tree="${ch_tree}${ch_tree:+$WR_NL}$(pw_child_tree)"
-  if kill -0 "$PW_CHILD" 2>/dev/null; then
+  if pw_child_left "$ch_cs"; then
+    for ch_p in $(pw_child_tree); do
+      pw_pid_start "$ch_p"
+      ch_ps="${ch_ps} ${ch_p} ${PW_START}"
+    done
     kill -KILL "$PW_CHILD" 2>/dev/null || :
     ch_how="TERM, then KILL 1 s later"
   fi
-  for ch_p in $ch_tree; do
-    if kill -0 "$ch_p" 2>/dev/null; then
-      kill -KILL "$ch_p" 2>/dev/null || :
-      ch_k=$((ch_k + 1))
-    fi
-  done
+  pw_pids_kill "$ch_ps"
   wait "$PW_CHILD" 2>/dev/null || :
   PW_CHILD=""
-  if [ "$ch_k" -gt 0 ]; then
+  if [ "$PW_KILLED" -gt 0 ]; then
     ch_kids=", and every process it had started got TERM, then KILL 1 s later where TERM had not ended it"
-  elif [ -n "$ch_tree" ]; then
+  elif [ -n "$ch_ps" ]; then
     ch_kids=", and every process it had started got TERM"
   fi
   [ -n "$WR_CALLS" ] || ch_w=", and nothing was written"
