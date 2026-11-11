@@ -59,7 +59,19 @@ kinds) and lane 3's T301 (the scratch render the proof runs) land.
   1's T107), of every path in `files`, committed to a second workspace; each
   read then runs in files mode on both workspaces, which needs no reader of
   primary's (lanes 4 and 5).
-- Test 7's cutover cases are T272's, in this module later.
+
+TEST 7'S CUTOVER CASES (T272; AT-7, "The cutover (G)" and "The abort",
+TP:1455-1481) are phase G's, at the end of this module. `CutoverRegister`
+imports the fixture register at C, then runs `lanes-index cutover --import
+<C>` as the operator lane through its checkout, by T203's flipped copy:
+while `RENDER_GIT_HALF` is False, `cutover` refuses `lanes_register`, a
+schema that is not a scratch one (lane 1's T116), and a write on primary
+needs the flipped copy too. AT-F2's cases in `test_sql_register_cutover.py`
+build on the same class. They fail until L1-A14 and lane 3's T327, the
+marker's push, read-back and abort: until T327, `cutover`'s 0 is its
+transaction alone, the marker stays `adding`, and nothing is pushed (T116's
+point 1). The first write's mirror commit also needs the renderer's fork,
+`render --checkout` (lane 3's T321 to T323, which T327 depends on).
 
 NOTHING HERE STARTS A DATABASE OF ITS OWN, and every remote is a bare
 repository under `tmp_path`.
@@ -987,3 +999,277 @@ def test_the_imports_proof_is_timed_and_recorded(pg, tmp_path):
     if summary:
         with open(summary, "a", encoding="utf-8") as handle:
             handle.write(row + "\n")
+
+
+# ====================================================== the cutover (G; T272)
+
+#: A password the operator's password file holds, for the marker commit's
+#: scan (AT-7, "The cutover (G)": "no password, no password-file path and no
+#: URL userinfo"). The session cluster's socket trusts every login, so it is
+#: never needed to connect.
+SECRET = "t272-pw-" + "6d1f0c2a9b"
+
+#: The trailer each mirror commit and the marker commit carry (section 1.3).
+REGISTER_SEQ = re.compile(r"^Register-Seq: ([0-9]+)$", re.M)
+#: A URL's userinfo, `<scheme>://<user>[:<password>]@`.
+USERINFO = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s@]+@")
+#: `status`'s lag line at a lag of 0, on primary (lane 1's T117; design.md
+#: section 2.1's smoke test, "a lag of 0").
+LAG_0 = re.compile(r"^\s*lag:\s+0 seq", re.M)
+
+
+def flipped_indexer(directory: Path) -> Path:
+    """T203's flipped copy, `RENDER_GIT_HALF = True`, in `directory`, with
+    `lanes-edit.sh` beside it (the copy rule, CLI4.5 section 6), so that
+    `cutover` takes `lanes_register` and a write on primary goes to SQL."""
+    from sql_register_helpers import RENDER_GIT_HALF_LINE, flipped_copy
+    assert len(RENDER_GIT_HALF_LINE.findall(INDEXER.read_bytes())) == 1, (
+        f"{INDEXER} holds no single `RENDER_GIT_HALF = ...` line, Q6(c)'s build constant "
+        f"(L1-A4, lane 1's T105), so no copy can be flipped")
+    copy = flipped_copy(INDEXER, directory, True)
+    for name in ("lanes-edit.sh", "repos.tsv"):
+        if (REPO / name).exists():
+            shutil.copy2(REPO / name, copy.parent / name)
+    return copy
+
+
+class CutoverRegister(FixtureRegister):
+    """Test 7's cutover (G): the fixture register at C, imported on `pg` by
+    `import --at <C>`, and the operator's two configurations, `mode=index`
+    for the import, `cutover` and `status`, and `mode=primary` for a write.
+    Each command runs as the operator lane, `LANES_LANE=repoA-2`, through
+    its checkout (F12; section 2.1), by the flipped copy. `extra_path` goes
+    first on those commands' `PATH` (AT-F2's `git` wrapper)."""
+
+    def __init__(self, root: Path, pg, *, extra_path: Path | None = None):
+        super().__init__(root)
+        self.pg = pg
+        self.extra_path = extra_path
+        self.copy = flipped_indexer(root / "flip")
+        self.index_conf = self.config(pg)
+        passfile = self.conf / "pgpass"
+        passfile.write_text(f"*:*:*:*:{SECRET}\n", encoding="utf-8")
+        passfile.chmod(0o600)
+        self.primary_conf = self.conf / "lanes-index-primary.conf"
+        self.primary_conf.write_text(self.index_conf.read_text(encoding="utf-8").replace(
+            "mode=index", "mode=primary"), encoding="utf-8")
+        self.primary_conf.chmod(0o600)
+        proc = self.import_at(pg, self.c, config=self.index_conf)
+        assert proc.returncode == 0, f"test 7's import at C failed: {proc.stderr}"
+
+    def index_env(self, conf: Path | None = None, env: dict | None = None) -> dict:
+        """The environment of one `lanes-index` run, as `Workspace.run`
+        merges it: None removes a key."""
+        child = {"LANES_INDEX_CONFIG": str(conf or self.index_conf), "LANES_LANE": OPERATOR,
+                 "LANES_INDEX": None, "LANES_EDIT": str(self.copy.parent / "lanes-edit.sh")}
+        if self.extra_path is not None:
+            child["PATH"] = str(self.extra_path) + os.pathsep + self.env["PATH"]
+        child.update(env or {})
+        return child
+
+    def index(self, *args, conf: Path | None = None, env: dict | None = None,
+              timeout: float = 300) -> subprocess.CompletedProcess:
+        return self.run(sys.executable, self.copy, *args, cwd=self.wip, timeout=timeout,
+                        env=self.index_env(conf, env))
+
+    def popen(self, *args, conf: Path | None = None, env: dict | None = None) -> subprocess.Popen:
+        """The same run, started and not waited for."""
+        child = dict(self.env)
+        for key, value in self.index_env(conf, env).items():
+            if value is None:
+                child.pop(key, None)
+            else:
+                child[key] = value
+        return subprocess.Popen([sys.executable, str(self.copy), *[str(a) for a in args]],
+                                cwd=str(self.wip), env=child, text=True,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE)
+
+    def cutover(self, **kw) -> subprocess.CompletedProcess:
+        """The first form, `lanes-index cutover --import <C>` (operations.md,
+        act 4's step 7)."""
+        return self.index("cutover", "--import", self.c, **kw)
+
+    def write(self, text: str, env: dict | None = None) -> subprocess.CompletedProcess:
+        """One `log NOTED` on primary, through the flipped copy's
+        `lanes-edit.sh`: R3b's smoke test."""
+        return self.run("bash", self.copy.parent / "lanes-edit.sh", "log", "NOTED",
+                        f"lane:{OPERATOR}", text, cwd=self.wip,
+                        env=self.index_env(self.primary_conf, env))
+
+    def origin_git(self, *args: str) -> str:
+        """git in the bare origin itself, so no clone's refs move."""
+        proc = subprocess.run(["git", f"--git-dir={self.origin}", *args], capture_output=True,
+                              env=self.env, check=False, stdin=subprocess.DEVNULL)
+        assert proc.returncode == 0, f"git {' '.join(args)}: {proc.stderr.decode(errors='replace')}"
+        return proc.stdout.decode("utf-8", "replace")
+
+    def origin_tip(self) -> str:
+        return self.origin_git("rev-parse", "refs/heads/main").strip()
+
+    def origin_tree(self, sha: str) -> str:
+        return self.origin_git("rev-parse", f"{sha}:lanes").strip()
+
+    def seqs_on_origin(self, since: str | None = None) -> dict:
+        """{commit: [its `Register-Seq` values]} for each commit on origin's
+        `main` after `since` (C by default), oldest first."""
+        commits = self.origin_git("rev-list", "--reverse", f"{since or self.c}..refs/heads/main")
+        return {sha: REGISTER_SEQ.findall(self.origin_git("log", "-1", "--format=%B", sha))
+                for sha in commits.split()}
+
+    def wait_for_seq(self, seq: int, seconds: float = 60) -> str | None:
+        """The commit on origin carrying `Register-Seq: <seq>`, once the
+        renderer a write forked has pushed it, or None at the deadline."""
+        deadline = time.monotonic() + seconds
+        while True:
+            for sha, seqs in self.seqs_on_origin().items():
+                if str(seq) in seqs:
+                    return sha
+            if time.monotonic() > deadline:
+                return None
+            time.sleep(0.5)
+
+    def other_clone(self, name: str) -> Path:
+        """Another clone of origin, as another host's."""
+        path = self.root / name
+        subprocess.run(["git", "clone", "-q", str(self.origin), str(path)], check=True,
+                       env=self.env, capture_output=True, stdin=subprocess.DEVNULL)
+        return path
+
+    def push_from(self, clone: Path, path: str, text: str, message: str) -> str:
+        """Commit `text` at `path` in `clone` and push it to origin's `main`."""
+        target = clone / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+        for argv in (["add", "--", path], ["commit", "-q", "-m", message],
+                     ["push", "-q", "origin", "HEAD:main"]):
+            subprocess.run(["git", "-C", str(clone), *argv], check=True, env=self.env,
+                           capture_output=True, stdin=subprocess.DEVNULL)
+        return self.origin_tip()
+
+
+def _switch(pg) -> dict:
+    return _rows(pg, "SELECT mode, marker_state, marker_seq, marker_commit FROM register_switch")[0]
+
+
+def _head(pg) -> int:
+    return _rows(pg, "SELECT seq FROM register_head")[0]["seq"]
+
+
+def _seqs(pg) -> list:
+    return [(r["seq"], r["kind"]) for r in _rows(pg, "SELECT seq, kind FROM journal ORDER BY seq")]
+
+
+def _store_fields(text: str) -> dict:
+    return dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+
+
+def test_a_cutover_pushes_one_fast_forward_marker_commit_with_no_credential(pg, tmp_path):
+    """The cutover, run by the operator lane through its checkout, exits 0;
+    the switch reads `primary`, and after the read-back the marker
+    `present`. Origin's `main` gains exactly one commit, a fast-forward of
+    C, carrying `Register-Seq: 1`, the cutover entry's own seq at a first
+    cutover, and adding `lanes/STORE` alone, with D21's fields: `store=primary`,
+    `database=` the configuration's `register_label=`, `import=<C>`,
+    `lanes-tree=` C's `lanes` tree id, and `utc=`. A scan of that commit
+    finds no password, no password-file path and no URL userinfo (AT-7,
+    "The cutover (G)", TP:1455-1468). It fails until T327: before it, 0 is
+    the transaction alone and the marker stays `adding`."""
+    reg = CutoverRegister(tmp_path / "e", pg)
+    assert reg.origin_tip() == reg.c
+    proc = reg.cutover()
+    assert proc.returncode == 0, proc.stderr
+    switch = _switch(pg)
+    assert (switch["mode"], switch["marker_state"]) == ("primary", "present"), switch
+    assert _rows(pg, "SELECT seq FROM journal WHERE kind = 'cutover'") == [{"seq": 1}]
+    gained = reg.seqs_on_origin()
+    assert len(gained) == 1, f"origin's main gains exactly one commit: {gained}"
+    (marker, seqs), = gained.items()
+    assert reg.origin_git("rev-list", "--parents", "-n", "1", marker).split()[1:] == [reg.c], \
+        "the marker commit is a fast-forward of C"
+    assert seqs == ["1"], f"the marker carries Register-Seq: 1: {seqs}"
+    assert switch["marker_commit"] == marker, "record_marker records the commit read back"
+    changed = reg.origin_git("diff-tree", "--no-commit-id", "--name-status", "-r", reg.c, marker)
+    assert changed.split("\n") == ["A\tlanes/STORE", ""], changed
+    fields = _store_fields(reg.origin_git("show", f"{marker}:lanes/STORE"))
+    assert {k: fields.get(k) for k in ("store", "database", "import", "lanes-tree")} == {
+        "store": "primary", "database": LABEL, "import": reg.c,
+        "lanes-tree": reg.tree(reg.c)}, fields
+    assert fields.get("utc"), f"lanes/STORE carries utc=: {fields}"
+    scanned = reg.origin_git("cat-file", "commit", marker) + reg.origin_git(
+        "show", "--format=fuller", "--patch", marker)
+    for needle in (SECRET, str(reg.conf / "pgpass"), str(reg.conf)):
+        assert needle not in scanned, f"the marker commit carries {needle!r}"
+    assert not USERINFO.search(scanned), f"the marker commit carries a URL's userinfo: {scanned}"
+
+
+def test_the_first_write_after_cutover_is_the_cutovers_seq_plus_1_with_lag_0(pg, tmp_path):
+    """After a first cutover, `log NOTED`, the smoke test, gives its SQL row
+    at seq 2, the cutover's plus 1; a mirror commit carrying `Register-Seq:
+    2`; a read-back equal to the row, here the mirror's file equal to SQL's
+    render of it; and a lag of 0 in `status` (AT-7, "The cutover (G)",
+    TP:1469-1471; design.md's cutover step 4)."""
+    reg = CutoverRegister(tmp_path / "e", pg)
+    proc = reg.cutover()
+    assert proc.returncode == 0, proc.stderr
+    assert _switch(pg)["marker_state"] == "present", _switch(pg)
+    cut = _rows(pg, "SELECT seq FROM journal WHERE kind = 'cutover'")[0]["seq"]
+    note = "the smoke test, after the cutover"
+    wrote = reg.write(note)
+    assert wrote.returncode == 0, f"log NOTED on primary: {wrote.stdout}{wrote.stderr}"
+    assert _rows(pg, f"SELECT seq, kind, lane FROM journal WHERE seq > {cut} ORDER BY seq") == \
+        [{"seq": cut + 1, "kind": "write", "lane": OPERATOR}]
+    rows = _rows(pg, f"SELECT file, raw FROM log_lines WHERE seq = {cut + 1}")
+    assert len(rows) == 1 and note in rows[0]["raw"], rows
+    commit = reg.wait_for_seq(cut + 1)
+    assert commit, f"no mirror commit carries Register-Seq: {cut + 1}: {reg.seqs_on_origin()}"
+    mirrored = reg.origin_git("show", f"{commit}:{rows[0]['file']}").encode("utf-8")
+    assert rows[0]["raw"] in mirrored.decode("utf-8").split("\n")
+    assert mirrored == _renders(pg)[rows[0]["file"]], "the read-back equals SQL's render"
+    status = reg.index("status")
+    assert LAG_0.search(status.stdout), f"status shows a lag of 0: {status.stdout}{status.stderr}"
+
+
+def test_the_cutover_aborts_when_main_moved_under_lanes(pg, tmp_path):
+    """Another clone pushes a commit under `lanes/` after C. The cutover
+    pushes nothing and exits with PC-10's abort code once `switch_to_files`
+    has committed: seq 1 is gone, the head reads the import's seq, 0, and
+    the switch reads `files` with the marker `absent` (AT-7, "The abort",
+    TP:1473-1479; `contracts/exit-codes.md` section 4)."""
+    reg = CutoverRegister(tmp_path / "e", pg)
+    aborted = load_indexer().EXIT_CUTOVER_ABORTED
+    log = "lanes/log/repoB-1.md"
+    moved = reg.push_from(reg.other_clone("other"), log,
+                          reg.blob(reg.c, log).decode("utf-8") + "a line pushed after C\n",
+                          "a commit under lanes/ after C")
+    assert reg.origin_tree(moved) != reg.tree(reg.c)
+    proc = reg.cutover()
+    assert proc.returncode == aborted, f"exit {proc.returncode}: {proc.stderr}"
+    assert reg.origin_tip() == moved, "the aborted cutover pushed nothing"
+    assert "lanes/STORE" not in reg.origin_git("ls-tree", "-r", "--name-only", moved, "lanes/")
+    assert _seqs(pg) == [(0, "import")], "switch_to_files deletes seq 1"
+    assert _head(pg) == 0, "the head reads the import's seq"
+    switch = _switch(pg)
+    assert (switch["mode"], switch["marker_state"]) == ("files", "absent"), switch
+
+
+def test_a_handoff_commit_on_the_tip_does_not_abort_the_cutover(pg, tmp_path):
+    """A third clone pushes a commit under `handoffs/` after C. The `lanes`
+    tree id is unchanged, so the cutover goes ahead: it exits 0, and its one
+    commit is a fast-forward of that tip, with C's import and tree in
+    `lanes/STORE` (AT-7, "The abort", TP:1480-1481; design.md's cutover
+    step 2, "a handoff commit on the tip only makes it rebuild")."""
+    reg = CutoverRegister(tmp_path / "e", pg)
+    tip = reg.push_from(reg.other_clone("third"), f"handoffs/{OPERATOR}.md",
+                        "# a handoff, written after C\n", "a handoff commit after C")
+    assert reg.origin_tree(tip) == reg.tree(reg.c), "the handoff leaves the lanes tree as C's"
+    proc = reg.cutover()
+    assert proc.returncode == 0, proc.stderr
+    gained = reg.seqs_on_origin(tip)
+    assert len(gained) == 1 and list(gained.values()) == [["1"]], gained
+    marker = next(iter(gained))
+    assert reg.origin_git("rev-list", "--parents", "-n", "1", marker).split()[1:] == [tip]
+    fields = _store_fields(reg.origin_git("show", f"{marker}:lanes/STORE"))
+    assert (fields.get("import"), fields.get("lanes-tree")) == (reg.c, reg.tree(reg.c)), fields
+    switch = _switch(pg)
+    assert (switch["mode"], switch["marker_state"]) == ("primary", "present"), switch

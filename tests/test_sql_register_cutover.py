@@ -50,6 +50,31 @@ EACH CASE ON ITS OWN CAUSE, against lane 1's T116 (#165 6770325296) and lane
 READ, NOT FOUND IN A CONTRACT: "the fake `psql`'s log holds no call" is
 read as "no call that carries a request": a `psql --version` probe is not
 counted (T203's fake), since it sends nothing to a database.
+
+AT-F2 (T272; TP:5515-5564), phase G, RE, at the end of this module:
+operator entries and a failed seq-1 push. Each case is test 7's cutover on
+a bare origin (`CutoverRegister`, from `test_sql_register_import.py`), run by
+the operator lane, with `GIT_WRAPPER` first on the command's `PATH`: test
+5's `git` wrapper (TP:1060-1080), here with the arms AT-F2 needs, each a
+line of `git-wrapper.json`: fail a call; push, then report the push failed;
+fail every `fetch` once a push has been made (the read-back's fetch); hold
+a push on a FIFO; and, for the deploy key, test 5's GitHub-shaped origin,
+whose URLs the wrapper sends to the bare origin. The cases fail until L1-A14
+and lane 3's T327 (the marker's push, read-back and abort, through T320's
+one push function); the renders until T321 to T323; and the `[rollback]`
+cases also until lane 3's T304 and T326, `rollback`'s transaction and its
+render and push (T327's and T326's Depends).
+
+READINGS, NOT FOUND IN A CONTRACT:
+- "Push failed: no renderer renders seq 1, and a render ends rather than
+  retry it" needs a render while seq 1 stands unpushed. A cutover whose
+  push fails aborts at once, so `[cutover]` of the render's case holds the
+  cutover's push on the wrapper's FIFO and renders meanwhile.
+- "The rerun reads origin back first" is read as: the rerun's first `git`
+  call that reaches origin is a `fetch`, before any `push`.
+- "A rollback's entry at `k+1`, with seqs up to `k` not yet on origin" is
+  made by failing every push while two writes commit and while `rollback`
+  writes `k+1`, so its own render (step 2) cannot push them either.
 """
 
 from __future__ import annotations
@@ -57,8 +82,10 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -296,3 +323,447 @@ def test_a_first_cutovers_store_names_the_register_label(tmp_path, request):
         f"until it lands exit 0 is the transaction alone (T116's point 1):\n{_said(proc)}")
     store = shown.stdout
     assert f"database={LABEL}" in store.splitlines(), f"lanes/STORE does not name {LABEL}: {store}"
+
+
+# ============================================================ AT-F2 (T272)
+#: Test 5's `git` wrapper (TP:1060-1080), with the arms AT-F2 needs. It logs
+#: each call as one JSON line, `git-wrapper.log`: the subcommand, the argv,
+#: its pid and parent's, and the push environment's names D23 sets (design.md,
+#: "The push"). `git-wrapper.json` holds the real `git` and the arms, each
+#: `{"call": <subcommand>, "mode": "fail" | "after-fail" | "hold", ...}`:
+#: `fail` exits 1 and runs nothing; `after-fail` runs the call, then exits 1
+#: (a push made, then reported failed); `hold` blocks on `fifo` until the
+#: test closes its end, then runs the call. `after_push` makes an arm wait
+#: for a push that ran and exited 0; `count` limits the calls it takes.
+#: `redirect` sends test 5's GitHub URLs to the bare origin, as `-c
+#: url.<origin>.insteadOf=<url>` before the call's own arguments.
+GIT_WRAPPER = r'''#!/usr/bin/env -S python3 -I
+import json, os, subprocess, sys
+HERE = os.path.dirname(os.path.abspath(__file__))
+CONTROL = os.path.join(HERE, "git-wrapper.json")
+LOG = os.path.join(HERE, "git-wrapper.log")
+STATE = os.path.join(HERE, "git-wrapper.state")
+WITH_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path",
+              "--config-env"}
+SHOWN = ("GIT_SSH_COMMAND", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "SSH_AUTH_SOCK")
+
+
+def subcommand(args):
+    i = 0
+    while i < len(args):
+        if args[i] in WITH_VALUE:
+            i += 2
+        elif args[i].startswith("-"):
+            i += 1
+        else:
+            return args[i]
+    return ""
+
+
+def log(record):
+    with open(LOG, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record) + "\n")
+
+
+def state():
+    try:
+        with open(STATE, encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return {"pushed": False, "used": {}}
+
+
+def save(st):
+    with open(STATE, "w", encoding="utf-8") as handle:
+        json.dump(st, handle)
+
+
+def main():
+    args = sys.argv[1:]
+    with open(CONTROL, encoding="utf-8") as handle:
+        control = json.load(handle)
+    sub = subcommand(args)
+    record = {"sub": sub, "argv": args, "pid": os.getpid(), "ppid": os.getppid(),
+              "env": {k: os.environ[k] for k in SHOWN if k in os.environ}}
+    st = state()
+    arm = None
+    for n, candidate in enumerate(control.get("arms", [])):
+        if candidate.get("call") != sub:
+            continue
+        if candidate.get("after_push") and not st["pushed"]:
+            continue
+        if "count" in candidate and st["used"].get(str(n), 0) >= candidate["count"]:
+            continue
+        arm = candidate
+        st["used"][str(n)] = st["used"].get(str(n), 0) + 1
+        save(st)
+        break
+    prefix = []
+    redirect = control.get("redirect")
+    if redirect:
+        for url in redirect["from"]:
+            prefix += ["-c", "url.%s.insteadOf=%s" % (redirect["to"], url)]
+    mode = arm["mode"] if arm else "run"
+    if mode == "fail":
+        log(dict(record, outcome="failed"))
+        sys.stderr.write("fatal: the test's git wrapper failed this %s\n" % sub)
+        return 1
+    if mode == "hold":
+        log(dict(record, outcome="held"))
+        with open(arm["fifo"], "rb") as fifo:
+            fifo.read()
+    rc = subprocess.run([control["git"]] + prefix + args).returncode
+    if sub == "push" and rc == 0:
+        st = state()
+        st["pushed"] = True
+        save(st)
+    if mode == "after-fail" and rc == 0:
+        log(dict(record, outcome="pushed, reported failed", rc=rc))
+        sys.stderr.write("error: the test's git wrapper reports this push failed\n")
+        return 1
+    log(dict(record, outcome="ran", rc=rc))
+    return rc
+
+
+sys.exit(main())
+'''
+
+#: Test 5's GitHub-shaped origin, for the deploy key's case: the bootstrap's
+#: repository (`pgcluster.FX_REPOSITORY`), by HTTPS and by the SSH URL the
+#: push names (design.md, "The push").
+F2_REPOSITORY = "opensoft/openRepoTools-fixture"
+GH_HTTPS = f"https://github.com/{F2_REPOSITORY}.git"
+GH_SSH = f"ssh://git@github.com/{F2_REPOSITORY}.git"
+
+
+def _import_module():
+    """`test_sql_register_import`, whose fixture register and cutover host
+    AT-F2 builds on ("Test 7's cutover on a bare origin")."""
+    import test_sql_register_import as module
+    return module
+
+
+class F2Register:
+    """AT-F2's fixture: test 7's cutover host with `GIT_WRAPPER` first on
+    each command's `PATH`. `github=True` gives test 5's GitHub-shaped origin
+    and a `render_key=` file, for the deploy key's case."""
+
+    def __init__(self, root: Path, pg, *, github: bool = False):
+        imp = _import_module()
+        self.imp = imp
+        self.pg = pg
+        self.wrapper = root / "wrapper"
+        _script(self.wrapper / "git", GIT_WRAPPER)
+        self.reg = imp.CutoverRegister(root, pg, extra_path=self.wrapper)
+        reg = self.reg
+        self.real_git = shutil.which("git", path=os.pathsep.join(
+            p for p in reg.env["PATH"].split(os.pathsep) if p and Path(p) != self.wrapper))
+        assert self.real_git, "no git on PATH"
+        self.redirect = None
+        self.conf = reg.index_conf
+        if github:
+            reg.git("remote", "set-url", "origin", GH_HTTPS)
+            self.redirect = {"to": str(reg.origin), "from": [GH_HTTPS, GH_SSH]}
+            self.key = _private(reg.conf / "render_key",
+                                "-----BEGIN OPENSSH PRIVATE KEY-----\nnot a key\n"
+                                "-----END OPENSSH PRIVATE KEY-----\n")
+            self.conf = _private(reg.conf / "lanes-index-key.conf",
+                                 reg.index_conf.read_text(encoding="utf-8")
+                                 + f"render_key={self.key}\n")
+        self.arm()
+
+    def arm(self, *arms: dict) -> None:
+        """Set the wrapper's arms, and start its log and state afresh."""
+        control = {"git": self.real_git, "arms": list(arms)}
+        if self.redirect:
+            control["redirect"] = self.redirect
+        (self.wrapper / "git-wrapper.json").write_text(json.dumps(control), encoding="utf-8")
+        for name in ("git-wrapper.log", "git-wrapper.state"):
+            (self.wrapper / name).unlink(missing_ok=True)
+
+    def calls(self) -> list:
+        log = self.wrapper / "git-wrapper.log"
+        if not log.exists():
+            return []
+        return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines() if line]
+
+    def settle(self, quiet: float = 3, limit: float = 90) -> None:
+        """Wait until the wrapper's log has not grown for `quiet` seconds:
+        the renders the writes forked, detached, have ended."""
+        log = self.wrapper / "git-wrapper.log"
+        deadline, last, since = time.monotonic() + limit, -1, time.monotonic()
+        while time.monotonic() < deadline:
+            size = log.stat().st_size if log.exists() else 0
+            if size != last:
+                last, since = size, time.monotonic()
+            elif time.monotonic() - since >= quiet:
+                return
+            time.sleep(0.25)
+
+
+def _first_reach(calls: list) -> str | None:
+    """The first call that reaches origin: a `fetch`, `push` or `ls-remote`."""
+    for call in calls:
+        if call["sub"] in ("fetch", "push", "ls-remote"):
+            return call["sub"]
+    return None
+
+
+def _open_when_held(fifo: Path, proc: subprocess.Popen, seconds: float = 120):
+    """The FIFO's write end, opened once the wrapper holds a call on it; None
+    where `proc` ends, or the time runs out, first. Closing it releases the
+    call."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline and proc.poll() is None:
+        try:
+            return os.open(str(fifo), os.O_WRONLY | os.O_NONBLOCK)
+        except OSError:
+            time.sleep(0.1)
+    return None
+
+
+def _fifo(directory: Path) -> Path:
+    path = directory / "hold.fifo"
+    os.mkfifo(str(path), 0o600)
+    assert stat.S_ISFIFO(os.lstat(path).st_mode)
+    return path
+
+
+def test_a_marker_only_entry_is_an_operator_entry_the_renderer_skips(pg, tmp_path):
+    """Clean: seq 1, the cutover's entry, touches `lanes/STORE` alone and
+    carries the operator flag, and no write entry does. A render forked
+    after it, by the first write, pushes no commit for seq 1: on origin only
+    the cutover's own marker commit carries `Register-Seq: 1`. `status`
+    shows no lag (AT-F2, "Clean", TP:5534-5537; D24)."""
+    f2 = F2Register(tmp_path / "e", pg)
+    reg, imp = f2.reg, f2.imp
+    proc = reg.cutover(conf=f2.conf)
+    assert proc.returncode == 0, proc.stderr
+    switch = imp._switch(pg)
+    assert switch["marker_state"] == "present", switch
+    assert imp._rows(pg, "SELECT path FROM journal_files WHERE seq = 1") == \
+        [{"path": "lanes/STORE"}], "the cutover's entry touches lanes/STORE alone"
+    wrote = reg.write("a write after the cutover")
+    assert wrote.returncode == 0, f"{wrote.stdout}{wrote.stderr}"
+    assert imp._rows(pg, "SELECT seq, kind, operator FROM journal WHERE seq > 0 ORDER BY seq") == [
+        {"seq": 1, "kind": "cutover", "operator": True},
+        {"seq": 2, "kind": "write", "operator": False}]
+    assert reg.wait_for_seq(2), f"the render pushed no seq 2: {reg.seqs_on_origin()}"
+    seqs = reg.seqs_on_origin()
+    assert [sha for sha, s in seqs.items() if "1" in s] == [switch["marker_commit"]], seqs
+    assert [s for sha, s in seqs.items() if sha != switch["marker_commit"]] == [["2"]], seqs
+    status = reg.index("status", conf=f2.conf)
+    assert imp.LAG_0.search(status.stdout), f"{status.stdout}{status.stderr}"
+
+
+def test_the_operator_entry_is_pushed_with_the_renderer_identity_and_read_back(pg, tmp_path):
+    """Clean, on test 5's GitHub-shaped origin with `render_key=` set and
+    `SSH_AUTH_SOCK` in the command's own environment: the cutover makes one
+    push, to `ssh://git@github.com/<owner>/<repo>.git` from origin's own URL,
+    with `--no-verify`, whose environment alone carries `GIT_SSH_COMMAND`
+    with `-i` the key, `IdentitiesOnly=yes` and `BatchMode=yes`,
+    `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1`, and no
+    `SSH_AUTH_SOCK`; a `fetch` of origin follows it, the read-back; the
+    checkout's configuration is unchanged; and the marker reads `present`,
+    `record_marker` naming the commit pushed (AT-F2, "Ruling" and "Clean",
+    TP:5517-5535; D23; design.md, "The push")."""
+    f2 = F2Register(tmp_path / "e", pg, github=True)
+    reg, imp = f2.reg, f2.imp
+    config_before = reg.git("config", "--local", "--list")
+    proc = reg.cutover(conf=f2.conf, env={"SSH_AUTH_SOCK": str(tmp_path / "agent.sock")})
+    assert proc.returncode == 0, proc.stderr
+    calls = f2.calls()
+    pushes = [n for n, c in enumerate(calls) if c["sub"] == "push"]
+    assert len(pushes) == 1, f"one push: {calls}"
+    push = calls[pushes[0]]
+    assert GH_SSH in push["argv"] and "--no-verify" in push["argv"], push["argv"]
+    env = push["env"]
+    ssh = env.get("GIT_SSH_COMMAND", "")
+    for word in ("-i", str(f2.key), "IdentitiesOnly=yes", "BatchMode=yes"):
+        assert word in ssh, f"GIT_SSH_COMMAND lacks {word!r}: {ssh!r}"
+    assert (env.get("GIT_CONFIG_GLOBAL"), env.get("GIT_CONFIG_NOSYSTEM")) == ("/dev/null", "1"), env
+    assert "SSH_AUTH_SOCK" not in env, env
+    others = [c for n, c in enumerate(calls) if n != pushes[0]]
+    assert not any(str(f2.key) in c["env"].get("GIT_SSH_COMMAND", "") for c in others), \
+        "the key is in the push's environment alone"
+    assert any(c["sub"] == "fetch" for c in calls[pushes[0] + 1:]), f"no read-back: {calls}"
+    assert reg.git("config", "--local", "--list") == config_before, "the checkout's config changed"
+    switch = imp._switch(pg)
+    assert switch["marker_state"] == "present", switch
+    assert switch["marker_commit"] == reg.origin_tip(), switch
+
+
+@pytest.mark.parametrize("case", ["not-pushed", "pushed"])
+def test_a_cutover_abort_deletes_seq_1_only_when_the_marker_is_proved_absent(pg, tmp_path, case):
+    """`[not-pushed]`: the wrapper fails the push (exit 1, nothing pushed).
+    The abort's read-back finds the commit carrying `Register-Seq: 1` absent
+    from origin, so seq 1 is deleted, the head reads the import's seq, 0,
+    and the switch reads `files` with the marker `absent`; the cutover exits
+    with PC-10's abort code. `[pushed]`: the wrapper pushes, then exits 1.
+    The read-back finds the marker, so the cutover completes:
+    `record_marker` sets it `present`, and seq 1 stays (AT-F2, "Push
+    failed" and "Pushed, reported failed", TP:5538-5547)."""
+    f2 = F2Register(tmp_path / "e", pg)
+    reg, imp = f2.reg, f2.imp
+    f2.arm({"call": "push", "mode": "fail" if case == "not-pushed" else "after-fail"})
+    proc = reg.cutover(conf=f2.conf)
+    calls = f2.calls()
+    pushed = [n for n, c in enumerate(calls) if c["sub"] == "push"]
+    assert pushed, f"the cutover made no push: exit {proc.returncode}: {proc.stderr}"
+    assert any(c["sub"] == "fetch" for c in calls[pushed[0] + 1:]), f"no read-back: {calls}"
+    if case == "not-pushed":
+        assert proc.returncode == imp.load_indexer().EXIT_CUTOVER_ABORTED, proc.stderr
+        assert reg.origin_tip() == reg.c and reg.seqs_on_origin() == {}
+        assert imp._seqs(pg) == [(0, "import")], "seq 1 is deleted"
+        assert imp._head(pg) == 0
+        switch = imp._switch(pg)
+        assert (switch["mode"], switch["marker_state"]) == ("files", "absent"), switch
+    else:
+        assert proc.returncode == 0, proc.stderr
+        assert imp._seqs(pg) == [(0, "import"), (1, "cutover")], "seq 1 stays"
+        switch = imp._switch(pg)
+        assert (switch["mode"], switch["marker_state"]) == ("primary", "present"), switch
+        assert list(reg.seqs_on_origin().values()) == [["1"]]
+        assert switch["marker_commit"] == reg.origin_tip()
+
+
+@pytest.mark.parametrize("command", ["cutover", "rollback"])
+def test_an_unconfirmed_operator_push_exits_3_and_its_rerun_reads_origin_first(pg, tmp_path,
+                                                                                command):
+    """The push is made and the read-back's fetch fails, so the push can be
+    neither confirmed nor disproved. `[cutover]`: `cutover` exits 3 and
+    changes nothing more; the switch stays `primary` with the marker
+    `adding`, and a write fails with LR002 (69). `[rollback]`, after a clean
+    cutover and `rollback --hold-marker` (steps 0 to 2): `rollback` exits 3
+    and the marker stays `removing`. Disarmed, the rerun reads origin back
+    first, before any push, and completes: the marker `present`, or
+    `absent` with `lanes/STORE` gone from origin's tip (AT-F2,
+    "Unconfirmed", TP:5548-5554; design.md section 2.1)."""
+    f2 = F2Register(tmp_path / "e", pg)
+    reg, imp = f2.reg, f2.imp
+    in_doubt = imp.load_indexer().EXIT_IN_DOUBT
+    unconfirmed = {"call": "fetch", "mode": "fail", "after_push": True}
+    if command == "cutover":
+        f2.arm(unconfirmed)
+        proc = reg.cutover(conf=f2.conf)
+        assert proc.returncode == in_doubt, f"exit {proc.returncode}: {proc.stderr}"
+        switch = imp._switch(pg)
+        assert (switch["mode"], switch["marker_state"]) == ("primary", "adding"), switch
+        assert list(reg.seqs_on_origin().values()) == [["1"]], "the push was made"
+        head = imp._head(pg)
+        wrote = reg.write("a write while the marker is adding")
+        assert wrote.returncode == imp.load_indexer().EXIT_UNAVAILABLE, wrote.stderr
+        assert "LR002" in wrote.stderr, wrote.stderr
+        assert imp._head(pg) == head, "the refused write wrote nothing"
+        f2.arm()
+        rerun = reg.cutover(conf=f2.conf)
+        assert rerun.returncode == 0, rerun.stderr
+        assert _first_reach(f2.calls()) == "fetch", f2.calls()
+        assert not any(c["sub"] == "push" for c in f2.calls()), "the rerun pushed again"
+        switch = imp._switch(pg)
+        assert (switch["mode"], switch["marker_state"]) == ("primary", "present"), switch
+        assert switch["marker_commit"] == reg.origin_tip()
+        return
+    assert reg.cutover(conf=f2.conf).returncode == 0
+    assert imp._switch(pg)["marker_state"] == "present", imp._switch(pg)
+    held = reg.index("rollback", "--hold-marker", conf=f2.conf)
+    assert held.returncode == 0, held.stderr
+    f2.arm(unconfirmed)
+    proc = reg.index("rollback", conf=f2.conf)
+    assert proc.returncode == in_doubt, f"exit {proc.returncode}: {proc.stderr}"
+    switch = imp._switch(pg)
+    assert (switch["mode"], switch["marker_state"]) == ("files", "removing"), switch
+    f2.arm()
+    rerun = reg.index("rollback", conf=f2.conf)
+    assert rerun.returncode == 0, rerun.stderr
+    assert _first_reach(f2.calls()) == "fetch", f2.calls()
+    switch = imp._switch(pg)
+    assert (switch["mode"], switch["marker_state"]) == ("files", "absent"), switch
+    assert "lanes/STORE" not in reg.origin_git("ls-tree", "-r", "--name-only", "refs/heads/main",
+                                               "lanes/")
+
+
+def test_no_operator_command_holds_a_transaction_across_git(pg, tmp_path):
+    """Held across git: with the cutover's push held on the wrapper's FIFO
+    for 6 s, past the writer role's 5 s idle bound, no session is idle in a
+    transaction while git holds, and the cutover still completes, since its
+    transaction committed before any git step (AT-F2, "Held across git",
+    TP:5555-5557; F23; design.md section 2.1)."""
+    f2 = F2Register(tmp_path / "e", pg)
+    reg, imp = f2.reg, f2.imp
+    fifo = _fifo(tmp_path)
+    f2.arm({"call": "push", "mode": "hold", "fifo": str(fifo), "count": 1})
+    run = reg.popen("cutover", "--import", reg.c, conf=f2.conf)
+    writer = _open_when_held(fifo, run)
+    try:
+        assert writer is not None, \
+            f"the cutover never reached its push: {run.communicate(timeout=300)}"
+        idle = imp._rows(pg, "SELECT count(*) AS n FROM pg_stat_activity WHERE state LIKE "
+                             "'idle in transaction%' AND datname = current_database()")
+        time.sleep(6)
+        idle += imp._rows(pg, "SELECT count(*) AS n FROM pg_stat_activity WHERE state LIKE "
+                              "'idle in transaction%' AND datname = current_database()")
+    finally:
+        if writer is not None:
+            os.close(writer)
+    out, err = run.communicate(timeout=300)
+    assert idle == [{"n": 0}, {"n": 0}], "a session sat idle in a transaction across git"
+    assert run.returncode == 0, err
+    switch = imp._switch(pg)
+    assert (switch["mode"], switch["marker_state"]) == ("primary", "present"), switch
+
+
+@pytest.mark.parametrize("command", ["cutover", "rollback"])
+def test_a_render_stops_before_an_operator_seq_not_yet_on_origin(pg, tmp_path, command):
+    """`[cutover]`: with the cutover's push held, seq 1 stands in SQL and is
+    not on origin; a render meanwhile renders nothing for it and ends, with
+    no push, and the cutover then completes. `[rollback]`: after a clean
+    cutover, two writes and `rollback`'s entry at `k+1` commit while every
+    push fails, so seqs 2 to `k` are not on origin; disarmed, a render
+    pushes them, stops before `k+1`, and ends (AT-F2, "Push failed" and "A
+    rollback's entry at k+1", TP:5538-5545; lane 4's section, "F2, the stop
+    at an operator seq")."""
+    f2 = F2Register(tmp_path / "e", pg)
+    reg, imp = f2.reg, f2.imp
+    if command == "cutover":
+        fifo = _fifo(tmp_path)
+        f2.arm({"call": "push", "mode": "hold", "fifo": str(fifo), "count": 1})
+        run = reg.popen("cutover", "--import", reg.c, conf=f2.conf)
+        writer = _open_when_held(fifo, run)
+        try:
+            assert writer is not None, \
+                f"the cutover never reached its push: {run.communicate(timeout=300)}"
+            assert imp._seqs(pg)[-1] == (1, "cutover")
+            render = reg.index("render", "--checkout", reg.wip, conf=reg.primary_conf,
+                               timeout=120)
+            ran = [c for c in f2.calls() if c["sub"] == "push" and c["outcome"] != "held"]
+            assert ran == [], f"the render pushed: {ran}; {render.stderr}"
+            assert reg.origin_tip() == reg.c, "the render pushed a commit for seq 1"
+        finally:
+            if writer is not None:
+                os.close(writer)
+        out, err = run.communicate(timeout=300)
+        assert run.returncode == 0, err
+        assert list(reg.seqs_on_origin().values()) == [["1"]]
+        return
+    assert reg.cutover(conf=f2.conf).returncode == 0
+    assert imp._switch(pg)["marker_state"] == "present", imp._switch(pg)
+    marker = reg.origin_tip()
+    f2.arm({"call": "push", "mode": "fail"})
+    for n in (1, 2):
+        wrote = reg.write(f"write {n} before the rollback")
+        assert wrote.returncode == 0, f"{wrote.stdout}{wrote.stderr}"
+    f2.settle()
+    k = imp._head(pg)
+    assert k == 3
+    rolled = reg.index("rollback", conf=f2.conf)
+    assert rolled.returncode != 0, "the rollback's render pushed with every push failing"
+    assert imp._seqs(pg)[-1] == (k + 1, "rollback"), imp._seqs(pg)
+    switch = imp._switch(pg)
+    assert (switch["mode"], switch["marker_state"]) == ("files", "removing"), switch
+    assert reg.origin_tip() == marker, "a seq reached origin with every push failing"
+    f2.arm()
+    render = reg.index("render", "--checkout", reg.wip, conf=reg.primary_conf, timeout=120)
+    seqs = [s for s in reg.seqs_on_origin(marker).values()]
+    assert seqs == [["2"], ["3"]], f"the render pushes 2 to k and stops before k+1: {seqs}; " \
+                                   f"{render.stderr}"
