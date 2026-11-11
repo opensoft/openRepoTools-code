@@ -1307,6 +1307,12 @@ fi
 # and never read from the environment, as `REG_MODE` (lane 5's answer 11, #165
 # 6746507353).
 REG_STORE=""
+# FEATURE 007, T507 - THE GUARD'S MIRROR PATH'S ONE TIP (`reg_guard_mirror`):
+# `mirror_tip=` from form 2's `.outage`, the commit form C walked, which every
+# read on that path is pinned to (lane 3's T507 ruling (4)(a)). Empty
+# everywhere else, the door's mirror arms included; never read from the
+# environment.
+REG_MIRROR_TIP=""
 # AMENDMENT 23 S4 — THE REPLAY'S OWN MARKERS. A refused push drops this write's
 # commit and runs this file again with the same argv (`commit_publish`), and
 # `exec` keeps the pid: `LANES__REPLAY_PID` equal to `$$` is that re-run, and
@@ -5972,6 +5978,19 @@ lane_log_events() {   # <lane> [checked]
     # `log_path_ci`'s or git's answer instead.
     [ "${REG_CLASS:-}" != guard ] || return "$lev_m"
     [ "$lev_m" != 69 ] || return 69
+  fi
+  # FEATURE 007, T507 - THE GUARD'S MIRROR PATH (`reg_guard_mirror`): every log
+  # is read at the one tip it is pinned to, `REG_MIRROR_TIP`, never at
+  # `origin/$LANES_BRANCH` (lane 3's T507 ruling (4)(a)), through
+  # `parse_log_stream` with the path it resolved to. No log there is no lines
+  # and 0; 1 where git could not read it, and 2 for two logs that differ only
+  # by case, as below.
+  if [ -z "$LANES_IDX_DIR" ] && [ -n "${REG_MIRROR_TIP:-}" ]; then
+    lev_m=0; lev_s="$(reg_mirror_log "${1-}")" || lev_m=$?
+    [ "$lev_m" = 0 ] || return "$lev_m"
+    [ -n "$lev_s" ] || return 0
+    parse_log_stream "$(sed -n -e 1p "$SE_CACHE_FILE.logpath.$lev_s")" < "$SE_CACHE_FILE.log.$lev_s"
+    return
   fi
   ll_rel="$(log_path_ci "$1")" || { [ "$?" != 69 ] || return 69; return 2; }
   if [ -n "$LANES_IDX_DIR" ]; then
@@ -13476,11 +13495,140 @@ reg_guard_files() {   # <why>
   reg_flush
 }
 
-# FORM 2's 69, THE STORE'S FAILED READ (W:4294; contract 3.6): the guard
-# refuses 2 with S3's outage text.
+# FORM 2's 69, THE STORE'S FAILED READ (W:4294; contract 3.6; the design's
+# SVC-12). `.outage`, which `lanes-index` writes beside the cache, by a
+# temporary file and a rename, only where an unexpired declaration names this
+# database (and on E1's cut at the declared cap, lane 3's ruling 6807694145),
+# gives SVC-12's verdict, read here and never the declaration itself, which the
+# client read once, at the prefetch:
+#   open     the mirror path (`reg_guard_mirror`), pinned to `mirror_tip=`
+#   behind   the mirror's seq is below the declaration's: 2, lane 5's text
+#            (Y:4472-4474)
+#   no-seq   none of form C's 200 commits carries a `Register-Seq`: 2, S3's
+#            outage text
+# No file, or one that is not `format=1` with a verdict whose fields read as
+# they must, opens nothing: 2, S3's outage text. Returns 0 on the mirror path,
+# else 2, the refusal printed.
 reg_guard_outage() {
-  reg_guard_s3 ""
+  if [ -z "${SE_CACHE_FILE:-}" ] || [ ! -f "$SE_CACHE_FILE.outage" ]; then
+    reg_guard_s3 ""
+    return 2
+  fi
+  rgo_v="$(reg_outage_field verdict)"; rgo_label="$(reg_outage_field label)"
+  rgo_d="$(reg_outage_field declared_seq)"; rgo_s="$(reg_outage_field mirror_seq)"
+  rgo_tip="$(reg_outage_field mirror_tip)"
+  [ -n "$rgo_label" ] || rgo_label="(declared outage)"
+  rgo_bad="Its verdict on a declared outage (.outage, beside the cache) could not be read, so it opens nothing."
+  [ "$(reg_outage_field format)" = 1 ] || rgo_v=""
+  case "$rgo_v" in
+    open)
+      case "$rgo_tip" in "" | *[!0-9a-f]*) rgo_v="" ;; esac
+      case "${#rgo_tip}" in 40|64) : ;; *) rgo_v="" ;; esac
+      if [ "$rgo_v" = open ]; then reg_guard_mirror "$rgo_tip" "$rgo_label"; return; fi ;;
+    behind)
+      case "$rgo_d" in "" | *[!0-9]*) rgo_v="" ;; esac
+      case "$rgo_s" in "" | *[!0-9]*) rgo_v="" ;; esac
+      if [ "$rgo_v" = behind ]; then
+        guard_refuse "the mirror here is at seq $rgo_s, behind the declared outage's seq $rgo_d; fetch it once origin carries seq $rgo_d, or wait for the outage to end. The register's SQL store did not answer the guard's read, and an outage is declared for it $rgo_label, but origin/$LANES_BRANCH as this checkout last fetched it lacks writes the store committed, so the triple is not verified from it (feature 007, SVC-12)."
+        return 2
+      fi ;;
+    no-seq)
+      reg_guard_s3 "An outage is declared for it $rgo_label, but none of the 200 newest commits of origin/$LANES_BRANCH, as this checkout last fetched it, carries a Register-Seq trailer, so how current that copy is cannot be known, and it is not read (SVC-12, form C)."
+      return 2 ;;
+  esac
+  reg_guard_s3 "$rgo_bad"
   return 2
+}
+# One field of `.outage`, `key=value` per line, the first of a key winning,
+# on one line with its control characters dropped.
+reg_outage_field() {   # <key>
+  sed -n -e "s/^$1=//p" "$SE_CACHE_FILE.outage" 2>/dev/null | head -n 1 | tr -d '\000-\037\177'
+}
+
+# SVC-12's MIRROR PATH, PINNED TO `mirror_tip` (lane 3's T507 ruling (4)(a),
+# #165 6783977598): the tip form C walked answers every read the guard makes
+# after this, and no other ref does, so another process's fetch cannot move
+# it. Before the guard's first read of them, `.register`, `.aliases` and the
+# window's log are filled from `git show <mirror_tip>:<path>`, in the forms the
+# files-mode reads cache them in: the register's text and the alias table's,
+# each ending in one newline, `# no lane aliases` where the tip has no table,
+# and `.log.<slot>` with `.logpath.<slot>` (`reg_mirror_log`). THE FILL IS THE
+# MIRROR'S, never the SQL image's, and whole (addendum 3, section 4): the
+# family is flushed first, so no `.head` or member of the failed read stays
+# beside it, and `REG_STORE=mirror`, so no read site takes its SQL branch or
+# reads `.head`, whose `file=` rows (T505's SHOULD-3) describe the database's
+# images, not this tip. `register_text_checked` and `lane_alias_text` read the
+# two caches; `lane_log_events` reads every log at the same tip
+# (`REG_MIRROR_TIP`), so a log the fill did not bring is read there too. It
+# prints `read: mirror at <sha12>, unknown (declared outage <utc>: <why>)`,
+# the label in place of the cause; the guard then runs today's parser on the
+# mirror's text and exits 0 or 2 as it gives. F17 is not asked: the mode is
+# primary, and the marker on the tip is the estate's own. Returns 0, or 2 with
+# the refusal printed where git could not read the tip.
+reg_guard_mirror() {   # <mirror_tip> <label>
+  rgm_tip="${1-}"
+  reg_flush
+  REG_STORE=mirror; REG_MIRROR_TIP="$rgm_tip"
+  printf 'read: mirror at %s, unknown %s\n' "${rgm_tip:0:12}" "${2-}" >&2
+  rgm_txt=""
+  if ! rgm_txt="$(git -C "$LANES_REPO" show "$rgm_tip:$LANES_PATH" 2>/dev/null)"; then
+    guard_refuse "the register could not be read from the mirror at ${rgm_tip:0:12}: git could not show $LANES_PATH at that commit, so the ROW cannot be read and the triple cannot be verified, and an indeterminate read refuses (Amendment 12(d); feature 007, SVC-12). $(guard_bypass)"
+    return 2
+  fi
+  rgm_al=""
+  if ! rgm_al="$(git -C "$LANES_REPO" ls-tree --full-tree --name-only "$rgm_tip" -- "$LANES_ALIASES_PATH" 2>/dev/null)"; then
+    rgm_al="-"
+  fi
+  rgm_atx=""
+  if [ "$rgm_al" = "-" ] ||
+     { [ -n "$rgm_al" ] && ! rgm_atx="$(git -C "$LANES_REPO" show "$rgm_tip:$LANES_ALIASES_PATH" 2>/dev/null)"; }; then
+    guard_refuse "${LANES_ALIASES_PATH:-lanes/aliases.tsv} could not be read from the mirror at ${rgm_tip:0:12}, so whether this window's name is a FORMER name of a lane could not be established, and an indeterminate read refuses (Amendment 12(d), Amendment 16(e); feature 007, SVC-12). $(guard_bypass)"
+    return 2
+  fi
+  rgm_w="$SE_CACHE_FILE.mfill.${BASHPID:-$$}"
+  if ! { printf '%s\n' "$rgm_txt" > "$rgm_w" && mv -f -- "$rgm_w" "$SE_CACHE_FILE.register" &&
+         printf '%s\n' "${rgm_atx:-# no lane aliases}" > "$rgm_w" && mv -f -- "$rgm_w" "$SE_CACHE_FILE.aliases"; } 2>/dev/null; then
+    rm -f -- "$rgm_w" "$SE_CACHE_FILE.register" "$SE_CACHE_FILE.aliases" 2>/dev/null
+    guard_refuse "the mirror at ${rgm_tip:0:12} could not be kept beside $SE_CACHE_FILE for this prompt's reads, so the triple cannot be verified (Amendment 12(d); feature 007, SVC-12). $(guard_bypass)"
+    return 2
+  fi
+  # THE WINDOW'S LOG, as form 2 asks for it: a log git cannot read here is
+  # read once more by `lane_log_events`, and noted as unreadable there.
+  [ -z "$G_WINNAME" ] || reg_mirror_log "$G_WINNAME" >/dev/null 2>&1 || :
+  return 0
+}
+
+# A KEY'S LOG ON THE GUARD'S MIRROR PATH (T507; `reg_guard_mirror`): its slot
+# on stdout where the key has a log at `REG_MIRROR_TIP`, nothing where it has
+# none; 0, 1 where git could not list or show it, 2 where two logs differ from
+# <key> only by case (C11; `log_path_ci`'s 2, with its note). The log is found
+# case-insensitively among the tip's `lanes/log/` paths, as `log_path_ci`
+# finds it on `origin/$LANES_BRANCH`, and kept as `.log.<slot>` and
+# `.logpath.<slot>` (`reg_slot`), so a second read of it reads the same bytes.
+reg_mirror_log() {   # <key>
+  gml_k="${1-}"; gml_s="$(reg_slot "$gml_k")"
+  if [ ! -f "$SE_CACHE_FILE.log.$gml_s" ] || [ ! -f "$SE_CACHE_FILE.logpath.$gml_s" ]; then
+    gml_ls=""
+    gml_ls="$(git -C "$LANES_REPO" ls-tree --full-tree --name-only "$REG_MIRROR_TIP" -- "$LANES_LOG_PREFIX" 2>/dev/null)" || return 1
+    gml_hits="$(printf '%s\n' "$gml_ls" | awk -v want="$(log_path_for "$gml_k")" 'BEGIN { w = tolower(want) } tolower($0) == w')"
+    gml_n="$(printf '%s' "$gml_hits" | grep -c . || :)"
+    if [ "$gml_n" -gt 1 ]; then
+      note "lane $gml_k has $gml_n object logs in the mirror at ${REG_MIRROR_TIP:0:12} whose names differ only by case: $(printf '%s\n' "$gml_hits" | tr '\n' ' ')"
+      note "one lane is ONE lane under any case and its log is ONE file (Amendment 15), so no read of it is unambiguous and nothing here picks one of them."
+      return 2
+    fi
+    gml_w="$SE_CACHE_FILE.mlog.${BASHPID:-$$}"
+    if [ "$gml_n" = 1 ]; then
+      git -C "$LANES_REPO" show "$REG_MIRROR_TIP:$gml_hits" > "$gml_w" 2>/dev/null || { rm -f -- "$gml_w"; return 1; }
+      printf '%s\n' "$gml_hits" > "$gml_w.p" 2>/dev/null || { rm -f -- "$gml_w" "$gml_w.p"; return 1; }
+    else
+      { : > "$gml_w" && : > "$gml_w.p"; } 2>/dev/null || { rm -f -- "$gml_w" "$gml_w.p"; return 1; }
+    fi
+    { mv -f -- "$gml_w" "$SE_CACHE_FILE.log.$gml_s" && mv -f -- "$gml_w.p" "$SE_CACHE_FILE.logpath.$gml_s"; } 2>/dev/null ||
+      { rm -f -- "$gml_w" "$gml_w.p"; return 1; }
+  fi
+  [ -s "$SE_CACHE_FILE.logpath.$gml_s" ] || return 0
+  printf '%s\n' "$gml_s"
 }
 
 # S3'S OUTAGE TEXT (Y:4343, Y:4475; contract 3.6): the store, the cause and the
