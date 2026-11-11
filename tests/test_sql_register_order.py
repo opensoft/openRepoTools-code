@@ -49,7 +49,7 @@ register); T248's AT-F14 (phase W); T233's AT-F5 group A (phase N, the act's
 client half, its off-primary and walk cases with no engine); T252's AT-F5
 group B (phase W);
 T232's AT-LR5 and AT-LR009 (phase N, `commit_write` called directly on this
-section's `Clone`, as here), whose rollback steps fail until T304; and, last,
+section's `Clone`, as here), whose rollback entry is T304's form; and, last,
 T243d's `register commit` path refusal (lane 1's follow-up 2: phase W, as
 T243's, but with no engine).
 """
@@ -2455,9 +2455,10 @@ def test_a_line_deriving_a_key_that_is_not_a_scope_exits_2_on_lr010_once(estates
 #     `switch_to_files` in one SERIALIZABLE transaction (R-merge6);
 #   * the stray entries' kinds, verbs and `git_commit`: lane 2's T221
 #     (`test_sql_register_schema.py` at line W3b's `8f645fce`).
-# THE ROLLBACK'S ENTRY IS WRITTEN NOWHERE YET: each step that needs one FAILS
-# UNTIL T304 (`lanes-index rollback`'s transaction) by its own assertion, and
-# sends nothing (`rollback_entry`).
+# THE ROLLBACK'S ENTRY is T304's form (`rollback_entry`), as line R's
+# `lanes-index rollback` builds it from merge14 on, and as T231's schema module
+# sends it: kind and verb `rollback`, one edit removing `lanes/STORE`, its one
+# `files` row not present, and `not_after`.
 # Readings: the lines' texts (a row's cells, `RENAMED`'s words) are this
 # module's, in the grammar `lanes-edit.sh` and `parse_log_line` read; only the
 # keys they derive are asserted. `rename-lane` and `archive-rows` need step 6's
@@ -2710,11 +2711,15 @@ def stray_revert(c: Clone) -> dict:
 
 def rollback_entry(c: Clone) -> dict:
     """The rollback's entry (S5's step 1; TP's AT-SET fixture: "`commit_write`
-    with a `rollback` entry, as REGISTER-WRITER"). No lane has written its
-    form yet, so the step FAILS UNTIL T304, `lanes-index rollback`'s
-    transaction, and sends nothing (lane 2's brief: never invent a form)."""
-    pytest.fail("FAILS UNTIL T304: no rollback entry form is written yet (lanes-index rollback's "
-                "transaction), so this step sends nothing", pytrace=False)
+    with a `rollback` entry, as REGISTER-WRITER"), in T304's form, line R's
+    `rollback_entry` in `lanes-index` (merge14 on): `journal` with kind and
+    verb `rollback`; one edit, the `remove` of `lanes/STORE`; its one `files`
+    row, not present; `not_after`. T231's schema module sends the same entry.
+    The operator sends it, as the cutover's."""
+    return {"journal": c.journal("rollback", "rollback", OPERATOR, message="rollback (T232)"),
+            "not_after": c.not_after(),
+            "edits": [{"ord": 1, "op": "remove", "path": STORE}],
+            "files": [{"path": STORE, "present": False}]}
 
 
 def act5(c: Clone, base: int, expect, act_id: str = ACT_ID) -> dict:
