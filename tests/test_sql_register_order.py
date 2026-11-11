@@ -2208,20 +2208,21 @@ def act_worlds(pg_cluster, tmp_path):
 
 def race(world: ActWorld, write: ActWrite, rival_lane: str) -> Tuple[Writer, Writer, List[str]]:
     """The act run to `write`, its commit call held while the rival commits
-    on `rival_lane`; then let go. Returns the act, the rival, and the held
-    write's ids."""
+    on `rival_lane`; then let go. Returns the act, which may still run (a
+    `lane-start` whose W8 committed waits for the holder), the rival, and
+    the held write's id, read from the shim's log, which logs a call before
+    its hold."""
     fifo = world.root / "hold.fifo"
     os.mkfifo(str(fifo))
     act = world.act(write, [{"mode": "hold", "match": write.match, "call": 1, "fifo": str(fifo)}])
     held = hold_point(fifo, act)
-    rival = world.rival(write.rival, rival_lane)
-    assert rival.code == 0, f"the rival exited {rival.code}: {rival.err[-400:]}"
-    held.close()
-    act.wait(240)
     calls = [c.get("stdin") or "" for c in act.commit_calls() if write.match in (c.get("stdin") or "")]
     ids = [m.group(1) for m in (re.search(r"commit_write\(\s*-?[0-9]+\s*,\s*'(" + UUID_RE + ")'", s)
                                 for s in calls[:1]) if m]
     assert ids, f"the held commit call carries no write id: {calls[:1]}"
+    rival = world.rival(write.rival, rival_lane)
+    assert rival.code == 0, f"the rival exited {rival.code}: {rival.err[-400:]}"
+    held.close()
     return act, rival, ids
 
 
@@ -2237,6 +2238,7 @@ def test_an_act_whose_scope_changed_before_its_commit_writes_nothing(act_worlds,
     world = act_worlds()
     w = ACT_WRITES[write]
     act, rival, ids = race(world, w, w.lane)
+    act.wait(240)
     k = max(int(r["seq"]) for r in world.c.json(
         f"SELECT coalesce(jsonb_agg(q), '[]'::jsonb) FROM (SELECT seq FROM {REGISTER}.journal "
         f"WHERE write_id = ANY(ARRAY{rival.write_ids()}::uuid[])) q;"))
@@ -2258,9 +2260,17 @@ def test_an_act_whose_scopes_held_commits(act_worlds, write):
     another lane's `PAUSED` (or row line), the held write commits."""
     world = act_worlds()
     w = ACT_WRITES[write]
-    _, _, ids = race(world, w, R_OTHER[w.lane])
-    assert all(world.c.value(f"SELECT count(*) FROM {REGISTER}.journal WHERE write_id = '{x}';") == "1"
-               for x in ids), f"[{write}] the held write {ids} did not commit"
+    act, _, ids = race(world, w, R_OTHER[w.lane])
+    deadline = time.monotonic() + 60
+    while True:
+        ended = act.ended is not None
+        if all(world.c.value(f"SELECT count(*) FROM {REGISTER}.journal WHERE write_id = '{x}';") == "1"
+               for x in ids):
+            break
+        assert not ended and time.monotonic() < deadline, (
+            f"[{write}] the held write {ids} did not commit; the act "
+            f"{'exited ' + str(act.code) if ended else 'still runs after 60 s'}: {act.err[-600:]}")
+        time.sleep(0.2)
 
 
 @CLIENT
