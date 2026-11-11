@@ -63,7 +63,7 @@ from conftest import WINDOWS_SKIP
 from sql_register_helpers import PSQL_SHIM, PSQL_SHIM_CONTROL, PSQL_SHIM_LOG
 from test_sql_register_render import (AUTHOR, DOT, EM, LOGIN_READER, LOGIN_WRITER, SCHEMA, SEED,
                                       SID_A1, SID_A2, TIP, WRITER, WS, Estate, _canonical_rows,
-                                      _sanitized_path, ensure_logins, fake_calls, fake_psql_dir,
+                                      ensure_logins, fake_calls, fake_psql_dir,
                                       flipped, git, import_to_primary, index_env, primary_config,
                                       projection_entry, rows, run_index, sql, workspace)
 
@@ -179,7 +179,7 @@ def test_the_storage_layer_entry_exits_69_when_the_database_is_unreachable(tmp_p
                           f"postgresql://{WRITER_LOGIN}@{host}:5432/lanes_t210",
                           f"postgresql://lanes_r_t210@{host}:5432/lanes_t210", passfile)
     env = index_env(tmp_path, conf, estate.home, **fake)
-    env["PATH"] = str(tmp_path / "fakebin") + os.pathsep + _sanitized_path()
+    env["PATH"] = str(tmp_path / "fakebin") + os.pathsep + _masked_path()
     before = estate.state()
 
     done = projection_entry(copy, env, estate.checkout, tmp_path, "managed-projection",

@@ -81,6 +81,7 @@ fake answers T106's `psql --version` probe itself since T203b.
 
 from __future__ import annotations
 
+import atexit
 import base64
 import hashlib
 import json
@@ -90,6 +91,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -739,13 +741,66 @@ def fake_calls(fake: dict) -> list:
     return [e for e in entries if e.get("kind") != "version"]
 
 
-def _sanitized_path() -> str:
-    """The caller's PATH without any directory that holds a `lanes-index` or
-    a `psql`: an installed indexer, or a real `psql`, is never what a case
-    runs."""
-    return os.pathsep.join(part for part in os.environ.get("PATH", "").split(os.pathsep)
-                           if part and not os.path.exists(os.path.join(part, "lanes-index"))
-                           and not os.path.exists(os.path.join(part, "psql")))
+#: What `_masked_path` keeps off a case's `PATH`: an installed `lanes-index`,
+#: a real `psql`, and every `pg_` client that `postgresql-16` puts beside it.
+_MASKED_NAMES = ("psql", "lanes-index")
+_MASKED_PREFIX = "pg_"
+#: `_masked_path`'s mirrors, built once per process: each masked directory's
+#: real path, to its mirror under the one `l2-pathmask-` directory.
+_PATH_MIRRORS: dict = {}
+_PATH_MIRROR_ROOT: list = []
+
+
+def _masked_path() -> str:
+    """The caller's PATH with every directory kept, in its place, and each one
+    that holds a masked name swapped for a mirror of it without them. A real
+    `psql` or `pg_` client, or an installed `lanes-index`, is never what a
+    case runs; but dropping the directory that holds one drops what sits
+    beside it. On a GitHub runner, `postgresql-16`'s client package puts
+    `psql` in `/usr/bin` together with `git` and `bash`, and `/bin` links
+    there, so a filter that drops the directory leaves a case no `git` or
+    `bash` to run. The mirror is a directory of symlinks, one per entry, each
+    to the original entry's absolute path, the masked names left out. It is
+    built once per process, keyed by the directory's real path, under one
+    temporary directory that an `atexit` handler removes. A directory that
+    holds no masked name passes through unchanged, so where no `PATH`
+    directory holds one, the PATH is what the old filter gave; empty entries
+    are left out, as that filter left them."""
+    kept = []
+    for part in os.environ.get("PATH", "").split(os.pathsep):
+        if not part:
+            continue
+        real = os.path.realpath(part)
+        if real not in _PATH_MIRRORS:
+            try:
+                names = os.listdir(real)
+            except OSError:
+                names = []
+            if not any(_is_masked(name) for name in names):
+                kept.append(part)
+                continue
+            _PATH_MIRRORS[real] = _path_mirror(real, names)
+        kept.append(_PATH_MIRRORS[real])
+    return os.pathsep.join(kept)
+
+
+def _is_masked(name: str) -> bool:
+    return name in _MASKED_NAMES or name.startswith(_MASKED_PREFIX)
+
+
+def _path_mirror(real: str, names: list) -> str:
+    """`real`'s mirror: a new directory under the one `l2-pathmask-`
+    directory, holding a symlink to each entry of `real` but the masked."""
+    if not _PATH_MIRROR_ROOT:
+        root = tempfile.mkdtemp(prefix="l2-pathmask-")
+        atexit.register(shutil.rmtree, root, ignore_errors=True)
+        _PATH_MIRROR_ROOT.append(root)
+    mirror = tempfile.mkdtemp(prefix=(os.path.basename(real) or "root") + "-",
+                              dir=_PATH_MIRROR_ROOT[0])
+    for name in names:
+        if not _is_masked(name):
+            os.symlink(os.path.join(real, name), os.path.join(mirror, name))
+    return mirror
 
 
 def workspace(root: Path, fakebin: Path) -> tuple:
@@ -774,7 +829,7 @@ def workspace(root: Path, fakebin: Path) -> tuple:
                CLAUDE_CONFIG_DIR=str(estate.home / ".claude"), LANES_WORKSTATION=WS,
                LANES_HOST="eagle", LANES_OS="linux", LANES_CONTAINER="none",
                LANES_IN_CONTAINER="0", LANES_NO_GITHUB="1", LANES_REPO=str(estate.checkout),
-               PATH=str(fakebin) + os.pathsep + _sanitized_path())
+               PATH=str(fakebin) + os.pathsep + _masked_path())
     return estate, env, source
 
 
