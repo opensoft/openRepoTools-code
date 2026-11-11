@@ -15791,12 +15791,13 @@ class _RollbackLostTurn(Exception):
 
 def rollback_deadline_s() -> int:
     """D7's deadline for this run, in whole seconds: `LANES_REGISTER_DEADLINE_S`
-    where it is set to a positive whole number, the seam that sets D7's
-    deadline for tests (design.md S1; the test plan's AT-D9 `rollback` row sets
-    it to 6), and otherwise `ROLLBACK_DEADLINE_S`, 30. Any other value is
-    ignored, and 30 kept."""
+    where it is a positive whole number of at most 18 digits, else 30 (Q73):
+    1 to 18 ASCII digits read in base 10, above 0, as lane 4's T415 reads it.
+    It is the seam that sets D7's deadline for tests (design.md S1; the test
+    plan's AT-D9 `rollback` row sets it to 6). Any other value, `0` included,
+    is ignored, and `ROLLBACK_DEADLINE_S`, 30, kept."""
     raw = os.environ.get("LANES_REGISTER_DEADLINE_S", "")
-    if re.fullmatch(r"[0-9]{1,6}", raw) and int(raw) > 0:
+    if re.fullmatch(r"[0-9]{1,18}", raw) and int(raw) > 0:
         return int(raw)
     return ROLLBACK_DEADLINE_S
 
