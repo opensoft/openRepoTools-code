@@ -2311,6 +2311,10 @@ T235_OUT_LINE = (f"NOTED — lane repoO-1, session {STORE_ONLY_UUID}@Eagle, "
 #: two reads each door form makes.
 T235_FENCE = "these published logs could not be read, so no lane of theirs is classed DORMANT:"
 T235_RUNS = (("lanes", "--all", "--closed"), ("history", "--all"))
+#: `cleanup`'s note of a failed second read at exit (`reg_fail`'s first line,
+#: by `note`): a mirror arm has said its failure in its mirror line, and must
+#: not say it again here (lane 3's review of T505, SHOULD-1, #165 6783977065).
+T235_READ_FAILED = re.compile(r"^lanes-edit: the register could not be read", re.M)
 
 
 def git_log_reads(log: Path, upto: re.Pattern | None = None) -> list:
@@ -2428,6 +2432,9 @@ def test_on_primary_known_lanes_remote_log_events_and_worktree_rows_read_the_sto
         `a,b`'s lines silently missing. The no-git check holds only up to
         that label, since the mirror read is a git read: the fake `git`'s
         log and the run's stderr are one file, appended in the order written.
+        The failure is said once: one mirror line, and no note at exit that
+        "the register could not be read" beyond any files mode's own run
+        prints (lane 3's review of T505, SHOULD-1, #165 6783977065).
 
     The register is the estate's, brought to primary on the `pg` fixture's
     database by AT-LR006's route (`RealRegister`), with the store-only files
@@ -2612,6 +2619,14 @@ def test_on_primary_known_lanes_remote_log_events_and_worktree_rows_read_the_sto
                                stderr[-1500:])
             assert MIRROR_LINE.search(stderr), (case, argv, "no `read: mirror at` line",
                                                 stderr[-1500:])
+            # SAID ONCE (lane 3's review of T505, SHOULD-1, #165 6783977065): the mirror line
+            # once, and no second report at exit, `cleanup`'s "the register could not be read".
+            assert len(MIRROR_LINE.findall(stderr)) == 1, (
+                case, argv, "the mirror line, once", MIRROR_LINE.findall(stderr), stderr[-1500:])
+            assert (len(T235_READ_FAILED.findall(stderr))
+                    == len(T235_READ_FAILED.findall(mirror.stderr))), (
+                case, argv, "the failed read said twice: a second note at exit",
+                T235_READ_FAILED.findall(stderr), stderr[-1500:])
             assert not MIRROR_LINE.search(result.stdout), (case, argv, result.stdout)
             assert result.returncode == mirror.returncode, (
                 case, argv, result.returncode, mirror.returncode, stderr[-1500:])
