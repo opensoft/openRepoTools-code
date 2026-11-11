@@ -313,12 +313,18 @@
 #      which on primary is a second binding, in every case; its code where it
 #      makes a new lane's row, or binds under `--bind`; and `request-handoff`'s
 #      69, 75 and 3. A resume's refused `start-record` is a note, and the
-#      launch goes on. Under a seq base that note, after any code but 3,
-#      prints no rerun of its own and names `lane-start --no-launch` with
-#      this run's own arguments, run in the launched session's window as its
-#      first act (lane 3's Q39 and Q41, #165 6780753157): its lane words,
-#      `--dir`, `--estate`, `--agent` and `--bind`, as typed, and no other
-#      option, nor `--` and what follows it (Q64, #165 6807881675).
+#      launch goes on; so is a refused W2 to W6, which run as their own
+#      verbs where no transcript uuid is known. Under a seq base that note,
+#      after any code but 3, prints no rerun of its own and names `lane-start
+#      --no-launch`, run in the launched session's window as its first act
+#      (lane 3's Q39 and Q41, #165 6780753157). With a uuid known, that act
+#      has this run's own arguments: its lane words, `--dir`, `--estate`,
+#      `--agent` and `--bind`, as typed, and no other option, nor `--` and
+#      what follows it (Q64, #165 6807881675). With none, it is Amendment
+#      7(b)'s line, the lane and the `--agent` it was given, which the
+#      deferred-record note prints too (Q65, #165 6808141050). Where the act
+#      dies instead, on a new row's code but 3 and on `request-handoff`'s 2,
+#      it says to run `lane-start` again from its start (Q63, Q66).
 #
 # ENVIRONMENT
 #   PROJECTS_ROOT        default ~/projects
@@ -1447,11 +1453,12 @@ LS_Q4="No command is printed for it here, since one run by hand without this lau
 # as its first act: the act without its launch (`--no-launch`, the first act
 # INSIDE a running session). A 3 keeps the writer's rerun (G3), in `LS_D8`.
 # A new row's arms die, and `LS_Q4`'s "from its start" stands for them, a
-# 69 or 75 included. Under `@files` today's texts stand.
+# 69 or 75 included, as it does for W8's `request-handoff` 2 (lane 3's Q63
+# and Q66, #165 6808141050). Under `@files` today's texts stand.
 #
 # "THE SAME ARGUMENTS" ARE THE ACT'S OWN (lane 3's Q64, #165 6807881675):
 # the run's lane words, `--dir`, `--estate`, `--agent` and `--bind`, as
-# typed. Amendment 7(b)'s first act, `ls_defer_agent`'s line below, is the
+# typed. Amendment 7(b)'s first act, `ls_defer_line` below, is the
 # precedent. The line is built from `LS_ARGV`, each word kept one word by
 # `quoted`, so it reads back as typed. Every other option is dropped with
 # its value, in either spelling, since each shapes only the launch or
@@ -1474,9 +1481,25 @@ LS_Q4="No command is printed for it here, since one run by hand without this lau
 # The patterns are quoted so that the hygiene test's reading of option arms
 # (`_value_flag_arms`, `tests/test_repo_hygiene.py`) reads the parser's,
 # not these: unquoted, this walk's arm stood in for seven of them.
+#
+# BUT WHERE NO TRANSCRIPT UUID IS KNOWN, THE ACT IS AMENDMENT 7(b)'s LINE
+# (lane 3's Q65, #165 6808141050). There W2 to W6 run as their own verbs,
+# and the same run prints 7(b)'s deferred-record note, whose first act is
+# `$prog --no-launch $self_args` with the `--agent` it was given. Two lines
+# would invite two runs, and a second run writes anew (Y:5182). So the
+# line here is `ls_defer_line`, the one that note prints, and the two notes
+# name one command. Where a uuid is known, 7(b)'s note does not print, and
+# the walk below stands (Q64). `ls_defer_line` is defined here, above both
+# users; `self_args`, `AGENT` and `lane_sid_known` are set before either.
+ls_defer_line() {
+  local ag=""
+  if (( AGENT_EXPLICIT )); then ag=" $(quoted --agent "$AGENT")"; fi
+  printf '%s --no-launch %s%s' "$prog" "$self_args" "$ag"
+}
 ls_q41_line() {
   local a val=0 skip=0
   local -a nl
+  if [ "${lane_sid_known:-}" = 0 ]; then ls_defer_line; return 0; fi
   nl=(--no-launch)
   for a in ${LS_ARGV[@]+"${LS_ARGV[@]}"}; do
     if (( skip )); then skip=0; continue; fi
@@ -4934,11 +4957,12 @@ fi
 # this one is the same agent's, so it is written down, quoted like every other
 # command this file prints. It goes AFTER the lane's own arguments, so the
 # `--no-launch <repo> <n>` a reader looks for is still one run of words.
-ls_defer_agent=""
-if (( AGENT_EXPLICIT )); then ls_defer_agent=" $(quoted --agent "$AGENT")"; fi
+# The line is `ls_defer_line`'s, above, which W2 to W6's notes print too
+# where no uuid is known, so the two notes name one command (lane 3's Q65,
+# #165 6808141050).
 if (( ! lane_sid_known )); then
   note "no transcript uuid is knowable at this instant (the row's stamp says '${lane_sid:-unknown}'), so the lane's $lane_verb log line is NOT written: Amendment 7(b) makes that field a transcript uuid and only that, and the log is append-only. Nor is the handoff's Rule 3 stamp. BOTH are written by the first act that knows the uuid, which is this session's own:"
-  note "  $prog --no-launch $self_args$ls_defer_agent"
+  note "  $(ls_defer_line)"
 else
   # FEATURE 007, T428 - THE ONE CALL: W1, or W2 to W6, with W7, as
   # `start-record`, carrying the union of their expectations (Y:5648-5656)
