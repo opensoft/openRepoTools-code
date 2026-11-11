@@ -321,6 +321,8 @@ class Estate:
         self.origin = root / "origin.git"
         self.wip = home / "projects" / "wip"
         self.wip.parent.mkdir(parents=True)
+        #: W, the workspace checkout (Amendment 9(a)), a clone of its own.
+        self.w = root / "W"
         (root / "t").mkdir()
         self.cache = root / "cache" / "se"
         self.cache.parent.mkdir()
@@ -333,6 +335,7 @@ class Estate:
         env.update(HOME=str(home), XDG_STATE_HOME=str(root / "state"),
                    XDG_CONFIG_HOME=str(root / "config"), TMPDIR=str(root / "t"),
                    LANES_WORKSTATION="Eagle", LANES_NO_GITHUB="1", LANES_REPO=str(self.wip),
+                   LANES_WORKSPACE_ROOT=str(self.w),
                    T215_REAL_GIT=shutil.which("git"), T215_GIT_LOG=str(self.git_log),
                    FAKE_PSQL_LOG=str(self.psql_log), FAKE_PSQL_ANSWERS=str(self.answers),
                    GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid",
@@ -346,14 +349,20 @@ class Estate:
         _fast_import(self.origin, origin_messages, env, register.replace("{session}", self.session))
         subprocess.run([git, "clone", "-q", str(self.origin), str(self.wip)], check=True,
                        env=env, capture_output=True)
-        # THE WORKSPACE, as `test_lanes_index.py` names it (Amendment 9(a)):
-        # `lanes-edit.sh workspace-root` answers with `path:`, the checkout
-        # `outage declare` fetches in (lane 1's reading 1).
-        # The checkout is whatever `lanes-edit.sh workspace-root` answers, with
-        # `workspace.yaml` as its default (lane 1, #165 comment 6755305741, item 4).
+        # THE WORKSPACE, W (Amendment 9(a)): whatever `lanes-edit.sh
+        # workspace-root` answers, the checkout `outage declare` fetches in
+        # (lane 1's reading 1; #165 comment 6755305741, item 4), and whose
+        # `origin/main` `status` reads. It is a clone of its own, never the
+        # lane's checkout that `LANES_REPO` names: `import`, and `cutover
+        # --import` through it, refuse a `LANES_REPO` that names W (contract
+        # 4.18:987; lane 1's group 6, #165 6807494089). `LANES_WORKSPACE_ROOT`,
+        # `lanes-edit.sh`'s test seam, names it, and `workspace.yaml`'s
+        # `path:` names the same W.
+        subprocess.run([git, "clone", "-q", str(self.origin), str(self.w)], check=True,
+                       env=env, capture_output=True)
         (home / ".agents").mkdir()
         (home / ".agents" / "workspace.yaml").write_text(
-            f"repository: {self.origin}\npath: {self.wip}\n", encoding="utf-8")
+            f"repository: {self.origin}\npath: {self.w}\n", encoding="utf-8")
 
     # -------------------------------------------------------------- the estate
     def grow(self, messages: list) -> None:
@@ -897,8 +906,9 @@ def test_outage_declare_takes_mirror_seq_from_a_fetch_or_the_flag_and_refuses_wi
     - with the fetch failing, `--mirror-seq 7` writes `mirror-seq=7`;
     - with the fetch failing and no `--mirror-seq`, it exits 2 and writes no
       file.
-    The checkout fetched is the workspace's, as `lanes-edit.sh
-    workspace-root` names it (lane 1's reading 1, #165 comment 6754714549)."""
+    The checkout fetched is the workspace's, W, as `lanes-edit.sh
+    workspace-root` names it (lane 1's reading 1, #165 comment 6754714549),
+    so the fetch is made to fail in W (T215f)."""
     estate = Estate(tmp_path, [_render(1), _render(2)])
     estate.grow([_render(3)])
     fetched = estate.config(name="conf-fetch")
@@ -909,7 +919,7 @@ def test_outage_declare_takes_mirror_seq_from_a_fetch_or_the_flag_and_refuses_wi
     assert "mirror-seq=3\n" in text, f"from a fetch: {text}"
     assert "kind=word\n" in text and f"database={LABEL}\n" in text and f"until={UNTIL}\n" in text
     assert estate.psql_log.exists(), "the probe was not sent"
-    subprocess.run([estate.env["T215_REAL_GIT"], "-C", str(estate.wip), "remote", "set-url",
+    subprocess.run([estate.env["T215_REAL_GIT"], "-C", str(estate.w), "remote", "set-url",
                     "origin", str(tmp_path / "no-such-origin.git")], check=True,
                    env=estate.env)
     flagged = estate.config(name="conf-flag")
