@@ -1060,11 +1060,14 @@ def _candidate_log(lane: str, k: int) -> str:
 
 
 def _paused(lane: str, k: int) -> str:
-    """A swap's PAUSED line, in the payload `swapped_candidates` reads
-    (`lanes-edit.sh:9519` at the base): `swap; window ...; workstation ...;
-    dir ...; profile ...; agent ...; transcript ...`."""
+    """A swap's PAUSED line, its payload after the arrow that follows the
+    object (Amendment 7's grammar: object, then the arrow and the payload,
+    then the em dash and the free text), which `swapped_candidates` reads as
+    the line's payload: `swap; window ...; workstation ...; dir ...; profile
+    ...; agent ...; transcript ...`. After the em dash it is free text, which
+    `swapped` does not read."""
     return (f"PAUSED {EM} lane {lane}, session {_sid(k)}@{WS}, 2026-11-10T0{k}:00:00Z, "
-            f"lane:{lane} {EM} swap; window w{k}; workstation {WS}; dir /work/{lane}; "
+            f"lane:{lane} {ARROW} swap; window w{k}; workstation {WS}; dir /work/{lane}; "
             f"profile p{k}; agent a{k}; transcript t{k}")
 
 
