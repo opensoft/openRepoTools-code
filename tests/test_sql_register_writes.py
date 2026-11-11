@@ -677,6 +677,14 @@ def test_an_image_holding_a_cr_or_a_nul_is_refused_with_2_and_nothing_sent(tmp_p
 # `<W>-lanes/repoA-1`. Every check but the id's own is met, so each id meets
 # its own refusal and no other: `<c>` is made first, a clone of origin, but
 # for `[missing-checkout]`. No engine; fails until lane 4's T415 takes Q35.
+#
+# Lane 3's batch c, Q67 (#165 6807881675; B15 text 5 for B14 tasks:1149 and
+# text 7 for F13d:513), adds the two other refusals the primary branch makes
+# before its claim: a pending hand edit of a rendered file in `<c>`
+# (`pw_hand_edit_refuse`, `[hand-edit]`) and no author identity in `<c>`
+# (`pw_author_read`, `[no-author]`). Each is 64 for `request-handoff`, by
+# `pw_pre_rc`. They fail until lane 4's T415 takes Q67; the first four ids
+# pass on lane 4's T415 `15af6b9c`.
 
 #: The arguments `WRITE_VERBS` gives `request-handoff`, and its `<lane>`.
 REQUEST_HANDOFF_ARGV = WRITE_VERBS["request-handoff"][0]
@@ -695,7 +703,34 @@ REQUEST_HANDOFF_64 = {
     # B14 tasks:1142: "naming `lanes-edit.sh lane-checkout <lane> --create`".
     "missing-checkout": (REQUEST_HANDOFF_ARGV, "repoA-2", {}, False,
                          f"lane-checkout {REQUEST_HANDOFF_LANE} --create"),
+    # Q67, `pw_hand_edit_refuse`: Y:2459's refusal names each file.
+    "hand-edit": (REQUEST_HANDOFF_ARGV, "repoA-2", {}, True, "lanes/LANES.md"),
+    # Q67, `pw_author_read`: "no author identity in `<c>`" (B15 text 5).
+    "no-author": (REQUEST_HANDOFF_ARGV, "repoA-2", {}, True, "author identity"),
 }
+
+
+def _hand_edit_in_c(ws: PrimaryWorkstation, checkout: Path) -> None:
+    """A pending hand edit of a rendered file in `<c>`: a line appended to
+    its `lanes/LANES.md`, not committed (B14 tasks:1151, "looked for in the
+    lane checkout")."""
+    with open(checkout / "lanes" / "LANES.md", "a", encoding="utf-8") as handle:
+        handle.write("a hand edit in the lane's checkout, never committed\n")
+
+
+def _no_author_in_c(ws: PrimaryWorkstation, checkout: Path) -> None:
+    """No author identity in `<c>`: the run loses the estate's `GIT_AUTHOR_*`
+    (and any `EMAIL`), and `<c>` sets `user.useConfigOnly`, so `git -C <c>
+    var GIT_AUTHOR_IDENT` gives none, whatever the host's name; the global
+    and system configurations are already empty (`git_env`)."""
+    for name in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "EMAIL"):
+        ws.env.pop(name, None)
+    git(checkout, "config", "user.useConfigOnly", "true", env=ws.estate.env)
+
+
+#: What a `REQUEST_HANDOFF_64` id does to `<c>` before its run, where it does
+#: anything.
+REQUEST_HANDOFF_C_PREP = {"hand-edit": _hand_edit_in_c, "no-author": _no_author_in_c}
 
 
 @pytest.mark.parametrize("refusal", list(REQUEST_HANDOFF_64))
@@ -703,30 +738,36 @@ def test_request_handoff_refuses_64_never_2_on_primary(tmp_path, refusal):
     """Lane 3's batch 8, Q35 (B15 text 5 for B14 tasks:1149): on primary,
     `request-handoff` refuses 64, never 2, for its missing lane
     (`[missing-lane]`, no `<lane>` at all), `LANES_NO_GIT=1` (`[no-git]`),
-    `pw_lane_given`'s refusal (`[lane-given]`, `LANES_LANE` unset) and a
-    missing `<c>`, the lane's own checkout (`[missing-checkout]`), since
-    `lane` reads a 2 from it as "lane <L> is still bound elsewhere". Each is
-    a refusal before the claim: stderr names its cause, the fake's log holds
-    no call that carries a request, git is as it was, and no clone is made.
-    The other writer verbs' `LANES_NO_GIT=1` refusal stays 2 (B14
-    tasks:1149), and is not this case's. It fails until lane 4's T415 takes
-    Q35; `[missing-lane]` passes before it, since main's arm already refuses
-    a missing lane 64, and holds that code against a 2."""
+    `pw_lane_given`'s refusal (`[lane-given]`, `LANES_LANE` unset), a
+    missing `<c>`, the lane's own checkout (`[missing-checkout]`), and, by
+    lane 3's batch c, Q67 (B15 text 7 for F13d:513), a pending hand edit of
+    a rendered file in `<c>` (`[hand-edit]`) and no author identity in
+    `<c>` (`[no-author]`), since `lane` reads a 2 from it as "lane <L> is
+    still bound elsewhere". Each is a refusal before the claim: stderr names
+    its cause, the fake's log holds no call that carries a request, git is
+    as it was, and no clone is made. The other writer verbs' `LANES_NO_GIT=1`
+    refusal stays 2 (B14 tasks:1149), and is not this case's. Its first four
+    ids fail until lane 4's T415 takes Q35, and pass on T415 `15af6b9c`;
+    `[missing-lane]` passes before it, since main's arm already refuses a
+    missing lane 64, and holds that code against a 2. `[hand-edit]` and
+    `[no-author]` fail until lane 4's T415 takes Q67."""
     argv, lane, extra, with_checkout, names = REQUEST_HANDOFF_64[refusal]
     ws = PrimaryWorkstation(tmp_path,
                             checkouts=(REQUEST_HANDOFF_LANE,) if with_checkout else ())
     fake = fake_psql_dir(ws.fakebin, answers=unreachable_answers(ws.dead))
     ws.env.update(fake)
     checkout = ws.lane_checkout(REQUEST_HANDOFF_LANE)
+    if refusal in REQUEST_HANDOFF_C_PREP:
+        REQUEST_HANDOFF_C_PREP[refusal](ws, checkout)
     before = ws.git_state()
     proc = ws.run(argv, lane, **extra)
     assert proc.returncode != 2, (
         f"request-handoff on primary refused [{refusal}] with 2, which `lane` reads as 'lane "
-        f"{REQUEST_HANDOFF_LANE} is still bound elsewhere' (Q35; lane 4's T415): "
+        f"{REQUEST_HANDOFF_LANE} is still bound elsewhere' (Q35, Q67; lane 4's T415): "
         f"{proc.stderr[-800:]}")
     assert proc.returncode == 64, (
-        f"request-handoff on primary exited {proc.returncode} for [{refusal}], not 64 (Q35; "
-        f"lane 4's T415): {proc.stderr[-800:]}")
+        f"request-handoff on primary exited {proc.returncode} for [{refusal}], not 64 (Q35, "
+        f"Q67; lane 4's T415): {proc.stderr[-800:]}")
     assert names in proc.stderr, f"stderr does not name {names!r}: {proc.stderr!r}"
     assert fake_calls(fake) == [], f"the refusal reached SQL: {fake_calls(fake)}"
     assert ws.git_state() == before, "git changed: the refusal wrote"
