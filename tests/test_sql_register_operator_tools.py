@@ -984,8 +984,11 @@ def test_bootstrap_prints_password_file_lines_and_stores_no_secret(tmp_path, req
     files_before = {p for p in bench.home.rglob("*")} | {p for p in bench.wip.rglob("*")}
     proc = bench.bootstrap("--admin-service", ADMIN, *BOOTSTRAP_INPUTS, pty_run=True)
     assert proc.returncode == 0, f"the bootstrap under a pty failed:\n{_said(proc)}"
-    # One password-file line, the indexer's: host:port:database:user:password.
-    lines = [line for line in proc.stdout.splitlines() if re.fullmatch(r"[^:\s]+:\d+:[^:]+:[^:]+:\S+", line)]
+    # One password-file line, the indexer's: host:port:database:user:password,
+    # libpq's form, where the host and the port may each be `*` (lanes-index
+    # prints `*:*:<database>:lanes_indexer:<password>`, "at any host and port").
+    lines = [line for line in proc.stdout.splitlines()
+             if re.fullmatch(r"[^:\s]+:(?:\d+|\*):[^:]+:[^:]+:\S+", line)]
     assert len(lines) == 1 and ":lanes_indexer:" in lines[0], _said(proc)
     secret = lines[0].rsplit(":", 1)[1]
     # The lanes-index.conf lines: register_label= the --label, and no secret.
