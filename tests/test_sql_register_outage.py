@@ -658,7 +658,13 @@ def test_under_a_declaration_a_silent_database_is_capped_and_the_mirror_answers_
     follows the read's end (rule 3); the cut, `T0 + 3.65 s`, and the start
     line, `T0 + 3.75 s`, are each asserted at twice their value (rule 2) and
     recorded with their margins; and the hook answers from the mirror in
-    under 4.5 s, never killed (rule 1). `T0` is the hook's start."""
+    under 4.5 s, never killed (rule 1). `T0` is the hook's start.
+
+    Lane 3's E1 ruling (#165 6807694145) is this case's reading: under an
+    unexpired declaration that names this database, a direct read cut at
+    the declared cap, `T0 + 3.65 s`, ends 69 with `.outage`, so the guard
+    starts the mirror path by `T0 + 3.75 s`; T507's writer A handles the
+    cut. It fails until T507 (L5-A3, L5-A5)."""
     estate = Estate(tmp_path, [_render(1), _render(2), _render(3)])
     fields = estate.declared(estate.config(), mirror_seq=3)
     login = f"t215_{uuid.uuid4().hex[:12]}"
@@ -678,11 +684,15 @@ def test_under_a_declaration_a_silent_database_is_capped_and_the_mirror_answers_
     assert not result["killed"], "the hook was killed at 5 s, and the prompt passed"
     assert result["elapsed"] < BUDGET, f"the hook took {result['elapsed']:.2f} s"
     _record("hook end to end", result["elapsed"], BUDGET, "timing rule 1")
+    # The wrapper writes its log at the first call, so a guard that made no
+    # direct read leaves none; that is the case's own "no direct read"
+    # (T215g; line AN11b's U4), never a FileNotFoundError.
+    log = timed / "psql-timing.log"
     timing = [json.loads(line) for line in
-              (timed / "psql-timing.log").read_text(encoding="utf-8").splitlines()]
+              log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
     starts = [t for t in timing if "start" in t]
     ends = {t["call"]: t["end"] for t in timing if "end" in t}
-    assert starts, "the guard made no direct read"
+    assert starts, f"the guard made no direct read: {result['out'][-600:]}"
     read = starts[0]
     assert read["call"] in ends, "the direct read never ended"
     cut = ends[read["call"]] - result["t0"]
