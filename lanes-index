@@ -10730,7 +10730,13 @@ def register_psql_end(failure: PsqlFailed) -> str:
 
 #: The paths a write may stage (contract §3.3; Y:5060, the seam's path check,
 #: again): the render set, as `journal_edits`' and `files`' CHECKs name it,
-#: less `lanes/STORE`, which only the two operator entries edit (D24).
+#: less `lanes/STORE`, which only the two operator entries edit (D24). Like
+#: those CHECKs, whose `[^/]+` admits every character but `/`, the pattern
+#: takes any character in a file name. A path holding a control character,
+#: U+0085, U+2028 or U+2029 is refused beside it, by
+#: `register_path_unrenderable` (`_RENDER_CONTROL_RE`), and not by narrowing
+#: the pattern, so the pattern stays the CHECKs' mirror and the refusal can say
+#: why (line R, opensoft/openRepoTools#165 6783185080).
 REGISTER_WRITE_PATH_RE = re.compile(
     r"lanes/(LANES\.md|aliases\.tsv|archive/[^/]+\.md|log/[^/]+\.md)")
 #: Where a rename may move a file: `journal_edits.to_path`'s CHECK.
@@ -11008,6 +11014,23 @@ def register_files_rows(changes: dict, images: dict) -> bytes:
     return "".join(rows).encode("utf-8")
 
 
+def register_path_unrenderable(path: str, where: str) -> str | None:
+    """Why `path`, staged or renamed in an attempt directory, cannot be
+    written, or None (line R, lane 3's assignment, opensoft/openRepoTools#165
+    6783185080; the characters, lane 5's NIT 3, 6779760684): it holds a
+    character `_RENDER_CONTROL_RE` matches, a control character, U+0085,
+    U+2028 or U+2029. No render of the register can write such a path as one
+    `file=` row, and `register_write_images` and `register read` refuse it, so
+    a write that stored it would leave a seq that nothing could render. The
+    path is named with `!r`, so each such character shows as an escape.
+    `where` opens the refusal, and names the file and the path's place in it."""
+    if not _RENDER_CONTROL_RE.search(path):
+        return None
+    return (f"{where} {path!r}, which holds a control character, U+0085, U+2028 or U+2029, "
+            f"so no render of the register can write its image as one file= row, and the "
+            f"register stores no such path")
+
+
 #: GIT'S SCISSORS LINE: the comment string, one space and wt-status.c's
 #: `cut_line`, alone on its line, as `git commit --cleanup=scissors` writes it
 #: and as `wt_status_locate_end` finds it at the message's start or after any
@@ -11128,6 +11151,9 @@ def read_attempt_dir(directory: str, ident: dict, env_act: dict | None) -> dict:
             raise RegisterAttemptRefused(
                 f"changes.tsv stages {path!r}, which is outside the render set: lanes/LANES.md, "
                 f"lanes/aliases.tsv, lanes/archive/*.md and lanes/log/<lane>.md")
+        unrenderable = register_path_unrenderable(path, "changes.tsv stages")
+        if unrenderable:
+            raise RegisterAttemptRefused(unrenderable)
         if path in changes:
             raise RegisterAttemptRefused(f"changes.tsv names {path} twice")
         if not _REGISTER_BLOB_RE.fullmatch(base) or not _REGISTER_BLOB_RE.fullmatch(new):
@@ -11148,6 +11174,11 @@ def read_attempt_dir(directory: str, ident: dict, env_act: dict | None) -> dict:
             if len(parts) != 2:
                 raise RegisterAttemptRefused(f"renames.tsv line {number} is not <from> TAB <to>")
             frm, to = parts
+            for side, moved in (("<from>", frm), ("<to>", to)):
+                unrenderable = register_path_unrenderable(
+                    moved, f"renames.tsv line {number}'s {side} is")
+                if unrenderable:
+                    raise RegisterAttemptRefused(unrenderable)
             if changes.get(frm, ("",))[0] != "D" or changes.get(to, ("",))[0] != "A":
                 raise RegisterAttemptRefused(f"renames.tsv line {number}: {frm} must be a D line "
                                              f"and {to} an A line in changes.tsv")
