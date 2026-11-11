@@ -1935,10 +1935,10 @@ _RENDER_SET_RE = re.compile(r"lanes/(?:LANES\.md|aliases\.tsv|(?:archive|log)/[^
 #: does not. An image whose path holds one cannot be a `file=` or `image=` row
 #: of one line and three fields, and ends 69 where it would be written (lane
 #: 3's review of T301, SHOULD-2; the three since lane 5's NIT 3,
-#: opensoft/openRepoTools#165 6779760684, as T111's `_SNAPSHOT_LINE_RE`
-#: refuses them). Only an image at `k` is refused for it, never a row the
-#: replay passes over. The one pattern for every image path: the images'
-#: writer, `register read`'s rows and the import's paths.
+#: opensoft/openRepoTools#165 6779760684, which T111's `workstation=` and
+#: `file=` checks refuse by it too). Only an image at `k` is refused for it,
+#: never a row the replay passes over. The one pattern for every image path:
+#: the images' writer, `register read`'s rows and the import's paths.
 _RENDER_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
 
 #: The columns `register_images` takes, in each row's order: `journal`'s, and
@@ -3236,14 +3236,6 @@ _SNAPSHOT_ARGS_SHA_RE = re.compile(r"[0-9a-f]{64}")
 #: generation the snapshot prints, and so the ones a caller passes back.
 _SNAPSHOT_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
-#: What a `workstation=` value or a `file=` path may not hold, so that its row
-#: is one line to every reader: the C0 controls and DEL, which
-#: `_RENDER_CONTROL_RE` names, and U+0085, U+2028 and U+2029, which Python's
-#: `str.splitlines()` splits on with the C0 ones (U+001C to U+001E among
-#: them) and which bash's `read` does not. Lane 1's review of T111, #165
-#: 6775233959, NIT 3.
-_SNAPSHOT_LINE_RE = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
-
 #: The variables that name a repository's location, which git reads before
 #: `-C` (git rev-parse --local-env-vars, with the config ones): dropped before
 #: the checkout is read and before the scratch tree is built, as T112 drops
@@ -3498,18 +3490,24 @@ def _register_snapshot_digests(files: list, k: int) -> dict:
             if sha256 is not None and register_render_path(path)}
 
 
-def _register_snapshot_images(store, answers: list, k: int, start) -> dict:
+def _register_snapshot_images(store, answers: list, k: int, start, *,
+                              first_request_at: float | None = None) -> dict:
     """The render set's images at `k`, `{path: bytes}`, each proven, from the
     four render answers of the snapshot's own request
     (`register_snapshot_queries`' item 8) and the cache's `start`:
     - with `start` at `c` <= `k`, and the entries read being `c+1` to `k`,
       `register_images(..., start=start)`;
     - where that raises `RenderRefused`, or `c` is above `k`: A MISS. One
-      more request, `_register_render_rows(store, k, None, "snapshot")`, the
-      full replay from the latest import, as `register_render_read` makes it
-      on a miss, with D9's snapshot row. Its images must equal the first
-      request's digests at `k`, path for path, since seq `k` may have been
-      reused between the two (lane 3's ruling, #165 6754819099, choice 6);
+      more request, `_register_render_rows(store, k, None, "snapshot",
+      first_request_at=first_request_at)`, the full replay from the latest
+      import, as `register_render_read` makes it on a miss, with D9's snapshot
+      row. Its images must equal the first request's digests at `k`, path for
+      path, since seq `k` may have been reused between the two (lane 3's
+      ruling, #165 6754819099, choice 6). `first_request_at` is the
+      `time.monotonic()` reading `register snapshot` took right before its
+      first request: `PostgresStore.bounds` cuts this request to what is left
+      of `S` from then, and with nothing left sends nothing and raises
+      `PsqlFailed` (lane 1's rulings, #165 6783051626);
     - without `start`, the request already read the full rows, and they are
       replayed with no second request.
     A journal with no import, a `k` before the latest import, rows that do
@@ -3541,7 +3539,8 @@ def _register_snapshot_images(store, answers: list, k: int, start) -> dict:
             return register_images(journal, edits, files, start=start)
         except RenderRefused:
             pass        # A MISS: the files are fetched whole, below
-    images = register_images(*_register_render_rows(store, k, None, "snapshot"))
+    images = register_images(*_register_render_rows(store, k, None, "snapshot",
+                                                    first_request_at=first_request_at))
     want = _register_snapshot_digests(files, k)
     got = {path: hashlib.sha256(data).hexdigest() for path, data in images.items()}
     if got != want:
@@ -3740,6 +3739,7 @@ def _register_snapshot(store, opts: dict) -> int:
     queries = register_snapshot_queries(write_id=look_up, images=images_wanted, at=at,
                                         since=start[0] if start else None,
                                         entry_blob=tree_dir is not None)
+    first_request_at = time.monotonic()
     answers = store._query_many(queries, snapshot=True, row="snapshot")
     if len(answers) != len(queries):
         raise SnapshotUnavailable(f"psql answered {len(answers)} of the {len(queries)} reads "
@@ -3791,11 +3791,11 @@ def _register_snapshot(store, opts: dict) -> int:
             # The entry's `workstation=` and `utc=` (draft 4.15), each one
             # line. The journal's CHECK refuses only an empty workstation, so
             # a name holding a control character or any other line break
-            # (`_SNAPSHOT_LINE_RE`) can be stored; it cannot be one line, and
+            # (`_RENDER_CONTROL_RE`) can be stored; it cannot be one line, and
             # is a failed read, as a `file=` path holding one is.
             utc = _render_int(utc, "journal.utc")
             if (not isinstance(workstation, str) or not workstation
-                    or _SNAPSHOT_LINE_RE.search(workstation)):
+                    or _RENDER_CONTROL_RE.search(workstation)):
                 raise SnapshotUnavailable(f"seq {seq}'s journal.workstation {workstation!r} "
                                           f"cannot be a workstation= line")
             found = [seq, workstation, utc, []]
@@ -3805,7 +3805,7 @@ def _register_snapshot(store, opts: dict) -> int:
                                               f"read")
                 path, present, sha256 = row
                 present = _render_bool(present, "journal_files.present")
-                if (not isinstance(path, str) or _SNAPSHOT_LINE_RE.search(path)
+                if (not isinstance(path, str) or _RENDER_CONTROL_RE.search(path)
                         or (present and not (isinstance(sha256, str)
                                              and _IMAGE_DIGEST_RE.fullmatch(sha256)))):
                     raise SnapshotUnavailable(f"seq {seq}'s journal_files row {path!r} "
@@ -3832,7 +3832,8 @@ def _register_snapshot(store, opts: dict) -> int:
     repos_blob = None
     out_rows = None
     if found is None and images_wanted:
-        images = _register_snapshot_images(store, answers[-4:], n, start)
+        images = _register_snapshot_images(store, answers[-4:], n, start,
+                                           first_request_at=first_request_at)
         if tree_dir is not None:
             entry_blob = None
             if at is not None:
