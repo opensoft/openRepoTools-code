@@ -98,7 +98,7 @@ import sql_register_helpers as helpers
 from conftest import REPO
 from test_lane_start_claude_current import FAKE_CLAUDE_CURRENT, Sandbox, _write
 from test_lanes_index import (UUID_A1, UUID_A1B, UUID_A2, UUID_M1, Estate,
-                              estate)
+                              estate, load_indexer)
 
 __all__ = ["estate"]  # the fixture, imported so that pytest finds it here
 
@@ -1340,6 +1340,18 @@ def _lines(text: str) -> list:
     return body.split("\n") if body else []
 
 
+_LANE1_INDEX: list = []
+
+
+def lane1_index():
+    """The checkout's `lanes-index` as a module (test_lanes_index's
+    `load_indexer`), loaded once: lane 1's derivation helpers, which
+    `RealRegister` derives its entries with (T217l)."""
+    if not _LANE1_INDEX:
+        _LANE1_INDEX.append(load_indexer())
+    return _LANE1_INDEX[0]
+
+
 class RealRegister:
     """A real register on the `pg` fixture's database (T205), brought to
     `primary` with the marker `present` by the documented functions, as
@@ -1347,7 +1359,8 @@ class RealRegister:
     login, `commit_write` with an `import` entry holding the render set, then
     a `cutover` entry, which writes `lanes/STORE` alone (ruling 1), then
     `record_marker`. Each `write(...)` is one more committed `write` entry, a
-    seq more. A copy of the checkout's `lanes-index` with `RENDER_GIT_HALF`
+    seq more. The import and each write are the entries lane 1's own helpers
+    derive (item 9). A copy of the checkout's `lanes-index` with `RENDER_GIT_HALF`
     flipped True (T203's `flipped_copy`, PC-5) reads it as the reader's
     login, through a `mode=primary` configuration that names both logins.
 
@@ -1376,7 +1389,22 @@ class RealRegister:
       7. (lane 2's) the superuser is `pgcluster`'s, `lanes_test`: the cluster
          has no `postgres` role, so a superuser read names no user;
       8. (lane 2's) a render set's bytes (`render_set`) are taken as UTF-8
-         text, as `_commit` reads them.
+         text, as `_commit` reads them;
+      9. (T217l; lane 3's batch 7, #165 6780364102, other ask (4), on N1f's
+         doubt in T217h) the entries carry the rows `register commit`
+         builds: the import is lane 1's `import_entry` and each write its
+         `register_commit_entry`, the one set of derivation helpers
+         `register commit` and `import --at` build every row with (lane 3's
+         reading 7, #165 6755386771; ERR-49), loaded from the checkout's
+         `lanes-index`, over a bare repository that holds each text's blob,
+         as their `git cat-file` reads it. So `lanes`, `log_lines`,
+         `register_lines` and `object_holds` hold the rows a real register
+         would, edits and rows agree, and a log line written after the
+         cutover is stamped `primary`, where `log_lines`' CHECK refuses an
+         unreadable one with 23514, as it refuses `register commit`'s: the
+         cases write well-formed lines. The cutover's entry writes
+         `lanes/STORE` alone, from which no row is derived, and is built as
+         before. T228's logins are kept.
 
     So every case built on it FAILS UNTIL T227 and T228 land, beside the
     waits its own docstring names. UNVERIFIED HERE: this bench has no engine.
@@ -1390,6 +1418,14 @@ class RealRegister:
     READER = "lanes_r_fx"
     #: Copied beside the flipped copy, as `Primary` copies them beside the door.
     TOOLS = ("lanes-edit.sh", "lanes", "repos.tsv", "lane-start", "lane-worktrees")
+    #: Every entry's author (`journal_author_check`, `^[^<>]+ <[^<>]*>$`; T217k) and
+    #: its `not_after`, as text and as the epoch seconds an attempt carries.
+    AUTHOR = "T217 fixture <t217@example.invalid>"
+    NOT_AFTER = "2999-12-31T00:00:00Z"
+    NOT_AFTER_EPOCH = 32503593600
+    #: Lane 1's derivation helpers (item 9), the names this fixture calls.
+    LANE1_HELPERS = ("import_entry", "register_commit_entry", "RegisterView",
+                     "register_doc_lines", "register_shipped_repos_text")
 
     def __init__(self, pg, root: Path, files: dict):
         self.pg, self.root = pg, root
@@ -1405,6 +1441,15 @@ class RealRegister:
         source = helpers.LANES_INDEX.read_bytes()
         assert len(helpers.RENDER_GIT_HALF_LINE.findall(source)) == 1, (
             f"{helpers.LANES_INDEX} holds no single RENDER_GIT_HALF line to flip: lane 1's T105")
+        self.lane1 = lane1_index()
+        missing = [name for name in self.LANE1_HELPERS if not hasattr(self.lane1, name)]
+        assert not missing, (
+            f"{helpers.LANES_INDEX} has no {', '.join(missing)}: lane 1's T112 and T115 derive "
+            "the rows `register commit` builds (T217l)")
+        self.blobs = root / "blobs.git"
+        self._blob_ids: dict = {}
+        self._git("init", "-q", "--bare", str(self.blobs))
+        self.entry: dict = {}
         self.bin = root / "bin"
         self.copy = helpers.flipped_copy(helpers.LANES_INDEX, self.bin, True)
         self.config = root / "config" / "openRepoTools" / "lanes-index.conf"
@@ -1448,7 +1493,84 @@ class RealRegister:
     def head(self) -> int:
         return int(self._one("SELECT seq FROM lanes_register.register_head;"))
 
+    @staticmethod
+    def _git(*args: str, data: bytes | None = None) -> str:
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        proc = subprocess.run(["git", *args], input=data, capture_output=True, env=env,
+                              timeout=60, check=False,
+                              stdin=None if data is not None else subprocess.DEVNULL)
+        assert proc.returncode == 0, ("git", args, proc.returncode, proc.stderr[-500:])
+        return proc.stdout.decode("utf-8").strip()
+
+    def _blob(self, data: bytes) -> str:
+        """`data`'s blob id, written once into the bare repository."""
+        if data not in self._blob_ids:
+            self._blob_ids[data] = self._git("-C", str(self.blobs), "hash-object", "-w",
+                                             "--stdin", data=data)
+        return self._blob_ids[data]
+
+    def _import_entry(self, texts: dict) -> dict:
+        """Lane 1's `import_entry` of `texts`, as `import --at` derives it
+        from `import_source`'s answer: `C` and its lanes tree are the old
+        fixed ids, and the blobs are this fixture's repository's."""
+        index = self.lane1
+        data = {path: text.encode("utf-8") for path, text in texts.items()}
+        source = {"commit": "1" * 40, "tree": "2" * 40,
+                  "blobs": {path: self._blob(raw) for path, raw in data.items()},
+                  "render": sorted(data, key=lambda p: p.encode("utf-8")), "data": data,
+                  "texts": dict(texts),
+                  "lines": {path: index.register_doc_lines(text) for path, text in texts.items()},
+                  "warnings": []}
+        return index.import_entry(source, root=str(self.blobs), lane="repoA-1",
+                                  workstation="Eagle", author=self.AUTHOR,
+                                  not_after=self.NOT_AFTER,
+                                  shipped_repos=index.register_shipped_repos_text())
+
+    def _write_entry(self, files: dict, verb: str) -> dict:
+        """Lane 1's `register_commit_entry` of a write that turns the
+        register's files into `files` (a path to its new text, or None to
+        remove it), from the attempt `register commit` reads: `changes`,
+        `images` and the bases at `n`, over this fixture's repository."""
+        index, zero = self.lane1, "0" * 40
+        tree_blobs = {path: self._blob(text.encode("utf-8")) for path, text in self.files.items()}
+        changes, images, bases = {}, {}, {}
+        for path, text in files.items():
+            old = self.files.get(path)
+            if text is None:
+                if old is not None:
+                    changes[path] = ("D", tree_blobs[path], zero)
+                    bases[path] = old.encode("utf-8")
+                continue
+            if old == text:
+                continue
+            images[path] = text.encode("utf-8")
+            if old is None:
+                changes[path] = ("A", zero, self._blob(images[path]))
+            else:
+                changes[path] = ("M", tree_blobs[path], self._blob(images[path]))
+                bases[path] = old.encode("utf-8")
+        att = {"tree": str(self.blobs), "tree_blobs": tree_blobs, "changes": changes,
+               "renames": {}, "images": images, "author": self.AUTHOR,
+               "message": "write by T217's fixture", "act": None,
+               "not_after": self.NOT_AFTER_EPOCH, "repos_blob": None}
+        ident = {"verb": verb or "log", "lane": "repoA-1", "workstation": "Eagle",
+                 "args_sha256": "0" * 64}
+        return index.register_commit_entry(att, ident, index.RegisterView(att, bases),
+                                           index.register_shipped_repos_text())
+
     def _commit(self, kind: str, files: dict, base: int | None = None, verb: str = "") -> int:
+        if kind in ("import", "write"):
+            # Lane 1's entry, its rows included (item 9; T217l).
+            self.entry = (self._import_entry(files) if kind == "import"
+                          else self._write_entry(files, verb))
+            seq = self._post(self.entry, base)
+            for path, text in files.items():
+                if text is None:
+                    self.files.pop(path, None)
+                else:
+                    self.files[path] = text
+            return seq
+        # The cutover's `lanes/STORE`, from which no row is derived.
         # `journal_edits.ord` starts at 1 (its CHECK `ord >= 1`; lane 1's own `edit()` counts
         # `len(edits) + 1`), as T221's and T222's modules number theirs.
         edits, rows, order = [], [], 1
@@ -1483,18 +1605,23 @@ class RealRegister:
 
     def _send(self, kind: str, edits: list, rows: list, verb: str = "",
               base: int | None = None) -> int:
-        """One `commit_write` call, as the writer's login: the entry's journal
-        object, `edits` and the `files` rows; the seq it made."""
-        import uuid as _uuid
+        """The cutover's entry, its journal object, `edits` and the `files`
+        rows, sent by `_post`; the seq it made."""
         # `journal.author` is `Name <address>` (journal_author_check, `^[^<>]+ <[^<>]*>$`).
         journal = {"kind": kind, "verb": verb or ("import" if kind == "import" else "log"),
                    "lane": "repoA-1", "workstation": "Eagle",
-                   "author": "T217 fixture <t217@example.invalid>",
+                   "author": self.AUTHOR,
                    "message": f"{kind} by T217's fixture", "args_sha256": "0" * 64}
         if kind == "import":
             journal.update(git_commit="1" * 40, git_tree="2" * 40)
         entry = {"journal": journal, "edits": edits, "files": rows,
-                 "not_after": "2999-12-31T00:00:00Z"}
+                 "not_after": self.NOT_AFTER}
+        return self._post(entry, base)
+
+    def _post(self, entry: dict, base: int | None = None) -> int:
+        """One `commit_write` call of `entry`, as the writer's login; the
+        seq it made."""
+        import uuid as _uuid
         base = self.head() if base is None else base
         sql = ("BEGIN ISOLATION LEVEL SERIALIZABLE;\n"
                f"SELECT lanes_register.commit_write({base}, '{_uuid.uuid4()}'::uuid, {self.client}, "
@@ -1507,19 +1634,15 @@ class RealRegister:
 
     def replace(self, path: str, line_no: int, new_text: str) -> int:
         """One committed `write` entry whose one edit is a `replace` of line
-        `line_no` of `path`, the edit op `_commit`'s create, append and remove
-        edits never make (`commit_write`'s step 6 checks its `old_sha256`
-        against the stored line, the sha256 of its UTF-8 text without its LF);
-        the seq it made."""
+        `line_no` of `path` (`commit_write`'s step 6 checks its `old_sha256`
+        against the stored line, the sha256 of its UTF-8 text without its LF),
+        as lane 1's `register_line_edits` sends a write that changes that line
+        alone (T217l); the seq it made."""
         lines = _lines(self.files[path])
-        old = lines[line_no - 1]
         text = "\n".join(lines[:line_no - 1] + [new_text] + lines[line_no:]) + "\n"
-        edits = [{"ord": 1, "op": "replace", "path": path, "line_no": line_no,
-                  "old_sha256": _sha(old.encode("utf-8")), "new_text": new_text}]
-        rows = [{"path": path, "present": True, "sha256": _sha(text.encode("utf-8")),
-                 "final_newline": True}]
-        seq = self._send("write", edits, rows)
-        self.files[path] = text
+        seq = self._commit("write", {path: text})
+        ops = [(e["op"], e["line_no"]) for e in self.entry["edits"]]
+        assert ops == [("replace", line_no)], ("not one replace", ops)
         return seq
 
     def env(self, extra: dict | None = None) -> dict:
@@ -1543,6 +1666,16 @@ class RealRegister:
     def family(self) -> dict:
         return {p.name[len(self.cache.name):]: p.read_bytes()
                 for p in self.cache.parent.glob(self.cache.name + ".*") if p.is_file()}
+
+
+def well_formed(text: str, second: int) -> str:
+    """A well-formed `NOTED` line of repoA-1's, its free text `text`: the
+    lines the cases write after the cutover are stamped `primary`, and
+    `log_lines`' CHECK refuses an unreadable primary row with 23514, as it
+    refuses `register commit`'s (T217l). The rest of the line holds no `.`
+    and no `X`, so a `--grep` key matches its text alone."""
+    return (f"NOTED — lane repoA-1, session {UUID_A1}@Eagle, 2026-10-07T00:00:{second:02d}Z, "
+            f"lane:repoA-1 — {text}\n")
 
 
 #: `check_lane_name`'s class (CLI4.5 section 3.6; the stub's own copy).
@@ -1601,7 +1734,7 @@ def test_guard_second_read_at_its_head_writes_one_log_and_fails_open(pg, tmp_pat
     head_before = (reg.cache.parent / (reg.cache.name + ".head")).read_bytes()
     key, at, env, expect, copy = "repoA-1", str(n), {}, 0, None
     if case == "moved-head":
-        reg.write({"lanes/log/repoA-1.md": at_n + "NOTED — the head moved past n\n"})
+        reg.write({"lanes/log/repoA-1.md": at_n + well_formed("the head moved past n", 0)})
     elif case == "case-insensitive":
         key = "REPOA-1"
     elif case == "outside-the-class":
@@ -1791,13 +1924,14 @@ def test_journal_last_pickaxe_finds_the_newest_entry_that_changes_the_keys_count
     log = "lanes/log/repoA-1.md"
     reg = RealRegister(request.getfixturevalue("pg"), tmp_path / "real", l1_files())
     text = reg.files[log]
-    seq_axb = reg.write({log: text + "NOTED — lane aXb\n"})
+    seq_axb = reg.write({log: text + well_formed("lane aXb", 1)})
     text = reg.files[log]
-    seq_dot = reg.write({log: text + "NOTED — lane a.b\n"})
+    seq_dot = reg.write({log: text + well_formed("lane a.b", 2)})
     text = reg.files[log]
-    reg.write({log: text + "NOTED — lane aXb again\n"})
+    reg.write({log: text + well_formed("lane aXb again", 3)})
     text = reg.files[log]
-    seq_kept = reg.write({log: text.replace("NOTED — lane a.b\n", "NOTED — lane a.b, reworded\n")})
+    seq_kept = reg.write({log: text.replace(well_formed("lane a.b", 2),
+                                            well_formed("lane a.b, reworded", 2))})
 
     def last(*args):
         return reg.index("journal", "--last", "--path", log, *args)
