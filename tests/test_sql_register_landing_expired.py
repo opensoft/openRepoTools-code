@@ -54,6 +54,7 @@ T425 for the form and the awk.
 
 from __future__ import annotations
 
+import atexit
 import calendar
 import hashlib
 import importlib.machinery
@@ -65,6 +66,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -199,13 +201,49 @@ def git(cwd: Path, *args: str, env: dict = None) -> str:
     return proc.stdout
 
 
-def _sanitized_path() -> str:
-    """The caller's PATH without any directory holding a `lanes-index` or a
-    `psql`: an installed indexer, or a real `psql`, is never what a case
-    runs."""
-    return os.pathsep.join(part for part in os.environ.get("PATH", "").split(os.pathsep)
-                           if part and not os.path.exists(os.path.join(part, "lanes-index"))
-                           and not os.path.exists(os.path.join(part, "psql")))
+#: `_masked_path`'s mirrors, by each directory's real path (None where the
+#: directory holds no masked name), and the one temporary root they share.
+_PATH_MIRRORS: dict = {}
+_PATH_MIRROR_ROOT: list = []
+
+
+def _masked_path() -> str:
+    """The caller's PATH with every directory kept in its place, and each one
+    that holds a `psql`, a `lanes-index` or a name that starts `pg_` swapped
+    for a private mirror of it: a directory of links, one to each of its
+    entries by its absolute path, those names left out. An installed
+    indexer, a real `psql` or one of the `pg_` client wrappers shipped beside
+    it is never what a case runs, but the tools beside them are: on a GitHub
+    runner `postgresql-16`'s client puts `psql` in `/usr/bin` with `git` and
+    `bash` (and `/bin` is a link to it), so dropping the directory dropped
+    `git` and `bash` too (lane 1's census, #165 6807454856). A directory that
+    holds none of those names passes through unchanged. Each mirror is made
+    once per process, under one `mkdtemp` that an `atexit` handler removes."""
+    parts = []
+    for part in os.environ.get("PATH", "").split(os.pathsep):
+        if not part:
+            continue
+        real = os.path.realpath(part)
+        if real not in _PATH_MIRRORS:
+            try:
+                names = os.listdir(real)
+            except OSError:
+                names = []
+            masked = {name for name in names
+                      if name in ("psql", "lanes-index") or name.startswith("pg_")}
+            mirror = None
+            if masked:
+                if not _PATH_MIRROR_ROOT:
+                    _PATH_MIRROR_ROOT.append(tempfile.mkdtemp(prefix="l2-pathmask-"))
+                    atexit.register(shutil.rmtree, _PATH_MIRROR_ROOT[0], ignore_errors=True)
+                mirror = os.path.join(_PATH_MIRROR_ROOT[0], str(len(_PATH_MIRRORS)))
+                os.mkdir(mirror)
+                for name in names:
+                    if name not in masked:
+                        os.symlink(os.path.join(real, name), os.path.join(mirror, name))
+            _PATH_MIRRORS[real] = mirror
+        parts.append(_PATH_MIRRORS[real] or part)
+    return os.pathsep.join(parts)
 
 
 def _workspace(root: Path, fakebin: Path, files: dict) -> tuple:
@@ -246,7 +284,7 @@ def _workspace(root: Path, fakebin: Path, files: dict) -> tuple:
                CLAUDE_CONFIG_DIR=str(home / ".claude"), LANES_WORKSTATION=WS,
                LANES_HOST="eagle", LANES_OS="linux", LANES_CONTAINER="none",
                LANES_IN_CONTAINER="0", LANES_NO_GITHUB="1", LANES_REPO=str(checkout),
-               PATH=str(fakebin) + os.pathsep + _sanitized_path())
+               PATH=str(fakebin) + os.pathsep + _masked_path())
     return origin, checkout, env
 
 
