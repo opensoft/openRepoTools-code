@@ -13329,7 +13329,7 @@ class SyncLock:
 # these (R44).
 #
 # RECONCILE, on `mode=primary` and for the register's source, checks the mirror
-# against SQL and writes nothing (`reconcile_register`; Y:4854). It compares the
+# against SQL and writes nothing (`reconcile_check`; Y:4854). It compares the
 # render set at `R`, the commit on `origin/<branch>` that carries `m`, with each
 # render-set path's latest `journal_files` digest at or below `m`. It names
 # each commit after `R` that changes the render set and carries no
@@ -13338,8 +13338,13 @@ class SyncLock:
 # (Y:3527). A resolved stray is passed over when `m` is found and set aside
 # after `R`, as in `status`; where the walk's first value is a resolved
 # stray's, the walk runs again past them and the request is made again, at
-# most `RECONCILE_READS` in all. A mirror that differs is reported with 0
-# (exit-codes.md §3.4, [P]). The re-render is lane 3's T325, in phase 3.
+# most `RECONCILE_READS` in all. The check alone, under `--dry-run`, reports a
+# mirror that differs with 0 (exit-codes.md §3.4, [P]). Without `--dry-run`,
+# where the check was made and found a seq the mirror lacks or a difference,
+# lane 3's T325 RE-RENDERS in the checkout the check read, through the
+# renderer's own pass under that checkout's render lock (`reconcile_render`;
+# FR-048; Y:2930-2931), and exits as the renderer does: a difference it
+# cannot render over, `diverged at` among them, is 1. It imports nothing.
 #
 # SYNC of the register's source on `mode=primary` does nothing and says so
 # (`sync_register_on_primary`). It makes no `psql` call, takes no lock and
@@ -13836,7 +13841,7 @@ def _register_strays(root: str, commit: str, tip: str) -> tuple[list[str], int]:
     the render set, and how many commits come after it. None of them carries
     a `Register-Seq` that counts, since `commit` is the newest that does, so
     none is a render commit (Y:2921-2930). A resolved stray among them, which
-    may carry one, is its caller's to set aside (`reconcile_register`;
+    may carry one, is its caller's to set aside (`reconcile_check`;
     Y:2848-2850)."""
     count = git(root, "rev-list", "--first-parent", "--count", f"{commit}..{tip}")
     proc = git(root, "-c", "log.showSignature=false", "log", "--first-parent", "--format=%H",
@@ -13889,10 +13894,16 @@ def _reconcile_settled(mirror: dict, resolved: frozenset[str]) -> bool:
             and all(sha in resolved for sha, _value in mirror["passed"]))
 
 
-def reconcile_register(cfg: dict, requested: str | None, dry_run: bool) -> int:
-    """`reconcile` on `mode=primary`, for the register's source: the mirror
-    checked against SQL, READ-ONLY (Y:4854; exit-codes.md §3.4). Nothing is
-    written, and no lock is taken, here or in the database.
+def reconcile_check(cfg: dict, requested: str | None,
+                    dry_run: bool) -> tuple[int, str, str]:
+    """`reconcile`'s first half on `mode=primary`, for the register's source:
+    the mirror checked against SQL, READ-ONLY (Y:4854; exit-codes.md §3.4;
+    T117). Nothing is written, and no lock is taken, here or in the
+    database. Returns `(its exit, the checkout to re-render in, why not)`:
+    the checkout it read the mirror in where the check was made and found a
+    seq the mirror lacks or a difference, for `reconcile_register`'s
+    re-render (T325); otherwise "", with why there is nothing to re-render
+    where the check was made, or "" where it was not.
 
     THE RESOLVED STRAYS (Y:2848-2850; lane 3's item 5): the read names them,
     the walk passes over their `Register-Seq` when it finds `m`, and the
@@ -13922,6 +13933,7 @@ def reconcile_register(cfg: dict, requested: str | None, dry_run: bool) -> int:
             tip = tip_of(root)
         except StoreUnusable as exc:
             unread = exc
+    checked = root if unread is None else ""
     skip: frozenset[str] | None = None
     for _read in range(RECONCILE_READS):
         mirror, mine, strays, after = _reconcile_mirror(root, tip, unread, skip)
@@ -13949,7 +13961,8 @@ def reconcile_register(cfg: dict, requested: str | None, dry_run: bool) -> int:
             state, why = None, (str(exc) if isinstance(exc, RegisterUnavailable) else
                                 "psql answered a journal extent this build cannot read")
     say(f"{PROG} reconcile: {source} on primary - the mirror against the SQL register, "
-        f"read-only{' - DRY RUN' if dry_run else ''}")
+        f"read-only" + (" - DRY RUN, so nothing is re-rendered" if dry_run else
+                        ", then what the mirror lacks re-rendered by the renderer's pass"))
     if unchecked:
         say(f"  source:      {_register_shown(requested)} went unchecked: the workspace root is "
             f"unknown here (the mirror line says why), so whether it names this "
@@ -13960,7 +13973,7 @@ def reconcile_register(cfg: dict, requested: str | None, dry_run: bool) -> int:
     if state is None:
         say(f"  register:    cannot be read - {_register_shown(why, 400)}")
         say(f"  result:      the check could not be made; {nothing}")
-        return EXIT_UNAVAILABLE
+        return EXIT_UNAVAILABLE, "", ""
     say(f"  register:    switch {state['mode']}, marker {state['marker']}; n {state['n']}; "
         f"generation {state['generation']}")
     if state["diverged"]:
@@ -13970,17 +13983,19 @@ def reconcile_register(cfg: dict, requested: str | None, dry_run: bool) -> int:
         recorded = "none recorded"
     if mine is None:
         say(f"  divergence:  {recorded}")
+        no_m = ("the mirror carries no Register-Seq that counts, so the renderer's pass would "
+                "find no m to render from (T322's step 3)")
         if mirror["why"].startswith("no-seq") and mirror["passed"]:
             say(f"  result:      the mirror carries no Register-Seq that counts, past the "
                 f"resolved strays it passed over (Y:2848-2850; the mirror line says why), so it "
                 f"has no seq to be compared at; {nothing}")
-            return EXIT_OK
+            return EXIT_OK, "", no_m
         if mirror["why"].startswith("no-seq"):
             say(f"  result:      the mirror carries no Register-Seq, so it has no seq to be "
                 f"compared at, and it is no mirror of this register; {nothing}")
-            return EXIT_OK
+            return EXIT_OK, "", no_m
         say(f"  result:      the mirror cannot be read, so it was not compared; {nothing}")
-        return 1
+        return 1, "", ""
     differences, rows = [], []
     if first is None:
         compared = f"none: the journal is empty, and the mirror is at seq {m}"
@@ -14047,9 +14062,98 @@ def reconcile_register(cfg: dict, requested: str | None, dry_run: bool) -> int:
         say(f"  result:      the mirror equals SQL at seq {m}, and the divergence recorded "
             f"stands until a person resolves it (D16); {nothing}")
     else:
-        say(f"  result:      the mirror equals SQL at seq {m}; {nothing}, and T325 re-renders "
-            f"what the mirror lacks, in phase 3")
-    return EXIT_OK
+        say(f"  result:      the mirror equals SQL at seq {m}; {nothing}")
+    # WHAT THE RE-RENDER IS FOR (T325): a seq the mirror lacks, or a
+    # difference, at which the renderer's pass stops and records it (D16).
+    # A mirror that equals SQL and lacks no seq, as last fetched, leaves it
+    # nothing to do: no fetch, no lock and no write.
+    if differences or lacks > 0:
+        return EXIT_OK, checked, ""
+    return EXIT_OK, "", (f"the mirror lacks no seq: it carries {REGISTER_SEQ_KEY} {m}, n "
+                         f"{state['n']}, as last fetched in {checked}")
+
+
+def reconcile_register(cfg: dict, requested: str | None, dry_run: bool) -> int:
+    """`reconcile` on `mode=primary`, for the register's source (FR-048):
+    the mirror checked against SQL, read-only (`reconcile_check`, T117), and
+    then what the mirror lacks RE-RENDERED, through T322's pass in the
+    checkout the check read (`reconcile_render`, T325). It imports nothing:
+    no journal entry, and the mirror is never indexed back into SQL.
+
+    The re-render follows only a check that was made, and only where the
+    check found a seq the mirror lacks or a difference; never under
+    `--dry-run`, which is the check alone. So a register that cannot be read
+    is 69 at the check's own timer, with no git act after it (Y:3527).
+
+    Exits: the check's 69, #160's 1 for a mirror's checkout that cannot be
+    read, and 2 for a `--source` that is not this workstation's register;
+    0 where the check leaves nothing to re-render, or under `--dry-run`;
+    otherwise the re-render's (`reconcile_render`)."""
+    rc, checkout, why = reconcile_check(cfg, requested, dry_run)
+    if dry_run:
+        say("  re-render:   none: --dry-run makes the check alone")
+        return rc
+    if rc != EXIT_OK:
+        say("  re-render:   none: the check could not be made, so what the mirror lacks is not "
+            "known (D10)")
+        return rc
+    if not checkout:
+        say(f"  re-render:   none: {_register_shown(why, 400)}")
+        return rc
+    return reconcile_render(cfg, checkout)
+
+
+def reconcile_render(cfg: dict, checkout: str) -> int:
+    """`reconcile`'s RE-RENDER (T325; FR-048; Y:2930-2931; the phase plan's
+    `reconcile` row, Y:5757): the renderer itself, in-process, in
+    `checkout`, the one `reconcile_check` read. It reuses the render line
+    whole, and copies none of it:
+    - `render_scrub_environ` first (D12; Y:5776), as `render --checkout`;
+    - `render_locked`: that checkout's render lock, one render at a time
+      per checkout (T321), the handshake's first half where another render
+      holds it, which then renders again for this one before it is done;
+    - T323's holder loop, `_render_holding`: T322's pass, `render_pass`,
+      again after each pass that made progress, so a backlog over one
+      pass's 64 seqs is rendered, at most 16 passes (F15); every stop of the
+      renderer is a stop here too, `diverged at` recorded (D16), with
+      nothing on any HEAD;
+    - each pass's push through T320's `render_push`, and its build through
+      the private index and `commit-tree`.
+    It closes F15's known gap, six lost races that leave the last write
+    unrendered until the next write anywhere, or `reconcile` (Y:2905-2907;
+    research.md's PC-3).
+
+    Exits are `render --checkout`'s (`cmd_render_checkout`): 0 where the
+    last pass rendered, or found nothing missing, an operator seq next or
+    the switch at `files`, or where another render holds the lock and
+    renders again; 1 for a stop recorded with the mirror state (`diverged
+    at`, a failed fetch, walk, build or push, six rejected pushes) or a lock
+    that cannot be used; 69 where the register cannot be read (Y:3527).
+    A push `render_push` refuses raises `Refusal` (2). The checkout is made
+    absolute first, as `render --checkout` makes its own, so the cap's
+    re-fork names the same one wherever it starts."""
+    render_scrub_environ()
+    checkout = os.path.abspath(checkout)
+    say(f"  re-render:   in {checkout}, by the renderer's pass under that checkout's render "
+        f"lock (T322; T323); it imports nothing")
+    results: list = []
+    rc = render_locked(checkout, cfg, results)
+    if not results:
+        if rc == EXIT_OK:
+            say("  re-render:   another render holds the lock, and renders again for this one "
+                "before it is done (D14); no pass was run here")
+        else:
+            say("  re-render:   no pass was run: the render lock or its rerun mark could not be "
+                "used (stderr says why)")
+    else:
+        last = results[-1]
+        moved = sum(1 for result in results if result.progressed)
+        say(f"  re-render:   {len(results)} pass(es), {moved} of them moving origin's "
+            f"{REGISTER_SEQ_KEY}; the last ended {last.outcome}: "
+            f"{_register_shown(last.detail, 400)}")
+    say(f"  result:      the re-render exits {rc}"
+        + ("" if rc == EXIT_OK else f"; `{PROG} status` shows what it recorded"))
+    return rc
 
 
 def register_primary_config() -> dict | None:
@@ -16357,7 +16461,9 @@ def cmd_reconcile(requested: str | None, dry_run: bool) -> int:
         return 0
     kind = "inventory" if is_inventory(requested) else "register"
     # ON PRIMARY, THE REGISTER'S RECONCILE IS THE MIRROR'S READ-ONLY CHECK
-    # AGAINST SQL (T117; Y:4854): no lock, and nothing written.
+    # AGAINST SQL (T117; Y:4854), with no index lock, and then the re-render
+    # of what the mirror lacks, under the checkout's render lock (T325;
+    # FR-048); `--dry-run` is the check alone.
     if kind == "register":
         primary = register_primary_config()
         if primary is not None:
@@ -18835,6 +18941,11 @@ that decides nothing, and never a gate: no lane act reads it or waits on it.
   reconcile   Reads the source whole, compares every stored row by its
               CONTENT, upserts what differs and removes what is gone: on a
               wiped index, the rebuild. `--dry-run` prints the counts only.
+              On mode=primary, for the register: the mirror checked against
+              the SQL register, read-only, then what the mirror lacks
+              re-rendered by the renderer's own pass in the workspace
+              checkout, under its render lock. It imports nothing;
+              `--dry-run` is the check alone.
   status      The store, each source's provenance against its tip, the lag in
               commits, and this workstation's last sync and last error.
   export      Writes the index's image of the register into <dir> for
