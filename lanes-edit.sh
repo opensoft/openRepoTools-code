@@ -23402,8 +23402,8 @@ Nothing was written." 2
   #   - The lifecycle directory moves under the workstation's sidecar lock
   #     (R19), and the note and the comments cite `register seq <s>` where
   #     they cited the commit's sha (Q19(A)).
-  #   - EXIT 3 ON PRIMARY IS D8's: the rename may not be written; run the
-  #     printed `LANES_WRITE_ID` rerun, which writes it once or finds it
+  #   - EXIT 3 ON PRIMARY IS D8's: the rename
+  #     may not be written; run the printed `LANES_WRITE_ID` rerun, which writes it once or finds it
   #     (T417; the exit table's row 3). Off primary 3 is still a push not
   #     confirmed, which `commit_publish` says in its own words. 69 and 75
   #     are the primary branch's, and nothing was written.
@@ -24124,8 +24124,8 @@ EOF
     # ON PRIMARY (feature 007, T422) NO COMMIT IS MADE HERE: the seam hands
     # the change set to the parent, whose commit call decides it, and the
     # scratch tree's HEAD never moves, so the undo is the scratch tree's alone.
-    # A 3 there is D8's (T417): the rename may not be written; run the printed
-    # `LANES_WRITE_ID` rerun, which writes it once or finds it.
+    # A 3 there is D8's (T417): the rename
+    # may not be written; run the printed `LANES_WRITE_ID` rerun, which writes it once or finds it.
     RL_HEAD_BEFORE="$(git -C "$LANES_REPO" rev-parse HEAD 2>/dev/null || printf '')"
     rl_msg="LANES($rl_new@$WS): RENAMED lane $rl_old → $rl_new (Amendment 16) — the row, $rl_log_new_rel, the handoff and $LANES_ALIASES_PATH in one commit"
     # FEATURE 007, T422 — ON PRIMARY THE ENTRY'S MESSAGE NAMES WHAT IT HOLDS:
