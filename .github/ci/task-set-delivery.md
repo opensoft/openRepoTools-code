@@ -9,8 +9,10 @@ store. Canonical feature 008 and its OpenSpec change live in openRepoTools-spec.
 This pilot is **advisory only**. Full tests.yml checks remain required; the
 assembly's exact-pin composed run is separate acceptance. A `claude-current`
 shadow result does not authorize fast-only CI, a queue or a merge. No Mergify
-queue has been activated by this change. Do not copy OpenBenches efficiency
-labels, admission receipts or allowlists into this project.
+queue was activated by feature 008. Feature 009's separate
+[manual documentation queue](batching-pilot.md) prepares full-CI batching only;
+it does not use this classifier, activate a canary or enable fast-only CI. Do
+not copy OpenBenches efficiency labels, admission receipts or allowlists here.
 
 Code [PR #34](https://github.com/opensoft/openRepoTools-code/pull/34) owns the
 `verify` workflow, its `verify/**` branches, selectors and optional PostgreSQL.
@@ -46,11 +48,12 @@ explicitly waived for that PR. A quota response, Copilot, or old-head review is
 not approval. Recheck head/base/checks and unresolved findings after changes.
 Preserve existing review policy; do not invent a bypass or post a green status.
 
-No live stack/canary, queue admission, app access, ruleset bypass, paid upgrade,
-release change or tag is authorized by this pilot. Future activation requires
-trusted default-branch classification, coverage parity, current queue/app/ruleset
-verification, separately authorized canaries and matching landed-tree evidence.
-The head-owned shadow classifier must never be promoted directly to a gate.
+No live stack/canary, queue command, app access, ruleset bypass, paid upgrade,
+release change or tag is authorized by configuration preparation. A future
+manual full-CI canary must satisfy the runbook's access, review and authorization
+checks. Fast-only activation additionally requires trusted default-branch
+classification, coverage parity and separately qualified candidate/landed-tree
+evidence. Never promote the head-owned shadow classifier directly to a gate.
 
 Leg PRs do not advance the assembled project. After separately authorized leg
 merges, use the existing pin tooling and exact-pin composed checks. Never treat
