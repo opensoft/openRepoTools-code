@@ -1168,12 +1168,15 @@ RERUN_RESTORED = "aaaaaaaa-0011-4000-8000-00000000a011"
 #: `match`, where set, is the write's own words, since one run can make more
 #: than one call of the verb; `fake` is a fact the scenario needs.
 RERUN_SITES = {
-    "lane-start-3851": Arm("lane-start", ("repoA", "1"), "append-session-id", "3904"),
+    # 2a057a6d:3851 is the harness's id for this window, appended to the cell (the
+    # `--no-launch` case's W2); :3909 the id `lane-start` mints, stamped on it (W4).
+    "lane-start-3851": Arm("lane-start", ("repoA", "1"), "append-session-id", "3904",
+                           match="*the harness minted*", fake=("window-session", WINDOW_RECORD)),
     "lane-start-3872": Arm("lane-start", ("repoA", "1"), "append-session-id", "3925",
                            match="*restored from the lane*",
                            fake=("lane-transcript", RERUN_RESTORED)),
     "lane-start-3909": Arm("lane-start", ("repoA", "1"), "append-session-id", "3962",
-                           fake=("window-session", WINDOW_RECORD)),
+                           match="*lane-start minted*"),
     "lane-start-3989": Arm("lane-start", ("repoA", "1"), "set-row-state", "4042"),
     "lane-start-4022": Arm("lane-start", ("repoA", "2", "--agent", "codex"), "append-session-id",
                            "4075", match="*launched codex*",
