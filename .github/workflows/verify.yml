@@ -41,7 +41,8 @@ name: verify
 # `env:` and is used double-quoted. The selector is refused unless it is
 # pytest's `-k` alphabet (letters, digits, `_`, space, `.`, `(`, `)`, `[`,
 # `]`, `:`, `+`, `/`, `-`), begins with a letter, a digit, `_` or `(`, and is
-# at most 500 bytes. So it reaches pytest as one argument, never as an option,
+# at most 4096 bytes (a task's own selector in spec#17's tasks.md runs to
+# 1,438). So it reaches pytest as one argument, never as an option,
 # and can carry no quote, `$`, backtick or newline, begin no workflow command,
 # and leave no code span of the summary. A refused value is printed `%q`-quoted.
 on:
@@ -88,9 +89,12 @@ jobs:
   verify:
     # `ubuntu-24.04`, as every job in `tests.yml` and for its reason:
     # `ubuntu-latest` became Ubuntu 26.04 on 2026-10-21, where setup-python
-    # has no Python 3.9 and a kill test fails. Ubuntu 24.04's own PostgreSQL
-    # is major 16, so the engine comes from Ubuntu's archive and no PGDG
-    # source is added.
+    # has no Python 3.9 and a kill test fails. The engine that runs today is
+    # the one the runner image carries, PGDG's build of PostgreSQL 16
+    # (`16.15-1.pgdg24.04+2` on 2026-11-11, which the install step below found
+    # already newest). Ubuntu 24.04's own default major is 16 too, so if the
+    # image ever drops it, the install falls back to `postgresql-16` from
+    # Ubuntu's archive. This job adds no PGDG source.
     runs-on: ubuntu-24.04
     # The whole suite takes 58 to 81 minutes serial, and a task's selector is
     # far less. A hung pytest would otherwise hold the runner for 360.
@@ -149,8 +153,8 @@ jobs:
             *$'\n'*) refuse "$from give a selector of more than one line (a Verify-Selector trailer given twice, or an input holding a line break): $(printf '%q' "$selector")" ;;
           esac
           alphabet='^[A-Za-z0-9_(][][A-Za-z0-9_ .():+/-]*$'
-          if [ "${#selector}" -gt 500 ] || ! [[ $selector =~ $alphabet ]]; then
-            refuse "the selector $(printf '%q' "$selector") is refused: it is at most 500 bytes of letters, digits and _ .()[]:+/- and spaces, beginning with a letter, a digit, _ or ("
+          if [ "${#selector}" -gt 4096 ] || ! [[ $selector =~ $alphabet ]]; then
+            refuse "the selector $(printf '%q' "$selector") is refused: it is at most 4096 bytes of letters, digits and _ .()[]:+/- and spaces, beginning with a letter, a digit, _ or ("
           fi
           case "$postgres" in
             ''|0)
@@ -174,8 +178,11 @@ jobs:
             printf 'postgres: %s (PG_BIN %s)\n' "$postgres" "$pg_bin"
           } | tee -a "$out/plan.txt"
 
-      # POSTGRESQL 16, ONLY WHEN ASKED FOR, from Ubuntu 24.04's archive: the
-      # image carries it today, and this keeps the job from depending on that.
+      # POSTGRESQL 16, ONLY WHEN ASKED FOR. Today this installs nothing: the
+      # runner image carries PGDG's build of PostgreSQL 16, and apt finds it
+      # already newest, so that build is what runs. The step keeps the job from
+      # depending on the image: if the image drops it, `postgresql-16` comes
+      # from Ubuntu 24.04's archive, whose default major is 16.
       # NO SERVICE CONTAINER AND NO SYSTEM SERVICE: `tests/pgcluster.py` runs
       # `initdb` and a postmaster of its own as the runner's user, on a Unix
       # socket under `/tmp` (and T229's TLS cluster on 127.0.0.1 at a free
@@ -290,6 +297,11 @@ jobs:
           elif not junit.is_file():
               line = f"{head}: pytest exited {code} and wrote no report"
           else:
+              # ONE OUTCOME PER TEST CASE, `.github/ci/ci_shards.py`'s rule:
+              # an xfail is counted as skipped and an xpass as passed, and a
+              # test that passes and then errors in teardown counts only as
+              # an error, where pytest's own line says "1 passed, 1 error".
+              # The suite has no xfail today.
               counts = {"passed": 0, "failed": 0, "skipped": 0, "error": 0}
               for case in ElementTree.parse(str(junit)).getroot().iter("testcase"):
                   outcome = "passed"
