@@ -8835,8 +8835,9 @@ act_snapshot() {
 #   IT TESTS NO `LANES_REGISTER_SCRATCH`. A flag honoured on its presence
 #   alone would let a stray export skip the mode ask, and `act-begin` would
 #   print `@files` on primary, against Y:5034 and YT:6869–6873 (lane 3's
-#   ruling, #165 6755005268). T413 adds the flag's own path at its landing,
-#   on the flag it has honoured.
+#   ruling, #165 6755005268). It tests `REG_SCRATCH`, the flag T413 has
+#   HONOURED: an attempt's child prints `<act-id>@files` and takes no
+#   snapshot, though its `REG_MODE` is `primary` (the same ruling, item 8).
 #   On primary it makes one snapshot and prints `<act-id>@<n>:<generation>`.
 #   `lanes-index mode`'s 78 is T409's 69, before anything else is read.
 # `--rebase` KEEPS `LANES_ACT`'s id and takes a new seq and generation from one
@@ -8860,6 +8861,16 @@ act_begin() {   # <1 for --rebase, else 0>
   else
     ab_id="$(act_mint_id)" ||
       die "act-begin could not mint an act id: od gave no 16 random bytes from /dev/urandom. No base was taken." 1
+  fi
+  # UNDER FEATURE 007'S INTERNAL FLAG, AS T413 HONOURS IT (`REG_SCRATCH`, set
+  # only by `reg_scratch_take`, never on the variable's presence), the verb is
+  # an attempt's child on its scratch tree: `<act-id>@files`, and no snapshot.
+  # `REG_MODE` is `primary` there and `reg_mode_ask` returns on a set answer,
+  # so without this test it would take one (lane openRepoTools-3's ruling,
+  # #165 6755005268, item 8).
+  if [ -n "$REG_SCRATCH" ]; then
+    printf '%s@files\n' "$ab_id"
+    return 0
   fi
   # THE MODE NEEDS NO ARM HERE: `reg_mode_ask` returns 0 on every path. A
   # question that cannot be answered sets `REG_MODE=files` after T409's one
