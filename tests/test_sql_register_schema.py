@@ -491,8 +491,11 @@ def test_a_client_outside_the_version_window_is_refused_lr003(pg, tmp_path, case
     """A writer below `writers_from`, or above `version`, gets LR003 from
     `commit_write`, naming both numbers, with nothing written, and its
     `lanes-index` exits 69 naming both numbers and the remedy. A reader outside
-    `readers_from` to `version` exits 69 with nothing on stdout. The copies'
-    constant is one below the floor or one above `version` (open point 3)."""
+    `readers_from` to `version` exits 69 with nothing on stdout past its
+    `mode` line, which `register read` prints first in every form (lane 3,
+    #165 6807694145: "the contract stands"; 4.18:758-760; B14 tasks:454;
+    T221j). The copies' constant is one below the floor or one above
+    `version` (open point 3)."""
     role, side = case.split("-")
     win = window(pg)
     floor = win["writers_from" if role == "writer" else "readers_from"]
@@ -516,7 +519,11 @@ def test_a_client_outside_the_version_window_is_refused_lr003(pg, tmp_path, case
     assert proc.returncode == 69, f"a {role} at {number}:\n{shown(proc)}"
     assert names_both(proc.stderr, win["version"] if side == "new" else floor, number), shown(proc)
     assert remedy in proc.stderr, f"the refusal names no remedy ({remedy!r}):\n{shown(proc)}"
-    assert proc.stdout == "", f"a refused {role} printed:\n{shown(proc)}"
+    # A refused writer prints nothing; a refused reader, its `mode primary`
+    # line and nothing more (this configuration is mode=primary).
+    printed = "mode primary\n" if role == "reader" else ""
+    assert proc.stdout == printed, \
+        f"a refused {role} printed {proc.stdout!r}, not {printed!r}:\n{shown(proc)}"
     assert state(pg) == before, f"a {role} outside the window changed the register"
 
 
