@@ -1792,10 +1792,13 @@ cleanup() {   # [exit]: `exit` on the EXIT trap's path only, never INT's or TERM
   # a pipeline or a `|| :` on its way may have lost the 69. An `exit` in the
   # EXIT trap sets the process's status. INT's and TERM's paths call this with
   # no argument and re-raise their signal, so they keep the signal's status.
+  # A MIRROR ARM HAS SAID ITS FAILURE ONCE ALREADY, in its mirror line, at the
+  # switch or just above, and reads on: it gets no second note (lane 3's review
+  # of T505, SHOULD-1).
   if [ -n "${SE_CACHE_FILE:-}" ]; then
     if [ -s "$SE_CACHE_FILE.rmirror" ]; then
       cat -- "$SE_CACHE_FILE.rmirror" >&2 2>/dev/null || :
-    elif [ -s "$SE_CACHE_FILE.rfail" ] && [ ! -e "$SE_CACHE_FILE.rfend" ]; then
+    elif [ "${REG_CLASS:-}" != mirror ] && [ -s "$SE_CACHE_FILE.rfail" ] && [ ! -e "$SE_CACHE_FILE.rfend" ]; then
       note "$(sed -n -e 1p "$SE_CACHE_FILE.rfail" 2>/dev/null)"
       if [ "${1-}" = exit ] && [ "${REG_STORE:-}" = sql ]; then
         case "${REG_CLASS:-}" in decide) cln_end=69 ;; projection) cln_end=1 ;; esac
@@ -4593,9 +4596,13 @@ reg_marker_check() {
 # C6). It drops the cache family the read door's prefetch wrote beside
 # `SE_CACHE_FILE` - `.register`, `.aliases`, `.archive`, `.paths`, `.head`,
 # `.outage`, every `.log.*` and `.logpath.*` (the `.log.%<hex>` and
-# `.logpath.%<hex>` names among them) - and the flag a failed second read
-# leaves (`.rfail`), keeps `.direct`, empties `LANES_REGISTER_CACHE`, and runs
-# `lane_alias_flush`, which empties `LANES_ALIAS_CACHE` and drops `.aliaserr`.
+# `.logpath.%<hex>` names among them) - keeps `.direct`, empties
+# `LANES_REGISTER_CACHE`, and runs `lane_alias_flush`, which empties
+# `LANES_ALIAS_CACHE` and drops `.aliaserr`. IT KEEPS THE FLAG A FAILED SECOND
+# READ LEAVES (`.rfail`), beside `.rmirror` and `.rfend`: C6 does not list it
+# in the family, and it carries the failure until the arm ends by its class
+# (tasks:764), so a later flush can neither erase a 69 a pipeline lost nor
+# turn a mirror arm back to SQL (lane 3's review of T505, SHOULD-2).
 # It replaces the register and alias drops `log_sync`, `index_open` and the
 # guard's post-bind site made. In files mode it drops what they dropped:
 # files mode writes no other member of the family. In `log_sync` it runs only
@@ -4610,7 +4617,7 @@ reg_flush() {
   LANES_REGISTER_CACHE=""
   if [ -n "${SE_CACHE_FILE:-}" ]; then
     rm -f -- "$SE_CACHE_FILE.register" "$SE_CACHE_FILE.aliases" "$SE_CACHE_FILE.archive" \
-      "$SE_CACHE_FILE.paths" "$SE_CACHE_FILE.head" "$SE_CACHE_FILE.outage" "$SE_CACHE_FILE.rfail" \
+      "$SE_CACHE_FILE.paths" "$SE_CACHE_FILE.head" "$SE_CACHE_FILE.outage" \
       "$SE_CACHE_FILE".log.* "$SE_CACHE_FILE".logpath.* 2>/dev/null
   fi
   lane_alias_flush
@@ -4664,10 +4671,21 @@ reg_head_n() {   # `.head`'s `n=`, or 0 where `.head` is absent or names none
   esac
   printf '%s\n' "$rhn_n"
 }
-# 0 where `.head`'s `file=<path>` row says the path is absent at `n`.
+# 0 where `.head`'s `file=<path>` row says the path is absent at `n`; 1 where
+# it says the path is present, or where there is no `.head`. A `.head` with no
+# `file=` row for the path, or one that cannot be read, is a malformed cache,
+# 69 (lane 3's review of T505, SHOULD-3): contract 3.6 writes a row for every
+# path a cached member names, present or not, so a missing row is never read
+# as a present register (tasks:760, "never an empty answer").
 reg_head_absent() {   # <path>
   [ -f "$SE_CACHE_FILE.head" ] || return 1
-  awk -F'\t' -v p="file=$1" '$1 == p && $2 == "0" { f = 1 } END { exit !f }' "$SE_CACHE_FILE.head" 2>/dev/null
+  rha_v=""
+  rha_v="$(awk -F'\t' -v p="file=$1" '$1 == p { print $2; exit }' "$SE_CACHE_FILE.head" 2>/dev/null)" || return 69
+  case "$rha_v" in
+    0) return 0 ;;
+    "") return 69 ;;
+  esac
+  return 1
 }
 # `check_lane_name`'s class, without its refusal: letters, digits, `.`, `_`
 # and `-`, not opening with `.` or `-` (O18).
@@ -4926,8 +4944,9 @@ reg_paths() {
 # nothing for an empty or absent table, which it tells by `.head`'s `file=`
 # row, never by `.aliases`' `# no lane aliases` line. An absent `lanes/LANES.md`
 # is 69. Every other end - two logs that differ from `<File>` only by case
-# (C11), or any non-0 from form 3 - is 69, the decide class's failed read,
-# never an empty answer.
+# (C11), any non-0 from form 3, or a `.head` with no `file=` row for
+# `lanes/LANES.md` or `lanes/aliases.tsv`, a malformed cache (SHOULD-3) - is
+# 69, the decide class's failed read, never an empty answer.
 REG_EMPTY_SHA256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 reg_image() {   # <path>
   rim_p="${1-}"
@@ -4935,7 +4954,8 @@ reg_image() {   # <path>
     lanes/LANES.md)
       rim_m=0; reg_member register || rim_m=$?
       [ "$rim_m" = 0 ] || return 69
-      ! reg_head_absent lanes/LANES.md || return 69
+      rim_h=0; reg_head_absent lanes/LANES.md || rim_h=$?
+      [ "$rim_h" = 1 ] || return 69                # absent, or no `file=` row: 69
       cat -- "$SE_CACHE_FILE.register" || return 69
       return 0 ;;
     lanes/aliases.tsv)
@@ -4943,7 +4963,8 @@ reg_image() {   # <path>
       [ "$rim_m" = 0 ] || return 69
       rim_row="$(awk -F'\t' '$1 == "file=lanes/aliases.tsv" { print $2 " " $3; exit }' "$SE_CACHE_FILE.head" 2>/dev/null)" || return 69
       case "$rim_row" in
-        "1 $REG_EMPTY_SHA256" | "0 "* | "") return 0 ;;
+        "1 $REG_EMPTY_SHA256" | "0 "*) return 0 ;;
+        "") return 69 ;;                         # no `file=` row: a malformed cache
       esac
       cat -- "$SE_CACHE_FILE.aliases" || return 69
       return 0 ;;
@@ -5980,8 +6001,14 @@ register_text_checked() {
   # file's size, and is a failed read, 69, never an empty register (T505 Q8).
   if [ "${REG_STORE:-}" = sql ]; then
     rt_m=0; reg_member register || rt_m=$?
-    if [ "$rt_m" = 0 ] && reg_head_absent "$LANES_PATH"; then
+    rt_h=1
+    if [ "$rt_m" = 0 ]; then rt_h=0; reg_head_absent "$LANES_PATH" || rt_h=$?; fi
+    if [ "$rt_m" = 0 ] && [ "$rt_h" = 0 ]; then
       rt_m=0; reg_fail "the register could not be read: $LANES_PATH is absent from it at seq $(reg_head_n), which is never an empty register (feature 007, T505)" "$LANES_PATH is absent from the register" || rt_m=$?
+    elif [ "$rt_m" = 0 ] && [ "$rt_h" != 1 ]; then
+      # A `.head` WITH NO `file=` ROW FOR IT is a malformed cache, never a
+      # present register (lane 3's review of T505, SHOULD-3).
+      rt_m=0; reg_fail "the register could not be read: its cache's .head has no file= row for $LANES_PATH, so the cached register is not known to be the register at seq $(reg_head_n) (feature 007, T505)" "the register's cache is malformed" || rt_m=$?
     elif [ "$rt_m" = 0 ]; then
       cat -- "$SE_CACHE_FILE.register" || return 69
       return 0
