@@ -20,10 +20,12 @@ them with `-k 'sql_register_render and image_cache'`, with no engine: see
 and the render read's one case with `start`, lane 2's T210f (B10 tasks:1003;
 lane 1's T301 cache-forward, #165 6767347563): with `start`,
 `register_render_read` returns the images, `{path: bytes}`, and not the rows.
-No engine, no image cache: see "the render read's `start`" below.
+No engine, no image cache: see "the render read's `start`" below;
 
-Test 1's phase-W parts and its files-mode twin are lane 2's T240, and its
-phase-G part is later still; each adds its cases here.
+and test 1's phase-W part, lane 2's T240: each verb through `lanes-edit.sh`
+on `mode=primary` with the pure renderer writing a scratch mirror, its
+files-mode twin, `rename-lane`'s transaction then its move, a caller's UTC
+kept, and no register `sync` nudge on primary (see "phase W: T240" below).
 
 THE STORAGE-LAYER ENTRY (design S4; the delta spec's "The managed seam stays
 the ledger's"). The managed projection writer arrives with the 001 feature's
@@ -87,6 +89,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -100,7 +103,8 @@ from urllib.parse import quote
 import pytest
 
 from conftest import REPO, WINDOWS_SKIP
-from sql_register_helpers import (LANES_INDEX, REGISTER_FAKE_PSQL, RENDER_GIT_HALF_LINE,
+from sql_register_helpers import (LANES_INDEX, PSQL_SHIM, PSQL_SHIM_CONTROL, PSQL_SHIM_LOG,
+                                  REGISTER_FAKE_PSQL, RENDER_GIT_HALF_LINE, contract_stub,
                                   flipped_copy)
 
 pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
@@ -1610,3 +1614,896 @@ def test_the_render_read_with_start_returns_the_images_and_a_bad_start_costs_one
                       ("an image that is not bytes", {**images, ALPHA_LOG: "alpha\n"}),
                       ("images that are not a dict", list(images.items()))):
         assert m.register_cache_state(bad) is None, f"register_cache_state took {what}"
+
+
+# ============================================================ phase W: T240
+#
+# TEST 1'S PHASE-W PART (lane 2's T240; AT-1, the test plan's lines 537-645;
+# FR-018, FR-027, FR-042, FR-059): each of S1's writes through `lanes-edit.sh`
+# on a `mode=primary` workstation, from T203's flipped copy (`RENDER_GIT_HALF =
+# True`, test 14's second state) with `lanes-edit.sh` beside it, over test 1's
+# imported register (`import_to_primary`, AT-LR006's route), then the pure
+# renderer writing a scratch mirror, `render --images --at <seq> --out <dir>`.
+#
+# THE VERBS (`W_VERBS`) are the thirteen of P192-196, `log` once per verb of
+# its grammar: the fourteen arms of `lanes-edit.sh`'s write dispatch but
+# `commit`, whose direct write is 2 (D10), with the argument lists the writes
+# module's `WRITE_VERBS` gives them (T241), and `log` once for each verb of
+# `VERB_LIST` that `log` writes by hand. That is twelve: `log` refuses CLAIMED,
+# TAKEOVER, RELEASED, CLAIM-LOST, HANDOFF-REQUESTED and RENAMED, which their own
+# verbs write. The lists are copied here, never imported: the writes module
+# imports this one. Every verb runs from the same starting state, C with the
+# verb's prep (`W_PREPS`), and each case gets a database of its own. Each
+# argument list exits 0 and makes one commit in files mode on line R's
+# V-round4 (line W1-12's probe).
+#
+# THE TWIN (AT-1, "Part W adds an FM twin"): a files-mode clone of W's origin
+# at C, with its own origin and its own `$HOME`, makes the same verb. The
+# mirror's render set equals the twin's origin's, path set and bytes, with
+# every UTC masked in both, in a line or in a path (`migrate-state-cells`'
+# archive is named by its UTC): open point 4 leaves the mask in place until a
+# test can fix the database's clock. The journal entry's message is the twin's
+# commit message.
+#
+# GB SECTION 4.3'S CASES (R29), each an assertion of a named test: D12, the
+# fake `git`'s log holding no `fetch` on primary for any verb, in the mirror
+# case; `rename-lane`'s `register seq` and its tail under Q13(a), the
+# transaction first and then the move, in
+# `test_rename_lane_commits_the_transaction_then_a_rerun_makes_only_the_move`;
+# and `start-record` in both modes, its twin run once more under
+# `LANES_ROUTE_WRITES=1`, as the twin case's `[start-record]`.
+#
+# THE MOVE ON PRIMARY (lane 3's batch c, #165 6807881675, Q55 and Q56, B15
+# texts (2) to (4) for F13d:502, :497 and :496): `rename-lane` renames one
+# regular file inside its own folder and commits those two paths alone, so a
+# folder's tracked bytecode never rides it (#162); a handoff whose own path has
+# a cache, bytecode or environment part refuses 2 before the seam (Y:5138;
+# REV422c N1). The rerun is `LANES_LANE=<new> lanes-edit.sh rename-lane <old>
+# <new>` (batch c Q71 and Q74, #165 6808141050).
+#
+# THEY FAIL UNTIL lane 4's L4-B4 (T414's seam), L4-B8 (T422, `rename-lane`'s
+# tail and its seq) and L4-B13 (T415's author, T416's fork, `<c>` and the
+# nudge) land, each by its own assertion here: line R's `lanes-edit.sh` writes
+# the files whatever `mode=` says. `[start-record]` fails until L4-B9 (T427)
+# too, and the two `rename-lane` cases B15 adds until lane 4's T422.
+
+#: The lanes these writes are for, each with its own checkout `<c>`,
+#: `<W>-lanes/<lane>` (B14 tasks:1142's T415 bullets; R17): repoA-1 and
+#: repoA-2, as `LANES_LANE` or a verb's `<lane>`, and repoA-3, `add-row`'s new
+#: row and `rename-lane`'s new name (the writes module's `WRITE_LANES`).
+W_LANES = ("repoA-1", "repoA-2", "repoA-3")
+
+#: The writer's password in the 0600 `register_passfile=` (AT-1's fixture),
+#: which the cluster's trust never asks for and no output may carry.
+W_SECRET = "t240-never-printed-5d2a"
+
+
+def _w_with_row(lane: str, sid: str, cell: str, log: str = None) -> dict:
+    """A prep: test 1's SEED with one more row in `LANES.md`'s table, after
+    repoA-2's, and the lane's log (its header, then `log`'s lines). Copied
+    from the writes module's `_with_row`."""
+    lanes = SEED["lanes/LANES.md"]
+    anchor = next(line for line in lanes.split("\n") if line.startswith("| `repoA-2` |"))
+    row = (f"| `{lane}` | harness `{sid}` | Eagle / test / brett | 2026-09-01T00:00Z | none "
+           f"| handoffs/{lane}.md | {cell} |")
+    header = f"# lane {lane} {EM} object log (lane-collision-protocol Amendment 7)\n"
+    return {"lanes/LANES.md": lanes.replace(anchor + "\n", anchor + "\n" + row + "\n", 1),
+            f"lanes/log/{lane}.md": header + (log or "")}
+
+
+def _w_with_handoffs(handoffs: dict, extra: dict = None) -> dict:
+    """A prep: test 1's SEED with each lane of `handoffs`, {lane: (path,
+    bytes)}, naming the handoff at `path` in its row's handoff column, and that
+    handoff committed there; and `extra`, {path: bytes}, committed beside
+    them."""
+    lanes = SEED["lanes/LANES.md"]
+    files: dict = {}
+    for lane, (path, data) in handoffs.items():
+        old = next(line for line in lanes.split("\n") if line.startswith(f"| `{lane}` |"))
+        assert old.count(f"| handoffs/{lane}.md |") == 1, old
+        lanes = lanes.replace(old, old.replace(f"| handoffs/{lane}.md |", f"| {path} |"), 1)
+        files[path] = data
+    files["lanes/LANES.md"] = lanes
+    files.update(extra or {})
+    return files
+
+
+#: The starting state three verbs need, or they refuse for want of work (2),
+#: as the writes module's `PREPS` gives it: `archive-rows <repo>` moves a
+#: repository's RETIRED rows, `retire-rows` takes a dormant row, and
+#: `migrate-state-cells` migrates a diary cell.
+W_PREPS = {
+    "archive-rows": _w_with_row(
+        "repoZ-2", "eeeeeeee-0002-4000-8000-00000000e002",
+        f"RETIRED {DOT} 2026-09-03T00:00:00Z {DOT} retired",
+        f"RETIRED {EM} lane repoZ-2, session eeeeeeee-0002-4000-8000-00000000e002@Eagle, "
+        f"2026-09-03T00:00:00Z, lane:repoZ-2 {EM} retired\n"),
+    "retire-rows": _w_with_row("repoA-4", "aaaaaaaa-0005-4000-8000-00000000a005",
+                               f"MIGRATED {DOT} 2026-09-01T00:00:00Z {DOT} migrated"),
+    "migrate-state-cells": _w_with_row("repoA-5", "aaaaaaaa-0006-4000-8000-00000000a006",
+                                       f"parked 2026-09-01 {DOT} picked up 2026-09-02"),
+}
+
+#: The session `request-handoff --force` writes its `PAUSED` for, as the
+#: writes module's `SID_REQUESTER`.
+W_SID_REQUESTER = "bbbbbbbb-0007-4000-8000-00000000b007"
+
+#: A lane's binding payload, for `log STARTED` and `log RESUMED`.
+W_BINDING = "home opensoft/repoA; dir /work/repoA2"
+
+#: S1's writes but `commit`, `log` once per verb of its grammar: {id: (its
+#: arguments, the lane it writes as)}. The forms are `lanes-edit.sh`'s usage
+#: lines at a2073eae; `log`'s are its arm's, at line R's V-round4.
+W_VERBS = {
+    "add-row": (["add-row", f"| `repoA-3` | harness `aaaaaaaa-0004-4000-8000-00000000a004` | "
+                 f"Eagle / test / brett | 2026-11-10T00:00Z | none | handoffs/repoA-3.md | "
+                 f"LIVE {DOT} 2026-11-10T00:00:00Z {DOT} test 1 |"], "repoA-2"),
+    "append-line": (["append-line", f"HOLD {EM} lane repoA-2 ({WS}), window w, "
+                     f"2026-11-10T00:00:00Z: opensoft/repoB main {TIP} for test 1"], "repoA-2"),
+    "append-session-id": (["append-session-id", "repoA-2", f"harness `{SID_A2}`",
+                           " (test 1)"], "repoA-2"),
+    "archive-rows": (["archive-rows", "repoZ", "--yes"], "repoA-2"),
+    "claim": (["claim", "opensoft/repoA#9", "--no-github"], "repoA-2"),
+    "log-closed": (["log", "CLOSED", "opensoft/repoA#9", "closed for test 1"], "repoA-2"),
+    "log-opened": (["log", "OPENED", "opensoft/repoA#8", "test 1's PR"], "repoA-2"),
+    "log-landing": (["log", "LANDING", "opensoft/repoA#8", "test 1"], "repoA-2"),
+    "log-landed": (["log", "LANDED", "opensoft/repoA#8", ARROW, "abc1234"], "repoA-2"),
+    "log-withdrawn": (["log", "WITHDRAWN", "opensoft/repoA#8", "test 1"], "repoA-2"),
+    "log-started": (["log", "STARTED", "lane:repoA-2", ARROW, W_BINDING], "repoA-2"),
+    "log-paused": (["log", "PAUSED", "lane:repoA-1", "parked for test 1"], "repoA-1"),
+    "log-resumed": (["log", "RESUMED", "lane:repoA-2", ARROW, W_BINDING], "repoA-2"),
+    "log-ended": (["log", "ENDED", "lane:repoA-1", "ended for test 1"], "repoA-1"),
+    "log-retired": (["log", "RETIRED", "lane:repoA-1", "retired for test 1"], "repoA-1"),
+    "log-noted": (["log", "NOTED", "lane:repoA-2", "test 1's note"], "repoA-2"),
+    "log-ruled": (["log", "RULED", "lane:repoA-2", ARROW, "opensoft/repoA#9",
+                   "the words, verbatim"], "repoA-2"),
+    "migrate-state-cells": (["migrate-state-cells", "--yes"], "repoA-2"),
+    "release": (["release", "opensoft/repoA#7", "test 1", "--no-github"], "repoA-1"),
+    "rename-lane": (["rename-lane", "repoA-2", "repoA-3", "test 1", "--no-github"], "repoA-2"),
+    "replace-in-row": (["replace-in-row", "repoA-2", "parked", "parked for test 1"], "repoA-2"),
+    "request-handoff": (["request-handoff", "repoA-1", "--force", "test 1", "--session",
+                         W_SID_REQUESTER], "repoA-2"),
+    "retire-rows": (["retire-rows", "repoA-4", "--reason", "test 1"], "repoA-2"),
+    "set-row-state": (["set-row-state", "repoA-2", f"PAUSED {DOT} test 1"], "repoA-2"),
+}
+
+#: The twin's verbs: `W_VERBS`, and GB section 4.3's `start-record`, lane 4's
+#: T427 verb (L4-B9), as a resume of repoA-2, which `LANES_SESSION` names by
+#: its transcript uuid and `LANES_LANE` by the row's own spelling (B14
+#: tasks:1325-1333): {id: (its arguments, the lane, what the run adds to the
+#: environment)}.
+TWIN_VERBS = {**{verb: (argv, lane, {}) for verb, (argv, lane) in W_VERBS.items()},
+              "start-record": (["start-record", "repoA-2", "RESUMED", "--state",
+                                f"LIVE {DOT} resumed for test 1", "--log", "lane:repoA-2",
+                                ARROW, W_BINDING], "repoA-2", {"LANES_SESSION": SID_A2})}
+
+
+def _logging_git(path: Path, log: Path) -> None:
+    """A `git` at `path` that appends each call's arguments to `log`, each
+    argument ended by a US (0x1f) and the call by an RS (0x1e) and a LF, then
+    runs the real `git` with them (D12's oracle: GB section 4.3, "the fake
+    `git`'s log")."""
+    real = shutil.which("git")
+    assert real, "no git on PATH"
+    path.write_text("#!/bin/sh\n"
+                    "{ for a in \"$@\"; do printf '%s\\037' \"$a\"; done; printf '\\036\\n'; } "
+                    f">> {shlex.quote(str(log))}\n"
+                    f"exec {shlex.quote(real)} \"$@\"\n", encoding="utf-8")
+    path.chmod(0o755)
+
+
+#: `git`'s own options that take the next argument as their value.
+_GIT_VALUE_OPTIONS = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace",
+                                "--exec-path", "--super-prefix", "--config-env"})
+
+
+def _git_calls(log: Path) -> list:
+    """`_logging_git`'s log: each call as (its subcommand, its arguments),
+    the subcommand being the first argument that is not one of `git`'s own
+    options or such an option's value."""
+    if not log.exists():
+        return []
+    calls = []
+    for record in log.read_bytes().decode("utf-8", "replace").split("\x1e\n"):
+        if not record:
+            continue
+        args = record.split("\x1f")[:-1]
+        i = 0
+        while i < len(args) and args[i].startswith("-"):
+            i += 2 if args[i] in _GIT_VALUE_OPTIONS else 1
+        calls.append((args[i] if i < len(args) else "", args))
+    return calls
+
+
+def _git_bytes(cwd: Path, env: dict, *args: str) -> bytes:
+    proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, env=env,
+                          check=False)
+    assert proc.returncode == 0, f"git {' '.join(args)} in {cwd}: {proc.stderr!r}"
+    return proc.stdout
+
+
+def _origin_render_set(origin: Path, env: dict, ref: str = "main") -> dict:
+    """The render set on a bare repository's `ref`, read by object: {path:
+    bytes}."""
+    names = _git_bytes(origin, env, "ls-tree", "-r", "-z", "--name-only", ref, "--", "lanes")
+    return {name: _git_bytes(origin, env, "cat-file", "blob", f"{ref}:{name}")
+            for name in names.decode("utf-8").split("\0") if name and RENDER_SET.match(name)}
+
+
+def _origin_paths(origin: Path, env: dict, ref: str = "main", where: str = ".") -> dict:
+    """Every path under `where` on a bare repository's `ref`, to its blob."""
+    out = _git_bytes(origin, env, "ls-tree", "-r", "-z", ref, "--", where).decode("utf-8")
+    found = {}
+    for entry in out.split("\0"):
+        if entry:
+            meta, path = entry.split("\t", 1)
+            found[path] = meta.split()[2]
+    return found
+
+
+def _raw_message(origin: Path, env: dict, ref: str = "main") -> str:
+    """A commit's message as git stores it, every byte after the header."""
+    raw = _git_bytes(origin, env, "cat-file", "commit", ref)
+    return raw.split(b"\n\n", 1)[1].decode("utf-8") if b"\n\n" in raw else ""
+
+
+#: A UTC in any form a register file spells it: whole minutes (a row's
+#: `started` cell), whole seconds, or with a fraction (Q4(d)(i)).
+_UTC_ANY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\.[0-9]+)?)?Z")
+_UTC_ANY_BYTES = re.compile(_UTC_ANY.pattern.encode("ascii"))
+
+
+def _utc_masked(files: dict) -> dict:
+    """`files`, {path: bytes}, with every UTC masked, in each path and in
+    each file's bytes (AT-1's twin oracle; open point 4)."""
+    return {_UTC_ANY.sub("<utc>", path): _UTC_ANY_BYTES.sub(b"<utc>", data)
+            for path, data in files.items()}
+
+
+def _first_difference(ours: bytes, theirs: bytes) -> str:
+    a = ours.decode("utf-8", "replace").split("\n")
+    b = theirs.decode("utf-8", "replace").split("\n")
+    for n, (x, y) in enumerate(zip(a, b), 1):
+        if x != y:
+            return f"line {n}: {x!r} != {y!r}"
+    return f"{len(a)} lines != {len(b)} lines"
+
+
+def _assert_same_files(ours: dict, theirs: dict, what: str) -> None:
+    assert sorted(ours) == sorted(theirs), (
+        f"{what}: the path sets differ: only ours {sorted(set(ours) - set(theirs))}, only "
+        f"theirs {sorted(set(theirs) - set(ours))}")
+    for name in sorted(ours):
+        assert ours[name] == theirs[name], (
+            f"{what}: {name}'s bytes differ, {_first_difference(ours[name], theirs[name])}")
+
+
+def _stamped_utcs(before: dict, after: dict, argv: list) -> list:
+    """Each UTC in whole seconds or finer that a write put on a line of the
+    render set, (path, line, utc): one not already anywhere in the register
+    before it, and not one the caller typed. A UTC in whole minutes is a row's
+    `started` cell, never a write's clock."""
+    old = set(_UTC_ANY.findall("\n".join(d.decode("utf-8", "replace") for d in before.values())))
+    typed = set(_UTC_ANY.findall(" ".join(argv)))
+    found = []
+    for path, data in sorted(after.items()):
+        lines_before = set(before.get(path, b"").decode("utf-8", "replace").split("\n"))
+        for line in data.decode("utf-8", "replace").split("\n"):
+            if line in lines_before:
+                continue
+            for utc in _UTC_ANY.findall(line):
+                if utc.count(":") == 2 and utc not in old and utc not in typed:
+                    found.append((path, line, utc))
+    return found
+
+
+class PrimaryWrites:
+    """AT-1's part-W workstation over the test's database, a copy of the
+    writes module's `RegisterWorkstation` (that module imports this one): the
+    files-mode workspace of the sync case (`workspace`) at C, the case's prep
+    committed and pushed first; C imported and brought to `primary` with the
+    marker `present` (`import_to_primary`, AT-LR006's route); T203's flipped
+    copy with `lanes-edit.sh` beside it; a 0600 `lanes-index.conf` with
+    `mode=primary`, both URLs naming the cluster's socket as this module's
+    logins, and a 0600 `register_passfile=`; `<c>` for each of `W_LANES`, a
+    clone of origin; and first on `PATH`, T203's `psql` shim, which hands each
+    call to the cluster's `psql` and logs it, and `_logging_git`."""
+
+    def __init__(self, pg, tmp_path: Path, prep: dict = None):
+        self.pg = pg
+        self.fakebin = tmp_path / "fakebin"
+        self.fakebin.mkdir(parents=True, exist_ok=True)
+        (self.fakebin / "psql").write_text(PSQL_SHIM, encoding="utf-8")
+        (self.fakebin / "psql").chmod(0o755)
+        (self.fakebin / PSQL_SHIM_CONTROL).write_text(json.dumps({"psql": pg.psql_bin}),
+                                                      encoding="utf-8")
+        self.git_log = tmp_path / "git-calls.log"
+        _logging_git(self.fakebin / "git", self.git_log)
+        self.estate, self.env, _source = workspace(tmp_path / "ws", self.fakebin)
+        if prep:
+            self._prep(prep)
+        ensure_logins(pg)
+        self.copy = flipped(tmp_path)
+        self.lanes_edit = self.copy.parent / "lanes-edit.sh"
+        conf_dir = tmp_path / "conf"
+        conf_dir.mkdir()
+        passfile = conf_dir / "pgpass"
+        passfile.write_text(f"*:*:*:{LOGIN_WRITER}:{W_SECRET}\n", encoding="utf-8")
+        passfile.chmod(0o600)
+        self.conf = primary_config(conf_dir / "lanes-index.conf", pg.url(LOGIN_WRITER),
+                                   pg.url(LOGIN_READER), passfile)
+        self.env.update(LANES_INDEX_CONFIG=str(self.conf))
+        self.env.pop("LANES_INDEX", None)
+        #: The environment the pure renderer and `status` run in.
+        self.index = index_env(tmp_path, self.conf, self.estate.home)
+        self.imported = import_to_primary(pg, self.estate)
+        for lane in W_LANES:
+            self.make_lane_checkout(lane)
+
+    def _prep(self, files: dict) -> None:
+        """`files` ({path: text or bytes}) written over the checkout,
+        committed and pushed, so the case starts from them; C is that
+        commit."""
+        estate = self.estate
+        for path, data in files.items():
+            target = estate.checkout / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data if isinstance(data, bytes) else data.encode("utf-8"))
+        git(estate.checkout, "add", "-A", env=estate.env)
+        git(estate.checkout, "commit", "-q", "-m", "C': the case's starting state",
+            env=estate.env)
+        git(estate.checkout, "push", "-q", "origin", "main", env=estate.env)
+        estate.files.update({p: d for p, d in files.items() if isinstance(d, str)})
+        estate.c = git(estate.checkout, "rev-parse", "HEAD", env=estate.env).strip()
+        estate.lanes_tree = git(estate.checkout, "rev-parse", f"{estate.c}:lanes",
+                                env=estate.env).strip()
+
+    def lane_checkout(self, lane: str) -> Path:
+        """`<c>`, `<W>-lanes/<lane>`, W being the real path of
+        `workspace.yaml`'s `path:` (Amendment 23 S1)."""
+        real = Path(os.path.realpath(self.estate.checkout))
+        return real.parent / f"{real.name}-lanes" / lane
+
+    def make_lane_checkout(self, lane: str) -> Path:
+        target = self.lane_checkout(lane)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        git(target.parent, "clone", "-q", str(self.estate.origin), str(target),
+            env=self.estate.env)
+        return target
+
+    def checkouts(self) -> list:
+        """W's checkout and each lane's `<c>`."""
+        return [self.estate.checkout, *(self.lane_checkout(lane) for lane in W_LANES)]
+
+    def run(self, argv: list, lane: str, **extra) -> subprocess.CompletedProcess:
+        """`lanes-edit.sh <argv>` in W's checkout, as lane `lane`."""
+        env = dict(self.env, LANES_LANE=lane, **extra)
+        return subprocess.run(["bash", str(self.lanes_edit), *argv], capture_output=True,
+                              encoding="utf-8", errors="replace", env=env, timeout=120,
+                              cwd=str(self.estate.checkout), check=False,
+                              stdin=subprocess.DEVNULL)
+
+    def shim_calls(self) -> list:
+        log = self.fakebin / PSQL_SHIM_LOG
+        if not log.exists():
+            return []
+        entries = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines() if x]
+        return [e for e in entries if e.get("kind") != "version"]
+
+    def commit_calls(self) -> list:
+        return [c for c in self.shim_calls() if "commit_write(" in (c.get("stdin") or "")]
+
+    def git_calls(self) -> list:
+        return _git_calls(self.git_log)
+
+
+class FilesTwin:
+    """AT-1's twin: a files-mode clone of W's origin at C, "under its own
+    `$HOME`", with an origin of its own, a bare clone of W's, so its push
+    moves nothing the primary case reads, and the environment `workspace`
+    sets, with no `lanes-index.conf`: `lanes-edit.sh` beside the flipped copy
+    asks its mode, and `files` answers. Made before the primary write, so it
+    is at C whatever a forked render pushes to W's origin."""
+
+    def __init__(self, root: Path, estate: Estate, lanes_edit: Path):
+        self.root = root
+        self.home = root / "home"
+        self.home.mkdir(parents=True, exist_ok=True)
+        self.git_env = git_env(self.home)
+        self.origin = root / "origin.git"
+        self.checkout = root / "checkout"
+        git(root, "clone", "-q", "--bare", str(estate.origin), str(self.origin),
+            env=self.git_env)
+        git(root, "clone", "-q", str(self.origin), str(self.checkout), env=self.git_env)
+        self.c = git(self.origin, "rev-parse", "main", env=self.git_env).strip()
+        assert self.c == estate.c, "the twin is not at C"
+        agents = self.home / ".agents"
+        agents.mkdir(parents=True, exist_ok=True)
+        (agents / "workspace.yaml").write_text(
+            f"repository: {self.origin}\npath: {self.checkout}\n", encoding="utf-8")
+        fakebin = root / "fakebin"
+        fakebin.mkdir(parents=True, exist_ok=True)
+        (fakebin / "tmux").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        (fakebin / "tmux").chmod(0o755)
+        for d in ("state", "config", "tmp"):
+            (root / d).mkdir(parents=True, exist_ok=True)
+        self.env = dict(self.git_env)
+        self.env.update(AGENT_PROTOCOL_ROOT=str(agents), TMPDIR=str(root / "tmp"),
+                        XDG_STATE_HOME=str(root / "state"),
+                        XDG_CONFIG_HOME=str(root / "config"),
+                        CLAUDE_CONFIG_DIR=str(self.home / ".claude"), LANES_WORKSTATION=WS,
+                        LANES_HOST="eagle", LANES_OS="linux", LANES_CONTAINER="none",
+                        LANES_IN_CONTAINER="0", LANES_NO_GITHUB="1",
+                        LANES_REPO=str(self.checkout),
+                        PATH=str(fakebin) + os.pathsep + _masked_path())
+        self.env.pop("LANES_INDEX", None)
+        self.env.pop("LANES_INDEX_CONFIG", None)
+        self.lanes_edit = lanes_edit
+
+    def run(self, argv: list, lane: str, **extra) -> subprocess.CompletedProcess:
+        env = dict(self.env, LANES_LANE=lane, **extra)
+        return subprocess.run(["bash", str(self.lanes_edit), *argv], capture_output=True,
+                              encoding="utf-8", errors="replace", env=env, timeout=120,
+                              cwd=str(self.checkout), check=False, stdin=subprocess.DEVNULL)
+
+    def commits(self) -> list:
+        """The commits the twin pushed since C, oldest first."""
+        out = git(self.origin, "rev-list", "--reverse", f"{self.c}..main", env=self.git_env)
+        return out.split()
+
+    def render_set(self) -> dict:
+        return _origin_render_set(self.origin, self.git_env)
+
+    def message(self) -> str:
+        return _raw_message(self.origin, self.git_env)
+
+
+def _journal_since(db, seq: int) -> list:
+    return rows(db, f"SELECT seq, write_id, kind, verb, lane, message FROM journal "
+                    f"WHERE seq > {seq} ORDER BY seq")
+
+
+def _one_entry(db, before: int, proc: subprocess.CompletedProcess, what: str) -> dict:
+    """A write on primary that exited 0, and its one journal entry, at the old
+    head plus one."""
+    assert proc.returncode == 0, (
+        f"{what} on primary exited {proc.returncode} (L4-B4, L4-B8, L4-B13): "
+        f"{proc.stderr[-800:]}")
+    new = _journal_since(db, before)
+    assert len(new) == 1 and new[0]["seq"] == before + 1, (
+        f"{what} on primary added {len(new)} journal entries after seq {before}, not one at "
+        f"{before + 1}: line R's lanes-edit.sh writes the files whatever mode= says (L4-B4, "
+        f"T414's seam): {new}")
+    return new[0]
+
+
+def _rows_written_at(db, seq: int) -> list:
+    """Every register row whose last writer is the entry at `seq`, with the
+    mode it records: part N's five tables."""
+    return rows(db, f"SELECT 'doc_lines' AS t, written_mode AS m FROM doc_lines "
+                    f"WHERE written_seq = {seq} "
+                    f"UNION ALL SELECT 'lanes', last_mode FROM lanes WHERE last_seq = {seq} "
+                    f"UNION ALL SELECT 'log_lines', mode FROM log_lines WHERE seq = {seq} "
+                    f"UNION ALL SELECT 'register_lines', mode FROM register_lines "
+                    f"WHERE seq = {seq} "
+                    f"UNION ALL SELECT 'object_holds', mode FROM object_holds WHERE seq = {seq}")
+
+
+def _mirror(ws: PrimaryWrites, seq: int, out_dir: Path) -> dict:
+    """The pure renderer's scratch mirror at `seq`, its render set: {path:
+    bytes}. It writes nothing outside its four paths (and `lanes/STORE`)."""
+    proc, images = render_images(ws.copy, ws.index, seq, out_dir)
+    assert proc.returncode == 0, f"render --images --at {seq} exited {proc.returncode}: " \
+                                 f"{proc.stderr}"
+    assert all(RENDER_SET.match(p) or p == STORE_PATH for p in images), (
+        f"the renderer wrote outside its four paths: {sorted(images)}")
+    return _rendered_only(images)
+
+
+@pytest.mark.parametrize("verb", list(W_VERBS))
+def test_each_write_leaves_the_mirror_byte_identical_to_a_full_render(pg, tmp_path, verb):
+    """AT-1's part W, the mirror: `lanes-edit.sh <verb>` on primary exits 0;
+    the journal gains exactly one entry, at the old head plus one, with a
+    `write_id` unique in the journal; the pure renderer's scratch mirror at
+    that seq equals the full render from SQL (`render_file` of every path in
+    `files`), path set and bytes, over `lanes/LANES.md`, `lanes/log/*.md`,
+    `lanes/aliases.tsv` and `lanes/archive/**`, and holds nothing outside
+    them; the write changed a rendered file; each UTC the write put on a line
+    is the database's, in whole seconds, between its clock read before the
+    write and after it (S6; D13). And D12 (GB section 4.3): the fake `git`'s
+    log holds no `fetch` (nor a `pull`) for any verb on primary. Fails until
+    L4-B4, L4-B8 and L4-B13."""
+    argv, lane = W_VERBS[verb]
+    ws = PrimaryWrites(pg, tmp_path, W_PREPS.get(verb))
+    before_head = head(pg)
+    before_ids = {r["write_id"] for r in rows(pg, "SELECT write_id FROM journal")}
+    before = _rendered_only(full_render(pg))
+    clock_before = db_clock(pg)
+    proc = ws.run(argv, lane)
+    clock_after = db_clock(pg)
+    entry = _one_entry(pg, before_head, proc, verb)
+    seq = entry["seq"]
+    assert entry["write_id"] and entry["write_id"] not in before_ids, entry
+    assert rows(pg, f"SELECT count(*) AS n FROM journal "
+                    f"WHERE write_id = '{entry['write_id']}'") == [{"n": 1}]
+
+    # THE MIRROR: the scratch mirror at seq is the full render from SQL.
+    mirror = _mirror(ws, seq, tmp_path / "mirror")
+    full = _rendered_only(full_render(pg))
+    _assert_same_files(mirror, full, f"{verb}: the mirror at seq {seq} and the full render")
+    assert mirror != before, f"{verb} changed no rendered file"
+
+    # THE UTC: the database's clock, in whole seconds.
+    for path, line, utc in _stamped_utcs(before, mirror, argv):
+        assert UTC_RE.match(utc), f"{verb} wrote {utc!r}, not whole seconds, in {path}: {line!r}"
+        assert clock_before <= epoch_of(utc) <= clock_after, (
+            f"{verb} wrote {utc} in {path}, outside the database's clock "
+            f"[{utc_of(clock_before)}, {utc_of(clock_after)}]: {line!r}")
+
+    # D12: NO FETCH ON PRIMARY.
+    fetches = [args for sub, args in ws.git_calls() if sub in ("fetch", "pull")]
+    assert fetches == [], f"{verb} fetched on primary (D12): {fetches}"
+
+
+@pytest.mark.parametrize("verb", list(TWIN_VERBS))
+def test_each_write_matches_its_files_mode_twin_byte_for_byte(pg, tmp_path, verb):
+    """AT-1's part W, the twin: `lanes-edit.sh <verb>` on primary exits 0 with
+    one journal entry; its files-mode twin, a clone of W's origin at C under
+    its own `$HOME`, makes the same verb, exits 0 and pushes one commit; the
+    scratch mirror at the entry's seq equals the render set on the twin's
+    origin, path set and bytes, every UTC masked in both (open point 4); and
+    the entry's message is the twin's commit message, byte for byte, or but
+    for the one LF git ends a stored message with. GB section 4.3's
+    `start-record` (lane 4's T427, L4-B9) is `[start-record]`, a resume of
+    repoA-2 in both modes, whose twin runs once more, in a second clone at C,
+    under `LANES_ROUTE_WRITES=1`, with the same render set and message. Fails
+    until L4-B4, L4-B8 and L4-B13; `[start-record]` until L4-B9 too."""
+    argv, lane, extra = TWIN_VERBS[verb]
+    ws = PrimaryWrites(pg, tmp_path, W_PREPS.get(verb))
+    twin = FilesTwin(tmp_path / "twin", ws.estate, ws.lanes_edit)
+    routed = (FilesTwin(tmp_path / "twin-routed", ws.estate, ws.lanes_edit)
+              if verb == "start-record" else None)
+    before_head = head(pg)
+    proc = ws.run(argv, lane, **extra)
+    entry = _one_entry(pg, before_head, proc, verb)
+    mirror = _mirror(ws, entry["seq"], tmp_path / "mirror")
+
+    for label, files_twin, more in (("the twin", twin, {}),
+                                    ("the routed twin", routed, {"LANES_ROUTE_WRITES": "1"})):
+        if files_twin is None:
+            continue
+        done = files_twin.run(argv, lane, **extra, **more)
+        assert done.returncode == 0, (
+            f"{label}'s {verb} in files mode exited {done.returncode}: {done.stderr[-800:]}")
+        assert len(files_twin.commits()) == 1, (
+            f"{label}'s {verb} pushed {len(files_twin.commits())} commits, not one")
+        _assert_same_files(_utc_masked(mirror), _utc_masked(files_twin.render_set()),
+                           f"{verb}: the mirror and {label}'s files, every UTC masked")
+        message = files_twin.message()
+        bare = message[:-1] if message.endswith("\n") else message
+        assert entry["message"] in (message, bare), (
+            f"{verb}: the journal's message {entry['message']!r} is not {label}'s commit "
+            f"message {message!r}")
+
+
+@pytest.mark.parametrize("verb", list(W_VERBS))
+def test_each_write_reads_back_primary_as_the_mode_that_wrote_it_last(pg, tmp_path, verb):
+    """AT-1's part W, the rows (P183-188): after `lanes-edit.sh <verb>` on
+    primary exits 0 with one journal entry, every register row that entry
+    wrote last (`doc_lines`, `lanes`, `log_lines`, `register_lines` and
+    `object_holds`, by its seq) reads `primary` as the mode that wrote it,
+    and there is at least one. Fails until L4-B4, L4-B8 and L4-B13."""
+    argv, lane = W_VERBS[verb]
+    ws = PrimaryWrites(pg, tmp_path, W_PREPS.get(verb))
+    before_head = head(pg)
+    proc = ws.run(argv, lane)
+    entry = _one_entry(pg, before_head, proc, verb)
+    touched = _rows_written_at(pg, entry["seq"])
+    assert touched, f"{verb}'s entry at seq {entry['seq']} wrote no register row"
+    assert {r["m"] for r in touched} == {"primary"}, (
+        f"{verb}'s rows do not all read primary as the mode that wrote them last: {touched}")
+
+
+#: AT-1's `rename-lane` handoffs: a handoff named for its lane, under its
+#: estate's folder, as `lane-start` computes it, and where the rename moves it.
+RL_HANDOFF = "handoffs/eagle/session-handoff-2026-10-01-lane-repoA-2.md"
+RL_MOVED = "handoffs/eagle/session-handoff-2026-10-01-lane-repoA-3.md"
+#: A handoff Rule 3's stamp can go into: a header line, a blank line, a body.
+RL_TEXT = b"# handoff of lane repoA-2\n\nwhat the lane left\n"
+#: A handoff that cannot take the stamp without a byte of it rewritten: one
+#: line and no LF, so the stamp would join its only line.
+RL_UNSTAMPABLE = ("handoffs/eagle/session-handoff-2026-10-01-lane-repoA-1.md",
+                  b"# handoff of lane repoA-1, with no LF")
+#: The rename's arguments, its old lane and its new.
+RL_ARGV = ["rename-lane", "repoA-2", "repoA-3", "test 1", "--no-github"]
+
+
+def _rl_stamped(old: bytes, new: bytes) -> bool:
+    """`new` is `old` with exactly one line put in, which names both lanes:
+    Rule 3's stamp (Amendment 16(d))."""
+    a, b = old.split(b"\n"), new.split(b"\n")
+    return len(b) == len(a) + 1 and any(
+        b[:i] + b[i + 1:] == a and b"repoA-2" in b[i] and b"repoA-3" in b[i]
+        for i in range(len(b)))
+
+
+def test_rename_lane_commits_the_transaction_then_a_rerun_makes_only_the_move(pg, tmp_path):
+    """AT-1's part W, Brett's row 18 (comment 6721583757), with GB section
+    4.3's `rename-lane` cases (R29): on primary the transaction comes first,
+    and the handoff's move and Rule 3 stamp follow it as the verb's
+    after-COMMIT tail (Q13(a); Y:5092; B14 tasks:1270-1279).
+
+    A HANDOFF THAT CANNOT BE STAMPED refuses before anything is sent (Y:5138):
+    repoA-1's, one line with no LF; its rename exits non-zero with no commit
+    call, the journal and origin as they were.
+
+    THEN repoA-2's, with the move made to fail after the commit (its folder in
+    repoA-2's `<c>` read-only): the rename exits 0 with one WARNING, the move
+    owed; it prints `register seq <s>`, the entry's seq; the journal holds the
+    rename once; the handoff paths left the change set (no `handoffs/` path
+    among the entry's files), and the row's handoff column names the new path
+    in the transaction; origin still holds the handoff at its old path. A
+    rerun, `LANES_LANE=repoA-3 lanes-edit.sh rename-lane repoA-2 repoA-3`
+    (batch c Q71 and Q74), exits 0, adds no journal entry, and makes the move:
+    origin holds the handoff at the new path, stamped, and not at the old.
+    Fails until L4-B8 (lane 4's T422), L4-B4 and L4-B13."""
+    prep = _w_with_handoffs({"repoA-2": (RL_HANDOFF, RL_TEXT), "repoA-1": RL_UNSTAMPABLE})
+    ws = PrimaryWrites(pg, tmp_path, prep)
+    origin, env = ws.estate.origin, ws.estate.env
+
+    # A HANDOFF THAT CANNOT BE STAMPED: refused before anything is sent.
+    before_head, refs = head(pg), _origin_paths(origin, env)
+    refused = ws.run(["rename-lane", "repoA-1", "repoA-9", "test 1", "--no-github"], "repoA-1")
+    assert refused.returncode != 0, (
+        f"a rename of a handoff that cannot take Rule 3's stamp exited 0 (Y:5138): "
+        f"{refused.stderr[-800:]}")
+    assert ws.commit_calls() == [], f"the refusal sent a commit call: {ws.commit_calls()}"
+    assert head(pg) == before_head and _origin_paths(origin, env) == refs
+
+    # THE MOVE MADE TO FAIL AFTER THE COMMIT.
+    folder = ws.lane_checkout("repoA-2") / Path(RL_HANDOFF).parent
+    folder.chmod(0o555)
+    try:
+        if os.access(str(folder), os.W_OK):
+            pytest.skip("this user writes into a read-only directory, so the move cannot be "
+                        "made to fail")
+        first = ws.run(RL_ARGV, "repoA-2")
+    finally:
+        folder.chmod(0o755)
+    entry = _one_entry(pg, before_head, first, "rename-lane, its move made to fail")
+    said = first.stdout + first.stderr
+    assert re.search(rf"\bregister seq {entry['seq']}\b", said), (
+        f"rename-lane on primary did not print `register seq {entry['seq']}`: {said[-800:]}")
+    assert first.stderr.count("WARNING") == 1, (
+        f"a failed move ends 0 with ONE WARNING, the move owed: {first.stderr[-1200:]}")
+    entry_files = rows(pg, f"SELECT path FROM journal_files WHERE seq = {entry['seq']}")
+    assert not [r for r in entry_files if r["path"].startswith("handoffs/")], (
+        f"the handoff paths did not leave the change set: {entry_files}")
+    lanes_md = _rendered_only(full_render(pg))["lanes/LANES.md"].decode("utf-8")
+    row = next((line for line in lanes_md.split("\n") if line.startswith("| `repoA-3`")), "")
+    assert f"| {RL_MOVED} |" in row, f"the row's handoff column is not the new path: {row!r}"
+    paths = _origin_paths(origin, env)
+    assert RL_HANDOFF in paths and RL_MOVED not in paths, (
+        "the failed move reached origin, or the handoff left its old path")
+
+    # THE RERUN: no entry, only the move.
+    again = ws.run(RL_ARGV, "repoA-3")
+    assert again.returncode == 0, f"the rerun exited {again.returncode}: {again.stderr[-800:]}"
+    assert _journal_since(pg, entry["seq"]) == [], "the rerun added a journal entry"
+    paths = _origin_paths(origin, env)
+    assert RL_MOVED in paths and RL_HANDOFF not in paths, (
+        f"the rerun did not make the move on origin: "
+        f"{sorted(p for p in paths if p.startswith('handoffs/'))}")
+    moved = _git_bytes(origin, env, "cat-file", "blob", f"main:{RL_MOVED}")
+    assert _rl_stamped(RL_TEXT, moved), f"the moved handoff is not stamped: {moved!r}"
+
+
+def test_a_caller_composed_utc_and_log_paused_utc_stay_as_written(pg, tmp_path):
+    """AT-1's part W: a UTC the caller wrote into the line, `append-line`'s
+    `HOLD` line, and `log PAUSED --utc`'s, Amendment 17's late PAUSED, are
+    stored and rendered byte for byte, never replaced by the database's
+    clock: after each write on primary (exit 0, one journal entry), the line
+    is in `doc_lines`, in the full render from SQL and in the scratch mirror
+    at the entry's seq, carrying the caller's UTC, which is not the
+    database's clock. Fails until L4-B4, L4-B8 and L4-B13."""
+    ws = PrimaryWrites(pg, tmp_path)
+    hold = (f"HOLD {EM} lane repoA-2 ({WS}), window w, 2026-11-02T03:04:05Z: "
+            f"opensoft/repoB main {TIP} for test 1's own UTC")
+    late = "2026-11-01T09:08:07Z"
+    paused = re.compile(rf"^PAUSED {EM} lane repoA-1, session [^,]+@{WS}, {late}, lane:repoA-1"
+                        rf"(?: |$)")
+    for what, argv, lane, path, utc, wanted in (
+            ("append-line's HOLD", ["append-line", hold], "repoA-2", "lanes/LANES.md",
+             "2026-11-02T03:04:05Z", lambda line: line == hold),
+            ("log PAUSED --utc", ["log", "PAUSED", "lane:repoA-1", "--utc", late,
+                                  "parked late for test 1"], "repoA-1", "lanes/log/repoA-1.md",
+             late, lambda line: bool(paused.match(line)))):
+        assert abs(db_clock(pg) - epoch_of(utc)) > 3600, "the caller's UTC is the clock's"
+        before_head = head(pg)
+        proc = ws.run(argv, lane)
+        entry = _one_entry(pg, before_head, proc, what)
+        stored = [r["text"] for r in rows(pg, f"SELECT text FROM doc_lines WHERE path = '{path}' "
+                                              f"AND written_seq = {entry['seq']}")]
+        assert any(wanted(text) for text in stored), (
+            f"{what}: no line the write stored carries the caller's UTC as written: {stored}")
+        for label, files in (("the full render", _rendered_only(full_render(pg))),
+                             ("the mirror", _mirror(ws, entry["seq"],
+                                                    tmp_path / f"mirror-{entry['seq']}"))):
+            lines = files[path].decode("utf-8").split("\n")
+            assert any(wanted(line) for line in lines), (
+                f"{what}: {label}'s {path} holds no line with the caller's UTC as written")
+
+
+def test_on_primary_a_write_does_not_nudge_a_register_sync(tmp_path):
+    """AT-1's FP case (the delta's "The post-write nudge does not re-index the
+    mirror into its own source"; FR-027; T416, "The nudge: `index_nudge`'s
+    register `sync` is suppressed on primary. Its inventory nudge stays"): a
+    `log RESUMED` on a `mode=primary` workstation whose `lanes-index` is the
+    contract's stub (T207), beside a copy of `lanes-edit.sh`, `repos.tsv` and
+    `lane-start` (CLI4.5 section 6's copy rule) and first on `PATH`, where
+    `index_nudge` finds it, its register holding C's render set. The write
+    exits 0 and is a primary write (the stub's log holds its `register
+    commit`); then the stub's log holds no register `sync` (`sync` with no
+    `--source`, or one naming the register), and holds the inventory's,
+    `sync --source inventory`, which a `RESUMED`'s lifecycle follow leaves
+    (`LANES_LANE_STATE_ROOT` gives it a control root). The nudges are
+    detached forks, so the case waits for the inventory's, 30 s at most, and
+    one second more. No engine. Fails until L4-B13 (T416's nudge) and L4-B4:
+    on line R's V-round4 the write runs files mode, exits 0 and makes no
+    `register commit`."""
+    code = tmp_path / "code"
+    code.mkdir()
+    for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
+        shutil.copy2(str(REPO / name), str(code / name))
+    fakebin = tmp_path / "fakebin"
+    estate, env, _source = workspace(tmp_path / "ws", fakebin)
+    contract_stub(code, register={p: t for p, t in estate.files.items() if RENDER_SET.match(p)})
+    argv_log = code / "lanes-index.argv"
+    dead = tmp_path / "dead"
+    dead.mkdir()
+    host = quote(dead.as_posix(), safe="")
+    (tmp_path / "conf").mkdir()
+    conf = primary_config(tmp_path / "conf" / "lanes-index.conf",
+                          f"postgresql://{LOGIN_WRITER}@{host}:5432/lanes_t240",
+                          f"postgresql://{LOGIN_READER}@{host}:5432/lanes_t240")
+    env.update(LANES_INDEX_CONFIG=str(conf), LANES_LANE="repoA-2",
+               LANES_LANE_STATE_ROOT=str(tmp_path / "lane-state"),
+               PATH=str(code) + os.pathsep + env["PATH"])
+    env.pop("LANES_INDEX", None)
+    real = Path(os.path.realpath(estate.checkout))
+    lane_c = real.parent / f"{real.name}-lanes" / "repoA-2"
+    lane_c.parent.mkdir(parents=True, exist_ok=True)
+    git(lane_c.parent, "clone", "-q", str(estate.origin), str(lane_c), env=estate.env)
+
+    proc = subprocess.run(["bash", str(code / "lanes-edit.sh"), *W_VERBS["log-resumed"][0]],
+                          capture_output=True, encoding="utf-8", errors="replace", env=env,
+                          timeout=120, cwd=str(estate.checkout), check=False,
+                          stdin=subprocess.DEVNULL)
+    assert proc.returncode == 0, (
+        f"log RESUMED on primary exited {proc.returncode} (L4-B4, L4-B13): "
+        f"{proc.stderr[-800:]}")
+
+    def calls() -> list:
+        if not argv_log.exists():
+            return []
+        return [json.loads(x) for x in argv_log.read_text(encoding="utf-8").splitlines() if x]
+
+    assert any(c[:2] == ["register", "commit"] for c in calls()), (
+        f"the write made no `register commit`, so it was no primary write: {calls()}")
+    inventory = ["sync", "--source", "inventory"]
+    deadline = time.monotonic() + 30
+    while inventory not in calls() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    time.sleep(1)
+    syncs = [c for c in calls() if c and c[0] == "sync"]
+    register_syncs = [c for c in syncs if c != inventory]
+    assert register_syncs == [], (
+        f"a primary write nudged a register sync, which re-indexes the mirror into its own "
+        f"source (T416): {register_syncs}")
+    assert inventory in syncs, f"the inventory's nudge did not run: {calls()}"
+
+
+def test_rename_lane_commits_the_transaction_then_its_move_on_primary_takes_no_bytecode_to_to(
+        pg, tmp_path):
+    """The move's bytecode on primary (R-F13c-23; lane 3's batch 8, Q32, as
+    lane 3's batch c corrects it, #165 6807881675, Q55 and Q56; #162; B15 text
+    (2) for F13d:502): `rename-lane` on primary moves a handoff whose folder
+    also tracks a pre-#162 `__pycache__` file and a tool-cache path
+    (`.mypy_cache`). The rename exits 0 with one journal entry; the move
+    renames that one handoff inside its folder, and its commit, the one commit
+    on origin that changes a path under `handoffs/`, holds only the handoff's
+    D at `<from>` and A at `<to>`; the folder's other tracked paths stay in
+    `<c>`'s index and on origin as they were; no note names them; and T420's
+    backstop passes the push (origin holds the move). The files-mode twin
+    moves as today: its rename exits 0, and its origin holds the handoff at
+    `<to>` alone, with the folder's other paths kept. Fails until lane 4's
+    T422 lands, with L4-B4 and L4-B13."""
+    bytecode = {"handoffs/eagle/__pycache__/notes.cpython-312.pyc": b"\x00pyc, before #162",
+                "handoffs/eagle/.mypy_cache/3.12/notes.meta.json": b"{}\n"}
+    ws = PrimaryWrites(pg, tmp_path, _w_with_handoffs({"repoA-2": (RL_HANDOFF, RL_TEXT)},
+                                                      bytecode))
+    twin = FilesTwin(tmp_path / "twin", ws.estate, ws.lanes_edit)
+    origin, env = ws.estate.origin, ws.estate.env
+    lane_c = ws.lane_checkout("repoA-2")
+    base = git(origin, "rev-parse", "main", env=env).strip()
+    kept_on_origin = {p: b for p, b in _origin_paths(origin, env).items() if p in bytecode}
+    kept_in_c = git(lane_c, "ls-files", "-s", "--", *bytecode, env=env)
+    assert len(kept_on_origin) == 2 and len(kept_in_c.splitlines()) == 2
+
+    before_head = head(pg)
+    proc = ws.run(RL_ARGV, "repoA-2")
+    _one_entry(pg, before_head, proc, "rename-lane over a folder that tracks bytecode")
+    moves = git(origin, "log", "--format=%H", f"{base}..main", "--", "handoffs",
+                env=env).split()
+    assert len(moves) == 1, f"{len(moves)} commits on origin change handoffs/, not one: {moves}"
+    changed = git(origin, "diff-tree", "--no-commit-id", "-r", "--no-renames", "--name-status",
+                  moves[0], env=env).split("\n")
+    assert sorted(x for x in changed if x) == sorted([f"D\t{RL_HANDOFF}", f"A\t{RL_MOVED}"]), (
+        f"the move's commit holds more than the handoff's D and A: {changed}")
+    assert {p: b for p, b in _origin_paths(origin, env).items() if p in bytecode} == \
+        kept_on_origin, "the folder's other tracked paths changed on origin"
+    assert git(lane_c, "ls-files", "-s", "--", *bytecode, env=env) == kept_in_c, (
+        "the folder's other tracked paths left <c>'s index")
+    said = proc.stdout + proc.stderr
+    assert "__pycache__" not in said and ".mypy_cache" not in said, (
+        f"a note names the folder's bytecode or tool-cache paths: {said[-800:]}")
+
+    done = twin.run(RL_ARGV, "repoA-2")
+    assert done.returncode == 0, f"the files-mode twin's rename exited {done.returncode}: " \
+                                 f"{done.stderr[-800:]}"
+    theirs = _origin_paths(twin.origin, twin.git_env)
+    assert RL_MOVED in theirs and RL_HANDOFF not in theirs, "the twin did not move the handoff"
+    assert {p: b for p, b in theirs.items() if p in bytecode} == kept_on_origin, (
+        "the twin's move changed the folder's other tracked paths")
+
+
+#: N1's handoff paths (REV422c N1; batch c Q56): a row whose handoff is at a
+#: path with a `venv/` part, and one whose handoff is at a path with a
+#: `__pycache__/` part, each named for its lane: {lane: (path, its new name)}.
+RL_CACHE_PARTS = {
+    "repoA-2": ("handoffs/venv/session-handoff-2026-10-01-lane-repoA-2.md", "repoA-3", "venv"),
+    "repoA-1": ("handoffs/eagle/__pycache__/session-handoff-2026-10-01-lane-repoA-1.md",
+                "repoA-9", "__pycache__"),
+}
+
+
+def test_rename_lane_commits_the_transaction_only_where_its_handoffs_path_has_no_cache_part_on_primary(  # noqa: E501
+        pg, tmp_path):
+    """N1's refusal (REV422c N1; lane 3's batch c, #165 6807881675, Q56; B15
+    text (2) for F13d:502; Y:5138, "a handoff that cannot be stamped refuses
+    before anything is sent"): on primary, a row whose handoff is at a path
+    with a `venv/` part, and one whose handoff is at a path with a
+    `__pycache__/` part (each tracked in the lane's `<c>`, committed there
+    before #162), each refuse 2 before the seam: stderr names the part; the
+    run sent the register a read, the attempt's snapshot, so the refusal is
+    primary's, made in the attempt's child before the seam (files mode's own
+    #162 refusal of the same move sends nothing, and exits 2 as well); no
+    commit call is sent; no register line is written (the journal's head and
+    the rendered files as they were); and no move is made (origin, and the
+    handoff in `<c>`, as they were). Fails until lane 4's T422 lands, with
+    L4-B4 and L4-B13: it passes on T422 `eda2411` over line R's V-round4."""
+    prep = _w_with_handoffs({lane: (path, f"# handoff of lane {lane}\n\nbody\n".encode("ascii"))
+                             for lane, (path, _new, _part) in RL_CACHE_PARTS.items()})
+    ws = PrimaryWrites(pg, tmp_path, prep)
+    origin, env = ws.estate.origin, ws.estate.env
+    for lane, (path, new, part) in RL_CACHE_PARTS.items():
+        before_head, before_files = head(pg), _rendered_only(full_render(pg))
+        paths = _origin_paths(origin, env)
+        handoff = ws.lane_checkout(lane) / path
+        held = handoff.read_bytes()
+        sent_before = len(ws.shim_calls())
+        proc = ws.run(["rename-lane", lane, new, "test 1", "--no-github"], lane)
+        sent = ws.shim_calls()[sent_before:]
+        assert proc.returncode == 2, (
+            f"rename-lane {lane} on primary, its handoff at {path}, exited {proc.returncode}, "
+            f"not 2 (N1; lane 4's T422): {proc.stderr[-800:]}")
+        assert part in proc.stderr, f"the refusal does not name {part!r}: {proc.stderr!r}"
+        assert sent, (
+            f"rename-lane {lane} sent the register nothing, so its 2 is not primary's refusal "
+            f"after the attempt's snapshot (N1; lane 4's T422; L4-B4): {proc.stderr[-800:]}")
+        assert not [c for c in sent if "commit_write(" in (c.get("stdin") or "")], (
+            f"the refusal sent a commit call: {sent}")
+        assert head(pg) == before_head and _rendered_only(full_render(pg)) == before_files, (
+            "the refusal wrote a register line")
+        assert _origin_paths(origin, env) == paths and handoff.read_bytes() == held, (
+            "the refusal moved the handoff")
