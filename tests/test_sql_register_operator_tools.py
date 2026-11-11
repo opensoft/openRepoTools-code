@@ -54,6 +54,11 @@ wait for lane 3's word:
 - `[fetch-fails]` rests on reading 3: the fetch must succeed. Its checkout's
   `origin/main`, fetched before, already names this database.
 Every other case refuses, or flips, under any of the readings.
+
+A MARKER NAMING NO `database=` (R-F13c-21; T218h): `[marker-names-no-database]`'s
+origin holds a `lanes/STORE` with no `database=` line, and the refusal must also
+say lane 1's words for it (T120 follow-up 2, `1a50506`, #165 6780516820, on lane
+3's ruling 5 in 6778959652). It fails until that follow-up lands.
 """
 
 from __future__ import annotations
@@ -107,9 +112,11 @@ def _script(path: Path, text: str) -> Path:
     return path
 
 
-def _store(database: str, store: str = "primary") -> str:
-    """`lanes/STORE` in D21's form, one `key=value` per line."""
-    return "\n".join([f"store={store}", f"database={database}", "import=1",
+def _store(database: str | None, store: str = "primary") -> str:
+    """`lanes/STORE` in D21's form, one `key=value` per line; with
+    `database` None, it holds no `database=` line."""
+    named = [] if database is None else [f"database={database}"]
+    return "\n".join([f"store={store}", *named, "import=1",
                       "lanes-tree=0000000000000000000000000000000000000000",
                       "utc=2026-11-10T00:00:00Z", ""])
 
@@ -288,6 +295,12 @@ REFUSALS = {
     "label-not-the-switchs": dict(switch=("primary", "present", OTHER), marker=_store(OTHER)),
     # reading 3: the fetch fails, though origin/main, as last fetched, names LABEL
     "fetch-fails": dict(unreachable=True),
+    # origin's marker names no database: lane 1's words (T120 follow-up 2, on
+    # lane 3's ruling 5; R-F13c-21), which the refusal must say
+    "marker-names-no-database": dict(marker=_store(None), says=(
+        "has a lanes/STORE naming no `database=`, so it cannot show that it names this "
+        f"database, `{LABEL}`, as the switch and register_label= name it (D21); "
+        "nothing was written")),
 }
 
 
@@ -311,6 +324,9 @@ def test_set_mode_primary_refuses_before_the_marker_is_present_or_names_another_
         f"{_said(proc)}")
     assert _mode_lines(config) == ["mode=index"]
     assert estate.passfile.read_bytes() == estate.passfile_bytes
+    if "says" in case:
+        assert case["says"] in proc.stderr, (
+            f"[{fault}] the refusal does not say lane 1's words, {case['says']!r}:\n{_said(proc)}")
 
     # THE CONTROL: the same estate with the fault taken away flips to primary.
     other = estate.config("index", name="control")
