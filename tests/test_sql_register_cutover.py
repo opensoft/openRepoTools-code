@@ -135,10 +135,21 @@ def _said(proc: subprocess.CompletedProcess) -> str:
 class Host:
     """One host: a `lanes-index` copy beside `lanes-edit.sh`, a workspace
     checkout of a bare origin, and the register's fake `psql` first on
-    `PATH`."""
+    `PATH`.
+
+    `LANES_REPO` names the checkout, the operator lane's own, and `W` is a
+    directory of its own, `LANES_WORKSPACE_ROOT` (`lanes-edit.sh`'s test
+    seam), as T221i's and T231d's import cases have it: the operator
+    commands run through the operator lane's checkout, never `W` (D24), and
+    the import refuses a `LANES_REPO` that names `W` ("REFUSED: import:
+    LANES_REPO names W itself"; lane 1's triage, group 6, #165 comment
+    6807494089). `workspace.yaml` still names the checkout; the seam is
+    read first."""
 
     def __init__(self, root: Path):
         self.root = root
+        self.w = root / "W"
+        self.w.mkdir(parents=True)
         tool = root / "tool"
         tool.mkdir(parents=True)
         source = REPO / "lanes-index"
@@ -169,6 +180,7 @@ class Host:
         env.update(HOME=str(self.home), XDG_STATE_HOME=str(root / "state"),
                    XDG_CONFIG_HOME=str(root / "config"), TMPDIR=str(root / "t"),
                    LANES_WORKSTATION="Eagle", LANES_NO_GITHUB="1", LANES_REPO=str(self.wip),
+                   LANES_WORKSPACE_ROOT=str(self.w),
                    LANES_LANE=OPERATOR_LANE, FAKE_PSQL_LOG=str(self.psql_log),
                    GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0",
                    PATH=os.pathsep.join([str(self.fakebin),
