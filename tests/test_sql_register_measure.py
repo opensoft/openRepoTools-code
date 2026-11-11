@@ -1146,7 +1146,10 @@ def test_swapped_with_several_candidates_is_timed_beside_its_journal_last_calls(
 #: for lane 4 to confirm against its [L4-c] section. A landing's object is
 #: an `owner/repo#<n>` key, one of the forms `lanes-edit.sh`'s `canon_object`
 #: takes (`owner/repo#<n>`, `#<n>`, `lane:<name>` and the OpenSpec form),
-#: which has no `pr:` form.
+#: which has no `pr:` form. `{dir}` is the estate's checkout: SEED's log
+#: records `dir /work/repoA1`, which exists on no host, so the dry run names
+#: a directory that exists with `--dir`, and it runs in a tmux window of its
+#: own, `_window`'s, since `lane-start` refuses outside tmux.
 VERBS = {
     "log-noted": ([["log", "NOTED", "lane:repoA-1", "t255 measured note {k}"]], 1),
     "claim": ([["claim", "opensoft/repoA#{k}", "--no-github"]], 1),
@@ -1158,7 +1161,7 @@ VERBS = {
                         f"opensoft/repoA main {ARROW} abc1234"],
         ["log", "CLOSED", "opensoft/repoA#{k}", "merged abc1234"],
         ["release", "opensoft/repoA#{k}", "landed", "--no-github"]], 5),
-    "lane-start-dry-run": ([["@lane-start", "--dry-run", "repoA", "1"]], 0),
+    "lane-start-dry-run": ([["@lane-start", "--dry-run", "--dir", "{dir}", "repoA", "1"]], 0),
 }
 MODES = ("files", "primary")
 
@@ -1208,8 +1211,36 @@ class VerbEstate:
         return int(git(self.estate.origin, "rev-list", "--count", "main", env=self.estate.env).strip())
 
 
+def _window(estate: VerbEstate, root: Path, lane: str, session_id: str = None):
+    """The tmux window `lane-start` runs in, named `lane`, with a live session
+    in it (T203c's `guard_session`, imported here so the module still loads
+    where T203c is not in the tree). `lane-start` refuses outside tmux (its
+    step 2: "run this inside the tmux window that will carry the lane"), and
+    `--bind` takes only the transcript uuid of the session live in its
+    window. So a run gets the stand-in `tmux` in `<root>/window`, answering
+    as the window `lane`, and a live session record under the estate's
+    `HOME` whose `sessionId` is `session_id` (a new uuid where None); the
+    estate's environment then carries that window's `TMUX`, `TMUX_PANE` and
+    the stand-in first on `PATH`, no inherited `CLAUDE_*` (a person's
+    `CLAUDE_CONFIG_DIR` would move the records), and `CLAUDE_CODE_SESSION_ID`
+    naming the session, as the harness exports it. The record's `cwd`,
+    `<HOME>/projects/repoA`, is the helper's rule; `lane-start` does not read
+    it. The caller closes the session."""
+    try:
+        from sql_register_helpers import guard_session
+    except ImportError:
+        pytest.fail("tests/sql_register_helpers.py has no `guard_session`: T203c provides it",
+                    pytrace=False)
+    home = estate.estate.home
+    session = guard_session(home, root / "window", home / "projects" / "repoA", window=lane,
+                            session_id=session_id)
+    base = {k: v for k, v in estate.env.items() if not k.startswith("CLAUDE_")}
+    estate.env = session.env(base, CLAUDE_CODE_SESSION_ID=session.session_id)
+    return session
+
+
 @pytest.mark.parametrize("verb", list(VERBS))
-def test_each_verb_is_timed_end_to_end_in_both_modes(pg_engine, pg, tmp_path, verb):
+def test_each_verb_is_timed_end_to_end_in_both_modes(pg_engine, pg, tmp_path, verb, request):
     """M7 (section 5.1; P5, what a lane feels): the verb, exec to exit, cold
     once and 20 warm, in files mode against a local bare origin and on
     primary, on the same host. The oracle: every run exits 0; on primary the
@@ -1221,11 +1252,14 @@ def test_each_verb_is_timed_end_to_end_in_both_modes(pg_engine, pg, tmp_path, ve
     lines = []
     for mode in MODES:
         estate = VerbEstate(pg, tmp_path / mode, mode)
+        if any(step[0] == "@lane-start" for step in steps):
+            request.addfinalizer(_window(estate, tmp_path / mode, "repoA-1").close)
         before = head(pg) if mode == "primary" else estate.origin_commits()
         times = []
         for k in range(1 + N_WARM):
             utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            argvs = [[part.format(k=1000 + k, utc=utc) for part in step] for step in steps]
+            argvs = [[part.format(k=1000 + k, utc=utc, dir=estate.estate.checkout) for part in step]
+                     for step in steps]
             start = time.monotonic_ns()
             for argv in argvs:
                 proc = estate.run(argv)
