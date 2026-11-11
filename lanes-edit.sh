@@ -2706,8 +2706,9 @@ reg_marker_read() {   # <repo> <tip; empty: the working tree>
 # `$( )`, has `REG_ASK` 0, and an attempt's child as T413 makes it has
 # `REG_ASK` 0 and `REG_MODE` `primary` (lane 3, #165 6754806910 and
 # 6767463594). THE TIP is resolved as `have_remote_ref` resolves it, with no
-# `^{commit}`: no ref is no origin branch to read, and a ref whose commit git
-# cannot read goes to the read, which answers 2. THE READ is `ls-tree`, which
+# `^{commit}`: no ref, or a ref whose value git cannot parse, is no readable
+# origin branch (the refusal says so), and a ref whose commit git cannot read
+# goes to the read, which answers 2. THE READ is `ls-tree`, which
 # tells an absent marker (0, nothing printed) from a tree git cannot read
 # (not 0), where `cat-file -e` is 128 for both; a read that fails refuses
 # (2), since it proves nothing. Under `LANES_NO_GIT=1`, or where there is no
@@ -2726,7 +2727,7 @@ cs_marker_refuse() {   # <what> <the tip: a revision; empty: no origin branch> <
     cs_refuse "$1" "git could not read the tree of origin/$LANES_BRANCH at ${csm_tip:0:12}, $3, to look for lanes/STORE, the marker of an estate whose register is SQL, so whether this workstation may write the files is unknown (feature 007, FR-004)"
   if [ -z "$csm_tip" ]; then
     if [ "$NO_GIT" = 1 ]; then csm_where="$LANES_DIR/STORE is in the working tree (LANES_NO_GIT=1)"
-    else csm_where="$LANES_DIR/STORE is in the working tree, and there is no origin/$LANES_BRANCH here to read instead"
+    else csm_where="$LANES_DIR/STORE is in the working tree, and there is no readable origin/$LANES_BRANCH here to read instead"
     fi
   else
     csm_where="lanes/STORE is on origin/$LANES_BRANCH at ${csm_tip:0:12}, $3"
