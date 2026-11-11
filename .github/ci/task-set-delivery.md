@@ -1,4 +1,4 @@
-# Shared Claude/Codex task-set instructions: CI-only pilot
+# Shared Claude/Codex task-set instructions: manual full-CI delivery
 
 Read the assembly's AGENTS.md and AGENTS-shape.md first. This is a code-local
 supplement for both agents, not replacement governance or a second specification
@@ -6,12 +6,12 @@ store. Canonical feature 008 and its OpenSpec change live in openRepoTools-spec.
 
 ## Current authority
 
-This pilot is **advisory only**. Full tests.yml checks remain required; the
+Feature 008's classifier is **advisory only**. Full tests.yml checks remain required; the
 assembly's exact-pin composed run is separate acceptance. A `claude-current`
 shadow result does not authorize fast-only CI, a queue or a merge. No Mergify
 queue was activated by feature 008. Feature 009's separate
-[manual documentation queue](batching-pilot.md) prepares full-CI batching only;
-it does not use this classifier, activate a canary or enable fast-only CI. Do
+[manual queues](batching-pilot.md) supply separately approved full-CI batching;
+they do not use this classifier or enable fast-only CI. Do
 not copy OpenBenches efficiency labels, admission receipts or allowlists here.
 
 Code [PR #34](https://github.com/opensoft/openRepoTools-code/pull/34) owns the
@@ -19,6 +19,14 @@ Code [PR #34](https://github.com/opensoft/openRepoTools-code/pull/34) owns the
 Check its actual merge state and latest instructions before using it. Targeted
 verification is feedback, never full integration or release acceptance. Do not
 copy or cherry-pick its file just to make this pilot work.
+
+The 2026-11-11 rollout adds the main-only `openrepotools-code` queue for normal
+code PRs without renaming lane branches. A repository writer checks current
+authority, exact-head review, threads, paths, base and all full gates before
+the explicit named command. See the runbook; eligibility alone enqueues nothing.
+An independent PR targets main; do not flatten a genuine dependency to qualify.
+Workflow/queue/pin/package-control and unknown/mixed paths need separate normal
+reviewed landing, not this queue. Existing lanes and installed tools stay put.
 
 ## Small task sets without disrupting lanes
 
@@ -48,8 +56,8 @@ explicitly waived for that PR. A quota response, Copilot, or old-head review is
 not approval. Recheck head/base/checks and unresolved findings after changes.
 Preserve existing review policy; do not invent a bypass or post a green status.
 
-No live stack/canary, queue command, app access, ruleset bypass, paid upgrade,
-release change or tag is authorized by configuration preparation. A future
+No unrelated live stack/canary, queue command, app access, ruleset bypass, paid
+upgrade, release change or tag is authorized by configuration preparation. A future
 manual full-CI canary must satisfy the runbook's access, review and authorization
 checks. Fast-only activation additionally requires trusted default-branch
 classification, coverage parity and separately qualified candidate/landed-tree
