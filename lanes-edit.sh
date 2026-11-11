@@ -561,9 +561,9 @@
 #      of the attempt's directory that cannot be written, or a `ready` there
 #      already; and `commit`'s publish act, which T420 keeps out of the
 #      attempt loop (ERR-06; R16). Likewise: a staged set that git cannot
-#      list, or lists in a form the seam cannot read; a blob id that is not
-#      40 hex digits; and a case-only rename that is not one D line and one A
-#      line.
+#      list, or lists in a form the seam cannot read, or lists with no path
+#      the seam could read (REV-W9a M1); a blob id that is not 40 hex
+#      digits; and a case-only rename that is not one D line and one A line.
 #      AND FEATURE 007'S PRIMARY BRANCH (T415; FR-018; Y:2459, Y:5014,
 #      Y:5603–5605; the contract's §3.2 and §3.3), the parent's, each with
 #      nothing written: a write that names no lane, or whose lane's own
@@ -759,8 +759,9 @@
 #      parent sent `abandon`, or its parent is gone, or the seam's cap passed
 #      with no answer (twice D + 30 s, 120 s at D7's 30 s; the variable
 #      LANES_REGISTER_SEAM_CAP_S sets it for tests), or the parent's line
-#      was neither `committed <seq>` nor `abandon`, or `seam.out` could not
-#      be written as `tail`. `seam.out` then reads `none`, unless it could
+#      was neither `committed <seq>` nor `abandon` (a `committed` whose seq
+#      is not the attempt's snapshot `n=` plus 1 is neither, as is a line
+#      longer than 28 bytes), or `seam.out` could not be written as `tail`. `seam.out` then reads `none`, unless it could
 #      not be written at all, and but for `abandon` one line on the real
 #      stderr says "attempt <k> of write <id> stopped waiting at the seam
 #      (<why>); nothing after the seam ran". Only that child exits it. Its
@@ -3790,15 +3791,24 @@ EOF
 #   5. The handshake (Y:4999–5007). The parent made `seam.fifo`; it is opened
 #      read-write on fd 5 BEFORE `ready`, so the open cannot block and a line
 #      the parent writes once it sees `ready` is held in the pipe until it is
-#      read. Turns of `read -t 1 -n 1 -u 5`, one byte each, build the line;
-#      after a turn with no byte, and at most once a second while bytes come
-#      with no newline, the parent is tested with `pid_start_of` against
-#      `parent.pid`, whose 2 is live (R49), as is a shell with no such
-#      function yet (`wr_claim_live`'s `untested`); and the cap,
-#      `wr_seam_cap_s` (Y:5001). One byte a read keeps a line whole across a
-#      timeout on bash 3.2 too, which drops a timed-out read's partial input
-#      (W7-T422's finding: `committed 8` was read as `ommitted 8`).
-#   6. `committed <s>`: `seam.out` is `tail`, fds 1 and 2 go back to 3 and 4,
+#      read. Turns of `read -t 1 -n 1 -u 5`, one byte each in the C locale,
+#      build the line; after a turn with no byte, and at most once a second
+#      while bytes come with no newline, the parent is tested with
+#      `pid_start_of` against `parent.pid`, whose 2 is live (R49), as is a
+#      shell with no such function yet (`wr_claim_live`'s `untested`); and
+#      the cap, `wr_seam_cap_s` (Y:5001). Where either says stop, one more
+#      turn is read first (REV-W9a N3). One byte a read keeps a line whole
+#      across a timeout on bash 3.2 too, which drops a timed-out read's
+#      partial input (W7-T422's finding: `committed 8` was read as
+#      `ommitted 8`). A byte that races bash 3.2's alarm can still be lost,
+#      only the first, and the result is never a valid message, so
+#      `seam.out` is `none` and the run replays (Y:5053, Y:5388; lane
+#      openRepoTools-3's batch c, Q76). Nothing in the seam goes through a
+#      here-document or a here-string, which need a temp file on bash 3.2
+#      (REV-W9a M1).
+#   6. `committed <s>`, where `<s>` is the attempt's snapshot `n=` plus 1
+#      (REV-W9a S1; any other `<s>` is neither message, item 7): `seam.out`
+#      is `tail`, fds 1 and 2 go back to 3 and 4,
 #      the buffered `out.1` and then `out.2` are replayed, `REGISTER_SEQ` is
 #      set, `REG_STORE` is set to `sql` (T504's variable: nothing else in a
 #      child sets it, so `committed` alone opens the tail's reads to D17's
@@ -3807,7 +3817,9 @@ EOF
 #      (Y:5011).
 #   7. `abandon`: `seam.out` is `none`, and the child exits 75 without its
 #      tail, its buffered output discarded (Y:5013). The parent gone, the cap
-#      passed, or a line that is neither message: `none`, Y:5006's one line on
+#      passed, or a line that is neither message (a `committed` whose seq is
+#      not the snapshot's `n=` plus 1, or a line longer than 28 bytes, the
+#      longest `committed <seq>`, among them): `none`, Y:5006's one line on
 #      fd 4, and 75 without the tail (`cp_seam_stop`).
 #
 # The parent's part, the loop, `mkfifo` and the child's start with its real
@@ -3866,14 +3878,42 @@ cp_seam_stop() {   # <why>
     "${REG_SCRATCH##*/}" "${css_id:-unknown}" "$1" 2>/dev/null >&4 || :
   exit 75
 }
+# A LINE'S FIELDS, split at runs of spaces and tabs as `IFS=" <tab>" read`
+# splits them, into `cs_f`, `cp_seam`'s array, with its `cs_tab`: by parameter
+# expansion alone, since a here-string needs a temp file on bash 3.2 (REV-W9a
+# M1).
+cp_seam_fields() {   # <line>
+  local csf_m="${1-}" csf_a="" csf_b=""
+  cs_f=()
+  while [ -n "$csf_m" ]; do
+    case "$csf_m" in
+      " "*|"$cs_tab"*) csf_m="${csf_m#?}" ;;
+      *)
+        csf_a="${csf_m%%" "*}"; csf_b="${csf_m%%"$cs_tab"*}"
+        [ "${#csf_b}" -ge "${#csf_a}" ] || csf_a="$csf_b"
+        cs_f+=("$csf_a"); csf_m="${csf_m#"$csf_a"}" ;;
+    esac
+  done
+}
+# ONE BYTE FROM THE SEAM'S FIFO, fd 5, into `cs_c`, `cp_seam`'s, within 1 s;
+# `read`'s own code. In the C locale, so that `read -n 1` takes a byte and
+# never a character (REV-W8a N2: under a UTF-8 locale, bash 5.2 read a lone
+# lead byte and the newline after it as one character). The locale is this
+# function's alone: a `local LC_ALL` is exported to child processes where
+# LC_ALL was exported, and the parent test's `pid_start_of` runs in the
+# caller's.
+cp_seam_byte() {
+  local LC_ALL=C
+  IFS= read -r -t 1 -n 1 -u 5 cs_c
+}
 cp_seam() {
   local cs_tab="" cs_raw="" cs_l="" cs_meta="" cs_p="" cs_q="" cs_sm="" cs_dm="" cs_b="" cs_n="" \
         cs_st="" cs_x="" cs_i=0 cs_known=0 cs_extra="" cs_out="" cs_bad="" cs_ren="${LOG_RENAMED_FROM:-}" \
         cs_to="" cs_ton=0 cs_fromd=0 cs_tsv="" cs_rows="" cs_img="" cs_h="" cs_d="$REG_SCRATCH" \
         cs_pl="" cs_ptok="" cs_tok="" cs_prc=0 cs_cap="" cs_t0=0 cs_msg="" cs_s="" cs_buf="" \
-        cs_c="" cs_tt=0
-  local cs_sts cs_ps cs_bs cs_ns
-  cs_sts=(); cs_ps=(); cs_bs=(); cs_ns=()
+        cs_c="" cs_tt=0 cs_r="" cs_rc=0 cs_nb=0 cs_why="" cs_tw=0 cs_sl="" cs_sn=""
+  local cs_sts cs_ps cs_bs cs_ns cs_f
+  cs_sts=(); cs_ps=(); cs_bs=(); cs_ns=(); cs_f=()
   cs_tab="$(printf '\t')"
   # `commit`'S PUBLISH ACT IS AN INTERNAL ERROR HERE (ERR-06; R16). On primary
   # only `commit`'s carry form is refused; its publish act runs outside the
@@ -3896,19 +3936,33 @@ cp_seam() {
   # ---- 3. THE PATHS AND THEIR STATUS (Y:5060). `core.quotepath=false` leaves
   # a path as it is unless it holds a control character, a quote or a
   # backslash; git then quotes it, and the quoted form is in no render set.
-  while IFS= read -r cs_l; do
+  # THE LIST IS SPLIT BY PARAMETER EXPANSION, never through a here-document or
+  # a here-string (REV-W9a M1): bash 3.2 writes each of those to a temp file,
+  # and where none can be made, as in a full TMPDIR, the read never runs, so
+  # the seam would hand an empty change set to `ready`. A line is split at
+  # each newline, and its meta, which holds no tab, at runs of spaces
+  # (`cp_seam_fields`), as `IFS=' ' read` split it; five fields, or the line
+  # is refused. And a list git gave that yields no path is refused with 2,
+  # so that no `ready` is ever written for a change set the seam could not
+  # read.
+  cs_r="$cs_raw"
+  while [ -n "$cs_r" ]; do
+    cs_l="${cs_r%%"$WR_NL"*}"
+    case "$cs_r" in
+      *"$WR_NL"*) cs_r="${cs_r#*"$WR_NL"}" ;;
+      *) cs_r="" ;;
+    esac
     [ -n "$cs_l" ] || continue
     cs_meta="${cs_l%%"$cs_tab"*}"; cs_p="${cs_l#*"$cs_tab"}"
-    cs_sm=""; cs_dm=""; cs_b=""; cs_n=""; cs_st=""; cs_x=""
-    IFS=' ' read -r cs_sm cs_dm cs_b cs_n cs_st cs_x <<<"$cs_meta" || :
+    cp_seam_fields "$cs_meta"
     case "$cs_l" in
-      :*"$cs_tab"?*) [ -n "$cs_st" ] && [ -z "$cs_x" ] ;;
+      :*"$cs_tab"?*) [ "${#cs_f[@]}" -eq 5 ] ;;
       *) false ;;
     esac || die "git listed a line this seam cannot read, $(printf '%q' "$cs_l"), in the attempt's scratch tree under LANES_REGISTER_SCRATCH: an internal error. Nothing was sent." 2
-    cs_sts+=("$cs_st"); cs_ps+=("$cs_p"); cs_bs+=("$cs_b"); cs_ns+=("$cs_n")
-  done <<CS_EOF
-$cs_raw
-CS_EOF
+    cs_sts+=("${cs_f[4]}"); cs_ps+=("$cs_p"); cs_bs+=("${cs_f[2]}"); cs_ns+=("${cs_f[3]}")
+  done
+  [ "${#cs_ps[@]}" -gt 0 ] ||
+    die "git listed what this write stages in the attempt's scratch tree, ${LANES_REPO}, under LANES_REGISTER_SCRATCH, but the seam read no path from that list, so its change set would be empty: an internal error. Nothing was sent." 2
   for cs_p in ${cs_ps[@]+"${cs_ps[@]}"}; do
     cs_known=0
     for cs_q in ${CP_PATHS[@]+"${CP_PATHS[@]}"} ${cs_ren:+"$cs_ren"}; do
@@ -3990,48 +4044,73 @@ CS_EOF
     die "refusing to wait at the seam: this attempt's ready, in ${cs_d}, is there already or cannot be made, so its parent cannot be told when this change set is whole, under LANES_REGISTER_SCRATCH: an internal error. Nothing was sent." 2
   # ---- 5. THE HANDSHAKE (Y:4999–5007). The parent's start token is the
   # second field of `parent.pid`'s first line, whose first field T413 checked
-  # is `$PPID`; with none, its pid alone is tested.
+  # is `$PPID`; with none, its pid alone is tested. The line is split as the
+  # change set is, with no here-string (REV-W9a M1).
   if [ -f "$cs_d/parent.pid" ] && [ -r "$cs_d/parent.pid" ]; then
     { IFS= read -r cs_pl || :; } 2>/dev/null < "$cs_d/parent.pid"
   fi
-  IFS=" $cs_tab" read -r cs_x cs_ptok cs_q <<<"$cs_pl" || :
+  cp_seam_fields "$cs_pl"
+  [ "${#cs_f[@]}" -lt 2 ] || cs_ptok="${cs_f[1]}"
   cs_cap="$(wr_seam_cap_s)"
   cs_t0="$SECONDS"
   cs_tt="$SECONDS"
-  # ONE BYTE A READ, SO A TIMEOUT NEVER CUTS A LINE (W7-T422's finding;
+  # ONE BYTE A READ KEEPS A LINE WHOLE ACROSS A TIMEOUT (W7-T422's finding;
   # Y:4999–5007). Where a `read -t` times out part way through a line, bash 4
   # and later keep the partial input in its variable, but bash 3.2 returns 1
   # with the variable empty and the bytes it took from the FIFO lost: there,
   # a `committed 8` cut after its `c` was read as `ommitted 8`. So each read
-  # takes one byte (`-n 1`) into `cs_c`, and `cs_buf` builds the line from
+  # takes one byte (`cp_seam_byte`, in the C locale, so a byte and never a
+  # character: REV-W8a N2) into `cs_c`, and `cs_buf` builds the line from
   # every byte a read returns; a timeout ends a turn between two reads. A
   # read that succeeds empty is the newline; `IFS=` keeps a space, which
-  # would otherwise read as that empty. What a timed-out read leaves in `cs_c` is kept, as a later
-  # bash may leave part of a multibyte character there. The parent and cap
-  # tests run after a turn that times out, and at most once a second while
-  # bytes come with no newline.
+  # would otherwise read as that empty. A one-byte read that times out has
+  # taken nothing, but a byte it left in `cs_c` would still be kept.
+  # A BYTE THAT RACES THE ALARM on bash 3.2, returned in the instant its 1 s
+  # alarm fires, can still be lost (lane openRepoTools-3's batch c, Q76). Only
+  # the first: only a read that is blocked when the parent's line arrives can
+  # race, and that line is one write shorter than PIPE_BUF (a later byte only
+  # where a read stalls a second or more between its alarm and its return).
+  # The result is never a valid message: a cut `committed` or `abandon` is
+  # neither, and so is a valid message with the wrong seq (below), as a lost
+  # digit would leave it. So `seam.out` is `none` and the run replays
+  # (Y:5053, Y:5388).
+  # The parent and cap tests run after a turn that times out, and at most
+  # once a second while bytes come with no newline. Where either says stop,
+  # one more turn is read first (REV-W9a N3), so that a line that reached the
+  # FIFO after a turn's timeout and before the test is still taken; that turn
+  # stops at a read that times out, or 2 s on. A line longer than any
+  # message, `committed ` and 18 digits, is neither, once its 29th byte is
+  # read (REV-W8a N3).
   while :; do
-    cs_c=""
-    if IFS= read -r -t 1 -n 1 -u 5 cs_c; then
-      if [ -z "$cs_c" ]; then
-        cs_msg="$cs_buf"
-        break
-      fi
-      cs_buf="${cs_buf}${cs_c}"
+    cs_c=""; cs_rc=0
+    cp_seam_byte || cs_rc=$?
+    if [ "$cs_rc" = 0 ] && [ -z "$cs_c" ]; then
+      cs_msg="$cs_buf"
+      break
+    fi
+    if [ -n "$cs_c" ]; then
+      cs_buf="${cs_buf}${cs_c}"; cs_nb=$((cs_nb + 1))
+      [ "$cs_nb" -le 28 ] ||
+        cp_seam_stop "its parent's message is longer than 28 bytes, the longest committed <seq>, so it is neither committed <seq> nor abandon; it begins $(printf '%q' "$cs_buf")"
+    fi
+    if [ "$cs_rc" = 0 ]; then
       [ "$SECONDS" != "$cs_tt" ] || continue
+      [ -z "$cs_why" ] || [ $((SECONDS - cs_tw)) -lt 2 ] || cp_seam_stop "$cs_why"
     else
-      cs_buf="${cs_buf}${cs_c}"
+      [ -z "$cs_why" ] || cp_seam_stop "$cs_why"
     fi
     cs_tt="$SECONDS"
+    [ -z "$cs_why" ] || continue
     cs_tok=""; cs_prc=0
     cs_tok="$(pid_start_of "$PPID" 2>/dev/null)" || cs_prc=$?
     case "$cs_prc" in
-      1) cp_seam_stop "its parent, pid ${PPID}, is gone" ;;
+      1) cs_why="its parent, pid ${PPID}, is gone" ;;
       0) if [ -n "$cs_ptok" ] && [ "$cs_tok" != "$cs_ptok" ]; then
-           cp_seam_stop "its parent, pid ${PPID}, is gone, and that pid is another process now"
+           cs_why="its parent, pid ${PPID}, is gone, and that pid is another process now"
          fi ;;
     esac
-    [ $((SECONDS - cs_t0)) -lt "$cs_cap" ] || cp_seam_stop "the seam's cap of ${cs_cap} s passed"
+    [ -n "$cs_why" ] || [ $((SECONDS - cs_t0)) -lt "$cs_cap" ] || cs_why="the seam's cap of ${cs_cap} s passed"
+    [ -z "$cs_why" ] || cs_tw="$SECONDS"
   done
   case "$cs_msg" in
     abandon)
@@ -4039,7 +4118,27 @@ CS_EOF
       exit 75 ;;
     "committed "*)
       cs_s="${cs_msg#committed }"
-      wr_is_count "$cs_s" || cp_seam_stop "its parent's message is $(printf '%q' "$cs_msg"), which is neither committed <seq> nor abandon" ;;
+      wr_is_count "$cs_s" || cp_seam_stop "its parent's message is $(printf '%q' "$cs_msg"), which is neither committed <seq> nor abandon"
+      # THIS ATTEMPT'S OWN SEQ (REV-W9a S1): a commit of this change set is at
+      # the snapshot's `n=` plus 1, since `commit_write` refuses unless the
+      # head is still `n` (Y:2616) and commits at `n+1` (Y:2647); and the
+      # child a run sends `committed <s>` to took its snapshot at `s-1`, or
+      # was built `--at <s-1>`, whose `n=` is `s-1` (contract §3.2). Any other
+      # `<s>`, one with a leading zero included, is neither message: `none`,
+      # and the run replays (Y:5053, Y:5388). The reference is the snapshot,
+      # the attempt's own, and not the record's `tail=sent <s>` (Y:5339),
+      # which the child does not read.
+      cs_sn=""
+      if [ -f "$cs_d/snapshot" ] && [ -r "$cs_d/snapshot" ]; then
+        while IFS= read -r cs_sl || [ -n "$cs_sl" ]; do
+          case "$cs_sl" in n=*) cs_sn="${cs_sl#n=}"; break ;; esac
+          cs_sl=""
+        done 2>/dev/null < "$cs_d/snapshot"
+      fi
+      wr_is_count "$cs_sn" ||
+        cp_seam_stop "its parent's message is committed ${cs_s}, and this attempt's snapshot gives no n= to check that seq against, so it is neither committed <seq> of this attempt nor abandon"
+      [ "$cs_s" = "$((10#$cs_sn + 1))" ] ||
+        cp_seam_stop "its parent's message is committed ${cs_s}, and this attempt's snapshot is at n=${cs_sn}, so a commit of it is at seq $((10#$cs_sn + 1)): neither committed <seq> of this attempt nor abandon" ;;
     *)
       cp_seam_stop "its parent's message is $(printf '%q' "$cs_msg"), which is neither committed <seq> nor abandon" ;;
   esac
