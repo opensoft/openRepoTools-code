@@ -16381,8 +16381,9 @@ section "== Amendment 14: the derived index is never read by an act =="
 #   control      exactly as every case above ran: `LANES_INDEX=off` and no
 #                indexer on PATH;
 #   unreachable  OFFLINE NO-READ — an indexer installed on PATH and configured
-#                at a Postgres nobody can reach (a fake `psql` that logs and
-#                refuses), so every write's nudge DOES reach for it;
+#                at a Postgres nobody can reach (a fake `psql` that logs who
+#                called it and refuses), so every write's nudge DOES reach for
+#                it;
 #   poisoned     POISONED INDEX — a real sync of this register into SQLite,
 #                then WRONG rows: a forged hold, forged owners, forged states,
 #                forged narrative. Unreachability cannot prove an act does not
@@ -16400,7 +16401,7 @@ A14_PSQL_LOG="$SANDBOX/a14-psql.log"
 : > "$A14_PSQL_LOG"
 cat > "$A14_FAKE/psql" <<FAKE
 #!/bin/sh
-printf '%s\n' "\$*" >> "$A14_PSQL_LOG"
+printf 'psql %s %s\n' "\${A14_CALLER:-other}" "\$*" >> "$A14_PSQL_LOG"
 echo 'psql: error: connection to server at "lanes-index.invalid" failed' >&2
 exit 2
 FAKE
@@ -16424,7 +16425,8 @@ chmod 600 "$A14_CONF/poisoned.conf"
 #
 #   unreachable  the sync logs `psql` and runs on - the refusal, the status
 #                file, the marks it was left - and `a14_wait_psql` returns at
-#                the FIRST line, with the sync alive and the lock held.
+#                the FIRST line a sync wrote, with the sync alive and the lock
+#                held.
 #   poisoned     the leg had no indexer of its own on PATH, so a host with one
 #                installed (every lane workstation; a clean CI runner has none)
 #                forked a real sync into the poisoned store from every write,
@@ -16436,9 +16438,11 @@ chmod 600 "$A14_CONF/poisoned.conf"
 #
 #   unreachable  a wrapper that logs `start` and `done` for every `sync` (with or
 #                without `--source inventory`: that is a write's nudge) and
-#                runs the real script by its own path ($A14_BIN, unchanged),
-#                which `a14_wait_nudges` waits on, bounded, before the snapshot
-#                goes back. Every other subcommand (`export`, and any mode
+#                runs the real script by its own path ($A14_BIN, unchanged) with
+#                A14_CALLER=sync in its environment, which the fake `psql` logs
+#                (`psql sync`; any other caller is `psql other`). That is what
+#                `a14_wait_nudges` waits on, bounded, before the snapshot goes
+#                back. Every other subcommand (`export`, and any mode
 #                question or register read a later tree adds) execs that script
 #                with no log line: it is not a nudge, and counted as one it
 #                would let a write leg's "one began" prove only that
@@ -16461,7 +16465,7 @@ cat > "$A14_NUDGE/lanes-index" <<WRAP
 #!/bin/sh
 [ "\${1-}" = sync ] || exec "$A14_BIN/lanes-index" "\$@"
 printf 'start %s\n' "\$\$" >> "$A14_NUDGE_LOG"
-"$A14_BIN/lanes-index" "\$@"
+A14_CALLER=sync "$A14_BIN/lanes-index" "\$@"
 a14_rc=\$?
 printf 'done %s %s\n' "\$\$" "\$a14_rc" >> "$A14_NUDGE_LOG"
 exit "\$a14_rc"
@@ -16591,10 +16595,20 @@ a14_restore() {
 # which is also the proof that it reached for the store at all. That line is the
 # sync's FIRST act on the store, not its last, so it is not the wait that lets
 # the snapshot go back: `a14_wait_nudges` is.
-a14_wait_psql() {   # <lines before>
+#
+# IT COUNTS A SYNC'S PSQL CALLS AND NOTHING ELSE (the lines the fake `psql`
+# logged as `psql sync`), and so does the count it is given. The nudge is the
+# only thing this wait is about, and once T504's register prefetch or T409's
+# mode question reaches `psql` too, a call that was not a sync's would satisfy
+# the wait before the nudge had reached its store. The read leg's "reached for
+# no store at all" still counts every line, whoever wrote it.
+a14_psql_syncs() {   # the lines in the fake `psql`'s log that a sync wrote
+  awk '$2 == "sync" { n++ } END { print n + 0 }' "$A14_PSQL_LOG"
+}
+a14_wait_psql() {   # <sync lines before, from a14_psql_syncs>
   a14_w=0
   while [ "$a14_w" -lt 150 ]; do
-    [ "$(awk 'END { print NR + 0 }' "$A14_PSQL_LOG")" -gt "$1" ] && return 0
+    [ "$(a14_psql_syncs)" -gt "$1" ] && return 0
     sleep 0.1; a14_w=$((a14_w + 1))
   done
   return 1
@@ -16633,7 +16647,8 @@ a14_three() {   # <label> <write: 0|1> <command…>
   run "$@"
   a14_c_rc="$rc"; a14_c_out="$(a14_norm "$out")"; a14_c_err="$(a14_norm "$err")"
   a14_restore
-  a14_before="$(awk 'END { print NR + 0 }' "$A14_PSQL_LOG")"
+  a14_before="$(a14_psql_syncs)"
+  a14_before_all="$(awk 'END { print NR + 0 }' "$A14_PSQL_LOG")"
   a14_begun="$(a14_nudge_counts)"; a14_begun="${a14_begun% *}"
   run env -u LANES_INDEX PATH="$A14_NUDGE:$A14_BIN:$A14_FAKE:$PATH" LANES_INDEX_CONFIG="$A14_CONF/unreachable.conf" "$@"
   is   "$a14_label: the same exit with an indexer configured at a store nobody can reach" "$rc" "$a14_c_rc"
@@ -16644,7 +16659,7 @@ a14_three() {   # <label> <write: 0|1> <command…>
     is "…and its nudge DID reach for that store, after the write had answered" "$?" 0
   else
     is "…and, being no write, it reached for no store at all" \
-       "$(awk 'END { print NR + 0 }' "$A14_PSQL_LOG")" "$a14_before"
+       "$(awk 'END { print NR + 0 }' "$A14_PSQL_LOG")" "$a14_before_all"
   fi
   # THE STATUS IS TAKEN BEFORE THE DESCRIPTION IS BUILT: the `$( )` in it would
   # otherwise be the `$?` the assertion reads. On a timeout the counts say
