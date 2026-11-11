@@ -85,6 +85,7 @@ repository under `tmp_path`.
 
 from __future__ import annotations
 
+import atexit
 import base64
 import datetime
 import hashlib
@@ -94,6 +95,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from importlib.machinery import SourceFileLoader
@@ -295,11 +297,62 @@ UTC = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2})?Z")
 AGE = re.compile(r"\b[0-9]+h [0-9]{2}m\b|\b[0-9]+[smhd] ago\b")
 
 
-def _sanitized_path() -> str:
-    """The caller's PATH without any directory that holds a `lanes-index`:
-    an installed indexer is never what a case runs."""
-    return os.pathsep.join(part for part in os.environ.get("PATH", "").split(os.pathsep)
-                           if part and not os.path.exists(os.path.join(part, "lanes-index")))
+#: THE PATH MASK (lane 2's rule for wave 11, "mask, never drop"): the names
+#: no directory of the caller's `PATH` may offer a case. This helper once
+#: dropped each directory holding a `lanes-index`; it now masks that name,
+#: and every name that starts `pg_`, the client wrappers postgresql-16's
+#: package puts in `/usr/bin` beside `psql`.
+MASKED_NAMES = ("lanes-index",)
+MASKED_PREFIX = "pg_"
+#: {a directory's real path: its mirror, or None where it holds no masked
+#: name}, filled once a process.
+_MIRRORS: dict = {}
+#: The one `l2-pathmask-` directory the mirrors live in, made on first need
+#: and removed at exit.
+_MASK_ROOT: list = []
+
+
+def _is_masked(name: str) -> bool:
+    return name in MASKED_NAMES or name.startswith(MASKED_PREFIX)
+
+
+def _mirror(directory: str):
+    """`directory`'s private mirror, or None where it holds no masked name
+    or cannot be listed: a directory of symlinks, one per entry, each to the
+    entry's absolute path, the masked names left out. Built once a process,
+    cached by the directory's real path."""
+    real = os.path.realpath(directory)
+    if real in _MIRRORS:
+        return _MIRRORS[real]
+    try:
+        names = os.listdir(real)
+    except OSError:
+        names = []
+    mirror = None
+    if any(_is_masked(name) for name in names):
+        if not _MASK_ROOT:
+            _MASK_ROOT.append(tempfile.mkdtemp(prefix="l2-pathmask-"))
+            atexit.register(shutil.rmtree, _MASK_ROOT[0], True)
+        mirror = os.path.join(_MASK_ROOT[0], str(len(_MIRRORS)))
+        os.mkdir(mirror)
+        for name in names:
+            if not _is_masked(name):
+                os.symlink(os.path.join(real, name), os.path.join(mirror, name))
+    _MIRRORS[real] = mirror
+    return mirror
+
+
+def _masked_path() -> str:
+    """The caller's PATH with every directory kept, in its place, and each
+    one that holds a masked name swapped for its mirror (`_mirror`), so an
+    installed indexer is never what a case runs. A directory is never
+    dropped: a GitHub runner's `/usr/bin` holds `psql`, `git` and `bash`
+    together (postgresql-16's client package; `/bin` is a link to it), so
+    dropping a directory for one name it holds drops `git` and `bash` with
+    it (lane 1's census, #165 comment 6807454856). A directory that holds no
+    masked name passes through unchanged."""
+    return os.pathsep.join(_mirror(part) or part
+                           for part in os.environ.get("PATH", "").split(os.pathsep) if part)
 
 
 def load_indexer():
@@ -373,7 +426,7 @@ class Workspace:
             LANES_IN_CONTAINER="0", LANES_NO_GITHUB="1", LANES_EDIT=str(LANES_EDIT),
             GIT_AUTHOR_NAME="lanes-index tests", GIT_AUTHOR_EMAIL="test@example.invalid",
             GIT_COMMITTER_NAME="lanes-index tests", GIT_COMMITTER_EMAIL="test@example.invalid",
-            PATH=str(self.fakebin) + os.pathsep + _sanitized_path())
+            PATH=str(self.fakebin) + os.pathsep + _masked_path())
         self.env = env
         subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(self.origin)],
                        check=True, env=self.env)
