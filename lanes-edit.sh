@@ -4460,8 +4460,11 @@ reg_open() {   # <arm> [<its arguments>...]
 # T409's one wrap form, whose subshell drops bash's job notice for a call a
 # signal ended (lane 3, #165 6755027994). Sets `REG_MODE`, and `RO_FAILED` (what
 # failed, for the refusal) and `RO_WHY` (the cause, for the mirror line) on a
-# failed read.
-reg_prefetch() {
+# failed read. The door asks `--all`; the post-bind refill (T507,
+# `guard_bind_refill`) names its members, `--files register,aliases`, and keeps
+# the same ends.
+reg_prefetch() {   # [<--files set>; --all where none is given]
+  rp_sel=(--all); [ -z "${1-}" ] || rp_sel=(--files "$1")
   RO_FAILED=""; RO_WHY=""
   rp_bin="$(lanes_index_bin)"
   if [ -z "$rp_bin" ]; then
@@ -4473,7 +4476,7 @@ reg_prefetch() {
     return 0
   fi
   rp_rc=0
-  ( "$rp_bin" register read --prefetch --cache "$SE_CACHE_FILE" --all </dev/null >"$SE_CACHE_FILE.door-out" 2>"$SE_CACHE_FILE.door-err"; exit "$?" ) 2>/dev/null || rp_rc=$?
+  ( "$rp_bin" register read --prefetch --cache "$SE_CACHE_FILE" "${rp_sel[@]}" </dev/null >"$SE_CACHE_FILE.door-out" 2>"$SE_CACHE_FILE.door-err"; exit "$?" ) 2>/dev/null || rp_rc=$?
   rp_out="$(cat -v -- "$SE_CACHE_FILE.door-out" 2>/dev/null; printf .)"; rp_out="${rp_out%.}"
   # WHAT IT SAID: its first line, the cause (contract 2.6), for the mirror line;
   # all of it as one line, for a refusal or a warning. Control characters are
@@ -13258,6 +13261,27 @@ guard_bind_bound_s() {   # <offer file>
   printf '%s\n' "$(( (437000 + 28000 * gbs_n * gbs_c + 19 * gbs_w + 9999) / 10000 * 10 ))"
 }
 
+# FEATURE 007, T507 - `.head`'s `c`, `n_a` AND `w_s_ms` INTO THE BIND RECORD
+# (contract 3.6's `.head`; tasks.md T507; O15; R05): the guard reads them from
+# the prefetch's `.head` and never writes `.head` (forms 1 to 3 do), and
+# `guard-bind` sums `bound_s` from the record, so they are copied before the
+# first `guard_bind_bound_s`. Each is copied as `.head` gives it, where it is a
+# whole number; a missing `.head` (files mode, `mode index`, the mirror path)
+# writes nothing, and the defaults give 500 s. Through `guard_bind_rewrite`, so
+# every later rewrite keeps them.
+#   0 copied, or nothing to copy · 1 the record could not be rewritten
+guard_bind_head_copy() {   # <offer file>
+  [ -n "${SE_CACHE_FILE:-}" ] && [ -f "$SE_CACHE_FILE.head" ] || return 0
+  ghc_kv=()
+  for ghc_k in c n_a w_s_ms; do
+    ghc_v="$(sed -n -e "s/^$ghc_k=//p" "$SE_CACHE_FILE.head" 2>/dev/null | head -n 1)"
+    case "$ghc_v" in ''|*[!0-9]*) continue ;; esac
+    ghc_kv+=("$ghc_k=$ghc_v")
+  done
+  [ "${#ghc_kv[@]}" -gt 0 ] || return 0
+  guard_bind_rewrite "${1-}" "" "${ghc_kv[@]}"
+}
+
 # `lane-start`, found the way every word in this toolset finds its siblings:
 # beside this file first — `--install` places them in one directory — then on
 # PATH. One resolution, so a workstation with two copies never reads one and
@@ -14163,6 +14187,36 @@ guard_allow_active() {   # <offer file>
   return 0
 }
 
+# FEATURE 007, T507 - THE POST-BIND REFILL (contract 3.6, C1; tasks.md T507;
+# Y:4940): `reg_flush`, then, on a configured workstation, ONE form-1 read,
+# `lanes-index register read --prefetch --cache "$SE_CACHE_FILE" --files
+# register,aliases`, with a reader's row (`reg_prefetch`'s call and its ends):
+# never `--for guard`, since `guard-bind`'s child runs after `lane-start`, where
+# no hook `T0` exists, never `--all`, and never git. On primary the store is
+# then SQL (`REG_STORE=sql`), so the child's tail reads take that family
+# (contract 3.6: "After `committed`, the child's tail reads take D17's path
+# through the read family that `reg_flush` drops"); a read that failed (69, or
+# 78) is recorded as any failed read is (`reg_fail`, `.rfail`), so each later
+# read answers 69 and none asks again. `mode index`, or a call that failed
+# with its warning, reads the files as today. With no configuration it only
+# flushes, and today's git read follows. On primary it is made once per
+# process (`GB_REFILLED`); off primary it flushes at each call, as before.
+GB_REFILLED=0
+guard_bind_refill() {
+  [ "$GB_REFILLED" = 0 ] || return 0
+  reg_flush
+  reg_config_present || return 0
+  REG_MODE=""
+  reg_prefetch register,aliases
+  if [ -n "$RO_FAILED" ]; then
+    GB_REFILLED=1; REG_STORE=sql
+    reg_fail "$RO_FAILED" "$RO_WHY" || :
+    return 0
+  fi
+  if [ "$REG_MODE" = primary ]; then GB_REFILLED=1; REG_STORE=sql; fi
+  return 0
+}
+
 # ------------ THE UUID IN THE NEW LANE'S CELL, WHICH `lane-start --bind` WRITES
 #
 # CLAUSE (h) RULE 2 NAMES THE END STATE AND RULE 3 REPEATS IT: after choice 2,
@@ -14204,7 +14258,8 @@ guard_allow_active() {   # <offer file>
 # against a published ref that never moved — the uuid in the cell twice.
 #
 #   0  the cell ends on this uuid
-#   1  it does not, and the act that fixes it has been printed
+#   1  it does not, or the register could not be read after the bind, and the
+#      act that fixes it has been printed
 guard_bound_check() {   # <the lane moved to>
   gbc_to="${1-}"
   # THE CACHED REGISTER IS THE ONE FROM BEFORE `lane-start` RAN, and this is the
@@ -14214,8 +14269,15 @@ guard_bound_check() {   # <the lane moved to>
   # dropped — the variable this shell holds and the file every subshell reads
   # (A11 Addendum 4 ruling 12) — exactly as `log_sync` drops them after a fetch,
   # and for the same reason: the ref has moved under them. The alias table goes
-  # with them, as `log_sync`'s does (`reg_flush`, feature 007, T505).
-  reg_flush
+  # with them, as `log_sync`'s does (`reg_flush`, feature 007, T505). ON PRIMARY
+  # THE REFILL IS ONE `register read`, NEVER GIT (feature 007, T507; C1):
+  # `guard_bind_refill`.
+  guard_bind_refill
+  if reg_read_lost; then
+    note "…but whether $gbc_to's session cell now ends on $G_ID is NOT known: the register could not be read after the bind (${RO_FAILED:-its read failed}). Read it with \`lanes-edit.sh last-session $gbc_to\`, and where it does not end on $G_ID, stamp it as this session's first act, which is Amendment 6(c)'s own remedy:"
+    note "   LANES_LANE=$gbc_to lanes-edit.sh append-session-id $gbc_to \"<the session cell's last id>\" \"→ harness $G_ID (transcript uuid; profile ${G_PROF:-unknown})\""
+    return 1
+  fi
   gbc_last="$(last_session_id_of_lane "$gbc_to" 2>/dev/null || :)"
   if [ "$(lc "$gbc_last")" = "$(lc "$G_ID")" ]; then
     note "…and $gbc_to's session cell now ends on $G_ID, written by lane-start's binding mode — which is what the next \`lane-start $gbc_to\` resumes."
@@ -14721,6 +14783,13 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     # file, and the outer and its body find the facts file beside it.
     ga_k=$((ga_k + 1))
     ga_out="$ga_f.bind.$(guard_bind_next_index "$ga_f").out"
+    # THE PREFETCH'S `c`, `n_a` AND `w_s_ms` FIRST (feature 007, T507;
+    # `guard_bind_head_copy`), so this bound and the outer's are summed from them.
+    if ! guard_bind_head_copy "$ga_f"; then
+      guard_refuse "the bind could not be recorded in $ga_f, so it was NOT started: NOTHING has been written to the register, and the offer is KEPT. Answer \`2\` again once that directory is writable, or choose \`1\` or \`3\`."
+      [ "$ga_ren" = 0 ] || guard_window_back "$ga_from" "$ga_to" || :
+      return 2
+    fi
     ga_bs="$(guard_bind_bound_s "$ga_f")"
     ga_bd=no
     command -v timeout >/dev/null 2>&1 && ga_bd=yes
@@ -15140,25 +15209,37 @@ guard_bind_body() {   # <session uuid>
   # and goes on; the bind is not undone for it.
   gbb_st="$(printf '%s\n' "$gbb_said" | grep -F "Rule 3's stamp" | grep -F 'NOT' | tail -n 1 || :)"
   [ -z "$gbb_st" ] || gbb_notes+=("note=lane $gbb_to's Rule 3 stamp is owed: $(guard_bind_oneline "$gbb_st")")
-  if [ -n "$(row_of_lane "$gbb_from" 2>/dev/null || :)" ]; then
+  # THE LINE IS BOUNDED (Copilot round 5 on openRepoTools#82). A lane name is
+  # bounded in its CHARACTERS by `check_lane_name` and not in its length, and
+  # this line carried it twice: a long enough name makes `set-row-state`
+  # refuse the very write that records where the work went — after the window
+  # has already been renamed and moved. The name is said ONCE, and cut where
+  # even once does not fit, so the act always records something true.
+  gbb_line="this window moved to lane $gbb_to on the person's choice 2 at the guard"
+  if [ "${#gbb_line}" -gt 230 ]; then
+    gbb_line="${gbb_line:0:230}"
+    case "$gbb_line" in *' '*) gbb_line="${gbb_line% *}" ;; esac
+    gbb_line="$gbb_line ..."
+  fi
+  # FEATURE 007, T507 - THE POST-BIND REFILL COMES BEFORE THE TAIL'S FIRST READ
+  # (`guard_bind_refill`; contract 3.6, C1: "After `committed`, the child's
+  # tail reads take D17's path through the read family that `reg_flush`
+  # drops"). This child read nothing before `lane-start`, so on primary the row
+  # of the lane the window left is read from the refill too, and nothing after
+  # `lane-start` reads git; `guard_bound_check` below finds the refill made. A
+  # read that failed marks nothing, and the act is owed.
+  guard_bind_refill
+  gbb_rrc=0; gbb_row="$(row_of_lane "$gbb_from" 2>/dev/null)" || gbb_rrc=$?
+  if [ "$gbb_rrc" = 69 ] || reg_read_lost; then
+    note "…but $gbb_from's row could NOT be read after the bind (${RO_FAILED:-the register read failed}), so it has NOT been marked. Run: lanes-edit.sh set-row-state $gbb_from \"PAUSED · $gbb_line\""
+    gbb_notes+=("note=lane $gbb_from's row was not marked PAUSED: run LANES_LANE=$gbb_from lanes-edit.sh set-row-state $gbb_from \"PAUSED · $gbb_line\"")
+  elif [ -n "$gbb_row" ]; then
     # AMENDMENT 13(a) — THE STATE IS SET, NOT APPENDED. This window has just
     # moved to another lane, so the lane it LEFT is not running in it any
     # more: `PAUSED` is where that lane now is, and the line says where it
     # went. It used to be an `append-row-status` of `MOVED → <lane>`, which
     # left the cell saying two things at once — whatever state it opened with,
     # and this.
-    # THE LINE IS BOUNDED (Copilot round 5 on openRepoTools#82). A lane name is
-    # bounded in its CHARACTERS by `check_lane_name` and not in its length, and
-    # this line carried it twice: a long enough name makes `set-row-state`
-    # refuse the very write that records where the work went — after the window
-    # has already been renamed and moved. The name is said ONCE, and cut where
-    # even once does not fit, so the act always records something true.
-    gbb_line="this window moved to lane $gbb_to on the person's choice 2 at the guard"
-    if [ "${#gbb_line}" -gt 230 ]; then
-      gbb_line="${gbb_line:0:230}"
-      case "$gbb_line" in *' '*) gbb_line="${gbb_line% *}" ;; esac
-      gbb_line="$gbb_line ..."
-    fi
     # THROUGH `LANES_EDIT` WHERE IT IS SET, else this file (R48): the copy
     # `lane-start`'s own writes already use.
     if "${LANES_EDIT:-$RESOLVED}" set-row-state "$gbb_from" "PAUSED · $gbb_line" >&2; then
