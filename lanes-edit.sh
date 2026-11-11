@@ -5465,17 +5465,37 @@ wr_claim_release() {
   return 0
 }
 
+# A RECORD'S `tail` (Y:5179): `sent <s> <utc>` or `done <s> <rc> <utc>`, one
+# space between fields, `<s>` and `<rc>` counts and `<utc>` this file's UTC
+# form; no other value is one. `owed` belongs to a done mark only (Y:5181)
+# (lane openRepoTools-3, #165 6780753157, Q34).
+wr_is_tail() {   # <value>
+  local it_w="" it_s="" it_r="" it_u=""
+  case "${1-}" in
+    'sent '*)
+      IFS=' ' read -r it_w it_s it_u <<<"$1"
+      [ "$1" = "sent $it_s $it_u" ] && wr_is_count "$it_s" && wr_is_utc "$it_u" ;;
+    'done '*)
+      IFS=' ' read -r it_w it_s it_r it_u <<<"$1"
+      [ "$1" = "done $it_s $it_r $it_u" ] && wr_is_count "$it_s" && wr_is_count "$it_r" && wr_is_utc "$it_u" ;;
+    *) return 1 ;;
+  esac
+}
+
 # THE RECORD READ (Y:5172) into WR_REC_*: 0 when it is whole, 1 when there is no
 # record, 2 when there is one and it cannot be read as one, which names nothing
 # a run can rely on.
 #
 # Whole is: `format=1`; a write id and a generation, each a lower-case UUID;
 # `args_sha256` equal to its own file's name, `<d>`; `created_utc` and
-# `updated_utc` in this file's UTC form; and every `call=` line
+# `updated_utc` in this file's UTC form; every `call=` line
 # `<base> <clock> <not_after> <files> <dir>`, three counts, a sha256 and a
-# directory. A key it does not know is passed over.
+# directory; and a `tail=` line, where there is one, one of Y:5179's two forms
+# (`wr_is_tail`): any other `tail`, an empty one included, is a record that
+# cannot be read, so it is T412's 2 with the record kept (lane
+# openRepoTools-3, #165 6780753157, Q34). A key it does not know is passed over.
 wr_record_read() {   # <record file>
-  local rr_l="" rr_b rr_c rr_n rr_f rr_d
+  local rr_l="" rr_b rr_c rr_n rr_f rr_d rr_t=0
   WR_REC_FORMAT=""; WR_REC_WRITE_ID=""; WR_REC_GENERATION=""; WR_REC_DATABASE=""
   WR_REC_LANE=""; WR_REC_SESSION=""; WR_REC_VERB=""; WR_REC_ARGS_SHA256=""
   WR_REC_CMDLINE=""; WR_REC_CREATED_UTC=""; WR_REC_UPDATED_UTC=""; WR_REC_PID=""
@@ -5502,7 +5522,7 @@ wr_record_read() {   # <record file>
       container=*) WR_REC_CONTAINER="${rr_l#container=}" ;;
       attempts=*) WR_REC_ATTEMPTS="${rr_l#attempts=}" ;;
       call=*) WR_REC_CALLS="${WR_REC_CALLS}${WR_REC_CALLS:+$WR_NL}${rr_l#call=}" ;;
-      tail=*) WR_REC_TAIL="${rr_l#tail=}" ;;
+      tail=*) WR_REC_TAIL="${rr_l#tail=}"; rr_t=1 ;;
     esac
     rr_l=""
   done < "$1" 2>/dev/null
@@ -5511,6 +5531,7 @@ wr_record_read() {   # <record file>
   [ "$WR_REC_ARGS_SHA256" = "${1##*/}" ] || return 2
   wr_is_utc "$WR_REC_CREATED_UTC" && wr_is_utc "$WR_REC_UPDATED_UTC" || return 2
   [ -n "$(epoch_of "$WR_REC_UPDATED_UTC")" ] || return 2
+  [ "$rr_t" = 0 ] || wr_is_tail "$WR_REC_TAIL" || return 2
   while IFS= read -r rr_l; do
     [ -n "$rr_l" ] || continue
     IFS=' ' read -r rr_b rr_c rr_n rr_f rr_d <<<"$rr_l"
@@ -7369,24 +7390,22 @@ pw_tail_found() {   # <seq>
 # record would remove the only evidence left. So the run refuses 2 at that
 # snapshot: it sends nothing and runs no tail (Y:5298), and leaves the record
 # as found, as Y:5215 does for another generation; only its own claim goes
-# (`wr_refuse`). Its text names the seq the record's `tail` says (`<unknown>`
-# where that value names none), then gives Y:5211-5213's effect check, the
-# steps that may be owed (Y:5214) and `LANES_WRITE_ID=new`. With `found=` the
+# (`wr_refuse`). Its text names the seq the record's `tail` says, which
+# `wr_record_read` has checked is one of Y:5179's two forms (lane
+# openRepoTools-3, #165 6780753157, Q34), then gives Y:5211-5213's effect
+# check, the steps that may be owed (Y:5214) and `LANES_WRITE_ID=new`. With
+# `found=` the
 # path is `pw_tail`'s, to the done mark (`pw_tail_found`), with the record's
 # pid (`pw_tail_writer`); another generation stays T412's
 # `wr_refuse_other_generation`.
 pw_took_tail_refuse() {
   local tr_s="" tr_w="" tr_utc="" tr_owed="" tr_steps=""
   tr_w="${WR_TOOK_TAIL%% *}"; tr_utc="${WR_TOOK_TAIL##* }"
-  case "$tr_w" in
-    sent|done) tr_s="${WR_TOOK_TAIL#* }"; tr_s="${tr_s%% *}" ;;
-  esac
-  wr_is_count "$tr_s" || tr_s="<unknown>"
+  tr_s="${WR_TOOK_TAIL#* }"; tr_s="${tr_s%% *}"
   tr_owed="$(wr_owed_text "$WR_REC_VERB")"
   case "$tr_w" in
     sent) tr_steps="its after-COMMIT steps may have run at ${tr_utc}: ${tr_owed}. Do by hand any that did not run." ;;
     done) tr_steps="its after-COMMIT steps ran at ${tr_utc}." ;;
-    *) tr_steps="its after-COMMIT steps may be owed: ${tr_owed}. Do by hand any that did not run." ;;
   esac
   pw_run_dir_done
   wr_refuse "the pending record of this command, $WR_STATE/register-pending/$WR_D, holds write ${WR_REC_WRITE_ID} made at ${WR_REC_CREATED_UTC} against register generation ${WR_REC_GENERATION}, and its tail, ${WR_TOOK_TAIL}, says that write committed at seq ${tr_s}; but this register does not hold it: this run's first snapshot did not find it. A register restored from a backup carries the lost database's generation until its cutover (Y:1518), and a damaged record reads the same. Nothing was sent, no after-COMMIT step was run, and the record is left as it is. Look for its effect in the register as it stands: lanes-edit.sh history ${WR_REC_LANE} --since ${WR_REC_CREATED_UTC} for a log line, or lanes-edit.sh register-row ${WR_REC_LANE} for a row. If it is there, ${tr_steps} If it is not there, run the same command with LANES_WRITE_ID=new, which mints a new id and replaces this record: $(wr_rerun_new_text)"
