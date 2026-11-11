@@ -4275,9 +4275,14 @@ reg_mode_files() {   # <why>
 # arm ignores the variable, `who` and `lane-last` among them. `REG_NO_CALL=1`
 # is `session-start`'s: a mirror arm with no register call (R39), whose read
 # T508 gives it. `lanes --decide` is decide, `reg_open`'s one flag rule (R38).
-# Rows for arms another task adds (`register-text`, `register-grep`,
-# `act-begin`, `start-record`, `guard-bind`) are here before their arms are,
-# as T504's text lists them; a row matches nothing until its arm exists.
+# The table has no rows for the five arms its own tree lacks: T401's
+# `register-text` and `register-grep`, T410's `act-begin`, T427's
+# `start-record` and T502's `guard-bind`. Whichever of T504 and an arm's task
+# lands second adds that arm's row, and an integration merge that brings an
+# arm and this table together adds it in that merge (lane 3's ruling
+# 6782923063). B14 tasks:731-732 give each arm's class: `register-text` and
+# `register-grep` decide, `act-begin` none, `start-record` writer,
+# `guard-bind` none. Until its row is here an arm takes the `*)` row, decide.
 reg_class_of() {   # <arm>: sets REG_CLASS, REG_MIRROR_VAR and REG_NO_CALL
   REG_MIRROR_VAR=0; REG_NO_CALL=0
   case "$1" in
@@ -4295,7 +4300,6 @@ reg_class_of() {   # <arm>: sets REG_CLASS, REG_MIRROR_VAR and REG_NO_CALL
     release) REG_CLASS=writer ;;
     request-handoff) REG_CLASS=writer ;;
     rename-lane) REG_CLASS=writer ;;
-    start-record) REG_CLASS=writer ;;
     lanes) REG_CLASS=mirror ;;
     history) REG_CLASS=mirror ;;
     session-start) REG_CLASS=mirror; REG_NO_CALL=1 ;;
@@ -4310,8 +4314,6 @@ reg_class_of() {   # <arm>: sets REG_CLASS, REG_MIRROR_VAR and REG_NO_CALL
     set-lane-state) REG_CLASS=decide; REG_MIRROR_VAR=1 ;;
     handoff-path) REG_CLASS=decide; REG_MIRROR_VAR=1 ;;
     write-handoff) REG_CLASS=decide; REG_MIRROR_VAR=1 ;;
-    register-text) REG_CLASS=decide ;;
-    register-grep) REG_CLASS=decide ;;
     verify-row) REG_CLASS=decide ;;
     who) REG_CLASS=decide ;;
     idle-holders) REG_CLASS=decide ;;
@@ -4353,8 +4355,6 @@ reg_class_of() {   # <arm>: sets REG_CLASS, REG_MIRROR_VAR and REG_NO_CALL
     project-legs) REG_CLASS=none ;;
     pathspec-check) REG_CLASS=none ;;
     refresh-workspace) REG_CLASS=none ;;
-    act-begin) REG_CLASS=none ;;
-    guard-bind) REG_CLASS=none ;;
     *) REG_CLASS=decide ;;
   esac
 }
