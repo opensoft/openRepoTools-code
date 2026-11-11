@@ -708,7 +708,8 @@ SLOW_ROWS = [row for row, spec in ROWS.items()
 
 
 class Bench:
-    """One test's bench: a scratch workspace with a bare origin, a copy of
+    """One test's bench: a scratch workspace with a bare origin, the lane's
+    checkout and W, a clone of its own (T220h), a copy of
     `lanes-edit.sh` beside T203's flipped `lanes-index` (the copy rule, CLI4.5
     section 6), a configuration naming the endpoint the fault gives, a login
     of the row's group where it needs one, and the timing wrapper first on
@@ -735,6 +736,8 @@ class Bench:
         # guard returns 0 before reading anything (line W4a's T215b).
         self.wip = tmp_path / "projects" / "wip"
         self.wip.parent.mkdir(parents=True)
+        #: W, the workspace checkout (Amendment 9(a)), a clone of its own.
+        self.w = tmp_path / "W"
         # THE BASE ENVIRONMENT, T203c's: the lane's, the harness's, tmux's and
         # libpq's variables out, and `PROJECTS_ROOT` and `AGENT_PROTOCOL_ROOT`
         # with them (F10's item 28), which would move the guard's scope test
@@ -743,6 +746,7 @@ class Bench:
         env.update(HOME=str(tmp_path), XDG_STATE_HOME=str(tmp_path / "state"),
                    XDG_CONFIG_HOME=str(tmp_path / "config"), TMPDIR=str(tmp_path),
                    LANES_WORKSTATION="Eagle", LANES_NO_GITHUB="1", LANES_REPO=str(self.wip),
+                   LANES_WORKSPACE_ROOT=str(self.w),
                    T220_REAL_PSQL=pg.psql_bin, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid",
                    GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid",
                    PATH=str(self.bin) + os.pathsep + os.environ.get("PATH", os.defpath))
@@ -751,17 +755,23 @@ class Bench:
                        check=True, env=env)
         subprocess.run(["git", "clone", "-q", str(self.origin), str(self.wip)], check=True,
                        env=env, capture_output=True)
-        # THE WORKSPACE, as `test_lanes_index.py` names it (Amendment 9(a)):
-        # `lanes-edit.sh workspace-root` answers with `path:`, the checkout
-        # (line W4a's T215b).
-        (tmp_path / ".agents").mkdir()
-        (tmp_path / ".agents" / "workspace.yaml").write_text(
-            f"repository: {self.origin}\npath: {self.wip}\n", encoding="utf-8")
         (self.wip / "lanes" / "log").mkdir(parents=True)
         (self.wip / "lanes" / "LANES.md").write_text(REGISTER, encoding="utf-8")
         for argv in (["add", "-A"], ["commit", "-q", "-m", "C"], ["push", "-q", "origin", "main"]):
             subprocess.run(["git", *argv], cwd=str(self.wip), check=True, env=env,
                            capture_output=True)
+        # THE WORKSPACE, W (Amendment 9(a)), is a clone of its own at C, never
+        # the lane's checkout that `LANES_REPO` names: `import` refuses a
+        # `LANES_REPO` that names W, or one set where W cannot be read
+        # (contract 4.18:987; lane 1's group 6, #165 6807494089), and `status`
+        # and `reconcile` read W's `origin/main`. `lanes-edit.sh
+        # workspace-root` answers W by `LANES_WORKSPACE_ROOT`, its test seam,
+        # and `workspace.yaml`'s `path:` names the same W.
+        subprocess.run(["git", "clone", "-q", str(self.origin), str(self.w)], check=True,
+                       env=env, capture_output=True)
+        (tmp_path / ".agents").mkdir()
+        (tmp_path / ".agents" / "workspace.yaml").write_text(
+            f"repository: {self.origin}\npath: {self.w}\n", encoding="utf-8")
         self.c = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(self.wip), env=env,
                                 capture_output=True, text=True, check=True).stdout.strip()
         self.request = request
@@ -1342,17 +1352,29 @@ def test_import_and_reconcile_set_their_bounds_at_connect(tmp_path):
         subprocess.run(["git", *argv], cwd=str(wip), check=True, env=env, capture_output=True)
     c = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(wip), env=env, capture_output=True,
                        text=True, check=True).stdout.strip()
+    # W, A CLONE OF ITS OWN (T220h; lane 1's group 6, #165 6807494089): with
+    # `LANES_REPO` set, `import` reads W to check that the checkout is not W,
+    # and refuses where W cannot be read or is the checkout (contract
+    # 4.18:987), before any `psql` call; `reconcile` reads W's `origin/main`.
+    # `LANES_WORKSPACE_ROOT` is `lanes-edit.sh`'s test seam. The workstation
+    # is named too, as `Bench` names it: in a container with none, `import`
+    # refuses 2 before any call (Amendment 11, R-A11-14).
+    w = tmp_path / "W"
+    subprocess.run(["git", "clone", "-q", str(origin), str(w)], check=True, env=env,
+                   capture_output=True)
+    env.update(LANES_WORKSPACE_ROOT=str(w), LANES_WORKSTATION="Eagle")
     log = tmp_path / "fake.log"
     for argv, options in (
             (["import", "--at", c], ("-c lock_timeout=2000", "-c statement_timeout=300000")),
             (["reconcile"], ("-c lock_timeout=1000", "-c statement_timeout=10000"))):
         if log.exists():
             log.unlink()
-        subprocess.run([sys.executable, str(INDEXER), *argv], capture_output=True, text=True,
-                       env=env, cwd=str(wip), timeout=120, stdin=subprocess.DEVNULL)
+        proc = subprocess.run([sys.executable, str(INDEXER), *argv], capture_output=True,
+                              text=True, env=env, cwd=str(wip), timeout=120,
+                              stdin=subprocess.DEVNULL)
         calls = [json.loads(l) for l in log.read_text().splitlines()] if log.exists() else []
         calls = [c for c in calls if c.get("kind") != "version"]
-        assert calls, f"{argv[0]} made no psql call"
+        assert calls, f"{argv[0]} made no psql call: {proc.returncode}: {proc.stderr[-400:]}"
         for call in calls:
             assert call["connect_timeout"] == str(C), (argv[0], call["connect_timeout"])
             assert all(o in (call["options"] or "") for o in options), (argv[0], call["options"])
