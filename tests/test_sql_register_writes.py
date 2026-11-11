@@ -8,7 +8,8 @@ section 1.3; lane 2's T210):
 and test 2's per-verb cases, its refused transactions, its partial failures
 and S1's other tests, phase W, lane 2's T241 (see "phase W: T241" below),
 with lane 3's reading 3 of T112, an image holding a CR or a NUL refused with
-2 by `register commit`.
+2 by `register commit`, and lane 3's Q35, `request-handoff`'s refusals before
+its claim, 64 and never 2 (T241d).
 
 THE STORAGE-LAYER ENTRY is the managed projection writer's (design S4), driven
 by the fake writer AT-1's part N drives it with,
@@ -162,7 +163,8 @@ def test_the_storage_layer_entry_exits_69_when_the_database_is_unreachable(tmp_p
 #
 # NO ENGINE (FP): the database unreachable, as a fake `psql` (T203's register
 # fake, which answers T106's `--version` itself) that exits 2 with `psql`'s own
-# "connection to server ... failed" text; D10's refusals; the queued commits.
+# "connection to server ... failed" text; D10's refusals; the queued commits;
+# `request-handoff`'s 64s before its claim.
 # REAL ENGINE (RE, on `pg`, skipped without PostgreSQL 16 by T205's banner):
 # the switch not `primary`, the refused GRANTs, the late statement, the lock,
 # the pending hand edit and the service down, each over test 1's imported
@@ -304,8 +306,30 @@ class PrimaryWorkstation:
         estate.lanes_tree = git(estate.checkout, "rev-parse", f"{estate.c}:lanes",
                                 env=estate.env).strip()
 
-    def run(self, argv: list, lane: str, **extra) -> subprocess.CompletedProcess:
-        env = dict(self.env, LANES_LANE=lane, **extra)
+    def lane_checkout(self, lane: str) -> Path:
+        """`<c>`, lane `lane`'s own register checkout, where `lanes-edit.sh`'s
+        `lane_checkout_path` puts it (Amendment 23 S1): `<W>-lanes/<lane>`, W
+        being the real path of `workspace.yaml`'s `path:`, this checkout."""
+        real = Path(os.path.realpath(self.estate.checkout))
+        return real.parent / f"{real.name}-lanes" / lane
+
+    def make_lane_checkout(self, lane: str) -> Path:
+        """`<c>` for `lane`, a clone of W's origin, as `lane-checkout <lane>
+        --create` makes one."""
+        target = self.lane_checkout(lane)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        git(target.parent, "clone", "-q", str(self.estate.origin), str(target),
+            env=self.estate.env)
+        return target
+
+    def run(self, argv: list, lane: str | None, **extra) -> subprocess.CompletedProcess:
+        """`lanes-edit.sh <argv>` in the checkout, as lane `lane`
+        (`LANES_LANE`), or with `LANES_LANE` unset where `lane` is None."""
+        env = dict(self.env, **extra)
+        if lane is None:
+            env.pop("LANES_LANE", None)
+        else:
+            env["LANES_LANE"] = lane
         return subprocess.run(["bash", str(self.lanes_edit), *argv], capture_output=True,
                               encoding="utf-8", errors="replace", env=env, timeout=120,
                               cwd=str(self.estate.checkout), check=False,
@@ -558,6 +582,82 @@ def test_an_image_holding_a_cr_or_a_nul_is_refused_with_2_and_nothing_sent(tmp_p
         f"psql was called before the refusal: {log.read_text(encoding='utf-8')}")
     assert {p.relative_to(attempt).as_posix(): p.read_bytes()
             for p in sorted(attempt.rglob("*")) if p.is_file()} == before
+
+
+# REQUEST-HANDOFF'S 64S (lane 2's T241d; R-F13c-23; lane 3's batch 8, #165
+# 6780753157, Q35 and its text change 5 for B14 tasks:1149; lane 4's
+# questions, `QUESTIONS-L3-1110g-b-a5582b2d.md`, 35). On primary every write
+# runs four checks before its claim (B14 tasks:1142's T415 bullets): it names
+# its lane, the lane's own checkout `<c>` is there (`lanes-edit.sh
+# lane-checkout <lane> --create` makes it; a write makes no clone, which
+# would be D12's fetch), `LANES_LANE` is a lane name, and `LANES_NO_GIT=1` is
+# not set. Each refuses with nothing sent: 2 for every verb but
+# `request-handoff`, which refuses 64, never 2, since `lane` reads a 2 from it
+# as "lane <L> is still bound elsewhere" (REV415b NIT 6's reason). `lane`
+# calls it with no `LANES_LANE` (lane 4's question 35), and lane 3 rules that
+# `lane` sets it (T432), and that the verb's refusal is 64 all the same.
+#
+# The write's lane is `request-handoff`'s `<lane>`, repoA-1, and its `<c>` is
+# `<W>-lanes/repoA-1`. Every check but the id's own is met, so each id meets
+# its own refusal and no other: `<c>` is made first, a clone of origin, but
+# for `[missing-checkout]`. No engine; fails until lane 4's T415 takes Q35.
+
+#: The arguments `WRITE_VERBS` gives `request-handoff`, and its `<lane>`.
+REQUEST_HANDOFF_ARGV = WRITE_VERBS["request-handoff"][0]
+REQUEST_HANDOFF_LANE = REQUEST_HANDOFF_ARGV[1]
+
+#: {id: (the arguments, `LANES_LANE` or None for it unset, what the run adds
+#: to the environment, whether `<c>` is made first, what stderr names)}.
+REQUEST_HANDOFF_64 = {
+    # No `<lane>`: the arm's own usage code (B14 tasks:1162).
+    "missing-lane": (["request-handoff"], "repoA-2", {}, True, "request-handoff <lane>"),
+    # B14 tasks:1149: refused "before the claim, naming it".
+    "no-git": (REQUEST_HANDOFF_ARGV, "repoA-2", {"LANES_NO_GIT": "1"}, True, "LANES_NO_GIT"),
+    # `pw_lane_given`: `LANES_LANE` unset, as `lane` calls the verb; B14
+    # tasks:1142, "naming the command with it".
+    "lane-given": (REQUEST_HANDOFF_ARGV, None, {}, True, "LANES_LANE"),
+    # B14 tasks:1142: "naming `lanes-edit.sh lane-checkout <lane> --create`".
+    "missing-checkout": (REQUEST_HANDOFF_ARGV, "repoA-2", {}, False,
+                         f"lane-checkout {REQUEST_HANDOFF_LANE} --create"),
+}
+
+
+@pytest.mark.parametrize("refusal", list(REQUEST_HANDOFF_64))
+def test_request_handoff_refuses_64_never_2_on_primary(tmp_path, refusal):
+    """Lane 3's batch 8, Q35 (B15 text 5 for B14 tasks:1149): on primary,
+    `request-handoff` refuses 64, never 2, for its missing lane
+    (`[missing-lane]`, no `<lane>` at all), `LANES_NO_GIT=1` (`[no-git]`),
+    `pw_lane_given`'s refusal (`[lane-given]`, `LANES_LANE` unset) and a
+    missing `<c>`, the lane's own checkout (`[missing-checkout]`), since
+    `lane` reads a 2 from it as "lane <L> is still bound elsewhere". Each is
+    a refusal before the claim: stderr names its cause, the fake's log holds
+    no call that carries a request, git is as it was, and no clone is made.
+    The other writer verbs' `LANES_NO_GIT=1` refusal stays 2 (B14
+    tasks:1149), and is not this case's. It fails until lane 4's T415 takes
+    Q35; `[missing-lane]` passes before it, since main's arm already refuses
+    a missing lane 64, and holds that code against a 2."""
+    argv, lane, extra, with_checkout, names = REQUEST_HANDOFF_64[refusal]
+    ws = PrimaryWorkstation(tmp_path)
+    fake = fake_psql_dir(ws.fakebin, answers=unreachable_answers(ws.dead))
+    ws.env.update(fake)
+    checkout = ws.lane_checkout(REQUEST_HANDOFF_LANE)
+    if with_checkout:
+        ws.make_lane_checkout(REQUEST_HANDOFF_LANE)
+    before = ws.git_state()
+    proc = ws.run(argv, lane, **extra)
+    assert proc.returncode != 2, (
+        f"request-handoff on primary refused [{refusal}] with 2, which `lane` reads as 'lane "
+        f"{REQUEST_HANDOFF_LANE} is still bound elsewhere' (Q35; lane 4's T415): "
+        f"{proc.stderr[-800:]}")
+    assert proc.returncode == 64, (
+        f"request-handoff on primary exited {proc.returncode} for [{refusal}], not 64 (Q35; "
+        f"lane 4's T415): {proc.stderr[-800:]}")
+    assert names in proc.stderr, f"stderr does not name {names!r}: {proc.stderr!r}"
+    assert fake_calls(fake) == [], f"the refusal reached SQL: {fake_calls(fake)}"
+    assert ws.git_state() == before, "git changed: the refusal wrote"
+    assert checkout.is_dir() == with_checkout, (
+        f"the refusal {'removed' if with_checkout else 'made'} {checkout}: a write on primary "
+        f"makes no clone (D12)")
 
 
 # ------------------------------------------------------------ real engine (RE)
