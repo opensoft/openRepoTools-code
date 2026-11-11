@@ -849,8 +849,9 @@ def test_the_readiness_check_13_compares_each_hosts_address_count_with_register_
 # test's own `$HOME/.pg_service.conf`, with a 0600 `~/.pgpass` beside it, so
 # no connection string is ever an argument, and `lanes-index` hands it to
 # `psql` only as `PGSERVICE`. FP for the refusals and the service; RE for the
-# runs that create (a `stoppable_cluster` of the test's own, since roles are
-# global to a cluster), which skip with T205's banner here.
+# runs that create (a cluster of the test's own, since roles are global to a
+# cluster, with an empty template: `empty_template_cluster`), which skip with
+# T205's banner here.
 
 ADMIN = "t218admin"
 BOOTSTRAP_INPUTS = ("--label", LABEL, "--repository", "opensoft/t218-workspace",
@@ -914,10 +915,26 @@ def _creating(entries: list) -> list:
             if re.search(r"\b(CREATE|GRANT|ALTER|INSERT)\b", entry.get("stdin", ""))]
 
 
+@pytest.fixture()
+def empty_template_cluster(pg_engine):
+    """A cluster of the test's own, built as `stoppable_cluster` is, but with
+    `pg_template_sql`'s plain-SQL form, `""`, an empty `tmpl` (T227; line
+    FX's report on T227, "Overrides"): no role of the bootstrap's exists in
+    it. Since T227 every `stoppable_cluster`'s `tmpl` is built by P8's
+    bootstrap, whose roles are global to the cluster, so a case's own first
+    bootstrap there finds them and says `unchanged`, and the indexer's
+    password-file line, printed only for a role it creates, never comes
+    (line AN11b's bug 11). Only the two bootstrap cases use it; a module-wide
+    `pg_template_sql` would change the `tls_cluster` cases too."""
+    import pgcluster
+    yield from pgcluster._own_cluster(pg_engine, "", pgcluster.Cluster)
+
+
 def _bootstrap_cluster(request, root: Path):
-    """RE: a cluster of the test's own, a database cloned from `template0`, and
-    the admin service naming its socket and its bootstrap superuser."""
-    cluster = request.getfixturevalue("stoppable_cluster")
+    """RE: a cluster of the test's own with an empty template
+    (`empty_template_cluster`), a database cloned from `template0`, and the
+    admin service naming its socket and its bootstrap superuser."""
+    cluster = request.getfixturevalue("empty_template_cluster")
     import pgcluster
     name = "t218_p8"
     cluster.psql(f"CREATE DATABASE {name} TEMPLATE template0;")
