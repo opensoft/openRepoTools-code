@@ -376,7 +376,7 @@ def test_an_unconfigured_workstations_acts_refuse_and_listings_read_the_mirror(t
     `who` exits 69 with Amendment 22's text, and the listing, `lanes --all`
     (which today exits 0 and lists the lane), reads on, exits 0 and prints the
     `read: mirror` line at origin's tip. Fails until
-    T504 and T507."""
+    T504."""
     home, wip, origin, env = _estate(tmp_path, str(uuid.uuid4()))
     marker = _push_marker(tmp_path, origin, env)
     _git(wip, env, "fetch", "-q", "origin", "main")
