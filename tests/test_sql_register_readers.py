@@ -1150,12 +1150,20 @@ def test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives(
 
 
 # ------------------------------------------------- the rerun on a 3, and the 2
+#: A transcript id the lane's last PAUSED record names (the fake
+#: `lane-transcript` answers it), here and not in the row's cell: a resume
+#: restores it and appends it to the cell, the write at `lane-start-3872`.
+RERUN_RESTORED = "aaaaaaaa-0011-4000-8000-00000000a011"
+
 #: Each act that carries on after a failed write (lane 4's section, F9, item
 #: 2), by its line at `2a057a6d`: the run that reaches it, and the write.
+#: `match`, where set, is the write's own words, since one run can make more
+#: than one call of the verb; `fake` is a fact the scenario needs.
 RERUN_SITES = {
     "lane-start-3851": Arm("lane-start", ("repoA", "1"), "append-session-id", "3904"),
     "lane-start-3872": Arm("lane-start", ("repoA", "1"), "append-session-id", "3925",
-                           match="*recovered*"),
+                           match="*restored from the lane*",
+                           fake=("lane-transcript", RERUN_RESTORED)),
     "lane-start-3909": Arm("lane-start", ("repoA", "1"), "append-session-id", "3962",
                            fake=("window-session", WINDOW_RECORD)),
     "lane-start-3989": Arm("lane-start", ("repoA", "1"), "set-row-state", "4042"),
@@ -1171,6 +1179,19 @@ RERUN_SITES = {
     "lane-end-2490": Arm("lane-end", ("repoA-2",), "log", "2543", match="ENDED*"),
     "skill-738": Arm("skills/handoff/SKILL.md", (), "append-line", "743"),
 }
+#: A transcript a site's run must find in the lane's directory (`lane-start`'s
+#: `recorded_transcript`): the restored one, as the `--no-launch` case's W3 has.
+RERUN_TRANSCRIPTS = {"lane-start-3872": RERUN_RESTORED}
+
+
+def place_transcript(world: ArmWorld, sid: str) -> None:
+    """A transcript `<sid>.jsonl` in the sandbox's projects directory for the
+    lane's directory, where `lane-start` looks for one."""
+    here = (Path(world.env["CLAUDE_CONFIG_DIR"]) / "projects"
+            / re.sub(r"[^A-Za-z0-9]", "-", str(world.lane_dir)))
+    here.mkdir(parents=True, exist_ok=True)
+    (here / f"{sid}.jsonl").write_text('{"type":"user"}\n', encoding="utf-8")
+
 
 #: The skill's `(b)` write (`SKILL.md:738-742` at `2a057a6d`), run by its
 #: text with the variables its step 4 has set. Code v1.2.0 (slice 3, `98e2ec0`)
@@ -1221,6 +1242,8 @@ def test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3(tmp_path, site):
                                 stdin=subprocess.DEVNULL)
         assert world.reached(), (site, "the arm was never reached", result.stderr)
     else:
+        if site in RERUN_TRANSCRIPTS:
+            place_transcript(world, RERUN_TRANSCRIPTS[site])
         result = run_arm(world, arm, 3, stderr=line)
     assert line in result.stderr.splitlines(), (site, "the writer's rerun was not relayed",
                                                 result.stderr[-3000:])
