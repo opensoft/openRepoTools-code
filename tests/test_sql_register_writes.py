@@ -922,23 +922,33 @@ def test_a_refused_write_leaves_no_lock(pg, tmp_path, verb):
 
 
 def test_a_pending_hand_edit_names_the_file_and_a_recovery_that_works(pg, tmp_path):
-    """P361-365: with a hand edit of `lanes/LANES.md` pending in the writing
-    lane's checkout, a write refuses before its snapshot (the shim's log is
-    empty), naming the file and one recovery command; running that command
-    leaves `status --porcelain` empty, and the next write exits 0."""
+    """P361-365 (TP:764-769 and Y:2505-2507, "in the writing lane's
+    checkout"; B14 tasks:1151, "It is looked for in the lane checkout"): with
+    a hand edit of `lanes/LANES.md` pending in the writing lane's own
+    checkout `<c>` (`<W>-lanes/<lane>`, which `RegisterWorkstation` makes),
+    a write refuses before its snapshot (the shim's log is empty), naming the
+    file and one recovery command, the one backticked `git` command in its
+    stderr; running that command in `<c>` leaves `<c>`'s `status --porcelain`
+    empty, and the next write exits 0. W's own checkout holds no edit: lane
+    4's answer (#165 6808439918) puts the edit in `<c>`, and keeps this
+    oracle. It fails until lane 4's T415 round that prints that one command,
+    `git -C <c> restore --source=HEAD --staged --worktree -- <paths>`, in
+    backticks, with its read line holding none; T415 `15af6b9c` prints both
+    as plain notes."""
     ws = RegisterWorkstation(pg, tmp_path)
-    target = ws.estate.checkout / "lanes" / "LANES.md"
-    target.write_bytes(target.read_bytes() + b"a pending hand edit\n")
     argv, lane = WRITE_VERBS["set-row-state"]
+    checkout = ws.lane_checkout(lane)
+    target = checkout / "lanes" / "LANES.md"
+    target.write_bytes(target.read_bytes() + b"a pending hand edit\n")
     proc = ws.run(argv, lane)
     assert proc.returncode != 0 and ws.shim_calls() == [], (proc.returncode, ws.shim_calls())
     assert "lanes/LANES.md" in proc.stderr, proc.stderr
     commands = re.findall(r"`(git [^`]+)`", proc.stderr)
     assert len(commands) == 1, f"the refusal names {len(commands)} recovery commands: " \
                                f"{proc.stderr!r}"
-    subprocess.run(commands[0], shell=True, cwd=str(ws.estate.checkout), env=ws.estate.env,
+    subprocess.run(commands[0], shell=True, cwd=str(checkout), env=ws.estate.env,
                    check=True, capture_output=True)
-    assert git(ws.estate.checkout, "status", "--porcelain", env=ws.estate.env) == ""
+    assert git(checkout, "status", "--porcelain", env=ws.estate.env) == ""
     assert ws.run(argv, lane).returncode == 0
 
 
