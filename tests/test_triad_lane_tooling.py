@@ -25,6 +25,17 @@ TWO THINGS ARE HELD HERE, and the second is the condition of the first:
     normalised for what no two runs share - the bench's path, UTC stamps,
     hashes, ages and byte sizes - and for nothing else.
 
+ONE EXCEPTION, BY DESIGN: `lane-handoff`'s commit act (#198, act 2's slice
+2b). That slice replaces `lane-handoff`'s own commit and push in the
+register's working tree with one `lanes-edit.sh write-handoff --prepend`
+under the checkout's lock. So in the one hunk where repoS-1's handoff is
+committed, `handoff commit: <subject>` and `handoff pushed to origin/main`
+are the helper's own words now (`lanes-edit: committed: <subject>`,
+`lanes-edit: pushed origin/main (attempt 1)`), the subject carries the
+handoff's why, and a `handoff written through write-handoff` step follows
+`handoff refreshed:`. That hunk was re-captured from slice 2b's tools by
+`--capture`; every other line is `c45a452`'s, and the case keeps its name.
+
 NOTHING REAL IS TOUCHED: every repository, origin, register, `$HOME` and
 state directory is under `tmp_path`, and the network is never reached.
 """
@@ -1220,7 +1231,10 @@ def test_t018_add_refuses_where_the_manifest_cannot_be_read(triad):
 
 def capture(tools: Path, golden: Path) -> None:
     """Write the golden file from the tools in `tools` - run ONCE, against
-    `c45a452`'s (`git archive c45a452 | tar -x -C <dir>`), and committed."""
+    `c45a452`'s (`git archive c45a452 | tar -x -C <dir>`), and committed.
+    Slice 2b of #198 ran it again against its own tools for its one exception,
+    `lane-handoff`'s commit act (the module docstring), and kept every other
+    line of `c45a452`'s."""
     with tempfile.TemporaryDirectory(prefix="t018-capture.") as tmp:
         text = render_golden(single_repository(Bench(Path(tmp) / "bench", tools)))
     golden.parent.mkdir(parents=True, exist_ok=True)
