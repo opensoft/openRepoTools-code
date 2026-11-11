@@ -654,13 +654,21 @@ def test_ready_check_12_passes_the_logins_the_step_made(tmp_path, request):
     config = m.config("e1", m.socket_url("lanes_w_e1", "t224_reg"), files["lanes_w_e1"],
                       m.socket_url("lanes_r_e1", "t224_reg"), files["lanes_r_e1"])
     proc = m.ready(config)
-    state, reason = _checks(proc.stdout).get(12, ("", ""))
+    checks = _checks(proc.stdout)
+    state, _reason = checks.get(12, ("", ""))
     assert state == "ok", f"check 12 fails the logins the step made:\n{_said(proc)}"
-    # "check 12 passes and prints each login's floors" (AT-LRMPG's oracle).
-    for half in ("w", "r"):
-        for floor in ROLCONFIG[half]:
-            assert floor.split("=", 1)[0] in reason, (
-                f"check 12's line does not print {floor}:\n{_said(proc)}")
+    # "check 12 passes, `check 12: ok`" (lane 3's batch 7, ruling 1: lane 1's
+    # bare line stands, Y-ops:457; tasks:572): the line is bare, with no floor.
+    assert re.search(r"^check 12: ok$", proc.stdout, re.M), (
+        f"check 12's line is not the bare `check 12: ok`:\n{_said(proc)}")
+    # Exit 0 where every check passes. On this socket fixture not every check
+    # can (check 11 always fails on a Unix socket, AT-LRMPG's own
+    # `[unix-socket]`), so the run's exit follows the other checks: 2, with
+    # check 12 not among the failures `ready` names.
+    failed = sorted(number for number, (said, _why) in checks.items() if said == "FAIL")
+    assert proc.returncode == (2 if failed else 0), (
+        f"ready's exit does not follow its checks ({failed} failed):\n{_said(proc)}")
+    assert 12 not in failed
 
 
 def test_login_rotate_keeps_an_open_session_and_refuses_the_old_password(tmp_path, request):
