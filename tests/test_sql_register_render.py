@@ -25,7 +25,11 @@ No engine, no image cache: see "the render read's `start`" below;
 and test 1's phase-W part, lane 2's T240: each verb through `lanes-edit.sh`
 on `mode=primary` with the pure renderer writing a scratch mirror, its
 files-mode twin, `rename-lane`'s transaction then its move, a caller's UTC
-kept, and no register `sync` nudge on primary (see "phase W: T240" below).
+kept, and no register `sync` nudge on primary (see "phase W: T240" below);
+
+and test 1's phase-G part, lane 2's T270's one case here: the mirror read
+from the bare origin's `main` after the forked render (see "phase G: T270"
+below).
 
 THE STORAGE-LAYER ENTRY (design S4; the delta spec's "The managed seam stays
 the ledger's"). The managed projection writer arrives with the 001 feature's
@@ -2507,3 +2511,84 @@ def test_rename_lane_commits_the_transaction_only_where_its_handoffs_path_has_no
             "the refusal wrote a register line")
         assert _origin_paths(origin, env) == paths and handoff.read_bytes() == held, (
             "the refusal moved the handoff")
+
+
+# ============================================================ phase G: T270
+#
+# TEST 1'S PHASE-G PART (lane 2's T270, its one case in this module; AT-1, the
+# test plan's line 606; the rest of T270 is test 5 and C8, in
+# `test_sql_register_renderer_git.py`): the same verbs as part W, on the same
+# workstation, with the mirror read from the bare origin's `main`, by object,
+# after the renderer the write forks (T416's `render --checkout <c>`, lane 3's
+# T320 to T323) has pushed it. The wait is open point 8's first: `lanes-index
+# status`, every 100 ms, 30 s at most, until its lag is 0 (`lag:         0
+# seq(s)`, lane 1's `status_register`). `status` reads `m` from `origin/<b>` as
+# last fetched in the checkout it runs in (`_register_mirror`; it fetches
+# nothing), and the render's push moves that ref in the checkout it commits
+# in, the writing lane's `<c>`, so the poll asks `status` in each lane's `<c>`
+# (`LANES_REPO`), and stops at the first that reads 0. It fails until T320 to
+# T323, T325 and L4-B13 land.
+
+#: `status`'s lag line when the mirror has caught up (`status_register`).
+STATUS_LAG_ZERO = re.compile(r"^\s*lag:\s+0 seq\(s\)", re.M)
+
+
+def _checkout_state(checkout: Path, env: dict) -> tuple:
+    """A checkout's HEAD, its index's digest and `status --porcelain=v1 -uall`."""
+    index = checkout / ".git" / "index"
+    return (git(checkout, "rev-parse", "HEAD", env=env),
+            hashlib.sha256(index.read_bytes()).hexdigest() if index.exists() else "-",
+            git(checkout, "status", "--porcelain=v1", "-uall", env=env))
+
+
+def _wait_for_the_render(ws: PrimaryWrites, ceiling: float = 30.0) -> None:
+    """Open point 8's first wait: a bounded poll of `status` until its lag is
+    0, in each lane's `<c>`."""
+    deadline = time.monotonic() + ceiling
+    last = ""
+    while True:
+        for lane in W_LANES:
+            checkout = ws.lane_checkout(lane)
+            proc = run_index(ws.copy, ["status"], dict(ws.env, LANES_REPO=str(checkout)),
+                             cwd=checkout)
+            if STATUS_LAG_ZERO.search(proc.stdout):
+                return
+            last = f"{lane}: exit {proc.returncode}: {proc.stdout[-700:]}{proc.stderr[-300:]}"
+        assert time.monotonic() < deadline, (
+            f"the forked render did not bring the lag to 0 within {ceiling:.0f} s (T320 to "
+            f"T323, L4-B13); status said {last}")
+        time.sleep(0.1)
+
+
+@pytest.mark.parametrize("verb", list(W_VERBS))
+def test_the_mirror_on_origin_equals_a_full_render_after_each_write(pg, tmp_path, verb):
+    """AT-1's part G: `lanes-edit.sh <verb>` on primary exits 0 with one
+    journal entry; once the forked render has brought `status`'s lag to 0
+    (open point 8), origin has gained exactly one commit, whose
+    `Register-Seq:` trailer, in its message's last paragraph in `Key: value`
+    form, is the entry's seq, so `git log
+    --format='%(trailers:key=Register-Seq,valueonly)'` reads it (AT-F11); the
+    render set on origin's `main`, read by object, equals the full render from
+    SQL, path set and bytes; and W's checkout and each lane's `<c>` keep their
+    HEAD, index and working tree (Q27(a), the private-index form). Fails until
+    T320 to T323, T325 and L4-B13, with L4-B4 and L4-B8."""
+    argv, lane = W_VERBS[verb]
+    ws = PrimaryWrites(pg, tmp_path, W_PREPS.get(verb))
+    origin, env = ws.estate.origin, ws.estate.env
+    base = git(origin, "rev-parse", "main", env=env).strip()
+    checkouts = {str(c): _checkout_state(c, env) for c in ws.checkouts()}
+    before_head = head(pg)
+    proc = ws.run(argv, lane)
+    entry = _one_entry(pg, before_head, proc, verb)
+    _wait_for_the_render(ws)
+
+    gained = git(origin, "rev-list", f"{base}..main", env=env).split()
+    assert len(gained) == 1, f"origin gained {len(gained)} commits, not one: {gained}"
+    trailer = git(origin, "log", "-1", "--format=%(trailers:key=Register-Seq,valueonly)",
+                  gained[0], env=env).strip()
+    assert trailer == str(entry["seq"]), (
+        f"the render commit's Register-Seq trailer reads {trailer!r}, not {entry['seq']}")
+    _assert_same_files(_origin_render_set(origin, env), _rendered_only(full_render(pg)),
+                       f"{verb}: origin's main and the full render")
+    assert {str(c): _checkout_state(c, env) for c in ws.checkouts()} == checkouts, (
+        "the render changed a lane checkout's HEAD, index or working tree")
