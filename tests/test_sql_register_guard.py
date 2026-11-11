@@ -1289,14 +1289,67 @@ BOUND_CASES = {
     "c3-rtt270": ({"c": 3, "n_a": 1, "w_s_ms": 470}, 530),
 }
 
+#: Case 22's `[answer-2]`: the contract stub's constants line as T207 writes
+#: it (section 2.4's defaults, `sql_register_helpers.py`'s `_CONTRACT_STUB`),
+#: and the line this case's own copy of the stub carries instead, so that its
+#: `.head` gives `c=3`, `n_a=2` and `w_s_ms=300`: `BOUND_CASES["a2-c3-socket"]`,
+#: 620 s. A record missing any one of the three gives another bound: 560
+#: without `c` (`"a2-c2-socket"`), 530 without `n_a` (`"c3-socket"`) and 610
+#: without `w_s_ms` (`"a2-c3"`).
+ANSWER_2 = "answer-2"
+STUB_HEAD_LINE = "C, N_A, W_S_MS, SCHEMA = 2, 1, 0, 1"
+ANSWER_2_HEAD_LINE = "C, N_A, W_S_MS, SCHEMA = 3, 2, 300, 1"
 
-@pytest.mark.parametrize("configuration", sorted(BOUND_CASES))
-def test_guard_bind_computes_bound_s_from_c_n_a_and_the_service(estate, configuration):
+
+def _bound_through_answer_2_on_the_stub(estate, tmp_path) -> None:
+    """Case 22's `[answer-2]`: the contract's stub `lanes-index` (T207), its
+    register the estate's own `lanes/LANES.md`, with `lanes-edit.sh`,
+    `repos.tsv` and `lane-start` copied beside it and a configuration naming
+    the store, as `test_the_guard_maps_69_75_and_3_to_2` does, so the guard
+    reads the register through the stub and the stub's `.head` (form 2). The
+    stand-in `lane-start` holds, so the record is read at `mode=binding`."""
+    code = tmp_path / "code"
+    code.mkdir()
+    for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
+        shutil.copy2(REPO / name, code / name)
+    est = estate(guard=code / "lanes-edit.sh")
+    stub = contract_stub(code, register={
+        "lanes/LANES.md": (est.wip / "lanes" / "LANES.md").read_text(encoding="utf-8")})
+    text, made = re.subn(re.escape(STUB_HEAD_LINE), ANSWER_2_HEAD_LINE,
+                         stub.read_text(encoding="utf-8"))
+    assert made == 1, f"the contract stub's constants line was replaced {made} times, not once"
+    stub.write_text(text, encoding="utf-8")
+    conf = tmp_path / "lanes-index.conf"
+    conf.write_text(f"register_url=postgresql:///register?host={tmp_path}/sock\n",
+                    encoding="utf-8")
+    est.extra["LANES_INDEX_CONFIG"] = str(conf)
+    est.set("hold", 60)
+    est.make_offer()
+    est.answer_2()
+    record = est.outer()
+    assert record["mode"] == "binding", record
+    assert (record.get("c"), record.get("n_a"), record.get("w_s_ms")) == ("3", "2", "300"), \
+        f"the record does not hold .head's c=3, n_a=2 and w_s_ms=300: {record}"
+    assert record["bound_s"] == "620", record
+    assert int(record["deadline_epoch"]) == _epoch(record["started_utc"]) + 625, record
+
+
+@pytest.mark.parametrize("configuration", sorted(BOUND_CASES) + [ANSWER_2])
+def test_guard_bind_computes_bound_s_from_c_n_a_and_the_service(estate, tmp_path, configuration):
     """AT-F6 case 22: `bound_s` as `guard-bind` computes it from the record's
     `c`, `n_a` and `w_s_ms`, which the hook copies from `.head` (R05: it
     reads no configuration), with a stand-in body that exits 0: each record's
     `deadline_epoch` is its start plus `bound_s` plus 5 s, and its body runs
-    under `timeout -k 10` at `bound_s` - 10."""
+    under `timeout -k 10` at `bound_s` - 10.
+
+    `[answer-2]` writes no record of its own: it reaches `guard-bind` through
+    answer 2 on the contract stub (T207), its `.head` set to `c=3`, `n_a=2`
+    and `w_s_ms=300`, and the record at `mode=binding` holds the three as
+    `.head` gives them, with `bound_s=620` and a `deadline_epoch` 625 s after
+    `started_utc`. It fails until L5-A2 (lane 5's T507), which copies them."""
+    if configuration == ANSWER_2:
+        _bound_through_answer_2_on_the_stub(estate, tmp_path)
+        return
     keys, bound = BOUND_CASES[configuration]
     est = estate()
     _record_with(est, keys)
