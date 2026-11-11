@@ -18991,8 +18991,16 @@ Nothing was written." 2
   #   (6779688808, Q21); a
   #   LANES_SESSION that is not a transcript uuid; S3's refusals; each with
   #   nothing written · 3 pushed, not confirmed · 4 the lock · 5 an edit's
-  #   proof · 6 S4's commit, kept and named · 69 on primary, at T409's ask
-  #   (T415 and T417 give 69, 75 and 3 their primary meanings)
+  #   proof · 6 S4's commit, kept and named · 66 an alias table that could
+  #   not be read, where the router asks `canon_lane` (under
+  #   LANES_ROUTE_WRITES=1, before anything is cloned): the router carries
+  #   `canon_lane`'s code as it does for every routed verb, `canon_lane … ||
+  #   exit $?`. WHERE THIS ARM ASKS, in the lane's checkout or in a call that
+  #   is not routed, the same unreadable table is its 2, `canon_lane … || exit
+  #   2`, as every writer arm's ask is. BOTH CODES STAND, with nothing written
+  #   under either (lane 3, #165 6780753157, Q48), since changing either
+  #   reaches beyond this verb · 69 on primary, at T409's ask (T415 and T417
+  #   give 69, 75 and 3 their primary meanings)
   start-record)
     sr_use="$SR_USE"
     sr_in="${1-}"; sr_verb="${2-}"
