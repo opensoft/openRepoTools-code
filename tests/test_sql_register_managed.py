@@ -57,6 +57,7 @@ is `*:*:<database>:<login>:<password>`; `login`'s argv is `login add|rotate
 
 from __future__ import annotations
 
+import atexit
 import errno
 import hashlib
 import itertools
@@ -1330,13 +1331,50 @@ def _w_git(cwd: Path, env: dict, *args: str) -> str:
     return proc.stdout
 
 
-def _w_path() -> str:
-    """The caller's PATH without a directory that holds a `lanes-index` or a
-    `psql`: neither an installed indexer nor a `psql` behind the shim's back
-    is what a case runs."""
-    return os.pathsep.join(part for part in os.environ.get("PATH", os.defpath).split(os.pathsep)
-                           if part and not os.path.exists(os.path.join(part, "lanes-index"))
-                           and not os.path.exists(os.path.join(part, "psql")))
+#: `_masked_path`'s mirrors, by each directory's real path (None where the
+#: directory holds no masked name), and the one temporary root they share.
+_PATH_MIRRORS: dict = {}
+_PATH_MIRROR_ROOT: list = []
+
+
+def _masked_path() -> str:
+    """The caller's PATH with every directory kept in its place, and each one
+    that holds a `psql`, a `lanes-index` or a name that starts `pg_` swapped
+    for a private mirror of it: a directory of links, one to each of its
+    entries by its absolute path, those names left out. Neither an installed
+    indexer nor a `psql` (or a `pg_` client wrapper shipped beside it) behind
+    the shim's back is what a case runs, but the tools beside them are: on a
+    GitHub runner `postgresql-16`'s client puts `psql` in `/usr/bin` with
+    `git` and `bash` (and `/bin` is a link to it), so dropping the directory
+    dropped `git` and `bash` too (lane 1's census, #165 6807454856). A
+    directory that holds none of those names passes through unchanged. Each
+    mirror is made once per process, under one `mkdtemp` that an `atexit`
+    handler removes."""
+    parts = []
+    for part in os.environ.get("PATH", os.defpath).split(os.pathsep):
+        if not part:
+            continue
+        real = os.path.realpath(part)
+        if real not in _PATH_MIRRORS:
+            try:
+                names = os.listdir(real)
+            except OSError:
+                names = []
+            masked = {name for name in names
+                      if name in ("psql", "lanes-index") or name.startswith("pg_")}
+            mirror = None
+            if masked:
+                if not _PATH_MIRROR_ROOT:
+                    _PATH_MIRROR_ROOT.append(tempfile.mkdtemp(prefix="l2-pathmask-"))
+                    atexit.register(shutil.rmtree, _PATH_MIRROR_ROOT[0], ignore_errors=True)
+                mirror = os.path.join(_PATH_MIRROR_ROOT[0], str(len(_PATH_MIRRORS)))
+                os.mkdir(mirror)
+                for name in names:
+                    if name not in masked:
+                        os.symlink(os.path.join(real, name), os.path.join(mirror, name))
+            _PATH_MIRRORS[real] = mirror
+        parts.append(_PATH_MIRRORS[real] or part)
+    return os.pathsep.join(parts)
 
 
 def _commit_logins(log: str) -> list:
@@ -1538,7 +1576,8 @@ class PhaseW:
         made = subprocess.run(["bash", str(self.lanes_edit), "lane-checkout", lane, "--create"],
                               cwd=str(checkout), capture_output=True, text=True, timeout=120,
                               stdin=subprocess.DEVNULL, check=False,
-                              env=dict(env, PATH=os.pathsep.join([str(self.fakebin), _w_path()])))
+                              env=dict(env, PATH=os.pathsep.join([str(self.fakebin),
+                                                                  _masked_path()])))
         assert made.returncode == 0 and Path(made.stdout.strip()).is_dir(), (
             f"lane-checkout {lane} --create did not make {who}'s lane checkout:\n{_said(made)}")
         return {"lane": lane, "checkout": checkout, "env": env, "state": where / "state"}
@@ -1554,7 +1593,8 @@ class PhaseW:
         (psql_dir / "psql").chmod(0o755)
         (psql_dir / PSQL_SHIM_CONTROL).write_text(json.dumps(
             {"psql": str(self.m.cluster.tool("psql")), "arms": list(arms)}), encoding="utf-8")
-        env = dict(e["env"], PATH=os.pathsep.join([str(psql_dir), str(self.fakebin), _w_path()]))
+        env = dict(e["env"], PATH=os.pathsep.join([str(psql_dir), str(self.fakebin),
+                                                   _masked_path()]))
         proc = subprocess.Popen(["bash", str(self.lanes_edit), *argv], cwd=str(e["checkout"]),
                                 env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, encoding="utf-8", errors="replace",
