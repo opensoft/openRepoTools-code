@@ -7925,7 +7925,7 @@ start_record_tail() {
 # word after the verb; SRA_LOGS, SRA_ADDS, SRA_STATES and SRA_CELLS, the
 # counts of the four options; SRA_LOG and SRA_PAY, the object and payload of a
 # `--log` with three words after it, the arrow second; and SRA_BAD, the first
-# word the arm's parse would refuse, in its order: `add-short`, `cell-short`
+# word the arm's parse would refuse, in its order: `row-short`, `cell-short`
 # or `state-short` (that option with fewer words after it than it takes),
 # `log-short` (fewer than three words after `--log`), `log-arrow`
 # (SRA_BAD_WORD is the word where the arrow should be) or `stray`
@@ -7949,7 +7949,7 @@ sr_argv_adds_row() {
         if [ $((sra_i + 1)) -lt "$sra_n" ]; then
           if [ "$SRA_ADDS" = 1 ]; then SRA_ROW="${ORIG_ARGV[$((sra_i + 1))]}"; SRA_ROW_GIVEN=1; fi
         else
-          [ -n "$SRA_BAD" ] || SRA_BAD=add-short
+          [ -n "$SRA_BAD" ] || SRA_BAD=row-short
         fi
         sra_i=$((sra_i + 2)) ;;
       --log)
@@ -8020,15 +8020,15 @@ sr_log_shape_routed() {   # after sr_argv_adds_row
 # `start-record`'S REFUSALS OF ITS OTHER WORDS, one copy of the arm's words for
 # the arm and for the router, which asks an `--add-row` call's words whole
 # before anything is cloned (lane 3, #165 6780753157, Q49): the second word
-# (`verb <word>`); an option short of its words (`add-short`, `cell-short`,
+# (`verb <word>`); an option short of its words (`row-short`, `cell-short`,
 # `state-short`); a word that is no option (`stray <word>`); `--add-row` or
 # `--state` more than once (`once`); `--add-row` with `--append-cell` or
 # `--state` (`mixed`); and neither `--add-row` nor `--state` (`neither`). Each
 # is 2, with nothing written.
-sr_form_die() {   # verb <word> | add-short | cell-short | state-short | stray <word> | once | mixed | neither
+sr_form_die() {   # verb <word> | row-short | cell-short | state-short | stray <word> | once | mixed | neither
   case "${1-}" in
     verb) die "start-record's second word is its log line's verb, STARTED or RESUMED, and '${2-}' is neither. Nothing was written. $SR_USE" 2 ;;
-    add-short) die "--add-row takes the new row as ONE quoted string. Nothing was written. $SR_USE" 2 ;;
+    row-short) die "--add-row takes the new row as ONE quoted string. Nothing was written. $SR_USE" 2 ;;
     cell-short) die "--append-cell takes three words: the anchor in the session cell, the text to append to the cell, and why. Nothing was written. $SR_USE" 2 ;;
     state-short) die "--state takes the phrase as ONE quoted string. Nothing was written. $SR_USE" 2 ;;
     stray) die "start-record takes --add-row, --append-cell, --state and --log, and '${2-}' is none of them. Nothing was written. $SR_USE" 2 ;;
@@ -19059,7 +19059,7 @@ Nothing was written." 2
     while [ $# -gt 0 ]; do
       case "$1" in
         --add-row)
-          [ $# -ge 2 ] || sr_form_die add-short
+          [ $# -ge 2 ] || sr_form_die row-short
           sr_row="$2"; sr_rows=$((sr_rows + 1)); shift 2 ;;
         --append-cell)
           [ $# -ge 4 ] || sr_form_die cell-short
