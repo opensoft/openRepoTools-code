@@ -566,7 +566,10 @@
 #      So does feature 007's `act-begin` (T410).
 #
 #  66  EX_NOINPUT — AMENDMENT 16(e)'s ALIAS TABLE COULD NOT BE READ, and
-#      `canon-lane` is the one verb that spends it. `lanes/aliases.tsv` is what
+#      `canon-lane` spends it, and so do `handoff-path`, `lane-checkout`
+#      and, under `LANES_ROUTE_WRITES=1`, the router of every writer,
+#      `start-record`'s included, each relaying `canon_lane`'s 66
+#      (lane 3, #165 6808141050, batch c Q70). `lanes/aliases.tsv` is what
 #      makes a renamed lane's OLD name resolve, so a table nobody can read is
 #      not an estate with no renames: a former name would read as a lane nobody
 #      has, and `lane-start` would append a SECOND row for one that has been
