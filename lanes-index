@@ -15484,9 +15484,12 @@ def render_refork(checkout: str) -> bool:
     return True
 
 
-def _render_holding(lock: RenderLock, checkout: str, cfg: dict) -> int:
+def _render_holding(lock: RenderLock, checkout: str, cfg: dict,
+                    results: list | None = None) -> int:
     """The holder's side of the handshake, bounded by F15 (T323). Each turn
-    clears the rerun mark, the pass's first act (S2), and runs a pass.
+    clears the rerun mark, the pass's first act (S2), and runs a pass. Where
+    the caller hands over a list, `results`, each pass's `RenderPass` is
+    appended to it, so `reconcile` can say how its re-render ended (T325).
 
     - A PASS THAT MADE PROGRESS is followed by another, the lock still held.
     - ANY OTHER END is a stop: the holder releases, looks for a mark once
@@ -15510,6 +15513,8 @@ def _render_holding(lock: RenderLock, checkout: str, cfg: dict) -> int:
                  f"({exc.strerror or exc}); nothing rendered")
             return 1
         result = render_pass(checkout, cfg)
+        if results is not None:
+            results.append(result)
         rc = result.rc
         passes += 1
         if passes >= RENDER_PASS_CAP:
@@ -15587,10 +15592,32 @@ def cmd_render_checkout(args: list) -> int:
     # `GIT_*` reaches `load_config`, `source_of` or any child (SHOULD-2 of lane
     # 3's review of T321): both are gone before anything here reads a
     # repository or starts a child.
+    render_scrub_environ()
+    cfg = load_config()
+    return render_locked(os.path.abspath(checkout), cfg)
+
+
+def render_scrub_environ() -> None:
+    """D12 AND Y:5776 for this process itself: every inherited `GIT_*`
+    variable and `LANES_NO_FETCH` removed from `os.environ`, so none reaches
+    `source_of`'s git read or any child, as `_render_child_env` keeps them
+    from each git call. `render --checkout` makes it its first act, and
+    `reconcile` before its re-render (T325)."""
     for name in [key for key in os.environ if key.startswith("GIT_") or key == "LANES_NO_FETCH"]:
         os.environ.pop(name, None)
-    cfg = load_config()
-    checkout = os.path.abspath(checkout)
+
+
+def render_locked(checkout: str, cfg: dict, results: list | None = None) -> int:
+    """THE RENDERER IN `checkout`, an absolute path, under its render lock
+    (T321), as `render --checkout <c>` runs it and `reconcile`'s re-render
+    reuses it (T325): the lock taken at once or, where another render holds
+    it, the handshake's first half, the mark and one more try; then
+    `_render_holding` (T322's pass, bounded by T323), `results` gathering
+    each pass's `RenderPass`. Returns `cmd_render_checkout`'s exits: 0 where
+    another render holds the lock and renders again for this one, with no
+    pass run here; 1 where the lock cannot be taken; otherwise the last
+    pass's. A `checkout` that is no git checkout, and a push `render_push`
+    refuses, raise `Refusal` (2)."""
     lock = RenderLock(render_git_dir(checkout))
     try:
         held = lock.acquire()
@@ -15610,7 +15637,7 @@ def cmd_render_checkout(args: list) -> int:
             f"is done")
         return 0
     try:
-        return _render_holding(lock, checkout, cfg)
+        return _render_holding(lock, checkout, cfg, results)
     finally:
         lock.release()
 
