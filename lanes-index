@@ -15803,7 +15803,8 @@ def rollback_deadline_s() -> int:
 
 def _rollback_args(args: list[str]) -> dict | None:
     """The rollback's flags; None for `--help`. `--hold-marker`, step 3's stop
-    for the ruleset, is T326's, and not in this build."""
+    for the ruleset, is T326's, and not in this build: T326 parses it here, and
+    `rollback_steps_2_to_4` reads it from the options this returns."""
     for arg in args:
         if arg in ("-h", "--help"):
             return None
@@ -15859,13 +15860,19 @@ def _rollback(opts: dict) -> int:
     while True:
         st = _rollback_read(store, "nothing was written, and the switch and the marker are "
                                    "unchanged")
+        # WHOSE ENTRY IT IS (F12; Rule 10; D15), read once, after the first read and
+        # before the rerun path, so that T326's writes on a rerun have it too.
+        if not ident:
+            ident = {"lane": _rollback_lane(), "workstation": _rollback_workstation(),
+                     "author": _rollback_author()}
         pair = (st["mode"], st["marker"])
         if pair == ("files", "removing"):
             if _rollback_own_entry(st):
                 say(f"rollback: seq {st['head']}, this rollback's entry, stands: the switch "
                     f"reads files with the marker removing, so this rerun declares first and "
                     f"goes on from step 2 (operations.md §2.3)")
-                return _rollback_after_step_1(cfg, store, st["head"] - 1, st["head"])
+                return _rollback_after_step_1(cfg, store, opts, ident, st["head"] - 1,
+                                              st["head"])
             raise _RollbackEnd(EXIT_UNAVAILABLE, f"rollback: the switch reads files with the "
                                f"marker removing at set_seq {st['set_seq']}, but the head "
                                f"{st['head']} is not a rollback's entry at that seq, which "
@@ -15891,16 +15898,13 @@ def _rollback(opts: dict) -> int:
                 f"current, so the rollback does not start (F1; S5's step 0). Resolve it first "
                 f"by one of S2's two ways out, `{PROG} import --single <sha>` or `{PROG} render "
                 f"--revert <sha>`, while the switch reads primary; nothing was written")
-        # WHOSE ENTRY IT IS (F12; Rule 10; D15), read once, before the first call.
-        if not ident:
-            ident = {"lane": _rollback_lane(), "workstation": _rollback_workstation(),
-                     "author": _rollback_author()}
         # STEP 0, ITS GIT HALF: T326's.
         rollback_step_0_git_half(cfg, store, k, ident["lane"])
         # STEP 1.
         tries += 1
         write_id = str(uuid4())
         timer = store.bounds("rollback")[1]
+        # T326: not_after counts from this read, before the git half; a slow fetch ends LR008, 69.
         not_after = _dt.datetime.fromtimestamp(st["clock"] + timer + 2,
                                                _dt.timezone.utc).isoformat()
         entry = rollback_entry(k, not_after=not_after, **ident)
@@ -15931,13 +15935,15 @@ def _rollback(opts: dict) -> int:
                 raise _RollbackEnd(
                     EXIT_UNAVAILABLE, f"rollback: step 1's call ended with no answer, and the "
                     f"switch read again is {again['mode']} with the marker {again['marker']} at "
-                    f"head {again['head']}, not this rollback's entry: nothing was written by "
-                    f"it (D9, Y:3529)")
+                    f"head {again['head']}, not this rollback's entry, so whether its "
+                    f"transaction commits is not known: it may still run on the server. A "
+                    f"rerun reads the switch first, and goes on from this rollback's entry "
+                    f"where it finds one (D9, Y:3529)")
         else:
             say(f"rollback: seq {seq} committed: the switch reads files with the marker "
                 f"removing, the head moved from {k} to {seq}, and the operator entry removes "
                 f"{CUTOVER_STORE_PATH} (S5's step 1; D24)")
-        return _rollback_after_step_1(cfg, store, k, seq)
+        return _rollback_after_step_1(cfg, store, opts, ident, k, seq)
 
 
 def _rollback_read(store, failed: str) -> dict:
@@ -16135,29 +16141,31 @@ def _rollback_declare(cfg: dict, k: int) -> None:
         say(line)
         return
     try:
-        _outage_declare({"verb": "declare", "--until": None, "--why": None,
-                         "--mirror-seq": str(k), "--rollback": True})
-    except (Refusal, StoreUnusable) as exc:
+        _outage_declare(_outage_args(["declare", "--rollback", "--mirror-seq", str(k)]))
+    except (Refusal, StoreUnusable, _OutageUsage) as exc:
         note(f"rollback: the outage was not declared here ({exc}). Run on each configured "
              f"workstation, from the host, or run the rollback again, which declares first "
              f"(operations.md §2.3):")
         say(line)
 
 
-def _rollback_after_step_1(cfg: dict, store, k: int, seq: int) -> int:
+def _rollback_after_step_1(cfg: dict, store, opts: dict, ident: dict, k: int, seq: int) -> int:
     """After step 1, or a rerun that found it standing: the declaration, then
     steps 2 to 4."""
     _rollback_declare(cfg, k)
-    return rollback_steps_2_to_4(cfg, store, k, seq)
+    return rollback_steps_2_to_4(cfg, store, opts, ident, k, seq)
 
 
-def rollback_steps_2_to_4(cfg: dict, store, k: int, seq: int) -> int:
+def rollback_steps_2_to_4(cfg: dict, store, opts: dict, ident: dict, k: int, seq: int) -> int:
     """THE SEAM FOR T326: STEPS 2 TO 4 (Y:3245-3256; ops:337-340), from the
     first run once step 1 and the declaration are done, and from a rerun that
-    found step 1 standing. T326 renders to `k` in the operator lane's checkout,
-    stops there under `--hold-marker`, and otherwise pushes seq `seq` (`k+1`)
-    with its read-back and `record_marker`, holding no database transaction
-    across a git act (F23; FR-052).
+    found step 1 standing. `opts` is the parsed command line, where T326's
+    `--hold-marker` belongs (`_rollback_args`), and `ident` the operator
+    lane's `lane`, `workstation` and `author`, read before the rerun path. T326
+    renders to `k` in the operator lane's checkout, stops there under
+    `--hold-marker`, and otherwise pushes seq `seq` (`k+1`) with its read-back
+    and `record_marker`, holding no database transaction across a git act
+    (F23; FR-052).
 
     This build has neither: it says so and returns 0, as the cutover's T116
     returns 0 before T327's push. The marker stays `removing`, so every SQL
