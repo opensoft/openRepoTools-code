@@ -943,11 +943,19 @@ def test_an_import_whose_line_derives_a_bad_key_is_refused_lr010_and_writes_noth
     ``| `x y` |``: `lanes-index import --at <C>` exits 2 naming
     `lanes/LANES.md`, that line's number and the key, and the head, the journal
     and every table of §1.2 equal their values before. With two such lines,
-    the message names the first in path and line order. The same with U+00A0."""
+    the message names the first in path and line order. The same with U+00A0.
+    The import runs as the operator lane (`LANES_LANE`, D24), with git's
+    author named, through `LANES_REPO`, the lane's checkout; `W` is a
+    directory of its own (`LANES_WORKSPACE_ROOT`, `lanes-edit.sh`'s test
+    seam), since the import refuses a `LANES_REPO` that is `W` or a `W` it
+    cannot read."""
     bad_lines, shown_key, line_no = IMPORT_CASES[case]
     work, commit = workspace_at(tmp_path, bad_lines)
+    w = tmp_path / "W"
+    w.mkdir()
     env = index_env(tmp_path, config(tmp_path, pg, mode="index"), LANES_REPO=str(work),
-                    LANES_WORKSTATION=WS)
+                    LANES_WORKSPACE_ROOT=str(w), LANES_LANE=LANE, LANES_WORKSTATION=WS,
+                    **OPERATOR_GIT)
     before = state(pg)
     proc = run_index(LANES_INDEX, ["import", "--at", commit], env, cwd=work)
     assert proc.returncode == 2, shown(proc)
