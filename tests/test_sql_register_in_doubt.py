@@ -76,6 +76,7 @@ workstation serves both modules and neither keeps a copy.
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import itertools
 import json
@@ -961,6 +962,15 @@ def test_a_lookup_never_mistakes_a_rivals_row_for_the_lost_write(estates):
 # has none of its own; `[snapshot-fails]` holds it. A record from another
 # host keeps "calls at once" (T246's `[too-early]`).
 #
+# A `tail` RECORD A TAKEOVER CANNOT USE (R-F13c-23; lane 3's batch 8, #165
+# 6780753157, Q46, Q34 and text change 1): a takeover of a record holding
+# `tail` whose first snapshot has no `found=` refuses 2 and keeps the record,
+# giving the effect check and, where the effect is not there, the same command
+# with no `LANES_WRITE_ID` once the record is `LANES_REGISTER_PENDING_MAX_AGE_S`
+# past its `updated_utc`, printing that time, never `LANES_WRITE_ID=new`
+# (Y:5207, Y:5215); a `tail` of neither Y:5179 form is a record that cannot be
+# read, T412's 2, the record kept.
+#
 # `found`'s two lines (R-F13-2, R-F13-7; F13b-OWED items 11 and 15): every
 # `found` answer the shim and the fakes give here carries `workstation=` and
 # `utc=` after its seq line, as lane 1's T114-fu3 prints them (`found <seq>`,
@@ -970,7 +980,8 @@ def test_a_lookup_never_mistakes_a_rivals_row_for_the_lost_write(estates):
 #
 # They FAIL UNTIL L4-B2, L4-B5 and L4-B6 land; `[snapshot-fails]` until lane
 # 4's T417 and lane 1's T114 take the record's clock (Q-L1-1); the texts for 3
-# until lane 4's T417, T433 and T434; and the `found` lines until lane 1's
+# until lane 4's T417, T433 and T434; the `tail` record a takeover cannot use
+# until lane 4's T418 takes Q46 and Q34; and the `found` lines until lane 1's
 # T114 and lane 5's T111 print them. Without PostgreSQL 16 each skips, except
 # the texts for 3, which read the scripts and run here.
 
@@ -1654,6 +1665,73 @@ def test_a_run_with_no_record_runs_no_tail_and_names_it(estates, case):
         assert "may already have run" in again.err, again.err[-800:]
     else:
         assert "done" in again.err, again.err[-800:]
+
+
+# ------------------------------------------------------------ D8: a `tail` record a takeover cannot use
+#: The maximum age these cases set (`LANES_REGISTER_PENDING_MAX_AGE_S`, Y:5207),
+#: so the time the refusal prints, the record's `updated_utc` plus the age, is
+#: the test's to compute, in the record's own UTC form.
+TAIL_AGE_S = 600
+TAIL_AGE = {"LANES_REGISTER_PENDING_MAX_AGE_S": str(TAIL_AGE_S)}
+UTC_FORM = "%Y-%m-%dT%H:%M:%SZ"
+
+
+@CLIENT
+@pytest.mark.parametrize("case", ["no-found", "tail-of-another-form"])
+def test_a_tail_record_a_takeover_cannot_use_is_refused_2_and_kept(estates, case):
+    """A `claim` ended 3 by `no-reconnect`, and its record given a `tail`
+    by hand (R-F13c-23; lane 3's batch 8, Q46 and Q34). [no-found]: its
+    call never landed (`before`), and the record holds `tail=sent <s> <utc>`,
+    as a damaged record does, so the takeover's first snapshot answers with
+    no `found=`. A plain rerun refuses 2, sending no commit call and running
+    no tail, and leaves the record as it was. Its text gives Y:5211-5213's
+    effect check and, where the effect is not there, the same command again
+    with no `LANES_WRITE_ID` once the record is
+    `LANES_REGISTER_PENDING_MAX_AGE_S` past its `updated_utc`, printing that
+    time, and never `LANES_WRITE_ID=new`, which replaces only a record of
+    another generation (Y:5215). With `updated_utc` set past the age, that
+    rerun writes anew by Y:5207's aged plan: it warns, prints the lookup of
+    the record's id, and commits once under a new id, its tail run once.
+    [tail-of-another-form] (Q34): its call landed (`after`), so a snapshot
+    would find it, and the record's `tail` is `owed <utc>`, a done mark's
+    value and neither Y:5179 form, `sent <s> <utc>` or `done <s> <rc>
+    <utc>`: a record that cannot be read, T412's 2, with no commit call and
+    no tail, the record kept."""
+    e = estates()
+    where = loggers(e)
+    argv = claim(OBJ)
+    arm = dict(NO_RECONNECT, **{"as": "before" if case == "no-found" else "after"})
+    w = e.run(LA, argv, arms=[arm], first=[where])
+    assert w.code == 3 and comments(where) == [], f"exit {w.code}, not 3: {w.err[-800:]}"
+    rec = the_record(e)
+    write_id = rec["fields"]["write_id"].lower()
+    assert e.has_write(write_id) == (case != "no-found"), f"[{case}]: the first call's outcome is not the case's"
+    tail = f"sent {e.c.head() + 1} {e.utc()}" if case == "no-found" else f"owed {e.utc()}"
+    with rec["path"].open("a", encoding="utf-8") as f:
+        f.write(f"tail={tail}\n")
+    kept, journal = rec["path"].read_bytes(), e.journal_after()
+    again = e.run(LA, argv, first=[where], extra=TAIL_AGE)
+    assert again.code == 2, f"[{case}] the takeover exited {again.code}, not 2: {again.err[-800:]}"
+    assert again.commit_calls() == [] and comments(where) == [], again.err[-800:]
+    assert rec["path"].read_bytes() == kept, f"[{case}] the refused run changed the record"
+    assert e.journal_after() == journal
+    if case == "tail-of-another-form":
+        assert "cannot be read" in again.err, f"the refusal is not T412's 2: {again.err[-800:]}"
+        return
+    assert f"lanes-edit.sh history {LA} --since" in again.err or f"lanes-edit.sh register-row {LA}" in again.err
+    aged_at = (datetime.datetime.strptime(rec["fields"]["updated_utc"], UTC_FORM)
+               + datetime.timedelta(seconds=TAIL_AGE_S)).strftime(UTC_FORM)
+    assert aged_at in again.err, f"the text does not print {aged_at}, updated_utc plus the age: {again.err[-800:]}"
+    assert "LANES_WRITE_ID=new" not in again.err and not WRITE_ID_SAID.search(again.err), (
+        f"the text offers a LANES_WRITE_ID rerun: {again.err[-800:]}")
+    set_field(rec["path"], "updated_utc", e.utc((TAIL_AGE_S + 60) / 60))
+    anew = e.run(LA, argv, first=[where], extra=TAIL_AGE)
+    assert anew.code == 0, f"the rerun past the age exited {anew.code}: {anew.err[-800:]}"
+    assert anew.write_ids() and write_id not in anew.write_ids(), anew.err[-800:]
+    assert "WARNING" in anew.err and f"--write-id {write_id}" in anew.err, anew.err[-800:]
+    ids = [r["write_id"] for r in e.journal_after()]
+    assert ids.count(write_id) == 0 and ids.count(anew.write_ids()[-1]) == 1, ids
+    assert len(comments(where)) == 1 and pending(e) == [], (comments(where), pending(e))
 
 
 # ------------------------------------------------------------ GB §4.3: the texts for 3 (runs here)
