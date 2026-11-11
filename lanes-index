@@ -1929,11 +1929,17 @@ def cmd_register_classify(args: list[str]) -> int:
 #: one component that ends `.md`, so no image path leaves `<dir>`.
 _RENDER_SET_RE = re.compile(r"lanes/(?:LANES\.md|aliases\.tsv|(?:archive|log)/[^/]+\.md)")
 
-#: A control character, U+0000-U+001F or U+007F: an image whose path holds one
-#: cannot be a `file=` row of one line and three fields, and ends 69 where it
-#: would be written (lane 3's review of T301, SHOULD-2). Only an image at `k`
-#: is refused for it, never a row the replay passes over.
-_RENDER_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+#: A character that breaks a line for some reader: a control character,
+#: U+0000-U+001F or U+007F, or U+0085, U+2028 or U+2029, which Python's
+#: `str.splitlines()` splits on as it does on U+001C-U+001E, and bash's `read`
+#: does not. An image whose path holds one cannot be a `file=` or `image=` row
+#: of one line and three fields, and ends 69 where it would be written (lane
+#: 3's review of T301, SHOULD-2; the three since lane 5's NIT 3,
+#: opensoft/openRepoTools#165 6779760684, as T111's `_SNAPSHOT_LINE_RE`
+#: refuses them). Only an image at `k` is refused for it, never a row the
+#: replay passes over. The one pattern for every image path: the images'
+#: writer, `register read`'s rows and the import's paths.
+_RENDER_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
 
 #: The columns `register_images` takes, in each row's order: `journal`'s, and
 #: `journal_edits`' and `journal_files`' as T107's migration names them.
@@ -2411,14 +2417,22 @@ def register_render_read(store, k: int, *, start=None, row: str = "render") -> t
     return register_images(*_register_render_rows(store, k, None, row))
 
 
-def _register_render_rows(store, k: int, since, row: str) -> tuple:
+def _register_render_rows(store, k: int, since, row: str, *,
+                          first_request_at: float | None = None) -> tuple:
     """`register_render_read`'s one request and its checks, with D9's `row`:
     `(journal, edits, files)`, typed, from the latest import to `k`; or,
     with `since=c`, the entries from `c+1`, or from the latest import where
     it is above `c`, to `k`, and their edits, beside every `journal_files`
-    row from the latest import to `k`."""
+    row from the latest import to `k`.
+
+    `register snapshot`'s second request on a cache miss is this call with
+    the `snapshot` row and `first_request_at`, the `time.monotonic()` reading
+    taken right before the snapshot's first request: `PostgresStore.bounds`
+    cuts it to what is left of `S` from then, and raises `PsqlFailed`, 69,
+    where nothing is left (lane 3's ruling on SHOULD-2 of lane 1's review of
+    T111, opensoft/openRepoTools#165 6780364102, "Lane 1" item (1))."""
     answers = store._query_many(register_render_queries(k, since=since), snapshot=True,
-                                row=row)
+                                row=row, first_request_at=first_request_at)
     if len(answers) != 5:
         raise RenderRefused(f"psql answered {len(answers)} of the 5 reads of one render")
     version_rows, head_rows = answers[0], answers[1]
@@ -2463,8 +2477,10 @@ def register_write_images(out_dir: str, images: dict) -> list:
 
     - EACH PATH IS CHECKED FIRST, before anything is written. It must be a
       render-set path, so it cannot leave `<out_dir>`. It must hold no control
-      character, U+0000-U+001F or U+007F, so its row stays one line (SHOULD-2).
-      Either failure raises `RenderRefused`.
+      character, U+0000-U+001F or U+007F, and no U+0085, U+2028 or U+2029
+      (`_RENDER_CONTROL_RE`), so its row stays one line to every reader
+      (SHOULD-2; lane 5's NIT 3, #165 6779760684). Either failure raises
+      `RenderRefused`.
     - THE TREE IS BUILT APART, in a `tempfile.mkdtemp` directory beside
       `<out_dir>`, on its filesystem. Each image is written whole to a temp
       file there, then `os.link`ed to its path, and the temp file is
@@ -2485,8 +2501,8 @@ def register_write_images(out_dir: str, images: dict) -> list:
         if not register_render_path(path):
             raise RenderRefused(f"{path!r} is not a render-set path")
         if _RENDER_CONTROL_RE.search(path):
-            raise RenderRefused(f"the image {path!r} holds a control character in its path, "
-                                f"so it cannot be a file= row")
+            raise RenderRefused(f"the image {path!r} holds a control character or a line "
+                                f"separator in its path, so it cannot be a file= row")
     target_dir = os.path.abspath(out_dir)
     parent = os.path.dirname(target_dir)
     os.makedirs(parent, exist_ok=True)
@@ -4064,13 +4080,28 @@ class PostgresStore:
         if major is None or major < PSQL_MIN_MAJOR:
             raise PsqlTooOld(version, major is not None)
 
-    def bounds(self, row: str, timer: float | None = None) -> tuple[str, float]:
+    def bounds(self, row: str, timer: float | None = None, *,
+               first_request_at: float | None = None) -> tuple[str, float]:
         """D9's `row` for one call of this register role: its `PGOPTIONS`,
         `-c lock_timeout=<ms> -c statement_timeout=<ms>`, and its client timer
         in s, `N_a`·`c` + the statement bound + 1 s and never below the row's
         figure (`REGISTER_BOUNDS`). Only the guard's caller passes `timer`, its
         cut at `T0 + 3.75 s`; every other row sets its own. A row of the other
-        role is refused: a read never connects with the writer's credential."""
+        role is refused: a read never connects with the writer's credential.
+
+        THE SECOND REQUEST OF A MISSED SNAPSHOT (lane 3's ruling on SHOULD-2 of
+        lane 1's review of T111, opensoft/openRepoTools#165 6780364102, "Lane
+        1" item (1): "`bounds` cuts the second request of a missed snapshot to
+        what is left of `S` from its first request's start, and ends 69 where
+        nothing is left. `T_write`, `bound_s` and D7 do not change."). On the
+        `snapshot` row alone, `first_request_at` is the `time.monotonic()`
+        reading its caller took right before the snapshot's first request.
+        The timer returned is then `S` less the time since that reading, never
+        more than `S`, so the two requests together end by `S` from the first
+        one's start. Where nothing is left, nothing is sent: `PsqlFailed`,
+        with `timer_expired` and not `ran`, as the timer's other ends raise it,
+        which `register snapshot` ends 69. Every other row refuses
+        `first_request_at`, and the snapshot's first request passes none."""
         if not self.register:
             raise ValueError("only the register's roles carry D9's bounds; #160's index "
                              "paths keep theirs")
@@ -4079,6 +4110,9 @@ class PostgresStore:
         lock_ms, statement_ms, least_s, role = REGISTER_BOUNDS[row]
         if role and role != self.role:
             raise ValueError(f"D9's {row} row is run as {role}, and this store is {self.role}")
+        if first_request_at is not None and row != "snapshot":
+            raise ValueError(f"only D9's snapshot row is cut to what is left of its first "
+                             f"request's timer, and this call is the {row} row")
         options = f"-c lock_timeout={lock_ms} -c statement_timeout={statement_ms}"
         if least_s is None:
             if timer is None:
@@ -4087,9 +4121,18 @@ class PostgresStore:
         if timer is not None:
             raise ValueError(f"D9's {row} row sets its own client timer; only the guard's "
                              f"caller cuts one")
-        return options, max(least_s, self.addresses * self.connect_timeout + statement_ms / 1000 + 1)
+        own = max(least_s, self.addresses * self.connect_timeout + statement_ms / 1000 + 1)
+        if first_request_at is None:
+            return options, own
+        left = own - max(0.0, time.monotonic() - first_request_at)
+        if left <= 0:
+            raise PsqlFailed("unreachable", f"the snapshot's client timer S, {own:g} s from its "
+                             f"first request's start, has run out, so its second request was "
+                             f"not sent", timer_expired=True, ran=False)
+        return options, left
 
-    def request(self, statements: list[str], row: str, *, timer: float | None = None) -> str:
+    def request(self, statements: list[str], row: str, *, timer: float | None = None,
+                first_request_at: float | None = None) -> str:
         """ONE REQUEST PER CALL (FR-012; contract §2.3; Y:5876): `statements`
         joined by `psql`'s `\\;` into one simple-protocol Query on stdin,
         `A \\; B \\; C;`, so the call costs the connect and one round trip,
@@ -4098,18 +4141,21 @@ class PostgresStore:
 
         Each statement is one SQL statement with no `;` of its own outside a
         literal, no `--` comment and no `psql` meta-command; a trailing `;` is
-        dropped. Returns `psql`'s stdout; a failure is `PsqlFailed`."""
+        dropped. Returns `psql`'s stdout; a failure is `PsqlFailed`.
+        `first_request_at` is a missed snapshot's second request's, which
+        `bounds` cuts (#165 6780364102)."""
         if not self.register:
             raise ValueError("only the register's roles send a register request")
         parts = [statement.strip().rstrip(";").rstrip() for statement in statements]
         if not parts or not all(parts):
             raise ValueError("a register request is one or more statements, none of them empty")
-        options, timer = self.bounds(row, timer)
+        options, timer = self.bounds(row, timer, first_request_at=first_request_at)
         return self._run(" \\; ".join(parts) + ";\n", timer=timer, register=True,
                          options=options)
 
     def _query_many(self, queries: list[str], snapshot: bool = False, *,
-                    row: str | None = None, timer: float | None = None) -> list[list[list]]:
+                    row: str | None = None, timer: float | None = None,
+                    first_request_at: float | None = None) -> list[list[list]]:
         """Several SELECTs in ONE connection, each answered as TEXT-format COPY
         rows; a marker line no COPY row can be (one field, a control
         character) separates them. With `snapshot`, in ONE read-only
@@ -4120,7 +4166,11 @@ class PostgresStore:
         the marker sent as `REGISTER_MARKER_COPY`, whose row is the line
         `\\echo` prints, so the output is byte-identical and the parse below is
         #160's, unchanged. `row` names D9's bounds; `timer` is the guard's
-        cut."""
+        cut; `first_request_at` is a missed snapshot's second request's, which
+        `bounds` cuts to what is left of `S` (#165 6780364102)."""
+        if first_request_at is not None and row is None:
+            raise ValueError("first_request_at cuts a register row's timer, and this read "
+                             "names no row")
         marker = "\x1eLANES-INDEX-NEXT"
         parts = [f"SET search_path TO \"{self.schema}\";"]
         if snapshot:
@@ -4134,7 +4184,8 @@ class PostgresStore:
             out = self._run("\n".join(parts) + "\n")
         else:
             out = self.request([REGISTER_MARKER_COPY if part.startswith("\\echo") else part
-                                for part in parts], row, timer=timer)
+                                for part in parts], row, timer=timer,
+                               first_request_at=first_request_at)
         results, current = [], []
         for line in out.split("\n"):
             if line == marker:
@@ -5323,8 +5374,8 @@ def _register_read_shell_text(data: bytes) -> bytes:
 
 def _register_read_row_path(path: str) -> str:
     if _RENDER_CONTROL_RE.search(path):
-        raise RegisterReadFailed(f"the path {path!r} holds a control character, so it cannot be "
-                                 f"a line of the cache family")
+        raise RegisterReadFailed(f"the path {path!r} holds a control character or a line "
+                                 f"separator, so it cannot be a line of the cache family")
     return path
 
 
@@ -10182,6 +10233,71 @@ def register_files_rows(changes: dict, images: dict) -> bytes:
     return "".join(rows).encode("utf-8")
 
 
+#: GIT'S SCISSORS LINE: the comment string, one space and wt-status.c's
+#: `cut_line`, alone on its line, as `git commit --cleanup=scissors` writes it
+#: and as `wt_status_locate_end` finds it at the message's start or after any
+#: LF. git reads no trailer from that line on, so `%(trailers)` never reaches
+#: a `Register-Seq` appended after it. The comment string is `#` unless
+#: `core.commentChar` names another, so any prefix without white space counts.
+_REGISTER_SCISSORS_RE = re.compile(r"[^\s]+ -{24} >8 -{24}")
+#: A trailer line as git's `%(trailers)` reads one: a token of letters,
+#: digits and `-` (F29, Y:5964), then any blanks, then the `:` separator.
+_REGISTER_TRAILER_LINE_RE = re.compile(r"([A-Za-z0-9-]+)[ \t]*:")
+
+
+def register_message_unrenderable(message: str) -> str | None:
+    """Why `message` cannot be a render commit's message, or None (B13, lane
+    3's ruling on `register commit`, opensoft/openRepoTools#165 6779518728:
+    "`register commit` refuses with 2, before it journals, a message holding
+    a scissors line or whose final trailer block already holds a
+    `Register-Seq`"; render-commit.md §1). The render appends `Register-Seq:
+    <k>` to the message's final trailer block, or after one blank line as a
+    new last paragraph, and form C must read `<k>` back alone.
+
+    1. A SCISSORS LINE (`_REGISTER_SCISSORS_RE`) anywhere, the subject
+       included: git reads no trailer after it, so form C reads nothing.
+    2. A `Register-Seq` ALREADY IN THE FINAL TRAILER BLOCK: form C would read
+       two values. The final trailer block is the message's last paragraph,
+       its trailing blank lines dropped, where that paragraph is not the
+       first, which git reads as the title ("A subject alone never counts as
+       trailers", Y:5965), and where every line of it is a trailer line
+       (`_REGISTER_TRAILER_LINE_RE`) or a continuation, which begins with a
+       blank. A paragraph is ended by a line of blanks alone, as git's
+       `is_blank_line` reads one. The token is matched in any case, as
+       `%(trailers:key=Register-Seq)` matches it.
+
+    A `Register-Seq` anywhere else is passed: the render starts a new last
+    paragraph, which form C reads alone."""
+    lines = message.split("\n")
+    for number, line in enumerate(lines, 1):
+        if _REGISTER_SCISSORS_RE.fullmatch(line):
+            return (f"msg line {number} is a scissors line, git's cut line "
+                    f"`{'-' * 24} >8 {'-' * 24}` after a comment character (`#` by default), "
+                    f"after which git reads no trailer, so form C could never read this "
+                    f"write's Register-Seq from its render commit (render-commit.md §1)")
+    blank = [line.strip(" \t") == "" for line in lines]
+    end = len(lines)
+    while end and blank[end - 1]:
+        end -= 1
+    title_end = next((at for at in range(end) if blank[at]), end)
+    start = end
+    while start > title_end and not blank[start - 1]:
+        start -= 1
+    if start <= title_end:
+        return None
+    block = lines[start:end]
+    if not all(_REGISTER_TRAILER_LINE_RE.match(line) or (at and line[:1] in (" ", "\t"))
+               for at, line in enumerate(block)):
+        return None
+    for at, line in enumerate(block):
+        match = _REGISTER_TRAILER_LINE_RE.match(line)
+        if match and match.group(1).lower() == "register-seq":
+            return (f"msg's final trailer block already holds a Register-Seq, at its line "
+                    f"{start + at + 1}, so its render commit would carry two and form C would "
+                    f"not read this write's seq alone (render-commit.md §1)")
+    return None
+
+
 def read_attempt_dir(directory: str, ident: dict, env_act: dict | None) -> dict:
     """The attempt directory `register commit` takes as its argument (contract
     §3.3): only the names its table lists are read (CO-1), and each check that
@@ -10335,6 +10451,11 @@ def read_attempt_dir(directory: str, ident: dict, env_act: dict | None) -> dict:
     if message == "" or "\r" in message or "\0" in message:
         raise RegisterAttemptRefused("msg is empty, or holds a carriage return or a NUL, which "
                                      "journal.message cannot hold")
+    # A MESSAGE NO RENDER COMMIT CAN CARRY: refused here, before the store is
+    # opened and so before anything is journaled (B13, #165 6779518728).
+    unrenderable = register_message_unrenderable(message)
+    if unrenderable:
+        raise RegisterAttemptRefused(unrenderable)
     author = text("author", read("author"))
     author = author[:-1] if author.endswith("\n") else author
     if not _REGISTER_AUTHOR_RE.fullmatch(author):
@@ -14623,7 +14744,8 @@ def import_source(root: str, commit: str, *, fetch: bool) -> dict:
     `Refusal` naming the path, and its line where there is one: UTF-8, read
     strictly; no CR, since a line holds none (`doc_lines`' CHECK) and the
     renderer ends each line with LF alone; no NUL; and a path with no control
-    character.
+    character and no U+0085, U+2028 or U+2029 (`_RENDER_CONTROL_RE`), since no
+    image can be written for one.
 
     Returns `commit`; `tree`, `C:lanes`'s id; `blobs`, `{path: blob id}` of
     the render set and `lanes/repos.tsv`; `render`, the render set's paths
@@ -14676,8 +14798,8 @@ def import_source(root: str, commit: str, *, fetch: bool) -> dict:
     data, texts, lines, warnings = {}, {}, {}, []
     for path in render:
         if _RENDER_CONTROL_RE.search(path):
-            raise Refusal(f"import: {path!r} holds a control character in its name, so no image "
-                          f"can be written for it; nothing was swapped in")
+            raise Refusal(f"import: {path!r} holds a control character or a line separator in "
+                          f"its name, so no image can be written for it; nothing was swapped in")
         raw = contents.get(blobs[path])
         if raw is None:
             raise Refusal(f"import: {path}'s blob {blobs[path]} cannot be read in {root}; "
