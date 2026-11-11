@@ -594,9 +594,9 @@
 #      at `commit_publish`'s push, the branch-wide push: a commit it would
 #      send that changes a path outside `handoffs/`, or, other than the
 #      write's own commit, one under it that is not an added or modified
-#      regular file, or is bytecode; in the write's own commit, bytecode or a
-#      tool cache other than as a deletion; a path with a `.`, `..` or `.git`
-#      component; a merge or
+#      regular file, or is bytecode or a tool cache; in the write's own
+#      commit, bytecode or a tool cache other than as a deletion; a path with
+#      a `.`, `..` or `.git` component; a merge or
 #      root commit among them, a range it cannot read, or no origin branch,
 #      refused before any push is made, the write's commit kept
 #      on HEAD (`cp_primary_push_check`).
@@ -3489,7 +3489,15 @@ CH_EOF
 # own; BUT NOT BESIDE A MOVE (REV420b S2): where this write's own commit holds
 # a D, a T, a symlink or a gitlink under `handoffs/` (T422's move, `own` in the
 # read), the publish act refuses that commit with 2, so the refusal does not
-# offer it and gives S6.3's archive instead. Whether such a move can be
+# offer it and gives S6.3's archive instead. SO TOO WHERE THIS WRITE'S OWN
+# COMMIT ADDS A BYTECODE OR TOOL-CACHE PATH (`byte` in the read): the act's
+# fence refuses an added one as this backstop does, so it passes in no act
+# (#162), and the refusal gives the archive with no offer (lane
+# openRepoTools-3, #165 6780753157, Q31 and Q45). Every other path this
+# backstop refuses keeps the offer as before, `lanes/repos.tsv` and an
+# ordinary bad path included, and so does a MODIFIED or type-changed bytecode
+# path in the write's own commit, since the ruling names an added one.
+# Whether such a move can be
 # published at all is put to lane openRepoTools-3 (REV420b S2), and nothing
 # more is built for it here. Under `handoffs/`, THE WRITE'S OWN COMMIT (`$1`)
 # passes any change, a deletion, a type change, a symlink or a gitlink
@@ -3512,7 +3520,7 @@ CP_PRIMARY_TIP=""
 cp_primary_push_check() {   # <this write's commit> <its subject>
   local pb_trk="refs/remotes/origin/$LANES_BRANCH" pb_br="refs/heads/$LANES_BRANCH" \
         pb_base="" pb_tip="" pb_revs="" pb_odd="" pb_pairs="" pb_n=0 pb_bad="" pb_rc=0 \
-        pb_rows="" pb_own="" pb_until="" pb_lane="${LANES_LANE:-${CS_LANE:-}}"
+        pb_rows="" pb_own="" pb_byte="" pb_why="" pb_until="" pb_lane="${LANES_LANE:-${CS_LANE:-}}"
   CP_PRIMARY_TIP=""
   if [ "$CS_NO_ORIGIN_BRANCH" = 1 ]; then
     die "refusing to push on primary (feature 007): origin has no branch $LANES_BRANCH, so this push would publish the whole branch, and on primary this push sends only handoff changes onto origin's tip (D10; FR-026; R16 (d)). Nothing was pushed; this write's commit is local and kept on HEAD: $1 $2" 2
@@ -3533,17 +3541,24 @@ cp_primary_push_check() {   # <this write's commit> <its subject>
     pb_rows="$(printf '%s\n' "$pb_pairs" | cp_primary_read push "$pb_n" "$1")" || pb_rc=$?
     pb_bad="$(printf '%s\n' "$pb_rows" | sed -n -e 's/^bad//p')" || pb_rc=$?
     pb_own="$(printf '%s\n' "$pb_rows" | sed -n -e 's/^own//p')" || pb_rc=$?
+    pb_byte="$(printf '%s\n' "$pb_rows" | sed -n -e 's/^byte//p')" || pb_rc=$?
   fi
   [ "$pb_rc" = 0 ] ||
     die "refusing to push on primary (feature 007): git could not read, or this helper could not classify, the commits on $pb_br that refs/remotes/origin/$LANES_BRANCH lacks, so whether each changes only paths under handoffs/ is unknown (D10; FR-026; R16 (d)). Nothing was pushed; this write's commit is local and kept on HEAD: $1 $2" 2
-  if [ -n "$pb_odd$pb_bad" ]; then
+  if [ -n "$pb_odd$pb_bad$pb_byte" ]; then
     note "of the commits this push would send to origin/$LANES_BRANCH, these are not changes it sends on primary (a merge or root commit; a path outside handoffs/, lanes/repos.tsv and lanes/log/README.md included; a path with a \`.\`, \`..\` or \`.git\` component; or, in a commit other than this write's own, a change under handoffs/ that is not an added or modified regular file, or is bytecode or a tool cache; or, in this write's own commit, bytecode or a tool cache other than as a deletion):"
     [ -z "$pb_odd" ] || printf '%s\n' "$pb_odd" >&2
     [ -z "$pb_bad" ] || printf '%s\n' "$pb_bad" >&2
+    [ -z "$pb_byte" ] || printf '%s\n' "$pb_byte" >&2
     note "look at them: git -C $LANES_REPO log --stat refs/remotes/origin/$LANES_BRANCH..$pb_br"
-    if [ -n "$pb_own" ]; then
-      note "this write's own commit changes these under handoffs/ other than as an added or modified regular file (a deletion, a move's or bytecode's, a type change, a symlink or a gitlink), which only this push sends: \`commit\`'s publish act refuses such a change with 2 in any queue, so it cannot send this one. Archive the queue and drop it instead:"
-      printf '%s\n' "$pb_own" >&2
+    if [ -n "$pb_own$pb_byte" ]; then
+      # An added bytecode or tool-cache path in the write's own commit takes
+      # this arm too (#165 6780753157, Q31 and Q45): it passes in no act.
+      pb_why=""
+      [ -z "$pb_own" ] || pb_why="changes these under handoffs/ other than as an added or modified regular file (a deletion, a move's or bytecode's, a type change, a symlink or a gitlink), which only this push sends"
+      [ -z "$pb_byte" ] || pb_why="${pb_why:+$pb_why, or }holds an added bytecode or tool-cache path, which passes in no act (#162), listed above"
+      note "this write's own commit $pb_why: \`commit\`'s publish act refuses such a change with 2 in any queue, so it cannot send this one. Archive the queue and drop it instead:"
+      [ -z "$pb_own" ] || printf '%s\n' "$pb_own" >&2
       pb_until="archived and dropped"
     else
       note "\`commit\`'s publish act sends a queue whose every commit is a handoff write or a write of lanes/repos.tsv or lanes/log/README.md alone, this write's commit with it, and refuses with 2, sending nothing, over any other queue. Run it first: ${pb_lane:+LANES_LANE=$pb_lane }$SELF commit \"publish the queue\". Where it refuses:"
@@ -3568,7 +3583,9 @@ cp_primary_push_check() {   # <this write's commit> <its subject>
 # separator is not portable. stdout: one line for each change that does not
 # pass, `<class>  <commit, 12> <status> <mode> <path, quoted for a shell>`,
 # class `div`, `mix` or `bad`, and in `push` an `own` line for each change
-# that passes as the write's own alone. Non-zero where git fails, where a
+# that passes as the write's own alone, and a `byte` line (refused like `bad`)
+# for an added bytecode or tool-cache path in the write's own commit, which no
+# act sends (#162; Q31, Q45). Non-zero where git fails, where a
 # commit handed to it never came back as a header, or where the stream does
 # not parse.
 #
@@ -3643,7 +3660,11 @@ cp_primary_classify() {   # fence|push <how many commits> [<the write's own comm
             handoffs/*)
               if [ "$cq_c" = "$cq_own" ]; then
                 if [ "$cq_byte" = 1 ] && [ "$cq_st" != D ]; then
-                  cq_k=bad
+                  # An ADDED one is `byte`: refused here, and refused by the
+                  # act's fence too, so the refusal withholds the publish
+                  # act's offer (#165 6780753157, Q31 and Q45). A modified or
+                  # type-changed one stays `bad`.
+                  if [ "$cq_st" = A ]; then cq_k=byte; else cq_k=bad; fi
                 else
                   [ "$cq_am" = 1 ] || cq_k=own
                 fi
