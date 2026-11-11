@@ -1373,7 +1373,10 @@ class RenderRegister:
     given from an in-memory sqlite database holding `journal`'s rows. It
     records each call in `requests`, as `(queries, snapshot, row)`. With
     `raises` set, a call records itself and raises that, as a dead connection
-    does."""
+    does. Line R's `_register_render_rows` also passes `first_request_at=`
+    (`lanes-index:2434-2435` at `refs/l1/V-round4`), the bound's clock for
+    `register snapshot`'s second request (#165 6780364102), which the stand-in
+    takes and does not use."""
 
     DDL = (
         "CREATE TABLE schema_version (id INTEGER PRIMARY KEY, version INTEGER, "
@@ -1400,7 +1403,8 @@ class RenderRegister:
         self.requests: list = []
         self.raises = None
 
-    def _query_many(self, queries, snapshot=False, *, row=None, timer=None):
+    def _query_many(self, queries, snapshot=False, *, row=None, timer=None,
+                    first_request_at=None):
         self.requests.append((list(queries), snapshot, row))
         if self.raises is not None:
             raise self.raises
