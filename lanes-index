@@ -5894,11 +5894,11 @@ def _outage_clear() -> int:
 # database gave at the read's seq (D17); every other image is fetched whole in
 # the same request and checked against that digest.
 #
-# WHAT IS NOT HERE: `T0` from the pid, the clamp, the floor, the declaration,
-# `.outage`, form C in `--repo` and the detached whole-file fetch are lane 5's
-# T507 (contract §3.6, R07). Until T507, the guard's cut at `T0` + 3.75 s is
-# counted from this process's own start. T113 still ends "too late to verify",
-# 2, where that cut is passed before the request or reached during it.
+# THE GUARD'S CLIENT HALF is lane 5's T507 (contract §3.6, R07), under lane 1's
+# review: `T0` from `--pid`, the clamp, the declared cap and its floor
+# (`register_guard_t0`, `register_guard_declared`, `cmd_register_read`). T113
+# ends "too late to verify", 2, where the cut is passed before the request or
+# reached during it.
 
 #: `check_lane_name`'s class (`lanes-edit.sh`; Y:4956; contract §3.6, O18):
 #: letters, digits, `.`, `_` and `-`, not opening with `.` or `-`.
@@ -5921,10 +5921,24 @@ EXIT_FAILED = 1
 #: reads no declaration, so its cut is always this one.
 REGISTER_GUARD_CUT_S = 3.75
 
-#: `T0`'S STAND-IN UNTIL T507: this process's own start. T507's client half
-#: reads `T0` from `--pid` (`/proc/<pid>/stat` against `/proc/uptime`, Y:4263)
-#: and applies the clamp and the floor; T113 ships the cut and its end.
-_REGISTER_READ_STARTED = time.monotonic()
+#: SVC-8'S DECLARED CAP (B14 design :4296-4302; contract §2.4): where an
+#: unexpired declaration names this database, form 2's direct read is cut at
+#: `T0` + 3.65 s, 0.1 s earlier, which is then also the clamp's line, so that a
+#: database that accepts the connection and then goes silent still leaves the
+#: mirror path its start by `T0` + 3.75 s. Form 4 reads no declaration (B5).
+REGISTER_GUARD_DECLARED_CUT_S = 3.65
+
+#: SVC-8'S FLOOR under such a declaration (B14 design :4321-4330): a direct read
+#: that would start with less than 0.5 s left before its cap does not start, so
+#: a read that expires, and so opens the mirror path, has always had 0.5 s.
+#: Without a declaration no floor is needed: a read that expires refuses 2.
+REGISTER_GUARD_FLOOR_S = 0.5
+
+#: THE HOOK'S AGE WHERE IT CANNOT BE READ (B14 design :4330-4334): a negative
+#: age, as from a `/proc/uptime` a container virtualises (lxcfs) apart from the
+#: process's start, an age neither `/proc` nor `ps` gives, and any other system
+#: are unknown, and the client assumes 1 s has passed.
+REGISTER_GUARD_UNKNOWN_AGE_S = 1.0
 
 #: `w_s`, the client's wait for the service, in whole ms (contract §2.5, O15):
 #: 0 while this `lanes-index` has no `serve` (Y:4868).
@@ -6510,15 +6524,93 @@ def _register_read_args(args: list[str]) -> dict | None:
     return opts
 
 
-def _register_read_query(store, queries: list, guard: bool) -> list:
-    """The one request, with D9's reader row, or the guard's cut at `T0` +
-    3.75 s (forms 2 and 4)."""
-    if not guard:
+def _register_guard_age_linux(pid: str) -> float:
+    """Process `pid`'s age in s on Linux: field 22 of `/proc/<pid>/stat`, its
+    start in clock ticks since boot, against `/proc/uptime`'s seconds since
+    boot. Field 2, `comm`, may hold blanks and parentheses, so the fields are
+    counted from after its last `)`. Raises `OSError`, `ValueError` or
+    `IndexError` where either cannot be read."""
+    with open(f"/proc/{pid}/stat", "rb") as handle:
+        text = handle.read()
+    fields = text[text.rindex(b")") + 1:].split()
+    started = int(fields[19]) / os.sysconf("SC_CLK_TCK")    # field 22: fields[0] is field 3
+    with open("/proc/uptime", "rb") as handle:
+        uptime = float(handle.read().split()[0])
+    return uptime - started
+
+
+def _register_guard_age_ps(pid: str) -> float:
+    """Process `pid`'s age in s on macOS: `ps -o etime= -p <pid>`, which
+    prints `[[dd-]hh:]mm:ss` in whole seconds, rounded up to the next whole
+    second, so the age is never under the true one and the read's time can
+    only shorten. Raises `OSError`, `ValueError` or
+    `subprocess.SubprocessError` where `ps` gives no such time."""
+    proc = subprocess.run(["ps", "-o", "etime=", "-p", pid], capture_output=True, check=False,
+                          stdin=subprocess.DEVNULL, timeout=1)
+    match = re.fullmatch(r"(?:(?:([0-9]+)-)?([0-9]+):)?([0-9]+):([0-9]+)",
+                         proc.stdout.decode("ascii", "replace").strip())
+    if proc.returncode != 0 or match is None:
+        raise ValueError(f"ps names no elapsed time for pid {pid}")
+    days, hours, minutes, seconds = (int(part or 0) for part in match.groups())
+    return ((days * 24 + hours) * 60 + minutes) * 60 + seconds + 1
+
+
+def register_guard_t0(pid: str) -> float:
+    """`T0`, the hook's start, as a `time.monotonic()` instant (contract
+    §3.6's `--pid <pid>`, the hook's own `$$`; SVC-8, "How the client knows
+    `T0`", B14 design :4309-4334): now, taken before the age is read so that
+    `T0` is never later than the truth, less process `pid`'s age, read on
+    Linux from `/proc` and on macOS from `ps`. An age that is negative, or
+    cannot be read, or a system that is neither, is unknown, and 1 s is
+    assumed (`REGISTER_GUARD_UNKNOWN_AGE_S`)."""
+    now = time.monotonic()
+    try:
+        if sys.platform.startswith("linux"):
+            age = _register_guard_age_linux(pid)
+        elif sys.platform == "darwin":
+            age = _register_guard_age_ps(pid)
+        else:
+            age = -1.0
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        age = -1.0
+    return now - (age if age >= 0 else REGISTER_GUARD_UNKNOWN_AGE_S)
+
+
+def register_guard_declared(cfg: dict) -> dict | None:
+    """SVC-12'S DECLARATION, READ ONCE, at the prefetch, before the direct
+    read (B14 design :4296-4298 and :4493-4500; contract §3.6's `.outage`):
+    `register-outage` beside `lanes-index.conf`, by T121's
+    `read_register_outage`. Its fields where it is unexpired and its
+    `database=` is this host's `register_label=` (SVC-12's condition 2), else
+    None. A rollback's declaration has no `until=`, and counts as unexpired
+    until it is cleared; it counts for `.outage` only where the read found
+    the switch at `files`, which its caller tests. Expiry is read as `status`
+    reads it: `until=` at or before now has expired. A declaration that is
+    not well formed, foreign or expired opens nothing, and nothing is said of
+    it here, since under `--for guard` the cause is stderr's first line
+    (O15); `status` reports it."""
+    try:
+        fields = read_register_outage(register_outage_path(cfg))
+    except ValueError:
+        return None
+    label = cfg.get("register_label") or ""
+    if fields is None or not label or fields["database"] != label:
+        return None
+    if fields["kind"] == "word" and fields["until"] <= utc_now():
+        return None
+    return fields
+
+
+def _register_read_query(store, queries: list, cut: float | None) -> list:
+    """The one request, with D9's reader row (`cut` None: forms 1 and 3), or
+    with the guard's row cut at `cut`, a `time.monotonic()` instant (forms 2
+    and 4): `T0` + 3.75 s, or in form 2 `T0` + 3.65 s under a declaration."""
+    if cut is None:
         return store._query_many(queries, snapshot=True, row="read")
-    left = REGISTER_GUARD_CUT_S - (time.monotonic() - _REGISTER_READ_STARTED)
+    left = cut - time.monotonic()
     if left <= 0:
-        raise PsqlFailed("unreachable", f"the guard's cut, T0 + {REGISTER_GUARD_CUT_S:g} s, has "
-                         f"passed", timer_expired=True, ran=False)
+        raise PsqlFailed("unreachable", "the guard's cut has passed", timer_expired=True,
+                         ran=False)
     return store._query_many(queries, snapshot=True, row="guard", timer=left)
 
 
@@ -6556,7 +6648,7 @@ def _register_read_prefetch(store, cfg: dict, opts: dict) -> int:
     held = _register_read_held(cached[1] if cached else {},
                                _register_read_wanted(members, keys, all_logs=all_logs))
     answers = _register_read_query(store, register_read_queries(
-        texts=_register_read_texts(members, keys, all_logs=all_logs), held=held), guard)
+        texts=_register_read_texts(members, keys, all_logs=all_logs), held=held), opts.get("cut"))
     snap = _register_read_snapshot(answers)
     family = _register_read_family(snap, held, members=members, keys=keys, all_logs=all_logs)
     drops = [f"{kind}.{key}" for key in sorted(family["ambiguous"]) for kind in ("log", "logpath")]
@@ -6597,7 +6689,7 @@ def _register_read_since(store, cfg: dict, opts: dict) -> int:
         candidates.update({path: digest for path, digest in head["rows"].items() if digest})
     held = _register_read_held(candidates, _register_read_wanted(members, texts_keys))
     answers = _register_read_query(store, register_read_queries(
-        texts=_register_read_texts(members, texts_keys), held=held), False)
+        texts=_register_read_texts(members, texts_keys), held=held), None)
     snap = _register_read_snapshot(answers)
     listing = snap["listing"]
     for key in sorted(asked_keys | ({log_key} if log_key else set()), key=os.fsencode):
@@ -6695,7 +6787,7 @@ def _register_read_at(store, cfg: dict, opts: dict) -> int:
                                  f"read at (B3)")
     texts = _register_read_texts((), {key})
     snap = _register_read_snapshot(_register_read_query(
-        store, register_read_queries(texts=texts, at=n), True), at=n)
+        store, register_read_queries(texts=texts, at=n), opts["cut"]), at=n)
     if snap["generation"] != head["generation"]:
         raise RegisterReadFailed(f"the register's generation is {snap['generation']}, and "
                                  f"{cache}.head's is {head['generation']} (B3)")
@@ -6789,8 +6881,11 @@ def cmd_register_read(args: list[str]) -> int:
       above the head or below the generation's first seq;
     - 78: Q6(c)'s refusal of `mode=primary` (`EXIT_CONFIG`), in every form;
     - 2: a refused configuration, R09's included, in forms 1 and 3; under
-      `--for guard`, only "too late to verify": the cut passed before the
-      request, or reached during the read, which stops `psql`;
+      `--for guard`, only "too late to verify": the hook's age, from
+      `--pid`, at or above the cap, `T0` + 3.75 s, or in form 2 `T0` + 3.65 s
+      under a declaration that names this database, where the floor also
+      refuses less than 0.5 s left before it; or the cut reached during the
+      read, which stops `psql`;
     - 1 (`EXIT_FAILED`): under `--for guard`, a refused configuration (O14);
     - 64: usage, before the configuration is read, an empty `--lane=`
       included."""
@@ -6804,6 +6899,7 @@ def cmd_register_read(args: list[str]) -> int:
         return EXIT_OK
     guard = opts["form"] in (2, 4)
     refused = EXIT_FAILED if guard else EXIT_REFUSED    # O14: 2 means only "too late" under the guard
+    t0 = register_guard_t0(opts["pid"]) if guard else None
     try:
         cfg = load_config()
     except PrimaryNotBuilt as exc:
@@ -6822,9 +6918,20 @@ def cmd_register_read(args: list[str]) -> int:
         return refused
     say("mode primary")
     sys.stdout.flush()
-    if guard and time.monotonic() - _REGISTER_READ_STARTED >= REGISTER_GUARD_CUT_S:
-        note("too late to verify")
-        return EXIT_REFUSED
+    if guard:
+        # THE CLAMP AND THE FLOOR (SVC-8; B14 design :4309-4330): form 2 reads
+        # the declaration once, before its direct read, and under one that
+        # counts its cap is `T0` + 3.65 s; form 4 reads none, so its cap is
+        # always `T0` + 3.75 s (B5). An age at or above the cap, or under
+        # such a declaration less than the 0.5 s floor left before it, is too
+        # late: no request is made.
+        declared = register_guard_declared(cfg) if opts["form"] == 2 else None
+        opts["declared"] = declared
+        opts["cut"] = t0 + (REGISTER_GUARD_DECLARED_CUT_S if declared else REGISTER_GUARD_CUT_S)
+        left = opts["cut"] - time.monotonic()
+        if left <= 0 or (declared is not None and left < REGISTER_GUARD_FLOOR_S):
+            note("too late to verify")
+            return EXIT_REFUSED
     try:
         if opts["form"] in (1, 2):
             return _register_read_prefetch(store, cfg, opts)
