@@ -579,15 +579,19 @@ def test_a_none_class_arm_makes_no_register_call_with_the_store_unreachable(prim
 CLASSES = ("decide", "mirror", "guard", "projection", "none", "writer")
 
 #: What the table must say for the arms whose class is named in the design
-#: and in T504's rows; every other arm must be in exactly one class.
+#: and in T504's rows, of the arms every tree has; every other arm must be in
+#: exactly one class. T401's `register-text` and `register-grep`, T410's
+#: `act-begin`, T427's `start-record` and T502's `guard-bind` are not named
+#: here: whichever of T504 and the arm's task lands second adds the arm's
+#: row, and the table is held to the dispatcher (T217n; lane 3, #165
+#: 6782923063).
 NAMED_CLASSES = {
     "lanes": "mirror", "history": "mirror", "session-start": "mirror",
     "guard": "guard", "managed-projection": "projection",
     "workstation": "none", "fetch-age": "none", "window-session": "none",
-    "transcript-holders": "none", "act-begin": "none", "guard-bind": "none",
-    "register-text": "decide", "register-grep": "decide", "canon-lane": "decide",
+    "transcript-holders": "none", "canon-lane": "decide",
     "who": "decide", "binding": "decide", "register-row": "decide",
-    "register-row-local": "decide", "start-record": "writer",
+    "register-row-local": "decide",
     "add-row": "writer", "set-row-state": "writer", "log": "writer", "claim": "writer",
 }
 
@@ -620,9 +624,9 @@ def dispatcher_arms(text: str) -> list:
 def test_every_dispatcher_arm_is_classified_for_the_read_door():
     """THE HYGIENE TEST (AT-C5; R46): every dispatcher arm of `lanes-edit.sh`
     is in exactly one of the six classes of the read door's one table,
-    `writer` among them for the write guard's verbs, `start-record`
-    included; the arms the design and T504 name have the class they name;
-    and the table names no arm the dispatcher lacks."""
+    `writer` among them for the write guard's verbs; the arms the design
+    and T504 name, of those every tree has (`NAMED_CLASSES`), have the
+    class they name; and the table names no arm the dispatcher lacks."""
     text = LANES_EDIT.read_text(encoding="utf-8")
     arms = dispatcher_arms(text)
     assert len(arms) > 50 and "who" in arms, arms
