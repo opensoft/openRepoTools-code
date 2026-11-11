@@ -6252,18 +6252,21 @@ class GitRun:
         self.err = err
         self.timed_out = timed_out
 
-    #: git's boilerplate around the line that says what went wrong: never the
-    #: line kept (SHOULD-3 of lane 3's review of T320).
+    #: git's boilerplate around the line that says what went wrong, and its
+    #: `warning:` lines, which come before a `fatal:` that says it: never the
+    #: line kept (SHOULD-3 of lane 3's review of T320; NIT-a of the render
+    #: re-review).
     BOILERPLATE = re.compile(r"fatal: Could not read from remote repository\.?"
                              r"|Please make sure you have the correct access rights"
-                             r"|and the repository exists\.?|hint:.*|To \S+")
+                             r"|and the repository exists\.?|hint:.*|warning:.*|To \S+")
 
     def last_line(self) -> str:
         """The FIRST USEFUL line of stderr, URLs masked: git's boilerplate (the
-        "Could not read from remote repository" lines, `hint:` lines and a
-        push's `To <url>` line) is passed over, so "Permission denied
-        (publickey)" or git's own refusal is the line kept. Where nothing
-        else is left, the first line, git's "fatal: ..." itself."""
+        "Could not read from remote repository" lines, `hint:` and `warning:`
+        lines and a push's `To <url>` line) is passed over, so "Permission
+        denied (publickey)", git's own refusal or the `fatal:` line behind a
+        `warning:` is the line kept. Where nothing else is left, the first
+        line, git's "fatal: ..." itself."""
         lines = [line.strip() for line in self.err.splitlines() if line.strip()]
         useful = [line for line in lines if not self.BOILERPLATE.fullmatch(line)]
         kept = useful[0] if useful else (lines[0] if lines else "")
@@ -6420,7 +6423,8 @@ def render_readback(checkout: str, tip: str) -> tuple:
     3's review of T322): `lanes-edit.sh` reads that file's age as the
     checkout's own fetch."""
     fetched = render_git(checkout, "-c", "gc.auto=0", "-c", "maintenance.auto=false",
-                         "fetch", "--no-tags", "--no-write-fetch-head", "-q", "origin",
+                         "fetch", "--no-tags", "--no-write-fetch-head",
+                         "--no-recurse-submodules", "-q", "origin",
                          f"+refs/heads/{RENDER_BRANCH}:refs/remotes/origin/{RENDER_BRANCH}",
                          timeout=git_timeout_s())
     if fetched.rc != 0:
@@ -6976,8 +6980,13 @@ def render_message(message: str, k: int) -> str:
     message byte for byte, with `Register-Seq: <k>` in its final trailer
     block. Composed here; `git interpret-trailers` is never run.
 
-    - Its blank lines at the end are dropped, a line of only blanks
-      counting as blank, as git reads paragraphs.
+    - Its blank lines at the end are dropped, a line of only spaces and
+      tabs counting as blank, as git reads paragraphs and as lane 1's
+      refusal of a message reads them. Never `str.strip()` with no
+      argument: it also takes NBSP, FF, VT, U+2028, U+001C to U+001F and
+      NEL as blank, which git does not, so a message holding such a line
+      would end every pass in `build-failed` at its seq (render re-review
+      SHOULD-A).
     - Where the message has two paragraphs or more, and every line of the
       last is `Token: value` with a token of letters, digits and `-`, the
       trailer is that paragraph's last line.
@@ -6987,14 +6996,14 @@ def render_message(message: str, k: int) -> str:
     So a message that ends with at most one LF is kept whole at the start of
     the commit's. A message with no text is refused (`RenderRefused`)."""
     lines = message.split("\n")
-    while lines and not lines[-1].strip():
+    while lines and not lines[-1].strip(" \t"):
         lines.pop()
     if not lines:
         raise RenderRefused(f"seq {k}'s message holds no text, so no trailer block can follow "
                             f"a title")
     paragraphs, current = [], []
     for line in lines:
-        if line.strip():
+        if line.strip(" \t"):
             current.append(line)
         elif current:
             paragraphs.append(current)
