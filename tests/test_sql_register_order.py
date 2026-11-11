@@ -56,6 +56,7 @@ T243's, but with no engine).
 
 from __future__ import annotations
 
+import atexit
 import errno
 import hashlib
 import itertools
@@ -65,6 +66,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -566,6 +568,8 @@ def test_the_for_lane_checks_refuse_a_for_lane_off_a_landing_expired_and_a_landi
 #     them, and one checkout per writer (a reading: AT-4 names one
 #     configuration, and the writers' git fetches are kept off one index);
 #   * a fake `gh` that logs each call with its body (AT-D8's form);
+#   * the test's own `PATH` behind it, every directory kept in its place,
+#     with `psql`, `lanes-index` and every `pg_*` masked out (`_masked_path`);
 #   * per writer, a `psql` directory of its own: a stamp wrapper, which logs
 #     each call's start time, in front of T203's shim (section 3.2), so each
 #     writer's arms, log and counters are its own;
@@ -648,6 +652,64 @@ def run_git(cwd, *args: str, env: dict) -> str:
                           check=False)
     assert proc.returncode == 0, f"git {' '.join(args)} in {cwd}: {proc.stderr}{proc.stdout}"
     return proc.stdout
+
+
+#: `_masked_path`'s names: those the filters dropped a directory for holding.
+#: Every name that starts `pg_` is masked as well.
+PATH_MASKED = ("psql", "lanes-index")
+_MIRRORS: Dict[Tuple[str, Tuple[str, ...]], str] = {}
+_MIRROR_ROOT: List[str] = []
+_MIRRORS_LOCK = threading.Lock()
+
+
+def _masked_path(path: str, spared: Optional[Dict[str, Sequence[str]]] = None) -> str:
+    """`path` with every directory kept, in its place, and each one that
+    holds `psql`, `lanes-index` or a `pg_*` name swapped for a mirror of it
+    without them: a directory of links, one per other entry, each to the
+    entry's absolute path. A directory that holds none of them is kept as it
+    is, and an empty entry is left out, as before.
+
+    Why not drop the directory: on a GitHub runner, `postgresql-16`'s client
+    package puts `psql` and its `pg_*` wrappers in `/usr/bin`, beside `git`
+    and `bash`, and `/bin` is a link to `/usr/bin`. Dropping each directory
+    that held a `psql` dropped `git` and `bash` with it, and the case's own
+    `subprocess.run` failed (lane 1's census of round 4, #165 6807454856).
+
+    `spared` maps a directory, as `path` names it, to the masked names it
+    keeps: a call site's own exception. Each mirror is built once per
+    process, keyed by the directory's real path and the names it masks,
+    under one `l2-pathmask-` temporary directory that an `atexit` handler
+    removes."""
+    kept = []
+    for where in path.split(os.pathsep):
+        if not where:
+            continue
+        masked = tuple(sorted(set(PATH_MASKED) - set((spared or {}).get(where, ()))))
+        try:
+            names = os.listdir(where)
+        except OSError:
+            names = []
+        if any(name in masked or name.startswith("pg_") for name in names):
+            where = _path_mirror(os.path.realpath(where), masked)
+        kept.append(where)
+    return os.pathsep.join(kept)
+
+
+def _path_mirror(real: str, masked: Tuple[str, ...]) -> str:
+    """The mirror of the directory `real` less `masked` and every `pg_*`
+    name, made on the first call for that pair."""
+    with _MIRRORS_LOCK:
+        if (real, masked) not in _MIRRORS:
+            if not _MIRROR_ROOT:
+                _MIRROR_ROOT.append(tempfile.mkdtemp(prefix="l2-pathmask-"))
+                atexit.register(shutil.rmtree, _MIRROR_ROOT[0], ignore_errors=True)
+            mirror = os.path.join(_MIRROR_ROOT[0], str(len(_MIRRORS) + 1))
+            os.mkdir(mirror)
+            for name in sorted(os.listdir(real)):
+                if name not in masked and not name.startswith("pg_"):
+                    os.symlink(os.path.join(real, name), os.path.join(mirror, name))
+            _MIRRORS[(real, masked)] = mirror
+        return _MIRRORS[(real, masked)]
 
 
 _STAMP = r'''#!/usr/bin/env python3
@@ -820,9 +882,7 @@ class Estate:
         self.state = root / "state"
         for d in ("state", "config", "tmp"):
             (root / d).mkdir(exist_ok=True)
-        path = os.pathsep.join(p for p in env.get("PATH", "").split(os.pathsep)
-                               if p and not os.path.exists(os.path.join(p, "lanes-index"))
-                               and not os.path.exists(os.path.join(p, "psql")))
+        path = _masked_path(env.get("PATH", ""))
         env.update(TMPDIR=str(root / "tmp"), XDG_STATE_HOME=str(self.state),
                    XDG_CONFIG_HOME=str(root / "config"), CLAUDE_CONFIG_DIR=str(home / ".claude"),
                    LANES_WORKSTATION=W_WS, LANES_HOST="eagle", LANES_OS="linux",
