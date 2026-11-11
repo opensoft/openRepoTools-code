@@ -3516,13 +3516,13 @@ CH_EOF
 # a D, a T, a symlink or a gitlink under `handoffs/` (T422's move, `own` in the
 # read), the publish act refuses that commit with 2, so the refusal does not
 # offer it and gives S6.3's archive instead. SO TOO WHERE THIS WRITE'S OWN
-# COMMIT ADDS A BYTECODE OR TOOL-CACHE PATH (`byte` in the read): the act's
-# fence refuses an added one as this backstop does, so it passes in no act
-# (#162), and the refusal gives the archive with no offer (lane
-# openRepoTools-3, #165 6780753157, Q31 and Q45). Every other path this
-# backstop refuses keeps the offer as before, `lanes/repos.tsv` and an
-# ordinary bad path included, and so does a MODIFIED or type-changed bytecode
-# path in the write's own commit, since the ruling names an added one.
+# COMMIT HOLDS A BYTECODE OR TOOL-CACHE PATH OTHER THAN AS A DELETION (`byte`
+# in the read), an added, a modified and a type-changed one alike: the act's
+# fence refuses each as this backstop does, so it passes in no act (#162),
+# and the refusal gives the archive with no offer (lane openRepoTools-3, #165
+# 6780753157, Q31 and Q45; #165 6808141050, batch c Q51). Every other path
+# this backstop refuses keeps the offer as before, `lanes/repos.tsv` and an
+# ordinary bad path included.
 # Whether such a move can be
 # published at all is put to lane openRepoTools-3 (REV420b S2), and nothing
 # more is built for it here. Under `handoffs/`, THE WRITE'S OWN COMMIT (`$1`)
@@ -3578,11 +3578,12 @@ cp_primary_push_check() {   # <this write's commit> <its subject>
     [ -z "$pb_byte" ] || printf '%s\n' "$pb_byte" >&2
     note "look at them: git -C $LANES_REPO log --stat refs/remotes/origin/$LANES_BRANCH..$pb_br"
     if [ -n "$pb_own$pb_byte" ]; then
-      # An added bytecode or tool-cache path in the write's own commit takes
-      # this arm too (#165 6780753157, Q31 and Q45): it passes in no act.
+      # A bytecode or tool-cache path in the write's own commit, other than
+      # as a deletion, takes this arm too (#165 6780753157, Q31 and Q45; #165
+      # 6808141050, batch c Q51): it passes in no act.
       pb_why=""
       [ -z "$pb_own" ] || pb_why="changes these under handoffs/ other than as an added or modified regular file (a deletion, a move's or bytecode's, a type change, a symlink or a gitlink), which only this push sends"
-      [ -z "$pb_byte" ] || pb_why="${pb_why:+$pb_why, or }holds an added bytecode or tool-cache path, which passes in no act (#162), listed above"
+      [ -z "$pb_byte" ] || pb_why="${pb_why:+$pb_why, or }holds a bytecode or tool-cache path other than as a deletion, which passes in no act (#162), listed above"
       note "this write's own commit $pb_why: \`commit\`'s publish act refuses such a change with 2 in any queue, so it cannot send this one. Archive the queue and drop it instead:"
       [ -z "$pb_own" ] || printf '%s\n' "$pb_own" >&2
       pb_until="archived and dropped"
@@ -3610,8 +3611,9 @@ cp_primary_push_check() {   # <this write's commit> <its subject>
 # pass, `<class>  <commit, 12> <status> <mode> <path, quoted for a shell>`,
 # class `div`, `mix` or `bad`, and in `push` an `own` line for each change
 # that passes as the write's own alone, and a `byte` line (refused like `bad`)
-# for an added bytecode or tool-cache path in the write's own commit, which no
-# act sends (#162; Q31, Q45). Non-zero where git fails, where a
+# for a bytecode or tool-cache path in the write's own commit other than as a
+# deletion, which no act sends (#162; Q31, Q45; batch c Q51). Non-zero where
+# git fails, where a
 # commit handed to it never came back as a header, or where the stream does
 # not parse.
 #
@@ -3686,11 +3688,12 @@ cp_primary_classify() {   # fence|push <how many commits> [<the write's own comm
             handoffs/*)
               if [ "$cq_c" = "$cq_own" ]; then
                 if [ "$cq_byte" = 1 ] && [ "$cq_st" != D ]; then
-                  # An ADDED one is `byte`: refused here, and refused by the
+                  # Any status but D is `byte`, an added, a modified and a
+                  # type-changed one alike: refused here, and refused by the
                   # act's fence too, so the refusal withholds the publish
-                  # act's offer (#165 6780753157, Q31 and Q45). A modified or
-                  # type-changed one stays `bad`.
-                  if [ "$cq_st" = A ]; then cq_k=byte; else cq_k=bad; fi
+                  # act's offer (#165 6780753157, Q31 and Q45; #165
+                  # 6808141050, batch c Q51).
+                  cq_k=byte
                 else
                   [ "$cq_am" = 1 ] || cq_k=own
                 fi
