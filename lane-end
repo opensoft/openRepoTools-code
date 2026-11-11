@@ -975,8 +975,8 @@ if [ -z "${LANES_FILE:-}" ]; then die "$(lanes_workspace_why)" 1; fi
 cl_out=""; cl_rc=0
 cl_out="$("$LANES_EDIT" canon-lane "$LANE" 2>/dev/null)" || cl_rc=$?
 cl_why=""; cl_pair=0
-case "$cl_rc" in 2 | 66) cl_why="$(LANES_NO_FETCH=1 "$LANES_EDIT" canon-lane "$LANE" 2>&1 >/dev/null || :)" ;; esac
-case "$cl_why" in *"Amendment 15(d)"*) cl_pair=1 ;; esac
+case "$cl_rc" in 2 | 66 | 69 | 75 | 3) cl_why="$(LANES_NO_FETCH=1 "$LANES_EDIT" canon-lane "$LANE" 2>&1 >/dev/null || :)" ;; esac
+case "$cl_rc:$cl_why" in 2:*"Amendment 15(d)"*) cl_pair=1 ;; esac
 # AMENDMENT 16(e) — AND 66 IS THE ALIAS TABLE THAT COULD NOT BE READ (Copilot
 # round 4 on openRepoTools#81). It is its own number because 2 already carries
 # two meanings here, and this command must not END a lane it cannot name: a
@@ -994,9 +994,18 @@ fi
 # here and pass the code. Any code but 66 and the 15(d) pair's 2 used to fall
 # through silently, and carrying on with the name as typed is acting on a row
 # whose spelling nobody could read: the ENDED line would be written under it.
-# Every other code keeps the old-helper fallback (the row scan below).
+# Every other code keeps the old-helper fallback (the row scan below). The
+# verb's own words are asked for again, as for 2 and 66, and printed above the
+# refusal, as the other arms print theirs. Only a first answer of 2 is the
+# 15(d) pair's arm: a second answer carrying the pair's words never turns this
+# read's 69, 75 or 3 into that 2.
 case "$cl_rc" in
-  69 | 75 | 3) le_read_refuse "$LANES_EDIT canon-lane $LANE" "$cl_rc" "the register's spelling of lane $LANE" ;;
+  69 | 75 | 3)
+    if [ -n "$cl_why" ]; then
+      printf '%s\n' "$cl_why" >&2
+      note "the helper's own output is above (asked again, with no fetch)."
+    fi
+    le_read_refuse "$LANES_EDIT canon-lane $LANE" "$cl_rc" "the register's spelling of lane $LANE" ;;
 esac
 if [ "$cl_rc" = 0 ] && [ -n "$cl_out" ] && [ "$cl_out" != "$LANE" ]; then
   note "lane $LANE → $cl_out (Amendment 15: the register row's spelling is canonical)"
