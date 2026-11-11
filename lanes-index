@@ -6601,6 +6601,73 @@ def register_guard_declared(cfg: dict) -> dict | None:
     return fields
 
 
+def register_guard_outage_counts(declared: dict | None, exc: Exception) -> bool:
+    """Whether form 2's failed read, `exc`, opens SVC-12's mirror path under
+    `declared`, which `register_guard_declared` gave (condition 2): its
+    database read failed (condition 1), as a `RegisterReadFailed` or a
+    `StoreUnusable`, never a cache family that could not be written; and
+    under a rollback's declaration, only where the read found the switch at
+    `files`, by its cause token `switch-files`, never by the line, which
+    through the service carries a SQLSTATE (B14 design :4493-4500; lane 1,
+    #165 6798083202, question 6)."""
+    if declared is None or not isinstance(exc, (RegisterReadFailed, StoreUnusable)):
+        return False
+    return declared["kind"] == "word" or getattr(exc, "cause", None) == "switch-files"
+
+
+def register_guard_outage_text(declared: dict, verdict: str, tip: str,
+                               mirror_seq: int | None = None) -> bytes:
+    """`.outage` (contract §3.6, frozen in lane 5's seam): `format=1`,
+    `verdict=`, `label=(declared outage <utc>: <why>)` on one line,
+    `declared_seq=` the declaration's `mirror-seq=`, `mirror_seq=` with
+    `behind` only, and `mirror_tip=` the full sha form C walked. `why=` holds
+    no line break: `parse_register_outage` refuses one."""
+    lines = ["format=1", f"verdict={verdict}",
+             f"label=(declared outage {declared['utc']}: {declared['why']})",
+             f"declared_seq={int(declared['mirror-seq'])}"]
+    if verdict == "behind":
+        lines.append(f"mirror_seq={mirror_seq}")
+    lines.append(f"mirror_tip={tip}")
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def register_guard_outage(opts: dict, declared: dict) -> None:
+    """FORM C AND `.outage`, after form 2's 69 under a declaration that
+    counts (SVC-12's condition 3, B14 design :4501-4512; contract §3.6):
+    `tip = tip_of(repo)`, then one `git log --first-parent -n 200` from it,
+    `mirror_register_seq(repo, deadline, max_pages=1, tip=tip)` (lane 1,
+    #165 6798306476), in `--repo`, bounded by the mirror path's start line,
+    `T0` + 3.75 s. The verdict is `open` where the mirror's `Register-Seq` is
+    at least the declaration's `mirror-seq=`, `behind` where it is below, and
+    `no-seq` where none of the 200 carries one (`StoreUnusable` of kind
+    `no-seq`). `.outage` is written beside `--cache` by a temp file and a
+    rename. Where form C fails otherwise (kind `unread`: a missing ref, a
+    git failure, the deadline), nothing is written, so the guard refuses
+    with S3's outage text, as with no file. Its notes follow the cause."""
+    repo, tip, mirror_seq = opts["repo"], None, None
+    try:
+        tip = tip_of(repo)
+        mirror_seq, _carrier = mirror_register_seq(repo, opts["t0"] + REGISTER_GUARD_CUT_S,
+                                                   max_pages=1, tip=tip)
+        verdict = "open" if mirror_seq >= int(declared["mirror-seq"]) else "behind"
+    except StoreUnusable as exc:
+        if exc.kind != "no-seq" or tip is None:
+            note(f"register read: form C could not read the mirror's Register-Seq "
+                 f"({exc.detail}), so no .outage was written")
+            return
+        verdict = "no-seq"
+    except OSError as exc:
+        note(f"register read: form C could not run git in {repo} ({exc.strerror or exc}), "
+             f"so no .outage was written")
+        return
+    try:
+        _register_read_put(opts["cache"], "outage",
+                           register_guard_outage_text(declared, verdict, tip, mirror_seq))
+    except OSError as exc:
+        note(f"register read: {opts['cache']}.outage could not be written "
+             f"({exc.strerror or exc})")
+
+
 def _register_read_query(store, queries: list, cut: float | None) -> list:
     """The one request, with D9's reader row (`cut` None: forms 1 and 3), or
     with the guard's row cut at `cut`, a `time.monotonic()` instant (forms 2
@@ -6876,7 +6943,8 @@ def cmd_register_read(args: list[str]) -> int:
       `primary` or a client outside the readers' window (each naming its
       cause first), an answer it cannot read, its timer outside `--for guard`,
       a family that could not be written; in forms 3 and 4 a key that matches
-      two logs (C11);
+      two logs (C11); in form 2, under a declaration that counts, with
+      `.outage` beside `--cache` (SVC-12: `register_guard_outage`);
       in form 4 also a missing `.head`, a generation that differs, an `--at`
       above the head or below the generation's first seq;
     - 78: Q6(c)'s refusal of `mode=primary` (`EXIT_CONFIG`), in every form;
@@ -6926,7 +6994,7 @@ def cmd_register_read(args: list[str]) -> int:
         # such a declaration less than the 0.5 s floor left before it, is too
         # late: no request is made.
         declared = register_guard_declared(cfg) if opts["form"] == 2 else None
-        opts["declared"] = declared
+        opts["declared"], opts["t0"] = declared, t0
         opts["cut"] = t0 + (REGISTER_GUARD_DECLARED_CUT_S if declared else REGISTER_GUARD_CUT_S)
         left = opts["cut"] - time.monotonic()
         if left <= 0 or (declared is not None and left < REGISTER_GUARD_FLOOR_S):
@@ -6939,7 +7007,14 @@ def cmd_register_read(args: list[str]) -> int:
             return _register_read_since(store, cfg, opts)
         return _register_read_at(store, cfg, opts)
     except (RegisterReadFailed, StoreUnusable, OSError) as exc:
-        return _register_read_end(exc, guard)
+        # SVC-12 (contract §3.6's `.outage`): whether the declaration counts
+        # is tested here, before `_register_read_end` prints the cause, which
+        # stays stderr's first line (O15); form C and `.outage` follow it.
+        counts = opts["form"] == 2 and register_guard_outage_counts(opts.get("declared"), exc)
+        code = _register_read_end(exc, guard)
+        if counts and code == EXIT_UNAVAILABLE:
+            register_guard_outage(opts, opts["declared"])
+        return code
 
 
 # ===== the SQL register: schema, roles, bootstrap and logins (007)
