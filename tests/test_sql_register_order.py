@@ -47,9 +47,11 @@ THE MODULE ALSO HOLDS, each at its own section below, in this order: T243's
 test 4, C10, D19 and section 4.1 (phase W, the client's writers on a real
 register); T248's AT-F14 (phase W); T233's AT-F5 group A (phase N, the act's
 client half, its off-primary and walk cases with no engine); T252's AT-F5
-group B (phase W); and, last,
+group B (phase W);
 T232's AT-LR5 and AT-LR009 (phase N, `commit_write` called directly on this
-section's `Clone`, as here), whose rollback steps fail until T304.
+section's `Clone`, as here), whose rollback steps fail until T304; and, last,
+T243d's `register commit` path refusal (lane 1's follow-up 2: phase W, as
+T243's, but with no engine).
 """
 
 from __future__ import annotations
@@ -3147,3 +3149,141 @@ def test_lr002_comes_before_lr009_after_a_rollback(clones):
     assert (sw["mode"], sw["marker_state"]) == ("files", "removing"), sw
     refused5(c, claim5(c, LA5, OBJ5_FREE, act=act5(c, base, [f"row:{LA5.lower()}"])), "LR002", None,
              "register switch is files with the marker removing")
+
+
+# ============================================================ PHASE W, NO ENGINE: `register commit`'s path refusal (T243d)
+#
+# LANE 1'S FOLLOW-UP 2 (line R's merge13, `3a30ba89`, tag `l1-007-R-pathre`;
+# #165 6783763467): `register commit` refuses with 2, before the store opens,
+# a path that holds a control character, U+0085, U+2028 or U+2029, where
+# `changes.tsv` stages it and on either side of a `renames.tsv` line
+# (`register_path_unrenderable`, called from `read_attempt_dir`). No render of
+# the register could write such a path as one `file=` row, and the database's
+# CHECKs admit every character but `/`, so this refusal is the only guard.
+# Lane 1: "no test covers the attempt directory's path checks".
+#
+# NO ENGINE. T203's flipped copy runs `register commit` under a `mode=primary`
+# configuration whose URLs name 127.0.0.1, with a `psql` first on `PATH` that
+# only logs its calls: "before the store opens" is that log left empty. Each
+# attempt directory is contract section 3.3's, whole, as lane 1's hand checks
+# build it (`runs/R-pathre/mkattempt.py`): a scratch tree at seq n, then
+# `snapshot`, `not_after`, `changes.tsv`, `images/`, `files`, `msg` and
+# `author`. A `changes` case adds a log at the path (an A line). A `renames`
+# case appends a line to its lane's log (an M line) and names the path on one
+# side of a `renames.tsv` line that `changes.tsv` does not name, since a side
+# that `changes.tsv` also stages is refused first, as `changes.tsv stages`.
+# The place asserted is lane 1's text: the file, the side, and the path as
+# `repr` prints it. On merge12 a `changes` case reaches the store, and a
+# `renames` case is refused by the D and A check, which names no side, so
+# each FAILS there by its own assertion; from merge13 on each passes.
+
+PATH_LANE, PATH_WS, PATH_N = "L1-t243d", "ws-t243d", 41
+#: Each case: the file that names the path, the side of the `renames.tsv`
+#: line (None for `changes.tsv`), and the character the path holds.
+UNRENDERABLE = {
+    "changes-u0001": ("changes.tsv", None, 0x0001),
+    "changes-u0085": ("changes.tsv", None, 0x0085),
+    "changes-u2028": ("changes.tsv", None, 0x2028),
+    "changes-u2029": ("changes.tsv", None, 0x2029),
+    "renames-old-u2028": ("renames.tsv", "<from>", 0x2028),
+    "renames-new-u2029": ("renames.tsv", "<to>", 0x2029),
+}
+#: The prefixes of the test's own environment that the run of `lanes-index` does not inherit.
+PATH_DROPPED = ("GIT_", "PG", "LANES_", "TMUX", "RULE6_", "FAKE_PSQL", "CLAUDE_", "PROJECTS_ROOT",
+                "XDG_", "OPENREPOTOOLS_BIN_DIR", "AGENT_PROTOCOL_ROOT")
+
+
+def unrenderable_attempt(root: Path, case: str, env: dict) -> Tuple[Path, List[str], str]:
+    """`case`'s whole attempt directory under `root`, the `register commit`
+    argv that sends it, and the place its refusal must name."""
+    where, side, code = UNRENDERABLE[case]
+    bad = f"lanes/log/a{chr(code)}b.md"
+    att = root / "attempt"
+    tree = att / "tree"
+    tree.mkdir(parents=True)
+    sid = session_of(PATH_LANE)
+
+    def log_line(verb: str, lane: str, utc: str, what: str) -> str:
+        return f"{verb} {EM} lane {lane}, session {sid}@{PATH_WS}, {utc}, {what}\n"
+
+    def log_head(lane: str) -> str:
+        return f"# lane {lane} {EM} object log (lane-collision-protocol Amendment 7)\n"
+
+    log = f"lanes/log/{PATH_LANE}.md"
+    register = {"lanes/LANES.md": "# Lanes\n", "lanes/repos.tsv": "# alias\towner/repo\nr9\topensoft/r9\n",
+                "lanes/aliases.tsv": "# old\tnew\tutc\n", "lanes/log/README.md": "# logs\n",
+                log: log_head(PATH_LANE) + log_line("STARTED", PATH_LANE, "2026-11-01T00:00:00Z",
+                                                    f"lane:{PATH_LANE} home opensoft/r9")}
+    for path, text in register.items():
+        (tree / path).parent.mkdir(parents=True, exist_ok=True)
+        (tree / path).write_bytes(text.encode("utf-8"))
+    run_git(tree, "init", "-q", "-b", "main", env=env)
+    run_git(tree, "add", "-A", env=env)
+    run_git(tree, "commit", "-q", "-m", f"register snapshot at seq {PATH_N}", env=env)
+    if where == "changes.tsv":
+        path, verb, old = bad, "log", None
+        new = (log_head("added") + log_line("STARTED", "added", "2026-11-09T12:00:00Z",
+                                            "lane:added home opensoft/r9")).encode("utf-8")
+    else:
+        path, verb, old = log, "claim", register[log].encode("utf-8")
+        new = old + log_line("CLAIMED", PATH_LANE, "2026-11-09T12:00:00Z", "opensoft/r9#7").encode("utf-8")
+        sides = (bad, f"lanes/log/{PATH_LANE}-moved.md") if side == "<from>" else (log, bad)
+        (att / "renames.tsv").write_bytes(("\t".join(sides) + "\n").encode("utf-8"))
+    image = att / "images" / path
+    image.parent.mkdir(parents=True)
+    image.write_bytes(new)
+    new_blob = run_git(tree, "hash-object", "--no-filters", str(image), env=env).strip()
+    base_blob = "0" * 40 if old is None else run_git(tree, "rev-parse", f"HEAD:{path}", env=env).strip()
+    (att / "changes.tsv").write_bytes(
+        f"{'A' if old is None else 'M'}\t{path}\t{base_blob}\t{new_blob}\n".encode("utf-8"))
+    (att / "files").write_bytes(f"{path}\t1\t{hashlib.sha256(new).hexdigest()}\n".encode("utf-8"))
+    write_id, generation, clock = str(uuid.uuid4()), str(uuid.uuid4()), int(time.time())
+    repos_blob = run_git(tree, "rev-parse", "HEAD:lanes/repos.tsv", env=env).strip()
+    snapshot = {"format": 1, "generation": generation, "write_id": write_id, "switch": "primary",
+                "marker": "present", "n": PATH_N, "clock": clock, "not_after": clock + 10, "schema": 1,
+                "repos_blob": repos_blob, "c": 2, "n_a": 1}
+    (att / "snapshot").write_text("".join(f"{k}={v}\n" for k, v in snapshot.items()), encoding="utf-8")
+    (att / "not_after").write_text(f"{clock + 10}\n", encoding="utf-8")
+    (att / "msg").write_text(f"LANES({PATH_LANE}@{PATH_WS}): {verb} {EM} T243d's case\n", encoding="utf-8")
+    (att / "author").write_text("T243d Tester <t243d@example.invalid>\n", encoding="utf-8")
+    argv = ["register", "commit", "--write-id", write_id, "--generation", generation, "--lane", PATH_LANE,
+            "--verb", verb, "--args-sha256", hashlib.sha256(case.encode("utf-8")).hexdigest(),
+            "--workstation", PATH_WS, str(att)]
+    place = f"changes.tsv stages {bad!r}" if side is None else f"renames.tsv line 1's {side} is {bad!r}"
+    return att, argv, place
+
+
+@CLIENT
+@pytest.mark.parametrize("case", list(UNRENDERABLE))
+def test_register_commit_refuses_an_unrenderable_path_with_2_before_the_store_opens(tmp_path, case):
+    """Lane 1's follow-up 2 (#165 6783763467): an attempt directory whose
+    `changes.tsv` stages a path holding U+0001, U+0085, U+2028 or U+2029
+    ([changes-*]), or whose `renames.tsv` line holds U+2028 on its `<from>`
+    side ([renames-old-u2028]) or U+2029 on its `<to>` side
+    ([renames-new-u2029]), makes `register commit` exit 2, with stderr naming
+    the file, the side and the path, and no `psql` call: the store is never
+    opened."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith(PATH_DROPPED)}
+    (tmp_path / "home").mkdir()
+    env.update(HOME=str(tmp_path / "home"), XDG_STATE_HOME=str(tmp_path / "state"),
+               XDG_CONFIG_HOME=str(tmp_path / "config"), GIT_CONFIG_NOSYSTEM="1",
+               GIT_CONFIG_GLOBAL=os.devnull, GIT_AUTHOR_NAME="T243d", GIT_AUTHOR_EMAIL="t243d@example.invalid",
+               GIT_COMMITTER_NAME="T243d", GIT_COMMITTER_EMAIL="t243d@example.invalid", LC_ALL="C")
+    _att, argv, place = unrenderable_attempt(tmp_path, case, env)
+    copy = flipped_copy(LANES_INDEX, tmp_path / "bin", True)
+    (tmp_path / "bin" / "repos.tsv").write_text("# alias\towner/repo\n", encoding="utf-8")
+    conf = tmp_path / "lanes-index.conf"
+    conf.write_text("mode=primary\nregister_url=postgresql://lanes_w_t243d@127.0.0.1:9/t243d\n"
+                    "reader_url=postgresql://lanes_r_t243d@127.0.0.1:9/t243d\n", encoding="utf-8")
+    conf.chmod(0o600)
+    calls = tmp_path / "psql.log"
+    _write(tmp_path / "fakebin" / "psql", f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "{calls}"\nexit 2\n')
+    env.update(LANES_INDEX_CONFIG=str(conf),
+               PATH=str(tmp_path / "fakebin") + os.pathsep + env.get("PATH", os.defpath))
+    r = subprocess.run([sys.executable, str(copy), *argv], cwd=str(tmp_path), env=env, capture_output=True,
+                       encoding="utf-8", errors="replace", timeout=120, stdin=subprocess.DEVNULL, check=False)
+    sent = calls.read_text(encoding="utf-8").splitlines() if calls.exists() else []
+    assert r.returncode == 2, (
+        f"[{case}] register commit exited {r.returncode}, not 2, after {len(sent)} psql calls: {r.stderr[-900:]}")
+    assert sent == [], f"[{case}] register commit called psql before it refused: {sent}"
+    assert place in r.stderr, f"[{case}] stderr does not name {place!r}: {r.stderr[-900:]}"
