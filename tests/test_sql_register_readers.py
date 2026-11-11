@@ -1401,6 +1401,25 @@ WORKTREE_READS = {
     "landed-1002": (("sweep", "repoA-2", "--dry-run"), "*LANDED*"),
     "lifecycle-events-5596": (("sweep", "--all", "--report"), "*STARTED|RESUMED*"),
 }
+#: `landed-1002`'s tree: its branch, and the pull request `gh` lists for it.
+LANDED_BRANCH = "s1"
+LANDED_PR = 7
+
+
+def landed_gh(log: Path, tip: str) -> str:
+    """`landed-1002`'s `gh`: `pr list … --head <LANDED_BRANCH>` answers one
+    row, that branch's pull request merged into `main` at the tree's tip;
+    every other call refuses, as the sandbox's own fake does. Each call is
+    logged to `log`."""
+    row = json.dumps([{"number": LANDED_PR, "state": "MERGED", "mergedAt": "2026-10-01T05:00:00Z",
+                       "headRefName": LANDED_BRANCH, "headRefOid": tip, "baseRefName": "main",
+                       "isCrossRepository": False}])
+    return ("#!/usr/bin/env bash\n"
+            f"printf '%s\\n' \"$*\" >> '{log}'\n"
+            'case " $* " in\n'
+            f"  *' pr list '*' --head {LANDED_BRANCH} '*) printf '%s\\n' '{row}' ;;\n"
+            "  *) printf 'FAKE gh REFUSED: %s\\n' \"$*\" >&2; exit 90 ;;\n"
+            "esac\n")
 
 
 @pytest.mark.parametrize("read", sorted(WORKTREE_READS))
@@ -1419,8 +1438,31 @@ def test_lane_worktrees_register_reads_go_through_a_verb_and_refuse_69(tmp_path,
         # line, lane 3's item 2); a lane's tree is what an unreadable claim can take.
         tree.parent.mkdir(parents=True)
         world.git("-C", str(world.lane_dir), "worktree", "add", "-q", "-b", "s1", str(tree))
+    gh_log = world.root / "gh.log"
+    if read == "landed-1002":
+        # AN11a's bug 4 (F13d:237 and :240; lane 4's INV402-404, T404-B): `lane-worktrees`
+        # reads `LANDED` only in `MergeEvidence.judge()`, for a lane's tree on a branch whose
+        # pull request `gh` lists. So the lane's checkout has a commit and a GitHub origin,
+        # the tree is on a branch, `gh` lists one pull request for it, and `LANES_NO_GITHUB`
+        # is unset (below).
+        world.git("-C", str(world.lane_dir), "commit", "-q", "--allow-empty", "-m", "the lane's work")
+        world.git("-C", str(world.lane_dir), "remote", "set-url", "origin",
+                  "https://github.com/opensoft/repoA.git")
+        tree.parent.mkdir(parents=True)
+        world.git("-C", str(world.lane_dir), "worktree", "add", "-q", "-b", LANDED_BRANCH, str(tree))
+        _write(world.fakebin / "gh",
+               landed_gh(gh_log, world.git("-C", str(tree), "rev-parse", "HEAD").strip()))
     env = world.arm_env("register-grep", 69, match=match, stderr=UNREACHABLE_STDERR.rstrip("\n"))
+    if read == "landed-1002":
+        env["LANES_NO_GITHUB"] = None
     result = world.run("lane-worktrees", *argv, env=env)
+    if read == "landed-1002" and not world.reached():
+        # THE SCENARIO'S CONTROL: `judge()` asked `gh` for the branch's pull request and got
+        # its row, so the `LANDED` read came next; what is missing is the read's verb.
+        asked = gh_log.read_text(encoding="utf-8") if gh_log.exists() else ""
+        assert re.search(rf"^pr list .*--head {LANDED_BRANCH}( |$)", asked, re.M), (
+            read, "the scenario never reached judge(): fix the case's scenario", asked,
+            result.returncode, result.stdout[-2000:], result.stderr[-2000:])
     assert world.reached(), (read, "the read never went through register-grep",
                              result.returncode, result.stderr[-3000:])
     if read == "lifecycle-events-5596":
