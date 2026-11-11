@@ -5616,19 +5616,21 @@ wr_claim_release() {
 
 # A RECORD'S `tail` (Y:5179): `sent <s> <utc>` or `done <s> <rc> <utc>`, one
 # space between fields, `<s>` and `<rc>` counts and `<utc>` this file's UTC
-# form; no other value is one. `owed` belongs to a done mark only (Y:5181)
-# (lane openRepoTools-3, #165 6780753157, Q34).
+# form naming a real time, which `epoch_of` reads, as `updated_utc` must
+# (review REV-W8b, N1); no other value is one. `owed` belongs to a done mark
+# only (Y:5181) (lane openRepoTools-3, #165 6780753157, Q34).
 wr_is_tail() {   # <value>
   local it_w="" it_s="" it_r="" it_u=""
   case "${1-}" in
     'sent '*)
       IFS=' ' read -r it_w it_s it_u <<<"$1"
-      [ "$1" = "sent $it_s $it_u" ] && wr_is_count "$it_s" && wr_is_utc "$it_u" ;;
+      [ "$1" = "sent $it_s $it_u" ] && wr_is_count "$it_s" && wr_is_utc "$it_u" || return 1 ;;
     'done '*)
       IFS=' ' read -r it_w it_s it_r it_u <<<"$1"
-      [ "$1" = "done $it_s $it_r $it_u" ] && wr_is_count "$it_s" && wr_is_count "$it_r" && wr_is_utc "$it_u" ;;
+      [ "$1" = "done $it_s $it_r $it_u" ] && wr_is_count "$it_s" && wr_is_count "$it_r" && wr_is_utc "$it_u" || return 1 ;;
     *) return 1 ;;
   esac
+  [ -n "$(epoch_of "$it_u")" ]
 }
 
 # THE RECORD READ (Y:5172) into WR_REC_*: 0 when it is whole, 1 when there is no
@@ -5642,7 +5644,9 @@ wr_is_tail() {   # <value>
 # directory; and a `tail=` line, where there is one, one of Y:5179's two forms
 # (`wr_is_tail`): any other `tail`, an empty one included, is a record that
 # cannot be read, so it is T412's 2 with the record kept (lane
-# openRepoTools-3, #165 6780753157, Q34). A key it does not know is passed over.
+# openRepoTools-3, #165 6780753157, Q34). So is a record with two `tail=`
+# lines, of which no run can tell the one that holds (review REV-W8b, N1). A
+# key it does not know is passed over.
 wr_record_read() {   # <record file>
   local rr_l="" rr_b rr_c rr_n rr_f rr_d rr_t=0
   WR_REC_FORMAT=""; WR_REC_WRITE_ID=""; WR_REC_GENERATION=""; WR_REC_DATABASE=""
@@ -5671,7 +5675,7 @@ wr_record_read() {   # <record file>
       container=*) WR_REC_CONTAINER="${rr_l#container=}" ;;
       attempts=*) WR_REC_ATTEMPTS="${rr_l#attempts=}" ;;
       call=*) WR_REC_CALLS="${WR_REC_CALLS}${WR_REC_CALLS:+$WR_NL}${rr_l#call=}" ;;
-      tail=*) WR_REC_TAIL="${rr_l#tail=}"; rr_t=1 ;;
+      tail=*) WR_REC_TAIL="${rr_l#tail=}"; rr_t=$((rr_t + 1)) ;;
     esac
     rr_l=""
   done < "$1" 2>/dev/null
@@ -5680,6 +5684,7 @@ wr_record_read() {   # <record file>
   [ "$WR_REC_ARGS_SHA256" = "${1##*/}" ] || return 2
   wr_is_utc "$WR_REC_CREATED_UTC" && wr_is_utc "$WR_REC_UPDATED_UTC" || return 2
   [ -n "$(epoch_of "$WR_REC_UPDATED_UTC")" ] || return 2
+  [ "$rr_t" -le 1 ] || return 2
   [ "$rr_t" = 0 ] || wr_is_tail "$WR_REC_TAIL" || return 2
   while IFS= read -r rr_l; do
     [ -n "$rr_l" ] || continue
