@@ -1,5 +1,29 @@
 # Manual full-CI queues: operator procedure and qualification
 
+## Coverage-parity prerequisite (preparation only)
+
+`tests.yml` additionally accepts a parameterless `workflow_call`. The local
+`full-ci-parity.yml` caller qualifies the SAME complete workflow on CI-contract
+PRs; it does not introduce a queue trigger, dispatch, fast selector or admission.
+Ordinary PR/main/release-branch/nightly/manual full CI remains independent and
+unchanged. This preparation intentionally runs both paths on qualifying PRs;
+it does not claim a runner-time saving yet.
+
+`.github/ci/full-ci-baseline.json` records the complete parsed job definitions
+and environment from merged code d3c55e55aa3516cbaa1d68a77061ddd50191d49a. Each job
+hash is SHA-256 of UTF-8 `json.dumps(job, sort_keys=True, separators=(",", ":"))`.
+Parity regressions freeze all 13 expanded jobs, not just their names: five normal
+shards, four no-submodule shards, both aggregators, guard and full package checks.
+Baseline edits require explicit coverage review; never rehash a reduced job just
+to make this test green. New test files do not require a baseline edit and remain
+discovered by the shard planner. Existing shard-report/count and package no-skip
+checks still execute. Missing/failed/cancelled/skipped calls fail qualification.
+
+This is not a live candidate or release receipt. Existing required checks and
+the manual full-CI queues stay unchanged. Fast-only CI, event classification,
+candidate identity proofs, required-check migration and live canaries are later
+separately authorized stages. Preserve lanes 1–5 and their running sessions.
+
 This is a code-local CI operator reference for both Claude and Codex. The
 assembly's rules and the spec leg's feature 009 remain authoritative. Existing
 lane claims, review and landing coordination still apply. No canary is authorized

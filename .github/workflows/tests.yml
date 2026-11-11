@@ -76,6 +76,9 @@ on:
   schedule:
     - cron: '17 4 * * *'          # 04:17 UTC, nightly
   workflow_dispatch:
+  # Same full jobs for a same-commit local caller; no inputs or skip mode.
+  # Existing PR/push/nightly/manual checks and release eligibility are unchanged.
+  workflow_call:
 
 # THE CHECKOUT CONTEXT, NAMED (#186, T010): the code root is the checkout's
 # own root, and the run is standalone. Every job below checks out into
