@@ -5789,7 +5789,7 @@ wr_lookup_text() {
 # verb whose arm has no side effect outside the register after its seam owes
 # nothing, and says so.
 wr_owed_text() {   # <verb>
-  local ow_v="${1-}" ow_l="${PW_LANE:-${WR_LANE:-<lane>}}" ow_e="" ow_o="" ow_n="" ow_ls="" ow_a="" ow_k=0 ow_skip=0 ow_to=""
+  local ow_v="${1-}" ow_l="${PW_LANE:-${WR_LANE:-<lane>}}" ow_e="" ow_o="" ow_n="" ow_od="" ow_ls="" ow_a="" ow_k=0 ow_skip=0 ow_to=""
   ow_e="${WR_ARGS[0]-}"; ow_o="${WR_ARGS[0]-<object>}"
   case "$ow_v" in
     log)
@@ -5807,17 +5807,22 @@ wr_owed_text() {   # <verb>
       printf "the typing of its request into lane %s's bound pane, which is never made after the fact, since that pane may hold another session by now: the request travels in the register, and is read at that session's next prompt; and the wait for the release: read lanes-edit.sh binding %s\n" \
         "$ow_l" "$ow_l" ;;
     rename-lane)
+      # The handoff's move and stamp are owed with the writer verb that makes
+      # them, `lanes-edit.sh rename-lane <old> <new>` run again, never
+      # `lane-rename`, whose arm reads that verb's 2 as "already landed" and
+      # ends 0 (REV422c S3; lane openRepoTools-3, #165 6780753157, Q44 with
+      # Q42).
       for ow_a in ${WR_ARGS[@]+"${WR_ARGS[@]}"}; do
         if [ "$ow_skip" = 1 ]; then ow_skip=0; continue; fi
         case "$ow_a" in
           --why) ow_skip=1 ;;
           --*) : ;;
-          *) ow_k=$((ow_k + 1)); [ "$ow_k" != 2 ] || ow_n="$ow_a" ;;
+          *) ow_k=$((ow_k + 1)); [ "$ow_k" != 1 ] || ow_od="$ow_a"; [ "$ow_k" != 2 ] || ow_n="$ow_a" ;;
         esac
       done
-      ow_n="${ow_n:-<new>}"
-      printf "lane %s's lifecycle directory moved to its new name (lane_state_rename): read it with lanes-edit.sh lane-reconcile %s; the RENAMED comment on each object the lane holds, unless --no-github was given: gh issue comment <number> --repo <owner/repo>, or gh pr comment, on each; and its handoff's move and RENAMED stamp in its checkout\n" \
-        "$ow_n" "$ow_n" ;;
+      ow_od="${ow_od:-<old>}"; ow_n="${ow_n:-<new>}"
+      printf "lane %s's lifecycle directory moved to its new name (lane_state_rename): read it with lanes-edit.sh lane-reconcile %s; the RENAMED comment on each object the lane holds, unless --no-github was given: gh issue comment <number> --repo <owner/repo>, or gh pr comment, on each; and its handoff's move and RENAMED stamp in its checkout: run lanes-edit.sh rename-lane %s %s again\n" \
+        "$ow_n" "$ow_n" "$ow_od" "$ow_n" ;;
     retire-rows)
       for ow_a in ${WR_ARGS[@]+"${WR_ARGS[@]}"}; do
         if [ "$ow_skip" = 1 ]; then ow_skip=0; continue; fi
