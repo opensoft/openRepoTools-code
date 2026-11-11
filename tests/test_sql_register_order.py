@@ -249,9 +249,11 @@ class Clone:
         line, row = line_row
         return self.committed(self.append(lane, line, row))
 
-    def to_primary(self) -> int:
+    def to_primary(self, confirm: bool = True) -> int:
         """A `cutover` entry over the template's import, then `record_marker`:
-        `primary`, the marker `present`. Returns the cutover's seq."""
+        `primary`, the marker `present`. Returns the cutover's seq. With
+        `confirm` False, no `record_marker`: the cutover is left unconfirmed,
+        `primary` with the marker `adding`, which `switch_to_files` aborts."""
         sw = self.switch()
         assert (sw["mode"], sw["marker_state"]) == ("files", "absent"), sw
         head = self.head()
@@ -260,7 +262,11 @@ class Clone:
         edits, files, _ = self.appended(STORE, ["primary"])
         seq = self.committed({"journal": self.journal("cutover", "cutover", OPERATOR),
                               "not_after": self.not_after(), "edits": edits, "files": files})
-        marked = self.call(MARKER_SQL, client=self.client(), seq=seq, commit=MARKER_COMMIT, ws=WS)
+        if not confirm:
+            sw = self.switch()
+            assert (sw["mode"], sw["marker_state"], sw["marker_seq"]) == ("primary", "adding", seq), sw
+            return seq
+        marked =self.call(MARKER_SQL, client=self.client(), seq=seq, commit=MARKER_COMMIT, ws=WS)
         assert (marked.returncode, marked.stdout.strip()) == (0, "present"), marked.stderr
         sw = self.switch()
         assert (sw["mode"], sw["marker_state"]) == ("primary", "present"), sw
@@ -835,12 +841,13 @@ class Estate:
     head)."""
 
     def __init__(self, root: Path, c: Clone, lanes: Sequence[str] = W_LANES,
-                 repos: str = REPOS_T0, aliases: str = "") -> None:
+                 repos: str = REPOS_T0, aliases: str = "", confirmed: bool = True) -> None:
         self.root, self.c = root, c
         self.files = estate_files(lanes)
         self.files["lanes/aliases.tsv"] += aliases
         import_files(c, self.files)
-        assert c.to_primary() == 1, "test 4's cutover is not at seq 1 (AT-4's fixture)"
+        # `confirmed` False leaves the cutover unconfirmed, the marker `adding` (T233's [switch-at-files]).
+        assert c.to_primary(confirmed) == 1, "test 4's cutover is not at seq 1 (AT-4's fixture)"
         home = root / "home"
         (home / ".agents").mkdir(parents=True)
         env = {k: v for k, v in os.environ.items()
@@ -1896,10 +1903,11 @@ def test_act_begin_on_primary_prints_id_seq_and_generation(estates, case):
     """[present]: on primary `act-begin` prints 32 lower-case hex digits, `@`,
     the head seq with no leading zero, `:` and the switch's generation as a
     lower-case uuid, and the shim's log holds its one snapshot call.
-    [switch-at-files] (the cutover aborted by `switch_to_files`) and
-    [snapshot-fails] (the shim fails the call): exit 69, nothing on stdout
-    (TP:5874-5878; T410)."""
-    e = estates()
+    [switch-at-files] (the cutover aborted by `switch_to_files`, which aborts
+    only a cutover left unconfirmed, the marker `adding`, so this estate's
+    cutover gets no `record_marker`) and [snapshot-fails] (the shim fails the
+    call): exit 69, nothing on stdout (TP:5874-5878; T410)."""
+    e = estates(confirmed=case != "switch-at-files")
     arms = []
     if case == "switch-at-files":
         aborted = e.c.call(ABORT_SQL, client=e.c.client(), seq=e.c.head(), lane=OPERATOR, ws=WS)
