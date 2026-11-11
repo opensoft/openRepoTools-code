@@ -42,6 +42,7 @@ whose oracle is today's text and today's drop.
 
 from __future__ import annotations
 
+import atexit
 import calendar
 import hashlib
 import json
@@ -51,6 +52,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -2679,6 +2681,50 @@ def test_a_write_between_two_requests_is_in_the_next_answer(estate):
                                        if line != FALLBACK], (second.err, direct.err)
 
 
+#: `_masked_path`'s mirrors, by each directory's real path (None where the
+#: directory holds no masked name), and the one temporary root they share.
+_PATH_MIRRORS: dict = {}
+_PATH_MIRROR_ROOT: list = []
+
+
+def _masked_path(path: str) -> str:
+    """`path` with every directory kept in its place, and each one that holds
+    a `psql`, a `lanes-index` or a name that starts `pg_` swapped for a
+    private mirror of it: a directory of links, one to each of its entries
+    by its absolute path, those names left out. The case below runs `serve`
+    with no `psql` on a `PATH` of Python's own directory and `/bin`; on a
+    GitHub runner `postgresql-16`'s client puts `psql` in `/usr/bin` with
+    `git` and `bash`, and `/bin` is a link to it, so that `PATH` held a
+    `psql` there (lane 1's census, #165 6807454856). A directory that holds
+    none of those names passes through unchanged. Each mirror is made once
+    per process, under one `mkdtemp` that an `atexit` handler removes."""
+    parts = []
+    for part in path.split(os.pathsep):
+        if not part:
+            continue
+        real = os.path.realpath(part)
+        if real not in _PATH_MIRRORS:
+            try:
+                names = os.listdir(real)
+            except OSError:
+                names = []
+            masked = {name for name in names
+                      if name in ("psql", "lanes-index") or name.startswith("pg_")}
+            mirror = None
+            if masked:
+                if not _PATH_MIRROR_ROOT:
+                    _PATH_MIRROR_ROOT.append(tempfile.mkdtemp(prefix="l2-pathmask-"))
+                    atexit.register(shutil.rmtree, _PATH_MIRROR_ROOT[0], ignore_errors=True)
+                mirror = os.path.join(_PATH_MIRROR_ROOT[0], str(len(_PATH_MIRRORS)))
+                os.mkdir(mirror)
+                for name in names:
+                    if name not in masked:
+                        os.symlink(os.path.join(real, name), os.path.join(mirror, name))
+            _PATH_MIRRORS[real] = mirror
+        parts.append(_PATH_MIRRORS[real] or part)
+    return os.pathsep.join(parts)
+
+
 def test_the_service_reaches_the_database_only_through_psql(estate):
     """OP-10 (R-F10-20): every answer from the database is a call in the
     shim's log; with no `psql` at the start, `serve` stamps `no-psql` and
@@ -2692,8 +2738,8 @@ def test_the_service_reaches_the_database_only_through_psql(estate):
     assert len(est.shim_calls()) > before, "an answer came from the database without psql"
     nopsql = subprocess.run([sys.executable, str(INDEX), "serve"], capture_output=True,
                             text=True, timeout=30, cwd=str(est.wip),
-                            env=est.env(PATH=os.pathsep.join([os.path.dirname(sys.executable),
-                                                              "/bin"])))
+                            env=est.env(PATH=_masked_path(os.pathsep.join(
+                                [os.path.dirname(sys.executable), "/bin"]))))
     stamp = (_run_dir(est) / "register.failed").read_text(encoding="utf-8").split()
     # THE STAMP HOLDS THE UTC AND THE FIXED CAUSE, AND NO OTHER TEXT (section 8.6).
     assert nopsql.returncode == 2 and "no-psql" in stamp and len(stamp) == 2, (nopsql, stamp)
