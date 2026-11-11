@@ -74,8 +74,8 @@ WHAT EACH WAITS FOR (the block's Order): L4-A1, L5-A4 and L5-A5; lane 1's
 three for L1v4.5's T113 and T114; lane 5's for T504 to T506 and T509; the
 `--decide` test for T502; the read verbs' for lane 4's T401; the arms for
 lane 4's T402 to T408; `key()`'s trim, on primary only, for lane 4's T426;
-T235's for lane 5's T505, and its three later forms for lane 3's rulings
-on lane 5's points 4, 5 and 6.
+T235's for lane 5's T505, its three door forms included, whose oracles are
+lane 3's batch 7 (#165 6780364102), by batch 5's answers 3 and 4.
 Every case on `RealRegister` (lane 1's three and `managed-projection`'s RE
 case) also fails until lane 2's T227 (`tmpl` built by the bootstrap) and
 T228 (the `lanes_w_fx` and `lanes_r_fx` logins), each by the fixture's own
@@ -2132,11 +2132,12 @@ exec "$T235_REAL_GIT" "$@"
 #: pin read by git off primary (P2's `lanes-edit.sh`, `LANES_LOG_PREFIX`).
 LOG_DIR = "lanes/log"
 
-#: T235's ids (F13b's block, T235): four the text writes whole, and three
-#: whose answer waits for lane 3's rulings on lane 5's points 4, 5 and 6
-#: (#165 6774988528; lane 5, 6778955065). No id holds the word `worktrees`,
-#: which lane 4's T404 word `sql_register_readers and worktrees` (B12b
-#: tasks:886) would otherwise select.
+#: T235's ids (F13c's block, T235): four the text writes whole, and three run
+#: through the module's door (`DOOR_WRAPPER`), whose oracles are lane 3's
+#: batch 7 (#165 6780364102), by batch 5's answers 3 and 4 (6778890211). No
+#: id holds the word `worktrees`, which lane 4's T404 word
+#: `sql_register_readers and worktrees` (B12b tasks:886) would otherwise
+#: select.
 T235_CASES = ["known-lanes", "remote-log-events-lanes", "remote-log-events-history",
               "worktree-rows", "case-pair", "out-of-class", "failed-second-read"]
 T235_LATER = ("case-pair", "out-of-class", "failed-second-read")
@@ -2145,14 +2146,36 @@ T235_LATER = ("case-pair", "out-of-class", "failed-second-read")
 T235_DIR = "/work/t235-only-in-the-store"
 T235_NOTE = "T235: a note only the store holds"
 
+#: `[case-pair]`'s two logs (C11; CLI:674), which differ only by case.
+T235_PAIR = ("lanes/log/repoP-1.md", "lanes/log/RepoP-1.md")
+#: `[out-of-class]`'s log (O18; CLI:670-672, :729), a stem outside the class,
+#: and its own event, a well-formed line naming a lane (batch 7); its lane is
+#: the file's, `a,b` (Amendment 16(e)).
+T235_OUT_KEY = "a,b"
+T235_OUT_LOG = f"lanes/log/{T235_OUT_KEY}.md"
+T235_OUT_NOTE = "T235: an event only the log outside the class holds"
+T235_OUT_LINE = (f"NOTED — lane repoO-1, session {STORE_ONLY_UUID}@Eagle, "
+                 f"2026-10-06T00:00:01Z, lane:repoO-1 — {T235_OUT_NOTE}\n")
+#: `lanes`' fence for the logs a read could not read (`lanes_rows`), and the
+#: two reads each door form makes.
+T235_FENCE = "these published logs could not be read, so no lane of theirs is classed DORMANT:"
+T235_RUNS = (("lanes", "--all", "--closed"), ("history", "--all"))
 
-def git_log_reads(log: Path) -> list:
+
+def git_log_reads(log: Path, upto: re.Pattern | None = None) -> list:
     """The calls in the fake `git`'s argv log that read `lanes/log` by git:
-    an `ls-tree` naming it, or a `show` of a path under it."""
+    an `ls-tree` naming it, or a `show` of a path under it. Each call's line
+    holds US. Where the log is also the run's stderr (`[failed-second-read]`),
+    every other line is stderr's, and `upto`, where given, ends the scan at
+    the first of those it matches."""
     if not log.exists():
         return []
     found = []
     for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+        if "\037" not in line:
+            if upto is not None and upto.search(line):
+                break
+            continue
         argv = line.split("\037")
         if argv and argv[-1] == "":
             argv = argv[:-1]
@@ -2181,15 +2204,46 @@ def _rows(stdout: str) -> dict:
     return {line.split("\t", 1)[0]: line for line in stdout.splitlines() if line}
 
 
+def asked_logs(argv: list) -> list:
+    """How one `register read` call asks for logs (CLI:670-672, :729): `("=",
+    <key>)` for each `--log-key=<key>`, `(" ", <key>)` for a `--log-key <key>`,
+    and `("files", <list>)` for each `--files` list, whole, since a key that
+    holds `,` would be split across its items."""
+    found = []
+    for i, arg in enumerate(argv):
+        after = argv[i + 1] if i + 1 < len(argv) else ""
+        if arg.startswith("--log-key="):
+            found.append(("=", arg[len("--log-key="):]))
+        elif arg == "--log-key":
+            found.append((" ", after))
+        elif arg.startswith("--files="):
+            found.append(("files", arg[len("--files="):]))
+        elif arg == "--files":
+            found.append(("files", after))
+    return found
+
+
+def files_names_log(value: str, key: str) -> bool:
+    """Whether a `--files` list names `key`'s log, `log:<key>`, in any case."""
+    return re.search(rf"(?:^|,)log:{re.escape(key)}(?:,|$)", value, re.I) is not None
+
+
+def unreadable_notes(stderr: str, path: str) -> int:
+    """How many `unreadable log: <path> — ` notes stderr holds, as `note`
+    prints them, `lanes-edit: ` first, the form `lanes_rows`' and
+    `worktree_rows`' `sed` patterns read back."""
+    return len(re.findall(rf"(?m)^lanes-edit: unreadable log: {re.escape(path)} — ", stderr))
+
+
 @pytest.mark.parametrize("case", T235_CASES)
 def test_on_primary_known_lanes_remote_log_events_and_worktree_rows_read_the_store_and_never_git(
         pg, estate, tmp_path, case):
-    """T235 (F13b's proposed task for lane 5's T505, for lane 3 to place;
-    lane 5's T505 plan, #165 6774988528, question 12; lane 5's choice (b),
-    6778955065; FR-033, FR-034): on primary, `known_lanes`,
-    `remote_log_events` and `worktree_rows` read the store and never git.
-    Each id asserts the store's answer, and that no `git ls-tree` and no `git
-    show` of `lanes/log` ran, by the fake `git`'s argv log (`LOGGING_GIT`):
+    """T235 (lane 5's T505 plan, #165 6774988528, question 12; lane 5's
+    choice (b), 6778955065; placed in B14, 6779844884; FR-033, FR-034): on
+    primary, `known_lanes`, `remote_log_events` and `worktree_rows` read the
+    store and never git. Each id asserts the store's answer, and that no `git
+    ls-tree` and no `git show` of `lanes/log` ran, by the fake `git`'s argv
+    log (`LOGGING_GIT`):
 
       * `[known-lanes]`: a lane's log with no register row, only in the store,
         which `known_lanes` lists from the family (`lanes --all --closed`);
@@ -2198,13 +2252,31 @@ def test_on_primary_known_lanes_remote_log_events_and_worktree_rows_read_the_sto
         `lanes` without `--lane`, and through `history --all`;
       * `[worktree-rows]`: the `worktrees` arm on primary, through
         `worktree_rows` and its log-set pin (P2's `lanes-edit.sh:17222`): a
-        tree under a `dir` only the store's log names;
-      * `[case-pair]` and `[out-of-class]`, the logs `--all` leaves out (a
-        case pair's two logs, and a stem outside the class), and
-        `[failed-second-read]`, a second read that fails and must be told
-        apart from "no log": each asserts no git read, and then FAILS UNTIL
-        lane 3 rules on lane 5's points 4, 5 and 6, since no text gives
-        their answer.
+        tree under a `dir` only the store's log names.
+
+    The three door forms run through the module's door in front of the
+    flipped copy, which logs every register call, and their oracles are lane
+    3's batch 7 (#165 6780364102), by batch 5's answers 3 and 4 (6778890211):
+
+      * `[case-pair]`, the store holding `lanes/log/repoP-1.md` and
+        `lanes/log/RepoP-1.md` (C11; CLI:674): `lanes --all --closed` and
+        `history --all` exit 0, never 69; no form 3 names either log, as
+        `log:<key>` in `--files` or as `--log-key=`, by the door's call log
+        with failures off; stderr carries one `unreadable log: <path> — `
+        note per path, its reason words T505's, which both `sed` patterns
+        must accept; `lanes` prints its fence naming both paths; the other
+        lanes' rows are the store's answer; and no git read;
+      * `[out-of-class]`, `lanes/log/a,b.md` (O18; CLI:670-672, :729): every
+        form 3 that asks for it carries `--log-key=a,b`, in the `=` form,
+        and none puts it inside `--files`; its own event is in `history
+        --all`; exit 0, no `unreadable log:` note for it, and no git read;
+      * `[failed-second-read]`, every form 3 failing 69, with `a,b.md` in
+        `.paths`: `lanes` and `history` print `read: mirror at <sha12>` on
+        stderr and then the mirror's answer, files mode's (its exit, and its
+        stdout, `lanes`' age column masked), never the store's answer with
+        `a,b`'s lines silently missing. The no-git check holds only up to
+        that label, since the mirror read is a git read: the fake `git`'s
+        log and the run's stderr are one file, appended in the order written.
 
     The register is the estate's, brought to primary on the `pg` fixture's
     database by AT-LR006's route (`RealRegister`), with the store-only files
@@ -2214,17 +2286,17 @@ def test_on_primary_known_lanes_remote_log_events_and_worktree_rows_read_the_sto
     lane 2's T227 and T228. Real engine: it skips without one (T205)."""
     files = render_set(estate.wip)
     a2 = files["lanes/log/repoA-2.md"].decode("utf-8")
+    a2_dir = (f"STARTED — lane repoA-2, session {UUID_A2}@Eagle, 2026-10-06T00:00:00Z, "
+              f"lane:repoA-2 → home opensoft/repoA; dir {T235_DIR}; profile team-01b\n")
+    a2_note = (f"NOTED — lane repoA-2, session {UUID_A2}@Eagle, 2026-10-06T00:00:00Z, "
+               f"lane:repoA-2 — {T235_NOTE}\n")
     trees = tmp_path / "t235-roots"
     if case == "known-lanes":
         files[f"lanes/log/{STORE_ONLY_LANE}.md"] = STORE_ONLY_LOG.encode()
     elif case == "remote-log-events-lanes":
-        files["lanes/log/repoA-2.md"] = (
-            a2 + f"STARTED — lane repoA-2, session {UUID_A2}@Eagle, 2026-10-06T00:00:00Z, "
-            f"lane:repoA-2 → home opensoft/repoA; dir {T235_DIR}; profile team-01b\n").encode()
+        files["lanes/log/repoA-2.md"] = (a2 + a2_dir).encode()
     elif case == "remote-log-events-history":
-        files["lanes/log/repoA-2.md"] = (
-            a2 + f"NOTED — lane repoA-2, session {UUID_A2}@Eagle, 2026-10-06T00:00:00Z, "
-            f"lane:repoA-2 — {T235_NOTE}\n").encode()
+        files["lanes/log/repoA-2.md"] = (a2 + a2_note).encode()
     elif case == "worktree-rows":
         # `lane_control_root`: a `dir` whose parent is there gives `<parent>/.lane-state/<lane>`,
         # and a sidecar of a schema no reader knows is listed by its id and path, never parsed.
@@ -2237,27 +2309,32 @@ def test_on_primary_known_lanes_remote_log_events_and_worktree_rows_read_the_sto
             f"2026-10-05T00:00:00Z, lane:{STORE_ONLY_LANE} → home opensoft/repoS; "
             f"dir {trees / 'repoS-1'}\n").encode()
     elif case == "case-pair":
-        files["lanes/log/repoP-1.md"] = ("STARTED — lane repoP-1, session "
-                                         f"{STORE_ONLY_UUID}@Eagle, 2026-10-05T00:00:00Z, "
-                                         "lane:repoP-1 → home opensoft/repoP\n").encode()
-        files["lanes/log/RepoP-1.md"] = "NOTED — the case pair's other half\n".encode()
+        files["lanes/log/repoA-2.md"] = (a2 + a2_dir + a2_note).encode()
+        files[T235_PAIR[0]] = ("STARTED — lane repoP-1, session "
+                               f"{STORE_ONLY_UUID}@Eagle, 2026-10-05T00:00:00Z, "
+                               "lane:repoP-1 → home opensoft/repoP\n").encode()
+        files[T235_PAIR[1]] = "NOTED — the case pair's other half\n".encode()
     elif case == "out-of-class":
-        files["lanes/log/a,b.md"] = "NOTED — a log whose name is outside the class\n".encode()
+        files[T235_OUT_LOG] = T235_OUT_LINE.encode()
     else:                                                    # failed-second-read
-        files["lanes/log/a,b.md"] = "NOTED — a log the prefetch leaves out\n".encode()
+        files["lanes/log/repoA-2.md"] = (a2 + a2_dir + a2_note).encode()
+        files[T235_OUT_LOG] = T235_OUT_LINE.encode()
     reg = RealRegister(pg, tmp_path / "real", files)
     edit = reg.tools()
     door = None
-    if case == "failed-second-read":
-        # The module's door in front of a flipped copy: every second read (form 3) fails 69.
+    if case in T235_LATER:
+        # The module's door in front of a flipped copy, which logs every register call ("count
+        # this from the door's call log, with failures off"); for [failed-second-read] every
+        # second read (form 3) fails 69.
         door = tmp_path / "real" / "door"
         helpers.flipped_copy(helpers.LANES_INDEX, door / "store", True)
         _write(door / "lanes-index", DOOR_WRAPPER)
         for name in RealRegister.TOOLS:
             shutil.copy2(REPO / name, door / name)
-        (door / "lanes-index.fail").write_text(json.dumps(
-            {"all": True, "forms": [3], "exit": UNREACHABLE_EXIT, "stdout": "mode primary\n",
-             "stderr": UNREACHABLE_STDERR}), encoding="utf-8")
+        if case == "failed-second-read":
+            (door / "lanes-index.fail").write_text(json.dumps(
+                {"all": True, "forms": [3], "exit": UNREACHABLE_EXIT, "stdout": "mode primary\n",
+                 "stderr": UNREACHABLE_STDERR}), encoding="utf-8")
         edit = door / "lanes-edit.sh"
     shim = tmp_path / "t235-git"
     real_git = shutil.which("git")
@@ -2283,13 +2360,24 @@ def test_on_primary_known_lanes_remote_log_events_and_worktree_rows_read_the_sto
                                         result.stderr[-1500:])
         return result
 
-    if case in T235_LATER:
-        for argv in (("lanes", "--all", "--closed"), ("history", "--all")):
-            run(*argv)
-        asked = [c["argv"] for c in door_second_reads(door)] if door else []
-        pytest.fail(f"FAILS UNTIL lane 3 rules on lane 5's points 4, 5 and 6 (#165 6774988528; "
-                    f"lane 5, 6778955065): no text gives [{case}]'s answer (second reads made: "
-                    f"{asked})", pytrace=False)
+    def run_in_order(*argv: str) -> tuple:
+        """The run with the fake `git`'s log and its stderr in ONE file, each
+        line appended as it is written, so that a git call can be placed
+        before or after a line of stderr: the result, stderr, and the file."""
+        both = tmp_path / f"t235-order-{'-'.join(argv)}.log"
+        child = dict(estate.env)
+        for key, value in git_env(both).items():
+            if value is None:
+                child.pop(key, None)
+            else:
+                child[key] = value
+        with open(both, "ab") as err:                        # O_APPEND, as the shim's `>>`
+            result = subprocess.run(["bash", str(edit), *argv], stdout=subprocess.PIPE,
+                                    stderr=err, text=True, env=child, cwd=str(estate.root),
+                                    timeout=120, stdin=subprocess.DEVNULL, check=False)
+        lines = both.read_text(encoding="utf-8", errors="replace").splitlines()
+        return result, "\n".join(line for line in lines if "\037" not in line), both
+
     if case == "known-lanes":
         result = run("lanes", "--all", "--closed")
         assert result.returncode == 0, (case, result.returncode, result.stderr[-1500:])
@@ -2307,11 +2395,73 @@ def test_on_primary_known_lanes_remote_log_events_and_worktree_rows_read_the_sto
         result = run("history", "--all")
         assert result.returncode == 0, (case, result.returncode, result.stderr[-1500:])
         assert T235_NOTE in result.stdout, (case, "not the store's answer", result.stdout)
-    else:                                                    # worktree-rows
+    elif case == "worktree-rows":
         result = run("worktrees")
         assert result.returncode == 0, (case, result.returncode, result.stdout,
                                         result.stderr[-1500:])
         assert "t235-store-tree" in result.stdout, (case, "not the store's answer", result.stdout)
+    elif case == "case-pair":
+        for argv in T235_RUNS:
+            result = run(*argv)
+            assert result.returncode == 0, (case, argv, "exit 0, never 69", result.returncode,
+                                            result.stderr[-1500:])
+            for path in T235_PAIR:
+                assert unreadable_notes(result.stderr, path) == 1, (
+                    case, argv, path, "one `unreadable log:` note per path", result.stderr[-1500:])
+            if argv[0] == "lanes":
+                fence = [line.split(T235_FENCE, 1)[1].split()
+                         for line in result.stderr.splitlines() if T235_FENCE in line]
+                assert fence and all(path in fence[0] for path in T235_PAIR), (
+                    case, "lanes fences both logs", fence, result.stderr[-1500:])
+                rows = _rows(result.stdout)
+                assert T235_DIR in rows.get("repoA-2", ""), (
+                    case, "the other lanes' rows are not the store's answer", result.stdout)
+            else:
+                assert T235_NOTE in result.stdout, (case, "not the store's answer", result.stdout)
+        for argv in (c["argv"] for c in door_second_reads(door)):
+            for how, value in asked_logs(argv):
+                named = (files_names_log(value, "repoP-1") if how == "files"
+                         else value.lower() == "repop-1")
+                assert not named, (case, "a form 3 asked for a log of the case pair", argv)
+    elif case == "out-of-class":
+        for argv in T235_RUNS:
+            result = run(*argv)
+            assert result.returncode == 0, (case, argv, result.returncode, result.stderr[-1500:])
+            assert unreadable_notes(result.stderr, T235_OUT_LOG) == 0, (
+                case, argv, "an `unreadable log:` note for it", result.stderr[-1500:])
+            if argv[0] == "history":
+                assert T235_OUT_NOTE in result.stdout, (
+                    case, "its event is not in history --all", result.stdout)
+        seconds = [c["argv"] for c in door_second_reads(door)]
+        assert any(("=", T235_OUT_KEY) in asked_logs(argv) for argv in seconds), (
+            case, "no form 3 asked for it as --log-key=a,b", seconds)
+        for argv in seconds:
+            for how, value in asked_logs(argv):
+                assert not (how == "files" and files_names_log(value, T235_OUT_KEY)), (
+                    case, "asked for inside --files", argv)
+                assert not (how == " " and value == T235_OUT_KEY), (
+                    case, "asked for, but not in the `=` form", argv)
+    else:                                                    # failed-second-read
+        for argv in T235_RUNS:
+            mirror = estate.edit(*argv)                      # the mirror's answer: files mode's
+            result, stderr, both = run_in_order(*argv)
+            reads = git_log_reads(both, upto=MIRROR_LINE)
+            assert not reads, (case, argv, "git read lanes/log before the mirror's label", reads,
+                               stderr[-1500:])
+            assert MIRROR_LINE.search(stderr), (case, argv, "no `read: mirror at` line",
+                                                stderr[-1500:])
+            assert not MIRROR_LINE.search(result.stdout), (case, argv, result.stdout)
+            assert result.returncode == mirror.returncode, (
+                case, argv, result.returncode, mirror.returncode, stderr[-1500:])
+            for only in (T235_DIR, T235_NOTE, T235_OUT_NOTE):
+                assert only not in result.stdout, (
+                    case, argv, "the store's answer, not the mirror's", only, result.stdout)
+            if argv[0] == "lanes":
+                assert _masked(result.stdout) == _masked(mirror.stdout), (
+                    case, argv, result.stdout, mirror.stdout)
+            else:
+                assert result.stdout == mirror.stdout, (case, argv, result.stdout, mirror.stdout)
+        assert door_second_reads(door), (case, "no second read was made, so none failed")
 
 
 def door_second_reads(door: Path) -> list:
