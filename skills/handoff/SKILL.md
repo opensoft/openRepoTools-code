@@ -550,7 +550,12 @@ them, as for every block here; `sread` is defined in the first block of this fil
 # block ends 1. A container with no workstation writes nothing here, so it takes no base.
 unset LANES_ACT LANES_EXPECT
 act_line=""; act_scopes=""; act_down=""; act_exit=""; act_w69=""
-act_re='^[0-9a-f]{32}@(files|(0|[1-9][0-9]{0,17}):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$'
+# THE BASE'S FORM (Y:5577-5579; REV-ACT2 N5), read with SPELLED-OUT bracket lists
+# and no range: `[0123456789abcdef]` for a lower-case hex digit, `[123456789]` for a
+# seq's first digit and `[0123456789]` for the rest. A range such as `[0-9a-f]` is
+# read through the shell's locale, and a list is not. The same grammar as `act_parse`
+# in `lanes-edit.sh` and `act_form` in `lane-handoff`.
+act_re='^[0123456789abcdef]{32}@(files|(0|[123456789][0123456789]{0,17}):[0123456789abcdef]{8}-[0123456789abcdef]{4}-[0123456789abcdef]{4}-[0123456789abcdef]{4}-[0123456789abcdef]{12})$'
 # THE 69 NOTE (spec:692, :700-702; Y:5573; lane 3, #165 6770733371, T429's
 # question 5 and T431's question 3; 6774499606, REV-ACT 1 and 2). Where a `PAUSED`
 # write exits 69 or none of them is sent, a note names how the record is completed
