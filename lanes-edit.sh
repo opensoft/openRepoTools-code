@@ -658,19 +658,18 @@
 #      write refuses until the publish act sends it or an archive (S6.3)
 #      takes it.
 #      ON PRIMARY (FEATURE 007; D8; FR-028; T417), A REGISTER WRITE IN DOUBT:
-#      may not be written; run the printed `LANES_WRITE_ID` rerun, which
-#      writes it once or finds it. "cannot confirm whether register write <id>
-#      committed; nothing else was written": a commit call of the write may
-#      have committed (its pending record holds a `call` line, this run's or
-#      one a record taken over carried in), and F3's lookup, `lanes-index
-#      journal --write-id <id> …`, could not settle it: no try within its
-#      window took the head row's lock, the lookup was refused as too early
-#      (LR011), or its answer settles nothing (any other code, a crash). The
-#      message gives the lookup and the rerun, `LANES_WRITE_ID=<id>
-#      LANES_WRITE_GENERATION=<generation> LANES_LANE=<lane>
-#      LANES_SESSION=<the value the digest took> lanes-edit.sh <the same
-#      arguments>` (ERR-38), and the pending record is kept, so the rerun
-#      settles the write and never writes it twice.
+#      may not be written; run the printed `LANES_WRITE_ID` rerun, which writes it once or finds it.
+#      "cannot confirm whether register write <id> committed; nothing else was
+#      written": a commit call of the write may have committed (its pending
+#      record holds a `call` line, this run's or one a record taken over
+#      carried in), and F3's lookup, `lanes-index journal --write-id <id> …`,
+#      could not settle it: no try within its window took the head row's lock,
+#      the lookup was refused as too early (LR011), or its answer settles
+#      nothing (any other code, a crash). The message gives the lookup and the
+#      rerun, `LANES_WRITE_ID=<id> LANES_WRITE_GENERATION=<generation>
+#      LANES_LANE=<lane> LANES_SESSION=<the value the digest took>
+#      lanes-edit.sh <the same arguments>` (ERR-38), and the pending record is
+#      kept, so the rerun settles the write and never writes it twice.
 #      ON PRIMARY, AN IDENTICAL WRITE'S OWNER STILL LIVE AT D7's DEADLINE
 #      (Y:5216–5218; T417): this run sent nothing, that write's outcome is
 #      not known, and its record and claims are left as they are. With a
