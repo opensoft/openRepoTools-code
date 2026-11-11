@@ -4119,10 +4119,9 @@ index_open() {   # [worktrees]
   fi
   LANES_IDX_DIR="$io_dir"
   # WHAT WAS READ BEFORE THE FLAG WAS HONOURED IS NOT WHAT IS READ AFTER IT:
-  # every published-read cache this process may already hold is dropped.
-  LANES_REGISTER_CACHE=""
-  [ -n "${SE_CACHE_FILE:-}" ] && rm -f -- "$SE_CACHE_FILE.register"
-  lane_alias_flush
+  # every published-read cache this process may already hold is dropped
+  # (`reg_flush`, feature 007, T505).
+  reg_flush
   state_events_flush
   printf 'read: index (%s) at register@%s; %s commits behind\n' "${io_store:-unknown}" "${io_sha:0:12}" "$io_behind" >&2
   return 0
@@ -4565,6 +4564,34 @@ reg_marker_check() {
       if [ "$rmc_rc" = 0 ]; then die "this estate's register is SQL; configure \`mode=primary\`" 69; fi
       die "whether this estate's register is SQL could not be read; nothing was answered" 69 ;;
   esac
+}
+
+# FEATURE 007, T505 - THE ONE FLUSH OF THE READ FAMILY (W:4907; contract 3.6,
+# C6). It drops the cache family the read door's prefetch wrote beside
+# `SE_CACHE_FILE` - `.register`, `.aliases`, `.archive`, `.paths`, `.head`,
+# `.outage`, every `.log.*` and `.logpath.*` (the `.log.%<hex>` and
+# `.logpath.%<hex>` names among them) - and the flag a failed second read
+# leaves (`.rfail`), keeps `.direct`, empties `LANES_REGISTER_CACHE`, and runs
+# `lane_alias_flush`, which empties `LANES_ALIAS_CACHE` and drops `.aliaserr`.
+# It replaces the register and alias drops `log_sync`, `index_open` and the
+# guard's post-bind site made. In files mode it drops what they dropped:
+# files mode writes no other member of the family. In `log_sync` it runs only
+# off primary, `[ "${REG_STORE:-}" = sql ] || reg_flush`, the no-flush half of
+# T506's bullet, which T505's readers cases need (lane 3, #165 6778890211, T505
+# Q1). `cs_flush`, S3's drop, is not among its callers: its callers run with
+# `REG_STORE` empty (T505 Q7). Lane 4's T414 calls it after `committed`, T423
+# before each poll's read in `request-handoff`'s wait on primary, and T507 for
+# the post-bind refill (lane 5's text 2, #165 6773212220). Cleanup's glob
+# removes the family unchanged.
+reg_flush() {
+  LANES_REGISTER_CACHE=""
+  if [ -n "${SE_CACHE_FILE:-}" ]; then
+    rm -f -- "$SE_CACHE_FILE.register" "$SE_CACHE_FILE.aliases" "$SE_CACHE_FILE.archive" \
+      "$SE_CACHE_FILE.paths" "$SE_CACHE_FILE.head" "$SE_CACHE_FILE.outage" "$SE_CACHE_FILE.rfail" \
+      "$SE_CACHE_FILE".log.* "$SE_CACHE_FILE".logpath.* 2>/dev/null
+  fi
+  lane_alias_flush
+  return 0
 }
 
 # Prints, to stdout, a comma-joined, de-duplicated list of the lane(s) whose
@@ -8097,13 +8124,15 @@ log_sync() {
   # THE CACHE ABOVE IS THE REF AS IT STOOD; a fetch moves the ref, so it is
   # dropped here rather than read past. Both copies of it: the variable this
   # shell holds and the file every subshell reads (ruling 12).
-  LANES_REGISTER_CACHE=""
-  ls_rc="${SE_CACHE_FILE:+$SE_CACHE_FILE.register}"; [ -n "$ls_rc" ] && rm -f -- "$ls_rc"
   # AND AMENDMENT 16's ALIAS TABLE, for the same reason and in the same breath:
   # it is read from `origin/<branch>` beside the register and a fetch moves that
   # ref. A rename lands both files in ONE commit, so a cache that kept one and
   # dropped the other is exactly the disagreement the single commit prevents.
-  lane_alias_flush
+  # ON PRIMARY THE FAMILY IS NOT DROPPED (feature 007, T505): it is the
+  # register at one `n`, which no fetch moves, and a flush here would make every
+  # read after it a second read (lane 3, #165 6778890211, T505 Q1). T506 moves
+  # this test above the drops and adds the no-fetch half.
+  [ "${REG_STORE:-}" = sql ] || reg_flush
   LOG_SYNC_FETCH=""
   [ "$NO_GIT" = 1 ] && { LOG_SYNC_FETCH="LANES_NO_GIT=1 is set, so nothing in this run touches git"; return 0; }
   [ "${LANES_NO_FETCH:-0}" = 1 ] && { LOG_SYNC_FETCH="LANES_NO_FETCH=1 is set in this environment"; note "LANES_NO_FETCH=1 — not fetching; reading origin/$LANES_BRANCH as the ref already stands here"; cs_seen_mark; return 0; }
@@ -13039,9 +13068,9 @@ guard_bound_check() {   # <the lane moved to>
   # be "no uuid" on the one path that most needs the true one. Both copies are
   # dropped — the variable this shell holds and the file every subshell reads
   # (A11 Addendum 4 ruling 12) — exactly as `log_sync` drops them after a fetch,
-  # and for the same reason: the ref has moved under them.
-  LANES_REGISTER_CACHE=""
-  gbc_rc="${SE_CACHE_FILE:+$SE_CACHE_FILE.register}"; [ -n "$gbc_rc" ] && rm -f -- "$gbc_rc"
+  # and for the same reason: the ref has moved under them. The alias table goes
+  # with them, as `log_sync`'s does (`reg_flush`, feature 007, T505).
+  reg_flush
   gbc_last="$(last_session_id_of_lane "$gbc_to" 2>/dev/null || :)"
   if [ "$(lc "$gbc_last")" = "$(lc "$G_ID")" ]; then
     note "…and $gbc_to's session cell now ends on $G_ID, written by lane-start's binding mode — which is what the next \`lane-start $gbc_to\` resumes."
