@@ -311,7 +311,10 @@
 #      which on primary is a second binding, in every case; its code where it
 #      makes a new lane's row, or binds under `--bind`; and `request-handoff`'s
 #      69, 75 and 3. A resume's refused `start-record` is a note, and the
-#      launch goes on.
+#      launch goes on. Under a seq base that note, after any code but 3,
+#      prints no rerun of its own and names `lane-start --no-launch` with
+#      this run's arguments, run in the launched session's window as its
+#      first act (lane 3's Q39 and Q41, #165 6780753157).
 #
 # ENVIRONMENT
 #   PROJECTS_ROOT        default ~/projects
@@ -829,6 +832,10 @@ bind_sid=""
 # AMENDMENT 18(c)/(e) — the three words a second place has for a bound lane.
 request_handoff=0; force_why=""; handoff_wait=300
 positional=(); pass=()
+# THIS RUN'S ARGUMENTS AS THEY WERE GIVEN, before the loop below takes them:
+# the `--no-launch` act a resume's arm names under a seq base is this act with
+# the same arguments (`ls_q41_line`; lane 3's Q41, #165 6780753157).
+LS_ARGV=("$@")
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -1403,8 +1410,10 @@ LS_D8="may not be written; run the printed \`LANES_WRITE_ID\` rerun, which write
 # `LANES_ACT` and `LANES_EXPECT` would write unchecked; after a 2, with them
 # it would only be refused again. So under a base `<id>@<seq>:<generation>`,
 # after any code but 0 and 3, the writer's words above are kept, this script
-# prints no command for the write, and the launch says to run it again from
-# its start. A 3 keeps the writer's rerun (G3), in T433's text (`LS_D8`).
+# prints no command for the write, and an arm that dies says to run it again
+# from its start (`LS_Q4`); an arm the launch goes on past names the act
+# without its launch instead (`ls_q41_note`, below; Q39, Q41). A 3 keeps the
+# writer's rerun (G3), in T433's text (`LS_D8`).
 # Under `@files` today's hand commands stand (Y:5596): no write there reads
 # either variable. `act-begin`'s 2 never reaches here: `lane-start` refuses
 # it (A2). Defined here, above its first user, W8's arm.
@@ -1414,6 +1423,41 @@ ls_q4() {   # <the write's exit>: 0 where no hand command is printed for it
   return 0
 }
 LS_Q4="No command is printed for it here, since one run by hand without this launch's \`LANES_ACT\` and \`LANES_EXPECT\` would write unchecked (Y:5587). Run \`$prog\` again from its start (Y:5601)"
+# BUT NOT "FROM ITS START" WHERE THE ACT GOES ON TO LAUNCH (lane 3's Q39 and
+# Q41, #165 6780753157, correcting Q11 for this command): a second
+# `lane-start` from its start would start a second launch. So under a seq
+# base a resume's write that ended 69 or 75, and W2 to W6's other codes but
+# 0 and 3, keep the writer's words above, print no rerun of their own, and
+# the stamp and the launch go on as before; the arm names `lane-start
+# --no-launch` with the same arguments, run in the launched session's window
+# as its first act: the act without its launch (`--no-launch`, the first act
+# INSIDE a running session). A 3 keeps the writer's rerun (G3), in `LS_D8`.
+# A new row's arms die, and `LS_Q4`'s "from its start" stands for them, a
+# 69 or 75 included. Under `@files` today's texts stand. The line is this
+# run's own arguments (`LS_ARGV`), each one word by `quoted`, so it reads
+# back as typed; a `--no-launch` among them is not given twice, and nothing
+# after `--`, nor a flag's own value, is taken for one.
+ls_q41_line() {
+  local a dd=0 val=0
+  local -a nl
+  nl=(--no-launch)
+  for a in ${LS_ARGV[@]+"${LS_ARGV[@]}"}; do
+    if (( ! dd )) && (( ! val )); then
+      case "$a" in
+        --no-launch) continue ;;
+        --) dd=1 ;;
+        --agent | --operation | --bind | --force | --wait | --dir | --estate) val=1; nl+=("$a"); continue ;;
+      esac
+    fi
+    val=0
+    nl+=("$a")
+  done
+  printf '%s %s' "$prog" "$(quoted "${nl[@]}")"
+}
+ls_q41_note() {   # <what was not written, naming the verb and its code> <the arm's own sentence on the launch>
+  note "$1. No rerun of it is printed here: one run by hand without this launch's \`LANES_ACT\` and \`LANES_EXPECT\` would write unchecked (Y:5587). $2 In the launched session's window, as that session's first act, run this act without its launch (lane 3, #165 6780753157, Q39, Q41):"
+  note "  $(ls_q41_line)"
+}
 
 repo="${repo:-$LANE}"          # the verbatim form has no <repo> of its own
 estate="${estate:-$repo}"
@@ -4430,7 +4474,9 @@ if [ "$row_count" = 0 ]; then
       # THE TEXTS FOR 3, AND THE WRITER'S RERUN (T428; D8; Y:5698-5699).
       case "$ar_rc" in
         3) die "the register row for $LANE MAY NOT have been added: \`$LANES_EDIT add-row\` exited 3, and it ${LS_D8}. This window has been renamed and nothing has been launched: a lane whose row is in doubt is not started until that is settled." 3 ;;
-        69 | 75) die "the register row for $LANE was NOT added (\`$LANES_EDIT add-row\` exited $ar_rc; its own words are above, with the rerun it prints). This window has been renamed and NOTHING else has been written — no session cell, no object log, no launch: a lane with no row is a lane no other lane's liveness read, crossing check or \`lane-start\` can see. Run the writer's printed rerun, or this command again once the register answers." "$ar_rc" ;;
+        # A new row's 69 or 75 under a seq base takes `LS_Q4` below: the arm
+        # dies, so "from its start" stands (lane 3's Q41, #165 6780753157).
+        69 | 75) ls_q4 "$ar_rc" || die "the register row for $LANE was NOT added (\`$LANES_EDIT add-row\` exited $ar_rc; its own words are above, with the rerun it prints). This window has been renamed and NOTHING else has been written — no session cell, no object log, no launch: a lane with no row is a lane no other lane's liveness read, crossing check or \`lane-start\` can see. Run the writer's printed rerun, or this command again once the register answers." "$ar_rc" ;;
       esac
       ! ls_q4 "$ar_rc" ||
         die "the register row for $LANE was NOT added (\`$LANES_EDIT add-row\` exited $ar_rc under this launch's base; its own words are above). This window has been renamed and NOTHING else has been written — no session cell, no object log, no launch: a lane with no row is a lane no other lane's liveness read, crossing check or \`lane-start\` can see. ${LS_Q4}." "$ar_rc"
@@ -4473,7 +4519,7 @@ else
       elif [ "$ls_w_rc" = 3 ]; then
         note "the session cell's extension with $harness_sid is in doubt (\`append-session-id\` exited 3): it ${LS_D8}. The launch is not refused for it."
       elif ls_q4 "$ls_w_rc"; then
-        note "the session cell was NOT extended with $harness_sid (\`append-session-id\` exited $ls_w_rc under this launch's base; its words are above). ${LS_Q4}. The launch is not refused for it."
+        ls_q41_note "the session cell was NOT extended with $harness_sid (\`append-session-id\` exited $ls_w_rc under this launch's base; its words are above)" "The launch is not refused for it."
       else
         note "the session cell was NOT extended with $harness_sid (this checkout's copy of the row does not carry $cell_anchor exactly once IN ITS SESSION CELL — it may be older than the published one). STAMP IT AS THIS SESSION'S FIRST ACT:"
         note "  $harness_hint"
@@ -4508,7 +4554,7 @@ else
       elif [ "$ls_w_rc" = 3 ]; then
         note "the session cell's extension with recovered transcript $restored_sid is in doubt (\`append-session-id\` exited 3): it ${LS_D8}. The launch is not refused for it."
       elif ls_q4 "$ls_w_rc"; then
-        note "the session cell was NOT extended with recovered transcript $restored_sid (\`append-session-id\` exited $ls_w_rc under this launch's base; its words are above). ${LS_Q4}. The launch is not refused for it."
+        ls_q41_note "the session cell was NOT extended with recovered transcript $restored_sid (\`append-session-id\` exited $ls_w_rc under this launch's base; its words are above)" "The launch is not refused for it."
       else
         note "the session cell was NOT extended with recovered transcript $restored_sid (this checkout's copy of the row may be older than the published one). The launch is unaffected and so is the NEXT one: this recovery reads the lane's last PAUSED record and not the cell, so it finds the same transcript again and prints this same act — the row keeps naming an id no transcript answers to until somebody runs it. STAMP IT AS THIS SESSION'S FIRST ACT:"
         note "  $restored_hint"
@@ -4559,7 +4605,7 @@ else
       elif [ "$ls_w_rc" = 3 ]; then
         note "the session cell's stamp with $new_sid is in doubt (\`append-session-id\` exited 3): it ${LS_D8}. The launch is not refused for it."
       elif ls_q4 "$ls_w_rc"; then
-        note "the session cell was NOT stamped with $new_sid (\`append-session-id\` exited $ls_w_rc under this launch's base; its words are above). ${LS_Q4}. The launch is not refused for it."
+        ls_q41_note "the session cell was NOT stamped with $new_sid (\`append-session-id\` exited $ls_w_rc under this launch's base; its words are above)" "The launch is not refused for it."
       else
         note "the session cell was NOT stamped (this checkout's copy of the row does not carry $row_sid exactly once IN ITS SESSION CELL — it may be older than the published one). STAMP IT AS THIS SESSION'S FIRST ACT:"
         note "  $stamp_hint"
@@ -4649,7 +4695,7 @@ else
     elif [ "$srs_rc" = 3 ]; then
       note "the row's state cell is in doubt (\`set-row-state\` exited 3): it ${LS_D8}. The launch is not refused for it: the stamp is the record of this act, not its licence."
     elif ls_q4 "$srs_rc"; then
-      note "the row's state cell was NOT set (\`set-row-state\` exited $srs_rc under this launch's base; its words are above). ${LS_Q4}. The launch is not refused for it: the stamp is the record of this act, not its licence."
+      ls_q41_note "the row's state cell was NOT set (\`set-row-state\` exited $srs_rc under this launch's base; its words are above)" "The launch is not refused for it: the stamp is the record of this act, not its licence."
     else
       note "the row's state cell was NOT set (exit $srs_rc — the helper's own words are above), and the launch is not refused for it: the stamp is the record of this act, not its licence. Set it by hand:"
       note "  LANES_LANE=$LANE $LANES_EDIT set-row-state $LANE \"LIVE · $state_line\""
@@ -4695,7 +4741,7 @@ else
       elif [ "$ls_w_rc" = 3 ]; then
         note "the session cell's extension with $agent_cell is in doubt (\`append-session-id\` exited 3): it ${LS_D8}. The launch is not refused for it."
       elif ls_q4 "$ls_w_rc"; then
-        note "the session cell was NOT extended with $agent_cell (\`append-session-id\` exited $ls_w_rc under this launch's base; its words are above). ${LS_Q4}. The launch is not refused for it."
+        ls_q41_note "the session cell was NOT extended with $agent_cell (\`append-session-id\` exited $ls_w_rc under this launch's base; its words are above)" "The launch is not refused for it."
       else
         note "the session cell was NOT extended with $agent_cell (this checkout's copy of the row may be older than the published one). STAMP IT AS THIS SESSION'S FIRST ACT:"
         note "  LANES_LANE=$LANE $LANES_EDIT append-session-id $LANE \"<the session cell's last id>\" \"→ $agent_cell\""
@@ -4908,7 +4954,8 @@ else
         if [ -n "$LS_SR_ROW" ]; then
           case "$ls_sr_rc" in
             3) die "the register row for $LANE MAY NOT have been added, with its STARTED line: \`$LANES_EDIT start-record\` exited 3, and it ${LS_D8}. This window has been renamed and nothing has been launched: a lane whose row is in doubt is not started until that is settled." 3 ;;
-            69 | 75) die "the register row for $LANE was NOT added (\`$LANES_EDIT start-record\` exited $ls_sr_rc; its own words are above, with the rerun it prints). This window has been renamed and NOTHING else has been written — no session cell, no object log, no launch: a lane with no row is a lane no other lane's liveness read, crossing check or \`lane-start\` can see. Run the writer's printed rerun, or this command again once the register answers." "$ls_sr_rc" ;;
+            # Under a seq base a 69 or 75 takes `LS_Q4` below (Q41).
+            69 | 75) ls_q4 "$ls_sr_rc" || die "the register row for $LANE was NOT added (\`$LANES_EDIT start-record\` exited $ls_sr_rc; its own words are above, with the rerun it prints). This window has been renamed and NOTHING else has been written — no session cell, no object log, no launch: a lane with no row is a lane no other lane's liveness read, crossing check or \`lane-start\` can see. Run the writer's printed rerun, or this command again once the register answers." "$ls_sr_rc" ;;
           esac
           ! ls_q4 "$ls_sr_rc" ||
             die "the register row for $LANE was NOT added (\`$LANES_EDIT start-record\` exited $ls_sr_rc under this launch's base; its own words are above). This window has been renamed and NOTHING else has been written — no session cell, no object log, no launch: a lane with no row is a lane no other lane's liveness read, crossing check or \`lane-start\` can see. ${LS_Q4}." "$ls_sr_rc"
@@ -4922,10 +4969,16 @@ else
           3)
             note "${ls_sr_what} MAY NOT have been written: \`$LANES_EDIT start-record\` exited 3, and it ${LS_D8}. The launch is not refused for it: they are the record of this resume, not its licence (spec:318, 2A)." ;;
           69 | 75)
-            note "${ls_sr_what} were NOT written: \`$LANES_EDIT start-record\` exited ${ls_sr_rc}, and its words above say so, with the rerun it prints: the write id and its generation where the write has one, or that nothing was sent where it has none (spec:318). Run that rerun, not a command of this script's. The launch is not refused for it: they are the record of this resume, not its licence (2A)." ;;
+            # Under a seq base the writer's rerun is not pointed to: the
+            # arm names the act without its launch (lane 3's Q39, Q41).
+            if ls_q4 "$ls_sr_rc"; then
+              ls_q41_note "${ls_sr_what} were NOT written (\`$LANES_EDIT start-record\` exited $ls_sr_rc under this launch's base; its words are above)" "The launch is not refused for it: they are the record of this resume, not its licence (spec:318, 2A)."
+            else
+              note "${ls_sr_what} were NOT written: \`$LANES_EDIT start-record\` exited ${ls_sr_rc}, and its words above say so, with the rerun it prints: the write id and its generation where the write has one, or that nothing was sent where it has none (spec:318). Run that rerun, not a command of this script's. The launch is not refused for it: they are the record of this resume, not its licence (2A)."
+            fi ;;
           *)
             if ls_q4 "$ls_sr_rc"; then
-              note "${ls_sr_what} were NOT written: \`$LANES_EDIT start-record\` exited $ls_sr_rc under this launch's base, and its words above say what was left. ${LS_Q4}. The launch is not refused for it: they are the record of this resume, not its licence (spec:318, 2A)."
+              ls_q41_note "${ls_sr_what} were NOT written (\`$LANES_EDIT start-record\` exited $ls_sr_rc under this launch's base; its words above say what was left)" "The launch is not refused for it: they are the record of this resume, not its licence (spec:318, 2A)."
             else
               note "${ls_sr_what} were NOT written: \`$LANES_EDIT start-record\` exited $ls_sr_rc, and its words above say what was left. The launch is not refused for it: they are the record of this resume, not its licence (spec:318, 2A). Once those words say nothing was written, write them as this session's first act:"
               note "  $ls_sr_hint"
