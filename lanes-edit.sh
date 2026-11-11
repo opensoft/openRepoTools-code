@@ -6740,27 +6740,41 @@ pw_child_hung_end() {   # bound | kept
     pw_pid_start "$ch_p"
     ch_ps="${ch_ps} ${ch_p} ${PW_START}"
   done
-  if ! kill -TERM "$PW_CHILD" 2>/dev/null; then
-    PW_RC=0
-    wait "$PW_CHILD" 2>/dev/null || PW_RC=$?
-    PW_CHILD=""
-    return 1
-  fi
-  for ch_p in $ch_tree; do kill -TERM "$ch_p" 2>/dev/null || :; done
-  # shellcheck disable=SC2086
-  while [ "$ch_n" -lt 20 ] && pw_pids_run "$PW_CHILD" $ch_tree; do
-    if sleep 0.05 2>/dev/null; then ch_n=$((ch_n + 1)); else sleep 1; ch_n=20; fi
-  done
-  if pw_child_left "$ch_cs"; then
-    for ch_p in $(pw_child_tree); do
-      pw_pid_start "$ch_p"
-      ch_ps="${ch_ps} ${ch_p} ${PW_START}"
+  # THE STOP, FROM ITS FIRST `kill -TERM` TO ITS LAST `wait`, IS ONE GROUP
+  # WITH STDERR ON /dev/null (lane openRepoTools-3, #165 6755027994: "A
+  # refusal's stderr is its own text (§2.6). A job notice from bash before it
+  # is noise"; its batch c (68), #165 6808141050). Bash prints a job notice for
+  # a child a signal ended ("Killed" after a KILL, which no trap can take;
+  # "Terminated" where the shell does not trap TERM) on the shell's own stderr,
+  # not the `wait`'s, wherever a forked command runs between that death and
+  # the `wait`: `sleep 0.05` in the wait loop, and `pw_pids_kill`'s
+  # `ps -o lstart=` on a host with no /proc, which is macOS, whose /bin/bash
+  # is 3.2. A group's redirection holds in the shell itself for the group's
+  # whole span, so no such notice reaches the caller before the end's 75 text.
+  # The early `return 1` inside it is unchanged.
+  {
+    if ! kill -TERM "$PW_CHILD" 2>/dev/null; then
+      PW_RC=0
+      wait "$PW_CHILD" 2>/dev/null || PW_RC=$?
+      PW_CHILD=""
+      return 1
+    fi
+    for ch_p in $ch_tree; do kill -TERM "$ch_p" 2>/dev/null || :; done
+    # shellcheck disable=SC2086
+    while [ "$ch_n" -lt 20 ] && pw_pids_run "$PW_CHILD" $ch_tree; do
+      if sleep 0.05 2>/dev/null; then ch_n=$((ch_n + 1)); else sleep 1; ch_n=20; fi
     done
-    kill -KILL "$PW_CHILD" 2>/dev/null || :
-    ch_how="TERM, then KILL 1 s later"
-  fi
-  pw_pids_kill "$ch_ps"
-  wait "$PW_CHILD" 2>/dev/null || :
+    if pw_child_left "$ch_cs"; then
+      for ch_p in $(pw_child_tree); do
+        pw_pid_start "$ch_p"
+        ch_ps="${ch_ps} ${ch_p} ${PW_START}"
+      done
+      kill -KILL "$PW_CHILD" 2>/dev/null || :
+      ch_how="TERM, then KILL 1 s later"
+    fi
+    pw_pids_kill "$ch_ps"
+    wait "$PW_CHILD" 2>/dev/null || :
+  } 2>/dev/null
   PW_CHILD=""
   if [ "$PW_KILLED" -gt 0 ]; then
     ch_kids=", and every process it had started got TERM, then KILL 1 s later where TERM had not ended it"
