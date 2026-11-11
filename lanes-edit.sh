@@ -8131,12 +8131,15 @@ sr_log_names_lane() {   # <--log's object> <L>
 #   fetch of W, which passes `routed`. WHERE THE ANSWER IS A FORMER NAME'S (it
 #   differs from `<L>` under case too, as `canon_lane`'s own note tells them
 #   apart), THE WORDS SAY SO AND NAME BOTH WAYS OUT (REV427c S1): resume that
-#   lane as itself, or take a position `next-free` does not offer. A rename
-#   frees the old name's position, and `lane_next_free` counts rows and not
-#   former names, so `next-free` and `lanes --prefix <repo>` offer `<L>` again;
-#   "take a free position as it prints it" sent the caller back to the name
-#   just refused. Whether `next-free` should count alias keys is lane 3's
-#   question; neither is changed here.
+#   lane as itself, or take the position `next-free` offers. THE WAY OUT IS
+#   `next-free`'S POSITION (lane 3, #165 6780753157, Q47): `lane_next_free`
+#   counts each alias key of the repository as a taken position, so a former
+#   name is refused for good as a new row and is never the position `next-free`
+#   and `lanes --prefix <repo>` offer. Before that, a rename freed the old
+#   name's position and `next-free` handed it out again, so these words sent
+#   the caller back to the name just refused (REV427c S1). That change is
+#   `lane_next_free`'s own, on code `main` (lane 3, 749e969); it reaches this
+#   branch where this lands, and nothing here changes `lane_next_free`.
 sr_add_row_known() {   # <L> <canon_lane's answer for it>
   [ "${2-}" = "${1-}" ] || return 0
   sak_rows="$(rows_named_ci "${1-}" 2>/dev/null)" || return 2
@@ -8149,9 +8152,9 @@ sr_known_die() {   # <L> <canon_lane's answer> [routed]
     skd_not=", and nothing was cloned (Amendment 23 S1, S2)"
   fi
   if [ "$(lc "${2-}")" != "$(lc "${1-}")" ]; then
-    die "start-record's first word is '$1', a FORMER name of lane '$2' (${LANES_ALIASES_PATH:-lanes/aliases.tsv}, Amendment 16(e)), as $skd_read answers it: --add-row makes the row of a lane the register does not know yet, and a former name stays its lane's. Resume that lane as itself (LANES_LANE=$2 $SELF start-record $2 RESUMED …), or take a position that \`next-free\` does not offer: it counts rows and not former names, so it offers '$1' again, as \`lanes --prefix <repo>\` does. Nothing was written$skd_not. $SR_USE" 2
+    die "start-record's first word is '$1', a FORMER name of lane '$2' (${LANES_ALIASES_PATH:-lanes/aliases.tsv}, Amendment 16(e)), as $skd_read answers it: --add-row makes the row of a lane the register does not know yet, and a former name stays its lane's. Resume that lane as itself (LANES_LANE=$2 $SELF start-record $2 RESUMED …), or take the position \`next-free\` offers, as \`lanes --prefix <repo>\` prints it. Nothing was written$skd_not. $SR_USE" 2
   fi
-  die "start-record's first word is '$1', and $skd_read answers lane '$2' for it, by a row under any case or as a former name (Amendment 15(a), 16(e)): --add-row makes the row of a lane the register does not know yet, and this one would be a second row for lane $2. Take a free position instead, as \`lanes --prefix <repo>\` prints it. Nothing was written$skd_not. $SR_USE" 2
+  die "start-record's first word is '$1', and $skd_read answers lane '$2' for it, by a row under any case or as a former name (Amendment 15(a), 16(e)): --add-row makes the row of a lane the register does not know yet, and this one would be a second row for lane $2. Take the position \`next-free\` offers instead, as \`lanes --prefix <repo>\` prints it. Nothing was written$skd_not. $SR_USE" 2
 }
 
 # A read fetches first — there is no index, so "current" means "after a fetch".
