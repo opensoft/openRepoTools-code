@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Feature 007's AT-LRMPG, a managed PostgreSQL, its phase-N cases (T224;
-FR-009, FR-053, FR-054, FR-055, FR-059) (opensoft/openRepoTools#165).
+"""Feature 007's AT-LRMPG, a managed PostgreSQL: its phase-N cases (T224;
+FR-009, FR-053, FR-054, FR-055, FR-059) and its phase-W cases (T258; FR-009,
+FR-054, FR-059) (opensoft/openRepoTools#165).
 
 The test plan's thirteen phase-N names, byte for byte (AT-LRMPG, "Tests."),
 and lane 1's two new since v3f, `dump_restore_privileges` (L1-2, T109's option
 (a)) and `rotate_dump_job` (L1-3, T110's `rotate --dump-job`): 15 tests. The
 phase-W cases, the logins' writes and reads through the flipped copy, are
-T258's and are not here.
+T258's five, in the last section, "phase W (T258)", which says how they run.
 
 THE SERVER (X, `97147aa8`, kept at Y): the register runs on CNPG, so the
 admin of every case stands for the database's owner as CNPG's `initdb` makes
@@ -56,7 +57,9 @@ is `*:*:<database>:<login>:<password>`; `login`'s argv is `login add|rotate
 
 from __future__ import annotations
 
+import errno
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -66,6 +69,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -74,7 +78,9 @@ from urllib.parse import quote
 import pytest
 
 from conftest import REPO, WINDOWS_SKIP
-from sql_register_helpers import REGISTER_FAKE_PSQL, guard_strip_env
+from sql_register_helpers import (LANES_INDEX, PSQL_SHIM, PSQL_SHIM_CONTROL, PSQL_SHIM_ENDS,
+                                  PSQL_SHIM_LOG, REGISTER_FAKE_PSQL, RENDER_SET_PATH, flipped_copy,
+                                  guard_strip_env)
 
 pytestmark = [WINDOWS_SKIP]
 
@@ -1203,3 +1209,615 @@ def test_rotate_dump_job_changes_only_the_dump_logins_password(tmp_path, request
     dumped, _target = m.dump("t224_reg", new[DUMP], "rotated.dump")
     assert dumped.returncode == 0, f"the new dump password does not dump:\n{_said(dumped)}"
     _no_clear_text(m.log(), lines)
+
+
+# ============================================================ phase W (T258)
+#
+# AT-LRMPG'S PHASE W (T258; the test plan's "Phase and kind": the logins'
+# writes and reads, which run through the flipped test copy of `lanes-index`,
+# test 14's second state, are W). Each case runs on a managed PostgreSQL of
+# its own, as phase N's do (`Managed`): the admin's database, the bootstrap,
+# and `login add` for the case's engineers, whose printed lines go into 0600
+# password files. `PhaseW` then brings the register to `primary` by AT-LR006's
+# route (TP:4610-4615), as e1's writer login: an `import` entry of the render
+# set at a bare origin's `main`, a `cutover` entry naming `lanes/STORE`, and
+# `record_marker`. Each engineer gets a checkout of that origin, a protocol
+# root naming it, and a `mode=primary` `lanes-index.conf` whose
+# `register_url=` and `reader_url=` name that engineer's own two logins on
+# the cluster's socket, each with its own password file (section 1.4, "One
+# engineer's file").
+#
+# A WRITE is `lanes-edit.sh log NOTED lane:<lane> <text>`, a READ is
+# `lanes-edit.sh binding <lane>` (S3's table), each from the flipped copy,
+# with `lanes-edit.sh` beside it (CLI4.5 section 6's copy rule), as T241's
+# and T243's writers run; this module builds the workstation itself, since
+# neither of their modules is on this branch. Each run puts T203's shim first
+# on `PATH`, in a directory of its own, so the shim's log is that run's calls,
+# and the mid-commit case arms its `hold` there. The two writer logins' log
+# lines are the server's own: `log_connections` and `log_statement=all`, each
+# line prefixed with its backend's pid (`Managed`).
+#
+# Rotate's write half is the fifth case (lane 3's batch 7, lane 2's item (3);
+# TP:5317-5318): with the old password file, e1's write exits 69 at its
+# snapshot and the journal gains nothing; with the new lines it commits once.
+# T224's rotate case keeps the connection half.
+#
+# They FAIL UNTIL lane 1's T110 (L1-A8, `lanes-index login`) and lane 4's
+# writer on primary land, its attempt loop (L4-B3) and its in-doubt rule and
+# pending record (L4-B5): merge10's `lanes-edit.sh` has no primary branch and
+# writes the files whatever `mode=` says, so each write case fails at its
+# own assertion. `target_session_attrs` (M5) is `psql`'s alone and needs only
+# L1-A8. Without PostgreSQL 16 each skips with T205's banner.
+
+W_DB = "t224_reg"
+#: Phase W's lanes, one per engineer, and their sessions.
+W_LANES = {"e1": "repoE-1", "e2": "repoE-2"}
+W_SESSIONS = {"e1": "eeeeeeee-0258-4000-8000-00000000e001",
+              "e2": "eeeeeeee-0258-4000-8000-00000000e002"}
+W_WS = "Eagle"
+#: The register's punctuation, spelled by code point, as the render module
+#: spells it: the em dash, the middle dot of a state cell, the arrow.
+EM, DOT, ARROW = chr(0x2014), chr(0x00B7), chr(0x2192)
+STORE_PATH = "lanes/STORE"
+UUID_RE = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+#: The pending records (L4-B5): `<state>/openRepoTools/register-pending/<d>`,
+#: as T245 reads them.
+PENDING = Path("openRepoTools") / "register-pending"
+#: Everything a write that wrote nothing leaves as it was (T243's form).
+W_STATE_SQL = f"""
+SELECT md5(concat_ws('|',
+  (SELECT seq::text FROM {REGISTER}.register_head),
+  (SELECT string_agg(j::text, ',' ORDER BY j.seq) FROM {REGISTER}.journal j),
+  (SELECT string_agg(e::text, ',' ORDER BY e.seq, e.ord) FROM {REGISTER}.journal_edits e),
+  (SELECT string_agg(f::text, ',' ORDER BY f.path) FROM {REGISTER}.files f),
+  (SELECT string_agg(d::text, ',' ORDER BY d.line_id) FROM {REGISTER}.doc_lines d),
+  (SELECT string_agg(s::text, ',') FROM {REGISTER}.register_switch s)));
+"""
+#: A server log line under `log_line_prefix = '%p '`: the pid, the level and
+#: the message. A line without the prefix continues the one before it.
+LOG_LINE = re.compile(r"^([0-9]+) ([A-Z]+):  (.*)$")
+AUTHORIZED = re.compile(r"connection authorized: user=(\S+)")
+
+
+def _w_row(lane: str, sid: str) -> str:
+    return (f"| `{lane}` | harness `{sid}` | {W_WS} / test / brett | 2026-10-01T00:00Z | none "
+            f"| handoffs/{lane}.md | LIVE {DOT} 2026-10-01T01:00:00Z {DOT} working |")
+
+
+def _w_seed() -> dict:
+    """Phase W's register at C: a row and a log for each engineer's lane, an
+    empty aliases table; `lanes/repos.tsv` and `lanes/log/README.md`, which
+    the checkout gives and the register does not hold."""
+    files = {
+        "lanes/LANES.md": "\n".join([
+            f"# LANES.md {EM} AT-LRMPG's phase W register (T258)", "",
+            "| lane | session id | workstation / env / user | started (UTC) | objects owned "
+            "| handoff path | state |",
+            "|---|---|---|---|---|---|---|",
+            *(_w_row(W_LANES[who], W_SESSIONS[who]) for who in W_LANES), ""]),
+        "lanes/aliases.tsv": "# old\tnew\tutc\n",
+        "lanes/log/README.md": "# the object logs\n",
+        "lanes/repos.tsv": "# alias\towner/repo\nrepoE\topensoft/repoE\n",
+    }
+    for who, lane in W_LANES.items():
+        files[f"lanes/log/{lane}.md"] = "\n".join([
+            f"# lane {lane} {EM} object log (lane-collision-protocol Amendment 7)",
+            f"STARTED {EM} lane {lane}, session {W_SESSIONS[who]}@{W_WS}, 2026-10-01T00:00:00Z, "
+            f"lane:{lane} {ARROW} home opensoft/repoE; dir /work/{lane}", ""])
+    return files
+
+
+def _w_creates(files: dict) -> tuple:
+    """Each of `files` ({path: text}) created, then its lines appended, and
+    its `files` row with its digest as it renders (AT-LR006's first step)."""
+    edits: list = []
+    rows: list = []
+    for path in sorted(files):
+        edits.append({"ord": len(edits) + 1, "op": "create", "path": path})
+        for text in files[path].rstrip("\n").split("\n"):
+            edits.append({"ord": len(edits) + 1, "op": "append", "path": path, "new_text": text})
+        rows.append({"path": path, "present": True, "final_newline": True,
+                     "sha256": _sha256(files[path].encode("utf-8"))})
+    return edits, rows
+
+
+def _w_git(cwd: Path, env: dict, *args: str) -> str:
+    proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, env=env,
+                          timeout=120, check=False)
+    assert proc.returncode == 0, f"git {' '.join(args)} in {cwd}: {proc.stderr}{proc.stdout}"
+    return proc.stdout
+
+
+def _w_path() -> str:
+    """The caller's PATH without a directory that holds a `lanes-index` or a
+    `psql`: neither an installed indexer nor a `psql` behind the shim's back
+    is what a case runs."""
+    return os.pathsep.join(part for part in os.environ.get("PATH", os.defpath).split(os.pathsep)
+                           if part and not os.path.exists(os.path.join(part, "lanes-index"))
+                           and not os.path.exists(os.path.join(part, "psql")))
+
+
+def _commit_logins(log: str) -> list:
+    """The login of each `commit_write` call in `log`: each statement line,
+    or a line continuing one, that carries `commit_write(`, tied by its
+    backend's pid to that backend's `connection authorized` line."""
+    users: dict = {}
+    found: list = []
+    pid, in_statement = None, False
+    for line in log.splitlines():
+        m = LOG_LINE.match(line)
+        if m:
+            pid, level, said = m.groups()
+            in_statement = level == "LOG" and said.startswith("statement:")
+            authorized = AUTHORIZED.match(said)
+            if authorized:
+                users[pid] = authorized.group(1)
+        else:
+            said = line
+        if in_statement and "commit_write(" in said:
+            found.append(users.get(pid, f"no connection authorized line for pid {pid}"))
+            in_statement = False
+    return found
+
+
+class W258Writer:
+    """One `lanes-edit.sh` run, its shim's directory and its outcome."""
+
+    def __init__(self, who: str, proc: subprocess.Popen, psql_dir: Path, state: Path):
+        self.who, self.proc, self.psql_dir, self.state = who, proc, psql_dir, state
+        self.ended = None
+        self.out = self.err = ""
+        self._thread = threading.Thread(target=self._wait, daemon=True)
+        self._thread.start()
+
+    def _wait(self) -> None:
+        self.out, self.err = self.proc.communicate()
+        self.ended = time.monotonic()
+
+    def wait(self, timeout: float = 150) -> int:
+        self._thread.join(timeout)
+        assert not self._thread.is_alive(), f"{self.who}'s run did not end in {timeout} s"
+        return self.proc.returncode
+
+    @property
+    def code(self) -> int:
+        return self.proc.returncode
+
+    def said(self) -> str:
+        return f"exit {self.code}\nstdout: {self.out[-800:]}\nstderr: {self.err[-1500:]}"
+
+    def _jsonl(self, name: str) -> list:
+        path = self.psql_dir / name
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+
+    def calls(self) -> list:
+        """The shim's calls that carry a request, in order."""
+        return [e for e in self._jsonl(PSQL_SHIM_LOG) if e.get("kind") != "version"]
+
+    def commit_calls(self) -> list:
+        return [e for e in self.calls() if "commit_write" in (e.get("stdin") or "")]
+
+    def lookups(self) -> list:
+        return [e for e in self.calls() if "find_write" in (e.get("stdin") or "")]
+
+    def ends(self) -> dict:
+        return {e["call"]: e for e in self._jsonl(PSQL_SHIM_ENDS) if "call" in e}
+
+    def write_ids(self) -> list:
+        """Each commit call's write id, `commit_write`'s second argument, as
+        T243's `Writer` reads it."""
+        found = []
+        for call in self.commit_calls():
+            m = re.search(r"commit_write\(\s*-?[0-9]+\s*,\s*'(" + UUID_RE + ")'", call.get("stdin") or "")
+            assert m, f"{self.who}'s commit call carries no write id: {(call.get('stdin') or '')[:300]}"
+            found.append(m.group(1))
+        return found
+
+    def pending(self) -> list:
+        where = self.state / PENDING
+        return sorted(p for p in where.iterdir()
+                      if re.fullmatch(r"[0-9a-f]{64}", p.name)) if where.is_dir() else []
+
+
+class PhaseW:
+    """AT-LRMPG's phase W on one test's managed PostgreSQL (see the section's
+    head): the server, the register at `primary`, the flipped copy, and a
+    workstation for each engineer."""
+
+    def __init__(self, request, root: Path, engineers: tuple = ("e1", "e2")):
+        self.root = root
+        self.m = Managed(request, root / "server")
+        self.service = self.m.database(W_DB)
+        self.m.bootstrapped(self.service)
+        self.files = self.m.logins(self.service, *engineers, dump=False)
+        self.genv = self._git_env(root / "git-home")
+        self.seed = _w_seed()
+        self.origin = root / "origin.git"
+        _w_git(root, self.genv, "init", "-q", "--bare", "-b", "main", str(self.origin))
+        seed = root / "seed"
+        _w_git(root, self.genv, "clone", "-q", str(self.origin), str(seed))
+        for path, text in self.seed.items():
+            (seed / path).parent.mkdir(parents=True, exist_ok=True)
+            (seed / path).write_bytes(text.encode("utf-8"))
+        _w_git(seed, self.genv, "add", "-A")
+        _w_git(seed, self.genv, "commit", "-q", "-m", "C: phase W's register (T258)")
+        _w_git(seed, self.genv, "push", "-q", "origin", "main")
+        self.c = _w_git(seed, self.genv, "rev-parse", "HEAD").strip()
+        self.lanes_tree = _w_git(seed, self.genv, "rev-parse", f"{self.c}:lanes").strip()
+        self.cut = self._to_primary()
+        self.bindir = root / "bin"
+        flipped_copy(LANES_INDEX, self.bindir, True)
+        for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
+            if (REPO / name).exists():
+                shutil.copy2(str(REPO / name), str(self.bindir / name))
+        self.lanes_edit = self.bindir / "lanes-edit.sh"
+        self.fakebin = root / "fakebin"
+        self.fakebin.mkdir()
+        (self.fakebin / "tmux").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        (self.fakebin / "tmux").chmod(0o755)
+        self.engineers = {who: self._engineer(who) for who in engineers}
+        self.writers: list = []
+        self._runs = itertools.count(1)
+        request.addfinalizer(self._stop)
+
+    @staticmethod
+    def _git_env(home: Path) -> dict:
+        home.mkdir(parents=True, exist_ok=True)
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("GIT_", "PG", "LANES_", "TMUX", "RULE6_", "FAKE_PSQL", "CLAUDE_",
+                                    "PROJECTS_ROOT", "XDG_", "T224_"))}
+        env.update(HOME=str(home), GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+                   GIT_AUTHOR_NAME="T258 estate", GIT_AUTHOR_EMAIL="t258@example.invalid",
+                   GIT_COMMITTER_NAME="T258 estate", GIT_COMMITTER_EMAIL="t258@example.invalid",
+                   LC_ALL="C")
+        return env
+
+    def _commit(self, kind: str, files: dict, **journal) -> int:
+        """One entry creating `files`, committed by `commit_write` as e1's
+        writer login; its seq."""
+        edits, rows = _w_creates(files)
+        clock = self.m.value("SELECT (clock_timestamp() + interval '60 s')::text;", W_DB)
+        entry = {"journal": {"kind": kind, "verb": kind, "lane": OPERATOR, "workstation": WS,
+                             "author": AUTHOR, "message": f"{kind} by {OPERATOR} (T258)", **journal},
+                 "not_after": clock, "edits": edits, "files": rows}
+        proc = self.m.commit(W_DB, "lanes_w_e1", self.files["lanes_w_e1"], entry)
+        assert proc.returncode == 0, f"the {kind} entry did not commit:\n{_said(proc)}"
+        return int(proc.stdout.split()[-1])
+
+    def _to_primary(self) -> int:
+        """AT-LR006's route over C, as e1's writer login: the render set's
+        `import`, a `cutover` entry, then `record_marker`. The cutover's seq."""
+        render = {p: t for p, t in self.seed.items() if RENDER_SET_PATH.match(p)}
+        self._commit("import", render, git_commit=self.c, git_tree=self.lanes_tree)
+        store = "".join(f"{line}\n" for line in (
+            "store=primary", f"database={W_DB}", f"import={self.c}",
+            f"lanes-tree={self.lanes_tree}", "utc=2026-11-10T00:00:00Z"))
+        cut = self._commit("cutover", {STORE_PATH: store})
+        client = self.m.value(f"SELECT version FROM {REGISTER}.schema_version;", W_DB)
+        proc = self.m.as_login("lanes_w_e1", W_DB, f"SELECT {REGISTER}.record_marker(:client, :seq, "
+                               ":'commit', :'ws');\n", self.files["lanes_w_e1"], client=client,
+                               seq=cut, commit=MARKER_COMMIT, ws=W_WS)
+        assert proc.returncode == 0 and proc.stdout.strip() == "present", _said(proc)
+        switch = self.m.value(f"SELECT mode || ' ' || marker_state FROM {REGISTER}.register_switch;",
+                              W_DB)
+        assert switch == "primary present", f"the register is not at primary with its marker: {switch}"
+        return cut
+
+    def _engineer(self, who: str) -> dict:
+        lane, where = W_LANES[who], self.root / who
+        checkout = where / "checkout"
+        _w_git(self.root, self.genv, "clone", "-q", str(self.origin), str(checkout))
+        home = where / "home"
+        agents = home / ".agents"
+        agents.mkdir(parents=True)
+        (agents / "workspace.yaml").write_text(f"repository: {self.origin}\npath: {checkout}\n",
+                                               encoding="utf-8")
+        for name in ("t", "state", "config"):
+            (where / name).mkdir()
+        conf = _private(where / "conf" / "lanes-index.conf", "\n".join([
+            "mode=primary",
+            f"register_url={self.m.socket_url(f'lanes_w_{who}', W_DB)}",
+            f"register_passfile={self.files[f'lanes_w_{who}']}",
+            f"reader_url={self.m.socket_url(f'lanes_r_{who}', W_DB)}",
+            f"reader_passfile={self.files[f'lanes_r_{who}']}",
+            f"register_label={LABEL}", ""]))
+        env = dict(self.genv)
+        env.update(HOME=str(home), TMPDIR=str(where / "t"), XDG_STATE_HOME=str(where / "state"),
+                   XDG_CONFIG_HOME=str(where / "config"), CLAUDE_CONFIG_DIR=str(home / ".claude"),
+                   AGENT_PROTOCOL_ROOT=str(agents), LANES_WORKSTATION=W_WS, LANES_HOST="eagle",
+                   LANES_OS="linux", LANES_CONTAINER="none", LANES_IN_CONTAINER="0",
+                   LANES_NO_GITHUB="1", LANES_REPO=str(checkout), LANES_INDEX_CONFIG=str(conf),
+                   LANES_LANE=lane, LANES_SESSION=W_SESSIONS[who])
+        # THE LANE CHECKOUT, made first: on primary the writer takes `<c>` from
+        # `lane_checkout_path` and refuses 2 where it does not exist, naming
+        # `lane-checkout <lane> --create` (lane 4's T415, B14's text).
+        made = subprocess.run(["bash", str(self.lanes_edit), "lane-checkout", lane, "--create"],
+                              cwd=str(checkout), capture_output=True, text=True, timeout=120,
+                              stdin=subprocess.DEVNULL, check=False,
+                              env=dict(env, PATH=os.pathsep.join([str(self.fakebin), _w_path()])))
+        assert made.returncode == 0 and Path(made.stdout.strip()).is_dir(), (
+            f"lane-checkout {lane} --create did not make {who}'s lane checkout:\n{_said(made)}")
+        return {"lane": lane, "checkout": checkout, "env": env, "state": where / "state"}
+
+    # -------------------------------------------------- running the client
+    def launch(self, who: str, argv: list, arms: tuple = ()) -> W258Writer:
+        """`lanes-edit.sh <argv>` as `who`, with T203's shim, armed with
+        `arms`, first on `PATH` in a directory of its own."""
+        e = self.engineers[who]
+        psql_dir = self.root / f"psql-{next(self._runs):02d}-{who}"
+        psql_dir.mkdir()
+        (psql_dir / "psql").write_text(PSQL_SHIM, encoding="utf-8")
+        (psql_dir / "psql").chmod(0o755)
+        (psql_dir / PSQL_SHIM_CONTROL).write_text(json.dumps(
+            {"psql": str(self.m.cluster.tool("psql")), "arms": list(arms)}), encoding="utf-8")
+        env = dict(e["env"], PATH=os.pathsep.join([str(psql_dir), str(self.fakebin), _w_path()]))
+        proc = subprocess.Popen(["bash", str(self.lanes_edit), *argv], cwd=str(e["checkout"]),
+                                env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, encoding="utf-8", errors="replace",
+                                start_new_session=True)
+        writer = W258Writer(who, proc, psql_dir, e["state"])
+        self.writers.append(writer)
+        return writer
+
+    def run(self, who: str, argv: list, arms: tuple = ()) -> W258Writer:
+        writer = self.launch(who, argv, arms)
+        writer.wait()
+        return writer
+
+    def note(self, who: str, text: str) -> list:
+        """One write: a `NOTED` line in the engineer's lane's log."""
+        return ["log", "NOTED", f"lane:{W_LANES[who]}", text]
+
+    def _stop(self) -> None:
+        for writer in self.writers:
+            if writer.ended is None and writer.proc.poll() is None:
+                os.killpg(writer.proc.pid, 9)
+
+    # -------------------------------------------------- the register, read by the provider
+    def journal_after(self) -> list:
+        """The journal's rows after the cutover: seq, write id, lane and verb."""
+        return json.loads(self.m.value(
+            "SELECT coalesce(json_agg(j ORDER BY j.seq), '[]') FROM (SELECT seq, write_id::text "
+            f"AS write_id, lane, verb FROM {REGISTER}.journal WHERE seq > {self.cut}) j;", W_DB))
+
+    def state(self) -> str:
+        return self.m.value(W_STATE_SQL, W_DB)
+
+
+def _hold_point(fifo: Path, writer: W258Writer, timeout: float = 90):
+    """`fifo` opened for writing once `writer`'s call is held on it (the
+    shim's `hold`), bounded: a writer that never reaches the call fails the
+    case and never hangs it. Closing the handle lets the call go (T243's)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return os.fdopen(os.open(str(fifo), os.O_WRONLY | os.O_NONBLOCK), "wb")
+        except OSError as error:
+            if error.errno != errno.ENXIO:
+                raise
+        assert writer.ended is None, (
+            f"{writer.who}'s run ended before its commit call was held:\n{writer.said()}")
+        assert time.monotonic() < deadline, f"{writer.who}'s commit call was not held in {timeout} s"
+        time.sleep(0.05)
+
+
+def test_two_writer_logins_write_alike_and_the_log_names_each(tmp_path, request):
+    """Two writer logins (section 1.4, "One engineer's logins"): E1 and E2,
+    each with its own `register_url=` and password file, each make one
+    write, and both commit as one login does: one journal row each, at
+    consecutive seqs. The server's log ties each commit call, by its
+    backend's pid, to its `connection authorized` line, which names E1 or E2
+    (`operations.md` act 3's step 1, "Who connected")."""
+    w = PhaseW(request, tmp_path)
+    marks = [len(w.m.log())]
+    writers = []
+    for who in ("e1", "e2"):
+        writer = w.run(who, w.note(who, f"{who}'s write (T258)"))
+        assert writer.code == 0, f"{who}'s write on primary did not exit 0:\n{writer.said()}"
+        writers.append(writer)
+        marks.append(len(w.m.log()))
+    rows = w.journal_after()
+    assert [r["lane"] for r in rows] == [W_LANES["e1"], W_LANES["e2"]], (
+        f"the journal after the cutover (seq {w.cut}) is not one row each, e1's then e2's: {rows}")
+    assert [r["seq"] for r in rows] == [w.cut + 1, w.cut + 2], (
+        f"the two writes are not at consecutive seqs after the cutover's {w.cut}: {rows}")
+    for writer, row in zip(writers, rows):
+        assert row["write_id"] in writer.write_ids(), (
+            f"{writer.who}'s row {row} is not its commit call's write id {writer.write_ids()}")
+    log = w.m.log()
+    for k, who in enumerate(("e1", "e2")):
+        logins = _commit_logins(log[marks[k]:marks[k + 1]])
+        assert logins and set(logins) == {f"lanes_w_{who}"}, (
+            f"the server's log ties {who}'s commit calls to {logins or 'no commit call'}, "
+            f"not to lanes_w_{who}'s connection authorized line")
+
+
+#: AT-LRMPG's revoked login: `[revoke]`, `lanes-index login revoke e2`; and
+#: `[membership-only]`, the revoke block's step 2 alone, by the admin's hand.
+#: Each: the words a new connection by each refused login is refused with.
+REVOKED = {
+    "revoke": {"lanes_w_e2": "is not permitted to log in", "lanes_r_e2": "is not permitted to log in"},
+    "membership-only": {"lanes_w_e2": "permission denied for database"},
+}
+
+
+@pytest.mark.parametrize("case", list(REVOKED))
+def test_a_revoked_login_is_refused_69_and_writes_nothing(tmp_path, request, case):
+    """A revoked login (section 1.4, "What a revoked login sees"; section
+    2.4's `revoke`), while a session of `lanes_w_e2` is open and idle, held
+    by the test. `[revoke]`: `login revoke e2` prints each step's result; a
+    new connection by either of e2's logins is refused, FATAL 28000, so e2's
+    write exits 69 with nothing written, since the snapshot sent nothing that
+    writes, and e2's read exits 69 (S3's table); the open session's next
+    statement gets FATAL 57P01, or a lost connection, and never 42501 or an
+    answer; the admin, with no superuser, needed no `pg_signal_backend`; both
+    roles still exist; e1 still writes. `[membership-only]`: the revoke
+    block's step 2 alone, by the admin, so `lanes_w_e2` keeps `LOGIN` and
+    loses its membership: a new connection is refused, FATAL 42501,
+    "permission denied for database", and e2's write exits 69 with nothing
+    written."""
+    w = PhaseW(request, tmp_path)
+    m = w.m
+    held = m.session("lanes_w_e2", W_DB, w.files["lanes_w_e2"])
+    assert "ERROR" not in held.send("SELECT 'open';", "t258-open"), "e2's session did not open"
+    if case == "revoke":
+        proc = m.login("revoke", "e2", w.service)
+        assert proc.returncode == 0, f"login revoke e2 failed:\n{_said(proc)}"
+        for login in ("lanes_w_e2", "lanes_r_e2"):
+            for step in (1, 2, 3):
+                assert re.search(rf"^login {login}, step {step}, ", proc.stdout, re.M), (
+                    f"login revoke printed no result for {login}'s step {step}:\n{_said(proc)}")
+    else:
+        m.psql(f"REVOKE {WRITER} FROM lanes_w_e2;\n", W_DB, user=ADMIN)
+        role = m.role("lanes_w_e2")
+        assert role["canlogin"] and role["groups"] == [], (
+            f"step 2 alone did not keep LOGIN and take the membership: {role}")
+    for login, words in REVOKED[case].items():
+        refused = m.as_login(login, W_DB, "SELECT 1;\n", w.files[login])
+        assert refused.returncode == 2 and words in refused.stderr, (
+            f"[{case}] a new connection by {login} is not refused with {words!r}:\n{_said(refused)}")
+    before = w.state()
+    write = w.run("e2", w.note("e2", f"e2's write after [{case}] (T258)"))
+    assert write.code == 69, f"[{case}] e2's write on primary did not exit 69:\n{write.said()}"
+    assert write.commit_calls() == [], (
+        f"[{case}] e2's refused write sent a commit call: the snapshot must send nothing that writes")
+    assert w.state() == before, f"[{case}] e2's refused write changed the register"
+    if case != "revoke":
+        held.close()
+        return
+    read = w.run("e2", ["binding", W_LANES["e2"]])
+    assert read.code == 69 and read.out == "", f"e2's read on primary did not exit 69:\n{read.said()}"
+    said = held.send(f"SELECT {REGISTER}.commit_write(NULL, NULL, NULL, NULL, NULL);", "t258-next")
+    ended = held.close()
+    said += ended.stderr
+    assert ("57P01" in said or "terminating connection due to administrator command" in said
+            or "server closed the connection" in said), (
+        f"the open session's next statement after the revoke was not ended: {said}")
+    assert "42501" not in said and "permission denied" not in said, (
+        f"the open session's next statement got 42501, so revoke returned between its steps: {said}")
+    assert ended.stdout.split() == ["open"], f"the open session got an answer after the revoke: {ended.stdout!r}"
+    assert m.value("SELECT count(*) FROM pg_roles WHERE rolname IN ('lanes_w_e2', 'lanes_r_e2');",
+                   "postgres") == "2", "a revoked login's role was dropped"
+    assert m.role(ADMIN)["super"] is False and m.value(
+        f"SELECT pg_has_role('{ADMIN}', 'pg_signal_backend', 'MEMBER');", "postgres") == "f", (
+        f"{ADMIN} is a superuser or holds pg_signal_backend: the case proves nothing of the revoke")
+    mine = w.run("e1", w.note("e1", "e1 still writes after e2's revoke (T258)"))
+    assert mine.code == 0, f"e1's write after e2's revoke did not exit 0:\n{mine.said()}"
+    assert [r["lane"] for r in w.journal_after()] == [W_LANES["e1"]], (
+        f"e1's write is not the journal's one new row: {w.journal_after()}")
+
+
+def test_a_write_cut_by_a_revoke_mid_commit_is_in_doubt_and_ends_3_with_nothing_written(
+        tmp_path, request):
+    """`[mid-commit]` (section 2.4's `revoke`): the shim's `hold` blocks e2's
+    commit call while `login revoke e2` runs, then releases it: its `psql`
+    is refused at login and exits 2, which section 1.3's signals table makes
+    in doubt for a commit call; its lookup's tries are refused at login too,
+    and it exits 3 naming the id, the pending record kept. The journal holds
+    no entry for the id, and so answers it; nothing is written. The journal
+    is read here by the provider, the cluster's superuser."""
+    w = PhaseW(request, tmp_path)
+    gate = tmp_path / "mid-commit.fifo"
+    os.mkfifo(str(gate))
+    before = w.state()
+    writer = w.launch("e2", w.note("e2", "e2's write cut mid-commit (T258)"),
+                      arms=({"mode": "hold", "match": "commit_write", "call": 1, "fifo": str(gate)},))
+    held = _hold_point(gate, writer)
+    try:
+        revoke = w.m.login("revoke", "e2", w.service)
+    finally:
+        held.close()
+    assert revoke.returncode == 0, f"login revoke e2 failed:\n{_said(revoke)}"
+    writer.wait(timeout=150)
+    assert writer.code == 3, f"e2's write cut mid-commit did not exit 3:\n{writer.said()}"
+    ids = writer.write_ids()
+    assert ids and len(set(ids)) == 1, f"e2's commit calls carried {ids}, not one write id"
+    write_id = ids[0]
+    assert write_id in writer.err, f"exit 3 does not name the write id {write_id}:\n{writer.said()}"
+    ends = writer.ends()
+    first = writer.commit_calls()[0]["call"]
+    assert ends.get(first, {}).get("exit") == 2, (
+        f"the held commit call's psql was not refused at login with exit 2: {ends.get(first)}")
+    tries = writer.lookups()
+    assert tries and all(ends.get(t["call"], {}).get("exit") == 2 for t in tries), (
+        f"the lookup's tries were not each refused at login: {[ends.get(t['call']) for t in tries]}")
+    records = writer.pending()
+    assert len(records) == 1 and write_id in records[0].read_text(encoding="utf-8"), (
+        f"the pending record naming {write_id} was not kept: {records}")
+    assert w.m.value(f"SELECT count(*) FROM {REGISTER}.journal WHERE write_id = '{write_id}';",
+                     W_DB) == "0", f"the journal holds an entry for the id {write_id}"
+    assert w.state() == before, "the write cut mid-commit changed the register"
+
+
+#: `target_session_attrs` (M5): each id's login, the value in its URL, and
+#: whether it gets in and reads `register_head`.
+TARGET_SESSION_ATTRS = {
+    "primary": ("lanes_r_e1", "primary", True),
+    "read-write": ("lanes_r_e1", "read-write", False),
+    "read-write-bare-member": ("lanes_r_bare", "read-write", True),
+}
+
+
+@pytest.mark.parametrize("case", list(TARGET_SESSION_ATTRS))
+def test_reader_url_takes_target_session_attrs_primary_not_read_write(tmp_path, request, case):
+    """`target_session_attrs` (M5; section 1.4, "TLS and the endpoint"):
+    `lanes_r_e1`'s `psql` with `target_session_attrs=primary` in its URL
+    connects and reads `register_head`; with `read-write`, the connection is
+    refused with libpq's `session is read-only`, since the login step made
+    its sessions read-only by default. `lanes_r_bare`, a member made without
+    the step, is let in by `read-write`: the floor is the login's own, since
+    `ALTER ROLE ... SET` binds the role it names and not its members."""
+    login, attrs, gets_in = TARGET_SESSION_ATTRS[case]
+    m = Managed(request, tmp_path)
+    service = m.database(W_DB)
+    m.bootstrapped(service)
+    files = m.logins(service, "e1", dump=False)
+    if login == "lanes_r_bare":
+        password = uuid.uuid4().hex
+        m.psql(f"CREATE ROLE {login} LOGIN PASSWORD '{password}';\nGRANT {READER} TO {login};\n")
+        files[login] = _private(m.home / "passfiles" / login, f"*:*:{W_DB}:{login}:{password}\n")
+    env = {k: v for k, v in m.env.items() if not k.startswith("PG")}
+    env.update(PGPASSFILE=str(files[login]), PGCONNECT_TIMEOUT="10")
+    url = f"{m.socket_url(login, W_DB)}?target_session_attrs={attrs}"
+    proc = subprocess.run([m.cluster.tool("psql"), "-X", "-q", "-A", "-t", "-w", "-v", "ON_ERROR_STOP=1",
+                           "-d", url, "-c", f"SELECT seq FROM {REGISTER}.register_head;"],
+                          capture_output=True, text=True, timeout=60, env=env, check=False)
+    head = m.value(f"SELECT seq FROM {REGISTER}.register_head;", W_DB)
+    if gets_in:
+        assert proc.returncode == 0 and proc.stdout.strip() == head, (
+            f"[{case}] {login} with target_session_attrs={attrs} did not read the head {head}:\n"
+            f"{_said(proc)}")
+    else:
+        assert proc.returncode == 2 and "session is read-only" in proc.stderr, (
+            f"[{case}] {login} with target_session_attrs={attrs} was not refused with "
+            f"`session is read-only`:\n{_said(proc)}")
+
+
+def test_after_login_rotate_the_old_password_files_write_exits_69_and_the_new_lines_commit_once(
+        tmp_path, request):
+    """Rotate's write half (TP:5317-5318; lane 3's batch 7, lane 2's item
+    (3)): after `login rotate e1`, e1's write with the old password file
+    exits 69 at its snapshot, since a refused login is "refused in any other
+    way" (CLI:336), and the journal gains nothing; with the new lines written
+    into the files e1's configuration names, the write exits 0 and commits
+    once."""
+    w = PhaseW(request, tmp_path, engineers=("e1",))
+    proc = w.m.login("rotate", "e1", w.service)
+    assert proc.returncode == 0, f"login rotate e1 failed:\n{_said(proc)}"
+    new = _passwords(proc.stdout)
+    assert sorted(new) == ["lanes_r_e1", "lanes_w_e1"], _said(proc)
+    before = w.state()
+    old = w.run("e1", w.note("e1", "e1's write with the old password file (T258)"))
+    assert old.code == 69, f"e1's write with the old password file did not exit 69:\n{old.said()}"
+    assert old.commit_calls() == [], "e1's refused write sent a commit call: the 69 is the snapshot's"
+    assert w.state() == before, "e1's refused write changed the register"
+    for login, line in new.items():
+        _private(w.files[login], line + "\n")
+    wrote = w.run("e1", w.note("e1", "e1's write with the new lines (T258)"))
+    assert wrote.code == 0, f"e1's write with the new lines did not exit 0:\n{wrote.said()}"
+    rows = w.journal_after()
+    assert [r["lane"] for r in rows] == [W_LANES["e1"]], f"the journal did not gain one row, e1's: {rows}"
+    assert set(wrote.write_ids()) == {rows[0]["write_id"]}, (
+        f"the row's write id is not the one e1's commit calls carried: {wrote.write_ids()}")
