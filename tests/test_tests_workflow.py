@@ -917,14 +917,15 @@ def test_tests_yml_push_runs_on_main_and_every_release_branch(workflow):
 @NEEDS_UPSTREAM
 def test_tests_yml_triggers_keep_full_ci_except_label_only_events(workflow):
     """GitHub's three PR defaults, the nightly cron at 04:17 UTC and
-    `workflow_dispatch`, and no trigger besides those and `push`."""
+    `workflow_dispatch`, plus parameterless reuse of the same full jobs."""
     on = workflow.get("on")
     assert isinstance(on, dict), "tests.yml has no `on:` mapping"
     assert sorted(on) == sorted(["pull_request", "push", "schedule",
-                                 "workflow_dispatch"]), sorted(on)
+                                 "workflow_dispatch", "workflow_call"]), sorted(on)
     assert on["pull_request"] == PULL_REQUEST, on["pull_request"]
     assert on["schedule"] == SCHEDULE, on["schedule"]
     assert on["workflow_dispatch"] is None, on["workflow_dispatch"]
+    assert on["workflow_call"] is None, on["workflow_call"]
 
 
 @NEEDS_UPSTREAM
