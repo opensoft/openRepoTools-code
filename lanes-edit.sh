@@ -7209,8 +7209,12 @@ pw_keep() {
 # NOT BEHIND `LANES_INDEX=off`, which `index_nudge` honours: `lane-worktrees`
 # sets that variable on every call it makes, and it must never skip the fork
 # (Y:5377; FR-027). It stays in this process's group, as `index_nudge`'s fork
-# does, so a signal to the group ends it too, and the next fork renders what it
-# left (lane openRepoTools-4's plan, §11.5; R47). Its answer is never read: a
+# does, so a TERM or a HUP to the group ends it too, and the next fork renders
+# what it left (lane openRepoTools-4's plan, §11.5; R47). An INT or a QUIT
+# does not: bash starts an `&` child of a non-interactive shell with both
+# ignored, so a Ctrl-C leaves the renderer running, which is harmless, since
+# it renders committed writes, and `index_nudge`'s fork is the same (review
+# REV-W9g, N1). Its answer is never read: a
 # `lanes-index` before T321 has no such form (64), and from T321 phase 2's
 # answers "git half not installed" (69; contract :804). Where no `lanes-index`
 # resolves, which the snapshot or the commit has just run, nothing is forked.
