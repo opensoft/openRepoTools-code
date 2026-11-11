@@ -623,9 +623,10 @@ ROWS = {
     # earlier call makes. A missed snapshot's second request (lane 1's cut,
     # `refs/l1/R-rulings` 8121903; lane 3's batch 7 SHOULD-2) is a snapshot
     # request still, and reaches the cluster.
-    # A reading of lane 2's: TP's F4 list names no place for `rollback`;
-    # its step 1 writes the journal's `rollback` entry, so its trigger is on
-    # `journal` too.
+    # `rollback`'s F4 is a trigger on `journal` (lane 3's batch 11 (7)(a),
+    # #165 6783909985, which adds "the rollback's step 1" to TP's F4 list):
+    # step 1 is `commit_write` with the `rollback` entry (T304), whose
+    # `INSERT INTO journal` meets the trigger, as the cutover's entry does.
     "rollback":        dict(group=None, exit=69, bound=30, strict=False, faults=("F1",),
                             statement_ms=10000, table="journal", f4_exit=69,
                             slow=("journal", "INSERT"), estate="primary", after=None,
@@ -2196,11 +2197,37 @@ GIT_NO_PUSH = ('#!/bin/sh\n'
                '  if [ "$arg" = push ]; then echo "T278: push failed by the test" >&2; exit 1; fi\n'
                'done\n'
                'exec "$T278_REAL_GIT" "$@"\n')
-#: The rollback's lost turns (TP:3604): `LANES_REGISTER_DEADLINE_S=6`, its
-#: calls' 5000 ms `lock_timeout`, and its check's bound, the head read's
-#: 15 s timer (lane 2's reading: TP times the check from the `git` wrapper's
-#: and the shim's logs, and gives it no figure of its own).
-ROLLBACK_DEADLINE_S, ROLLBACK_LOCK_S, ROLLBACK_CHECK_S = 6, 5, 15
+#: The rollback's lost turns (TP:3607 at B14): `LANES_REGISTER_DEADLINE_S=6` and its
+#: calls' 5000 ms `lock_timeout`. Its check has no figure of its own: the 75
+#: cell's bound takes the last try's check as measured from the `git`
+#: wrapper's and the shim's logs, not a fixed 15 s (lane 3's batch 11 (7)(b),
+#: #165 6783909985; `_rollback_checks`).
+ROLLBACK_DEADLINE_S, ROLLBACK_LOCK_S = 6, 5
+#: T278b's `git` wrapper for the rollback's check (TP:3607 at B14, "where the
+#: check is the fetch of `origin main` and the head read, timed from the `git`
+#: wrapper's and the shim's logs"): first on `PATH`, it runs the real `git`,
+#: which `T278_REAL_GIT` names, on the same standard streams, and then logs
+#: the call's argv, its parent's pid, its start and end on the monotonic
+#: clock and its exit, one JSON object a call, in `git-timing.log` beside it.
+GIT_TIMING = r'''#!/usr/bin/env python3
+# T278b's git wrapper: each call's start and end, logged beside it.
+import time
+start = time.monotonic()
+import json, os, subprocess, sys
+here = os.path.dirname(os.path.abspath(__file__))
+real = os.environ.get("T278_REAL_GIT") or next(
+    (os.path.join(d, "git") for d in os.environ.get("PATH", "").split(os.pathsep)
+     if d and os.path.realpath(d) != os.path.realpath(here)
+     and os.access(os.path.join(d, "git"), os.X_OK)), "git")
+code = subprocess.call([real] + sys.argv[1:])
+with open(os.path.join(here, "git-timing.log"), "a", encoding="utf-8") as handle:
+    handle.write(json.dumps({"argv": sys.argv[1:], "ppid": os.getppid(), "start": start,
+                             "end": time.monotonic(), "exit": code}) + "\n")
+sys.exit(code if code >= 0 else 128 - code)
+'''
+#: The register's write functions, as a request calls them (`TIMING_PSQL`'s
+#: and the shim's logs).
+WRITE_CALLS = ("commit_write(", "switch_to_files(", "record_marker(")
 
 
 class Operator:
@@ -2294,6 +2321,18 @@ class Operator:
         (self.bin / "git").write_text(GIT_NO_PUSH, encoding="utf-8")
         (self.bin / "git").chmod(0o755)
         self.env["T278_REAL_GIT"] = shutil.which("git", path=self.reg.env["PATH"]) or "git"
+
+    def time_git(self) -> None:
+        """`GIT_TIMING` first on `PATH`, for the rollback's check (T278b)."""
+        (self.bin / "git").write_text(GIT_TIMING, encoding="utf-8")
+        (self.bin / "git").chmod(0o755)
+        self.env["T278_REAL_GIT"] = shutil.which("git", path=self.reg.env["PATH"]) or "git"
+
+    def git_calls(self) -> list:
+        """`GIT_TIMING`'s log: each `git` call that ended, in order."""
+        log = self.bin / "git-timing.log"
+        return [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines() if l] \
+            if log.exists() else []
 
     def run(self, argv: list, config: Path, extra: dict | None = None) -> tuple:
         """`lanes-index <argv>` from the operator's checkout, as the operator
@@ -2416,6 +2455,42 @@ def _faulted_start(op: Operator, target: str | None) -> float:
     return sends[0]
 
 
+def _fetches_origin(argv: list) -> bool:
+    """Whether a `git` call is a fetch from `origin`."""
+    return "fetch" in argv and "origin" in argv
+
+
+def _rollback_checks(op: Operator) -> list:
+    """Each try's check, as the 75 cell times it (TP:3607 at B14; lane 3's
+    batch 11 (7)(b), #165 6783909985): step 0's head read, T304's
+    `_rollback_read`, in the shim's log (`TIMING_PSQL`'s), and T326's fetch
+    of `origin main` right before step 1 (B14 tasks:1539), in the `git`
+    wrapper's (`GIT_TIMING`'s); a try's parts are the calls that start after
+    the try before's step 1 call ended and before its own step 1 call
+    starts. Returns each try's (its check's start, its check's span in s),
+    the span from its first part's start to its last part's end. The last
+    try's check must hold both its head read and its fetch: the bound is
+    measured on them."""
+    calls, gits = op.calls(), op.git_calls()
+    steps = [c for c in calls if "commit_write" in c.get("calls", ())]
+    assert steps, f"the rollback made no step 1 call: {calls}"
+    checks, after = [], float("-inf")
+    for n, step in enumerate(steps, 1):
+        reads = [c for c in calls if not c.get("calls") and after <= c["start"] < step["start"]]
+        fetches = [g for g in gits if _fetches_origin(g["argv"])
+                   and after <= g["start"] < step["start"]]
+        parts = reads + fetches
+        if n == len(steps):
+            assert reads, f"the last try made no head read before its step 1: {calls}"
+            assert fetches, ("the last try fetched no origin main before its step 1 (T326's "
+                             f"step 0, B14 tasks:1539): {gits}")
+        if parts:
+            begin = min(p["start"] for p in parts)
+            checks.append((begin, max(p["end"] for p in parts) - begin))
+        after = step["end"]
+    return checks
+
+
 def _operator_row(pg, tmp_path: Path, request, row: str, fault: str) -> None:
     """`test_each_database_path_exits_inside_its_bound`'s T278 rows, at F1:
     each operator command whose faulted call meets a silent listener at its
@@ -2485,9 +2560,10 @@ def test_a_rollback_whose_first_call_expires_rereads_the_switch(pg, tmp_path, re
     1's call expires at its 15 s timer, and so does the switch's re-read:
     69, inside twice 15 + 15 = 30 s from step 1's start; exactly two calls
     after the check's, step 1's and the re-read, and none after them; the
-    switch, the head and origin unchanged. Lane 2's reading: the check's
-    head read is the rollback's first call (TP's 75 cell). It fails until
-    lane 3's T304 and T326 land."""
+    switch, the head and origin unchanged. The rollback's first database call
+    is its check's head read, T304's `_rollback_read`, so this arming stands
+    (lane 3's batch 11 (7)(b), #165 6783909985). It fails until lane 3's T304
+    and T326 land."""
     op = Operator(pg, tmp_path, request, "primary")
     before = op.state()
     relay = ArmedFault(f"{pg.host}/.s.PGSQL.{pg.port}", "F2", lambda: bool(op.calls()))
@@ -2514,12 +2590,16 @@ def test_a_rollback_that_keeps_losing_its_turn_exits_75_at_the_deadline_with_not
     `FOR UPDATE` by the test's own session (`_hold_head`); the rollback reads
     the head afresh and tries again, and at `LANES_REGISTER_DEADLINE_S=6`
     exits 75, with nothing written and the switch still `primary`. From the
-    rollback's start: no call begins after the deadline, asserted at twice
-    it (timing rule 2), and the run ends inside twice the deadline, one
-    check (`ROLLBACK_CHECK_S`) and the last call's 5 s. It fails until lane
-    3's T304 and T326 land."""
+    rollback's start (TP:3607 at B14): no check starts after the deadline,
+    asserted at twice it (timing rule 2), and the run ends inside twice the
+    deadline, plus one check, plus the last call's 5 s. The check is each
+    try's head read and its fetch of `origin main`, timed from the shim's
+    log and the `git` wrapper's (`GIT_TIMING`), and the bound takes the last
+    try's as measured, not a fixed 15 s (lane 3's batch 11 (7)(b),
+    `_rollback_checks`). It fails until lane 3's T304 and T326 land."""
     op = Operator(pg, tmp_path, request, "primary")
     before = op.state()
+    op.time_git()
     session = _hold_head(pg)
     try:
         proc, elapsed = op.run(["rollback"], op.config(),
@@ -2531,12 +2611,16 @@ def test_a_rollback_that_keeps_losing_its_turn_exits_75_at_the_deadline_with_not
         f"no call ended with 55P03: {op.calls()}"
     assert op.state() == before, f"the rollback wrote: {before} -> {op.state()}"
     start = op.exited - elapsed
-    late = [round(b["begin"] - start, 2) for b in op.begins()
-            if b["begin"] - start >= 2 * ROLLBACK_DEADLINE_S]
-    assert not late, f"rollback-F3: calls began after the deadline: {late}"
-    bound = ROLLBACK_DEADLINE_S + ROLLBACK_CHECK_S + ROLLBACK_LOCK_S
-    assert elapsed < 2 * bound, f"rollback-F3: {elapsed:.2f} s against {bound} s"
-    _record("rollback-F3-75", elapsed, bound, "timing rule 2, from the rollback's start")
+    checks = _rollback_checks(op)
+    late = [round(begin - start, 2) for begin, _ in checks
+            if begin - start >= 2 * ROLLBACK_DEADLINE_S]
+    assert not late, f"rollback-F3: checks started after the deadline: {late}"
+    check = checks[-1][1]
+    bound = ROLLBACK_DEADLINE_S + check + ROLLBACK_LOCK_S
+    assert elapsed < 2 * bound, \
+        f"rollback-F3: {elapsed:.2f} s against {bound:.2f} s, the last check {check:.2f} s"
+    _record("rollback-F3-75", elapsed, bound, f"timing rule 2, from the rollback's start; "
+            f"the last try's check measured at {check:.2f} s, {len(checks)} tries")
 
 
 @pytest.mark.parametrize("fault", ["F1", "F2", "F3", "F4"])
@@ -2606,15 +2690,21 @@ def test_the_aborts_call_that_expires_is_run_again_or_found_done_by_its_rerun(
     the call is lost before its `COMMIT`; `[landed]`, its `timer` mode at
     20 s, so the call commits and its answer comes after the 15 s timer.
     Either way the cutover exits 69, inside twice 15 s from the abort's call.
-    Once the fault is removed, the rerun reads the switch: after `before`
-    the abort did not land, so the rerun runs it again, one
-    `switch_to_files` call, and ends with the abort's 2, the switch `files`
-    with the marker `absent`; after `timer` it landed, so the rerun finds
-    the switch at `files` and sends no write, no `commit_write` and no
-    `switch_to_files`. Lane 2's reading: the rerun is the same `cutover`,
-    with the push still failing. It fails until lane 1's L1-A14 and lane 3's
-    T327 land."""
+    Once the fault is removed, the rerun, `cutover` again with the push
+    still failing (lane 3's batch 11 (7)(c), #165 6783909985), reads the
+    switch. After `before` the abort did not land, so the rerun runs it
+    again, one `switch_to_files` call, and ends with the abort's 2, the
+    switch `files` with the marker `absent`. After `timer` it landed, and
+    the switch at `files` with the marker `absent` is also "before any
+    cutover" (Y:1531), so the rerun runs no abort for that entry and goes on
+    as a first cutover would: its first write call is `commit_write`, never
+    `switch_to_files`; with the push still failing it then aborts its own
+    entry once and ends 2, the switch `files` with the marker `absent` and
+    the head back at the import's seq. "Sends nothing" (TP:3641-3642 at B14)
+    cannot hold, and B15 drops it. It fails until lane 1's L1-A14 and lane
+    3's T327 land."""
     op = Operator(pg, tmp_path, request, "imported")
+    imported = op.state()[1]
     op.fail_push()
     arm = {"mode": "before"} if landed == "not-landed" else {"mode": "timer", "ms": 20000}
     where = _shim(op, [dict(arm, match="switch_to_files")])
@@ -2634,9 +2724,14 @@ def test_the_aborts_call_that_expires_is_run_again_or_found_done_by_its_rerun(
         assert len(aborts) == 1, f"the rerun runs the abort again, once: {len(aborts)}"
         assert proc.returncode == 2, f"the rerun's abort: {proc.returncode}: {proc.stderr}"
     else:
-        writes = [e for e in rerun if "commit_write(" in e["stdin"]]
-        assert not aborts and not writes, \
-            f"the rerun found the abort done and sends nothing: {len(aborts)}, {len(writes)}"
+        writes = [[w[:-1] for w in WRITE_CALLS if w in e["stdin"]] for e in rerun]
+        writes = [w for w in writes if w]
+        assert writes and writes[0] == ["commit_write"], \
+            f"the rerun's first write call is commit_write, never switch_to_files: {writes}"
+        assert len(aborts) == 1, f"the rerun aborts its own entry once: {len(aborts)}"
+        assert proc.returncode == 2, f"the rerun's own abort: {proc.returncode}: {proc.stderr}"
+        assert op.state()[1] == imported, \
+            f"the head is back at the import's seq {imported}: {op.state()}"
     assert op.state()[0].split("|")[:2] == ["files", "absent"], op.state()
 
 
@@ -2647,10 +2742,13 @@ def test_a_record_marker_that_expires_leaves_the_marker_adding_and_writes_refusi
     first on `PATH`, holds the `record_marker` call on a FIFO no one opens,
     so it is never sent and the cutover's 15 s timer ends it: 69. The push
     stands, the marker reads `adding`, and a writer's commit, `lanes-edit.sh
-    set-row-state` on the operator's lane with `mode=primary`, refuses with
-    69. The rerun, the fault removed, records the marker once: one
-    `record_marker` call, 0, the marker `present`. It fails until lane 1's
-    L1-A14, lane 3's T327 and lane 4's L4-B2 land."""
+    set-row-state` on the operator's lane with `mode=primary` (lane 3's batch
+    11 (7)(d), #165 6783909985), refuses with 69, its stderr naming LR002,
+    the marker's refusal (TP:4182-4183; Y:3580): T409's placeholder exits 69
+    on primary too (B14 tasks:937), so the exit alone proves nothing. The
+    rerun, the fault removed, records the marker once: one `record_marker`
+    call, 0, the marker `present`. It fails until lane 1's L1-A14, lane 3's
+    T327 and lane 4's L4-B2 land, and its writer until lane 4's T415."""
     op = Operator(pg, tmp_path, request, "imported")
     fifo = tmp_path / "hold-record-marker"
     os.mkfifo(fifo)
@@ -2670,6 +2768,8 @@ def test_a_record_marker_that_expires_leaves_the_marker_adding_and_writes_refusi
                             stdin=subprocess.DEVNULL,
                             env=dict(op.env, LANES_INDEX_CONFIG=str(config)))
     assert writer.returncode == 69, f"the writer's commit: {writer.returncode}: {writer.stderr}"
+    assert "LR002" in writer.stderr, \
+        f"the writer's 69 is the marker's refusal, LR002, not T409's placeholder: {writer.stderr}"
     mark = len(_shim_calls(where))
     proc, _ = op.run(op.argv("record-marker"), op.config())
     recorded = [e for e in _shim_calls(where)[mark:] if "record_marker(" in e["stdin"]]
