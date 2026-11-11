@@ -722,8 +722,14 @@ class Bench:
         elif row == "status":
             argv = index + ["status"]
         elif row == "outage-probe":
+            # `--mirror-seq 0` (T220g; T218g's, line RE's A15): on Brett's word
+            # with no `--mirror-seq`, the declare reads the mirror's `m` after
+            # a fetch (F11), and this bench's origin holds no `Register-Seq`,
+            # so it would refuse 2, "no mirror-seq". 0 is T218g's value, which
+            # lane 1's code takes as any whole number. No closed port: the
+            # row's own fault keeps the probe from an answer.
             argv = index + ["outage", "declare", "--until", "2999-01-01T00:00:00Z",
-                            "--why", "D9's probe row"]
+                            "--why", "D9's probe row", "--mirror-seq", "0"]
         elif row == "mode-query":
             argv = index + ["mode"]
         elif row in ("writer-snapshot", "writer-commit-f2", "writer-commit-f3", "whole-write"):
@@ -1080,11 +1086,16 @@ def test_the_outage_declare_probe_ends_inside_its_bound_and_the_declaration_foll
         # D20 (Y:3073): `outage declare --until <UTC> --why "<words>"`; the rollback
         # form is `--rollback --mirror-seq <k>`, with no `--until` (lane 1, #165
         # comment 6754680212).
+        # On Brett's word the declare is given `--mirror-seq 0`, T218g's value
+        # (T220g, as `Bench.run`'s `outage-probe` row): the bench's origin
+        # holds no mirror `Register-Seq` to read after a fetch (F11). No
+        # closed port: the case's fault keeps the probe from an answer.
         argv = [sys.executable, str(bench.copy), "outage", "declare"]
         if form == "rollback":
             argv += ["--rollback", "--mirror-seq", "1"]
         else:
-            argv += ["--until", "2999-01-01T00:00:00Z", "--why", "D9's probe"]
+            argv += ["--until", "2999-01-01T00:00:00Z", "--why", "D9's probe",
+                     "--mirror-seq", "0"]
         env = dict(bench.env, LANES_INDEX_CONFIG=str(config), LANES_LANE="repoA-2")
         start = time.monotonic()
         proc = subprocess.run(argv, capture_output=True, text=True, env=env, cwd=str(bench.wip),
