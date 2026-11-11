@@ -569,11 +569,12 @@
 #      nothing written: a write that names no lane, or whose lane's own
 #      checkout is not there to read (`pw_checkout`; D12: no clone); an unset,
 #      empty or out-of-class LANES_LANE (`pw_lane_given`); LANES_NO_GIT=1,
-#      since on primary the write is its commit (`pw_no_git_refuse`); each of
-#      these four but for `request-handoff`, whose refusal there is 64 (below,
-#      `pw_pre_rc`); a hand
+#      since on primary the write is its commit (`pw_no_git_refuse`); a hand
 #      edit of a rendered file pending in that checkout (`pw_hand_edit_refuse`);
-#      no author identity there (`pw_author_read`); an act whose generation is
+#      no author identity there (`pw_author_read`); each of these six but for
+#      `request-handoff`, whose refusal there is 64 (below, `pw_pre_rc`), though
+#      a lane name out of class keeps files mode's 2 for it too; an act whose
+#      generation is
 #      not the snapshot's, or whose base is past it (`pw_act_at_snapshot`); a
 #      snapshot's refusal (LR007 `generation` or `another-write`, a refused
 #      configuration), relayed; the commit's refusal, LR005 with its token and
@@ -592,10 +593,16 @@
 #      Amendment 23's `lane-checkout` and `refresh-workspace` spend it too.
 #      So does feature 007's `act-begin` (T410). And feature 007's primary
 #      branch (T415) refuses `request-handoff` with it, never 2, with nothing
-#      sent, for its missing lane and its lane's missing checkout
-#      (`pw_checkout`), an unset, empty or out-of-class LANES_LANE
-#      (`pw_lane_given`), and LANES_NO_GIT=1 (`pw_no_git_refuse`), all by
-#      `pw_pre_rc`: its callers read its 2 as "still bound".
+#      sent, for each refusal the primary branch adds before its claim: its
+#      missing lane, by the arm's own usage line (`pw_checkout`); and, by
+#      `pw_pre_rc`, its lane's missing checkout (`pw_checkout`), an unset,
+#      empty or out-of-class LANES_LANE (`pw_lane_given`), LANES_NO_GIT=1
+#      (`pw_no_git_refuse`), a pending hand edit of a rendered file in that
+#      checkout (`pw_hand_edit_refuse`), and no author identity there
+#      (`pw_author_read`) (Q35; lane openRepoTools-3, #165 6807881675, batch c
+#      Q67). Its callers read its 2 as "still bound". A lane name out of class
+#      keeps files mode's 2, the act's checks keep Y:5643's 2, and the
+#      register's refusals keep the contract's 2 (register-cli.md:334).
 #
 #  66  EX_NOINPUT — AMENDMENT 16(e)'s ALIAS TABLE COULD NOT BE READ, and
 #      `canon-lane` is the one verb that spends it. `lanes/aliases.tsv` is what
@@ -761,13 +768,15 @@
 #      LANES_REGISTER_SEAM_CAP_S sets it for tests), or the parent's line
 #      was neither `committed <seq>` nor `abandon` (a `committed` whose seq
 #      is not the attempt's snapshot `n=` plus 1 is neither, as is a line
-#      longer than 28 bytes), or `seam.out` could not be written as `tail`. `seam.out` then reads `none`, unless it could
-#      not be written at all, and but for `abandon` one line on the real
-#      stderr says "attempt <k> of write <id> stopped waiting at the seam
-#      (<why>); nothing after the seam ran". Only that child exits it. Its
+#      longer than 28 bytes), or `seam.out` could not be written as `tail`.
+#      `seam.out` then reads `none`, unless it could not be written at all,
+#      and but for `abandon` one line on the real stderr says "attempt <k> of
+#      write <id> stopped waiting at the seam (<why>); nothing after the seam
+#      ran". Of an attempt's processes, only the child at the seam exits 75
+#      this way; the parent's own 75s are below (review REV-W9a, N2). The
 #      parent, the primary write path (T415), acts on `seam.out`, never on
-#      this code (Y:5007): `none` sends the run to a replay, and the code is
-#      never passed on.
+#      the child's code (Y:5007): `none` sends the run to a replay, and that
+#      code is never passed on.
 #      AND FEATURE 007'S PRIMARY BRANCH (T415; D7; Y:2632–2641), the parent's:
 #      "register busy: <k> attempts in <D> s, each beaten by another write;
 #      nothing was written; a retry in seconds is safe", where every attempt
@@ -2070,6 +2079,11 @@ create_heartbeat_stop() {
   return 0
 }
 cleanup() {
+  # FEATURE 007: each child still live at its seam gets `abandon` first, so a
+  # Ctrl-C stops it at once (`pw_abandon_live`; review REV-W9a, N1). Tested
+  # by name, since `cleanup` also runs for a process that died before it was
+  # defined.
+  if declare -F pw_abandon_live >/dev/null; then pw_abandon_live; fi
   if [ -n "${HANDOFF_OUT:-}" ]; then printf '%s\n' "$HANDOFF_OUT"; HANDOFF_OUT=""; fi
   [ -z "${pbh_tmp:-}" ] || rm -f -- "$pbh_tmp"
   [ -z "${rl_htmp:-}" ] || rm -f -- "$rl_htmp"   # rename-lane's stamp before its replace (#158)
@@ -6023,13 +6037,17 @@ PW_LOCK=""; PW_REC_OURS=0
 PW_K=0; PW_DIR=""; PW_CHILD=""; PW_KEPT=""; PW_FIRST_DONE=0; PW_RELAY=""; PW_RC=0
 PW_CAP_S=120; PW_CHILD_T0=0; PW_READY_T=0; PW_SEAM_CAP_S=120; PW_KEPT_END=""; PW_KEPT_K=""
 PW_S_GEN=""; PW_S_WID=""; PW_S_FOUND=""; PW_S_N=""; PW_S_CLOCK=""; PW_S_NOT_AFTER=""
-PW_START="-"; PW_KILLED=0
+PW_START="-"; PW_KILLED=0; PW_CHILD_START="-"
 
 # D7's deadline in whole seconds: 30, or `LANES_REGISTER_DEADLINE_S` for tests
 # (Y:2632–2641), read in base 10, so a leading zero is neither octal nor an
-# arithmetic error: `08` is 8 s (review REV415, S2).
+# arithmetic error: `08` is 8 s (review REV415, S2). It is honoured only as a
+# positive whole number: 1 to 18 ASCII digits (`wr_is_count`) whose value,
+# read in base 10, is above 0. Any other value, `0` and `000` included, is
+# ignored and 30 kept, as T304 reads it (tasks:1636's rule; lane
+# openRepoTools-3, #165 6807881675, batch c Q73).
 pw_deadline_s() {
-  if wr_is_count "${LANES_REGISTER_DEADLINE_S:-}"; then
+  if wr_is_count "${LANES_REGISTER_DEADLINE_S:-}" && [ "$((10#$LANES_REGISTER_DEADLINE_S))" -gt 0 ]; then
     printf '%s\n' "$((10#$LANES_REGISTER_DEADLINE_S))"
   else
     printf '30\n'
@@ -6082,9 +6100,14 @@ pw_no_lane() {
 PW_DRY=0
 # THE CODE OF A REFUSAL BEFORE THE CLAIM (lane openRepoTools-3, #165
 # 6780753157, Q35): 2, or 64 for `request-handoff`, which refuses 64, never 2,
-# for its missing lane, LANES_NO_GIT=1, `pw_lane_given`'s refusal and a
-# missing `<c>`, so that it never refuses 2 there but for its binding. Its
-# callers read its 2 as "still bound" (`lane`:1253, `lane-start`:2875).
+# for each refusal the primary branch adds before its claim: its missing lane
+# (the arm's own 64, in `pw_checkout`), LANES_NO_GIT=1, `pw_lane_given`'s
+# refusal, a missing `<c>`, a pending hand edit in `<c>`
+# (`pw_hand_edit_refuse`) and no author identity there (`pw_author_read`)
+# (lane openRepoTools-3, #165 6807881675, batch c Q67), so that it never
+# refuses 2 there but for its binding. Its callers read its 2 as "still bound"
+# (`lane`:1253, `lane-start`:2875). A lane name out of class keeps files
+# mode's 2 (`check_lane_name`).
 pw_pre_rc() {
   if [ "$cmd" = request-handoff ]; then printf '64\n'; else printf '2\n'; fi
 }
@@ -6166,11 +6189,16 @@ pw_no_git_refuse() {
 # A PENDING HAND EDIT IN `<c>` (Y:2459–2464; Amendment 23's S3 step 4). The verb
 # runs on a scratch tree, so the lane's checkout is the one place a hand edit of
 # a rendered file can be seen, and on primary it is never carried or committed:
-# the write refuses with 2, naming each file and the recovery that works on
-# primary, before anything is sent. The render set is the seam's
-# (`cp_seam_render_path`); `lanes/STORE`, `repos.tsv` and the handoffs are not
-# in it. The recovery's two commands quote the checkout and each path with
-# `printf '%q'`, so each can be pasted as it is (review REV415, N4). Its
+# the write refuses with 2, or 64 for `request-handoff` (`pw_pre_rc`; batch c
+# Q67), naming each file and the recovery that works on primary, before
+# anything is sent. The render set is the seam's (`cp_seam_render_path`);
+# `lanes/STORE`, `repos.tsv` and the handoffs are not in it. The recovery's
+# two commands quote the checkout and each path with `printf '%q'`, so each
+# can be pasted as it is (review REV415, N4). THE ONE RECOVERY COMMAND, the
+# restore, is printed in backticks, and the read line has no backticked `git`
+# command, so the refusal names the file and one recovery command (lane 4's
+# call, from the test plan's TP:764–769: "names the file holding the hand
+# edit and one recovery command"). Its
 # restore is `git restore --source=HEAD --staged --worktree`, as T420's
 # `commit_hand_edit_refuse` gives it, not `checkout HEAD --`, which fails for a
 # staged new file that HEAD lacks (lane 3, #165 6774499606, T420 5(a); review
@@ -6194,15 +6222,16 @@ PH_EOF
   ph_c="$(printf '%q' "$PW_C")"
   note "RECOVERY, in $PW_C:"
   note "  read it:      git -C $ph_c diff HEAD --$ph_q"
-  note "  restore it:   git -C $ph_c restore --source=HEAD --staged --worktree --$ph_q"
+  note "  restore it:   \`git -C $ph_c restore --source=HEAD --staged --worktree --$ph_q\`"
   note "  then make the change through its verb, and run this write again"
-  die "refusing to write on primary: lane ${PW_LANE}'s checkout, $PW_C, holds an uncommitted edit of$ph_l, which the register renders. On primary the register is the database and that file is its rendering, so a hand edit there is never committed, carried or swept into a write (Y:2459). Nothing was sent." 2
+  die "refusing to write on primary: lane ${PW_LANE}'s checkout, $PW_C, holds an uncommitted edit of$ph_l, which the register renders. On primary the register is the database and that file is its rendering, so a hand edit there is never committed, carried or swept into a write (Y:2459). Nothing was sent." "$(pw_pre_rc)"
 }
 
 # THE AUTHOR (Y:5379; D15): `<c>`'s identity, as `git -C <c> var
 # GIT_AUTHOR_IDENT` gives it, less its date: `Name <email>`, for the attempt's
-# `author` file. Where git gives none, the write refuses with 2 before the first
-# snapshot, as a files-mode commit there would fail.
+# `author` file. Where git gives none, the write refuses with 2, or 64 for
+# `request-handoff` (`pw_pre_rc`; lane openRepoTools-3, #165 6807881675, batch
+# c Q67), before the first snapshot, as a files-mode commit there would fail.
 pw_author_read() {
   local pa_i=""
   pa_i="$(git -C "$PW_C" var GIT_AUTHOR_IDENT 2>/dev/null)" || pa_i=""
@@ -6211,7 +6240,7 @@ pw_author_read() {
   case "$PW_AUTHOR" in ?*' <'*'>') : ;; *) PW_AUTHOR="" ;; esac
   wr_value_ok "$PW_AUTHOR" || PW_AUTHOR=""
   [ -n "$PW_AUTHOR" ] ||
-    die "refusing to write on primary: git gives no author identity in lane ${PW_LANE}'s checkout, $PW_C (\`git -C $PW_C var GIT_AUTHOR_IDENT\` answered none), and the register's journal records each write's author (D15), as a commit there would need one. Set user.name and user.email for that checkout, then run \`$cmd\` again. Nothing was sent." 2
+    die "refusing to write on primary: git gives no author identity in lane ${PW_LANE}'s checkout, $PW_C (\`git -C $PW_C var GIT_AUTHOR_IDENT\` answered none), and the register's journal records each write's author (D15), as a commit there would need one. Set user.name and user.email for that checkout, then run \`$cmd\` again. Nothing was sent." "$(pw_pre_rc)"
   return 0
 }
 
@@ -6508,11 +6537,17 @@ pw_attempt_files() {
 # attempt's `out.1` and `out.2`, since redirections apply left to right (lane
 # 3, #165 6755641373, T414's question 2). An asynchronous command's stdin is
 # /dev/null. Its start, in `SECONDS`, starts its bound (`pw_child_wait`).
+# ITS PROCESS START IS READ AT ONCE, right after `$!` (`pw_pid_start`, into
+# PW_CHILD_START; review REV-W8a, N1), while that pid can only be the child:
+# read later, after a kept child's `wait` or a listing, it could be a
+# stranger's that reused the pid of a child that had ended.
 pw_child_start() {
   PW_CHILD_T0="$SECONDS"
   LANES_REGISTER_SCRATCH="$PW_DIR" "${BASH:-bash}" "$RESOLVED" ${ORIG_ARGV[@]+"${ORIG_ARGV[@]}"} \
     3>&1 4>&2 1>"$PW_DIR/out.1" 2>"$PW_DIR/out.2" &
   PW_CHILD=$!
+  pw_pid_start "$PW_CHILD"
+  PW_CHILD_START="$PW_START"
 }
 
 # THE CHILD REACHES `ready`, or ends first. 0 at `ready`, where it waits on fd
@@ -6684,16 +6719,23 @@ pw_pids_kill() {   # <list>
 # A CHILD THAT ENDED ON ITS OWN between the wait's `kill -0` and the TERM, so
 # that the TERM finds no such process, is not stopped: its code is taken with
 # `wait`, PW_CHILD is cleared, and 1 sends the run to `pw_child_end`, its own
-# end (Y:5016; review REV415b, NIT 5). Nothing is signalled then.
+# end (Y:5016; review REV415b, NIT 5). Nothing is signalled then. So is a
+# child whose start, read at its launch (`pw_child_start`), is no longer its
+# pid's, tested before the listing and the TERM (review REV-W8a, N1): it has
+# ended, and its pid may be another process's now, which gets nothing.
 pw_child_hung_end() {   # bound | kept
   local ch_n=0 ch_how="TERM" ch_w="" ch_b="" ch_tree="" ch_p="" ch_t=0 ch_kids="" \
-        ch_cs="-" ch_ps=""
+        ch_cs="$PW_CHILD_START" ch_ps=""
   local ch_kk="$PW_KEPT_K"
   ch_t=$((SECONDS - PW_CHILD_T0))
   pw_abandon_kept
+  if [ "$ch_cs" != - ] && ! pw_pid_same "$PW_CHILD" "$ch_cs"; then
+    PW_RC=0
+    wait "$PW_CHILD" 2>/dev/null || PW_RC=$?
+    PW_CHILD=""
+    return 1
+  fi
   ch_tree="$(pw_child_tree)"
-  pw_pid_start "$PW_CHILD"
-  ch_cs="$PW_START"
   for ch_p in $ch_tree; do
     pw_pid_start "$ch_p"
     ch_ps="${ch_ps} ${ch_p} ${PW_START}"
@@ -6778,6 +6820,41 @@ pw_abandon_all() {
     pw_abandon_one "$PW_CHILD" "$PW_DIR"
     PW_CHILD=""
   fi
+}
+
+# A PARENT STOPPED BY A SIGNAL TELLS ITS CHILDREN (review REV-W9a, N1). An `&`
+# child of a non-interactive shell ignores INT from its start, and bash cannot
+# trap it there, so a Ctrl-C never reached the child at its seam: it waited for
+# its next parent test, 1 s or more, then wrote its stop line after the
+# prompt. So `cleanup`, which the INT and TERM traps run and the EXIT trap runs
+# (a HUP, which no trap here takes, still runs EXIT), calls this: each child
+# still live, the attempt's own and the kept ones, gets `abandon` (`pw_send`),
+# and stops at once with `seam.out` `none` and 75, its tail not run. Nothing
+# is sent where no child is live (`kill -0`), nothing is waited for, so a trap
+# never blocks, and the kept list is split with no here-document, which bash
+# 3.2 would need a temp file for. Both are then emptied, so the EXIT trap's
+# second `cleanup` sends nothing again. In an attempt's child, which is this
+# file too, both are empty. On every end but a signal's both are empty already
+# (`pw_abandon_all`, and the reaps after `committed`).
+pw_abandon_live() {
+  local al_k="${PW_KEPT:-}" al_l="" al_p=""
+  if [ -n "${PW_CHILD:-}" ] && [ -n "${PW_DIR:-}" ] && kill -0 "$PW_CHILD" 2>/dev/null; then
+    pw_send "$PW_DIR" abandon || :
+  fi
+  while [ -n "$al_k" ]; do
+    al_l="${al_k%%"$WR_NL"*}"
+    case "$al_k" in
+      *"$WR_NL"*) al_k="${al_k#*"$WR_NL"}" ;;
+      *) al_k="" ;;
+    esac
+    [ -n "$al_l" ] || continue
+    al_p="${al_l%% *}"
+    kill -0 "$al_p" 2>/dev/null || continue
+    pw_send "${al_l#* }" abandon || :
+  done
+  # Once: the INT and TERM traps run `cleanup`, and the EXIT trap runs it again.
+  PW_CHILD=""; PW_KEPT=""
+  return 0
 }
 
 # THE OUTCOME KNOWN, the record goes with this run's claims (Y:5193–5198), or
