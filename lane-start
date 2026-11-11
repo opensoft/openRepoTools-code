@@ -285,11 +285,19 @@
 #      printed on stdout, so a launcher can exec it itself.
 #   69, 75, 3  a register read this command cannot do without, refused with
 #      the reading verb's own code (feature 007, T402; FR-036): 69, the
-#      register could not be read; 75, register busy; 3, in doubt. Nothing of
-#      this launch's own is written. The default read arms see these codes
-#      only from a SQL register; `register-text`, the read of the lane's row,
-#      spends 69 in every mode where the register cannot be read, and any
-#      code it exits with is passed on, never read as an empty register.
+#      register could not be read; 75, register busy; 3, in doubt. This
+#      launch has written no row, no STARTED or RESUMED line and no stamp,
+#      and launched nothing; a refusal after this window's rename gives it
+#      its name back. One line of the handoff may stand: where a
+#      `lane-transcript` read refuses after `request-handoff` answered 0, the
+#      HANDOFF-REQUESTED line or the forced PAUSED it wrote stands, written
+#      whole to the append-only log (R-A11-11), and the refusal names it. The
+#      default read arms see these codes only from a SQL register;
+#      `register-text`, the read of the lane's row, spends 69 in every mode
+#      where the register cannot be read, and any code it exits with is passed
+#      on, never read as an empty register. The ownership seam's read,
+#      `managed-projection`, is the exception: it exits 1, UNKNOWN, for these
+#      codes too (research.md ERR-46).
 #
 # ENVIRONMENT
 #   PROJECTS_ROOT        default ~/projects
@@ -1190,9 +1198,13 @@ ls_refresh "before this launch reads it"
 # with the verb's own code ("pass the code", Y:5722), naming it, before this
 # launch makes any write of its own. Where a read's arm already refused, it
 # keeps its words and exits with these three codes instead of its own
-# (`ls_read_code`); every other code keeps that arm's exit. `request-handoff`'s
-# arm is a write's (Y:5731) and keeps 1 until T428. No read verb emits any of
-# the three in files mode (Y:5746), so neither changes anything there.
+# (`ls_read_code`); every other code keeps that arm's exit. Two arms are the
+# exception. The ownership seam's (`seam_refuse`) exits 1, UNKNOWN, for every
+# code but 0 and 8, these three included: an ownership nobody established is
+# refused as UNKNOWN, never passed on (S4; DEC-27; research.md ERR-46). And
+# `request-handoff`'s arm is a write's (Y:5731) and keeps 1 until T428. No
+# read verb emits any of the three in files mode (Y:5746), so neither changes
+# anything there.
 ls_read_code() {   # <the verb's exit> <the arm's own exit for any other code>
   case "$1" in 69 | 75 | 3) printf '%s\n' "$1" ;; *) printf '%s\n' "$2" ;; esac
 }
@@ -1722,13 +1734,15 @@ esac
 # where ownership could not be established. ANY other status — a helper that
 # predates the verb included — is UNKNOWN as well, and refused the same way:
 # a fence that opens because its read failed is no fence (Amendment 7(d)).
+# A 69, 75 or 3 is UNKNOWN too, and exits 1, never the code passed on
+# (feature 007, T402; S4; DEC-27; research.md ERR-46).
 seam_refuse() {   # <lane> <the act>
   sr_out=""; sr_rc=0
   sr_out="$("$LANES_EDIT" managed-projection "$1" 2>/dev/null)" || sr_rc=$?
   case "$sr_rc" in
   0) die "lane $1 is owned by the managed ledger (owner ${sr_out:-unnamed}), and $2 is a legacy lane act, refused here, before the binding is read, before a handoff is requested of anybody and before a byte is written: no row, no log line, no stamp, no window name, no launch. Brett Heap's ruling of 2026-10-04: \"managed ledger owns enrolled lanes; #97 owns legacy\". Act on this lane through the managed ledger." 2 ;;
   8) : ;;
-  *) die "whether the managed ledger owns lane $1 is UNKNOWN (\`$LANES_EDIT managed-projection $1\` exited $sr_rc): its register row carries managed-owner vocabulary that does not parse, or the read failed. An ownership nobody could establish is never read as legacy (Amendment 7(d)), so $2 is refused here, before the binding is read, before a handoff is requested of anybody and before a byte is written: no row, no log line, no stamp, no window name, no launch. Read it: $LANES_EDIT managed-projection $1" "$(ls_read_code "$sr_rc" 1)" ;;
+  *) die "whether the managed ledger owns lane $1 is UNKNOWN (\`$LANES_EDIT managed-projection $1\` exited $sr_rc): its register row carries managed-owner vocabulary that does not parse, or the read failed. An ownership nobody could establish is never read as legacy (Amendment 7(d)), so $2 is refused here, before the binding is read, before a handoff is requested of anybody and before a byte is written: no row, no log line, no stamp, no window name, no launch. Read it: $LANES_EDIT managed-projection $1" 1 ;;
   esac
 }
 # AT THE TOP OF SECTION 3, and so BEFORE Amendment 18's binding gate and its
