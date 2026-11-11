@@ -24899,7 +24899,11 @@ EOF
       # family, `.head` with it, before each poll's read, so the read below is
       # the readers' second read at the register's head (§3.6, form 3), never
       # git. Off primary, `log_sync`'s fetch and drops are the poll, as before.
-      [ "$REG_MODE" != primary ] || reg_flush
+      # Keyed on the flag, `REG_SCRATCH`, as the arm's other primary switches
+      # are, so that one key decides "on primary" across the arm (review
+      # REV-W9f, N1); `reg_scratch_take` sets REG_MODE=primary in every child,
+      # so the two agree.
+      [ -z "$REG_SCRATCH" ] || reg_flush
       rh_out=""; rh_rc=0
       rh_out="$(lane_binding_scan "$lane")" || rh_rc=$?
       rh_last="$rh_rc"
