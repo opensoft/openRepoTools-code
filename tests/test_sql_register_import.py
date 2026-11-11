@@ -779,24 +779,35 @@ def test_import_loads_takes_with_no_readable_utc_and_a_holderless_landing_expire
     and the import is not refused for it; the line in the `LANDING EXPIRED`
     shape with no `for lane` is a line of no kind, with no slot role, that
     releases nothing. A re-import loads them the same way (AT-7, "Takes
-    with no UTC, and a release with no holder"; U3; F13)."""
+    with no UTC, and a release with no holder"; U3; F13).
+
+    A line of no kind is loaded as text: one `doc_lines` line in
+    `lanes/LANES.md`, and no `register_lines` row, since the import makes a
+    row only for a line of a kind (design.md:1412 at spec#17 `8523aa0c`:
+    "an import loads it as text instead of failing on it";
+    test-plan.md:1447-1453; lane 1's triage, group 3, #165 comment
+    6807494089). `main_slots` still lists repoA-2's open `LANDING` of PR #9
+    on opensoft/repoE, the take the line names."""
     reg = FixtureRegister(tmp_path / "e")
     line = EXPIRED_NO_HOLDER if case == "expired-no-holder" else TAKE_LINES[case]
+    quoted = "'" + line.replace("'", "''") + "'"
     loads = []
     for _ in range(2):
         proc = reg.import_at(pg, reg.c)
         assert proc.returncode == 0, proc.stderr
         rows = _rows(pg, "SELECT kind, slot_role, slot_kind, utc_ts, for_lane FROM "
-                         "register_lines WHERE raw = " + "'" + line.replace("'", "''") + "'")
-        assert len(rows) == 1, f"loaded once, as it stands: {line!r}"
-        row = rows[0]
+                         "register_lines WHERE raw = " + quoted)
         if case == "expired-no-holder":
-            assert (row["kind"], row["slot_role"], row["slot_kind"], row["for_lane"]) == \
-                (None, None, None, None)
+            as_text = _rows(pg, "SELECT path FROM doc_lines WHERE text = " + quoted)
+            assert as_text == [{"path": "lanes/LANES.md"}], f"loaded once, as text: {line!r}"
+            assert rows == [], f"a line of no kind has no register_lines row: {rows!r}"
             open_e = _rows(pg, "SELECT lane, pr FROM main_slots WHERE slot_kind = 'landing' "
                                "AND lower(repo_key) LIKE '%repoe'")
             assert open_e == [{"lane": "repoA-2", "pr": 9}], "it releases nothing"
+            row = {"doc_lines": as_text, "register_lines": rows, "open": open_e}
         else:
+            assert len(rows) == 1, f"loaded once, as it stands: {line!r}"
+            row = rows[0]
             assert (row["slot_role"], row["utc_ts"]) == ("take", None)
         loads.append(row)
     assert loads[0] == loads[1], "a re-import loads it the same way"
