@@ -569,8 +569,9 @@
 #      nothing written: a write that names no lane, or whose lane's own
 #      checkout is not there to read (`pw_checkout`; D12: no clone); an unset,
 #      empty or out-of-class LANES_LANE (`pw_lane_given`); LANES_NO_GIT=1,
-#      since on primary the write is its commit (`pw_no_git_refuse`), but
-#      for `request-handoff`, whose refusal there is 64 (below); a hand
+#      since on primary the write is its commit (`pw_no_git_refuse`); each of
+#      these four but for `request-handoff`, whose refusal there is 64 (below,
+#      `pw_pre_rc`); a hand
 #      edit of a rendered file pending in that checkout (`pw_hand_edit_refuse`);
 #      no author identity there (`pw_author_read`); an act whose generation is
 #      not the snapshot's, or whose base is past it (`pw_act_at_snapshot`); a
@@ -590,9 +591,11 @@
 #      being the code the contract gives every one of those reads.
 #      Amendment 23's `lane-checkout` and `refresh-workspace` spend it too.
 #      So does feature 007's `act-begin` (T410). And feature 007's primary
-#      branch (T415) refuses `request-handoff` with it, with nothing sent,
-#      where it names no lane (`pw_checkout`) and under LANES_NO_GIT=1
-#      (`pw_no_git_refuse`): its callers read its 2 as "still bound".
+#      branch (T415) refuses `request-handoff` with it, never 2, with nothing
+#      sent, for its missing lane and its lane's missing checkout
+#      (`pw_checkout`), an unset, empty or out-of-class LANES_LANE
+#      (`pw_lane_given`), and LANES_NO_GIT=1 (`pw_no_git_refuse`), all by
+#      `pw_pre_rc`: its callers read its 2 as "still bound".
 #
 #  66  EX_NOINPUT — AMENDMENT 16(e)'s ALIAS TABLE COULD NOT BE READ, and
 #      `canon-lane` is the one verb that spends it. `lanes/aliases.tsv` is what
@@ -5960,7 +5963,8 @@ pw_no_lane() {
 # and no S3. On primary the verb runs on a scratch tree the register builds, and
 # `<c>` is read only for a pending hand edit, the author, and the `repos.tsv`
 # its `origin/main` gives the snapshot (Y:5048–5050). A checkout that is not
-# there would need a clone, which is D12's fetch, so the write refuses with 2.
+# there would need a clone, which is D12's fetch, so the write refuses with 2,
+# or 64 for `request-handoff` (`pw_pre_rc`).
 #
 # `write_lane_of`'s 1, on a verb that asks the mode, is one of two forms (its
 # own comment), and neither ends 69 (lane openRepoTools-3, #165 6769061039,
@@ -5977,6 +5981,14 @@ pw_no_lane() {
 #     sent, with the code that arm gives: 64 for `request-handoff`, 2 for every
 #     other verb that asks the mode.
 PW_DRY=0
+# THE CODE OF A REFUSAL BEFORE THE CLAIM (lane openRepoTools-3, #165
+# 6780753157, Q35): 2, or 64 for `request-handoff`, which refuses 64, never 2,
+# for its missing lane, LANES_NO_GIT=1, `pw_lane_given`'s refusal and a
+# missing `<c>`, so that it never refuses 2 there but for its binding. Its
+# callers read its 2 as "still bound" (`lane`:1253, `lane-start`:2875).
+pw_pre_rc() {
+  if [ "$cmd" = request-handoff ]; then printf '64\n'; else printf '2\n'; fi
+}
 pw_checkout() {   # <the verb's arguments>
   local pc_rc=0 pc_l=""
   pc_l="$(write_lane_of "$cmd" ${1+"$@"})" || pc_rc=$?
@@ -6001,7 +6013,7 @@ pw_checkout() {   # <the verb's arguments>
   check_lane_name "$PW_LANE"
   PW_C="$(lane_checkout_path "$PW_LANE")" || die "$(lanes_workspace_why)" 1
   [ -d "$PW_C" ] ||
-    die "lane ${PW_LANE}'s own register checkout, $PW_C/, is not here, and on primary a write makes no clone to make it, since a clone is a fetch (D12): the verb runs on a scratch tree the register builds, and reads only its author, its pending hand edits and its repos.tsv from that checkout. Make the checkout first, as lane-start does at a launch — $SELF lane-checkout $PW_LANE --create — then run \`$cmd\` again. Nothing was sent." 2
+    die "lane ${PW_LANE}'s own register checkout, $PW_C/, is not here, and on primary a write makes no clone to make it, since a clone is a fetch (D12): the verb runs on a scratch tree the register builds, and reads only its author, its pending hand edits and its repos.tsv from that checkout. Make the checkout first, as lane-start does at a launch — $SELF lane-checkout $PW_LANE --create — then run \`$cmd\` again. Nothing was sent." "$(pw_pre_rc)"
   return 0
 }
 
@@ -6012,7 +6024,8 @@ pw_checkout() {   # <the verb's arguments>
 # class"). Passing the write's lane instead would split `--lane` from the
 # digest's, which a takeover's lookup sends. So where it is unset, empty or
 # outside `check_lane_name`'s class, the run refuses 2 before its claim, naming
-# the command with it. Nothing is sent.
+# the command with it, or 64 for `request-handoff` (`pw_pre_rc`; lane
+# openRepoTools-3, #165 6780753157, Q35). Nothing is sent.
 pw_lane_given() {
   local pl_w="" pl_cmd="lanes-edit.sh" pl_why=""
   case "${LANES_LANE-}" in
@@ -6027,7 +6040,7 @@ pw_lane_given() {
   else
     pl_why="LANES_LANE is $(printf '%q' "$LANES_LANE"), which is not a lane name (letters, digits, . _ -, not opening with . or -)"
   fi
-  die "refusing to write on primary: ${pl_why}. Every register call of a write carries the writer's own lane, LANES_LANE as given, and it keys the write's claim and pending record (Y:5171), so a write without one is refused before its claim. Nothing was sent. Run it again with your own lane: LANES_LANE=<lane> ${pl_cmd}" 2
+  die "refusing to write on primary: ${pl_why}. Every register call of a write carries the writer's own lane, LANES_LANE as given, and it keys the write's claim and pending record (Y:5171), so a write without one is refused before its claim. Nothing was sent. Run it again with your own lane: LANES_LANE=<lane> ${pl_cmd}" "$(pw_pre_rc)"
 }
 
 # `LANES_NO_GIT=1` ON PRIMARY (lane openRepoTools-3, #165 6770688147, T421's
@@ -6037,15 +6050,16 @@ pw_lane_given() {
 # would end 0 with nothing written. So it refuses 2 here, beside
 # `pw_lane_given`, before its claim and its first snapshot, naming the flag.
 # Nothing is sent. `request-handoff`'s refusal is 64, as for its missing lane
-# (`pw_checkout`): its callers read its 2 as "still bound" (`lane`:1253,
-# `lane-start`:2875) (lane 3, #165 6774499606, T415 (4); review REV415b, NIT 6). A dry run meets it too, since a dry run takes the write's
+# (`pw_pre_rc`): its callers read its 2 as "still bound" (`lane`:1253,
+# `lane-start`:2875) (lane 3, #165 6774499606, T415 (4); review REV415b, NIT
+# 6; #165 6780753157, Q35). A dry run meets it too, since a dry run takes the write's
 # whole path and refuses wherever the real write would (lane 3, #165
 # 6770820384, T415's question 2). `commit` never reaches the loop (T420), so it
 # is unchanged; T421's and T423's guards stay as backstops.
 pw_no_git_refuse() {
   local pg_w="" pg_cmd="lanes-edit.sh" pg_rc=2
   [ "$NO_GIT" = 1 ] || return 0
-  [ "$cmd" != request-handoff ] || pg_rc=64
+  pg_rc="$(pw_pre_rc)"
   for pg_w in ${ORIG_ARGV[@]+"${ORIG_ARGV[@]}"}; do pg_cmd="$pg_cmd $(printf '%q' "$pg_w")"; done
   die "refusing to write on primary: LANES_NO_GIT=1 is set, which means edit only, with no commit and no push. On primary a write is its commit to the register, so under it this run would end 0 having written nothing. Nothing was sent. Unset it and run the command again: env -u LANES_NO_GIT ${pg_cmd}" "$pg_rc"
 }
