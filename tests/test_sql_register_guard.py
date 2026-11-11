@@ -1462,13 +1462,19 @@ def test_the_post_bind_refill_is_one_register_read_and_never_git(estate, tmp_pat
     read --prefetch --cache <file> --files register,aliases`, with a reader's
     row, never `--for guard`, and no `git` call. On primary through the
     contract's stub `lanes-index` (T207), beside a copy of `lanes-edit.sh`
-    (the copy rule, CLI4.5:885), with a `git` that logs its calls. Fails until
-    L5-A2 (lane 5's T507)."""
+    (the copy rule, CLI4.5:885), with a `git` that logs its calls. The stub's
+    register is the estate's own `lanes/LANES.md`, as `[answer-2]`'s is: on
+    primary the guard reads the register from the prefetch's `.register`, and
+    a register with no `lanes/LANES.md` is a failed read there (T505), which
+    would end the hook 2 at its text check before any offer.
+    Fails until L5-A2 (lane 5's T507)."""
     code = tmp_path / "code"
-    stub = contract_stub(code)
+    code.mkdir()
     for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
         shutil.copy2(REPO / name, code / name)
     est = estate(guard=code / "lanes-edit.sh")
+    stub = contract_stub(code, register={
+        "lanes/LANES.md": (est.wip / "lanes" / "LANES.md").read_text(encoding="utf-8")})
     real_git = shutil.which("git")
     git_log = est.ctl / "git.log"
     _script(est.bin / "git", "#!/bin/sh\nprintf '%s %s\\n' \"$(date +%s.%N)\" \"$*\" >> @LOG@\n"
