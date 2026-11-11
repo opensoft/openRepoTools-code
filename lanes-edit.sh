@@ -17423,10 +17423,12 @@ gh_comment() {
 # staged", which neither verb meets, since each appends a line. Either would
 # post a comment for a write the register does not hold. So under the flag,
 # with no seq, the verb stops here: an internal error, 2, before `ready`, so
-# nothing is sent. Files mode never stops here: `REG_SCRATCH` is empty.
+# nothing is sent; a backstop that no input reaches now, since T415's
+# `pw_no_git_refuse` refuses LANES_NO_GIT=1 in the parent before its claim
+# (review REV-W9f, N2). Files mode never stops here: `REG_SCRATCH` is empty.
 reg_tail_committed() {   # <verb>
   [ -z "$REG_SCRATCH" ] || [ -n "$REGISTER_SEQ" ] ||
-    die "refusing to run ${1}'s steps after its write in an attempt's child under LANES_REGISTER_SCRATCH: the write took no \`committed <seq>\` from the seam (it reached the seam with nothing staged, or never reached it: LANES_NO_GIT=1 stops it before the seam), so its GitHub comment would speak for a write the register does not hold. An internal error of the write path. Nothing was sent." 2
+    die "refusing to run ${1}'s steps after its write in an attempt's child under LANES_REGISTER_SCRATCH: the write took no \`committed <seq>\` from the seam (it reached the seam with nothing staged, or never reached it: LANES_NO_GIT=1 stops it before the seam, though the parent's \`pw_no_git_refuse\` refuses that flag before its claim), so its GitHub comment would speak for a write the register does not hold. An internal error of the write path. Nothing was sent." 2
 }
 
 # FEATURE 007, T421 — CLAIM-LOST IS UNREACHABLE ON PRIMARY (FR-031; Y:3349–3354,
