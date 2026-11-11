@@ -1929,11 +1929,17 @@ def cmd_register_classify(args: list[str]) -> int:
 #: one component that ends `.md`, so no image path leaves `<dir>`.
 _RENDER_SET_RE = re.compile(r"lanes/(?:LANES\.md|aliases\.tsv|(?:archive|log)/[^/]+\.md)")
 
-#: A control character, U+0000-U+001F or U+007F: an image whose path holds one
-#: cannot be a `file=` row of one line and three fields, and ends 69 where it
-#: would be written (lane 3's review of T301, SHOULD-2). Only an image at `k`
-#: is refused for it, never a row the replay passes over.
-_RENDER_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+#: A character that breaks a line for some reader: a control character,
+#: U+0000-U+001F or U+007F, or U+0085, U+2028 or U+2029, which Python's
+#: `str.splitlines()` splits on as it does on U+001C-U+001E, and bash's `read`
+#: does not. An image whose path holds one cannot be a `file=` or `image=` row
+#: of one line and three fields, and ends 69 where it would be written (lane
+#: 3's review of T301, SHOULD-2; the three since lane 5's NIT 3,
+#: opensoft/openRepoTools#165 6779760684, as T111's `_SNAPSHOT_LINE_RE`
+#: refuses them). Only an image at `k` is refused for it, never a row the
+#: replay passes over. The one pattern for every image path: the images'
+#: writer, `register read`'s rows and the import's paths.
+_RENDER_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
 
 #: The columns `register_images` takes, in each row's order: `journal`'s, and
 #: `journal_edits`' and `journal_files`' as T107's migration names them.
@@ -2471,8 +2477,10 @@ def register_write_images(out_dir: str, images: dict) -> list:
 
     - EACH PATH IS CHECKED FIRST, before anything is written. It must be a
       render-set path, so it cannot leave `<out_dir>`. It must hold no control
-      character, U+0000-U+001F or U+007F, so its row stays one line (SHOULD-2).
-      Either failure raises `RenderRefused`.
+      character, U+0000-U+001F or U+007F, and no U+0085, U+2028 or U+2029
+      (`_RENDER_CONTROL_RE`), so its row stays one line to every reader
+      (SHOULD-2; lane 5's NIT 3, #165 6779760684). Either failure raises
+      `RenderRefused`.
     - THE TREE IS BUILT APART, in a `tempfile.mkdtemp` directory beside
       `<out_dir>`, on its filesystem. Each image is written whole to a temp
       file there, then `os.link`ed to its path, and the temp file is
@@ -2493,8 +2501,8 @@ def register_write_images(out_dir: str, images: dict) -> list:
         if not register_render_path(path):
             raise RenderRefused(f"{path!r} is not a render-set path")
         if _RENDER_CONTROL_RE.search(path):
-            raise RenderRefused(f"the image {path!r} holds a control character in its path, "
-                                f"so it cannot be a file= row")
+            raise RenderRefused(f"the image {path!r} holds a control character or a line "
+                                f"separator in its path, so it cannot be a file= row")
     target_dir = os.path.abspath(out_dir)
     parent = os.path.dirname(target_dir)
     os.makedirs(parent, exist_ok=True)
@@ -5366,8 +5374,8 @@ def _register_read_shell_text(data: bytes) -> bytes:
 
 def _register_read_row_path(path: str) -> str:
     if _RENDER_CONTROL_RE.search(path):
-        raise RegisterReadFailed(f"the path {path!r} holds a control character, so it cannot be "
-                                 f"a line of the cache family")
+        raise RegisterReadFailed(f"the path {path!r} holds a control character or a line "
+                                 f"separator, so it cannot be a line of the cache family")
     return path
 
 
@@ -14701,7 +14709,8 @@ def import_source(root: str, commit: str, *, fetch: bool) -> dict:
     `Refusal` naming the path, and its line where there is one: UTF-8, read
     strictly; no CR, since a line holds none (`doc_lines`' CHECK) and the
     renderer ends each line with LF alone; no NUL; and a path with no control
-    character.
+    character and no U+0085, U+2028 or U+2029 (`_RENDER_CONTROL_RE`), since no
+    image can be written for one.
 
     Returns `commit`; `tree`, `C:lanes`'s id; `blobs`, `{path: blob id}` of
     the render set and `lanes/repos.tsv`; `render`, the render set's paths
@@ -14743,8 +14752,8 @@ def import_source(root: str, commit: str, *, fetch: bool) -> dict:
     data, texts, lines, warnings = {}, {}, {}, []
     for path in render:
         if _RENDER_CONTROL_RE.search(path):
-            raise Refusal(f"import: {path!r} holds a control character in its name, so no image "
-                          f"can be written for it; nothing was swapped in")
+            raise Refusal(f"import: {path!r} holds a control character or a line separator in "
+                          f"its name, so no image can be written for it; nothing was swapped in")
         raw = contents.get(blobs[path])
         if raw is None:
             raise Refusal(f"import: {path}'s blob {blobs[path]} cannot be read in {root}; "
