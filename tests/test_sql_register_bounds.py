@@ -587,10 +587,18 @@ ROWS = {
     # (`_hold_head`; TP:3560-3561, "for a writer's commit, the head row held
     # `FOR UPDATE`"), which a snapshot's plain read does not wait on, so the
     # snapshot answers and each attempt's commit meets 55P03.
+    #
+    # THE COMMIT'S F4 (T257h; line BD9's finding on T257a): the second
+    # function's `[writer-commit-f2]` meets a trigger on `journal` that
+    # sleeps, which the commit's entry meets (`slow`), and the writer exits
+    # 69, "a refusal the database made", not the F2 row's 3 (`f4_exit`;
+    # TP:3621-3626 at B14). T257a's policy on `register_head` was met by the
+    # snapshot's read first.
     "writer-snapshot":  dict(group="lanes_register_writer", exit=69, bound=8, strict=False,
                              faults=("F1",), statement_ms=5000, table="register_head"),
     "writer-commit-f2": dict(group="lanes_register_writer", exit=3, bound=25, strict=False,
-                             faults=("F2",), statement_ms=5000, table="register_head"),
+                             faults=("F2",), statement_ms=5000, table="register_head",
+                             f4_exit=69, slow=("journal", "INSERT")),
     "writer-commit-f3": dict(group="lanes_register_writer", exit=75, bound=19, strict=False,
                              faults=("F3",), statement_ms=None, table="register_head"),
     "lookup":           dict(group="lanes_register_writer", exit=3, bound=19, strict=False,
@@ -1128,7 +1136,9 @@ def test_a_slow_statement_meets_57014_before_the_client_timer(pg, tmp_path, requ
     than the path's `statement_timeout` after the call's start (timing rule
     3) and under twice it (timing rule 2), and the path exits with its row's
     outcome (AT-D9, "Oracle"). `[service]` times the warm service's held
-    child, through `STREAM_PSQL` (T237y, `_service_57014`)."""
+    child, through `STREAM_PSQL` (T237y, `_service_57014`). A writer's
+    commit, `[writer-commit-f2]`, meets a trigger on `journal` and exits 69,
+    a refusal the database made (T257h)."""
     spec = ROWS[row]
     if row in OPERATOR_ROWS:
         _operator_57014(pg, tmp_path, request, row)
@@ -1139,14 +1149,19 @@ def test_a_slow_statement_meets_57014_before_the_client_timer(pg, tmp_path, requ
         _service_57014(bench, spec, user)
         return
     statement_s = spec["statement_ms"] / 1000
-    _slow_statement(pg, spec["table"], spec["group"], 4 * statement_s + 5)
+    if spec.get("slow"):
+        # A writer's commit (T257h): a trigger where its call works.
+        _slow_trigger(pg, *spec["slow"], 4 * statement_s + 5)
+    else:
+        _slow_statement(pg, spec["table"], spec["group"], 4 * statement_s + 5)
     proc, elapsed = bench.run(row, bench.config(quote(str(pg.host), safe=""), pg.port, user))
     ended = [c for c in bench.calls() if "57014" in c["first"]]
     assert ended, f"{row}: no call ended with 57014: {bench.calls()}"
     took = ended[0]["end"] - ended[0]["start"]
     assert statement_s <= took < 2 * statement_s, f"{row}: 57014 after {took:.2f} s"
-    if spec["exit"] is not None:
-        assert proc.returncode == spec["exit"], f"{row}: {proc.returncode}: {proc.stderr}"
+    outcome = spec.get("f4_exit", spec["exit"])
+    if outcome is not None:
+        assert proc.returncode == outcome, f"{row}: {proc.returncode}: {proc.stderr}"
     _record(f"{row}-F4", took, statement_s, "timing rules 2 and 3")
 
 
