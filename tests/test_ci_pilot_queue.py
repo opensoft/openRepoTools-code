@@ -89,7 +89,7 @@ def test_manual_mergify_queue_is_bounded_and_has_no_automatic_admission(config):
         "mode": "serial", "max_parallel_checks": 1, "queue_controls_comment": False,
         "reset_on_external_merge": "always", "skip_intermediate_results": False}
     assert [q["name"] for q in config["queue_rules"]] == [
-        "openrepotools-docs-pilot", "openrepotools-real-code-35-36"]
+        "openrepotools-docs-pilot", "openrepotools-real-code-35-36", "openrepotools-code"]
     queue = config["queue_rules"][0]
     assert queue["name"] == "openrepotools-docs-pilot"
     assert queue["batch_size"] == 2
@@ -255,3 +255,94 @@ def test_real_code_queue_every_gate_must_succeed(config, real_ready, gate, outco
 def test_real_code_queue_missing_context_cannot_grant_scope(config, real_ready, attribute):
     del real_ready[attribute]
     assert not admitted(config, real_ready, 1)
+
+
+@pytest.fixture
+def code_ready():
+    return {"draft": False, "closed": False, "from-fork": False,
+            "base": "main", "head": "fix/small-task-set",
+            "files": ["lane-handoff", "tests/test_a23_lane_handoff.py"],
+            "check-success": sorted(CHECKS)}
+
+
+def test_general_code_queue_is_manual_full_ci_and_bounded(config, code_ready):
+    queue = config["queue_rules"][2]
+    assert queue["name"] == "openrepotools-code"
+    assert admitted(config, code_ready, 2)
+    for key, value in {"batch_size": 2, "batch_max_wait_time": "60 seconds",
+                       "batch_max_failure_resolution_attempts": 0,
+                       "max_checks_retries": 0, "checks_timeout": "90 minutes",
+                       "merge_method": "merge"}.items():
+        assert queue[key] == value
+    assert queue.get("allow_queue_branch_edit", False) is False
+    expected = {"check-success=" + check for check in CHECKS}
+    assert expected <= {c for c in queue["queue_conditions"] if isinstance(c, str)}
+    assert set(queue["merge_conditions"]) == expected
+    assert not any("label" in c for c in queue["queue_conditions"] if isinstance(c, str))
+    assert "pull_request_rules" not in config  # No auto-enqueue rule.
+    assert not admitted(config, code_ready, 0)  # Earlier scopes stay narrow.
+    assert not admitted(config, code_ready, 1)
+
+
+@pytest.mark.parametrize("path", ["claude-current", "claude-restart-check", "lane",
+    "lane-end", "lane-handoff", "lane-rename", "lane-start", "lane-worktrees",
+    "lanes", "lanes-edit.sh", "lanes-index", "link-estates", "openRepoTools",
+    "park", "resume", "status", "repos.tsv", "README.md", "tests/test_new.py",
+    "src/openrepotools/cli.py", "commands/handoff.md", "skills/handoff/SKILL.md",
+    "features/009-manual-two-pr-queue/openspec/amendment.md"])
+def test_general_code_queue_accepts_known_normal_paths(config, code_ready, path):
+    code_ready["files"] = [path]
+    assert admitted(config, code_ready, 2)
+
+
+@pytest.mark.parametrize("path", [".mergify.yml", ".github/workflows/tests.yml",
+    ".github/workflows/release.yml", ".github/ci/pilot_scope.py",
+    ".github/release-build-requirements.txt", "contracts/openreposhape-pin.yaml",
+    "upstream/openRepoShape", ".gitmodules", "pyproject.toml", "AGENTS.md",
+    "CLAUDE.md", "src/openrepotools/_release.py", "new-command", "docs/new.md",
+    "tests/", "tests/test_new.py\n", "lane-handoff.evil", "lane-handoff\n"])
+@pytest.mark.parametrize("mixed", [False, True])
+def test_general_code_queue_rejects_unknown_control_release_and_mixed_paths(
+        config, code_ready, path, mixed):
+    code_ready["files"] = (["lane-handoff"] if mixed else []) + [path]
+    assert not admitted(config, code_ready, 2)
+
+
+@pytest.mark.parametrize("attribute,value", [("draft", True), ("closed", True),
+    ("from-fork", True), ("base", "release/v1.2"), ("base", "fix/predecessor"),
+    ("head", "release/v1.2"), ("head", "verify/lane/task"),
+    ("head", "mergify/merge-queue/123"), ("head", "ci/batch-pilot/first"),
+    ("files", [])])
+def test_general_code_queue_refuses_unsupported_state_or_topology(
+        config, code_ready, attribute, value):
+    code_ready[attribute] = value
+    assert not admitted(config, code_ready, 2)
+
+
+@pytest.mark.parametrize("gate", sorted(CHECKS))
+@pytest.mark.parametrize("outcome", ["missing", "pending", "skipped", "neutral", "failure", "cancelled"])
+def test_general_code_queue_every_full_gate_must_succeed(config, code_ready, gate, outcome):
+    code_ready["check-success"].remove(gate)
+    code_ready["check-" + outcome] = [gate]
+    assert not admitted(config, code_ready, 2)
+    assert not all(matches(c, code_ready) for c in config["queue_rules"][2]["merge_conditions"])
+
+
+def test_general_code_queue_other_app_or_unqualified_success_is_insufficient(config, code_ready):
+    code_ready["check-success"] = sorted(GATES) + ["@another-app/" + name for name in GATES]
+    assert not admitted(config, code_ready, 2)
+
+
+@pytest.mark.parametrize("attribute", ["draft", "closed", "from-fork", "head", "base", "files", "check-success"])
+def test_general_code_queue_missing_context_refuses(config, code_ready, attribute):
+    del code_ready[attribute]
+    assert not admitted(config, code_ready, 2)
+
+
+def test_general_code_queue_operator_procedure_is_shared():
+    text = (REPO / ".github/ci/batching-pilot.md").read_text()
+    assert "@mergifyio queue openrepotools-code" in text
+    assert "operator attestation" in text
+    assert "exact-head Codex review" in text
+    assert "main-only" in text
+    assert "batching-pilot.md" in (REPO / ".github/ci/task-set-delivery.md").read_text()

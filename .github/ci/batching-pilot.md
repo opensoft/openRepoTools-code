@@ -1,4 +1,4 @@
-# Manual two-PR queue: configuration, not live qualification
+# Manual full-CI queues: operator procedure and qualification
 
 This is a code-local CI operator reference for both Claude and Codex. The
 assembly's rules and the spec leg's feature 009 remain authoritative. Existing
@@ -103,3 +103,56 @@ is not this test. Record candidate/landed trees and CI evidence as above.
 Preserve lanes 1–5, existing sessions and #32. No ruleset bypass, app-access,
 paid upgrade, release or assembly-pin change is authorized. A later general
 code queue or fast-only CI rollout needs its own scoped change and evidence.
+
+## General manual code queue — approved rollout
+
+The 2026-11-11 rollout adds `openrepotools-code`. This is a **main-only** queue
+for independent same-repository open non-draft code PRs, not an automatic merge
+rule or fast-only CI. Keep actual dependencies as dependencies; gh-stack can
+author them where installed, but do not register native stack objects, flatten
+them or rewrite an active lane merely to qualify here.
+
+Eligible paths are the known root commands, `repos.tsv`, `README.md`, and safe
+file paths under `tests/`, `src/`, `commands/`, `skills/` and `features/`.
+The release stamp, workflows, queue configuration, pins/gitlinks, package
+metadata and unknown/mixed paths refuse. Such control changes still use ordinary
+reviewed PRs and full CI; do not widen this allowlist ad hoc to clear a refusal.
+
+### Before each command
+
+1. Confirm user merge authority and existing lane claims/landing coordination.
+   Do not take over lanes 1–5 or apply a repository freeze/bypass.
+2. Read back the exact current head, base main, changed paths, all four full
+   GitHub Actions gates, exact-head Codex review and unresolved threads. Request
+   `@codex review` when no fresh exact-head bot receipt exists; quota is no pass.
+3. Record those identities and review/CI links. This preflight and the named
+   command are an **operator attestation**, not service-enforced Codex/SHA proof.
+   No review label is required or sufficient. Only repository writers can queue.
+4. For the authorized eligible PR, use:
+
+   ```bash
+   gh pr comment PR_NUMBER --repo opensoft/openRepoTools-code \
+     --body '@mergifyio queue openrepotools-code'
+   ```
+
+   Request two independent ready PRs close together when a two-member batch is
+   desired. Batch size is a maximum; a singleton is not a two-PR qualification.
+5. Verify Mergify's actual members/order, checking base, candidate SHA/tree,
+   successful full candidate run and the landed tree. Report partial/failed/
+   singleton/retried results honestly. There is one active candidate, a 60-second
+   fill window, 90-minute checks and no automatic retry or failure splitting.
+
+A head push invalidates the pending/queued manual request: verify fresh review
+and CI and explicitly request again. On a base change, dequeue and repeat
+preflight; never edit a live queue branch. An external main merge resets testing.
+If service/plan/rules block, stop for approval; no paid upgrade or access change
+is implied. This rollout itself enqueues no existing PR or new live canary.
+
+Code #44 removes obsolete label-triggered full runs: Mergify adding `queued`
+does not replace full checks with skipped checks, and code updates still run
+the complete suite. Full original and combined CI, ordinary main/release-branch
+pushes and nightly/manual runs remain. Do not claim one heavy run total.
+
+Fresh assembly-root sessions read the pinned code references through AGENTS.md
+and CLAUDE.md. A profile launch neither queues a PR nor creates a lane. Existing
+sessions read the new reference at a safe checkpoint; do not restart them.
