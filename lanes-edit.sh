@@ -555,7 +555,10 @@
 #      T401; FR-036). `register-text` and `register-grep`, the two verbs the
 #      lifecycle scripts' own reads move behind, spend it in every mode: the
 #      file could not be read, `git grep` on `origin/<branch>` ended other than
-#      0 or 1 (a ref that does not resolve, a repository git cannot read), or
+#      0 or 1 and the ERE compiles where nothing but the pattern can fail (a
+#      ref that does not resolve, a repository or a config of it that git
+#      cannot read, such as a bad `grep.threads`: the register's failure,
+#      never the caller's 2), or
 #      no workspace repository was found. Nothing is printed on stdout, never a
 #      partial answer. It is not 1, which is `register-grep`'s "no match" and
 #      which `lane-worktrees` reads as an answer, and it is never 8: a read that
@@ -20927,14 +20930,21 @@ EOF
       1) exit 1 ;;
     esac
     # A MALFORMED ERE IS THE CALLER'S USAGE ERROR, never an unreadable register.
-    # Where the ref resolves, the same ERE is asked of the empty tree, which
-    # reads nothing, so a 128 there is the pattern's alone.
-    if git -C "$rgr_root" rev-parse -q --verify "origin/$LANES_BRANCH^{tree}" >/dev/null 2>&1; then
-      rgr_erc=0
-      rgr_empty="$(git -C "$rgr_root" hash-object -t tree /dev/null 2>/dev/null)" &&
-        { LC_ALL=C git -C "$rgr_root" grep -q -E -e "$rgr_ere" "$rgr_empty" >/dev/null 2>&1 || rgr_erc=$?; }
-      [ "$rgr_erc" != 128 ] || die "$rgr_usage — '$rgr_ere' is not an ERE that git grep -E can compile (above)" 2
-    fi
+    # The workspace repository cannot tell the two apart: a 128 from its own
+    # config, such as a bad `grep.threads`, meets every grep asked of it, and
+    # that is the register's read failing, 69. So the same ERE is asked again
+    # where nothing but the pattern can fail: of an empty file in `$TMPD`, with
+    # `--no-index`, no system or global config, no `git -c` or repository
+    # variable carried in, and no repository looked for above `$TMPD`. A 128
+    # there is the pattern's alone, so 2. Any other end of the probe's own, its
+    # 1 ("no match") or an empty file that could not be made, leaves the first
+    # failure the register's, so 69.
+    rgr_erc=0
+    : > "$TMPD/empty" &&
+      { env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT \
+          GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_CEILING_DIRECTORIES="${TMPD%/*}" LC_ALL=C \
+          git -C "$TMPD" grep --no-index -q -E -e "$rgr_ere" empty >/dev/null 2>&1 || rgr_erc=$?; }
+    [ "$rgr_erc" != 128 ] || die "$rgr_usage — '$rgr_ere' is not an ERE that git grep -E can compile (above)" 2
     die "the register could not be read: git grep on origin/$LANES_BRANCH in $rgr_root exited $rgr_rc (above)" 69
     ;;
 
