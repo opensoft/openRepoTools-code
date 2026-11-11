@@ -92,7 +92,8 @@
 #
 # EXIT CODES, in this family's convention (clause (f)'s, which excludes 3
 # because `lanes-edit.sh` already spends it on an unpushed commit and a code
-# that means two things is a code a caller cannot act on):
+# that means two things is a code a caller cannot act on), except a 3 passed
+# on from `lanes-edit.sh`:
 #
 #   0  the lane was reached — this process replaced by the launcher, or the
 #      attach performed — or the listing printed, or the pick declined
