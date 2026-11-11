@@ -7207,15 +7207,16 @@ pw_lookup_clock() {
 #   found     exit 0, `found <seq>` first (PW_LK_SEQ)
 #   absent    exit 0, `absent`: the lock was held, and the id is not this
 #             write's
-#   lr007     exit 2 with stderr's `ERROR:  LR007:` and a `DETAIL:` token
-#             `generation` or `another-write` (PW_LK_TOKEN)
+#   lr007     exit 2 with stderr's `ERROR:  LR007:` and, on the line right
+#             after it, a `DETAIL:` token `generation` or `another-write`
+#             (PW_LK_TOKEN)
 #   doubt     anything else (PW_LK_WHY): exit 3 (LR011, no try took the lock,
 #             another SQLSTATE, a refused configuration), any other 2 (Q6(c)'s
 #             included, which no primary write can precede), an exit 0 that
 #             cannot be read, a crash or a code outside the contract (CO-2,
 #             CO-3); and a lookup that cannot be made at all
 pw_lookup() {
-  local lk_bin="" lk_dir="" lk_rc=0 lk_l="" lk_b="" lk_c="" lk_n="" lk_f="" lk_d="" lk_7=0 lk_tok=""
+  local lk_bin="" lk_dir="" lk_rc=0 lk_l="" lk_b="" lk_c="" lk_n="" lk_f="" lk_d="" lk_7=0 lk_tok="" lk_p=""
   PW_LK=doubt; PW_LK_SEQ=""; PW_LK_TOKEN=""; PW_LK_N=""; PW_LK_WHY=""; PW_LK_OUT=""; PW_LK_ERR=""
   while IFS= read -r lk_l; do
     [ -n "$lk_l" ] || continue
@@ -7255,12 +7256,18 @@ pw_lookup() {
       esac
       PW_LK_WHY="\`lanes-index journal\` exited 0 with an answer this lanes-edit.sh cannot read, which settles nothing" ;;
     2)
+      # The token is LR007's own: the `DETAIL:` line right after the
+      # `ERROR:  LR007:` line (register-cli.md [P]'s lines 1 and 2), never
+      # another error's DETAIL elsewhere on stderr (review REV-W9b, N3).
       while IFS= read -r lk_l || [ -n "$lk_l" ]; do
         case "$lk_l" in
           'ERROR:  LR007:'*) lk_7=1 ;;
-          'DETAIL:  '*) [ -n "$lk_tok" ] || lk_tok="${lk_l#DETAIL:  }" ;;
+          'DETAIL:  '*)
+            case "$lk_p" in
+              'ERROR:  LR007:'*) [ -n "$lk_tok" ] || lk_tok="${lk_l#DETAIL:  }" ;;
+            esac ;;
         esac
-        lk_l=""
+        lk_p="$lk_l"; lk_l=""
       done < "$PW_LK_ERR" 2>/dev/null
       lk_tok="${lk_tok%%[[:space:]]*}"
       if [ "$lk_7" = 1 ]; then
