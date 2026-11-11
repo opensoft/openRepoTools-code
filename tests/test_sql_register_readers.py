@@ -2293,6 +2293,9 @@ T235_LATER = ("case-pair", "out-of-class", "failed-second-read")
 #: Lines only the store's logs hold (T235): a `dir` for repoA-2, and a note.
 T235_DIR = "/work/t235-only-in-the-store"
 T235_NOTE = "T235: a note only the store holds"
+#: `[worktree-rows]`' sidecar's schema, one no reader knows: `worktree_rows`'
+#: unknown-schema arm lists its tree as `unknown schema <it>`, by its path.
+T235_TREE_SCHEMA = "t235-a-schema-no-reader-knows"
 
 #: `[case-pair]`'s two logs (C11; CLI:674), which differ only by case.
 T235_PAIR = ("lanes/log/repoP-1.md", "lanes/log/RepoP-1.md")
@@ -2447,10 +2450,12 @@ def test_on_primary_known_lanes_remote_log_events_and_worktree_rows_read_the_sto
         files["lanes/log/repoA-2.md"] = (a2 + a2_note).encode()
     elif case == "worktree-rows":
         # `lane_control_root`: a `dir` whose parent is there gives `<parent>/.lane-state/<lane>`,
-        # and a sidecar of a schema no reader knows is listed by its id and path, never parsed.
+        # and a sidecar of a schema no reader knows is listed by its path, never parsed: its
+        # `tree:` claim stands in only where it names no path (`worktree_rows`' unknown-schema
+        # arm, `[ -n "${t_p:-}" ] || t_p="$t_id"`), so this one's id is never printed.
         sidecar = trees / ".lane-state" / STORE_ONLY_LANE / "trees" / "t235.yaml"
         sidecar.parent.mkdir(parents=True)
-        sidecar.write_text(f"schema: t235-a-schema-no-reader-knows\ntree: t235-store-tree\n"
+        sidecar.write_text(f"schema: {T235_TREE_SCHEMA}\ntree: t235-store-tree\n"
                            f"path: {trees / 'tree'}\n", encoding="utf-8")
         files[f"lanes/log/{STORE_ONLY_LANE}.md"] = (
             f"STARTED — lane {STORE_ONLY_LANE}, session {STORE_ONLY_UUID}@Eagle, "
@@ -2547,7 +2552,16 @@ def test_on_primary_known_lanes_remote_log_events_and_worktree_rows_read_the_sto
         result = run("worktrees")
         assert result.returncode == 0, (case, result.returncode, result.stdout,
                                         result.stderr[-1500:])
-        assert "t235-store-tree" in result.stdout, (case, "not the store's answer", result.stdout)
+        # The store's answer (batch 5's answer 5: the pin reads `.paths`): a TREE row for the
+        # lane only the store's log names, carrying the sidecar's path and the unknown-schema
+        # arm's branch. The row's columns are `worktree_rows`': TREE, the workstation, the lane,
+        # the owner, the path, the branch, ...; the sidecar's `tree:` id is not among them,
+        # since its path is set (lane 5's T505 sample, #165 6783860030).
+        rows = [line.split("\037") for line in result.stdout.splitlines()
+                if line.startswith("TREE\037")]
+        assert any(len(row) > 5 and row[2] == STORE_ONLY_LANE and row[4] == str(trees / "tree")
+                   and row[5] == f"unknown schema {T235_TREE_SCHEMA}" for row in rows), (
+            case, "not the store's answer: no row of the store-only lane's tree", result.stdout)
     elif case == "case-pair":
         for argv in T235_RUNS:
             result = run(*argv)
