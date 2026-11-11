@@ -50,6 +50,12 @@ kinds) and lane 3's T301 (the scratch render the proof runs) land.
   line's text"), never `build_records`' full count, which adds a record for
   each lane with a log and no row (`repoB-1` here; lane 1's T115 finding,
   #165 comment 6780760076).
+- Only CRLF is a difference the import refuses. A trailing blank in a table
+  row and a line of a kind the parser does not know are arms of the success
+  case, `[trailing-blank]` and `[unknown-kind]` beside `[at-c]`: each line is
+  stored as it stands and rendered back unchanged, so the import exits 0
+  and the proof holds (design.md:1176, :1181, :1300-1304, :1467; lane 3's
+  batches 9 and 11 (4), #165 comments 6781033556 and 6783909985).
 - The import runs as the operator lane, `LANES_LANE=repoA-2`, through that
   lane's checkout (lane 1's T115; D24), with `LANES_INDEX_CONFIG` naming a
   configuration whose `register_url=` and `reader_url=` name the session
@@ -612,24 +618,48 @@ def test_register_classify_parity_holds_on_every_line(tmp_path):
 
 # ======================================================= the import (real engine)
 
-def test_import_at_a_commit_proves_a_byte_identical_render(pg, tmp_path):
-    """The import exits 0; seq 0 holds C's sha, C's `lanes` tree id and the
-    digests; each table's count equals the files'; every rendered path's
-    blob id equals C's (AT-7, "Success"; R3's three-part proof)."""
-    reg = FixtureRegister(tmp_path / "e")
-    proc = reg.import_at(pg, reg.c)
-    assert proc.returncode == 0, proc.stderr
-    _assert_proved(reg, pg, reg.c)
-
-
-#: C' differs from C in one way the renderer cannot reproduce (AT-7, "The
-#: differences"): {id: (path, a function of C's text giving C's')}.
-DIFFERENCES = {
-    "crlf": ("lanes/log/repoA-2.md", lambda text: text.replace("\n", "\r\n", 1)),
+#: Two lines that are no difference (AT-7, "Success"; lane 3's batches 9 and
+#: 11 (4), #165 comments 6781033556 and 6783909985): a line's text bars only
+#: `\n` and `\r` (design.md:1181), and each line is stored as it stands
+#: (:1176, :1467) and rendered back unchanged (:1300-1304), so a commit on C
+#: holding either one imports with exit 0 and the proof holds.
+#: {id: (path, a function of C's text giving that commit's)}.
+NO_DIFFERENCE = {
     "trailing-blank": ("lanes/LANES.md", lambda text: text.replace(
         "· the operator lane |\n", "· the operator lane | \n", 1)),
     "unknown-kind": ("lanes/LANES.md", lambda text: text + (
         "HOLD REQUESTED — lane repoA-2 (Eagle), 2026-10-01T06:00:00Z: opensoft/repoA main\n")),
+}
+
+
+@pytest.mark.parametrize("case", ["at-c", *NO_DIFFERENCE])
+def test_import_at_a_commit_proves_a_byte_identical_render(pg, tmp_path, case):
+    """The import exits 0; seq 0 holds the commit's sha, its `lanes` tree id
+    and the digests; each table's count equals the files'; every rendered
+    path's blob id equals the commit's (AT-7, "Success"; R3's three-part
+    proof). `[at-c]` imports C itself; `[trailing-blank]` and
+    `[unknown-kind]` each import a commit on C whose `lanes/LANES.md`
+    holds one line that is no difference (`NO_DIFFERENCE`)."""
+    reg = FixtureRegister(tmp_path / "e")
+    sha = reg.c
+    if case in NO_DIFFERENCE:
+        path, change = NO_DIFFERENCE[case]
+        good = reg.blob(reg.c, path)
+        changed = change(good.decode("utf-8")).encode("utf-8")
+        assert changed != good, f"{case}: the change found no line of {path} to change"
+        sha = reg.commit({path: changed}, f"C with {case}")
+    proc = reg.import_at(pg, sha)
+    assert proc.returncode == 0, proc.stderr
+    _assert_proved(reg, pg, sha)
+
+
+#: C' differs from C in the one way the renderer cannot reproduce (AT-7, "The
+#: difference"): a CRLF line ending, since a line's text holds no `\r`
+#: (design.md:1181; lane 3's batch 11 (4)). The two lines once listed here
+#: beside it are `NO_DIFFERENCE`'s. {id: (path, a function of C's text giving
+#: C's')}.
+DIFFERENCES = {
+    "crlf": ("lanes/log/repoA-2.md", lambda text: text.replace("\n", "\r\n", 1)),
 }
 
 
