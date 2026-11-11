@@ -578,7 +578,10 @@
 #      marker on the ref the read reads, as last fetched, and a deciding read
 #      under it is 69 too, naming that fetch's age. The listings `lanes` and
 #      `history` read the mirror instead, with `read: mirror at ...` on
-#      stderr, and `managed-projection` answers 1, UNKNOWN.
+#      stderr, and `managed-projection` answers 1, UNKNOWN. On primary a read
+#      site whose member the prefetch did not cache makes one more `register
+#      read` (feature 007, T505), and where that fails, the read is this 69
+#      by the same classes, passed on by every caller, never the files instead.
 #   3  PUSHED, NOT CONFIRMED: <sha> (Amendment 23 S4, its one cause). The write
 #      committed and pushed — or its push timed out, and a hung push often
 #      lands — and the read-back could not confirm the commit on origin: the
@@ -4862,6 +4865,68 @@ RRE_EOF
   cat -- "$rre_t"
   rm -f -- "$rre_t"
   return 0
+}
+
+# FEATURE 007, T505 - `reg_paths` (tasks:761; contract 3.6, C10): `.paths`, the
+# render set's paths present at `n`, one per line, sorted bytewise; where
+# `.paths` is not cached, form 3 `--files paths` at `n'`. Any end but 0 returns
+# 69 and prints nothing. It is the one reader of `.paths` beside the read
+# sites: lane 4's T401 primary branch takes `lanes/log`'s paths from it.
+reg_paths() {
+  rpa_m=0; reg_member paths || rpa_m=$?
+  [ "$rpa_m" = 0 ] || return 69
+  rpa_t=""
+  rpa_t="$(cat -- "$SE_CACHE_FILE.paths" && printf x)" || return 69
+  printf '%s' "${rpa_t%x}"
+}
+
+# FEATURE 007, T505 - `reg_image <path>`, lane 4's T401 primary branch (Q-L5-3;
+# tasks:760; O21 (a), #165 6741093519; contract 3.6 and 8). It takes the path,
+# never a key, and serves only `lanes/LANES.md` (the member `register`),
+# `lanes/aliases.tsv` (`aliases`) and `lanes/log/<File>.md` (`log:<File>`); any
+# other path is 2, printing nothing. It prints the member from the family; a
+# member not cached takes form 3 at `n'`, and a `<File>` outside the class
+# `--log-key=<File>`, read from `.log.%<hex>` (O18). A log is printed only where
+# its `.logpath` names exactly `<path>`: where `.logpath` is empty, or names a
+# file of another case, the log at `<path>` is absent. An absent
+# `lanes/aliases.tsv` or `lanes/log/<File>.md` is 0 with nothing on stdout, as
+# in every mode; for `lanes/aliases.tsv` it prints the table's own bytes, and
+# nothing for an empty or absent table, which it tells by `.head`'s `file=`
+# row, never by `.aliases`' `# no lane aliases` line. An absent `lanes/LANES.md`
+# is 69. Every other end - two logs that differ from `<File>` only by case
+# (C11), or any non-0 from form 3 - is 69, the decide class's failed read,
+# never an empty answer.
+REG_EMPTY_SHA256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+reg_image() {   # <path>
+  rim_p="${1-}"
+  case "$rim_p" in
+    lanes/LANES.md)
+      rim_m=0; reg_member register || rim_m=$?
+      [ "$rim_m" = 0 ] || return 69
+      ! reg_head_absent lanes/LANES.md || return 69
+      cat -- "$SE_CACHE_FILE.register" || return 69
+      return 0 ;;
+    lanes/aliases.tsv)
+      rim_m=0; reg_member aliases || rim_m=$?
+      [ "$rim_m" = 0 ] || return 69
+      rim_row="$(awk -F'\t' '$1 == "file=lanes/aliases.tsv" { print $2 " " $3; exit }' "$SE_CACHE_FILE.head" 2>/dev/null)" || return 69
+      case "$rim_row" in
+        "1 $REG_EMPTY_SHA256" | "0 "* | "") return 0 ;;
+      esac
+      cat -- "$SE_CACHE_FILE.aliases" || return 69
+      return 0 ;;
+    lanes/log/README.md) return 2 ;;
+    lanes/log/*.md)
+      rim_f="${rim_p#lanes/log/}"; rim_f="${rim_f%.md}"
+      case "$rim_f" in "" | */*) return 2 ;; esac
+      rim_m=0; rim_s=""; rim_s="$(reg_log "$rim_f")" || rim_m=$?
+      [ "$rim_m" = 0 ] || return 69
+      [ -n "$rim_s" ] || return 0
+      [ "$(sed -n -e 1p "$SE_CACHE_FILE.logpath.$rim_s" 2>/dev/null)" = "$rim_p" ] || return 0
+      cat -- "$SE_CACHE_FILE.log.$rim_s" || return 69
+      return 0 ;;
+  esac
+  return 2
 }
 
 # Prints, to stdout, a comma-joined, de-duplicated list of the lane(s) whose
