@@ -100,7 +100,12 @@
 #   2  REFUSED — no such lane, a lane bound elsewhere, no directory or profile
 #      recorded yet, no launcher on PATH, an answer that is not one of the
 #      choices, a recorded window that no longer resolves
-#   1  a read failed, which is never "there are no lanes" (Amendment 7(d))
+#   1  a read failed, which is never "there are no lanes" (Amendment 7(d)); or
+#      a request's base that is not one: `act-begin`'s 1 or 64, or an exit 0
+#      whose line is empty or is not `<act-id>@files` or
+#      `<act-id>@<seq>:<generation>` (lane 3's A2). `act-begin`'s 69, 75 and 3
+#      pass as they are; its 2, a `lanes-edit.sh` older than the verb, is no
+#      exit at all: the request goes on with `LANES_ACT` empty (A2)
 #   64 usage — an unknown option, or a flag with no value
 #
 #   $LANES_EDIT      the register's reader (default: lanes-edit.sh beside this)
@@ -117,7 +122,11 @@
 # BOUND ELSEWHERE branch: it is an act of its own. `act-begin` takes its base
 # before the `binding` read that decides it, and the write goes under that base
 # with `LANES_EXPECT="bind:<lane>"` and `LANES_LANE="<lane>"` on that one call.
-# Its exits are passed on where they are the register's own — 69 and 75 as they
+# The base is read as `lanes-edit.sh`'s `act_parse` reads it (lane 3's A2):
+# `act-begin`'s 69, 75 and 3 leave as they are, its 2 goes on with `LANES_ACT`
+# empty and `bind:<lane>` kept, and every other answer refuses with 1 before the
+# write: its 1 or 64, an exit 0 with no line, or a line that is no base.
+# The write's exits are passed on where they are the register's own — 69 and 75 as they
 # are, and 3 with T433's text (D8's words for primary, then the files-mode
 # meaning) beside the writer's own printed rerun, never a hint of this word's.
 # Every other code keeps 1, a 64 included; a 2 says the lane may no longer be
@@ -184,7 +193,7 @@ stdin is not a terminal. `f` at the question opens a NEW lane at the next free
 position; `q` picks none.
 
 Exit: 0 reached, listed or declined · 8 nothing to pick · 2 refused ·
-1 a read failed · 64 usage.
+1 a read failed, or a request's base is not one · 64 usage.
 
   $LANES_EDIT   the register's reader   (default: lanes-edit.sh beside this file)
   $PCLAUDE      the launcher            (default: lclaude, else pclaude, else claude-profile)
@@ -1058,6 +1067,39 @@ EOF
 	exit 0
 }
 
+# THE BASE'S FORM, AS `lanes-edit.sh`'S `act_parse` READS IT (Y:5577-5579; lane 3's
+# A2: an exit 0 with no line "or a malformed one" refuses with 1). `<act-id>@files`
+# or `<act-id>@<seq>:<generation>`: 32 lower-case hex digits, an `@`, then `files`,
+# or a seq of 1 to 18 digits with no leading zero (or `0`), a colon and a
+# lower-case 8-4-4-4-12 uuid. Copied from `lane-start`'s `ls_act_form` and
+# `lane-end`'s `le_act_shaped`, with `case` patterns of spelled-out bracket lists
+# so no locale widens a range and bash 3.2 reads them as bash 5 does. A second
+# line, a space or an upper-case digit fails it, so no base is exported that the
+# write would refuse anyway.
+ge_act_form() (   # <the line>: 0 where it is a base
+	set -f
+	gaf_h='[0123456789abcdef]'
+	gaf_id="${1%%@*}"; gaf_rest="${1#*@}"
+	case "$1" in *@*) : ;; *) return 1 ;; esac
+	case "$gaf_id" in "" | *[!0123456789abcdef]*) return 1 ;; esac
+	[ "${#gaf_id}" -eq 32 ] || return 1
+	[ "$gaf_rest" != files ] || return 0
+	case "$gaf_rest" in *:*) : ;; *) return 1 ;; esac
+	gaf_seq="${gaf_rest%%:*}"; gaf_gen="${gaf_rest#*:}"
+	case "$gaf_seq" in
+	0) : ;;
+	[123456789]*)
+		case "$gaf_seq" in *[!0123456789]*) return 1 ;; esac
+		[ "${#gaf_seq}" -le 18 ] || return 1 ;;
+	*) return 1 ;;
+	esac
+	# shellcheck disable=SC2254  # the generation's pattern is a glob on purpose
+	case "$gaf_gen" in
+	$gaf_h$gaf_h$gaf_h$gaf_h$gaf_h$gaf_h$gaf_h$gaf_h-$gaf_h$gaf_h$gaf_h$gaf_h-$gaf_h$gaf_h$gaf_h$gaf_h-$gaf_h$gaf_h$gaf_h$gaf_h-$gaf_h$gaf_h$gaf_h$gaf_h$gaf_h$gaf_h$gaf_h$gaf_h$gaf_h$gaf_h$gaf_h$gaf_h) return 0 ;;
+	esac
+	return 1
+)
+
 # BOUND ELSEWHERE — CLAUSE (c)'s QUESTION, WHICH EXISTS NOW. This word never
 # offers a launch here: a second session on a lane another place holds is the
 # collision the whole protocol is about. What it offers is the REQUEST — *"the
@@ -1105,19 +1147,42 @@ go_elsewhere() {
 	# be refused with the same code, and a request with no base would be made
 	# with no expectation checked, which is a silent under-check. So this
 	# refuses, with the register's own 69, 75 or 3 where the read ended in one of
-	# them, and with the exit of today, 1, for any other code. `2` is what a
-	# `lanes-edit.sh` older than the verb spends on an unknown subcommand:
-	# `act-begin` itself never answers 2 unless it is told to `--rebase`, and
-	# this word never does.
+	# them, and with the exit of today, 1, for any other code and for an exit 0
+	# whose line is empty or is not a base (lane 3's A2, #165 6774499606, which
+	# reads "an exit 0 with no line or a malformed one" as `act_parse` reads it:
+	# `ge_act_form`, above). ONE ANSWER GOES ON, AND IT IS THE 2. A2: "`act-begin`'s
+	# 2 comes from a helper older than T410, which reads neither variable
+	# (Y:5596). The act goes on with `LANES_ACT` unset and every `LANES_EXPECT`
+	# kept." `act-begin` itself never answers 2 unless it is told to `--rebase`,
+	# and this word never does, so a 2 is that helper, and the request below is
+	# made with `LANES_ACT` empty and `bind:<lane>` kept (B14, tasks:1393: "unset
+	# or empty"). The `binding` read and the write below then run as they ever
+	# did, each with its own arm for the codes it can answer.
 	ge_act="$("$LANES_EDIT" act-begin)" || ge_act_rc=$?
 	case "$ge_act_rc" in
-	0) : ;;
-	2) die "this workstation's \`lanes-edit.sh\` has no \`act-begin\`, so it predates feature 007's
-    acts and this command cannot take the base its request rests on. That is not
-    a failure and nothing is wrong with the register — this workstation has not
-    taken the install yet. Take it:
-      openRepoTools --install
-    Nothing was written, launched or attached." 2 ;;
+	0)
+		[ -n "$ge_act" ] || die "no base could be taken for the request: \`$LANES_EDIT act-begin\` exited 0 and printed nothing.
+    That is NOT 'the request needs none' (Amendment 7(d)). Nothing was written,
+    launched or attached. Run it by hand to see what it says:
+      $LANES_EDIT act-begin" 1
+		ge_act_form "$ge_act" || die "no base could be taken for the request: \`$LANES_EDIT act-begin\` exited 0 and printed
+    \"$ge_act\", which is not one line of <act-id>@files or
+    <act-id>@<seq>:<generation>, so it is not a base (lane 3's A2). Every write of
+    this act would be refused on it, so this command will not ask another place
+    for a handoff on a binding it cannot check. Nothing was written, launched or
+    attached. Run it by hand to see what it says:
+      $LANES_EDIT act-begin" 1 ;;
+	2)
+		# A2: the act goes on, with no base and every expectation kept. Said once,
+		# on stderr, because a base that was not taken is a fact the person may
+		# want; it is not a refusal, and it is not today's "nothing was written".
+		ge_act=""
+		note "\`$LANES_EDIT act-begin\` exited 2, so this request takes no base: this workstation's
+    \`lanes-edit.sh\` is older than feature 007's acts and reads neither \`LANES_ACT\`
+    nor \`LANES_EXPECT\` (Y:5596). That is not a failure and nothing is wrong with
+    the register. The request goes on with \`LANES_ACT\` empty, and its write still
+    names its expectation, \`bind:$R_LANE\` (lane 3's A2). \`openRepoTools --install\`
+    brings this workstation up to date." ;;
 	69 | 75 | 3)
 		die "no base could be taken for the request: \`$LANES_EDIT act-begin\` exited $ge_act_rc, the
     register's own code, which is passed on. Every write of this act would be
@@ -1131,10 +1196,6 @@ go_elsewhere() {
     written, launched or attached. Run it by hand to see what it says:
       $LANES_EDIT act-begin" 1 ;;
 	esac
-	[ -n "$ge_act" ] || die "no base could be taken for the request: \`$LANES_EDIT act-begin\` exited 0 and printed nothing.
-    That is NOT 'the request needs none' (Amendment 7(d)). Nothing was written,
-    launched or attached. Run it by hand to see what it says:
-      $LANES_EDIT act-begin" 1
 	# LOCAL, LIKE EVERY READ IN THIS WORD, and the fetch that matters is one
 	# layer down rather than missing: this read decides WHAT to ask and which
 	# facts to print, and `request-handoff` — the act it leads to — fetches for
