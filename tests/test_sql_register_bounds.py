@@ -401,6 +401,8 @@ TIMING_PSQL = r'''#!/usr/bin/env python3
 # is also stamped in psql-sent.log once read, before the real psql connects.
 # Each logged call names its parent's pid too, the command that made it, so a
 # missed snapshot's second request is told from a new attempt's (T257i).
+# Each send stamp says whether its request is a snapshot, so a case can tell
+# that a writer's SQL path ran even where the snapshot never ended (T257j).
 import time
 begin = time.monotonic()
 import json, os, subprocess, sys
@@ -416,8 +418,8 @@ if sys.argv[1:] != ["--version"]:
     # write functions it calls, so a fault can be armed for one named call.
     with open(os.path.join(here, "psql-sent.log"), "a", encoding="utf-8") as handle:
         handle.write(json.dumps({"ppid": os.getppid(), "sent": time.monotonic(),
-                                 "calls": [k for k in KINDS if k.encode() + b"(" in data]})
-                     + "\n")
+                                 "calls": [k for k in KINDS if k.encode() + b"(" in data],
+                                 "snapshot": b"REPEATABLE READ" in data}) + "\n")
 start = time.monotonic()
 proc = subprocess.run([real] + sys.argv[1:], input=data, capture_output=True)
 end = time.monotonic()
@@ -621,6 +623,15 @@ ROWS = {
     # function (`SLOW_ROWS`).
     "snapshot-miss":    dict(group=None, exit=69, bound=8, strict=False,
                              faults=("F2",), statement_ms=5000, table="register_head"),
+    # T257j: `writer-commit-f2`, `writer-commit-f3` and `whole-write` meet
+    # their faults after the snapshot's check 4, which refuses any switch but
+    # `primary` with the marker `present`; `pg` alone is a bootstrap-only
+    # clone, its switch `files` with the marker `absent` and its head -1. So
+    # they run on the imported register at `primary` (`Operator`, as T278's
+    # rows and `snapshot-miss` do; `PRIMARY_WRITER_ROWS`), each with its id,
+    # its fault and its expected exit unchanged. `writer-snapshot` meets its
+    # F1 at the connect and its F4 at the snapshot's read, both before check
+    # 4, so it stays on `Bench`.
     # T278'S SIX ROWS (AT-D9's table, TP:3600-3608; "The operator rows run the
     # real commands", TP:3627-3641): the operator's commands on test 7's
     # fixture register (`Operator`, below), each at F1, timed from the
@@ -679,6 +690,8 @@ ROWS = {
 #: T278's rows, which `Operator` runs, not `Bench`.
 OPERATOR_ROWS = ("rollback", "cutover", "switch-to-files", "record-marker", "stray-commit",
                  "stray-calls")
+#: T257a's writer rows that `Operator`'s estate at `primary` runs (T257j).
+PRIMARY_WRITER_ROWS = ("writer-commit-f2", "writer-commit-f3", "whole-write")
 
 #: The whole write's own cell (TP's "a whole write" row; T257f): at
 #: `LANES_REGISTER_DEADLINE_S=3`, no attempt starts after the deadline, and
@@ -825,11 +838,12 @@ class Bench:
                             "--why", "D9's probe row", "--mirror-seq", "0"]
         elif row == "mode-query":
             argv = index + ["mode"]
-        elif row in ("writer-snapshot", "writer-commit-f2", "writer-commit-f3", "whole-write"):
+        elif row == "writer-snapshot":
             # A WRITER'S WHOLE PATH, `set-row-state` on the bench's lane, whose
-            # snapshot (F1), commit (F2) or lock (F3) meets the fault; the
-            # deadline is D9's test value. A reading: T257's text names the
-            # rows, not the verb that carries them.
+            # snapshot meets the fault; the deadline is D9's test value. A
+            # reading: T257's text names the rows, not the verb that carries
+            # them. The writer rows whose fault comes after the snapshot's
+            # check 4 run on `Operator`'s estate (`Operator.write`; T257j).
             argv = ["bash", str(tool / "lanes-edit.sh"), "set-row-state", "repoA-2",
                     f"PAUSED {DOT} T257's writer row"]
             env = dict(env, LANES_REGISTER_DEADLINE_S="3", LANES_LANE="repoA-2")
@@ -876,14 +890,6 @@ class Bench:
             return []
         return [json.loads(l) for l in self.timing.read_text(encoding="utf-8").splitlines()
                 if l and json.loads(l)["argv"] != ["--version"]]
-
-    def sent(self) -> list:
-        """`TIMING_PSQL`'s send stamps, as `Operator.sent` reads them: each
-        request read, with the write functions it calls, before its `psql`
-        connects (T257i)."""
-        log = self.bin / "psql-sent.log"
-        return [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines() if l] \
-            if log.exists() else []
 
     def request_elapsed(self) -> float:
         """`status`'s time (T220f; lane 3's T220 bullet, #165 comment
@@ -1007,6 +1013,9 @@ def test_each_database_path_exits_inside_its_bound(pg, tmp_path, request, case):
     if row == "snapshot-miss":
         _snapshot_miss(pg, tmp_path, request, fault)
         return
+    if row in PRIMARY_WRITER_ROWS:
+        _primary_writer_row(pg, tmp_path, request, row, fault)
+        return
     bench = Bench(pg, tmp_path, request)
     user = bench.login(spec["group"]) if spec["group"] else "lanes_test"
     if row == "migration":
@@ -1018,17 +1027,10 @@ def test_each_database_path_exits_inside_its_bound(pg, tmp_path, request, case):
             listener = SilentListener()
             config = bench.config("127.0.0.1", listener.port, user)
         elif fault == "F2":
-            # THE COMMIT'S F2 IS ARMED AT THE COMMIT'S OWN SEND (T257i; T257f
-            # armed it after the snapshot's end, TP:3586-3589): the relay
-            # passes each snapshot request whole, a missed snapshot's second
-            # request among them, which lane 1's cut sends under what is left
-            # of `S` (#165 6783051626) and which F2 would end 69, not 3.
-            armed = (lambda: any("commit_write" in s["calls"] for s in bench.sent())) \
-                if row == "writer-commit-f2" else None
-            listener = StartupRelay(f"{pg.host}/.s.PGSQL.{pg.port}", armed=armed)
+            listener = StartupRelay(f"{pg.host}/.s.PGSQL.{pg.port}")
             config = bench.config("127.0.0.1", listener.port, user)
         else:
-            session = _hold_head(pg) if row in HEAD_HELD_F3 else _hold(pg, spec["table"])
+            session = _hold(pg, spec["table"])
             config = bench.config(quote(str(pg.host), safe=""), pg.port, user)
         if row == "mode-query":
             config.write_text(config.read_text().replace("mode=primary", "mode=index"))
@@ -1042,37 +1044,6 @@ def test_each_database_path_exits_inside_its_bound(pg, tmp_path, request, case):
         assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {proc.stderr}"
     else:
         assert proc.returncode != 0, f"{case}: the path ended without its read"
-    if row == "writer-commit-f2":
-        # Every snapshot request sent before the commit's, a miss's second
-        # among them, reached the cluster and ended 0, and the commit's
-        # connection met the armed relay (TP:3589; T257i).
-        sends = [s["sent"] for s in bench.sent() if "commit_write" in s["calls"]]
-        assert sends, f"{case}: the write sent no commit call: {bench.sent()}"
-        snapshots = [c for c in bench.calls() if c.get("snapshot") and c["start"] < sends[0]]
-        assert snapshots and all(c["exit"] == 0 for c in snapshots), \
-            f"{case}: a snapshot request before the commit failed: {bench.calls()}"
-        assert listener.silenced, f"{case}: no call met F2 at the commit's send"
-    if row == "whole-write":
-        # ITS OWN CELL (T257f): no attempt, each begun by its snapshot call,
-        # starts after the deadline, asserted at twice it (timing rule 2); the
-        # time runs from the first attempt's start, and stays under `T_write`.
-        # An attempt's start is its process's first snapshot request: a
-        # missed snapshot's second request, in the same process, starts no
-        # attempt (T257i; lane 1's cut, #165 6783051626).
-        firsts: dict = {}
-        for c in bench.calls():
-            if c.get("snapshot"):
-                firsts.setdefault(c.get("ppid"), c["start"])
-        starts = sorted(firsts.values())
-        assert starts, f"{case}: the write made no attempt"
-        late = [round(s - starts[0], 2) for s in starts
-                if s - starts[0] >= 2 * WHOLE_WRITE["deadline_s"]]
-        assert not late, f"{case}: attempts started after the deadline: {late}"
-        elapsed = bench.exited - starts[0]
-        assert elapsed < WHOLE_WRITE["t_write_s"], \
-            f"{case}: {elapsed:.2f} s, over T_write's {WHOLE_WRITE['t_write_s']} s"
-        _record(f"{case}-T_write", elapsed, WHOLE_WRITE["t_write_s"],
-                f"T_write, from the first attempt's start, {len(starts)} attempts")
     if row == "reader":
         assert proc.stdout == "", "a reader's 69 has nothing on stdout"
     if row == "answer-2":
@@ -1090,8 +1061,7 @@ def test_each_database_path_exits_inside_its_bound(pg, tmp_path, request, case):
     else:
         assert elapsed < 2 * spec["bound"], f"{case}: {elapsed:.2f} s against {spec['bound']} s"
         _record(case, elapsed, spec["bound"], "timing rule 2" + (
-            ", from the register request's start" if row == "status" else
-            ", from the first attempt's start" if row == "whole-write" else ""))
+            ", from the register request's start" if row == "status" else ""))
 
 
 def _slow_statement(pg, table: str, group: str, seconds: float) -> None:
@@ -1163,10 +1133,14 @@ def test_a_slow_statement_meets_57014_before_the_client_timer(pg, tmp_path, requ
     outcome (AT-D9, "Oracle"). `[service]` times the warm service's held
     child, through `STREAM_PSQL` (T237y, `_service_57014`). A writer's
     commit, `[writer-commit-f2]`, meets a trigger on `journal` and exits 69,
-    a refusal the database made (T257h)."""
+    a refusal the database made (T257h), on `Operator`'s estate at `primary`
+    (T257j, `_primary_writer_57014`)."""
     spec = ROWS[row]
     if row in OPERATOR_ROWS:
         _operator_57014(pg, tmp_path, request, row)
+        return
+    if row in PRIMARY_WRITER_ROWS:
+        _primary_writer_57014(pg, tmp_path, request, row)
         return
     bench = Bench(pg, tmp_path, request)
     user = bench.login(spec["group"])
@@ -1174,19 +1148,14 @@ def test_a_slow_statement_meets_57014_before_the_client_timer(pg, tmp_path, requ
         _service_57014(bench, spec, user)
         return
     statement_s = spec["statement_ms"] / 1000
-    if spec.get("slow"):
-        # A writer's commit (T257h): a trigger where its call works.
-        _slow_trigger(pg, *spec["slow"], 4 * statement_s + 5)
-    else:
-        _slow_statement(pg, spec["table"], spec["group"], 4 * statement_s + 5)
+    _slow_statement(pg, spec["table"], spec["group"], 4 * statement_s + 5)
     proc, elapsed = bench.run(row, bench.config(quote(str(pg.host), safe=""), pg.port, user))
     ended = [c for c in bench.calls() if "57014" in c["first"]]
     assert ended, f"{row}: no call ended with 57014: {bench.calls()}"
     took = ended[0]["end"] - ended[0]["start"]
     assert statement_s <= took < 2 * statement_s, f"{row}: 57014 after {took:.2f} s"
-    outcome = spec.get("f4_exit", spec["exit"])
-    if outcome is not None:
-        assert proc.returncode == outcome, f"{row}: {proc.returncode}: {proc.stderr}"
+    if spec["exit"] is not None:
+        assert proc.returncode == spec["exit"], f"{row}: {proc.returncode}: {proc.stderr}"
     _record(f"{row}-F4", took, statement_s, "timing rules 2 and 3")
 
 
@@ -2408,6 +2377,28 @@ class Operator:
             self.exited = time.monotonic()
         return subprocess.CompletedProcess(argv, child.returncode, out, err), self.exited - start
 
+    def write(self, config: Path) -> tuple:
+        """A writer's whole path on this estate (T257j): `lanes-edit.sh
+        set-row-state` on the operator's lane, from its checkout, at
+        `LANES_REGISTER_DEADLINE_S=3`, D9's test value, as T257a's rows ran it
+        on `Bench`; (the process, its elapsed seconds), its pid and exit
+        stamp kept."""
+        argv = ["bash", str(self.copy.parent / "lanes-edit.sh"), "set-row-state", self.lane,
+                f"PAUSED {DOT} T257's writer row"]
+        env = dict(self.env, LANES_INDEX_CONFIG=str(config), LANES_REGISTER_DEADLINE_S="3")
+        start = time.monotonic()
+        with subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, env=env,
+                              cwd=str(self.reg.wip)) as child:
+            self.pid = child.pid
+            try:
+                out, err = child.communicate(timeout=300)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                raise
+            self.exited = time.monotonic()
+        return subprocess.CompletedProcess(argv, child.returncode, out, err), self.exited - start
+
     def calls(self) -> list:
         """`TIMING_PSQL`'s log: each call that ended, in order."""
         if not self.timing.exists():
@@ -2671,6 +2662,114 @@ def _snapshot_miss(pg, tmp_path: Path, request, fault: str) -> None:
     elapsed = op.exited - requests[0]["begin"]
     assert elapsed < 2 * spec["bound"], f"{case}: {elapsed:.2f} s against {spec['bound']} s"
     _record(case, elapsed, spec["bound"], "timing rule 2, from the first request's start")
+
+
+#: T257j: the writer's SQL path is lane 4's (L4-B2, `lanes-edit.sh`'s SQL
+#: writer), which line R's `lanes-edit.sh` lacks: until it lands, the writer
+#: sends no snapshot request, and the cases say so rather than fail later.
+NO_SQL_WRITER = "it fails until L4-B2, lanes-edit.sh's SQL writer"
+
+
+def _sent_a_snapshot(op: Operator, case: str, proc) -> None:
+    """The writer sent its snapshot request: its SQL path ran (T257j)."""
+    assert any(s.get("snapshot") for s in op.sent()), \
+        (f"{case}: the writer sent no snapshot request, so {NO_SQL_WRITER}: "
+         f"{proc.returncode}: {proc.stderr}")
+
+
+def _primary_writer_row(pg, tmp_path: Path, request, row: str, fault: str) -> None:
+    """`test_each_database_path_exits_inside_its_bound`'s T257a writer rows
+    whose fault comes after the snapshot's check 4 (T257j; line BD10's
+    doubt 1): `writer-commit-f2` at F2, `writer-commit-f3` and `whole-write`
+    at F3, each with its id, its fault and its expected exit, on the
+    imported register at `primary` (`Operator`), since `pg` alone is a
+    bootstrap-only clone whose switch reads `files` with the marker `absent`
+    and whose head is -1, where check 4 would end each write 69 before its
+    commit. The writer is `Operator.write`. F2 is armed at the commit's own
+    send (T257i; TP:3586-3589); F3 is the head row held `FOR UPDATE`
+    (`_hold_head`). They fail until L4-B2 and L4-B5."""
+    spec = ROWS[row]
+    case = f"{row}-{fault}"
+    op = Operator(pg, tmp_path, request, "primary")
+    listener, session = None, None
+    try:
+        if fault == "F2":
+            # THE COMMIT'S F2 IS ARMED AT THE COMMIT'S OWN SEND (T257i; T257f
+            # armed it after the snapshot's end, TP:3586-3589): the relay
+            # passes each snapshot request whole, a missed snapshot's second
+            # request among them, which lane 1's cut sends under what is left
+            # of `S` (#165 6783051626) and which F2 would end 69, not 3.
+            listener = StartupRelay(f"{pg.host}/.s.PGSQL.{pg.port}",
+                                    armed=op.armed_for("commit_write"))
+            config = op.config("127.0.0.1", listener.port)
+        else:
+            session = _hold_head(pg) if row in HEAD_HELD_F3 else _hold(pg, spec["table"])
+            config = op.config()
+        proc, elapsed = op.write(config)
+    finally:
+        if listener is not None:
+            listener.close()
+        if session is not None:
+            _end(session)
+    _sent_a_snapshot(op, case, proc)
+    assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {proc.stderr}"
+    if row == "writer-commit-f2":
+        # Every snapshot request sent before the commit's, a miss's second
+        # among them, reached the cluster and ended 0, and the commit's
+        # connection met the armed relay (TP:3589; T257i).
+        sends = [s["sent"] for s in op.sent() if "commit_write" in s["calls"]]
+        assert sends, f"{case}: the write sent no commit call: {op.sent()}"
+        snapshots = [c for c in op.calls() if c.get("snapshot") and c["start"] < sends[0]]
+        assert snapshots and all(c["exit"] == 0 for c in snapshots), \
+            f"{case}: a snapshot request before the commit failed: {op.calls()}"
+        assert listener.silenced, f"{case}: no call met F2 at the commit's send"
+    if row == "whole-write":
+        # ITS OWN CELL (T257f): no attempt, each begun by its snapshot call,
+        # starts after the deadline, asserted at twice it (timing rule 2); the
+        # time runs from the first attempt's start, and stays under `T_write`.
+        # An attempt's start is its process's first snapshot request: a
+        # missed snapshot's second request, in the same process, starts no
+        # attempt (T257i; lane 1's cut, #165 6783051626).
+        firsts: dict = {}
+        for c in op.calls():
+            if c.get("snapshot"):
+                firsts.setdefault(c.get("ppid"), c["start"])
+        starts = sorted(firsts.values())
+        assert starts, f"{case}: the write made no attempt"
+        late = [round(s - starts[0], 2) for s in starts
+                if s - starts[0] >= 2 * WHOLE_WRITE["deadline_s"]]
+        assert not late, f"{case}: attempts started after the deadline: {late}"
+        elapsed = op.exited - starts[0]
+        assert elapsed < WHOLE_WRITE["t_write_s"], \
+            f"{case}: {elapsed:.2f} s, over T_write's {WHOLE_WRITE['t_write_s']} s"
+        _record(f"{case}-T_write", elapsed, WHOLE_WRITE["t_write_s"],
+                f"T_write, from the first attempt's start, {len(starts)} attempts")
+    assert elapsed < 2 * spec["bound"], f"{case}: {elapsed:.2f} s against {spec['bound']} s"
+    _record(case, elapsed, spec["bound"], "timing rule 2" + (
+        ", from the first attempt's start" if row == "whole-write" else ""))
+
+
+def _primary_writer_57014(pg, tmp_path: Path, request, row: str) -> None:
+    """`test_a_slow_statement_meets_57014_before_the_client_timer`'s
+    `[writer-commit-f2]` (T257h, T257j): on the imported register at
+    `primary` (`Operator`), past the snapshot's check 4, the commit's entry
+    meets a trigger on `journal` that sleeps (`slow`), made after the
+    estate is built; the call ends with 57014 no earlier than its
+    `statement_timeout` after its start and under twice it, and the writer
+    exits 69 (`f4_exit`), a refusal the database made (TP:3621-3626 at
+    B14). It fails until L4-B2 and L4-B5."""
+    spec = ROWS[row]
+    op = Operator(pg, tmp_path, request, "primary")
+    statement_s = spec["statement_ms"] / 1000
+    _slow_trigger(pg, *spec["slow"], 4 * statement_s + 5)
+    proc, _ = op.write(op.config())
+    _sent_a_snapshot(op, row, proc)
+    ended = [c for c in op.calls() if "57014" in c["first"]]
+    assert ended, f"{row}: no call ended with 57014: {op.calls()}"
+    took = ended[0]["end"] - ended[0]["start"]
+    assert statement_s <= took < 2 * statement_s, f"{row}: 57014 after {took:.2f} s"
+    assert proc.returncode == spec["f4_exit"], f"{row}: {proc.returncode}: {proc.stderr}"
+    _record(f"{row}-F4", took, statement_s, "timing rules 2 and 3")
 
 
 def test_a_rollback_whose_first_call_expires_rereads_the_switch(pg, tmp_path, request):
