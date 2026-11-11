@@ -2554,8 +2554,12 @@ def test_an_import_carries_not_after_of_its_330_s_timer_plus_2_s(pg, tmp_path):
     `not_after` is more than 300 s after the import's journal row's `utc`, and
     at most 332 s after it, both on the database's clock. `utc` is whole seconds
     (its CHECK), so "at most 332 s" is read as less than 333 s. A writer's bound
-    would put it at most 10 s after."""
+    would put it at most 10 s after. `W` is a directory of its own
+    (`LANES_WORKSPACE_ROOT`, `lanes-edit.sh`'s test seam), since the import
+    refuses a `LANES_REPO` that is `W` or a `W` it cannot read."""
     work, commit = workspace_at(tmp_path, [])
+    w = tmp_path / "W"
+    w.mkdir()
     shim = tmp_path / "shim"
     shim.mkdir()
     (shim / "psql").write_text(PSQL_SHIM, encoding="utf-8")
@@ -2563,8 +2567,8 @@ def test_an_import_carries_not_after_of_its_330_s_timer_plus_2_s(pg, tmp_path):
     (shim / PSQL_SHIM_CONTROL).write_text(json.dumps({"psql": pg.psql_bin, "arms": []}),
                                           encoding="utf-8")
     env = index_env(tmp_path, config(tmp_path, pg, mode="index"), LANES_REPO=str(work),
-                    LANES_LANE=LANE, LANES_WORKSTATION=WS, **OPERATOR_GIT,
-                    PATH=f"{shim}{os.pathsep}{os.environ.get('PATH', os.defpath)}")
+                    LANES_WORKSPACE_ROOT=str(w), LANES_LANE=LANE, LANES_WORKSTATION=WS,
+                    **OPERATOR_GIT, PATH=f"{shim}{os.pathsep}{os.environ.get('PATH', os.defpath)}")
     proc = run_index(LANES_INDEX, ["import", "--at", commit], env, cwd=work)
     assert proc.returncode == 0, shown(proc)
     log = [json.loads(line) for line in
