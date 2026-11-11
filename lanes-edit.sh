@@ -6445,15 +6445,30 @@ pw_child_tree() {
   [ -z "$ct_all" ] || printf '%s\n' "$ct_all"
 }
 
+# DOES ANY OF THEM STILL RUN? (review REV415c, S1): `kill -0` on each pid, the
+# child first. A pid reused meanwhile only holds the wait to its 20 turns.
+pw_pids_run() {   # <pid>...
+  local pr_p=""
+  for pr_p in "$@"; do
+    if kill -0 "$pr_p" 2>/dev/null; then return 0; fi
+  done
+  return 1
+}
+
 # A CHILD THAT NEVER REACHES `ready` (lane openRepoTools-3, #165 6770820384,
 # T415's question 3; T415's line at B12b; review REV415, N3): past its bound,
 # PW_CAP_S seconds from its start (Y:5001), or 1 s before a kept child's seam
 # cap where that comes first (#165 6774499606, T415 (3)). Every kept child gets
 # `abandon` FIRST, so none meets its cap while the child below is stopped
 # (Y:5026). Then the processes under the child are listed (`pw_child_tree`),
-# the child gets TERM, and they get it with the child; whatever is left of
-# them 1 s later gets KILL, the child listed again first (#165 6774499606,
-# T415 (2)). The child is reaped and none of its output is replayed. The run
+# the child gets TERM, and they get it with the child. The wait after it lasts
+# while the child OR any of them still runs, up to 20 turns of 0.05 s, so each
+# has the same 1 s to clean up after its TERM, though the child itself, whose
+# trap runs `cleanup` once its foreground command dies, usually ends at once
+# (review REV415c, S1). Whatever is left then gets KILL, the child listed
+# again first (#165 6774499606, T415 (2)), and the end names TERM, or TERM
+# then KILL, for the child and for them apart. The child is reaped and none
+# of its output is replayed. The run
 # ends as at D7's deadline: 75, nothing sent by that attempt, naming the
 # attempt and why it was stopped, with the write's rerun. Where the pending
 # record holds a `call` line, F3's lookup comes first (`pw_end`,
@@ -6465,7 +6480,7 @@ pw_child_tree() {
 # `wait`, PW_CHILD is cleared, and 1 sends the run to `pw_child_end`, its own
 # end (Y:5016; review REV415b, NIT 5). Nothing is signalled then.
 pw_child_hung_end() {   # bound | kept
-  local ch_n=0 ch_how="TERM" ch_w="" ch_b="" ch_tree="" ch_p="" ch_t=0 ch_kids=""
+  local ch_n=0 ch_how="TERM" ch_w="" ch_b="" ch_tree="" ch_p="" ch_t=0 ch_kids="" ch_k=0
   local ch_kk="$PW_KEPT_K"
   ch_t=$((SECONDS - PW_CHILD_T0))
   pw_abandon_kept
@@ -6477,7 +6492,8 @@ pw_child_hung_end() {   # bound | kept
     return 1
   fi
   for ch_p in $ch_tree; do kill -TERM "$ch_p" 2>/dev/null || :; done
-  while kill -0 "$PW_CHILD" 2>/dev/null && [ "$ch_n" -lt 20 ]; do
+  # shellcheck disable=SC2086
+  while [ "$ch_n" -lt 20 ] && pw_pids_run "$PW_CHILD" $ch_tree; do
     if sleep 0.05 2>/dev/null; then ch_n=$((ch_n + 1)); else sleep 1; ch_n=20; fi
   done
   ch_tree="${ch_tree}${ch_tree:+$WR_NL}$(pw_child_tree)"
@@ -6486,11 +6502,18 @@ pw_child_hung_end() {   # bound | kept
     ch_how="TERM, then KILL 1 s later"
   fi
   for ch_p in $ch_tree; do
-    if kill -0 "$ch_p" 2>/dev/null; then kill -KILL "$ch_p" 2>/dev/null || :; fi
+    if kill -0 "$ch_p" 2>/dev/null; then
+      kill -KILL "$ch_p" 2>/dev/null || :
+      ch_k=$((ch_k + 1))
+    fi
   done
   wait "$PW_CHILD" 2>/dev/null || :
   PW_CHILD=""
-  [ -z "$ch_tree" ] || ch_kids=", and every process it had started got the same"
+  if [ "$ch_k" -gt 0 ]; then
+    ch_kids=", and every process it had started got TERM, then KILL 1 s later where TERM had not ended it"
+  elif [ -n "$ch_tree" ]; then
+    ch_kids=", and every process it had started got TERM"
+  fi
   [ -n "$WR_CALLS" ] || ch_w=", and nothing was written"
   if [ "$1" = kept ]; then
     pw_end 75 "attempt ${PW_K}'s child had not reached the seam ${ch_t} s after its start, and attempt ${ch_kk}'s child, kept at its seam after a commit call in doubt, was within 1 s of the seam's cap of ${PW_SEAM_CAP_S} s, so the run ended first (Y:5004): every kept child got \`abandon\`, attempt ${PW_K}'s child was stopped with ${ch_how}${ch_kids}, and its output is not shown. Nothing was sent by that attempt${ch_w}. $(pw_rerun_line)"
