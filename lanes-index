@@ -7775,11 +7775,376 @@ def cmd_serve(args: list[str]) -> int:
     return register_serve_run(cfg, store, paths)
 
 
+#: THE TWO TEST-ONLY VARIABLES (R37; socket API §10; tasks:1641-1643), each
+#: honoured only where it is set, in whole seconds: a value that is not a
+#: positive whole number is ignored and the default kept, never
+#: `config-refused` (lane 3's OP-14, #165 6746215510, which stands, #165
+#: 6827356485), and the idle check's value of 240 or more, the load
+#: balancer's idle reset, is ignored too.
+REGISTER_SERVE_IDLE_CHECK = ("LANES_REGISTER_SERVE_IDLE_CHECK_S", 60, 240)
+REGISTER_SERVE_IDLE_STOP = ("LANES_REGISTER_SERVE_IDLE_STOP_S", 900, None)
+
+#: A REQUEST'S BOUND in bytes, its `end` line included (socket API §13.3).
+REGISTER_SERVE_REQUEST_MAX = 65536
+
+
+def register_serve_seconds(spec: tuple) -> tuple[int, bool]:
+    """One test-only variable's interval in s (`REGISTER_SERVE_IDLE_CHECK`,
+    `REGISTER_SERVE_IDLE_STOP`), and whether a value set was ignored."""
+    name, default, cap = spec
+    raw = os.environ.get(name)
+    if raw is None:
+        return default, False
+    if not re.fullmatch(r"[0-9]{1,9}", raw) or int(raw) < 1 or (cap and int(raw) >= cap):
+        return default, True
+    return int(raw), False
+
+
+def register_serve_wait_ms(cfg: dict) -> int:
+    """`w_s`, THE CLIENT'S WAIT, in whole ms (SVC-8; Y:4182; socket API
+    §6.1): 300, or `register_rtt_ms=` plus 200 where that is over 100, so
+    always SVC-6's timer plus 100."""
+    rtt = int(cfg.get("register_rtt_ms") or 0)
+    return rtt + 200 if rtt > 100 else 300
+
+
+def register_serve_timer_ms(cfg: dict) -> int:
+    """SVC-6'S PER-REQUEST TIMER, in whole ms (Y:4001-4008; socket API §6.2):
+    200, or `register_rtt_ms=` plus 100 where that is over 100."""
+    rtt = int(cfg.get("register_rtt_ms") or 0)
+    return rtt + 100 if rtt > 100 else 200
+
+
+def register_serve_install() -> tuple:
+    """THE INSTALL'S IDENTITY (Y:3915-3916): this `lanes-index` file's size,
+    mtime and inode, or () where it cannot be read."""
+    try:
+        st = os.stat(os.path.abspath(__file__))
+    except OSError:
+        return ()
+    return st.st_size, st.st_mtime_ns, st.st_ino
+
+
+def register_serve_host() -> dict:
+    """THIS PROCESS'S PID NAMESPACE AND BOOT ID, on Linux (Y:3782-3784), each
+    absent where it cannot be read, as on macOS."""
+    out = {}
+    try:
+        out["pidns"] = os.readlink("/proc/self/ns/pid")
+    except OSError:
+        pass
+    try:
+        with open("/proc/sys/kernel/random/boot_id", "rb") as handle:
+            out["boot"] = handle.read(100).decode("ascii").strip()
+    except (OSError, UnicodeDecodeError):
+        pass
+    return out
+
+
+def register_serve_owner_text(started: str) -> bytes:
+    """`register.owner` (Y:3782-3784; socket API §2.4): the pid, the start
+    UTC, the install's identity and, on Linux, the pid namespace and the
+    boot id, one `key=value` line each."""
+    lines = [f"pid={os.getpid()}", f"started={started}",
+             "install=" + " ".join(str(part) for part in register_serve_install())]
+    lines += [f"{key}={value}" for key, value in sorted(register_serve_host().items())]
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def register_serve_config_stamp(cfg: dict) -> tuple:
+    """The configuration's and its reader password file's mtimes, which the
+    service re-reads when they change (Y:3918-3920)."""
+    out = []
+    for path in (cfg.get("path"), cfg.get("reader_passfile")):
+        try:
+            out.append(os.stat(path).st_mtime_ns if path else None)
+        except OSError:
+            out.append(None)
+    return tuple(out)
+
+
+def register_serve_request(data: bytes) -> list | None:
+    """A REQUEST'S LINES, CHECKED (socket API §13.3): `read 1`; then one line
+    for each thing it wants, `file <path>`, `set <prefix>` or `list`; then
+    `end`. Returns its items, `("file", <path>)`, `("set", <prefix>)` and
+    `("list", "")`, in order, or None where it cannot be taken: another first
+    line, a line of none of the three forms, a name outside the three shapes,
+    an empty key included, a prefix other than the two, no item, or more than
+    `REGISTER_SERVE_REQUEST_MAX` bytes before `end`. Names are ASCII, each
+    byte 0x21 to 0x7E, compared as bytes and never as file-system paths."""
+    end = data.find(b"\nend\n")
+    if end < 0 or end + 5 > REGISTER_SERVE_REQUEST_MAX:
+        return None
+    lines = data[:end].split(b"\n")
+    if lines[0] != b"read 1" or len(lines) < 2:
+        return None
+    items = []
+    for line in lines[1:]:
+        if line == b"list":
+            items.append(("list", ""))
+            continue
+        word, sep, rest = line.partition(b" ")
+        if not sep or not rest or any(byte < 0x21 or byte > 0x7E for byte in rest):
+            return None
+        name = rest.decode("ascii")
+        if word == b"file" and (name in (REGISTER_PATH, ALIASES_PATH) or (
+                name.startswith(LOG_PREFIX) and name.endswith(".md")
+                and len(name) > len(LOG_PREFIX) + 3)):
+            items.append(("file", name))
+        elif word == b"set" and name in (_REGISTER_ARCHIVE_PREFIX, LOG_PREFIX):
+            items.append(("set", name))
+        else:
+            return None
+    return items
+
+
+class RegisterService:
+    """THE SERVICE ONCE IT LISTENS (SVC-4 to SVC-8; socket API §7 and §8):
+    the accept loop in the main thread, one thread per connection, and the
+    idle stop, the install check and the configuration check."""
+
+    def __init__(self, cfg: dict, store, paths: dict, server, bound: int):
+        import threading
+        self.cfg, self.store, self.paths = cfg, store, paths
+        self.server, self.bound = server, bound
+        self.cond = threading.Condition()
+        self.stopping = ""
+        self.last_request = time.monotonic()
+        self.install = register_serve_install()
+        self.config_stamp = register_serve_config_stamp(cfg)
+        self.idle_check_s, ignored = register_serve_seconds(REGISTER_SERVE_IDLE_CHECK)
+        if ignored:
+            register_serve_log(paths, "the idle check's test value is ignored: the default is kept")
+        self.idle_stop_s, ignored = register_serve_seconds(REGISTER_SERVE_IDLE_STOP)
+        if ignored:
+            register_serve_log(paths, "the idle stop's test value is ignored: the default is kept")
+
+    # -- the lifecycle
+
+    def stop(self, why: str) -> None:
+        with self.cond:
+            if not self.stopping:
+                self.stopping = why
+            self.cond.notify_all()
+
+    def ours(self) -> bool:
+        """Whether the socket at the fixed path is still the one this
+        service bound, by its inode."""
+        try:
+            return os.lstat(self.paths["sock"]).st_ino == self.bound
+        except OSError:
+            return False
+
+    def serve(self) -> int:
+        """THE ACCEPT LOOP: each connection to its own thread; between
+        accepts, the idle stop (Y:3912-3914), and an end where the socket is
+        no longer this service's, since nothing can reach it then."""
+        import select
+        import signal
+        import threading
+        for number in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(number, lambda _sig, _frame: self.stop("stopped by a signal"))
+        self.begin()
+        while True:
+            with self.cond:
+                idle = time.monotonic() - self.last_request
+            if idle >= self.idle_stop_s:
+                self.stop(f"idle for {self.idle_stop_s} s")
+            elif not self.ours():
+                self.stop("its socket is gone or another's")
+            with self.cond:
+                why = self.stopping
+            if why:
+                break
+            try:
+                ready, _, _ = select.select([self.server], [], [], 0.25)
+            except InterruptedError:
+                continue
+            if not ready:
+                continue
+            try:
+                conn, _ = self.server.accept()
+            except OSError:
+                continue
+            threading.Thread(target=self.connection, args=(conn, time.monotonic()),
+                             daemon=True).start()
+        self.end()
+        if self.ours():
+            try:
+                os.unlink(self.paths["sock"])
+            except OSError:
+                pass
+        register_serve_log(self.paths, f"stopped: {why}")
+        return EXIT_OK
+
+    def begin(self) -> None:
+        """What starts once the socket listens."""
+
+    def end(self) -> None:
+        """What stops before the service exits."""
+
+    # -- a connection
+
+    def connection(self, conn, accepted: float) -> None:
+        """ONE CONNECTION, ONE REQUEST (socket API §3, §13.3): a peer of
+        another uid is closed with no answer (Y:3789-3790); the request is
+        read until its `end` line, within the client's own wait, `w_s`, from
+        the accept, else closed with no answer; one that cannot be taken is
+        `unavailable`, with `bad request` in `register.log`. Only a whole
+        request moves the idle clock."""
+        try:
+            try:
+                uid = register_peercred(conn)
+            except OSError:
+                uid = -1
+            if uid is not None and uid != os.getuid():
+                register_serve_log(self.paths, "closed a client of another uid")
+                return
+            data = self.receive(conn, accepted + register_serve_wait_ms(self.cfg) / 1000)
+            if data is None:
+                return
+            items = register_serve_request(data)
+            arrival = time.monotonic()
+            if items is not None:
+                with self.cond:
+                    self.last_request = arrival
+            else:
+                register_serve_log(self.paths, "bad request")
+            answer = self.answer(items, arrival)
+            conn.settimeout(max(0.05, register_serve_wait_ms(self.cfg) / 1000))
+            conn.sendall(answer)
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+    def receive(self, conn, deadline: float) -> bytes | None:
+        """The request's bytes up to its `end` line, or None where the client
+        closed, the wait ended, or more than the bound came first."""
+        data = b""
+        while b"\nend\n" not in data:
+            left = deadline - time.monotonic()
+            if left <= 0 or len(data) > REGISTER_SERVE_REQUEST_MAX:
+                return None if len(data) <= REGISTER_SERVE_REQUEST_MAX else data
+            conn.settimeout(left)
+            try:
+                chunk = conn.recv(65536)
+            except OSError:
+                return None
+            if not chunk:
+                return None
+            data += chunk
+        return data
+
+    def answer(self, items: list | None, arrival: float) -> bytes:
+        """The answer's bytes for one request (socket API §13): first the
+        install check (`unavailable restarting`, then the service exits,
+        Y:3914-3918) and the configuration's (Y:3918-3920)."""
+        if items is None:
+            return b"unavailable\n"
+        if register_serve_install() != self.install:
+            self.stop("its install changed")
+            return b"unavailable restarting\n"
+        if register_serve_config_stamp(self.cfg) != self.config_stamp:
+            why = self.reload()
+            if why:
+                self.stop(why)
+                return b"unavailable restarting\n"
+        return self.request(items, arrival)
+
+    def reload(self) -> str:
+        """The configuration re-read (Y:3918-3920): why the service must exit,
+        a refused configuration or a mode other than `primary`, or "" where
+        it runs on with it."""
+        try:
+            cfg = load_config()
+            if cfg["mode"] != "primary":
+                return f"its configuration is now mode={cfg['mode']}"
+            store = PostgresStore(cfg, "register_reader")
+        except Refusal:
+            return "its configuration is now refused"
+        with self.cond:
+            self.cfg, self.store = cfg, store
+            self.config_stamp = register_serve_config_stamp(cfg)
+        self.reconnect()
+        return ""
+
+    def reconnect(self) -> None:
+        """What a changed configuration restarts."""
+
+    def request(self, items: list, arrival: float) -> bytes:
+        """A request the service can take. Until its `psql` child is held,
+        `unavailable` (Y:4014-4016)."""
+        return b"unavailable\n"
+
+
 def register_serve_run(cfg: dict, store, paths: dict) -> int:
-    """The service once its four checks have passed. Not built in this
-    part: it refuses, writing nothing."""
-    note("serve: REFUSED: the service's listener is not built in this commit")
-    return EXIT_REFUSED
+    """THE SERVICE'S START, once `serve`'s four checks have passed (SVC-4;
+    Y:3899-3911; socket API §2.4, §2.5, §8.3): `register.lock` by `flock`,
+    taken without waiting and held for the service's life, where a second
+    starter exits 0; under it, the socket tried: one that answers the
+    connect is a live service, and this starter exits 0; `ECONNREFUSED` is a
+    stale socket, which it unlinks; then the bind, under `umask 077`, the
+    owner file, the listen, and the stamp removed (Y:3936-3938)."""
+    import socket
+    try:
+        import fcntl
+    except ImportError:
+        note("serve: REFUSED: this platform has no flock, so one instance cannot be held")
+        return EXIT_REFUSED
+    try:
+        lock = os.open(paths["lock"], os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC
+                       | os.O_NOFOLLOW, 0o600)
+    except OSError as exc:
+        note(f"serve: {paths['lock']} could not be opened ({exc.strerror or exc})")
+        return EXIT_UNAVAILABLE
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(lock)
+        return EXIT_OK      # ONE INSTANCE: another service holds the lock
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        probe.settimeout(1.0)
+        probe.connect(paths["sock"])
+        return EXIT_OK      # a live service answers the connect
+    except OSError:
+        pass                # `ENOENT`, or `ECONNREFUSED`: a stale socket
+    finally:
+        probe.close()
+    # THE BIND, UNDER `umask 077` (Y:3768-3770), at a short name of its own
+    # beside the fixed path, renamed over it: so a STALE SOCKET is replaced
+    # under the lock in one step (Y:3907-3909), and the new socket is never
+    # the old one's inode, which a file system may hand out again at once
+    # after an unlink.
+    # The owner file is written, and the socket listens, before the rename,
+    # so a client never connects to it unanswered or finds no owner file.
+    temp = os.path.join(paths["run"], f"s.{os.urandom(2).hex()}")
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    old = os.umask(0o077)
+    try:
+        server.bind(temp)
+        server.listen(64)
+        _register_serve_write(paths["owner"], register_serve_owner_text(utc_now()))
+        os.rename(temp, paths["sock"])
+        bound = os.lstat(paths["sock"]).st_ino
+    except OSError as exc:
+        server.close()
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        note(f"serve: the socket {paths['sock']} could not be bound ({exc.strerror or exc})")
+        return EXIT_UNAVAILABLE
+    finally:
+        os.umask(old)
+    register_serve_unstamp(paths)
+    register_serve_log(paths, f"listening, pid {os.getpid()}")
+    try:
+        return RegisterService(cfg, store, paths, server, bound).serve()
+    finally:
+        server.close()
+        os.close(lock)
 
 
 def status_service(cfg: dict) -> None:
