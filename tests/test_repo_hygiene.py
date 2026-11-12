@@ -482,8 +482,9 @@ def test_the_estate_commands_carry_the_same_flag_value_byte_for_byte():
 #: `lanes-index status` looks (`pending-record.md`'s `<state>`). The two are
 #: written twice and must be one answer. Each row is `(id, the WHOLE
 #: environment each side gets, the answer)`; the answer is None where it is
-#: the password entry's home, which no test can name. The values are made up,
-#: so no real `HOME` or `XDG_STATE_HOME` reaches either side.
+#: the password entry's home, which the test reads from `pwd` for the user it
+#: runs as. The values are made up, so no real `HOME` or `XDG_STATE_HOME`
+#: reaches either side.
 STATE_DIR_CASES = [
     ("xdg-set",
      {"XDG_STATE_HOME": "/made/up/state-home", "HOME": "/made/up/home"},
@@ -526,7 +527,7 @@ _STATE_DIR_OF_LANES_INDEX = (
 @WINDOWS_SKIP
 @pytest.mark.parametrize("case_id, env, expected", STATE_DIR_CASES,
                          ids=[row[0] for row in STATE_DIR_CASES])
-def test_wr_state_dir_agrees_with_lanes_index_state_dir(case_id, env, expected):
+def test_wr_state_dir_agrees_with_the_indexers_state_dir(case_id, env, expected):
     """`wr_state_dir` and `state_dir()` name the same directory, with
     `XDG_STATE_HOME` set and unset.
 
@@ -537,8 +538,9 @@ def test_wr_state_dir_agrees_with_lanes_index_state_dir(case_id, env, expected):
     own function cut out and run in `bash -u`, as `lanes-edit.sh` runs it; the
     Python side is `state_dir()` of the file's own module.
 
-    The two are held EQUAL, and each is held to the answer the case says
-    where it can, because two sides that both print nothing agree. The cases
+    The two are held EQUAL, and each is held to the answer the case says (the
+    password entry's, for the case with no `HOME`), because two sides that
+    both print nothing agree. The cases
     are the ones `wr_state_dir`'s comment lists: no second slash where the
     base ends in one, the password entry's home where `HOME` is unset, and
     the root where it is set and empty; an `XDG_STATE_HOME` set and empty is
@@ -552,24 +554,35 @@ def test_wr_state_dir_agrees_with_lanes_index_state_dir(case_id, env, expected):
     function = re.search(r"^wr_state_dir\(\) \{[^\n]*\n.*?^\}\n", text,
                          re.M | re.S)
     assert function, "`wr_state_dir() {` ... `}` is no longer in lanes-edit.sh"
+    # `-B` AND NOT `-I` ALONE: `-I` ignores `PYTHONPYCACHEPREFIX` and
+    # `PYTHONDONTWRITEBYTECODE`, which this `env=` does not pass in any case, so
+    # loading `lanes-index` would write `__pycache__/lanes-indexcpython-3NN.pyc`
+    # into the checkout, which `tests/run.sh` keeps clean (#162). `stdin` is
+    # closed so that `bash -c` reads nothing a terminal could hand it.
     in_bash = subprocess.run(
         [bash, "-u", "-c", function.group(0) + "\nwr_state_dir\n"],
-        env=env, capture_output=True, text=True, check=False)
+        env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        check=False)
     in_python = subprocess.run(
-        [sys.executable, "-I", "-c", _STATE_DIR_OF_LANES_INDEX,
+        [sys.executable, "-I", "-B", "-c", _STATE_DIR_OF_LANES_INDEX,
          str(REPO / "lanes-index")],
-        env=env, capture_output=True, text=True, check=False)
+        env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        check=False)
     assert in_bash.returncode == 0, in_bash.stderr
     assert in_python.returncode == 0, in_python.stderr
     assert in_bash.stdout == in_python.stdout, (
         f"{case_id}: lanes-edit.sh's wr_state_dir says {in_bash.stdout!r} and "
         f"lanes-index's state_dir() says {in_python.stdout!r}: a pending record "
         "would be written where `lanes-index status` does not look")
-    answer = in_bash.stdout.rstrip("\n")
     if expected is None:
-        assert answer.endswith("/.local/state/openRepoTools"), (case_id, answer)
-    else:
-        assert answer == expected, (case_id, answer)
+        # The password entry's home, where `HOME` is unset: both sides read
+        # it. A home of `/` gives `/.local/state/...`, and a trailing slash is
+        # not doubled. `pwd` is POSIX only, as this test is.
+        import pwd
+        expected = (pwd.getpwuid(os.getuid()).pw_dir.rstrip("/")
+                    + "/.local/state/openRepoTools")
+    answer = in_bash.stdout.rstrip("\n")
+    assert answer == expected, (case_id, answer)
 
 
 def code_lines(path: Path) -> str:
