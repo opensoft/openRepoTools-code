@@ -29,6 +29,7 @@ handoff there and its unlocked commit in W is what each case sees at the base.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -486,3 +487,117 @@ def test_a_why_with_a_tab_is_a_space_in_the_subject(tmp_path, short_root):
     published = _published(box, cell)
     assert published.endswith("\n---\n\n" + HANDOFF), published
     assert _origin(box, "log", "-1", "--format=%s", "main", "--", cell).strip() == SUBJECT
+
+
+@pytest.mark.parametrize("flag, mode", [("--restart", "respawn"), ("--exit", "end")])
+def test_the_no_tmux_refusal_names_its_mode_not_both_words(tmp_path, short_root, flag, mode):
+    """opensoft/openRepoTools#355: `lane-handoff` built the mode word for its
+    no-tmux refusal from `${do_restart:+respawn}${do_exit:+end}`. Both flags are
+    `0` or `1`, never empty, so both expansions fired and the message named
+    `respawnend`, which is no mode. `--restart` names `respawn`, `--exit` names
+    `end`, and the refusal's other words are unchanged."""
+    box, _checkout, _cell_, _before = _ready(tmp_path, short_root)
+
+    result = _handoff(box, flag)
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert "respawnend" not in result.stderr, result.stderr
+    assert f"there is no tmux here to {mode} this pane with. Do it by hand" in result.stderr, result.stderr
+    assert "the record is written, and there is no tmux here to" in result.stderr, result.stderr
+    assert "the record is the part that mattered." in result.stderr, result.stderr
+
+
+def _failing_send_keys(box: Sandbox) -> tuple[dict, Path]:
+    """The environment of a lane handed off from INSIDE tmux (`LANE_HANDOFF_NO_TMUX`
+    is the harness's own `1`, and here it is `0`), with a `tmux` ahead of the
+    sandbox's fake one that refuses `send-keys` and answers every other verb as
+    the fake does. Returns that environment's overrides and the file each
+    refused `send-keys` is logged to."""
+    failbin = box.root / "failbin"
+    failbin.mkdir()
+    log = box.root / "send-keys.log"
+    stub = failbin / "tmux"
+    stub.write_text(f"""#!/usr/bin/env bash
+if [ "${{1-}}" = send-keys ]; then printf '%s\\n' "$*" >> '{log}'; exit 1; fi
+exec '{box.root / "fakebin" / "tmux"}' "$@"
+""", encoding="utf-8")
+    stub.chmod(0o755)
+    return {"LANE_HANDOFF_NO_TMUX": "0", "PATH": f"{failbin}{os.pathsep}{box.env['PATH']}"}, log
+
+
+def test_the_exit_refusal_prints_its_slash_exit_word_and_runs_no_command(tmp_path, short_root):
+    """lane openRepoTools-3's review 6778792731 on opensoft/openRepoTools#165:
+    the refusal for a `/exit` that could not be typed was spelled
+    `` `/exit` `` inside a double-quoted `die` message, so bash ran `/exit` as a
+    command substitution, printed `/exit: No such file or directory`, and the
+    message lost its word. The backquotes are escaped: the refusal prints
+    `/exit` literally, names the pane the keys were sent to, and nothing is run."""
+    box, _checkout, _cell_, _before = _ready(tmp_path, short_root)
+    env, sent = _failing_send_keys(box)
+
+    result = _handoff(box, "--exit", env=env)
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    typed = sent.read_text(encoding="utf-8").splitlines()
+    assert len(typed) == 1 and typed[0].endswith(" /exit Enter") and typed[0].startswith("send-keys -t "), typed
+    target = typed[0].split()[2]
+    assert (f"the record is written and `/exit` could NOT be typed into {target}. "
+            "Type it in the lane's own pane yourself.") in result.stderr, result.stderr
+    assert "No such file or directory" not in result.stderr, result.stderr
+
+
+#: What each gate says, word for word, under each flag. `--restart`'s words are
+#: the ones the gates always had; `--exit`'s name the act that mode takes.
+_GATE_OPENING = {
+    "row": "the lane's PAUSED line is written and the ROW WAS NOT FLIPPED (the note above says why), "
+           "so this pane is left exactly as it is: ",
+    "handoff": "the lane's PAUSED line is written and the HANDOFF WAS NOT REFRESHED (the note above says why), "
+               "so this pane is left exactly as it is: the top block of that file is what the new session "
+               "is started with, and ",
+}
+_GATE_ACT = {
+    ("row", "--restart"): "respawning it would leave the register reading RUNNING for a session that "
+                          "has just been replaced, and every other lane reads the row. "
+                          "Flip it and re-run, or restart by hand:  ",
+    ("row", "--exit"): "ending its session would leave the register reading RUNNING for a session that "
+                       "has just been ended, and every other lane reads the row. "
+                       "Flip it and re-run, or restart by hand:  ",
+    ("handoff", "--restart"): "respawning now would hand it the block of a handoff this act has replaced. "
+                              "Put the block printed above at the head of the handoff, then re-run "
+                              "— or restart by hand once you have:  ",
+    ("handoff", "--exit"): "ending now would leave the new session to be started with the block of a "
+                           "handoff this act has replaced. Put the block printed above at the head of "
+                           "the handoff, then re-run — or restart by hand once you have:  ",
+}
+
+
+@pytest.mark.parametrize("flag", ["--restart", "--exit"])
+@pytest.mark.parametrize("gate", ["row", "handoff"])
+def test_the_row_and_handoff_gates_name_the_act_their_mode_takes(tmp_path, short_root, gate, flag):
+    """lane openRepoTools-3's review 6778792731 on opensoft/openRepoTools#165:
+    the row gate and the handoff gate fire under `--exit` as under `--restart`,
+    and each said "respawning" (and the row gate "replaced") to a lane whose
+    session was about to be ended. `--restart` says "respawning" as before;
+    `--exit` says "ending", and no word of either gate assumes a respawn. The
+    gate logic and the exit code (2) are unchanged."""
+    box, _checkout, _cell_, _before = _ready(tmp_path, short_root)
+    if gate == "row":
+        real = box.bin / "lanes-edit.sh"
+        wrapper = box.root / "no-row-lanes-edit.sh"
+        wrapper.write_text(f"""#!/usr/bin/env bash
+if [ "${{1-}}" = set-row-state ]; then echo "set-row-state: the row is refused" >&2; exit 1; fi
+exec '{real}' "$@"
+""", encoding="utf-8")
+        wrapper.chmod(0o755)
+    else:
+        wrapper = _forcing(box, 1, False)
+
+    result = _handoff(box, flag, env={"LANES_EDIT": str(wrapper)})
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    refused = [line for line in result.stderr.splitlines() if "REFUSED:" in line]
+    assert len(refused) == 1, result.stderr
+    said = refused[0].split("REFUSED: ", 1)[1]
+    assert said.startswith(_GATE_OPENING[gate] + _GATE_ACT[gate, flag]), said
+    if flag == "--exit":
+        assert "respawn" not in refused[0], refused
+        assert "replaced" not in refused[0] or gate == "handoff", refused
+    else:
+        assert not re.search(r"\bending\b", refused[0]), refused
