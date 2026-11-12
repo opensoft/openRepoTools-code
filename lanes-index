@@ -19080,6 +19080,12 @@ def cutover_abort(store, seq: int, *, lane: str, workstation: str, why: str) -> 
 #     recognises and records a divergence as the renderer does, rendering
 #     nothing (`rollback_step_0_git_half`). `not_after` then counts the time
 #     it took.
+#   - THE READ-BACK FIRST, before step 2 and so before `--hold-marker`'s
+#     stop, on every run that gets there: the switch read again, then origin
+#     read back for the removal (`rollback_read_back_first`). One an earlier
+#     run pushed is recorded, and nothing is rendered or pushed; a read-back
+#     that cannot tell is 3 (tasks:1549; Y:3204-3205; AT-F2; MUST-1 of lane
+#     3's review of T326).
 #   - STEP 2: T327's `render_to(k)` in the operator lane's checkout, under its
 #     render lock, which at a rollback's `files` renders and stops before the
 #     entry `k+1`, then proves origin holds a full render at `k`.
@@ -19096,10 +19102,11 @@ def cutover_abort(store, seq: int, *, lane: str, workstation: str, why: str) -> 
 # declared or its line printed; 2 for each refusal, LR012 and a divergence its
 # fresh fetch finds among them, and for a render or a push that ends without
 # proof or without a push (the entry standing, the marker `removing`); 3 for
-# a removal pushed that its read-back cannot confirm; 69 where the register
-# cannot be read or refuses, the switch and the marker unchanged, and where
-# step 1's call ends with no answer, after one re-read of the switch; 75 at
-# D7's deadline; 64 for usage.
+# a removal pushed that its read-back cannot confirm, and for a read-back
+# before step 2 that cannot tell whether the removal is there; 69 where the
+# register cannot be read or refuses, the switch and the marker unchanged, and
+# where step 1's call ends with no answer, after one re-read of the switch; 75
+# at D7's deadline; 64 for usage.
 
 #: D7'S DEADLINE across step 1's tries, in seconds (Y:455-456; ops:331).
 ROLLBACK_DEADLINE_S = 30
@@ -19134,15 +19141,18 @@ cannot be written. Then it renders in the operator lane's checkout until
 origin carries seq k, proven against a full render (step 2), and pushes the
 commit removing lanes/STORE with the renderer identity, reads it back and
 records the marker absent (step 4). --hold-marker stops after step 2, for the
-ruleset to be turned off (step 3); run again, it goes on to step 4. A rerun
-finds its own entry and goes on from step 2. Run it as the operator lane, with
+ruleset to be turned off (step 3); run again, it goes on to step 4. Before
+step 2 every run reads origin back, and records a removal an earlier run
+pushed, rendering and pushing nothing. A rerun finds its own entry and goes
+on from that read-back. Run it as the operator lane, with
 LANES_LANE=<lane>, from a shell or a CLAUDE_NO_LANE=1 session, in that lane's
 checkout (D24). While this build refuses mode=primary, it runs only against a
 scratch schema (register_schema=), as its transaction alone.
 
 Exit: 0 done through step 4, or stopped after step 2 under --hold-marker ·
-2 refused · 3 the removal's push cannot be confirmed: a rerun reads origin
-back first · 64 usage · 69 the register cannot be read or refused, or a
+2 refused · 3 the removal's push cannot be confirmed, or a read-back cannot
+tell whether the removal is on origin: a rerun reads origin back first ·
+64 usage · 69 the register cannot be read or refused, or a
 call's timer expired · 75 register busy at D7's deadline, nothing written."""
 
 
@@ -19259,8 +19269,9 @@ def _rollback(opts: dict) -> int:
         if pair == ("files", "removing"):
             if _rollback_own_entry(st):
                 say(f"rollback: seq {st['head']}, this rollback's entry, stands: the switch "
-                    f"reads files with the marker removing, so this rerun declares first and "
-                    f"goes on from step 2 (operations.md §2.3)")
+                    f"reads files with the marker removing, so this rerun declares first, "
+                    f"reads origin back for its removal, and goes on from step 2 where the "
+                    f"removal is not there (operations.md §2.3; tasks:1549)")
                 return _rollback_after_step_1(cfg, store, opts, ident, st["head"] - 1,
                                               st["head"], git)
             raise _RollbackEnd(EXIT_UNAVAILABLE, f"rollback: the switch reads files with the "
@@ -19625,6 +19636,12 @@ def rollback_steps_2_to_4(cfg: dict, store, opts: dict, ident: dict, k: int, seq
     run once step 1 and the declaration are done, and from a rerun that found
     step 1 standing, for this rollback's entry at `seq` (`k+1`):
 
+    - THE READ-BACK FIRST (`rollback_read_back_first`): the switch read
+      again, and origin read back for the removal. One there, pushed by an
+      earlier run, is recorded and ends the run, 0 (or 69); a read-back that
+      cannot tell is 3; absent, the run goes on. It comes before step 2, and
+      so before `--hold-marker`'s stop (tasks:1549, "the rerun reads origin
+      back before it acts"; Y:3204-3205; AT-F2, TP:5563-5565);
     - STEP 2 (`rollback_step_2`): render until origin carries `k`, proven;
     - STEP 3: under `--hold-marker`, stop there, 0, for Brett to turn the
       ruleset off (F4); `rollback`, run again, renders nothing more, proves
@@ -19644,6 +19661,9 @@ def rollback_steps_2_to_4(cfg: dict, store, opts: dict, ident: dict, k: int, seq
              f"schema's transaction alone (Y:4872, Y:4918): no mirror renders it, so steps 2 to "
              f"4 render and push nothing{held}; seq {seq} stands with the marker removing")
         return EXIT_OK
+    ended = rollback_read_back_first(store, git, ident, seq)
+    if ended is not None:
+        return ended
     rollback_step_2(cfg, store, git, k, seq)
     if opts.get("hold_marker"):
         say(f"rollback: stopped after step 2 (--hold-marker): origin {RENDER_BRANCH} carries every "
@@ -19653,6 +19673,71 @@ def rollback_steps_2_to_4(cfg: dict, store, opts: dict, ident: dict, k: int, seq
             f"(operations.md §2.3)")
         return EXIT_OK
     return rollback_step_4(cfg, store, git, ident, k, seq)
+
+
+def rollback_read_back_first(store, git: dict, ident: dict, seq: int) -> int | None:
+    """THE READ-BACK FIRST (T326; MUST-1 of lane 3's review of T326): before
+    step 2, a run reads origin back for this rollback's removal, `seq`
+    (`k+1`), before it acts (tasks:1549, "A push it cannot confirm exits 3,
+    and the rerun reads origin back before it acts"; Y:3204-3205; AT-F2,
+    TP:5563-5565, "its rerun reads origin back, then records the marker
+    `absent` or pushes the removal again"). Returns an exit, or None where
+    the run goes on to step 2.
+
+    1. The switch read again (`_rollback_push_read`): this rollback's entry
+       must stand at `seq`, the head, with the marker `removing`, and the
+       switch names the cutover's confirmed marker commit, the walk's base.
+       A marker already `absent` at this entry, recorded by another run, is
+       0. Any other answer, or a read that fails, is 69, nothing pushed.
+    2. Origin read back (`render_readback`, a fetch of `origin main` in the
+       operator lane's checkout), and the removal looked for on its
+       first-parent line after that base as step 4's push looks for it
+       (`operator_on_origin`, S4's form C, `lanes/STORE` absent):
+       - `present`: an earlier run pushed it, one that exited 3 or died
+         among them, so this run renders and pushes nothing and records it
+         (`_rollback_record`): 0 once `record_marker` answers `absent`;
+       - `unknown`, or a fetch that did not answer: 3, nothing more changed,
+         naming the read; the rerun reads origin back first again;
+       - `absent`: None, and step 2 follows.
+
+    WHY BEFORE STEP 2: once the removal is on origin, a files-mode write
+    lands after it (ops:338, "after it, a files-mode write lands"), and to
+    step 2's pass at `files` with the marker `removing` that commit is a
+    stray after `R`: the render would end without its proof (2), on this
+    rerun and every one after it, with the marker never recorded and the
+    re-import waiting on that record (ops:340). Read back first, the run
+    records the removal whatever has landed on origin since.
+
+    A FIRST RUN makes it too, right after step 1 commits `seq`. No earlier
+    run can have pushed that removal, so it reads absent there and costs one
+    fetch; a concurrent rerun's push, if one landed meanwhile, is found the
+    same way. No database transaction is held across the fetch (F23)."""
+    checkout = git["checkout"]
+    st = _rollback_push_read(store, seq)
+    if st["marker"] == "absent":
+        say(f"rollback: seq {seq}'s removal of {CUTOVER_STORE_PATH} is already read back and "
+            f"recorded, by another run: the marker is absent (S5's step 4)")
+        return EXIT_OK
+    base = st["base"]
+    stays = (f"Seq {seq} stands with the marker removing, so no write commits; nothing was "
+             f"rendered or pushed, and a rerun reads origin back first again (S5's step 4; "
+             f"tasks:1549)")
+    answered, _descends, tip, why = render_readback(checkout, base)
+    if not answered:
+        note(f"rollback: before step 2, origin {RENDER_BRANCH} could not be read back for seq "
+             f"{seq}'s removal ({why}), so whether an earlier run pushed it is not known. "
+             f"{stays}")
+        return EXIT_IN_DOUBT
+    state, said = operator_on_origin(checkout, base, tip, seq, CUTOVER_STORE_PATH, None)
+    if state == "present":
+        return _rollback_record(store, seq, OperatorPush(
+            "found", f"origin {RENDER_BRANCH} carries seq {seq}'s removal {said}, read back "
+            f"before step 2", commit=said, tip=tip), ident["workstation"])
+    if state == "unknown":
+        note(f"rollback: before step 2, the read-back of origin {RENDER_BRANCH}'s tip {tip} "
+             f"cannot tell whether seq {seq}'s removal is there: {said}. {stays}")
+        return EXIT_IN_DOUBT
+    return None
 
 
 def rollback_step_2(cfg: dict, store, git: dict, k: int, seq: int) -> None:
@@ -19702,9 +19787,10 @@ def rollback_step_2(cfg: dict, store, git: dict, k: int, seq: int) -> None:
         f"and its render set is a full render at seq {k}, by tree id (S5's step 2)")
 
 
-#: STEP 4'S READ before its push, one REPEATABLE READ snapshot as
-#: REGISTER-WRITER under D9's rollback row: the version window, the switch
-#: with the cutover's confirmed marker commit, the head and its kind.
+#: THE SWITCH READ AGAIN before the read-back that comes before step 2, and
+#: before step 4's push: one REPEATABLE READ snapshot as REGISTER-WRITER under
+#: D9's rollback row: the version window, the switch with the cutover's
+#: confirmed marker commit, the head and its kind.
 _ROLLBACK_PUSH_READS = (
     "SELECT version, writers_from, readers_from FROM schema_version WHERE id = 1",
     "SELECT mode, marker_state, marker_seq, set_seq, marker_commit FROM register_switch "
@@ -19715,8 +19801,10 @@ _ROLLBACK_PUSH_READS = (
 
 
 def _rollback_push_read(store, seq: int) -> dict:
-    """The switch read again before step 4's push: this rollback's entry at
-    `seq` must stand, the head, unconfirmed, with the marker `removing`.
+    """The switch read again before the read-back that comes before step 2
+    (`rollback_read_back_first`), and before step 4's push: this rollback's
+    entry at `seq` must stand, the head, unconfirmed, with the marker
+    `removing`.
     Returns `{"marker": ..., "base": <the cutover's marker commit>}`; a
     marker already `absent` at this entry, recorded by another run, comes
     back as it is. Every other answer, and a read that fails, is 69 with
