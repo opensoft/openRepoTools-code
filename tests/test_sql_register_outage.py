@@ -1486,7 +1486,16 @@ def test_a_rollbacks_declaration_counts_only_where_the_guards_read_finds_the_swi
 def test_status_reports_a_declaration_left_in_place(pg, tmp_path, request):
     """AT-D20, real engine: with the database answering and the switch at
     `primary`, a declaration left in place is ignored by the guard, which
-    answers from the database, and `status` reports it."""
+    answers from the database, and `status` reports it.
+
+    `status` keeps T117's exit (lane 3's (L2-1), #165 6808937880). The
+    register reads, so the exit is #160's own (B15 tasks:545, "Exits: 69
+    where the register cannot be read ...; otherwise #160's own 0 or 1";
+    exit-codes.md section 3.4), never 69. This estate has no local index,
+    so #160's half gives its 1, with its `index: missing` line. That line
+    is #160's, and #160's `cmd_status` prints it through `say`, on stdout
+    (`lanes-index:2384` at `a2073eae`; `lanes-index:16417` at round 5;
+    lane 1, #165 6810924785). The contract names no other stream for it."""
     estate, config, env, reader = _on_pg(pg, tmp_path, request, ["import", "cutover"])
     estate.declared(config, mirror_seq=1)
     guard_config = estate.config(url=pg.url(reader), name="conf-guard")
@@ -1495,5 +1504,7 @@ def test_status_reports_a_declaration_left_in_place(pg, tmp_path, request):
     assert not result["killed"], "the hook was killed at 5 s"
     assert "read: mirror" not in result["out"] and "declared outage" not in result["out"]
     proc, _ = _index(estate, config, "status", env=env)
-    assert proc.returncode == 0, f"status exited {proc.returncode}: {proc.stderr[-600:]}"
-    assert "register-outage" in proc.stdout + proc.stderr, (proc.stdout + proc.stderr)[-600:]
+    said = f"stdout: {proc.stdout[-600:]!r}; stderr: {proc.stderr[-600:]!r}"
+    assert proc.returncode == 1, f"status exited {proc.returncode}, not #160's 1: {said}"
+    assert "index: missing" in proc.stdout, f"#160's `index: missing` is not on stdout: {said}"
+    assert "register-outage" in proc.stdout + proc.stderr, said
