@@ -2414,9 +2414,22 @@ class Operator:
 
     def __init__(self, pg, tmp_path: Path, request, estate: str = "imported"):
         from sql_register_helpers import flipped_copy
-        from test_sql_register_import import OPERATOR, FixtureRegister, _to_primary
+        from test_sql_register_import import OPERATOR, TIP_A, FixtureRegister, _to_primary
         self.pg, self.root, self.request, self.lane = pg, tmp_path, request, OPERATOR
         self.reg = FixtureRegister(tmp_path / "reg")
+        if estate == "imported":
+            # THE SEED'S HOLD WITH NO TIME IS RELEASED BEFORE THE IMPORT (line HC14; W3a's
+            # T211n `3fe23d7`, whose `HOLD_NO_UTC_RELEASE` this inlines, since BD's import
+            # module predates it): lane 1's open-`HOLD` check (merge21f6) counts
+            # `TAKE_LINES["hold-no-utc"]` as open, so a first-form cutover over it refuses 2.
+            # Its holder, the operator lane, releases it in files mode, and C is the tip after.
+            # Only `imported` cuts over; `primary` and `stray` come through `_to_primary`.
+            proc = self.reg.edit("append-line", "HOLD RELEASED — lane repoA-2 (Eagle), "
+                                 f"2026-10-01T05:20:00Z: opensoft/repoH main {TIP_A}",
+                                 env={"LANES_LANE": OPERATOR})
+            assert proc.returncode == 0, (
+                f"the dead HOLD's release, lanes-edit.sh append-line: {proc.stdout}{proc.stderr}")
+            self.reg.c = self.reg.tip()
         proc = self.reg.import_at(pg, self.reg.c)
         assert proc.returncode == 0, \
             f"lanes-index import --at C (lane 1's T115): {proc.returncode}: {proc.stderr}"
