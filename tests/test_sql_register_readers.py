@@ -1465,7 +1465,10 @@ def test_lane_worktrees_register_reads_go_through_a_verb_and_refuse_69(tmp_path,
     """Each of `lane-worktrees`' three direct reads of `origin/<branch>`
     (`:711`, `:1002`, `:5596`) goes through `register-grep`, and a 69 from it
     is the register unreadable: the sweep deletes nothing, exits non-zero
-    and names the register (Y:4926; the design's S3)."""
+    and names the register (Y:4926; the design's S3). `[landed-1002]` also
+    keeps the tree and the branch its failed `LANDED` read would have let go,
+    and its stderr names `register-grep`'s 69 (lane 3's (L2-3), #165
+    6808937880)."""
     argv, match = WORKTREE_READS[read]
     world = ArmWorld(tmp_path / "w")
     stray = world.home / "projects" / "repoA-2-stray"
@@ -1515,6 +1518,21 @@ def test_lane_worktrees_register_reads_go_through_a_verb_and_refuse_69(tmp_path,
     assert stray.is_dir(), (read, "the sweep deleted on a failed read")
     if read == "lifecycle-events-711":
         assert tree.is_dir(), (read, "the sweep deleted a tree on a failed read")
+    if read == "landed-1002":
+        # LANE 3'S (L2-3) (#165 6808937880): a failed `LANDED` read keeps the trees it would
+        # have let go, and names the read (B15 tasks:897, T404's "On 69,": "deletes nothing,
+        # and names the register as unreadable"). So the tree and its branch remain, and
+        # stderr names `register-grep`'s 69. The non-zero exit is no longer the whole oracle:
+        # another refusal, such as no #97 snapshot (2), gives one too.
+        assert tree.is_dir(), (read, "the sweep let the tree go on a failed LANDED read")
+        branch = world.git("-C", str(world.lane_dir), "for-each-ref", "--format=%(refname)",
+                           f"refs/heads/{LANDED_BRANCH}").strip()
+        assert branch == f"refs/heads/{LANDED_BRANCH}", (
+            read, "the sweep let the branch go on a failed LANDED read", branch)
+        assert any("register-grep" in line and names_the_code(line, 69)
+                   for line in result.stderr.splitlines()), (
+            read, "stderr does not name register-grep's 69", result.returncode,
+            result.stdout[-2000:], result.stderr[-2000:])
 
 
 def test_index_flag_on_primary_changes_nothing_and_prints_no_index_line(primary):
