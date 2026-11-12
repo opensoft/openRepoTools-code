@@ -136,6 +136,11 @@ MODE_PRIMARY_REFUSED_TEXT = (
     "mode=primary is not available in this build: the renderer's git half is not "
     "installed, so a write could not be mirrored; nothing was written")
 
+#: Amendment 22's S1 line (delta spec sql-register:42; register-cli.md's check
+#: 4 row; TP:694-697), the bytes `lanes-edit.sh` dies with: `register
+#: snapshot`'s check 4 prints it as its own note (lane 3, #165 6828023371).
+REGISTER_IS_SQL_TEXT = "this estate's register is SQL; configure `mode=primary`"
+
 #: THE EXIT CODES, NAMED (contracts/exit-codes.md section 1): the tests read
 #: the constant, never a literal. The task that first exits with a code names
 #: it here; `mode`'s are 0, 2, 64 and 78. #160's own exits keep their literals.
@@ -3829,6 +3834,7 @@ def _register_snapshot(store, opts: dict) -> int:
                  f"{marker}, not primary with the marker present: a register write goes to "
                  f"SQL in one transaction or refuses, and is never made in the files instead "
                  f"(Amendment 22's S1, \"No fallback writes\"); nothing was written")
+            note(REGISTER_IS_SQL_TEXT)
             return EXIT_UNAVAILABLE
         if at is not None and at > head:
             raise SnapshotUnavailable(f"seq {at} is above the head, seq {head}")
