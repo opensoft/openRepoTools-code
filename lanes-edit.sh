@@ -555,11 +555,12 @@
 #      T401; FR-036). `register-text` and `register-grep`, the two verbs the
 #      lifecycle scripts' own reads move behind, spend it in every mode: the
 #      file could not be read, `git grep` on `origin/<branch>` ended other than
-#      0 or 1 and the ERE compiles where nothing but the pattern can fail (a
-#      ref that does not resolve, a repository or a config of it that git
-#      cannot read, such as a bad `grep.threads`: the register's failure,
-#      never the caller's 2), or
-#      no workspace repository was found. Nothing is printed on stdout, never a
+#      0 or 1 (a ref that does not resolve, a repository or a config of it
+#      that git cannot read, such as a bad `grep.threads`: the register's
+#      failure, never the caller's 2), or no workspace repository was found.
+#      `register-grep` asks first whether its ERE compiles where nothing but
+#      the pattern can fail: a malformed one is the caller's 2, before any of
+#      these (lane 3's (97)). Nothing is printed on stdout, never a
 #      partial answer. It is not 1, which is `register-grep`'s "no match" and
 #      which `lane-worktrees` reads as an answer, and it is never 8: a read that
 #      could not be made is not "none" (R22). So `lane-worktrees` deletes
@@ -20917,6 +20918,32 @@ EOF
         *)    rgr_specs+=("$rgr_p") ;;
       esac
     done
+    # A MALFORMED ERE IS REFUSED BEFORE ANY READ, as a path outside the set is
+    # just above (lane 3's (97), #165 6808937880: "A malformed ERE is the call's
+    # own words, refused before any read"). So it is 2 with no workspace, with
+    # no temporary directory, and whatever the ref. THE VERDICT IS GIT'S: the
+    # probe is the read's own `git grep -E -e <ERE>`, the same `git` under the
+    # same `LC_ALL=C`, which compiles the pattern before it opens a file and
+    # exits 128 on one it cannot compile; `-E` outranks any `grep.patternType`.
+    # A system `grep -E` may differ: GNU grep 3.11 takes `*a`, `+a` and `a{1`,
+    # which git's regcomp refuses. NOTHING BUT THE PATTERN CAN FAIL THE PROBE,
+    # and it needs neither the workspace nor `TMPDIR`. It runs in `/`, with
+    # `--no-index`, and `GIT_DIR` naming /dev/null, which is no repository, so
+    # none is looked for. No system or global config, no `git -c`, no
+    # repository variable and none of the four pathspec switches is carried in.
+    # Its one pathspec, `dev/null`, is a device, which a `--no-index` grep never
+    # reads. Its stderr is held by the command substitution, a pipe, and printed
+    # only above the refusal. Any other end of the probe leaves the answer to
+    # the read.
+    rgr_erc=0
+    rgr_err="$(env -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT \
+        -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS -u GIT_NOGLOB_PATHSPECS -u GIT_ICASE_PATHSPECS \
+        GIT_DIR=/dev/null GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 LC_ALL=C \
+        git -C / grep --no-index -q -E -e "$rgr_ere" -- dev/null 2>&1 >/dev/null </dev/null)" || rgr_erc=$?
+    if [ "$rgr_erc" = 128 ]; then
+      [ -z "$rgr_err" ] || printf '%s\n' "$rgr_err" >&2
+      die "$rgr_usage — '$rgr_ere' is not an ERE that git grep -E can compile (above)" 2
+    fi
     rgr_root="$LANES_WS_ROOT"
     [ -n "$rgr_root" ] || die "the register could not be read: $(lanes_workspace_why)" 69
     TMPD="$(mktemp -d)" || die "the register could not be read: no temporary directory could be made under ${TMPDIR:-/tmp} to hold the answer whole" 69
@@ -20929,22 +20956,9 @@ EOF
       0) cat -- "$TMPD/grep" || exit 69; exit 0 ;;
       1) exit 1 ;;
     esac
-    # A MALFORMED ERE IS THE CALLER'S USAGE ERROR, never an unreadable register.
-    # The workspace repository cannot tell the two apart: a 128 from its own
-    # config, such as a bad `grep.threads`, meets every grep asked of it, and
-    # that is the register's read failing, 69. So the same ERE is asked again
-    # where nothing but the pattern can fail: of an empty file in `$TMPD`, with
-    # `--no-index`, no system or global config, no `git -c` or repository
-    # variable carried in, and no repository looked for above `$TMPD`. A 128
-    # there is the pattern's alone, so 2. Any other end of the probe's own, its
-    # 1 ("no match") or an empty file that could not be made, leaves the first
-    # failure the register's, so 69.
-    rgr_erc=0
-    : > "$TMPD/empty" &&
-      { env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT \
-          GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_CEILING_DIRECTORIES="${TMPD%/*}" LC_ALL=C \
-          git -C "$TMPD" grep --no-index -q -E -e "$rgr_ere" empty >/dev/null 2>&1 || rgr_erc=$?; }
-    [ "$rgr_erc" != 128 ] || die "$rgr_usage — '$rgr_ere' is not an ERE that git grep -E can compile (above)" 2
+    # THE PROBE ABOVE DID NOT REFUSE THE ERE, so any other end is the
+    # register's read failing, 69, a 128 from the workspace's own config (a bad
+    # `grep.threads`, which meets every grep asked of it) among them.
     die "the register could not be read: git grep on origin/$LANES_BRANCH in $rgr_root exited $rgr_rc (above)" 69
     ;;
 
