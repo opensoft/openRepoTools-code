@@ -11536,7 +11536,34 @@ lane_groups() {   # <workstation> ; rows on stdin
 # AND A SOURCE THAT EXISTS AND CANNOT BE READ IS A REFUSAL, not an empty set: a
 # position is handed out ONCE, and a read that failed is never an answer
 # (Amendment 7(d)).
-lane_position_rows() {   # 0 with the names · 1 where a source exists and could not be read
+#
+# FEATURE 007, T506 - ON PRIMARY THE TWO ARE THE REGISTER'S AT `n`, read
+# before the workspace test, since `next-free` is exempt from the workspace
+# guard (B14 tasks:775; lane 3, #165 6807910478, T506 Q6): `register_text_checked`,
+# then `archive_text`, and nothing of this checkout's - no `lpr_have`, no
+# `-f`/`-r` test, no `register_published` gate. An archive absent at `n` is
+# still empty text (T505 Q6). A `lanes/LANES.md` absent at `n` (T505 Q8) or
+# empty there is 69, never a position, as the zero-byte register below is a
+# refusal in files mode; the empty one is recorded through `reg_fail`, so the
+# arm's refusal names it. 69 is passed on before any other code.
+lane_position_rows() {   # 0 with the names · 1 where a source exists and could not be read · 69 on primary, a failed read
+  if [ "${REG_STORE:-}" = sql ]; then
+    lpr_reg=""; lpr_rc=0
+    lpr_reg="$(register_text_checked 2>/dev/null)" || lpr_rc=$?
+    [ "$lpr_rc" != 69 ] || return 69
+    [ "$lpr_rc" = 0 ] || return 1
+    if [ -z "$lpr_reg" ]; then
+      lpr_rc=0
+      reg_fail "the register could not be read: $LANES_PATH is empty in it at seq $(reg_head_n), and an empty register is what a rewrite that failed leaves, never a register with no positions taken, so no position is offered (feature 007, T506)" "$LANES_PATH is empty in the register" || lpr_rc=$?
+      return "$lpr_rc"
+    fi
+    lpr_arc=""; lpr_rc=0
+    lpr_arc="$(archive_text 2>/dev/null)" || lpr_rc=$?
+    [ "$lpr_rc" != 69 ] || return 69
+    [ "$lpr_rc" = 0 ] || return 1
+    printf '%s\n%s\n' "$lpr_reg" "$lpr_arc" | lane_position_names 2>/dev/null || return 1
+    return 0
+  fi
   [ -n "${LANES_FILE:-}" ] || return 0
   # THE PUBLISHED REGISTER FIRST AND THE WORKING TREE SECOND — `register_text`'s
   # own rule, asked for rather than restated (Copilot round 3 on #93). Gated on
@@ -11572,13 +11599,18 @@ lane_position_rows() {   # 0 with the names · 1 where a source exists and could
   fi
   lpr_arc=""
   lpr_arc="$(archive_text 2>/dev/null)" || return 1
-  printf '%s\n%s\n' "$lpr_reg" "$lpr_arc" | awk '
+  printf '%s\n%s\n' "$lpr_reg" "$lpr_arc" | lane_position_names 2>/dev/null || return 1
+  return 0
+}
+# Every table row's lane, its first backticked token, as bare names: the
+# register's and the archive's rows on stdin, in both modes.
+lane_position_names() {
+  awk '
     substr($0,1,1) == "|" {
       p1 = index($0, "`"); if (p1 == 0) next
       r = substr($0, p1 + 1); p2 = index(r, "`"); if (p2 == 0) next
       print substr(r, 1, p2 - 1)
-    }' 2>/dev/null || return 1
-  return 0
+    }'
 }
 
 # A FORMER NAME IS A TAKEN POSITION TOO (lane 3's batch 8 Q47,
@@ -11597,15 +11629,21 @@ lane_position_rows() {   # 0 with the names · 1 where a source exists and could
 # this position must avoid, and a read that failed is not an answer
 # (Amendment 7(d)). A table that is absent is an estate that never renamed a
 # lane, and changes nothing.
+# ON PRIMARY A FAILED READ'S 69 IS PASSED ON, from the rows and from the alias
+# keys alike, before either note below, and the arm ends by its class (feature
+# 007, T506; lane 3, #165 6807910478, T506 Q6).
 lane_next_free() {   # <repo> ; rows on stdin
   [ -n "${1-}" ] || return 64
-  lnf_more=""
-  if ! lnf_more="$(lane_position_rows)"; then
+  lnf_more=""; lnf_prc=0
+  lnf_more="$(lane_position_rows)" || lnf_prc=$?
+  [ "$lnf_prc" != 69 ] || return 69
+  if [ "$lnf_prc" != 0 ]; then
     note "the register or the archive of retired rows exists and could not be read, so the rows this position must avoid are not all known. A position is handed out ONCE and a read that failed is not an answer (Amendment 7(d)), so none is offered."
     return 1
   fi
   lnf_keys=""; lnf_krc=0
   lnf_keys="$(lane_alias_keys 2>/dev/null)" || lnf_krc=$?
+  [ "$lnf_krc" != 69 ] || return 69
   if [ "$lnf_krc" != 0 ]; then
     if [ "$lnf_krc" = 5 ]; then lnf_why="$(lane_alias_err)"; else lnf_why="its keys could not be listed, exit $lnf_krc"; fi
     note "${LANES_ALIASES_PATH:-lanes/aliases.tsv} could not be read ($lnf_why), so the FORMER names this position must avoid are not all known (Amendment 16(e)). A position is handed out ONCE and a read that failed is not an answer (Amendment 7(d)), so none is offered."
@@ -22191,10 +22229,14 @@ EOF
     lane_groups "${1-}"
     ;;
 
+  # ON PRIMARY A FAILED READ ENDS THE ARM BY ITS CLASS, decide 69 with nothing
+  # on stdout (feature 007, T506; B14 tasks:775); any other code is the one
+  # `lane_next_free` always answered.
   next-free)
     [ -n "${1-}" ] || die "usage: next-free <repo>   (the rows on stdin)" 64
     [ "$#" -le 1 ] || die "next-free takes one repository: next-free <repo>   (the rows on stdin)" 64
-    lane_next_free "$1"
+    lnf_a=0; lane_next_free "$1" || lnf_a=$?
+    [ "$lnf_a" = 0 ] || { reg_fail_end "$lnf_a"; exit "$lnf_a"; }
     ;;
 
   # AMENDMENT 8 — Rule 1's sibling reads, filtered to lines that NAME the
