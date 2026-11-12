@@ -459,6 +459,8 @@
 #      deleted, moved or repaired; `refresh-workspace` with no W; a checkout,
 #      or the directory its lock lives in, removed while the write waited for
 #      that lock (360: lane-end's sweep of a CLOSED lane), said at once;
+#      `canon-lane --walk`, where its walk's read of the register failed off
+#      primary, with nothing printed (R22: never "no row"; 69 on primary);
 #      `handoff-path` and `write-handoff`, a register that could not be read
 #      (R22: never 8), and `write-handoff`'s target under a repository that
 #      git could not read (R22: never "no repository")
@@ -6821,7 +6823,10 @@ lane_alias_keys() {
 #
 # `canon_lane_walk`, below `canon_lane`, walks THIS loop again to print the
 # names it visits (`canon-lane --walk`, 007 T411): a change to one is a change
-# to both.
+# to both, but for one difference, ruled: a failed read other than 69, which
+# this loop still reads as no row, ends the walk 1 (lane openRepoTools-3, #165
+# 6827722997, Q-A; Amendment 7(d)). Closing it here is a follow-up item, since
+# four callers read `canon-lane`'s codes by number (`canon_lane`'s 66 note).
 rows_named_ci_alias() {   # <typed name>
   rna_hits="$(rows_named_ci "$1" 2>/dev/null || :)"
   if [ -n "$rna_hits" ]; then printf '%s\n' "$rna_hits"; return 0; fi
