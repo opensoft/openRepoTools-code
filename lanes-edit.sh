@@ -593,8 +593,8 @@
 #      AND FEATURE 007'S `rename-lane` ON PRIMARY (T422; Q13(a); Y:5092;
 #      R18), each with nothing sent: in an attempt's child, before the seam,
 #      a handoff the row names that is not under `handoffs/` in the lane's
-#      checkout, has a cache or bytecode part in its path, or has a pending
-#      change there (`rl_move_refuse_checks`), a
+#      checkout, has a cache, bytecode or environment part in its path, or
+#      has a pending change there (`rl_move_refuse_checks`), a
 #      lane checkout that is not there (`rl_handoff_repo`), and a write that
 #      returned with no `committed <seq>` (`rl_after_committed`); and in the
 #      handoff act its parent runs after COMMIT (`rl_move_act`), with the
@@ -604,7 +604,8 @@
 #      act's code is said in one WARNING, never the run's (`pw_rl_move`),
 #      a rerun's act included, and the move is then owed. And a rerun's
 #      child whose snapshot gives no seq, or one where the row's handoff
-#      cell has a cache or bytecode part in either path (`rl_rerun`).
+#      cell has a cache, bytecode or environment part in either path
+#      (`rl_rerun`).
 #  64  usage — a caller's bad arguments to one of the reads Amendment 11 added
 #      (`window-lane`, `lane-dir`, `lane-profile`, `last-session`, `forks`,
 #      `duplicate-holder` (issue #39), `workstation`, `fetch-age`, `lanes`,
@@ -21035,9 +21036,12 @@ rl_move_act() {
   # origin's tip, after S3, where no `<from>` is there:
   # - NO FILE AT `<to>` EITHER: nothing is owed. The first run's own words,
   #   0, and no hand steps (Q29).
-  # - A FILE AT `<to>` AND A `<from>` NAMED: `<to>` is not the file this rename
-  #   moves, a later handoff the cell names since, so no move is owed: 0, no
-  #   hand steps (S1).
+  # - A FILE AT `<to>` AND A `<from>` NAMED: the rerun takes `<to>` for a later
+  #   handoff the cell names since, so no move is owed: 0, no hand steps (S1).
+  #   At origin's tip it cannot tell that from this rename's handoff moved by
+  #   hand without its stamp, so it stamps nothing, and its note gives the
+  #   stamp line for a person to apply there (lane 3, #165 6808141050, batch c
+  #   Q72).
   # - A FILE AT `<to>` AND NO `<from>`, a handoff not named for its lane: it
   #   takes this rename's stamp only where origin's render of the rename shows
   #   the row naming it then (`rl_cell_at_rename`). Any other handoff the cell
@@ -21049,7 +21053,7 @@ rl_move_act() {
       exit 0
     fi
     if [ -n "$ma_hf" ]; then
-      note "the handoff the row names is at $ma_to, and $ma_from, the file this rename would move there, is not at origin's tip, so $ma_to is not this rename's to move or stamp, and no move is owed. Nothing was moved or stamped."
+      note "the handoff the row names is at $ma_to, without this rename's stamp, and $ma_from, the file this rename would move there, is not at origin's tip, so this rerun takes $ma_to for a later handoff the cell names since, and no move is owed. Nothing was moved or stamped. If it is this rename's handoff, moved by hand without its stamp, stamp it by hand: $ma_st"
       release_lock
       exit 0
     fi
