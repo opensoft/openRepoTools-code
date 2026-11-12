@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import atexit
 import calendar
+import errno
 import hashlib
 import json
 import os
@@ -324,6 +325,28 @@ def _until(predicate, limit: float, step: float = 0.05):
         time.sleep(step)
 
 
+def _release(fifo: Path, limit: float) -> bool:
+    """Let go the call the shim holds on `fifo` (its `hold` arm, which reads
+    the FIFO to its end): open it for writing and close it, inside `limit`
+    seconds. True where a call was held and is let go; False where no call
+    held the FIFO in that time. A plain `open(fifo, "w")` waits until a
+    reader opens the FIFO, which is for ever where the engine never made the
+    call the arm names, or the call died before it reached the FIFO; that
+    open hung test 10's case 6 in lane 1's CI rounds 3, 4 and 5 (#165
+    6810924785). So the open is `O_NONBLOCK`, which fails at once with ENXIO
+    while no reader holds the FIFO, and it is tried again until `limit`."""
+    def once() -> bool:
+        try:
+            fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError as exc:
+            if exc.errno == errno.ENXIO:
+                return False
+            raise
+        os.close(fd)
+        return True
+    return bool(_until(once, limit))
+
+
 def _utc(epoch: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
 
@@ -358,7 +381,9 @@ def run_hook(argv, stdin_text: str, env: dict, cwd, timeout: float = HOOK_TIMEOU
     the hook as the leader of a process group of its own, feeds its JSON on
     stdin, and at `timeout` sends `SIGTERM` to that whole group; it never
     waits on a pipe a child inherited, only for the hook's own exit, and it
-    logs when each stream reached EOF."""
+    logs when each stream reached EOF. Every wait is bounded: 10 s after the
+    `SIGTERM`, then `SIGKILL` to the group and 10 s more, and a hook that
+    outlives that is a `TimeoutExpired`, never a wait without end."""
     t0 = time.monotonic()
     proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, cwd=str(cwd), env=env,
@@ -400,7 +425,7 @@ def run_hook(argv, stdin_text: str, env: dict, cwd, timeout: float = HOOK_TIMEOU
             code = proc.wait(10)
         except subprocess.TimeoutExpired:
             os.killpg(proc.pid, signal.SIGKILL)
-            code = proc.wait()
+            code = proc.wait(10)
     t_exit = time.monotonic()
     for reader in readers:
         reader.join(timeout=1.0)
@@ -537,7 +562,7 @@ class Estate:
 
     def _git(self, argv, cwd) -> str:
         return subprocess.run(["git", *argv], cwd=str(cwd), env=self.base, check=True,
-                              capture_output=True, text=True).stdout
+                              capture_output=True, text=True, timeout=60).stdout
 
     def push_register(self, rows, first=False) -> None:
         (self.wip / "lanes" / "LANES.md").write_text(register_text(rows), encoding="utf-8")
@@ -1774,6 +1799,10 @@ def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate):
 BUDGET = 4.5
 #: The parse's start line, `T0 + 3.75 s` (SVC-8), asserted at twice it.
 START_LINE = 3.75
+#: How long case 6 waits, once the hook has exited, for the shim to hold the
+#: whole-file fetch on its FIFO. The fetch starts before the cut, so it is
+#: held by then; this is a margin, the outer's 10 s (`Estate.outer`).
+HOLD_LIMIT = 10.0
 
 
 def _silent_listener(host="127.0.0.1"):
@@ -1914,15 +1943,25 @@ def test_a_whole_file_fetch_the_start_line_cuts_fills_the_image_cache_for_the_ne
     fetch on a FIFO; the hook exits 2 at the cut inside the budget; the fetch
     runs on in a detached child, and once released writes the file to the
     image cache, so the next prompt's read fetches no whole file and
-    answers."""
+    answers. The FIFO is let go by `_release`, bounded at `HOLD_LIMIT`, so
+    where no call is held on it the case fails, and never waits: on an
+    engine without lane 5's T507 the guard makes no direct read, and the
+    first prompt's 2 is the name offer's, as T213c found for cases 1, 3, 4
+    and 5."""
     est = estate(mode="primary")
     fifo = tmp_path / "whole-file"
     os.mkfifo(fifo)
     est.shim([{"mode": "hold", "match": "lanes/LANES.md", "call": 1, "fifo": str(fifo)}])
-    hook = est.hook("hello")
-    _refuses_inside_the_budget(hook)
-    with open(fifo, "w"):
-        pass
+    try:
+        hook = est.hook("hello")
+        _refuses_inside_the_budget(hook)
+        assert _release(fifo, HOLD_LIMIT), (
+            f"no call naming lanes/LANES.md was held on the FIFO {HOLD_LIMIT:.0f} s after the "
+            f"hook exited, so the guard's direct read started no whole-file fetch for the cut "
+            f"to leave running (fails until lane 5's T507); the shim logged "
+            f"{len(est.shim_calls())} call(s)\n{hook!r}")
+    finally:
+        _release(fifo, 0)
     before = len(est.shim_calls())
     time.sleep(1.0)
     hook = est.hook("hello")
