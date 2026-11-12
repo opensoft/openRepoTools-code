@@ -2030,13 +2030,15 @@ def test_a_whole_file_fetch_the_start_line_cuts_fills_the_image_cache_for_the_ne
     runs on in a detached child, and once released writes the file to the
     image cache, so the next prompt's read fetches no whole file and
     answers. The FIFO is let go by `_release`, bounded at `HOLD_LIMIT`, so
-    where no call is held on it the case fails, and never waits: on an
-    engine without lane 5's T507 the guard makes no direct read, and the
-    first prompt's 2 is the name offer's, as T213c found for cases 1, 3, 4
-    and 5. The case's database holds the estate's register at primary
-    (`_Register`; lane 5's F2, #165 6812547449): at `files` the first request
-    ends 69, `switch-files`, and no whole-file fetch is ever made."""
-    est = estate(mode="primary")
+    where no call is held on it the case fails, and never waits. The estate
+    is G1's, `to=FROM, to_row=False`, as T213c built it for cases 1, 3, 4
+    and 5: with the default estate the first prompt's 2 is the name offer's,
+    and an oracle's refusal must come from the fault under test alone (lane
+    3, #165 6812490130). The case's database holds the estate's register at
+    primary (`_Register`; lane 5's F2, #165 6812547449): at `files` the
+    first request ends 69, `switch-files`, and no whole-file fetch is ever
+    made."""
+    est = estate(mode="primary", to=FROM, to_row=False)
     _Register(est)
     fifo = tmp_path / "whole-file"
     os.mkfifo(fifo)
