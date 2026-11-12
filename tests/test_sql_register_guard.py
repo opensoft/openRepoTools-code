@@ -2678,7 +2678,16 @@ class _Service:
                                      cwd=str(est.wip), start_new_session=True)
         est.spare.append(self.proc.pid)
         self.dir = _until(lambda: _service_dir(est), 10)
-        assert self.dir, f"the service named no socket: {self.proc.poll()}"
+        if not self.dir:
+            # WHAT `serve` SAID, where it has exited: until lane 5's T512
+            # (L5-S1), `lanes-index` answers 64, "unknown subcommand 'serve'".
+            # Read without waiting, so a child holding the pipe cannot hang it.
+            code, said = self.proc.poll(), b""
+            if code is not None:
+                os.set_blocking(self.proc.stderr.fileno(), False)
+                said = self.proc.stderr.read() or b""
+            assert self.dir, (f"the service named no socket: {code} "
+                              f"{said.decode('utf-8', 'replace').strip()}")
 
     def stop(self) -> None:
         _kill(self.proc.pid, signal.SIGTERM)
@@ -2701,6 +2710,153 @@ def _both(est: Estate) -> tuple:
         svc.stop()
     down = est.hook("hello")
     return up, down
+
+
+#: THE STREAMING `psql`, T237y's `STREAM_PSQL` (`tests/test_sql_register_bounds.py`
+#: on line W3a) in this module's own form, since this line does not carry that
+#: module. PSQL_SHIM reads its stdin to the end before it hands a call on (its
+#: `main()`), so the service's "one long-lived `psql` child on pipes" (d8
+#: section 7, d8:229) never answers through it, and a case that rested on it
+#: read the direct read's calls instead (lane 5's T512 plan, point 2, #165
+#: 6827295319). This stand-in starts the real `psql` at once, on the caller's
+#: stdout and stderr, and hands its stdin on chunk by chunk through a delay
+#: line: each chunk goes on `stream-hold-ms` milliseconds (a file beside it,
+#: read as each chunk comes) after it was read where the call is the service's
+#: held child, known by its own argv's `VERBOSITY=sqlstate` (d8:229), and at
+#: once for every other call, the guard's direct reads among them. It logs
+#: each call's argv in `stream-begin.log`, and each chunk as it reads it, with
+#: its monotonic time, the hold in force and whether the call is the held
+#: child, in `stream-chunks.log`, so a chunk that the service's SIGINT
+#: overtakes is logged all the same. SIGINT and SIGTERM go on to the real
+#: `psql`; `psql --version` is the real one's.
+_STREAM_PSQL = r'''#!@PY@ -I
+import json, os, queue, signal, subprocess, sys, threading, time
+HERE = @HERE@
+REAL = @REAL@
+args = sys.argv[1:]
+held = "VERBOSITY=sqlstate" in args
+
+
+def log(name, record):
+    with open(os.path.join(HERE, name), "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def hold_ms():
+    try:
+        with open(os.path.join(HERE, "stream-hold-ms"), encoding="utf-8") as handle:
+            return float(handle.read().strip() or 0)
+    except (OSError, ValueError):
+        return 0.0
+
+
+log("stream-begin.log", {"argv": args, "pid": os.getpid(), "held": held, "t": time.monotonic()})
+if args == ["--version"]:
+    os.execv(REAL, [REAL] + args)
+proc = subprocess.Popen([REAL] + args, stdin=subprocess.PIPE)
+for number in (signal.SIGINT, signal.SIGTERM):
+    signal.signal(number, lambda sig, frame: proc.send_signal(sig))
+line = queue.Queue()
+
+
+def read():
+    while True:
+        try:
+            chunk = os.read(0, 65536)
+        except OSError:
+            chunk = b""
+        now = time.monotonic()
+        hold = hold_ms() if held else 0.0
+        if chunk:
+            log("stream-chunks.log", {"pid": os.getpid(), "held": held, "read": now,
+                                      "hold_ms": hold, "bytes": len(chunk)})
+        line.put((now + hold / 1000, chunk))
+        if not chunk:
+            return
+
+
+def feed():
+    while True:
+        due, chunk = line.get()
+        if not chunk:
+            break
+        wait = due - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            proc.stdin.write(chunk)
+            proc.stdin.flush()
+        except OSError:
+            break
+    try:
+        proc.stdin.close()
+    except OSError:
+        pass
+
+
+for target in (read, feed):
+    threading.Thread(target=target, daemon=True).start()
+code = proc.wait()
+sys.exit(code if code >= 0 else 128 - code)
+'''
+
+
+class _StreamPsql:
+    """`_STREAM_PSQL` first on the estate's `PATH` as `psql` (its `bin`, as
+    `Estate.shim` puts PSQL_SHIM), in front of the case's cluster's own
+    `psql`, with no hold until `hold` sets one."""
+
+    def __init__(self, est: Estate):
+        self.dir = est.bin
+        _script(est.bin / "psql", _STREAM_PSQL, PY=sys.executable, HERE=_q(est.bin),
+                REAL=_q(est.pg.cluster.tool("psql")))
+
+    def hold(self, ms: int) -> None:
+        """Each chunk handed to the service's held child from now on is held
+        `ms` milliseconds."""
+        (self.dir / "stream-hold-ms").write_text(str(ms), encoding="utf-8")
+
+    def log(self, name: str = "stream-chunks.log") -> list:
+        path = self.dir / name
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+                if line.strip()]
+
+    def handed(self, hook: Hook) -> list:
+        """The chunks the service's held child read while `hook` ran (one
+        monotonic clock for the runner and the stand-in, as on Linux)."""
+        return [c for c in self.log() if c["held"] and hook.t0 <= c["read"] <= hook.t_exit]
+
+
+#: How long a case warms the service, in guard runs, before it reads it.
+WARM_S = 15.0
+
+
+def _warm(est: Estate, limit: float = WARM_S) -> Hook:
+    """Guard runs until one is answered by the service, with no fallback
+    line (d8 section 5.3), returned: a cold service answers `unavailable`
+    until its `psql` has connected (d8:502), and one holding no image
+    answers its first request so (the cache miss), as T237y's case warms
+    it."""
+    end = time.monotonic() + limit
+    while True:
+        hook = est.hook("hello")
+        if FALLBACK not in hook.err:
+            return hook
+        assert time.monotonic() < end, \
+            f"no guard run was answered by the service in {limit:.0f} s: {hook!r}"
+        time.sleep(0.2)
+
+
+def _service_backends(pg) -> set:
+    """The pids of the case's database's `lanes-index` client backends, by
+    the `application_name` the service's `psql` carries (`PGAPPNAME`, d8
+    section 7). Between guard runs that is the service's held connection
+    alone, once a direct read's backend has gone."""
+    sql = ("SELECT pid FROM pg_catalog.pg_stat_activity WHERE datname = current_database() "
+           "AND application_name LIKE 'lanes-index%' AND pid <> pg_backend_pid();")
+    return {int(word) for word in pg.psql(sql).stdout.split()}
 
 
 def _sha(text: str) -> str:
@@ -2916,51 +3072,137 @@ def test_the_database_unreachable_with_the_service_up_is_2_never_a_cached_ok(est
     assert hook.code == 2 and not hook.killed, repr(hook)
 
 
+#: THE HOLD on each chunk handed to the service's held child in the timer's
+#: case: past the 200 ms timer with no `register_rtt_ms=`, and inside the
+#: 250 ms at 150 (d8 section 6.2). The answer comes the hold and the real
+#: `psql`'s run, a few ms, after the request reached the service, near the
+#: middle of that window.
+STREAM_HOLD_MS = 220
+
+
 @pytest.mark.parametrize("rtt", ["none", "rtt-150"])
 def test_the_services_request_timer_follows_register_rtt_ms(estate, rtt):
     """SVC-6 at X: the service's request timer is 200 ms, or the round trip
-    plus 100 ms where `register_rtt_ms=` is over 100 (250 ms at 150)."""
+    plus 100 ms where `register_rtt_ms=` is over 100 (250 ms at 150).
+
+    The contract fixes the timer, not a `status` key, so the case reads it
+    from the answer, through the service's own `psql` (`_StreamPsql`, since
+    PSQL_SHIM never runs the held child: lane 5's T512 plan, point 2). The
+    service is warmed with no hold until a guard run is answered by it; then
+    each chunk handed to its held child is held `STREAM_HOLD_MS`, and one more
+    guard run's request reaches the held child and is held there: `[none]`
+    falls back, its 200 ms timer having expired, and `[rtt-150]` is answered
+    inside its 250 ms."""
     est = estate(mode="primary")
     if rtt != "none":
         _db_config(est, est.pg.url(), register_rtt_ms=150)
-    # EVERY CALL HELD 225 ms: past 200 ms, the timer with no `register_rtt_ms`,
-    # and inside 250 ms, the timer at 150. The contract fixes the timer, not a
-    # `status` key, so the case reads it from the answer.
-    est.shim([{"mode": "window", "ms": 225}])
+    stream = _StreamPsql(est)
     svc = _Service(est)
-    est.hook("hello")
-    hook = est.hook("hello")
-    svc.stop()
+    try:
+        _warm(est)
+        stream.hold(STREAM_HOLD_MS)
+        hook = est.hook("hello")
+    finally:
+        svc.stop()
+    held = [c for c in stream.handed(hook) if c["hold_ms"] == STREAM_HOLD_MS]
+    assert held, f"the guard's request never reached the service's held psql: {stream.log()}"
     if rtt == "none":
-        assert FALLBACK in hook.err, hook.err
+        assert hook.err.count(FALLBACK) == 1, hook.err
     else:
         assert FALLBACK not in hook.err, hook.err
 
 
-def test_each_service_request_is_one_query(estate):
-    """AT-10: each request the service answers is one Query message, one call
-    in the shim's log."""
-    est = estate(mode="primary")
-    est.shim()
+def test_each_service_request_is_one_query(estate, request):
+    """AT-10: each request the service answers is one Query message.
+
+    PSQL_SHIM's log cannot count it: the shim reads its stdin to the end
+    before it hands a call on, so the service's held `psql` never answers
+    through it, and the call it counted was the direct read's (lane 5's T512
+    plan, point 2). So the case runs on T229's counting cluster (line FX's
+    `CountingCluster`), which logs one `statement:` line per Query message,
+    each with its backend's pid (`log_statement=all`): the service is warmed
+    until a guard run is answered by it, its held connection is then the one
+    `lanes-index` backend (d8 section 7), and one more answered guard run,
+    one request (form 2, d8 section 13.9), is one `statement:` line of that
+    backend's."""
+    pgcluster = pytest.importorskip("pgcluster")
+    assert "CountingCluster" in vars(pgcluster), "tests/pgcluster.py has no counting cluster (T229)"
+    cluster = request.getfixturevalue("counting_cluster")
+    db = pgcluster.Database(cluster, cluster.new_database())
+    est = estate()
+    est.primary(db)
     svc = _Service(est)
-    before = len(est.shim_calls())
-    est.hook("hello")
-    svc.stop()
-    assert len(est.shim_calls()) - before == 1, est.shim_calls()[before:]
+    try:
+        _warm(est)
+        held = _until(lambda: (lambda s: s if len(s) == 1 else None)(_service_backends(db)),
+                      10, 0.1)
+        assert held, f"no one lanes-index backend is left for the service: {_service_backends(db)}"
+        offset = cluster.log().stat().st_size
+        hook = est.hook("hello")
+    finally:
+        svc.stop()
+    time.sleep(0.2)                       # the server's last log line, as T229's smoke waits
+    text = cluster.log().read_bytes()[offset:].decode("utf-8", "replace")
+    pid = next(iter(held))
+    queries = [line for line in text.splitlines() if f"[{pid}]" in line and "statement: " in line]
+    assert FALLBACK not in hook.err, hook.err
+    assert len(queries) == 1, queries
+
+
+#: THE IDLE CHECK'S DEFAULT, kept for a value the contract ignores (d8
+#: section 10), and the case's two reads of it: no replacement by
+#: `IDLE_CHECK_EARLY_S`, `[interval]`'s wait, and one by `IDLE_CHECK_LIMIT_S`.
+IDLE_CHECK_DEFAULT_S = 60
+IDLE_CHECK_EARLY_S = 2.5
+IDLE_CHECK_LIMIT_S = IDLE_CHECK_DEFAULT_S + 30
 
 
 @pytest.mark.parametrize("case", ["interval", "floor", "cap"])
 def test_the_services_idle_check_replaces_a_dropped_connection_in_the_background(estate, case):
     """SVC-6 (R37): `[interval]`, at `LANES_REGISTER_SERVE_IDLE_CHECK_S=1`, a
     dropped connection is replaced in the background before the next
-    request; `[floor]`, a value under 1 s refused; `[cap]`, one at or above
-    the load balancer's 240 s refused."""
+    request.
+
+    `[floor]`, 0.5, under the 1 s floor, and `[cap]`, 240, the load
+    balancer's 240 s: such a value is ignored, with the default 60 s kept,
+    never `config-refused` (tasks:1643; lane 5's socket contract d8, section
+    10; lane 3's OP-14, #165 6746215510, which stands, #165 6827356485). So
+    `serve` listens and runs on, with no failure stamp (section 8.6), and
+    `[interval]`'s own observable shows the 60 s: the service's dropped
+    connection is not replaced within `IDLE_CHECK_EARLY_S`, as a check at
+    the value given or at the 1 s floor would have replaced it, and is
+    replaced within `IDLE_CHECK_LIMIT_S`, as a check at 240 s would not
+    have; the next request is then answered by the service. The replacement
+    is read in `pg_stat_activity` by its `application_name` (d8 section 7),
+    with no request in between, since a request on the dropped connection
+    would itself start the new one (d8 section 6.2)."""
     est = estate(mode="primary")
     value = {"interval": "1", "floor": "0.5", "cap": "240"}[case]
     if case != "interval":
-        done = _index(est, "serve", env=est.env(LANES_REGISTER_SERVE_IDLE_CHECK_S=value),
-                      timeout=30)
-        assert done.returncode == 2, done.stderr
+        svc = _Service(est, LANES_REGISTER_SERVE_IDLE_CHECK_S=value)
+        try:
+            _warm(est)
+            dropped = _until(lambda: _service_backends(est.pg), 10, 0.1)
+            assert dropped, "the warmed service held no connection to drop"
+            est.pg.psql("SELECT pg_terminate_backend(pid) FROM pg_catalog.pg_stat_activity "
+                        f"WHERE pid IN ({','.join(str(p) for p in dropped)});")
+            time.sleep(IDLE_CHECK_EARLY_S)
+            early = _service_backends(est.pg) - dropped
+            replaced = early or _until(lambda: _service_backends(est.pg) - dropped,
+                                       IDLE_CHECK_LIMIT_S - IDLE_CHECK_EARLY_S, 1.0)
+            hook = est.hook("hello")
+            code = svc.proc.poll()
+            stamp = (_run_dir(est) / "register.failed").exists()
+        finally:
+            svc.stop()
+        assert code is None and not stamp, \
+            f"serve exited {code} or stamped a failure under LANES_REGISTER_SERVE_IDLE_CHECK_S={value}"
+        assert not early, (f"the dropped connection was replaced within {IDLE_CHECK_EARLY_S} s: "
+                           f"the check ran at {value} s or at the 1 s floor, not at the default "
+                           f"{IDLE_CHECK_DEFAULT_S} s")
+        assert replaced, (f"the dropped connection was not replaced within {IDLE_CHECK_LIMIT_S} s: "
+                          f"the check did not run at the default {IDLE_CHECK_DEFAULT_S} s")
+        assert FALLBACK not in hook.err, hook.err
         return
     svc = _Service(est, LANES_REGISTER_SERVE_IDLE_CHECK_S=value)
     est.pg.psql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
@@ -3092,16 +3334,25 @@ def _masked_path(path: str) -> str:
 
 
 def test_the_service_reaches_the_database_only_through_psql(estate):
-    """OP-10 (R-F10-20): every answer from the database is a call in the
-    shim's log; with no `psql` at the start, `serve` stamps `no-psql` and
-    exits 2 before any socket exists, and the client's direct read answers."""
+    """OP-10 (R-F10-20): every answer from the database is a call through
+    `psql`; with no `psql` at the start, `serve` stamps `no-psql` and exits 2
+    before any socket exists, and the client's direct read answers.
+
+    The first half reads the service's own `psql` through `_StreamPsql`:
+    PSQL_SHIM, which reads its stdin to the end first, never runs the
+    service's held child, so the call it logged was the direct read's (lane
+    5's T512 plan, point 2). The guard run the service answers, with no
+    fallback line, handed its request to the held child, the `psql` the
+    service ran from `PATH`."""
     est = estate(mode="primary")
-    est.shim()
+    stream = _StreamPsql(est)
     svc = _Service(est)
-    before = len(est.shim_calls())
-    est.hook("hello")
-    svc.stop()
-    assert len(est.shim_calls()) > before, "an answer came from the database without psql"
+    try:
+        hook = _warm(est)
+    finally:
+        svc.stop()
+    assert stream.handed(hook), \
+        f"an answer came from the database without psql: {stream.log('stream-begin.log')}"
     nopsql = subprocess.run([sys.executable, str(est.index), "serve"], capture_output=True,
                             text=True, timeout=30, cwd=str(est.wip),
                             env=est.env(PATH=_masked_path(os.pathsep.join(
@@ -3331,16 +3582,38 @@ def test_a_stale_socket_is_unlinked_under_the_lock_and_rebound(estate):
         again.stop()
 
 
+#: How long `[floor]`'s service must run on: ten times the 0.5 s given, five
+#: times the 1 s floor, and past `[stops]`'s 2 s.
+IDLE_STOP_RUNS_ON_S = 5.0
+
+
 @pytest.mark.parametrize("case", ["stops", "floor"])
 def test_the_service_stops_after_its_idle_time_and_unlinks_its_socket(estate, case):
     """SVC-4 (R37): `[stops]`, with `LANES_REGISTER_SERVE_IDLE_STOP_S=2` the
-    service stops after it and unlinks its socket; `[floor]`, a value under
-    1 s refused."""
+    service stops after it and unlinks its socket.
+
+    `[floor]`, 0.5, under the 1 s floor: the value is ignored, with the
+    default 900 s kept, never `config-refused` (tasks:1643; d8 section 10;
+    lane 3's OP-14, #165 6746215510, which stands, #165 6827356485). So
+    `serve` listens, with no failure stamp (section 8.6), and by section
+    8.4's own observable, its process and its socket, it runs on for
+    `IDLE_STOP_RUNS_ON_S`, past the 0.5 s given and the 1 s floor. The 900 s
+    itself is not waited for."""
     est = estate(mode="primary")
     if case == "floor":
-        done = _index(est, "serve", env=est.env(LANES_REGISTER_SERVE_IDLE_STOP_S="0.5"),
-                      timeout=30)
-        assert done.returncode == 2, done
+        svc = _Service(est, LANES_REGISTER_SERVE_IDLE_STOP_S="0.5")
+        sock = svc.dir / "register.sock"
+        try:
+            stopped = _until(lambda: svc.proc.poll() is not None or not sock.exists(),
+                             IDLE_STOP_RUNS_ON_S)
+            code = svc.proc.poll()
+            stamp = (_run_dir(est) / "register.failed").exists()
+        finally:
+            svc.stop()
+        assert not stamp, "serve stamped a failure under LANES_REGISTER_SERVE_IDLE_STOP_S=0.5"
+        assert not stopped, (f"serve stopped (exit {code}) or unlinked its socket inside "
+                             f"{IDLE_STOP_RUNS_ON_S} s under LANES_REGISTER_SERVE_IDLE_STOP_S=0.5: "
+                             f"the value was taken, not ignored with the default 900 s kept")
         return
     svc = _Service(est, LANES_REGISTER_SERVE_IDLE_STOP_S="2")
     sock = svc.dir / "register.sock"
