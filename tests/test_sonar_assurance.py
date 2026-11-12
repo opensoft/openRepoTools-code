@@ -230,3 +230,48 @@ def test_evidence_rebind_requires_exact_commits_sources_and_complete_reports(
         assert assurance.rebind_evidence(root, out) == summary
         assert "sonar.coverageReportPaths=" + str(out / "coverage.xml") in (
             out / "scanner.properties").read_text()
+
+
+@pytest.mark.parametrize("failure", [None, "missing-provider", "foreign-provider", "incomplete-provider"])
+def test_combination_requires_both_exact_complete_suites_and_unions_real_hits(
+        assurance, tmp_path, monkeypatch, failure):
+    monkeypatch.syspath_prepend(str(HERE / ".github/ci"))
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    root = repo(tmp_path / "checkout", {
+        "command": b"#!/usr/bin/env bash\necho one\necho two\n",
+        "index": b"#!/usr/bin/env python3\nprint(1)\nprint(2)\n"})
+    manifest = assurance.inventory(root)
+    for label in ("composed", "provider"):
+        if failure == "missing-provider" and label == "provider":
+            continue
+        directory = tmp_path / ("sonar-" + label)
+        directory.mkdir()
+        recorded = json.loads(json.dumps(manifest))
+        if failure == "foreign-provider" and label == "provider":
+            recorded["commits"]["."] = "f" * 40
+        (directory / "inventory.json").write_text(json.dumps(recorded))
+        (directory / "provenance-probe.json").write_text(json.dumps({"exact": 2, "modified": 0}))
+        files = ['<file path="' + item["path"] + '">' +
+                 '<lineToCover lineNumber="2" covered="' +
+                 ("true" if label == "composed" else "false") + '"/>' +
+                 '<lineToCover lineNumber="3" covered="' +
+                 ("true" if label == "provider" else "false") + '"/></file>'
+                 for item in manifest["files"]]
+        if failure == "incomplete-provider" and label == "provider":
+            files.pop()
+        (directory / "coverage.xml").write_text('<coverage version="1">' + "".join(files) + '</coverage>')
+        (directory / "coverage-summary.json").write_text(json.dumps({
+            "files": 2, "languages": {
+                "py": {"covered": 1, "lines": 2}, "shell": {"covered": 1, "lines": 2}}}))
+    out = tmp_path / "sonar"
+    if failure:
+        with pytest.raises((ValueError, FileNotFoundError)):
+            assurance.combine_evidence(root, out)
+        assert not (out / "coverage.xml").exists()
+    else:
+        summary = assurance.combine_evidence(root, out)
+        assert summary == {"files": 2, "languages": {
+            "py": {"covered": 2, "lines": 2}, "shell": {"covered": 2, "lines": 2}}}
+        inputs = json.loads((out / "evidence-inputs.json").read_text())
+        assert set(inputs) == {"composed", "provider"}
+        assert all(item["commits"] == manifest["commits"] for item in inputs.values())

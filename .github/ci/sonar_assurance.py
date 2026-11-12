@@ -167,6 +167,37 @@ def rebind_evidence(root, out):
     return summary
 
 
+def combine_evidence(root, out):
+    """Union real observations from both mandatory complete suites."""
+    from sonar_coverage import write_report
+
+    manifest = inventory(root)
+    measurements = {item["path"]: {} for item in manifest["files"] if not item["test"]}
+    inputs = {}
+    for label in ("composed", "provider"):
+        directory = Path(os.environ["RUNNER_TEMP"]).resolve() / ("sonar-" + label)
+        summary = rebind_evidence(root, directory)
+        data = (directory / "coverage.xml").read_bytes()
+        for file in ET.fromstring(data):
+            lines = measurements[file.attrib["path"]]
+            for line in file:
+                number = int(line.attrib["lineNumber"])
+                lines[number] = lines.get(number, False) or line.attrib["covered"] == "true"
+        inputs[label] = {
+            "commits": manifest["commits"], "coverage_sha256": hashlib.sha256(data).hexdigest(),
+            "summary": summary,
+            "probe": json.loads((directory / "provenance-probe.json").read_text())}
+    out.mkdir(parents=True, exist_ok=True)
+    write_configuration(root, out, manifest)
+    summary = write_report(out, manifest, measurements)
+    # Both independent probes passed; diagnostic observations never enter
+    # measurements. Retain each exact result plus a conservative roll-up.
+    probe = {"exact": min(item["probe"]["exact"] for item in inputs.values()), "modified": 0}
+    (out / "provenance-probe.json").write_text(json.dumps(probe, indent=2) + "\n")
+    (out / "evidence-inputs.json").write_text(json.dumps(inputs, indent=2) + "\n")
+    return summary
+
+
 def verify_gate(status, conditions, require_period=True, require_coverage=True):
     actual = {row["metric"]: (row["op"], str(row["error"]))
               for row in conditions}
@@ -294,7 +325,7 @@ def ci_paths(root, out):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("prepare", "rebind", "verify-analysis"))
+    parser.add_argument("command", choices=("prepare", "rebind", "combine", "verify-analysis"))
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--pull-request")
@@ -309,6 +340,8 @@ def main():
                               item["path"] for item in manifest["files"]
                               if not Path(item["path"]).suffix and not item["test"]]},
                          indent=2))
+    elif args.command == "combine":
+        combine_evidence(root, out)
     elif args.command == "rebind":
         print(json.dumps(rebind_evidence(root, out), indent=2))
     else:
