@@ -63,15 +63,18 @@ fail, since the schema is not there. Without PostgreSQL 16 they skip with
 T205's banner. DEC-23's two rendering ids take `pg_cluster` by
 `request.getfixturevalue`, so they skip the same way, but that function's
 closure does not hold `pg_engine`; its name holds neither word of the launch
-job's filter, so T200's check is unaffected. T231's three T116 cases take
+job's filter, so T200's check is unaffected. T231's three cutover cases take
 `pg_cluster` itself, so their closure holds `pg_engine`, and bootstrap a
 database of their own with a scratch `register_schema=`.
 
 A REGISTER ON `primary` with the marker `present` is reached as AT-LR006's
 fixture reaches it (the test plan at 4610-4615): by the documented functions as
 `lanes_register_writer`, `commit_write` with an `import` entry, then with a
-`cutover` entry, then `record_marker`. Only T231's three T116 cases run
-`lanes-index cutover`, against a scratch schema of their own.
+`cutover` entry, then `record_marker`. Only T231's three cutover cases run
+`lanes-index cutover`, against a scratch schema of their own: its whole row,
+T116's transaction and T327's push of the marker, from the operator lane's
+own checkout onto a real commit C on a local bare origin (lane 3's (c), #165
+6828023371; T221k).
 
 THE ROLES. The test's own `psql` connects as the fixture's superuser and takes
 each role by `SET ROLE`, so a case needs no login of its own except where
@@ -86,6 +89,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -248,10 +252,13 @@ def entry(kind: str, verb: str, **parts) -> dict:
     return {"journal": journal, "not_after": NOT_AFTER, **parts}
 
 
-def import_entry(files: dict, no_newline=(), **rows) -> dict:
+def import_entry(files: dict, no_newline=(), *, commit: str = COMMIT_C, tree: str = TREE_C,
+                 **rows) -> dict:
     """An import of `files` (path to its lines): each created, then its lines
     appended, and each path's digest as it renders; each path in `no_newline`
-    with no final newline (AT-LR4's fixture file)."""
+    with no final newline (AT-LR4's fixture file). The journal names `commit`
+    and its `lanes` tree `tree`: the fixed `COMMIT_C` and `TREE_C`, but for
+    the cutover's cases, whose step 2 reads a real C (`OperatorEstate`)."""
     edits, ord_ = [], 0
     for path in sorted(files):
         ord_ += 1
@@ -259,7 +266,7 @@ def import_entry(files: dict, no_newline=(), **rows) -> dict:
         for text in files[path]:
             ord_ += 1
             edits.append({"ord": ord_, "op": "append", "path": path, "new_text": text})
-    return entry("import", "import", journal={"git_commit": COMMIT_C, "git_tree": TREE_C},
+    return entry("import", "import", journal={"git_commit": commit, "git_tree": tree},
                  edits=edits,
                  files=[{"path": p, "present": True,
                          "sha256": rendered(files[p], p not in no_newline),
@@ -1632,12 +1639,18 @@ def test_commit_write_derives_step_6s_deletes_so_the_tables_equal_the_imports_de
 #:     route, so they pass on T107 alone. The rollback's entry is the operator
 #:     entry that removes `lanes/STORE`, sent by a direct call, since no task
 #:     before T304 sends one.
-#:   * T116'S CASES (`set_seq_after_a_cutover`, `the_reimport_forms`,
+#:   * THE CUTOVER'S CASES (`set_seq_after_a_cutover`, `the_reimport_forms`,
 #:     `restore_prior_is`) run `lanes-index cutover` itself against a scratch
 #:     schema (`register_schema=`, DEC-23), which it alone accepts while
 #:     `RENDER_GIT_HALF` is False; the import before it is the entry
 #:     `import --at` sends, by a direct call, as `root_seq` gives an after-loss
-#:     import its `m`.
+#:     import its `m`. Each runs the cutover's whole row (lane 3's (c), #165
+#:     6828023371, which moves the three from T116's verify to T327's, since
+#:     T327 waits for T116): T116's transaction, then T327's push of the
+#:     marker, its read-back and `record_marker`, so its 0 leaves the marker
+#:     `present`. The run is the operator lane's, from its own checkout by
+#:     T221i's route, onto a real commit C (`OperatorEstate`); an abort is the
+#:     cutover's own step 3, with origin refusing the marker's push.
 #:   * T112'S CASES write through `lanes-index register snapshot --tree` and
 #:     `register commit` from T203's flipped copy, with the shim's `edit-entry`
 #:     mode on the commit call, so each fails until T111 is on line R as well
@@ -1752,11 +1765,117 @@ def scratch_register(cluster, where: Path) -> Database:
     return db
 
 
-def cutover_run(where: Path, db, label: str, *args: str) -> subprocess.CompletedProcess:
-    """`lanes-index cutover <args>` as the operator lane (F12): `LANES_LANE`,
-    this workstation, git's author, and a configuration naming the scratch
-    schema and `register_label=` `label` (N4), its URLs the cluster's socket
-    (the fake-`psql` host rule, L1v4.5:525)."""
+#: T221k: ORIGIN'S REFUSAL OF A PUSH (lane 3's (c), #165 6828023371: the abort
+#: "seen through the cutover's own step 3, with origin refusing the push"), as
+#: a `pre-receive` hook in the estate's bare origin. Until the case arms it
+#: (`ARMED_PATH`) it lets every push through. Armed, it refuses each push with
+#: 1, so `git push --porcelain` reads `[remote rejected]`, T320's `failed`,
+#: and T327's read-back after it proves the marker absent: the abort. Where
+#: the case also holds it (`HOLD_PATH`), it marks `REACHED_PATH` and waits for
+#: `RELEASE_PATH` before it refuses, under 40 s, below `LANES_GIT_TIMEOUT`'s
+#: 60 s, so the case reads the switch while the cutover's entry stands. Each
+#: ref update is one line of `LOG_PATH`: the verdict, the old and the new sha,
+#: and the ref.
+REFUSE_HOOK = r"""#!/bin/sh
+if [ -e ARMED_PATH ]; then verdict=refused; else verdict=accepted; fi
+while read -r old new ref; do
+  printf '%s %s %s %s\n' "$verdict" "$old" "$new" "$ref" >> LOG_PATH
+done
+[ "$verdict" = refused ] || exit 0
+if [ -e HOLD_PATH ]; then
+  : > REACHED_PATH
+  n=0
+  while [ ! -e RELEASE_PATH ] && [ "$n" -lt 800 ]; do sleep 0.05; n=$((n + 1)); done
+fi
+echo "origin refuses this push (T221k's model of a server-side refusal)" >&2
+exit 1
+"""
+
+
+class OperatorEstate:
+    """T221k: THE OPERATOR LANE'S OWN CHECKOUT for the cutover's cases, by
+    T221i's route (lane 3's (c), #165 6828023371): `work`, a clone whose
+    origin is the bare `origin.git`, which `LANES_REPO` names, and `w`, a
+    directory of its own, which `LANES_WORKSPACE_ROOT` names, since the
+    cutover finds its checkout as the import does and refuses a `LANES_REPO`
+    that is `W`, or one set where `W` cannot be read (T327's
+    `cutover_git_preflight`, through `lane_own_checkout`). Origin's URLs are
+    absolute paths, as its local-origin check needs while `RENDER_GIT_HALF`
+    is False.
+
+    Origin's `main` is a real commit C, `commit`, whose `lanes/LANES.md` is
+    `DEFAULT_FILES`' as the register renders it, beside the checkout's own
+    files, which are no render-set path: so the marker's commit builds on C,
+    and in the restore form the render set at origin's tip is the images at
+    `b`. `tree` is C's `lanes` tree, which the import's entry names and step 2
+    compares origin's tip with. Origin's `pre-receive` hook is
+    `REFUSE_HOOK`."""
+
+    def __init__(self, root: Path):
+        root.mkdir(parents=True)
+        files = {path: file_bytes(lines).decode("utf-8") for path, lines in DEFAULT_FILES.items()}
+        self.work = estate_checkout(root, {**files, **CHECKOUT_FILES})
+        self.origin, self.w = root / "origin.git", root / "W"
+        self.w.mkdir()
+        self.commit = git("rev-parse", "HEAD", cwd=self.work).stdout.strip()
+        self.tree = git("rev-parse", "HEAD:lanes", cwd=self.work).stdout.strip()
+        self.armed, self.hold = root / "refuse-armed", root / "refuse-hold"
+        self.reached, self.release = root / "refuse-reached", root / "refuse-release"
+        self.log = root / "pushes.log"
+        text = REFUSE_HOOK
+        for name, path in (("ARMED_PATH", self.armed), ("HOLD_PATH", self.hold),
+                           ("REACHED_PATH", self.reached), ("RELEASE_PATH", self.release),
+                           ("LOG_PATH", self.log)):
+            text = text.replace(name, shlex.quote(str(path)))
+        hook = self.origin / "hooks" / "pre-receive"
+        hook.parent.mkdir(exist_ok=True)                # no templates, no hooks/
+        hook.write_text(text, encoding="utf-8")
+        hook.chmod(0o755)
+
+    def refuse(self, hold: bool = False) -> None:
+        """Arm origin's refusal of every push from now on; held, where `hold`."""
+        if hold:
+            self.hold.write_text("", encoding="utf-8")
+        self.armed.write_text("", encoding="utf-8")
+
+    def wait_reached(self, proc: subprocess.Popen, ceiling: float = 30.0) -> bool:
+        """Poll in 0.05 s steps, under `ceiling`, until a held push reaches the
+        hook: True; False where `proc` ends first or the ceiling passes."""
+        end = time.monotonic() + ceiling
+        while time.monotonic() < end:
+            if self.reached.exists():
+                return True
+            if proc.poll() is not None:
+                return False
+            time.sleep(0.05)
+        return False
+
+    def tip(self) -> str:
+        """Origin's `main`, read in the bare repository itself."""
+        return git("rev-parse", "refs/heads/main", cwd=self.origin).stdout.strip()
+
+    def parent(self, commit: str) -> str:
+        return git("rev-parse", f"{commit}^", cwd=self.origin).stdout.strip()
+
+    def seq_of(self, commit: str) -> str:
+        """Form C on one commit: its `Register-Seq` trailer's value."""
+        return git("log", "-n", "1", "--format=%(trailers:key=Register-Seq,valueonly)", commit,
+                   "--", cwd=self.origin).stdout.strip()
+
+    def pushes(self) -> list:
+        """Each ref update the hook saw, `[verdict, old, new, ref]`, in order."""
+        if not self.log.exists():
+            return []
+        return [line.split(" ") for line in self.log.read_text(encoding="utf-8").splitlines()]
+
+
+def cutover_env(where: Path, db, label: str, estate: OperatorEstate) -> dict:
+    """`lanes-index cutover`'s environment as the operator lane (F12):
+    `LANES_LANE`, this workstation, git's author, and a configuration naming
+    the scratch schema and `register_label=` `label` (N4), its URLs the
+    cluster's socket (the fake-`psql` host rule, L1v4.5:525); and the lane's
+    own checkout by T221i's route (T221k): `LANES_REPO` names `estate`'s
+    clone and `LANES_WORKSPACE_ROOT` its `W`."""
     where.mkdir(parents=True, exist_ok=True)
     conf = where / "lanes-index.conf"
     query = f"?connect_timeout={CONNECT_TIMEOUT}"
@@ -1764,8 +1883,25 @@ def cutover_run(where: Path, db, label: str, *args: str) -> subprocess.Completed
                     f"reader_url={db.url(LOGIN_READER)}{query}\n"
                     f"register_schema={T231_SCHEMA}\nregister_label={label}\n", encoding="utf-8")
     conf.chmod(0o600)
-    env = index_env(where, conf, LANES_LANE=LANE, LANES_WORKSTATION=WS, **OPERATOR_GIT)
-    return run_index(LANES_INDEX, ["cutover", *args], env, cwd=where)
+    return index_env(where, conf, LANES_LANE=LANE, LANES_WORKSTATION=WS,
+                     LANES_REPO=str(estate.work), LANES_WORKSPACE_ROOT=str(estate.w),
+                     **OPERATOR_GIT)
+
+
+def cutover_run(where: Path, db, label: str, estate: OperatorEstate,
+                *args: str) -> subprocess.CompletedProcess:
+    """`lanes-index cutover <args>` in `cutover_env`'s environment, from the
+    operator lane's checkout, to its end: its whole row (T116, T327)."""
+    return run_index(LANES_INDEX, ["cutover", *args], cutover_env(where, db, label, estate),
+                     cwd=estate.work)
+
+
+def aborted(proc: subprocess.CompletedProcess) -> bool:
+    """Whether the cutover ended in its step 3's abort: exit 2,
+    `EXIT_CUTOVER_ABORTED`, with the abort's `ABORTED` line on stderr
+    (`cutover_abort`)."""
+    return proc.returncode == 2 and bool(
+        re.search(r"^lanes-index: cutover: ABORTED: ", proc.stderr, re.M))
 
 
 # ------------------------------------------------------------------ T112's writer
@@ -1976,25 +2112,36 @@ def test_set_seq_after_a_cutover_is_the_cutovers_own_seq(pg_cluster, tmp_path, c
     """`set_seq` is the cutover's own seq: 1 after the first import at 0, and
     `m+1` after an after-loss import at `m` and `cutover --import <M>
     --after-loss`, whose transaction also gives the switch a generation other
-    than the bootstrap's (F10, F18). The cutover is `lanes-index cutover`
-    (T116) against T231's scratch schema; the import is the entry `import --at`
-    sends, by a direct call, with `root_seq` `m` for the after-loss form. After
-    it: the switch `primary` with the marker `adding` at `marker_seq` = the
-    head = `set_seq`, and `journal.operator` true for that seq alone."""
+    than the bootstrap's (F10, F18). The cutover is `lanes-index cutover`'s
+    whole row against T231's scratch schema (T116's transaction, then T327's
+    push; lane 3's (c), #165 6828023371), run from the operator lane's own
+    checkout, whose origin's `main` is a real commit C (`OperatorEstate`);
+    the import is the entry `import --at <C>` sends, by a direct call, with
+    `root_seq` `m` for the after-loss form. Its 0 is the whole row (T327): the
+    switch `primary` with the marker `present` at `marker_seq` = the head =
+    `set_seq`; `marker_commit` is origin's new tip, the one push origin took,
+    a child of C carrying `Register-Seq` that seq; and `journal.operator` is
+    true for that seq alone."""
     db = scratch_register(pg_cluster, tmp_path / "scratch")
     try:
+        estate = OperatorEstate(tmp_path / "estate")
         bootstrap_generation = generation(db, T231_SCHEMA)
         m = 0 if case == "first" else REIMPORT_M
-        body = import_entry(DEFAULT_FILES) if case == "first" else import_entry(
-            DEFAULT_FILES, root_seq=REIMPORT_M)
+        rows = {} if case == "first" else {"root_seq": REIMPORT_M}
+        body = import_entry(DEFAULT_FILES, commit=estate.commit, tree=estate.tree, **rows)
         assert committed(db, -1, body, "the import", T231_SCHEMA) == m
-        args = ["--import", COMMIT_C] + (["--after-loss"] if case == "after-loss" else [])
-        proc = cutover_run(tmp_path / "operator", db, STORE_LABEL, *args)
+        args = ["--import", estate.commit] + (["--after-loss"] if case == "after-loss" else [])
+        proc = cutover_run(tmp_path / "operator", db, STORE_LABEL, estate, *args)
         assert proc.returncode == 0, f"cutover {' '.join(args)}:\n{shown(proc)}"
         switch = switch_of(db, T231_SCHEMA)
         assert switch["set_seq"] == m + 1, f"set_seq is {switch['set_seq']}, not {m + 1}: {switch}"
         assert head(db, T231_SCHEMA) == m + 1 and switch["marker_seq"] == m + 1, switch
-        assert (switch["mode"], switch["marker_state"]) == ("primary", "adding"), switch
+        assert (switch["mode"], switch["marker_state"]) == ("primary", "present"), switch
+        tip = estate.tip()
+        assert estate.pushes() == [["accepted", estate.commit, tip, "refs/heads/main"]], (
+            f"origin took not one push, the marker's, onto C: {estate.pushes()}")
+        assert switch["marker_commit"] == tip, (switch, tip)
+        assert estate.parent(tip) == estate.commit and estate.seq_of(tip) == str(m + 1), tip
         assert [seq for seq, _kind, operator in journal_of(db, T231_SCHEMA) if operator] == [m + 1]
         if case == "first":
             assert switch["generation"] == bootstrap_generation, switch
@@ -2259,25 +2406,52 @@ def test_switch_to_files_aborts_only_an_unconfirmed_cutover(pg):
 
 def test_the_reimport_forms_abort_leaves_label_and_generation(pg_cluster, tmp_path):
     """The re-import form's abort (the third database; lane 3, comment
-    6710770304): after an after-loss import at `m` and `lanes-index cutover
-    --import <M> --after-loss` (T116) at `m+1`, `switch_to_files` at `m+1`
-    sets `files` with the marker `absent`, `set_seq` `m`, and `lanes/STORE`
-    gone, and leaves the `database_label` and the `generation` its cutover set.
-    So a commit call carrying the lost database's generation, as a pending
-    record made against it would, still fails with LR007."""
+    6710770304), seen through the cutover's own step 3 (T327; lane 3's (c),
+    #165 6828023371): after an after-loss import at `m`, `lanes-index cutover
+    --import <C> --after-loss`, from the operator lane's own checkout
+    (`OperatorEstate`), commits its entry at `m+1`, and origin refuses the
+    marker's push. The case holds that push at origin's hook and reads the
+    switch: `primary` with the marker `adding`, `set_seq` `m+1`, and a
+    generation other than the lost database's. Released, the push is
+    refused, the read-back proves the marker absent, and the cutover aborts,
+    exit 2 with its `ABORTED` line: its `switch_to_files` at `m+1` sets
+    `files` with the marker `absent`, `set_seq` `m`, and `lanes/STORE` gone,
+    and leaves the `database_label` and the `generation` its cutover set, as
+    the held read saw them; origin's `main` is still C. So a commit call
+    carrying the lost database's generation, as a pending record made against
+    it would, still fails with LR007."""
     db = scratch_register(pg_cluster, tmp_path / "scratch")
     try:
+        estate = OperatorEstate(tmp_path / "estate")
         lost = generation(db, T231_SCHEMA)
         m = REIMPORT_M
-        assert committed(db, -1, import_entry(DEFAULT_FILES, root_seq=m), "the re-import",
-                         T231_SCHEMA) == m
-        proc = cutover_run(tmp_path / "operator", db, STORE_LABEL, "--import", COMMIT_C,
-                           "--after-loss")
-        assert proc.returncode == 0, shown(proc)
-        cut = switch_of(db, T231_SCHEMA)
-        assert cut["set_seq"] == m + 1 and cut["generation"] != lost, cut
-        proc = abort_call(db, m + 1, T231_SCHEMA)
-        assert proc.returncode == 0 and proc.stdout.strip() == str(m), proc.stderr
+        assert committed(db, -1, import_entry(DEFAULT_FILES, commit=estate.commit, tree=estate.tree,
+                                              root_seq=m), "the re-import", T231_SCHEMA) == m
+        estate.refuse(hold=True)
+        run = subprocess.Popen([sys.executable, str(LANES_INDEX), "cutover", "--import",
+                                estate.commit, "--after-loss"], stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8",
+                               errors="replace", cwd=str(estate.work),
+                               env=cutover_env(tmp_path / "operator", db, STORE_LABEL, estate))
+        cut = None
+        try:
+            if estate.wait_reached(run):
+                cut = switch_of(db, T231_SCHEMA)        # the entry stands; its push is held
+        finally:
+            estate.release.write_text("", encoding="utf-8")
+            try:
+                out, err = run.communicate(timeout=120)
+            except subprocess.TimeoutExpired:
+                run.kill()
+                out, err = run.communicate()
+        proc = subprocess.CompletedProcess(run.args, run.returncode, out, err)
+        assert cut is not None, f"the cutover's push never reached origin's hook:\n{shown(proc)}"
+        assert (cut["mode"], cut["marker_state"], cut["set_seq"]) == (
+            "primary", "adding", m + 1), cut
+        assert cut["generation"] != lost, cut
+        assert aborted(proc), f"the cutover did not abort at its step 3:\n{shown(proc)}"
+        assert [push[0] for push in estate.pushes()] == ["refused"], estate.pushes()
+        assert estate.tip() == estate.commit, "origin's main moved past C"
         switch = switch_of(db, T231_SCHEMA)
         assert (switch["mode"], switch["marker_state"], switch["set_seq"]) == (
             "files", "absent", m), switch
@@ -2297,39 +2471,53 @@ def test_the_reimport_forms_abort_leaves_label_and_generation(pg_cluster, tmp_pa
 def test_restore_prior_is_set_by_the_restore_form_and_cleared_by_record_marker(pg_cluster,
                                                                               tmp_path):
     """The restore form (a database restored at `b`, here the scratch database
-    at its head after the first cutover is confirmed): after `lanes-index
-    cutover --after-loss` (T116) with another `register_label=` (N4),
-    `restore_prior` holds the switch row and `lanes/STORE`'s `files` row and
-    lines as they were; `record_marker` clears it. A second restore form's
-    abort, `switch_to_files`, puts them back with their old `line_id`s, the
-    switch row whole, and `set_seq` the value before that cutover. As the admin
+    at its head after the first cutover), each cutover `lanes-index
+    cutover`'s whole row (T116's transaction, then T327's push; lane 3's (c),
+    #165 6828023371) from the operator lane's own checkout
+    (`OperatorEstate`), so `restore_prior` is checked only by what the abort
+    puts back. The first form's 0 leaves the marker `present`. Then `cutover
+    --after-loss` with another `register_label=` (N4) renders up to `b`,
+    which origin already carries, commits at `b+1`, pushes its marker and
+    records it: its 0 leaves `primary` with the marker `present`, `set_seq`
+    `b+1` and its label, and `record_marker` has cleared `restore_prior`. A
+    second restore form, whose marker's push origin refuses, aborts at its
+    step 3, exit 2, and its `switch_to_files` puts back what `restore_prior`
+    held: `lanes/STORE`'s `files` row and lines with their old `line_id`s,
+    the switch row whole, the head `b` and `set_seq` the value before that
+    cutover; origin's `main` is where that cutover found it. As the admin
     under `SET ROLE lanes_register_owner`, setting `restore_prior` while the
     marker is not `adding` fails with 23514 (`register_switch_check4`)."""
     db = scratch_register(pg_cluster, tmp_path / "scratch")
     try:
-        imported = committed(db, -1, import_entry(DEFAULT_FILES), "the import", T231_SCHEMA)
-        proc = cutover_run(tmp_path / "first", db, STORE_LABEL, "--import", COMMIT_C)
+        estate = OperatorEstate(tmp_path / "estate")
+        imported = committed(db, -1, import_entry(DEFAULT_FILES, commit=estate.commit,
+                                                  tree=estate.tree), "the import", T231_SCHEMA)
+        proc = cutover_run(tmp_path / "first", db, STORE_LABEL, estate, "--import", estate.commit)
         assert proc.returncode == 0, shown(proc)
-        assert marker_call(db, imported + 1, T231_SCHEMA).stdout.strip() == "present"
+        assert pair_of(db, T231_SCHEMA) == ("primary", "present"), switch_of(db, T231_SCHEMA)
+        assert head(db, T231_SCHEMA) == imported + 1
         for n, label in enumerate((f"{STORE_LABEL}-restored", f"{STORE_LABEL}-restored-2"), 1):
             b = head(db, T231_SCHEMA)                   # the restored backup's head
             before = store_of(db, T231_SCHEMA)
             assert before["file"] and before["lines"], before
-            proc = cutover_run(tmp_path / f"restore-{n}", db, label, "--after-loss")
-            assert proc.returncode == 0, shown(proc)
-            switch = switch_of(db, T231_SCHEMA)
-            assert (switch["mode"], switch["marker_state"], switch["set_seq"],
-                    switch["database_label"]) == ("primary", "adding", b + 1, label), switch
-            assert switch["restore_prior"] == before, (
-                f"restore_prior is not the switch row and lanes/STORE's rows as they were:\n"
-                f"want {json.dumps(before, sort_keys=True)[:2000]}\n"
-                f"got  {json.dumps(switch['restore_prior'], sort_keys=True)[:2000]}")
+            tip = estate.tip()
+            if n == 2:
+                estate.refuse()
+            proc = cutover_run(tmp_path / f"restore-{n}", db, label, estate, "--after-loss")
             if n == 1:
-                assert marker_call(db, b + 1, T231_SCHEMA).stdout.strip() == "present"
-                assert switch_of(db, T231_SCHEMA)["restore_prior"] is None, "record_marker kept it"
+                assert proc.returncode == 0, shown(proc)
+                switch = switch_of(db, T231_SCHEMA)
+                assert (switch["mode"], switch["marker_state"], switch["set_seq"],
+                        switch["database_label"]) == ("primary", "present", b + 1, label), switch
+                assert switch["restore_prior"] is None, "record_marker kept it"
+                pushed = estate.tip()
+                assert switch["marker_commit"] == pushed and pushed != tip, (switch, tip)
+                assert estate.parent(pushed) == tip and estate.seq_of(pushed) == str(b + 1), pushed
                 continue
-            proc = abort_call(db, b + 1, T231_SCHEMA)
-            assert proc.returncode == 0 and proc.stdout.strip() == str(b), proc.stderr
+            assert aborted(proc), f"the restore form did not abort at its step 3:\n{shown(proc)}"
+            assert [push[0] for push in estate.pushes()] == ["accepted", "accepted", "refused"], (
+                estate.pushes())
+            assert estate.tip() == tip, "origin's main moved under the refused push"
             after = store_of(db, T231_SCHEMA)
             assert after == before, (
                 f"the restore form's abort did not put back the switch row and lanes/STORE:\n"
