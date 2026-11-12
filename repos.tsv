@@ -42,7 +42,7 @@ OmniWorker-Install	opensoft/OmniWorker-Install
 Omnigent-Install	opensoft/Omnigent-Install
 OpenSpec	brettheap/OpenSpec
 Opensoft-Tenant	opensoft/Opensoft-Tenant
-OpsxFactory	opensoft/OpsxFactory
+OpsxFactory	opensoft/opsXfactory
 brett-wip	opensoft/brett-wip
 codeXfactory	codeXfactory/codexFactory
 codeXfactory/codexFactory	codeXfactory/codexFactory
@@ -51,6 +51,7 @@ openRepoProject	opensoft/openRepoProject
 openRepoShape	opensoft/openRepoShape
 openRepoTools	opensoft/openRepoTools
 opensoft/codexFactory	codeXfactory/codexFactory
+opensoft/OpsxFactory	opensoft/opsXfactory
 openxFactory	opensoft/openxFactory
 workBenches	opensoft/workBenches
 xFactory	opensoft/xFactory

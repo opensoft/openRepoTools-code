@@ -1,0 +1,47 @@
+name: ci-pilot
+
+# Additive shadow qualification only. No job in tests.yml depends on this file,
+# and no output here can authorize a skip, queue admission or a release.
+# PR #34's verify.yml owns targeted branch/dispatch feedback; do not duplicate it.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled, ready_for_review, converted_to_draft, enqueued, dequeued, closed]
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  shadow-scope:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.x'
+      - name: observe scope without changing acceptance
+        run: python3 .github/ci/pilot_scope.py
+
+  pilot-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.x'
+      - name: install the existing test-runner pin
+        run: 'python3 -m pip install --disable-pip-version-check --only-binary=:all: pytest==8.3.4'
+      - name: offline pilot contract
+        run: bash tests/run.sh -k ci_pilot -q
