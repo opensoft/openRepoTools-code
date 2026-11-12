@@ -545,12 +545,13 @@
 #      pending record that cannot be read as one; and three cases the design
 #      leaves open, refused rather than guessed (`wr_id_plan`, `wr_id_settle`).
 #      AND FEATURE 007'S INTERNAL FLAG (T413; F22, Y:5078), with nothing
-#      sent, two faults under a flag that is honoured: an attempt directory
-#      whose `snapshot` gives no `clock=` in whole seconds to date the attempt
-#      by (`reg_scratch_fault`), and a pathspec that differs from HEAD in the
-#      attempt's scratch tree before the verb has edited it, an internal
-#      error and never a capture (`reg_scratch_dirty`). A value that is not
-#      honoured is never a 2: it is ignored.
+#      sent, three faults under a flag that is honoured: an attempt directory
+#      whose `snapshot` gives no `clock=` in whole seconds, written with no
+#      leading zero, to date the attempt by, or whose scratch tree has no
+#      `lanes/LANES.md` (both `reg_scratch_fault`), and a pathspec that
+#      differs from HEAD in the attempt's scratch tree before the verb has
+#      edited it, an internal error and never a capture (`reg_scratch_dirty`).
+#      A value that is not honoured is never a 2: it is ignored.
 #      AND FEATURE 007'S SEAM (T414; Y:5060, Y:5097; `cp_seam`), in an
 #      attempt's child under the flag, each an internal error refused before
 #      `ready`, so that reach sends nothing: a staged path outside the write's
@@ -1497,8 +1498,10 @@ unset LANES__REPLAY_PID LANES__ATTEMPT LANES__CLAIM_FROM LANES__CLAIM_DEAD LANES
 # and the run goes on as any write and asks the mode (Y:5034; YT:6869–6873;
 # the same ruling, item 1). A stray export is then nothing, and never blocks a
 # prompt through `guard`'s 2. Exit 2, nothing sent, is kept for a fault under
-# a flag that IS honoured: a `snapshot` with no whole-seconds `clock=` here
-# (item 3), and a dirty scratch tree (`reg_scratch_dirty`, Y:5078).
+# a flag that IS honoured: a `snapshot` with no whole-seconds `clock=`, or one
+# with a leading zero, here (item 3; REV-W9c N1), a scratch tree with no
+# `lanes/LANES.md`, here too (REV-W9c N2), and a dirty scratch tree
+# (`reg_scratch_dirty`, Y:5078).
 #
 # FIELD 2 IS NOT COMPARED with `pid_start_of "$PPID"`, which the ruling leaves
 # optional. Lane 5's `pid_start_of` (T502) is defined far below this file
@@ -1581,7 +1584,12 @@ reg_scratch_take() {
   # HONOURED FROM HERE ON. THE CLOCK: the first `clock=` of the snapshot's
   # stdout, saved verbatim by the parent (contract §3.2: "clock=<epoch s>  the
   # database clock, in whole seconds"), as this file's UTC stamp. None, or one
-  # that is not whole seconds, is a fault, 2 (ruling item 3).
+  # that is not whole seconds, is a fault, 2 (ruling item 3). So is one with a
+  # leading zero, though `lanes-index` prints none: `$(( ))` reads `0100` as
+  # octal, 64, where GNU `date -d @0100` writes 100 seconds, so `now_epoch` and
+  # `utc_now` would be two clocks, and a leading-zero clock with an 8 or a 9
+  # in it aborts the arithmetic with "value too great for base" (REV-W9c N1).
+  # A lone `0` is whole seconds, and both read it alike.
   rst_l=""
   if [ -f "$rst_d/snapshot" ] && [ -r "$rst_d/snapshot" ]; then
     while IFS= read -r rst_l || [ -n "$rst_l" ]; do
@@ -1591,6 +1599,7 @@ reg_scratch_take() {
   fi
   case "$rst_c" in
     ''|*[!0123456789]*) reg_scratch_fault "$rst_d" "snapshot gives no clock= in whole seconds (it reads $(printf '%q' "$rst_c")), and that clock is the one this attempt's lines and durations are read on" ;;
+    0?*) reg_scratch_fault "$rst_d" "snapshot's clock=${rst_c} has a leading zero, which this shell's arithmetic reads as octal and GNU date as decimal, so this attempt's lines and durations would not be read on one clock" ;;
   esac
   [ "${#rst_c}" -le 18 ] ||
     reg_scratch_fault "$rst_d" "snapshot's clock=${rst_c} is too long to be a time"
@@ -1600,6 +1609,16 @@ reg_scratch_take() {
     [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) : ;;
     *) reg_scratch_fault "$rst_d" "snapshot's clock=${rst_c} is a time this host's date cannot write as a UTC" ;;
   esac
+  # THE SCRATCH TREE'S REGISTER. `LANES_REPO` is `<dir>/tree` below, so the
+  # resolver's `LANES_FILE` is `<dir>/tree/lanes/LANES.md`, which `register
+  # snapshot --tree` writes from SQL before the parent starts this child
+  # (contract §3.2). Without it the workspace guard would answer 1, "registry
+  # not found", with a person's words ("re-run it … or pull that checkout")
+  # about a `workspace.yaml` that has no part in it. Under a flag that is
+  # honoured that is a fault of the write path, 2, nothing sent (ruling items
+  # 1 and 7; REV-W9c N2).
+  [ -f "$rst_d/tree/lanes/LANES.md" ] ||
+    reg_scratch_fault "$rst_d" "tree has no lanes/LANES.md, the register this verb edits, which lanes-index register snapshot --tree writes there before the child is started"
   # THE RUN'S DIRECTORY, `<d>/<run>/`, which every attempt of this run shares:
   # where `gh_reads` is cached, only where it too is under `register-writes/`,
   # this uid's and 0700. Otherwise nothing is cached there.
