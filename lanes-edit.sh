@@ -5657,6 +5657,7 @@ reg_class_of() {   # <arm>: sets REG_CLASS, REG_MIRROR_VAR and REG_NO_CALL
     project-legs) REG_CLASS=none ;;
     pathspec-check) REG_CLASS=none ;;
     refresh-workspace) REG_CLASS=none ;;
+    act-begin) REG_CLASS=none ;;
     *) REG_CLASS=decide ;;
   esac
 }
