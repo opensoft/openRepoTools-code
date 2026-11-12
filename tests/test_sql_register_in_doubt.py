@@ -2300,8 +2300,10 @@ def test_lr008_alone_never_gives_3_or_69(estates, case):
 # argument, NUL-separated; it is owned by the run in its highest-numbered
 # claim file `<d>.take.<k>`, whose liveness is tested on that claim's pid
 # and start time, never on the record's `pid`. The claims the test writes
-# hold `pid=`, `start=`, `host=`, `container=` and `utc=`, one per line, each
-# owner a live stand-in (`Owner`) where it is on this host.
+# hold `pid=`, `pid_start=`, `host=`, `container=` and `utc=`, one per line,
+# in that order (pending-record.md §4.1, the key `lanes-edit.sh` reads,
+# `wr_claim_read`; T247b, lane 4's triage, #165 6833813092), each owner a live
+# stand-in (`Owner`) where it is on this host.
 #
 # A CLAIM WITH NO RECORD BESIDE IT (Q-L2-6; R26, lane 4's answer to 42):
 # `[live-at-deadline]` asserts the 3's text: it names the claim by pid, host
@@ -2348,8 +2350,8 @@ def write_claim(e: Estate, d: str, k: int, pid: int, start: str = "", *, host: s
     where = e.state / PENDING
     where.mkdir(mode=0o700, parents=True, exist_ok=True)
     claim_file = where / f"{d}.take.{k}"
-    claim_file.write_text(f"pid={pid}\nstart={start}\nhost={host}\ncontainer={container}\nutc={utc or e.utc()}\n",
-                          encoding="utf-8")
+    claim_file.write_text(f"pid={pid}\npid_start={start}\nhost={host}\ncontainer={container}\n"
+                          f"utc={utc or e.utc()}\n", encoding="utf-8")
     return claim_file
 
 
