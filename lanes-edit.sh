@@ -24643,9 +24643,11 @@ EOF
     # gone, and `git add` FAILS on a pathspec that matches nothing at all,
     # which would end this write inside `commit_publish` with all four moves on
     # disk. Nothing in the index refers to it, so there is nothing to stage.
+    rl_log_tracked=0
     if [ -n "$rl_log_old_rel" ] && [ "$rl_log_old_rel" != "$rl_log_new_rel" ] \
        && { [ "$NO_GIT" = 1 ] || git -C "$LANES_REPO" ls-files --error-unmatch -- "$rl_log_old_rel" >/dev/null 2>&1; }; then
       rl_paths+=("$rl_log_old_rel")
+      rl_log_tracked=1
     fi
     # FEATURE 007, T422 — ON PRIMARY THE HANDOFF PATHS LEAVE THE CHANGE SET
     # (Y:5092; the plan's §3.13): the transaction holds the row, the log and
@@ -24830,6 +24832,22 @@ EOF
     # is not in this entry but in the git commit that follows it (Q13(a)).
     [ -z "$REG_SCRATCH" ] ||
       rl_msg="LANES($rl_new@$WS): RENAMED lane $rl_old → $rl_new (Amendment 16) — the row, $rl_log_new_rel and $LANES_ALIASES_PATH in one register write; the handoff's move and stamp follow in the lane's checkout (Q13(a))"
+    # FEATURE 007, T422 — ON PRIMARY THE LOG'S MOVE IS ONE `rename` (lane
+    # openRepoTools-3, #165 6834224496, question 1; O5; register-cli.md:492,
+    # "one per rename the verb made"; Y:3446–3447): where the old log is
+    # tracked and is not the new one, the seam is told both paths, and pairs
+    # the old path's D line with the new path's A line in `renames.tsv`. So
+    # the entry moves the log's lines with it and sends only the `RENAMED`
+    # line, where `remove` plus `create` sent every line again, as lines of
+    # this write, and a line the primary CHECK refuses (Y:1217–1219) ended it
+    # with 23514, 69. Under the flag only: files mode's `commit_publish` reads
+    # `LOG_RENAMED_FROM` as `ensure_log`'s case-only rename and commits from
+    # the index, so there the pair is never set, and the commit stays by the
+    # pathspecs above. The seam clears both on `committed`.
+    if [ -n "$REG_SCRATCH" ] && [ "$rl_log_tracked" = 1 ]; then
+      LOG_RENAMED_FROM="$rl_log_old_rel"
+      LOG_RENAMED_TO="$rl_log_new_rel"
+    fi
     commit_publish "$rl_msg" "${rl_paths[@]}"
     rl_rc=$?
     # `commit_publish` RETURNED, so either it committed or it had nothing staged;
