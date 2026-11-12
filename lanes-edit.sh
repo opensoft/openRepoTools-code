@@ -6207,17 +6207,26 @@ pw_no_git_refuse() {
 # names both its paths, and one restore undoes it; without it, rename
 # detection named the new path alone, and the old one's deletion was left for
 # a second refusal (review REV415c, N3).
+# THE LIST IS SPLIT BY PARAMETER EXPANSION, at each newline, never through a
+# here-document, as the seam's is (T414, review REV-W9a M1): bash 3.2 writes a
+# here-document to a temp file, and where none can be made, as in a full
+# TMPDIR, the loop never ran, so the write went on as though no hand edit were
+# pending. Now a full TMPDIR changes nothing here: the edit is refused as
+# above (lane 4's W9-T415 report, §6).
 pw_hand_edit_refuse() {
   local ph_hits="" ph_p="" ph_l="" ph_q="" ph_c=""
   ph_hits="$(LANES_REPO="$PW_C" cs_pending_of --no-renames lanes/LANES.md lanes/aliases.tsv lanes/log lanes/archive)"
-  while IFS= read -r ph_p; do
+  while [ -n "$ph_hits" ]; do
+    ph_p="${ph_hits%%"$WR_NL"*}"
+    case "$ph_hits" in
+      *"$WR_NL"*) ph_hits="${ph_hits#*"$WR_NL"}" ;;
+      *) ph_hits="" ;;
+    esac
     [ -n "$ph_p" ] || continue
     cp_seam_render_path "$ph_p" || continue
     ph_l="$ph_l $ph_p"
     ph_q="$ph_q $(printf '%q' "$ph_p")"
-  done <<PH_EOF
-$ph_hits
-PH_EOF
+  done
   [ -n "$ph_l" ] || return 0
   ph_c="$(printf '%q' "$PW_C")"
   note "RECOVERY, in $PW_C:"
