@@ -12958,7 +12958,7 @@ def cmd_register_commit(args: list[str]) -> int:
                                       os.environ.get("LANES_EXPECT", ""))
         att = read_attempt_dir(directory, ident, env_act)
         # AN EMPTY CHANGE SET: this arm's entry is always a `write`, and the
-        # seam sends none that names no path (Y:5060), so it is refused here,
+        # seam sends none that names no path (Y:5059), so it is refused here,
         # before the store opens. `read_attempt_dir` pairs every `files` row
         # with a `changes.tsv` line, so `files` is empty too. The shared read
         # takes no such check: T324's in-process entries with no edits still
