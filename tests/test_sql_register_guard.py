@@ -33,11 +33,18 @@ wait on pipes a child inherits.
 EVERY CASE BUT TWO IS RED TODAY by its own assertion: today's answer 2 runs
 `lane-start` inside the hook, so no "BINDING" is printed and the runner stops
 the hook at 5 s; today's guard has no bind modes, no `guard-bind` and no
-`pid_start_of`. They fail until L5-A1 and L5-A2 (lane 5's T502 and T507); the
-ones that run the real `lane-start` fail until lane 4's `start-record` (L4-B9)
-as well. The two are `test_the_hook_string_and_guard_timeout_are_unchanged`,
-an invariant that holds today, and `test_an_unreadable_bind_record_is_dropped_with_exit_2`,
-whose oracle is today's text and today's drop.
+`pid_start_of`. They fail until L5-A1, lane 5's T502. Case 22's
+`test_guard_bind_computes_bound_s_from_c_n_a_and_the_service` and lane 5's
+`test_the_post_bind_refill_is_one_register_read_and_never_git` also fail until
+L5-A3, lane 5's T507, which copies `c`, `n_a` and `w_s_ms` from `.head` and
+makes the post-bind refill. Of the `[files]` cases that run the real
+`lane-start`, only `test_the_bind_child_records_bind_failed_with_the_code_and_binds_nothing`
+also fails until lane 4's `start-record` (L4-B9, T427 and T428), whose calls it
+asserts; case 17 and row (d) need nothing more, and pass on lane 5's `6050581`
+with T214g's estate (T214h, T214i). The two are
+`test_the_hook_string_and_guard_timeout_are_unchanged`, an invariant that holds
+today, and `test_an_unreadable_bind_record_is_dropped_with_exit_2`, whose
+oracle is today's text and today's drop.
 """
 
 from __future__ import annotations
