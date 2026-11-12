@@ -2579,11 +2579,19 @@ def test_an_acts_own_earlier_write_never_refuses_its_later_one(estates):
 def test_a_handoff_request_never_refuses_the_holders_own_handoff(estates):
     """A `HANDOFF-REQUESTED` line is not a lane-kind line: another lane's
     request after the holder's base does not refuse the holder's write on
-    `row:<L>` and `bind:<L>`."""
-    e = estates()
+    `row:<L>` and `bind:<L>`.
+
+    The holder is bound (`bound_line`), since a request for a FREE lane is
+    refused with 8 before any write. The request is made with `--no-wait`:
+    it commits, and its empty wait then ends 2, "THE WAIT ENDED WITH
+    NOTHING", since nothing releases the lane. So the oracle for the request
+    is the journal, not its code (T252k)."""
+    e = estates(bound=(LA, LC))
     act = act_begin(e)
-    rival = e.run(LB, ["request-handoff", LA, "--session", session_of(LA)])
-    assert rival.code == 0, f"the request exited {rival.code}: {rival.err[-400:]}"
+    rival = e.run(LB, ["request-handoff", LA, "--session", session_of(LB), "--no-wait"])
+    grew = e.journal_after()
+    assert [r["verb"] for r in grew] == ["request-handoff"], (
+        f"the request exited {rival.code} and the journal holds {grew}: {rival.err[-400:]}")
     w = e.run(LA, act_write(e, "row", tag="handoff"), extra=acted(act, f"row:{LA.lower()}", f"bind:{LA.lower()}"))
     assert w.code == 0, f"the holder's write exited {w.code}: {w.err[-600:]}"
 
