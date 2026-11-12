@@ -6606,16 +6606,61 @@ def register_guard_declared(cfg: dict) -> dict | None:
     return fields
 
 
+def register_guard_store_name(cfg: dict) -> str:
+    """THE DATABASE THE GUARD'S CAUSE LINE NAMES where its `psql` failed
+    (AT-P3, "Stderr names the database, without credentials"; lane 3, #165
+    6809045090): the database as `register_url=` gives it, from the URL's own
+    parts as `pg_url_env` maps them, `database <name> at <host>:<port>`, each
+    host with its port where the URL names one. It names no user, no
+    password and no query parameter, so nothing secret; and the database is
+    not named by `register_label=`, which no register read reads (draft
+    4.19:279). Empty where `register_url=` cannot be mapped, which
+    `load_config` has already refused."""
+    try:
+        env = pg_url_env(cfg.get("register_url") or "", "`register_url=`")
+    except Refusal:
+        return ""
+    hosts = env.get("PGHOST", "").split(",")
+    ports = env.get("PGPORT", "").split(",")
+    where = []
+    for i, host in enumerate(hosts):
+        if len(ports) == len(hosts):
+            port = ports[i]
+        else:
+            port = ports[0] if len(ports) == 1 else ""
+        shown = f"[{host}]" if ":" in host else host or "(the default host)"
+        where.append(f"{shown}:{port}" if port else shown)
+    return (f"database {_register_shown(env.get('PGDATABASE') or '(the default)', 80)} at "
+            f"{_register_shown(', '.join(where), 160)}")
+
+
+class RegisterGuardFetchMissed(RegisterReadFailed):
+    """A FAILED READ THAT THE DATABASE ANSWERED, 69, and no failed database
+    read (lane 1's R07 SHOULD-1, #165 6809169664, ruled by lane 3, #165
+    6809568632): the guard's whole-file fetch could not be started; or it
+    gave no image of a file the read needs with the digest the read's `n`
+    gave it, or none, since the register moved between the read and the
+    fetch. SVC-12's condition 1 is "its database read has failed", and the
+    mirror path is entered only after one did (B14 design :4491-4492 and
+    :4516-4518), so `register_guard_outage_counts` is False for it, as for
+    an `OSError`, and it opens no `.outage` under any declaration. The read
+    is not retried: the fetch has put the new image in T302's cache for the
+    next prompt."""
+
+
 def register_guard_outage_counts(declared: dict | None, exc: Exception) -> bool:
     """Whether form 2's failed read, `exc`, opens SVC-12's mirror path under
     `declared`, which `register_guard_declared` gave (condition 2): its
     database read failed (condition 1), as a `RegisterReadFailed` or a
-    `StoreUnusable`, never a cache family that could not be written; and
-    under a rollback's declaration, only where the read found the switch at
-    `files`, by its cause token `switch-files`, never by the line, which
-    through the service carries a SQLSTATE (B14 design :4493-4500; lane 1,
-    #165 6798083202, question 6)."""
-    if declared is None or not isinstance(exc, (RegisterReadFailed, StoreUnusable)):
+    `StoreUnusable`, never a cache family that could not be written, nor a
+    `RegisterGuardFetchMissed`, whose database answered; and under a
+    rollback's declaration, only where the read found the switch at `files`,
+    by its cause token `switch-files`, never by the line, which through the
+    service carries a SQLSTATE (B14 design :4493-4500; lane 1, #165
+    6798083202, question 6). A read whose own `psql` could not be run, or is
+    too old, is a `PsqlFailed`, and counts (lane 3, #165 6809568632)."""
+    if (declared is None or isinstance(exc, RegisterGuardFetchMissed)
+            or not isinstance(exc, (RegisterReadFailed, StoreUnusable))):
         return False
     return declared["kind"] == "word" or getattr(exc, "cause", None) == "switch-files"
 
@@ -6763,7 +6808,9 @@ def register_guard_fetch(opts: dict, paths: list) -> dict:
     detached, and fills the cache, so the next prompt reads the file from
     there. Returns {path: bytes} as the fetch read them, at its own head;
     the caller takes each only where its digest is the read's at `n`. The
-    cut is a `PsqlFailed` with `timer_expired`, as a cut request is."""
+    cut is a `PsqlFailed` with `timer_expired`, as a cut request is. A fetch
+    that could not be started is `RegisterGuardFetchMissed`: the database
+    answered the read, so it opens no `.outage`."""
     argv = [sys.executable or "python3", os.path.abspath(__file__), "register", "guard-fetch"]
     for path in paths:
         argv += ["--path-hex", os.fsencode(path).hex()]
@@ -6772,7 +6819,7 @@ def register_guard_fetch(opts: dict, paths: list) -> dict:
                                  stderr=subprocess.DEVNULL, close_fds=True,
                                  start_new_session=True)
     except OSError as exc:
-        raise RegisterReadFailed(f"the whole-file fetch could not be started: {exc}")
+        raise RegisterGuardFetchMissed(f"the whole-file fetch could not be started: {exc}")
     try:
         out, _ = child.communicate(timeout=max(0.0, opts["cut"] - time.monotonic()))
     except subprocess.TimeoutExpired:
@@ -6789,8 +6836,10 @@ def register_guard_whole_files(opts: dict, wants: dict, held: dict) -> None:
     that name (D17), else from the detached fetch (`register_guard_fetch`),
     where the image the fetch read has that digest. An image the fetch did
     not give, or gave with another digest, since the register moved between
-    the read and the fetch and changed that file, is a failed read: the
-    fetch has put the new one in the cache for the next prompt."""
+    the read and the fetch and changed that file, is a failed read, 69, but
+    no failed database read (`RegisterGuardFetchMissed`), so it opens no
+    `.outage`: the fetch has put the new one in the cache for the next
+    prompt."""
     missing = {}
     for path, digest in wants.items():
         if digest in held:
@@ -6806,7 +6855,7 @@ def register_guard_whole_files(opts: dict, wants: dict, held: dict) -> None:
     for path in sorted(missing, key=os.fsencode):
         data = fetched.get(path)
         if data is None or hashlib.sha256(data).hexdigest() != missing[path]:
-            raise RegisterReadFailed(
+            raise RegisterGuardFetchMissed(
                 f"the whole-file fetch gave no image of {path} with the digest this read's seq "
                 f"gave it, {missing[path]}: the register moved between them, or the file is "
                 f"gone")
@@ -6828,16 +6877,37 @@ def _register_guard_wants(snap: dict, members, keys) -> dict:
     return {_register_read_row_path(path): listing[path][0] for path in paths if path in listing}
 
 
-def _register_read_query(store, queries: list, cut: float | None) -> list:
+def _register_read_query(store, queries: list, cut: float | None,
+                         floor: bool = False) -> list:
     """The one request, with D9's reader row (`cut` None: forms 1 and 3), or
     with the guard's row cut at `cut`, a `time.monotonic()` instant (forms 2
-    and 4): `T0` + 3.75 s, or in form 2 `T0` + 3.65 s under a declaration."""
+    and 4): `T0` + 3.75 s, or in form 2 `T0` + 3.65 s under a declaration.
+
+    THE FLOOR AGAIN, AFTER `psql --version` (lane 1's R07 NIT-1, #165
+    6809169664; lane 3, #165 6809568632): with `floor`, form 2 under a
+    declaration, `psql`'s version is checked here first, inside the cut, and
+    the floor is read again just before the request. Less than 0.5 s left is
+    "too late to verify", 2: nothing is sent, so a read cut at the declared
+    cap has always had 0.5 s at the database (B14 design :4321-4326). The
+    version is checked once per process (`_check_psql_version`), so the
+    request's own call does not run it again. A cut before any request
+    reached `psql` is a `PsqlFailed` with `timer_expired` and not `ran`,
+    which E1 never takes for its 69."""
     if cut is None:
         return store._query_many(queries, snapshot=True, row="read")
     left = cut - time.monotonic()
     if left <= 0:
         raise PsqlFailed("unreachable", "the guard's cut has passed", timer_expired=True,
                          ran=False)
+    if floor:
+        if store.psql:
+            options, _timer = store.bounds("guard", left)
+            store._check_psql_version(store._env(register=True, options=options), cut)
+        left = cut - time.monotonic()
+        if left < REGISTER_GUARD_FLOOR_S:
+            raise PsqlFailed("unreachable", f"less than the floor, {REGISTER_GUARD_FLOOR_S:g} s, "
+                             f"was left before the declared cap once psql's version was read, "
+                             f"so the request was not sent", timer_expired=True, ran=False)
     return store._query_many(queries, snapshot=True, row="guard", timer=left)
 
 
@@ -6880,7 +6950,7 @@ def _register_read_prefetch(store, cfg: dict, opts: dict) -> int:
     # images come from T302's cache, else from the detached fetch.
     texts = () if guard else _register_read_texts(members, keys, all_logs=all_logs)
     answers = _register_read_query(store, register_read_queries(texts=texts, held=held),
-                                   opts.get("cut"))
+                                   opts.get("cut"), floor=opts.get("declared") is not None)
     snap = _register_read_snapshot(answers)
     if guard:
         register_guard_whole_files(opts, _register_guard_wants(snap, members, keys), held)
@@ -7061,7 +7131,7 @@ def _register_read_at(store, cfg: dict, opts: dict) -> int:
     return EXIT_OK
 
 
-def _register_read_end(exc: Exception, guard: bool = False) -> int:
+def _register_read_end(exc: Exception, guard: bool = False, name: str = "") -> int:
     """A failed read's stderr and exit (contract §2.6, §3.6): the cause
     first, which the guard quotes (O15). A direct read that found the switch
     not `primary`, or the client outside the window, opens with `refuse db
@@ -7073,9 +7143,15 @@ def _register_read_end(exc: Exception, guard: bool = False) -> int:
     passed before the request is (§3.6's exits table, tasks:466, Y:3518's
     "On expiry", exit-codes.md:246): not a failed read, 69. Every other
     `PsqlFailed` keeps its 69. E1's cut, at the declared cap under a word's
-    declaration, is 69 with `.outage`: `cmd_register_read` ends it before
-    this is called. It is not T114's `_register_read_failed`
-    (`journal`'s end), which line R defines under that name."""
+    declaration of a request that reached `psql`, is 69 with `.outage`:
+    `cmd_register_read` ends it before this is called. It is not T114's
+    `_register_read_failed` (`journal`'s end), which line R defines under
+    that name.
+
+    `name` is the guard's: `register_guard_store_name`'s database, which a
+    failed `psql`'s line names right after "could not be read", early
+    enough for the guard's first 300 bytes (AT-P3; lane 3, #165
+    6809045090)."""
     if guard and isinstance(exc, PsqlFailed) and exc.timer_expired:
         note("too late to verify")
         return EXIT_REFUSED
@@ -7086,7 +7162,8 @@ def _register_read_end(exc: Exception, guard: bool = False) -> int:
         return EXIT_UNAVAILABLE
     if isinstance(exc, PsqlFailed):
         echoed = _register_psql_lines(exc)
-        note(f"register read: the register could not be read"
+        named = f" ({name})" if name else ""
+        note(f"register read: the register could not be read{named}"
              f"{'' if echoed else ': ' + exc.detail}")
         code = next((m.group(1) for m in (re.match(r"ERROR:\s+([0-9A-Z]{5}):", line)
                                            for line in (exc.stderr or "").splitlines()) if m),
@@ -7182,7 +7259,7 @@ def cmd_register_read(args: list[str]) -> int:
     except (RegisterReadFailed, StoreUnusable, OSError) as exc:
         declared = opts.get("declared")
         if (opts["form"] == 2 and declared is not None and declared["kind"] == "word"
-                and isinstance(exc, PsqlFailed) and exc.timer_expired):
+                and isinstance(exc, PsqlFailed) and exc.timer_expired and exc.ran):
             # E1 (draft 4.19, :776; lane 3's ruling FOR it, #165 6807694145):
             # under an unexpired declaration that names this database, a
             # direct read cut at the declared cap, `T0` + 3.65 s, ends 69 with
@@ -7191,7 +7268,13 @@ def cmd_register_read(args: list[str]) -> int:
             # declaration a cut is 2, T113's MUST-2, in `_register_read_end`;
             # a rollback's declaration counts only where the read found the
             # switch at `files`, which a cut read never did, so it opens
-            # nothing here and its cut stays 2.
+            # nothing here and its cut stays 2 (R07 (a), #165 6809568632).
+            # ONLY A CUT OF A REQUEST HANDED TO `psql`, or of the whole-file
+            # fetch, is E1's (`exc.ran`; lane 1's R07 NIT-1, #165 6809169664,
+            # as lane 3 confirmed, #165 6809568632): a cut that came before
+            # any request reached `psql`, in `psql --version` or before it,
+            # had no time at the database, and is the floor's 2, "too late
+            # to verify", with no `.outage` (B14 design :4322-4325).
             note(f"register read: the register did not answer by the declared outage's cap, "
                  f"T0 + {REGISTER_GUARD_DECLARED_CUT_S:g} s ({exc.detail}), so the read failed "
                  f"(E1)")
@@ -7201,7 +7284,7 @@ def cmd_register_read(args: list[str]) -> int:
         # is tested here, before `_register_read_end` prints the cause, which
         # stays stderr's first line (O15); form C and `.outage` follow it.
         counts = opts["form"] == 2 and register_guard_outage_counts(declared, exc)
-        code = _register_read_end(exc, guard)
+        code = _register_read_end(exc, guard, register_guard_store_name(cfg) if guard else "")
         if counts and code == EXIT_UNAVAILABLE:
             register_guard_outage(opts, opts["declared"])
         return code
@@ -19235,7 +19318,6 @@ the forms contracts/register-cli.md fixes; <id> is a write's identity,
 {PROG} register read     --for guard --prefetch --cache <file> --pid <pid> --repo <dir>
                               [--lane=<window>]
 {PROG} register read     --for guard --at <n> --pid <pid> --cache <file> --lane=<key>
-{PROG} register guard-fetch --path-hex <hex> ...
 {PROG} journal  <id> --not-after <epoch s> [--clock <epoch s> --clock-age <s>]
 {PROG} journal  --since <m>
 {PROG} journal  --last --path <log> --grep <key> [--at <n> --generation <uuid>]
@@ -19254,6 +19336,10 @@ the forms contracts/register-cli.md fixes; <id> is a write's identity,
 {PROG} ready    --expect index|primary --release <version> --env <name>
 {PROG} set-mode index|primary [--config <path>]
 {PROG} serve
+
+Not for people, and not among the forms contracts/register-cli.md fixes: the
+guard's own read starts this one, detached, for the whole files it lacks:
+{PROG} register guard-fetch --path-hex <hex> ...
 
 The DERIVED INDEX of the lane register (lane-collision-protocol Amendment 14).
 It is written behind the sources by this command alone, read only by tooling
