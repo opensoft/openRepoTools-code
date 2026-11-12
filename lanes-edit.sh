@@ -6569,7 +6569,7 @@ pw_snapshot() {
     64)
       pw_snap_end 2 "\`lanes-index register snapshot\` exited 64, a usage error this lanes-edit.sh never sends: an internal error" ;;
     *)
-      pw_snap_end 69 "\`lanes-index register snapshot\` exited ${ps_rc}: the register could not be read" ;;
+      pw_snap_end 69 "\`lanes-index register snapshot\` exited ${ps_rc} and gave this write no snapshot to make its change on (its own words, where it gave any, are above)" ;;
   esac
   if [ "$PW_FIRST_DONE" = 0 ]; then
     [ -n "$PW_S_FOUND" ] || pw_runs_purge
