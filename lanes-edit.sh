@@ -12099,8 +12099,9 @@ row_stamp_is_unknown() {   # <lane>
 # `lanes-index`'s 78, the block reads the mirror, with the `read: mirror` line
 # on stderr and no prefetch and no register call; off primary it runs F17,
 # which reads on with its line under the marker. Every read below reads the
-# files either way, since `REG_STORE` is never `sql` here, and on primary
-# `row_stamp_is_unknown` reads nothing.
+# files either way, since `REG_STORE` is never `sql` here. On primary
+# `row_stamp_is_unknown` reads nothing, and `lane_forks`' fence takes no local
+# half (lane 3, #165 6814531692).
 session_start_block() {
   ssb_json="${1-}"; ssb_win="${2-}"
   ssb_id="$(lc "$(jstr "$ssb_json" session_id)")"
@@ -12244,7 +12245,19 @@ session_start_block() {
   # retirement is a person's act (Amendment 8(f)), so the line NAMES and does
   # nothing.
   ssb_fk=""; ssb_fkrc=0
-  ssb_fk="$(lane_forks "$ssb_lane" 2>/dev/null)" || ssb_fkrc=$?
+  # FEATURE 007, T508 - ON PRIMARY THE FENCE'S LOCAL HALF IS SKIPPED (lane 3,
+  # #165 6814531692; W:4865: "the local half is skipped: no local row can be
+  # ahead of SQL", D11), under `row_stamp_is_unknown`'s test of primary: the
+  # block hands `lane_forks` the fence from `session_ids_of_lane` alone, built
+  # as `lane_forks` builds its own, so no working-tree row is read for it. Off
+  # primary, under a 78 and under F17's marker, `lane_forks` builds its fence
+  # as it always has.
+  if [ "${REG_MODE:-}" = primary ]; then
+    ssb_fids=" $( { session_ids_of_lane "$ssb_lane" 2>/dev/null || :; } | awk 'NF && !seen[$0]++' | tr '\n' ' ')"
+    ssb_fk="$(lane_forks "$ssb_lane" "$ssb_fids" 2>/dev/null)" || ssb_fkrc=$?
+  else
+    ssb_fk="$(lane_forks "$ssb_lane" 2>/dev/null)" || ssb_fkrc=$?
+  fi
   # AND THE SAME HERE, for the same reason: this block is the first thing a
   # session that starts into a lane reads, and "no fork" is a fact it acts on.
   case "$ssb_fkrc" in
