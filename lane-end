@@ -2488,6 +2488,17 @@ else
     note "  $prog $LANE$rflag$fflag --inventory-only"
     exit "$gate_exit"
   fi
+  # FEATURE 007, T403 (B15 tasks:881; Y@a6497d00:3014; lane 3, #165 6808937880,
+  # batch e Q99): THE DOOR PASSES ONLY THE GATE'S FINDINGS ON DISK, never a
+  # register that could not be read. Where the unread read is `lane-dir`'s and it
+  # answered 69, 75 or 3, the lane's own root is not known and the register's
+  # refusal is no answer about it, so the door ends with that code too, in
+  # `le_read_refuse`'s words and before its `step`, whatever `--inventory-only`
+  # says. Nothing has been written at this point. The sweep's own unread code
+  # under the door is main's behaviour and is not changed here.
+  case "$gd_rc" in
+    69 | 75 | 3) le_read_refuse "$LANES_EDIT lane-dir $LANE" "$gd_rc" "the lane's recorded directory (which the close-out gate's residue check reads)" ;;
+  esac
   step "--inventory-only: ending lane $LANE past the close-out gate; $gate_log. Nothing on disk is touched, and the lines written say so"
 fi
 
