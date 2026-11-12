@@ -14,8 +14,12 @@ T225 (L2-N7; A8): `wip init`'s two cases, AT-3's three reader cases and lane
   readers"; Y:3055-3068): on a workstation that is not `mode=primary`, a
   reader checks the ref its read uses for `lanes/STORE`; an act refuses 69
   and the guard 2, both with Amendment 22's text, and the listings and the
-  `SessionStart` block read on with the `read: mirror` line. They fail until
-  lane 5's T504 to T508 (L5-A5) land.
+  `SessionStart` block read on with the `read: mirror` line. All six are
+  lane 5's L5-A5, T504 to T508 (T225's Order), and each fails only until the
+  task whose `verify:` runs it: AT-3's three reader cases until T504
+  (tasks:713, at B19 and at the follow-up head `09096c6d`), and lane 5's
+  three guesses until T506, T507 and T508, one each, as their docstrings
+  say.
 
 T242 (L2-W1, L2-W5; FR-002, FR-004, FR-059) adds test 3's unit form and
 AT-F8, phase W, FM, with no database: the writers' marker check, and every
@@ -375,8 +379,8 @@ def test_an_unconfigured_workstations_acts_refuse_and_listings_read_the_mirror(t
     """AT-3 (Q21(a)(A)): on an unconfigured workstation under the marker,
     `who` exits 69 with Amendment 22's text, and the listing, `lanes --all`
     (which today exits 0 and lists the lane), reads on, exits 0 and prints the
-    `read: mirror` line at origin's tip. Fails until
-    T504."""
+    `read: mirror` line at origin's tip. Fails until T504, whose `verify:`
+    runs it (tasks:713); T507, the guard's, does not bear on it (T225d)."""
     home, wip, origin, env = _estate(tmp_path, str(uuid.uuid4()))
     marker = _push_marker(tmp_path, origin, env)
     _git(wip, env, "fetch", "-q", "origin", "main")
