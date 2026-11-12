@@ -1760,7 +1760,9 @@ SH_Y
     sfe_x="${1#*: }"
     case "$sfe_x" in
       \'*\')
-        sfe_x="${sfe_x#\'}"; sfe_x="${sfe_x%\'}"; sfe_x="${sfe_x//\\\'/\'}"
+        # The quote is in a variable: inside "..." bash 3.2 and BASH_COMPAT up
+        # to 42 keep the backslash of a literal \' replacement (see quoted()).
+        sfe_q="'"; sfe_x="${sfe_x#\'}"; sfe_x="${sfe_x%\'}"; sfe_x="${sfe_x//\\\'/$sfe_q}"
         case "$sfe_x" in *\\*) sfe_x="$(printf '%b' "$sfe_x")" ;; esac ;;
     esac
     printf '%s' "$sfe_x"

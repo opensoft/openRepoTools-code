@@ -21,6 +21,12 @@ THE FIX keeps the spelling in a variable (`q_r="'\\''"`) and substitutes
 `"${q_a//\'/$q_r}"`. A variable's value is not read again, so every bash gives
 `'\''`.
 
+`lane-end`'s `sc_find_err_path` had the same defect in the line that turns GNU
+`find`'s `\'` in a quoted path back into `'`, `"${sfe_x//\\\'/\'}"`, and has
+the same fix (`sfe_q="'"`, then `$sfe_q`). It is nested in a block, so it is
+cut out by its own indent, and what it prints is compared with the path that
+was quoted.
+
 WHAT THIS HOLDS. Each copy is cut out of the shipped file as it is written
 there and run in `bash`, with `BASH_COMPAT` unset and at 32 and 42, which are
 the levels that keep the backslashes; on a real bash 3.2 (macOS's `/bin/bash`)
@@ -94,6 +100,35 @@ def _function(name: str) -> str:
     return match.group(0)
 
 
+#: (id, what `sc_find_err_path` is given, the path). The argument is `find`'s
+#: error line less its ": <error>", with the path in the C locale's quoting: a
+#: quote as `\'` and a backslash as `\\`, which `printf %b` then reads. The
+#: unquoted row is BSD `find`'s own form, and every row but the quote ones read
+#: back before the fix too.
+FIND_CASES = [
+    ("one-quote", r"find: '/p/it\'s here'", "/p/it's here"),
+    ("two-quotes-in-a-row", r"find: 'a\'\'b'", "a''b"),
+    ("quote-at-the-start", r"find: '\'x'", "'x"),
+    ("quote-at-the-end", r"find: 'x\''", "x'"),
+    ("only-a-quote", r"find: '\''", "'"),
+    ("backslash-then-quote", r"find: 'a\\\'b'", "a\\'b"),
+    ("space", "find: 'a b'", "a b"),
+    ("backslash", r"find: 'a\\b'", "a\\b"),
+    ("plain-word", "find: 'plain'", "plain"),
+    ("unquoted", "find: /p/x y", "/p/x y"),
+]
+
+
+def _nested_function(name: str, source: str, indent: str) -> str:
+    """One function of a shipped file that is written INSIDE a block, as it
+    is written there: it opens and closes at `indent`."""
+    text = (REPO / source).read_text(encoding="utf-8")
+    match = re.search(rf"^{indent}{re.escape(name)}\(\) \{{[^\n]*\n.*?^{indent}\}}\n",
+                      text, re.M | re.S)
+    assert match, f"`{name}() {{` ... `}}` is no longer in {source}"
+    return match.group(0)
+
+
 def _bashes():
     """`bash` on PATH, and macOS's `/bin/bash` (3.2.57) where that is a
     different file: the second is the one that has the defect without help."""
@@ -161,4 +196,27 @@ def test_quoted_prints_a_line_that_reads_back_whatever_the_bash(tool, compat):
         bad += [f"[{label}] {m}" for m in mismatches(source, shell, compat)]
     assert not bad, (
         f"{tool}'s quoted() printed a line that does not read back "
+        f"(BASH_COMPAT={compat}):\n  " + "\n  ".join(bad))
+
+
+@pytest.mark.parametrize("compat", COMPATS, ids=lambda c: f"compat-{c or 'unset'}")
+def test_sc_find_err_path_gives_back_the_path_whatever_the_bash(compat):
+    """`lane-end`'s unquoting of `find`'s path comes out as the path that was
+    quoted, with `BASH_COMPAT` unset and at 32 and 42, on this bash and (where
+    it is a different file) on `/bin/bash`."""
+    source = _nested_function("sc_find_err_path", "lane-end", "  ")
+    bad = []
+    for label, shell in _bashes():
+        for cid, given, want in FIND_CASES:
+            script = ("set -euo pipefail\n" + source
+                      + '\nsc_find_err_path "$1"\n')
+            res = subprocess.run([shell, "-c", script, "bash", given],
+                                 capture_output=True, check=False,
+                                 env=_env(compat))
+            if res.returncode != 0 or res.stdout != want.encode("utf-8"):
+                bad.append(f"[{label}] {cid}: given {given!r}, printed "
+                           f"{res.stdout!r} (exit {res.returncode}), wanted "
+                           f"{want!r}")
+    assert not bad, (
+        f"lane-end's sc_find_err_path does not give back the path "
         f"(BASH_COMPAT={compat}):\n  " + "\n  ".join(bad))

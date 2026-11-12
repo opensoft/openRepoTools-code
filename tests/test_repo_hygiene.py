@@ -4332,20 +4332,6 @@ def _escapes_a_quote_in_a_double_quoted_replacement(line: str) -> bool:
                for hit in _SUBSTITUTION.finditer(line))
 
 
-#: THE ONE SHIPPED LINE THAT HAS THE DEFECT AND IS NOT YET FIXED, by file name
-#: and the text of the line (a substring of it). `lane-end`'s `sc_find_err_path`
-#: undoes GNU `find`'s own quoting of a path with `"${sfe_x//\\\'/\'}"`, and
-#: under `BASH_COMPAT` 42 and below that gives `\'` for `'`. It is reached only
-#: from GNU `find`'s message, so no macOS run meets it, and it is a different
-#: file's to fix than the one that found the rule. The fix is the one
-#: `quoted()` took: put the replacement in a variable. When that lands the
-#: entry goes with it, and `test_the_known_escaped_quote_replacements_remain`
-#: fails until it does.
-KNOWN_ESCAPED_QUOTE_REPLACEMENTS = {
-    "lane-end": (r'''sfe_x="${sfe_x//\\\'/\'}"''',),
-}
-
-
 @pytest.mark.parametrize("name", ALL_BASH)
 def test_no_shipped_bash_quotes_the_replacement_half_of_a_substitution(name):
     """BASH 3.2 KEEPS THOSE QUOTES AS CHARACTERS (A9 Addendum 4, R-A9-11).
@@ -4379,11 +4365,9 @@ def test_no_shipped_bash_quotes_the_replacement_half_of_a_substitution(name):
         f"writes those quote marks out as text. Build the string from "
         f"`${{var%%\"$pat\"*}}` and `${{var#*\"$pat\"}}` instead:\n  "
         + "\n  ".join(bad))
-    known = KNOWN_ESCAPED_QUOTE_REPLACEMENTS.get(name, ())
     escaped = [line.strip() for line in text.splitlines()
                if not line.lstrip().startswith("#")
-               and _escapes_a_quote_in_a_double_quoted_replacement(line)
-               and not any(entry in line for entry in known)]
+               and _escapes_a_quote_in_a_double_quoted_replacement(line)]
     assert not escaped, (
         f"{name} escapes a single quote in the replacement half of a "
         "`${var/pat/rep}` inside double quotes; bash 3.2 and `BASH_COMPAT` "
@@ -4393,25 +4377,12 @@ def test_no_shipped_bash_quotes_the_replacement_half_of_a_substitution(name):
         + "\n  ".join(escaped))
 
 
-@pytest.mark.parametrize("name,entry", [
-    (name, entry) for name, entries in KNOWN_ESCAPED_QUOTE_REPLACEMENTS.items()
-    for entry in entries])
-def test_the_known_escaped_quote_replacements_remain(name, entry):
-    """An entry in `KNOWN_ESCAPED_QUOTE_REPLACEMENTS` is a line that is still
-    there. Fixing the line means taking its entry out, and this fails until
-    that is done, so the list never holds a line the file no longer has."""
-    text = (REPO / name).read_text(encoding="utf-8")
-    assert entry in text, (
-        f"{name} no longer holds {entry!r}: take it out of "
-        f"KNOWN_ESCAPED_QUOTE_REPLACEMENTS")
-
-
 @pytest.mark.parametrize("line,flagged", [
     # THE LINE `quoted()` HAD, in both lane tools: flagged.
     (r'''      printf "%s'%s'" "$q_sep" "${q_a//\'/\'\\\'\'}" ;;''', True),
     # THE LINE IT HAS NOW: the replacement is a variable.
     (r'''      printf "%s'%s'" "$q_sep" "${q_a//\'/$q_r}" ;;''', False),
-    # `lane-end`'s, whose replacement is one escaped quote.
+    # The shape `lane-end`'s `sc_find_err_path` had: one escaped quote.
     (r'''x="${x//\\\'/\'}"''', True),
     (r'''echo "${v/a/it\'s}"''', True),
     (r'''echo "[${v/a/\'}] and [${w//b/c}]"''', True),
