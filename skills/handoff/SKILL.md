@@ -780,8 +780,10 @@ if [[ -z "$ws_missing" && -z "$act_down" ]]; then
         # `lane-end` relay them, with no temporary file to leave behind: one call, its
         # stdout sent to fd 3, its stderr through `sed` to tag each line `E `, and its
         # exit code echoed as `rc=<n>` on fd 3, all into the one substitution, then
-        # split by tag. A name has no space and no `=`, so no stdout line can be taken
-        # for a tag. A missing `rc=` line stays `unknown`, which refuses below.
+        # split by tag. A name `check_lane_name` accepts has no space and no `=`, so no such
+        # line can be taken for a tag; one outside that class that begins `E ` or `rc=` would
+        # be, which no tool can write today (lane 3, #165 6837908956, question 7). A missing
+        # `rc=` line stays `unknown`, which refuses below.
         aw_rc=unknown; act_walk=""; aw_err=""
         aw_all="$( { { env -u LANES_READ_MIRROR LANES_NO_FETCH=1 "$L" canon-lane --walk "$id_typed" 1>&3 3>&-; echo "rc=$?" >&3; } 2>&1 | sed 's/^/E /'; } 3>&1 )"
         while IFS= read -r aw_l; do
