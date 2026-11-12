@@ -1000,6 +1000,11 @@ def test_a_lookup_never_mistakes_a_rivals_row_for_the_lost_write(estates):
 # no-record reruns choose Y:5347's text for this host or another by
 # `workstation=`, naming the entry's UTC from `utc=`.
 #
+# THE TAIL'S `gh` CALL IS THE COMMENT (T245c; lane 4's triage, #165
+# 6833813092): a case counts only `gh issue comment` and `gh pr comment`
+# (`comments`), never `claim`'s Rule 1 reads, which every run of `claim`
+# makes before the seam, a killed one and a refused one included.
+#
 # They FAIL UNTIL L4-B2, L4-B5 and L4-B6 land; `[snapshot-fails]` until lane
 # 4's T417 and lane 1's T114 take the record's clock (Q-L1-1); the texts for 3
 # until lane 4's T417, T433 and T434; the `tail` record a takeover cannot use
@@ -1066,7 +1071,14 @@ def mark_of(e: Estate, write_id: str) -> Path:
 
 
 def comments(where: Path) -> List[dict]:
-    return [c for c in tool_calls(where, "gh") if "comment" in " ".join(c["argv"])]
+    """The fake `gh`'s comment calls, `issue comment` or `pr comment`: a
+    verb's tail (`gh_comment`, T421). Never Rule 1's reads, `issue view
+    --comments` and `pr list`, which `claim` makes at its step 2, before the
+    seam (`gh_reads_live`; Y:5043), and which decide nothing (T245c; lane
+    4's triage, #165 6833813092; T248a's `comment_calls` has the same
+    shape)."""
+    return [c for c in tool_calls(where, "gh") if c["argv"][:1] in (["issue"], ["pr"])
+            and c["argv"][1:2] == ["comment"]]
 
 
 def sidecars(e: Estate) -> Path:
