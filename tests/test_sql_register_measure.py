@@ -1349,8 +1349,9 @@ def hook_pid():
     from that start, and an age at or above the cut exits 2, "too late to
     verify" (section 3.6's 2; `register_guard_t0`). The pytest process's own
     pid is minutes old on a runner, so with it `[m10]` ended 2 (lane 1's
-    round 6b census, #165 6827592167, item 2). The stand-in is AT-F7's,
-    `test_sql_register_outage.py`'s `_stand_in`, at an age of 0."""
+    round 6b census, #165 6827592167, item 2). `[m10]` and `[m5]` each take
+    one. The stand-in is AT-F7's, `test_sql_register_outage.py`'s
+    `_stand_in`, at an age of 0."""
     standin = subprocess.Popen(["sleep", "120"], start_new_session=True,
                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
     try:
@@ -1403,8 +1404,11 @@ def _path_m5(reg, root: Path):
     under a short state home of the case's own (`STATE_PREFIX`); then form 2,
     the guard's prefetch, with the service up, so the counting cluster logs
     the service's connection and its one Query per request (section 5.6).
-    The cache file's directory is made first, as `[m10]`'s is. Fails until
-    L5-S1 (lane 5's T512) and T229."""
+    Its `--pid` is a stand-in started just before the read, once the socket
+    is bound (`hook_pid`), as `[m10]`'s is, so T507's cut at `T0 + 3.75 s`
+    runs from the read's own start, never from the pytest process's or the
+    service's. The cache file's directory is made first, as `[m10]`'s is.
+    Fails until L5-S1 (lane 5's T512) and T229."""
     state = Path(tempfile.mkdtemp(prefix=STATE_PREFIX, dir=STATE_PARENT))
     try:
         sock = state / "openRepoTools" / "run" / "register.sock"
@@ -1420,9 +1424,10 @@ def _path_m5(reg, root: Path):
             while not sock.exists() and time.monotonic() < end and serve.poll() is None:
                 time.sleep(0.05)
             assert sock.exists(), f"lanes-index serve bound no socket at {sock}: {serve.poll()}"
-            proc = run_index(reg.copy, ["register", "read", "--for", "guard", "--prefetch",
-                                        "--cache", root / "m5" / "cache", "--pid", os.getpid(),
-                                        "--repo", reg.estate.checkout, "--lane=repoA-1"], env)
+            with hook_pid() as pid:
+                proc = run_index(reg.copy, ["register", "read", "--for", "guard", "--prefetch",
+                                            "--cache", root / "m5" / "cache", "--pid", pid,
+                                            "--repo", reg.estate.checkout, "--lane=repoA-1"], env)
             assert proc.returncode == 0, proc.stderr
             assert "guard: direct (service unavailable)" not in proc.stderr, proc.stderr
         finally:
