@@ -50,6 +50,10 @@ WHAT IT CHECKS, by the test plan's entries and lane 2's task T221:
     `register commit`'s own call, LR004's one re-read (R02), `not_after`, the
     operator flag and a file with no final newline. Its section's head says
     which lane 1 task each part drives.
+  * `test_an_entry_without_a_path_in_changes_tsv_is_refused_2_before_the_store_opens`,
+    new since B15 (lane 3, #165 6808937880, batch e Q88): T112's refusal of an
+    empty change set, 2 from `register commit` before the store opens, through
+    the same writer as AT-LR4's cases. T112's word `an_entry_without` selects it.
 
 REAL ENGINE. Every case but the one-number rule and DEC-23's test asks for
 `pg`, one database cloned from the session's template, so its fixture closure
@@ -1876,6 +1880,33 @@ class Writer:
         return {"dir": att, "keys": keys, "lane": lane, "verb": verb, "args_sha": args_sha,
                 "path": path, "old": old, "image": new}
 
+    def empty_attempt(self, name: str, lane: str = LANE, verb: str = "log") -> dict:
+        """An attempt with an empty change set (lane 3, #165 6808937880, batch e
+        Q88), as only a broken seam leaves one: the snapshot at `n` with its
+        scratch tree, and `msg`, `author` and `not_after` as `attempt` writes
+        them, but a `changes.tsv` and a `files` of 0 bytes and no `images/`."""
+        att = self.root / name
+        att.mkdir()
+        args_sha = hashlib.sha256(f"{lane}\0{verb}\0{name}".encode("utf-8")).hexdigest()
+        snap = self.index(*self.snapshot_args(lane, verb, args_sha), "--tree", str(att / "tree"),
+                          "--checkout", str(self.work))
+        assert snap.returncode == 0, (
+            f"register snapshot --tree (T111) for the attempt {name}:\n{shown(snap)}")
+        keys = dict(line.partition("=")[::2] for line in snap.stdout.splitlines() if "=" in line)
+        (att / "snapshot").write_text(snap.stdout, encoding="utf-8")
+        (att / "changes.tsv").write_bytes(b"")
+        (att / "files").write_bytes(b"")
+        (att / "msg").write_text(f"LANES({lane}@{WS}): {verb} {EM_DASH} T231's case\n",
+                                 encoding="utf-8")
+        (att / "author").write_text(f"{AUTHOR}\n", encoding="utf-8")
+        (att / "not_after").write_text(keys["not_after"] + "\n", encoding="utf-8")
+        return {"dir": att, "keys": keys, "lane": lane, "verb": verb, "args_sha": args_sha}
+
+    def shim_lines(self) -> list:
+        """Every line of the shim's log, its `psql --version` probes included."""
+        log = self.shim / PSQL_SHIM_LOG
+        return log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+
     def commit_args(self, att: dict) -> list:
         keys = att["keys"]
         return ["register", "commit", "--write-id", keys["write_id"], "--generation",
@@ -2650,3 +2681,45 @@ def test_a_file_without_a_final_newline_renders_back_byte_identical(pg, tmp_path
     shown_now = sql(pg, f"SELECT encode({SCHEMA}.render_file('{path}'), 'hex');", WRITER)
     assert bytes.fromhex(shown_now) == att["image"], (
         f"{path} renders as {bytes.fromhex(shown_now)!r}, not the write's {att['image']!r}")
+
+
+# =================================================================== T112's empty change set
+#: T112's words for an attempt whose `changes.tsv` names no path (B15
+#: tasks:427, "An empty change set"; lane 3, #165 6808937880, batch e Q88).
+EMPTY_REFUSAL = "changes.tsv names no path; nothing was sent"
+
+
+def test_an_entry_without_a_path_in_changes_tsv_is_refused_2_before_the_store_opens(pg, tmp_path):
+    """An empty change set (B15 tasks:427; lane 3, #165 6808937880, batch e Q88;
+    lane 1, #165 6808595488): an attempt whose `changes.tsv` and `files` are
+    empty, with no `images/`, and whose snapshot, scratch tree, `msg`, `author`
+    and `not_after` are a write's, is refused by `register commit` with 2,
+    "changes.tsv names no path; nothing was sent", before the store opens: no
+    `psql` runs for it, its `--version` probe included; stdout is empty; and
+    every table of section 1.2 equals its value before, so there is no journal
+    row and no seq. The seam sends no empty change set (Y:5060), so only a
+    broken one leaves this attempt. The refusal is the CLI arm's alone, whose
+    entry is always a `write`: T324's `stray-revert` and an `import --single`
+    that changes no render-set path build their entries with no edits
+    in-process, and still journal, as T271's revert cases prove.
+
+    Fails until lane 1's T112 follow-up for Q88: on `refs/l1/V-round5` the
+    attempt directory parses, and the write entry with no edit commits."""
+    n = bring_to_primary(pg)
+    writer = Writer(pg, tmp_path / "writer")
+    before = state(pg)
+    att = writer.empty_attempt("empty")
+    seen = len(writer.shim_lines())
+    proc = writer.commit(att)
+    assert proc.returncode == 2, (
+        f"register commit did not refuse an empty change set with 2, which fails until "
+        f"T112's refusal (B15 tasks:427; lane 3, #165 6808937880, batch e Q88):\n{shown(proc)}")
+    assert EMPTY_REFUSAL in proc.stderr, (
+        f"the 2 does not say {EMPTY_REFUSAL!r} (B15 tasks:427):\n{shown(proc)}")
+    assert proc.stdout == "", f"a refusal of an empty change set prints nothing:\n{shown(proc)}"
+    ran = writer.shim_lines()[seen:]
+    assert ran == [], (
+        f"register commit ran psql {len(ran)} time(s) for an empty change set, so the store "
+        f"opened; the refusal comes before it: {ran}")
+    assert head(pg) == n, f"the head moved from {n} to {head(pg)}: an empty change set took a seq"
+    assert state(pg) == before, "an empty change set changed the register"
