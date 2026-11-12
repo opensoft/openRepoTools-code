@@ -518,7 +518,10 @@ there, and step 5 prints the restart command with `--lane`. **Every other answer
 ends the block 1,** naming the verb and its code: `act-begin`'s 1 or 64, an `act-begin` that exited 0 with no line or a
 malformed one, an identity read that failed, and any walk code but 0, 69, 75 and 3, a 2 included (lane 3, #165
 6774499606, A2). **That 1 ends the act:** after the note it prints no `READY TO SWAP` line and no restart command,
-and runs no step 5 or step 6 (REV-ACT2 S2; ruling A2: "the act exits 1"). **A write that exits 69, and a block that sent none, print the same note:** ONE note that says how the
+and runs no step 5 or step 6 (REV-ACT2 S2; ruling A2: "the act exits 1"). **A 2 ends the act the same way:** the identity refusal's 2 and a write that was
+sent and exited anything but 0, 3 or 69 under a seq base, which ends the block 2 with `THIS ACT STOPS` after the three writes have been tried. It is 2 alone
+whatever code the writer gave, and its own 75 stays printed in its own stderr (lane 3, #165 6835210568, question 4), so a 75 from this block is always one
+that held the writes. **A write that exits 69, and a block that sent none, print the same note:** ONE note that says how the
 record is completed later (`lane-handoff --late --at <UTC> --lane <L>`, run from a shell by whoever relaunches the
 lane, once the register answers and before the relaunch), after the third write however many of the three exited 69
 (spec:692; B12b tasks:1361 and :1375). Where `act-begin` exits 2 the helper predates feature 007 and the writes go as
@@ -550,6 +553,16 @@ them, as for every block here; `sread` is defined in the first block of this fil
 # block ends 1. A container with no workstation writes nothing here, so it takes no base.
 unset LANES_ACT LANES_EXPECT
 act_line=""; act_scopes=""; act_down=""; act_exit=""; act_w69=""
+# A WRITE THAT WAS SENT AND DID NOT END 0, 3 OR 69 UNDER A SEQ BASE ENDS THE BLOCK, AND THE ACT
+# (feature 007, T431; TP:5891-5894 "never 0"; tasks:1373, `:2817`'s rule; lane 3, #165
+# 6834271321, and 6835210568 on lane 4's question 4: THE SKILL'S STOP USES 2 ALONE).
+# `act_again_say` records it below, and the end of the block prints the stop and exits 2,
+# whatever code the writer gave: the writer's own 75 stays printed in its own stderr. A 75
+# is this block's exit only where `act-begin`, an identity read or the walk gave it
+# (`act_down_say`), and step 5 then stands, so a write's 75 read as the block's would be two
+# things at once and a 2 is one. A 3 and a 69 keep their own paths, as do the writes under
+# `@files` and after `act-begin`'s 2.
+act_stop=""; act_stop_names=""; act_d3=""
 # THE BASE'S FORM (Y:5577-5579; REV-ACT2 N5), read with SPELLED-OUT bracket lists
 # and no range: `[0123456789abcdef]` for a lower-case hex digit, `[123456789]` for a
 # seq's first digit and `[0123456789]` for the rest. A range such as `[0-9a-f]` is
@@ -587,6 +600,7 @@ act_69_note() {
 # words and then the files-mode sentence. The writers' stderr is kept, so the rerun is
 # above, and this block prints no hint of its own beside it.
 act_in_doubt() {   # act_in_doubt <which write>
+  act_d3=1
   echo "IN DOUBT: $1 exited 3 (the writer's own code, above). On primary it may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun (off primary), the commit is local and may already be on origin."
 }
 # NO HAND COMMAND AFTER A WRITE THAT DID NOT END 0, UNDER A SEQ BASE (lane 3, #165
@@ -595,10 +609,13 @@ act_in_doubt() {   # act_in_doubt <which write>
 # so the block prints none. A 3 keeps the writer's rerun (`act_in_doubt`), a 69 keeps
 # the note, and every other code keeps the writer's own stderr, above, and says to run
 # the act again from its start. Under `@files`, or with no base after `act-begin`'s 2,
-# today's hand re-run stands and this prints nothing.
+# today's hand re-run stands and this prints nothing. AND THE WRITE IS RECORDED AS ONE
+# THAT STOPS THE ACT (T431; lane 3, #165 6834271321 and 6835210568, question 4): the block
+# ends with it, below, 2 and never 0, whatever code the writer gave.
 act_again_say() {   # act_again_say <which write> <its exit code>
   case "$act_line" in ""|*@files) return 0 ;; esac
   case "$2" in 0|3|69) return 0 ;; esac
+  act_stop=1; act_stop_names="${act_stop_names:+$act_stop_names, }$1"
   echo "RUN /handoff AGAIN FROM STEP 1: $1 exited $2 under a seq base, so no hand command is printed for it. The writer's own words are above, and a new run takes a new base."
 }
 act_scope_add() {   # act_scope_add <scope>: appended to act_scopes once, in lower case
@@ -1101,12 +1118,39 @@ fi
 # says which write the register refused. Where none was sent, the note was printed
 # above, where the block ended.
 [[ -z "$act_w69" ]] || act_69_note
+# A REFUSED WRITE ENDS THE BLOCK AND THE ACT (feature 007, T431; lane 3, #165 6834271321,
+# on lane 4's question 3, and 6835210568, which rules question 4 for the skill alone:
+# "the skill's stop uses 2 alone"; TP:5891-5894: the act exits with the code lane 4's
+# arms give, "never 0"; the row `[skill-step-4-writes]`). Under a seq base a write that was
+# sent and exited with any code but 0, 3 and 69 (a 2, a 75, any other) leaves this block at
+# `act_stop`, and the block ends 2, whichever code or mix of codes the writes gave. It is not
+# `lane-handoff`'s 75, because a 75 here would read as `act-begin`'s own (`NO PAUSED WRITES`,
+# after which step 5 stands) and the session dispatches on the code; the writer's 75 stays
+# printed in its own stderr, above. The line below says what the act then does not do: no
+# `READY TO SWAP` and no restart command, and neither step 5 nor any act of step 6, as after
+# the A2 refusal that ends the block 1. A 3 and a 69 keep their paths above, and so does
+# every write under `@files` or after `act-begin`'s 2, where `act_stop` is never set and the
+# block ends 0 as it did.
+if [[ -n "$act_stop" ]]; then
+  echo "THIS ACT STOPS: $act_stop_names exited with a code other than 0, 3 and 69 under a seq base (the writer's own words, and its own exit code, are above), so this block ends 2, whichever code that was. The handoff step 2 refreshed stands, and the lane stays as it is. Print no READY TO SWAP line and no restart command, and run neither step 5 nor any act of step 6. Run /handoff again from step 1, which takes a new base."
+  if [[ -n "$act_d3" ]]; then
+    echo "A write of this act also exited 3 (the IN DOUBT line above): run the rerun the writer printed for it, which writes it once or finds it, before you run /handoff again."
+  fi
+  exit 2
+fi
 ```
 
 **Under a seq base no write that did not end 0 is re-run by hand** (lane 3, #165 6779688808, Q11). Where one exits
 anything but 0, 3 or 69, the block prints `RUN /handoff AGAIN FROM STEP 1` and no command: keep the writer's own words,
 which are above it, say in the report which write and its code, and tell the operator to run `/handoff` again from
-step 1, which takes a new base. A 3 keeps the writer's rerun and a 69 the note, below. Only where the block printed no
+step 1, which takes a new base. After the third write the block then prints `THIS ACT STOPS` and **ends 2, whichever
+code the writer gave, a 75 included** (lane 3, #165 6835210568, question 4: the skill's stop uses 2 alone; the writer's
+own 75 stays printed in its own stderr, above the line). **That 2 ends the act,** as the 1 below does: print no `READY TO
+SWAP` line and no restart command, run neither step 5 nor any act of step 6, and do not tell the operator the swap is
+safe. A 75 that ends the block is therefore never a write's: it is `act-begin`'s, an identity read's or the walk's, the
+`NO PAUSED WRITES` line says so, and step 5 stands after it (below). A 3 keeps the writer's rerun and a 69 the note,
+below, and where a write of the act also exited 3, the stop's last line says to run that rerun before `/handoff` is run
+again. Only where the block printed no
 such line, under `@files` or after `act-begin`'s 2, does today's hand re-run stand: if (a) still exits 2 there, and its
 words do not open `expectation:` (the paragraph below), re-run it with the free-text argument **dropped entirely** and
 say so in the report:
@@ -1120,7 +1164,9 @@ rested on, `row:`, `bind:` or `alias:` of this lane, was changed by another plac
 Dropping the free text does not answer it, so it is not re-run with less. All three writes carry the same scopes,
 so say in the report which of them were refused, with the scope and the other place's lane and verb as the writer
 printed them, and that the lane changed under this swap. A `/handoff` run again from step 1 takes a new base and
-reads who the lane is afresh. A refusal above the writes, from the base or from the identity, wrote nothing at all.
+reads who the lane is afresh, and under a seq base that 2 is a write that stopped the act, so the block ends 2 after
+`THIS ACT STOPS` (above). A refusal above the writes, from the base or from the identity, wrote nothing at all: the base's
+ends the block 1 and the identity's (its own `REFUSED` line, or Amendment 15(d)'s) ends it 2.
 
 **A write that exits 3 is in doubt, not refused** (Y:5698; the register's in-doubt code). On primary the transaction
 may or may not have committed, so the block goes on to the next write, as it does after any write that did not land,
@@ -1150,11 +1196,21 @@ the REFUSED line that names the verb and its code, then the note, and ended 1. *
 neither step 5 nor any act of step 6, say in the report the REFUSED line and the handoff step 2 refreshed, and tell
 the operator to fix what the refusal names and run `/handoff` again.
 
+**A 2 ends the act the same way** (lane 3, #165 6835210568, question 4: the skill's stop uses 2 alone). The block ends 2
+where the identity, read again under the base, answered another lane or Amendment 15(d) refused it (its `REFUSED` line,
+and nothing of step 4 was written), and where `THIS ACT STOPS` after a write that was sent and refused (the three writes
+were tried). Print no `READY TO SWAP` line and no restart command, run neither step 5 nor any act of step 6, say in the
+report which line it was, and tell the operator to run `/handoff` again from step 1, after fixing what a `REFUSED` line
+names. So **step 5 runs after a block that ended 0, 3, 69 or 75, and after no other**, and a 75 that ends the block is
+always one that held the writes (`NO PAUSED WRITES`), never a write's own: the writer's 75 stays printed in its stderr.
+
 ## 5. Print the restart command — one command, no menu
 
-**Run this step only where step 4's block did not end 1.** A block that ended 1 held the writes (A2) and the act
-stopped after its note: no `READY TO SWAP` line and no restart command are printed (REV-ACT2 S2). After a 69, 75 or 3
-the step stands, and its note says the row write "may not be written".
+**Run this step only where step 4's block ended 0, 3, 69 or 75.** A block that ended 1 held the writes (A2) and the act
+stopped after its note, and a block that ended 2 stopped it as well (the identity's `REFUSED` line, or `THIS ACT STOPS`
+after a refused write; lane 3, #165 6835210568, question 4): after either, no `READY TO SWAP` line and no restart
+command are printed (REV-ACT2 S2). After a 69, 75 or 3 the step stands, and its note says the row write "may not be
+written".
 
 ```sh
 if command -v lclaude >/dev/null 2>&1; then
