@@ -17377,7 +17377,7 @@ def _import_workstation() -> str:
     return name
 
 
-def _import_checkout(lane: str) -> str:
+def _import_checkout(lane: str, who: str = "import", left: str = "nothing was swapped in") -> str:
     """THE OPERATOR LANE'S CHECKOUT (D24, Y:653): `LANES_REPO` where it is set,
     the operator's override that `lanes-edit.sh` honours too, else the
     checkout `lanes-edit.sh lane-checkout <lane>` names, `<W>-lanes/<lane>/`.
@@ -17390,7 +17390,11 @@ def _import_checkout(lane: str) -> str:
     at all: the checkout is `lanes-edit.sh lane-checkout <lane>`'s
     `<W>-lanes/<lane>/`, which that helper derives from `W` and which is
     never `W`, and a `W` that cannot be read refuses there as a lane with no
-    checkout of its own."""
+    checkout of its own.
+
+    `who` and `left` name the operator command in its refusals and what it
+    leaves: the import's by default, and the cutover's, which finds its
+    checkout the same way (T327; D24, F12)."""
     named = os.environ.get("LANES_REPO", "")
     if named:
         where = named
@@ -17398,20 +17402,20 @@ def _import_checkout(lane: str) -> str:
         try:
             proc = _helper_run(["lane-checkout", lane], 60, f"lane {lane}'s checkout")
         except StoreUnusable as exc:
-            raise Refusal(f"import: lane {lane}'s checkout cannot be found ({exc.detail}); "
-                          f"nothing was swapped in")
+            raise Refusal(f"{who}: lane {lane}'s checkout cannot be found ({exc.detail}); "
+                          f"{left}")
         where = proc.stdout.strip()
         if proc.returncode != 0 or not where:
             why = (proc.stderr.strip().splitlines() or ["no answer"])[0].strip()
-            raise Refusal(f"import: lane {lane} has no checkout of its own (`lanes-edit.sh "
+            raise Refusal(f"{who}: lane {lane} has no checkout of its own (`lanes-edit.sh "
                           f"lane-checkout {lane}` exited {proc.returncode}: {why}). Make it "
                           f"with `lanes-edit.sh lane-checkout {lane} --create`, or name one with "
-                          f"LANES_REPO; the import never reads W (D24); nothing was swapped in")
+                          f"LANES_REPO; the {who} never reads W (D24); {left}")
     top = git(where, "rev-parse", "--show-toplevel", check=False)
     root = top.stdout.strip()
     if top.returncode != 0 or not root:
-        raise Refusal(f"import: {where} is not a git checkout, so origin's objects cannot be "
-                      f"read through it; nothing was swapped in")
+        raise Refusal(f"{who}: {where} is not a git checkout, so origin's objects cannot be "
+                      f"read through it; {left}")
     if named:
         try:
             w = workspace_root()
@@ -17419,14 +17423,14 @@ def _import_checkout(lane: str) -> str:
             # A read that failed is never an answer (Amendment 7(d)): "W could
             # not be read" is not "LANES_REPO is not W", so it is refused (2).
             why = exc.detail if isinstance(exc, StoreUnusable) else str(exc)
-            raise Refusal(f"import: LANES_REPO is set, and W cannot be read to check that it "
+            raise Refusal(f"{who}: LANES_REPO is set, and W cannot be read to check that it "
                           f"is not W itself ({why}); a read that failed is not an answer "
-                          f"(Amendment 7(d)), so the import reads nothing through {root}; "
-                          f"nothing was swapped in")
+                          f"(Amendment 7(d)), so the {who} reads nothing through {root}; "
+                          f"{left}")
         if os.path.realpath(w) == os.path.realpath(root):
-            raise Refusal(f"import: LANES_REPO names W itself ({root}); the import reads "
+            raise Refusal(f"{who}: LANES_REPO names W itself ({root}); the {who} reads "
                           f"origin through the operator lane's own checkout, never W (D24); "
-                          f"nothing was swapped in")
+                          f"{left}")
     return root
 
 
@@ -18050,18 +18054,37 @@ def import_proof(source: dict, staged: dict, entry: dict, records: dict,
 # schema, a `register_schema=` other than `lanes_register`, and exits 2 on
 # `lanes_register` before anything connects.
 #
-# EXIT 0 IN THIS BUILD: the entry committed; or a rerun found this cutover's
-# own entry standing; or the register is already cut over at the same import
-# with the same label. Nothing is pushed, so the marker stays `adding` and
-# every write refuses (LR002) until T327's read-back calls `record_marker`.
-# The restore form's render of every seq the mirror lacks up to `b` (ops:382)
-# is the renderer's git half, which this build does not have: on a scratch
-# schema it renders nothing and says so, and with the constant set it refuses.
+# THE GIT HALF (lane 3's T327; S5's steps 2 and 3; D21, D23, D24; FR-050;
+# ops:116, act 4's step 7):
+#   - BEFORE THE TRANSACTION, `cutover_git_preflight`: the operator lane's
+#     checkout, found as the import finds it and never `W`, and with
+#     `render_key=` the push's destination and the checkout's configuration,
+#     each refused (2) with nothing written. The restore form then renders
+#     every seq the mirror lacks, up to `b` (ops:382), at `_cutover_render_to`.
+#   - STEP 2, `cutover_step_2`, after the transaction or from a rerun that
+#     found this cutover's own entry standing at `primary`/`adding` (Y:3532):
+#     the read-back first, then the marker's commit on origin's tip, which
+#     must descend from the import's commit and carry its `lanes` tree (the
+#     restore form: a render set equal to the images at `b`), pushed as a
+#     fast-forward with the renderer identity through T320, read back, and
+#     recorded with `record_marker`, setting the marker `present`.
+#   - STEP 3, THE ABORT, once a read-back of this run proves the marker absent
+#     from origin and this run pushes it no more: `cutover_abort`, lane 1's
+#     `switch_to_files`.
+# The commit carries the entry's `Register-Seq`, D15's message, and the
+# journal's author and UTC; `lanes/STORE`'s bytes are those the entry
+# committed, read back from the journal, so a rerun pushes the same file.
 #
-# ITS ENDS (contracts/exit-codes.md §3.2): 0; 2 for each refusal, an LR004
-# from the transaction, and `cutover_abort`'s `EXIT_CUTOVER_ABORTED`; 69 for
-# a register it cannot read or that refuses, and for an expired timer, after
-# which the switch is unknown and a rerun reads it first; 64 for usage.
+# ITS ENDS (contracts/exit-codes.md §3.2): 0 for the whole row: the marker's
+# commit on origin, read back, and recorded `present`, or a register already
+# cut over at the same import with the same label; 2 for each refusal, an
+# LR004 from the transaction, and `cutover_abort`'s `EXIT_CUTOVER_ABORTED`;
+# 3 where a read-back can neither confirm the marker nor prove it absent, the
+# rerun reading origin back first; 69 for a register it cannot read or that
+# refuses, and for an expired timer: the transaction's, after which the
+# switch is unknown and a rerun reads it first; `record_marker`'s, after
+# which the push stands, the marker stays `adding` and a rerun records it;
+# and `switch_to_files`'; 64 for usage.
 
 #: PC-10'S CODE FOR THE CUTOVER'S ABORT (contracts/exit-codes.md §1 and §4;
 #: T102): 2, and only once `switch_to_files` has committed. It shares 2 with
@@ -18103,17 +18126,25 @@ _CUTOVER_USAGE = f"""\
 
 Sets the SQL register's switch to primary with the marker adding, and writes the
 operator entry that makes lanes/STORE name this database, in one transaction
-(operations.md §2.2, act 4's step 7, and §2.3). Run it as the operator lane, with
-LANES_LANE=<lane>, from that lane's checkout. The label it sends is the one
+(operations.md §2.2, act 4's step 7, and §2.3). Then it pushes that entry's
+commit of lanes/STORE as a fast-forward of origin's main, with the renderer
+identity, reads it back and records the marker present; where a read-back
+proves the marker absent and it pushes no more (origin moved under lanes/, or
+the push failed), it aborts through switch_to_files. Run it as the operator
+lane, with LANES_LANE=<lane>, from that lane's checkout (LANES_REPO, or
+lanes-edit.sh lane-checkout <lane>; never W). The label it sends is the one
 register_label= names, and nothing else. While this build refuses mode=primary,
-it runs only against a scratch schema (register_schema=), for act 3's rehearsal.
-The marker's push is lane 3's T327.
+it runs only against a scratch schema (register_schema=), for act 3's rehearsal,
+whose checkout's origin is a local copy.
 
   --import <C>   the imported commit, its full sha: the latest import's
   --after-loss   the disaster path's form, after a re-import or a restore
 
-Exit: 0 committed, or found standing · 2 refused, nothing written · 64 usage ·
-69 the register cannot be read or refused, or the call's timer expired."""
+Exit: 0 the marker pushed, read back and recorded, or already cut over ·
+2 refused, nothing written, or aborted (stderr's first line says ABORTED) ·
+3 a push its read-back can neither confirm nor disprove: rerun it, and it reads
+origin back first · 64 usage · 69 the register cannot be read or refused, or a
+call's timer expired: rerun it."""
 
 
 class _CutoverUsage(Exception):
@@ -18214,8 +18245,9 @@ def _cutover(opts: dict) -> int:
     st = _cutover_read(store)
     pair = (st["mode"], st["marker"])
     notes: list[str] = []          # this run's own notes, printed after its outcome
+    git = None                     # T327's checks before the transaction
     if pair == ("primary", "adding"):
-        return _cutover_standing(st, form, want, label)
+        return _cutover_standing(cfg, store, st, form, want, label)
     if pair == ("files", "removing"):
         raise Refusal(
             f"cutover: a rollback's entry stands at seq {st['marker_seq']} with the marker "
@@ -18236,7 +18268,8 @@ def _cutover(opts: dict) -> int:
             notes.append(f"cutover: the switch reads primary with the marker present, so this "
                          f"is the restore form's transaction (ops:379), and --import {want} "
                          f"names no import here")
-        notes.append(_cutover_render_to(st["head"]))
+        git = cutover_git_preflight(cfg, _cutover_lane())
+        notes.append(_cutover_render_to(cfg, store, git, st["head"]))
         base, commit, tree, sent = st["head"], st["import_commit"], st["import_tree"], "restore"
     elif pair == ("files", "absent"):
         if form == "restore":
@@ -18264,8 +18297,12 @@ def _cutover(opts: dict) -> int:
         raise _CutoverEnd(EXIT_UNAVAILABLE, f"cutover: the switch reads {st['mode']} with the "
                           f"marker {st['marker']}, which this build does not know; nothing "
                           f"was written")
-    # BEFORE THE COMMIT CALL: whose entry it is (F12; Rule 10; D15).
+    # BEFORE THE COMMIT CALL: whose entry it is (F12; Rule 10; D15), and
+    # T327's checks of the git half, so that a cutover that could never push
+    # its marker writes nothing.
     lane, workstation, author = _cutover_lane(), _cutover_workstation(), _cutover_author()
+    if git is None:
+        git = cutover_git_preflight(cfg, lane)
     timer = store.bounds("cutover")[1]
     not_after = _dt.datetime.fromtimestamp(st["clock"] + timer + 2, _dt.timezone.utc).isoformat()
     entry = cutover_entry(sent, lane=lane, workstation=workstation, author=author, label=label,
@@ -18276,7 +18313,7 @@ def _cutover(opts: dict) -> int:
     except _CutoverEnd as exc:
         exc.notes = notes
         raise
-    return _cutover_done(seq, sent, label, "committed", notes)
+    return _cutover_done(cfg, store, git, seq, sent, label, "committed", notes)
 
 
 def _cutover_read(store) -> dict:
@@ -18335,13 +18372,15 @@ def _cutover_psql_lines(exc: PsqlFailed) -> tuple[str, tuple]:
     return "", ()
 
 
-def _cutover_standing(st: dict, form: str, want: str | None, label: str) -> int:
+def _cutover_standing(cfg: dict, store, st: dict, form: str, want: str | None,
+                      label: str) -> int:
     """At `primary` with the marker `adding`, a cutover's entry stands
     unconfirmed. Where it is this cutover's own, a rerun after an expired
-    timer finds it and goes on from it (D9, Y:3532; F12): the same label, the
-    entry at the head, and the import it names, or `restore_prior` in the
-    restore form. Any other is refused (2): its push and read-back, or its
-    abort, come first."""
+    timer, an unconfirmed push or an expired `record_marker` finds it and
+    goes on to step 2 (D9, Y:3532; F12; T327's last bullet), which reads
+    origin back first: the same label, the entry at the head, and the import
+    it names, or `restore_prior` in the restore form. Any other is refused
+    (2): its push and read-back, or its abort, come first."""
     if form == "restore":
         own = st["restore_prior"]
     elif form == "reimport":
@@ -18350,27 +18389,29 @@ def _cutover_standing(st: dict, form: str, want: str | None, label: str) -> int:
         own = not st["restore_prior"] and st["import_commit"] == want
     if (own and st["label"] == label and st["marker_seq"] == st["head"]
             and st["head_kind"] == "cutover"):
-        return _cutover_done(st["head"], "restore" if st["restore_prior"] else form, label,
+        git = cutover_git_preflight(cfg, _cutover_lane())
+        return _cutover_done(cfg, store, git, st["head"],
+                             "restore" if st["restore_prior"] else form, label,
                              "stands, committed by an earlier run")
     raise Refusal(f"cutover: a cutover's entry stands unconfirmed at seq {st['marker_seq']}, "
                   f"database {st['label']}, import {st['import_commit']}, and it is not this "
                   f"cutover's: its push and read-back, or its abort, come first (S5)")
 
 
-def _cutover_render_to(b: int) -> str:
+def _cutover_render_to(cfg: dict, store, git: dict, b: int) -> str:
     """THE RESTORE FORM'S RENDER (ops:382): every seq the mirror lacks, up to
     the backup's head `b`, rendered as the rollback renders, before the
-    transaction. That is the renderer's git half, which this build does not
-    have. While `RENDER_GIT_HALF` is False, so on a scratch schema, it renders
-    nothing and returns the note that says so; with the constant set it
-    refuses (2), so that no real restore's cutover can skip its render."""
+    transaction, in the operator lane's checkout `git` names. Not in this
+    commit: while `RENDER_GIT_HALF` is False, so on a scratch schema, it
+    renders nothing and returns the note that says so; with the constant set
+    it refuses (2), so that no real restore's cutover can skip its render."""
     if RENDER_GIT_HALF:
         raise Refusal(f"cutover: the restore form renders every seq the mirror lacks, up to "
                       f"{b}, before its transaction (ops:382), and this build has no such "
                       f"render; nothing was written")
     return (f"cutover: the restore form first renders every seq the mirror lacks, up to {b} "
-            f"(ops:382); that render is the renderer's git half, which this build does not "
-            f"have, so nothing was rendered for this scratch schema")
+            f"(ops:382); that render is not in this build, so nothing was rendered for this "
+            f"scratch schema")
 
 
 def _cutover_lane() -> str:
@@ -18529,14 +18570,181 @@ def _cutover_commit(store, base: int, generation: str, entry: dict) -> int:
     return int(answer[0])
 
 
-def _cutover_done(seq: int, form: str, label: str, how: str, notes: list | tuple = ()) -> int:
+def _cutover_done(cfg: dict, store, git: dict, seq: int, form: str, label: str, how: str,
+                  notes: list | tuple = ()) -> int:
+    """The entry stands at `seq`: say so, then T327's step 2 and, where it
+    proves the marker absent, step 3. This run's own notes follow the
+    outcome, so that an abort's line is stderr's first (exit-codes.md §4)."""
     say(f"cutover: seq {seq} {how}, {_CUTOVER_FORMS[form]}: the switch is primary with the "
         f"marker adding, and lanes/STORE names database {label}")
-    for text in notes:
-        note(text)
-    note("cutover: the marker's push, its read-back and record_marker are lane 3's T327, which "
-         "this build does not have: nothing was pushed, and the marker stays adding, so no "
-         "write commits, until a read-back is recorded")
+    try:
+        return cutover_step_2(cfg, store, git, seq)
+    finally:
+        for text in notes:
+            note(text)
+
+
+def cutover_git_preflight(cfg: dict, lane: str) -> dict:
+    """T327'S CHECKS OF THE GIT HALF, BEFORE THE TRANSACTION (F12; D23; D24),
+    and before a rerun's step 2: the operator lane's checkout, found as the
+    import finds it (`_import_checkout`: `LANES_REPO`, else `lanes-edit.sh
+    lane-checkout <lane>`; never `W`), its git directory, and, with
+    `render_key=`, T320's own checks of the push: its destination
+    (`render_push_url`: a GitHub origin that is this workstation's register)
+    and the checkout's configuration (`_render_push_config_check`). Each is a
+    `Refusal` (2) with nothing written, so a cutover that could never push its
+    marker does not commit its entry. `render_push` makes the same checks
+    again at the push. Returns `{"checkout": <top>, "git_dir": <git dir>}`."""
+    checkout = _import_checkout(lane, who="cutover", left="nothing was written")
+    git_dir = render_git_dir(checkout)
+    key = cfg.get("render_key") or ""
+    if key:
+        destination = render_push_url(checkout, key)
+        _render_push_config_check(checkout, destination,
+                                  {name: value for name, value in render_push_env(key).items()
+                                   if name != "GIT_SSH_COMMAND"})
+    return {"checkout": checkout, "git_dir": git_dir}
+
+
+def _cutover_entry_state(store, seq: int) -> dict:
+    """The switch read again before step 2 (`_cutover_read`): it must hold this
+    cutover's entry at `seq`, unconfirmed, the head, with the marker `adding`.
+    Anything else, or a read that fails, is 69 with nothing pushed: the entry
+    stands, and a rerun reads the switch first."""
+    try:
+        st = _cutover_read(store)
+    except _CutoverEnd as exc:
+        raise _CutoverEnd(EXIT_UNAVAILABLE, f"cutover: seq {seq}'s entry stands, and the switch "
+                          f"could not be read again before its push ({exc}); nothing was pushed, "
+                          f"and a rerun reads the switch first and goes on from its own entry "
+                          f"(D9, Y:3532)", exc.psql_lines)
+    if ((st["mode"], st["marker"]) != ("primary", "adding") or st["marker_seq"] != seq
+            or st["head"] != seq or st["head_kind"] != "cutover"):
+        raise _CutoverEnd(EXIT_UNAVAILABLE, f"cutover: the switch reads {st['mode']} with the "
+                          f"marker {st['marker']} at marker_seq {st['marker_seq']}, head "
+                          f"{st['head']}, and not this cutover's entry at seq {seq} with the marker "
+                          f"adding; nothing was pushed, and a rerun reads the switch first")
+    return st
+
+
+def cutover_step_2(cfg: dict, store, git: dict, seq: int) -> int:
+    """STEP 2, AND STEP 3'S TRIGGER (S5; D21, D24; FR-050; ops:116; act 4's
+    step 7), for this cutover's entry at `seq`, standing at `primary` with the
+    marker `adding`:
+
+    1. The switch read again (`_cutover_entry_state`), and the entry read from
+       the journal (`operator_entry_read`): D15's author, message and UTC, and
+       `lanes/STORE`'s bytes as the entry committed them. A register that
+       cannot be read, or an entry that is not this cutover's, is 69 with
+       nothing pushed.
+    2. `operator_entry_push` (T320's push; the read-back first), with the
+       base the import's commit, which origin's tip must descend from, and
+       `moved`: in the first and re-import forms, a tip whose `lanes` tree is
+       not the import's (R3's abort, S5's "moved under `lanes/`"); in the
+       restore form, a tip whose render set is not the images at `b`, the
+       seq before the entry (ops:340's rule, as the rollback builds), since
+       its render to `b` moved the tree on purpose.
+    3. Its outcome:
+       - `pushed` or `found`: `record_marker`, setting the marker `present`:
+         0; its timer, or any other end, 69, the push standing;
+       - `absent`: the abort, `cutover_abort` (`switch_to_files`): its 2,
+         `EXIT_CUTOVER_ABORTED`, or 69;
+       - `unknown`: 3, with nothing more changed, and the rerun reads origin
+         back first (Y:3157-3159)."""
+    st = _cutover_entry_state(store, seq)
+    lane, workstation = _cutover_lane(), _cutover_workstation()
+    checkout, base, tree = git["checkout"], st["import_commit"], st["import_tree"]
+    restore = st["restore_prior"]
+    try:
+        row, data = operator_entry_read(store, seq, CUTOVER_STORE_PATH)
+        if data is None:
+            raise RenderRefused(f"seq {seq}'s entry removes {CUTOVER_STORE_PATH}")
+        want = render_image_set(render_images_span(store, seq - 1, seq - 1)[0][seq - 1]) \
+            if restore else None
+    except (RenderRefused, StoreUnusable) as exc:
+        why = exc.detail if isinstance(exc, StoreUnusable) else str(exc)
+        raise _CutoverEnd(EXIT_UNAVAILABLE, f"cutover: seq {seq}'s entry could not be read from "
+                          f"the journal for its push ({why}); nothing was pushed, the entry stands "
+                          f"with the marker adding, and a rerun goes on from it")
+    if not SHA_RE.match(base or ""):
+        raise _CutoverEnd(EXIT_UNAVAILABLE, f"cutover: the switch names no import commit for "
+                          f"seq {seq}'s marker to descend from; nothing was pushed")
+
+    def moved(tip: str) -> str | None:
+        if restore:
+            try:
+                at_tip = render_tree_set(checkout, tip)
+            except RenderBuildFailed as exc:
+                return (f"the render set at origin {RENDER_BRANCH}'s tip {tip} cannot be read "
+                        f"({exc}); nothing was pushed")
+            if at_tip == want:
+                return None
+            return (f"origin {RENDER_BRANCH}'s tip {tip} has moved under lanes/: its render set "
+                    f"is not the images at seq {seq - 1}, the backup's head, which the restore "
+                    f"form rendered; nothing was pushed")
+        got = render_git(checkout, "rev-parse", "--verify", "-q", f"{tip}:lanes",
+                         timeout=git_timeout_s())
+        have = got.out.strip() if got.rc == 0 else ""
+        if have == tree:
+            return None
+        return (f"origin {RENDER_BRANCH}'s tip {tip} has moved under lanes/ since the import's "
+                f"commit {base}: its lanes tree is {have or 'not readable'}, not {tree} (R3's "
+                f"abort; S5's \"moved under lanes/\"); nothing was pushed")
+
+    result = operator_entry_push(checkout, cfg, git_dir=git["git_dir"], seq=seq, base=base,
+                                 row=row, path=CUTOVER_STORE_PATH, data=data, moved=moved)
+    if result.outcome in ("pushed", "found"):
+        return _cutover_record(store, seq, result, workstation)
+    if result.outcome == "absent":
+        tip = result.tip
+        why = result.detail if not tip or tip in result.detail else \
+            f"{result.detail} (origin {RENDER_BRANCH} at {tip})"
+        return cutover_abort(store, seq, lane=lane, workstation=workstation,
+                             why=f"seq {seq}'s marker commit is not on origin, and this run "
+                                 f"pushes it no more: {why}")
+    note(f"cutover: the marker's push cannot be confirmed: {result.detail}. Seq {seq} stands "
+         f"with the marker adding, so no write commits; a rerun reads origin back first, then "
+         f"records the marker or aborts (S5; Y:3157-3159)")
+    return EXIT_IN_DOUBT
+
+
+def _cutover_record(store, seq: int, result: OperatorPush, workstation: str) -> int:
+    """`record_marker` after a read-back that found the marker's commit
+    (`result.commit`) on origin, under D9's cutover row (Y:3534): 0 once it
+    answers `present`. Any other end is 69: the push stands, the marker stays
+    `adding` where the call did not commit, and the rerun reads origin back
+    and records it again (contracts/exit-codes.md §3.2)."""
+    commit = result.commit
+    how = ("pushed by this run" if result.outcome == "pushed"
+           else "pushed by an earlier run, whose read-back this run made")
+    stands = (f"The marker's commit {commit} stands on origin, {how}; while the marker reads "
+              f"adding no write commits, and a rerun reads origin back and records it again")
+    try:
+        state = operator_record_marker(store, "cutover", seq, commit, workstation)
+    except PsqlFailed as exc:
+        code, lines = _cutover_psql_lines(exc)
+        for line in lines:
+            sys.stderr.write(line + "\n")
+        if exc.timer_expired:
+            what = "record_marker's timer expired (D9, Y:3534), so whether it committed is not known"
+        elif not exc.ran:
+            what = f"record_marker's call was not sent ({exc.detail})"
+        elif code and exc.psql_exit == 3:
+            what = f"the database refused record_marker ({code}, above)"
+        else:
+            what = (f"record_marker's call ended with psql's exit {exc.psql_exit} ({exc.detail}), "
+                    f"so whether it committed is not known")
+        note(f"cutover: {what}. {stands}")
+        return EXIT_UNAVAILABLE
+    except StoreUnusable as exc:
+        note(f"cutover: record_marker could not be called ({exc.kind}: {exc.detail}). {stands}")
+        return EXIT_UNAVAILABLE
+    if state != "present":
+        note(f"cutover: record_marker answered {state or 'nothing it could read'}, not present. "
+             f"{stands}")
+        return EXIT_UNAVAILABLE
+    say(f"cutover: seq {seq}'s marker commit {commit} is on origin {RENDER_BRANCH}, {how}, read "
+        f"back and recorded: the marker is present (S5's step 2; D21)")
     return EXIT_OK
 
 
