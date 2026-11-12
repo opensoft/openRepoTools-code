@@ -4326,7 +4326,9 @@ reg_mode_files() {   # <why>
 # `managed-projection` at the ownership seam (DEC-27, 6754522885). Every other
 # arm ignores the variable, `who` and `lane-last` among them. `REG_NO_CALL=1`
 # is `session-start`'s: a mirror arm with no register call (R39), whose read is
-# its block's own, `reg_session_read` (T508), never `reg_open`'s.
+# its block's own, `reg_session_read` (T508), never `reg_open`'s. Its one other
+# `lanes-index` call, `serve --start` on primary (T513), is no register call
+# either.
 # `lanes --decide` is decide, `reg_open`'s one flag rule (R38).
 # The table has no rows for the five arms its own tree lacks: T401's
 # `register-text` and `register-grep`, T410's `act-begin`, T427's
@@ -4501,6 +4503,9 @@ reg_open() {   # <arm> [<its arguments>...]
 #      nothing was unreachable where nothing was asked.
 #   5. OFF PRIMARY, files mode and `mode index`: F17 (`reg_marker_check`,
 #      W:4896), whose `mirror` arm reads on with its line under the marker.
+# `REG_MODE=primary` from this one answer is also the key of the arm's start
+# of the service after the block (T513, `reg_service_start`), so no second
+# mode question is asked.
 reg_session_read() {
   reg_class_of session-start
   REG_STORE=""; RO_FAILED=""; RO_WHY=""
@@ -12388,6 +12393,12 @@ row_stamp_is_unknown() {   # <lane>
 # files either way, since `REG_STORE` is never `sql` here. On primary
 # `row_stamp_is_unknown` reads nothing, and `lane_forks`' fence takes no local
 # half (lane 3, #165 6814531692).
+#
+# FEATURE 007, T513 — THE START OF THE SERVICE IS THE CALLER'S, never this
+# function's: on primary, once this has returned its whole answer, the
+# `session-start` arm runs `lanes-index serve --start` (`reg_service_start`),
+# keyed on the one mode answer `reg_session_read` set here. A compact returns
+# above that read, so it starts nothing.
 session_start_block() {
   ssb_json="${1-}"; ssb_win="${2-}"
   ssb_id="$(lc "$(jstr "$ssb_json" session_id)")"
@@ -12512,8 +12523,10 @@ session_start_block() {
   ssb_ho="$(handoff_of_lane "$ssb_lane" 2>/dev/null || :)"
   # AMENDMENT 11 CLAUSE (h) — THE BOUND LINE GAINS THE WINDOW, and gains
   # nothing else: `session-start` keeps all three of its safety properties, it
-  # never writes, it never touches the network and it always exits 0 (R-A8-1),
-  # and this is a field the block has already read out of the lane's own log.
+  # never writes, it never touches the network and it always exits 0 (R-A8-1;
+  # on primary, the arm's start of the register service after the block is the
+  # one qualification, T513, which the arm's comment states), and this is a
+  # field the block has already read out of the lane's own log.
   # It is here because the window is what clause (b)'s precedence 3 and clause
   # (f)'s step 2(c) bind from, and a reader who cannot see what the record says
   # the window is cannot tell a lane that will bind with no question from one
@@ -18254,7 +18267,9 @@ managed_local_remedy() {
 # WHO WRITES `RUNNING`. The confirming act, and never the SessionStart hook:
 # `session-start` NEVER WRITES, never touches the network and ALWAYS EXITS 0
 # (Amendment 8, R-A8-1), which is what makes it safe in front of every session
-# on the workstation. The act that actually proves lane, transcript, agent,
+# on the workstation; on primary, the arm's start of the register service
+# after the block (T513) is the one qualification, and it writes no state of a
+# lane. The act that actually proves lane, transcript, agent,
 # directory and binding is `lane-start` (with or without `--no-launch`), and
 # the proof it leaves is its `STARTED`/`RESUMED` line — so the snapshot follows
 # THAT line, in `write_event`, from any caller. `ENDED`/`RETIRED` become
@@ -21110,9 +21125,11 @@ if [ "$SWEEP_MODE" = sweep ]; then
     *) die "--sweep is withdrawn (Amendment 23 S3 step 4, ratified choice 9): a pending hand edit of the register is committed by its own act and never swept into another write. Commit it first — LANES_LANE=<lane> $SELF commit \"<what the edit is>\" — then run \`$cmd\` without --sweep. Nothing was written." 2 ;;
   esac
 fi
-# `session-start` is EXEMPT. It is a hook: it never writes, and it must exit 0
-# even where there is no register to read at all — a hook that dies is a hook
-# that breaks the session it was meant to orient.
+# `session-start` is EXEMPT. It is a hook: it never writes the register (on
+# primary its start of the service, T513, touches only the service's run
+# directory), and it must exit 0 even where there is no register to read at
+# all — a hook that dies is a hook that breaks the session it was meant to
+# orient.
 # EVERY WRITER REFUSES WHERE THIS CONTAINER HAS NO CONFIGURED WORKSTATION
 # (Amendment 11, decision 8(d), `R-A11-14`). ONE GUARD AT THE DISPATCHER rather
 # than one per writer: `WS` is built into every event line's `session <uuid>@<ws>`
@@ -22963,7 +22980,15 @@ EOF
 
   # The SessionStart hook. IT NEVER WRITES, IT NEVER TOUCHES THE NETWORK, AND
   # IT ALWAYS EXITS 0 — the three properties that make it safe to put in front
-  # of every session on this workstation. Its stdin is the hook's JSON; with a
+  # of every session on this workstation. FEATURE 007, T513: on primary, the
+  # arm's last act, after the block's whole answer, is `lanes-index serve
+  # --start` (`reg_service_start`; R50), which starts the register service from
+  # Python, detached, and is never waited for. The first two properties stay
+  # the block's own: the block writes nothing and opens no door to the network.
+  # The start makes the service's run directory and opens `register.log` in
+  # it, and the service it starts makes its own connection (SVC-4 item 1;
+  # socket API §7 and §9). The third is unchanged: the start's exit is
+  # ignored; off primary nothing starts. Its stdin is the hook's JSON; with a
   # terminal on stdin nobody piped one, and it is read as empty rather than
   # waited for, because a hook that blocks is worse than a hook that says
   # nothing.
@@ -22980,9 +23005,12 @@ EOF
   # FETCHED and says how old that is, so a reader can tell a current answer from
   # a stale one. `git_net` is the only door to the network in this file, and
   # nothing on this path opens it. FEATURE 007, T508: its one `lanes-index`
-  # call is `lanes-index mode`, asked once, only where a configuration exists,
-  # under its 2 s timer (`reg_session_read`), and it reads only the
+  # question is `lanes-index mode`, asked once, only where a configuration
+  # exists, under its 2 s timer (`reg_session_read`), and it reads only the
   # configuration (contract 3.1): no network, and no register call (R39).
+  # T513's `serve --start`, on primary only and after the answer, is no
+  # register call either: it reads the configuration and the run directory,
+  # and asks the service nothing (socket API §9).
   session-start)
     # FEATURE 007, T513: the block's own clock, for the start's skip rule
     # below. Reset here, so an inherited `SECONDS` counts for nothing.
