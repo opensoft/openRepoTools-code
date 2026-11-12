@@ -805,7 +805,11 @@ if [ -n "$retire_dormant" ]; then
   # is the one that never refuses.
   rd_err="$(cat -- "$rd_errf")" ||
     die "the capture of the read's own notes could not be read back, so whether this workstation's session records could be read was never established — and DORMANT is 'no object log AND no live session here'. The rows are not counted over a fact that was not read (Amendment 7(d)). Nothing was written." 1
-  printf '%s' "$rd_err" >&2
+  # THE NOTES END THEIR LINE (#165 6808937880, batch e Q101): `$(cat …)` took the
+  # last newline off, and a note printed without one fused the next `die` onto
+  # it ("…answers 69lane-end: …"). Main's line, older than 007, fixed here
+  # because T403 owns this read; an empty capture prints nothing.
+  [ -z "$rd_err" ] || printf '%s\n' "$rd_err" >&2
   rm -f -- "$rd_errf"
   case "$rd_err" in
     *"session records could not be read"*)
