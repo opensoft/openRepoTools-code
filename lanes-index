@@ -3834,7 +3834,10 @@ def _register_snapshot(store, opts: dict) -> int:
                  f"{marker}, not primary with the marker present: a register write goes to "
                  f"SQL in one transaction or refuses, and is never made in the files instead "
                  f"(Amendment 22's S1, \"No fallback writes\"); nothing was written")
-            note(REGISTER_IS_SQL_TEXT)
+            # Amendment 22's line only where the switch reads other than `primary`
+            # (TP:694-697; lane 3, #165 6833961066).
+            if mode != "primary":
+                note(REGISTER_IS_SQL_TEXT)
             return EXIT_UNAVAILABLE
         if at is not None and at > head:
             raise SnapshotUnavailable(f"seq {at} is above the head, seq {head}")
