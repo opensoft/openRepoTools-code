@@ -85,6 +85,8 @@ def prepare(root, out, kcov):
     if os.environ.get("GITHUB_ENV"):
         with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as stream:
             for key, value in env.items():
+                if key == "BASH_ENV":
+                    continue  # GitHub forbids setting BASH_ENV through GITHUB_ENV
                 if "\n" in value or "\r" in value:
                     raise ValueError("multiline coverage environment")
                 stream.write(key + "=" + value + "\n")
