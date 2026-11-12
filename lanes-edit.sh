@@ -3768,11 +3768,23 @@ cp_primary_classify() {   # fence|push <how many commits> [<the write's own comm
 # One commit's lines, read from `cp_primary_classify`'s locals: what passes is
 # not printed, except as `mix` in a fence commit that holds a git file beside
 # any other path, and as `own` in the backstop; a component is printed `bad`,
-# with its reason.
+# with its reason. THE ROWS ARE SPLIT BY PARAMETER EXPANSION, at each newline,
+# never through a here-document, as `commit_hand_edit_refuse`'s list is
+# (review REV-W9a M1's pattern): these printed rows are all that the fence and
+# the backstop learn of each commit's paths, and `cp_primary_classify` does
+# not read this function's status, so where bash 3.2 could make no temp file
+# for a here-document, as in a full /tmp, no row was printed and both passed
+# what they refuse (lane 4's MERGES-B2 report). Each row is one line, its path
+# quoted by `%q`; the split reads a copy, and leaves `cq_rows` as it was.
 cp_primary_rows() {
-  local cw_l="" cw_k=""
+  local cw_r="$cq_rows" cw_l="" cw_k=""
   [ -n "$cq_rows" ] || return 0
-  while IFS= read -r cw_l; do
+  while [ -n "$cw_r" ]; do
+    cw_l="${cw_r%%"$WR_NL"*}"
+    case "$cw_r" in
+      *"$WR_NL"*) cw_r="${cw_r#*"$WR_NL"}" ;;
+      *) cw_r="" ;;
+    esac
     [ -n "$cw_l" ] || continue
     cw_k="${cw_l%% *}"; cw_l="${cw_l#* }"
     if [ "$cw_k" = ok ]; then
@@ -3783,9 +3795,7 @@ cp_primary_rows() {
       cw_k=bad; cw_l="$cw_l   (a \".\", \"..\" or \".git\" path component)"
     fi
     printf '%s  %s %s\n' "$cw_k" "${cq_c:0:12}" "$cw_l"
-  done <<CW_EOF
-$cq_rows
-CW_EOF
+  done
 }
 
 # #194, AS #214's ADVERSARIAL CHECK HARDENED IT — WHAT `commit` MAY PUBLISH
