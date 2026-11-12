@@ -270,6 +270,88 @@ def run(argv, cwd=None, env=None, timeout=GIT_TIMEOUT, input_text=None):
 GROUP_GRACE = 5
 
 
+class CallerSignal(BaseException):
+    """INT, TERM or HUP reached this command while a `run_group` call ran,
+    with that signal at `SIG_DFL` (RC-W10f N-b). A BaseException, as
+    KeyboardInterrupt is: `main`'s `except Exception` lets it through, and
+    every `finally` on the way runs. At the top this command then ends by
+    that signal itself (`__main__`), as it did before the handler."""
+
+    def __init__(self, signum: int):
+        super().__init__(signum)
+        self.signum = signum
+
+
+def _take_signals(handler, taken: dict) -> None:
+    """Point each of INT, TERM and HUP that is at `SIG_DFL` - each would end
+    this command with no `finally` run - at `handler`, and note in `taken`
+    what to give back. One with a handler of its own (Python's ^C), or one
+    ignored (`nohup`'s HUP), is left as it is. Off the main thread nothing
+    is taken, since Python runs a handler only there."""
+    for name in ("SIGINT", "SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is None or signal.getsignal(sig) != signal.SIG_DFL:
+            continue
+        # NOTED BEFORE IT IS SET, so a signal that comes in between is still
+        # given back.
+        taken[sig] = signal.SIG_DFL
+        try:
+            signal.signal(sig, handler)
+        except ValueError:
+            taken.pop(sig, None)
+            return
+
+
+def _give_back(taken: dict) -> None:
+    """The dispositions `_take_signals` took, back as they were. The signals
+    are blocked meanwhile, so none lands half-way; one that came in then is
+    delivered at the unblock, to the disposition given back."""
+    if not taken:
+        return
+    mask = signal.pthread_sigmask(signal.SIG_BLOCK, list(taken))
+    try:
+        for sig, old in taken.items():
+            signal.signal(sig, old)
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+
+
+def _end_group(proc) -> None:
+    """TERM to the call's process group, which its own traps answer, then
+    KILL to whatever is left after `GROUP_GRACE` seconds. An interrupt that
+    cuts the grace short (a second ^C) sends the KILL at once, and is raised
+    once it has gone."""
+    ended = False
+    try:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except OSError:
+            pass
+        try:
+            proc.communicate(timeout=GROUP_GRACE)
+            ended = True
+        except subprocess.TimeoutExpired:
+            pass
+    finally:
+        if not ended:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            try:
+                proc.communicate(timeout=GROUP_GRACE)
+            except subprocess.TimeoutExpired:
+                # A PIPE HELD PAST THE KILL is held from outside the group: it
+                # is no longer read, and the call's own process is reaped
+                # where it can be.
+                for pipe in (proc.stdout, proc.stderr):
+                    pipe.close()
+                try:
+                    proc.wait(timeout=GROUP_GRACE)
+                except subprocess.TimeoutExpired:
+                    pass
+
+
 def run_group(argv, env=None, timeout=GIT_TIMEOUT):
     """`run`, with `argv` in a process group of its own, so A TIMEOUT ENDS THE
     WHOLE CALL (REV-W9h N1). `subprocess.run` kills only the process it
@@ -278,10 +360,21 @@ def run_group(argv, env=None, timeout=GIT_TIMEOUT):
 
     On a timeout the group gets TERM, which ends the grep, and then
     `lanes-edit.sh`'s TERM trap removes its `$TMPD`; whatever is left after
-    `GROUP_GRACE` seconds gets KILL. Each signal goes while the call's own
-    process is not yet reaped, so the group's id names this call's group
-    and no other. The exits are `run`'s: 124 a timeout, 127 a program that
-    could not be started."""
+    `GROUP_GRACE` seconds gets KILL (`_end_group`). Each signal goes before
+    this function reaps the call's own process, so the group's id names this
+    call's group and no other. (After a ^C, `communicate`'s own short wait
+    may reap it first; a group's id is not reused while a member lives.)
+    The exits are `run`'s: 124 a timeout, 127 a program that could not be
+    started.
+
+    AN INTERRUPT ENDS THE WHOLE CALL TOO (RC-W10f N-b). A group of its own is
+    out of reach of the caller's ^C, and of a TERM or HUP sent to the
+    caller's group. So whatever is raised in the wait, KeyboardInterrupt
+    included, ends the group the same way and is then raised again. While
+    the call runs, an INT, TERM or HUP at `SIG_DFL` raises `CallerSignal`
+    instead of ending this command at once (`_take_signals`). The first one
+    raises; a later one while the group ends is the same end. The old
+    dispositions are back before this returns or raises."""
     try:
         proc = subprocess.Popen(
             [str(a) for a in argv], env=env, stdin=subprocess.DEVNULL,
@@ -289,31 +382,28 @@ def run_group(argv, env=None, timeout=GIT_TIMEOUT):
             errors="surrogateescape", start_new_session=True)
     except OSError as exc:
         return subprocess.CompletedProcess(argv, 127, "", str(exc))
+    fired: list = []
+
+    def on_signal(signum, _frame):
+        if not fired:
+            fired.append(signum)
+            raise CallerSignal(signum)
+
+    taken: dict = {}
     try:
-        out, err = proc.communicate(timeout=timeout)
-        return subprocess.CompletedProcess(argv, proc.returncode, out, err)
-    except subprocess.TimeoutExpired:
-        pass
-    for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
-            os.killpg(proc.pid, sig)
-        except OSError:
-            pass
-        try:
-            proc.communicate(timeout=GROUP_GRACE)
-            break
-        except subprocess.TimeoutExpired:
-            continue
-    else:
-        # A PIPE HELD PAST THE KILL is held from outside the group: it is no
-        # longer read, and the call's own process is reaped where it can be.
-        for pipe in (proc.stdout, proc.stderr):
-            pipe.close()
-        try:
-            proc.wait(timeout=GROUP_GRACE)
+            _take_signals(on_signal, taken)
+            out, err = proc.communicate(timeout=timeout)
+            return subprocess.CompletedProcess(argv, proc.returncode, out, err)
         except subprocess.TimeoutExpired:
             pass
-    return subprocess.CompletedProcess(argv, 124, "", f"timed out after {timeout}s")
+        except BaseException:
+            _end_group(proc)
+            raise
+        _end_group(proc)
+        return subprocess.CompletedProcess(argv, 124, "", f"timed out after {timeout}s")
+    finally:
+        _give_back(taken)
 
 
 #: Repositories read as a git directory ALONE (#174, Copilot round 2): a
@@ -552,7 +642,7 @@ class Helper:
         Amendment 23 S3 refuses it (2, ratified choice 2), so the sweep's
         NOTED line was refused after its first removal (#198, slice 1b).
         `group` runs the call in a process group of its own, which its
-        timeout ends whole (`run_group`)."""
+        timeout, or an interrupt, ends whole (`run_group`)."""
         if not self.path:
             return subprocess.CompletedProcess(args, 127, "", "no lanes-edit.sh beside this "
                                                "command or on PATH")
@@ -610,10 +700,12 @@ class Helper:
         on `gh`'s word alone (lane 3's (L2-3)), and the report names it
         unread. The bound stays the grep's own.
 
-        A TIMEOUT ENDS THE CALL AND LEAVES NOTHING BEHIND (REV-W9h N1): the
-        verb runs in a process group of its own (`run_group`), with a
-        `TMPDIR` this command made for that call alone and removes after it
-        however it ended, so a `$TMPD` the verb could not remove goes too.
+        A TIMEOUT ENDS THE CALL AND LEAVES NOTHING BEHIND (REV-W9h N1), and
+        so does a ^C, TERM or HUP to this command (RC-W10f N-b): the verb
+        runs in a process group of its own (`run_group`), which is ended
+        before the interrupt goes on, with a `TMPDIR` this command made for
+        that call alone and removes after it however it ended, so a `$TMPD`
+        the verb could not remove goes too.
         Where that directory cannot be made, the verb runs with the `TMPDIR`
         it was given, and its own `mktemp -d` answers for it, as before."""
         own = ""
@@ -6511,4 +6603,13 @@ def _main(argv: list) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except CallerSignal as _sig:
+        # ENDED BY THE SIGNAL ITSELF (RC-W10f N-b): once the call's group has
+        # ended and every `finally` has run, the signal is sent again at its
+        # default, so whatever ran this command sees it end by that signal,
+        # as it did before `run_group` took it.
+        signal.signal(_sig.signum, signal.SIG_DFL)
+        os.kill(os.getpid(), _sig.signum)
+        sys.exit(128 + _sig.signum)
