@@ -4546,8 +4546,11 @@ reg_read_failed() {   # <what failed> <the cause, for the mirror line>
 # `$LANES_REPO`: on `origin/$LANES_BRANCH` where `have_remote_ref` holds, and
 # with an empty tip under `LANES_NO_GIT=1` or with no origin ref, where it reads
 # `$LANES_DIR/STORE` in the working tree (W:4895's alternative). It runs on the
-# ref the read reads, as last fetched: readers do not fetch first, so the
-# refusal names how old that fetch is. 1, absent, says nothing and changes
+# ref the read reads, as this checkout last fetched it, and the refusal names
+# how old that fetch is: at the door, before any fetch, and again at
+# `log_sync`'s end, after its fetch, where the tip differs from the one it last
+# read, which it keeps (`RMC_TIP`; feature 007, T506; lane 3, #165 6807910478,
+# T506 Q7). 1, absent, says nothing and changes
 # nothing. 0, present, and 2, a tip git could not read, which is a failed read
 # and never "no marker" (ERR-47), end by class alike (Y:4948): decide 69 with
 # Amendment 22's text; mirror reads on with its line; projection 1. The guard's
@@ -4564,6 +4567,7 @@ reg_marker_check() {
     # `ls-tree` then fails: a failed read, never "no marker".
     [ -n "$rmc_tip" ] || { rmc_tip="refs/remotes/origin/$LANES_BRANCH"; rmc_show="a tip git could not resolve"; }
   fi
+  RMC_TIP="$rmc_tip"; RMC_TIP_SET=1
   rmc_rc=0; reg_marker_read "$LANES_REPO" "$rmc_tip" || rmc_rc=$?
   [ "$rmc_rc" != 1 ] || return 0
   rmc_mode="files mode"; [ "$REG_MODE" = index ] && rmc_mode="\`mode=index\`"
@@ -4573,7 +4577,7 @@ reg_marker_check() {
     fi
     rmc_short="lanes/STORE is in this checkout's working tree"
   elif [ "$rmc_rc" = 0 ]; then
-    rmc_where="lanes/STORE is on origin/$LANES_BRANCH at $rmc_show, as this checkout last fetched it ($(fetch_age)): readers do not fetch first, so that is as current as this answer is"
+    rmc_where="lanes/STORE is on origin/$LANES_BRANCH at $rmc_show, as this checkout last fetched it ($(fetch_age)), so that is as current as this answer is"
     rmc_short="lanes/STORE is on origin/$LANES_BRANCH at $rmc_show"
   else
     rmc_where="git could not read the tree of origin/$LANES_BRANCH at $rmc_show, as this checkout last fetched it ($(fetch_age)), to look for lanes/STORE, the marker of an estate whose register is SQL, so whether it is there is unknown"
@@ -4671,6 +4675,12 @@ reg_head_n() {   # `.head`'s `n=`, or 0 where `.head` is absent or names none
     "" | *[!0-9]*) rhn_n=0 ;;
   esac
   printf '%s\n' "$rhn_n"
+}
+# `.head`'s `generation=`, or nothing where `.head` is absent or names none:
+# `swapped`'s `journal --last --generation` (feature 007, T506).
+reg_head_generation() {
+  [ -f "$SE_CACHE_FILE.head" ] || return 0
+  sed -n -e 's/^generation=//p' "$SE_CACHE_FILE.head" 2>/dev/null | head -n 1
 }
 # 0 where `.head`'s `file=<path>` row says the path is absent at `n`; 1 where
 # it says the path is present, or where there is no `.head`. A `.head` with no
@@ -8712,6 +8722,32 @@ cs_seen_mark() {
   CS_SEEN="$(git -C "$LANES_REPO" rev-parse -q --verify "refs/remotes/origin/$LANES_BRANCH" 2>/dev/null || :)"
   CS_SEEN_SET=1
 }
+# F17 AT `log_sync`'S END, OFF PRIMARY (feature 007, T506; W:4896; B14
+# tasks:772; lane 3, #165 6807910478, T506 Q7). The door's F17 read the marker
+# on the tip as last fetched; a reader's own `log_sync` then fetches, and a
+# marker that fetch brings is refused here, by class, in the one text the
+# door's F17 prints. It runs after the fetch, made or fallen back, for an arm
+# whose door read the files (`REG_STORE` is `files`, and never under T413's
+# flag, `REG_SCRATCH`), and only where `origin/$LANES_BRANCH`'s tip, resolved
+# as `reg_marker_check` resolves it, differs from the tip F17 last read in this
+# process (`RMC_TIP`): never compared with the tip before this fetch, since
+# another process may have moved the shared ref in between (`cs_seen_mark`'s
+# rule, above). The same tip is the same tree, so the skip never passes what a
+# run would refuse. A mirror arm's line is said once: an F17 that found the
+# marker has set `REG_STORE=mirror`. On primary, and in a writer, `none` or
+# guard arm (`REG_STORE` `sql` or empty), nothing runs here; the guard's F17 is
+# T507's.
+RMC_TIP=""; RMC_TIP_SET=0
+log_sync_marker_check() {
+  [ "${REG_STORE:-}" = files ] && [ -z "${REG_SCRATCH:-}" ] || return 0
+  lsm_tip=""
+  if have_remote_ref; then
+    lsm_tip="$(git -C "$LANES_REPO" rev-parse -q --verify "refs/remotes/origin/$LANES_BRANCH^{commit}" 2>/dev/null || :)"
+    [ -n "$lsm_tip" ] || lsm_tip="refs/remotes/origin/$LANES_BRANCH"
+  fi
+  if [ "$RMC_TIP_SET" = 1 ] && [ "$lsm_tip" = "$RMC_TIP" ]; then return 0; fi
+  reg_marker_check
+}
 log_sync() {
   # THE CACHE ABOVE IS THE REF AS IT STOOD; a fetch moves the ref, so it is
   # dropped here rather than read past. Both copies of it: the variable this
@@ -8720,11 +8756,21 @@ log_sync() {
   # it is read from `origin/<branch>` beside the register and a fetch moves that
   # ref. A rename lands both files in ONE commit, so a cache that kept one and
   # dropped the other is exactly the disagreement the single commit prevents.
-  # ON PRIMARY THE FAMILY IS NOT DROPPED (feature 007, T505): it is the
-  # register at one `n`, which no fetch moves, and a flush here would make every
-  # read after it a second read (lane 3, #165 6778890211, T505 Q1). T506 moves
-  # this test above the drops and adds the no-fetch half.
-  [ "${REG_STORE:-}" = sql ] || reg_flush
+  # ON PRIMARY A READ NEITHER FETCHES NOR FLUSHES (feature 007, T506; B14
+  # tasks:772): the family is the register at one `n`, which no fetch moves,
+  # and a flush here would make every read after it a second read (lane 3,
+  # #165 6778890211, T505 Q1). So the test is here, above the drops, and it
+  # sets `LOG_SYNC_FETCH` itself, on every call, to the phrase: never `yes`,
+  # which `lanes --fetch` and `lane_row_gate` read as a fetch made just now,
+  # never empty, and never a value an earlier call left (lane 3, #165
+  # 6807910478, T506 Q2). Until T509 removes the note on primary, `lanes
+  # --fetch` prints it as the note's reason. No `cs_seen_mark`: no S3 runs on
+  # primary. T423 calls `reg_flush` itself before each poll's read.
+  if [ "${REG_STORE:-}" = sql ]; then
+    LOG_SYNC_FETCH='this register is SQL, so a read never fetches (feature 007)'
+    return 0
+  fi
+  reg_flush
   LOG_SYNC_FETCH=""
   [ "$NO_GIT" = 1 ] && { LOG_SYNC_FETCH="LANES_NO_GIT=1 is set, so nothing in this run touches git"; return 0; }
   [ "${LANES_NO_FETCH:-0}" = 1 ] && { LOG_SYNC_FETCH="LANES_NO_FETCH=1 is set in this environment"; note "LANES_NO_FETCH=1 — not fetching; reading origin/$LANES_BRANCH as the ref already stands here"; cs_seen_mark; return 0; }
@@ -8742,6 +8788,7 @@ log_sync() {
     note "fetch $([ "$GIT_TIMED_OUT" = 1 ] && printf 'timed out after %ss' "$GIT_TIMEOUT" || printf 'failed') — reading the logs as they stand locally"
   fi
   cs_seen_mark
+  log_sync_marker_check                # feature 007, T506: F17, off primary
   return 0
 }
 
@@ -11801,9 +11848,99 @@ swapped_candidates() {
     }'
 }
 
+# FEATURE 007, T506 - ON PRIMARY A SWAPPED LANE'S RANK IS THE JOURNAL'S (C7,
+# C8; B14 tasks:772; lane 3, #165 6807694145 and 6807910478, T506 Q3): the
+# head less the seq of the lane's adding line, `lanes-index journal --last
+# --path <log> --grep <key> --at <n> --generation <g>`, with `.head`'s `n` and
+# generation, never `git log -S`, which reads the mirror. A `.head` absent
+# (after a flush) is first restored by one `--since 0` second read, which
+# rewrites the family "then `.head`" (draft 4.19:733-734); one still absent is
+# the class's failed read. Only `seq=` is read, since the contract stub prints
+# it alone; no `seq=` line is a candidate whose adding line the journal does
+# not hold, which ranks last, as git's did. Any exit but 0 (a 2 for a refused
+# configuration among them), a `seq=` that is not a whole number, or one above
+# `n`, is the class's failed read, through `reg_fail`: decide 69, and `swapped`
+# ends 69 through its `reg_read_lost`; under `LANES_READ_MIRROR=1`, the mirror,
+# and the candidate falls to the `git log -S` rank, as T505's mirror sites do.
+# The call is made in the prefetch's form, with no timer around it: a register
+# call's timer runs inside `lanes-index` (contract 2.4).
+# 0 with `SWH_N` and `SWH_G` set; 1 read the mirror; 69 a failed read.
+swapped_journal_head() {
+  SWH_N=""; SWH_G=""
+  if [ -e "$SE_CACHE_FILE.rfail" ]; then reg_fail_again; return; fi
+  if [ ! -f "$SE_CACHE_FILE.head" ]; then
+    sjh_rc=0; reg_second_read register "" || sjh_rc=$?
+    [ "$sjh_rc" = 0 ] || return "$sjh_rc"
+    if [ ! -f "$SE_CACHE_FILE.head" ]; then
+      reg_fail "the register could not be read: its cache's .head is still absent after one more read, \`lanes-index register read --since 0 --files register\`, so \`swapped\` has no seq to rank at (feature 007, T506)" "the register's head could not be read"
+      return
+    fi
+  fi
+  SWH_N="$(sed -n -e 's/^n=//p' "$SE_CACHE_FILE.head" 2>/dev/null | head -n 1)"
+  SWH_G="$(reg_head_generation)"
+  case "$SWH_N" in "" | *[!0-9]*) SWH_N="" ;; esac
+  if [ -z "$SWH_N" ] || [ "${#SWH_N}" -gt 18 ] || [ -z "$SWH_G" ]; then
+    SWH_N=""; SWH_G=""
+    reg_fail "the register could not be read: its cache's .head names no seq or no generation, so \`swapped\` has no seq to rank at (feature 007, T506)" "the register's cache is malformed"
+    return
+  fi
+  return 0
+}
+# 0 with `SJR_RANK` set; 1 read the mirror; 69 a failed read.
+swapped_journal_rank() {   # <the log's lane> <the pickaxe key>
+  SJR_RANK=999999999
+  if [ -e "$SE_CACHE_FILE.rfail" ]; then reg_fail_again; return; fi
+  sjr_path="$(log_path_for "$1")"
+  sjr_ask="journal --last --path $sjr_path --grep <its PAUSED line's head> --at $SWH_N --generation $SWH_G"
+  sjr_bin="$(lanes_index_bin)"
+  if [ -z "$sjr_bin" ]; then
+    reg_fail "the register could not be read: \`lanes-index $sjr_ask\` could not be run, since there is no lanes-index beside $SCRIPT_DIR/lanes-edit.sh or on PATH" "no lanes-index to run"
+    return
+  fi
+  sjr_o="$SE_CACHE_FILE.journal-out.${BASHPID:-$$}"; sjr_e="$SE_CACHE_FILE.journal-err.${BASHPID:-$$}"
+  sjr_rc=0
+  ( "$sjr_bin" journal --last --path "$sjr_path" --grep "$2" --at "$SWH_N" --generation "$SWH_G" </dev/null >"$sjr_o" 2>"$sjr_e"; exit "$?" ) 2>/dev/null || sjr_rc=$?
+  sjr_has=0; grep -q '^seq=' "$sjr_o" 2>/dev/null && sjr_has=1
+  sjr_k="$(sed -n -e 's/^seq=//p' "$sjr_o" 2>/dev/null | head -n 1)"
+  sjr_why="$(head -n 1 -- "$sjr_e" 2>/dev/null | head -c 300 | tr -d '\000-\037' || :)"
+  sjr_said="$(head -c 1000 -- "$sjr_e" 2>/dev/null | tr '\n\r\t' '   ' | tr -d '\000-\037' || :)"
+  while [ "${sjr_said% }" != "$sjr_said" ]; do sjr_said="${sjr_said% }"; done
+  rm -f -- "$sjr_o" "$sjr_e"
+  if [ "$sjr_rc" != 0 ]; then
+    reg_fail "the register could not be read: \`lanes-index $sjr_ask\` exited $sjr_rc${sjr_said:+ ($sjr_said)}, and \`swapped\` never ranks from git instead (feature 007, T506; C7)" "${sjr_why:-lanes-index printed no cause (exit $sjr_rc)}"
+    return
+  fi
+  [ "$sjr_has" = 1 ] || return 0
+  sjr_bad=""
+  case "$sjr_k" in
+    "" | *[!0-9]*) sjr_bad="seq=$(printf '%s' "$sjr_k" | head -c 40 | tr -d '\000-\037'), not a whole number" ;;
+    *) if [ "${#sjr_k}" -gt 18 ] || [ "$((10#$sjr_k))" -gt "$((10#$SWH_N))" ]; then
+         sjr_bad="seq $sjr_k, above the head's $SWH_N"
+       fi ;;
+  esac
+  if [ -n "$sjr_bad" ]; then
+    reg_fail "the register could not be read: \`lanes-index $sjr_ask\` answered $sjr_bad, which names no line of this generation's journal at that head, so \`swapped\` has no rank (feature 007, T506; C7)" "lanes-index journal --last answered $sjr_bad"
+    return
+  fi
+  SJR_RANK=$((10#$SWH_N - 10#$sjr_k))
+  return 0
+}
+
 swapped_lanes() {
   sw_rows="$(swapped_candidates "${1:-$WS}")"
   [ -n "$sw_rows" ] || return 0
+  # ON PRIMARY `.head` IS READ ONCE, before the candidates (above): a failed
+  # read ends here with 69, and where the class reads the mirror every
+  # candidate takes git's rank.
+  sw_sql=0
+  if [ "${REG_STORE:-}" = sql ]; then
+    sw_hrc=0; swapped_journal_head || sw_hrc=$?
+    case "$sw_hrc" in
+      0) sw_sql=1 ;;
+      1) : ;;
+      *) return 69 ;;
+    esac
+  fi
   while IFS="$US" read -r sw_l sw_u sw_w sw_d sw_p sw_a sw_t sw_key; do
     [ -n "${sw_l:-}" ] || continue
     # THE ROW'S SPELLING FOR THE FIRST FIELD, THE LOG'S FOR THE LOG (see above).
@@ -11816,8 +11953,16 @@ swapped_lanes() {
     sw_can=""; sw_crc=0
     sw_can="$(canon_lane "$sw_l" 2>/dev/null)" || sw_crc=$?
     [ "$sw_crc" != 69 ] || return 69
-    sw_rank=999999999
-    if have_remote_ref; then
+    sw_rank=999999999; sw_git=1
+    if [ "$sw_sql" = 1 ]; then
+      sw_jrc=0; swapped_journal_rank "$sw_l" "$sw_key" || sw_jrc=$?
+      case "$sw_jrc" in
+        0) sw_rank="$SJR_RANK"; sw_git=0 ;;
+        1) sw_sql=0 ;;
+        *) return 69 ;;
+      esac
+    fi
+    if [ "$sw_git" = 1 ] && have_remote_ref; then
       sw_sha="$(git -C "$LANES_REPO" log -1 --format=%H -S"$sw_key" "origin/$LANES_BRANCH" -- "$(log_path_for "$sw_l")" 2>/dev/null || :)"
       if [ -n "$sw_sha" ]; then
         sw_c="$(git -C "$LANES_REPO" rev-list --count "$sw_sha..origin/$LANES_BRANCH" 2>/dev/null || :)"
