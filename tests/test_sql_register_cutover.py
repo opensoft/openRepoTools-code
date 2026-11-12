@@ -681,7 +681,8 @@ def test_an_unconfirmed_operator_push_exits_3_and_its_rerun_reads_origin_first(p
     """The push is made and the read-back's fetch fails, so the push can be
     neither confirmed nor disproved. `[cutover]`: `cutover` exits 3 and
     changes nothing more; the switch stays `primary` with the marker
-    `adding`, and a write fails with LR002 (69). `[rollback]`, after a clean
+    `adding`, and a write exits 69 on the switch its snapshot reads, or on
+    LR002. `[rollback]`, after a clean
     cutover and `rollback --hold-marker` (steps 0 to 2): `rollback` exits 3
     and the marker stays `removing`. Disarmed, the rerun reads origin back
     first, before any push, and completes: the marker `present`, or
@@ -702,7 +703,12 @@ def test_an_unconfirmed_operator_push_exits_3_and_its_rerun_reads_origin_first(p
         f2.arm()                # disarmed: a fetch of the write's own is no failure of this case
         wrote = reg.write("a write while the marker is adding")
         assert wrote.returncode == imp.load_indexer().EXIT_UNAVAILABLE, wrote.stderr
-        assert "LR002" in wrote.stderr, wrote.stderr
+        # THE MARKER'S REFUSAL (lane 3's LR002 ruling, #165 6836905010; T278f's
+        # form): T415's writer meets the marker at its first snapshot, whose
+        # check 4 names the switch it read, the marker `adding`, before any
+        # commit call (`lanes-index:3834-3838` at pair-m33a `8ba10b4e`); a
+        # commit call would get LR002.
+        assert "LR002" in wrote.stderr or "marker adding" in wrote.stderr, wrote.stderr
         assert imp._head(pg) == head, "the refused write wrote nothing"
         f2.arm()
         rerun = reg.cutover(conf=f2.conf)
