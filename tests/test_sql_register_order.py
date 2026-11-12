@@ -2074,6 +2074,15 @@ def acted(act: str, *scopes: str) -> dict:
 # T502 writes its body, `guard-bind --body <uuid>`, whose record's path T502
 # owns.
 #
+# `lane-end`'S CLOSE-OUT GATE (T252g): every `lane-end` act runs with
+# `LANE_WORKTREES` set to a stand-in that prints nothing and exits 0, as
+# `[lane-end-gate]`'s does, so the gate finds nothing left and W13 and W14 are
+# reached. Without it the gate runs whatever `lane-worktrees` the host has:
+# py-bench's own `/usr/local/bin/lane-worktrees`, and on a host with none an
+# exit 127, on which `lane-end` refuses 1 before W13 (round 5, #165
+# 6810924785; OR12's report). `--retire-dormant` exits after `retire-rows`,
+# before the gate (`lane-end:764-952` at V-round5), and never runs it.
+#
 # They FAIL UNTIL L1-A6, L4-A2 (T410, T411), L4-B3, L4-B5 and L4-B14 (T428 to
 # T432) land; the skill's id also until T431's block, and the guard's until
 # T502's `guard-bind` and T510's expectations on its `set-row-state`. Without
@@ -2225,7 +2234,17 @@ class ActWorld(Sandbox):
                                arms, write.env)
         utc = self.c.value("SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"');")
         argv = [a.format(lane_dir=self.lane_dir, utc=utc) for a in write.argv]
-        return self.launch(write.tool, [str(self.bin / write.tool), *argv], write.lane, arms, write.env)
+        extra = dict(write.env)
+        if write.tool == "lane-end":
+            extra.setdefault("LANE_WORKTREES", str(self.gate_stand_in()))
+        return self.launch(write.tool, [str(self.bin / write.tool), *argv], write.lane, arms, extra)
+
+    def gate_stand_in(self) -> Path:
+        """`lane-end`'s close-out gate for the race's acts (T252g): a
+        `LANE_WORKTREES` stand-in that logs its argv and `LANES_ACT`, prints
+        nothing and exits 0, so the gate passes and the act goes on to its
+        write (see the section's head)."""
+        return act_logger(self.root / "race-gate", "lane-worktrees")
 
     def rival(self, kind: str, lane: str) -> Writer:
         """A second session's write: `bind`, the lane's own `PAUSED` in its
