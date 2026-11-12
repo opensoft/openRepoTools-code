@@ -2170,14 +2170,19 @@ def test_the_guard_maps_69_75_and_3_to_2(estate, tmp_path):
     """AT-10: where the guard's register read ends 69, 75 or 3, the guard
     exits 2 (the hook's only refusal), never the read's own code. Through
     the contract's stub `lanes-index`, beside a copy of `lanes-edit.sh`,
-    with each end injected by `stub_outcome`."""
+    with each end injected by `stub_outcome`. The estate is G1's, `to=FROM,
+    to_row=False`: the session is named for the window's lane, whose row
+    names it, so the guard's answer with a register it could read is 0, and
+    its 2 can only be the read's (lane 3's reason in #165 6812490130). The
+    module's default estate makes the name offer, whose own 2 would pass this
+    case wherever the guard went on past a failed read (line AN14)."""
     from sql_register_helpers import stub_outcome
     code = tmp_path / "code"
     contract_stub(code)
     for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
         shutil.copy2(REPO / name, code / name)
     for end in (69, 75, 3):
-        est = estate(guard=code / "lanes-edit.sh")
+        est = estate(guard=code / "lanes-edit.sh", to=FROM, to_row=False)
         conf = tmp_path / f"lanes-index-{end}.conf"
         conf.write_text(f"register_url=postgresql:///register?host={tmp_path}/sock\n",
                         encoding="utf-8")
