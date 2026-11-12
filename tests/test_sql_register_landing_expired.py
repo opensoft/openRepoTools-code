@@ -21,8 +21,9 @@ and a caller that branches reads the token, never the message (U7). On primary
 byte-identical to today's.
 
 THE CASES: (a) to (g) and (k) to (m) are FP; (i) and (j) are RE, on T205's
-`pg_cluster`, skipped without PostgreSQL 16 by its banner. Case (h), the
-rollback, is T279's. The fifteenth test, new since v3f, is T112's AT-F13
+`pg_cluster`, skipped without PostgreSQL 16 by its banner. Case (h), with
+its rollback, is T279's, RE, at the module's end. The fifteenth test, new
+since v3f, is T112's AT-F13
 case (R-F10-34): `register commit` expires an imported stale `LANDING` by
 Rule 6's key, the shipped table then the per-wip one (RE; at its section).
 
@@ -246,12 +247,14 @@ def _masked_path() -> str:
     return os.pathsep.join(parts)
 
 
-def _workspace(root: Path, fakebin: Path, files: dict) -> tuple:
+def _workspace(root: Path, fakebin: Path, files: dict, source: Path = None) -> tuple:
     """A files-mode workspace on a bare origin at `files`, in test 1's sync
     form (`test_sql_register_render.py`'s `workspace`): `workspace.yaml`
     names the origin and the checkout, a fake `tmux` and `fakebin` are first
-    on `PATH`, and the workstation is configured. Returns (the origin, the
-    checkout, the environment)."""
+    on `PATH`, and the workstation is configured. Where `source` is given
+    (T279's case (h)), the origin is a bare clone of that repository and
+    `files` is not written. Returns (the origin, the checkout, the
+    environment)."""
     home = root / "home"
     home.mkdir(parents=True, exist_ok=True)
     env = {k: v for k, v in os.environ.items()
@@ -261,15 +264,19 @@ def _workspace(root: Path, fakebin: Path, files: dict) -> tuple:
                GIT_COMMITTER_NAME="T253 estate", GIT_COMMITTER_EMAIL="t253@example.invalid",
                LC_ALL="C")
     origin, checkout = root / "origin.git", root / "checkout"
-    git(root, "init", "-q", "--bare", "-b", "main", str(origin), env=env)
-    git(root, "clone", "-q", str(origin), str(checkout), env=env)
-    for path, text in files.items():
-        target = checkout / path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(text.encode("utf-8"))
-    git(checkout, "add", "-A", env=env)
-    git(checkout, "commit", "-q", "-m", "C: AT-F13's register", env=env)
-    git(checkout, "push", "-q", "origin", "main", env=env)
+    if source is not None:
+        git(root, "clone", "-q", "--bare", str(source), str(origin), env=env)
+        git(root, "clone", "-q", str(origin), str(checkout), env=env)
+    else:
+        git(root, "init", "-q", "--bare", "-b", "main", str(origin), env=env)
+        git(root, "clone", "-q", str(origin), str(checkout), env=env)
+        for path, text in files.items():
+            target = checkout / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(text.encode("utf-8"))
+        git(checkout, "add", "-A", env=env)
+        git(checkout, "commit", "-q", "-m", "C: AT-F13's register", env=env)
+        git(checkout, "push", "-q", "origin", "main", env=env)
     agents = home / ".agents"
     agents.mkdir(parents=True, exist_ok=True)
     (agents / "workspace.yaml").write_text(f"repository: {origin}\npath: {checkout}\n",
@@ -1444,3 +1451,161 @@ def test_register_commit_expires_an_imported_stale_landing_by_the_shipped_then_p
     assert taken not in reg.open_landings(), (
         f"main_slots still holds the LANDING for {RULE6_KEY}: {reg.open_landings()}")
 
+
+
+# ============================================================ (h), T279's
+#
+# AT-F13 (h), RE, end to end, with its rollback in phase G (B15 tasks:2557,
+# T279's "AT-F13 (h): a `LANDING EXPIRED` on primary frees `main` and
+# `who_landing` until a rollback to files"). Its fixture is (h) to (j)'s
+# (TP's AT-F13 "Fixture"): `tmpl_imported` brought to `primary` with the
+# marker `present`, and lane B's `LANDING` dated 31 minutes or more back.
+
+
+def _commit_line(reg: Register, clock: int, lane: str, text: str) -> int:
+    """`text` appended to `lanes/LANES.md` by one commit call as lane `lane`,
+    in (i)'s form: the entry an `append-line` would send, with the line's
+    `register_lines` row by the checkout's own classifier. The seq it made."""
+    before = reg.rows("SELECT text FROM doc_lines WHERE path = 'lanes/LANES.md' ORDER BY line_no")
+    lines = [r["text"] for r in before] + [text]
+    rendered = ("\n".join(lines) + "\n").encode("utf-8")
+    return reg.commit(reg.entry(
+        "write", "append-line", lane,
+        journal={"args_sha256": hashlib.sha256(text.encode()).hexdigest()},
+        edits=[{"ord": 1, "op": "append", "path": "lanes/LANES.md", "new_text": text}],
+        files=[{"path": "lanes/LANES.md", "present": True, "final_newline": True,
+                "sha256": hashlib.sha256(rendered).hexdigest()}],
+        register_lines=line_rows([text], clock, {ALIAS: KEY, KEY.lower(): KEY},
+                                 first_line=len(lines))))
+
+
+def _to_primary_with_the_marker(reg: Register, checkout: Path, env: dict) -> int:
+    """AT-LR006's route, as `Register.to_primary` takes it, with the marker
+    on origin as T327's push leaves it: the `cutover` entry, then a commit on
+    origin's `main` that adds `lanes/STORE` with the entry's text and
+    carries its `Register-Seq`, then `record_marker` naming that commit.
+    Returns the entry's seq."""
+    store = "store=primary\n"
+    cut = reg.commit(reg.entry("cutover", "cutover", OPERATOR,
+                               edits=[{"ord": 1, "op": "create", "path": "lanes/STORE"},
+                                      {"ord": 2, "op": "append", "path": "lanes/STORE",
+                                       "new_text": "store=primary"}],
+                               files=[{"path": "lanes/STORE", "present": True,
+                                       "final_newline": True,
+                                       "sha256": hashlib.sha256(store.encode()).hexdigest()}]))
+    (checkout / "lanes" / "STORE").write_bytes(store.encode("utf-8"))
+    git(checkout, "add", "lanes/STORE", env=env)
+    git(checkout, "commit", "-q", "-m", f"cutover: the marker (T279's estate)\n\nRegister-Seq: {cut}",
+        env=env)
+    git(checkout, "push", "-q", "origin", "HEAD:main", env=env)
+    marker = git(checkout, "rev-parse", "HEAD", env=env).strip()
+    version = reg.rows("SELECT version FROM schema_version")[0]["version"]
+    marked = reg.call(f"SELECT {SCHEMA}.record_marker({version}, {cut}, '{marker}', '{WS}');\n")
+    assert (marked.returncode, marked.stdout.strip()) == (0, "present"), marked.stderr
+    return cut
+
+
+def test_a_landing_expired_on_primary_frees_main_and_who_landing_until_a_rollback_to_files(
+        registers, pg_cluster, tmp_path):
+    """(h), RE, end to end (TP's AT-F13 oracle (h)). On a clone of
+    `tmpl_imported` brought to `primary` with the marker `present`, lane B's
+    (`HOLDER`'s) `LANDING`, 31 minutes back by the database's clock, is
+    committed; then lane A's (`WRITER`'s) form, `append-line
+    --landing-expired`, commits over it and exits 0. Then:
+    - `main_slots` no longer shows lane B's `LANDING` as a take for its
+      `repo_key`;
+    - no other take on it being open, a later `LANDING` by lane C (`OTHER`)
+      is accepted, not refused by D18;
+    - on primary `who --landing` no longer lists lane B's `LANDING`, and
+      lists lane C's;
+    - after a rollback to files, `who --landing` lists lane B's `LANDING`
+      again, marked STALE: off primary Rule 6's program is the pin, with no
+      expired branch.
+
+    READINGS:
+    - "THE MARKER `present`" is read as both its halves: the switch's
+      marker `present`, and `lanes/STORE` on origin. So the workstation's
+      origin is a copy of the repository `tmpl_imported` was imported from
+      (`pg_cluster.imported_register`, whose C the import's entry names),
+      and AT-LR006's route pushes the cutover's marker commit there, with
+      the entry's `Register-Seq`, before `record_marker` names it, as T327's
+      push would. A rollback needs that origin: it renders onto the mirror
+      of this database and removes `lanes/STORE` from it (T326).
+    - Lane B's and lane C's `LANDING`s are committed as (i) commits its
+      lines: one commit call each, the entry `append-line` would send.
+    - "A ROLLBACK TO FILES" is `lanes-index rollback` as the operator lane,
+      then `set-mode index` on this workstation, as Brett runs it at the
+      rollback's step 5 (operations.md 2.3), so `who --landing` reads the
+      files: origin's `main` as the rollback rendered it.
+
+    Fails until lane 1's T107, T111 and T112 (F13 and D18 in the commit),
+    lane 4's T415 and T425 (L4-B10: the form and `RULE6_EXPIRED_AWK`), lane
+    5's T504 (the prefetch), and the rollback's T304 and T326 (L1-A18 for
+    its declaration)."""
+    reg = registers("tmpl_imported")
+    source = pg_cluster.imported_register
+    assert source is not None, f"no repository for tmpl_imported: {pg_cluster.imported_problem}"
+    origin, checkout, env = _workspace(tmp_path / "ws", tmp_path / "fakebin", {},
+                                       source=source.origin)
+    _to_primary_with_the_marker(reg, checkout, env)
+    clock = reg.clock()
+    _commit_line(reg, clock, HOLDER, _shift(landing(minutes=31), clock))
+    taken = (HOLDER, str(PR), KEY)
+    assert taken in reg.open_landings(), (
+        f"lane B's LANDING does not take main for {KEY}: {reg.open_landings()}")
+
+    bindir = tmp_path / "bin"
+    copy = flipped_copy(LANES_INDEX, bindir, True)
+    for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
+        shutil.copy2(str(REPO / name), str(bindir / name))
+    conf = tmp_path / "conf" / "lanes-index.conf"
+    conf.parent.mkdir()
+    conf.write_text(f"mode=primary\nregister_url={reg.db.url(WRITER_LOGIN)}\n"
+                    f"reader_url={reg.db.url()}\nregister_label={pg_cluster.label}\n",
+                    encoding="utf-8")
+    conf.chmod(0o600)
+    env.update(LANES_INDEX_CONFIG=str(conf), PATH=str(reg.cluster.bindir) + os.pathsep + env["PATH"])
+    env.pop("LANES_INDEX", None)
+
+    def run(argv: list, lane: str = None) -> subprocess.CompletedProcess:
+        child = dict(env)
+        if lane:
+            child.update(LANES_LANE=lane, LANES_SESSION=SESSIONS.get(lane, SID_W))
+        return subprocess.run(argv, capture_output=True, encoding="utf-8", errors="replace",
+                              env=child, timeout=300, cwd=str(checkout), check=False,
+                              stdin=subprocess.DEVNULL)
+
+    def who() -> list:
+        proc = run(["bash", str(bindir / "lanes-edit.sh"), "who", "--landing", KEY])
+        assert proc.returncode == 0, f"who --landing exited {proc.returncode}: {proc.stderr[-800:]}"
+        return [line for line in proc.stdout.splitlines() if line.startswith("LANDING  ")]
+
+    released = run(["bash", str(bindir / "lanes-edit.sh"), *form()], lane=WRITER)
+    assert released.returncode == 0, (
+        f"lane A's form exited {released.returncode} (L4-B10, T425's form; T415): "
+        f"{released.stderr[-800:]}")
+    assert taken not in reg.open_landings(), (
+        f"main_slots still holds lane B's LANDING for {KEY}: {reg.open_landings()}")
+    try:
+        _commit_line(reg, clock, OTHER, _shift(landing(lane=OTHER, minutes=1), clock))
+    except AssertionError as exc:
+        raise AssertionError(f"lane C's later LANDING on {KEY} was refused, though no take on "
+                             f"it is open (D18): {exc}") from None
+    assert (OTHER, str(PR), KEY) in reg.open_landings(), reg.open_landings()
+    rows = who()
+    assert not any(f"  lane {HOLDER}," in row for row in rows), (
+        f"on primary who --landing still lists lane B's released LANDING (T425's "
+        f"RULE6_EXPIRED_AWK): {rows}")
+    assert any(f"  lane {OTHER}," in row for row in rows), (
+        f"on primary who --landing does not list lane C's LANDING: {rows}")
+
+    rolled = run([sys.executable, str(copy), "rollback"], lane=OPERATOR)
+    assert rolled.returncode == 0, (
+        f"the rollback to files exited {rolled.returncode} (T304, T326): {rolled.stderr[-800:]}")
+    flipped = run([sys.executable, str(copy), "set-mode", "index"])
+    assert flipped.returncode == 0, f"set-mode index exited {flipped.returncode}: {flipped.stderr}"
+    rows = who()
+    held = [row for row in rows if f"  lane {HOLDER}," in row]
+    assert held and all(row.endswith(STALE_MARK) for row in held), (
+        f"after the rollback to files who --landing does not list lane B's LANDING again, "
+        f"marked STALE: {rows}")
