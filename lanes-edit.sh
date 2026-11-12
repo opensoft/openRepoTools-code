@@ -632,7 +632,9 @@
 #      edits that git cannot make (`pw_hand_edit_refuse`, batch g Q114), and
 #      no author identity there
 #      (`pw_author_read`) (Q35; lane openRepoTools-3, #165 6807881675, batch c
-#      Q67). Its callers read its 2 as "still bound". A lane name out of class
+#      Q67); and, in an attempt's child, its write returned to the arm without
+#      `committed`, before any of its tail (`rh_after_committed`, T423; batch c
+#      Q75). Its callers read its 2 as "still bound". A lane name out of class
 #      keeps files mode's 2, the act's checks keep Y:5643's 2, and the
 #      register's refusals keep the contract's 2 (register-cli.md:334).
 #
@@ -706,6 +708,11 @@
 #      the write's rerun: by its id and generation where it has one, or the
 #      command as given, saying that nothing was sent, where its first
 #      snapshot minted none (open point 38).
+#      AND ON PRIMARY, `request-handoff`'S WAIT WHOSE LAST POLL COULD NOT READ
+#      THE REGISTER (T423; lane openRepoTools-3, #165 6770688147, T423 Q6):
+#      here the request IS written, in the register at the seq it names, and
+#      whether the lane is still bound is not known, so the wait does not end
+#      2's "still bound". Nothing on stdout. Files mode keeps its 2.
 #   3  PUSHED, NOT CONFIRMED: <sha> (Amendment 23 S4, its one cause in files
 #      mode). The write
 #      committed and pushed — or its push timed out, and a hung push often
@@ -17656,6 +17663,31 @@ binding_facts() {   # <lane> <host> <container> <window> <utc> <session> <window
     "$1" "${4:-none}" "${3:-none}" "${2:-unknown}" "${6:-unknown}" "${5:-unknown}" "${7:-unknown}"
 }
 
+# FEATURE 007, T423 — `request-handoff`'S TAIL RUNS ONLY AFTER `committed`
+# (FR-024: every side effect outside the register runs after the seam; F14,
+# Y:5153; Y:5011–5012; lane openRepoTools-4's block, T423). On primary each
+# attempt's verb runs as a child under the internal flag, and `write_event`
+# returns into the arm once the seam has said `committed <s>`, which sets
+# `REGISTER_SEQ` (T414). Two ways back reach the arm with nothing committed:
+# `LANES_NO_GIT=1`, whose `commit_publish` returns 0 above the seam's branch,
+# and a seam that found nothing staged. Either way this child made no commit
+# call, so what follows the write in the arm, the pane, the wait, and the words
+# that say a request was written or a binding forced, would act on a line that
+# is not in the register. The child ends here instead, before any of it, with
+# `pw_pre_rc`'s 64, as T415's `pw_no_git_refuse` does: nothing was sent and
+# nothing is known about the binding (Q35; lane openRepoTools-3, #165
+# 6807881675, batch c Q75). B14 tasks:1286's "Exit 2 where none of its tail
+# ran" stays for the binding's 2 after `committed`; this is not that 2. Its
+# parent takes it as a child that ended before `ready`: no commit call, and
+# the child's output and code are the run's end (Y:5016). It is a backstop that
+# no input reaches now, since T415's `pw_no_git_refuse` refuses LANES_NO_GIT=1
+# in the parent before its claim (review REV-W9f, N2). Off the flag
+# `REG_SCRATCH` is empty, and this returns at once.
+rh_after_committed() {   # <what the write was: the request, or the forced release>
+  [ -z "$REG_SCRATCH" ] || [ -n "$REGISTER_SEQ" ] ||
+    die "request-handoff's ${1-write} returned in an attempt's child under LANES_REGISTER_SCRATCH without its seam's \`committed\` (LANES_NO_GIT=1 in this environment, though the parent's \`pw_no_git_refuse\` refuses that flag before its claim, or nothing staged), so this child made no commit call. Nothing after the seam runs: no pane is typed into, nothing is waited for, and nothing is said to be written (FR-024; Y:5011). It is an internal error of the write path. Nothing was sent." "$(pw_pre_rc)"
+}
+
 # The UTC of the lane's last `STARTED` or `RESUMED` — Amendment 18(b)'s BINDING,
 # read from the lane's own log out of `origin/<branch>` like every other state
 # read. Clause (h) rule 2 compares a record's `nameSince` against it: a rename
@@ -26855,6 +26887,23 @@ EOF
   # EXIT CODES, this file's family: 0 THE LANE IS FREE — bind it · 2 the wait
   # ended with nothing, or the request was refused · 8 the lane was already free
   # · 1 a read failed, which is never "the lane is free" · 64 usage.
+  #
+  # ON PRIMARY (feature 007, T423; Y:5090, Y:5153, Y:5326; spec:257–259) the
+  # write is one register transaction made from an attempt's child (T415), and
+  # the arm's code after `write_event` is the write's after-COMMIT tail, run
+  # once. The note, the pane and the wait run only where the seam said
+  # `committed` (`rh_after_committed`); a replay (T418) types into no pane but
+  # still waits; and each poll reads the register at its head (`reg_flush`),
+  # with no fetch. Its notes, the PLAN lines included, say the register, not
+  # the pushed or published log (lane openRepoTools-3, #165 6770688147, T423
+  # Q5). A failed poll waits on, but a wait whose last poll failed ends 69,
+  # not 2's "still bound", which it cannot know (T423 Q6). Where the wait ends
+  # 2 after `committed`, its notes name the request's register seq, as the 69's
+  # do; the window's name is not given back here, which is `lane-start`'s
+  # (SR:690), never the verb's (#165 6774499606, T423 item 1). A run that finds
+  # its request committed and runs none of this tail exits 2, not 0, naming
+  # the tail it did not run (T418's `pw_tail_said`), and the register's own
+  # 69, 75 and 3 are the primary branch's (T415, T417).
   request-handoff)
     lane="${1-}"; [ -n "$lane" ] || die "usage: request-handoff <lane> [--wait <s>] [--session <uuid>] [--force \"<why>\"] [--dry-run]" 64
     shift
@@ -27014,6 +27063,7 @@ EOF
         exit 0
       fi
       write_event "$lane" PAUSED "lane:$lane" '→' "$rh_fpay" "forced release" "$(utc_now)" "$rh_uuid" || exit $?
+      rh_after_committed "forced release"
       note "FORCED: lane $lane's binding is released on behalf of ${rh_bsess:-the bound session}. $(binding_facts "$lane" "$rh_host" "$rh_cont" "$rh_win" "$rh_utc" "$rh_bsess" "$rh_wstate")"
       note "If that session is alive after all it will read this line at its next prompt and refuse EVERY prompt from then on, naming it and naming you, until the person there hands off or ends it (Amendment 18(e)). Two places never both write a lane in silence."
       exit 0
@@ -27030,44 +27080,92 @@ EOF
     [ -n "$rh_mywin" ] || rh_mywin=none
     rh_pay="by host $LANES_HOST_NAME; container $LANES_CONTAINER_NAME; window $rh_mywin; wait ${rh_wait}s"
     rh_type="/handoff --exit requested by $rh_uuid@$LANES_HOST_NAME/$LANES_CONTAINER_NAME"
+    # FEATURE 007, T423 — ON PRIMARY THE NOTES SAY THE REGISTER (lane
+    # openRepoTools-3, #165 6770688147, T423 Q5; texts say only what is true).
+    # There the request is one register transaction, and this run pushes and
+    # publishes no log, so every note below, the PLAN lines included, names
+    # the register where files mode names the pushed or published log. Keyed
+    # on the flag, `REG_SCRATCH`, as T421's words are: on primary only an
+    # attempt's child runs this arm, a dry run included (T415). Files mode
+    # keeps its words.
+    rh_log="the pushed log"; rh_plog="the published log"; rh_first="committed and pushed FIRST"
+    if [ -n "$REG_SCRATCH" ]; then
+      rh_log="the register"; rh_plog="the register"; rh_first="committed to the register FIRST"
+    fi
     if [ "$rh_dry" = 1 ]; then
       note "PLAN: $(binding_facts "$lane" "$rh_host" "$rh_cont" "$rh_win" "$rh_utc" "$rh_bsess" "$rh_wstate") ($rh_here)"
-      note "PLAN: $SELF log HANDOFF-REQUESTED lane:$lane → \"$rh_pay\"   (as session $rh_uuid), committed and pushed FIRST"
+      note "PLAN: $SELF log HANDOFF-REQUESTED lane:$lane → \"$rh_pay\"   (as session $rh_uuid), $rh_first"
       if [ "$rh_wstate" = live ]; then
         note "PLAN: tmux send-keys into ${rh_win##* } — $rh_type"
       else
-        note "PLAN: nothing is typed into a pane — this tmux server says the bound window is $rh_wstate, and the request travels through the pushed log alone"
+        note "PLAN: nothing is typed into a pane — this tmux server says the bound window is $rh_wstate, and the request travels through $rh_log alone"
       fi
-      note "PLAN: then poll the published log every ${LANES_POLL_SECONDS:-15}s for ${rh_wait}s for a PAUSED, ENDED or RETIRED newer than the request; an empty wait REFUSES and names --force"
+      note "PLAN: then poll $rh_plog every ${LANES_POLL_SECONDS:-15}s for ${rh_wait}s for a PAUSED, ENDED or RETIRED newer than the request; an empty wait REFUSES and names --force"
       exit 0
     fi
     rh_wrote="$(utc_now)"
     write_event "$lane" HANDOFF-REQUESTED "lane:$lane" '→' "$rh_pay" "" "$rh_wrote" "$rh_uuid" || exit $?
+    rh_after_committed request
     note "REQUESTED: $(binding_facts "$lane" "$rh_host" "$rh_cont" "$rh_win" "$rh_utc" "$rh_bsess" "$rh_wstate")"
 
     # ---- AND ONLY NOW THE PANE, WHERE IT IS ON THIS TMUX SERVER (Amendment
     # 12's M1). It is an OPTIMISATION of the same-host case and never the
     # request: a session that never reads it answers at its hook's next read of
     # the pushed line instead.
+    #
+    # FEATURE 007, T423 — A REPLAY TYPES INTO NO PANE (Y:5326; Y:2688, "the
+    # typing, no; the poll, yes"). A replay (T418) runs this verb again at
+    # `s−1` only to reach the seam with the committed entry's change set, and
+    # the pane it reads may hold another session by now, so a second
+    # `/handoff --exit` would be typed into whatever runs there. So in a replay
+    # the arm does not call `guard_type` at all, and says so in its own words;
+    # `guard_type`'s own refusal in a replay (T418) stays as the backstop for
+    # every caller. The wait below still runs, since it only reads.
     rh_typed=no
-    if [ "$rh_wstate" = live ]; then
+    if [ "$REG_REPLAY" = 1 ]; then
+      rh_typed="no, a replay types into no pane"
+      note "this run replays the request the register holds at seq ${REGISTER_SEQ}, and a replay types into no pane: lane ${lane}'s bound pane may hold another session by now, and a request is never typed after the fact (Y:5326). The request travels in the register, as it does where no pane is live, and is read at that session's next prompt."
+    elif [ "$rh_wstate" = live ]; then
       rh_trc=0
       guard_type "${rh_win##* }" "$rh_type" || rh_trc=$?
       case "$rh_trc" in
         0) rh_typed=yes; note "typed into ${rh_win##* }: $rh_type" ;;
-        9) note "the bound pane is running something other than \`claude\`, so nothing was typed into it (M1's own condition): the request is in the pushed log and is read at that session's next prompt." ;;
-        8) note "the bound pane's current command could not be read, so nothing was typed into it — fail closed (M1). The request is in the pushed log." ;;
-        *) note "tmux would not take the keys for ${rh_win##* }, so nothing was typed. The request is in the pushed log and is read at that session's next prompt." ;;
+        9) note "the bound pane is running something other than \`claude\`, so nothing was typed into it (M1's own condition): the request is in $rh_log and is read at that session's next prompt." ;;
+        8) note "the bound pane's current command could not be read, so nothing was typed into it — fail closed (M1). The request is in $rh_log." ;;
+        *) note "tmux would not take the keys for ${rh_win##* }, so nothing was typed. The request is in $rh_log and is read at that session's next prompt." ;;
       esac
     else
-      note "the bound window is $rh_wstate from here, so no pane was typed into: the request travels through the pushed log, which is why it is written first."
+      note "the bound window is $rh_wstate from here, so no pane was typed into: the request travels through $rh_log, which is why it is written first."
     fi
 
     # ---- THE WAIT (clause (c)), AND ITS EMPTY END (clause (e)).
     rh_poll="${LANES_POLL_SECONDS:-15}"
     case "$rh_poll" in ''|*[!0-9]*|0) rh_poll=15 ;; esac
     rh_deadline=$(( $(date -u +%s) + rh_wait ))
-    [ "$rh_wait" = 0 ] || note "waiting up to ${rh_wait}s for lane $lane to be released (polling the published log every ${rh_poll}s) …"
+    [ "$rh_wait" = 0 ] || note "waiting up to ${rh_wait}s for lane $lane to be released (polling $rh_plog every ${rh_poll}s) …"
+    # FEATURE 007, T423 — A FAILED POLL WAITS ON, AND ON PRIMARY A WAIT WHOSE
+    # LAST POLL FAILED ENDS 69 (lane openRepoTools-3, #165 6770688147, T423
+    # Q6; Y:5359, "safe; reads only; it waits again"; tasks:723, the decide
+    # class's 69, nothing on stdout). A poll that cannot read the binding is
+    # waited past, as before. But the empty end below says "still bound", and
+    # a wait whose last poll failed cannot know that: the lane may have been
+    # released after the last poll that read it. So on primary that wait ends
+    # 69, naming its request, which is in the register; files mode keeps its
+    # 2 and its words. `rh_last` is the last poll's answer, 0 where it read.
+    rh_last=0
+    rh_pollfail="the lane's log could not be read on this poll — waiting on"
+    [ -z "$REG_SCRATCH" ] || rh_pollfail="the register could not be read on this poll — waiting on"
+    # FEATURE 007, T423 — ON PRIMARY THE REQUEST IS NAMED WITH ITS REGISTER SEQ
+    # ON EVERY END OF THE WAIT (lane openRepoTools-3, #165 6774499606, T423
+    # item 1; B13 item 12), computed here, above the loop, so the BOUND AGAIN
+    # end inside it names it too (#165 6779688808, Q1). The 69 below always
+    # named it, and the empty end's 2 named the request without it.
+    # `rh_after_committed` has returned by here, so on primary `REGISTER_SEQ`
+    # is the seq this run's one write committed at. Files mode has no seq and
+    # keeps its words. The window's name is not given back here: that is
+    # `lane-start`'s (SR:690), never the verb's.
+    rh_atseq=""
+    [ -z "$REG_SCRATCH" ] || rh_atseq=", in the register at seq ${REGISTER_SEQ}"
     while : ; do
       rh_left=$(( rh_deadline - $(date -u +%s) ))
       if [ "$rh_left" -le 0 ]; then break; fi
@@ -27080,9 +27178,27 @@ EOF
       [ "$rh_nap" -gt "$rh_left" ] && rh_nap="$rh_left"
       sleep "$rh_nap"
       log_sync
+      # FEATURE 007, T423 — ON PRIMARY EACH POLL READS THE REGISTER AT ITS HEAD
+      # (D17; Y:5090; contract §3.6: "After `committed`, the child's tail reads
+      # take D17's path through the read family that `reg_flush` drops"). On
+      # primary only an attempt's child reaches this wait, after `committed`,
+      # and `log_sync` fetches nothing there (D12): the flag returns before any
+      # fetch (T413), and its primary form makes no fetch and no flush with the
+      # read door open (T506). So the family the wait's first read cached would
+      # answer every later poll at that read's head, and a release written
+      # since would never be seen. `reg_flush` (lane 5's T505) drops the whole
+      # family, `.head` with it, before each poll's read, so the read below is
+      # the readers' second read at the register's head (§3.6, form 3), never
+      # git. Off primary, `log_sync`'s fetch and drops are the poll, as before.
+      # Keyed on the flag, `REG_SCRATCH`, as the arm's other primary switches
+      # are, so that one key decides "on primary" across the arm (review
+      # REV-W9f, N1); `reg_scratch_take` sets REG_MODE=primary in every child,
+      # so the two agree.
+      [ -z "$REG_SCRATCH" ] || reg_flush
       rh_out=""; rh_rc=0
       rh_out="$(lane_binding_scan "$lane")" || rh_rc=$?
-      [ "$rh_rc" = 0 ] || { note "the lane's log could not be read on this poll — waiting on"; continue; }
+      rh_last="$rh_rc"
+      [ "$rh_rc" = 0 ] || { note "$rh_pollfail"; continue; }
       IFS="$US" read -r rh_state2 rh_host2 rh_cont2 rh_win2 rh_utc2 rh_bsess2 rh_os2 rh_rest2 <<EOF
 $rh_out
 EOF
@@ -27093,12 +27209,20 @@ EOF
         bound|requested)
           if ! binding_identity_same "$rh_host" "$rh_cont" "$rh_win" "$rh_utc" "$rh_bsess" \
                                      "$rh_host2" "$rh_cont2" "$rh_win2" "$rh_utc2" "$rh_bsess2"; then
-            die "lane $lane was released and BOUND AGAIN while this request waited — its binding is now window ${rh_win2:-none} in container ${rh_cont2:-none} on host ${rh_host2:-unknown} (session ${rh_bsess2:-unknown}, $rh_utc2). The request this run wrote is answered and the lane is somebody else's: ask again, or take it up with that place." 2
+            die "lane $lane was released and BOUND AGAIN while this request waited — its binding is now window ${rh_win2:-none} in container ${rh_cont2:-none} on host ${rh_host2:-unknown} (session ${rh_bsess2:-unknown}, $rh_utc2). The request this run wrote${rh_atseq}${rh_atseq:+,} is answered and the lane is somebody else's: ask again, or take it up with that place." 2
           fi ;;
       esac
     done
+    if [ -n "$REG_SCRATCH" ] && [ "$rh_last" != 0 ]; then
+      note "THE WAIT ENDED ON A POLL THAT COULD NOT READ THE REGISTER. As read before the request, $(binding_facts "$lane" "$rh_host" "$rh_cont" "$rh_win" "$rh_utc" "$rh_bsess" "$rh_wstate")"
+      note "  the request: $rh_wrote → $rh_pay, as session $rh_uuid${rh_atseq}"
+      note "  the pane:    ${rh_typed} (this tmux server says that window is $rh_wstate)"
+      die "the register could not be read at this wait's last poll, so whether lane $lane is still bound, or was released after the last poll that read it, is not known here, and NOTHING here has bound it. The request is in the register and is not written again. Read the lane once the register answers, and bind it if it is free; or ask again with a longer wait:
+    $SELF binding $lane
+    $SELF request-handoff $lane --wait 900" 69
+    fi
     note "THE WAIT ENDED WITH NOTHING. $(binding_facts "$lane" "$rh_host" "$rh_cont" "$rh_win" "$rh_utc" "$rh_bsess" "$rh_wstate")"
-    note "  the request: $rh_wrote → $rh_pay, as session $rh_uuid"
+    note "  the request: $rh_wrote → $rh_pay, as session $rh_uuid${rh_atseq}"
     note "  the pane:    ${rh_typed} (this tmux server says that window is $rh_wstate)"
     die "no PAUSED, ENDED or RETIRED newer than that request arrived in ${rh_wait}s, so lane $lane is still bound and NOTHING here has bound it (Amendment 18(e)). A working session is never interrupted — a hook fires at a prompt boundary, and a session inside a long turn answers when that turn ends. Wait longer, or override, which is a SECOND invocation and never automatic:
     $SELF request-handoff $lane --wait 900
