@@ -2194,11 +2194,14 @@ def act_begin(e: Estate, lane: str = LA) -> str:
 
 
 def act_write(e: Estate, scope: str, lane: str = LA, tag: str = "") -> List[str]:
-    """The act's write on `scope`, `row` or `objects`."""
+    """The act's write on `scope`, `row` or `objects`. The `objects` write is
+    an object-kind line, `OPENED` on `opensoft/r9#77`: `NOTED` has been a
+    lane-kind line since Amendment 13(b) (`aa6cf53d`), so `log NOTED` on an
+    object is refused with 2 before any write (T252l)."""
     if scope == "row":
         return ["append-line", f"| `{lane}` | harness `{session_of(lane)}` | {W_WS} / test / brett "
                                f"| 2026-05-01T00:00Z | none | handoffs/{lane}.md | T252 row {tag} |"]
-    return ["log", "NOTED", f"{KEY}#77", f"T252 {tag}"]
+    return ["log", "OPENED", f"{KEY}#77", f"T252 {tag}"]
 
 
 def acted(act: str, *scopes: str) -> dict:
