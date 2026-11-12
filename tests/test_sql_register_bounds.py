@@ -3314,8 +3314,8 @@ def test_a_record_marker_that_expires_leaves_the_marker_adding_and_writes_refusi
     stands, the marker reads `adding`, and a writer's commit, `lanes-edit.sh
     set-row-state` on the operator's lane with `mode=primary` (lane 3's batch
     11 (7)(d), #165 6783909985), refuses with 69, its stderr naming the
-    marker's refusal (TP:4182-4183; Y:3580): LR002, or its snapshot's words
-    on the switch it read, the marker `adding` (TP:4230-4231 at B17; T278f).
+    marker's refusal (TP:4180-4181; Y:3580): LR002, or its snapshot's words
+    on the switch it read, the marker `adding` (TP:4221-4222; T278f).
     T409's placeholder exits 69 on primary too (B14 tasks:937), so the exit
     alone proves nothing. The
     rerun, the fault removed, records the marker once: one `record_marker`
@@ -3345,7 +3345,7 @@ def test_a_record_marker_that_expires_leaves_the_marker_adding_and_writes_refusi
                             env=dict(op.env, LANES_INDEX_CONFIG=str(config)))
     assert writer.returncode == 69, f"the writer's commit: {writer.returncode}: {writer.stderr}"
     # THE MARKER'S REFUSAL (T278f; line BD17): the write "exits 69 on the switch
-    # its snapshot reads, or on LR002" (TP:4230-4231 at B17). T415's writer meets
+    # its snapshot reads, or on LR002" (TP:4221-4222). T415's writer meets
     # the marker at its first snapshot, whose own words name the switch it read,
     # the marker `adding`, before any commit call; a commit call would get LR002.
     # Either is the marker's, never T409's placeholder, which names no marker.
