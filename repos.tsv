@@ -22,7 +22,11 @@
 #
 # Add a row when a new repo first appears in a LANDING line. Keep it sorted.
 
-AdxFactory	opensoft/AdxFactory
+# 2026-11-11: MedxFactory and LedgerxFactory owners are explicitly verified;
+# their rows below supersede the historical omission above. Casing aliases
+# continue to resolve case-insensitively to the canonical GitHub spelling.
+
+AdxFactory	opensoft/adXfactory
 CloudPC-Install	opensoft/CloudPC-Install
 Hermes-Install	opensoft/Hermes-Install
 IRRS	InkRouter/IRRS
@@ -38,21 +42,27 @@ InkRouter/IRSS-code	InkRouter/IRSS-code
 InkRouter/IRSS-spec	InkRouter/IRSS-spec
 InkRouter/InkRouter	InkRouter/InkRouter
 Keycloak-Install	opensoft/Keycloak-Install
+LedgerxFactory	ledgerXfactory/ledgerXfactory
+ledgerXfactory/LedgerxFactory	ledgerXfactory/ledgerXfactory
+MedxFactory	MedxSoft/medXfactory
+MedxSoft/MedxFactory	MedxSoft/medXfactory
 OmniWorker-Install	opensoft/OmniWorker-Install
 Omnigent-Install	opensoft/Omnigent-Install
+opensoft/AdxFactory	opensoft/adXfactory
+opensoft/openxFactory	opensoft/openXfactory
 OpenSpec	brettheap/OpenSpec
 Opensoft-Tenant	opensoft/Opensoft-Tenant
 OpsxFactory	opensoft/opsXfactory
 brett-wip	opensoft/brett-wip
-codeXfactory	codeXfactory/codexFactory
-codeXfactory/codexFactory	codeXfactory/codexFactory
+codeXfactory	codeXfactory/codeXfactory
+codeXfactory/codexFactory	codeXfactory/codeXfactory
 new-workstation	brettheap/new-workstation
 openRepoProject	opensoft/openRepoProject
 openRepoShape	opensoft/openRepoShape
 openRepoTools	opensoft/openRepoTools
-opensoft/codexFactory	codeXfactory/codexFactory
+opensoft/codexFactory	codeXfactory/codeXfactory
 opensoft/OpsxFactory	opensoft/opsXfactory
-openxFactory	opensoft/openxFactory
+openxFactory	opensoft/openXfactory
 workBenches	opensoft/workBenches
 xFactory	opensoft/xFactory
 xFactory-Hermes-Install	opensoft/xFactory-Hermes-Install

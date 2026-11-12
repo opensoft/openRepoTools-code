@@ -1574,7 +1574,8 @@ has  "…with the hint to spell owner/repo" "$err" "spell it owner/repo"
 
 run env LANES_LANE=repoE-1 "$E" log CLOSED "opensoft/codexFactory#9" "→" "opensoft/openxFactory#4"
 is   "a legacy spelling is accepted" "$rc" 0
-has  "…and is written as the canonical nameWithOwner" "$(cat "$LOGD/repoE-1.md")" ", codeXfactory/codexFactory#9 → opensoft/openxFactory#4"
+# The arrow destination is historical free text, not the normalized object key.
+has  "…and is written as the canonical nameWithOwner" "$(cat "$LOGD/repoE-1.md")" ", codeXfactory/codeXfactory#9 → opensoft/openxFactory#4"
 run env LANES_LANE=repoE-1 "$E" log CLOSED "Hermes-Install#3" "→" "opensoft/openxFactory#4"
 has  "…as is an alias with no owner at all" "$(cat "$LOGD/repoE-1.md")" ", opensoft/Hermes-Install#3 → opensoft/openxFactory#4"
 
@@ -1742,7 +1743,7 @@ has  "…and named" "$err" "$HOME/projects/nested/deepP/project.yaml"
 run env LANES_LANE=repoE-1 "$E" claim "codeXfactory/codexFactory#3" --no-github
 is   "a manifest that spells a leg the pre-move way is still ONE project" "$rc" 0
 has  "…both values resolved through repos.tsv before comparing" "$err" "are legs of one project.yaml — not a crossing"
-hasnt "…so no crossing is reported" "$err" "CROSS-REPO — codeXfactory/codexFactory"
+hasnt "…so no crossing is reported" "$err" "CROSS-REPO — codeXfactory/codeXfactory"
 
 run env LANES_LANE=repoE-1 "$E" claim "opensoft/repoFam#2" --no-github
 is   "a claim on a family member is still a claim" "$rc" 0
@@ -2723,14 +2724,14 @@ git init -q -b main "$HOME/projects/legacyorg"
 git -C "$HOME/projects/legacyorg" remote add origin git@github.com:opensoft/codexFactory.git
 run "$START" --dir "$HOME/projects/legacyorg" --estate cx repoW-1 --no-launch
 is   "lane-start on a checkout spelling the pre-move org exits 0" "$rc" 0
-has  "…resolving the home through repos.tsv BEFORE the STARTED line is written" "$err" "resolves through lanes/repos.tsv to codeXfactory/codexFactory"
-has  "…so the STARTED line records the canonical spelling" "$(cat "$LOGD/repoW-1.md")" "lane:repoW-1 → home codeXfactory/codexFactory"
+has  "…resolving the home through repos.tsv BEFORE the STARTED line is written" "$err" "resolves through lanes/repos.tsv to codeXfactory/codeXfactory"
+has  "…so the STARTED line records the canonical spelling" "$(cat "$LOGD/repoW-1.md")" "lane:repoW-1 → home codeXfactory/codeXfactory"
 run env LANES_LANE=repoW-1 "$E" claim "#5" --no-github
 is   "…and '#5' expands against it" "$rc" 0
-has  "…to the canonical key" "$(cat "$LOGD/repoW-1.md")" ", codeXfactory/codexFactory#5"
+has  "…to the canonical key" "$(cat "$LOGD/repoW-1.md")" ", codeXfactory/codeXfactory#5"
 run env LANES_LANE=repoW-2 "$E" claim "codeXfactory/codexFactory#5" --no-github
 is   "…so the other spelling of the SAME issue is refused, not given a second key" "$rc" 2
-has  "…naming the lane that holds it" "$err" "lane repoW-1 holds codeXfactory/codexFactory#5"
+has  "…naming the lane that holds it" "$err" "lane repoW-1 holds codeXfactory/codeXfactory#5"
 
 # …and a STARTED line written BEFORE this fix is resolved when it is READ.
 { printf '# lane repoW-3 — object log (lane-collision-protocol Amendment 7)\n'
@@ -2746,7 +2747,7 @@ git -C "$WIP" push -q origin main
 # the defect, uncaught, inside the suite that was meant to catch it.
 run env LANES_LANE=repoW-3 LANES_SESSION="$DEAD_ID" "$E" claim "#6" --no-github
 is   "a legacy home already on record is resolved when it is read" "$rc" 0
-has  "…so its shorthand keys canonically too" "$(cat "$LOGD/repoW-3.md")" ", codeXfactory/codexFactory#6"
+has  "…so its shorthand keys canonically too" "$(cat "$LOGD/repoW-3.md")" ", codeXfactory/codeXfactory#6"
 hasnt "…and the line it wrote carries a real uuid, never \`unknown\`" "$(cat "$LOGD/repoW-3.md")" "session unknown@"
 
 # ------------------------- R21: lane-end's recovery text and its --force line
