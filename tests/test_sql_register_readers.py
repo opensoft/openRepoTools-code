@@ -1167,21 +1167,41 @@ RERUN_RESTORED = "aaaaaaaa-0011-4000-8000-00000000a011"
 #: 2), by its line at `2a057a6d`: the run that reaches it, and the write.
 #: `match`, where set, is the write's own words, since one run can make more
 #: than one call of the verb; `fake` is a fact the scenario needs.
+#:
+#: WHICH CALL GETS THE 3 (lane 3's (L2-2), #165 6808937880): "A 3 is relayed
+#: from whichever call made the write." Where a transcript uuid is known, T428
+#: makes the writes one `start-record` call; where none is, W2 to W6 are their
+#: own verbs. So `-3851` (W2), `-3989` (W6) and `-4022` (W5) run with no uuid
+#: knowable and name their own verb alone: a scenario that came to know one
+#: would reach `start-record` instead and fail as never reached. `-4181` (W7)
+#: runs with one known, since its line is deferred where none is (Amendment
+#: 7(b)), and its stub gives the 3 to `start-record` at T428 and to `log`
+#: before it. W3 (`-3872`) and W4 (`-3909`) are written only where a uuid is
+#: known: the restored transcript is resumed by id, and a minted id is
+#: `lane_sid` (lane 4's T428 `f2c16de`, `lane-start:4132`, `:4148`, `:4206`,
+#: `:4251`), so T428 always carries them in the one call (`:4602`, `:4653`).
+#: They name both verbs, as the `--no-launch` case's w3 and w4 do.
 RERUN_SITES = {
     # 2a057a6d:3851 is the harness's id for this window, appended to the cell (the
     # `--no-launch` case's W2); :3909 the id `lane-start` mints, stamped on it (W4).
     "lane-start-3851": Arm("lane-start", ("repoA", "1"), "append-session-id", "3904",
                            match="*the harness minted*", fake=("window-session", WINDOW_RECORD)),
-    "lane-start-3872": Arm("lane-start", ("repoA", "1"), "append-session-id", "3925",
+    "lane-start-3872": Arm("lane-start", ("repoA", "1"), "append-session-id|start-record", "3925",
                            match="*restored from the lane*",
                            fake=("lane-transcript", RERUN_RESTORED)),
-    "lane-start-3909": Arm("lane-start", ("repoA", "1"), "append-session-id", "3962",
+    "lane-start-3909": Arm("lane-start", ("repoA", "1"), "append-session-id|start-record", "3962",
                            match="*lane-start minted*"),
-    "lane-start-3989": Arm("lane-start", ("repoA", "1"), "set-row-state", "4042"),
+    # W6 with no uuid knowable: the window's live session is taken, as at 3851, so
+    # nothing is minted and the state cell is its own verb (T428 `lane-start:4193–4194`).
+    "lane-start-3989": Arm("lane-start", ("repoA", "1"), "set-row-state", "4042",
+                           fake=("window-session", WINDOW_RECORD)),
     "lane-start-4022": Arm("lane-start", ("repoA", "2", "--agent", "codex"), "append-session-id",
                            "4075", match="*launched codex*",
                            fake=("lane-transcript", "codex-session-7")),
-    "lane-start-4181": Arm("lane-start", ("repoA", "1"), "log", "4234", match="STARTED*"),
+    # W7 with a minted uuid known: the STARTED line is `log`'s own call before T428,
+    # and rides in `start-record`'s at T428 (`<lane> STARTED … --log lane:<lane> → …`).
+    "lane-start-4181": Arm("lane-start", ("repoA", "1"), "log|start-record", "4234",
+                           match="*STARTED*"),
     "lane-handoff-2878": Arm("lane-handoff", ("--lane", "repoA-2", "the rerun test"), "log",
                              "2878", match="PAUSED*"),
     "lane-handoff-2890": Arm("lane-handoff", ("--lane", "repoA-2", "the rerun test"), "append-line",
@@ -1214,8 +1234,10 @@ SKILL_738_LINE = re.compile(r'^(?:LANES_LANE="\$lane" )?"\$L" append-line "PAUSE
 
 
 def rerun_argv(arm: Arm, lane: str) -> str:
-    """The writer's own arguments, as its printed rerun repeats them."""
-    return f"{arm.verb} lane:{lane} the-same-arguments"
+    """The writer's own arguments, as its printed rerun repeats them. Where
+    the arm names two verbs, the first, the write's own: the line is the
+    stub's and is relayed as printed, whichever call the stub fails."""
+    return f"{arm.verb.split('|')[0]} lane:{lane} the-same-arguments"
 
 
 def own_hints(stderr: str, verb: str) -> list:
@@ -1235,7 +1257,10 @@ def test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3(tmp_path, site):
     as written and none that leaves out `LANES_SESSION` (`lane-start:4182`
     today); `lane-handoff:2890-2891` and `:2913-2914`, which send the
     writer's stderr to `/dev/null` today, keep it; and `lane-start` carries
-    on to its launch, as it did before."""
+    on to its launch, as it did before. The 3 is the call's that made the
+    write: a write's own verb where no transcript uuid is knowable, and
+    `start-record`'s one call at T428 where one is (lane 3's (L2-2), #165
+    6808937880; `RERUN_SITES`), so no act's own hint names either verb."""
     arm = RERUN_SITES[site]
     world = arm_world(tmp_path, arm)
     lane = "repoA-2" if "2" in arm.argv[:2] or "repoA-2" in arm.argv or not arm.argv else "repoA-1"
@@ -1259,7 +1284,7 @@ def test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3(tmp_path, site):
         result = run_arm(world, arm, 3, stderr=line)
     assert line in result.stderr.splitlines(), (site, "the writer's rerun was not relayed",
                                                 result.stderr[-3000:])
-    hints = own_hints(result.stderr, arm.verb)
+    hints = [hint for verb in arm.verb.split("|") for hint in own_hints(result.stderr, verb)]
     assert not hints, (site, "the act's own hint", hints)
     if arm.script == "lane-start":
         assert launched(world), (site, "the launch did not carry on", result.returncode,
@@ -1270,7 +1295,9 @@ def test_an_expectation_2_at_lane_starts_last_write_dies(tmp_path):
     """Any 2 at `lane-start:4181`, its last write (the STARTED log line),
     dies with 2, an expectation's included (LR010): it is a second binding,
     a deciding refusal, never a stamp to carry on past (lane 4's table; the
-    design's outcomes table)."""
+    design's outcomes table). The run knows a minted uuid, so at T428 the
+    line rides in `start-record`'s one call, and the stub fails that call
+    ("any 2 dies, LR010's included"; lane 3's (L2-2), #165 6808937880)."""
     arm = RERUN_SITES["lane-start-4181"]
     world = arm_world(tmp_path, arm)
     stderr = ("ERROR:  LR010: an expectation of this act no longer holds\n"
