@@ -5593,10 +5593,15 @@ object_slug()    { case "$1" in *:openspec/changes/*) printf '%s\n' "${1##*/}" ;
 #
 # THE FIRST ANSWER WAS AN ALIAS LOOKUP IN THIS PARSE, AND IT WAS THE WRONG ONE
 # (Copilot round 1 on openRepoTools#81). A rename FREES the old name — no row
-# carries it, so `lane_next_free` hands the position out and a NEW lane can be
-# called it — and from that moment the field `lane <old>` is ambiguous: it is
-# the renamed lane's history in one file and the new lane's present in another.
-# No amount of resolving a NAME tells those apart, because the name is the same.
+# carries it, so a NEW lane can be called it — and from that moment the field
+# `lane <old>` is ambiguous: it is the renamed lane's history in one file and
+# the new lane's present in another. No amount of resolving a NAME tells those
+# apart, because the name is the same. This said `lane_next_free` hands the
+# freed position out; since lane 3's batch 8 Q47 (opensoft/openRepoTools#165
+# 6780753157) it counts every alias key as taken and does not, because a row
+# under a former name ends that name's resolution (Amendment 16(e)). The file
+# rule below stays as the defence for a row minted under a former name in the
+# past, or by hand or by `add-row`.
 #
 # THE FILE DOES. Amendment 7's first sentence is one file per lane, single
 # writer, and Amendment 15 makes its name the row's own spelling — so
@@ -7955,10 +7960,15 @@ lane_alias_target() {   # <typed name> [<forbidden name>]
 
 # ONE HOP, and the reason it exists apart from the walk above: "a ROW WINS OVER
 # AN ALIAS" has to be asked at EVERY hop and not only at the start (Copilot round
-# 1). After `A → B`, a lane legitimately minted under the name `A` again — the
-# position `A` freed is one `lane_next_free` will hand out — makes `A` both a row
+# 1). After `A → B`, a lane minted under the name `A` again makes `A` both a row
 # and an alias key, and a chain `C → A` must then stop AT `A`, which is a lane,
-# rather than carry on to `B`, which is a different one. Walking hop by hop in
+# rather than carry on to `B`, which is a different one. This called such a lane
+# "legitimately minted", because `lane_next_free` handed out the position `A`
+# freed. It no longer does (lane 3's batch 8 Q47, opensoft/openRepoTools#165
+# 6780753157): a row under `A` ends `A`'s resolution to `B`, which clause (e)
+# promises never happens. The test stays as the defence for a row minted under a
+# former name in the past, or by hand or by `add-row`, which reads no alias key —
+# such rows may exist, and they still win. Walking hop by hop in
 # the shell is what lets the row test sit between the hops; the chains this
 # estate writes are one or two long, and `register_text` is cached, so the cost
 # is an awk per hop over a table of a few lines.
@@ -7978,11 +7988,16 @@ lane_alias_hop() {   # <name>
     END { if (tolower(want) in map) { print map[tolower(want)]; exit 0 } exit 1 }'
 }
 
-# lane_alias_keys — every key of the table, one per line, as written. The one
-# caller is `rename-lane`, which refuses a `<new>` that is already a key
+# lane_alias_keys — every key of the table, one per line, as written. The first
+# caller was `rename-lane`, which refuses a `<new>` that is already a key
 # (Copilot round 1): a row under a former name TAKES PRECEDENCE over the alias,
 # so minting one deliberately would end that former name's resolution — the one
-# thing clause (e) promises never happens.
+# thing clause (e) promises never happens. `lane_next_free` reads it for the
+# same reason (lane 3's batch 8 Q47, opensoft/openRepoTools#165 6780753157):
+# each key of the repository is a taken position, so `next-free` never offers a
+# former name for a new row, and a table it cannot read offers none.
+# `lane_checkout_old` (Amendment 23 S1) reads it too, to find the checkout a
+# renamed lane had under its old name.
 lane_alias_keys() {
   lak_r=0; lak_out="$(lane_alias_text)" || lak_r=$?
   [ "$lak_r" != 69 ] || return 69                 # feature 007, T505 Q3: passed on
@@ -8001,10 +8016,13 @@ lane_alias_keys() {
 # round 1 on openRepoTools#81). A name that is a lane today IS that lane — which
 # is what makes renaming a lane BACK to a name readable — and the chain has to
 # be walked with that test BETWEEN the hops, because an alias key can become a
-# row again: `A → B` frees the name `A`, `lane_next_free` hands that position
-# out, and a later `C → A` must then answer `A`, the lane, rather than running
-# on to `B`, which is a different one. Taking only the END of the chain answered
-# `B` and lost `C`'s own lane.
+# row again: `A → B` frees the name `A`, a row is minted under it, and a later
+# `C → A` must then answer `A`, the lane, rather than running on to `B`, which
+# is a different one. Taking only the END of the chain answered `B` and lost
+# `C`'s own lane. This said `lane_next_free` hands that position out; since lane
+# 3's batch 8 Q47 (opensoft/openRepoTools#165 6780753157) it counts every alias
+# key as taken and does not, so the test is now the defence for a row minted
+# under a former name in the past, or by hand or by `add-row`.
 #
 # The loop is bounded by a `seen` list rather than by a number, for
 # `lane_alias_target`'s reason: every hop consumes one key of a finite table.
@@ -11543,6 +11561,22 @@ lane_position_rows() {   # 0 with the names · 1 where a source exists and could
   return 0
 }
 
+# A FORMER NAME IS A TAKEN POSITION TOO (lane 3's batch 8 Q47,
+# opensoft/openRepoTools#165 6780753157). Every key of the alias table is counted
+# with the rows, by the rows' own rule: the whole name before its last hyphen is
+# the repository, without regard to case, and the position is the digits after
+# it, a trailing letter dropped. Amendment 16(e) says the old name resolves for
+# ever, and a row under it TAKES PRECEDENCE over the alias, so a position a
+# rename freed is not free: `rename-lane` already refused a `<new>` that is a
+# key for exactly that reason, and this was the one reader that disagreed. It
+# offered the freed position, and `lane-start` then resolved the name it was
+# given to the renamed lane rather than starting a new one.
+#
+# AND A TABLE THAT CANNOT BE READ OFFERS NO POSITION, as a register or an
+# archive that cannot be read offers none above: the names it holds are names
+# this position must avoid, and a read that failed is not an answer
+# (Amendment 7(d)). A table that is absent is an estate that never renamed a
+# lane, and changes nothing.
 lane_next_free() {   # <repo> ; rows on stdin
   [ -n "${1-}" ] || return 64
   lnf_more=""
@@ -11550,7 +11584,14 @@ lane_next_free() {   # <repo> ; rows on stdin
     note "the register or the archive of retired rows exists and could not be read, so the rows this position must avoid are not all known. A position is handed out ONCE and a read that failed is not an answer (Amendment 7(d)), so none is offered."
     return 1
   fi
-  { cat; printf '%s\n' "$lnf_more"; } | awk -F'\t' -v r="$1" '
+  lnf_keys=""; lnf_krc=0
+  lnf_keys="$(lane_alias_keys 2>/dev/null)" || lnf_krc=$?
+  if [ "$lnf_krc" != 0 ]; then
+    if [ "$lnf_krc" = 5 ]; then lnf_why="$(lane_alias_err)"; else lnf_why="its keys could not be listed, exit $lnf_krc"; fi
+    note "${LANES_ALIASES_PATH:-lanes/aliases.tsv} could not be read ($lnf_why), so the FORMER names this position must avoid are not all known (Amendment 16(e)). A position is handed out ONCE and a read that failed is not an answer (Amendment 7(d)), so none is offered."
+    return 1
+  fi
+  { cat; printf '%s\n' "$lnf_more"; printf '%s\n' "$lnf_keys"; } | awk -F'\t' -v r="$1" '
     BEGIN { rl = tolower(r) }
     $1 != "" {
       # THE WHOLE NAME BEFORE THE POSITION IS COMPARED, NOT A PREFIX (Copilot
@@ -16886,10 +16927,20 @@ tree_id_for() {   # <absolute worktree path>
 # ONE TREE'S SIDECAR. Every field is an OBSERVATION and none of them is truth
 # about git: `lane-reconcile` recomputes all of them and reports the
 # difference, which is the whole of design decision 6.
-lane_tree_put() {   # <root> <lane> <path> <checkout> <branch> <head> <upstream> <dirty> <unpushed> <writer> <gen> <op>
+#
+# AND WHICH REPOSITORY IT IS, WHERE GIT ANSWERS FOR ONE (opensoft/openRepoTools
+# #116): `repo`, the path's git common directory, physical (`git_common_real`),
+# which the caller reads before it takes the lock. The five fields after it
+# say what is checked out at the path and not whose checkout it is, so an
+# independent clone on the same branch at the same commit read exactly as the
+# tree recorded. It is OPTIONAL: a path git does not answer in records none, a
+# record without one (every record a released helper wrote) is still a whole
+# record (`lane_sidecar_schema_ok` asks for no `repo`), and `lane_reconcile`
+# compares only a record that carries one.
+lane_tree_put() {   # <root> <lane> <path> <checkout> <branch> <head> <upstream> <dirty> <unpushed> <writer> <gen> <op> [<repo>]
   ltp_root="$1"; ltp_lane="$2"; ltp_path="$3"; ltp_co="$4"; ltp_branch="$5"
   ltp_head="$6"; ltp_up="$7"; ltp_dirty="$8"; ltp_unp="$9"; shift 9
-  ltp_writer="${1-}"; ltp_gen="${2-}"; ltp_op="${3-}"
+  ltp_writer="${1-}"; ltp_gen="${2-}"; ltp_op="${3-}"; ltp_repo="${4-}"
   ltp_id="$(tree_id_for "$ltp_path")"
   [ -n "$ltp_id" ] || return 1
   { printf 'schema: %s\n'    "$LANE_STATE_SCHEMA"
@@ -16897,6 +16948,7 @@ lane_tree_put() {   # <root> <lane> <path> <checkout> <branch> <head> <upstream>
     printf 'tree: %s\n'      "$ltp_id"
     printf 'path: %s\n'      "$(lane_sidecar_value "$ltp_path")"
     printf 'checkout: %s\n'  "$(lane_sidecar_value "${ltp_co:-unknown}")"
+    [ -z "$ltp_repo" ] || printf 'repo: %s\n' "$(lane_sidecar_value "$ltp_repo")"
     printf 'branch: %s\n'    "$(lane_sidecar_value "${ltp_branch:-unknown}")"
     printf 'head: %s\n'      "$(lane_sidecar_value "${ltp_head:-unknown}")"
     printf 'upstream: %s\n'  "$(lane_sidecar_value "${ltp_up:-none}")"
@@ -17382,11 +17434,39 @@ LRC_BIND
       # by what the sidecar last SAW there, and metadata can reconstruct no
       # file's contents: a tree that held uncommitted or unpublished work is
       # POSSIBLE LOSS and is never claimed to be rebuildable.
+      #
+      # AND A REGISTRATION GIT STILL HOLDS FOR IT IS SAID ON THE SAME ROW
+      # (opensoft/openRepoTools#117). The sweep below skips every path a sidecar
+      # names, so such a tree was `missing` or `possible-loss` and never
+      # `stale-registration`: the `git worktree prune` the estate's `resume`
+      # refuses without was never named. And where the record spells the path
+      # through a symlink, git's physical spelling was not in the seen set and
+      # the one tree was named twice. So the registrations of the checkout it
+      # was recorded under, and then of the lane's `dir`, are asked for it here
+      # under both spellings: the recorded one, and its parent's physical one
+      # (`path_real`, since a path that is gone has no physical spelling of its
+      # own and `lane_real_path` returns it unchanged). Where one holds it, the
+      # prune is named on this row and that spelling joins the seen set, so the
+      # sweep names the tree no second time. A read that fails here names no
+      # prune: the sweep reads the lane's `dir` and its legs again, and says so.
+      lrc_gp="$(path_real "$lrc_p")"; lrc_prune=""; lrc_gtried=""
+      for lrc_gco in "${lrc_co:-}" "${lrc_dir:-}"; do
+        case "$lrc_gco" in /*) : ;; *) continue ;; esac
+        [ -d "$lrc_gco" ] && [ "$lrc_gco" != "$lrc_gtried" ] || continue
+        lrc_gtried="$lrc_gco"
+        if git -C "$lrc_gco" worktree list --porcelain 2>/dev/null </dev/null \
+             | LRC_P="worktree $lrc_p" LRC_GP="worktree $lrc_gp" \
+               awk '$0 == ENVIRON["LRC_P"] || $0 == ENVIRON["LRC_GP"] { f = 1 } END { exit f ? 0 : 1 }'; then
+          lrc_prune="; git still registers it in $lrc_gco: \`git -C $lrc_gco worktree prune\` is a person's act"
+          lrc_seen="$lrc_seen $lrc_gp "
+          break
+        fi
+      done
       case "${lrc_d:-0}${lrc_np:-0}" in
-        00) printf 'TREE%s%s%smissing%s%s%swas branch %s head %s; clean and published at %s; the estate parked record and `resume <Name>` are the only rebuild\n' \
-              "$US" "$lrc_id" "$US" "$US" "$lrc_p" "$US" "$lrc_b" "$lrc_h" "$lrc_ob" ;;
-        *)  printf 'TREE%s%s%spossible-loss%s%s%swas branch %s head %s with %s dirty and %s unpushed at %s; NOTHING here can reconstruct uncommitted files — do not recreate this path\n' \
-              "$US" "$lrc_id" "$US" "$US" "$lrc_p" "$US" "$lrc_b" "$lrc_h" "$lrc_d" "$lrc_np" "$lrc_ob" ;;
+        00) printf 'TREE%s%s%smissing%s%s%swas branch %s head %s; clean and published at %s; the estate parked record and `resume <Name>` are the only rebuild%s\n' \
+              "$US" "$lrc_id" "$US" "$US" "$lrc_p" "$US" "$lrc_b" "$lrc_h" "$lrc_ob" "$lrc_prune" ;;
+        *)  printf 'TREE%s%s%spossible-loss%s%s%swas branch %s head %s with %s dirty and %s unpushed at %s; NOTHING here can reconstruct uncommitted files — do not recreate this path%s\n' \
+              "$US" "$lrc_id" "$US" "$US" "$lrc_p" "$US" "$lrc_b" "$lrc_h" "$lrc_d" "$lrc_np" "$lrc_ob" "$lrc_prune" ;;
       esac
       lrc_recover=$((lrc_recover + 1))
       continue
@@ -17402,6 +17482,37 @@ LRC_BIND
     lrc_nu="$(printf '%s' "$lrc_now" | awk -F"$US" '{print $3}')"
     lrc_nd="$(printf '%s' "$lrc_now" | awk -F"$US" '{print $4}')"
     lrc_nn="$(printf '%s' "$lrc_now" | awk -F"$US" '{print $5}')"
+    # AND IT IS STILL THE REPOSITORY THE RECORD IS ABOUT (opensoft/openRepoTools
+    # #116). The five fields just read say what is checked out at the path, never
+    # whose checkout it is: an independent clone on the same branch at the same
+    # commit (a re-clone, another checkout moved onto the path, a restored
+    # backup) read exactly as the tree recorded, so it was `ok`, and a recovery
+    # relaunched a writer into a repository the record is not about. So the git
+    # common directory the record was filed with (`repo`, read from the sidecar
+    # itself, because `lane-trees`' row keeps the shape its readers and the T018
+    # goldens hold) is compared with git's answer NOW, and a different one is
+    # `wrong-repository`: nothing else of the record is compared against that
+    # tree, it wants recovery, and it is left exactly as it is. NOT the recorded
+    # `checkout`: for a lane with no legs that is the lane's `dir`, even for a
+    # tree of another repository. A record with no `repo` is not compared, and
+    # an identity git cannot give now is a read that failed, never a match.
+    lrc_rrepo="$(lane_sidecar_field "$lrc_root/trees/$lrc_id.yaml" repo 2>/dev/null || :)"
+    if [ -n "$lrc_rrepo" ]; then
+      lrc_nrepo="$(git_common_real "$lrc_p" 2>/dev/null </dev/null)"
+      if [ -z "$lrc_nrepo" ]; then
+        printf 'TREE%s%s%sunreadable%s%s%sgit answers in this path and which repository it is could not be read, so NOTHING is assumed about it: it was recorded as a checkout of the repository at %s, branch %s head %s with %s dirty and %s unpushed at %s; read it by hand (git -C %s rev-parse --git-common-dir) before relaunching a writer onto it\n' \
+          "$US" "$lrc_id" "$US" "$US" "$lrc_p" "$US" "$lrc_rrepo" "$lrc_b" "$lrc_h" "${lrc_d:-0}" "${lrc_np:-0}" "$lrc_ob" "$lrc_p"
+        lrc_recover=$((lrc_recover + 1))
+        continue
+      fi
+      if [ "$lrc_nrepo" != "$lrc_rrepo" ]; then
+        printf 'TREE%s%s%swrong-repository%s%s%sit was recorded as a checkout of the repository at %s (branch %s head %s at %s) and git answers for the repository at %s there now (branch %s head %s), so it is not the tree its record is about and nothing else of that record is compared against it; it is left exactly as it is: find where the recorded tree went before relaunching a writer onto this path\n' \
+          "$US" "$lrc_id" "$US" "$US" "$lrc_p" "$US" "$lrc_rrepo" "$lrc_b" "$lrc_h" "$lrc_ob" "$lrc_nrepo" \
+          "$lrc_nb" "$lrc_nh"
+        lrc_recover=$((lrc_recover + 1))
+        continue
+      fi
+    fi
     lrc_class=ok
     [ "${lrc_nd:-0}" -gt 0 ] && lrc_class=dirty
     # `unpushed` IS A COUNT OR IT IS THE WORD `unknown`, and the word is what a
@@ -19826,9 +19937,13 @@ Nothing was written." 2
     # makes a name that is a lane today BE that lane — so minting a row under a
     # name some other lane was renamed AWAY from would end that lane's old name
     # resolving, which is the one thing clause (e) promises never happens. The
-    # refusal is here, at the one writer that can do it deliberately; a row
-    # minted under a freed name by `lane-start` is a different act and the
-    # readers handle it by the row-wins rule itself.
+    # refusal is here, at the one writer that can do it deliberately. This went
+    # on to call a row minted under a freed name by `lane-start` a different act,
+    # which the readers handle by the row-wins rule itself. Since lane 3's batch
+    # 8 Q47 (opensoft/openRepoTools#165 6780753157) `next-free` counts every
+    # alias key as taken and offers no former name's position, for this
+    # refusal's own reason; the row-wins rule stays as the defence for a row
+    # minted under a former name in the past, or by hand or by `add-row`.
     rl_krc=0
     rl_keys="$(lane_alias_keys 2>/dev/null)" || rl_krc=$?
     if [ "$rl_krc" = 5 ]; then
@@ -23614,6 +23729,12 @@ EOF
     # is the whole workstation's (design decision 14, and the same argument that
     # keeps `lane-reconcile` out of it): what must be serialized is the compare
     # and the write, not the reading of a repository.
+    #
+    # SO THE REPOSITORY IS READ HERE TOO, before the lock (#116): the path's git
+    # common directory, which the record keeps as `repo` and `lane-reconcile`
+    # compares with git's answer then. A path git does not answer in has none,
+    # and its record carries none.
+    slt_repo="$(git_common_real "$slt_path" 2>/dev/null </dev/null)"
     sidecar_lock_use; acquire_lock   # the workstation's sidecar lock, and no other (Amendment 23 S2)
     if [ -n "$slt_g" ] || [ -n "$slt_op" ]; then
       if ! lane_sidecar_schema_ok "$slt_root/lane-state.yaml"; then
@@ -23653,7 +23774,7 @@ EOF
       die "the worktree $slt_path was NOT recorded for lane $lane: its sidecar under $slt_root/trees is not a record this helper can read ($LSS_WHY), and a record it cannot read is one it cannot safely replace. Nothing was written. Upgrade this workstation's lanes-edit.sh if a newer tooling wrote it; if you know what wrote that file, move it aside by hand and re-run." 1
     fi
     if lane_tree_put "$slt_root" "$lane" "$slt_path" "$slt_co" "$slt_b" "$slt_h" \
-         "$slt_u" "$slt_d" "$slt_n" "$slt_w" "$slt_g" "$slt_op"; then
+         "$slt_u" "$slt_d" "$slt_n" "$slt_w" "$slt_g" "$slt_op" "$slt_repo"; then
       release_lock
       LANES_INDEX_NUDGE_INV=1   # opensoft/openRepoTools#161: `cleanup` nudges the indexer
       printf '%s\n' "$(tree_id_for "$slt_path")"

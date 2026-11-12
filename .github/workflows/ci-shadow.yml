@@ -1,0 +1,54 @@
+name: Trusted CI shadow
+
+# Observations only. No existing job consumes a shadow result or skips work.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited, labeled, unlabeled, ready_for_review, converted_to_draft, enqueued, dequeued, closed]
+  push:
+    branches-ignore: ['release/**']
+
+permissions: {}
+
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Observe using only main-owned policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -f .github/ci/shadow_scope.py ]; then
+            python3 .github/ci/shadow_scope.py
+          else
+            # During this PR, main lacks the policy. Never fall back to PR code.
+            printf '%s\n' '{"mode":"shadow","reason":"policy-unavailable","required_ci":"full","skip_ci":false,"queue_admission":false,"candidate_scope":"full","observation":"full-fallback","policy_sha":null,"main":null,"head":null,"base":null}'
+            printf '%s\n' 'Trusted policy unavailable; full CI remains required. No skips or admission.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.x'
+      - name: Install the existing test-runner pin
+        run: 'python3 -m pip install --disable-pip-version-check --only-binary=:all: pytest==8.3.4'
+      - name: Offline source contracts (no API token passed to tests)
+        run: bash tests/run.sh -k ci_shadow
