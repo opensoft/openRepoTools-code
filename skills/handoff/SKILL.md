@@ -1291,6 +1291,12 @@ through `lclaude`, explicit `pclaude --lane`, or `lane-start`, and by no other d
 Steps 1–5 are the whole act for a plain `/handoff`. The two flags add ONE act each, **after** the record,
 and both refuse where step 4's `PAUSED` line did not land: *"a `/ctx` whose record could not be written
 REFUSES before it kills anything (a pane is never respawned over an unrecorded lane)"* (Amendment 17(f)).
+**Neither act runs where step 4's block ended 1 or 2** (step 5's gate: the act stopped there and printed no `READY TO
+SWAP` line, and a `/exit` typed after it would end the session over a record that was refused or never written).
+**And under `--exit`, where step 4's (b), the register's `PAUSED` line, exited 3, the rerun the writer printed for it
+is run BEFORE `/exit`** (lane 3, #165 6835210568, question 1: W11's 3, which `lane-handoff`'s `--exit` refuses 2 for
+under a seq base, T429). `/exit` ends the session that holds that rerun, and the handoff's top block was written
+before the writes, so the next session never sees it. Say in the report what the rerun printed.
 
 **`/ctx` (`/handoff --restart`) — the context clear, and the person types nothing else.** IT IS ONE COMMAND
 AND THIS STEP DOES NOT SPELL IT OUT IN SHELL:
@@ -1363,7 +1369,7 @@ relaunch a writer that is still live** — a worktree is one writer's for as lon
 **`/handoff --exit requested by <uuid>@<host>/<container>` — the handoff another place asked for.** After
 the record, `/exit` is typed into this lane's own pane (Amendment 12's M1, the one mechanism there is), and
 the session ENDS: *"a handoff to another place is a handoff and not a restart"* (Amendment 18(d)). The `why`
-is the requester, verbatim.
+is the requester, verbatim. Where step 4's (b) exited 3, the rerun it printed runs first (the lead above).
 
 ```sh
 tmux send-keys -t "$pane" '/exit' Enter
