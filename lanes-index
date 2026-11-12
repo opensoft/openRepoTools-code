@@ -15179,9 +15179,11 @@ def _render_ident(author: str, epoch: int, k: int) -> dict:
             "GIT_COMMITTER_DATE": date}
 
 
-def _render_read_head(store) -> tuple:
-    """THE PASS'S FIRST READ, one request in one snapshot, D9's `render`
-    row: the schema window, `h` and the switch in one read, the resolved
+def _render_read_head(store, row: str = "render") -> tuple:
+    """THE PASS'S FIRST READ, one request in one snapshot, on D9's `row`:
+    the pass's own is the `render` row; T324's ways out pass `snapshot`, a
+    writer's snapshot bounds, D9's row for their other database calls
+    (Y:3583). The schema window, `h` and the switch in one read, the resolved
     strays, and the mirror state's two columns. Returns `(h, mode, marker,
     skip, diverged_sha, last_error)`, `marker` the switch's `marker_state`,
     which tells a rollback's `files` from any other (T326). Raises
@@ -15197,7 +15199,7 @@ def _render_read_head(store) -> tuple:
         "SELECT j.git_commit FROM journal j WHERE j.kind IN ('stray-import', 'stray-revert') "
         "AND j.git_commit IS NOT NULL ORDER BY j.seq",
         "SELECT mir.diverged_sha, mir.last_error FROM mirror_state mir WHERE mir.id = 1",
-    ], snapshot=True, row="render")
+    ], snapshot=True, row=row)
     if len(answers) != 4:
         raise RenderRefused(f"psql answered {len(answers)} of the pass's 4 reads")
     version_rows, head_rows, stray_rows, mirror_rows = answers
@@ -16364,7 +16366,9 @@ def operator_local_origin_check(checkout: str, render_key: str, *, who: str = "c
 # 2. THE GIT HALF, as T322's pass recognises a divergence: `render_readback`'s
 #    fetch of origin `main`, on which `<sha>` must be; the pass's first read
 #    (`_render_read_head`: the head `h`, the switch, the resolved strays and
-#    the recorded `diverged_sha`); and `m` and its commit `R` by form C past
+#    the recorded `diverged_sha`), on a writer's snapshot row, never the
+#    renderer's: it is one of the way out's other database calls (D9,
+#    Y:3583); and `m` and its commit `R` by form C past
 #    the resolved strays. `<sha>` must be the recorded divergence, or `R`
 #    where `m` is above `h` (R2's N6), or the oldest stray after `R`
 #    (`render_strays_after`): a way out never resolves a commit the renderer
@@ -16553,7 +16557,7 @@ def _stray_recognised(form: str, root: str, store, sha: str, rerun: bool,
             raise Refusal(f"{form}: {sha} is not on origin {RENDER_BRANCH}, whose tip is {tip}: "
                           f"a stray is a commit origin carries (S2); {nothing}")
     try:
-        head, mode, _marker, skip, diverged, _last_error = _render_read_head(store)
+        head, mode, _marker, skip, diverged, _last_error = _render_read_head(store, row="snapshot")
     except RenderRefused as exc:
         raise _StrayEnd(EXIT_UNAVAILABLE, f"{form}: the register's head could not be read: "
                         f"{exc}; {nothing}")
