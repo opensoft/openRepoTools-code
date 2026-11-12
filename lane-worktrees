@@ -416,6 +416,23 @@ def open_regular(path: str, mode: str = "r", **kwargs):
     return open(path, mode, opener=_opener, **kwargs)
 
 
+#: Why a record whose contents name a path with a NUL byte in it is unreadable.
+NUL_WHY = "names a path holding a NUL byte, which no path can: unreadable, never followed"
+
+
+def _nul_record(record: str, unread: list | None = None) -> None:
+    """A PATH READ OUT OF A FILE THAT HOLDS A NUL BYTE (lane 3, 2026-11-12):
+    the OS refuses it with a ValueError - no OSError, so no reader here caught
+    it - and one such `.git` pointer in an estate turned the whole daily
+    report into "INTERNAL ERROR", exit 2, no report. The record that named it
+    is one that could not be read: in `SKIPPED`, and in `unread` where one is
+    kept, so a leaning it may hide is unknown, never none."""
+    SKIPPED.setdefault(record, NUL_WHY)
+    line = f"{record} ({NUL_WHY})"
+    if unread is not None and line not in unread:
+        unread.append(line)
+
+
 def sha256_of(path: str) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as fh:
@@ -1280,6 +1297,11 @@ def git_common_dir(repo: str) -> str:
         return common
     except OSError:
         return gitdir
+    except ValueError:
+        # THE `gitdir:` LINE NAMES A PATH WITH A NUL BYTE: no git directory can
+        # be found from it, so it is no pointer here - and an unreadable record.
+        _nul_record(dotgit)
+        return ""
 
 
 def local_remote_urls(common: str, unread: list | None = None) -> list:
@@ -1331,6 +1353,10 @@ def dependents_map(repos: list, unread: list | None = None) -> dict:
             except OSError as exc:
                 if unread is not None:
                     unread.append(f"{repo}/.git ({exc.strerror or exc})")
+            else:
+                # ...and one READ that names a NUL-byte path (`git_common_dir`).
+                if SKIPPED.get(os.path.join(repo, ".git")) == NUL_WHY:
+                    _nul_record(os.path.join(repo, ".git"), unread)
             continue
         try:
             with open_regular(os.path.join(common, "objects", "info", "alternates"),
@@ -1348,12 +1374,20 @@ def dependents_map(repos: list, unread: list | None = None) -> dict:
         except OSError as exc:
             if unread is not None:
                 unread.append(f"{common}/objects/info/alternates ({exc.strerror or exc})")
-        for name, url in local_remote_urls(common, unread):
-            path = url[len("file://"):] if url.startswith("file://") else url
-            path = os.path.expanduser(path)
-            if not os.path.isabs(path):
-                path = os.path.normpath(os.path.join(repo, path))
-            deps.setdefault(real(path), []).append((repo, f"remote {name} -> {url}"))
+        except ValueError:
+            # A NUL BYTE in the git directory `commondir` names, or in an
+            # alternates line: the repository's leaning is unknown.
+            _nul_record(os.path.join(repo, ".git"), unread)
+        try:
+            for name, url in local_remote_urls(common, unread):
+                path = url[len("file://"):] if url.startswith("file://") else url
+                path = os.path.expanduser(path)
+                if not os.path.isabs(path):
+                    path = os.path.normpath(os.path.join(repo, path))
+                deps.setdefault(real(path), []).append((repo, f"remote {name} -> {url}"))
+        except ValueError:
+            # ...or in a remote's URL, or in that git directory, met again here.
+            _nul_record(os.path.join(repo, ".git"), unread)
     return deps
 
 
@@ -5250,7 +5284,10 @@ def archive_ledger(adir: str):
                 if line.startswith("#") or not line.strip():
                     continue
                 cols = line.rstrip("\n").split("\t")
-                if len(cols) < 3 or not cols[0] or not cols[1] or not SHA_RE.match(cols[2]):
+                # A NUL BYTE IS NO ORIGIN OR BRANCH: `git ls-remote` would be handed it,
+                # and the OS refuses that argument with a ValueError (`_nul_record`).
+                if len(cols) < 3 or not cols[0] or not cols[1] or not SHA_RE.match(cols[2]) \
+                        or "\0" in line:
                     return None, "its rescues.tsv has a row that is not origin, branch, sha"
                 out.append((cols[0], cols[1], cols[2]))
     except OSError:
@@ -5463,6 +5500,10 @@ class Report:
                 out[key.strip()] = value.strip()
         if need_path and not out.get("path"):
             self._unread(path, "an inventory record that names no path")
+        elif "\0" in out.get("path", ""):
+            # A NUL BYTE (`_nul_record`): `os.path.isdir` answers False for that
+            # path, which read as a tree that is gone - never a record not read.
+            self._unread(path, "an inventory record that " + NUL_WHY)
         return out
 
     def _tree_records(self, tdir: str) -> list:
@@ -5899,11 +5940,18 @@ class Report:
                 with open_regular(os.path.join(wroot, ".gitignore"), encoding="utf-8",
                                   errors="surrogateescape") as fh:
                     have = set(fh.read().splitlines())
+            except NotRegular as exc:
+                # NO REPAIR IS OFFERED FOR WHAT IS NOT A FILE: `printf ... >>` onto a
+                # FIFO waits for a reader, so the command this row offered would hang
+                # whoever pasted it. The row says what the path is instead.
+                have = None
+                rows.append([os.path.join(wroot, ".gitignore"), f"is {exc}",
+                             "a person's to look at: no line is appended to what is not a file"])
             except OSError:
                 have = set()
             want = ["__pycache__/", "*.pyc", "*.pyo", ".pytest_cache/", ".mypy_cache/",
                     ".ruff_cache/", "node_modules/", ".venv/", "venv/", "site-packages/"]
-            missing = [w for w in want if w not in have]
+            missing = [w for w in want if have is not None and w not in have]
             if missing:
                 # THE PATH IS QUOTED (#170 item 10): the command is offered to be
                 # pasted, and a workspace path with a space in it split the redirect.

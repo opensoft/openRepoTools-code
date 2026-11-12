@@ -800,4 +800,47 @@ def test_a_fifo_where_the_report_reads_a_file_is_skipped_and_named_never_waited_
             continue
         hit = [r for r in rows if r.startswith(f"- {path} · ")]
         assert hit and "a FIFO, not a regular file: skipped, never opened" in hit[0], (name, rows)
+    # NO `printf ... >> .gitignore` TO PASTE ONTO A FIFO: it would wait for a reader.
+    hygiene = section(proc.stdout, "Workspace repository hygiene")
+    assert f"{fifos['gitignore']} · is a FIFO, not a regular file" in hygiene, hygiene
+    assert "printf" not in hygiene and ">>" not in hygiene, hygiene
+    assert before == after, sorted(set(before.items()) ^ set(after.items()))[:10]
+
+
+def test_a_git_pointer_naming_a_nul_byte_path_is_unreadable_never_an_internal_error(tmp_path):
+    """Lane 3, 2026-11-12: past its FIFOs, the report on the real estate
+    stopped at a `.git` whose `gitdir:` line holds a NUL byte. The OS refuses
+    such a path with a ValueError, which no reader caught, so the daily report
+    was "INTERNAL ERROR", exit 2, and no report at all. Here one pointer's
+    `gitdir:` line holds a NUL, and so does the `commondir` another pointer
+    leads to: each is a row of "Records the report could not read", the report
+    exits 0, and it changes nothing."""
+    e = LW.Estate(tmp_path)
+    (e.fakebin / "status").write_text(FAKE_STATUS)
+    (e.fakebin / "status").chmod(0o755)
+    e.env["LANE_WORKTREES_STATUS"] = str(e.fakebin / "status")
+    in_gitdir = e.projects / "nul-gitdir"
+    in_gitdir.mkdir()
+    (in_gitdir / ".git").write_bytes(b"gitdir: ../m\0x\n")
+    admin = e.root / "admin" / "wt"
+    admin.mkdir(parents=True)
+    (admin / "commondir").write_bytes(b"../..\0junk\n")
+    in_common = e.projects / "nul-commondir"
+    in_common.mkdir()
+    (in_common / ".git").write_text(f"gitdir: {admin}\n")
+    e.write_spec()
+    skip = ("helper.log", "helper-spec.json", "prs.json")
+    before = LW.snapshot(e.root, skip=skip)
+    proc = subprocess.run([sys.executable, str(LW.LW), "sweep", "--all", "--dry-run",
+                           "--report", "--estate", str(e.projects)],
+                          capture_output=True, text=True, env=e.env, timeout=120,
+                          cwd=str(e.root), stdin=subprocess.DEVNULL)
+    after = LW.snapshot(e.root, skip=skip)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "INTERNAL ERROR" not in proc.stderr, proc.stderr
+    rows = section(proc.stdout, "Records the report could not read").splitlines()
+    for repo in (in_gitdir, in_common):
+        hit = [r for r in rows if r.startswith(f"- {repo / '.git'} · ")]
+        assert hit and "names a path holding a NUL byte" in hit[0], (repo, rows)
+    assert "\0" not in proc.stdout
     assert before == after, sorted(set(before.items()) ^ set(after.items()))[:10]
