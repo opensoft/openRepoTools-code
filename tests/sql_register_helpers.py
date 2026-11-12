@@ -142,8 +142,12 @@ The modes, with the keys each takes:
   sending nothing;
 - `edit-entry`, `field` and `value`: rewrite one field of the commit call's
   entry, the `'…'::jsonb` argument of `commit_write(`, before handing the
-  call on. `field` may be a dotted path, such as `act.base`, and must exist;
-  without `value` the field is removed;
+  call on. `field` may be a dotted path, such as `act.base`, and must exist.
+  A part that meets a list is an index into it, a negative one counting from
+  the list's end, so `register_lines.-1.workstation` is the last
+  `register_lines` row's `workstation` (T203d); an index past either end is a
+  field that is not there. Without `value` the field, or the list's element,
+  is removed;
 - `no-reconnect`, `as` (`before` or `after`): the first call the arm names
   is lost as that mode loses it, and every later call exits 2, sending
   nothing, as from a host that cannot reconnect;
@@ -495,6 +499,15 @@ def terminate(script, where):
     return script[:m.start()] + statement + " \\; " + TERMINATE + ";" + script[m.end():]
 
 
+def step(node, key):
+    # One part of `field`: in a list, a whole number is an index, a negative
+    # one counting from the list's end (`register_lines.-1.workstation`, T203d);
+    # every other part is the key as written, so a dict's path reads as before.
+    if isinstance(node, list) and re.fullmatch(r"-?[0-9]+", key):
+        return int(key)
+    return key
+
+
 def edit_entry(script, arm):
     at = script.find("commit_write(")
     if at < 0:
@@ -507,15 +520,19 @@ def edit_entry(script, arm):
         path = arm["field"].split(".")
         node = entry
         for key in path[:-1]:
-            node = node[key]
-        if path[-1] not in node:
-            raise KeyError(path[-1])
-    except (ValueError, KeyError, TypeError) as exc:
+            node = node[step(node, key)]
+        last = step(node, path[-1])
+        if isinstance(last, int):
+            if not -len(node) <= last < len(node):
+                raise IndexError("list index %d out of range for %d items" % (last, len(node)))
+        elif last not in node:
+            raise KeyError(last)
+    except (ValueError, KeyError, TypeError, IndexError) as exc:
         raise ShimError("`edit-entry`: the entry has no field %s (%s)" % (arm["field"], exc))
     if "value" in arm:
-        node[path[-1]] = arm["value"]
+        node[last] = arm["value"]
     else:
-        del node[path[-1]]
+        del node[last]
     text = json.dumps(entry, ensure_ascii=False, separators=(",", ":")).replace("'", "''")
     return script[:m.start()] + "'" + text + "'::jsonb" + script[m.end():]
 
