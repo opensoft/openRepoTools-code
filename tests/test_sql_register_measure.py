@@ -87,6 +87,7 @@ trust.
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -1338,18 +1339,41 @@ def _path_m9(reg, root: Path):
         session.close()
 
 
+@contextlib.contextmanager
+def hook_pid():
+    """THE HOOK'S `$$`, FOR A GUARD READ'S `--pid` (contract section 3.6:
+    "`--pid <pid>` ... is the hook's own pid, `$$`, in forms 2 and 4", and
+    "the client reads `T0` from it"). It yields the pid of a stand-in for the
+    hook, a `sleep` started just before the read, as a hook's own start is,
+    and stops it after the read. T507 cuts a guard read at `T0` + 3.75 s
+    from that start, and an age at or above the cut exits 2, "too late to
+    verify" (section 3.6's 2; `register_guard_t0`). The pytest process's own
+    pid is minutes old on a runner, so with it `[m10]` ended 2 (lane 1's
+    round 6b census, #165 6827592167, item 2). The stand-in is AT-F7's,
+    `test_sql_register_outage.py`'s `_stand_in`, at an age of 0."""
+    standin = subprocess.Popen(["sleep", "120"], start_new_session=True,
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+    try:
+        yield str(standin.pid)
+    finally:
+        standin.kill()
+        standin.wait()
+
+
 def _path_m10(reg, root: Path):
     """M10's part 4 on primary: the guard's register read through the
     direct read, the service down: form 2, the guard's prefetch,
     `register read --for guard --prefetch --cache <file> --pid <pid> --repo
     <dir> [--lane=<window>]` (CLI412:661; lane 1's T113, called by T507's
-    `guard_run`). How the caller's cut at `T0 + 3.75 s` reaches it is T507's,
-    so none is set here. The cache file's directory is made first: the read
-    writes the file's family beside it and makes no directory."""
+    `guard_run`). Its `--pid` is a stand-in started just before the read
+    (`hook_pid`), as the hook's `$$` is, so T507's cut at `T0 + 3.75 s` runs
+    from the read's own start. The cache file's directory is made first: the
+    read writes the file's family beside it and makes no directory."""
     (root / "m10").mkdir(parents=True, exist_ok=True)
-    proc = run_index(reg.copy, ["register", "read", "--for", "guard", "--prefetch", "--cache",
-                                root / "m10" / "cache", "--pid", os.getpid(), "--repo",
-                                reg.estate.checkout, "--lane=repoA-1"], reg.env)
+    with hook_pid() as pid:
+        proc = run_index(reg.copy, ["register", "read", "--for", "guard", "--prefetch", "--cache",
+                                    root / "m10" / "cache", "--pid", pid, "--repo",
+                                    reg.estate.checkout, "--lane=repoA-1"], reg.env)
     assert proc.returncode == 0, proc.stderr
 
 
