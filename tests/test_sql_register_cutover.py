@@ -59,7 +59,9 @@ the operator lane, with `GIT_WRAPPER` first on the command's `PATH`: test
 line of `git-wrapper.json`: fail a call; push, then report the push failed;
 fail every `fetch` once a push has been made (the read-back's fetch); hold
 a push on a FIFO; and, for the deploy key, test 5's GitHub-shaped origin,
-whose URLs the wrapper sends to the bare origin. The cases fail until L1-A14
+whose URLs the wrapper sends to the bare origin on the calls that reach it,
+`fetch`, `push` and `ls-remote`, with `workspace.yaml` naming that GitHub
+repository too. The cases fail until L1-A14
 and lane 3's T327 (the marker's push, read-back and abort, through T320's
 one push function); the renders until T321 to T323; and the `[rollback]`
 cases also until lane 3's T304 and T326, `rollback`'s transaction and its
@@ -359,7 +361,13 @@ def test_a_first_cutovers_store_names_the_register_label(tmp_path, request):
 #: test closes its end, then runs the call. `after_push` makes an arm wait
 #: for a push that ran and exited 0; `count` limits the calls it takes.
 #: `redirect` sends test 5's GitHub URLs to the bare origin, as `-c
-#: url.<origin>.insteadOf=<url>` before the call's own arguments.
+#: url.<origin>.insteadOf=<url>` before the call's own arguments, on the
+#: calls that reach origin alone: `fetch`, `push` and `ls-remote` (`REACH`).
+#: On any other call the redirect would be seen. `git remote get-url origin`
+#: expands `insteadOf`, so T320's `render_push_url` would read the bare
+#: origin's path and refuse it as no GitHub repository; and `git config`
+#: lists `-c`, so T320's `_render_push_config_check` would find a rewrite of
+#: the push URL and refuse it (lane 3's T327 builder, #165 6812549487).
 GIT_WRAPPER = r'''#!/usr/bin/env -S python3 -I
 import json, os, subprocess, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -369,6 +377,7 @@ STATE = os.path.join(HERE, "git-wrapper.state")
 WITH_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path",
               "--config-env"}
 SHOWN = ("GIT_SSH_COMMAND", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "SSH_AUTH_SOCK")
+REACH = ("fetch", "push", "ls-remote")
 
 
 def subcommand(args):
@@ -423,7 +432,7 @@ def main():
         break
     prefix = []
     redirect = control.get("redirect")
-    if redirect:
+    if redirect and sub in REACH:
         for url in redirect["from"]:
             prefix += ["-c", "url.%s.insteadOf=%s" % (redirect["to"], url)]
     mode = arm["mode"] if arm else "run"
@@ -468,8 +477,9 @@ def _import_module():
 
 class F2Register:
     """AT-F2's fixture: test 7's cutover host with `GIT_WRAPPER` first on
-    each command's `PATH`. `github=True` gives test 5's GitHub-shaped origin
-    and a `render_key=` file, for the deploy key's case."""
+    each command's `PATH`. `github=True` gives test 5's GitHub-shaped origin,
+    `workspace.yaml` naming that repository, and a `render_key=` file, for
+    the deploy key's case."""
 
     def __init__(self, root: Path, pg, *, github: bool = False):
         imp = _import_module()
@@ -486,6 +496,19 @@ class F2Register:
         self.conf = reg.index_conf
         if github:
             reg.git("remote", "set-url", "origin", GH_HTTPS)
+            # `workspace.yaml` names the repository origin now names. T320's
+            # `render_push_url` refuses an origin that is not `source_of`'s,
+            # which reads `repository:`; and `lanes-edit.sh`'s workspace
+            # resolver refuses a `path:` whose origin is not the
+            # `repository:` beside it (`lanes_ws_same_repo`). Only this arm's
+            # origin is GitHub-shaped: the import module's `Workspace` names
+            # the bare origin, as every other case's origin is.
+            yaml = reg.agents / "workspace.yaml"
+            lines = yaml.read_text(encoding="utf-8").splitlines()
+            assert sum(line.startswith("repository:") for line in lines) == 1, lines
+            yaml.write_text("\n".join(f"repository: {F2_REPOSITORY}"
+                                      if line.startswith("repository:") else line
+                                      for line in lines) + "\n", encoding="utf-8")
             self.redirect = {"to": str(reg.origin), "from": [GH_HTTPS, GH_SSH]}
             self.key = _private(reg.conf / "render_key",
                                 "-----BEGIN OPENSSH PRIVATE KEY-----\nnot a key\n"
