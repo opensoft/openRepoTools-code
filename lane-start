@@ -325,6 +325,15 @@
 #      deferred-record note prints too (Q65, #165 6808141050). Where the act
 #      dies instead, on a new row's code but 3 and on `request-handoff`'s 2,
 #      it says to run `lane-start` again from its start (Q63, Q66).
+#   130, 143  stopped by INT or TERM (128 plus the signal), in lane-end's form
+#      (REV-ACT2 N2): the run ends where the signal found it, removes its
+#      temporary files, and never resumes. A verb it was waiting on ends
+#      first, by its own rules, and its code is not read; what was written
+#      before stands, and nothing more is written or launched. A ^C or a TERM
+#      at either `[y/N]` prompt, `--confirm`'s or the one asked before a
+#      `request-handoff`, ends the run there, with nothing renamed or
+#      written: a signal is not an answer, so R-A8-3's "no answer exits" is
+#      not broken by it (the comment at the first prompt says why).
 #
 # ENVIRONMENT
 #   PROJECTS_ROOT        default ~/projects
@@ -2781,6 +2790,19 @@ if (( confirm )); then
       step "Take lane $LANE in this window? [y/N] ${LANE_START_ANSWER:-<empty>}   (LANE_START_ANSWER)"
       answer="$LANE_START_ANSWER"
     elif [ -t 0 ]; then
+      # A ^C OR A TERM AT THIS PROMPT ENDS THE RUN WITH 130 OR 143, AND THAT
+      # IS CHOSEN (RC-W10b n1). The traps at the top (`1c86237`, REV-ACT2 N2)
+      # end the run on INT and TERM here as anywhere. A signal is not an
+      # answer: R-A8-3 below makes every ANSWER lead somewhere, and `N`, an
+      # empty line, an end of input (^D) and no terminal each still start
+      # Claude bare, exit 0. ^C is the person stopping this command, as at any
+      # prompt in a terminal, and TERM is another process stopping it. Nothing
+      # has been renamed or written yet, so nothing is left half done. Before
+      # `1c86237` the one trap `cleanup EXIT INT TERM` ran `cleanup` and the
+      # `read` went on waiting (RC-W10b; W11-T428, bash 5.2): a ^C did nothing
+      # a person could see, and a TERM could not end the run. Keeping that
+      # would take a trap of its own around each `read`, and bring back here
+      # the defect N2 removed, a `cleanup` that runs while the run goes on.
       printf '%s: Take lane %s in this window? [y/N] ' "$prog" "$LANE" >&2
       IFS= read -r answer || answer=""
     else
@@ -3004,6 +3026,10 @@ if [ "$bind_rc" = 0 ]; then
       case "$LANE_START_HANDOFF_ANSWER" in y|Y|yes|YES|Yes) ls_ask=yes ;; *) ls_ask=no ;; esac
     elif [ -t 0 ]; then
       note "$ls_bind_facts"
+      # A ^C or a TERM here ends the run with 130 or 143, before the request
+      # is sent and with nothing renamed or written, as at `--confirm`'s
+      # prompt above, and for its reasons (RC-W10b n1). `N` ends it too,
+      # with 2 and the two commands below.
       printf '%s: ask it to hand off, then bind here? [y/N] ' "$prog" >&2
       IFS= read -r ls_answer || ls_answer=""
       case "$ls_answer" in y|Y|yes|YES|Yes) ls_ask=yes ;; *) ls_ask=no ;; esac
