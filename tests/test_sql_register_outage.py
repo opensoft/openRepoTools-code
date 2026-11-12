@@ -823,20 +823,48 @@ def test_under_a_declaration_a_direct_read_left_under_0_5_s_does_not_start(tmp_p
     assert "verdict=open\n" in text and f"label={_label(fields)}\n" in text, text
 
 
+#: AT-F7's control's age: the stand-in's, when the client starts. The client
+#: reads the age only after its own start, so the age it reads is this plus
+#: that start, above `T0` + 3.15 s, past which the declared floor refuses a
+#: read, wherever the start takes 0.15 s or more; and it leaves 0.75 s for
+#: the start and the stopped database's read before `T0` + 3.75 s.
+SAME_AGE = 3.0
+
+
 def test_without_a_declaration_the_same_age_still_starts_the_direct_read(tmp_path):
-    """AT-F7's control: at about 3.3 s and with nothing declared, the cap is
-    `T0 + 3.75 s` and no floor applies, so the direct read starts; the
-    stopped database fails it, and the client exits 69, writing no
-    `.outage` and never too late."""
+    """AT-F7's control: with nothing declared, the cap is `T0 + 3.75 s` and
+    no floor applies, so at an age the declared floor refuses, the direct
+    read still starts; the stopped database fails it, and the client exits
+    69, writing no `.outage` and never too late.
+
+    THE AGE (lane 5, #165 6808764772). The client reads the stand-in's age
+    after its own start, and its direct read must also end before the cap,
+    or the client's timer cuts it and the client exits 2, too late. At
+    3.3 s, as the test plan has it (TP:6412), that left 0.45 s, and the
+    case failed once in four of lane 5's runs, with the client's start at
+    0.2 to 0.5 s. Under T507A in lane 2's probe (W4a13, 2026-11-12, a load
+    of about 24 on 32 cores), the client's launch to its first `psql` call
+    took 0.46 to 0.57 s, and to its end 0.53 to 0.63 s; at stand-in ages
+    2.9, 3.0 and 3.1 the read started and ended 69, and at 3.16 and 3.2 it
+    was cut, 2. So `SAME_AGE` is 3.0. The age the client reads, `SAME_AGE`
+    plus its own start, stays above the declared floor's `T0` + 3.15 s
+    (`[floor]` is at 3.3 s). The client's start to its direct read is
+    recorded beside the 0.75 s it has."""
     estate = Estate(tmp_path, [_render(1), _render(2), _render(3)])
     config = estate.config()
-    standin = _stand_in(3.3)
+    standin = _stand_in(SAME_AGE)
+    launched = time.time()
     try:
         proc, _ = estate.client(config, standin.pid)
     finally:
         standin.kill()
         standin.wait()
-    assert len(estate.psql_starts()) == 1, f"the direct read did not start: {proc.stderr}"
+    starts = estate.psql_starts()
+    if starts:
+        _record("the client's start, from its launch to its direct read",
+                starts[0]["start"] - launched, CAP - SAME_AGE,
+                "the control's room, T0 + 3.75 s less SAME_AGE")
+    assert len(starts) == 1, f"the direct read did not start: {proc.stderr}"
     assert "too late to verify" not in proc.stderr
     assert proc.returncode == 69, f"the client exited {proc.returncode}: {proc.stderr}"
     assert not Path(str(estate.cache) + ".outage").exists()
