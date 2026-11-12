@@ -1623,10 +1623,23 @@ def test_lane_worktrees_register_reads_go_through_a_verb_and_refuse_69(tmp_path,
 def test_index_flag_on_primary_changes_nothing_and_prints_no_index_line(primary):
     """On primary, `--index` changes nothing: with and without it, stdout
     and the exit are equal, and stderr has no index line (Wspec:641-646;
-    lane 5's T509)."""
-    for argv in (("lanes",), ("history",)):
+    lane 5's T509).
+
+    `history` TAKES `--all` (T217ze; lane 5, #165 6833182352). A bare
+    `history` exits 64 at the arm's selector check
+    (`81bd6d3:lanes-edit.sh:23738`), after the door's prefetch and before
+    T509's `--index` guard (:23751), so it compared two usage errors. With
+    `--all` the arm reads every log, and the estate's logs hold `NOTED` and
+    `RULED` lines, so each run answers a timeline. Each half forgets the
+    door's calls first, so `history`'s calls are its own, never those
+    `lanes --index` left."""
+    for argv in (("lanes",), ("history", "--all")):
+        primary.door.forget_calls()
         bare = primary.edit(*argv)
         assert primary.door.register_calls(), (argv, "the read never reached the store", bare.stderr)
+        if argv[0] == "history":
+            assert bare.returncode == 0 and bare.stdout, (
+                argv, "no timeline to compare", bare.returncode, bare.stderr[-1500:])
         primary.door.forget_calls()
         flagged = primary.edit(*argv, "--index")
         assert (flagged.returncode, flagged.stdout) == (bare.returncode, bare.stdout), \
