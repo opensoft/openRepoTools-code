@@ -8944,8 +8944,10 @@ log_path_ci() {   # <lane> — 0 with the ONE path, 2 where two differ only by c
 }
 
 # The repo-relative path `ensure_log` renamed a log AWAY from, for the ONE
-# caller that has to put it in the same commit as the write. Empty on every
-# other run, and reset by every `ensure_log`, so "renamed" is never sticky.
+# caller that has to put it in the same commit as the write, or, on primary
+# only, the path of the log `rename-lane` moves (T422, with `LOG_RENAMED_TO`
+# below). Empty on every other run, reset by every `ensure_log`, and cleared
+# by the seam on `committed`, so "renamed" is never sticky.
 LOG_RENAMED_FROM=""
 # FEATURE 007, T422 — THE PATH `rename-lane` MOVED THE LOG TO, ON PRIMARY
 # ONLY: set with `LOG_RENAMED_FROM` under the flag, just before that verb's
