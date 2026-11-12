@@ -1103,7 +1103,13 @@ def tail_rerun(e: Estate, lane: str, argv: Sequence[str], where: Path, extra: Op
     """AT-D8's tail oracle around a killed write: no effect before the rerun;
     the rerun exits 0 with one row; the record wrote `tail=sent`, then
     `tail=done`, and is removed; the mark holds `done`; a second rerun under
-    the id runs nothing. Returns the rerun and the id."""
+    the id, with its generation (an id with no generation and no record is
+    refused 2 before any call: pending-record.md §5.2, R08; T245d), finds
+    the mark and runs none of the tail, so the effects stay at one
+    (TP:3366-3367): no comment and no `tmux` call of its own, and the
+    callers' checks of the sidecars and the handoff come after it. The
+    logging `git` wrapper logs every `git` call a run makes, so its count is
+    no oracle of the tail. Returns the rerun and the id."""
     _, write_id = killed(e, lane, argv, first=[where], extra=extra)
     before = len(tool_calls(where))
     again = e.run(lane, argv, first=[where], extra=extra)
@@ -1111,9 +1117,11 @@ def tail_rerun(e: Estate, lane: str, argv: Sequence[str], where: Path, extra: Op
     assert [r["write_id"] for r in e.journal_after()].count(write_id) == 1
     assert pending(e) == [] and take_files(e) == []
     assert "done" in mark_of(e, write_id).read_text(encoding="utf-8")
-    after = len(tool_calls(where))
-    third = e.run(lane, argv, first=[where], extra=dict(extra or {}, LANES_WRITE_ID=write_id))
-    assert third.code == 0 and len(tool_calls(where)) == after, "a second rerun ran the tail again"
+    effects = len(comments(where)), len(tool_calls(where, "tmux"))
+    third = e.run(lane, argv, first=[where], extra=dict(extra or {}, LANES_WRITE_ID=write_id,
+                                                         LANES_WRITE_GENERATION=e.c.switch()["generation"]))
+    assert third.code == 0, f"the second rerun exited {third.code}: {third.err[-800:]}"
+    assert (len(comments(where)), len(tool_calls(where, "tmux"))) == effects, "a second rerun ran the tail again"
     return again, write_id, before
 
 
@@ -1328,8 +1336,8 @@ def test_a_sent_record_whose_child_never_read_committed_replays_and_an_owed_mark
     """[sent-child-never-read]: a record holding `tail=sent` while the dead
     child's `seam.out` says `none`: the owner removes `tail` and replays,
     one comment, exit 0. [owed-mark]: a mark holding `owed <utc>`; a rerun
-    under `LANES_WRITE_ID` runs no tail, adds no comment, and names the
-    steps as owed again."""
+    under `LANES_WRITE_ID`, with its generation (T245d), runs no tail, adds
+    no comment, and names the steps as owed again."""
     e = estates()
     where = loggers(e)
     argv = claim(OBJ)
@@ -1347,7 +1355,8 @@ def test_a_sent_record_whose_child_never_read_committed_replays_and_an_owed_mark
         mark.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         mark.write_text(f"{write_id} {e.journal_after()[-1]['seq']} owed {e.utc()}\n", encoding="utf-8")
         rec["path"].unlink()
-        again = e.run(LA, argv, first=[where], extra={"LANES_WRITE_ID": write_id})
+        again = e.run(LA, argv, first=[where], extra={"LANES_WRITE_ID": write_id,
+                                                      "LANES_WRITE_GENERATION": e.c.switch()["generation"]})
         assert again.code == 0 and comments(where) == [] and "owed" in again.err, again.err[-800:]
 
 
@@ -1677,7 +1686,9 @@ def test_a_replay_that_stops_or_differs_runs_no_tail_and_warns(estates, case):
 @pytest.mark.parametrize("case", ["done-mark", "this-host", "other-host"])
 def test_a_run_with_no_record_runs_no_tail_and_names_it(estates, case):
     """A rerun under `LANES_WRITE_ID` of a write committed and settled, with
-    no record here, exits 0 and runs no tail. [done-mark]: it says what the
+    no record here, and so with its `LANES_WRITE_GENERATION` (an id with no
+    generation and no record is refused 2 before any call: pending-record.md
+    §5.2, R08; T245d), exits 0 and runs no tail. [done-mark]: it says what the
     mark's `tail` says; [this-host]: with the mark removed and
     `journal.workstation` this host (`found`'s `workstation=`), it says the
     steps may already have run here, naming the entry's UTC from `utc=`;
@@ -1693,7 +1704,8 @@ def test_a_run_with_no_record_runs_no_tail_and_names_it(estates, case):
     if case != "done-mark":
         mark_of(e, write_id).unlink()
     before = len(comments(where))
-    again = e.run(LA, argv, first=[where], extra={"LANES_WRITE_ID": write_id})
+    again = e.run(LA, argv, first=[where], extra={"LANES_WRITE_ID": write_id,
+                                                  "LANES_WRITE_GENERATION": e.c.switch()["generation"]})
     assert again.code == 0 and len(comments(where)) == before, again.err[-800:]
     if case == "other-host":
         assert "ws2" in again.err and "rerun" in again.err, again.err[-800:]
@@ -1808,6 +1820,14 @@ def test_the_texts_for_3_say_may_not_be_written_and_relay_the_writers_rerun(site
 # held on a FIFO while the case decides. `<n>` is the first call's
 # `not_after`. Its timer is D9's 9 s (open point 37).
 #
+# AT MOST ONE RETRY (TP:5634-5636): at a 1 s deadline the lost first call
+# may end past it, and then no attempt starts and the writer goes straight
+# to the lookup, with no next snapshot (T246c; on `pair-m23t` `c8acf67c` the
+# shim logged the lookup's two tries after the lost call, and no snapshot).
+# So `HalfOpen` waits for the writer's next call after its first commit
+# call, that snapshot or the lookup's first try, and releases the snapshot's
+# hold only where the snapshot came.
+#
 # THE TRIES (R26, lane 4's answer to 40): each try starts at least 0.75 s
 # after the last one's start, never before the last one has ended, the k-th
 # at least k - 1.25 s after the first's, and any up to the window's 10 s
@@ -1919,8 +1939,23 @@ class HalfOpen:
             "SELECT count(*) FROM pg_stat_activity WHERE application_name = 't246-held' "
             "AND state = 'idle in transaction';") == "1", self.w)
         self.write_id, self.n = self.w.write_ids()[0], first_not_after(self.w)
-        hold_point(snap, self.w).close()
+        after = until_seen("the writer's next call after its first commit call: its next snapshot, held, "
+                           "or its lookup's first try", self.next_call, self.w)
+        if SNAPSHOT_TEXT in (after.get("stdin") or ""):
+            hold_point(snap, self.w).close()
         self.held = hold_point(look, self.w) if hold_lookup else None
+
+    def next_call(self) -> Optional[dict]:
+        """The writer's first snapshot or lookup try after its first commit
+        call, as the shim logs each at its start, before any hold: a next
+        attempt's snapshot, or, where the deadline passed with no attempt
+        started, the lookup's first try (at most one retry, TP:5634-5636;
+        T246c)."""
+        calls = self.w.calls()
+        commits = [k for k, c in enumerate(calls) if "commit_write" in (c.get("stdin") or "")]
+        later = calls[commits[0] + 1:] if commits else []
+        return next((c for c in later if SNAPSHOT_TEXT in (c.get("stdin") or "")
+                     or "find_write" in (c.get("stdin") or "")), None)
 
     def end(self, how: str) -> None:
         self.session.stdin.write(f"{how};\n")
