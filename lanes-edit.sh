@@ -638,6 +638,12 @@
 #      root commit among them, a range it cannot read, or no origin branch,
 #      refused before any push is made, the write's commit kept
 #      on HEAD (`cp_primary_push_check`).
+#      FEATURE 007, T424: on primary only, `append-line` refuses with 2,
+#      before the lock and with nothing written, a text that the one
+#      classifier, `lanes-index register classify`, reads as one of four: a
+#      hand-typed `LANDING EXPIRED`, a take that names no repository, a take
+#      with no readable UTC, or a `LANDING` whose lane cannot be read. That
+#      classifier's own 2, a refused configuration, is relayed as 2.
 #  64  usage — a caller's bad arguments to one of the reads Amendment 11 added
 #      (`window-lane`, `lane-dir`, `lane-profile`, `last-session`, `forks`,
 #      `duplicate-holder` (issue #39), `workstation`, `fetch-age`, `lanes`,
@@ -741,6 +747,15 @@
 #      here the request IS written, in the register at the seq it names, and
 #      whether the lane is still bound is not known, so the wait does not end
 #      2's "still bound". Nothing on stdout. Files mode keeps its 2.
+#      FEATURE 007, T424: on primary only, `append-line` also exits 69, before
+#      the lock and with nothing written, where the one classifier,
+#      `lanes-index register classify`, gives no answer this file can read,
+#      so that it cannot say whether the text is one of the four it refuses
+#      (see 2): no `lanes-index` to run or no place to put the question, an
+#      exit other than 0 and 2 (the 64 of a `lanes-index` that has no
+#      `classify`, a crash, a signal, its 2 s timer), or an exit 0 without
+#      exactly one line of five tab-separated fields (contract §2.7, "No
+#      other code"; §2.8). It never writes the text unclassified.
 #   3  PUSHED, NOT CONFIRMED: <sha> (Amendment 23 S4, its one cause in files
 #      mode). The write
 #      committed and pushed — or its push timed out, and a hung push often
@@ -2258,8 +2273,10 @@ rename_undo() {
 # at the state-event cache below, so a signal before that line removed what it
 # inherited. Every other path `cleanup`, `rename_undo` and `release_lock`
 # remove is set above, before the trap: `RL_*`, `LANES_IDX_DIR`,
-# `LANES_WT_IDX_DIR`, `LOCK` and `LOCK_HELD`.
-TMPD=""; pbh_tmp=""; rl_htmp=""; SE_CACHE_FILE=""
+# `LANES_WT_IDX_DIR`, `LOCK` and `LOCK_HELD`. `alc_dir`, the classifier's
+# question files (T424), is assigned only in `append_line_primary_refusals`,
+# so it starts empty here too.
+TMPD=""; pbh_tmp=""; rl_htmp=""; SE_CACHE_FILE=""; alc_dir=""
 # `write-handoff`'s ONE LINE ON STDOUT, `<file><TAB><sha256>`, printed by
 # `cleanup` once this process has written the handoff — committed or not, so a
 # refusal after the bytes (S3's for `--prepend` and `--whole`, a push not
@@ -2317,6 +2334,11 @@ cleanup() {   # [exit]: `exit` on the EXIT trap's path only, never INT's or TERM
   [ -n "${SE_CACHE_FILE:-}" ] && rm -f -- "$SE_CACHE_FILE" "$SE_CACHE_FILE".* 2>/dev/null
   [ -n "${LANES_IDX_DIR:-}" ] && [ -d "${LANES_IDX_DIR:-}" ] && rm -rf -- "$LANES_IDX_DIR"
   [ -n "${LANES_WT_IDX_DIR:-}" ] && [ -d "${LANES_WT_IDX_DIR:-}" ] && rm -rf -- "$LANES_WT_IDX_DIR"
+  # THE CLASSIFIER'S QUESTION FILES, where a signal stopped the call (T424):
+  # `append_line_primary_refusals` empties `alc_dir` once it has removed them
+  # itself, so this removes only the directory this run's `mktemp` made, by
+  # its name.
+  [ -n "${alc_dir:-}" ] && [ -d "${alc_dir:-}" ] && [ ! -L "${alc_dir:-}" ] && rm -rf -- "$alc_dir"
   # `claim`'s whole reads (706) cross a re-run's `exec`, which runs no EXIT
   # trap, and go when the last run of the claim ends, however it ends.
   [ -z "${CP_CLAIM_READS_FILE:-}" ] || rm -f -- "$CP_CLAIM_READS_FILE"
@@ -2944,6 +2966,157 @@ delete_lines() {   # <line numbers, one per line, any order>
   # it short (#120 item 1, above `replace_line`).
   register_rewrite "$dl_pre" "$dl_out" "$dl_after_write"
   note "$dl_n row(s) removed from $LANES_FILE"
+}
+
+# FEATURE 007, T424 — `append-line`'s FOUR REFUSALS ON PRIMARY, DECIDED BY THE
+# ONE CLASSIFIER (design S6, Y:3396–3405; Y:5115–5116; lane 3's ruling, #165
+# 6747761107; contract §3.5, R04). `append-line` calls this only where
+# `REG_MODE` is `primary`, T409's one answer (in an attempt's child, T413's),
+# beside its newline and managed-vocabulary refusals and before the lock, so a
+# refusal leaves the checkout as the command found it. Files mode and index
+# mode never call it, and start no `lanes-index` for it.
+#
+# The text goes, as the one line `append_text_line` would write, to
+# `lanes-index register classify` on stdin, found by `lanes_index_bin`, and
+# one line comes back: <kind> TAB <slot_role> TAB <repo_key> TAB <utc_ts> TAB
+# <lane>, `-` for none. This file reads those fields and classifies nothing
+# itself: a bash copy would be the second classifier Y:6247–6249 warns of. It
+# refuses with 2, nothing written:
+#   - a `<kind>` of `LANDING EXPIRED`: on primary only `append-line
+#     --landing-expired` writes that kind, copying the holder's `LANDING` for
+#     F13's check, so one typed by hand is refused and the form is named
+#     (Y:5115);
+#   - a take, `<slot_role>` `take`, whose `<repo_key>` is `-`: it would look
+#     like a hold to readers and order nothing (Y:3396–3400);
+#   - a take whose `<utc_ts>` is `-`: it could never be stale, so no
+#     `LANDING EXPIRED` could release it (Y:5116, Y:3401–3405);
+#   - a `LANDING` whose `<lane>` is `-`: it would hold `main` with nothing able
+#     to close it (lane 3's ruling, #165 6747761107).
+# A close, and a line of no kind, are free text here, as (B) leaves them
+# (Y:3399–3400).
+#
+# THE CLASSIFIER FAILING IS NEVER A PASS. Its own 2, a refused configuration,
+# is relayed as 2. Anything else that is not one answer this file can read
+# exits 69, nothing written (`append_line_classify_failed`): no `lanes-index`
+# to run, or no place to put the question; an exit other than 0 and 2 (64,
+# which a `lanes-index` with no `classify` gives, a crash, a signal, its
+# timer's 124 or 137); or an exit 0 without exactly one LF-ended line of five
+# non-empty tab-separated fields of printable ASCII, whose `<slot_role>` is
+# `take`, `close` or `-` and whose `<utc_ts>` is `-` or whole seconds
+# (contract §2.7, "No other code … as 69 for a failed read"; §2.8). Its stdout
+# and stderr go to files, as the mode question's do, so a stand-in that leaves
+# a child behind holds no pipe open here; a signal that stops the call leaves
+# their directory to `cleanup`, which removes it while `alc_dir` holds it. Its
+# timer is the mode question's, `timeout -k 1 2` where `timeout` is installed,
+# and the call runs unbounded where it is not, as that one does (lane 3's
+# ruling, #165 6754806910; contract §2.4's `mode` row).
+append_line_primary_refusals() {   # <text>
+  alc_why=""; alc_rc=0; alc_out=""; alc_odd=0; alc_said=""; alc_dir=""; alc_timer=bare
+  alc_bin="$(lanes_index_bin)"
+  if [ -z "$alc_bin" ]; then
+    alc_why="could not be run: there is no lanes-index beside $SCRIPT_DIR/lanes-edit.sh or on PATH"
+  else
+    alc_dir="$(mktemp -d "${TMPDIR:-/tmp}/lanes-edit-classify.XXXXXX" 2>/dev/null || printf '')"
+    if [ -z "$alc_dir" ]; then
+      alc_why="could not be asked: no temporary directory could be made under ${TMPDIR:-/tmp} to hold its answer"
+    elif ! printf '%s\n' "$1" >"$alc_dir/in" 2>/dev/null; then
+      alc_why="could not be asked: the text could not be written to $alc_dir/in"
+    else
+      # IN A SUBSHELL THAT ENDS IN `exit`, ITS OWN STDERR DROPPED (lane 3's
+      # ruling, #165 6755027994): a call that a signal ends, the timer's KILL
+      # or another, is waited for in there, so bash's job notice ("Killed")
+      # goes nowhere and this shell reads the plain 137. The `exit` is what
+      # makes bash fork: a lone command in `( … )`, with or without a `;`, is
+      # exec'd in place by bash 5, and the notice comes back. The call's own
+      # stderr keeps its file.
+      if command -v timeout >/dev/null 2>&1; then
+        alc_timer=timed
+        ( timeout -k 1 2 "$alc_bin" register classify <"$alc_dir/in" >"$alc_dir/out" 2>"$alc_dir/err"; exit "$?" ) 2>/dev/null || alc_rc=$?
+      else
+        ( "$alc_bin" register classify <"$alc_dir/in" >"$alc_dir/out" 2>"$alc_dir/err"; exit "$?" ) 2>/dev/null || alc_rc=$?
+      fi
+      # WHAT IT SAID, AS ONE LINE, as the mode question reads it.
+      alc_said="$(head -c 1000 -- "$alc_dir/err" 2>/dev/null | tr '\n\r\t' '   ' | tr -d '\000-\037' || :)"
+      while [ "${alc_said% }" != "$alc_said" ]; do alc_said="${alc_said% }"; done
+      # Every byte a tab, a line feed or printable ASCII, counted before the
+      # answer is read, since bash drops a NUL from it; and read only where
+      # every byte is one of those, so that bash never meets a NUL here and
+      # prints no "ignored null byte" warning before the 69 below.
+      alc_odd="$(LC_ALL=C tr -d '\t\n -~' <"$alc_dir/out" 2>/dev/null | wc -c | tr -d ' ')"
+      if [ "$alc_odd" = 0 ]; then
+        alc_out="$(cat -- "$alc_dir/out" 2>/dev/null; printf .)"; alc_out="${alc_out%.}"
+      fi
+    fi
+    if [ -n "$alc_dir" ]; then
+      rm -f -- "$alc_dir/in" "$alc_dir/out" "$alc_dir/err"
+      if rmdir -- "$alc_dir" 2>/dev/null; then alc_dir=""; fi
+    fi
+  fi
+  [ -z "$alc_why" ] || append_line_classify_failed "$alc_why"
+  if [ "$alc_rc" = 2 ]; then
+    [ -n "$alc_said" ] || alc_said="lanes-index printed no text"
+    die "on primary, append-line asks lanes-index register classify whether its text is one of the four it refuses, and lanes-index refused (exit 2): $alc_said. Nothing was written, and the lock was not taken." 2
+  fi
+  # 124 AND 137 SAY WHAT THEY CAN MEAN, as the mode question's do (T409).
+  # Under the timer, a 124 is its stop, and a 137 is its KILL a second after a
+  # stop that was ignored, or a kill that was not the timer's. Where the call
+  # ran bare, with no `timeout`, no timer ran: a 124 is the call's own code and
+  # takes the plain line below, "exited 124 (…)", and a 137 is a signal's
+  # (lane 3, #165 6767463594, item 1). Every one exits 69, nothing written.
+  case "${alc_rc}:${alc_timer}" in
+    124:timed) append_line_classify_failed "did not answer within 2 s, and was stopped (exit 124)" ;;
+    137:timed) append_line_classify_failed "was killed (exit 137): by its 2 s timer after it ignored the stop, or by a signal" ;;
+    137:bare) append_line_classify_failed "was killed by a signal (exit 137)" ;;
+  esac
+  [ "$alc_rc" = 0 ] || append_line_classify_failed "exited $alc_rc${alc_said:+ ($alc_said)}"
+  [ "$alc_odd" = 0 ] ||
+    append_line_classify_failed "exited 0 with an answer holding a byte that is not printable ASCII, a tab or a line feed"
+  # ONE LINE OF FIVE FIELDS: cut at the first four tabs, then put back
+  # together, which gives the line again only where it held exactly four.
+  alc_tab="$(printf '\t')"; alc_lf="$(printf '\nx')"; alc_lf="${alc_lf%x}"
+  alc_line="${alc_out%"$alc_lf"}"
+  alc_kind="${alc_line%%"$alc_tab"*}"; alc_r="${alc_line#*"$alc_tab"}"
+  alc_role="${alc_r%%"$alc_tab"*}"; alc_r="${alc_r#*"$alc_tab"}"
+  alc_repo="${alc_r%%"$alc_tab"*}"; alc_r="${alc_r#*"$alc_tab"}"
+  alc_utc="${alc_r%%"$alc_tab"*}"; alc_lane="${alc_r#*"$alc_tab"}"
+  alc_ok=1
+  [ "$alc_line$alc_lf" = "$alc_out" ] || alc_ok=0
+  case "$alc_line" in *"$alc_lf"*) alc_ok=0 ;; esac
+  case "$alc_lane" in *"$alc_tab"*) alc_ok=0 ;; esac
+  [ "$alc_kind$alc_tab$alc_role$alc_tab$alc_repo$alc_tab$alc_utc$alc_tab$alc_lane" = "$alc_line" ] || alc_ok=0
+  [ -n "$alc_kind" ] && [ -n "$alc_repo" ] && [ -n "$alc_utc" ] && [ -n "$alc_lane" ] || alc_ok=0
+  case "$alc_role" in take|close|-) : ;; *) alc_ok=0 ;; esac
+  alc_secs="${alc_utc#-}"
+  if [ "$alc_utc" != - ]; then
+    case "$alc_secs" in ""|*[!0-9]*) alc_ok=0 ;; esac
+  fi
+  if [ "$alc_ok" != 1 ]; then
+    alc_show="${alc_out:0:200}"
+    alc_show="${alc_show//$alc_tab/<TAB>}"; alc_show="${alc_show//$alc_lf/<LF>}"
+    append_line_classify_failed "exited 0 without exactly one line of five tab-separated fields, its <slot_role> take, close or - and its <utc_ts> - or whole seconds (contract §3.5); it printed '${alc_show}'"
+  fi
+  if [ "$alc_kind" = "LANDING EXPIRED" ]; then
+    die "on primary, a LANDING EXPIRED line is written only by \`append-line --landing-expired <holder> --pr <n> --repo <owner/repo> --word '<quote>' --word-where '<where>' --word-utc <UTC>\`, which copies the holder's open LANDING for the commit's check (F13); typed by hand, it would release a LANDING that nothing judged stale. lanes-index register classify reads this text as LANDING EXPIRED: '$1'. Nothing was written, and the lock was not taken." 2
+  fi
+  alc_no=""
+  if [ "$alc_role" = take ]; then
+    [ "$alc_repo" != - ] ||
+      alc_no="$alc_no it names no repository, as 'into <owner/repo> main', so it would look like a hold to readers and order nothing;"
+    [ "$alc_utc" != - ] ||
+      alc_no="$alc_no it carries no UTC that reads as a time, as YYYY-MM-DDTHH:MMZ, so Rule 6's thirty minutes, measured from it, could never run out and no LANDING EXPIRED could release it;"
+  fi
+  if [ "$alc_kind" = LANDING ] && [ "$alc_lane" = - ]; then
+    alc_no="$alc_no it names no lane, as 'lane <name>', so it would hold main with nothing able to close it, since a LANDED closes its own lane's LANDING;"
+  fi
+  [ -z "$alc_no" ] ||
+    die "on primary, append-line refuses this ${alc_kind} line, as lanes-index register classify reads it:${alc_no%;}. Nothing was written, and the lock was not taken. The text: '$1'" 2
+  return 0
+}
+
+# THE CLASSIFIER GAVE NO ANSWER THIS FILE CAN READ (T424, above): 69, nothing
+# written, never the text unclassified.
+append_line_classify_failed() {   # <why>
+  die "on primary, append-line asks lanes-index register classify whether its text is one of the four it refuses, and the classifier $1. Without its answer the text is not written: nothing was written, and the lock was not taken. Install the lanes-index that ships with this lanes-edit.sh, or run the text through lanes-index register classify by hand to see why." 69
 }
 
 # $2 is the file to append to, defaulting to the register. Amendment 7's
@@ -5483,10 +5656,11 @@ index_nudge() {
 # the rule `index_open` has always used. A test's stand-in goes where it looks
 # first, beside a COPY of this file that also has the `repos.tsv` and
 # `lane-start` this file reads from `$SCRIPT_DIR`, so nothing installed runs.
-# Prints the path, or nothing where there is none. It resolves every
-# `lanes-index` call on the mode and SQL paths: `index_open` and the writers'
-# mode question here. `index_nudge` above keeps PATH alone, for the reason its
-# comment gives (lane 3's ruling on T409's item 8, #165 6747281902).
+# Prints the path, or nothing where there is none. Every `lanes-index` call
+# on the mode and SQL paths resolves through it, whichever function makes the
+# call, so this comment names none of them. `index_nudge` above keeps PATH
+# alone, for the reason its comment gives (lane 3's ruling on T409's item 8,
+# #165 6747281902).
 lanes_index_bin() {
   if [ -x "$SCRIPT_DIR/lanes-index" ]; then
     printf '%s\n' "$SCRIPT_DIR/lanes-index"
@@ -25765,6 +25939,11 @@ Nothing was written." 2
     if managed_projection_hint "$text"; then
       die "the line carries managed-owner vocabulary ('managed owner', 'managed binding', 'mode=managed' or 'managed:'), and only the managed ledger's own writer writes it into the register. Nothing was written." 2
     fi
+    # FEATURE 007, T424 — ON PRIMARY ONLY, THE FOUR TEXTS THE ONE CLASSIFIER
+    # NAMES are refused with 2 here, before the lock, as the two refusals above
+    # are (`append_line_primary_refusals`). Files mode and index mode skip it
+    # and start no `lanes-index`.
+    if [ "$REG_MODE" = primary ]; then append_line_primary_refusals "$text"; fi
     lane_tag="${LANES_LANE:-}"
     [ -z "$lane_tag" ] || lane_tag="$(canon_lane "$lane_tag")" || reg_exit $? 2
     if [ -z "$lane_tag" ]; then
