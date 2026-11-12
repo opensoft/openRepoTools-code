@@ -694,9 +694,10 @@ def _sleeper() -> subprocess.Popen:
 
 
 def _dead_pid() -> int:
-    """A pid that has exited and been reaped."""
+    """A pid that has exited and been reaped. The wait is bounded, as every
+    wait in this module is."""
     proc = subprocess.Popen([sys.executable, "-I", "-c", "pass"])
-    proc.wait()
+    proc.wait(30)
     return proc.pid
 
 
@@ -1476,7 +1477,7 @@ def test_pid_start_of_answers_live_dead_and_unreadable(tmp_path, case):
                 assert token != str(int(token) + 7)
         finally:
             holder.kill()
-            holder.wait()
+            holder.wait(10)
     elif case == "dead":
         assert ask(_dead_pid())[0] == 1
     else:
