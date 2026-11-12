@@ -124,7 +124,7 @@ L="$(command -v lanes-edit.sh || printf '%s' ~/projects/xFactory/lanes-edit.sh)"
 # AND IT REMEMBERS THAT IT READ THE MIRROR, in `mirror_read`, which it sets to
 # `1` where it forwarded a label or re-read a 69, with a label printed or not,
 # and never clears. It is the one fact this skill has of having read the mirror
-# (lane 3's rulings on #165, 6754439281 item 5 and 6754607466, which have it the
+# (lane 3's rulings on #165, 6754439281 item 5 and 6754607466, which make it the
 # rule `lane-handoff` follows for `kept_block_say`), and step 1 prints it, for
 # block 2's printed call to name `LANES_READ_MIRROR=1` by.
 sread() {                      # sread <var> "<what the failure is NOT>" <verb> [args…]
