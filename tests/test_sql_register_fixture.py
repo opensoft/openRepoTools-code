@@ -417,3 +417,168 @@ def test_the_delayed_loopback_relay_delays_each_direction_and_passes_tls_through
         _relay_clean_close(relay_of)
     else:
         _relay_no_root()
+
+
+# ---------------------------------------------------------------- T229c's relay
+#: THE SILENT-AFTER-STARTUP RELAY'S OWN TEST (T229c; lane 3's batch 8, "Lane
+#: 2's relay: T229 builds it", #165 6780753157, and its text change 8;
+#: TP:7682-7684), before the cases that connect through it: D9's F2, AT-F7's
+#: silent host, the service's timer and the guard's `[2-service-down]`.
+#: `tests/pgcluster.py`'s `silent_after_startup(target_port)`.
+#: `[forwards-the-startup]`, `[then-nothing]` and `[holds-both-sockets]` run on
+#: a loopback peer of the standard library that answers a startup as
+#: PostgreSQL does on trust, so they need no engine; `[psql-on-the-socket]`
+#: runs the engine's `psql` through it to the session cluster's Unix socket,
+#: and skips with T205's banner without one.
+SILENT_CASES = ["forwards-the-startup", "then-nothing", "holds-both-sockets", "psql-on-the-socket"]
+#: How long a case waits to see that nothing arrives.
+SILENT_WAIT = 1.0
+
+
+def _message(kind: bytes, body: bytes) -> bytes:
+    return kind + (len(body) + 4).to_bytes(4, "big") + body
+
+
+#: A startup as libpq sends it (protocol 3.0), and PostgreSQL's answer on
+#: trust: AuthenticationOk, a ParameterStatus, BackendKeyData, whose key here
+#: ends like a ReadyForQuery's head, and ReadyForQuery (`Z`, length 5, idle).
+_STARTUP_BODY = (196608).to_bytes(4, "big") + b"user\x00fx\x00database\x00fx\x00\x00"
+STARTUP = (len(_STARTUP_BODY) + 4).to_bytes(4, "big") + _STARTUP_BODY
+STARTUP_ANSWER = (_message(b"R", (0).to_bytes(4, "big"))
+                  + _message(b"S", b"server_version\x0016.15\x00")
+                  + _message(b"K", (4242).to_bytes(4, "big") + b"Z\x00\x00\x00")
+                  + _message(b"Z", b"I"))
+QUERY = _message(b"Q", b"SELECT 1;\x00")
+
+
+def _within(sock, wait: float):
+    """What reaches `sock` within `wait` seconds: None for nothing, b"" for a
+    close, else the bytes."""
+    sock.settimeout(wait)
+    try:
+        return sock.recv(65536)
+    except socket.timeout:
+        return None
+
+
+def _startup_peer(after):
+    """A loopback peer for one connection: it reads a startup, answers it,
+    its ReadyForQuery 0.2 s after the rest, then runs `after(conn, seen)`."""
+    def handler(conn, seen):
+        seen["startup"] = _read_all(conn, len(STARTUP))
+        cut = len(STARTUP_ANSWER) - 6
+        conn.sendall(STARTUP_ANSWER[:cut])
+        time.sleep(0.2)
+        conn.sendall(STARTUP_ANSWER[cut:])
+        after(conn, seen)
+    return _peer(handler)
+
+
+def _started(relay):
+    client = socket.create_connection(("127.0.0.1", relay.port), timeout=10)
+    client.sendall(STARTUP)
+    return client, _read_all(client, len(STARTUP_ANSWER))
+
+
+def _silent_forwards_the_startup(relay_of):
+    port, thread, seen = _startup_peer(lambda conn, seen: None)
+    with relay_of(port) as relay:
+        assert relay.port != port, "the relay listens on its target's own port"
+        client, got = _started(relay)
+        with client:
+            assert client.getpeername() == ("127.0.0.1", relay.port), client.getpeername()
+            thread.join(10)
+            assert seen.get("startup") == STARTUP, "the startup the peer read is not the one the client sent"
+            assert got == STARTUP_ANSWER, (
+                f"the client read {got!r}, not the peer's answer up to its ReadyForQuery")
+            assert len(relay.silenced) == 1, f"one startup silenced the relay {len(relay.silenced)} time(s)"
+
+
+def _silent_then_nothing(relay_of):
+    def after(conn, seen):
+        seen["up"] = _within(conn, SILENT_WAIT)
+        conn.sendall(_message(b"N", b"SNOTICE\x00\x00"))
+        seen["down"] = True
+        _within(conn, SILENT_WAIT)
+    port, thread, seen = _startup_peer(after)
+    with relay_of(port) as relay:
+        client, got = _started(relay)
+        with client:
+            assert got == STARTUP_ANSWER, got
+            client.sendall(QUERY)
+            heard = _within(client, 2 * SILENT_WAIT)
+            thread.join(10)
+    assert seen.get("up") is None, f"after the startup the client's query reached the peer: {seen.get('up')!r}"
+    assert seen.get("down"), "the peer did not speak after the startup"
+    assert heard is None, f"after the startup the peer's bytes reached the client: {heard!r}"
+
+
+def _silent_holds_both_sockets(relay_of):
+    def after(conn, seen):
+        seen["eof"] = _within(conn, SILENT_WAIT)
+    port, thread, seen = _startup_peer(after)
+    with relay_of(port) as relay:
+        client, got = _started(relay)
+        with client:
+            assert got == STARTUP_ANSWER, got
+            client.shutdown(socket.SHUT_WR)
+            thread.join(10)
+            assert seen.get("eof") is None, (
+                f"after the startup the client's close reached the peer: {seen.get('eof')!r}")
+            held = _within(client, SILENT_WAIT)
+            assert held is None, f"after the startup the peer's close reached the client: {held!r}"
+            assert len(relay.sockets) == 2, f"the relay holds {len(relay.sockets)} socket(s), not both"
+            relay.close()
+            assert _within(client, 5) == b"", "the relay's close did not close the client's end"
+    assert not relay.sockets and relay.alive() == [], (relay.sockets, relay.alive())
+
+
+def _silent_psql_on_the_socket(relay_of, request):
+    pg = request.getfixturevalue("pg")
+    marker = f"silent-relay-{os.getpid()}"
+    activity = (f"SELECT state || '|' || query FROM pg_stat_activity "
+                f"WHERE application_name = '{marker}';")
+    with relay_of(pg.port, socket_dir=pg.host) as relay:
+        env = dict(pg.env(appname=marker), PGHOST="127.0.0.1", PGPORT=str(relay.port))
+        psql = subprocess.Popen([pg.psql_bin, "-X", "-A", "-t", "-c", "SELECT 'through the relay'"],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+        try:
+            row, end = "", time.monotonic() + 15
+            while not row and time.monotonic() < end and psql.poll() is None:
+                row = pg.psql(activity).stdout.strip()
+                time.sleep(0.05)
+            assert row, f"no session logged in through the relay, so the startup did not complete: {psql.poll()}"
+            time.sleep(SILENT_WAIT)
+            row = pg.psql(activity).stdout.strip()
+            assert row == "idle|", f"the session through the silent relay is not idle with no query: {row!r}"
+            assert psql.poll() is None, f"psql was answered through the silent relay: {psql.communicate()}"
+            assert len(relay.silenced) == 1, relay.silenced
+        finally:
+            psql.kill()
+            psql.communicate()
+
+
+@pytest.mark.parametrize("case", SILENT_CASES)
+def test_the_silent_after_startup_relay_forwards_the_startup_then_nothing_and_holds_both_sockets(
+        request, case):
+    """T229c's relay (lane 3's batch 8; TP:7682-7684), a relay of the
+    standard library on 127.0.0.1 at a free port: `[forwards-the-startup]`,
+    the client's startup and the server's answer, up to and including its
+    first ReadyForQuery, arrive byte for byte; `[then-nothing]`, after it
+    nothing is forwarded either way; `[holds-both-sockets]`, after it a close
+    on either side reaches neither, and both ends stay open until the relay
+    closes; `[psql-on-the-socket]`, the engine's `psql`, through it to the
+    session cluster's Unix socket, logs in and is never answered, its
+    session idle with no query."""
+    import pgcluster
+    relay_of = getattr(pgcluster, "silent_after_startup", None)
+    assert relay_of is not None, (
+        "tests/pgcluster.py has no silent_after_startup: T229 builds it (lane 3's batch 8)")
+    if case == "forwards-the-startup":
+        _silent_forwards_the_startup(relay_of)
+    elif case == "then-nothing":
+        _silent_then_nothing(relay_of)
+    elif case == "holds-both-sockets":
+        _silent_holds_both_sockets(relay_of)
+    else:
+        _silent_psql_on_the_socket(relay_of, request)
