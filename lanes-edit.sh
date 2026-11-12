@@ -2730,13 +2730,22 @@ cs_refuse_register() {   # <what> <lane>
 # HEAD before the verb has edited it is a fault of the write path, never a
 # person's hand edit: refused with 2, nothing sent, never captured or
 # committed, and no recovery is printed, since there is nothing to recover.
+# THE LIST IS SPLIT BY PARAMETER EXPANSION, at each newline, never through a
+# here-document, as `pw_hand_edit_refuse`'s and the seam's are (review REV-W9a
+# M1's class): bash 3.2 writes a here-document to a temp file in /tmp, and
+# where none can be made, as in a full /tmp, the loop never ran, so this 2
+# named no path and bash printed its own error first. Now a full /tmp changes
+# nothing here: the same paths are named, with the same 2.
 reg_scratch_dirty() {   # <what> <the paths, one a line>
-  rsdy_l=""
-  while IFS= read -r rsdy_p; do
+  rsdy_s="$2"; rsdy_l=""
+  while [ -n "$rsdy_s" ]; do
+    rsdy_p="${rsdy_s%%"$WR_NL"*}"
+    case "$rsdy_s" in
+      *"$WR_NL"*) rsdy_s="${rsdy_s#*"$WR_NL"}" ;;
+      *) rsdy_s="" ;;
+    esac
     [ -z "$rsdy_p" ] || rsdy_l="$rsdy_l $rsdy_p"
-  done <<RSDY_EOF
-$2
-RSDY_EOF
+  done
   die "refusing to $1 in $LANES_REPO, the attempt's scratch tree under LANES_REGISTER_SCRATCH: an internal error, since these paths differ from its HEAD before the write has edited any:${rsdy_l}. That tree is built fresh from the register at the snapshot, so this is a fault in the write path, never a hand edit to capture or commit (T413; Y:5078). Nothing was sent." 2
 }
 # S3 STEP 4 FOR THE PATHS A WRITE LEARNS ONLY IN ITS SCAN (the sweeps,
