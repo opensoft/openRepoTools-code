@@ -15760,7 +15760,10 @@ def _render_read_head(store) -> tuple:
     skip, diverged_sha, last_error)`, `marker` the switch's `marker_state`,
     which tells a rollback's `files` from any other (T326). Raises
     `RenderRefused` where the answer cannot be read or the schema is outside
-    this client's window."""
+    this client's window. TWO CALLERS unpack all six by position, so a change
+    to the tuple changes both: `render_pass`'s step 2, and T324's ways out in
+    `_stray_recognised`, which leave `marker` to each attempt's snapshot
+    (check 4: `primary` with the marker `present`, else 69)."""
     answers = store._query_many([
         "SELECT version, writers_from, readers_from FROM schema_version WHERE id = 1",
         "SELECT h.seq, s.mode, s.marker_state FROM register_head h, register_switch s "
@@ -17124,7 +17127,7 @@ def _stray_recognised(form: str, root: str, store, sha: str, rerun: bool,
             raise Refusal(f"{form}: {sha} is not on origin {RENDER_BRANCH}, whose tip is {tip}: "
                           f"a stray is a commit origin carries (S2); {nothing}")
     try:
-        head, mode, skip, diverged, _last_error = _render_read_head(store)
+        head, mode, _marker, skip, diverged, _last_error = _render_read_head(store)
     except RenderRefused as exc:
         raise _StrayEnd(EXIT_UNAVAILABLE, f"{form}: the register's head could not be read: "
                         f"{exc}; {nothing}")
