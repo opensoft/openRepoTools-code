@@ -1152,7 +1152,9 @@ def _fields(path: Path) -> dict:
 
 
 def _names_the_store(out: str) -> bool:
-    """The store named without credentials: its label or its database."""
+    """`status`'s store, named without credentials: its label or its
+    database. The guard's refusal is held to the database as `register_url=`
+    gives it (lane 3, #165 6809045090), in its own case."""
     return LABEL in out or "register_db" in out
 
 
@@ -1169,7 +1171,15 @@ def test_the_guards_outage_refusal_names_the_store_the_cause_and_both_ways_out(t
     any read, and T507's prefetch comes after the session-record check (B8
     item 40; lane 5, #165 6755266457). So only a lane session reaches the
     prefetch and the direct read this case asserts (lane 3's T507 ruling
-    (1), #165 6783977598)."""
+    (1), #165 6783977598).
+
+    THE NAME (lane 3's ruling on lane 5's seam question, #165 6809045090):
+    under `--for guard`, the cause line names the database as
+    `register_url=` gives it, without credentials, not `register_label=`.
+    So the refusal names `register_db`, the URL's database, and the label
+    alone does not do; and neither the URL's user, `t215_login`, nor the
+    password file's password appears. It fails until lane 5's follow-up on
+    T507's writer A half, which puts that name in the cause line."""
     estate = Estate(tmp_path, [_render(1)])
     estate.passfile.write_text(f"127.0.0.1:55432:register_db:t215_login:{SECRET}\n",
                                encoding="utf-8")
@@ -1180,8 +1190,10 @@ def test_the_guards_outage_refusal_names_the_store_the_cause_and_both_ways_out(t
     assert estate.psql_starts(), (
         f"the guard made no direct read: the fake psql has no call: {out[-600:]}")
     assert result["exit"] == 2, f"the guard exited {result['exit']}"
-    assert _names_the_store(out), f"the refusal names no store: {out[-600:]}"
-    assert SECRET not in out and "t215_login:" not in out, "the refusal carries a credential"
+    assert "register_db" in out, (
+        f"the refusal does not name the database as register_url= gives it: {out[-600:]}")
+    assert SECRET not in out and "t215_login" not in out, (
+        f"the refusal carries a credential, the URL's user or its password: {out[-600:]}")
     assert "unreachable" in out or "Connection refused" in out, f"no cause: {out[-600:]}"
     for words in ("lanes-index status", "lanes-index rollback", "CLAUDE_NO_LANE=1"):
         assert words in out, f"the refusal does not carry {words!r}: {out[-600:]}"
