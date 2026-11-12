@@ -84,6 +84,7 @@ assertion (T217h).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -2005,6 +2006,27 @@ def hex_slot(key: str) -> str:
     return "%" + key.encode("utf-8").hex()
 
 
+@contextlib.contextmanager
+def hook_pid():
+    """THE HOOK'S `$$`, FOR A GUARD READ'S `--pid` (contract section 3.6:
+    "`--pid <pid>` ... is the hook's own pid, `$$`, in forms 2 and 4", and
+    "the client reads `T0` from it"). It yields the pid of a stand-in for the
+    hook, a `sleep` started just before the read, as a hook's own start is,
+    and stops it after the read. T507 cuts a guard read at `T0` + 3.75 s
+    from that start, and an age at or above the cut exits 2, "too late to
+    verify" (section 3.6's 2; `register_guard_t0`). The pytest process's own
+    pid is minutes old on a runner, so with it every guard read ended 2
+    (lane 1's round 6b census, #165 6827592167, item 2). The stand-in is
+    AT-F7's, `test_sql_register_outage.py`'s `_stand_in`, at an age of 0."""
+    standin = subprocess.Popen(["sleep", "120"], start_new_session=True,
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+    try:
+        yield str(standin.pid)
+    finally:
+        standin.kill()
+        standin.wait()
+
+
 #: The render set lane 1's three read: two lanes, their logs and the aliases.
 def l1_files(extra: dict | None = None) -> dict:
     files = {
@@ -2036,7 +2058,10 @@ def test_guard_second_read_at_its_head_writes_one_log_and_fails_open(pg, tmp_pat
     `.logpath.<key>`, or `.log.%<hex>` and `.logpath.%<hex>` for a key outside
     `check_lane_name`'s class, O18) and nothing else, at `n`; `.head` is
     byte-identical and no `.outage` is written; and every end but 0 writes no
-    `.log.<key>`. Real engine: it skips without one (T205)."""
+    `.log.<key>`. Each guard read passes the pid of a stand-in started just
+    before it (`hook_pid`), as the hook's `$$` is, so T507's cut at `T0` +
+    3.75 s runs from that read's own start. Real engine: it skips without one
+    (T205)."""
     extra = {}
     if case == "outside-the-class":
         extra["lanes/log/a,b.md"] = "NOTED — a log whose name is outside the class\n"
@@ -2045,9 +2070,9 @@ def test_guard_second_read_at_its_head_writes_one_log_and_fails_open(pg, tmp_pat
     if case == "case-duplicates":
         extra["lanes/log/RepoA-1.md"] = "NOTED — the case pair's other half\n"
     reg = RealRegister(pg, tmp_path / "real", l1_files(extra))
-    pid = str(os.getpid())
-    pre = reg.read("--for", "guard", "--prefetch", "--cache", str(reg.cache), "--pid", pid,
-                   "--repo", str(tmp_path), "--lane=repoA-1")
+    with hook_pid() as pid:
+        pre = reg.read("--for", "guard", "--prefetch", "--cache", str(reg.cache), "--pid", pid,
+                       "--repo", str(tmp_path), "--lane=repoA-1")
     assert pre.returncode == 0 and pre.stdout.startswith("mode primary"), (pre.returncode, pre.stderr)
     n, at_n = reg.head(), reg.files["lanes/log/repoA-1.md"]
     head_before = (reg.cache.parent / (reg.cache.name + ".head")).read_bytes()
@@ -2092,8 +2117,9 @@ def test_guard_second_read_at_its_head_writes_one_log_and_fails_open(pg, tmp_pat
         key, expect = "", 64
     before = reg.family()
     try:
-        result = reg.read("--for", "guard", "--at", at, "--pid", pid, "--cache", str(reg.cache),
-                          f"--lane={key}", env=env, copy=copy)
+        with hook_pid() as pid:
+            result = reg.read("--for", "guard", "--at", at, "--pid", pid, "--cache",
+                              str(reg.cache), f"--lane={key}", env=env, copy=copy)
     finally:
         if case == "no-mirror":
             (tmp_path / "mirror").chmod(0o755)
@@ -2123,8 +2149,9 @@ def test_guard_second_read_at_its_head_writes_one_log_and_fails_open(pg, tmp_pat
                               encoding="utf-8")
         reg.config.chmod(0o600)
         before = reg.family()
-        tls = reg.read("--for", "guard", "--at", at, "--pid", pid, "--cache", str(reg.cache),
-                       f"--lane={key}")
+        with hook_pid() as pid:
+            tls = reg.read("--for", "guard", "--at", at, "--pid", pid, "--cache", str(reg.cache),
+                           f"--lane={key}")
         after = reg.family()
         assert tls.returncode == 1, (case, "R09", tls.returncode, tls.stdout, tls.stderr)
         assert ".outage" not in after, (case, "R09", "an .outage was written")
@@ -2149,8 +2176,9 @@ def test_log_key_hex_slot_holds_a_key_outside_the_class_and_is_never_cached(pg, 
     n = reg.head()
     if case == "forms-1-and-2":
         assert not any(k.startswith(".log.%") for k in reg.family()), sorted(reg.family())
-        two = reg.read("--for", "guard", "--prefetch", "--cache", str(reg.cache) + "-g", "--pid",
-                       str(os.getpid()), "--repo", str(tmp_path), "--lane=a,b")
+        with hook_pid() as pid:
+            two = reg.read("--for", "guard", "--prefetch", "--cache", str(reg.cache) + "-g",
+                           "--pid", pid, "--repo", str(tmp_path), "--lane=a,b")
         assert two.returncode == 0, (two.returncode, two.stderr)
         assert not list(reg.cache.parent.glob(reg.cache.name + "-g.log.*")), "form 2 fetched the log"
         return
