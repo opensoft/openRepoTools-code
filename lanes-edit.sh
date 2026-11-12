@@ -2991,7 +2991,7 @@ append_line_landing_expired_usage() {   # <what is wrong>
 }
 append_line_landing_expired() {   # <holder> --pr <n> --repo <r> --word <q> --word-where <w> --word-utc <u>
   local le_a="" le_o="" le_seen=" " le_rows="" le_rc=0 le_pass="" le_ch="" le_t="" le_a1="" le_a2="" le_a3="" le_a4="" le_a5=""
-  local le_l="" le_p="" le_r="" le_u="" le_n=-1 le_age=0 le_line="" lane_tag="" le_left="" le_row=""
+  local le_l="" le_p="" le_r="" le_u="" le_n=-1 le_age=0 le_line="" lane_tag="" le_left="" le_row="" le_open=""
   if [ "$REG_MODE" != primary ]; then
     die "append-line --landing-expired: the release of a stale LANDING exists only on mode=primary, where the register's own check (F13) judges it when it is committed; this register's mode is ${REG_MODE:-files}. Nothing was written. Off primary a LANDING past Rule 6's thirty minutes is listed as STALE, and only its own lane's LANDED closes it." 2
   fi
@@ -3075,12 +3075,27 @@ append_line_landing_expired() {   # <holder> --pr <n> --repo <r> --word <q> --wo
   # LANDING", closed but with the wrong words (lane 4's MERGES-B2 note). A row
   # is `OPEN` and five fields more, the last the rest of the row, as `read`
   # split it; any other row was passed over, and still is.
+  # ONLY THE `OPEN` ROWS ARE SPLIT, KEPT FIRST BY ONE awk OVER A PIPE.
+  # `le_rows` holds Rule 6's own END row for every LANDING key in the whole
+  # register before the few `OPEN` rows, and the split above copies the rest
+  # of the value at each row: on bash 3.2.57, 500 rows took 8.4 s and 2000
+  # took 83.7 s (lane 4's W11-T425 report, gap 1). The filter is linear, and
+  # a command substitution over a pipe needs no temp file, so a full /tmp
+  # changes nothing. A filter that fails refuses with its own words, never as
+  # "holds no open LANDING". It keeps every row that opens `OPEN` and a US,
+  # short ones included, which the split still passes over; empty rows go, as
+  # the split skipped them. IFS and noglob are left as they are, since the
+  # walk calls `canon_lane`.
+  le_rc=0
+  le_open="$(printf '%s\n' "$le_rows" | awk 'BEGIN { o = sprintf("OPEN%c", 31) } index($0, o) == 1')" || le_rc=$?
+  [ "$le_rc" = 0 ] ||
+    die "append-line --landing-expired: the open LANDING rows of the register at this attempt's snapshot could not be kept apart from Rule 6's other rows (awk exited $le_rc): an internal error. Nothing was written." 2
   for le_pass in exact canon; do
     if [ "$le_pass" = canon ]; then
       le_ch="$(canon_lane "$LE_HOLDER" 2>/dev/null)" || le_ch=""
       [ -n "$le_ch" ] || break
     fi
-    le_left="$le_rows"
+    le_left="$le_open"
     while [ -n "$le_left" ]; do
       le_row="${le_left%%"$WR_NL"*}"
       case "$le_left" in
