@@ -1599,6 +1599,11 @@ unset LANES__REPLAY_PID LANES__ATTEMPT LANES__CLAIM_FROM LANES__CLAIM_DEAD LANES
 #     line, `age_of` is passed `now_epoch`, so its words agree with the decision
 #     and one printed block reads one clock (ruling item 5; lane
 #     openRepoTools-3's ruling, #165 6767463594, delta question 5);
+#   * a line `migrate-state-cells` writes is dated in whole seconds, as
+#     `log_lines`' primary CHECK reads one (Y:1217–1219): a minute-only time
+#     it copies from the register, an entry's own lead or its row's `started`
+#     cell, gets `:00` at its site below (lane openRepoTools-3's ruling, #165
+#     6834224496, question 2);
 #   * the routing re-exec, S3 (`checkout_sync`) and `log_sync`'s fetch are
 #     skipped, `gh_reads` is cached in the run's directory, and
 #     `sidecar_lock_dir` answers the path the parent wrote into `<dir>/lock`,
@@ -18180,6 +18185,22 @@ EOF
         fi
         if mig_is_ruling "$msc_e"; then msc_verb=RULED; msc_ruled=$((msc_ruled + 1))
         else                            msc_verb=NOTED; msc_noted=$((msc_noted + 1)); fi
+        # UNDER FEATURE 007'S FLAG, WHOLE SECONDS (T413; lane
+        # openRepoTools-3's ruling, #165 6834224496, question 2). On primary
+        # `log_lines`' CHECK takes a line's UTC only as `YYYY-MM-DDTHH:MM:SSZ`
+        # (Y:1217–1219), and D13 (Y:528–530) composes a line's time in whole
+        # seconds, so a minute-only time, the entry's own `HH:MMZ` lead or its
+        # row's `started` cell as `T00:00Z` or `HH:MMZ` (`mig_started_utc`),
+        # gets `:00`, which says nothing the minute did not. It is done here,
+        # after the entry's text was cut past its lead, so `mig_lead_utc`'s
+        # answer, which that cut and `mig_strip_lead` compare as text, is
+        # unchanged, and the text keeps every byte. Files mode writes the
+        # minute as it always has.
+        if [ -n "$REG_SCRATCH" ]; then
+          case "$msc_eutc" in
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]Z) msc_eutc="${msc_eutc%Z}:00Z" ;;
+          esac
+        fi
         printf '%s — lane %s, session %s@%s, %s, lane:%s — %s\n' \
           "$msc_verb" "$msc_lane" "$msc_uuid" "$msc_ws" "$msc_eutc" "$msc_lane" "$msc_text" >> "$msc_tmp/block/$msc_n"
         msc_en=$((msc_en + 1)); msc_lines=$((msc_lines + 1))
@@ -22666,8 +22687,12 @@ fi
 # written no files. ONE MARKER IS TESTED, AND NOTHING ELSE (lane
 # openRepoTools-3, #165 6774499606, A1): `REG_PW`, set just before `pw_run`.
 # Keyed on the mode, this guard would also stop a process that never entered
-# the loop: a reader once T504 opens the register above here, `commit`'s
-# publish act (T420), or `write-handoff`. After `reg_mode_ask` answers
+# the loop but comes here with `REG_MODE` already `primary`: an attempt's
+# child (`reg_scratch_take`), `commit`'s publish act (T420), and, once T504's
+# `reg_open` answers a `write-handoff` primary below here, that write run
+# again by S4's replay (`cp_replay`), whose `exec` keeps the pid and so
+# carries the mode in `LANES__MODE`. Not a reader: `reg_open` runs below this
+# guard, and a read is never replayed. After `reg_mode_ask` answers
 # `primary` nothing between it and the arm can abort, so a 1 here means only
 # that `pw_run` was entered and returned or was abandoned. An attempt's child
 # runs this file afresh, so its `REG_PW` is 0.
