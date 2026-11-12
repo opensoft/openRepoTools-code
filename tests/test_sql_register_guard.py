@@ -33,11 +33,18 @@ wait on pipes a child inherits.
 EVERY CASE BUT TWO IS RED TODAY by its own assertion: today's answer 2 runs
 `lane-start` inside the hook, so no "BINDING" is printed and the runner stops
 the hook at 5 s; today's guard has no bind modes, no `guard-bind` and no
-`pid_start_of`. They fail until L5-A1 and L5-A2 (lane 5's T502 and T507); the
-ones that run the real `lane-start` fail until lane 4's `start-record` (L4-B9)
-as well. The two are `test_the_hook_string_and_guard_timeout_are_unchanged`,
-an invariant that holds today, and `test_an_unreadable_bind_record_is_dropped_with_exit_2`,
-whose oracle is today's text and today's drop.
+`pid_start_of`. They fail until L5-A1, lane 5's T502. Case 22's
+`test_guard_bind_computes_bound_s_from_c_n_a_and_the_service` and lane 5's
+`test_the_post_bind_refill_is_one_register_read_and_never_git` also fail until
+L5-A3, lane 5's T507, which copies `c`, `n_a` and `w_s_ms` from `.head` and
+makes the post-bind refill. Of the `[files]` cases that run the real
+`lane-start`, only `test_the_bind_child_records_bind_failed_with_the_code_and_binds_nothing`
+also fails until lane 4's `start-record` (L4-B9, T427 and T428), whose calls it
+asserts; case 17 and row (d) need nothing more, and pass on lane 5's `6050581`
+with T214g's estate (T214h, T214i). The two are
+`test_the_hook_string_and_guard_timeout_are_unchanged`, an invariant that holds
+today, and `test_an_unreadable_bind_record_is_dropped_with_exit_2`, whose
+oracle is today's text and today's drop.
 """
 
 from __future__ import annotations
@@ -49,6 +56,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -1156,14 +1164,128 @@ def test_an_unreadable_bind_record_is_dropped_with_exit_2(estate):
     assert hook.code == 2 and OFFER in hook.err, repr(hook)
 
 
+#: THE STAND-IN `tmux` OF A REAL BIND (T214g): T203c's stand-in, kept beside
+#: it as `tmux.t203c` and run for every call, so its log and its answers are
+#: unchanged, but for one thing: this window's name follows `rename-window`, as
+#: tmux's does. Answer 2 renames the window to `<to>` before the bind's child
+#: runs, and the real `lane-start --no-launch --bind` then reads `#W`; T203c's
+#: stand-in answers it with the name it was made with, `<from>`, a lane with
+#: a row, so `lane-start` refuses with its veto 2, "this window is named
+#: 'repoA-2', which is another lane the register has a row for"
+#: (`lane-start:2274` at lane 5's `6050581`).
+_FOLLOW_TMUX = r'''#!/bin/sh
+# T214g: T203c's stand-in tmux (beside this file as tmux.t203c), with this
+# window's name following rename-window, as tmux's does.
+name=@NAME@
+out="$(@ORIG@ "$@")"; rc=$?
+if [ "$rc" = 0 ] && [ "${1-}" = rename-window ]; then
+  target=""; prev=""; last=""
+  for a in "$@"; do
+    [ "$prev" = -t ] && target="$a"
+    prev="$a"; last="$a"
+  done
+  case "$target" in
+    ''|@ID@|@SESSION@:@ID@|@PANE@|@SESSION@:@ID@.@PANE@) printf '%s\n' "$last" > "$name" ;;
+  esac
+fi
+if [ "$rc" = 0 ] && [ "${1-}" = display-message ] && [ "$out" = @WINDOW@ ] && [ -f "$name" ]; then
+  cat "$name"
+  exit 0
+fi
+[ -z "$out" ] || printf '%s\n' "$out"
+exit "$rc"
+'''
+
+
+def _follow_renames(session) -> None:
+    """Put `_FOLLOW_TMUX` in front of `session`'s stand-in `tmux`, once: a
+    stand-in `guard_session` writes again is wrapped again."""
+    tmux = Path(session.tmux)
+    if "T214g" in tmux.read_text(encoding="utf-8"):
+        return
+    orig = tmux.with_name("tmux.t203c")
+    _script(orig, tmux.read_text(encoding="utf-8"))
+    _, window_id, pane = re.split(r"[:.]", session.target)
+    words = {"NAME": tmux.with_name("tmux.window-name"), "ORIG": orig, "ID": window_id,
+             "SESSION": session.target.split(":", 1)[0], "PANE": pane, "WINDOW": session.window}
+    _script(tmux, _FOLLOW_TMUX, **{k: shlex.quote(str(v)) for k, v in words.items()})
+
+
 def _real_estate(estate, **kwargs) -> Estate:
     """The estate with the checkout's own `lane-start` in place of the
     stand-in: the bind's real `lane-start --no-launch --bind`, the copy
-    beside the guard on primary (`Estate.primary`), so it runs that build."""
+    beside the guard on primary (`Estate.primary`), so it runs that build.
+
+    TWO THINGS THE REAL `lane-start` NEEDS THAT THE STAND-IN DID NOT (T214g;
+    lane 5's CI run 43239525007, where case 17 and row (d) ended `bind-failed`
+    with 2 on T502's tree):
+    - THE LANE'S CHECKOUT. Its ladder (`lane-start:1331-1460` at `6050581`)
+      reads the swap record, the lane's log and `$PROJECTS_ROOT/<repo>`, and
+      proves a candidate only against a recorded home. This estate has no swap
+      record, no log line for `<to>`, no home and no `PROJECTS_ROOT`
+      (`GUARD_ENV_STRIP`), so it refused at `:1475`: "lane repoA-3 has no
+      recorded checkout and none could be PROVED, so nothing was started."
+      So `$HOME/projects/<repo>` is made, the ladder's default (rung 4); it
+      writes nothing to the register.
+    - THE WINDOW'S NEW NAME: the stand-in `tmux` follows the hook's rename
+      (`_follow_renames`), as tmux does.
+
+    AND RULE 3'S STAMP NEEDS THE LANE'S HANDOFF (T214k): where the lane has a
+    row, `_handoff` commits the file that row names, so the bind's
+    `write-handoff --stamp` writes the stamp as it does on a real lane. A new
+    lane (`to_row=False`) has no handoff yet, and its `lane-start` writes no
+    stamp (`lane-start:4352-4356` at `6050581`)."""
     est = estate(**kwargs)
     est.extra["LANES_LANE_START"] = str(est.guard.parent / "lane-start")
     est.set("edit-real")
+    (est.home / "projects" / est.to.rsplit("-", 1)[0]).mkdir(exist_ok=True)
+    _follow_renames(est.session)
+    if kwargs.get("to_row", True):
+        _handoff(est)
     return est
+
+
+#: THE LANE'S HANDOFF (T214k), as a real lane's register holds it: the file
+#: its row's handoff cell names (`_row`'s `handoffs/<lane>.md`; `lane-start`
+#: reads the cell as field 7, `lane-start:4413` at `6050581`), whose head is
+#: the one `lane-handoff`'s `top_block` writes (`lane-handoff:2559-2563`): the
+#: lane header on line 1, the blank line that ends the header block, then the
+#: resume prompt. `write-handoff --stamp` puts Rule 3's stamp immediately
+#: after that blank (`lanes-edit.sh:22439`; `lane-start:4358-4361`).
+DASH = chr(0x2014)
+HANDOFF_HEAD = (
+    "Lane: {lane} (test, session {sid}) " + DASH + " single-use resume prompt: stamp "
+    "RESUMED-by before acting (lane-collision-protocol rule 3)\n"
+    "\n"
+    "## RESUME PROMPT " + DASH + " PAUSED 2026-10-01T02:00:00Z (T214's estate), agent claude, "
+    "transcript {sid}, kind unknown\n"
+    "\n"
+    "**STATE at 2026-10-01T02:00:00Z.** Lane {lane} is paused, and the guard's answer 2 "
+    "resumes it.\n")
+
+
+def _handoff(est: Estate) -> Path:
+    """Commit and push the lane's handoff (`HANDOFF_HEAD`) where the row for
+    `est.to` names it, so that `write-handoff --stamp` finds a tracked file
+    to stamp, as on a real lane. Without it the stamp exits 8, "lane
+    repoA-3's handoff is not at ..., so there is nothing to write into"
+    (`lanes-edit.sh:22426-22428` at `6050581`), `lane-start` goes on with the
+    stamp owed (`lane-start:4481-4483`), and a case passed on a path where
+    the stamp stopped early (G17's doubt, wave 17). It is a commit of its own
+    after the estate's first, so the estate every other case builds is
+    unchanged; an untracked file would not do, since `write-handoff` refuses
+    a handoff git has never had (`lanes-edit.sh:22414`)."""
+    rel = f"handoffs/{est.to}.md"
+    register = (est.wip / "lanes" / "LANES.md").read_text(encoding="utf-8")
+    assert f"| `{est.to}` | harness `{est.other}` |" in register and f"| {rel} |" in register, \
+        f"the register names no handoff {rel} for {est.to}:\n{register}"
+    path = est.wip / rel
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(HANDOFF_HEAD.format(lane=est.to, sid=est.other), encoding="utf-8")
+    est._git(["add", "--", rel], est.wip)
+    est._git(["commit", "-q", "-m", f"handoff({est.to}): the lane's handoff", "--", rel], est.wip)
+    est._git(["push", "-q", "origin", "main"], est.wip)
+    return path
 
 
 def _two_binds(estate, mode="files") -> tuple:
@@ -1183,6 +1305,7 @@ def _two_binds(estate, mode="files") -> tuple:
         session.close()
     two.session = guard_session(one.home, two.bin, one.wip, window="repoA-4",
                                 session_id=two.sid, name=TO)
+    _follow_renames(two.session)
     two.sessions.append(two.session)
     one.make_offer()
     two.hook("hello")
@@ -1192,19 +1315,28 @@ def _two_binds(estate, mode="files") -> tuple:
     return one, two, [one.ended(60), two.ended(60)]
 
 
-def test_two_sessions_binding_one_lane_in_files_mode_the_second_is_refused_at_the_reread(
-        estate):
+def test_two_sessions_binding_one_lane_in_files_mode_both_binds_land(estate):
     """Row (d): two sessions answer `2` for one lane on the files-mode
-    fixture. The bind that reaches `lane-start`'s re-read of `binding` second
-    is refused there, the other record ends `bound`, and there is one
-    `RESUMED` line and one stamp for the lane. Lane 4's table gives no exit
-    code for the re-read, so the code seen is recorded, not asserted."""
+    fixture, and both binds land, which is what files mode does (lane 3's
+    ruling (a), #165 6827853480, on lane 4's check, 6827539379). Each bind
+    reads `binding` once on `lane-start --no-launch --bind`, before either
+    writes, and finds the lane free; nothing in files mode refuses the second:
+    only a handoff wait or a Claude resolution sets `bind_recheck` for a second
+    read (`lane-start:2654-2655`, `:2751` at `6050581`), and neither runs here:
+    the lane has no live holder to wait for, and the resolution never runs
+    under `--no-launch` (`:708`). So the race is one read wide, the log
+    carries two bindings, and the reservation stays #84's
+    (`lane-start:2724-2733` at `6050581`). Both records end `bound`, and the
+    lane's log holds two `RESUMED` lines, one for each bind. Primary keeps its
+    own case, case 8, `test_two_sessions_binding_one_lane_one_start_record_commits`,
+    where `bind:<to>` refuses whichever bind commits second. Each record's
+    code and notes are printed, not asserted."""
     one, two, ends = _two_binds(estate)
-    modes = sorted(r["mode"] for r in ends)
-    print(f"T214 row (d): the second bind's code: {[r.get('rc') for r in ends]}")
-    assert modes == ["bind-failed", "bound"], ends
+    print(f"T214 row (d): the codes {[r.get('rc') for r in ends]}, "
+          f"the notes {[r.get('note') for r in ends]}")
+    assert [r["mode"] for r in ends] == ["bound", "bound"], ends
     log = one._git(["show", f"main:lanes/log/{TO}.md"], one.origin)
-    assert log.count("RESUMED") == 1, log
+    assert log.count("RESUMED") == 2, log
 
 
 @pytest.mark.parametrize("kind,code,mode", [
@@ -1352,21 +1484,62 @@ def test_a_bind_with_no_timeout_says_bounded_no_and_kill_stops_its_group_once(
     assert not _members("pgid", start[0]["pgid"]), "the body's group was left running"
 
 
+#: CASE 17'S READ CALLS (T214h). TP:6164-6166 bounds the `lanes-edit.sh`
+#: processes on the resume path that each make one `register read`, and Y:5443
+#: is that term of `bound_s`'s sum. Lane 3 ruled that the case counts those
+#: calls only, and that `N_r` = 17 stands (#165 6827853480), on lane 4's count of
+#: lane 5's 29 calls, 13 of them register reads (6827539379). A call whose verb
+#: is below is not counted, by its kind; every other verb is, so a read this
+#: table does not know still counts against 17:
+#: - "write": the bind's writes, which Y:5440-5450 bounds as terms of their own
+#:   (`S`, `M` + `W`, the stamp): `act-begin`, `start-record` and
+#:   `write-handoff` at lane 4's T428; at lane 5's T502, Y:5523's
+#:   `append-session-id`, `set-row-state LIVE` and `log RESUMED`, the stamp's
+#:   `publish-handoff`, and `add-row` for a new lane; and the guard child's own
+#:   `set-row-state` on the lane left;
+#: - "none": the arms that touch no register state, class "none" at Y:4898, "no
+#:   door, no call": the four it names, and `workspace-root`, which reads
+#:   `$HOME/.agents/workspace.yaml` and the checkout it names, never the
+#:   register (`lanes-edit.sh:21593`, `:1004` at `6050581`), and which R2B's
+#:   section 2, the inventory Y:4894 cites, lists as local-only;
+#: - "host-local": Y:5646's host-local reads that Y:4898 does not name, which
+#:   lane 4 counted apart from the 13. The case prints their count beside the
+#:   reads: Y:4894 would give these hybrid arms a door of their own.
+#: `LANES_INDEX=off` is set for the bind, so `index_nudge` returns at once
+#: (`lanes-edit.sh:3855` at `6050581`), and no detached `lanes-index sync` adds
+#: calls of its own after a write lands: 6 of the 29, varying with timing.
+CASE_17_NOT_A_READ = {
+    **{verb: "write" for verb in ("act-begin", "start-record", "write-handoff",
+                                  "append-session-id", "set-row-state", "log",
+                                  "publish-handoff", "add-row")},
+    **{verb: "none" for verb in ("workstation", "fetch-age", "window-session",
+                                 "transcript-holders", "workspace-root")},
+    **{verb: "host-local" for verb in ("live-holder", "lane-holders", "idle-holders",
+                                       "restart-intent")},
+}
+
+
 @pytest.mark.parametrize("mode", ["files", "primary"])
 def test_the_bind_resume_path_makes_at_most_n_r_read_calls(estate, mode):
     """AT-F6 case 17: a counting `LANES_EDIT` stand-in sees at most `N_r` = 17
-    calls on the real `lane-start --no-launch --bind`'s resume path, each a
-    `lanes-edit.sh` process that makes one register read; the test fails where
-    `N_r` must grow (lane 4's section, "The record, and its liveness test")."""
+    read calls on the real `lane-start --no-launch --bind`'s resume path, each
+    a `lanes-edit.sh` process that makes one `register read`; the test fails
+    where `N_r` must grow (lane 4's section, "The record, and its liveness
+    test"). It counts the read calls only (`CASE_17_NOT_A_READ`), with
+    `LANES_INDEX=off`, as lane 3 ruled (#165 6827853480)."""
     est = _real_estate(estate, mode=mode)
+    est.extra["LANES_INDEX"] = "off"
     est.make_offer()
     est.answer_2()
     record = est.ended(90)
     calls = [e["argv"] for e in est.log("lanes-edit.log")]
-    print(f"T214 case 17: {len(calls)} lanes-edit.sh calls on the resume path: "
-          f"{[a[:1] for a in calls]}")
+    kinds = [CASE_17_NOT_A_READ.get(a[0] if a else "", "read") for a in calls]
+    reads = [a[:1] for a, kind in zip(calls, kinds) if kind == "read"]
+    print(f"T214 case 17: {len(reads)} read calls of {len(calls)} lanes-edit.sh calls on the "
+          f"resume path, {kinds.count('host-local')} more host-local; the reads: {reads}; "
+          f"every call: {[(a[:1], kind) for a, kind in zip(calls, kinds)]}")
     assert record["mode"] == "bound", record
-    assert 0 < len(calls) <= 17, calls
+    assert 0 < len(reads) <= 17, reads
 
 
 def _record_with(est: Estate, keys) -> None:
@@ -2613,7 +2786,16 @@ class _Service:
                                      cwd=str(est.wip), start_new_session=True)
         est.spare.append(self.proc.pid)
         self.dir = _until(lambda: _service_dir(est), 10)
-        assert self.dir, f"the service named no socket: {self.proc.poll()}"
+        if not self.dir:
+            # WHAT `serve` SAID, where it has exited: until lane 5's T512
+            # (L5-S1), `lanes-index` answers 64, "unknown subcommand 'serve'".
+            # Read without waiting, so a child holding the pipe cannot hang it.
+            code, said = self.proc.poll(), b""
+            if code is not None:
+                os.set_blocking(self.proc.stderr.fileno(), False)
+                said = self.proc.stderr.read() or b""
+            assert self.dir, (f"the service named no socket: {code} "
+                              f"{said.decode('utf-8', 'replace').strip()}")
 
     def stop(self) -> None:
         _kill(self.proc.pid, signal.SIGTERM)
@@ -2636,6 +2818,153 @@ def _both(est: Estate) -> tuple:
         svc.stop()
     down = est.hook("hello")
     return up, down
+
+
+#: THE STREAMING `psql`, T237y's `STREAM_PSQL` (`tests/test_sql_register_bounds.py`
+#: on line W3a) in this module's own form, since this line does not carry that
+#: module. PSQL_SHIM reads its stdin to the end before it hands a call on (its
+#: `main()`), so the service's "one long-lived `psql` child on pipes" (d8
+#: section 7, d8:229) never answers through it, and a case that rested on it
+#: read the direct read's calls instead (lane 5's T512 plan, point 2, #165
+#: 6827295319). This stand-in starts the real `psql` at once, on the caller's
+#: stdout and stderr, and hands its stdin on chunk by chunk through a delay
+#: line: each chunk goes on `stream-hold-ms` milliseconds (a file beside it,
+#: read as each chunk comes) after it was read where the call is the service's
+#: held child, known by its own argv's `VERBOSITY=sqlstate` (d8:229), and at
+#: once for every other call, the guard's direct reads among them. It logs
+#: each call's argv in `stream-begin.log`, and each chunk as it reads it, with
+#: its monotonic time, the hold in force and whether the call is the held
+#: child, in `stream-chunks.log`, so a chunk that the service's SIGINT
+#: overtakes is logged all the same. SIGINT and SIGTERM go on to the real
+#: `psql`; `psql --version` is the real one's.
+_STREAM_PSQL = r'''#!@PY@ -I
+import json, os, queue, signal, subprocess, sys, threading, time
+HERE = @HERE@
+REAL = @REAL@
+args = sys.argv[1:]
+held = "VERBOSITY=sqlstate" in args
+
+
+def log(name, record):
+    with open(os.path.join(HERE, name), "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def hold_ms():
+    try:
+        with open(os.path.join(HERE, "stream-hold-ms"), encoding="utf-8") as handle:
+            return float(handle.read().strip() or 0)
+    except (OSError, ValueError):
+        return 0.0
+
+
+log("stream-begin.log", {"argv": args, "pid": os.getpid(), "held": held, "t": time.monotonic()})
+if args == ["--version"]:
+    os.execv(REAL, [REAL] + args)
+proc = subprocess.Popen([REAL] + args, stdin=subprocess.PIPE)
+for number in (signal.SIGINT, signal.SIGTERM):
+    signal.signal(number, lambda sig, frame: proc.send_signal(sig))
+line = queue.Queue()
+
+
+def read():
+    while True:
+        try:
+            chunk = os.read(0, 65536)
+        except OSError:
+            chunk = b""
+        now = time.monotonic()
+        hold = hold_ms() if held else 0.0
+        if chunk:
+            log("stream-chunks.log", {"pid": os.getpid(), "held": held, "read": now,
+                                      "hold_ms": hold, "bytes": len(chunk)})
+        line.put((now + hold / 1000, chunk))
+        if not chunk:
+            return
+
+
+def feed():
+    while True:
+        due, chunk = line.get()
+        if not chunk:
+            break
+        wait = due - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            proc.stdin.write(chunk)
+            proc.stdin.flush()
+        except OSError:
+            break
+    try:
+        proc.stdin.close()
+    except OSError:
+        pass
+
+
+for target in (read, feed):
+    threading.Thread(target=target, daemon=True).start()
+code = proc.wait()
+sys.exit(code if code >= 0 else 128 - code)
+'''
+
+
+class _StreamPsql:
+    """`_STREAM_PSQL` first on the estate's `PATH` as `psql` (its `bin`, as
+    `Estate.shim` puts PSQL_SHIM), in front of the case's cluster's own
+    `psql`, with no hold until `hold` sets one."""
+
+    def __init__(self, est: Estate):
+        self.dir = est.bin
+        _script(est.bin / "psql", _STREAM_PSQL, PY=sys.executable, HERE=_q(est.bin),
+                REAL=_q(est.pg.cluster.tool("psql")))
+
+    def hold(self, ms: int) -> None:
+        """Each chunk handed to the service's held child from now on is held
+        `ms` milliseconds."""
+        (self.dir / "stream-hold-ms").write_text(str(ms), encoding="utf-8")
+
+    def log(self, name: str = "stream-chunks.log") -> list:
+        path = self.dir / name
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+                if line.strip()]
+
+    def handed(self, hook: Hook) -> list:
+        """The chunks the service's held child read while `hook` ran (one
+        monotonic clock for the runner and the stand-in, as on Linux)."""
+        return [c for c in self.log() if c["held"] and hook.t0 <= c["read"] <= hook.t_exit]
+
+
+#: How long a case warms the service, in guard runs, before it reads it.
+WARM_S = 15.0
+
+
+def _warm(est: Estate, limit: float = WARM_S) -> Hook:
+    """Guard runs until one is answered by the service, with no fallback
+    line (d8 section 5.3), returned: a cold service answers `unavailable`
+    until its `psql` has connected (d8:502), and one holding no image
+    answers its first request so (the cache miss), as T237y's case warms
+    it."""
+    end = time.monotonic() + limit
+    while True:
+        hook = est.hook("hello")
+        if FALLBACK not in hook.err:
+            return hook
+        assert time.monotonic() < end, \
+            f"no guard run was answered by the service in {limit:.0f} s: {hook!r}"
+        time.sleep(0.2)
+
+
+def _service_backends(pg) -> set:
+    """The pids of the case's database's `lanes-index` client backends, by
+    the `application_name` the service's `psql` carries (`PGAPPNAME`, d8
+    section 7). Between guard runs that is the service's held connection
+    alone, once a direct read's backend has gone."""
+    sql = ("SELECT pid FROM pg_catalog.pg_stat_activity WHERE datname = current_database() "
+           "AND application_name LIKE 'lanes-index%' AND pid <> pg_backend_pid();")
+    return {int(word) for word in pg.psql(sql).stdout.split()}
 
 
 def _sha(text: str) -> str:
@@ -2851,51 +3180,137 @@ def test_the_database_unreachable_with_the_service_up_is_2_never_a_cached_ok(est
     assert hook.code == 2 and not hook.killed, repr(hook)
 
 
+#: THE HOLD on each chunk handed to the service's held child in the timer's
+#: case: past the 200 ms timer with no `register_rtt_ms=`, and inside the
+#: 250 ms at 150 (d8 section 6.2). The answer comes the hold and the real
+#: `psql`'s run, a few ms, after the request reached the service, near the
+#: middle of that window.
+STREAM_HOLD_MS = 220
+
+
 @pytest.mark.parametrize("rtt", ["none", "rtt-150"])
 def test_the_services_request_timer_follows_register_rtt_ms(estate, rtt):
     """SVC-6 at X: the service's request timer is 200 ms, or the round trip
-    plus 100 ms where `register_rtt_ms=` is over 100 (250 ms at 150)."""
+    plus 100 ms where `register_rtt_ms=` is over 100 (250 ms at 150).
+
+    The contract fixes the timer, not a `status` key, so the case reads it
+    from the answer, through the service's own `psql` (`_StreamPsql`, since
+    PSQL_SHIM never runs the held child: lane 5's T512 plan, point 2). The
+    service is warmed with no hold until a guard run is answered by it; then
+    each chunk handed to its held child is held `STREAM_HOLD_MS`, and one more
+    guard run's request reaches the held child and is held there: `[none]`
+    falls back, its 200 ms timer having expired, and `[rtt-150]` is answered
+    inside its 250 ms."""
     est = estate(mode="primary")
     if rtt != "none":
         _db_config(est, est.pg.url(), register_rtt_ms=150)
-    # EVERY CALL HELD 225 ms: past 200 ms, the timer with no `register_rtt_ms`,
-    # and inside 250 ms, the timer at 150. The contract fixes the timer, not a
-    # `status` key, so the case reads it from the answer.
-    est.shim([{"mode": "window", "ms": 225}])
+    stream = _StreamPsql(est)
     svc = _Service(est)
-    est.hook("hello")
-    hook = est.hook("hello")
-    svc.stop()
+    try:
+        _warm(est)
+        stream.hold(STREAM_HOLD_MS)
+        hook = est.hook("hello")
+    finally:
+        svc.stop()
+    held = [c for c in stream.handed(hook) if c["hold_ms"] == STREAM_HOLD_MS]
+    assert held, f"the guard's request never reached the service's held psql: {stream.log()}"
     if rtt == "none":
-        assert FALLBACK in hook.err, hook.err
+        assert hook.err.count(FALLBACK) == 1, hook.err
     else:
         assert FALLBACK not in hook.err, hook.err
 
 
-def test_each_service_request_is_one_query(estate):
-    """AT-10: each request the service answers is one Query message, one call
-    in the shim's log."""
-    est = estate(mode="primary")
-    est.shim()
+def test_each_service_request_is_one_query(estate, request):
+    """AT-10: each request the service answers is one Query message.
+
+    PSQL_SHIM's log cannot count it: the shim reads its stdin to the end
+    before it hands a call on, so the service's held `psql` never answers
+    through it, and the call it counted was the direct read's (lane 5's T512
+    plan, point 2). So the case runs on T229's counting cluster (line FX's
+    `CountingCluster`), which logs one `statement:` line per Query message,
+    each with its backend's pid (`log_statement=all`): the service is warmed
+    until a guard run is answered by it, its held connection is then the one
+    `lanes-index` backend (d8 section 7), and one more answered guard run,
+    one request (form 2, d8 section 13.9), is one `statement:` line of that
+    backend's."""
+    pgcluster = pytest.importorskip("pgcluster")
+    assert "CountingCluster" in vars(pgcluster), "tests/pgcluster.py has no counting cluster (T229)"
+    cluster = request.getfixturevalue("counting_cluster")
+    db = pgcluster.Database(cluster, cluster.new_database())
+    est = estate()
+    est.primary(db)
     svc = _Service(est)
-    before = len(est.shim_calls())
-    est.hook("hello")
-    svc.stop()
-    assert len(est.shim_calls()) - before == 1, est.shim_calls()[before:]
+    try:
+        _warm(est)
+        held = _until(lambda: (lambda s: s if len(s) == 1 else None)(_service_backends(db)),
+                      10, 0.1)
+        assert held, f"no one lanes-index backend is left for the service: {_service_backends(db)}"
+        offset = cluster.log().stat().st_size
+        hook = est.hook("hello")
+    finally:
+        svc.stop()
+    time.sleep(0.2)                       # the server's last log line, as T229's smoke waits
+    text = cluster.log().read_bytes()[offset:].decode("utf-8", "replace")
+    pid = next(iter(held))
+    queries = [line for line in text.splitlines() if f"[{pid}]" in line and "statement: " in line]
+    assert FALLBACK not in hook.err, hook.err
+    assert len(queries) == 1, queries
+
+
+#: THE IDLE CHECK'S DEFAULT, kept for a value the contract ignores (d8
+#: section 10), and the case's two reads of it: no replacement by
+#: `IDLE_CHECK_EARLY_S`, `[interval]`'s wait, and one by `IDLE_CHECK_LIMIT_S`.
+IDLE_CHECK_DEFAULT_S = 60
+IDLE_CHECK_EARLY_S = 2.5
+IDLE_CHECK_LIMIT_S = IDLE_CHECK_DEFAULT_S + 30
 
 
 @pytest.mark.parametrize("case", ["interval", "floor", "cap"])
 def test_the_services_idle_check_replaces_a_dropped_connection_in_the_background(estate, case):
     """SVC-6 (R37): `[interval]`, at `LANES_REGISTER_SERVE_IDLE_CHECK_S=1`, a
     dropped connection is replaced in the background before the next
-    request; `[floor]`, a value under 1 s refused; `[cap]`, one at or above
-    the load balancer's 240 s refused."""
+    request.
+
+    `[floor]`, 0.5, under the 1 s floor, and `[cap]`, 240, the load
+    balancer's 240 s: such a value is ignored, with the default 60 s kept,
+    never `config-refused` (tasks:1643; lane 5's socket contract d8, section
+    10; lane 3's OP-14, #165 6746215510, which stands, #165 6827356485). So
+    `serve` listens and runs on, with no failure stamp (section 8.6), and
+    `[interval]`'s own observable shows the 60 s: the service's dropped
+    connection is not replaced within `IDLE_CHECK_EARLY_S`, as a check at
+    the value given or at the 1 s floor would have replaced it, and is
+    replaced within `IDLE_CHECK_LIMIT_S`, as a check at 240 s would not
+    have; the next request is then answered by the service. The replacement
+    is read in `pg_stat_activity` by its `application_name` (d8 section 7),
+    with no request in between, since a request on the dropped connection
+    would itself start the new one (d8 section 6.2)."""
     est = estate(mode="primary")
     value = {"interval": "1", "floor": "0.5", "cap": "240"}[case]
     if case != "interval":
-        done = _index(est, "serve", env=est.env(LANES_REGISTER_SERVE_IDLE_CHECK_S=value),
-                      timeout=30)
-        assert done.returncode == 2, done.stderr
+        svc = _Service(est, LANES_REGISTER_SERVE_IDLE_CHECK_S=value)
+        try:
+            _warm(est)
+            dropped = _until(lambda: _service_backends(est.pg), 10, 0.1)
+            assert dropped, "the warmed service held no connection to drop"
+            est.pg.psql("SELECT pg_terminate_backend(pid) FROM pg_catalog.pg_stat_activity "
+                        f"WHERE pid IN ({','.join(str(p) for p in dropped)});")
+            time.sleep(IDLE_CHECK_EARLY_S)
+            early = _service_backends(est.pg) - dropped
+            replaced = early or _until(lambda: _service_backends(est.pg) - dropped,
+                                       IDLE_CHECK_LIMIT_S - IDLE_CHECK_EARLY_S, 1.0)
+            hook = est.hook("hello")
+            code = svc.proc.poll()
+            stamp = (_run_dir(est) / "register.failed").exists()
+        finally:
+            svc.stop()
+        assert code is None and not stamp, \
+            f"serve exited {code} or stamped a failure under LANES_REGISTER_SERVE_IDLE_CHECK_S={value}"
+        assert not early, (f"the dropped connection was replaced within {IDLE_CHECK_EARLY_S} s: "
+                           f"the check ran at {value} s or at the 1 s floor, not at the default "
+                           f"{IDLE_CHECK_DEFAULT_S} s")
+        assert replaced, (f"the dropped connection was not replaced within {IDLE_CHECK_LIMIT_S} s: "
+                          f"the check did not run at the default {IDLE_CHECK_DEFAULT_S} s")
+        assert FALLBACK not in hook.err, hook.err
         return
     svc = _Service(est, LANES_REGISTER_SERVE_IDLE_CHECK_S=value)
     est.pg.psql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
@@ -3027,16 +3442,25 @@ def _masked_path(path: str) -> str:
 
 
 def test_the_service_reaches_the_database_only_through_psql(estate):
-    """OP-10 (R-F10-20): every answer from the database is a call in the
-    shim's log; with no `psql` at the start, `serve` stamps `no-psql` and
-    exits 2 before any socket exists, and the client's direct read answers."""
+    """OP-10 (R-F10-20): every answer from the database is a call through
+    `psql`; with no `psql` at the start, `serve` stamps `no-psql` and exits 2
+    before any socket exists, and the client's direct read answers.
+
+    The first half reads the service's own `psql` through `_StreamPsql`:
+    PSQL_SHIM, which reads its stdin to the end first, never runs the
+    service's held child, so the call it logged was the direct read's (lane
+    5's T512 plan, point 2). The guard run the service answers, with no
+    fallback line, handed its request to the held child, the `psql` the
+    service ran from `PATH`."""
     est = estate(mode="primary")
-    est.shim()
+    stream = _StreamPsql(est)
     svc = _Service(est)
-    before = len(est.shim_calls())
-    est.hook("hello")
-    svc.stop()
-    assert len(est.shim_calls()) > before, "an answer came from the database without psql"
+    try:
+        hook = _warm(est)
+    finally:
+        svc.stop()
+    assert stream.handed(hook), \
+        f"an answer came from the database without psql: {stream.log('stream-begin.log')}"
     nopsql = subprocess.run([sys.executable, str(est.index), "serve"], capture_output=True,
                             text=True, timeout=30, cwd=str(est.wip),
                             env=est.env(PATH=_masked_path(os.pathsep.join(
@@ -3266,16 +3690,38 @@ def test_a_stale_socket_is_unlinked_under_the_lock_and_rebound(estate):
         again.stop()
 
 
+#: How long `[floor]`'s service must run on: ten times the 0.5 s given, five
+#: times the 1 s floor, and past `[stops]`'s 2 s.
+IDLE_STOP_RUNS_ON_S = 5.0
+
+
 @pytest.mark.parametrize("case", ["stops", "floor"])
 def test_the_service_stops_after_its_idle_time_and_unlinks_its_socket(estate, case):
     """SVC-4 (R37): `[stops]`, with `LANES_REGISTER_SERVE_IDLE_STOP_S=2` the
-    service stops after it and unlinks its socket; `[floor]`, a value under
-    1 s refused."""
+    service stops after it and unlinks its socket.
+
+    `[floor]`, 0.5, under the 1 s floor: the value is ignored, with the
+    default 900 s kept, never `config-refused` (tasks:1643; d8 section 10;
+    lane 3's OP-14, #165 6746215510, which stands, #165 6827356485). So
+    `serve` listens, with no failure stamp (section 8.6), and by section
+    8.4's own observable, its process and its socket, it runs on for
+    `IDLE_STOP_RUNS_ON_S`, past the 0.5 s given and the 1 s floor. The 900 s
+    itself is not waited for."""
     est = estate(mode="primary")
     if case == "floor":
-        done = _index(est, "serve", env=est.env(LANES_REGISTER_SERVE_IDLE_STOP_S="0.5"),
-                      timeout=30)
-        assert done.returncode == 2, done
+        svc = _Service(est, LANES_REGISTER_SERVE_IDLE_STOP_S="0.5")
+        sock = svc.dir / "register.sock"
+        try:
+            stopped = _until(lambda: svc.proc.poll() is not None or not sock.exists(),
+                             IDLE_STOP_RUNS_ON_S)
+            code = svc.proc.poll()
+            stamp = (_run_dir(est) / "register.failed").exists()
+        finally:
+            svc.stop()
+        assert not stamp, "serve stamped a failure under LANES_REGISTER_SERVE_IDLE_STOP_S=0.5"
+        assert not stopped, (f"serve stopped (exit {code}) or unlinked its socket inside "
+                             f"{IDLE_STOP_RUNS_ON_S} s under LANES_REGISTER_SERVE_IDLE_STOP_S=0.5: "
+                             f"the value was taken, not ignored with the default 900 s kept")
         return
     svc = _Service(est, LANES_REGISTER_SERVE_IDLE_STOP_S="2")
     sock = svc.dir / "register.sock"
