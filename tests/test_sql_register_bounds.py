@@ -34,7 +34,8 @@ same two functions. The faults (AT-D9, "Fixture"):
 - F2, a relay to the cluster's socket that goes silent once the startup has
   completed, at the server's first ReadyForQuery (`StartupRelay`);
 - F3, an `ALTER TABLE` in an open transaction of the test's own session on
-  the table the path reads;
+  the table the path reads, or, for a writer's commit, the head row held
+  `FOR UPDATE` (`_hold_head`; T257f);
 - F4, a slow statement the test creates in its own database: a row-level
   security policy that sleeps, for the path's group role. F4 is the second
   function's, `test_a_slow_statement_meets_57014_before_the_client_timer`.
@@ -119,6 +120,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -333,12 +335,21 @@ class SilentListener:
 class StartupRelay(SilentListener):
     """F2: a relay on loopback to the cluster's Unix socket that forwards
     until the startup completes, at the server's first ReadyForQuery
-    (`Z`, length 5), then goes silent, holding both ends open."""
+    (`Z`, length 5), then goes silent, holding both ends open.
+
+    `armed`, where given, is asked at each connection's accept (T257f;
+    TP:3586-3589, "A row that follows a healthy call ... The test arms the
+    fault once the shim's log shows the earlier call's end, so the call
+    before it reaches the cluster"): a connection accepted while it answers
+    False is relayed whole and never goes silent. Asked at the accept, it
+    has no race with the caller: the timing wrapper logs a call's end before
+    it hands the call's answer back. `silenced` counts the connections that
+    went silent."""
 
     READY = re.compile(rb"Z\x00\x00\x00\x05[ITE]")
 
-    def __init__(self, unix_path: str):
-        self.unix_path = unix_path
+    def __init__(self, unix_path: str, armed=None):
+        self.unix_path, self.armed, self.silenced = unix_path, armed, 0
         super().__init__()
 
     def _accept(self):
@@ -348,12 +359,14 @@ class StartupRelay(SilentListener):
                 conn, _ = self.sock.accept()
             except OSError:
                 continue
+            fault = self.armed is None or bool(self.armed())
             upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             upstream.connect(self.unix_path)
             self.held += [conn, upstream]
-            threading.Thread(target=self._pump, args=(conn, upstream), daemon=True).start()
+            threading.Thread(target=self._pump, args=(conn, upstream, fault),
+                             daemon=True).start()
 
-    def _pump(self, client, server):
+    def _pump(self, client, server, fault=True):
         seen, silent = b"", False
         while not self.done:
             ready, _, _ = select.select([client, server], [], [], 0.2)
@@ -369,8 +382,9 @@ class StartupRelay(SilentListener):
                 if end is server:
                     seen = (seen + data)[-64:]
                     (client.sendall(data))
-                    if self.READY.search(seen):
+                    if fault and self.READY.search(seen):
                         silent = True
+                        self.silenced += 1
                 else:
                     server.sendall(data)
 
@@ -381,6 +395,15 @@ TIMING_PSQL = r'''#!/usr/bin/env python3
 # object per call in psql-timing.log beside it. Its first statement stamps
 # the call's begin, written with its parent's pid to psql-begin.log before
 # it reads stdin, so a call its caller's timer kills is stamped too (T220f).
+# Each logged call also says whether its request was a writer's snapshot, the
+# one request that opens REPEATABLE READ (contract section 2.3), so a fault
+# can be armed after the snapshot's end and an attempt's start found (T257f),
+# and which of the register's write functions it called (T278). Each request
+# is also stamped in psql-sent.log once read, before the real psql connects.
+# Each logged call names its parent's pid too, the command that made it, so a
+# missed snapshot's second request is told from a new attempt's (T257i).
+# Each send stamp says whether its request is a snapshot, so a case can tell
+# that a writer's SQL path ran even where the snapshot never ended (T257j).
 import time
 begin = time.monotonic()
 import json, os, subprocess, sys
@@ -390,14 +413,24 @@ with open(os.path.join(here, "psql-begin.log"), "a", encoding="utf-8") as handle
                              "begin": begin}) + "\n")
 real = os.environ["T220_REAL_PSQL"]
 data = sys.stdin.buffer.read() if sys.argv[1:] != ["--version"] else b""
+KINDS = ("commit_write", "switch_to_files", "record_marker", "find_write")
+if sys.argv[1:] != ["--version"]:
+    # T278: the request read, stamped before the real psql connects, with the
+    # write functions it calls, so a fault can be armed for one named call.
+    with open(os.path.join(here, "psql-sent.log"), "a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"ppid": os.getppid(), "sent": time.monotonic(),
+                                 "calls": [k for k in KINDS if k.encode() + b"(" in data],
+                                 "snapshot": b"REPEATABLE READ" in data}) + "\n")
 start = time.monotonic()
 proc = subprocess.run([real] + sys.argv[1:], input=data, capture_output=True)
 end = time.monotonic()
 err = proc.stderr.decode("utf-8", "replace")
 with open(os.path.join(here, "psql-timing.log"), "a", encoding="utf-8") as handle:
-    handle.write(json.dumps({"argv": sys.argv[1:], "start": start, "end": end,
-                             "exit": proc.returncode,
-                             "first": (err.strip().splitlines() or [""])[0]}) + "\n")
+    handle.write(json.dumps({"argv": sys.argv[1:], "ppid": os.getppid(),
+                             "start": start, "end": end, "exit": proc.returncode,
+                             "first": (err.strip().splitlines() or [""])[0],
+                             "snapshot": b"REPEATABLE READ" in data,
+                             "calls": [k for k in KINDS if k.encode() + b"(" in data]}) + "\n")
 sys.stdout.buffer.write(proc.stdout)
 sys.stderr.buffer.write(proc.stderr)
 sys.exit(proc.returncode)
@@ -545,27 +578,160 @@ ROWS = {
     # commit at F3, 55P03 per attempt then 75 at the deadline
     # (`LANES_REGISTER_DEADLINE_S=3`), at most 3 + 8 + 8 = 19 s; the lookup,
     # `find_write`, 3 naming the id, its tries inside the 10 s window, each
-    # to `T_L` 9 s; and a whole write, 75 at the deadline. Each `statement_ms`
-    # is the lookup's 6000 ms, a reading for the snapshot and the commit,
-    # whose `statement_timeout` the table this line read does not give.
+    # to `T_L` 9 s; and a whole write, 75 at the deadline.
+    #
+    # LANE 3'S BATCH 7, ask (1) on T257a (T257f; #165, its analysis's
+    # "R-F13-1, T257a's four readings"): the snapshot's and the commit's
+    # `statement_timeout` is 5000 ms (CLI:250-251), the lookup's 6000 ms
+    # (CLI:252). `whole-write` runs at F3, since F1 ends the first snapshot
+    # with 69 (TP:3596), with its own cell: no attempt starts after the
+    # deadline, and the run stays under `T_write` (`WHOLE_WRITE`). And the
+    # commit's F2 is armed only once the timing log shows the snapshot's end
+    # (TP:3586-3589), so the snapshot reaches the cluster and the commit
+    # meets the relay; since T257i, at the commit's own send, so a missed
+    # snapshot's second request reaches it too (lane 1's cut, #165
+    # 6783051626). A writer's F3 is the head row held `FOR UPDATE`
+    # (`_hold_head`; TP:3560-3561, "for a writer's commit, the head row held
+    # `FOR UPDATE`"), which a snapshot's plain read does not wait on, so the
+    # snapshot answers and each attempt's commit meets 55P03.
+    #
+    # THE COMMIT'S F4 (T257h; line BD9's finding on T257a): the second
+    # function's `[writer-commit-f2]` meets a trigger on `journal` that
+    # sleeps, which the commit's entry meets (`slow`), and the writer exits
+    # 69, "a refusal the database made", not the F2 row's 3 (`f4_exit`;
+    # TP:3621-3626 at B14). T257a's policy on `register_head` was met by the
+    # snapshot's read first.
     "writer-snapshot":  dict(group="lanes_register_writer", exit=69, bound=8, strict=False,
-                             faults=("F1",), statement_ms=6000, table="register_head"),
+                             faults=("F1",), statement_ms=5000, table="register_head"),
     "writer-commit-f2": dict(group="lanes_register_writer", exit=3, bound=25, strict=False,
-                             faults=("F2",), statement_ms=6000, table="register_head"),
+                             faults=("F2",), statement_ms=5000, table="register_head",
+                             f4_exit=69, slow=("journal", "INSERT")),
     "writer-commit-f3": dict(group="lanes_register_writer", exit=75, bound=19, strict=False,
                              faults=("F3",), statement_ms=None, table="register_head"),
     "lookup":           dict(group="lanes_register_writer", exit=3, bound=19, strict=False,
                              faults=("F1",), statement_ms=6000, table="register_head"),
     "whole-write":      dict(group="lanes_register_writer", exit=75, bound=19, strict=False,
-                             faults=("F1",), statement_ms=None, table=None),
+                             faults=("F3",), statement_ms=None, table="register_head"),
+    # T257g'S CACHE MISS (F13c's T257 bullet, R-F13c-18; lane 3's batch 7,
+    # #165 6780364102, text change 18 and its ruling on T111's SHOULD-2,
+    # option (b)): `register snapshot` misses the image cache, F2 is armed
+    # once its first request ends, and its second request, the whole fetch
+    # (Y:2515-2516), runs under what is left of `S` from the first request's
+    # start, so the command ends 69 within `S`, 8 s (`_snapshot_miss`). It
+    # runs on the imported register at `primary` (`Operator`): a snapshot
+    # reads the switch first (its check 4), and a miss fetches from the
+    # import. Its F4 is `writer-snapshot`'s, so it takes no id of the second
+    # function (`SLOW_ROWS`).
+    "snapshot-miss":    dict(group=None, exit=69, bound=8, strict=False,
+                             faults=("F2",), statement_ms=5000, table="register_head"),
+    # T257j: `writer-commit-f2`, `writer-commit-f3` and `whole-write` meet
+    # their faults after the snapshot's check 4, which refuses any switch but
+    # `primary` with the marker `present`; `pg` alone is a bootstrap-only
+    # clone, its switch `files` with the marker `absent` and its head -1. So
+    # they run on the imported register at `primary` (`Operator`, as T278's
+    # rows and `snapshot-miss` do; `PRIMARY_WRITER_ROWS`), each with its id,
+    # its fault and its expected exit unchanged. `writer-snapshot` meets its
+    # F1 at the connect and its F4 at the snapshot's read, both before check
+    # 4, so it stays on `Bench`.
+    # T278'S SIX ROWS (AT-D9's table, TP:3600-3608; "The operator rows run the
+    # real commands", TP:3627-3641): the operator's commands on test 7's
+    # fixture register (`Operator`, below), each at F1, timed from the
+    # faulted call's start. `rollback`, each call 15 s and 69, where step 1's
+    # call and the switch's re-read both meet F1, 15 + 15 = 30 s; `cutover`,
+    # its transaction 15 s, 69; `switch-to-files`, the cutover's abort,
+    # reached by a cutover whose push the `git` wrapper fails, 15 s, 69;
+    # `record-marker`, after the cutover's push and read-back, 15 s, 69; the
+    # stray ways out's commit call (`stray-commit`), in doubt as a writer's,
+    # then the lookup, 3, the commit's F2 row's 35.5 s; and their other calls
+    # (`stray-calls`), the snapshot read, 69 in 8 s. Each `statement_timeout`
+    # is lane 1's `REGISTER_BOUNDS`' (`rollback` and `cutover`, 10 s; the
+    # ways out's calls, 5000 ms, TP:3607). The keys past `table`: `f4_exit`,
+    # the outcome at F4 ("For a writer's commit that outcome is 69, a refusal
+    # the database made", TP:3615-3617); `slow`, where F4's slow statement
+    # sits (TP:3618-3624: a trigger on `journal` for the cutover, its abort
+    # and the ways out's commit; on `register_switch` for `record_marker`; a
+    # policy on `register_head` for the snapshot's read); `estate`; and
+    # `after`, the healthy call before the faulted one, and `target`, the
+    # faulted call, by the write function it calls. F1 is armed for `target`
+    # at that call's own send, which `TIMING_PSQL` stamps before the real
+    # `psql` connects: so "once the shim's log shows the earlier call's end"
+    # (TP:3586-3589), and never earlier, whatever number of requests the
+    # earlier call makes. A missed snapshot's second request (lane 1's cut,
+    # `refs/l1/R-rulings` 8121903; lane 3's batch 7 SHOULD-2) is a snapshot
+    # request still, and reaches the cluster.
+    # `rollback`'s F4 is a trigger on `journal` (lane 3's batch 11 (7)(a),
+    # #165 6783909985, which adds "the rollback's step 1" to TP's F4 list):
+    # step 1 is `commit_write` with the `rollback` entry (T304), whose
+    # `INSERT INTO journal` meets the trigger, as the cutover's entry does.
+    # Its estate is `cutover-done` (T278d): T326's step 0 walks origin for the
+    # cutover's marker commit, which `_to_primary` never pushes.
+    "rollback":        dict(group=None, exit=69, bound=30, strict=False, faults=("F1",),
+                            statement_ms=10000, table="journal", f4_exit=69,
+                            slow=("journal", "INSERT"), estate="cutover-done", after=None,
+                            target=None),
+    "cutover":         dict(group=None, exit=69, bound=15, strict=False, faults=("F1",),
+                            statement_ms=10000, table="journal", f4_exit=69,
+                            slow=("journal", "INSERT"), estate="imported", after=None,
+                            target=None),
+    "switch-to-files": dict(group=None, exit=69, bound=15, strict=False, faults=("F1",),
+                            statement_ms=10000, table="journal", f4_exit=69,
+                            slow=("journal", "DELETE"), estate="imported",
+                            after="commit_write", target="switch_to_files"),
+    "record-marker":   dict(group=None, exit=69, bound=15, strict=False, faults=("F1",),
+                            statement_ms=10000, table="register_switch", f4_exit=69,
+                            slow=("register_switch", "UPDATE"), estate="imported",
+                            after="commit_write", target="record_marker"),
+    "stray-commit":    dict(group=None, exit=3, bound=35.5, strict=False, faults=("F1",),
+                            statement_ms=5000, table="journal", f4_exit=69,
+                            slow=("journal", "INSERT"), estate="stray", after="snapshot",
+                            target="commit_write"),
+    "stray-calls":     dict(group=None, exit=69, bound=8, strict=False, faults=("F1",),
+                            statement_ms=5000, table="register_head", f4_exit=69,
+                            slow=("register_head", "policy"), estate="stray", after=None,
+                            target=None),
 }
+#: T278's rows, which `Operator` runs, not `Bench`.
+OPERATOR_ROWS = ("rollback", "cutover", "switch-to-files", "record-marker", "stray-commit",
+                 "stray-calls")
+#: T257a's writer rows that `Operator`'s estate at `primary` runs (T257j).
+PRIMARY_WRITER_ROWS = ("writer-commit-f2", "writer-commit-f3", "whole-write")
+
+#: The whole write's own cell (TP's "a whole write" row; T257f): at
+#: `LANES_REGISTER_DEADLINE_S=3`, no attempt starts after the deadline, and
+#: from the first attempt's start the run takes at most the deadline + `S` +
+#: `C` = 3 + 8 + 8 = 19 s (`ROWS`' bound, asserted at twice it), and in no
+#: case over `T_write` = 62.5 + 3 * `N_a` * `c` s, 68.5 s here.
+WHOLE_WRITE = dict(deadline_s=3, t_write_s=62.5 + 3 * N_A * C)
+#: The rows whose F3 is the head row held `FOR UPDATE`, a writer's commit's.
+HEAD_HELD_F3 = ("writer-commit-f3", "whole-write")
 
 FIRST_CASES = [f"{row}-{fault}" for row, spec in ROWS.items() for fault in spec["faults"]]
-SLOW_ROWS = [row for row, spec in ROWS.items() if spec["statement_ms"] and row != "import"]
+SLOW_ROWS = [row for row, spec in ROWS.items()
+             if spec["statement_ms"] and row not in ("import", "snapshot-miss")]
+
+#: THE SERVICE ROW'S STATE HOME: SHORT, AND OUTSIDE THE TEMPORARY ROOT. The
+#: service's one socket is `${XDG_STATE_HOME}/openRepoTools/run/register.sock`
+#: (socket contract d8, section 2.1): `serve` binds it, and the guard's read
+#: connects to it. `sun_path` holds 107 bytes on Linux and 103 on macOS, and
+#: the contract's `serve` refuses a path over 103 bytes (`path-too-long`,
+#: exit 2). Under the bench's `tmp_path` the path followed the temporary root,
+#: about 147 bytes on the runner, where lane 1's guard rerun met `OSError:
+#: AF_UNIX path too long` (verify-r5-c2b, CI run 43140203269; line AN14). So
+#: the `service` row's `XDG_STATE_HOME`, for `serve` and for the guard runs it
+#: answers alike, is a `mkdtemp` of the bench's own in `/tmp`, as line G's
+#: estates make theirs (T213i): `/tmp/l2bd-` and mkdtemp's 8 characters, 18
+#: bytes, which puts the socket at 50 whatever `TMPDIR` or `--basetemp` is.
+#: The bench removes it when the test ends (`Bench.service_env`). No other row
+#: starts `serve`, so every other row keeps the bench's state home.
+STATE_PARENT = "/tmp"
+STATE_PREFIX = "l2bd-"
+#: The contract's bound on the socket's path, in bytes (section 2.1).
+SOCKET_MAX = 103
 
 
 class Bench:
-    """One test's bench: a scratch workspace with a bare origin, a copy of
+    """One test's bench: a scratch workspace with a bare origin, the lane's
+    checkout and W, a clone of its own (T220h), a copy of
     `lanes-edit.sh` beside T203's flipped `lanes-index` (the copy rule, CLI4.5
     section 6), a configuration naming the endpoint the fault gives, a login
     of the row's group where it needs one, and the timing wrapper first on
@@ -592,6 +758,8 @@ class Bench:
         # guard returns 0 before reading anything (line W4a's T215b).
         self.wip = tmp_path / "projects" / "wip"
         self.wip.parent.mkdir(parents=True)
+        #: W, the workspace checkout (Amendment 9(a)), a clone of its own.
+        self.w = tmp_path / "W"
         # THE BASE ENVIRONMENT, T203c's: the lane's, the harness's, tmux's and
         # libpq's variables out, and `PROJECTS_ROOT` and `AGENT_PROTOCOL_ROOT`
         # with them (F10's item 28), which would move the guard's scope test
@@ -600,6 +768,7 @@ class Bench:
         env.update(HOME=str(tmp_path), XDG_STATE_HOME=str(tmp_path / "state"),
                    XDG_CONFIG_HOME=str(tmp_path / "config"), TMPDIR=str(tmp_path),
                    LANES_WORKSTATION="Eagle", LANES_NO_GITHUB="1", LANES_REPO=str(self.wip),
+                   LANES_WORKSPACE_ROOT=str(self.w),
                    T220_REAL_PSQL=pg.psql_bin, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid",
                    GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid",
                    PATH=str(self.bin) + os.pathsep + os.environ.get("PATH", os.defpath))
@@ -608,21 +777,28 @@ class Bench:
                        check=True, env=env)
         subprocess.run(["git", "clone", "-q", str(self.origin), str(self.wip)], check=True,
                        env=env, capture_output=True)
-        # THE WORKSPACE, as `test_lanes_index.py` names it (Amendment 9(a)):
-        # `lanes-edit.sh workspace-root` answers with `path:`, the checkout
-        # (line W4a's T215b).
-        (tmp_path / ".agents").mkdir()
-        (tmp_path / ".agents" / "workspace.yaml").write_text(
-            f"repository: {self.origin}\npath: {self.wip}\n", encoding="utf-8")
         (self.wip / "lanes" / "log").mkdir(parents=True)
         (self.wip / "lanes" / "LANES.md").write_text(REGISTER, encoding="utf-8")
         for argv in (["add", "-A"], ["commit", "-q", "-m", "C"], ["push", "-q", "origin", "main"]):
             subprocess.run(["git", *argv], cwd=str(self.wip), check=True, env=env,
                            capture_output=True)
+        # THE WORKSPACE, W (Amendment 9(a)), is a clone of its own at C, never
+        # the lane's checkout that `LANES_REPO` names: `import` refuses a
+        # `LANES_REPO` that names W, or one set where W cannot be read
+        # (contract 4.18:987; lane 1's group 6, #165 6807494089), and `status`
+        # and `reconcile` read W's `origin/main`. `lanes-edit.sh
+        # workspace-root` answers W by `LANES_WORKSPACE_ROOT`, its test seam,
+        # and `workspace.yaml`'s `path:` names the same W.
+        subprocess.run(["git", "clone", "-q", str(self.origin), str(self.w)], check=True,
+                       env=env, capture_output=True)
+        (tmp_path / ".agents").mkdir()
+        (tmp_path / ".agents" / "workspace.yaml").write_text(
+            f"repository: {self.origin}\npath: {self.w}\n", encoding="utf-8")
         self.c = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(self.wip), env=env,
                                 capture_output=True, text=True, check=True).stdout.strip()
         self.request = request
         self.session = None
+        self.service_state = None
 
     def guard_session(self):
         """The guard rows' live session (T203c): a record on this workstation
@@ -658,7 +834,8 @@ class Bench:
             service: subprocess.Popen | None = None) -> tuple:
         """Run `row`'s path; return (the process, its elapsed seconds). The
         `service` row starts `lanes-index serve` for this run alone, unless the
-        caller passes the one it holds (T237y)."""
+        caller passes the one it holds (T237y), and runs under the service's
+        short state home (`service_env`), as that `serve` does."""
         env = dict(self.env, LANES_INDEX_CONFIG=str(config), LANES_LANE="repoA-2")
         tool = self.copy.parent
         index = [sys.executable, str(self.copy)]
@@ -672,6 +849,8 @@ class Bench:
             session = self.guard_session()
             env = session.env(env)
             stdin = session.hook_input("2" if row == "answer-2" else "hello")
+            if row == "service":
+                env = self.service_env(env)
         elif row == "reader":
             argv = index + ["register", "read", "--prefetch", "--cache",
                             str(self.root / "cache" / "reg"), "--files", "register,aliases"]
@@ -685,15 +864,22 @@ class Bench:
         elif row == "status":
             argv = index + ["status"]
         elif row == "outage-probe":
+            # `--mirror-seq 0` (T220g; T218g's, line RE's A15): on Brett's word
+            # with no `--mirror-seq`, the declare reads the mirror's `m` after
+            # a fetch (F11), and this bench's origin holds no `Register-Seq`,
+            # so it would refuse 2, "no mirror-seq". 0 is T218g's value, which
+            # lane 1's code takes as any whole number. No closed port: the
+            # row's own fault keeps the probe from an answer.
             argv = index + ["outage", "declare", "--until", "2999-01-01T00:00:00Z",
-                            "--why", "D9's probe row"]
+                            "--why", "D9's probe row", "--mirror-seq", "0"]
         elif row == "mode-query":
             argv = index + ["mode"]
-        elif row in ("writer-snapshot", "writer-commit-f2", "writer-commit-f3", "whole-write"):
+        elif row == "writer-snapshot":
             # A WRITER'S WHOLE PATH, `set-row-state` on the bench's lane, whose
-            # snapshot (F1), commit (F2) or lock (F3) meets the fault; the
-            # deadline is D9's test value. A reading: T257's text names the
-            # rows, not the verb that carries them.
+            # snapshot meets the fault; the deadline is D9's test value. A
+            # reading: T257's text names the rows, not the verb that carries
+            # them. The writer rows whose fault comes after the snapshot's
+            # check 4 run on `Operator`'s estate (`Operator.write`; T257j).
             argv = ["bash", str(tool / "lanes-edit.sh"), "set-row-state", "repoA-2",
                     f"PAUSED {DOT} T257's writer row"]
             env = dict(env, LANES_REGISTER_DEADLINE_S="3", LANES_LANE="repoA-2")
@@ -775,6 +961,20 @@ class Bench:
         env = dict(self.env, LANES_INDEX_CONFIG=str(config), LANES_LANE="repoA-2")
         return self.guard_session().env(env)
 
+    def service_env(self, env: dict) -> dict:
+        """`env` with the `service` row's state home (`STATE_PREFIX`): one
+        short directory of this bench's own in `/tmp`, made at the first call
+        and removed when the test ends, so `serve` and the guard runs it
+        answers share one socket path within `SOCKET_MAX` bytes."""
+        if self.service_state is None:
+            home = Path(tempfile.mkdtemp(prefix=STATE_PREFIX, dir=STATE_PARENT))
+            self.request.addfinalizer(lambda: shutil.rmtree(home, ignore_errors=True))
+            sock = home / "openRepoTools" / "run" / "register.sock"
+            assert len(os.fsencode(str(sock))) <= SOCKET_MAX, \
+                f"the service's socket path {sock} is over {SOCKET_MAX} bytes"
+            self.service_state = home
+        return dict(env, XDG_STATE_HOME=str(self.service_state))
+
     def start_service(self, env: dict) -> subprocess.Popen:
         """`lanes-index serve` on `env`, returned once its socket is bound at
         the one socket path (socket contract d8, section 2.1)."""
@@ -853,10 +1053,20 @@ def test_each_database_path_exits_inside_its_bound(pg, tmp_path, request, case):
     bound, under F1 (a silent listener, met at the connect), F2 (a relay
     silent after the startup) and F3 (a lock on the table it reads). It owns
     test 10's per-path cases (section 4.4). `migration` is the dedicated
-    test's below, and its F1 case here is the migration's connect, which
-    `test_a_waiting_migration_gives_up_at_its_own_lock_timeout` runs."""
+    test's below, `test_a_waiting_migration_gives_up_at_its_own_lock_timeout`,
+    and its F1 case here is the migration's connect, through T109's
+    `bootstrap` (`_migration`)."""
     row, fault = case.rsplit("-", 1)
     spec = ROWS[row]
+    if row in OPERATOR_ROWS:
+        _operator_row(pg, tmp_path, request, row, fault)
+        return
+    if row == "snapshot-miss":
+        _snapshot_miss(pg, tmp_path, request, fault)
+        return
+    if row in PRIMARY_WRITER_ROWS:
+        _primary_writer_row(pg, tmp_path, request, row, fault)
+        return
     bench = Bench(pg, tmp_path, request)
     user = bench.login(spec["group"]) if spec["group"] else "lanes_test"
     if row == "migration":
@@ -886,7 +1096,12 @@ def test_each_database_path_exits_inside_its_bound(pg, tmp_path, request, case):
     else:
         assert proc.returncode != 0, f"{case}: the path ended without its read"
     if row == "reader":
-        assert proc.stdout == "", "a reader's 69 has nothing on stdout"
+        # NOTHING PAST THE MODE LINE (T220j; lane 3, #165 6807694145: "the
+        # contract stands"): `register read` prints its `mode` line first in
+        # every form (4.18:758-760; B14 tasks:454), so a refused reader's
+        # "nothing on stdout" (TP:3603) is its `mode primary` line alone.
+        assert proc.stdout == "mode primary\n", \
+            f"a reader's 69 prints its mode line and nothing more: {proc.stdout!r}"
     if row == "answer-2":
         assert "BINDING" in proc.stdout + proc.stderr
     if row == "mode-query":
@@ -941,7 +1156,7 @@ def _service_57014(bench: Bench, spec: dict, user: str) -> None:
     config = bench.config(quote(str(bench.pg.host), safe=""), bench.pg.port, user)
     statement_s = spec["statement_ms"] / 1000
     bench.stream()
-    serve = bench.start_service(bench.guard_env(config))
+    serve = bench.start_service(bench.service_env(bench.guard_env(config)))
     try:
         proc, warm = None, False
         for _ in range(WARM_RUNS):
@@ -972,15 +1187,34 @@ def test_a_slow_statement_meets_57014_before_the_client_timer(pg, tmp_path, requ
     than the path's `statement_timeout` after the call's start (timing rule
     3) and under twice it (timing rule 2), and the path exits with its row's
     outcome (AT-D9, "Oracle"). `[service]` times the warm service's held
-    child, through `STREAM_PSQL` (T237y, `_service_57014`)."""
+    child, through `STREAM_PSQL` (T237y, `_service_57014`). A writer's
+    commit, `[writer-commit-f2]`, meets a trigger on `journal` and exits 69,
+    a refusal the database made (T257h), on `Operator`'s estate at `primary`
+    (T257j, `_primary_writer_57014`)."""
     spec = ROWS[row]
+    if row in OPERATOR_ROWS:
+        _operator_57014(pg, tmp_path, request, row)
+        return
+    if row in PRIMARY_WRITER_ROWS:
+        _primary_writer_57014(pg, tmp_path, request, row)
+        return
     bench = Bench(pg, tmp_path, request)
     user = bench.login(spec["group"])
     if row == "service":
         _service_57014(bench, spec, user)
         return
     statement_s = spec["statement_ms"] / 1000
-    _slow_statement(pg, spec["table"], spec["group"], 4 * statement_s + 5)
+    if row == "lookup":
+        # `find_write` is SECURITY DEFINER (`lanes-index:7863` at
+        # `refs/l1/V-round5`), so a policy for the writer's group never binds
+        # it: it locked the head row unslowed and refused LR007 on the row's
+        # random `--generation` at once (AN13b's cause 3). The lookup's F4 is
+        # `_slow_lookup`'s policy, forced on `journal` and `register_head`, as
+        # the lookup's own `[F4]` case meets it (AT-D9's F4: "a policy forced
+        # on `journal` for its owner, since `find_write` runs as the owner").
+        _slow_lookup(pg, 4 * statement_s + 5)
+    else:
+        _slow_statement(pg, spec["table"], spec["group"], 4 * statement_s + 5)
     proc, elapsed = bench.run(row, bench.config(quote(str(pg.host), safe=""), pg.port, user))
     ended = [c for c in bench.calls() if "57014" in c["first"]]
     assert ended, f"{row}: no call ended with 57014: {bench.calls()}"
@@ -1017,11 +1251,16 @@ def test_the_outage_declare_probe_ends_inside_its_bound_and_the_declaration_foll
         # D20 (Y:3073): `outage declare --until <UTC> --why "<words>"`; the rollback
         # form is `--rollback --mirror-seq <k>`, with no `--until` (lane 1, #165
         # comment 6754680212).
+        # On Brett's word the declare is given `--mirror-seq 0`, T218g's value
+        # (T220g, as `Bench.run`'s `outage-probe` row): the bench's origin
+        # holds no mirror `Register-Seq` to read after a fetch (F11). No
+        # closed port: the case's fault keeps the probe from an answer.
         argv = [sys.executable, str(bench.copy), "outage", "declare"]
         if form == "rollback":
             argv += ["--rollback", "--mirror-seq", "1"]
         else:
-            argv += ["--until", "2999-01-01T00:00:00Z", "--why", "D9's probe"]
+            argv += ["--until", "2999-01-01T00:00:00Z", "--why", "D9's probe",
+                     "--mirror-seq", "0"]
         env = dict(bench.env, LANES_INDEX_CONFIG=str(config), LANES_LANE="repoA-2")
         start = time.monotonic()
         proc = subprocess.run(argv, capture_output=True, text=True, env=env, cwd=str(bench.wip),
@@ -1098,39 +1337,87 @@ def _in_pty(argv: list, env: dict, cwd: Path, *, timeout: float = 120) -> tuple:
     return proc.wait(), time.monotonic() - start, timed_out
 
 
+def _own_migration(number: int) -> str:
+    """THE CASE'S OWN MIGRATION `number` (line AF13b; AN13b's cause 4), in
+    section 1.5's step 3 form (Y:2342), sent by the admin through `psql` as
+    T221's migration test sends its own (`migration_script` in
+    `test_sql_register_schema.py`; B15 tasks:2121): one transaction that
+    sets its own `lock_timeout`, 2000 ms, touches the head row, checks that
+    `version` is one below its own (else LR003), makes its DDL, raises
+    `version` and the floors, and records its `migrations` row. Its DDL alters
+    `register_head`, the table the reader's open transaction read, since an
+    ACCESS EXCLUSIVE lock on such a table is what a migration waits for
+    behind a reader; T221's new table waits for no reader. `VERBOSITY
+    verbose` puts the SQLSTATE in the kept output."""
+    return ("\\set VERBOSITY verbose\n"
+            "BEGIN;\nSET LOCAL ROLE lanes_register_owner;\n"
+            f"SET LOCAL search_path TO {SCHEMA}, pg_catalog;\n"
+            "SET LOCAL lock_timeout = '2000ms';\n"
+            "UPDATE register_head SET seq = seq WHERE id = 1;\n"
+            f"DO $m$ BEGIN IF (SELECT version FROM schema_version WHERE id = 1) <> {number - 1} "
+            f"THEN RAISE EXCEPTION 'migration {number} needs schema version {number - 1}, not %', "
+            "(SELECT version FROM schema_version WHERE id = 1) USING ERRCODE = 'LR003'; "
+            "END IF; END $m$;\n"
+            f"ALTER TABLE register_head ADD COLUMN t220_migration_{number} integer;\n"
+            f"UPDATE schema_version SET version = {number}, writers_from = {number}, "
+            f"readers_from = {number}, applied_utc = date_trunc('second', clock_timestamp()) "
+            "WHERE id = 1;\n"
+            "INSERT INTO migrations (version, script_sha256, by_lane, by_ws) "
+            f"VALUES ({number}, '{'f' * 64}', 'repoA-2', 't220');\n"
+            "COMMIT;\n")
+
+
 def test_a_waiting_migration_gives_up_at_its_own_lock_timeout(pg, tmp_path, request):
     """A migration waiting behind a reader's open transaction is refused at
     its own `lock_timeout`, and a rerun succeeds once the reader's
     transaction ends; a new plain read is not held longer than that
-    `lock_timeout` (AT-D9's migration row)."""
+    `lock_timeout` (AT-D9's migration row).
+
+    The migration is the case's own next one (`_own_migration`), migration 2
+    while this build ships migration 1 alone (`REGISTER_SCHEMA_VERSION = 1`,
+    `lanes-index:6867` at `refs/l1/V-round5`): the case's database is
+    already at that version, so T109's `bootstrap` has nothing to migrate and
+    no `lock_timeout` to meet (round 5: "gave up after 0.22 s"). It is sent
+    once the reader's transaction holds `register_head`, and each
+    assertion shows the `psql` call's exit and stderr. `[migration-F1]`
+    still runs `bootstrap`, for the migration's connect."""
     bench = Bench(pg, tmp_path, request)
     reader = bench.login("lanes_register_reader")
+    number = int(pg.psql(f"SELECT version FROM {SCHEMA}.schema_version WHERE id = 1;").stdout) + 1
     held = pg.session(user=reader, appname="t220-reader")
     held.stdin.write(f"BEGIN;\nSELECT seq FROM {SCHEMA}.register_head;\n")
     held.stdin.flush()
-    time.sleep(1)
-    service = tmp_path / "pg_service.conf"
-    service.write_text(f"[t220-admin]\nhost={pg.host}\nport={pg.port}\ndbname={pg.name}\n"
-                       f"user=lanes_test\n", encoding="utf-8")
-    env = dict(bench.env, PGSERVICEFILE=str(service))
-    argv = [sys.executable, str(bench.copy), "bootstrap", *BOOTSTRAP_FLAGS]
     try:
-        code, elapsed, timed_out = _in_pty(argv, env, bench.wip, timeout=60)
-        assert not timed_out, "the migration waited past 60 s instead of giving up"
-        assert code != 0, "the waiting migration is refused"
+        deadline = time.monotonic() + 30
+        while pg.psql("SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid) "
+                      "WHERE a.application_name = 't220-reader' AND l.granted "
+                      f"AND l.relation = '{SCHEMA}.register_head'::regclass "
+                      "AND l.mode = 'AccessShareLock';").stdout.strip() in ("", "0"):
+            assert time.monotonic() < deadline, "the reader's transaction never read register_head"
+            time.sleep(0.1)
+        start = time.monotonic()
+        proc = pg.psql(_own_migration(number), check=False)
+        elapsed = time.monotonic() - start
+        said = f": migration {number} exited {proc.returncode}: {proc.stderr.strip()}"
+        assert proc.returncode != 0, "the waiting migration is refused" + said
+        assert "55P03" in proc.stderr, "the migration gave up at its lock_timeout, 55P03" + said
         # Y:2342 (design 1.5 step 3): each migration is one transaction that
         # begins `SET LOCAL lock_timeout = '2000ms'`: it gives up no sooner
         # than that, and well before 10 s.
         assert 1.9 <= elapsed < 10, (f"the migration gave up after {elapsed:.2f} s, "
-                                     f"against its 2000 ms lock_timeout")
+                                     f"against its 2000 ms lock_timeout" + said)
         _record("migration-lock", elapsed, 2, "its own lock_timeout, 2000 ms (Y:2342)")
         start = time.monotonic()
         pg.psql(f"SELECT seq FROM {SCHEMA}.register_head;", user=reader)
         assert time.monotonic() - start < 60, "a plain read was held"
     finally:
         _end(held)
-    code, _, timed_out = _in_pty(argv, env, bench.wip)
-    assert not timed_out and code == 0, "the rerun succeeds once the reader's transaction ends"
+    proc = pg.psql(_own_migration(number), check=False)
+    assert proc.returncode == 0, ("the rerun succeeds once the reader's transaction ends: "
+                                  f"migration {number} exited {proc.returncode}: "
+                                  f"{proc.stderr.strip()}")
+    version = pg.psql(f"SELECT version FROM {SCHEMA}.schema_version WHERE id = 1;").stdout
+    assert int(version) == number, f"the rerun left version {version.strip()}, not {number}"
 
 
 def test_import_and_reconcile_set_their_bounds_at_connect(tmp_path):
@@ -1139,18 +1426,30 @@ def test_import_and_reconcile_set_their_bounds_at_connect(tmp_path):
     330 s client timer; `reconcile` carries its row's bounds, 1000 ms and
     10 s, at connect (AT-D9's table; T106's `PGOPTIONS`, Y:1573). No engine:
     T203's register fake, which answers `psql --version` itself (T203b),
-    records each call."""
-    from sql_register_helpers import REGISTER_FAKE_PSQL
+    records each call.
+
+    `reconcile`'s row is the register's, on primary (T117: on primary the
+    register's `reconcile` is the mirror's read-only check against SQL; on
+    `mode=index` it is #160's, on the local index, and calls no `psql`). So
+    it runs as `Bench`'s `[reconcile]` rows run it: from T203's flipped copy,
+    with `lanes-edit.sh` beside it, on a `mode=primary` configuration that
+    names the same URLs (T220i)."""
+    from sql_register_helpers import REGISTER_FAKE_PSQL, flipped_copy
     bindir = tmp_path / "bin"
     bindir.mkdir()
     (bindir / "psql").write_text(REGISTER_FAKE_PSQL, encoding="utf-8")
     (bindir / "psql").chmod(0o755)
     passfile = _private(tmp_path / "conf" / "pgpass")
     url = "postgresql://t220_fp@127.0.0.1:55432/register_db"
-    config = _private(tmp_path / "conf" / "lanes-index.conf", "\n".join([
-        "mode=index", f"register_url={url}", f"register_passfile={passfile}",
-        f"reader_url={url}", f"reader_passfile={passfile}", "register_label=register-test",
-        ""]))
+    lines = [f"register_url={url}", f"register_passfile={passfile}", f"reader_url={url}",
+             f"reader_passfile={passfile}", "register_label=register-test", ""]
+    config = _private(tmp_path / "conf" / "lanes-index.conf", "\n".join(["mode=index", *lines]))
+    primary = _private(tmp_path / "conf-primary" / "lanes-index.conf",
+                       "\n".join(["mode=primary", *lines]))
+    copy = flipped_copy(INDEXER, tmp_path / "tool", True)
+    for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
+        if (REPO / name).exists():
+            shutil.copy2(REPO / name, tmp_path / "tool" / name)
     origin, wip = tmp_path / "origin.git", tmp_path / "wip"
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("LANES_", "CLAUDE_", "TMUX", "PG", "FAKE_PSQL"))}
@@ -1169,17 +1468,31 @@ def test_import_and_reconcile_set_their_bounds_at_connect(tmp_path):
         subprocess.run(["git", *argv], cwd=str(wip), check=True, env=env, capture_output=True)
     c = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(wip), env=env, capture_output=True,
                        text=True, check=True).stdout.strip()
+    # W, A CLONE OF ITS OWN (T220h; lane 1's group 6, #165 6807494089): with
+    # `LANES_REPO` set, `import` reads W to check that the checkout is not W,
+    # and refuses where W cannot be read or is the checkout (contract
+    # 4.18:987), before any `psql` call; `reconcile` reads W's `origin/main`.
+    # `LANES_WORKSPACE_ROOT` is `lanes-edit.sh`'s test seam. The workstation
+    # is named too, as `Bench` names it: in a container with none, `import`
+    # refuses 2 before any call (Amendment 11, R-A11-14).
+    w = tmp_path / "W"
+    subprocess.run(["git", "clone", "-q", str(origin), str(w)], check=True, env=env,
+                   capture_output=True)
+    env.update(LANES_WORKSPACE_ROOT=str(w), LANES_WORKSTATION="Eagle")
     log = tmp_path / "fake.log"
-    for argv, options in (
-            (["import", "--at", c], ("-c lock_timeout=2000", "-c statement_timeout=300000")),
-            (["reconcile"], ("-c lock_timeout=1000", "-c statement_timeout=10000"))):
+    for argv, tool, conf, options in (
+            (["import", "--at", c], INDEXER, config,
+             ("-c lock_timeout=2000", "-c statement_timeout=300000")),
+            (["reconcile"], copy, primary,
+             ("-c lock_timeout=1000", "-c statement_timeout=10000"))):
         if log.exists():
             log.unlink()
-        subprocess.run([sys.executable, str(INDEXER), *argv], capture_output=True, text=True,
-                       env=env, cwd=str(wip), timeout=120, stdin=subprocess.DEVNULL)
+        proc = subprocess.run([sys.executable, str(tool), *argv], capture_output=True,
+                              text=True, env=dict(env, LANES_INDEX_CONFIG=str(conf)),
+                              cwd=str(wip), timeout=120, stdin=subprocess.DEVNULL)
         calls = [json.loads(l) for l in log.read_text().splitlines()] if log.exists() else []
         calls = [c for c in calls if c.get("kind") != "version"]
-        assert calls, f"{argv[0]} made no psql call"
+        assert calls, f"{argv[0]} made no psql call: {proc.returncode}: {proc.stderr[-400:]}"
         for call in calls:
             assert call["connect_timeout"] == str(C), (argv[0], call["connect_timeout"])
             assert all(o in (call["options"] or "") for o in options), (argv[0], call["options"])
@@ -2036,3 +2349,930 @@ def test_a_burst_of_ten_over_a_delayed_tls_link_commits_each_once_or_exits_75_wi
         print(f"D9c burst [{logins}] writer {i} ({writers[i]}): exit {code} after {took:.2f} s")
     print(f"D9c burst [{logins}]: {codes.count(0)} committed, {codes.count(75)} out with 75, "
           f"{snapshots} snapshot calls")
+
+
+# ============================== D9's rollback and cutover rows (T278), real engine
+
+#: The `git` wrapper that fails each push (TP:3633-3634, "a cutover whose push
+#: the `git` wrapper fails"), first on `PATH`; every other git call goes on to
+#: the real `git`, which `T278_REAL_GIT` names.
+GIT_NO_PUSH = ('#!/bin/sh\n'
+               '# T278: the git wrapper that fails the push; every other call goes on\n'
+               'for arg in "$@"; do\n'
+               '  if [ "$arg" = push ]; then echo "T278: push failed by the test" >&2; exit 1; fi\n'
+               'done\n'
+               'exec "$T278_REAL_GIT" "$@"\n')
+#: The rollback's lost turns (TP:3607 at B14): `LANES_REGISTER_DEADLINE_S=6` and its
+#: calls' 5000 ms `lock_timeout`. Its check has no figure of its own: the 75
+#: cell's bound takes the last try's check as measured from the `git`
+#: wrapper's and the shim's logs, not a fixed 15 s (lane 3's batch 11 (7)(b),
+#: #165 6783909985; `_rollback_checks`).
+ROLLBACK_DEADLINE_S, ROLLBACK_LOCK_S = 6, 5
+#: T278b's `git` wrapper for the rollback's check (TP:3607 at B14, "where the
+#: check is the fetch of `origin main` and the head read, timed from the `git`
+#: wrapper's and the shim's logs"): first on `PATH`, it runs the real `git`,
+#: which `T278_REAL_GIT` names, on the same standard streams, and then logs
+#: the call's argv, its parent's pid, its start and end on the monotonic
+#: clock and its exit, one JSON object a call, in `git-timing.log` beside it.
+GIT_TIMING = r'''#!/usr/bin/env python3
+# T278b's git wrapper: each call's start and end, logged beside it.
+import time
+start = time.monotonic()
+import json, os, subprocess, sys
+here = os.path.dirname(os.path.abspath(__file__))
+real = os.environ.get("T278_REAL_GIT") or next(
+    (os.path.join(d, "git") for d in os.environ.get("PATH", "").split(os.pathsep)
+     if d and os.path.realpath(d) != os.path.realpath(here)
+     and os.access(os.path.join(d, "git"), os.X_OK)), "git")
+code = subprocess.call([real] + sys.argv[1:])
+with open(os.path.join(here, "git-timing.log"), "a", encoding="utf-8") as handle:
+    handle.write(json.dumps({"argv": sys.argv[1:], "ppid": os.getppid(), "start": start,
+                             "end": time.monotonic(), "exit": code}) + "\n")
+sys.exit(code if code >= 0 else 128 - code)
+'''
+#: The register's write functions, as a request calls them (`TIMING_PSQL`'s
+#: and the shim's logs).
+WRITE_CALLS = ("commit_write(", "switch_to_files(", "record_marker(")
+
+
+class Operator:
+    """T278's operator estate (TP:3627-3641, "The operator rows run the real
+    commands"): test 7's fixture register, T211's `FixtureRegister` (a bare
+    origin and the operator lane's checkout), imported at C into this test's
+    own database by `lanes-index import --at` (lane 1's T115), as
+    `pgcluster`'s `tmpl_imported` is built, since a template keeps no origin
+    a cutover can push to. T203's flipped copy of `lanes-index`
+    (`RENDER_GIT_HALF` True), so the operator's commands run on the
+    register's own schema; a login of REGISTER-WRITER's, made here as T220's
+    rows make theirs (the cluster's socket takes it by trust); and
+    `TIMING_PSQL` first on `PATH`.
+
+    `estate`: `imported`, as the import leaves it, the switch at `files` with
+    the marker `absent`; `primary`, brought to `primary` with the marker
+    `present` by AT-LR006's route (the import module's `_to_primary`), which
+    pushes nothing, so origin carries no marker commit (T257's writer rows);
+    `cutover-done`, AT-6's "the cutover done (the switch at `primary`, and
+    `lanes/STORE` on a bare origin)": the imported estate cut over by the
+    real `cutover --import <C>` (lane 3's T327), whose marker commit, with
+    its `Register-Seq`, is pushed to origin, read back and recorded (T278d);
+    or `stray`, `cutover-done` with test 6's stray commit on origin after
+    the marker commit, so that it never reached the register (T278e,
+    `_stand_in_stray`).
+
+    THE STRAY IS A STAND-IN (T278e; line BD15; TP open point 5's second
+    choice, "a stand-in stray commit, which does not prove the real old
+    writer"): AT-6's stray is the v1.1.0 `lanes-edit.sh`'s `log NOTED`,
+    pushed by a stale workstation that knows no marker, and its pinned copy
+    is test 6's, in another module's fixtures. Today's `lanes-edit.sh`
+    refuses a files-mode write once origin carries `lanes/STORE` (FR-004's
+    marker check), so it can make no stray on this estate. So a clone of
+    origin with no configuration appends one `NOTED` line, in the form the
+    fixture's own `log NOTED` wrote at C, to the same `lanes/log/` file, and
+    pushes it by plain `git`. T278 made its stray with today's writer on
+    `_to_primary`'s estate, whose origin carried no `Register-Seq`, so both
+    ways out refused 2 there ("origin main's last Register-Seq could not be
+    found"). Line BD15 saw that only on a scratch probe: on T326-m23 both
+    ways out end 1 first, a traceback, since T324's `_stray_recognised`
+    unpacks five of the six values T326 made `_render_read_head` return.
+
+    WHY THE ROLLBACK'S ESTATE IS `cutover-done` (T278d; line BD15): T326's
+    step 0 fetches `origin main` on every try and walks its first-parent
+    line for the last `Register-Seq` (`rollback_step_0_git_half`, T322's
+    pass bounded at seq 0). On `_to_primary`'s estate no commit carries one,
+    so the rollback refused 2, "walk-failed", before step 1 ever ran. The
+    setup cutover runs with `TIMING_PSQL` off its `PATH`, so the timing,
+    send and begin logs hold the test's own command alone."""
+
+    def __init__(self, pg, tmp_path: Path, request, estate: str = "imported"):
+        from sql_register_helpers import flipped_copy
+        from test_sql_register_import import OPERATOR, TIP_A, FixtureRegister, _to_primary
+        self.pg, self.root, self.request, self.lane = pg, tmp_path, request, OPERATOR
+        self.reg = FixtureRegister(tmp_path / "reg")
+        noted = self.reg.c
+        if estate in ("imported", "cutover-done", "stray"):
+            # THE SEED'S HOLD WITH NO TIME IS RELEASED BEFORE THE IMPORT (line HC14; W3a's
+            # T211n `3fe23d7`, whose `HOLD_NO_UTC_RELEASE` this inlines, since BD's import
+            # module predates it): lane 1's open-`HOLD` check (merge21f6) counts
+            # `TAKE_LINES["hold-no-utc"]` as open, so a first-form cutover over it refuses 2.
+            # Its holder, the operator lane, releases it in files mode, and C is the tip after.
+            # `imported`, `cutover-done` and `stray` cut over; `primary` comes through
+            # `_to_primary`.
+            proc = self.reg.edit("append-line", "HOLD RELEASED — lane repoA-2 (Eagle), "
+                                 f"2026-10-01T05:20:00Z: opensoft/repoH main {TIP_A}",
+                                 env={"LANES_LANE": OPERATOR})
+            assert proc.returncode == 0, (
+                f"the dead HOLD's release, lanes-edit.sh append-line: {proc.stdout}{proc.stderr}")
+            self.reg.c = self.reg.tip()
+        proc = self.reg.import_at(pg, self.reg.c)
+        assert proc.returncode == 0, \
+            f"lanes-index import --at C (lane 1's T115): {proc.returncode}: {proc.stderr}"
+        self.bin = tmp_path / "bin"
+        self.bin.mkdir()
+        (self.bin / "psql").write_text(TIMING_PSQL, encoding="utf-8")
+        (self.bin / "psql").chmod(0o755)
+        self.timing = self.bin / "psql-timing.log"
+        self.copy = flipped_copy(INDEXER, tmp_path / "tool", True)
+        for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
+            if (REPO / name).exists():
+                shutil.copy2(REPO / name, tmp_path / "tool" / name)
+        self.passfile = _private(tmp_path / "conf" / "pgpass")
+        self.user = f"t278_{uuid.uuid4().hex[:12]}"
+        pg.psql(f"CREATE ROLE {self.user} LOGIN IN ROLE lanes_register_writer;")
+        request.addfinalizer(lambda: pg.cluster.psql(f"DROP ROLE IF EXISTS {self.user};",
+                                                     check=False))
+        self.env = dict(self.reg.env, T220_REAL_PSQL=pg.psql_bin, LANES_LANE=OPERATOR,
+                        PATH=str(self.bin) + os.pathsep + self.reg.env["PATH"])
+        self.mode, self.stray = "index", None
+        if estate == "primary":
+            _to_primary(pg, self.reg, load_indexer())
+            self.mode = "primary"
+        if estate in ("cutover-done", "stray"):
+            # THE REAL CUTOVER (T278d), off `TIMING_PSQL`: the setup's own calls never
+            # reach the logs the test reads, and no fault is armed by its `commit_write`.
+            proc, _ = self.run(self.argv("cutover"), self.config(),
+                               {"PATH": self.reg.env["PATH"]})
+            assert proc.returncode == 0, (
+                f"the estate's cutover --import C (lane 3's T327): {proc.returncode}: "
+                f"{proc.stderr}")
+            switch = self.state()[0].split("|")[:2]
+            assert switch == ["primary", "present"], f"the estate's cutover left {switch}"
+            assert self.origin_tip() != self.reg.c, "the cutover's marker commit is not on origin"
+            self.mode = "primary"
+        if estate == "stray":
+            marker = self.origin_tip()
+            self.stray = self._stand_in_stray(noted)
+            assert self.stray not in (self.reg.c, marker), "the stray commit reached origin"
+
+    def _git(self, *argv: str) -> str:
+        """`git` with the fixture's environment; its stdout."""
+        return subprocess.run(["git", *argv], capture_output=True, text=True, check=True,
+                              env=self.reg.env, stdin=subprocess.DEVNULL).stdout
+
+    def _stand_in_stray(self, noted: str) -> str:
+        """Test 6's stray, a stand-in (T278e; the class's docstring): a
+        clone of origin with no configuration appends one line to the
+        `lanes/log/` file that the fixture's `log NOTED` at `noted` changed,
+        that commit's own added line with its text made the stray's, and
+        pushes it to origin's `main` by plain `git`. Returns origin's tip,
+        the stray."""
+        wip = str(self.reg.wip)
+        paths = [p for p in self._git("-C", wip, "diff-tree", "--no-commit-id", "--name-only",
+                                      "-r", noted).split() if p.startswith("lanes/log/")]
+        assert len(paths) == 1, f"the fixture's log NOTED changed one log file: {paths}"
+        added = [line[1:] for line in self._git("-C", wip, "diff", f"{noted}^", noted, "--",
+                                                paths[0]).splitlines()
+                 if line.startswith("+") and not line.startswith("+++")
+                 and "the import's fixture, at C" in line]
+        assert len(added) == 1, f"the fixture's log NOTED added one line of its text: {added}"
+        clone = self.root / "stale"
+        self._git("clone", "-q", str(self.reg.origin), str(clone))
+        target = clone / paths[0]
+        text = target.read_text(encoding="utf-8")
+        target.write_text(text + ("" if text.endswith("\n") else "\n")
+                          + added[0].replace("the import's fixture, at C", "T278's stray commit")
+                          + "\n", encoding="utf-8")
+        message = self._git("-C", wip, "log", "-1", "--format=%B", noted).replace(
+            "the import's fixture, at C", "T278's stray commit")
+        self._git("-C", str(clone), "add", "--", paths[0])
+        self._git("-C", str(clone), "commit", "-q", "-m", message)
+        self._git("-C", str(clone), "push", "-q", "origin", "HEAD:main")
+        return self.origin_tip()
+
+    def origin_tip(self) -> str:
+        """The bare origin's `main`, read there, so a push from any checkout
+        shows."""
+        return subprocess.run(["git", "--git-dir", str(self.reg.origin), "rev-parse", "main"],
+                              capture_output=True, text=True, check=True,
+                              env=self.reg.env).stdout.strip()
+
+    def config(self, host: str | None = None, port: int | None = None) -> Path:
+        """The operator's configuration (CLI section 2.5): both URLs name
+        `host:port`, or the cluster's socket, as this test's login, a private
+        password file, `register_label=` and `register_schema=`."""
+        from test_sql_register_import import LABEL
+        host = host or quote(str(self.pg.host), safe="")
+        url = f"postgresql://{self.user}@{host}:{port or self.pg.port}/{self.pg.name}"
+        return _private(self.root / "conf" / "lanes-index.conf", "\n".join([
+            f"mode={self.mode}", f"register_url={url}", f"register_passfile={self.passfile}",
+            f"reader_url={url}", f"reader_passfile={self.passfile}",
+            f"register_label={LABEL}", f"register_schema={SCHEMA}", ""]))
+
+    def argv(self, row: str, form: str = "import-single") -> list:
+        """The row's command (CLI's USAGE; lane 3's T304, T324, T326 and T327
+        for the forms merge10 lacks): `rollback`; `cutover --import <C>`,
+        which its abort and `record_marker` follow; and the stray ways out,
+        `import --single <sha>` or `render --revert <sha>` on the stray."""
+        if row == "rollback":
+            return ["rollback"]
+        if row in ("cutover", "switch-to-files", "record-marker"):
+            return ["cutover", "--import", self.reg.c]
+        if form == "render-revert":
+            return ["render", "--revert", self.stray]
+        return ["import", "--single", self.stray]
+
+    def fail_push(self) -> None:
+        """`GIT_NO_PUSH` first on `PATH`, for the cutover's abort."""
+        (self.bin / "git").write_text(GIT_NO_PUSH, encoding="utf-8")
+        (self.bin / "git").chmod(0o755)
+        self.env["T278_REAL_GIT"] = shutil.which("git", path=self.reg.env["PATH"]) or "git"
+
+    def time_git(self) -> None:
+        """`GIT_TIMING` first on `PATH`, for the rollback's check (T278b)."""
+        (self.bin / "git").write_text(GIT_TIMING, encoding="utf-8")
+        (self.bin / "git").chmod(0o755)
+        self.env["T278_REAL_GIT"] = shutil.which("git", path=self.reg.env["PATH"]) or "git"
+
+    def git_calls(self) -> list:
+        """`GIT_TIMING`'s log: each `git` call that ended, in order."""
+        log = self.bin / "git-timing.log"
+        return [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines() if l] \
+            if log.exists() else []
+
+    def run(self, argv: list, config: Path, extra: dict | None = None) -> tuple:
+        """`lanes-index <argv>` from the operator's checkout, as the operator
+        lane; (the process, its elapsed seconds). Its pid and exit stamp are
+        kept for `begins`."""
+        env = dict(self.env, LANES_INDEX_CONFIG=str(config), **(extra or {}))
+        start = time.monotonic()
+        with subprocess.Popen([sys.executable, str(self.copy), *argv], stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                              env=env, cwd=str(self.reg.wip)) as child:
+            self.pid = child.pid
+            try:
+                out, err = child.communicate(timeout=300)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                raise
+            self.exited = time.monotonic()
+        return subprocess.CompletedProcess(argv, child.returncode, out, err), self.exited - start
+
+    def write(self, config: Path) -> tuple:
+        """A writer's whole path on this estate (T257j): `lanes-edit.sh
+        set-row-state` on the operator's lane, from its checkout, at
+        `LANES_REGISTER_DEADLINE_S=3`, D9's test value, as T257a's rows ran it
+        on `Bench`; (the process, its elapsed seconds), its pid and exit
+        stamp kept."""
+        argv = ["bash", str(self.copy.parent / "lanes-edit.sh"), "set-row-state", self.lane,
+                f"PAUSED {DOT} T257's writer row"]
+        env = dict(self.env, LANES_INDEX_CONFIG=str(config), LANES_REGISTER_DEADLINE_S="3")
+        start = time.monotonic()
+        with subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, env=env,
+                              cwd=str(self.reg.wip)) as child:
+            self.pid = child.pid
+            try:
+                out, err = child.communicate(timeout=300)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                raise
+            self.exited = time.monotonic()
+        return subprocess.CompletedProcess(argv, child.returncode, out, err), self.exited - start
+
+    def calls(self) -> list:
+        """`TIMING_PSQL`'s log: each call that ended, in order."""
+        if not self.timing.exists():
+            return []
+        return [json.loads(l) for l in self.timing.read_text(encoding="utf-8").splitlines()
+                if l and json.loads(l)["argv"] != ["--version"]]
+
+    def sent(self) -> list:
+        """`TIMING_PSQL`'s send stamps: each request read, with the write
+        functions it calls, before its `psql` connects (T278)."""
+        log = self.bin / "psql-sent.log"
+        return [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines() if l] \
+            if log.exists() else []
+
+    def armed_for(self, target: str):
+        """F1's or F2's arming for the faulted call: True once a request
+        calling `target` has been sent, so that call's own connect, and
+        every later one, meets the fault."""
+        return lambda: any(target in s["calls"] for s in self.sent())
+
+    def begins(self) -> list:
+        """The begin stamps of the last run's own register calls, a call its
+        timer killed among them (T220f)."""
+        log = self.bin / "psql-begin.log"
+        begins = [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines() if l] \
+            if log.exists() else []
+        return [b for b in begins if b["ppid"] == self.pid and b["argv"] == REGISTER_ARGV]
+
+    def state(self) -> tuple:
+        """(the switch's mode, marker and set_seq; the head; origin's tip),
+        read as the superuser and from the bare origin."""
+        switch = self.pg.psql(f"SELECT mode, marker_state, set_seq FROM {SCHEMA}.register_switch "
+                              f"WHERE id = 1;").stdout.strip()
+        head = self.pg.psql(f"SELECT seq FROM {SCHEMA}.register_head WHERE id = 1;").stdout.strip()
+        return switch, head, self.origin_tip()
+
+
+class ArmedFault(StartupRelay):
+    """A fault armed once an earlier, healthy call has ended (TP:3586-3589):
+    a relay to the cluster's socket that passes each connection whole while
+    `armed()` answers False, asked at each accept; once it answers True, F1
+    holds each new connection and never speaks, and F2 goes silent after
+    the startup, as `StartupRelay` does."""
+
+    def __init__(self, unix_path: str, fault: str, armed):
+        self.fault = fault
+        super().__init__(unix_path, armed=armed)
+
+    def _accept(self):
+        self.sock.settimeout(0.2)
+        while not self.done:
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:
+                continue
+            on = bool(self.armed())
+            if on and self.fault == "F1":
+                self.held.append(conn)
+                self.silenced += 1
+                continue
+            upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            upstream.connect(self.unix_path)
+            self.held += [conn, upstream]
+            threading.Thread(target=self._pump, args=(conn, upstream, on and self.fault == "F2"),
+                             daemon=True).start()
+
+
+def _did(call: dict, what: str) -> bool:
+    """Whether a logged call is `what`: `snapshot`, or a write function's name."""
+    return bool(call.get("snapshot")) if what == "snapshot" else what in call.get("calls", ())
+
+
+def _slow_trigger(pg, table: str, event: str, seconds: float) -> None:
+    """F4 for an operator's write (TP:3618-3621): a trigger the test creates in
+    its own database, after the import, never in the template, that sleeps
+    past the call's `statement_timeout`: `BEFORE <event>` on `table`, for each
+    row. On `register_switch` it fires only where the marker becomes
+    `present`, so the cutover's own update passes and `record_marker`'s
+    meets it; on `journal`, an `INSERT` trigger takes the write's entry and a
+    `DELETE` one the abort's."""
+    when = " WHEN (NEW.marker_state = 'present')" if table == "register_switch" else ""
+    pg.psql(f"SET search_path TO {SCHEMA};\n"
+            f"CREATE FUNCTION t278_slow() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+            f"PERFORM pg_sleep({seconds}); "
+            f"RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END; END $$;\n"
+            f"GRANT EXECUTE ON FUNCTION t278_slow() TO PUBLIC;\n"
+            f"CREATE TRIGGER t278_slow BEFORE {event} ON {table} FOR EACH ROW{when} "
+            f"EXECUTE FUNCTION t278_slow();\n")
+
+
+def _faulted_start(op: Operator, target: str | None) -> float:
+    """The faulted call's start (TP:3577-3579, "from the faulted call's
+    start"): the send stamp of the run's first request calling `target`
+    where the row names one, else the begin stamp of its first call."""
+    if target is None:
+        begins = [b["begin"] for b in op.begins()]
+        assert begins, "the command made no register call"
+        return begins[0]
+    sends = [s["sent"] for s in op.sent() if s["ppid"] == op.pid and target in s["calls"]]
+    assert sends, f"the command sent no {target} call"
+    return sends[0]
+
+
+def _fetches_origin(argv: list) -> bool:
+    """Whether a `git` call is a fetch from `origin`."""
+    return "fetch" in argv and "origin" in argv
+
+
+def _rollback_checks(op: Operator) -> list:
+    """Each try's check, as the 75 cell times it (TP:3607 at B14; lane 3's
+    batch 11 (7)(b), #165 6783909985): step 0's head read, T304's
+    `_rollback_read`, in the shim's log (`TIMING_PSQL`'s), and T326's fetch
+    of `origin main` right before step 1 (B14 tasks:1539), in the `git`
+    wrapper's (`GIT_TIMING`'s); a try's parts are the calls that start after
+    the try before's step 1 call ended and before its own step 1 call
+    starts. Returns each try's (its check's start, its check's span in s),
+    the span from its first part's start to its last part's end. The last
+    try's check must hold both its head read and its fetch: the bound is
+    measured on them."""
+    calls, gits = op.calls(), op.git_calls()
+    steps = [c for c in calls if "commit_write" in c.get("calls", ())]
+    assert steps, f"the rollback made no step 1 call: {calls}"
+    checks, after = [], float("-inf")
+    for n, step in enumerate(steps, 1):
+        reads = [c for c in calls if not c.get("calls") and after <= c["start"] < step["start"]]
+        fetches = [g for g in gits if _fetches_origin(g["argv"])
+                   and after <= g["start"] < step["start"]]
+        parts = reads + fetches
+        if n == len(steps):
+            assert reads, f"the last try made no head read before its step 1: {calls}"
+            assert fetches, ("the last try fetched no origin main before its step 1 (T326's "
+                             f"step 0, B14 tasks:1539): {gits}")
+        if parts:
+            begin = min(p["start"] for p in parts)
+            checks.append((begin, max(p["end"] for p in parts) - begin))
+        after = step["end"]
+    return checks
+
+
+def _operator_row(pg, tmp_path: Path, request, row: str, fault: str) -> None:
+    """`test_each_database_path_exits_inside_its_bound`'s T278 rows, at F1:
+    each operator command whose faulted call meets a silent listener at its
+    connect, armed at that call's own send where the row follows a healthy
+    call (`target`; `after`, the earlier call), exits with its row's outcome
+    inside twice its bound, timed from the faulted call's start. Where the
+    fault is armed, the earlier call reached the cluster. They fail until
+    lane 1's L1-A14 and lane 3's T304, T324, T326 and T327 land."""
+    spec = ROWS[row]
+    op = Operator(pg, tmp_path, request, spec["estate"])
+    before = op.state()
+    if row == "switch-to-files":
+        op.fail_push()
+    after, target = spec["after"], spec["target"]
+    if target is None:
+        listener = SilentListener()
+    else:
+        listener = ArmedFault(f"{pg.host}/.s.PGSQL.{pg.port}", fault, op.armed_for(target))
+    try:
+        proc, _ = op.run(op.argv(row), op.config("127.0.0.1", listener.port))
+    finally:
+        listener.close()
+    case = f"{row}-{fault}"
+    assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {proc.stderr}"
+    if after is not None:
+        assert any(_did(c, after) and c["exit"] == 0 for c in op.calls()), \
+            f"{case}: the {after} call before the fault never reached the cluster"
+        assert listener.silenced, f"{case}: the {target} call never met F1"
+    if row in ("rollback", "cutover", "stray-calls"):
+        assert op.state() == before, f"{case}: something was written: {before} -> {op.state()}"
+    elapsed = op.exited - _faulted_start(op, target)
+    assert elapsed < 2 * spec["bound"], f"{case}: {elapsed:.2f} s against {spec['bound']} s"
+    _record(case, elapsed, spec["bound"], "timing rule 2, from the faulted call's start")
+
+
+def _operator_57014(pg, tmp_path: Path, request, row: str) -> None:
+    """`test_a_slow_statement_meets_57014_before_the_client_timer`'s T278
+    rows: F4's slow statement where the row's call works (`slow`), made
+    after the estate is built; the call ends with 57014 no earlier than its
+    `statement_timeout` after its start and under twice it, and the command
+    exits with the row's F4 outcome (`f4_exit`). They fail until lane 1's
+    L1-A14 and lane 3's T304, T324, T326 and T327 land."""
+    spec = ROWS[row]
+    op = Operator(pg, tmp_path, request, spec["estate"])
+    statement_s = spec["statement_ms"] / 1000
+    table, event = spec["slow"]
+    if event == "policy":
+        _slow_statement(pg, table, "lanes_register_writer", 4 * statement_s + 5)
+    else:
+        _slow_trigger(pg, table, event, 4 * statement_s + 5)
+    if row == "switch-to-files":
+        op.fail_push()
+    proc, _ = op.run(op.argv(row), op.config())
+    ended = [c for c in op.calls() if "57014" in c["first"]]
+    assert ended, f"{row}: no call ended with 57014: {op.calls()}"
+    took = ended[0]["end"] - ended[0]["start"]
+    assert statement_s <= took < 2 * statement_s, f"{row}: 57014 after {took:.2f} s"
+    assert proc.returncode == spec["f4_exit"], f"{row}: {proc.returncode}: {proc.stderr}"
+    _record(f"{row}-F4", took, statement_s, "timing rules 2 and 3")
+
+
+#: T257g: the image cache's head planted above the register's head, through
+#: the flipped copy's own `image_cache_put` and `image_cache_record` (lane 1's
+#: cache, design Y:4963), run in the operator's environment, so the cache is
+#: the one `state_dir()` names for the command. A head above `k` is a miss
+#: once the snapshot's request answers (`_register_snapshot_start`; lane 3's
+#: ruling, #165 6746004829). Prints the cache's head as read back.
+MISS_CACHE = r'''
+import importlib.util, sys
+from importlib.machinery import SourceFileLoader
+copy, seq, path, text = sys.argv[1:5]
+loader = SourceFileLoader("lanes_index_t257g", copy)
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+loader.exec_module(module)
+module.image_cache_record(int(seq), {path: module.image_cache_put(text.encode("utf-8"))})
+head = module.image_cache_head()
+print(head[0] if head else "none")
+'''
+
+
+def _snapshot_miss(pg, tmp_path: Path, request, fault: str) -> None:
+    """`[snapshot-miss-F2]` (T257g; F13c's T257 bullet, R-F13c-18; lane 3's
+    batch 7, #165 6780364102, text change 18 and its ruling on T111's
+    SHOULD-2, option (b)): a writer's `register snapshot --write-id new
+    ... --tree <dir> --checkout <c>` (contract section 3.2) on the imported
+    register at `primary` misses the image cache, whose head is planted
+    above the register's (`MISS_CACHE`). F2 is armed once the first request
+    has ended, so that request reaches the cluster and the second, the whole
+    fetch (Y:2515-2516), meets the relay, silent after the startup.
+    `bounds` cuts that request's client timer to what is left of `S` from
+    the first request's start (lane 1's cut, #165 6783051626), so the
+    command sends both requests and ends 69 within `S`, 8 s, from the first
+    request's start (timing rule 2). It fails until lane 1's cut in T106 and
+    T111's use of it are on line R."""
+    spec = ROWS["snapshot-miss"]
+    case = f"snapshot-miss-{fault}"
+    op = Operator(pg, tmp_path, request, "primary")
+    head = int(op.state()[1])
+    planted = subprocess.run([sys.executable, "-c", MISS_CACHE, str(op.copy), str(head + 5),
+                              "lanes/LANES.md", "# LANES.md\n"], capture_output=True, text=True,
+                             env=op.env, cwd=str(op.reg.wip), timeout=120,
+                             stdin=subprocess.DEVNULL)
+    assert planted.stdout.strip() == str(head + 5), \
+        f"{case}: the cache's head was not planted at {head + 5}: {planted.stdout}{planted.stderr}"
+    relay = StartupRelay(f"{pg.host}/.s.PGSQL.{pg.port}",
+                         armed=lambda: any(c.get("snapshot") for c in op.calls()))
+    argv = ["register", "snapshot", "--write-id", "new", "--lane", op.lane,
+            "--verb", WRITE["verb"], "--args-sha256", WRITE["args_sha256"],
+            "--tree", str(tmp_path / "snapshot-tree"), "--checkout", str(op.reg.wip)]
+    try:
+        proc, _ = op.run(argv, op.config("127.0.0.1", relay.port))
+    finally:
+        relay.close()
+    assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {proc.stderr}"
+    first = [c for c in op.calls() if c.get("snapshot")]
+    assert first and first[0]["exit"] == 0, \
+        f"{case}: the first request never reached the cluster: {op.calls()}"
+    requests = op.begins()
+    assert len(requests) == 2, \
+        f"{case}: the miss's second request was not sent: {len(requests)} requests: {proc.stderr}"
+    assert relay.silenced, f"{case}: the second request never met F2"
+    elapsed = op.exited - requests[0]["begin"]
+    assert elapsed < 2 * spec["bound"], f"{case}: {elapsed:.2f} s against {spec['bound']} s"
+    _record(case, elapsed, spec["bound"], "timing rule 2, from the first request's start")
+
+
+#: T257j: the writer's SQL path is lane 4's (L4-B2, `lanes-edit.sh`'s SQL
+#: writer), which line R's `lanes-edit.sh` lacks: until it lands, the writer
+#: sends no snapshot request, and the cases say so rather than fail later.
+NO_SQL_WRITER = "it fails until L4-B2, lanes-edit.sh's SQL writer"
+
+
+def _sent_a_snapshot(op: Operator, case: str, proc) -> None:
+    """The writer sent its snapshot request: its SQL path ran (T257j)."""
+    assert any(s.get("snapshot") for s in op.sent()), \
+        (f"{case}: the writer sent no snapshot request, so {NO_SQL_WRITER}: "
+         f"{proc.returncode}: {proc.stderr}")
+
+
+def _primary_writer_row(pg, tmp_path: Path, request, row: str, fault: str) -> None:
+    """`test_each_database_path_exits_inside_its_bound`'s T257a writer rows
+    whose fault comes after the snapshot's check 4 (T257j; line BD10's
+    doubt 1): `writer-commit-f2` at F2, `writer-commit-f3` and `whole-write`
+    at F3, each with its id, its fault and its expected exit, on the
+    imported register at `primary` (`Operator`), since `pg` alone is a
+    bootstrap-only clone whose switch reads `files` with the marker `absent`
+    and whose head is -1, where check 4 would end each write 69 before its
+    commit. The writer is `Operator.write`. F2 is armed at the commit's own
+    send (T257i; TP:3586-3589); F3 is the head row held `FOR UPDATE`
+    (`_hold_head`). They fail until L4-B2 and L4-B5."""
+    spec = ROWS[row]
+    case = f"{row}-{fault}"
+    op = Operator(pg, tmp_path, request, "primary")
+    listener, session = None, None
+    try:
+        if fault == "F2":
+            # THE COMMIT'S F2 IS ARMED AT THE COMMIT'S OWN SEND (T257i; T257f
+            # armed it after the snapshot's end, TP:3586-3589): the relay
+            # passes each snapshot request whole, a missed snapshot's second
+            # request among them, which lane 1's cut sends under what is left
+            # of `S` (#165 6783051626) and which F2 would end 69, not 3.
+            listener = StartupRelay(f"{pg.host}/.s.PGSQL.{pg.port}",
+                                    armed=op.armed_for("commit_write"))
+            config = op.config("127.0.0.1", listener.port)
+        else:
+            session = _hold_head(pg) if row in HEAD_HELD_F3 else _hold(pg, spec["table"])
+            config = op.config()
+        proc, elapsed = op.write(config)
+    finally:
+        if listener is not None:
+            listener.close()
+        if session is not None:
+            _end(session)
+    _sent_a_snapshot(op, case, proc)
+    assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {proc.stderr}"
+    if row == "writer-commit-f2":
+        # Every snapshot request sent before the commit's, a miss's second
+        # among them, reached the cluster and ended 0, and the commit's
+        # connection met the armed relay (TP:3589; T257i).
+        sends = [s["sent"] for s in op.sent() if "commit_write" in s["calls"]]
+        assert sends, f"{case}: the write sent no commit call: {op.sent()}"
+        snapshots = [c for c in op.calls() if c.get("snapshot") and c["start"] < sends[0]]
+        assert snapshots and all(c["exit"] == 0 for c in snapshots), \
+            f"{case}: a snapshot request before the commit failed: {op.calls()}"
+        assert listener.silenced, f"{case}: no call met F2 at the commit's send"
+    if row == "whole-write":
+        # ITS OWN CELL (T257f): no attempt, each begun by its snapshot call,
+        # starts after the deadline, asserted at twice it (timing rule 2); the
+        # time runs from the first attempt's start, and stays under `T_write`.
+        # An attempt's start is its process's first snapshot request: a
+        # missed snapshot's second request, in the same process, starts no
+        # attempt (T257i; lane 1's cut, #165 6783051626).
+        firsts: dict = {}
+        for c in op.calls():
+            if c.get("snapshot"):
+                firsts.setdefault(c.get("ppid"), c["start"])
+        starts = sorted(firsts.values())
+        assert starts, f"{case}: the write made no attempt"
+        late = [round(s - starts[0], 2) for s in starts
+                if s - starts[0] >= 2 * WHOLE_WRITE["deadline_s"]]
+        assert not late, f"{case}: attempts started after the deadline: {late}"
+        elapsed = op.exited - starts[0]
+        assert elapsed < WHOLE_WRITE["t_write_s"], \
+            f"{case}: {elapsed:.2f} s, over T_write's {WHOLE_WRITE['t_write_s']} s"
+        _record(f"{case}-T_write", elapsed, WHOLE_WRITE["t_write_s"],
+                f"T_write, from the first attempt's start, {len(starts)} attempts")
+    assert elapsed < 2 * spec["bound"], f"{case}: {elapsed:.2f} s against {spec['bound']} s"
+    _record(case, elapsed, spec["bound"], "timing rule 2" + (
+        ", from the first attempt's start" if row == "whole-write" else ""))
+
+
+def _primary_writer_57014(pg, tmp_path: Path, request, row: str) -> None:
+    """`test_a_slow_statement_meets_57014_before_the_client_timer`'s
+    `[writer-commit-f2]` (T257h, T257j): on the imported register at
+    `primary` (`Operator`), past the snapshot's check 4, the commit's entry
+    meets a trigger on `journal` that sleeps (`slow`), made after the
+    estate is built; the call ends with 57014 no earlier than its
+    `statement_timeout` after its start and under twice it, and the writer
+    exits 69 (`f4_exit`), a refusal the database made (TP:3621-3626 at
+    B14). It fails until L4-B2 and L4-B5."""
+    spec = ROWS[row]
+    op = Operator(pg, tmp_path, request, "primary")
+    statement_s = spec["statement_ms"] / 1000
+    _slow_trigger(pg, *spec["slow"], 4 * statement_s + 5)
+    proc, _ = op.write(op.config())
+    _sent_a_snapshot(op, row, proc)
+    ended = [c for c in op.calls() if "57014" in c["first"]]
+    assert ended, f"{row}: no call ended with 57014: {op.calls()}"
+    took = ended[0]["end"] - ended[0]["start"]
+    assert statement_s <= took < 2 * statement_s, f"{row}: 57014 after {took:.2f} s"
+    assert proc.returncode == spec["f4_exit"], f"{row}: {proc.returncode}: {proc.stderr}"
+    _record(f"{row}-F4", took, statement_s, "timing rules 2 and 3")
+
+
+def test_a_rollback_whose_first_call_expires_rereads_the_switch(pg, tmp_path, request):
+    """AT-D9's `rollback` row (TP:3604): "Where step 1's call expires, the
+    rollback reads the switch again and never goes on to step 2 on an
+    unknown switch." On the `cutover-done` estate (T278d), F2 is armed at
+    step 1's own send, its `commit_write` (TP:3586-3589, "once the shim's
+    log shows the earlier call's end"), so every call of the check before
+    it reaches the cluster, and step 1's call expires at its 15 s timer, and
+    so does the switch's re-read: 69, inside twice 15 + 15 = 30 s from step
+    1's start; exactly two calls after the check's last, step 1's and then
+    the re-read, a read that calls no write function, and none after them;
+    the switch, the head and origin unchanged.
+
+    THE ARMING (T278d; line BD15): T278 armed F2 once the rollback's first
+    call had ended, its head read (lane 3's batch 11 (7)(b), #165
+    6783909985). Since T326 the check is that read, then step 0's fetch of
+    `origin main` and the head read after it (`rollback_step_0_git_half`),
+    so that arming put F2 on step 0's read, and the rollback ended 69 with
+    one call after the first, never reaching step 1. It fails until lane 3's
+    T304, T326 and T327 land (the estate's cutover is T327's)."""
+    op = Operator(pg, tmp_path, request, "cutover-done")
+    before = op.state()
+    relay = ArmedFault(f"{pg.host}/.s.PGSQL.{pg.port}", "F2", op.armed_for("commit_write"))
+    try:
+        proc, _ = op.run(["rollback"], op.config("127.0.0.1", relay.port))
+    finally:
+        relay.close()
+    assert proc.returncode == 69, f"rollback: {proc.returncode}: {proc.stderr}"
+    calls = op.calls()
+    assert calls and all(c["exit"] == 0 for c in calls), \
+        f"a call of the check before step 1 did not answer: {calls}"
+    healthy = max(c["end"] for c in calls)
+    later = [b["begin"] for b in op.begins() if b["begin"] >= healthy]
+    assert len(later) == 2, \
+        f"step 1's call and the switch's re-read, and nothing after: {len(later)} calls"
+    sends = [s for s in op.sent() if s["ppid"] == op.pid and s["sent"] >= healthy]
+    assert [s["calls"] for s in sends] == [["commit_write"], []], \
+        f"step 1's commit_write, then a read of the switch: {sends}"
+    assert op.state() == before, f"the rollback wrote: {before} -> {op.state()}"
+    elapsed = op.exited - later[0]
+    assert elapsed < 2 * 30, f"rollback: {elapsed:.2f} s against 15 + 15 s"
+    _record("rollback-first-call", elapsed, 30, "timing rule 2, step 1's and the re-read's")
+
+
+def test_a_rollback_that_keeps_losing_its_turn_exits_75_at_the_deadline_with_nothing_written(
+        pg, tmp_path, request):
+    """AT-D9's `rollback` row under F3 (TP:3604): step 1's call ends in a lost
+    turn, 55P03 at its 5000 ms `lock_timeout`, against the head row held
+    `FOR UPDATE` by the test's own session (`_hold_head`); the rollback reads
+    the head afresh and tries again, and at `LANES_REGISTER_DEADLINE_S=6`
+    exits 75, with nothing written and the switch still `primary`. From the
+    rollback's start (TP:3607 at B14): no check starts after the deadline,
+    asserted at twice it (timing rule 2), and the run ends inside twice the
+    deadline, plus one check, plus the last call's 5 s. The check is each
+    try's head read and its fetch of `origin main`, timed from the shim's
+    log and the `git` wrapper's (`GIT_TIMING`), and the bound takes the last
+    try's as measured, not a fixed 15 s (lane 3's batch 11 (7)(b),
+    `_rollback_checks`). It runs on the `cutover-done` estate (T278d): on
+    `_to_primary`'s, T326's step 0 found no `Register-Seq` on origin and
+    refused 2 before step 1. It fails until lane 3's T304, T326 and T327
+    land (the estate's cutover is T327's)."""
+    op = Operator(pg, tmp_path, request, "cutover-done")
+    before = op.state()
+    op.time_git()
+    session = _hold_head(pg)
+    try:
+        proc, elapsed = op.run(["rollback"], op.config(),
+                               {"LANES_REGISTER_DEADLINE_S": str(ROLLBACK_DEADLINE_S)})
+    finally:
+        _end(session)
+    assert proc.returncode == 75, f"rollback-F3: {proc.returncode}: {proc.stderr}"
+    assert any("55P03" in c["first"] for c in op.calls()), \
+        f"no call ended with 55P03: {op.calls()}"
+    assert op.state() == before, f"the rollback wrote: {before} -> {op.state()}"
+    start = op.exited - elapsed
+    checks = _rollback_checks(op)
+    late = [round(begin - start, 2) for begin, _ in checks
+            if begin - start >= 2 * ROLLBACK_DEADLINE_S]
+    assert not late, f"rollback-F3: checks started after the deadline: {late}"
+    check = checks[-1][1]
+    bound = ROLLBACK_DEADLINE_S + check + ROLLBACK_LOCK_S
+    assert elapsed < 2 * bound, \
+        f"rollback-F3: {elapsed:.2f} s against {bound:.2f} s, the last check {check:.2f} s"
+    _record("rollback-F3-75", elapsed, bound, f"timing rule 2, from the rollback's start; "
+            f"the last try's check measured at {check:.2f} s, {len(checks)} tries")
+
+
+@pytest.mark.parametrize("fault", ["F1", "F2", "F3", "F4"])
+def test_a_cutover_whose_call_expires_leaves_the_switch_unknown_and_its_rerun_reads_it_first(
+        pg, tmp_path, request, fault):
+    """AT-D9's `cutover` row (TP:3606; TP:3629-3631): on the imported
+    register and its origin, the fault takes the transaction's call, so no
+    marker is pushed: F1 and F2 armed at the transaction's own send, after
+    the cutover's read has ended (TP:3586-3589), F3 the head row held `FOR
+    UPDATE`, which `commit_write` takes, and F4 a trigger on `journal` that
+    sleeps (`_slow_trigger`). It
+    exits 69, the switch still `files` with the marker `absent`, the head
+    and origin unchanged; the transaction's call inside twice 15 s, or under
+    F3 twice its 5000 ms `lock_timeout`, from its start. A rerun after the
+    fault is removed reads the switch and the journal first, its first call
+    no commit, and goes on: 0, one `cutover` entry, the switch `primary` with
+    the marker `adding` or, with T327's push and read-back, `present`. It
+    fails until lane 1's L1-A14 and lane 3's T327 land."""
+    op = Operator(pg, tmp_path, request, "imported")
+    before = op.state()
+    listener, session = None, None
+    try:
+        if fault in ("F1", "F2"):
+            listener = ArmedFault(f"{pg.host}/.s.PGSQL.{pg.port}", fault,
+                                  op.armed_for("commit_write"))
+            config = op.config("127.0.0.1", listener.port)
+        else:
+            if fault == "F3":
+                session = _hold_head(pg)
+            else:
+                _slow_trigger(pg, "journal", "INSERT", 45)
+            config = op.config()
+        proc, _ = op.run(op.argv("cutover"), config)
+    finally:
+        if listener is not None:
+            listener.close()
+        if session is not None:
+            _end(session)
+    assert proc.returncode == 69, f"cutover-{fault}: {proc.returncode}: {proc.stderr}"
+    assert op.state() == before, f"cutover-{fault} wrote or pushed: {before} -> {op.state()}"
+    calls = op.calls()
+    assert calls and calls[0]["exit"] == 0, f"the cutover's read never answered: {calls}"
+    bound = 5 if fault == "F3" else 15
+    elapsed = op.exited - _faulted_start(op, "commit_write")
+    assert elapsed < 2 * bound, f"cutover-{fault}: {elapsed:.2f} s against {bound} s"
+    _record(f"cutover-{fault}", elapsed, bound, "timing rule 2, from the transaction's start")
+    if fault == "F4":
+        pg.psql(f"DROP TRIGGER t278_slow ON {SCHEMA}.journal;")
+    mark = len(op.calls())
+    proc, _ = op.run(op.argv("cutover"), op.config())
+    assert proc.returncode == 0, f"the rerun: {proc.returncode}: {proc.stderr}"
+    rerun = op.calls()[mark:]
+    assert rerun and "commit_write" not in rerun[0]["calls"], \
+        f"the rerun's first call is not a read of the switch: {rerun}"
+    entries = pg.psql(f"SELECT count(*) FROM {SCHEMA}.journal WHERE kind = 'cutover';").stdout
+    assert entries.strip() == "1", f"one cutover entry: {entries.strip()}"
+    mode, marker, _ = op.state()[0].split("|")
+    assert mode == "primary" and marker in ("adding", "present"), op.state()
+
+
+@pytest.mark.parametrize("landed", ["not-landed", "landed"])
+def test_the_aborts_call_that_expires_is_run_again_or_found_done_by_its_rerun(
+        pg, tmp_path, request, landed):
+    """AT-D9's `switch_to_files` row (TP:3606; TP:3632-3635): a cutover whose
+    push the `git` wrapper fails (`GIT_NO_PUSH`) runs its abort, whose call
+    meets T203's shim, first on `PATH`: `[not-landed]`, its `before` mode, so
+    the call is lost before its `COMMIT`; `[landed]`, its `timer` mode at
+    20 s, so the call commits and its answer comes after the 15 s timer.
+    Either way the cutover exits 69, inside twice 15 s from the abort's call.
+    Once the fault is removed, the rerun, `cutover` again with the push
+    still failing (lane 3's batch 11 (7)(c), #165 6783909985), reads the
+    switch. After `before` the abort did not land, so the rerun runs it
+    again, one `switch_to_files` call, and ends with the abort's 2, the
+    switch `files` with the marker `absent`. After `timer` it landed, and
+    the switch at `files` with the marker `absent` is also "before any
+    cutover" (Y:1531), so the rerun runs no abort for that entry and goes on
+    as a first cutover would: its first write call is `commit_write`, never
+    `switch_to_files`; with the push still failing it then aborts its own
+    entry once and ends 2, the switch `files` with the marker `absent` and
+    the head back at the import's seq. "Sends nothing" (TP:3641-3642 at B14)
+    cannot hold, and B15 drops it. It fails until lane 1's L1-A14 and lane
+    3's T327 land."""
+    op = Operator(pg, tmp_path, request, "imported")
+    imported = op.state()[1]
+    op.fail_push()
+    arm = {"mode": "before"} if landed == "not-landed" else {"mode": "timer", "ms": 20000}
+    where = _shim(op, [dict(arm, match="switch_to_files")])
+    proc, _ = op.run(op.argv("switch-to-files"), op.config())
+    assert proc.returncode == 69, f"abort-{landed}: {proc.returncode}: {proc.stderr}"
+    sent = [e for e in _shim_calls(where) if "switch_to_files(" in e["stdin"]]
+    assert len(sent) == 1, f"abort-{landed}: one abort call: {len(sent)}"
+    mode = op.state()[0].split("|")[:2]
+    assert mode == (["primary", "adding"] if landed == "not-landed" else ["files", "absent"]), \
+        f"abort-{landed}: the switch reads {mode}"
+    _arm(where, op, [])
+    mark = len(_shim_calls(where))
+    proc, _ = op.run(op.argv("switch-to-files"), op.config())
+    rerun = _shim_calls(where)[mark:]
+    aborts = [e for e in rerun if "switch_to_files(" in e["stdin"]]
+    if landed == "not-landed":
+        assert len(aborts) == 1, f"the rerun runs the abort again, once: {len(aborts)}"
+        assert proc.returncode == 2, f"the rerun's abort: {proc.returncode}: {proc.stderr}"
+    else:
+        writes = [[w[:-1] for w in WRITE_CALLS if w in e["stdin"]] for e in rerun]
+        writes = [w for w in writes if w]
+        assert writes and writes[0] == ["commit_write"], \
+            f"the rerun's first write call is commit_write, never switch_to_files: {writes}"
+        assert len(aborts) == 1, f"the rerun aborts its own entry once: {len(aborts)}"
+        assert proc.returncode == 2, f"the rerun's own abort: {proc.returncode}: {proc.stderr}"
+        assert op.state()[1] == imported, \
+            f"the head is back at the import's seq {imported}: {op.state()}"
+    assert op.state()[0].split("|")[:2] == ["files", "absent"], op.state()
+
+
+def test_a_record_marker_that_expires_leaves_the_marker_adding_and_writes_refusing(
+        pg, tmp_path, request):
+    """AT-D9's `record_marker` row (TP:3607; TP:3636-3638): reached after the
+    cutover's push and read-back. The fault takes its call: T203's shim,
+    first on `PATH`, holds the `record_marker` call on a FIFO no one opens,
+    so it is never sent and the cutover's 15 s timer ends it: 69. The push
+    stands, the marker reads `adding`, and a writer's commit, `lanes-edit.sh
+    set-row-state` on the operator's lane with `mode=primary` (lane 3's batch
+    11 (7)(d), #165 6783909985), refuses with 69, its stderr naming LR002,
+    the marker's refusal (TP:4182-4183; Y:3580): T409's placeholder exits 69
+    on primary too (B14 tasks:937), so the exit alone proves nothing. The
+    rerun, the fault removed, records the marker once: one `record_marker`
+    call, 0, the marker `present`. It fails until lane 1's L1-A14, lane 3's
+    T327 and lane 4's L4-B2 land, and its writer until lane 4's T415."""
+    op = Operator(pg, tmp_path, request, "imported")
+    fifo = tmp_path / "hold-record-marker"
+    os.mkfifo(fifo)
+    where = _shim(op, [{"mode": "hold", "match": "record_marker", "fifo": str(fifo)}])
+    proc, elapsed = op.run(op.argv("record-marker"), op.config())
+    assert proc.returncode == 69, f"record-marker: {proc.returncode}: {proc.stderr}"
+    assert any("record_marker(" in e["stdin"] for e in _shim_calls(where)), \
+        "the cutover made no record_marker call"
+    assert op.origin_tip() != op.reg.c, "the cutover's push stands on origin"
+    assert op.state()[0].split("|")[:2] == ["primary", "adding"], op.state()
+    _arm(where, op, [])
+    config = op.config()
+    config.write_text(config.read_text().replace("mode=index", "mode=primary"))
+    writer = subprocess.run(["bash", str(op.copy.parent / "lanes-edit.sh"), "set-row-state",
+                             op.lane, f"PAUSED {DOT} T278's write behind the marker"],
+                            capture_output=True, text=True, timeout=300, cwd=str(op.reg.wip),
+                            stdin=subprocess.DEVNULL,
+                            env=dict(op.env, LANES_INDEX_CONFIG=str(config)))
+    assert writer.returncode == 69, f"the writer's commit: {writer.returncode}: {writer.stderr}"
+    assert "LR002" in writer.stderr, \
+        f"the writer's 69 is the marker's refusal, LR002, not T409's placeholder: {writer.stderr}"
+    mark = len(_shim_calls(where))
+    proc, _ = op.run(op.argv("record-marker"), op.config())
+    recorded = [e for e in _shim_calls(where)[mark:] if "record_marker(" in e["stdin"]]
+    assert proc.returncode == 0 and len(recorded) == 1, \
+        f"the rerun records the marker once: {proc.returncode}, {len(recorded)}: {proc.stderr}"
+    assert op.state()[0].split("|")[:2] == ["primary", "present"], op.state()
+
+
+@pytest.mark.parametrize("form", ["import-single", "render-revert"])
+def test_a_stray_ways_out_commit_call_is_in_doubt_like_a_writers(pg, tmp_path, request, form):
+    """AT-D9's rows for `import --single <sha>` and `render --revert <sha>`
+    (TP:3607; TP:3639): on test 6's stray commit, F2 is armed at the commit
+    call's own send, after the command's snapshot has ended (TP:3586-3589),
+    so a missed snapshot's second request still reaches the cluster (lane
+    1's cut, `refs/l1/R-rulings` 8121903), and the commit call meets the
+    silent relay: in doubt, as a writer's commit, then the lookup, whose
+    tries meet it too, and 3. The snapshot reached the cluster, a call met
+    the relay, and nothing was written; from the commit call's start, inside
+    twice the commit's F2 row's 35.5 s (`C` + `S` + `R` + `T_L` + `p`), and
+    no call begins after D7's 30 s deadline, at twice it. The stray sits on
+    the `cutover-done` estate, after the marker commit (T278e). It fails
+    until lane 1's L1-A14 and lane 3's T324 and T327 land, and until T326's
+    `_render_read_head` and T324's `_stray_recognised` agree on its values
+    (line BD15: on T326-m23 `552c22d4` both forms end 1, a traceback)."""
+    op = Operator(pg, tmp_path, request, "stray")
+    before = op.state()
+    relay = ArmedFault(f"{pg.host}/.s.PGSQL.{pg.port}", "F2", op.armed_for("commit_write"))
+    try:
+        proc, _ = op.run(op.argv("stray-commit", form), op.config("127.0.0.1", relay.port))
+    finally:
+        relay.close()
+    assert proc.returncode == 3, f"{form}: {proc.returncode}: {proc.stderr}"
+    assert any(c.get("snapshot") and c["exit"] == 0 for c in op.calls()), \
+        f"{form}: the snapshot never reached the cluster: {op.calls()}"
+    assert relay.silenced, f"{form}: no call met F2 after the snapshot"
+    assert op.state()[:2] == before[:2], f"{form} wrote: {before} -> {op.state()}"
+    start = _faulted_start(op, "commit_write")
+    late = [round(b["begin"] - start, 2) for b in op.begins() if b["begin"] - start >= 2 * 30]
+    assert not late, f"{form}: calls began after the deadline: {late}"
+    elapsed = op.exited - start
+    assert elapsed < 2 * 35.5, f"{form}: {elapsed:.2f} s against 35.5 s"
+    _record(f"stray-{form}", elapsed, 35.5, "timing rule 2, from the commit call's start")
