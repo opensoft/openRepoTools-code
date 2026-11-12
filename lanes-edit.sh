@@ -572,7 +572,10 @@
 #      empty or out-of-class LANES_LANE (`pw_lane_given`); LANES_NO_GIT=1,
 #      since on primary the write is its commit (`pw_no_git_refuse`); a hand
 #      edit of a rendered file pending in that checkout (`pw_hand_edit_refuse`);
-#      no author identity there (`pw_author_read`); each of these six but for
+#      a listing of that checkout's pending edits that git cannot make, named
+#      with git's code (`pw_hand_edit_refuse`, by `cs_pending_of --rc`; lane
+#      openRepoTools-3, #165 6813027223, batch g Q114); no author identity
+#      there (`pw_author_read`); each of these seven but for
 #      `request-handoff`, whose refusal there is 64 (below, `pw_pre_rc`), though
 #      a lane name out of class keeps files mode's 2 for it too; an act whose
 #      generation is
@@ -599,7 +602,9 @@
 #      `pw_pre_rc`, its lane's missing checkout (`pw_checkout`), an unset,
 #      empty or out-of-class LANES_LANE (`pw_lane_given`), LANES_NO_GIT=1
 #      (`pw_no_git_refuse`), a pending hand edit of a rendered file in that
-#      checkout (`pw_hand_edit_refuse`), and no author identity there
+#      checkout (`pw_hand_edit_refuse`), a listing of that checkout's pending
+#      edits that git cannot make (`pw_hand_edit_refuse`, batch g Q114), and
+#      no author identity there
 #      (`pw_author_read`) (Q35; lane openRepoTools-3, #165 6807881675, batch c
 #      Q67). Its callers read its 2 as "still bound". A lane name out of class
 #      keeps files mode's 2, the act's checks keep Y:5643's 2, and the
@@ -2894,11 +2899,19 @@ cs_refuse() {   # <what> <why> [<recovery line>…]
 # and in the C locale, because they are compared as strings. With
 # `--no-renames` first, a rename among them is listed as both its paths, not
 # its new path alone (review REV415c, N3); without it, as before.
-cs_pending_of() {   # [--no-renames] <pathspec>…
-  local cpo_r=""
+# With `--rc` first, before `--no-renames`, it returns git's own exit status,
+# so a caller can tell a listing git could not make from an empty one; without
+# it, 0, as before, and a failed listing prints nothing. Only T415's
+# `pw_hand_edit_refuse` passes it: a read that failed is never "no hand edit"
+# there (Amendment 7(d); lane openRepoTools-3, #165 6813027223, batch g Q114).
+cs_pending_of() {   # [--rc] [--no-renames] <pathspec>…
+  local cpo_r="" cpo_s=0 cpo_rc=0
+  if [ "${1-}" = --rc ]; then cpo_s=1; shift; fi
   if [ "${1-}" = --no-renames ]; then cpo_r="--no-renames"; shift; fi
   [ "$#" -gt 0 ] || return 0
-  LC_ALL=C git -C "$LANES_REPO" -c "$CP_EXACT" -c core.quotePath=false diff ${cpo_r:+"$cpo_r"} --name-only HEAD -- "$@" 2>/dev/null || :
+  LC_ALL=C git -C "$LANES_REPO" -c "$CP_EXACT" -c core.quotePath=false diff ${cpo_r:+"$cpo_r"} --name-only HEAD -- "$@" 2>/dev/null || cpo_rc=$?
+  [ "$cpo_s" = 1 ] || cpo_rc=0
+  return "$cpo_rc"
 }
 # A PENDING HAND EDIT OF THE REGISTER REFUSES EVERY WRITER BUT `commit` (S3
 # step 4, ratified choice 9). A lane's session and its subagents share this
@@ -6194,8 +6207,9 @@ PW_DRY=0
 # 6780753157, Q35): 2, or 64 for `request-handoff`, which refuses 64, never 2,
 # for each refusal the primary branch adds before its claim: its missing lane
 # (the arm's own 64, in `pw_checkout`), LANES_NO_GIT=1, `pw_lane_given`'s
-# refusal, a missing `<c>`, a pending hand edit in `<c>`
-# (`pw_hand_edit_refuse`) and no author identity there (`pw_author_read`)
+# refusal, a missing `<c>`, a pending hand edit in `<c>` or a listing of it git
+# cannot make (`pw_hand_edit_refuse`; batch g Q114) and no author identity
+# there (`pw_author_read`)
 # (lane openRepoTools-3, #165 6807881675, batch c Q67), so that it never
 # refuses 2 there but for its binding. Its callers read its 2 as "still bound"
 # (`lane`:1253, `lane-start`:2875). A lane name out of class keeps files
@@ -6305,9 +6319,19 @@ pw_no_git_refuse() {
 # TMPDIR, the loop never ran, so the write went on as though no hand edit were
 # pending. Now a full TMPDIR changes nothing here: the edit is refused as
 # above (lane 4's W9-T415 report, §6).
+# A LISTING GIT CANNOT MAKE IS NO ANSWER: `cs_pending_of --rc` returns git's
+# status, and where it is not 0 the write refuses the same way, 2, or 64 for
+# `request-handoff` (`pw_pre_rc`), naming the read and its code, before
+# anything is sent. Until then a failed listing read as "no hand edit", and the
+# write went on (Amendment 7(d); lane openRepoTools-3, #165 6813027223, batch g
+# Q114, as `pw_author_read`, git's other read of `<c>`, refuses).
 pw_hand_edit_refuse() {
-  local ph_hits="" ph_p="" ph_l="" ph_q="" ph_c=""
-  ph_hits="$(LANES_REPO="$PW_C" cs_pending_of --no-renames lanes/LANES.md lanes/aliases.tsv lanes/log lanes/archive)"
+  local ph_hits="" ph_p="" ph_l="" ph_q="" ph_c="" ph_rc=0
+  ph_hits="$(LANES_REPO="$PW_C" cs_pending_of --rc --no-renames lanes/LANES.md lanes/aliases.tsv lanes/log lanes/archive)" || ph_rc=$?
+  if [ "$ph_rc" != 0 ]; then
+    ph_c="$(printf '%q' "$PW_C")"
+    die "refusing to write on primary: git could not list the uncommitted edits in lane ${PW_LANE}'s checkout, $PW_C: \`git -C $ph_c diff --no-renames --name-only HEAD -- lanes/LANES.md lanes/aliases.tsv lanes/log lanes/archive\` exited $ph_rc. So whether that checkout holds a hand edit of a file the register renders is not known, and a read that failed is never 'no hand edit' (Amendment 7(d)). Fix the read, then run \`$cmd\` again. Nothing was sent." "$(pw_pre_rc)"
+  fi
   while [ -n "$ph_hits" ]; do
     ph_p="${ph_hits%%"$WR_NL"*}"
     case "$ph_hits" in
