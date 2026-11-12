@@ -2267,10 +2267,24 @@ def test_the_guards_last_budget_line_is_below_guard_timeout():
     assert max(int(v) for v in found) < 5000, found
 
 
+#: A MIRROR READ'S LABEL, in the form the text gives it: `read: mirror at
+#: <sha12>, …` on stderr (the test plan's AT-11 oracle, TP:2878-2881, which
+#: names `session-start`; B15 tasks:728's mirror class). The words after the
+#: comma are not fixed for the `SessionStart` block on primary (lane 5's
+#: point 2 to lane 3, #165 6814032480), so only the prefix, the 12 hex digits
+#: and the comma are pinned, as the readers module's `MIRROR_LINE` pins them.
+MIRROR_LINE = re.compile(r"^read: mirror at [0-9a-f]{12}, .*$", re.M)
+
+
 def test_the_session_start_block_makes_no_register_call_on_primary(estate):
     """Lane 5's (A5; R39): the `SessionStart` block, in the mirror class,
     makes no register call on primary: the shim logs no call while it
-    runs."""
+    runs. And it reads the mirror offline, labelled `read: mirror` (T508,
+    B15 tasks:822): its stderr carries the label (`MIRROR_LINE`), its stdout
+    does not, and it exits 0. A build with no SQL path makes no register
+    call either, so the call count alone passed at the base and proved
+    nothing for T508 (lane 5's point 4, #165 6814032480); the label is T508's
+    own, so the case fails at the base on it, until T508 (L5-A4)."""
     est = estate(mode="primary")
     est.shim()
     proc = subprocess.run(["bash", str(est.guard), "session-start"],
@@ -2278,6 +2292,9 @@ def test_the_session_start_block_makes_no_register_call_on_primary(estate):
                           env=est.env(), cwd=str(est.wip), timeout=60)
     assert proc.returncode == 0, proc.stderr
     assert not est.shim_calls(), est.shim_calls()
+    assert MIRROR_LINE.search(proc.stderr), \
+        f"the block printed no `read: mirror at <sha12>, ...` line on stderr (T508): {proc.stderr}"
+    assert not MIRROR_LINE.search(proc.stdout), proc.stdout
 
 
 # ============================================================ T226: the guard's measured parts
