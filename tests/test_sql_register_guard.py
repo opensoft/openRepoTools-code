@@ -1966,19 +1966,58 @@ def test_a_connect_timeout_above_the_direct_reads_share_is_cut_at_the_parse_star
             svc.stop()
 
 
+#: Where the too-late case's guard arrives at its prefetch: just past the
+#: start line, `T0 + 3.8 s` from the runner's own start (lane 3, #165
+#: 6812673125, on lane 5's F3, 6812547449).
+ARRIVAL = 3.8
+#: The stand-in `tmux`'s hold for that case, put in before its `case "$fmt"`:
+#: on the guard's last query before its prefetch, `record_window_state`'s
+#: targeted `#{session_name}`, once, it sleeps until the wall time in
+#: `@DEADLINE@`, then writes the time it woke to `@ARRIVED@`.
+_TOO_LATE_HOLD = r'''if [ "$fmt" = '#{session_name}' ] && [ -n "$target" ] && [ ! -e @ARRIVED@ ]; then
+  : > @ARRIVED@
+  rem=$(awk -v d="$(cat @DEADLINE@)" -v n="$(date +%s.%N)" 'BEGIN { r = d - n; if (r < 0) r = 0; printf "%.3f", r }')
+  sleep "$rem"
+  date +%s.%N > @ARRIVED@
+fi
+'''
+
+
 def test_a_guard_that_starts_too_late_refuses_2_without_a_read(estate):
     """AT-10: a guard that starts at or past the direct read's cap refuses 2
     and makes no read (the 5 s is one budget, spent once). The stand-in
-    `tmux` holds the hook's fixed parts past the start line, so `T0` is
-    early and the read would start too late."""
-    est = estate(mode="primary")
+    `tmux` holds the guard's last query before its prefetch,
+    `record_window_state`'s targeted `#{session_name}`, until `T0 + 3.8 s`
+    from the runner's own start (`ARRIVAL`), once, so `T0` is early and the
+    read would start just past the start line; the arrival and the exit
+    are printed beside the 4.5 s, which is asserted as stated (lane 3, #165
+    6812673125; design:6181-6183 records every measured time). A sleep on
+    every `tmux` call put four of them, 5.2 s, before the prefetch, so the
+    runner killed the hook first (lane 5's F3, #165 6812547449). The estate
+    is G1's, `to=FROM, to_row=False`, so the guard's only refusal is the
+    late start's, never the name offer's (lane 3's reason in #165
+    6812490130)."""
+    est = estate(mode="primary", to=FROM, to_row=False)
     est.shim()
+    deadline, arrived = est.bin / "tmux-deadline", est.bin / "tmux-arrived"
+    hold = _TOO_LATE_HOLD.replace("@ARRIVED@", f"'{arrived}'").replace(
+        "@DEADLINE@", f"'{deadline}'")
     tmux = est.session.tmux
     text = tmux.read_text(encoding="utf-8")
-    tmux.write_text(text.replace("[ \"${1-}\" = display-message ] || exit 0",
-                                 "sleep 1.3\n[ \"${1-}\" = display-message ] || exit 0", 1),
-                    encoding="utf-8")
+    assert text.count('case "$fmt" in') == 1, "the stand-in tmux has changed its shape"
+    tmux.write_text(text.replace('case "$fmt" in', hold + 'case "$fmt" in'), encoding="utf-8")
+    mono0, wall0 = time.monotonic(), time.time()
+    deadline.write_text(f"{wall0 + ARRIVAL:.6f}\n", encoding="utf-8")
     hook = est.hook("hello")
+    woke = arrived.read_text(encoding="utf-8").strip() if arrived.exists() else ""
+    took = hook.t_exit - hook.t0
+    if woke:
+        at = float(woke) - wall0 - (hook.t0 - mono0)
+        print(f"T213: the guard's last tmux query before its prefetch returned at T0 + "
+              f"{at:.3f} s (set for {ARRIVAL} s); the hook exited {hook.code} at T0 + "
+              f"{took:.3f} s (budget {BUDGET} s)")
+    assert woke, ("the guard made no targeted `#{session_name}` query (record_window_state's), "
+                  f"or was stopped in it, so nothing held it to the start line\n{hook!r}")
     _refuses_inside_the_budget(hook)
     assert not est.shim_calls(), "a guard past its start line still read"
 
