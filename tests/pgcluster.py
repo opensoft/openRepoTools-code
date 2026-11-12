@@ -889,6 +889,12 @@ def _test7_seed() -> Dict[str, str]:
         f"LANDING — lane repoA-1, session {UUID_A1}@Eagle, 2026-10-01T04:01:00Z, PR #10 into OpenSoft/RepoE main",
         f"LANDED — lane repoA-1, session {UUID_A1}@Eagle, 2026-10-01T04:05:00Z, PR #10 into OpenSoft/RepoE main → def5678",
         TAKE_LINES["hold-no-utc"],
+        # ITS HOLDER RELEASES IT (lane 3's B16 post, #165 6814260122): lane
+        # 1's open-HOLD check (T116 follow-up 6, line R's merge21f6) counts a
+        # HOLD with no readable time as open (lane 3, #165 6813195977), and a
+        # first-form cutover over an open one refuses with 2. So the operator
+        # lane releases this dead take, as T211n's CutoverRegister does.
+        f"HOLD RELEASED — lane repoA-2 (Eagle), 2026-10-01T05:20:00Z: opensoft/repoH main {TIP_A}",
         TAKE_LINES["landing-no-utc"],
         TAKE_LINES["bad-stamp"],
         EXPIRED_NO_HOLDER,
