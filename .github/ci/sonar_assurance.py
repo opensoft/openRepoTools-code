@@ -164,8 +164,12 @@ def verify_analysis(out, task_file, pull_request=None):
         page += 1
     manifest = json.loads((out / "inventory.json").read_text())
     actual = {item["path"]: item.get("language") for item in components if "path" in item}
-    missing = [item["path"] for item in manifest["files"]
-               if actual.get(item["path"]) != item["language"]]
+    # Sonar's PR component API returns changed files only. Main is the
+    # authoritative complete-index receipt; a PR must not pretend to prove it.
+    expected = {item["path"]: item["language"] for item in manifest["files"]}
+    verified = {path: lang for path, lang in expected.items()
+                if not pull_request or path in actual}
+    missing = [path for path, lang in verified.items() if actual.get(path) != lang]
     if missing:
         raise ValueError("Sonar omitted or misclassified sources: " + ", ".join(missing))
     measures = sonar_api("measures/component", {
@@ -174,7 +178,8 @@ def verify_analysis(out, task_file, pull_request=None):
     if "coverage" not in measured or int(measured.get("lines_to_cover", {}).get("value", "0")) <= 0:
         raise ValueError("Sonar did not import measured coverage")
     receipt = {"analysisId": analysis_id, "taskId": task["ceTaskId"],
-               "revision": manifest["commits"]["."], "indexed_sources": len(manifest["files"]),
+               "revision": manifest["commits"]["."], "indexed_sources": len(verified),
+               "configured_sources": len(expected), "full_index_verified": not bool(pull_request),
                "qualityGate": gate, "projectStatus": status["projectStatus"],
                "measures": measures["component"]["measures"]}
     (out / "acceptance.json").write_text(json.dumps(receipt, indent=2) + "\n")
