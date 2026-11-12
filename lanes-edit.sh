@@ -5934,7 +5934,7 @@ wr_lookup_text() {
 # says they may have run, or ran, at its UTC (Y:5214). The effect check's
 # `<lane>` is the lane the write is made for, `write_lane_of`'s, PW_LANE, which
 # the record's digest fixes with its arguments, not the writer's `LANES_LANE`
-# (lane openRepoTools-3, #165 6808937880, batch e Q106; Y:5257): every caller
+# (lane openRepoTools-3, #165 6808937880, batch e Q106; design:5257): every caller
 # runs after `pw_checkout` has set it. The rerun keeps the writer's
 # `LANES_LANE` (`wr_rerun_new_text`), which its digest takes.
 wr_text_other_generation() {   # [<g'>] [<owed>]
