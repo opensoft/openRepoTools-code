@@ -392,9 +392,10 @@ def run_group(argv, env=None, timeout=GIT_TIMEOUT):
     timeout, and anything raised in this thread's wait, still end the group
     as above, TERM and then KILL after `GROUP_GRACE`. So a caller that runs
     a call on another thread keeps the process up until the call returns,
-    which its timeout bounds. On Python 3.12 a `join` that a ^C cut short
-    no longer waits for the thread, so such a caller waits on something of
-    its own, an Event the thread sets as it ends. This file starts no
+    which takes at most its timeout and then up to three `GROUP_GRACE`
+    waits in `_end_group`. On Python 3.12 a `join` that a ^C cut short no
+    longer waits for the thread, so such a caller waits on something of its
+    own, an Event the thread sets as it ends. This file starts no
     thread."""
     try:
         proc = subprocess.Popen(
