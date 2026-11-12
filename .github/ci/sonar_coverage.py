@@ -76,7 +76,7 @@ def shell_baseline(out, sources, kcov):
 def coverage_environment(root, out, hashes):
     config = out / COVERAGE_CONFIG
     config.write_text(
-        "[run]\ncore = ctrace\nparallel = true\nsigterm = true\nplugins = provenance\n"
+        "[run]\ncore = ctrace\nparallel = true\nsigterm = false\nplugins = provenance\n"
         "data_file = " + str(out / COVERAGE_DATA) + "\n"
         "omit =\n    */site-packages/*\n    /usr/*\n"
         "disable_warnings = no-data-collected, module-not-measured\n",

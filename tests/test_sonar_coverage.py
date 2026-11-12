@@ -115,3 +115,22 @@ def test_clean_python_environment_keeps_its_dependency_isolation(tmp_path):
                             env=env, capture_output=True, text=True, check=True)
     assert result.stdout.strip() == "isolation-preserved"
     assert result.stderr == ""
+
+
+def test_measurement_preserves_the_applications_default_sigterm_handler(
+        collector, tmp_path, monkeypatch):
+    # Supervisors install cleanup only when SIGTERM retains its default.
+    # Instrumentation must not take ownership of that application contract.
+    monkeypatch.delenv("GITHUB_ENV", raising=False)
+    root, out = tmp_path / "checkout", tmp_path / "report"
+    root.mkdir(); out.mkdir()
+    (out / "inventory.json").write_text(json.dumps({"files": []}))
+    env = {**os.environ, **collector.coverage_environment(root, out, [])}
+    config = (out / collector.COVERAGE_CONFIG).read_text()
+    assert "sigterm = false" in config
+    result = subprocess.run([sys.executable, "-c",
+        "import signal; assert signal.getsignal(signal.SIGTERM) == signal.SIG_DFL; "
+        "print('signal-contract-preserved')"],
+        env=env, capture_output=True, text=True, check=True)
+    assert result.stdout.strip() == "signal-contract-preserved"
+    assert result.stderr == ""
