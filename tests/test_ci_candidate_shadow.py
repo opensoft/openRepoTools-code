@@ -79,14 +79,17 @@ def test_ci_candidate_shadow_actual_probe_shell(caller, tmp_path, policy, expect
 
 @pytest.mark.parametrize("probe_result,output,scheduled", [
     ("success", "true", True), ("success", "false", False),
-    ("success", "", False), ("success", "True", False),
+    ("success", "", False), ("success", "True", True),
     ("failure", "true", False), ("cancelled", "true", False),
     ("skipped", "true", False), ("timed_out", "true", False),
 ])
-def test_ci_candidate_shadow_only_explicit_success_schedules(caller, probe_result, output, scheduled):
+def test_ci_candidate_shadow_scheduling_condition_contract(caller, probe_result, output, scheduled):
     expression = caller["jobs"]["candidate"]["if"]
     assert expression == "${{ needs.probe.result == 'success' && needs.probe.outputs.qualify == 'true' }}"
-    assert ((probe_result == "success") and (output == "true")) is scheduled
+    # Actions string equality ignores case. This is a bounded interpretation
+    # of the asserted graph expression, not an executed hosted scheduler.
+    # The actual probe-shell tests above prove it emits lowercase literals.
+    assert ((probe_result.casefold() == "success") and (output.casefold() == "true")) is scheduled
 
 
 @NEEDS_UPSTREAM
