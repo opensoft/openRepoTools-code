@@ -102,6 +102,8 @@ JOB_IDS = ("guard-launch-mode", "tests", "tests-no-submodule", "package")
 SHARD_JOBS = {"tests": "tests-shard",
               "tests-no-submodule": "tests-no-submodule-shard"}
 ALWAYS = "${{ always() }}"
+FULL_ROOT = "${{ !cancelled() && !(needs.delivery-route.result == 'success' && needs.delivery-route.outputs.omit_full == 'true') }}"
+FULL_AGGREGATE = "${{ always() && !(needs.delivery-route.result == 'success' && needs.delivery-route.outputs.omit_full == 'true') }}"
 #: A shard job's `timeout-minutes`. Shards take 10 to 26 minutes; without it a
 #: hung pytest holds a required check for GitHub's 360-minute default.
 SHARD_TIMEOUT_MINUTES = 60
@@ -945,10 +947,12 @@ def test_tests_yml_pr_changes_and_candidates_keep_unfiltered_full_ci(workflow, a
     assert set(trigger) == {"types"}, trigger
     assert action in trigger["types"], trigger
     for job_id, job in jobs_of(workflow).items():
+        if job_id in {"delivery-route", "delivery-gate"}:
+            continue
         if job_id in SHARD_JOBS:
-            assert job.get("if") == ALWAYS, job
+            assert job.get("if") == FULL_AGGREGATE, job
         else:
-            assert "if" not in job, job
+            assert job.get("if") == FULL_ROOT, job
 
 
 @NEEDS_UPSTREAM
@@ -960,15 +964,17 @@ def test_tests_yml_has_the_four_gate_jobs_and_the_two_shard_jobs_and_no_other(wo
     nothing else, so every trigger runs all four and a failed shard is a red
     gate, not a skipped one."""
     jobs = jobs_of(workflow)
-    want = sorted(JOB_IDS + tuple(SHARD_JOBS.values()))
+    original = JOB_IDS + tuple(SHARD_JOBS.values())
+    want = sorted(original + ("delivery-route", "delivery-gate"))
     assert sorted(jobs) == want, f"the jobs are {list(jobs)}, not {want}"
     for job_id in JOB_IDS + tuple(SHARD_JOBS.values()):
         assert "name" not in jobs[job_id], f"`{job_id}` has a `name:`"
-    for job_id in want:
+    for job_id in original:
         if job_id in SHARD_JOBS:
-            assert jobs[job_id].get("if") == ALWAYS, jobs[job_id].get("if")
+            assert jobs[job_id].get("if") == FULL_AGGREGATE, jobs[job_id].get("if")
         else:
-            assert "if" not in jobs[job_id], f"`{job_id}` has an `if:`"
+            assert jobs[job_id].get("if") == FULL_ROOT
+            assert jobs[job_id].get("needs") == ["delivery-route"]
 
 
 @NEEDS_UPSTREAM
@@ -1003,8 +1009,8 @@ def test_tests_yml_the_gate_waits_on_its_shards_and_fails_closed(workflow, gate)
     and one last step, the count check, that always runs, reads the shards'
     combined result and is not allowed to continue past its own failure."""
     job = jobs_of(workflow)[gate]
-    assert job.get("needs") == SHARD_JOBS[gate], job.get("needs")
-    assert job.get("if") == ALWAYS, job.get("if")
+    assert job.get("needs") == [SHARD_JOBS[gate], "delivery-route"], job.get("needs")
+    assert job.get("if") == FULL_AGGREGATE, job.get("if")
     assert "strategy" not in job and "continue-on-error" not in job
     last = job["steps"][-1]
     assert last.get("if") == ALWAYS and "continue-on-error" not in last, last

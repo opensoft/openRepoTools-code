@@ -439,14 +439,16 @@ def test_ci_delivery_workflows_are_additive_and_candidate_has_no_live_trigger():
             "contents": "read", "pull-requests": "read", "checks": "read", "actions": "read"}
     assert set(heavy["jobs"]) == {"verify", "full-ci", "qualification"}
     assert heavy["jobs"]["full-ci"] == {
-        "needs": "verify", "uses": "./.github/workflows/tests.yml"}
+        "needs": "verify", "uses": "./.github/workflows/tests.yml",
+        "permissions": {"contents": "read", "pull-requests": "read", "checks": "read", "actions": "read"}}
     gate = heavy["jobs"]["qualification"]
     assert gate["if"] == "${{ always() }}"
     assert gate["needs"] == ["verify", "full-ci"]
-    assert gate["name"] == "openrepotools-batch-heavy"
+    assert gate["name"] == "Candidate full-suite qualification"
     assert heavy["jobs"]["verify"]["steps"][0]["with"]["ref"] == "main"
     assert gate["steps"][1]["with"]["ref"] == "main"
-    assert gate["steps"][-1]["run"] == "python3 policy/.github/ci/delivery_verify.py candidate"
+    assert gate["steps"][-2]["run"] == 'python3 policy/.github/ci/delivery_verify.py candidate --proof-kind qualified'
+    assert gate["steps"][-1]["with"]["if-no-files-found"] == "error"
     assert all("GH_TOKEN" not in step.get("env", {}) for step in fast["jobs"]["fast"]["steps"])
 
 

@@ -1,7 +1,6 @@
-name: Non-gating task-set candidate qualification
+name: Task-set candidate qualification
 
-# Preparation only: ordinary full CI and Mergify requirements are unchanged.
-# No queue/ruleset consumes this observation. No dispatch or auto-enqueue.
+# Prepared cutover: routing remains disabled. No dispatch or auto-enqueue.
 on:
   push:
     branches: ['mergify/merge-queue/*']
@@ -31,13 +30,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [ -f .github/ci/delivery_verify.py ] && python3 .github/ci/delivery_verify.py candidate; then
+          if [ -f .github/ci/delivery_evidence.py ] && python3 .github/ci/delivery_verify.py candidate --proof-kind admission; then
             printf '%s\n' 'qualify=true' >> "$GITHUB_OUTPUT"
-            printf '%s\n' 'Scoped probe passed; full CI remains required. No queue admission. Additional qualification will independently verify again.' >> "$GITHUB_STEP_SUMMARY"
+            printf '%s\n' 'Scoped probe passed; full CI remains required. No queue admission from this probe. Additional qualification will independently verify again.' >> "$GITHUB_STEP_SUMMARY"
           else
             printf '%s\n' 'qualify=false' >> "$GITHUB_OUTPUT"
             printf '%s\n' 'Candidate observation fell back; full CI remains required. No queue admission. No additional qualification scheduled.' >> "$GITHUB_STEP_SUMMARY"
           fi
+      - name: Preserve verified admission
+        if: ${{ steps.scope.outputs.qualify == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-admission-${{ github.sha }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/proof.json
+          if-no-files-found: error
+          retention-days: 14
 
   candidate:
     needs: probe
@@ -48,3 +55,35 @@ jobs:
       checks: read
       actions: read
     uses: ./.github/workflows/task-set-candidate.yml
+
+  heavy:
+    name: openrepotools-batch-heavy
+    needs: [probe, candidate]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      actions: read
+    steps:
+      - name: Require admitted complete integration
+        env:
+          PROBE: ${{ needs.probe.result }}
+          QUALIFY: ${{ needs.probe.outputs.qualify }}
+          CANDIDATE: ${{ needs.candidate.result }}
+        run: |
+          set -euo pipefail
+          test "$PROBE" = success
+          test "$QUALIFY" = true
+          test "$CANDIDATE" = success
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Final live candidate verification
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/ci/delivery_verify.py candidate --require-delivery

@@ -28,6 +28,14 @@ BASELINE = ".github/ci/full-ci-baseline.json"
 GATES = {"guard-launch-mode", "tests", "tests-no-submodule", "package"}
 SHARDS = {"tests-shard": ["pytest-1", "pytest-2", "pytest-3", "pytest-4", "shell"],
           "tests-no-submodule-shard": ["pytest-1", "pytest-2", "pytest-3", "shell"]}
+ROOT_GUARD = "${{ !cancelled() && !(needs.delivery-route.result == 'success' && needs.delivery-route.outputs.omit_full == 'true') }}"
+AGGREGATE_GUARD = "${{ always() && !(needs.delivery-route.result == 'success' && needs.delivery-route.outputs.omit_full == 'true') }}"
+CONTROLS = {"delivery-route", "delivery-gate"}
+CONTROL_DIGESTS = {
+    "delivery-gate": "a92ee06898813042cfc5cc413139ff330041a4b2baace8b7512fc5ad03053fa7",
+    "delivery-route": "513e7e08d5b60164bf837712478698f5434e8efd10ce7cf31d26c0f1c47fa044",
+}
+READ_PERMISSIONS = {"contents": "read", "pull-requests": "read", "checks": "read", "actions": "read"}
 
 
 @pytest.fixture(scope="module")
@@ -67,10 +75,22 @@ def parity_errors(workflow, baseline):
         errors.append("reuse is not parameterless")
     if events != baseline["ordinary_events"]:
         errors.append("ordinary events changed")
-    jobs = workflow.get("jobs", {})
-    if set(jobs) != set(baseline["job_sha256"]):
+    jobs = copy.deepcopy(workflow.get("jobs", {}))
+    if set(jobs) != set(baseline["job_sha256"]) | CONTROLS:
         errors.append("job inventory changed")
+    for name, expected in CONTROL_DIGESTS.items():
+        if digest(jobs.get(name)) != expected:
+            errors.append(name + " control changed")
     for name, expected in baseline["job_sha256"].items():
+        job = jobs.get(name, {})
+        shard = {"tests": "tests-shard", "tests-no-submodule": "tests-no-submodule-shard"}.get(name)
+        # Strip ONLY this exact reviewed routing projection. Every other field
+        # (including commands/env/matrices/step conditions) keeps its old hash.
+        if shard and job.get("needs") == [shard, "delivery-route"] and job.get("if") == AGGREGATE_GUARD:
+            job["needs"], job["if"] = shard, "${{ always() }}"
+        elif not shard and job.get("needs") == ["delivery-route"] and job.get("if") == ROOT_GUARD:
+            del job["needs"]
+            del job["if"]
         if digest(jobs.get(name)) != expected:
             errors.append(name + " definition changed")
     return errors
@@ -101,6 +121,26 @@ def test_full_ci_coverage_parity_rejects_each_missing_or_conditional_job(
 def test_full_ci_coverage_parity_rejects_a_missing_shard(workflow, baseline, name):
     workflow["jobs"][name]["strategy"]["matrix"]["shard"].pop()
     assert name + " definition changed" in parity_errors(workflow, baseline)
+
+
+@pytest.mark.parametrize("name", sorted(GATES | set(SHARDS)))
+@pytest.mark.parametrize("mutation", ["needs", "guard", "masking"])
+def test_full_ci_coverage_parity_only_normalizes_exact_control_wiring(workflow, baseline, name, mutation):
+    job = workflow["jobs"][name]
+    if mutation == "needs":
+        job["needs"].append("unrelated")
+    elif mutation == "guard":
+        job["if"] += " || true"
+    else:
+        job["continue-on-error"] = True
+    assert name + " definition changed" in parity_errors(workflow, baseline)
+
+
+@pytest.mark.parametrize("name", sorted(CONTROLS))
+@pytest.mark.parametrize("mutation", ["if", "permissions", "steps", "needs", "continue-on-error"])
+def test_full_ci_coverage_parity_control_projection_cannot_hide_mutations(workflow, baseline, name, mutation):
+    workflow["jobs"][name][mutation] = True
+    assert name + " control changed" in parity_errors(workflow, baseline)
 
 
 @pytest.mark.parametrize("name", sorted(GATES | set(SHARDS)))
@@ -153,11 +193,14 @@ def test_full_ci_coverage_parity_caller_is_pr_only_same_commit_and_not_admission
     assert set(trigger["paths"]) == {
         WORKFLOW, CALLER, BASELINE, ".github/ci/ci_shards.py", ".github/ci/weights.json",
         "tests/test_tests_workflow.py", "tests/test_ci_shards.py",
-        "tests/test_full_ci_coverage_parity.py"}
+        "tests/test_full_ci_coverage_parity.py", ".github/ci/delivery-policy.json",
+        ".github/ci/delivery_route.py", ".github/ci/delivery_evidence.py", ".github/ci/delivery_verify.py",
+        ".github/workflows/task-set-candidate.yml", ".github/workflows/task-set-candidate-shadow.yml",
+        ".mergify.yml", "tests/test_ci_cutover.py", "tests/test_ci_cutover_repair.py"}
     assert caller["permissions"] == {"contents": "read"}
     assert set(caller["jobs"]) == {"parity", "full-ci", "qualification"}
     assert caller["jobs"]["full-ci"] == {
-        "needs": "parity", "uses": "./" + WORKFLOW}
+        "needs": "parity", "uses": "./" + WORKFLOW, "permissions": READ_PERMISSIONS}
     parity = caller["jobs"]["parity"]
     assert "if" not in parity and "continue-on-error" not in parity
     assert any(step.get("run") == "bash tests/run.sh -k full_ci_coverage_parity"

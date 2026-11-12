@@ -86,3 +86,17 @@ base branch and base SHA before applying its review attestation. The upper
 member names its immediate predecessor in both the PR base and `Depends-On`.
 Every member retains the four full CI gates; a green advisory classifier is
 not a substitute. Keep the branches unchanged while the queue is testing them.
+
+## Prepared efficiency path — disabled
+
+Read [the cutover runbook](delivery-cutover.md) before interpreting the new
+delivery/heavy checks or claude-current queue. The committed flag is false and
+the current four full checks remain enforced. This preparation authorizes no
+queue command, source merge, flag/settings migration, canary or session refresh.
+
+After separately approved activation, an opted-in fast source must use the named
+manual queue for complete heavy qualification; NEVER direct-merge it on delivery
+success. That check can mean fast verification, not heavy integration. Queue-only
+usage is operator policy unless separately approved service controls enforce it.
+Mixed, dependent, unknown or stale work retains full checks. Managed candidate
+review trust and assembly/release acceptance remain separate and unchanged.

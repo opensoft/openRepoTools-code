@@ -23,8 +23,19 @@ FAST = "openrepotools-pr-fast"
 FAST_WORKFLOW = ".github/workflows/task-set-fast.yml"
 
 
+def delivery_intended(text):
+    if not policy.intended(text):
+        return False
+    lines = re.findall(r"(?m)^CI-Delivery:[^\n]*", text)
+    return [line.rstrip(" \t\r") for line in lines] == ["CI-Delivery: claude-current"]
+
+
 class Refused(ValueError):
     """A fixed-vocabulary refusal safe to expose in the CI log."""
+
+
+class PendingEvidence(Refused):
+    """Authenticated work is still running; waiting grants no CI omission."""
 
 
 def require(condition, reason):
@@ -83,7 +94,14 @@ def clean_review(number, head, request, threads):
     return max(receipts, key=lambda entry: entry[0]), response
 
 
-def fast_receipt(pr, head, request, base_changes):
+def receipt_pending(value, allow_pending):
+    pending = value["status"] in {"queued", "in_progress"} and value["conclusion"] is None
+    require((value["status"] == "completed" and value["conclusion"] == "success")
+            or (allow_pending and pending), "Fast evidence is not successful or authenticated pending work")
+    return pending
+
+
+def fast_receipt(pr, head, request, base_changes, *, allow_pending=False):
     endpoint = f"commits/{head}/check-runs?check_name={FAST}&filter=latest&per_page=100"
     response = request(REPOSITORY, endpoint)
     checks = response["check_runs"]
@@ -91,9 +109,9 @@ def fast_receipt(pr, head, request, base_changes):
             "Missing or ambiguous fast check")
     check = checks[0]
     require(check["name"] == FAST and check["head_sha"] == head
-            and check["app"]["slug"] == "github-actions"
-            and check["status"] == "completed" and check["conclusion"] == "success",
+            and check["app"]["slug"] == "github-actions",
             "Fast check is not successful exact-head Actions evidence")
+    pending = receipt_pending(check, allow_pending)
     link = re.fullmatch(
         r"https://github[.]com/opensoft/openRepoTools-code/actions/runs/([1-9]\d*)/job/([1-9]\d*)",
         check["details_url"], flags=re.ASCII)
@@ -106,9 +124,9 @@ def fast_receipt(pr, head, request, base_changes):
             and run["head_branch"] == pr["head"]["ref"]
             and run["head_repository"]["full_name"] == REPOSITORY
             and run["check_suite_id"] == check["check_suite"]["id"]
-            and type(run["run_attempt"]) is int and run["run_attempt"] >= 1
-            and run["status"] == "completed" and run["conclusion"] == "success",
+            and type(run["run_attempt"]) is int and run["run_attempt"] >= 1,
             "Fast run belongs to another workflow/head or is incomplete")
+    pending = receipt_pending(run, allow_pending) or pending
     associated = run["pull_requests"]
     require(isinstance(associated, list) and len(associated) == 1,
             "Fast run has no unique source PR")
@@ -135,12 +153,14 @@ def fast_receipt(pr, head, request, base_changes):
     job = request(REPOSITORY, f"actions/jobs/{job_id}")
     require(type(job["id"]) is int and job["id"] == job_id
             and type(job["run_id"]) is int and job["run_id"] == run_id and job["head_sha"] == head
-            and job["run_attempt"] == run["run_attempt"] and job["name"] == FAST
-            and job["status"] == "completed" and job["conclusion"] == "success",
+            and job["run_attempt"] == run["run_attempt"] and job["name"] == FAST,
             "Fast job does not match the current successful run")
+    pending = receipt_pending(job, allow_pending) or pending
     require(run == request(REPOSITORY, f"actions/runs/{run_id}")
             and response == request(REPOSITORY, endpoint),
             "Fast run/check changed during verification")
+    if pending:
+        raise PendingEvidence("Authenticated fast workflow is pending")
     return response, run, job, history
 
 
@@ -231,7 +251,8 @@ def verify_candidate(env, event, root, request=policy.github, threads=read_threa
         tree = policy.sha(policy.git(root, "rev-parse", prefix + "^{tree}").decode().strip())
         require(expected == tree and policy.regular_scope(root, previous, prefix),
                 "Candidate prefix is not the expected clean scoped merge")
-        members.append({"number": pr["number"], "head": head, "prefix": prefix, "tree": tree})
+        members.append({"number": pr["number"], "head": head, "prefix": prefix, "tree": tree,
+                        "delivery": delivery_intended(pr["body"])})
         snapshots.append((pr, evidence))
     for pr, evidence in snapshots:
         require(policy.snapshot(pr) == policy.snapshot(
@@ -248,14 +269,39 @@ def verify_candidate(env, event, root, request=policy.github, threads=read_threa
             "tree": members[-1]["tree"], "members": members}
 
 
+def write_record(record, env):
+    # The CLI cannot select a destination. Only the Actions-owned canonical
+    # temp directory is accepted; exclusive creation refuses files/symlinks.
+    directory = Path(env["RUNNER_TEMP"])
+    require(directory.is_absolute() and directory.is_dir()
+            and directory.resolve(strict=True) == directory and not directory.is_symlink(),
+            "Proof directory is not a canonical runner temporary directory")
+    data = json.dumps(record, sort_keys=True) + "\n"
+    require(len(data.encode("utf-8")) <= 32768, "Proof record is oversized")
+    with (directory / "proof.json").open("x", encoding="utf-8") as output:
+        output.write(data)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("fast", "candidate"))
-    mode = parser.parse_args().mode
+    parser.add_argument("--proof-kind", choices=("admission", "qualified"))
+    parser.add_argument("--require-delivery", action="store_true")
+    args = parser.parse_args()
+    mode = args.mode
     try:
         event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
         result = (verify_fast(os.environ, event, Path.cwd()) if mode == "fast"
                   else verify_candidate(os.environ, event, Path(__file__).resolve().parents[2]))
+        if args.require_delivery:
+            require(mode == "candidate" and all(row["delivery"] is True for row in result["members"]),
+                    "Member delivery intent is missing")
+        if args.proof_kind:
+            require(mode == "candidate", "Proof output requires a candidate phase")
+            # Imported lazily to keep the existing standalone fast CLI unchanged.
+            from delivery_evidence import make_record
+            record = make_record(result, args.proof_kind, os.environ)
+            write_record(record, os.environ)
     except Refused as error:
         parser.exit(1, f"Delivery verification refused: {error}.\n")
     except policy.ERRORS:
