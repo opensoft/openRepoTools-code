@@ -48,7 +48,8 @@ def prepare(root, out, kcov):
         "--bash-parse-files-in-dir=" + str(sources),
         "--include-path=" + str(sources), "--output-interval=0",
         str(out / "shell-baseline"), str(launcher)], check=True)
-    reports = list((out / "shell-baseline").glob("*/sonarqube.xml"))
+    reports = [path for path in (out / "shell-baseline").glob("*/sonarqube.xml")
+               if path.parent.name != "kcov-merged"]
     if len(reports) != 1:
         raise ValueError("expected exactly one kcov shell denominator report")
     shutil.copyfile(reports[0], out / "shell-baseline.xml")

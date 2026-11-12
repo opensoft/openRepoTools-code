@@ -8,8 +8,6 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
-import urllib.parse
-import urllib.request
 
 PROJECT = "opensoft_openRepoTools"
 GATE = {
@@ -86,8 +84,9 @@ def write_configuration(root, out, manifest):
                           if item["language"] == lang]
     properties = {
         "sonar.projectKey": PROJECT, "sonar.organization": "opensoft",
-        "sonar.sources": ".", "sonar.tests": "code/tests,code/upstream/openRepoShape/tests",
-        "sonar.exclusions": "code/tests/**,code/upstream/openRepoShape/tests/**",
+        "sonar.sources": ".", "sonar.tests": ".",
+        "sonar.test.inclusions": ",".join(item["path"] for item in manifest["files"] if item["test"]),
+        "sonar.exclusions": ",".join(item["path"] for item in manifest["files"] if item["test"]),
         "sonar.sourceEncoding": "UTF-8", "sonar.python.version": "3.9",
         "sonar.lang.patterns.py": ",".join(patterns["py"]),
         "sonar.lang.patterns.shell": ",".join(patterns["shell"]),

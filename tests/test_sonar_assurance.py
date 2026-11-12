@@ -46,15 +46,17 @@ def test_inventory_includes_extensionless_and_tests_and_rejects_source_drift(ass
 
 def test_configuration_covers_each_command_and_removes_automatic_coverage_exclusion(assurance, tmp_path):
     manifest = {"commits": {".": "a" * 40},
-                "files": [{"path": "code/lane", "language": "shell"},
-                          {"path": "code/lanes-index", "language": "py"}]}
+                "files": [{"path": "code/lane", "language": "shell", "test": False},
+                          {"path": "code/lanes-index", "language": "py", "test": False},
+                          {"path": "code/tests/test_sample.py", "language": "py", "test": True}]}
     config = assurance.write_configuration(tmp_path, tmp_path / "out", manifest)
     assert config["sonar.lang.patterns.shell"] == "code/lane"
-    assert config["sonar.lang.patterns.py"] == "code/lanes-index"
+    assert config["sonar.lang.patterns.py"] == "code/lanes-index,code/tests/test_sample.py"
     assert config["sonar.coverage.exclusions"] == ""
     assert config["sonar.python.version"] == "3.9"
     assert config["sonar.qualitygate.wait"] == "true"
-    assert "code/tests/**" in config["sonar.exclusions"]
+    assert config["sonar.exclusions"] == "code/tests/test_sample.py"
+    assert config["sonar.test.inclusions"] == config["sonar.exclusions"]
 
 
 @pytest.mark.parametrize("status,period,conditions", [
