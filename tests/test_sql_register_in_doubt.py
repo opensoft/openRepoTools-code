@@ -865,6 +865,11 @@ def test_an_in_doubt_write_whose_next_attempt_is_refused_makes_its_lookup_before
         assert e.run(LB, rival).code == 0
         held.close()
     assert w.wait() == code, f"exit {w.code}, not {code}: {w.err[-800:]}"
+    # Before T415 the writer's 69 is T409's placeholder, which makes no
+    # commit call and equals [database]'s own 69: the case fails here, at its
+    # own assertion, not at `write_ids()[0]` (AN13b's cause 5; line AF13b).
+    assert w.commit_calls(), (f"exit {w.code}, but the writer made no commit call, so the "
+                              f"write has no id (T415's primary branch): {w.err[-800:]}")
     write_id = w.write_ids()[0]
     stamps = w.stamps()
     attempts = [c for c in stamps if (SNAPSHOT_TEXT if reason == "verb" else "commit_write") in (c.get("stdin") or "")]
