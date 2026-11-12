@@ -684,10 +684,11 @@
 #      (Y:5216–5218; T417): this run sent nothing, that write's outcome is
 #      not known, and its record and claims are left as they are. With a
 #      pending record: "an identical write is still running in pid <p>
-#      (write <id>, started <utc>)", with its lookup and its printed rerun
-#      (ERR-38). With none yet (open point 42): "an identical write is being
-#      started in pid <p> on <host>/<container> (claimed <utc>)", with the
-#      effect check, `history <lane> --since <utc>` or `register-row <lane>`.
+#      (write <id>, started <utc>)", with its lookup where the record holds a
+#      `call` line, and its printed rerun (ERR-38). With none yet (open point
+#      42): "an identical write is being started in pid <p> on
+#      <host>/<container> (claimed <utc>)", with the effect check,
+#      `history <lane> --since <utc>` or `register-row <lane>`.
 #      And where that owner cannot be tested here (DEC-25: the claim names no
 #      pid or cannot be read, its pid lives with no start time, or it is from
 #      another host or container, Y:5220), "an identical write holds the claim
@@ -6317,9 +6318,10 @@ pw_run_dir() {
 #   - a claim whose owner cannot be tested here (DEC-25): `no-pid`,
 #     `no-start` or `other-host`, live only for the seam's cap, which D7's
 #     deadline beat: `pw_owner_untested_end`;
-#   - a pending record beside the claim: Y:5218's text, with its write id, its
-#     lookup and its printed rerun, whose `LANES_SESSION` is the value the
-#     digest took (ERR-38). A record there that cannot be read names no id,
+#   - a pending record beside the claim: Y:5218's text, with its write id and
+#     its printed rerun, whose `LANES_SESSION` is the value the digest took
+#     (ERR-38), and its lookup only where the record holds a `call` line
+#     (batch e Q107). A record there that cannot be read names no id,
 #     and the text says so;
 #   - no record beside it (open point 42, taken under R26; the plan's §11.4):
 #     a record being made, so no write id is known. The text names the claim
@@ -6333,7 +6335,7 @@ pw_run_dir() {
 # pid cannot be tested here (lane 3, #165 6769061039, T417 item 2). So every
 # pid the second and third forms print is this host's.
 pw_owner_live_end() {
-  local po_rec="" po_rc=0 po_p="" po_utc="" po_look="" po_re="" po_l="" po_b="" po_c="" po_n="" po_f="" po_d="" po_max="" po_last=""
+  local po_rec="" po_rc=0 po_p="" po_utc="" po_look="" po_re="" po_then="" po_l="" po_b="" po_c="" po_n="" po_f="" po_d="" po_max="" po_last=""
   case "$WR_OWNER_WHY" in no-pid|no-start|other-host) pw_owner_untested_end ;; esac
   po_p="${WR_OWNER_PID:-<unknown>}"; po_utc="${WR_OWNER_UTC:-<unknown>}"
   po_rec="$WR_STATE/register-pending/$WR_D"
@@ -6344,10 +6346,17 @@ pw_owner_live_end() {
       IFS=' ' read -r po_b po_c po_n po_f po_d <<<"$po_l"
       if [ -z "$po_max" ] || [ "$po_n" -gt "$po_max" ]; then po_max="$po_n"; fi
     done <<<"$WR_REC_CALLS"
-    po_look="lanes-index journal --write-id $WR_REC_WRITE_ID"
-    [ -z "$po_max" ] || po_look="$po_look --not-after $po_max --generation $WR_REC_GENERATION --lane $(printf '%q' "$WR_REC_LANE") --verb $(printf '%q' "$WR_REC_VERB") --args-sha256 $WR_REC_ARGS_SHA256"
     po_re="$(wr_rerun_text "$WR_REC_WRITE_ID" "$WR_REC_GENERATION")"
-    die "an identical write is still running in pid ${po_p} (write ${WR_REC_WRITE_ID}, started ${po_utc}); this run sent nothing, and that write's outcome is not known. Once pid ${po_p} has ended, look it up (${po_look}), or run ${po_re}, which finds it or writes it once." 3
+    # With no `call` line the lookup has no `<n>` for its `--not-after` (§3.4;
+    # LR011), and the live owner may yet write one, so the text names the
+    # rerun alone (lane openRepoTools-3, #165 6808937880, batch e Q107; B15
+    # Y:5264).
+    po_then="run ${po_re}"
+    if [ -n "$po_max" ]; then
+      po_look="lanes-index journal --write-id $WR_REC_WRITE_ID --not-after $po_max --generation $WR_REC_GENERATION --lane $(printf '%q' "$WR_REC_LANE") --verb $(printf '%q' "$WR_REC_VERB") --args-sha256 $WR_REC_ARGS_SHA256"
+      po_then="look it up (${po_look}), or ${po_then}"
+    fi
+    die "an identical write is still running in pid ${po_p} (write ${WR_REC_WRITE_ID}, started ${po_utc}); this run sent nothing, and that write's outcome is not known. Once pid ${po_p} has ended, ${po_then}, which finds it or writes it once." 3
   fi
   if [ "$po_rc" = 2 ]; then
     die "an identical write is still running in pid ${po_p} (started ${po_utc}), and its pending record, ${po_rec}, cannot be read as one, so its write id is not known here; this run sent nothing, and that write's outcome is not known. Once pid ${po_p} has ended, lanes-index status lists the pending records." 3
