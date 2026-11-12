@@ -80,7 +80,10 @@ READINGS, NOT FOUND IN A CONTRACT:
   the receiving `git` runs `lanes-index` (the renderer's pass, `cutover`'s
   marker push and `rollback`'s removal, each through T320's one push
   function), and anyone else's otherwise (`lanes-edit.sh`'s files-mode push,
-  a person's `git push`).
+  a person's `git push`). Lane 3 accepted this model, with the check outside
+  pytest as its control, and suggested that the hook log the process it
+  found, so that a failure names it (#165 6813027223): each record carries
+  `found` and `walked`.
 - C IS ORIGIN'S TIP AT THE IMPORT, after the freeze's `PAUSED` write and
   AT-F4's accepted pushes: the cutover checks that the tip's `lanes` tree is
   C's (T327's step 2), and the import runs from ws1's checkout fetched to it.
@@ -225,7 +228,10 @@ _SECRET_FIELD = re.compile(r"^(\*:\*:.*:)[^:\n]*$", re.M)
 #: runbook steps set: off, it lets every push through. It LETS THE RENDERER'S
 #: IDENTITY THROUGH: a push from a process tree that runs `lanes-index` (see
 #: the readings). Each push is one JSON line of its log, with the switch's
-#: state, who pushed, and the outcome.
+#: state, who pushed, the process it found (`found`, null for `other`), the
+#: processes it walked to find it (`walked`), and the outcome. So each AT-F4
+#: failure, which prints the records, names the process the model saw, and a
+#: refusal's stderr names the walk (lane 3, #165 6813027223).
 RULESET_HOOK = r'''#!/usr/bin/env -S python3 -I
 # T276's model of the organisation's push ruleset (AT-F4), from T271's model
 # of the server-side gate (test 6): a model, since the suite cannot reach
@@ -233,6 +239,7 @@ RULESET_HOOK = r'''#!/usr/bin/env -S python3 -I
 import json, os, re, subprocess, sys
 SWITCH = SWITCH_PATH
 LOG = LOG_PATH
+TOP = TOP_PID
 GUARDED = re.compile(r"^lanes/(LANES\.md|aliases\.tsv|STORE|archive/.+"
                      r"|log/(?!README\.md$)[^/]+\.md)$")
 ZERO = "0" * 40
@@ -271,15 +278,24 @@ def parent(pid):
 
 
 def pusher():
-    """`renderer` where a process above this hook runs `lanes-index`."""
-    pid = os.getppid()
+    """(who, found, walked): `renderer` where a process above this hook runs
+    `lanes-index`, else `other`; `found`, that process as {"pid", "argv"},
+    or None; and `walked`, each process the walk read, from the hook's
+    parent up, each argv's first four words, so that a failure names what
+    the model saw (lane 3's suggestion, #165 6813027223). The walk stops
+    below `TOP`, the test's own process, which every push the drill makes
+    descends from: no process the case did not start is read or logged."""
+    pid, walked = os.getppid(), []
     for _ in range(64):
-        if pid <= 1:
+        if pid <= 1 or pid == TOP:
             break
-        pid, argv = parent(pid)
+        up, argv = parent(pid)
+        seen = {"pid": pid, "argv": argv}
+        walked.append(seen)
         if any(os.path.basename(word) == RENDERER for word in argv):
-            return "renderer"
-    return "other"
+            return "renderer", seen, walked
+        pid = up
+    return "other", None, walked
 
 
 def main():
@@ -288,7 +304,7 @@ def main():
             state = handle.read().strip()
     except OSError:
         state = "off"
-    who = pusher()
+    who, found, walked = pusher()
     pushes, hits = [], []
     for line in sys.stdin:
         old, new, ref = line.split()
@@ -300,13 +316,17 @@ def main():
         hits += guarded
     refused = state == "on" and bool(hits) and who != "renderer"
     with open(LOG, "a", encoding="utf-8") as handle:
-        handle.write(json.dumps({"state": state, "pusher": who,
+        handle.write(json.dumps({"state": state, "pusher": who, "found": found,
+                                 "walked": walked,
                                  "outcome": "refused" if refused else "accepted",
                                  "pushes": pushes}) + "\n")
     if refused:
         sys.stderr.write("t276 ruleset model: a push to the render set or lanes/STORE by "
                          "an identity other than the renderer's is refused: "
-                         + ", ".join(sorted(set(hits))) + "\n")
+                         + ", ".join(sorted(set(hits))) + "; no lanes-index above the "
+                         "hook, which walked: "
+                         + " < ".join(f"{p['pid']} {' '.join(p['argv'])}" for p in walked)
+                         + "\n")
         return 1
     return 0
 
@@ -371,7 +391,8 @@ def _renders(db) -> dict:
 
 class Ruleset:
     """`RULESET_HOOK` in origin's `hooks/`, its switch file and its log, both
-    beside origin and never in a work tree. It starts off."""
+    beside origin and never in a work tree, and this test's own pid, where
+    the hook's walk stops. It starts off."""
 
     def __init__(self, root: Path, origin: Path):
         root.mkdir(parents=True, exist_ok=True)
@@ -379,7 +400,8 @@ class Ruleset:
         self.off()
         _script(origin / "hooks" / "pre-receive",
                 RULESET_HOOK.replace("SWITCH_PATH", repr(str(self.switch)))
-                .replace("LOG_PATH", repr(str(self.log))))
+                .replace("LOG_PATH", repr(str(self.log)))
+                .replace("TOP_PID", str(os.getpid())))
 
     def on(self) -> None:
         self.switch.write_text("on\n", encoding="utf-8")
