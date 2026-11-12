@@ -1574,9 +1574,10 @@ has  "…with the hint to spell owner/repo" "$err" "spell it owner/repo"
 
 run env LANES_LANE=repoE-1 "$E" log CLOSED "opensoft/codexFactory#9" "→" "opensoft/openxFactory#4"
 is   "a legacy spelling is accepted" "$rc" 0
-has  "…and is written as the canonical nameWithOwner" "$(cat "$LOGD/repoE-1.md")" ", codeXfactory/codeXfactory#9 → opensoft/openXfactory#4"
+# The arrow destination is historical free text, not the normalized object key.
+has  "…and is written as the canonical nameWithOwner" "$(cat "$LOGD/repoE-1.md")" ", codeXfactory/codeXfactory#9 → opensoft/openxFactory#4"
 run env LANES_LANE=repoE-1 "$E" log CLOSED "Hermes-Install#3" "→" "opensoft/openxFactory#4"
-has  "…as is an alias with no owner at all" "$(cat "$LOGD/repoE-1.md")" ", opensoft/Hermes-Install#3 → opensoft/openXfactory#4"
+has  "…as is an alias with no owner at all" "$(cat "$LOGD/repoE-1.md")" ", opensoft/Hermes-Install#3 → opensoft/openxFactory#4"
 
 run env LANES_LANE=repoE-1 "$E" log OPENED "oxF#3"
 is   "a spelling the register uses but nothing resolved is refused, not guessed" "$rc" 2
