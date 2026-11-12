@@ -72,7 +72,9 @@ imports the fixture register at C, then runs `lanes-index cutover --import
 <C>` as the operator lane through its checkout, by T203's flipped copy:
 while `RENDER_GIT_HALF` is False, `cutover` refuses `lanes_register`, a
 schema that is not a scratch one (lane 1's T116), and a write on primary
-needs the flipped copy too. AT-F2's cases in `test_sql_register_cutover.py`
+needs the flipped copy too, and the operator lane's own register checkout,
+`<W>-lanes/repoA-2`, which `CutoverRegister.write` makes before the first
+write (lane 3's batch g Q119). AT-F2's cases in `test_sql_register_cutover.py`
 build on the same class. They fail until L1-A14 and lane 3's T327, the
 marker's push, read-back and abort: until T327, `cutover`'s 0 is its
 transaction alone, the marker stays `adding`, and nothing is pushed (T116's
@@ -1162,7 +1164,13 @@ class CutoverRegister(FixtureRegister):
     after that release and no `HOLD` is open in `main_slots`: lane 1's
     open-`HOLD` check would refuse the first form otherwise (lane 3, #165
     6814260122). `release_hold=False` keeps it open, for the one case that
-    expects the refusal."""
+    expects the refusal.
+
+    A write on primary also reads the operator lane's own register checkout,
+    `<c>`, beside W, and refuses 2 where it is not there (lane 3's batch g
+    Q119, #165 6813027223). `write` makes it before the first write, after
+    the case's cutover has pushed from the operator's checkout
+    (`lane_checkout`)."""
 
     def __init__(self, root: Path, pg, *, extra_path: Path | None = None,
                  release_hold: bool = True):
@@ -1219,9 +1227,31 @@ class CutoverRegister(FixtureRegister):
         act 4's step 7)."""
         return self.index("cutover", "--import", self.c, **kw)
 
+    def lane_checkout(self) -> Path:
+        """`<c>`, THE OPERATOR LANE'S OWN REGISTER CHECKOUT (lane 3's batch g
+        Q119, #165 6813027223): beside the checkout `workspace.yaml` names as
+        W, `ws`, at `<W>-lanes/repoA-2`, W being its real path, as
+        `lanes-edit.sh`'s `lane_checkout_path` puts it (Amendment 23 S1). On
+        primary a write reads its author, its pending hand edits and its
+        `repos.tsv` from there, and refuses 2 where it is not there, "Nothing
+        was sent" (B15 tasks:1154; T415's `pw_checkout`). A clone of origin,
+        as `lane-checkout <lane> --create` makes one, in LX's T253f style.
+        One that is already there is kept, so a case or an estate that made
+        its own keeps it (line RB's T273f makes test 8's in the same place)."""
+        real = Path(os.path.realpath(self.ws))
+        target = real.parent / f"{real.name}-lanes" / OPERATOR
+        if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["git", "clone", "-q", str(self.origin), str(target)], check=True,
+                           env=self.env, capture_output=True, stdin=subprocess.DEVNULL)
+        return target
+
     def write(self, text: str, env: dict | None = None) -> subprocess.CompletedProcess:
         """One `log NOTED` on primary, through the flipped copy's
-        `lanes-edit.sh`: R3b's smoke test."""
+        `lanes-edit.sh`: R3b's smoke test. The operator lane's `<c>` is made
+        first where it is not there yet (`lane_checkout`): after the case's
+        last push from W, so it is a clone of origin's tip then."""
+        self.lane_checkout()
         return self.run("bash", self.copy.parent / "lanes-edit.sh", "log", "NOTED",
                         f"lane:{OPERATOR}", text, cwd=self.wip,
                         env=self.index_env(self.primary_conf, env))
