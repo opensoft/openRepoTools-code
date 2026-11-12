@@ -45,8 +45,10 @@ WHAT IT HOLDS, by task:
       the refusal, with the fake `psql`'s log empty, a read that decides
       exits 69 with nothing on stdout; the listings and the `SessionStart`
       block answer from the mirror, exit 0, and carry the `read: mirror`
-      line; the prompt guard exits 2; and `managed-projection` answers 1,
-      UNKNOWN, never 8.
+      line; the prompt guard exits 2, run in the lane's window with a live
+      session record and compact hook JSON, since without them it refuses 2
+      before any read (lane 3's T507 ruling (1), #165 6783977598); and
+      `managed-projection` answers 1, UNKNOWN, never 8.
   * T256 (L2-W6), the flipped state and the render fork's stub test, each a
     REAL-ENGINE case (the flipped state is RE: its write is a `register
     snapshot` reply and a commit, which a fake cannot fabricate):
@@ -258,9 +260,42 @@ os.execv(sys.executable, [sys.executable, TARGET] + argv)
 #: The `read: mirror` line (design S3, "The mirror reads"), on stderr.
 MIRROR_LINE = re.compile(r"^read: mirror at [0-9a-f]{12}, .*$", re.M)
 
-#: The guard's hook JSON, as T217 feeds it (UserPromptSubmit).
-GUARD_INPUT = json.dumps({"session_id": UUID_A2, "prompt": "hello", "hook_event_name":
-                          "UserPromptSubmit", "transcript_path": "/dev/null", "cwd": "/"})
+#: THE GUARD'S WINDOW (lane 3's T507 ruling (1), #165 6783977598; lane 1's
+#: finding of this case, 6809022654). The guard keeps its order: with no
+#: window, or no live session record in it, it refuses 2 before any read, and
+#: T507's prefetch, the first call that asks `lanes-index`, comes after the
+#: session-record check (lane 5, #165 6755266457). So `[guard]` runs in the
+#: lane's window with a live record of the hook's session, as lane 2's T215e
+#: gave AT-P3's case in the outage module (T203c's `guard_session`; built
+#: here in its form, since this module runs on lines that lack that helper).
+#: The window's stand-in `tmux` answers `display-message` as a real one does,
+#: with each `@…@` word below filled in.
+GUARD_WINDOW, GUARD_TMUX_SESSION, GUARD_WINDOW_ID, GUARD_PANE = "repoA-2", "testsess", "@1", "%1"
+GUARD_TMUX = r'''#!/bin/sh
+# TEST 14's STAND-IN tmux for the guard's window (feature 007, T507 ruling
+# (1)): it answers display-message as the lane's window does, a target that is
+# not that window with tmux's own "can't find window" and 1, and every other
+# command with nothing and 0.
+[ "${1-}" = display-message ] || exit 0
+target=""; prev=""; fmt=""
+for a in "$@"; do
+  [ "$prev" = -t ] && target="$a"
+  prev="$a"; fmt="$a"
+done
+case "$target" in
+  ''|'@ID@'|'@SESSION@:@ID@'|'@PANE@'|'@SESSION@:@ID@.@PANE@') ;;
+  *) printf "can't find window: %s\n" "$target" >&2; exit 1 ;;
+esac
+case "$fmt" in
+  '#{session_name}:#{window_id}') printf '%s\n' '@SESSION@:@ID@' ;;
+  '#{session_name}') printf '%s\n' '@SESSION@' ;;
+  '#{window_id}') printf '%s\n' '@ID@' ;;
+  '#{pane_id}') printf '%s\n' '@PANE@' ;;
+  '#{pane_pid}') printf '%s\n' '@PID@' ;;
+  *) printf '%s\n' '@WINDOW@' ;;
+esac
+exit 0
+'''
 
 #: THE READS THAT DECIDE (TP:2587-2589), each with an argv `Estate` answers in
 #: files mode, as T217's readers' table gives them: under the refusal each
@@ -465,6 +500,53 @@ class Refusing:
 
     def origin_and_head(self) -> tuple:
         return self.e.tip(), self.e._git("rev-parse", "HEAD").strip()
+
+
+def proc_start(pid: int) -> str:
+    """The start token the guard compares, field 22 of `/proc/<pid>/stat`, cut
+    after the last `) ` as `pid_alive` cuts it. Empty where there is no
+    `/proc`, where `pid_alive` asks `kill -0` alone."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return stat.rsplit(") ", 1)[1].split()[19]
+
+
+def in_the_lane_window(state: Refusing) -> tuple:
+    """`[guard]`'s window and session (see `GUARD_TMUX`): the environment the
+    hook runs in, and its input. The environment names the stand-in `tmux`'s
+    server, pane and directory (first on `PATH`). The stand-in is written to
+    `<root>/guard-window`, and the session's record to the estate's
+    `$HOME/.claude/sessions/<pid>.json`, mode 0600, one line of compact JSON
+    in the suite's record form: its live process is this test's own, so it
+    needs no teardown, and its `procStart` is the live one, so the guard reads
+    it live. The record's `tmux` names the window the stand-in answers for,
+    and its `sessionId` is the hook's. The input is the hook's JSON, compact
+    as the harness sends it, since the guard's `jstr` reads `"cwd":"<dir>"`
+    with no blank after the colon; its `cwd` is the lane's checkout, under
+    `$HOME/projects`, since a `cwd` outside the projects root is silent
+    (clause (e))."""
+    pid, cwd = os.getpid(), str(state.e.wip)
+    directory = state.root / "guard-window"
+    directory.mkdir(parents=True, exist_ok=True)
+    text = GUARD_TMUX
+    for word, value in (("@SESSION@", GUARD_TMUX_SESSION), ("@ID@", GUARD_WINDOW_ID),
+                        ("@PANE@", GUARD_PANE), ("@PID@", str(pid)), ("@WINDOW@", GUARD_WINDOW)):
+        text = text.replace(word, value)
+    tmux = directory / "tmux"
+    tmux.write_text(text, encoding="utf-8")
+    tmux.chmod(0o755)
+    write_private(state.e.home / ".claude" / "sessions" / f"{pid}.json", json.dumps(
+        {"pid": pid, "sessionId": UUID_A2, "cwd": cwd, "procStart": proc_start(pid),
+         "tmux": f"{GUARD_TMUX_SESSION}:{GUARD_WINDOW_ID}.{GUARD_PANE}", "name": GUARD_WINDOW,
+         "nameSource": "user", "status": "busy", "kind": "interactive"},
+        separators=(",", ":")) + "\n")
+    env = {"TMUX": f"{directory / 'tmux-server'},{pid},0", "TMUX_PANE": GUARD_PANE,
+           "PATH": os.pathsep.join([str(directory), state.env()["PATH"]])}
+    hook = json.dumps({"hook_event_name": "UserPromptSubmit", "session_id": UUID_A2,
+                       "cwd": cwd, "prompt": "hello"}, separators=(",", ":"))
+    return env, hook
 
 
 # ------------------------------------------ T256: the flipped state's world
@@ -872,7 +954,11 @@ def test_readers_under_the_refusal_answer_the_78_as_a_failed_read(estate, reader
     `SessionStart` block answer from the mirror, exit 0, with the `read:
     mirror` line on stderr; the prompt guard exits 2; `managed-projection`
     answers 1, UNKNOWN, never 8. The fake `psql`'s log stays empty, and the
-    files and origin are unchanged."""
+    files and origin are unchanged. The guard runs in the lane's window with
+    a live session record (`in_the_lane_window`), as the guard keeps its
+    order: with no window, or no session record, it refuses 2 before any
+    read, so it would never ask `lanes-index` (lane 3's T507 ruling (1),
+    #165 6783977598)."""
     state = Refusing(estate)
     bin_dir = state.root / "bin"
     edit = beside(bin_dir, state.copy)
@@ -902,7 +988,8 @@ def test_readers_under_the_refusal_answer_the_78_as_a_failed_read(estate, reader
         assert MIRROR_LINE.search(proc.stderr), ("no `read: mirror` line", shown(proc))
         assert not MIRROR_LINE.search(proc.stdout), shown(proc)
     elif reader == "guard":
-        proc = state.edit(edit, "guard", input_text=GUARD_INPUT)
+        window_env, hook = in_the_lane_window(state)
+        proc = state.edit(edit, "guard", input_text=hook, **window_env)
         asked(proc, "guard")
         assert proc.returncode == GUARD_REFUSED, shown(proc)
     else:
