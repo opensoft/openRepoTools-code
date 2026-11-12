@@ -7299,14 +7299,22 @@ pw_lookup_clock() {
 #             cannot be read, a crash or a code outside the contract (CO-2,
 #             CO-3); and a lookup that cannot be made at all
 pw_lookup() {
-  local lk_bin="" lk_dir="" lk_rc=0 lk_l="" lk_b="" lk_c="" lk_n="" lk_f="" lk_d="" lk_7=0 lk_tok="" lk_p=""
+  local lk_bin="" lk_dir="" lk_rc=0 lk_k="" lk_l="" lk_n="" lk_7=0 lk_tok="" lk_p=""
   PW_LK=doubt; PW_LK_SEQ=""; PW_LK_TOKEN=""; PW_LK_N=""; PW_LK_WHY=""; PW_LK_OUT=""; PW_LK_ERR=""
-  while IFS= read -r lk_l; do
+  # By parameter expansion, never a here-string (`pw_call_fields`), so a
+  # full /tmp cannot leave the lookup with no `<n>` to look it up at.
+  lk_k="$WR_CALLS"
+  while [ -n "$lk_k" ]; do
+    lk_l="${lk_k%%"$WR_NL"*}"
+    case "$lk_k" in
+      *"$WR_NL"*) lk_k="${lk_k#*"$WR_NL"}" ;;
+      *) lk_k="" ;;
+    esac
     [ -n "$lk_l" ] || continue
-    IFS=' ' read -r lk_b lk_c lk_n lk_f lk_d <<<"$lk_l"
+    pw_call_fields "$lk_l"; lk_n="$PW_CF_N"
     wr_is_count "$lk_n" || continue
     if [ -z "$PW_LK_N" ] || [ "$lk_n" -gt "$PW_LK_N" ]; then PW_LK_N="$lk_n"; fi
-  done <<<"$WR_CALLS"
+  done
   if [ -z "$PW_LK_N" ]; then
     PW_LK_WHY="the pending record's call lines give no not_after to look it up at"
     return 0
