@@ -2171,15 +2171,19 @@ def test_a_lookup_made_too_early_exits_3_and_keeps_the_record(estates):
     once: LR011, exit 3 naming the id with the server's message, the record
     kept, one try. Once snapshots pass, a plain rerun exits 0 with one row.
     The other host's claim lives the seam's cap, so the first rerun runs at
-    `LANES_REGISTER_SEAM_CAP_S=1` (see the section's head; T246d)."""
+    `LANES_REGISTER_SEAM_CAP_S=1` (see the section's head; T246d), and so
+    does the last: the first rerun's 3 removes its own claim
+    (`c8acf67c:lanes-edit.sh:9734`), so the last meets the other host's
+    claim again, its cap counted afresh from the record's `updated_utc`,
+    which the takeover rewrote (T246e)."""
     e = estates()
     argv = note(LA, "F3 too early")
+    cap = {"LANES_REGISTER_SEAM_CAP_S": "1"}
     _, write_id = killed(e, LA, argv, extra={"LANES_HOST": "eagle-2"})
-    early = e.run(LA, argv, arms=[{"mode": "fail-match", "match": SNAPSHOT_TEXT, "call": 1}],
-                  extra={"LANES_REGISTER_SEAM_CAP_S": "1"})
+    early = e.run(LA, argv, arms=[{"mode": "fail-match", "match": SNAPSHOT_TEXT, "call": 1}], extra=cap)
     assert early.code == 3 and write_id in early.err and "LR011" in early.err, early.err[-800:]
     assert len(lookups(early)) == 1 and len(pending(e)) == 1
-    again = e.run(LA, argv)
+    again = e.run(LA, argv, extra=cap)
     assert again.code == 0 and [r["write_id"] for r in e.journal_after()].count(write_id) == 1
 
 
