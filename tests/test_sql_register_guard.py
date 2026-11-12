@@ -1257,19 +1257,28 @@ def _two_binds(estate, mode="files") -> tuple:
     return one, two, [one.ended(60), two.ended(60)]
 
 
-def test_two_sessions_binding_one_lane_in_files_mode_the_second_is_refused_at_the_reread(
-        estate):
+def test_two_sessions_binding_one_lane_in_files_mode_both_binds_land(estate):
     """Row (d): two sessions answer `2` for one lane on the files-mode
-    fixture. The bind that reaches `lane-start`'s re-read of `binding` second
-    is refused there, the other record ends `bound`, and there is one
-    `RESUMED` line and one stamp for the lane. Lane 4's table gives no exit
-    code for the re-read, so the code seen is recorded, not asserted."""
+    fixture, and both binds land, which is what files mode does (lane 3's
+    ruling (a), #165 6827853480, on lane 4's check, 6827539379). Each bind
+    reads `binding` once on `lane-start --no-launch --bind`, before either
+    writes, and finds the lane free; nothing in files mode refuses the second:
+    only a handoff wait or a Claude resolution sets `bind_recheck` for a second
+    read (`lane-start:2654-2655`, `:2751` at `6050581`), and neither runs here:
+    the lane has no live holder to wait for, and the resolution never runs
+    under `--no-launch` (`:708`). So the race is one read wide, the log
+    carries two bindings, and the reservation stays #84's
+    (`lane-start:2724-2733` at `6050581`). Both records end `bound`, and the
+    lane's log holds two `RESUMED` lines, one for each bind. Primary keeps its
+    own case, case 8, `test_two_sessions_binding_one_lane_one_start_record_commits`,
+    where `bind:<to>` refuses whichever bind commits second. Each record's
+    code and notes are printed, not asserted."""
     one, two, ends = _two_binds(estate)
-    modes = sorted(r["mode"] for r in ends)
-    print(f"T214 row (d): the second bind's code: {[r.get('rc') for r in ends]}")
-    assert modes == ["bind-failed", "bound"], ends
+    print(f"T214 row (d): the codes {[r.get('rc') for r in ends]}, "
+          f"the notes {[r.get('note') for r in ends]}")
+    assert [r["mode"] for r in ends] == ["bound", "bound"], ends
     log = one._git(["show", f"main:lanes/log/{TO}.md"], one.origin)
-    assert log.count("RESUMED") == 1, log
+    assert log.count("RESUMED") == 2, log
 
 
 @pytest.mark.parametrize("kind,code,mode", [
