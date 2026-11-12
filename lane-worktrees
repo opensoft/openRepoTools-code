@@ -364,6 +364,58 @@ def rmtree(path: str) -> None:
     shutil.rmtree(path, onerror=clear)
 
 
+#: EVERY PATH A READ SKIPPED AS NO REGULAR FILE, {path: why} (`open_regular`):
+#: the estate report names each one, so a skip is a finding and never silence.
+SKIPPED: dict = {}
+
+
+class NotRegular(OSError):
+    """A FIFO, socket or device where a file was to be opened: an OSError,
+    so every reader here takes it as the read that failed it is - never as
+    a file that is not there."""
+
+
+def _refuse_special(path: str, mode: int) -> None:
+    for test, what in ((stat.S_ISFIFO, "a FIFO"), (stat.S_ISSOCK, "a socket"),
+                       (stat.S_ISCHR, "a character device"), (stat.S_ISBLK, "a block device")):
+        if test(mode):
+            why = f"{what}, not a regular file: skipped, never opened"
+            SKIPPED.setdefault(path, why)
+            raise NotRegular(why)
+
+
+def _opener(path: str, flags: int) -> int:
+    fd = os.open(path, flags | os.O_NONBLOCK, 0o666)
+    try:
+        _refuse_special(path, os.fstat(fd).st_mode)
+        os.set_blocking(fd, True)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def open_regular(path: str, mode: str = "r", **kwargs):
+    """`open(path, mode, ...)` that never opens a FIFO, a socket or a device.
+
+    A FIFO BLOCKS open() UNTIL ITS OTHER END OPENS, AND NOTHING TIMES THAT OUT
+    (lane 3, 2026-11-12): two daily reports, started from two lanes' starts four
+    hours apart, sat in `wait_for_partner` for most of a day in a plain `open()`
+    of an estate path, with no child to time out and no answer to give. So
+    what `stat` says is not a regular file is refused before any open, and
+    what is opened is opened O_NONBLOCK and asked again by `fstat`, so one
+    swapped in between cannot hold the read either. A directory, and a path
+    `stat` cannot answer, go to `open()` itself, which refuses them at once,
+    exactly as before."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        st = None
+    if st is not None:
+        _refuse_special(path, st.st_mode)
+    return open(path, mode, opener=_opener, **kwargs)
+
+
 def sha256_of(path: str) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as fh:
@@ -427,7 +479,7 @@ def load_conf() -> dict:
     conf = dict(DEFAULT_CONF)
     path = conf_path()
     try:
-        with open(path, encoding="utf-8", errors="surrogateescape") as fh:
+        with open_regular(path, encoding="utf-8", errors="surrogateescape") as fh:
             lines = fh.read().splitlines()
     except OSError:
         return conf
@@ -1210,7 +1262,7 @@ def git_common_dir(repo: str) -> str:
     if os.path.isdir(dotgit):
         return dotgit
     try:
-        with open(dotgit, encoding="utf-8", errors="surrogateescape") as fh:
+        with open_regular(dotgit, encoding="utf-8", errors="surrogateescape") as fh:
             first = fh.readline().strip()
     except OSError:
         return ""
@@ -1220,7 +1272,8 @@ def git_common_dir(repo: str) -> str:
     if not os.path.isabs(gitdir):
         gitdir = os.path.normpath(os.path.join(repo, gitdir))
     try:
-        with open(os.path.join(gitdir, "commondir"), encoding="utf-8", errors="surrogateescape") as fh:
+        with open_regular(os.path.join(gitdir, "commondir"), encoding="utf-8",
+                          errors="surrogateescape") as fh:
             common = fh.readline().strip()
         if not os.path.isabs(common):
             common = os.path.normpath(os.path.join(gitdir, common))
@@ -1234,7 +1287,7 @@ def local_remote_urls(common: str, unread: list | None = None) -> list:
     A config that exists and cannot be read is named in `unread`."""
     out = []
     try:
-        with open(os.path.join(common, "config"), encoding="utf-8", errors="replace") as fh:
+        with open_regular(os.path.join(common, "config"), encoding="utf-8", errors="replace") as fh:
             text = fh.read()
     except FileNotFoundError:
         return out
@@ -1273,15 +1326,15 @@ def dependents_map(repos: list, unread: list | None = None) -> dict:
             # one in its cache to stop git looking upward. Only one that cannot
             # be read leaves the leaning unknown.
             try:
-                with open(os.path.join(repo, ".git"), "rb") as fh:
+                with open_regular(os.path.join(repo, ".git"), "rb") as fh:
                     fh.read(1)
             except OSError as exc:
                 if unread is not None:
                     unread.append(f"{repo}/.git ({exc.strerror or exc})")
             continue
         try:
-            with open(os.path.join(common, "objects", "info", "alternates"),
-                      encoding="utf-8", errors="surrogateescape") as fh:
+            with open_regular(os.path.join(common, "objects", "info", "alternates"),
+                              encoding="utf-8", errors="surrogateescape") as fh:
                 for raw in fh.read().splitlines():
                     alt = raw.strip()
                     if not alt or alt.startswith("#"):
@@ -4979,7 +5032,7 @@ def sandbox_items(procs: ProcScan, conf: dict) -> list:
 
 def _lock_pid(path: str) -> int:
     try:
-        with open(path, encoding="utf-8", errors="surrogateescape") as fh:
+        with open_regular(path, encoding="utf-8", errors="surrogateescape") as fh:
             text = fh.read().strip()
         return int(text) if text.isdigit() else 0
     except (OSError, ValueError):
@@ -5160,7 +5213,7 @@ def archive_ledger(adir: str):
     manifest = os.path.join(adir, "MANIFEST.sha256")
     listed: dict = {}
     try:
-        with open(manifest, encoding="utf-8", errors="surrogateescape") as fh:
+        with open_regular(manifest, encoding="utf-8", errors="surrogateescape") as fh:
             for line in fh:
                 if not line.strip():
                     continue
@@ -5182,7 +5235,7 @@ def archive_ledger(adir: str):
             if rel not in listed:
                 return None, f"{rel} is in it and not in its MANIFEST.sha256"
             try:
-                with open(full, "rb") as fh:
+                with open_regular(full, "rb") as fh:
                     if hashlib.sha256(fh.read()).hexdigest() != listed[rel]:
                         return None, f"{rel} does not match its MANIFEST.sha256"
             except OSError:
@@ -5191,7 +5244,8 @@ def archive_ledger(adir: str):
         return None, "it has no rescues.tsv"
     out = []
     try:
-        with open(os.path.join(adir, "rescues.tsv"), encoding="utf-8", errors="surrogateescape") as fh:
+        with open_regular(os.path.join(adir, "rescues.tsv"), encoding="utf-8",
+                          errors="surrogateescape") as fh:
             for line in fh:
                 if line.startswith("#") or not line.strip():
                     continue
@@ -5371,6 +5425,11 @@ class Report:
         self._archives()
         self._workspace_hygiene()
         self._status_all()
+        # A FIFO, SOCKET OR DEVICE A READ SKIPPED (`open_regular`) IS NAMED: what
+        # it stood in for - a `.git` pointer, a git config, a lock, a record - was
+        # not read. A lane record's own row, from `_record`, is the one kept.
+        for path, why in sorted(SKIPPED.items()):
+            self._unread(path, why, record=False)
         self.add("Records the report could not read", [[p, w] for p, w in
                                                       sorted(self.unreadable.items())], "none",
                  "UNKNOWN IS NEVER ABSENT: a lane snapshot, inventory or tree the report "
@@ -5389,7 +5448,7 @@ class Report:
 
     def _record(self, path: str, need_path: bool = False) -> dict:
         try:
-            with open(path, encoding="utf-8") as fh:
+            with open_regular(path, encoding="utf-8") as fh:
                 text = fh.read()
         except FileNotFoundError:
             return {}
@@ -5837,8 +5896,8 @@ class Report:
             # SURROGATEESCAPE, as every other reader here (#170 G10): one byte that
             # is not UTF-8 in the workspace's `.gitignore` aborted the report.
             try:
-                with open(os.path.join(wroot, ".gitignore"), encoding="utf-8",
-                          errors="surrogateescape") as fh:
+                with open_regular(os.path.join(wroot, ".gitignore"), encoding="utf-8",
+                                  errors="surrogateescape") as fh:
                     have = set(fh.read().splitlines())
             except OSError:
                 have = set()
@@ -5950,7 +6009,7 @@ def report_all(opts) -> int:
         return 0
     try:
         os.makedirs(os.path.dirname(os.path.abspath(post)), exist_ok=True)
-        with open(post, "w", encoding="utf-8", errors="surrogateescape") as fh:
+        with open_regular(post, "w", encoding="utf-8", errors="surrogateescape") as fh:
             fh.write(text)
     except OSError as exc:
         note(f"the report could not be written to {post}: {exc}")

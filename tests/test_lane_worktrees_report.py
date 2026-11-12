@@ -744,3 +744,60 @@ def test_a_W_that_is_a_lane_checkout_lists_its_siblings_as_register_checkouts(tm
     registers = section(proc.stdout, "Register checkouts (Amendment 23 S1)")
     assert f"{mine} · lane repoA-1 ·" in registers, registers
     assert f"{other} · lane repoB-1 ·" in registers, registers
+
+
+# ================================================= a FIFO where a file is read
+
+def test_a_fifo_where_the_report_reads_a_file_is_skipped_and_named_never_waited_on(tmp_path):
+    """Lane 3, 2026-11-12: two daily reports, from two lanes' starts four hours
+    apart, sat for most of a day in `wait_for_partner` - a plain `open()` of a
+    FIFO blocks until its other end opens, and nothing timed it out. Here every
+    file the report itself opens is a FIFO: a lane's snapshot and inventory
+    record, a `.git` that is no directory, a sandbox's `.lock`, an archive's
+    MANIFEST.sha256, `sweep.conf`, the workspace's `.gitignore` and the
+    `--post` target. (A git config, `commondir` or `alternates` is git's own
+    read too, where a FIFO costs git's timeout, so none is here.) The report
+    ends, names each one as skipped, and changes nothing."""
+    e = LW.Estate(tmp_path)
+    (e.fakebin / "status").write_text(FAKE_STATUS)
+    (e.fakebin / "status").chmod(0o755)
+    e.env["LANE_WORKTREES_STATUS"] = str(e.fakebin / "status")
+    lanes = e.projects / ".lane-state"
+    fifos = {
+        "snapshot": lanes / "repoA-7" / "lane-state.yaml",
+        "record": lanes / LW.LANE / "trees" / "c1.yaml",
+        "dotgit": e.projects / "stray" / ".git",
+        "lock": e.sandboxes / "tmp.fifo1" / ".lock",
+        "manifest": (e.state / "openRepoTools" / "sweeps" / LW.LANE / "20200101T000000Z"
+                     / "MANIFEST.sha256"),
+        "conf": e.root / "sweep.conf",
+        "gitignore": Path(e.workspace) / ".gitignore",
+        "post": e.root / "posted.md",
+    }
+    for path in fifos.values():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        os.mkfifo(path)
+    e.env["LANE_WORKTREES_CONF"] = str(fifos["conf"])
+    e.write_spec()
+    skip = ("helper.log", "helper-spec.json", "prs.json")
+    before = LW.snapshot(e.root, skip=skip)
+    try:
+        proc = subprocess.run([sys.executable, str(LW.LW), "sweep", "--all", "--dry-run",
+                               "--report", "--estate", str(e.projects),
+                               "--post", str(fifos["post"])],
+                              capture_output=True, text=True, env=e.env, timeout=120,
+                              cwd=str(e.root), stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        pytest.fail("the report blocked in the open() of a FIFO")
+    after = LW.snapshot(e.root, skip=skip)
+    # A `--post` it cannot write is the documented exit 1, the report printed.
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert f"could not be written to {fifos['post']}: a FIFO, not a regular file" in proc.stderr
+    assert proc.stdout.startswith("# Estate report")
+    rows = section(proc.stdout, "Records the report could not read").splitlines()
+    for name, path in fifos.items():
+        if name == "post":
+            continue
+        hit = [r for r in rows if r.startswith(f"- {path} · ")]
+        assert hit and "a FIFO, not a regular file: skipped, never opened" in hit[0], (name, rows)
+    assert before == after, sorted(set(before.items()) ^ set(after.items()))[:10]
