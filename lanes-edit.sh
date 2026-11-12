@@ -7018,13 +7018,38 @@ pw_wdir_ok() {   # <dir> <run | attempt>
 
 # The attempt directories named by `call` lines, one a line, from WR_CALLS or
 # a record's `call=` lines: the fifth field and the rest of the line.
+#
+# Split by parameter expansion, never `read` from a here-string: bash 3.2
+# writes one to a temp file, and where none can be made, as in a full TMPDIR,
+# the loop never ran and named no directory. Then `pw_run_dir_done` removed a
+# kept attempt's `snapshot`, `files` and `preimages`, which a rerun that takes
+# the record over reads (Y:5177), and `pw_runs_purge` removed an old `<run>/`
+# that a record's `call` line names (review REV-W10a M1's pattern). The split
+# is `read`'s with IFS=' ', exactly: blanks at either end dropped, four fields
+# each ended by a run of blanks, the rest the directory. `pw_runs_purge` gives
+# it a record's lines as they are, which `wr_record_read` has not judged, so a
+# line it names a directory by is named the same as before.
 pw_calls_dirs() {   # <call lines, one a line, without `call=`>
-  local cd_l="" cd_x=""
-  while IFS= read -r cd_l; do
-    [ -n "$cd_l" ] || continue
-    IFS=' ' read -r cd_x cd_x cd_x cd_x cd_l <<<"$cd_l"
+  local cd_l="" cd_r="${1-}" cd_i=0
+  while [ -n "$cd_r" ]; do
+    cd_l="${cd_r%%"$WR_NL"*}"
+    case "$cd_r" in
+      *"$WR_NL"*) cd_r="${cd_r#*"$WR_NL"}" ;;
+      *) cd_r="" ;;
+    esac
+    cd_i=0
+    while [ "$cd_i" -lt 4 ]; do
+      cd_l="${cd_l#"${cd_l%%[! ]*}"}"
+      case "$cd_l" in
+        *' '*) cd_l="${cd_l#*' '}" ;;
+        *) cd_l="" ;;
+      esac
+      cd_i=$((cd_i + 1))
+    done
+    cd_l="${cd_l#"${cd_l%%[! ]*}"}"
+    cd_l="${cd_l%"${cd_l##*[! ]}"}"
     [ -z "$cd_l" ] || printf '%s\n' "$cd_l"
-  done <<<"${1-}"
+  done
 }
 
 # THE RECORD REMOVED: the attempt directories its `call` lines named, this
