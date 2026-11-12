@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Acceptance is complete source inventory and a computed, unchanged gate."""
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 
@@ -100,3 +101,72 @@ def test_pr_gate_is_computed_without_a_main_branch_period(assurance):
     status = {"projectStatus": {"status": "OK", "periods": [],
                                 "conditions": [{"metricKey": "new_coverage", "status": "OK"}]}}
     assert assurance.verify_gate(status, thresholds, require_period=False)["status"] == "OK"
+
+
+@pytest.mark.parametrize("conditions,ignored", [
+    ([{"metricKey": "new_reliability_rating"}], False),
+    ([{"metricKey": "new_coverage"}], True),
+])
+def test_gate_refuses_unevaluated_or_ignored_coverage(assurance, conditions, ignored):
+    thresholds = [{"metric": key, "op": op, "error": threshold}
+                  for key, (op, threshold) in assurance.GATE.items()]
+    with pytest.raises(ValueError, match="evaluate new coverage"):
+        assurance.verify_gate({"projectStatus": {
+            "status": "OK", "periods": [{"index": 1}],
+            "conditions": conditions, "ignoredConditions": ignored}}, thresholds)
+
+
+@pytest.mark.parametrize("failure", [
+    None, "wrong-project", "compute-pending", "missing-source",
+    "wrong-language", "missing-coverage", "neutral-gate",
+])
+def test_analysis_verifies_the_submitted_task_sources_and_coverage(
+        assurance, tmp_path, monkeypatch, failure):
+    manifest = {"commits": {".": "b" * 40},
+                "files": [{"path": "code/lane", "language": "shell"}]}
+    (tmp_path / "inventory.json").write_text(json.dumps(manifest))
+    task = tmp_path / "report-task.txt"
+    project = "wrong" if failure == "wrong-project" else assurance.PROJECT
+    task.write_text("projectKey=" + project + "
+ceTaskId=task-123
+")
+    conditions = [{"metric": key, "op": op, "error": threshold}
+                  for key, (op, threshold) in assurance.GATE.items()]
+    calls = []
+
+    def api(endpoint, parameters):
+        calls.append((endpoint, parameters))
+        if endpoint == "ce/task":
+            return {"task": {"status": "PENDING" if failure == "compute-pending" else "SUCCESS",
+                             "analysisId": "analysis-123"}}
+        if endpoint == "qualitygates/project_status":
+            return {"projectStatus": {
+                "status": "NONE" if failure == "neutral-gate" else "OK",
+                "periods": [{"index": 1}], "conditions": [{"metricKey": "new_coverage"}]}}
+        if endpoint == "qualitygates/get_by_project":
+            assert parameters["organization"] == "opensoft"
+            return {"qualityGate": {"id": 9}}
+        if endpoint == "qualitygates/show":
+            assert parameters["organization"] == "opensoft"
+            return {"id": 9, "conditions": conditions}
+        if endpoint == "components/tree":
+            files = [] if failure == "missing-source" else [{
+                "path": "code/lane", "language": "py" if failure == "wrong-language" else "shell"}]
+            return {"paging": {"total": len(files)}, "components": files}
+        if endpoint == "measures/component":
+            measures = [] if failure == "missing-coverage" else [
+                {"metric": "coverage", "value": "90.0"}, {"metric": "lines_to_cover", "value": "100"}]
+            return {"component": {"measures": measures}}
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(assurance, "sonar_api", api)
+    if failure:
+        with pytest.raises(ValueError):
+            assurance.verify_analysis(tmp_path, task)
+        assert not (tmp_path / "acceptance.json").exists()
+    else:
+        receipt = assurance.verify_analysis(tmp_path, task)
+        assert receipt["analysisId"] == "analysis-123"
+        assert receipt["indexed_sources"] == 1
+        assert calls[1][1] == {"analysisId": "analysis-123"}
+        assert (tmp_path / "acceptance.json").exists()

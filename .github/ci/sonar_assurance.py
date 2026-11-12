@@ -116,6 +116,9 @@ def verify_gate(status, conditions, require_period=True):
     gate = status["projectStatus"]
     if gate.get("status") != "OK" or not gate.get("conditions"):
         raise ValueError("quality gate did not compute and pass: " + json.dumps(gate))
+    evaluated = {row["metricKey"] for row in gate["conditions"]}
+    if "new_coverage" not in evaluated or gate.get("ignoredConditions"):
+        raise ValueError("quality gate did not evaluate new coverage")
     if require_period and not gate.get("periods") and not gate.get("period"):
         raise ValueError("quality gate has no new-code period")
     return gate
