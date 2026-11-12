@@ -11823,13 +11823,18 @@ def _register_last_hold(view: RegisterView, obj: str, key: str, table: tuple) ->
 
 
 def register_commit_entry(att: dict, ident: dict, view: RegisterView,
-                          shipped_repos: str | None = None) -> dict:
+                          shipped_repos: str | None = None, *, kind: str = "write",
+                          git_commit: str | None = None) -> dict:
     """The one `jsonb` entry `commit_write` takes (its head comment, Y:1587-1611;
     contract §3.3), derived from the attempt directory, and from the shipped
     `repos.tsv`'s text, `shipped_repos`, for Rule 6's table:
 
     - `journal`: `kind` `write`, the flags' lane, verb, workstation and
       `args_sha256`, `author`, `msg` verbatim and `repos_blob`;
+      `git_commit` NULL. S2's two ways out of a divergence (T324) pass `kind`
+      `stray-import` or `stray-revert` and the stray's sha as `git_commit`,
+      which the journal's CHECK requires of both (§1.3's kinds table); every
+      other caller leaves both as they were;
     - `not_after`, the snapshot's, as a UTC text;
     - `act`, only inside an act;
     - `edits`, in `ord` order: per path, bytewise, a `remove`, a `create` and
@@ -11850,7 +11855,14 @@ def register_commit_entry(att: dict, ident: dict, view: RegisterView,
     `delete` deletes its line's structured rows, a `remove` those of every
     line of its path, and a `rename` the old path's `object_holds`, moving its
     `log_lines` to the new file and its lane. Step 7 then inserts what this
-    entry sends."""
+    entry sends.
+
+    A LINE'S WORKSTATION, where it names none of its own, is the write's
+    `--workstation` (`register_line_workstation`). Any other kind writes in
+    files mode (`commit_write`'s `v_wmode`): a stray's lines were written by
+    the workstation that pushed it, never by the one that loads it, so its
+    fallback is None, as the import's is (Y:1273)."""
+    fallback = ident["workstation"] if kind == "write" else None
     changes, renames = att["changes"], att["renames"]
     renamed_to = {to: frm for frm, to in renames.items()}
     table = register_repo_table(shipped_repos, view.before(REGISTER_REPOS_PATH))
@@ -11942,13 +11954,13 @@ def register_commit_entry(att: dict, ident: dict, view: RegisterView,
         wrote = sorted(written[REGISTER_PATH])
         walks = [line_no for line_no in wrote if row_name(lines[line_no - 1]) is None
                  and _register_landed_walks(parse_register_line(lines[line_no - 1]))]
-        walked = (register_slot_rows(lines[:walks[-1]], table, ident["workstation"])
+        walked = (register_slot_rows(lines[:walks[-1]], table, fallback)
                   if walks else {})
         for line_no in wrote:
             text = lines[line_no - 1]
             if row_name(text) is None:
                 row = (walked[line_no] if line_no in walked else
-                       _register_slot_row(line_no, text, table, ident["workstation"]))
+                       _register_slot_row(line_no, text, table, fallback))
                 if row is not None:
                     slot_rows.append(row)
 
@@ -12003,9 +12015,9 @@ def register_commit_entry(att: dict, ident: dict, view: RegisterView,
         if row is not None:
             hold_rows.append(row)
 
-    entry = {"journal": {"kind": "write", "verb": ident["verb"], "lane": ident["lane"],
+    entry = {"journal": {"kind": kind, "verb": ident["verb"], "lane": ident["lane"],
                          "workstation": ident["workstation"], "author": att["author"],
-                         "message": att["message"], "git_commit": None, "git_tree": None,
+                         "message": att["message"], "git_commit": git_commit, "git_tree": None,
                          "repos_blob": att["repos_blob"], "args_sha256": ident["args_sha256"]},
              "not_after": register_epoch_utc(att["not_after"])}
     if att["act"] is not None:
@@ -12276,15 +12288,18 @@ def _register_commit_lr004(store: PostgresStore, att: dict, ident: dict, entry: 
     return EXIT_UNAVAILABLE
 
 
-def _register_build_entry(att: dict, ident: dict,
-                          shipped_repos: str | None) -> tuple[dict, RegisterView]:
+def _register_build_entry(att: dict, ident: dict, shipped_repos: str | None, *,
+                          kind: str = "write",
+                          git_commit: str | None = None) -> tuple[dict, RegisterView]:
     """`register_commit_entry` over `tree/`, and the view it read `tree/`
     through, whose reads LR004's re-read compares. A failed read of `tree/` is
     the attempt directory's fault: `RegisterAttemptRefused`, 2, nothing
-    sent."""
+    sent. `kind` and `git_commit` are `register_commit_entry`'s, which only
+    S2's two ways out (T324) change."""
     view = RegisterView(att, att["tree_bases"])
     try:
-        return register_commit_entry(att, ident, view, shipped_repos), view
+        return register_commit_entry(att, ident, view, shipped_repos, kind=kind,
+                                     git_commit=git_commit), view
     except StoreUnusable as exc:
         raise RegisterAttemptRefused(f"tree/ cannot be read ({exc.detail})")
 
@@ -12342,8 +12357,9 @@ def cmd_register_commit(args: list[str]) -> int:
 
     In order: the argv (64); the configuration (2, Q6(c)'s refusal
     included); `LANES_ACT` and `LANES_EXPECT`, checked again (2); the attempt
-    directory (2); the shipped `repos.tsv`, Rule 6's first table (2 where it
-    is there and cannot be read); the store, as this engineer's
+    directory (2), one whose `changes.tsv` names no path included; the
+    shipped `repos.tsv`, Rule 6's first table (2 where it is there and cannot
+    be read); the store, as this engineer's
     REGISTER-WRITER login; then the call, made once. Exits 0 `committed
     <seq>` or `already <seq>`, 75, 69, 2 and 3, as `_register_commit_end`
     and, after an LR004, `_register_commit_lr004` read them."""
@@ -12367,6 +12383,14 @@ def cmd_register_commit(args: list[str]) -> int:
         env_act = register_act_of_env(os.environ.get("LANES_ACT", ""),
                                       os.environ.get("LANES_EXPECT", ""))
         att = read_attempt_dir(directory, ident, env_act)
+        # AN EMPTY CHANGE SET: this arm's entry is always a `write`, and the
+        # seam sends none that names no path (Y:5060), so it is refused here,
+        # before the store opens. `read_attempt_dir` pairs every `files` row
+        # with a `changes.tsv` line, so `files` is empty too. The shared read
+        # takes no such check: T324's in-process entries with no edits still
+        # journal (lane 3, #165 6808937880, batch e Q88).
+        if not att["changes"]:
+            raise RegisterAttemptRefused("changes.tsv names no path")
         entry, view = _register_build_entry(att, ident, register_shipped_repos_text())
         store = PostgresStore(cfg, "register_writer")
     except Refusal as exc:
@@ -12800,6 +12824,21 @@ def _register_journal_lookup(values: dict, started: float) -> int:
         note(f"journal: nothing was looked up, so write {ident['write_id']} stays in doubt: "
              f"keep its pending record")
         return EXIT_IN_DOUBT
+    clock = (int(values["--clock"]), int(values["--clock-age"])) if "--clock" in values else None
+    kind, answer, failure, err, ends = register_lookup(store, ident, not_after, clock, started)
+    return _register_lookup_end(ident, kind, answer, failure, err, ends)
+
+
+def register_lookup(store: PostgresStore, ident: dict, not_after: int, clock: tuple | None,
+                    started: float) -> tuple:
+    """F3'S LOOKUP (Y:5235-5255), the client's own wait and then `find_write`'s
+    tries inside the window, as `journal --write-id` makes it, for any caller
+    that holds a store: `(kind, answer, failure, err, ends)`, which
+    `_register_lookup_end` reads (`_register_lookup_try`'s first four, and the
+    tally of the tries that gave no answer). `clock` is `(the database's
+    clock, its age in seconds)` as a snapshot last read it, or None; `started`
+    is the `time.monotonic()` instant that age is counted from. S2's two ways
+    out (T324) make it in doubt, as a writer does (D8)."""
     # 1. THE CLIENT WAITS FIRST, on its own estimate of the database's clock:
     # `--clock` + `--clock-age` + the seconds since this command started, on
     # the monotonic clock. It calls once that puts `<n>` at most 2 s ahead
@@ -12808,9 +12847,8 @@ def _register_journal_lookup(values: dict, started: float) -> int:
     # is at most `C` + 2 s (contract §3.4), so a clock far behind `<n>` ends
     # in LR011's 3, never in a wait with no end. With no clock, it calls at
     # once.
-    if "--clock" in values:
-        ahead = (not_after - REGISTER_LOOKUP_AHEAD_S - int(values["--clock"])
-                 - int(values["--clock-age"]))
+    if clock is not None:
+        ahead = not_after - REGISTER_LOOKUP_AHEAD_S - clock[0] - clock[1]
         _register_sleep_until(started + min(max(ahead, 0), store.bounds("commit")[1] + 2))
     # 2. THE WINDOW opens where that wait ends (Y:5247), and closes 10 s on.
     # A try that ends with no answer is made again: at least 1 s after the
@@ -12830,7 +12868,7 @@ def _register_journal_lookup(values: dict, started: float) -> int:
         start = max(began + REGISTER_LOOKUP_SPACING_S, ended)
         if start > closes:
             break
-    return _register_lookup_end(ident, kind, answer, failure, err, ends)
+    return kind, answer, failure, err, ends
 
 
 def _register_read_failed(what: str, failure: StoreUnusable) -> int:
@@ -13329,7 +13367,7 @@ class SyncLock:
 # these (R44).
 #
 # RECONCILE, on `mode=primary` and for the register's source, checks the mirror
-# against SQL and writes nothing (`reconcile_register`; Y:4854). It compares the
+# in W against SQL and writes nothing (`reconcile_check`; Y:4854). It compares the
 # render set at `R`, the commit on `origin/<branch>` that carries `m`, with each
 # render-set path's latest `journal_files` digest at or below `m`. It names
 # each commit after `R` that changes the render set and carries no
@@ -13338,8 +13376,17 @@ class SyncLock:
 # (Y:3527). A resolved stray is passed over when `m` is found and set aside
 # after `R`, as in `status`; where the walk's first value is a resolved
 # stray's, the walk runs again past them and the request is made again, at
-# most `RECONCILE_READS` in all. A mirror that differs is reported with 0
-# (exit-codes.md §3.4, [P]). The re-render is lane 3's T325, in phase 3.
+# most `RECONCILE_READS` in all. The check alone, under `--dry-run`, reports a
+# mirror that differs with 0 (exit-codes.md §3.4, [P]). Without `--dry-run`,
+# after every check that was made, lane 3's T325 RE-RENDERS, through the
+# renderer's own pass, which fetches origin itself, under the render lock of
+# THE LANE'S OWN REGISTER CHECKOUT, never W (`reconcile_render`; FR-048;
+# Y:2930-2931; Amendment 23 S2 item 3 and S5; design.md D24): the checkout
+# `lane_own_checkout` takes, as `import` takes its own, with `LANES_LANE` set.
+# The check's view of W, as last fetched, decides nothing there. It exits as
+# the renderer does: "nothing was missing" is the pass's own 0, and a
+# difference it cannot render over, `diverged at` among them, is 1. It
+# imports nothing.
 #
 # SYNC of the register's source on `mode=primary` does nothing and says so
 # (`sync_register_on_primary`). It makes no `psql` call, takes no lock and
@@ -13836,7 +13883,7 @@ def _register_strays(root: str, commit: str, tip: str) -> tuple[list[str], int]:
     the render set, and how many commits come after it. None of them carries
     a `Register-Seq` that counts, since `commit` is the newest that does, so
     none is a render commit (Y:2921-2930). A resolved stray among them, which
-    may carry one, is its caller's to set aside (`reconcile_register`;
+    may carry one, is its caller's to set aside (`reconcile_check`;
     Y:2848-2850)."""
     count = git(root, "rev-list", "--first-parent", "--count", f"{commit}..{tip}")
     proc = git(root, "-c", "log.showSignature=false", "log", "--first-parent", "--format=%H",
@@ -13889,10 +13936,16 @@ def _reconcile_settled(mirror: dict, resolved: frozenset[str]) -> bool:
             and all(sha in resolved for sha, _value in mirror["passed"]))
 
 
-def reconcile_register(cfg: dict, requested: str | None, dry_run: bool) -> int:
-    """`reconcile` on `mode=primary`, for the register's source: the mirror
-    checked against SQL, READ-ONLY (Y:4854; exit-codes.md §3.4). Nothing is
-    written, and no lock is taken, here or in the database.
+def reconcile_check(cfg: dict, requested: str | None, dry_run: bool) -> int:
+    """`reconcile`'s first half on `mode=primary`, for the register's source:
+    the mirror in W checked against SQL, READ-ONLY (Y:4854; exit-codes.md
+    §3.4; T117). Nothing is written, and no lock is taken, here or in the
+    database. Its 0 says the check was made, and `reconcile_register` then
+    re-renders (T325) unless `dry_run`; so its result line says "nothing was
+    written: this check is read-only" only where nothing follows it, under
+    `--dry-run` or where the check could not be made, and "the check wrote
+    nothing" before a re-render that may write (NIT-2 of lane 3's review of
+    T325).
 
     THE RESOLVED STRAYS (Y:2848-2850; lane 3's item 5): the read names them,
     the walk passes over their `Register-Seq` when it finds `m`, and the
@@ -13949,17 +14002,21 @@ def reconcile_register(cfg: dict, requested: str | None, dry_run: bool) -> int:
             state, why = None, (str(exc) if isinstance(exc, RegisterUnavailable) else
                                 "psql answered a journal extent this build cannot read")
     say(f"{PROG} reconcile: {source} on primary - the mirror against the SQL register, "
-        f"read-only{' - DRY RUN' if dry_run else ''}")
+        f"read-only" + (" - DRY RUN, so nothing is re-rendered" if dry_run else
+                        ", then the renderer's pass in this lane's own register checkout"))
     if unchecked:
         say(f"  source:      {_register_shown(requested)} went unchecked: the workspace root is "
             f"unknown here (the mirror line says why), so whether it names this "
             f"workstation's register was not checked")
     say(f"  mirror:      {mirror['text']}"
         + (f"; the tip is {tip[:12]}" if tip and commit and tip != commit else ""))
-    nothing = "nothing was written: this check is read-only"
+    # NIT-2: "read-only" where the check is all that runs; before a re-render,
+    # which may write, only what the check itself wrote.
+    alone = "nothing was written: this check is read-only"
+    nothing = alone if dry_run else "the check wrote nothing, and the renderer's pass follows"
     if state is None:
         say(f"  register:    cannot be read - {_register_shown(why, 400)}")
-        say(f"  result:      the check could not be made; {nothing}")
+        say(f"  result:      the check could not be made; {alone}")
         return EXIT_UNAVAILABLE
     say(f"  register:    switch {state['mode']}, marker {state['marker']}; n {state['n']}; "
         f"generation {state['generation']}")
@@ -13979,7 +14036,7 @@ def reconcile_register(cfg: dict, requested: str | None, dry_run: bool) -> int:
             say(f"  result:      the mirror carries no Register-Seq, so it has no seq to be "
                 f"compared at, and it is no mirror of this register; {nothing}")
             return EXIT_OK
-        say(f"  result:      the mirror cannot be read, so it was not compared; {nothing}")
+        say(f"  result:      the mirror cannot be read, so it was not compared; {alone}")
         return 1
     differences, rows = [], []
     if first is None:
@@ -14047,9 +14104,139 @@ def reconcile_register(cfg: dict, requested: str | None, dry_run: bool) -> int:
         say(f"  result:      the mirror equals SQL at seq {m}, and the divergence recorded "
             f"stands until a person resolves it (D16); {nothing}")
     else:
-        say(f"  result:      the mirror equals SQL at seq {m}; {nothing}, and T325 re-renders "
-            f"what the mirror lacks, in phase 3")
+        say(f"  result:      the mirror equals SQL at seq {m}; {nothing}")
     return EXIT_OK
+
+
+def reconcile_register(cfg: dict, requested: str | None, dry_run: bool) -> int:
+    """`reconcile` on `mode=primary`, for the register's source (FR-048):
+    the mirror in W checked against SQL, read-only (`reconcile_check`,
+    T117), and then the renderer's pass, which RE-RENDERS what the mirror
+    lacks, in this lane's own register checkout, never W
+    (`reconcile_render`, T325). It imports nothing: no journal entry, and
+    the mirror is never indexed back into SQL.
+
+    THE PASS FOLLOWS EVERY CHECK THAT WAS MADE (SHOULD-1 of lane 3's review
+    of T325, lane 3's call): the check reads W as it was last fetched, which
+    is no answer about origin, and the pass fetches origin itself, so a
+    mirror that lacks nothing is the pass's own 0, "nothing was missing"
+    (exit-codes.md §3.4's `reconcile` 0 row). Never under `--dry-run`, which
+    is the check alone, and never after a check that could not be made: a
+    register that cannot be read is 69 at the check's own timer, with no
+    git act after it (Y:3527).
+
+    Exits: the check's 69, #160's 1 for a mirror's checkout that cannot be
+    read, and 2 for a `--source` that is not this workstation's register;
+    the check's 0 under `--dry-run`; otherwise the re-render's
+    (`reconcile_render`), its 2 where this lane has no checkout of its own
+    to render in."""
+    rc = reconcile_check(cfg, requested, dry_run)
+    if dry_run:
+        say("  re-render:   none: --dry-run makes the check alone")
+        return rc
+    if rc != EXIT_OK:
+        say("  re-render:   none: the check could not be made, so what the mirror lacks is not "
+            "known (D10)")
+        return rc
+    return reconcile_render(cfg)
+
+
+#: `lane_own_checkout`'s refusals in `reconcile`'s words (MUST-1 of lane 3's
+#: review of T325): each is 2, after the check, with nothing re-rendered.
+_RECONCILE_CHECKOUT_WORDS = {
+    "unfound": ("reconcile: lane {lane}'s checkout cannot be found ({why}); the re-render runs "
+                "only in the lane's own register checkout, never in W (Amendment 23 S5); "
+                "nothing was re-rendered"),
+    "none": ("reconcile: lane {lane} has no checkout of its own (`lanes-edit.sh lane-checkout "
+             "{lane}` exited {rc}: {why}). Make it with `lanes-edit.sh lane-checkout {lane} "
+             "--create`, or name one with LANES_REPO; the re-render never runs in W (Amendment "
+             "23 S5); nothing was re-rendered"),
+    "not-git": ("reconcile: {where} is not a git checkout, so the renderer's pass cannot run "
+                "in it; nothing was re-rendered"),
+    "w-unread": ("reconcile: LANES_REPO is set, and W cannot be read to check that it is not W "
+                 "itself ({why}); a read that failed is not an answer (Amendment 7(d)), so the "
+                 "re-render does not run in {root}; nothing was re-rendered"),
+    "is-w": ("reconcile: LANES_REPO names W itself ({root}), the readers' copy; the re-render "
+             "fetches, writes and pushes in the lane's own register checkout, never in W "
+             "(Amendment 23 S5); nothing was re-rendered"),
+}
+
+
+def reconcile_checkout() -> str:
+    """WHERE `reconcile` RE-RENDERS (MUST-1 of lane 3's review of T325): this
+    lane's own register checkout, never W, by the rule `import` takes its
+    own by (`lane_own_checkout`; Amendment 23 S2 item 3 and S5; design.md
+    D24; tasks.md T416's `<c>`, 1a's `lane_checkout_path`). The re-render
+    pushes, so `LANES_LANE` must name a lane, as the import's must (S2, "no
+    lane, no write"). Every refusal is 2, raised before the render lock,
+    the fetch or any other git act of the re-render, so nothing is written."""
+    lane = os.environ.get("LANES_LANE", "").strip()
+    if not lane:
+        raise Refusal("reconcile: LANES_LANE is not set: the re-render pushes, so it runs with "
+                      "LANES_LANE=<lane>, in that lane's own register checkout, never in W "
+                      "(Amendment 23's S2, \"no lane, no write\", and S5); nothing was "
+                      "re-rendered. `reconcile --dry-run` is the check alone, and needs no lane")
+    if re.search(r"[\s<>@]", lane) or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in lane):
+        raise Refusal("reconcile: LANES_LANE is not a lane's name: it holds a space, a control "
+                      "character, '<', '>' or '@'; nothing was re-rendered")
+    return lane_own_checkout(lane, _RECONCILE_CHECKOUT_WORDS)
+
+
+def reconcile_render(cfg: dict) -> int:
+    """`reconcile`'s RE-RENDER (T325; FR-048; Y:2930-2931; the phase plan's
+    `reconcile` row, Y:5757): the renderer itself, in-process, in THIS
+    LANE'S OWN REGISTER CHECKOUT, `reconcile_checkout`'s, never in W, the
+    readers' copy the check read (MUST-1 of lane 3's review of T325;
+    Amendment 23 S5: "No tool edits, stages, commits, stashes, resets,
+    rebases, switches or pushes there"). It reuses the render line whole,
+    and copies none of it:
+    - `render_scrub_environ` first (D12; Y:5776), as `render --checkout`;
+    - `render_locked`: that checkout's render lock, one render at a time
+      per checkout (T321), the handshake's first half where another render
+      holds it, which then renders again for this one before it is done;
+    - T323's holder loop, `_render_holding`: T322's pass, `render_pass`,
+      again after each pass that made progress, so a backlog over one
+      pass's 64 seqs is rendered, at most 16 passes (F15); every stop of the
+      renderer is a stop here too, `diverged at` recorded (D16), with
+      nothing on any HEAD;
+    - each pass's push through T320's `render_push`, and its build through
+      the private index and `commit-tree`.
+    It closes F15's known gap, six lost races that leave the last write
+    unrendered until the next write anywhere, or `reconcile` (Y:2905-2907;
+    research.md's PC-3).
+
+    Exits are `render --checkout`'s (`cmd_render_checkout`): 0 where the
+    last pass rendered, or found nothing missing, an operator seq next or
+    the switch at `files`, or where another render holds the lock and
+    renders again; 1 for a stop recorded with the mirror state (`diverged
+    at`, a failed fetch, walk, build or push, six rejected pushes) or a lock
+    that cannot be used; 69 where the register cannot be read (Y:3527).
+    A push `render_push` refuses raises `Refusal` (2), and so does a lane
+    with no checkout of its own, before any git act. The checkout is made
+    absolute first, as `render --checkout` makes its own, so the cap's
+    re-fork names the same one wherever it starts."""
+    render_scrub_environ()
+    checkout = os.path.abspath(reconcile_checkout())
+    say(f"  re-render:   in {checkout}, this lane's own register checkout, never W, by the "
+        f"renderer's pass under that checkout's render lock (T322; T323); it imports nothing")
+    results: list = []
+    rc = render_locked(checkout, cfg, results, caller="reconcile's re-render in")
+    if not results:
+        if rc == EXIT_OK:
+            say("  re-render:   another render holds the lock, and renders again for this one "
+                "before it is done (D14); no pass was run here")
+        else:
+            say("  re-render:   no pass was run: the render lock or its rerun mark could not be "
+                "used (stderr says why)")
+    else:
+        last = results[-1]
+        moved = sum(1 for result in results if result.progressed)
+        say(f"  re-render:   {len(results)} pass(es), {moved} of them moving origin's "
+            f"{REGISTER_SEQ_KEY}; the last ended {last.outcome}: "
+            f"{_register_shown(last.detail, 400)}")
+    say(f"  result:      the re-render exits {rc}"
+        + ("" if rc == EXIT_OK or not results else f"; `{PROG} status` shows what it recorded"))
+    return rc
 
 
 def register_primary_config() -> dict | None:
@@ -15495,9 +15682,12 @@ def render_refork(checkout: str) -> bool:
     return True
 
 
-def _render_holding(lock: RenderLock, checkout: str, cfg: dict) -> int:
+def _render_holding(lock: RenderLock, checkout: str, cfg: dict,
+                    results: list | None = None) -> int:
     """The holder's side of the handshake, bounded by F15 (T323). Each turn
-    clears the rerun mark, the pass's first act (S2), and runs a pass.
+    clears the rerun mark, the pass's first act (S2), and runs a pass. Where
+    the caller hands over a list, `results`, each pass's `RenderPass` is
+    appended to it, so `reconcile` can say how its re-render ended (T325).
 
     - A PASS THAT MADE PROGRESS is followed by another, the lock still held.
     - ANY OTHER END is a stop: the holder releases, looks for a mark once
@@ -15521,6 +15711,8 @@ def _render_holding(lock: RenderLock, checkout: str, cfg: dict) -> int:
                  f"({exc.strerror or exc}); nothing rendered")
             return 1
         result = render_pass(checkout, cfg)
+        if results is not None:
+            results.append(result)
         rc = result.rc
         passes += 1
         if passes >= RENDER_PASS_CAP:
@@ -15598,10 +15790,35 @@ def cmd_render_checkout(args: list) -> int:
     # `GIT_*` reaches `load_config`, `source_of` or any child (SHOULD-2 of lane
     # 3's review of T321): both are gone before anything here reads a
     # repository or starts a child.
+    render_scrub_environ()
+    cfg = load_config()
+    return render_locked(os.path.abspath(checkout), cfg)
+
+
+def render_scrub_environ() -> None:
+    """D12 AND Y:5776 for this process itself: every inherited `GIT_*`
+    variable and `LANES_NO_FETCH` removed from `os.environ`, so none reaches
+    `source_of`'s git read or any child, as `_render_child_env` keeps them
+    from each git call. `render --checkout` makes it its first act, and
+    `reconcile` before its re-render (T325)."""
     for name in [key for key in os.environ if key.startswith("GIT_") or key == "LANES_NO_FETCH"]:
         os.environ.pop(name, None)
-    cfg = load_config()
-    checkout = os.path.abspath(checkout)
+
+
+def render_locked(checkout: str, cfg: dict, results: list | None = None,
+                  caller: str = "render --checkout") -> int:
+    """THE RENDERER IN `checkout`, an absolute path, under its render lock
+    (T321), as `render --checkout <c>` runs it and `reconcile`'s re-render
+    reuses it (T325): the lock taken at once or, where another render holds
+    it, the handshake's first half, the mark and one more try; then
+    `_render_holding` (T322's pass, bounded by T323), `results` gathering
+    each pass's `RenderPass`. `caller` names the command that called the
+    pass, before `checkout`, where the lock cannot be taken (NIT-1 of lane
+    3's review of T325). Returns `cmd_render_checkout`'s exits: 0 where
+    another render holds the lock and renders again for this one, with no
+    pass run here; 1 where the lock cannot be taken; otherwise the last
+    pass's. A `checkout` that is no git checkout, and a push `render_push`
+    refuses, raise `Refusal` (2)."""
     lock = RenderLock(render_git_dir(checkout))
     try:
         held = lock.acquire()
@@ -15613,7 +15830,7 @@ def cmd_render_checkout(args: list) -> int:
             held = lock.acquire()
     except OSError as exc:
         lock.release()
-        note(f"render --checkout {checkout}: the render lock {lock.path} cannot be taken: "
+        note(f"{caller} {checkout}: the render lock {lock.path} cannot be taken: "
              f"{exc.strerror or exc}")
         return 1
     if not held:
@@ -15621,7 +15838,7 @@ def cmd_render_checkout(args: list) -> int:
             f"is done")
         return 0
     try:
-        return _render_holding(lock, checkout, cfg)
+        return _render_holding(lock, checkout, cfg, results)
     finally:
         lock.release()
 
@@ -16084,6 +16301,678 @@ def operator_local_origin_check(checkout: str, render_key: str, *, who: str = "c
                     f"3 step 8's rehearsal, from a scratch clone whose origin is a local bare "
                     f"copy of the workspace repository (ops:229); this check lifts with T328's "
                     f"flip of RENDER_GIT_HALF; {left}")
+
+
+# ========================== S2's two ways out of a divergence (group C, T324)
+#
+# `render --revert <sha>` AND `import --single <sha>` (feature 007's T324: S2's
+# "The two ways out of a divergence", Y:2979-3004; D16; FR-047; §1.3's kinds
+# table, Y:1543-1544). Each runs on a person's word, from the operator lane's
+# checkout with `LANES_LANE=` that lane (AT-6's fixture), only while the switch
+# is `primary`, as ONE journal entry made through `register commit`'s own
+# attempt directory, so it keeps a writer's commit bounds and its exits (D9's
+# rows, Y:3582-3583):
+#
+# 1. THE OPERATOR'S INPUTS, as lane 1's loader (T115) reads them: the
+#    configuration, the lane, the workstation, the checkout (never W) and the
+#    author, each a refusal (2) where it cannot be had, all in the environment
+#    this process inherited. Only then, as `render --checkout` does (D12), no
+#    inherited `GIT_*` and no `LANES_NO_FETCH` reaches anything after that,
+#    and every git call this process starts carries F29's pins
+#    (`render_git_env`).
+# 2. THE GIT HALF, as T322's pass recognises a divergence: `render_readback`'s
+#    fetch of origin `main`, on which `<sha>` must be; the pass's first read
+#    (`_render_read_head`: the head `h`, the switch, the resolved strays and
+#    the recorded `diverged_sha`); and `m` and its commit `R` by form C past
+#    the resolved strays. `<sha>` must be the recorded divergence, or `R`
+#    where `m` is above `h` (R2's N6), or the oldest stray after `R`
+#    (`render_strays_after`): a way out never resolves a commit the renderer
+#    would not stop at, since a resolved commit's `Register-Seq` no longer
+#    counts. A `<sha>` already resolved is refused, but for a rerun that finds
+#    its own entry. Each attempt makes this check again inside its turn, after
+#    its snapshot and before its commit call, so of two ways out on one `<sha>`
+#    run at once only one can journal: the other's check finds the first's
+#    entry, or its commit call loses its turn to it (40001 or LR001, Y:1558)
+#    and its next attempt's check finds it (lane 3's call on its review's
+#    open point 2).
+# 3. ATTEMPTS, under D7's deadline (`rollback_deadline_s`), each one writer's
+#    attempt: `register snapshot --write-id ... --tree <attempt>/tree
+#    --checkout <c>` run in this process, its stdout the attempt's `snapshot`;
+#    the attempt's files; `read_attempt_dir`; the entry by
+#    `register_commit_entry` with the stray's kind and `<sha>` as its
+#    `git_commit`; and one commit call. A lost turn, or a call in doubt, takes a
+#    fresh snapshot under the same write id, which finds the entry where it
+#    committed. Once any commit call was in doubt, an end but 0 waits for F3's
+#    lookup (`register_lookup`), as a writer's does (D8): found is 0, absent
+#    the code the last attempt earned, and no answer 3, naming the write id
+#    and the rerun, `LANES_WRITE_ID=<id> LANES_WRITE_GENERATION=<g>`.
+# 4. THE RENDER THAT FOLLOWS, in this process, in the operator lane's
+#    checkout, through `render --checkout`'s lock, pass and push (T321 to
+#    T323), with the renderer's rows. The way out exits 0 once its entry
+#    stands; the render's own end is the renderer's, recorded for `status`.
+#
+# The entry is `stray-revert` (no edits; its `journal_files` name the stray's
+# render-set paths at SQL's head, Y:1544) or `stray-import` (the stray's line
+# edits on the render set, Y:1543). Either clears `diverged at` inside
+# `commit_write` and names `<sha>` in `git_commit`, which makes it a resolved
+# stray for every later pass (Y:2894-2896).
+
+#: Each way out's command line, the flag that names the stray, and its verb
+#: in the journal, by the entry's kind.
+STRAY_FORMS = {"stray-revert": ("render --revert", "--revert", "render-revert"),
+               "stray-import": ("import --single", "--single", "import-single")}
+
+_STRAY_USAGE = f"""\
+{PROG} render --revert <sha>   journal the revert of a stray commit, then render
+{PROG} import --single <sha>   load a stray commit's line edits as one write, then render
+
+S2's two ways out of a divergence (D16), each on a person's word. <sha> is the
+stray commit's full sha: the one `{PROG} status` prints as `diverged at <sha>`,
+or the one the renderer would stop at now. Each journals ONE entry through
+register commit's commit call, while the switch reads primary, which records
+the stray as resolved and clears `diverged at`; then it renders in the
+operator lane's checkout. The revert's entry has no edits, so its render puts
+SQL's state back over the stray. The single-write import loads the stray's
+line edits on the render set, and refuses where they no longer apply to SQL's
+images; the revert is then the way out, and the runbook prefers it (PC-4).
+
+Run it as the operator lane, with LANES_LANE=<lane>, in that lane's checkout:
+LANES_REPO, else the one `lanes-edit.sh lane-checkout <lane>` names, never W.
+An end in doubt prints its rerun, LANES_WRITE_ID=<id>
+LANES_WRITE_GENERATION=<generation> before the same command, which writes the
+entry once or finds it (D8).
+
+Exit: 0 the entry stands, committed or found by a rerun · 2 refused, nothing
+written · 3 in doubt: run the printed rerun · 64 usage · 69 the register
+cannot be read, or refused · 75 register busy at D7's deadline, nothing
+written."""
+
+
+class _StrayUsage(Exception):
+    """A way out's command line that is not its one form: 64, before anything
+    is read."""
+
+
+class _StrayEnd(Exception):
+    """An end of a way out but 0 that is not a refusal of its own: its code and
+    its line."""
+
+    def __init__(self, code: int, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def _stray_args(args: list[str], flag: str) -> str | None:
+    """`render --revert <sha>` or `import --single <sha>`'s argv after the
+    subcommand: `flag` once, as `flag <sha>` or `flag=<sha>`, with the stray's
+    full sha, 40 hex digits, read in lower case, and nothing else. None for
+    `-h` or `--help` anywhere; `_StrayUsage` for anything else."""
+    if any(arg in ("-h", "--help") for arg in args):
+        return None
+    sha = None
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        name, eq, value = arg.partition("=")
+        if name != flag:
+            raise _StrayUsage(f"unknown argument '{arg}'")
+        if not eq:
+            value = args[i + 1] if i + 1 < len(args) else ""
+            i += 1
+        i += 1
+        if sha is not None:
+            raise _StrayUsage(f"{flag} is given twice")
+        if not re.fullmatch(r"[0-9A-Fa-f]{40}", value):
+            raise _StrayUsage(f"{flag} takes the stray commit's full sha, 40 hex digits")
+        sha = value.lower()
+    if sha is None:
+        raise _StrayUsage(f"{flag} <sha> is needed")
+    return sha
+
+
+def cmd_render_revert(args: list[str]) -> int:
+    """`lanes-index render --revert <sha>`: S2's renderer's revert (above)."""
+    return _stray_command(args, "stray-revert")
+
+
+def cmd_import_single(args: list[str]) -> int:
+    """`lanes-index import --single <sha>`: S2's single-write import (above),
+    lane 3's U7."""
+    return _stray_command(args, "stray-import")
+
+
+def _stray_command(args: list[str], kind: str) -> int:
+    """A way out's exits, by the contract's constants (exit-codes.md §3.5 and
+    §5: 3 for its commit call in doubt; 69 for its other calls, or 3 where an
+    earlier commit call of the same entry was in doubt; and `register
+    commit`'s 0, 2, 69 and 75)."""
+    form, flag, _verb = STRAY_FORMS[kind]
+    try:
+        sha = _stray_args(args, flag)
+    except _StrayUsage as exc:
+        note(f"{form}: {exc} - see {PROG} {form} --help")
+        return EXIT_USAGE
+    if sha is None:
+        say(_STRAY_USAGE)
+        return EXIT_OK
+    try:
+        return _stray_way_out(kind, sha)
+    except Refusal as exc:
+        note(f"REFUSED: {exc}")
+        return EXIT_REFUSED
+    except _StrayEnd as exc:
+        note(str(exc))
+        return exc.code
+    except StoreUnusable as exc:
+        note(f"{form}: the register could not be read ({exc.kind}: {exc.detail}); nothing was "
+             f"written")
+        return EXIT_UNAVAILABLE
+
+
+def _stray_rerun(form: str) -> tuple | None:
+    """D8'S RERUN: `LANES_WRITE_ID` and `LANES_WRITE_GENERATION`, as an end in
+    doubt prints them, `(write id, generation)` in lower case; None where
+    `LANES_WRITE_ID` is unset, empty or `new`. Anything else is refused (2):
+    the snapshot would read it as another write's id."""
+    write_id = os.environ.get("LANES_WRITE_ID", "")
+    if write_id in ("", "new"):
+        return None
+    generation = os.environ.get("LANES_WRITE_GENERATION", "")
+    if not (_SNAPSHOT_UUID_RE.fullmatch(write_id.lower())
+            and _SNAPSHOT_UUID_RE.fullmatch(generation.lower())):
+        raise Refusal(f"{form}: LANES_WRITE_ID and LANES_WRITE_GENERATION are a rerun's "
+                      f"identity, two UUIDs, as an end in doubt prints them (D8); nothing was "
+                      f"written")
+    return write_id.lower(), generation.lower()
+
+
+def _stray_recognised(form: str, root: str, store, sha: str, rerun: bool,
+                      tip: str | None = None) -> tuple:
+    """STEP 2, THE GIT HALF (section comment above): `(resolved, tip)`.
+    `resolved` is whether `sha` is resolved already, which only a rerun may
+    meet, since its own entry may have resolved it; otherwise `sha` is the
+    divergence the renderer recorded or finds now, or a `Refusal` (2) says why
+    it is not. The switch not at `primary`, and a register that cannot be
+    read, are `_StrayEnd` (69), as a writer's snapshot ends on them. `tip` is
+    origin's tip, which `render_readback`'s fetch finds and proves `sha` on.
+    An attempt's check inside its turn passes the tip the first check
+    fetched, and makes no fetch: its commit call must end before the
+    snapshot's `not_after`, the database clock plus the commit row's timer and
+    2 s (F3), and a fetch is bounded only by `LANES_GIT_TIMEOUT`."""
+    nothing = "nothing was written"
+    if tip is None:
+        answered, carried, tip, why = render_readback(root, sha)
+        if not answered:
+            if tip:
+                raise Refusal(f"{form}: {sha} is not a commit {root} holds after its fetch of "
+                              f"origin {RENDER_BRANCH} ({why}); {nothing}")
+            raise Refusal(f"{form}: {why}, so {sha} cannot be checked against origin; a read "
+                          f"that cannot answer refuses; {nothing}")
+        if not carried:
+            raise Refusal(f"{form}: {sha} is not on origin {RENDER_BRANCH}, whose tip is {tip}: "
+                          f"a stray is a commit origin carries (S2); {nothing}")
+    try:
+        head, mode, skip, diverged, _last_error = _render_read_head(store)
+    except RenderRefused as exc:
+        raise _StrayEnd(EXIT_UNAVAILABLE, f"{form}: the register's head could not be read: "
+                        f"{exc}; {nothing}")
+    if mode != "primary":
+        raise _StrayEnd(EXIT_UNAVAILABLE, f"{form}: the switch reads {mode}: a way out of a "
+                        f"divergence runs only while it reads primary (S2; §1.3's kinds table), "
+                        f"and at files no divergence is recorded or rendered; {nothing}")
+    if sha in skip:
+        if rerun:
+            return True, tip
+        raise Refusal(f"{form}: {sha} is resolved already: a stray-import or stray-revert entry "
+                      f"names it, so no pass counts or stops at it (Y:2894-2896); {nothing}")
+    try:
+        m, carrier = render_register_seq(root, tip, skip, _render_deadline())
+    except StoreUnusable as exc:
+        raise Refusal(f"{form}: origin {RENDER_BRANCH}'s last {REGISTER_SEQ_KEY} could not be "
+                      f"found ({exc.detail}); a read that cannot answer refuses; {nothing}")
+    if sha == diverged:
+        return False, tip
+    if m > head:
+        if sha == carrier:
+            return False, tip
+        found = (f"{carrier}, which carries {REGISTER_SEQ_KEY} {m} above the journal's head "
+                 f"{head} (R2's N6)")
+    else:
+        try:
+            stray = render_strays_after(root, carrier, tip, skip)
+        except StoreUnusable as exc:
+            raise Refusal(f"{form}: the commits after {carrier} could not be read "
+                          f"({exc.detail}); a read that cannot answer refuses; {nothing}")
+        if sha == stray:
+            return False, tip
+        found = (f"{stray}, the oldest commit after {carrier} that changes the render set"
+                 if stray else f"no commit after {carrier}, which carries {REGISTER_SEQ_KEY} {m}, "
+                 f"that changes the render set")
+    raise Refusal(f"{form}: {sha} is not the divergence: the register records "
+                  f"{diverged or 'none'}, and the renderer's check finds {found}. A way out "
+                  f"names the stray `{PROG} status` prints as diverged at, or the one the "
+                  f"renderer would stop at now (S2); {nothing}")
+
+
+def _stray_parent(form: str, root: str, sha: str) -> str:
+    """`sha`'s first parent, which the stray's changes are read against, as the
+    pass reads each commit after `R` (`--diff-merges=first-parent`). A commit
+    with none is refused (2)."""
+    run = render_git(root, "rev-parse", "--verify", "-q", f"{sha}^1^{{commit}}",
+                     env=_render_env(), timeout=git_timeout_s())
+    parent = run.out.strip()
+    if run.rc != 0 or not SHA_RE.match(parent):
+        raise Refusal(f"{form}: {sha} has no first parent to read its changes against; nothing "
+                      f"was written")
+    return parent
+
+
+def _stray_write(attempt: str, name: str, data: bytes) -> None:
+    """One file of the attempt directory, `name` under `attempt`, made 0600
+    and new (`O_EXCL`), its folders made where they are missing."""
+    path = os.path.join(attempt, *name.split("/"))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
+
+
+def _stray_snapshot(attempt: str, ident: dict, rerun: tuple | None,
+                    root: str) -> tuple[int, dict | None, float]:
+    """ONE WRITER'S SNAPSHOT (D9's snapshot row, Y:3583), `register snapshot`
+    itself, run in this process with its stdout the attempt's `snapshot` file:
+    `--write-id new` for a first attempt, or the write's id and generation
+    once it has them, with the lane, the verb and `args_sha256`, and the
+    scratch tree `--tree <attempt>/tree --checkout <c>`. Returns its exit,
+    its keys (`register_attempt_snapshot`), and the `time.monotonic()`
+    instant it ended, which F3's lookup counts the clock's age from."""
+    import contextlib     # used here alone, so the module's imports stay as they were
+    argv = (["--write-id", "new"] if rerun is None
+            else ["--write-id", rerun[0], "--generation", rerun[1]])
+    argv += ["--lane", ident["lane"], "--verb", ident["verb"], "--args-sha256",
+             ident["args_sha256"], "--tree", os.path.join(attempt, "tree"), "--checkout", root]
+    path = os.path.join(attempt, "snapshot")
+    with open(path, "w", encoding="utf-8", newline="") as handle, \
+            contextlib.redirect_stdout(handle):
+        code = cmd_register_snapshot(argv)
+    ended = time.monotonic()
+    if code != EXIT_OK:
+        return code, None, ended
+    with open(path, encoding="utf-8") as handle:
+        return code, register_attempt_snapshot(handle.read()), ended
+
+
+def _stray_way_out(kind: str, sha: str) -> int:
+    """A way out, steps 1 to 4 (section comment above). `kind` is the entry's,
+    `stray-revert` or `stray-import`."""
+    form, _flag, verb = STRAY_FORMS[kind]
+    nothing = "nothing was written"
+    # 1. THE OPERATOR'S INPUTS, read as T115's `import` reads them, in the
+    # environment this process inherited: the author above all, which
+    # `git var GIT_AUTHOR_IDENT` may take from `GIT_AUTHOR_NAME` and
+    # `GIT_AUTHOR_EMAIL` alone (lane 3's review of T324, MUST-1; T271's
+    # estate names its operator so).
+    cfg = load_config()
+    lane = _import_lane(who=form, nothing=nothing)
+    workstation = _import_workstation(who=form, nothing=nothing)
+    if not _REGISTER_WORD_RE.fullmatch(workstation):
+        raise Refusal(f"{form}: this workstation's name {workstation!r} holds white space, and "
+                      f"an entry's workstation is one word, as `register commit "
+                      f"--workstation` takes it; {nothing}")
+    root = _import_checkout(lane, who=form, nothing=nothing)
+    author = _import_author(root, who=form, nothing=nothing)
+    # THEN D12 AND F29, as `render --checkout` has them, before the git half
+    # and every call after it: `render_git_env()` is this environment with
+    # every `GIT_*` and `LANES_NO_FETCH` taken out and F29's pins put in.
+    pinned = render_git_env()
+    os.environ.clear()
+    os.environ.update(pinned)
+    rerun = _stray_rerun(form)
+    store = PostgresStore(cfg, "register_writer")
+    shipped = register_shipped_repos_text()
+    # F10's digest of what makes this write itself: the lane, the verb and the
+    # stray, so a rerun's snapshot and F3's lookup know its entry.
+    args_sha256 = hashlib.sha256("\x00".join((lane, verb, sha)).encode("utf-8")).hexdigest()
+    ident = {"write_id": None, "generation": None, "lane": lane, "verb": verb,
+             "args_sha256": args_sha256, "workstation": workstation}
+    # 2. THE GIT HALF, then what the entry carries, by its kind. Each attempt
+    # checks the git half again, inside its turn, at this check's tip
+    # (`_stray_attempts`).
+    _resolved, tip = _stray_recognised(form, root, store, sha, rerun is not None)
+    parent = _stray_parent(form, root, sha)
+    plan = (_stray_revert_plan(form, root, sha, parent) if kind == "stray-revert"
+            else _stray_single_plan(form, root, sha, parent))
+    message = (f"LANES({lane}@{workstation}): {form} of the stray commit {sha} — "
+               + plan["what"] + " (D16, S2)")
+    # 3. THE ATTEMPTS.
+    code, seq = _stray_attempts(form, kind, sha, store=store, root=root, tip=tip,
+                                ident=ident, rerun=rerun, plan=plan, message=message,
+                                author=author, shipped=shipped)
+    if code != EXIT_OK:
+        return code
+    # 4. THE RENDER THAT FOLLOWS.
+    say(f"{form}: " + (f"seq {seq}" if seq is not None else "its entry")
+        + f" {plan['done']} {sha} and records it resolved, which clears diverged at (D16); "
+        f"rendering in {root}")
+    sys.stdout.flush()
+    rendered = _render_checkout_main(["--checkout", root])
+    if rendered != EXIT_OK:
+        note(f"{form}: the render ended {rendered}, and the entry stands: `{PROG} status` shows "
+             f"what the renderer recorded and the lag, and the next write's render or "
+             f"`{PROG} reconcile` renders what is left")
+    return EXIT_OK
+
+
+def _stray_revert_plan(form: str, root: str, sha: str, parent: str) -> dict:
+    """WHAT `render --revert`'s ENTRY CARRIES (Y:1544): no edits, so its
+    attempt directory changes nothing; and one `journal_files` row for each
+    render-set path the stray changed against its first parent, SQL's at the
+    head, present with its digest and final newline or absent: the paths the
+    renderer restores. The paths are read with T322's `render_tree_set`."""
+    try:
+        before, after = render_tree_set(root, parent), render_tree_set(root, sha)
+    except RenderBuildFailed as exc:
+        raise Refusal(f"{form}: {sha}'s render set could not be read ({exc}); nothing was "
+                      f"written")
+    paths = sorted((path for path in set(before) | set(after)
+                    if before.get(path) != after.get(path)), key=lambda p: p.encode("utf-8"))
+
+    def finish(entry: dict, view: RegisterView) -> None:
+        rows = []
+        for path in paths:
+            view.before(path)       # read through the view, so LR004's re-read compares it
+            data = view.tree_bytes(path)
+            lines = None if data is None else register_image_lines(data)
+            if data is not None and lines is None:
+                raise RegisterAttemptRefused(f"tree/'s {path} is not UTF-8")
+            rows.append({"path": path, "present": data is not None,
+                         "sha256": None if data is None else hashlib.sha256(data).hexdigest(),
+                         "final_newline": None if lines is None else lines[1]})
+        entry["files"] = rows
+
+    return {"attempt": lambda attempt, ident, n: _stray_revert_attempt(attempt, ident),
+            "finish": finish, "paths": paths,
+            "what": "SQL's state is rendered back over it",
+            "done": "journals the revert of"}
+
+
+def _stray_revert_attempt(attempt: str, ident: dict) -> dict:
+    """THE REVERT'S ONE CALL TO `register commit`'s ATTEMPT READ, with its
+    change set EMPTY ON PURPOSE, made explicit here and nowhere else: "an entry
+    with no edits" (Y:2989-2991; B14 tasks:1526), so a 0-byte `changes.tsv`
+    and `files` and no `images/`, which `read_attempt_dir` reads as no change.
+    It needs no marker: T112's refusal of an empty change set is the CLI's
+    `register commit` arm's alone, which this in-process entry never passes
+    through (lane 3, #165 6808937880, batch e Q88, ruling lane 4's question
+    88, #165 6808439918). Returns `read_attempt_dir`'s attempt."""
+    _stray_write(attempt, "changes.tsv", b"")
+    _stray_write(attempt, "files", b"")
+    return read_attempt_dir(attempt, ident, None)
+
+
+def _stray_single_plan(form: str, root: str, sha: str, parent: str) -> dict:
+    """WHAT `import --single`'s ENTRY CARRIES (Y:1543; B14 tasks:1527): the
+    stray's line edits on the render set, as one write.
+
+    - LANE 1'S LOADER READS BOTH COMMITS (`_import_source`, T115), from
+      origin's objects in the operator lane's checkout: the stray and its first
+      parent, each on origin, each render-set file UTF-8 with no CR and no
+      NUL, under a path with no control character, or a refusal (2) that
+      names `import --single` and its way out, `render --revert <sha>`
+      (NIT-4 of lane 3's review of T324). Each render-set path whose bytes
+      differ between them is one of the stray's changes.
+    - AT EACH ATTEMPT, each change is applied to SQL's image at the head, as
+      the scratch tree holds it (`_stray_apply`), and the attempt directory
+      carries the images that leaves; `register commit` then derives the
+      entry's edits and rows from them as for any write, step 6's derived
+      deletes included (ERR-48). Where SQL's image is the parent's, those
+      edits are the stray's own (AT-6: "Its line edits equal the stray
+      commit's diff"); a line inserted before a file's end rewrites every
+      later line, ERR-48's recorded limitation.
+    - WHERE ONE NO LONGER APPLIES, it is refused (2), nothing sent, naming
+      `render --revert <sha>` as the way out (PC-4)."""
+    way_out = f"its way out is `{PROG} render --revert {sha}` (PC-4); nothing was written"
+    before = _import_source(root, parent, fetch=False, who=form, nothing=way_out)["data"]
+    after = _import_source(root, sha, fetch=False, who=form, nothing=way_out)["data"]
+    paths = sorted((path for path in set(before) | set(after)
+                    if before.get(path) != after.get(path)), key=lambda p: p.encode("utf-8"))
+
+    def attempt(directory: str, ident: dict, n: int) -> dict:
+        tree = os.path.join(directory, "tree")
+        changes: dict = {}
+        images: dict = {}
+        for path in paths:
+            where = os.path.join(tree, *path.split("/"))
+            sql = None
+            if os.path.isfile(where) and not os.path.islink(where):
+                with open(where, "rb") as handle:
+                    sql = handle.read()
+            status, data = _stray_apply(form, sha, n, path, before.get(path), after.get(path),
+                                        sql)
+            changes[path] = (status,
+                             _REGISTER_ZERO_BLOB if sql is None else _register_blob_id(sql),
+                             _REGISTER_ZERO_BLOB if data is None else _register_blob_id(data))
+            if data is not None:
+                images[path] = data
+        _stray_write(directory, "changes.tsv",
+                     "".join(f"{status}\t{path}\t{base}\t{new}\n"
+                             for path, (status, base, new) in changes.items()).encode("utf-8"))
+        for path, data in images.items():
+            _stray_write(directory, "images/" + path, data)
+        _stray_write(directory, "files", register_files_rows(changes, images))
+        return read_attempt_dir(directory, ident, None)
+
+    return {"attempt": attempt, "finish": lambda entry, view: None, "paths": paths,
+            "what": "its line edits on the render set, loaded as one write",
+            "done": f"loads, as one write, the line edits on {len(paths)} render-set "
+                    f"path{'' if len(paths) == 1 else 's'} of"}
+
+
+def _stray_apply(form: str, sha: str, n: int, path: str, base: bytes | None,
+                 new: bytes | None, sql: bytes | None) -> tuple:
+    """ONE OF THE STRAY'S CHANGES, APPLIED TO SQL'S IMAGE AT `n`, as
+    `commit_write`'s step 6 applies an entry's edits: `(status, bytes)`, the
+    status as `changes.tsv` takes it and the image it leaves, None where the
+    path goes. `base` and `new` are the path's bytes at the stray's first
+    parent and at the stray, None where absent; `sql` is SQL's. The edits are
+    `register_line_edits(base, new)`, as `register commit` would derive them
+    from those two images, and each is applied by the render line's own
+    replay of step 6, `_register_apply_edit` (lane 3's review of T324,
+    SHOULD-1): each `replace` or `delete` at its line, in the image the edits
+    before it left, must find there the text the parent had; each `append`
+    goes at that image's end, as step 6 takes an append with no line number
+    (design:1837-1839 at `6e534355`), so where appends are the stray's only
+    edits of the file (a log line, a row added at the end), SQL's file
+    having grown since the stray's parent refuses nothing (lane 3's call on
+    the review's open point 1). WHERE THE STRAY'S EDITS OF THE FILE MIX A
+    `replace` OR `delete` WITH APPENDS, and SQL's file has more lines than
+    the stray's parent's, the appends would land after lines the stray never
+    saw, reordering the file (ERR-48's rewrite of every later line), so it
+    no longer applies (lane 3's call on the fix round's observation); where
+    SQL's file has not grown, mixed edits apply as the rest. A final newline
+    the stray changes must be the parent's in SQL's image; a path the stray
+    adds must be absent from SQL; and one it removes must be the parent's,
+    byte for byte, since a `remove` takes every line. Anything else no longer
+    applies, a `Refusal` (2) naming the edit and the revert (L2-8)."""
+    where = f"{form}: {sha}'s line edits no longer apply to SQL's images at seq {n} (S2; FR-047)"
+    way_out = f"its way out is `{PROG} render --revert {sha}` (PC-4); nothing was written"
+    if base is None:
+        if sql is not None:
+            raise Refusal(f"{where}: it adds {path}, which SQL holds; {way_out}")
+        return "A", new
+    if new is None:
+        if sql != base:
+            raise Refusal(f"{where}: it removes {path}, which SQL "
+                          + ("does not hold" if sql is None else
+                             "holds other than the stray's parent did, so lines it never "
+                             "removed would go")
+                          + f"; {way_out}")
+        return "D", None
+    if sql is None:
+        raise Refusal(f"{where}: it edits {path}, which SQL does not hold; {way_out}")
+    old, edited, held = (register_image_lines(data) for data in (base, new, sql))
+    if old is None or edited is None or held is None:
+        raise Refusal(f"{where}: {path} is not UTF-8 on one side; {way_out}")
+    state = {path: [list(held[0]), held[1]]}
+    ops, _written = register_line_edits(old[0], edited[0])
+    appends = [number for number, op in enumerate(ops, 1) if op[0] == "append"]
+    if appends and len(appends) < len(ops) and len(held[0]) > len(old[0]):
+        number = appends[0]
+        raise Refusal(f"{where}: its edit {number} of {path} is an append at line "
+                      f"{ops[number - 1][1]}, among edits that replace or delete lines of it, "
+                      f"and SQL's {path} has grown past the stray's parent's end ({len(held[0])} "
+                      f"lines, the parent's {len(old[0])}), so its appends would land after "
+                      f"lines the stray never saw; {way_out}")
+    for number, (op, line_no, text, replacement) in enumerate(ops, 1):
+        try:
+            _register_apply_edit(
+                state, f"edit {number}", op, path, None if op == "append" else line_no,
+                None if text is None else hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                replacement, None)
+        except RenderRefused:
+            # Only a `replace` or a `delete` whose line is not the parent's
+            # reaches here: `register_line_edits` gives every op its text.
+            raise Refusal(f"{where}: its edit {number} of {path} is a {op} at line {line_no}, "
+                          f"and SQL's line there is not the one the stray's parent held; "
+                          f"{way_out}") from None
+    lines, final_newline = state[path]
+    if old[1] != edited[1]:
+        if final_newline != old[1]:
+            raise Refusal(f"{where}: it changes whether {path} ends with a newline, and SQL's "
+                          f"{path} does not end as the stray's parent did; {way_out}")
+        final_newline = edited[1]
+    return "M", register_image_bytes(lines, final_newline)
+
+
+def _stray_attempts(form: str, kind: str, sha: str, *, store, root: str, tip: str,
+                    ident: dict, rerun: tuple | None, plan: dict, message: str, author: str,
+                    shipped: str | None) -> tuple:
+    """STEP 3, THE ATTEMPTS (section comment above): `(code, seq)`, the seq
+    the entry stands at where the code is 0 and it is known. Each attempt's
+    files are in a directory of their own, removed with the rest when the
+    attempts end. Each attempt whose snapshot does not find this write checks
+    the git half again (`_stray_recognised`, at `tip`, the first check's
+    origin tip, with no fetch) before anything else, so its commit call is
+    made only where, at or after its snapshot's head, `sha` is still the
+    divergence and no other entry has resolved it."""
+    import tempfile     # used here alone, so the module's imports stay as they were
+    limit = rollback_deadline_s()
+    deadline = time.monotonic() + limit
+    doubt, not_after, clock = False, 0, None
+    work = tempfile.mkdtemp(prefix="lanes-index-stray-")
+    try:
+        number = 0
+        while True:
+            number += 1
+            attempt = os.path.join(work, str(number))
+            os.mkdir(attempt, 0o700)
+            seq = None
+            try:
+                code, snap, ended = _stray_snapshot(attempt, ident, rerun, root)
+                if code != EXIT_OK:
+                    note(f"{form}: attempt {number}'s snapshot ended {code}"
+                         + ("; an earlier commit call was in doubt" if doubt
+                            else "; nothing was written"))
+                    break
+                rerun = (snap["write_id"], snap["generation"])
+                ident.update(write_id=rerun[0], generation=rerun[1])
+                clock = ((int(snap["clock"]), 0), ended)
+                if snap.get("found"):
+                    seq = int(snap["found"])
+                    say(f"already {seq}")
+                    note(f"{form}: write {rerun[0]} is in the journal at seq {seq}, committed by "
+                         f"an earlier attempt or run")
+                    return EXIT_OK, seq
+                # THE GIT HALF AGAIN, IN THIS ATTEMPT'S TURN (lane 3's call on
+                # its review's open point 2): read after the snapshot and before
+                # the commit call, whose base is the snapshot's head, so an
+                # entry that resolved `sha` first is seen here or makes the
+                # call lose its turn, and the next attempt sees it.
+                if _stray_recognised(form, root, store, sha, True, tip)[0]:
+                    raise Refusal(f"{form}: {sha} is resolved already, and write {rerun[0]} is "
+                                  f"not in the journal: another entry resolved it "
+                                  f"(Y:2894-2896); nothing was written")
+                _stray_write(attempt, "msg", message.encode("utf-8"))
+                _stray_write(attempt, "author", (author + "\n").encode("utf-8"))
+                _stray_write(attempt, "not_after", (snap["not_after"] + "\n").encode("ascii"))
+                # THE CHANGE SET, BY THE ENTRY'S KIND, AND `read_attempt_dir`.
+                att = plan["attempt"](attempt, ident, int(snap["n"]))
+                entry, view = _register_build_entry(att, ident, shipped, kind=kind,
+                                                    git_commit=sha)
+                plan["finish"](entry, view)
+                not_after = max(not_after, att["not_after"])
+                code, seq, err, failure = _register_commit_call(store, att, ident, entry)
+                if err is not None and err.sqlstate == "LR004":
+                    code = _register_commit_lr004(store, att, ident, entry, view, err)
+                elif code == EXIT_IN_DOUBT:
+                    note(f"{form}: the commit call of write {rerun[0]} "
+                         f"{register_psql_end(failure)}, so whether it committed is not known")
+                else:
+                    code = _register_commit_end(store, ident, entry, code, seq, err, failure)
+                    if kind == "stray-import" and err is not None and err.sqlstate in (
+                            "LR005", "LR010"):
+                        # A STRAY THE REGISTER'S RULES REFUSE, a revived pair of
+                        # live claims among them (`one-live-claim`, with its
+                        # `held-by=` line above), cannot be loaded as one write
+                        # (lane 3, #165 6778890211; T107's `edge-two-live`).
+                        note(f"{form}: {sha} is not loaded; its way out is `{PROG} render "
+                             f"--revert {sha}` (S2; PC-4)")
+            except Refusal as exc:
+                note(f"REFUSED: {exc}")
+                code = EXIT_REFUSED
+            except _StrayEnd as exc:
+                # The git half's re-check, ended 69: after a doubt it still
+                # waits for F3's lookup below (exit-codes §3.5's 69 row).
+                note(str(exc))
+                code = exc.code
+            except (StoreUnusable, OSError, KeyError, ValueError) as exc:
+                note(f"{form}: attempt {number} could not be made ({exc}); nothing was sent")
+                code = EXIT_UNAVAILABLE
+            if code == EXIT_IN_DOUBT:
+                doubt = True
+            if code == EXIT_OK:
+                return EXIT_OK, seq
+            if code in (EXIT_BUSY, EXIT_IN_DOUBT) and time.monotonic() < deadline:
+                note(f"{form}: attempt {number} ended {code}; a fresh snapshot under write "
+                     f"{rerun[0]} follows, within D7's {limit} s")
+                continue
+            break
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    if doubt:
+        code, seq = _stray_after_doubt(form, store, ident, not_after, clock, code)
+        if code == EXIT_OK:
+            return EXIT_OK, seq
+    if code == EXIT_IN_DOUBT:
+        note(f"{form}: write {ident['write_id']} stays in doubt: whether its entry committed is "
+             f"not known. Run it again under the same id, which writes it once or finds it "
+             f"(D8): LANES_WRITE_ID={ident['write_id']} "
+             f"LANES_WRITE_GENERATION={ident['generation']} {PROG} {form} {sha}")
+    return code, None
+
+
+def _stray_after_doubt(form: str, store, ident: dict, not_after: int, clock: tuple,
+                       code: int) -> tuple:
+    """F3'S LOOKUP AFTER A DOUBT (D8; Y:5272-5300), before any end but 0:
+    `(code, seq)`. Found is 0, with the lookup's lines; absent, with the head
+    row's lock held past every call's `not_after`, is the code the last
+    attempt earned, and 75, a lost turn with nothing written, where that
+    attempt was itself the one in doubt (LR008's reading, Y:5294); LR007 is 2;
+    and no answer is 3."""
+    (db_clock, age), started = clock
+    kind, answer, failure, err, ends = register_lookup(store, ident, not_after,
+                                                       (db_clock, age), started)
+    if kind == "found":
+        _register_lookup_end(ident, kind, answer, failure, err, ends)
+        note(f"{form}: the lookup finds write {ident['write_id']} at seq {answer[0]}: its entry "
+             f"committed")
+        return EXIT_OK, answer[0]
+    if kind == "absent":
+        note(f"{form}: the lookup finds write {ident['write_id']} absent, with the head row's "
+             f"lock held past its not_after, so no call of it can still commit; nothing was "
+             f"written")
+        return (EXIT_BUSY if code == EXIT_IN_DOUBT else code), None
+    return _register_lookup_end(ident, kind, answer, failure, err, ends), None
 
 
 # ================================================================ the acts
@@ -16790,7 +17679,9 @@ def cmd_reconcile(requested: str | None, dry_run: bool) -> int:
         return 0
     kind = "inventory" if is_inventory(requested) else "register"
     # ON PRIMARY, THE REGISTER'S RECONCILE IS THE MIRROR'S READ-ONLY CHECK
-    # AGAINST SQL (T117; Y:4854): no lock, and nothing written.
+    # AGAINST SQL (T117; Y:4854), with no index lock, and then the re-render
+    # of what the mirror lacks, in the lane's own register checkout under its
+    # render lock, never in W (T325; FR-048); `--dry-run` is the check alone.
     if kind == "register":
         primary = register_primary_config()
         if primary is not None:
@@ -17447,42 +18338,46 @@ def _import_not_after(clock: float, read_at: float, timer: float) -> str:
     return _dt.datetime.fromtimestamp(now + timer + 2, _dt.timezone.utc).isoformat()
 
 
-def _import_lane() -> str:
+def _import_lane(*, who: str = "import", nothing: str = "nothing was swapped in") -> str:
     """The operator lane, `LANES_LANE` (F12; Amendment 23's S2, "no lane, no
-    write"): the entry's `lane`. Unset, or not a lane's name, is refused (2)."""
+    write"): the entry's `lane`. Unset, or not a lane's name, is refused (2).
+    `who` and `nothing` open and close each refusal: the import's own, or
+    S2's two ways out's (T324), which take the operator lane as it does."""
     lane = os.environ.get("LANES_LANE", "").strip()
     if not lane:
-        raise Refusal("import: LANES_LANE is not set: the import writes for the operator lane, "
-                      "so it runs with LANES_LANE=<operator lane>, through that lane's checkout "
-                      "(D24; Amendment 23's S2, \"no lane, no write\"); nothing was swapped in")
+        raise Refusal(f"{who}: LANES_LANE is not set: the {who} writes for the operator lane, "
+                      f"so it runs with LANES_LANE=<operator lane>, through that lane's checkout "
+                      f"(D24; Amendment 23's S2, \"no lane, no write\"); {nothing}")
     if re.search(r"[\s<>@]", lane) or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in lane):
-        raise Refusal("import: LANES_LANE is not a lane's name: it holds a space, a control "
-                      "character, '<', '>' or '@'; nothing was swapped in")
+        raise Refusal(f"{who}: LANES_LANE is not a lane's name: it holds a space, a control "
+                      f"character, '<', '>' or '@'; {nothing}")
     return lane
 
 
-def _import_workstation() -> str:
+def _import_workstation(*, who: str = "import", nothing: str = "nothing was swapped in") -> str:
     """This workstation's name (Rule 10), the entry's `workstation`, as the
     cutover reads it: `$LANES_WORKSTATION`, else `lanes-edit.sh workstation`.
-    A container with no name, or a name that cannot be read, is refused (2)."""
+    A container with no name, or a name that cannot be read, is refused (2).
+    `who` and `nothing` are `_import_lane`'s."""
     name = os.environ.get("LANES_WORKSTATION", "")
     if not name:
         try:
             name, how = this_workstation()
         except StoreUnusable as exc:
-            raise Refusal(f"import: this workstation's name cannot be read ({exc.detail}); "
-                          f"nothing was swapped in")
+            raise Refusal(f"{who}: this workstation's name cannot be read ({exc.detail}); "
+                          f"{nothing}")
         if how == "container-unset":
-            raise Refusal("import: this is a container and LANES_WORKSTATION is not set, so the "
-                          "import's entry would be stamped with the container's own id "
-                          "(Amendment 11, R-A11-14); nothing was swapped in")
+            raise Refusal(f"{who}: this is a container and LANES_WORKSTATION is not set, so the "
+                          f"{who}'s entry would be stamped with the container's own id "
+                          f"(Amendment 11, R-A11-14); {nothing}")
     if not name.strip() or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in name):
-        raise Refusal("import: this workstation's name is empty or holds a control character; "
-                      "nothing was swapped in")
+        raise Refusal(f"{who}: this workstation's name is empty or holds a control character; "
+                      f"{nothing}")
     return name
 
 
-def _import_checkout(lane: str, who: str = "import", left: str = "nothing was swapped in") -> str:
+def _import_checkout(lane: str, *, who: str = "import",
+                     nothing: str = "nothing was swapped in") -> str:
     """THE OPERATOR LANE'S CHECKOUT (D24, Y:653): `LANES_REPO` where it is set,
     the operator's override that `lanes-edit.sh` honours too, else the
     checkout `lanes-edit.sh lane-checkout <lane>` names, `<W>-lanes/<lane>/`.
@@ -17495,11 +18390,51 @@ def _import_checkout(lane: str, who: str = "import", left: str = "nothing was sw
     at all: the checkout is `lanes-edit.sh lane-checkout <lane>`'s
     `<W>-lanes/<lane>/`, which that helper derives from `W` and which is
     never `W`, and a `W` that cannot be read refuses there as a lane with no
-    checkout of its own.
+    checkout of its own. `who` and `nothing` are `_import_lane`'s, or the
+    cutover's, which finds its checkout the same way (T327; D24, F12). The
+    rule is `lane_own_checkout`'s, which `reconcile`'s re-render shares
+    (T325), each command in its own words."""
+    return lane_own_checkout(lane, _IMPORT_CHECKOUT_WORDS, who=who, nothing=nothing)
 
-    `who` and `left` name the operator command in its refusals and what it
-    leaves: the import's by default, and the cutover's, which finds its
-    checkout the same way (T327; D24, F12)."""
+
+#: `lane_own_checkout`'s refusals in the words of `_import_checkout`'s caller,
+#: `who` (`import`, or T324's `import --single` and `render --revert`), each
+#: 2 and ending in its `nothing`.
+_IMPORT_CHECKOUT_WORDS = {
+    "unfound": "{who}: lane {lane}'s checkout cannot be found ({why}); {nothing}",
+    "none": ("{who}: lane {lane} has no checkout of its own (`lanes-edit.sh lane-checkout "
+             "{lane}` exited {rc}: {why}). Make it with `lanes-edit.sh lane-checkout {lane} "
+             "--create`, or name one with LANES_REPO; the {who} never reads W (D24); "
+             "{nothing}"),
+    "not-git": ("{who}: {where} is not a git checkout, so origin's objects cannot be read "
+                "through it; {nothing}"),
+    "w-unread": ("{who}: LANES_REPO is set, and W cannot be read to check that it is not W "
+                 "itself ({why}); a read that failed is not an answer (Amendment 7(d)), so the "
+                 "{who} reads nothing through {root}; {nothing}"),
+    "is-w": ("{who}: LANES_REPO names W itself ({root}); the {who} reads origin through the "
+             "operator lane's own checkout, never W (D24); {nothing}"),
+}
+
+
+def lane_own_checkout(lane: str, words: dict, **fields: str) -> str:
+    """THE LANE'S OWN REGISTER CHECKOUT, NEVER W (Amendment 23 S2 item 3 and
+    S5; D24, Y:653; design.md's operator commands, "through that lane's
+    checkout"), the one rule `import --at` (T115), T324's ways out and
+    `reconcile`'s re-render (T325) take theirs by: `LANES_REPO` where it is
+    set, the operator's override that `lanes-edit.sh` honours too, else the
+    checkout `lanes-edit.sh lane-checkout <lane>` names, `<W>-lanes/<lane>/`,
+    1a's `lane_checkout_path`. Returns its top directory.
+
+    Each refusal is a `Refusal` (2) in the caller's own `words`, keyed
+    `unfound` (the helper could not be run), `none` (no checkout of its
+    own), `not-git`, `w-unread` and `is-w`, and formatted with `lane`, `rc`,
+    `why`, `where` and `root`, and with the caller's own `fields`, such as
+    the import's `who` and `nothing`. A `LANES_REPO` that is `W` by real
+    path is refused, and so is one set where `W` cannot be read, since a
+    read that failed is never an answer (Amendment 7(d); lane 3's ruling,
+    opensoft/openRepoTools#165 6781033556). With `LANES_REPO` unset no `W`
+    read is made here: `lanes-edit.sh lane-checkout` derives the path from
+    `W`, and it is never `W`."""
     named = os.environ.get("LANES_REPO", "")
     if named:
         where = named
@@ -17507,20 +18442,15 @@ def _import_checkout(lane: str, who: str = "import", left: str = "nothing was sw
         try:
             proc = _helper_run(["lane-checkout", lane], 60, f"lane {lane}'s checkout")
         except StoreUnusable as exc:
-            raise Refusal(f"{who}: lane {lane}'s checkout cannot be found ({exc.detail}); "
-                          f"{left}")
+            raise Refusal(words["unfound"].format(lane=lane, why=exc.detail, **fields))
         where = proc.stdout.strip()
         if proc.returncode != 0 or not where:
             why = (proc.stderr.strip().splitlines() or ["no answer"])[0].strip()
-            raise Refusal(f"{who}: lane {lane} has no checkout of its own (`lanes-edit.sh "
-                          f"lane-checkout {lane}` exited {proc.returncode}: {why}). Make it "
-                          f"with `lanes-edit.sh lane-checkout {lane} --create`, or name one with "
-                          f"LANES_REPO; the {who} never reads W (D24); {left}")
+            raise Refusal(words["none"].format(lane=lane, rc=proc.returncode, why=why, **fields))
     top = git(where, "rev-parse", "--show-toplevel", check=False)
     root = top.stdout.strip()
     if top.returncode != 0 or not root:
-        raise Refusal(f"{who}: {where} is not a git checkout, so origin's objects cannot be "
-                      f"read through it; {left}")
+        raise Refusal(words["not-git"].format(where=where, **fields))
     if named:
         try:
             w = workspace_root()
@@ -17528,44 +18458,43 @@ def _import_checkout(lane: str, who: str = "import", left: str = "nothing was sw
             # A read that failed is never an answer (Amendment 7(d)): "W could
             # not be read" is not "LANES_REPO is not W", so it is refused (2).
             why = exc.detail if isinstance(exc, StoreUnusable) else str(exc)
-            raise Refusal(f"{who}: LANES_REPO is set, and W cannot be read to check that it "
-                          f"is not W itself ({why}); a read that failed is not an answer "
-                          f"(Amendment 7(d)), so the {who} reads nothing through {root}; "
-                          f"{left}")
+            raise Refusal(words["w-unread"].format(why=why, root=root, **fields))
         if os.path.realpath(w) == os.path.realpath(root):
-            raise Refusal(f"{who}: LANES_REPO names W itself ({root}); the {who} reads "
-                          f"origin through the operator lane's own checkout, never W (D24); "
-                          f"{left}")
+            raise Refusal(words["is-w"].format(root=root, **fields))
     return root
 
 
-def _import_author(root: str) -> str:
+def _import_author(root: str, *, who: str = "import",
+                   nothing: str = "nothing was swapped in") -> str:
     """The entry's `author`, `Name <email>`: the identity git would record for
     a commit in the operator lane's checkout, `git var GIT_AUTHOR_IDENT`, less
     its date, as the cutover takes its own. Where git names none, it is
-    refused (2), since the journal holds no entry without one."""
+    refused (2), since the journal holds no entry without one. `who` and
+    `nothing` are `_import_lane`'s."""
     try:
         proc = subprocess.run(["git", "-C", root, "var", "GIT_AUTHOR_IDENT"],
                               capture_output=True, encoding="utf-8", errors="replace",
                               check=False, stdin=subprocess.DEVNULL, timeout=30)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise Refusal(f"import: git could not name the import's author ({exc}); nothing was "
-                      f"swapped in")
+        raise Refusal(f"{who}: git could not name the {who}'s author ({exc}); {nothing}")
     match = re.fullmatch(r"([^<>\n]+ <[^<>\n]*>) [0-9]+ [+-][0-9]{4}", proc.stdout.strip())
     if proc.returncode != 0 or not match:
-        raise Refusal(f"import: git names no author in {root}: set user.name and user.email "
-                      f"there; nothing was swapped in")
+        raise Refusal(f"{who}: git names no author in {root}: set user.name and user.email "
+                      f"there; {nothing}")
     return match.group(1)
 
 
-def _import_source(root: str, commit: str, *, fetch: bool) -> dict:
+def _import_source(root: str, commit: str, *, fetch: bool, who: str = "import",
+                   nothing: str = "nothing was swapped in") -> dict:
     """`import_source` with every git failure a refusal (2): a fetch that
-    fails, or objects that cannot be read, leave origin's `C` unproven."""
+    fails, or objects that cannot be read, leave origin's `C` unproven.
+    `who` and `nothing` are `_import_lane`'s: the import's own, or
+    `import --single`'s (T324), whose `nothing` names its way out."""
     try:
-        return import_source(root, commit, fetch=fetch)
+        return import_source(root, commit, fetch=fetch, who=who, nothing=nothing)
     except StoreUnusable as exc:
-        raise Refusal(f"import: origin's {commit[:12]} cannot be read through {root} "
-                      f"({exc.detail}); nothing was swapped in")
+        raise Refusal(f"{who}: origin's {commit[:12]} cannot be read through {root} "
+                      f"({exc.detail}); {nothing}")
 
 
 def _import_git_why(proc) -> str:
@@ -17578,7 +18507,8 @@ def _import_git_why(proc) -> str:
     return f"exited {proc.returncode}: {first}"
 
 
-def import_source(root: str, commit: str, *, fetch: bool) -> dict:
+def import_source(root: str, commit: str, *, fetch: bool, who: str = "import",
+                  nothing: str = "nothing was swapped in") -> dict:
     """ORIGIN'S `C`, AND NOTHING ELSE (Q4(c)(i); S5): the render set at
     `commit` as the checkout `root` holds origin's objects.
 
@@ -17602,13 +18532,13 @@ def import_source(root: str, commit: str, *, fetch: bool) -> dict:
     sorted bytewise; `data` and `texts`, each path's bytes and text; `lines`,
     each path's `(lines, final_newline)` by `register_doc_lines`; and
     `warnings`, `parse_log`'s `unreadable:` lines for the logs (Q4(d)(i)'s
-    warning)."""
+    warning). `who` and `nothing` open and close each refusal, as
+    `_import_source` passes them."""
     if fetch:
         mirror_fetch(root, mirror_git_timeout())
     if not has_commit(root, commit):
-        raise Refusal(f"import: {commit} is not a commit that {root} holds, so it is not "
-                      f"origin's (Q4(c)(i)): fetch, or name origin/{branch()}'s; nothing was "
-                      f"swapped in")
+        raise Refusal(f"{who}: {commit} is not a commit that {root} holds, so it is not "
+                      f"origin's (Q4(c)(i)): fetch, or name origin/{branch()}'s; {nothing}")
     tip = tip_of(root)
     # `git merge-base --is-ancestor`: 0 an ancestor, and 1 with nothing on
     # stderr not one. Any other exit, or a 1 that says something (git 2.43
@@ -17618,17 +18548,17 @@ def import_source(root: str, commit: str, *, fetch: bool) -> dict:
     # its first line on stderr.
     ancestry = git(root, "merge-base", "--is-ancestor", commit, tip, check=False)
     if ancestry.returncode != 0 and (ancestry.returncode != 1 or ancestry.stderr.strip()):
-        raise Refusal(f"import: git could not tell whether {commit} is on origin/{branch()} "
+        raise Refusal(f"{who}: git could not tell whether {commit} is on origin/{branch()} "
                       f"(its tip is {tip}): `git merge-base --is-ancestor` {_import_git_why(ancestry)}"
-                      f"; nothing was swapped in")
+                      f"; {nothing}")
     if ancestry.returncode != 0:
-        raise Refusal(f"import: {commit} is not on origin/{branch()} (its tip is {tip}): the "
-                      f"import takes origin's commits only, never a local one (Q4(c)(i)); "
-                      f"nothing was swapped in")
+        raise Refusal(f"{who}: {commit} is not on origin/{branch()} (its tip is {tip}): the "
+                      f"{who} takes origin's commits only, never a local one (Q4(c)(i)); "
+                      f"{nothing}")
     tree = git(root, "rev-parse", "--verify", "-q", f"{commit}:lanes", check=False).stdout.strip()
     if not SHA_RE.match(tree):
-        raise Refusal(f"import: {commit} has no lanes tree, or it is not a sha1 id; nothing was "
-                      f"swapped in")
+        raise Refusal(f"{who}: {commit} has no lanes tree, or it is not a sha1 id; "
+                      f"{nothing}")
     blobs: dict = {}
     proc = git(root, "ls-tree", "-r", "-z", commit, "--", LANES_DIR)
     for item in proc.stdout.split("\0"):
@@ -17640,32 +18570,32 @@ def import_source(root: str, commit: str, *, fetch: bool) -> dict:
             blobs[path] = obj
     render = sorted((p for p in blobs if register_render_path(p)), key=lambda p: p.encode("utf-8"))
     if REGISTER_PATH not in blobs:
-        raise Refusal(f"import: {commit} carries no {REGISTER_PATH}; nothing was swapped in")
+        raise Refusal(f"{who}: {commit} carries no {REGISTER_PATH}; {nothing}")
     if REGISTER_REPOS_PATH in blobs and not SHA_RE.match(blobs[REGISTER_REPOS_PATH]):
-        raise Refusal(f"import: {REGISTER_REPOS_PATH}'s id at {commit[:12]} is not a sha1 id; "
-                      f"nothing was swapped in")
+        raise Refusal(f"{who}: {REGISTER_REPOS_PATH}'s id at {commit[:12]} is not a sha1 id; "
+                      f"{nothing}")
     contents = cat_blobs(root, [blobs[p] for p in render])
     data, texts, lines, warnings = {}, {}, {}, []
     for path in render:
         if _RENDER_CONTROL_RE.search(path):
-            raise Refusal(f"import: {path!r} holds a control character or a line separator in "
-                          f"its name, so no image can be written for it; nothing was swapped in")
+            raise Refusal(f"{who}: {path!r} holds a control character or a line separator in "
+                          f"its name, so no image can be written for it; {nothing}")
         raw = contents.get(blobs[path])
         if raw is None:
-            raise Refusal(f"import: {path}'s blob {blobs[path]} cannot be read in {root}; "
-                          f"nothing was swapped in")
+            raise Refusal(f"{who}: {path}'s blob {blobs[path]} cannot be read in {root}; "
+                          f"{nothing}")
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError as exc:
-            raise Refusal(f"import: {path} is not UTF-8 at byte {exc.start}, so the register "
-                          f"cannot hold it byte for byte; nothing was swapped in")
+            raise Refusal(f"{who}: {path} is not UTF-8 at byte {exc.start}, so the register "
+                          f"cannot hold it byte for byte; {nothing}")
         for char, what in (("\r", "a carriage return (CR): a line ending the renderer cannot "
                                   "reproduce, since it ends each line with LF alone"),
                            ("\x00", "a NUL, which a line cannot hold")):
             at = text.find(char)
             if at >= 0:
-                raise Refusal(f"import: {path} line {text.count(chr(10), 0, at) + 1} holds "
-                              f"{what}; nothing was swapped in")
+                raise Refusal(f"{who}: {path} line {text.count(chr(10), 0, at) + 1} holds "
+                              f"{what}; {nothing}")
         data[path], texts[path] = raw, text
         lines[path] = register_doc_lines(text)
         if path.startswith(LOG_PREFIX):
@@ -18741,7 +19671,7 @@ def cutover_git_preflight(cfg: dict, lane: str) -> dict:
     its marker does not commit its entry, and the restore form renders
     nothing. `render_push` makes T320's checks again at the push. Returns
     `{"checkout": <top>, "git_dir": <git dir>}`."""
-    checkout = _import_checkout(lane, who="cutover", left="nothing was written")
+    checkout = _import_checkout(lane, who="cutover", nothing="nothing was written")
     git_dir = render_git_dir(checkout)
     key = cfg.get("render_key") or ""
     if key:
@@ -19520,7 +20450,9 @@ the forms contracts/register-cli.md fixes; <id> is a write's identity,
 {PROG} journal  --last --path <log> --grep <key> [--at <n> --generation <uuid>]
 {PROG} render   --images --at <k> --out <dir>
 {PROG} render   --checkout <c>
+{PROG} render   --revert <sha>
 {PROG} import   --at <C> [--dry-run | --after-loss]
+{PROG} import   --single <sha>
 {PROG} cutover  [--import <C>] [--after-loss | --marker-first]
 {PROG} rollback [--hold-marker]
 {PROG} outage   declare --until <UTC> --why <words> [--mirror-seq <m>]
@@ -19548,6 +20480,13 @@ that decides nothing, and never a gate: no lane act reads it or waits on it.
   reconcile   Reads the source whole, compares every stored row by its
               CONTENT, upserts what differs and removes what is gone: on a
               wiped index, the rebuild. `--dry-run` prints the counts only.
+              On mode=primary, for the register: the mirror in W checked
+              against the SQL register, read-only, then the renderer's own
+              pass, which fetches origin and re-renders what the mirror
+              lacks, in the lane's own register checkout - LANES_REPO, else
+              `lanes-edit.sh lane-checkout $LANES_LANE`, never W - under its
+              render lock. It needs LANES_LANE and imports nothing;
+              `--dry-run` is the check alone.
   status      The store, each source's provenance against its tip, the lag in
               commits, and this workstation's last sync and last error.
   export      Writes the index's image of the register into <dir> for
@@ -19582,11 +20521,13 @@ unknown subcommand does, and does nothing.
               classifier, and the readers' and the guard's `register read`.
   journal     The in-doubt lookup by write id; `--since` and `--last` read.
   render      `--images`, the render set at a seq; `--checkout`, the renderer
-              fork, which answers "git half not installed" until phase 3,
-              when `--until` and `--revert <sha>` join it.
+              fork; `--revert <sha>`, S2's way out of a divergence that
+              journals an entry with no edits naming the stray, then renders.
   import, cutover, rollback, outage
               The operator's acts (operations.md sections 2.2 to 2.5), each
-              from the operator lane's own checkout.
+              from the operator lane's own checkout. `import --single <sha>`
+              and `render --revert <sha>` are S2's two ways out of a
+              divergence: see `{PROG} import --single --help`.
   bootstrap, login, ready, set-mode
               The operator tools (operations.md section 2.4).
   serve       The register service (SVC-3), on `mode=primary` only.
@@ -19645,6 +20586,10 @@ def main(argv: list[str]) -> int:
     # `ready` (T119), the operator tools' readiness check, to its own parser.
     if verb == "ready":
         return cmd_ready(args)
+    # FEATURE 007'S `render --revert <sha>` (T324), S2's renderer's revert: its
+    # own parser, which takes no other flag, `--checkout` included.
+    if verb == "render" and any(a == "--revert" or a.startswith("--revert=") for a in args):
+        return cmd_render_revert(args)
     # FEATURE 007'S `render --checkout <c>` (T321): its own parser, ahead of
     # #160's argument loop. Any other `render` form is not this one's.
     if verb == "render" and any(a == "--checkout" or a.startswith("--checkout=") for a in args):
@@ -19655,6 +20600,10 @@ def main(argv: list[str]) -> int:
         return cmd_cutover(args)
     if verb == "rollback":
         return cmd_rollback(args)
+    # `import --single <sha>` (T324), S2's single-write import: its own parser,
+    # ahead of T115's, which takes no other flag beside it.
+    if verb == "import" and any(a == "--single" or a.startswith("--single=") for a in args):
+        return cmd_import_single(args)
     if verb == "import":
         return cmd_import(args)
     if verb == "mode":

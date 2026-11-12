@@ -29,6 +29,7 @@ handoff there and its unlocked commit in W is what each case sees at the base.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -40,7 +41,7 @@ from conftest import REPO
 from test_a23_lane_start import (HANDOFF, SIBLING_WORDS, _assert_nothing_unpublished, _other_repository,
                                  _racing_git, _sibling_handoff, _with_cell,
                                  _cell, _edit, _origin, _peer, _peer_push, _published, _started, _tip)
-from test_a23_lane_start_read import assert_W_moved_only_by_fast_forward
+from test_a23_lane_start_read import W_reflog, assert_W_moved_only_by_fast_forward
 from test_lane_start_row_stamp import LANE, Sandbox, pytestmark, short_root  # noqa: F401
 
 WHY = "a test handoff"
@@ -486,3 +487,241 @@ def test_a_why_with_a_tab_is_a_space_in_the_subject(tmp_path, short_root):
     published = _published(box, cell)
     assert published.endswith("\n---\n\n" + HANDOFF), published
     assert _origin(box, "log", "-1", "--format=%s", "main", "--", cell).strip() == SUBJECT
+
+
+@pytest.mark.parametrize("flag, mode", [("--restart", "respawn"), ("--exit", "end")])
+def test_the_no_tmux_refusal_names_its_mode_not_both_words(tmp_path, short_root, flag, mode):
+    """opensoft/openRepoTools#355: `lane-handoff` built the mode word for its
+    no-tmux refusal from `${do_restart:+respawn}${do_exit:+end}`. Both flags are
+    `0` or `1`, never empty, so both expansions fired and the message named
+    `respawnend`, which is no mode. `--restart` names `respawn`, `--exit` names
+    `end`, and the refusal's other words are unchanged."""
+    box, _checkout, _cell_, _before = _ready(tmp_path, short_root)
+
+    result = _handoff(box, flag)
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert "respawnend" not in result.stderr, result.stderr
+    assert f"there is no tmux here to {mode} this pane with. Do it by hand" in result.stderr, result.stderr
+    assert "the record is written, and there is no tmux here to" in result.stderr, result.stderr
+    assert "the record is the part that mattered." in result.stderr, result.stderr
+
+
+def _failing_send_keys(box: Sandbox) -> tuple[dict, Path]:
+    """The environment of a lane handed off from INSIDE tmux (`LANE_HANDOFF_NO_TMUX`
+    is the harness's own `1`, and here it is `0`), with a `tmux` ahead of the
+    sandbox's fake one that refuses `send-keys` and answers every other verb as
+    the fake does. Returns that environment's overrides and the file each
+    refused `send-keys` is logged to."""
+    failbin = box.root / "failbin"
+    failbin.mkdir()
+    log = box.root / "send-keys.log"
+    stub = failbin / "tmux"
+    stub.write_text(f"""#!/usr/bin/env bash
+if [ "${{1-}}" = send-keys ]; then printf '%s\\n' "$*" >> '{log}'; exit 1; fi
+exec '{box.root / "fakebin" / "tmux"}' "$@"
+""", encoding="utf-8")
+    stub.chmod(0o755)
+    return {"LANE_HANDOFF_NO_TMUX": "0", "PATH": f"{failbin}{os.pathsep}{box.env['PATH']}"}, log
+
+
+def test_the_exit_refusal_prints_its_slash_exit_word_and_runs_no_command(tmp_path, short_root):
+    """lane openRepoTools-3's review 6778792731 on opensoft/openRepoTools#165:
+    the refusal for a `/exit` that could not be typed was spelled
+    `` `/exit` `` inside a double-quoted `die` message, so bash ran `/exit` as a
+    command substitution, printed `/exit: No such file or directory`, and the
+    message lost its word. The backquotes are escaped: the refusal prints
+    `/exit` literally, names the pane the keys were sent to, and nothing is run."""
+    box, _checkout, _cell_, _before = _ready(tmp_path, short_root)
+    env, sent = _failing_send_keys(box)
+
+    result = _handoff(box, "--exit", env=env)
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    typed = sent.read_text(encoding="utf-8").splitlines()
+    assert len(typed) == 1 and typed[0].endswith(" /exit Enter") and typed[0].startswith("send-keys -t "), typed
+    target = typed[0].split()[2]
+    assert (f"the record is written and `/exit` could NOT be typed into {target}. "
+            "Type it in the lane's own pane yourself.") in result.stderr, result.stderr
+    assert "No such file or directory" not in result.stderr, result.stderr
+
+
+#: What each gate says, word for word, under each flag. `--restart`'s words are
+#: the ones the gates always had; `--exit`'s name the act that mode takes.
+_GATE_OPENING = {
+    "row": "the lane's PAUSED line is written and the ROW WAS NOT FLIPPED (the note above says why), "
+           "so this pane is left exactly as it is: ",
+    "handoff": "the lane's PAUSED line is written and the HANDOFF WAS NOT REFRESHED (the note above says why), "
+               "so this pane is left exactly as it is: the top block of that file is what the new session "
+               "is started with, and ",
+}
+_GATE_ACT = {
+    ("row", "--restart"): "respawning it would leave the register reading RUNNING for a session that "
+                          "has just been replaced, and every other lane reads the row. "
+                          "Flip it and re-run, or restart by hand:  ",
+    ("row", "--exit"): "ending its session would leave the register reading RUNNING for a session that "
+                       "has just been ended, and every other lane reads the row. "
+                       "Flip it and re-run, or restart by hand:  ",
+    ("handoff", "--restart"): "respawning now would hand it the block of a handoff this act has replaced. "
+                              "Put the block printed above at the head of the handoff, then re-run "
+                              "— or restart by hand once you have:  ",
+    ("handoff", "--exit"): "ending now would leave the new session to be started with the block of a "
+                           "handoff this act has replaced. Put the block printed above at the head of "
+                           "the handoff, then re-run — or restart by hand once you have:  ",
+}
+
+
+@pytest.mark.parametrize("flag", ["--restart", "--exit"])
+@pytest.mark.parametrize("gate", ["row", "handoff"])
+def test_the_row_and_handoff_gates_name_the_act_their_mode_takes(tmp_path, short_root, gate, flag):
+    """lane openRepoTools-3's review 6778792731 on opensoft/openRepoTools#165:
+    the row gate and the handoff gate fire under `--exit` as under `--restart`,
+    and each said "respawning" (and the row gate "replaced") to a lane whose
+    session was about to be ended. `--restart` says "respawning" as before;
+    `--exit` says "ending", and no word of either gate assumes a respawn. The
+    gate logic and the exit code (2) are unchanged."""
+    box, _checkout, _cell_, _before = _ready(tmp_path, short_root)
+    if gate == "row":
+        real = box.bin / "lanes-edit.sh"
+        wrapper = box.root / "no-row-lanes-edit.sh"
+        wrapper.write_text(f"""#!/usr/bin/env bash
+if [ "${{1-}}" = set-row-state ]; then echo "set-row-state: the row is refused" >&2; exit 1; fi
+exec '{real}' "$@"
+""", encoding="utf-8")
+        wrapper.chmod(0o755)
+    else:
+        wrapper = _forcing(box, 1, False)
+
+    result = _handoff(box, flag, env={"LANES_EDIT": str(wrapper)})
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    refused = [line for line in result.stderr.splitlines() if "REFUSED:" in line]
+    assert len(refused) == 1, result.stderr
+    said = refused[0].split("REFUSED: ", 1)[1]
+    assert said.startswith(_GATE_OPENING[gate] + _GATE_ACT[gate, flag]), said
+    if flag == "--exit":
+        assert "respawn" not in refused[0], refused
+        assert "replaced" not in refused[0] or gate == "handoff", refused
+    else:
+        assert not re.search(r"\bending\b", refused[0]), refused
+
+
+# ------------------------------------- a closed lane (opensoft/openRepoTools#118)
+
+def _closed(tmp_path: Path, short_root: Path) -> tuple[Sandbox, Path, str]:
+    """A started lane that `lane-end`'s own line has closed: its log's last
+    lane-kind line is an ENDED and its lifecycle reads CLOSED, with the handoff
+    a peer wrote still in the lane's checkout."""
+    box, checkout, cell, _before = _ready(tmp_path, short_root)
+    row = next(r for r in _published(box, "lanes/LANES.md").splitlines()
+               if r.startswith(f"| `{LANE}`"))
+    minted = re.search(r"harness `([0-9a-f-]{36})`", row)
+    assert minted, row
+    ended = _edit(box, "log", "ENDED", f"lane:{LANE}", "finished",
+                  env=dict(box.env, LANES_LANE=LANE, LANES_SESSION=minted.group(1)))
+    assert ended.returncode == 0, ended.stderr
+    _assert_nothing_unpublished(box, checkout)
+    return box, checkout, cell
+
+
+def _held(box: Sandbox, checkout: Path, cell: str) -> dict:
+    """Every place a handoff writes, as one comparable value: the published
+    register, the lane's object log and the commits behind them, W's reflog,
+    the lane's checkout (its head, its changed files and the handoff file), the
+    lifecycle snapshot, and the restart intent."""
+    read = dict(box.env, LANES_NO_FETCH="1")
+    return {
+        "origin": _tip(box),
+        "register": _published(box, "lanes/LANES.md"),
+        "log": _published(box, f"lanes/log/{LANE}.md"),
+        "W": W_reflog(box),
+        "checkout head": box.git("-C", str(checkout), "rev-parse", "HEAD"),
+        "checkout status": box.git("-C", str(checkout), "status", "--porcelain"),
+        "handoff": (checkout / cell).read_text(encoding="utf-8"),
+        "lifecycle": _edit(box, "lane-state", LANE, env=read).stdout,
+        "restart intent": _edit(box, "restart-intent", LANE, env=read).returncode,
+    }
+
+
+@pytest.mark.parametrize("mode", [(), ("--restart",), ("--exit",), ("--in-process",)],
+                         ids=["plain", "restart", "exit", "in-process"])
+def test_118_a_closed_lane_is_refused_before_any_write(tmp_path, short_root, mode):
+    """opensoft/openRepoTools#118, Brett Heap's "Refuse, as --late does
+    (Recommended)": `lane-handoff` on a lane whose last lane-kind line is an
+    ENDED took its lifecycle from CLOSED to SWAPPING, wrote a PAUSED after the
+    ENDED and finished at SWAPPED. It now exits 2 with `--late`'s own words, and
+    writes nothing: no commit, no changed file, no log line, no lifecycle
+    transition and, under `--restart`, no restart intent."""
+    box, checkout, cell = _closed(tmp_path, short_root)
+    before = _held(box, checkout, cell)
+    assert "state\tCLOSED" in before["lifecycle"], before["lifecycle"]
+    assert before["log"].splitlines()[-1].startswith("ENDED"), before["log"]
+
+    result = _handoff(box, *mode)
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert f"lane {LANE}'s last lane-kind line is ENDED (at " in result.stderr, result.stderr
+    assert ("the lane is closed, and a handoff after it would reopen a lane nobody is in"
+            in result.stderr), result.stderr
+    assert "Nothing was renamed and nothing was written" in result.stderr, result.stderr
+    assert "handoff refreshed" not in result.stderr and "lifecycle:" not in result.stderr
+    assert _held(box, checkout, cell) == before
+
+
+def _failing_lane_last(box: Sandbox) -> Path:
+    """A `LANES_EDIT` that fails only `lane-last`, with exit 1, and runs the
+    real helper for every other verb."""
+    wrapper = box.root / "failing-lane-last-lanes-edit.sh"
+    wrapper.write_text(f"""#!/usr/bin/env bash
+if [ "${{1-}}" = lane-last ]; then exit 1; fi
+exec '{box.bin / "lanes-edit.sh"}' "$@"
+""", encoding="utf-8")
+    wrapper.chmod(0o755)
+    return wrapper
+
+
+def test_118_a_failed_read_of_the_last_line_is_not_an_open_lane(tmp_path, short_root):
+    """Lane 3's MUST-1 on opensoft/openRepoTools-code#32: a `lane-last` that
+    FAILED says nothing about whether the lane is closed. Read as "open", it let
+    the handoff go on and take a lane closed with an ENDED from CLOSED to
+    SWAPPING, with a PAUSED written after the ENDED (#118's defect again); read
+    as "closed", it would be an exit 2 that claims what nobody established. The
+    handoff dies 1 before any write, as `--late` does on the same failed read
+    (Amendment 7(d): a helper that could not read is never read as "nothing to
+    report"). The stand-in fails only `lane-last`: the real helper reads the
+    same log and says ENDED."""
+    box, checkout, cell = _closed(tmp_path, short_root)
+    read = dict(box.env, LANES_NO_FETCH="1")
+    assert _edit(box, "lane-last", LANE, env=read).stdout.startswith("ENDED\t"), \
+        "the real helper reads this lane as closed"
+    before = _held(box, checkout, cell)
+    assert "state\tCLOSED" in before["lifecycle"], before["lifecycle"]
+    assert before["log"].splitlines()[-1].startswith("ENDED"), before["log"]
+
+    result = _handoff(box, env={"LANES_EDIT": str(_failing_lane_last(box))})
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert f"lane-last {LANE}` failed (exit 1)" in result.stderr, result.stderr
+    assert "That is NOT 'this lane is open'" in result.stderr, result.stderr
+    assert "Nothing was renamed and nothing was written" in result.stderr, result.stderr
+    assert "the lane is closed" not in result.stderr, "exit 2 is not claimed: nothing established it"
+    assert "handoff refreshed" not in result.stderr and "lifecycle:" not in result.stderr
+    # NOTHING WAS WRITTEN: no PAUSED line in the log or the register, and the
+    # lifecycle snapshot still reads CLOSED, where the defect took it to SWAPPING.
+    log_lines = _published(box, f"lanes/log/{LANE}.md").splitlines()
+    assert not [line for line in log_lines if line.startswith("PAUSED")], log_lines
+    assert f"PAUSED — lane {LANE}, session " not in _published(box, "lanes/LANES.md")
+    assert _edit(box, "lane-state", LANE, env=read).stdout == before["lifecycle"]
+    assert _held(box, checkout, cell) == before
+
+
+def test_118_a_lane_started_again_after_its_close_is_handed_off_as_before(tmp_path, short_root):
+    """The refusal reads the log's last lane-kind line, which is the lane's
+    state, so a lane that `lane-start` reopened after its ENDED is not refused.
+    What this sets up: a lane closed by an ENDED (snapshot CLOSED), then
+    `lane-start --fresh`, whose STARTED line is the log's last and takes the
+    snapshot to RUNNING. Log and snapshot both read open when the handoff runs,
+    so this guards against refusing an open lane. It does not set up an open
+    log under a CLOSED snapshot: the STARTED line resets the snapshot."""
+    box, _checkout, _cell = _closed(tmp_path, short_root)
+    again = box.start("--fresh", window_name=LANE)
+    assert again.returncode == 0, again.stderr
+
+    result = _handoff(box)
+    assert result.returncode == 0, result.stderr
+    assert "the lane is closed" not in result.stderr, result.stderr
