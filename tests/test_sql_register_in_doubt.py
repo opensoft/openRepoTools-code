@@ -1546,7 +1546,13 @@ def test_a_run_killed_after_its_call_line_or_mid_call_is_taken_over_in_doubt_and
     if landed:
         assert (rival.code, again.code) == (2, 0), (rival.err[-300:], again.err[-300:])
     else:
-        assert rival.code == 0 and again.code == 2, again.err[-800:]
+        # ITS LAST ATTEMPT'S CODE (TP:3458-3460 at `a91df2c4`): the verb's 2
+        # where the snapshot passes; where it fails, the snapshot's own 69
+        # (`8ba10b4e:lanes-edit.sh:9083-9087`), after F3's lookup. R26 rules
+        # the wait, on the record's clock, and no code (research.md DEC-12,
+        # ERR-22; T245o; PM33A-TRIAGE L5).
+        code = 69 if snapshot == "snapshot-fails" else 2
+        assert rival.code == 0 and again.code == code, again.err[-800:]
         assert snapshot == "snapshot-fails" or again.commit_calls() == []
         assert db_past(e, not_after), "the takeover exited before the record's not_after"
     assert "LR011" not in again.err
