@@ -197,8 +197,8 @@ checkout had no lane, and nothing is bound, stamped or resumed. That holds for e
 `<lane>` argument's check, the three rungs, the listing, the directory and step 4's two — because they go
 through the one fence. A read that never exits 69, which is every read in files mode and every one that
 predates the register's store, never reaches the arm, and the skill reads as it did. A files-mode *write* can
-exit 69, on the writers' marker check; the last row of the table below, "any other non-zero from any helper, a
-`69` among them", covers it.
+exit 69, on the writers' marker check; for step 5's (`lane-start`), the last row of the table below, "any other
+non-zero from any helper, a `69` among them", covers it.
 
 **Outcome where every rung answered 8 or 2: `NO LANE FOR THIS WINDOW` [8]**, with the listing above and
 `lane-start --no-launch <repo> <n>` filled in from the window's own name where it parses as `<repo>-<n>`.
