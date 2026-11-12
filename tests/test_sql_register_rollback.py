@@ -763,6 +763,25 @@ def _real_git() -> str:
     return found
 
 
+def _lane_checkout(origin: Path, checkout: Path, lane: str, env: dict) -> Path:
+    """`<c>`, THE WRITE LANE'S OWN CHECKOUT (lane 3's batch g Q119, #165
+    6813027223): beside the checkout `workspace.yaml` names as W, at
+    `<W>-lanes/<lane>`, W being its real path, as `lane_checkout_path` puts
+    it (Amendment 23 S1). On primary a write reads its author, its pending
+    hand edits and its `repos.tsv` from there, and refuses 2 where it is not
+    there, "Nothing was sent" (B15 tasks:1154). A clone of W's own origin, as
+    `lane-checkout <lane> --create` makes one, made after the case's last
+    push from W, as LX's T253f and N2's T243f make theirs. One that is
+    already there is kept, so a register that makes its own keeps it."""
+    real = Path(os.path.realpath(checkout))
+    target = real.parent / f"{real.name}-lanes" / lane
+    if not target.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "clone", "-q", str(origin), str(target)], check=True, env=env,
+                       capture_output=True, stdin=subprocess.DEVNULL)
+    return target
+
+
 class MissedWorkstation:
     """ws2, THE MISSED WORKSTATION (TP:1600-1604): a clone of origin of its
     own, its own `$HOME` and `workspace.yaml`, a `mode=primary`
@@ -778,6 +797,9 @@ class MissedWorkstation:
         self.clone = self.home / "projects" / "wip"
         subprocess.run(["git", "clone", "-q", str(reg.origin), str(self.clone)], check=True,
                        env=reg.env, capture_output=True, stdin=subprocess.DEVNULL)
+        # `MISSED_LANE`'s `<c>`, cloned with W: a ws2 kept behind the
+        # rollback's push keeps it behind too (Q119), and `fetch` moves both.
+        self.c = _lane_checkout(reg.origin, self.clone, MISSED_LANE, reg.env)
         (agents / "workspace.yaml").write_text(f"repository: {reg.origin}\npath: {self.clone}\n",
                                                encoding="utf-8")
         self.conf = _private(self.root / "conf" / "lanes-index.conf",
@@ -814,6 +836,8 @@ class MissedWorkstation:
 
     def fetch(self) -> None:
         self.git("fetch", "-q", "origin")
+        subprocess.run(["git", "-C", str(self.c), "fetch", "-q", "origin"], check=True,
+                       env=self.env, capture_output=True, stdin=subprocess.DEVNULL)
 
     def edit(self, *args: str, env: dict | None = None) -> subprocess.CompletedProcess:
         child = dict(self.env)
@@ -937,7 +961,8 @@ class RollbackEstate:
     # ------------------------------------------------------------ the commands
     def prepare(self) -> None:
         """The cutover, then `writes` writes on primary from ws1, each
-        rendered: `k` is the head."""
+        rendered: `k` is the head. The operator lane's `<c>` is made after
+        the cutover's push from W, before the first write."""
         proc = self.reg.cutover()
         assert proc.returncode == 0, f"the cutover (T116) failed:\n{_said(proc)}"
         switch = self.switch()
@@ -945,6 +970,7 @@ class RollbackEstate:
             f"after the cutover the switch reads {switch['mode']} with the marker "
             f"{switch['marker_state']}: the marker's push, read-back and record_marker are lane "
             f"3's T327, so test 8's estate fails until it lands")
+        self.c = _lane_checkout(self.reg.origin, self.reg.ws, self.imp.OPERATOR, self.reg.env)
         for n in range(1, self.writes + 1):
             proc = self.reg.write(f"test 8: write {n}")
             assert proc.returncode == 0, (
