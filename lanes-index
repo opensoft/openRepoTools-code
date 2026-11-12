@@ -15739,8 +15739,9 @@ class OperatorPush:
       otherwise, six pushes were rejected, or the build, the render lock or
       the push's configuration refused. The caller's abort may follow;
     - `unknown`: a read-back could not answer, or found what it cannot
-      confirm, such as a `Register-Seq` past the entry's: the command exits 3,
-      and its rerun reads origin back first.
+      confirm, such as a `Register-Seq` past the entry's, or the caller's
+      `moved` could not read a tip: the command exits 3, and its rerun reads
+      origin back first.
 
     `tip` is origin's tip as last read, `detail` one line saying why, and
     `attempts` the pushes made."""
@@ -15882,7 +15883,9 @@ def operator_entry_push(checkout: str, cfg: dict, *, git_dir: str, seq: int, bas
     `base` is the commit origin's tip must descend from, and the start of the
     read-back's walk; `row` and `data` are `operator_entry_read`'s; `moved`
     is the caller's check of a tip, `moved(tip)`, which returns why the tip
-    has moved under the entry, naming it, or None. It is asked of the first
+    has moved under the entry, naming it, or None, and raises
+    `RenderBuildFailed` where it cannot read the tip, which is unknown (3),
+    since a failed read proves no move. It is asked of the first
     tip and of each tip a rejected push finds, after that tip is read back
     for the entry's own commit. The build and the push hold
     the checkout's render lock (`render_lock_wait`), since T322's build reuses
@@ -15911,7 +15914,12 @@ def operator_entry_push(checkout: str, cfg: dict, *, git_dir: str, seq: int, bas
             if not descends:
                 return absent(f"origin {RENDER_BRANCH}'s tip {tip} does not descend from {base} "
                               f"(R3's abort); nothing was pushed to it")
-            why = moved(tip)
+            try:
+                why = moved(tip)
+            except RenderBuildFailed as exc:
+                # A tip `moved` could not read proves nothing either way (3).
+                return OperatorPush("unknown", f"{exc}; nothing was pushed to {tip}", tip=tip,
+                                    attempts=attempts)
             if why:
                 return absent(why)
             if lock is None:
@@ -18159,12 +18167,12 @@ def import_proof(source: dict, staged: dict, entry: dict, records: dict,
 # commit on origin, read back, and recorded `present`, or a register already
 # cut over at the same import with the same label; 2 for each refusal, an
 # LR004 from the transaction, and `cutover_abort`'s `EXIT_CUTOVER_ABORTED`;
-# 3 where a read-back can neither confirm the marker nor prove it absent, the
-# rerun reading origin back first; 69 for a register it cannot read or that
-# refuses, and for an expired timer: the transaction's, after which the
-# switch is unknown and a rerun reads it first; `record_marker`'s, after
-# which the push stands, the marker stays `adding` and a rerun records it;
-# and `switch_to_files`'; 64 for usage.
+# 3 where a read-back can neither confirm the marker nor prove it absent, or
+# a tip's `lanes` cannot be read, the rerun reading origin back first; 69
+# for a register it cannot read or that refuses, and for an expired timer:
+# the transaction's, after which the switch is unknown and a rerun reads it
+# first; `record_marker`'s, after which the push stands, the marker stays
+# `adding` and a rerun records it; and `switch_to_files`'; 64 for usage.
 
 #: PC-10'S CODE FOR THE CUTOVER'S ABORT (contracts/exit-codes.md §1 and §4;
 #: T102): 2, and only once `switch_to_files` has committed. It shares 2 with
@@ -18760,7 +18768,8 @@ def cutover_step_2(cfg: dict, store, git: dict, seq: int) -> int:
     2. `operator_entry_push` (T320's push; the read-back first), with the
        base the import's commit, which origin's tip must descend from, and
        `moved`: in the first and re-import forms, a tip whose `lanes` tree is
-       not the import's (R3's abort, S5's "moved under `lanes/`"); in the
+       not the import's (R3's abort, S5's "moved under `lanes/`"), where a
+       tip whose `lanes` cannot be read is unknown; in the
        restore form, a tip whose render set is not the images at `b`, the
        seq before the entry (ops:340's rule, as the rollback builds), since
        its render to `b` moved the tree on purpose.
@@ -18804,12 +18813,34 @@ def cutover_step_2(cfg: dict, store, git: dict, seq: int) -> int:
                     f"form rendered; nothing was pushed")
         got = render_git(checkout, "rev-parse", "--verify", "-q", f"{tip}:lanes",
                          timeout=git_timeout_s())
-        have = got.out.strip() if got.rc == 0 else ""
+        have = got.out.strip() if got.rc == 0 and not got.timed_out else ""
         if have == tree:
             return None
+        if not have:
+            # NIT-2 of lane 3's review of T327: a read that failed proves
+            # nothing about a move, so it is unknown (3), never the abort.
+            # `rev-parse --verify -q` exits 1 silently both where the tip
+            # holds no `lanes` and where the read failed, so the tip's commit
+            # is read once more: one that reads, with no `lanes`, has moved.
+            how = (f"timed out after {git_timeout_s()} s" if got.timed_out
+                   else f"exited {got.rc}: {got.last_line()}")
+            if got.rc == 1 and not got.timed_out:
+                whole = render_git(checkout, "cat-file", "-e", f"{tip}^{{commit}}",
+                                   timeout=git_timeout_s())
+                if whole.rc == 0 and not whole.timed_out:
+                    return (f"origin {RENDER_BRANCH}'s tip {tip} has moved under lanes/ since "
+                            f"the import's commit {base}: it holds no lanes tree, where {base} "
+                            f"holds {tree} (R3's abort; S5's \"moved under lanes/\"); nothing "
+                            f"was pushed")
+                how += (f", and `git cat-file -e {tip}^{{commit}}` "
+                        + (f"timed out after {git_timeout_s()} s" if whole.timed_out
+                           else f"exited {whole.rc}"))
+            raise RenderBuildFailed(f"`git rev-parse {tip}:lanes`, the read of origin "
+                                    f"{RENDER_BRANCH}'s tip under lanes/, {how}, so whether that "
+                                    f"tip has moved under lanes/ since {base} is not known")
         return (f"origin {RENDER_BRANCH}'s tip {tip} has moved under lanes/ since the import's "
-                f"commit {base}: its lanes tree is {have or 'not readable'}, not {tree} (R3's "
-                f"abort; S5's \"moved under lanes/\"); nothing was pushed")
+                f"commit {base}: its lanes tree is {have}, not {tree} (R3's abort; S5's "
+                f"\"moved under lanes/\"); nothing was pushed")
 
     result = operator_entry_push(checkout, cfg, git_dir=git["git_dir"], seq=seq, base=base,
                                  row=row, path=CUTOVER_STORE_PATH, data=data, moved=moved)
@@ -18822,9 +18853,12 @@ def cutover_step_2(cfg: dict, store, git: dict, seq: int) -> int:
         return cutover_abort(store, seq, lane=lane, workstation=workstation,
                              why=f"seq {seq}'s marker commit is not on origin, and this run "
                                  f"pushes it no more: {why}")
-    note(f"cutover: the marker's push cannot be confirmed: {result.detail}. Seq {seq} stands "
-         f"with the marker adding, so no write commits; a rerun reads origin back first, then "
-         f"records the marker or aborts (S5; Y:3157-3159)")
+    note(f"cutover: this run can neither confirm seq {seq}'s marker on origin nor take the "
+         f"abort: {result.detail}. Seq {seq} stands with the marker adding, so no write "
+         f"commits. A rerun reads origin back first: it records the marker where it finds it "
+         f"there, and where the read-back proves it absent it builds and pushes it again on "
+         f"origin's tip, or aborts where that tip has moved under lanes/ (Y:3157-3159; "
+         f"Y:3532; tasks:1566)")
     return EXIT_IN_DOUBT
 
 
