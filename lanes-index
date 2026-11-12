@@ -19104,11 +19104,12 @@ def cutover_abort(store, seq: int, *, lane: str, workstation: str, why: str) -> 
 # declared or its line printed; 2 for each refusal, LR012 and a divergence its
 # fresh fetch finds among them, and for a render or a push that ends without
 # proof or without a push (the entry standing, the marker `removing`); 3 for
-# a removal pushed that its read-back cannot confirm, and for a read-back
-# before step 2 that cannot tell whether the removal is there; 69 where the
-# register cannot be read or refuses, the switch and the marker unchanged, and
-# where step 1's call ends with no answer, after one re-read of the switch; 75
-# at D7's deadline; 64 for usage.
+# a removal pushed that its read-back cannot confirm, for a read-back before
+# step 2 that cannot tell whether the removal is there, and for a tip step 4
+# cannot read (NIT-2 of lane 3's review of T326); 69 where the register cannot
+# be read or refuses, the switch and the marker unchanged, and where step 1's
+# call ends with no answer, after one re-read of the switch; 75 at D7's
+# deadline; 64 for usage.
 
 #: D7'S DEADLINE across step 1's tries, in seconds (Y:455-456; ops:331).
 ROLLBACK_DEADLINE_S = 30
@@ -19152,10 +19153,11 @@ checkout (D24). While this build refuses mode=primary, it runs only against a
 scratch schema (register_schema=), as its transaction alone.
 
 Exit: 0 done through step 4, or stopped after step 2 under --hold-marker ·
-2 refused · 3 the removal's push cannot be confirmed, or a read-back cannot
-tell whether the removal is on origin: a rerun reads origin back first ·
-64 usage · 69 the register cannot be read or refused, or a
-call's timer expired · 75 register busy at D7's deadline, nothing written."""
+2 refused · 3 the removal's push cannot be confirmed, a read-back cannot
+tell whether the removal is on origin, or step 4 cannot read origin's tip:
+a rerun reads origin back first · 64 usage · 69 the register cannot be
+read or refused, or a call's timer expired · 75 register busy at D7's
+deadline, nothing written."""
 
 
 class _RollbackUsage(Exception):
@@ -19893,11 +19895,17 @@ def rollback_step_4(cfg: dict, store, git: dict, ident: dict, k: int, seq: int) 
        attempts in all. Its base is the cutover's confirmed marker commit,
        which origin's tip must descend from, and `moved` refuses a tip whose
        render set is not the images at `k` (ops:340), which at `files` only a
-       stray makes, S5's remaining gap.
+       stray makes, S5's remaining gap. A tip whose render set cannot be read
+       is no move: `moved` raises `RenderBuildFailed`, naming the read and
+       the tip, which `operator_entry_push` makes `unknown`, since a failed
+       read proves no move (its contract for `moved`; lane 3's ruling on
+       NIT-2 of its review of T326, as T327's forms read their tips since
+       cd9da58 and 752f473).
     3. Its outcome: `pushed` or `found`, `record_marker`, setting the marker
        `absent`: 0, or 69 where it does not answer `absent`, the push
-       standing; `absent`, 2, nothing pushed; `unknown`, 3, and the rerun
-       reads origin back first (Y:3157-3159)."""
+       standing; `absent`, 2, nothing pushed; `unknown`, 3, a push its
+       read-back cannot confirm or a tip that cannot be read, and the rerun
+       reads origin back first (Y:3157-3159; `rollback_read_back_first`)."""
     checkout, workstation = git["checkout"], ident["workstation"]
     stays = (f"Seq {seq} stands with the marker removing, so every write refuses; run "
              f"`{PROG} rollback` again")
@@ -19921,8 +19929,12 @@ def rollback_step_4(cfg: dict, store, git: dict, ident: dict, k: int, seq: int) 
         try:
             at_tip = render_tree_set(checkout, tip)
         except RenderBuildFailed as exc:
-            return (f"the render set at origin {RENDER_BRANCH}'s tip {tip} cannot be read "
-                    f"({exc}); nothing was pushed")
+            # A failed read proves nothing about a move: unknown (3), never the
+            # 2 of a move (NIT-2 of lane 3's review of T326, lane 3's ruling).
+            raise RenderBuildFailed(f"the render set at origin {RENDER_BRANCH}'s tip {tip} "
+                                    f"could not be read ({exc}), so whether that tip has moved "
+                                    f"under lanes/ since step 2's proof at seq {k} is not "
+                                    f"known") from exc
         if at_tip == want:
             return None
         return (f"origin {RENDER_BRANCH}'s tip {tip} has moved under lanes/: its render set is "
@@ -19941,9 +19953,10 @@ def rollback_step_4(cfg: dict, store, git: dict, ident: dict, k: int, seq: int) 
              f"origin back first, renders to seq {k} and proves it, then pushes the removal "
              f"(S5's steps 2 and 4)")
         return EXIT_REFUSED
-    note(f"rollback: the removal's push cannot be confirmed: {result.detail}. Seq {seq} stands "
-         f"with the marker removing, so no write commits; a rerun reads origin back first, "
-         f"then records the marker or pushes the removal again (S5's step 4; Y:3157-3159)")
+    note(f"rollback: this run can neither confirm seq {seq}'s removal on origin nor push it: "
+         f"{result.detail}. Seq {seq} stands with the marker removing, so no write commits; a "
+         f"rerun reads origin back first, then records the marker or pushes the removal again "
+         f"(S5's step 4; Y:3157-3159)")
     return EXIT_IN_DOUBT
 
 
