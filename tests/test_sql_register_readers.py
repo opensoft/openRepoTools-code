@@ -537,8 +537,12 @@ def test_each_reader_follows_the_table_when_the_store_is_unreachable(primary, re
 
 #: THE LISTINGS AND THE OFFLINE READS (AT-C5's oracle): each prints `read:
 #: mirror at <sha12>, …` on stderr and exits with its own code. The fourth,
-#: the launcher's bare window reads, is `window-lane` without a window,
-#: which the launcher makes before any lane is bound.
+#: the launcher's bare window reads, is `swapped`, the launcher's read of this
+#: workstation's swapped lanes, made before any lane is bound. It answers 0
+#: only where a lane's last lane-kind line is a `PAUSED` whose payload begins
+#: `swap;` and names this workstation, and 8 where none is, so the case seeds
+#: `SWAP_LANE` (AN13a's B4). (`window-lane` needs a window: without one it is
+#: a usage refusal, 64.)
 MIRROR_READS = {
     "lanes": ("lanes",),
     "history": ("history", "--all"),
@@ -546,16 +550,44 @@ MIRROR_READS = {
     "launcher-window-reads": ("swapped",),
 }
 
+#: The swapped lane `[launcher-window-reads]` seeds in the git register, which
+#: the mirror and files mode read: a log whose last lane-kind line is a swap's
+#: `PAUSED` on this workstation (Eagle), in the shape `swapped` reads.
+SWAP_LANE = "repoW-1"
+SWAP_UUID = "aaaaaaaa-0012-4000-8000-00000000a012"
+SWAP_LOG = (f"STARTED — lane {SWAP_LANE}, session {SWAP_UUID}@Eagle, 2026-10-01T04:00:00Z, "
+            f"lane:{SWAP_LANE} → home opensoft/repoW; dir /work/repoW; profile team-01c\n"
+            f"PAUSED — lane {SWAP_LANE}, session {SWAP_UUID}@Eagle, 2026-10-01T05:00:00Z, "
+            f"lane:{SWAP_LANE} → swap; window sess:2 @5; workstation Eagle; dir /work/repoW; "
+            f"profile team-01c; agent claude; transcript {SWAP_UUID}\n")
+
+
+def seed_swapped_lane(estate: Estate) -> None:
+    """`SWAP_LANE`'s log, committed and pushed to the git register."""
+    path = estate.wip / "lanes" / "log" / f"{SWAP_LANE}.md"
+    path.write_text(SWAP_LOG, encoding="utf-8")
+    estate._git("add", "--", str(path.relative_to(estate.wip)))
+    estate._git("commit", "-q", "-m", f"a swapped lane, {SWAP_LANE}")
+    estate._git("push", "-q", "origin", "main")
+
 
 @pytest.mark.parametrize("listing", sorted(MIRROR_READS))
 def test_each_mirror_read_prints_its_line_and_keeps_its_exit(primary, listing):
     """With the store unreachable, a mirror read reads the mirror: it prints
     the `read: mirror` line on stderr, never on stdout, and exits as the same
     read does in files mode, with the mirror's answer (no row only the store
-    holds). `session-start` and the bare window reads exit 0."""
+    holds). `session-start` and the bare window reads exit 0; for the
+    window reads the git register holds a swapped lane, which files mode
+    names first, as the scenario's control (AN13a's B4)."""
     argv = MIRROR_READS[listing]
     env = {"LANES_READ_MIRROR": "1"} if listing == "launcher-window-reads" else None
+    if listing == "launcher-window-reads":
+        seed_swapped_lane(primary.e)
     files = primary.files_edit(*argv, env=env)
+    if listing == "launcher-window-reads":
+        assert files.returncode == 0 and SWAP_LANE in files.stdout, (
+            listing, "the scenario's control: files mode does not name the swapped lane",
+            files.returncode, files.stdout, files.stderr)
     primary.door.unreachable()
     result = primary.edit(*argv, env=env)
     assert primary.door.register_calls() or listing == "session-start", \
