@@ -35,6 +35,11 @@ def rules(*contexts):
                                    for name, app in contexts]}}]
 
 
+def classic_clear():
+    return {"name": "main", "protected": True, "protection": {"enabled": False,
+            "required_status_checks": {"enforcement_level": "off", "contexts": [], "checks": []}}}
+
+
 @pytest.mark.parametrize("rows,expected", [
     (rules(("openrepotools-delivery", 15368)), True),
     ([], False), (rules(("openrepotools-delivery", None)), False),
@@ -44,7 +49,7 @@ def rules(*contexts):
     ({"error": "not a complete list"}, False),
 ])
 def test_ci_cutover_effective_gate_is_app_bound_without_old_requirements(cutover, rows, expected):
-    assert cutover.effective_gate(lambda _repo, _path: rows) is expected
+    assert cutover.effective_gate(lambda _repo, path: classic_clear() if path == "branches/main" else rows) is expected
 
 
 def test_ci_cutover_committed_configuration_is_disabled(cutover):
@@ -73,6 +78,7 @@ def enable_fixture(cutover, batch):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('{"schema_version":1,"enabled":true}')
     batch["data"]["rules/branches/main?per_page=100&page=1"] = rules((cutover.GATE, 15368))
+    batch["data"]["branches/main"] = classic_clear()
     for pr in batch["prs"].values():
         pr["body"] += "\nCI-Delivery: claude-current"
         batch["data"]["git/ref/heads/" + pr["head"]["ref"]] = {"object": {"sha": pr["head"]["sha"]}}
@@ -216,7 +222,7 @@ def test_ci_cutover_archive_roundtrip(cutover, batch, artifact):
 def test_ci_cutover_pruned_candidate_fetch_is_fixed_public_object_only(cutover, batch, artifact, monkeypatch):
     original, fetches = cutover.policy.git, []
     def read(root, *args):
-        if args[0] == "cat-file":
+        if args[0] == "cat-file" and not fetches:
             raise subprocess.CalledProcessError(1, args)
         if "fetch" in args:
             fetches.append(args)
@@ -387,8 +393,9 @@ def test_ci_cutover_candidate_uncertainty_retains_full(cutover, batch, artifact,
     elif failure == "source-mode":
         artifact["record"]["proof"]["members"][0]["delivery"] = False
         data, _ = install_artifact(cutover, batch, artifact)
-    assert cutover.route(env, event, batch["root"], request_for(batch), lambda _id: data,
-                          threads, base_changes) == cutover.FULL
+    result = cutover.route(env, event, batch["root"], request_for(batch), lambda _id: data,
+                           threads, base_changes)
+    assert result == ({**cutover.FULL, "retryable": True} if failure == "no-admission" else cutover.FULL)
 
 
 @pytest.mark.parametrize("state", ["failure", "skipped", "cancelled", "", "success\necho forged"])

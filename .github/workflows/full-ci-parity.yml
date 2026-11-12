@@ -19,6 +19,7 @@ on:
       - .github/workflows/task-set-candidate-shadow.yml
       - .mergify.yml
       - tests/test_ci_cutover.py
+      - tests/test_ci_cutover_repair.py
       - tests/test_tests_workflow.py
       - tests/test_ci_shards.py
       - tests/test_full_ci_coverage_parity.py

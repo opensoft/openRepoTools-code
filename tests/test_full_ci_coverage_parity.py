@@ -196,7 +196,7 @@ def test_full_ci_coverage_parity_caller_is_pr_only_same_commit_and_not_admission
         "tests/test_full_ci_coverage_parity.py", ".github/ci/delivery-policy.json",
         ".github/ci/delivery_route.py", ".github/ci/delivery_evidence.py", ".github/ci/delivery_verify.py",
         ".github/workflows/task-set-candidate.yml", ".github/workflows/task-set-candidate-shadow.yml",
-        ".mergify.yml", "tests/test_ci_cutover.py"}
+        ".mergify.yml", "tests/test_ci_cutover.py", "tests/test_ci_cutover_repair.py"}
     assert caller["permissions"] == {"contents": "read"}
     assert set(caller["jobs"]) == {"parity", "full-ci", "qualification"}
     assert caller["jobs"]["full-ci"] == {

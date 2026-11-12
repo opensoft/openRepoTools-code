@@ -17,7 +17,7 @@ import tempfile
 import zipfile
 
 import shadow_scope as policy
-from delivery_verify import require
+from delivery_verify import PendingEvidence, require
 
 REPOSITORY = policy.REPOSITORY
 REPOSITORY_ID = 1434660228
@@ -163,11 +163,16 @@ def download(artifact_id):
         return output.read(ARCHIVE_LIMIT + 1)
 
 
-def artifact_record(run, phase, request=policy.github, fetch=download):
+def artifact_record(run, phase, request=policy.github, fetch=download, *, allow_pending=False):
     run_identity(run)
     name = f"candidate-{phase}-{run['head_sha']}-a1"
     rows = pages(request, f"actions/runs/{run['id']}/artifacts", "artifacts")
     selected = [row for row in rows if row["name"] == name]
+    if (allow_pending and phase == "admission" and not selected
+            and run["status"] in {"queued", "in_progress"}):
+        require(run == request(REPOSITORY, f"actions/runs/{run['id']}"),
+                "Pending candidate run changed while reading")
+        raise PendingEvidence("Authenticated candidate has not published admission yet")
     require(len(selected) == 1, "Missing or duplicate receipt artifact")
     item = selected[0]
     artifact_id = positive(item["id"])
@@ -210,18 +215,23 @@ def completed_jobs(run, request=policy.github):
     return max(row["completed_at"] for row in rows)
 
 
-def candidate_chain(record, root):
-    proof = record["proof"]
-    # Queue branches may already be deleted at main-push time. Retrieve only
-    # the validated immutable public commit if checkout's fetch lacks it. No
-    # ref, FETCH_HEAD, tag, credential or working-tree update is permitted.
-    candidate = policy.sha(proof["candidate"])
+def ensure_commit(root, value):
+    """Acquire a validated immutable public object, never its checkout or refs."""
+    commit = policy.sha(value)
     try:
-        policy.git(root, "cat-file", "-e", candidate + "^{commit}")
+        policy.git(root, "cat-file", "-e", commit + "^{commit}")
     except subprocess.CalledProcessError:
         policy.git(root, "-c", "credential.helper=", "-c", "credential.interactive=false",
                    "-c", "fetch.recurseSubmodules=false", "fetch", "--no-tags",
-                   "--no-write-fetch-head", "https://github.com/" + REPOSITORY + ".git", candidate)
+                   "--no-write-fetch-head", "https://github.com/" + REPOSITORY + ".git", commit)
+    policy.git(root, "cat-file", "-e", commit + "^{commit}")
+    return commit
+
+
+def candidate_chain(record, root):
+    proof = record["proof"]
+    # Queue branches may already be deleted at main-push time.
+    ensure_commit(root, proof["candidate"])
     previous, heads = proof["base"], []
     for row in proof["members"]:
         head, prefix = row["head"], row["prefix"]

@@ -34,6 +34,10 @@ class Refused(ValueError):
     """A fixed-vocabulary refusal safe to expose in the CI log."""
 
 
+class PendingEvidence(Refused):
+    """Authenticated work is still running; waiting grants no CI omission."""
+
+
 def require(condition, reason):
     if not condition:
         raise Refused(reason)
@@ -90,7 +94,14 @@ def clean_review(number, head, request, threads):
     return max(receipts, key=lambda entry: entry[0]), response
 
 
-def fast_receipt(pr, head, request, base_changes):
+def receipt_pending(value, allow_pending):
+    pending = value["status"] in {"queued", "in_progress"} and value["conclusion"] is None
+    require((value["status"] == "completed" and value["conclusion"] == "success")
+            or (allow_pending and pending), "Fast evidence is not successful or authenticated pending work")
+    return pending
+
+
+def fast_receipt(pr, head, request, base_changes, *, allow_pending=False):
     endpoint = f"commits/{head}/check-runs?check_name={FAST}&filter=latest&per_page=100"
     response = request(REPOSITORY, endpoint)
     checks = response["check_runs"]
@@ -98,9 +109,9 @@ def fast_receipt(pr, head, request, base_changes):
             "Missing or ambiguous fast check")
     check = checks[0]
     require(check["name"] == FAST and check["head_sha"] == head
-            and check["app"]["slug"] == "github-actions"
-            and check["status"] == "completed" and check["conclusion"] == "success",
+            and check["app"]["slug"] == "github-actions",
             "Fast check is not successful exact-head Actions evidence")
+    pending = receipt_pending(check, allow_pending)
     link = re.fullmatch(
         r"https://github[.]com/opensoft/openRepoTools-code/actions/runs/([1-9]\d*)/job/([1-9]\d*)",
         check["details_url"], flags=re.ASCII)
@@ -113,9 +124,9 @@ def fast_receipt(pr, head, request, base_changes):
             and run["head_branch"] == pr["head"]["ref"]
             and run["head_repository"]["full_name"] == REPOSITORY
             and run["check_suite_id"] == check["check_suite"]["id"]
-            and type(run["run_attempt"]) is int and run["run_attempt"] >= 1
-            and run["status"] == "completed" and run["conclusion"] == "success",
+            and type(run["run_attempt"]) is int and run["run_attempt"] >= 1,
             "Fast run belongs to another workflow/head or is incomplete")
+    pending = receipt_pending(run, allow_pending) or pending
     associated = run["pull_requests"]
     require(isinstance(associated, list) and len(associated) == 1,
             "Fast run has no unique source PR")
@@ -142,12 +153,14 @@ def fast_receipt(pr, head, request, base_changes):
     job = request(REPOSITORY, f"actions/jobs/{job_id}")
     require(type(job["id"]) is int and job["id"] == job_id
             and type(job["run_id"]) is int and job["run_id"] == run_id and job["head_sha"] == head
-            and job["run_attempt"] == run["run_attempt"] and job["name"] == FAST
-            and job["status"] == "completed" and job["conclusion"] == "success",
+            and job["run_attempt"] == run["run_attempt"] and job["name"] == FAST,
             "Fast job does not match the current successful run")
+    pending = receipt_pending(job, allow_pending) or pending
     require(run == request(REPOSITORY, f"actions/runs/{run_id}")
             and response == request(REPOSITORY, endpoint),
             "Fast run/check changed during verification")
+    if pending:
+        raise PendingEvidence("Authenticated fast workflow is pending")
     return response, run, job, history
 
 

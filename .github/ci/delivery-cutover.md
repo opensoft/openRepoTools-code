@@ -14,6 +14,11 @@ needs/if projection before comparing every original job hash. The new controls
 are separately frozen and mutation-tested.
 
 The router executes only a main checkout with persisted Git credentials disabled.
+Both control jobs independently acquire the validated immutable PR test-merge
+object if their main-only fetch lacks it. They validate the PR ref and ordered
+main/source parents without checking out or executing PR-owned policy. Retrieval
+uses the fixed public repository/SHA with no credentials, ref/tag/FETCH_HEAD
+updates; failure retains full work or fails an already-selected omission gate.
 Missing policy bootstraps full CI. Disabled/unreadable policy and any incomplete
 or uncertain proof select full. A router failure cannot silently skip full jobs.
 The final gate requires all four actual full results, or independently rechecks
@@ -22,7 +27,10 @@ the same omitted-work proof. It never posts success under an unrun test's name.
 Even a future true flag cannot omit work until complete effective branch rules
 require `openrepotools-delivery` from GitHub Actions (integration15368) and none
 of `guard-launch-mode`, `tests`, `tests-no-submodule`, `package` remains required.
-The public effective-rules GET endpoint needs metadata read, not admin writes.
+The ruleset GET and public branch metadata GET cover layered rulesets and classic
+protection, including contexts and checks arrays. Missing, malformed or changing
+classic evidence retains full. Existing Contents:read is sufficient for branch
+metadata; neither endpoint needs administrative access or settings writes.
 No ruleset, branch protection, app, permission grant or bypass is applied here.
 
 ## Initial supported scope
@@ -64,9 +72,14 @@ ref/tag/FETCH_HEAD updates or checkout. Unavailable objects retain full work.
 
 A candidate-PR duplicate is omitted only for a genuine current caller plus its
 admission record and independently revalidated live sources/Git chain. Actor,
-branch prefix or draft status alone never exempts work. Missing admission costs
-a full run. An enabled PR route waits at most six ten-second intervals for startup
-evidence; each read is independently bounded and all uncertainty stays full.
+branch prefix or draft status alone never exempts work. Without verified admission
+no omission is allowed. Only authenticated pending fast receipts or an authentic live caller
+awaiting admission may wait, for at most thirty ten-second intervals plus bounded
+reads, within the existing fifteen-minute control-job budget. The observed fast
+run43289185180 took3m19s, so a one-minute cap was insufficient. Absent opt-in,
+unsupported scope, reusable/full-only callers, failed/malformed/unknown evidence
+return full immediately. Waiting never qualifies a pending result: admission
+remains success-only, and limit exhaustion retains full.
 
 The parameterless candidate entry performs complete full CI and final live
 verification before publishing qualified evidence. A unique **top-level**

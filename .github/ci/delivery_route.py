@@ -21,6 +21,7 @@ LEGACY = {"guard-launch-mode", "tests", "tests-no-submodule", "package"}
 GATE = "openrepotools-delivery"
 DIRECT = ".github/workflows/tests.yml"
 PARENTS = "--format=%P"
+PENDING_ATTEMPTS = 30
 ERRORS = policy.ERRORS + (zipfile.BadZipFile, RuntimeError)
 require = verifier.require
 
@@ -48,8 +49,27 @@ def effective_gate(request=policy.github):
                     require(isinstance(value["context"], str) and "integration_id" in value,
                             "Incomplete app-bound rule")
                     contexts.append((value["context"], value["integration_id"]))
-        return (any(name == GATE and type(app) is int and app == 15368 for name, app in contexts)
-                and not any(name in LEGACY for name, _app in contexts))
+        if (not any(name == GATE and type(app) is int and app == 15368 for name, app in contexts)
+                or any(name in LEGACY for name, _app in contexts)):
+            return False
+        # Rulesets and classic protection layer together. Public branch metadata
+        # exposes the latter using existing Contents:read, without admin access.
+        branch = request(REPOSITORY, "branches/main")
+        protection = branch["protection"]
+        checks = protection["required_status_checks"]
+        require(branch["name"] == "main" and branch["protected"] is True
+                and type(protection["enabled"]) is bool
+                and checks["enforcement_level"] in {"off", "non_admins", "everyone"}
+                and isinstance(checks["contexts"], list) and isinstance(checks["checks"], list),
+                "Incomplete classic protection evidence")
+        classic = list(checks["contexts"])
+        classic.extend(row["context"] for row in checks["checks"])
+        require(all(isinstance(name, str) and name for name in classic)
+                and (protection["enabled"] or not classic)
+                and (protection["enabled"] or checks["enforcement_level"] == "off")
+                and (checks["enforcement_level"] != "off" or not classic),
+                "Malformed classic status requirements")
+        return not any(name in LEGACY for name in classic)
     except policy.ERRORS:
         return False
 
@@ -81,10 +101,11 @@ def source(env, event, root, main, request, base_changes):
     require(base == main and base_ref == "main" and policy.source_branch(branch)
             and policy.regular_scope(root, main, head), "Source is outside fixed scope")
     policy.git(root, "merge-base", "--is-ancestor", main, head)
-    tested = policy.sha(env["GITHUB_SHA"])
+    require(env["GITHUB_REF"] == f"refs/pull/{number}/merge", "Source event ref differs")
+    tested = evidence.ensure_commit(root, env["GITHUB_SHA"])
     require(policy.git(root, "show", "-s", PARENTS, tested).decode().split() == [main, head],
             "Source test-merge identity differs")
-    fast = verifier.fast_receipt(pr, head, request, base_changes)
+    fast = verifier.fast_receipt(pr, head, request, base_changes, allow_pending=True)
     require(pr == request(REPOSITORY, f"pulls/{number}")
             and request(REPOSITORY, "git/ref/heads/" + branch)["object"]["sha"] == head,
             "Source moved during verification")
@@ -100,12 +121,15 @@ def duplicate(env, event, root, main, request, fetch, threads, base_changes):
             and pr["number"] == number and pr["state"] == "open" and pr["draft"] is True
             and pr["user"]["login"] == "mergify[bot]"
             and policy.side(pr, "base") == (main, "main")
-            and policy.QUEUE.fullmatch(branch) is not None, "Not a current draft candidate")
-    require(policy.git(root, "show", "-s", PARENTS, policy.sha(env["GITHUB_SHA"])).decode().split()
+            and policy.QUEUE.fullmatch(branch) is not None
+            and policy.regular_scope(root, main, head), "Not a current scoped draft candidate")
+    require(env["GITHUB_REF"] == f"refs/pull/{number}/merge", "Candidate event ref differs")
+    tested = evidence.ensure_commit(root, env["GITHUB_SHA"])
+    require(policy.git(root, "show", "-s", PARENTS, tested).decode().split()
             == [main, head], "Candidate test-merge identity differs")
     run = evidence.candidate_runs(head, request)
     evidence.run_identity(run, head, branch)
-    record = evidence.artifact_record(run, "admission", request, fetch)
+    record = evidence.artifact_record(run, "admission", request, fetch, allow_pending=True)
     proof = evidence.candidate_chain(record, root)
     require(proof["base"] == main, "Admission belongs to another main")
     # Independently re-read live sources; do not manufacture a push payload to
@@ -181,6 +205,8 @@ def route(env, event, root, request=policy.github, fetch=evidence.download,
                 and request(REPOSITORY, "git/ref/heads/main")["object"]["sha"] == main
                 and run == request(REPOSITORY, f"actions/runs/{run['id']}"), "Routing evidence changed")
         return {"mode": mode, "omit_full": True, "proof": evidence.digest(proof)}
+    except verifier.PendingEvidence:
+        return {**FULL, "retryable": True}
     except ERRORS:
         return dict(FULL)
 
@@ -206,15 +232,15 @@ def main():
         if args.mode == "gate":
             gate(os.environ, event, root)
             return
-        # One bounded startup wait, only under explicitly enabled policy. The
-        # same strict proof is re-read; waiting never changes what is accepted.
+        # Only authenticated pending receipts merit startup waits. Definite
+        # full-only, malformed, failed or unknown outcomes return immediately.
         result = route(os.environ, event, root)
-        if enabled(root) and not result["omit_full"] and os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
-            for _ in range(6):
-                time.sleep(10)
-                result = route(os.environ, event, root)
-                if result["omit_full"]:
-                    break
+        for _ in range(PENDING_ATTEMPTS):
+            if not result.get("retryable", False):
+                break
+            time.sleep(10)
+            result = route(os.environ, event, root)
+        result.pop("retryable", None)
     except ERRORS:
         if args.mode == "gate":
             parser.exit(1, "Delivery gate refused incomplete, changed or unsuccessful evidence.\n")
