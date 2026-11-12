@@ -39,10 +39,15 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
 import sys
+import threading
+import time
 import xml.etree.ElementTree as ElementTree
 from pathlib import Path
+
+import pytest
 
 from conftest import REPO
 
@@ -250,3 +255,165 @@ def test_no_real_engine_test_is_selected_by_the_launch_jobs_filter(tmp_path):
         f"`-k '{LAUNCH_JOB_FILTER}'`, the guard-launch-mode job's filter, "
         f"selects {len(offenders)} real-engine test(s); rename each so that "
         f"no part of its id holds either word: {offenders}")
+
+
+# ---------------------------------------------------------------- T229's relay
+#: THE DELAYED-LOOPBACK RELAY'S OWN TEST (T229; R-P23), before the cases that
+#: use it: `tests/pgcluster.py`'s `delayed_loopback(target_port, delay_s)`.
+#: `[each-direction]`, `[clean-close]` and `[no-root]` run on a loopback
+#: peer of the standard library, so they need no engine; `[tls-untouched]`
+#: checks the bytes on such a peer, then asks for T229's TLS cluster for its
+#: `verify-full` connect and query, and skips with T205's banner without one.
+RELAY_DELAY = 0.2
+RELAY_CASES = ["each-direction", "tls-untouched", "clean-close", "no-root"]
+
+
+def _peer(handler):
+    """A loopback server for one connection: `handler(conn, seen)` in a
+    thread. Returns (port, thread, seen)."""
+    server = socket.create_server(("127.0.0.1", 0))
+    seen: dict = {}
+
+    def run():
+        try:
+            conn, _ = server.accept()
+            with conn:
+                handler(conn, seen)
+        finally:
+            server.close()
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return server.getsockname()[1], thread, seen
+
+
+def _read_all(sock, size: int) -> bytes:
+    data = b""
+    while len(data) < size:
+        chunk = sock.recv(size - len(data))
+        if not chunk:
+            break
+        data += chunk
+    return data
+
+
+def _relay_each_direction(relay_of):
+    def handler(conn, seen):
+        conn.recv(1)
+        seen["up"] = time.monotonic()
+        seen["sent"] = time.monotonic()
+        conn.sendall(b"d")
+    port, thread, seen = _peer(handler)
+    with relay_of(port, RELAY_DELAY) as relay:
+        with socket.create_connection(("127.0.0.1", relay.port), timeout=10) as client:
+            sent = time.monotonic()
+            client.sendall(b"u")
+            assert client.recv(1) == b"d"
+            down = time.monotonic()
+        thread.join(10)
+    assert seen["up"] - sent >= RELAY_DELAY, f"the first byte up came {seen['up'] - sent:.3f} s after it was sent"
+    assert down - seen["sent"] >= RELAY_DELAY, f"the first byte down came {down - seen['sent']:.3f} s after it was sent"
+    assert seen["up"] - sent < RELAY_DELAY + 5 and down - seen["sent"] < RELAY_DELAY + 5, seen
+
+
+def _relay_tls_untouched(relay_of, request):
+    up, down = os.urandom(200_000), os.urandom(100_000)
+
+    def handler(conn, seen):
+        seen["up"] = _read_all(conn, len(up))
+        conn.sendall(down)
+    port, thread, seen = _peer(handler)
+    with relay_of(port, 0.01) as relay:
+        with socket.create_connection(("127.0.0.1", relay.port), timeout=30) as client:
+            client.sendall(up)
+            got = _read_all(client, len(down))
+        thread.join(30)
+    assert seen.get("up") == up, "the bytes the relay delivered up are not the bytes it was sent"
+    assert got == down, "the bytes the relay delivered down are not the bytes it was sent"
+    tls = request.getfixturevalue("tls_cluster")
+    with relay_of(tls.port, 0.01) as relay:
+        env = dict(tls.client_env(), PGPORT=str(relay.port))
+        proc = subprocess.run([tls.tool("psql"), "-X", "-A", "-t", "-c",
+                               "SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()"],
+                              capture_output=True, text=True, env=env, timeout=60, check=False)
+    assert (proc.returncode, proc.stdout.strip()) == (0, "t"), (
+        f"a verify-full connect and query through the relay: {shown(proc)}")
+
+
+def _relay_clean_close(relay_of):
+    for first in ("client", "peer"):
+        def handler(conn, seen, first=first):
+            if first == "peer":
+                conn.close()
+                return
+            seen["eof"] = conn.recv(1)
+        port, thread, seen = _peer(handler)
+        with relay_of(port, RELAY_DELAY) as relay:
+            client = socket.create_connection(("127.0.0.1", relay.port), timeout=10)
+            if first == "client":
+                client.close()
+                thread.join(10)
+                assert seen.get("eof") == b"", "the client's close did not reach the peer"
+            else:
+                assert client.recv(1) == b"", "the peer's close did not reach the client"
+                client.close()
+            end = time.monotonic() + 5
+            while relay.sockets and time.monotonic() < end:
+                time.sleep(0.05)
+            assert not relay.sockets, f"[{first} first] the relay still holds {len(relay.sockets)} socket(s)"
+        assert relay.alive() == [], f"[{first} first] the relay's threads outlive it: {relay.alive()}"
+
+
+NO_ROOT_CHILD = """
+import json, socket, sys, threading
+sys.path.insert(0, sys.argv[1])
+import pgcluster
+server = socket.create_server(("127.0.0.1", 0))
+def echo():
+    conn, _ = server.accept()
+    with conn:
+        conn.sendall(conn.recv(16))
+threading.Thread(target=echo, daemon=True).start()
+with pgcluster.delayed_loopback(server.getsockname()[1], 0.05) as relay:
+    with socket.create_connection(("127.0.0.1", relay.port), timeout=10) as client:
+        client.sendall(b"no-root")
+        said = client.recv(16)
+status = open("/proc/self/status").read()
+cap = [line.split()[1] for line in status.splitlines() if line.startswith("CapEff:")]
+print(json.dumps({"uid": __import__("os").geteuid(), "cap": cap[0] if cap else None, "said": said.decode()}))
+"""
+
+
+def _relay_no_root():
+    if os.geteuid() == 0:
+        pytest.skip("[no-root] shows the relay needs no capability, and this run is root")
+    proc = subprocess.run([sys.executable, "-I", "-B", "-c", NO_ROOT_CHILD, str(SUITE)],
+                          capture_output=True, text=True, timeout=60, check=False)
+    assert proc.returncode == 0, shown(proc)
+    said = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert said["said"] == "no-root", said
+    assert said["uid"] == os.getuid(), f"the relay ran as uid {said['uid']}, not the job's {os.getuid()}"
+    if said["cap"] is not None:
+        assert int(said["cap"], 16) == 0, f"the relay's process holds capabilities {said['cap']}"
+
+
+@pytest.mark.parametrize("case", RELAY_CASES)
+def test_the_delayed_loopback_relay_delays_each_direction_and_passes_tls_through(request, case):
+    """T229's relay (R-P23): `[each-direction]`, each direction's first byte
+    arrives no sooner than the delay after it was sent, on a monotonic
+    clock; `[tls-untouched]`, the bytes it delivers each way equal the bytes
+    it was sent, and a `verify-full` connect and a query through it to the
+    TLS cluster succeed (R2f-S11); `[clean-close]`, a close on either side
+    closes the other, and leaves no thread or socket of the relay's;
+    `[no-root]`, a process with no added capability, under the job's own
+    uid, starts and uses it."""
+    import pgcluster
+    relay_of = getattr(pgcluster, "delayed_loopback", None)
+    assert relay_of is not None, "tests/pgcluster.py has no delayed_loopback: T229 builds it"
+    if case == "each-direction":
+        _relay_each_direction(relay_of)
+    elif case == "tls-untouched":
+        _relay_tls_untouched(relay_of, request)
+    elif case == "clean-close":
+        _relay_clean_close(relay_of)
+    else:
+        _relay_no_root()
