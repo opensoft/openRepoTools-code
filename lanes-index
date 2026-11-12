@@ -15720,6 +15720,9 @@ def render_to(checkout: str, cfg: dict, store, k: int, *,
 # - ITS OUTCOMES, which the command maps to its own exit (`OperatorPush`).
 # - NO DATABASE TRANSACTION is held across any of it (F23): the command reads
 #   the entry before, and records the marker after, each a call of its own.
+# - WHILE `RENDER_GIT_HALF` IS FALSE, every URL git would reach must be local
+#   (`operator_local_origin_check`, lane 3's ruling, MUST-2 of its review of
+#   T327): the command checks it before its transaction (Q6(c); ops:229).
 
 class OperatorPush:
     """What `operator_entry_push` found. `outcome` is one of:
@@ -15994,6 +15997,66 @@ def operator_record_marker(store, row: str, seq: int, commit: str, workstation: 
                          "COMMIT"], row)
     answer = [line.strip() for line in out.splitlines() if line.strip()]
     return answer[0] if len(answer) == 1 and answer[0] in ("present", "absent") else ""
+
+
+def _git_url_is_local(url: str) -> bool:
+    """Whether git reaches `url` without a network: an absolute path, or a
+    `file://` URL (git 2.43 reads a `file://` URL's host as nothing)."""
+    return url.startswith("file://") or os.path.isabs(url)
+
+
+def operator_local_origin_check(checkout: str, render_key: str, *, who: str = "cutover",
+                                left: str = "nothing was written") -> None:
+    """WHILE `RENDER_GIT_HALF` IS FALSE, AN OPERATOR COMMAND REACHES ONLY A
+    LOCAL ORIGIN (lane 3's ruling on point 1 of its review of T327, MUST-2;
+    Q6(c), design Y:4872). Before the git half is installed, the only run of
+    `cutover` or `rollback` that pushes is act 3 step 8's rehearsal and
+    drill, from a scratch clone whose origin is a local bare copy of the
+    workspace repository (ops:229); the scratch-schema refusal guards only
+    the database, and `_import_checkout` without `LANES_REPO` takes the
+    lane's checkout of the real register. So every URL git would reach from
+    `checkout` must be an absolute path or a `file://` URL, each read in its
+    own act's environment, after every `insteadOf` git applies:
+    - the read-back's fetch (`render_readback`, `render_git_env()`):
+      `git ls-remote --get-url origin`;
+    - the push, with `render_key=`: `git ls-remote --get-url` of
+      `render_push_url`'s URL, in `render_push_env`'s environment without
+      the key's `GIT_SSH_COMMAND`;
+    - the push, without it: `git remote get-url --push --all origin`, in
+      the same environment, since a push to `origin` goes to every push URL.
+    Anything else, or a URL that cannot be read, is a `Refusal` (2) naming
+    the URL, with `left` said, before the command's transaction, render or
+    push. It does nothing once T328 sets `RENDER_GIT_HALF` True. `who` names
+    the command; T327's `cutover_git_preflight` calls it, and T326's
+    `rollback` can call it the same way."""
+    if RENDER_GIT_HALF:
+        return
+    push_env = {name: value for name, value in render_push_env(render_key).items()
+                if name != "GIT_SSH_COMMAND"}
+    if render_key:
+        push = ("ls-remote", "--get-url", render_push_url(checkout, render_key))
+    else:
+        push = ("remote", "get-url", "--push", "--all", "origin")
+    for what, args, env in (("the fetch URL", ("ls-remote", "--get-url", "origin"),
+                             render_git_env()),
+                            ("the push URL", push, push_env)):
+        run = render_git(checkout, *args, env=env, timeout=git_timeout_s())
+        urls = [line.strip() for line in run.out.splitlines() if line.strip()]
+        if run.rc != 0 or run.timed_out or not urls:
+            how = (f"timed out after {git_timeout_s()} s" if run.timed_out
+                   else f"exited {run.rc}: {_redact_url(run.last_line())}")
+            raise Refusal(f"{who}: {what} of {checkout} cannot be read (`git {' '.join(args)}` "
+                          f"{how}), so it cannot be shown to be local while the renderer's git "
+                          f"half is not installed (RENDER_GIT_HALF is False; Q6(c)); {left}")
+        for url in urls:
+            if not _git_url_is_local(url):
+                raise Refusal(
+                    f"{who}: {what} of {checkout} is {_redact_url(url)}, which is not local "
+                    f"(an absolute path or a file:// URL). While the renderer's git half is "
+                    f"not installed (RENDER_GIT_HALF is False; Q6(c)), {who} runs only as act "
+                    f"3 step 8's rehearsal, from a scratch clone whose origin is a local bare "
+                    f"copy of the workspace repository (ops:229); this check lifts with T328's "
+                    f"flip of RENDER_GIT_HALF; {left}")
 
 
 # ================================================================ the acts
@@ -18072,9 +18135,11 @@ def import_proof(source: dict, staged: dict, entry: dict, records: dict,
 # THE GIT HALF (lane 3's T327; S5's steps 2 and 3; D21, D23, D24; FR-050;
 # ops:116, act 4's step 7):
 #   - BEFORE THE TRANSACTION, `cutover_git_preflight`: the operator lane's
-#     checkout, found as the import finds it and never `W`, and with
+#     checkout, found as the import finds it and never `W`, with
 #     `render_key=` the push's destination and the checkout's configuration,
-#     each refused (2) with nothing written. The restore form then renders
+#     and while `RENDER_GIT_HALF` is False a local origin for every URL git
+#     would reach (`operator_local_origin_check`; ops:229), each refused (2)
+#     with nothing written. The restore form then renders
 #     every seq the mirror lacks, up to `b` (ops:382), at `_cutover_render_to`.
 #   - STEP 2, `cutover_step_2`, after the transaction or from a rerun that
 #     found this cutover's own entry standing at `primary`/`adding` (Y:3532):
@@ -18642,10 +18707,13 @@ def cutover_git_preflight(cfg: dict, lane: str) -> dict:
     lane-checkout <lane>`; never `W`), its git directory, and, with
     `render_key=`, T320's own checks of the push: its destination
     (`render_push_url`: a GitHub origin that is this workstation's register)
-    and the checkout's configuration (`_render_push_config_check`). Each is a
-    `Refusal` (2) with nothing written, so a cutover that could never push its
-    marker does not commit its entry. `render_push` makes the same checks
-    again at the push. Returns `{"checkout": <top>, "git_dir": <git dir>}`."""
+    and the checkout's configuration (`_render_push_config_check`); then,
+    while `RENDER_GIT_HALF` is False, `operator_local_origin_check`: every
+    URL git would reach is local (MUST-2 of lane 3's review of T327). Each is
+    a `Refusal` (2) with nothing written, so a cutover that could never push
+    its marker does not commit its entry, and the restore form renders
+    nothing. `render_push` makes T320's checks again at the push. Returns
+    `{"checkout": <top>, "git_dir": <git dir>}`."""
     checkout = _import_checkout(lane, who="cutover", left="nothing was written")
     git_dir = render_git_dir(checkout)
     key = cfg.get("render_key") or ""
@@ -18654,6 +18722,7 @@ def cutover_git_preflight(cfg: dict, lane: str) -> dict:
         _render_push_config_check(checkout, destination,
                                   {name: value for name, value in render_push_env(key).items()
                                    if name != "GIT_SSH_COMMAND"})
+    operator_local_origin_check(checkout, key, who="cutover", left="nothing was written")
     return {"checkout": checkout, "git_dir": git_dir}
 
 
