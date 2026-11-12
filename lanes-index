@@ -6606,6 +6606,13 @@ def register_guard_declared(cfg: dict) -> dict | None:
     return fields
 
 
+#: THE CAP ON EACH HOST in the guard's name (`register_guard_store_name`),
+#: in characters, before its `...` and its whole `:port` (lane 1's R07d NIT-1,
+#: #165 6813073600; its R07d2 SHOULD-1, #165 6814032524). Lane 3 rules the
+#: number.
+REGISTER_GUARD_NAME_HOST_CAP = 30
+
+
 def register_guard_store_name(cfg: dict) -> str:
     """THE DATABASE THE GUARD'S CAUSE LINE NAMES where its `psql` failed
     (AT-P3, "Stderr names the database, without credentials"; lane 3, #165
@@ -6622,12 +6629,13 @@ def register_guard_store_name(cfg: dict) -> str:
     4.19:279). Empty where `reader_url=` cannot be mapped, which
     `load_config` has already refused.
 
-    THE HOST PART IS CUT AT 30 CHARACTERS, marked `...` (lane 1's R07d
-    NIT-1, #165 6813073600, agreed by lane 3, #165 6813103156): a refused
-    connection's `psql` names the host again, so each host character costs
-    the line two bytes, and the guard quotes only its first 300. At 30 an
-    80-character host keeps `psql`'s "Connection refused" inside them, with
-    `lanes_register` and an IPv4 address; at 60 it would not."""
+    EACH HOST IS CUT AT `REGISTER_GUARD_NAME_HOST_CAP` CHARACTERS, marked
+    `...`, and its `:port` follows whole (lane 1's R07d NIT-1, #165
+    6813073600, agreed by lane 3, #165 6813103156; lane 1's R07d2 SHOULD-1,
+    #165 6814032524): a refused connection's `psql` names the host again, so
+    each host character costs the line two bytes, and the guard quotes only
+    its first 300. The whole list is bounded at A6's 160, for a URL of many
+    hosts."""
     try:
         env = pg_url_env(cfg.get("reader_url") or "", "`reader_url=`")
     except Refusal:
@@ -6640,10 +6648,11 @@ def register_guard_store_name(cfg: dict) -> str:
             port = ports[i]
         else:
             port = ports[0] if len(ports) == 1 else ""
-        shown = f"[{host}]" if ":" in host else host or "(the default host)"
+        shown = _register_shown(host, REGISTER_GUARD_NAME_HOST_CAP)
+        shown = f"[{shown}]" if ":" in host else shown or "(the default host)"
         where.append(f"{shown}:{port}" if port else shown)
     return (f"database {_register_shown(env.get('PGDATABASE') or '(the default)', 80)} at "
-            f"{_register_shown(', '.join(where), 30)}")
+            f"{_register_shown(', '.join(where), 160)}")
 
 
 class RegisterGuardFetchMissed(RegisterReadFailed):
