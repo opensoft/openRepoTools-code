@@ -1228,13 +1228,64 @@ def _real_estate(estate, **kwargs) -> Estate:
       So `$HOME/projects/<repo>` is made, the ladder's default (rung 4); it
       writes nothing to the register.
     - THE WINDOW'S NEW NAME: the stand-in `tmux` follows the hook's rename
-      (`_follow_renames`), as tmux does."""
+      (`_follow_renames`), as tmux does.
+
+    AND RULE 3'S STAMP NEEDS THE LANE'S HANDOFF (T214k): where the lane has a
+    row, `_handoff` commits the file that row names, so the bind's
+    `write-handoff --stamp` writes the stamp as it does on a real lane. A new
+    lane (`to_row=False`) has no handoff yet, and its `lane-start` writes no
+    stamp (`lane-start:4352-4356` at `6050581`)."""
     est = estate(**kwargs)
     est.extra["LANES_LANE_START"] = str(est.guard.parent / "lane-start")
     est.set("edit-real")
     (est.home / "projects" / est.to.rsplit("-", 1)[0]).mkdir(exist_ok=True)
     _follow_renames(est.session)
+    if kwargs.get("to_row", True):
+        _handoff(est)
     return est
+
+
+#: THE LANE'S HANDOFF (T214k), as a real lane's register holds it: the file
+#: its row's handoff cell names (`_row`'s `handoffs/<lane>.md`; `lane-start`
+#: reads the cell as field 7, `lane-start:4413` at `6050581`), whose head is
+#: the one `lane-handoff`'s `top_block` writes (`lane-handoff:2559-2563`): the
+#: lane header on line 1, the blank line that ends the header block, then the
+#: resume prompt. `write-handoff --stamp` puts Rule 3's stamp immediately
+#: after that blank (`lanes-edit.sh:22439`; `lane-start:4358-4361`).
+DASH = chr(0x2014)
+HANDOFF_HEAD = (
+    "Lane: {lane} (test, session {sid}) " + DASH + " single-use resume prompt: stamp "
+    "RESUMED-by before acting (lane-collision-protocol rule 3)\n"
+    "\n"
+    "## RESUME PROMPT " + DASH + " PAUSED 2026-10-01T02:00:00Z (T214's estate), agent claude, "
+    "transcript {sid}, kind unknown\n"
+    "\n"
+    "**STATE at 2026-10-01T02:00:00Z.** Lane {lane} is paused, and the guard's answer 2 "
+    "resumes it.\n")
+
+
+def _handoff(est: Estate) -> Path:
+    """Commit and push the lane's handoff (`HANDOFF_HEAD`) where the row for
+    `est.to` names it, so that `write-handoff --stamp` finds a tracked file
+    to stamp, as on a real lane. Without it the stamp exits 8, "lane
+    repoA-3's handoff is not at ..., so there is nothing to write into"
+    (`lanes-edit.sh:22426-22428` at `6050581`), `lane-start` goes on with the
+    stamp owed (`lane-start:4481-4483`), and a case passed on a path where
+    the stamp stopped early (G17's doubt, wave 17). It is a commit of its own
+    after the estate's first, so the estate every other case builds is
+    unchanged; an untracked file would not do, since `write-handoff` refuses
+    a handoff git has never had (`lanes-edit.sh:22414`)."""
+    rel = f"handoffs/{est.to}.md"
+    register = (est.wip / "lanes" / "LANES.md").read_text(encoding="utf-8")
+    assert f"| `{est.to}` | harness `{est.other}` |" in register and f"| {rel} |" in register, \
+        f"the register names no handoff {rel} for {est.to}:\n{register}"
+    path = est.wip / rel
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(HANDOFF_HEAD.format(lane=est.to, sid=est.other), encoding="utf-8")
+    est._git(["add", "--", rel], est.wip)
+    est._git(["commit", "-q", "-m", f"handoff({est.to}): the lane's handoff", "--", rel], est.wip)
+    est._git(["push", "-q", "origin", "main"], est.wip)
+    return path
 
 
 def _two_binds(estate, mode="files") -> tuple:
