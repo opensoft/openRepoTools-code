@@ -1325,11 +1325,23 @@ supervisor claiming that intent, running the launch as its CHILD through the lau
 replacement came up, and STAYING IN THE PANE with a diagnostic and a retry when it did not.
 
 **WHAT TO DO WITH WHAT IT PRINTS.** Exit 0 is the pane handed over — this session is about to be killed by
-the command it just ran, and there is nothing after it. Exit 2 is a REFUSAL and this pane is exactly as it
+the command it just ran, and there is nothing after it. **Exit 1 is a read that failed, which is never "nothing to
+report" (Amendment 7(d)), or the act refused by A2** (feature 007; lane 3, #165 6774499606): `act-begin` answered
+with anything but a base, 69, 75, 3 or an old helper's 2, or the walk of `canon-lane` with anything but a name, 69,
+75 or 3. The handoff file is written and none of the `PAUSED` record's writes was sent; the 69 note is printed, and
+no `READY` line, restart intent, respawn or `/exit` follows. Exit 2 is a REFUSAL and this pane is exactly as it
 was: read the line, it names which of the four writes did not land, or says a restart is already in flight
-(`lane-handoff --restart-status --lane <lane>` reads that one), or that tmux would not take the pane. In
-every refusal the record is already written, so the fallback is the printed restart line and never a second
-`--restart`.
+(`lane-handoff --restart-status --lane <lane>` reads that one), or that tmux would not take the pane. **A 2 or a
+75 whose line says the act stops there, and names the writes, is the stop under a seq base** (feature 007; lane 3,
+#165 6834271321 and 6835210568, questions 1 and 3): a write of the `PAUSED` record (the object log's line, the
+register's line or the row's cell, W11's included) was sent and refused, so the act ends after the handoff file
+with no `READY` line, restart intent, respawn or `/exit`, and the lane is not recorded SWAPPED. It is 75 only where
+every write that stopped it gave 75 and none of the act's writes exited 3 (a 3 is in doubt, never "busy"), and 2
+otherwise; where a write also exited 3, the line says to run that write's printed rerun first. **For that 1 and
+that stop alike nothing was started and no restart line was printed, so there is none to fall back to:** read the
+line, fix what it names (or wait for the register to answer, after a 75), and run `lane-handoff --restart` again
+from its start, which takes a fresh base and supersedes the operation it left. In every OTHER refusal the record is
+already written, so the fallback is the printed restart line and never a second `--restart`.
 
 **`lane <name>` IS STILL A PERSON'S DOOR AND IS NO LONGER THIS ONE** (Amendment 18 Addendum 2 (i-8) names
 two doors: `lane <name>`, *"or through the launcher directly"*). The supervisor takes the second, because
