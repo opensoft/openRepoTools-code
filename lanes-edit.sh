@@ -6215,15 +6215,21 @@ RETIRED_ROWS_AWK='
 retired_identity_hits() { # <lane>; stdout: matching retired spellings · 1 not read · 3 a line not a row
   ri_lane="$1"
   ri_pub="$(archive_text 2>/dev/null)" || { [ "$?" != 69 ] || return 69; return 1; }   # feature 007, T505
-  ri_local=""
-  ri_local="$(archive_local_text 2>/dev/null)" || return 1
   ri_scan=""
   ri_scan="$(printf '%s\n' "$ri_pub" | awk -v want="$ri_lane" -v sep="$US" "$RETIRED_ROWS_AWK")" || return 1
-  ri_scan2=""
-  ri_scan2="$(printf '%s\n' "$ri_local" | awk -v want="$ri_lane" -v sep="$US" "$RETIRED_ROWS_AWK")" || return 1
+  # ON PRIMARY THIS CHECKOUT'S ARCHIVE IS NOT READ (feature 007, T506; lane 3,
+  # #165 6778890211, T505 Q6): the local scan is one of the unions T506 skips,
+  # since a primary write is in SQL before it returns, and `archive_text` has
+  # answered with the register's `.archive` at `n`.
+  ri_local=""; ri_scan2=""
+  if [ "${REG_STORE:-}" != sql ]; then
+    ri_local="$(archive_local_text 2>/dev/null)" || return 1
+    ri_scan2="$(printf '%s\n' "$ri_local" | awk -v want="$ri_lane" -v sep="$US" "$RETIRED_ROWS_AWK")" || return 1
+  fi
   # WHICH COPY `archive_text` ANSWERED WITH: the index's under `--index`, else
   # origin's where the tree publishes one, else this checkout's (its own rungs,
-  # read the same way; a read that failed has already returned 1 above).
+  # read the same way; a read that failed has already returned 1 above); on
+  # primary, the register's (feature 007, T506).
   ri_from="this checkout"
   if [ -n "$LANES_IDX_DIR" ]; then
     [ -f "$LANES_IDX_DIR/archive" ] && ri_from="the index"
@@ -6231,6 +6237,7 @@ retired_identity_hits() { # <lane>; stdout: matching retired spellings · 1 not 
     ri_prc=0; register_published "$LANES_ARCH_PATH" >/dev/null 2>&1 || ri_prc=$?
     [ "$ri_prc" != 69 ] || return 69             # feature 007, T505
     [ "$ri_prc" != 0 ] || ri_from="origin/$LANES_BRANCH"
+    [ "${REG_STORE:-}" != sql ] || ri_from="the register"
   fi
   ri_bad=""
   ri_bad="$( { printf '%s\n' "$ri_scan" | awk -v sep="$US" -v w="$ri_from" 'substr($0, 1, 2) == "M" sep { print w sep substr($0, 3) }'
@@ -7697,7 +7704,15 @@ row_of_lane() {
 # subcommand, which unions these ids with the published ones because liveness
 # fails CLOSED — an id this checkout knows and `origin/main` does not yet is one
 # more reason to refuse a rename, never a reason to allow one (AGENTS.md rule 7).
-row_of_lane_local() { awk -v lane="$1" "$ROW_AWK" "$LANES_FILE"; }
+# ON PRIMARY IT READS NOTHING AND ANSWERS 0 (feature 007, T506; W:4865; B14
+# tasks:771): a primary write is in SQL before it returns, so no local row can
+# be ahead of the truth (D11's reason), and every union it feeds -
+# `session_ids_local_of_lane`, `session_ids_checked`'s local half and
+# `managed_local_hint` - is the register's alone. The one test is T504's.
+row_of_lane_local() {
+  [ "${REG_STORE:-}" != sql ] || return 0
+  awk -v lane="$1" "$ROW_AWK" "$LANES_FILE"
+}
 row_cell() { printf '%s\n' "$1" | awk -F'|' -v i="$2" '{print $i}'; }
 
 # ====================================================== AMENDMENT 15 =======
@@ -10657,6 +10672,10 @@ LANES_REGISTER_INDEX_AWK='
 # head and flag words, and nothing else. It is a separate call because it is a
 # separate COST — see the awk above — and the listing asks for it only where a
 # row has no object log to speak for it.
+# ON PRIMARY `--local` PRINTS NOTHING AND ANSWERS 0 (feature 007, T506; W:4865;
+# B14 tasks:771): the local union is skipped, as `row_of_lane_local`'s is, and
+# `lanes_rows` takes local words only to fill in, so an empty local index is
+# the register's answer alone.
 lanes_register_index() {   # [--local] [--cells]
   lri_local=0; lri_cells=0
   while [ $# -gt 0 ]; do
@@ -10666,6 +10685,7 @@ lanes_register_index() {   # [--local] [--cells]
       *) break ;;
     esac
   done
+  if [ "$lri_local" = 1 ] && [ "${REG_STORE:-}" = sql ]; then return 0; fi
   if [ "$lri_local" = 1 ]; then
     { cat -- "$LANES_FILE" 2>/dev/null || :
       [ -f "$LANES_ARCH_FILE" ] && { cat -- "$LANES_ARCH_FILE" 2>/dev/null || :; }
@@ -11871,8 +11891,16 @@ handoff_stamped_by() {   # <handoff cell> <session id>
 # the working directory confers no lane. `0` when the newest stamp says
 # `unknown`, `1` otherwise — including a row with no stamp at all, where a
 # relaunch is the ordinary remedy.
+# ON PRIMARY IT READS NOTHING AND ANSWERS 1 (feature 007, T506; B14 tasks:771;
+# lane 3, #165 6807910478, T506 Q4): it has no published half, so the skip of
+# the local unions leaves it nothing to read, and the block gives the relaunch
+# cure, never `--no-launch` from a row it did not read. The stamp is never read
+# from the register here. Its one caller, `session_start_block`, runs under
+# `session-start`, whose store is never `sql` (R39), so the skip waits for
+# T508's primary path, which keeps it.
 row_stamp_is_unknown() {   # <lane>
   rsu_lane="${1-}"; rsu_n=""; rsu_row=""; rsu_last=""
+  [ "${REG_STORE:-}" != sql ] || return 1
   [ -n "$rsu_lane" ] || return 1
   rsu_n="$(row_line "$rsu_lane" 2>/dev/null)" || return 1
   case "$rsu_n" in ''|*[!0-9]*) return 1 ;; esac
@@ -16271,8 +16299,12 @@ managed_seam_refuse() {   # <canonical lane> <the act>
 # not the row's shape (item 4d): a row with none cannot be a marker, so it is
 # legacy in either copy, and the writer that rewrites it refuses a shape it
 # cannot split on its own.
+# ON PRIMARY IT READS NOTHING AND ANSWERS 0 (feature 007, T506; B14 tasks:771):
+# this checkout's row is a local union T506 skips there, and the store's row
+# has already answered through `lane_is_managed_owned`.
 managed_local_hint() {   # <canonical lane>
   mlh_hint=8; mlh_loc=""
+  [ "${REG_STORE:-}" != sql ] || return 0
   [ -f "$LANES_FILE" ] || return 0
   mlh_loc="$(row_of_lane_local "${1-}" 2>/dev/null)" || mlh_hint=1
   if [ "$mlh_hint" = 8 ] && [ -n "$mlh_loc" ]; then
