@@ -22648,8 +22648,8 @@ esac
 # `commit` keeps phase 1's 69 until T420 gives it its primary form (T415's line:
 # "no state between T415 and T420 runs it in the loop"). `index` and `files`
 # run the verb as it runs today.
-if [ "$REG_ASK" = 1 ]; then reg_mode_ask; fi
 if [ "$REG_ASK" = 1 ]; then
+  reg_mode_ask
   case "$REG_MODE" in
     primary)
       [ "$cmd" != commit ] ||
