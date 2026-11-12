@@ -15736,7 +15736,8 @@ class OperatorPush:
     - `absent`: a read-back of this run proves the entry's commit absent from
       origin, and this run pushes it no more: origin's tip moved (the caller's
       `moved`, or a tip that does not descend from the base), a push failed
-      otherwise, six pushes were rejected, or the build, the render lock or
+      otherwise and the read-back after it finds no commit carrying the
+      entry's seq, six pushes were rejected, or the build, the render lock or
       the push's configuration refused. The caller's abort may follow;
     - `unknown`: a read-back could not answer, or found what it cannot
       confirm, such as a `Register-Seq` past the entry's, or the caller's
@@ -15953,6 +15954,24 @@ def operator_entry_push(checkout: str, cfg: dict, *, git_dir: str, seq: int, bas
                                     attempts=attempts)
             if pushed.outcome != "rejected":
                 tip = pushed.origin_tip or tip
+                # ANY PUSH THAT WAS MADE is read back for the entry's own
+                # commit before anything else (design:3243-3245), not only a
+                # rejected one: origin's tip may carry seq's commit, pushed by
+                # a concurrent run of this command. A marker found there
+                # completes the command; a read-back that cannot tell is 3,
+                # naming the push and the read; absent goes on as before.
+                if pushed.origin_tip:
+                    state, said = operator_on_origin(checkout, base, tip, seq, path, blob)
+                    if state == "present":
+                        return OperatorPush("found", f"origin {RENDER_BRANCH} carries seq {seq}'s "
+                                            f"commit {said}, read back after the push of {built} "
+                                            f"ended {pushed.outcome} ({pushed.detail})",
+                                            commit=said, tip=tip, attempts=attempts)
+                    if state == "unknown":
+                        return OperatorPush("unknown", f"{pushed.detail}, and the read-back of "
+                                            f"origin's tip {tip} cannot tell whether seq {seq}'s "
+                                            f"commit is there: {said}", tip=tip,
+                                            attempts=attempts)
                 if pushed.outcome == "failed":
                     return absent(f"{pushed.detail}; the read-back finds origin {RENDER_BRANCH} at "
                                   f"{tip}, without {built}")
@@ -18804,8 +18823,11 @@ def cutover_step_2(cfg: dict, store, git: dict, seq: int) -> int:
             try:
                 at_tip = render_tree_set(checkout, tip)
             except RenderBuildFailed as exc:
-                return (f"the render set at origin {RENDER_BRANCH}'s tip {tip} cannot be read "
-                        f"({exc}); nothing was pushed")
+                # A failed read proves nothing about a move, as below: 3.
+                raise RenderBuildFailed(f"the render set at origin {RENDER_BRANCH}'s tip {tip} "
+                                        f"could not be read ({exc}), so whether that tip has "
+                                        f"moved under lanes/ since the restore form's render is "
+                                        f"not known") from exc
             if at_tip == want:
                 return None
             return (f"origin {RENDER_BRANCH}'s tip {tip} has moved under lanes/: its render set "
