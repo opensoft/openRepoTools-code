@@ -613,8 +613,10 @@
 #      in a rerun's act whose `<from>` is gone, a `<to>` there that is not a
 #      regular file, a link to one included (lane openRepoTools-3, #165
 #      6814837872, Q127). The act's code is said in one WARNING, never the
-#      run's (`pw_rl_move`), a rerun's act included, and the move is then
-#      owed. And a rerun's child whose snapshot gives no seq, or one where
+#      run's (`pw_rl_move`), a rerun's act included: the move is then owed,
+#      or, where `<to>` is there, the WARNING says so and puts the act's
+#      refusal first (lane openRepoTools-3, #165 6827722997, Q127 Q-b).
+#      And a rerun's child whose snapshot gives no seq, or one where
 #      the row's handoff cell has a cache, bytecode or environment part in
 #      either path (`rl_rerun`).
 #  64  usage — a caller's bad arguments to one of the reads Amendment 11 added
@@ -20957,7 +20959,10 @@ rl_rerun() {   # <the typed old name>
 # than `PW_C`, or an act that fails, is said in one WARNING with the hand
 # steps, and the run keeps its code: the rename is committed either way, as
 # with its other steps after COMMIT (Y:5328), and the row's handoff column
-# names the file not yet moved (spec:372–376).
+# names `<to>`. The WARNING says `<to>` is not there yet and the move is owed
+# (spec:372–376), unless the act ran in `PW_C`, failed, and something is at
+# `<to>` there: then it says `<to>` is there and puts the act's refusal first
+# (lane openRepoTools-3, #165 6827722997, Q127 Q-b).
 # A RERUN'S MOVE (`rerun`, from `pw_child_end`; `rl_rerun`): this run wrote no
 # register line, its child looked at no checkout and names none, and the move
 # is made in this run's own `<c>`, `PW_C`, at the seq of the snapshot that
