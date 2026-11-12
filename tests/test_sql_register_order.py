@@ -2017,10 +2017,10 @@ def test_the_client_refuses_a_bad_act_with_2_before_any_call(estates, case):
 # their own (T252b, below). The other cases run on test 4's estate (T243's
 # `Estate`), where the writes are `append-line` of a row-shaped line
 # (`row:<L>`) and `log` (`objects:<L>`), a reading of lane 1's derived keys.
-# `[lane-start-reread]` is read from lane 4's tool's text (a reading: its flow
-# is T428's, and lane 3's batch 7 asks that it run the flow); `[lane-end-gate]`
-# and `[skill-step-4]` (T252f, at the three conditions below) and the two
-# launches (T252h, after them) run theirs on T252b's world. They FAIL UNTIL
+# The five cases that read lane 4's tools' text now run their flows on
+# T252b's world (lane 3's batch 7, item 5): `[lane-end-gate]` and
+# `[skill-step-4]` (T252f) and `[lane-start-reread]` (T252i) at the three
+# conditions below, and the two launches (T252h) after them. They FAIL UNTIL
 # L1-A6, L4-A2 (T410), L4-B3 and L4-B14 land; without PostgreSQL 16 the RE
 # cases skip.
 
@@ -2427,9 +2427,32 @@ def test_act_variables_change_nothing_in_files_mode(estates):
 # them and lane 3's batch 12 rules the gate's (#165 6808010497, "Lanes 2 and
 # 4, question 2"; `RULINGS-batch12-analysis-20261111.md` (`b892fb39...`),
 # A3, whose B15 text replaces TP:5877-5879's "so its `NOTED` writes do not
-# refuse W13"). `[lane-start-reread]` is still read from `lane-start`'s
-# text; `[lane-end-gate]` and `[skill-step-4]` run their flows on T252b's
-# world (lane 3's batch 7, item 5).
+# refuse W13"). All three run their flows on T252b's world (lane 3's batch 7,
+# item 5).
+#
+# [lane-start-reread] (T252i): `lane-start repoA 3 --request-handoff --wait
+# 120`, a new place (a session of its own) taking the world's lane bound on
+# Falcon, on primary, with `$LANES_EDIT` a logging stand-in and the request
+# polling every second (`LANES_POLL_SECONDS`). Once its W8, `request-handoff`,
+# has committed, a second session, the holder's, writes its handoff: the row's
+# state cell (`set-row-state` to PAUSED), then its `PAUSED` line, which
+# releases the binding and ends the wait. `lane-start` must then re-base with
+# `act-begin --rebase`, which keeps the act's id and takes a base at or past
+# the holder's entries, and read the row again (`register-row`) under it
+# (Y:5656: "at `:2614` `lane-start` must also re-base, then re-read
+# `register-row` and refuse on a change outside the state cell"; T428, "The
+# re-base"). Two halves, each on a world of its own. In `[outside]` the holder
+# first appends to the row's session cell (`append-session-id`), a change
+# outside the state cell: `lane-start` exits non-zero, sends no write after
+# its re-base and launches nothing, and W8's is the act's only entry. With the
+# state cell alone changed, the act's writes after its re-base commit past
+# the holder's entries, carrying its id, with no `expectation:` refusal, and
+# `exec` starts `claude` (T252h's pid test). Readings: the change outside the
+# state cell is N2-10's, an `append-session-id`, where any other cell would
+# do; the holder writes its `PAUSED` line last, so that the re-base is taken
+# past every write of its handoff (`lane-handoff` writes W9's line before
+# W12's row, a race this case leaves out); and the refusal's code is not
+# asserted, since T428's text names none (lane 4's draft dies 2).
 #
 # [lane-end-gate]: `lane-end`'s close-out of the world's live lane, on
 # primary, under its `act-begin` base. `LANE_WORKTREES` is a stand-in that
@@ -2461,17 +2484,19 @@ def test_act_variables_change_nothing_in_files_mode(estates):
 # another lane with a row while the window still names its own.
 #
 # They FAIL UNTIL L1-A6, L4-A2 (T410, T411), L4-B3 and L4-B5 land, and
+# `[lane-start-reread]` until T428 (with T427's `start-record`),
 # `[lane-end-gate]` until T430, `[skill-step-4]` until T431. Without
 # PostgreSQL 16 each flow skips, after `[skill-step-4]`'s first check, its
 # block opening with `act-begin`, which needs no engine.
 
-#: The three conditions, in the test plan's order: `[lane-start-reread]`'s
-#: tool and what its text must hold; the other two run their flows.
-CONDITIONS = {
-    "lane-start-reread": ("lane-start", ("act-begin --rebase",)),
-    "skill-step-4": None,
-    "lane-end-gate": None,
-}
+#: The three conditions, in the test plan's order; each runs its flow.
+CONDITIONS = ("lane-start-reread", "skill-step-4", "lane-end-gate")
+#: `[lane-start-reread]`'s starter, a session of its own, and the holder's new
+#: session-cell entry, `[outside]`'s change outside the state cell.
+STARTER_SID, HOLDER_NEW_SID = "aaaaaaaa-0257-4000-8000-00000000a257", "aaaaaaaa-0258-4000-8000-00000000a258"
+#: The register writes `lane-start` may send after its re-read: T428's one
+#: call, or its parts where no transcript uuid is known.
+START_WRITES = ("start-record", "add-row", "append-session-id", "set-row-state", "log")
 #: The second session that writes `[lane-end-gate]`'s `NOTED` line.
 SWEEP_SID = "aaaaaaaa-0256-4000-8000-00000000a256"
 #: The skill's three writes, as `$L`'s first argument names them.
@@ -2628,31 +2653,100 @@ def skill_step_4_holds(world: ActWorld, prelude: str, block: str) -> None:
         f"step 4's three writes did not all commit carrying the act's id {ident}: {entries}: {run.err[-600:]}")
 
 
-@pytest.mark.parametrize("condition", list(CONDITIONS))
+def lane_start_reread(world: ActWorld, outside: bool) -> Tuple[Writer, List[dict], List[dict], List[str]]:
+    """`[lane-start-reread]`'s run (see the section's head): `lane-start`
+    asks for the lane bound on Falcon and waits; once its W8 has committed,
+    the holder's second session writes its handoff, `[outside]` first
+    changing the row's session cell. Returns the run, its verb calls, the
+    `claude` its `exec` started, and the holder's write ids."""
+    tag = "outside" if outside else "state"
+    edit = act_logger(world.root / f"reread-{tag}", "lanes-edit.sh", world.bin / "lanes-edit.sh")
+    claude = act_logger(world.root / f"reread-{tag}-claude", "claude")
+    run = world.launch(f"lane-start-{tag}", [str(world.bin / "lane-start"), "repoA", "3", "--request-handoff",
+                                            "--wait", "120", "--dir", str(world.lane_dir)], R_FAR,
+                       extra={"LANES_EDIT": str(edit), "LANES_SESSION": STARTER_SID, "LANES_POLL_SECONDS": "1",
+                              "FAKE_CC_PATH": str(claude)})
+    deadline = time.monotonic() + 120
+    while run.ended is None and not any(e["verb"] == "request-handoff" for e in act_entries(world, 1)):
+        assert time.monotonic() < deadline, f"[{tag}] lane-start's W8 did not commit in 120 s"
+        time.sleep(0.5)
+    holder: List[str] = []
+    if run.ended is None:
+        writes = [["append-session-id", R_FAR, R_SID[R_FAR], f"{ARROW} harness `{HOLDER_NEW_SID}`",
+                   "T252i's holder: a session-cell change"]] if outside else []
+        writes += [["set-row-state", R_FAR, f"PAUSED {DOT} handed off on request (T252i's holder)"],
+                   ["log", "PAUSED", f"lane:{R_FAR}", ARROW, "T252i's holder", "handed off on request"]]
+        for argv in writes:
+            w = world.launch("holder", ["bash", str(world.bin / "lanes-edit.sh"), *argv], R_FAR)
+            w.wait()
+            assert w.code == 0, f"[{tag}] the holder's {argv[0]} exited {w.code}: {w.err[-400:]}"
+            holder += w.write_ids()
+    run.wait(240)
+    return run, act_calls(edit), [c for c in act_calls(claude) if c.get("pid") == run.proc.pid], holder
+
+
+def lane_start_reread_holds(make) -> None:
+    """`[lane-start-reread]` (see the section's head): `[outside]`, then the
+    state cell alone, each on a world of its own from `make`."""
+    for outside in (True, False):
+        world, tag = make(), "outside" if outside else "state"
+        run, calls, launched, holder = lane_start_reread(world, outside)
+        verbs = verbs_of(calls)
+        asked = verbs.index("request-handoff") if "request-handoff" in verbs else len(verbs)
+        assert "act-begin" in verbs[:asked], f"[{tag}] lane-start ran no act-begin before its W8 (T428): {verbs}"
+        assert asked < len(verbs), f"[{tag}] lane-start exited {run.code} and sent no W8: {run.err[-600:]}"
+        ident, _ = seq_base(calls[asked]["act"], f"[{tag}] W8's request-handoff", "T428")
+        assert holder, f"[{tag}] lane-start exited {run.code} before its W8 committed: {run.err[-600:]}"
+        rebase = next((k for k in range(asked + 1, len(calls))
+                       if calls[k]["argv"][:2] == ["act-begin", "--rebase"]), None)
+        assert rebase is not None, (
+            f"[{tag}] lane-start did not re-base with act-begin --rebase after its W8 wait (T428): {verbs[asked:]}")
+        reread = next((k for k in range(rebase + 1, len(calls)) if calls[k]["argv"][:2] == ["register-row", R_FAR]),
+                      None)
+        assert reread is not None, (
+            f"[{tag}] lane-start did not read {R_FAR}'s row again after its re-base (T428): {verbs[rebase:]}")
+        entries = act_entries(world, 1)
+        seqs = {e["write_id"]: e["seq"] for e in entries}
+        assert set(holder) <= set(seqs), f"[{tag}] the holder's writes {holder} are not all in the journal: {entries}"
+        released = max(seqs[x] for x in holder)
+        again, base = seq_base(calls[reread]["act"], f"[{tag}] the row's re-read", "T428")
+        assert again == ident and base >= released, (
+            f"[{tag}] the row's re-read ran under {calls[reread]['act']}: not act {ident} re-based at or past "
+            f"the holder's seq {released} (T428)")
+        mine = [e for e in entries if e["act_id"] == ident]
+        if outside:
+            sent = [v for v in verbs[rebase + 1:] if v in START_WRITES]
+            assert run.code != 0 and sent == [] and launched == [], (
+                f"[{tag}] with {R_FAR}'s session cell changed during the wait, lane-start exited {run.code}, sent "
+                f"{sent} after its re-base and launched {len(launched)} claude (T428): {run.err[-600:]}")
+            assert [e["verb"] for e in mine] == ["request-handoff"], f"[{tag}] the act's entries: {mine}"
+        else:
+            later = [e["verb"] for e in mine if e["seq"] > released]
+            assert later and "expectation:" not in run.err and launched, (
+                f"[{tag}] with only {R_FAR}'s state cell changed, lane-start's writes after its re-base committed "
+                f"{later} and it launched {len(launched)} claude (T428): {run.err[-900:]}")
+
+
+@pytest.mark.parametrize("condition", CONDITIONS)
 def test_each_of_the_three_conditions_holds(condition, request):
-    """[lane-start-reread]: `lane-start` re-bases with `act-begin --rebase`
-    before its second `binding` read, read from its text (FP): red until
-    T428 lands. [skill-step-4]: the skill's step 4 opens with `act-begin`
-    and re-derives the identity; where `lane` differs from step 1's it sends
-    none of its three writes, and with the same lane the three commit. Its
-    block is found with no engine: red until T431 lands. [lane-end-gate]:
-    `lane-end`'s gate runs with the act's `LANES_ACT` and writes nothing, and
-    a `NOTED lane:L` line that a second session writes after the base
-    refuses neither W13 nor W14 (lane 3's batch 12). Both flows run on
-    T252b's world (see the section's head)."""
+    """[lane-start-reread]: after its W8 wait, `lane-start` re-bases with
+    `act-begin --rebase` and reads the row again: a change outside the
+    state cell refuses it with no write after the re-base, and the state
+    cell alone does not. [skill-step-4]: the skill's step 4 opens with
+    `act-begin` and re-derives the identity; where `lane` differs from step
+    1's it sends none of its three writes, and with the same lane the three
+    commit. Its block is found with no engine: red until T431 lands.
+    [lane-end-gate]: `lane-end`'s gate runs with the act's `LANES_ACT` and
+    writes nothing, and a `NOTED lane:L` line that a second session writes
+    after the base refuses neither W13 nor W14 (lane 3's batch 12). All
+    three run their flows on T252b's world (see the section's head)."""
     if condition == "skill-step-4":
         prelude, block = skill_prelude_block(), skill_step_4_block()
         skill_step_4_holds(request.getfixturevalue("act_worlds")(), prelude, block)
-        return
-    if condition == "lane-end-gate":
+    elif condition == "lane-end-gate":
         lane_end_gate_holds(request.getfixturevalue("act_worlds")())
-        return
-    path, needs = CONDITIONS[condition]
-    target = REPO / path
-    assert target.exists(), f"[{condition}] no {path} in this tree"
-    text = target.read_text(encoding="utf-8", errors="replace")
-    for need in needs:
-        assert need in text, f"[{condition}] {path} does not hold {need!r}"
+    else:
+        lane_start_reread_holds(request.getfixturevalue("act_worlds"))
 
 
 # ---------------------------------------- the launches (T252, T252h)
