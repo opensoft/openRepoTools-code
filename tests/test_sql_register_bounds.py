@@ -800,6 +800,38 @@ class Bench:
         self.session = None
         self.service_state = None
 
+    def to_primary(self) -> None:
+        """THE BENCH'S DATABASE AT `primary` WITH THE MARKER `present` (T257m;
+        line BD-18): the bench's own C imported by lane 1's `lanes-index
+        import --at <C>` (T115) as the operator lane, from its checkout, as
+        the superuser on the cluster's socket, as test 7's `FixtureRegister`
+        imports; then AT-LR006's route, the import module's `_to_primary`
+        (TP:4610-4615 at B14), as T257j's writer rows' `Operator` estate takes
+        it. A writer's snapshot refuses at its check 4 on any other switch,
+        and `pg` alone, or a TLS cluster's database, is a bootstrap-only
+        clone, its switch `files` with the marker `absent` and its head -1
+        (line BD17's run of the lookup's wait). Made with `TIMING_PSQL` off
+        `PATH`, so the timing and begin logs hold the case's own calls alone.
+        Only the cases whose writers commit call it."""
+        from types import SimpleNamespace
+        from test_sql_register_import import _to_primary
+        url = self.pg.url()
+        config = _private(self.root / "conf" / "import" / "lanes-index.conf", "\n".join([
+            "mode=index", f"register_url={url}", f"register_passfile={self.passfile}",
+            f"reader_url={url}", f"reader_passfile={self.passfile}",
+            "register_label=register-test", f"register_schema={SCHEMA}", ""]))
+        env = dict(self.env, LANES_INDEX_CONFIG=str(config), LANES_LANE="repoA-2",
+                   PATH=os.environ.get("PATH", os.defpath))
+        proc = subprocess.run([sys.executable, str(INDEXER), "import", "--at", self.c],
+                              capture_output=True, text=True, env=env, cwd=str(self.wip),
+                              timeout=400, stdin=subprocess.DEVNULL)
+        assert proc.returncode == 0, \
+            f"the bench's import --at C (lane 1's T115): {proc.returncode}: {proc.stderr}"
+        tree = subprocess.run(["git", "rev-parse", f"{self.c}:lanes"], cwd=str(self.wip),
+                              env=self.env, capture_output=True, text=True,
+                              check=True).stdout.strip()
+        _to_primary(self.pg, SimpleNamespace(c=self.c, tree=lambda sha: tree), load_indexer())
+
     def lane_checkout(self) -> Path:
         """`<c>`, lane `repoA-2`'s own register checkout, made once (T257l;
         lane 4's triage, #165 6833813092, its group b1): on primary a write
@@ -831,12 +863,25 @@ class Bench:
             self.request.addfinalizer(self.session.close)
         return self.session
 
-    def login(self, group: str) -> str:
-        """A login of `group`, made here until T228's logins exist."""
+    def login(self, group: str, floors: bool = False) -> str:
+        """A login of `group`, made here until T228's logins exist. With
+        `floors`, a writer login also takes the writer's floors that `login
+        add` sets on each writer login (design.md section 1.4's login step,
+        Y:2302-2309; `lanes-index`'s `_REGISTER_LOGIN_BLOCK`): `lock_timeout`
+        2000 ms, `statement_timeout` 5 s and `idle_in_transaction_session_
+        timeout` 5 s, the login's own, so a session that sets none of them
+        has them, as the idle bound's held session needs (T257m; line
+        BD-18). A register call's own bounds ride `PGOPTIONS`, which a
+        login's settings never override."""
         name = f"t220_{uuid.uuid4().hex[:12]}"
         self.pg.psql(f"CREATE ROLE {name} LOGIN IN ROLE {group};")
         self.request.addfinalizer(lambda: self.pg.cluster.psql(f"DROP ROLE IF EXISTS {name};",
                                                                check=False))
+        if floors:
+            assert group == "lanes_register_writer", f"the writer's floors, on {group}"
+            self.pg.psql(f"ALTER ROLE {name} SET lock_timeout = '2000ms';\n"
+                         f"ALTER ROLE {name} SET statement_timeout = '5s';\n"
+                         f"ALTER ROLE {name} SET idle_in_transaction_session_timeout = '5s';\n")
         return name
 
     def config(self, host: str, port: int, user: str, mode: str = "primary") -> Path:
@@ -2082,12 +2127,17 @@ def test_an_orphaned_writer_transaction_is_ended_by_the_idle_bound(pg, tmp_path,
     through T203's shim, whose `fail-match` on `commit_write` fails its
     commit calls unsent; the shim's log holds the commit call's script, which
     the held session replays as the writer's login with its last statement,
-    `COMMIT`, left off. The waiting write is a second writer under D7's 30 s,
+    `COMMIT`, left off, and its entry's `not_after` moved 30 s past the
+    replay's start (T257m). The login has the writer's floors, the idle
+    bound among them, as `login add` sets them (`Bench.login`'s `floors`,
+    T257m). The waiting write is a second writer under D7's 30 s,
     started once the session idles. It fails until lane 4's L4-B3 (T414's
     seam and T415's attempt loop; only T413 is in lane 4's share) and lane
-    1's T112 land, on T227's template and T228's logins."""
+    1's T112 land, on T227's template and T228's logins. The bench's
+    database is at `primary` first (`Bench.to_primary`, T257m)."""
     bench = Bench(pg, tmp_path, request)
-    user = bench.login("lanes_register_writer")
+    bench.to_primary()
+    user = bench.login("lanes_register_writer", floors=True)
     config = bench.config(quote(str(pg.host), safe=""), pg.port, user)
     where = _shim(bench, [{"mode": "fail-match", "match": "commit_write"}])
     first = _writer(bench, config, f"PAUSED {DOT} T257's orphan, unsent", deadline="3")
@@ -2096,6 +2146,16 @@ def test_an_orphaned_writer_transaction_is_ended_by_the_idle_bound(pg, tmp_path,
     assert scripts, f"the first writer sent no commit call: {first.returncode}: {err}"
     parts = [part.strip() for part in scripts[0].strip().rstrip(";").split(SEP)]
     assert parts[-1] == "COMMIT", f"the commit call's script ends with COMMIT: {parts}"
+    # ITS `not_after` MOVES WITH THE REPLAY (T257m; line BD-18): the entry's
+    # `not_after` (F3) is the snapshot's clock plus `C` and 2 s, about 10 s on,
+    # and the replay starts once the first writer has exited, past it, where
+    # `commit_write` refuses the entry and the session ends before it idles. The
+    # held session stands for a commit sent in time whose client went away, so it
+    # carries a `not_after` 30 s past the replay's start; nothing else changes.
+    fresh = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 30))
+    parts = [re.sub(r'"not_after":"[^"]*"', f'"not_after":"{fresh}"', part) for part in parts]
+    assert sum(part.count('"not_after"') for part in parts) == 1, \
+        f"the commit call's entry carries one not_after: {parts}"
     _arm(where, bench, [])
     orphan = pg.session(user=user, appname="t257-orphan")
     waiting = None
@@ -2230,8 +2290,10 @@ def test_the_lookups_wait_counts_from_the_snapshot_calls_end_and_gets_no_lr011(
     are logged beside the shim's log of its script, in the same order; no
     call may be cut by its timer, or the two logs would not pair. It fails
     until lane 4's L4-B3 (T414, T415) and lane 1's T111, T112 and T114 land,
-    on T227's template and T228's logins."""
+    on T227's template and T228's logins. The bench's database is at
+    `primary` first (`Bench.to_primary`, T257m)."""
     bench = Bench(pg, tmp_path, request)
+    bench.to_primary()
     user = bench.login("lanes_register_writer")
     config = bench.config(quote(str(pg.host), safe=""), pg.port, user)
     where = _shim(bench, [{"mode": "window", "ms": 2500, "call": 1},
@@ -2285,10 +2347,12 @@ def test_over_a_delayed_tls_link_no_healthy_call_meets_its_timer(tls_cluster, tm
     timer: every call that began has ended with `psql`'s own exit, in the
     timing log, none cut by its client timer, and each call's time is
     recorded against its timer, `S` = `C` = 9 s, `T_L` = 10 s and a reader's
-    7 s, with its margin. It fails until lane 4's L4-B3 (T414, T415) and lane
-    1's T111 to T114 land, on T229's TLS cluster and relay."""
+    7 s, with its margin. The TLS cluster's database is at `primary` first
+    (`Bench.to_primary`, T257m). It fails until lane 4's L4-B3 (T414, T415)
+    and lane 1's T111 to T114 land, on T229's TLS cluster and relay."""
     from pgcluster import FX_WRITER, Database, delayed_loopback
     bench = Bench(Database(tls_cluster, tls_cluster.database_name), tmp_path, request)
+    bench.to_primary()
     where = _shim(bench, [], timed=True)
     with delayed_loopback(tls_cluster.port, DELAY_S) as relay:
         config = _link_config(tmp_path / "conf" / "lanes-index.conf", tls_cluster, relay.port,
@@ -2328,12 +2392,14 @@ def test_a_burst_of_ten_over_a_delayed_tls_link_commits_each_once_or_exits_75_wi
     every login's commits.
 
     Lane 2's reading: the ten writers share the bench's one checkout, as
-    `set-row-state` on one lane, each its own state. It fails until lane 4's
-    L4-B3 (T414, T415) and lane 1's T111 to T114 land, on T229's TLS cluster
-    and relay."""
+    `set-row-state` on one lane, each its own state. The TLS cluster's
+    database is at `primary` first (`Bench.to_primary`, T257m). It fails
+    until lane 4's L4-B3 (T414, T415) and lane 1's T111 to T114 land, on
+    T229's TLS cluster and relay."""
     from pgcluster import FX_WRITER, PASSWORD_LINE, Database, delayed_loopback
     db = Database(tls_cluster, tls_cluster.database_name)
     bench = Bench(db, tmp_path, request)
+    bench.to_primary()
     where = _shim(bench, [], timed=True)
     writers = [FX_WRITER] * 10
     if logins == "two-logins":
