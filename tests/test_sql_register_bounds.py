@@ -120,6 +120,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -706,6 +707,25 @@ FIRST_CASES = [f"{row}-{fault}" for row, spec in ROWS.items() for fault in spec[
 SLOW_ROWS = [row for row, spec in ROWS.items()
              if spec["statement_ms"] and row not in ("import", "snapshot-miss")]
 
+#: THE SERVICE ROW'S STATE HOME: SHORT, AND OUTSIDE THE TEMPORARY ROOT. The
+#: service's one socket is `${XDG_STATE_HOME}/openRepoTools/run/register.sock`
+#: (socket contract d8, section 2.1): `serve` binds it, and the guard's read
+#: connects to it. `sun_path` holds 107 bytes on Linux and 103 on macOS, and
+#: the contract's `serve` refuses a path over 103 bytes (`path-too-long`,
+#: exit 2). Under the bench's `tmp_path` the path followed the temporary root,
+#: about 147 bytes on the runner, where lane 1's guard rerun met `OSError:
+#: AF_UNIX path too long` (verify-r5-c2b, CI run 43140203269; line AN14). So
+#: the `service` row's `XDG_STATE_HOME`, for `serve` and for the guard runs it
+#: answers alike, is a `mkdtemp` of the bench's own in `/tmp`, as line G's
+#: estates make theirs (T213i): `/tmp/l2bd-` and mkdtemp's 8 characters, 18
+#: bytes, which puts the socket at 50 whatever `TMPDIR` or `--basetemp` is.
+#: The bench removes it when the test ends (`Bench.service_env`). No other row
+#: starts `serve`, so every other row keeps the bench's state home.
+STATE_PARENT = "/tmp"
+STATE_PREFIX = "l2bd-"
+#: The contract's bound on the socket's path, in bytes (section 2.1).
+SOCKET_MAX = 103
+
 
 class Bench:
     """One test's bench: a scratch workspace with a bare origin, the lane's
@@ -776,6 +796,7 @@ class Bench:
                                 capture_output=True, text=True, check=True).stdout.strip()
         self.request = request
         self.session = None
+        self.service_state = None
 
     def guard_session(self):
         """The guard rows' live session (T203c): a record on this workstation
@@ -811,7 +832,8 @@ class Bench:
             service: subprocess.Popen | None = None) -> tuple:
         """Run `row`'s path; return (the process, its elapsed seconds). The
         `service` row starts `lanes-index serve` for this run alone, unless the
-        caller passes the one it holds (T237y)."""
+        caller passes the one it holds (T237y), and runs under the service's
+        short state home (`service_env`), as that `serve` does."""
         env = dict(self.env, LANES_INDEX_CONFIG=str(config), LANES_LANE="repoA-2")
         tool = self.copy.parent
         index = [sys.executable, str(self.copy)]
@@ -825,6 +847,8 @@ class Bench:
             session = self.guard_session()
             env = session.env(env)
             stdin = session.hook_input("2" if row == "answer-2" else "hello")
+            if row == "service":
+                env = self.service_env(env)
         elif row == "reader":
             argv = index + ["register", "read", "--prefetch", "--cache",
                             str(self.root / "cache" / "reg"), "--files", "register,aliases"]
@@ -934,6 +958,20 @@ class Bench:
         bench's, the configuration, the lane, and the live session's."""
         env = dict(self.env, LANES_INDEX_CONFIG=str(config), LANES_LANE="repoA-2")
         return self.guard_session().env(env)
+
+    def service_env(self, env: dict) -> dict:
+        """`env` with the `service` row's state home (`STATE_PREFIX`): one
+        short directory of this bench's own in `/tmp`, made at the first call
+        and removed when the test ends, so `serve` and the guard runs it
+        answers share one socket path within `SOCKET_MAX` bytes."""
+        if self.service_state is None:
+            home = Path(tempfile.mkdtemp(prefix=STATE_PREFIX, dir=STATE_PARENT))
+            self.request.addfinalizer(lambda: shutil.rmtree(home, ignore_errors=True))
+            sock = home / "openRepoTools" / "run" / "register.sock"
+            assert len(os.fsencode(str(sock))) <= SOCKET_MAX, \
+                f"the service's socket path {sock} is over {SOCKET_MAX} bytes"
+            self.service_state = home
+        return dict(env, XDG_STATE_HOME=str(self.service_state))
 
     def start_service(self, env: dict) -> subprocess.Popen:
         """`lanes-index serve` on `env`, returned once its socket is bound at
@@ -1116,7 +1154,7 @@ def _service_57014(bench: Bench, spec: dict, user: str) -> None:
     config = bench.config(quote(str(bench.pg.host), safe=""), bench.pg.port, user)
     statement_s = spec["statement_ms"] / 1000
     bench.stream()
-    serve = bench.start_service(bench.guard_env(config))
+    serve = bench.start_service(bench.service_env(bench.guard_env(config)))
     try:
         proc, warm = None, False
         for _ in range(WARM_RUNS):
