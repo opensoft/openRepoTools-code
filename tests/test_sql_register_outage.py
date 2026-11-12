@@ -1492,10 +1492,14 @@ def test_status_reports_a_declaration_left_in_place(pg, tmp_path, request):
     register reads, so the exit is #160's own (B15 tasks:545, "Exits: 69
     where the register cannot be read ...; otherwise #160's own 0 or 1";
     exit-codes.md section 3.4), never 69. This estate has no local index,
-    so #160's half gives its 1, with its `index: missing` line. That line
-    is #160's, and #160's `cmd_status` prints it through `say`, on stdout
-    (`lanes-index:2384` at `a2073eae`; `lanes-index:16417` at round 5;
-    lane 1, #165 6810924785). The contract names no other stream for it."""
+    so #160's half gives its 1, with its `index: missing - <path> does not
+    exist` line. Lane 3's corrected oracle (#165 6812031872, on lane 1's
+    6810924785): "the case asserts the declaration's `outage:` line and
+    #160's `index: missing - ... does not exist` line, both on stdout, and
+    that the exit is #160's 1, never 69. That oracle names the cause, so
+    it cannot pass on another failure." Stderr is not in the oracle: `say`
+    writes stdout, and `status` prints both lines through it
+    (`lanes-index:205-206`, `:16417` at `465680ee`)."""
     estate, config, env, reader = _on_pg(pg, tmp_path, request, ["import", "cutover"])
     estate.declared(config, mirror_seq=1)
     guard_config = estate.config(url=pg.url(reader), name="conf-guard")
@@ -1504,7 +1508,11 @@ def test_status_reports_a_declaration_left_in_place(pg, tmp_path, request):
     assert not result["killed"], "the hook was killed at 5 s"
     assert "read: mirror" not in result["out"] and "declared outage" not in result["out"]
     proc, _ = _index(estate, config, "status", env=env)
-    said = f"stdout: {proc.stdout[-600:]!r}; stderr: {proc.stderr[-600:]!r}"
+    said = f"stdout: {proc.stdout[-900:]!r}; stderr: {proc.stderr[-300:]!r}"
+    outage = [line.strip() for line in proc.stdout.splitlines()
+              if line.strip().startswith("outage:")]
+    assert any("declared outage" in line and "register-outage" in line for line in outage), (
+        f"stdout has no `outage:` line naming the declaration left in place: {said}")
+    assert re.search(r"^index: missing - .+ does not exist$", proc.stdout, re.M), (
+        f"stdout has no `index: missing - ... does not exist` line, #160's: {said}")
     assert proc.returncode == 1, f"status exited {proc.returncode}, not #160's 1: {said}"
-    assert "index: missing" in proc.stdout, f"#160's `index: missing` is not on stdout: {said}"
-    assert "register-outage" in proc.stdout + proc.stderr, said
