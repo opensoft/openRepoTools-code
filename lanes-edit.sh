@@ -8224,27 +8224,39 @@ pw_last_line() {   # <file>
 # THE FIRST PATH WHOSE DIGEST DIFFERS (Y:5330), between the entry's rows
 # (PW_E_ROWS) and a replay's `files`: in path order, bytewise, the first path
 # that is in one set and not the other, or whose `<present>` and `<sha256>`
-# differ.
+# differ. Each set is split at each newline by parameter expansion, and a row
+# is looked for in the other set as one whole line of it, by `case`, never
+# through a here-string: bash 3.2 writes one to a temp file in /tmp, and
+# where none can be made, as in a full /tmp, no loop ran and no path was
+# named (review REV-W10a, M1's pattern).
 pw_first_diff() {   # <the replay's files>
-  local fd_l="" fd_p="" fd_r="" fd_o="" fd_x="" fd_all="" fd_t=""
+  local fd_k="" fd_l="" fd_p="" fd_r="" fd_x="" fd_all="" fd_t=""
   fd_t="$(printf '\t')"
   fd_r="$(cat -- "$1" 2>/dev/null)"
-  while IFS= read -r fd_l; do
+  fd_k="$PW_E_ROWS"
+  while [ -n "$fd_k" ]; do
+    fd_l="${fd_k%%"$WR_NL"*}"
+    case "$fd_k" in
+      *"$WR_NL"*) fd_k="${fd_k#*"$WR_NL"}" ;;
+      *) fd_k="" ;;
+    esac
     [ -n "$fd_l" ] || continue
     fd_p="${fd_l%%"$fd_t"*}"; fd_x=0
-    while IFS= read -r fd_o; do
-      [ "$fd_o" != "$fd_l" ] || fd_x=1
-    done <<<"$fd_r"
+    case "$WR_NL$fd_r$WR_NL" in *"$WR_NL$fd_l$WR_NL"*) fd_x=1 ;; esac
     [ "$fd_x" = 1 ] || fd_all="${fd_all}${fd_p}${WR_NL}"
-  done <<<"$PW_E_ROWS"
-  while IFS= read -r fd_l; do
+  done
+  fd_k="$fd_r"
+  while [ -n "$fd_k" ]; do
+    fd_l="${fd_k%%"$WR_NL"*}"
+    case "$fd_k" in
+      *"$WR_NL"*) fd_k="${fd_k#*"$WR_NL"}" ;;
+      *) fd_k="" ;;
+    esac
     [ -n "$fd_l" ] || continue
     fd_p="${fd_l%%"$fd_t"*}"; fd_x=0
-    while IFS= read -r fd_o; do
-      [ "$fd_o" != "$fd_l" ] || fd_x=1
-    done <<<"$PW_E_ROWS"
+    case "$WR_NL$PW_E_ROWS$WR_NL" in *"$WR_NL$fd_l$WR_NL"*) fd_x=1 ;; esac
     [ "$fd_x" = 1 ] || fd_all="${fd_all}${fd_p}${WR_NL}"
-  done <<<"$fd_r"
+  done
   printf '%s' "$fd_all" | LC_ALL=C sort | head -n 1
 }
 
