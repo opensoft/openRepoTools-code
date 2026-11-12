@@ -10493,9 +10493,10 @@ pw_keep() {
 # removed from its environment (D12), so the renderer fetches origin.
 # `LANES_ACT` AND `LANES_EXPECT` ARE REMOVED TOO (lane openRepoTools-3's ruling
 # on question 122, #165 6814531692, by its G5): the fork outlives the act, so
-# it carries neither the act's base nor this write's scopes, as T428 has
-# `lane-start` do for 5e's daily-report sweep. This process keeps both
-# (Y:5599's check 2).
+# it carries neither the act's base nor this write's scopes, as T428's
+# commit `4c46005` has `lane-start` do for 5e's daily-report sweep
+# (`4c46005:lane-start:5468`, on T428's branch and not in this tree). This
+# process keeps both (Y:5599's check 2).
 # NOT BEHIND `LANES_INDEX=off`, which `index_nudge` honours: `lane-worktrees`
 # sets that variable on every call it makes, and it must never skip the fork
 # (Y:5377; FR-027). It stays in this process's group, as `index_nudge`'s fork
