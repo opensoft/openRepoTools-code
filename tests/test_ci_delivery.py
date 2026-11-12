@@ -149,7 +149,7 @@ def test_ci_delivery_exact_independent_batch_has_immutable_prefix_proof(delivery
     "draft", "closed", "fork", "dependency", "intent", "ambiguous", "fast-missing",
     "fast-forged-app", "fast-old-head", "fast-wrong-workflow", "fast-job-skipped",
     "review-old-head", "review-running", "review-quota", "review-findings", "review-unmanaged",
-    "truncated-comments", "fast-attempt", "truncated-checks"])
+    "truncated-comments", "fast-attempt", "boolean-count", "truncated-checks"])
 def test_ci_delivery_missing_forged_or_unsupported_evidence_refuses(delivery, batch, failure):
     data, first = batch["data"], batch["heads"][0]
     checks = data[f"commits/{first}/check-runs?check_name={FAST}&filter=latest&per_page=100"]
@@ -196,6 +196,8 @@ def test_ci_delivery_missing_forged_or_unsupported_evidence_refuses(delivery, ba
         data["issues/7/comments?per_page=100"] = [copy.deepcopy(comment) for _ in range(100)]
     elif failure == "truncated-checks":
         checks["total_count"] = 2
+    elif failure == "boolean-count":
+        checks["total_count"] = True
     elif failure == "review-quota":
         comment["body"] = "Codex review usage limit reached"
     elif failure == "review-unmanaged":

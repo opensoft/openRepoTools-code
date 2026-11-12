@@ -73,7 +73,8 @@ def fast_receipt(pr, head, request):
     response = request(REPOSITORY,
                        f"commits/{head}/check-runs?check_name={FAST}&filter=latest&per_page=100")
     checks = response["check_runs"]
-    require(response["total_count"] == len(checks) == 1, "Missing or ambiguous fast check")
+    require(type(response["total_count"]) is int and response["total_count"] == len(checks) == 1,
+            "Missing or ambiguous fast check")
     check = checks[0]
     require(check["name"] == FAST and check["head_sha"] == head
             and check["app"]["slug"] == "github-actions"
@@ -84,9 +85,9 @@ def fast_receipt(pr, head, request):
         check["details_url"])
     require(link is not None, "Unrecognized fast workflow identity")
     run_id, job_id = (int(value) for value in link.groups())
-    require(check["id"] == job_id, "Fast job identity differs")
+    require(type(check["id"]) is int and check["id"] == job_id, "Fast job identity differs")
     run = request(REPOSITORY, f"actions/runs/{run_id}")
-    require(run["id"] == run_id and run["event"] == "pull_request"
+    require(type(run["id"]) is int and run["id"] == run_id and run["event"] == "pull_request"
             and run["path"] == FAST_WORKFLOW and run["head_sha"] == head
             and run["head_branch"] == pr["head"]["ref"]
             and run["head_repository"]["full_name"] == REPOSITORY
@@ -95,7 +96,8 @@ def fast_receipt(pr, head, request):
             and run["status"] == "completed" and run["conclusion"] == "success",
             "Fast run belongs to another workflow/head or is incomplete")
     job = request(REPOSITORY, f"actions/jobs/{job_id}")
-    require(job["id"] == job_id and job["run_id"] == run_id and job["head_sha"] == head
+    require(type(job["id"]) is int and job["id"] == job_id
+            and type(job["run_id"]) is int and job["run_id"] == run_id and job["head_sha"] == head
             and job["run_attempt"] == run["run_attempt"] and job["name"] == FAST
             and job["status"] == "completed" and job["conclusion"] == "success",
             "Fast job does not match the current successful run")
