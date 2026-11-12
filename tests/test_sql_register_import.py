@@ -1246,6 +1246,22 @@ class CutoverRegister(FixtureRegister):
                            env=self.env, capture_output=True, stdin=subprocess.DEVNULL)
         return target
 
+    def fetch_w(self) -> None:
+        """THE READER'S FETCH OF W (lane 3's ruling (a), #165 6833830078):
+        `status` reads `m` on W's `origin/main` as last fetched there and
+        never fetches (tasks:545), no write on primary fetches W (D12), and
+        the render pushes from `<c>`, so a lag read after a render follows
+        this: `git -C <W> fetch -q origin main`, with plain git, never
+        through AT-F2's wrapper (it is not on this environment's `PATH`).
+        It is the case's own act, not the write's, so no write's no-fetch
+        assertion changes (T240)."""
+        proc = subprocess.run(["git", "-C", str(self.ws), "fetch", "-q", "origin", "main"],
+                              capture_output=True, env=self.env, check=False,
+                              stdin=subprocess.DEVNULL, timeout=120)
+        assert proc.returncode == 0, (
+            f"the harness's fetch of W, git -C {self.ws} fetch -q origin main: "
+            f"{proc.stderr.decode(errors='replace')}")
+
     def write(self, text: str, env: dict | None = None) -> subprocess.CompletedProcess:
         """One `log NOTED` on primary, through the flipped copy's
         `lanes-edit.sh`: R3b's smoke test. The operator lane's `<c>` is made
@@ -1366,8 +1382,10 @@ def test_the_first_write_after_cutover_is_the_cutovers_seq_plus_1_with_lag_0(pg,
     """After a first cutover, `log NOTED`, the smoke test, gives its SQL row
     at seq 2, the cutover's plus 1; a mirror commit carrying `Register-Seq:
     2`; a read-back equal to the row, here the mirror's file equal to SQL's
-    render of it; and a lag of 0 in `status` (AT-7, "The cutover (G)",
-    TP:1469-1471; design.md's cutover step 4)."""
+    render of it; and a lag of 0 in `status`, read after the harness's
+    fetch of W, since `status` never fetches (AT-7, "The cutover (G)",
+    TP:1469-1471; design.md's cutover step 4; open point 8; lane 3's
+    ruling (a), #165 6833830078)."""
     reg = CutoverRegister(tmp_path / "e", pg)
     proc = reg.cutover()
     assert proc.returncode == 0, proc.stderr
@@ -1385,6 +1403,7 @@ def test_the_first_write_after_cutover_is_the_cutovers_seq_plus_1_with_lag_0(pg,
     mirrored = reg.origin_git("show", f"{commit}:{rows[0]['file']}").encode("utf-8")
     assert rows[0]["raw"] in mirrored.decode("utf-8").split("\n")
     assert mirrored == _renders(pg)[rows[0]["file"]], "the read-back equals SQL's render"
+    reg.fetch_w()   # open point 8: `status` reads W as last fetched (lane 3's ruling (a))
     status = reg.index("status")
     assert LAG_0.search(status.stdout), f"status shows a lag of 0: {status.stdout}{status.stderr}"
 
