@@ -73,8 +73,9 @@
 # D8, D7 and D10, Y:468-469, Y:455-456 and Y:511-512; Y:5738). On primary a 3 is
 # a write in doubt: the rename "may not be written", and the rerun that settles
 # it is the writer's, printed above, never this file's. 75 and 69 are refusals
-# that wrote nothing. This file reads no register, so it cannot tell the two
-# modes apart: it says D8's words and, beside them, the files-mode meaning of 3.
+# that wrote nothing. This file reads no register before the write, so it
+# cannot tell the two modes apart: it says D8's words and, beside them, the
+# files-mode meaning of 3.
 #
 #   $LANES_EDIT          the writer (default: lanes-edit.sh beside this file)
 #   $LANE_RENAME_NO_TMUX 1: the same as --no-tmux (the test seam)
