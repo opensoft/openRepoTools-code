@@ -4325,8 +4325,9 @@ reg_mode_files() {   # <why>
 # mirror read: lane 3's item 1 (#165 6746035594, as 6747422030 words it), with
 # `managed-projection` at the ownership seam (DEC-27, 6754522885). Every other
 # arm ignores the variable, `who` and `lane-last` among them. `REG_NO_CALL=1`
-# is `session-start`'s: a mirror arm with no register call (R39), whose read
-# T508 gives it. `lanes --decide` is decide, `reg_open`'s one flag rule (R38).
+# is `session-start`'s: a mirror arm with no register call (R39), whose read is
+# its block's own, `reg_session_read` (T508), never `reg_open`'s.
+# `lanes --decide` is decide, `reg_open`'s one flag rule (R38).
 # The table has no rows for the five arms its own tree lacks: T401's
 # `register-text` and `register-grep`, T410's `act-begin`, T427's
 # `start-record` and T502's `guard-bind`. Whichever of T504 and an arm's task
@@ -4442,7 +4443,8 @@ reg_class_of() {   # <arm>: sets REG_CLASS, REG_MIRROR_VAR and REG_NO_CALL
 #      there or the read of it failed.
 # `REG_STORE` then says which store answers the read sites: `sql` (the family at
 # `n`), `files`, or `mirror`; empty where no door ran (a none, writer or guard
-# arm, `session-start`). `REG_MODE` and `REG_STORE` differ under
+# arm), and for `session-start` until its block's own read, `reg_session_read`
+# (T508), sets it. `REG_MODE` and `REG_STORE` differ under
 # `LANES_READ_MIRROR=1` and in T413's child; the read sites test `REG_STORE`, and
 # the mode-keyed lines `REG_MODE` (lane 5's answer 11). `lanes-index` is
 # `lanes_index_bin`'s (Q-L5-2). No timer is set around the call: a register
@@ -12061,6 +12063,13 @@ handoff_stamped_by() {   # <handoff cell> <session id>
 row_stamp_is_unknown() {   # <lane>
   rsu_lane="${1-}"; rsu_n=""; rsu_row=""; rsu_last=""
   [ -n "$rsu_lane" ] || return 1
+  # FEATURE 007, T508 - ON PRIMARY IT READS NOTHING AND ANSWERS 1 (lane 3, #165
+  # 6807910478, T506 Q4): the stamp is never read from the register, and the
+  # one caller, `session_start_block`, may make no register call (R39), so
+  # there the cure is the relaunch. The key is this path's own test of primary,
+  # `REG_MODE` as `reg_session_read` set it, since `REG_STORE` is never `sql`
+  # here.
+  [ "${REG_MODE:-}" != primary ] || return 1
   rsu_n="$(row_line "$rsu_lane" 2>/dev/null)" || return 1
   case "$rsu_n" in ''|*[!0-9]*) return 1 ;; esac
   rsu_row="$(sed -n -e "${rsu_n}p" "$LANES_FILE" 2>/dev/null || :)"
@@ -12084,6 +12093,14 @@ row_stamp_is_unknown() {   # <lane>
 # DIRECTORY CONFERS NO LANE (Amendment 6(a)) — two lanes share one all day, and
 # every nested checkout in the xFactory estate shares its parent's. The WINDOW
 # and the REGISTER decide, in that order.
+#
+# FEATURE 007, T508 — ITS READ (`reg_session_read`; R39; W:4896) comes after a
+# compact's return and before the first read below. On primary, and under
+# `lanes-index`'s 78, the block reads the mirror, with the `read: mirror` line
+# on stderr and no prefetch and no register call; off primary it runs F17,
+# which reads on with its line under the marker. Every read below reads the
+# files either way, since `REG_STORE` is never `sql` here, and on primary
+# `row_stamp_is_unknown` reads nothing.
 session_start_block() {
   ssb_json="${1-}"; ssb_win="${2-}"
   ssb_id="$(lc "$(jstr "$ssb_json" session_id)")"
@@ -22585,7 +22602,10 @@ EOF
   # and it must be fast and offline-safe instead. It reads the checkout AS LAST
   # FETCHED and says how old that is, so a reader can tell a current answer from
   # a stale one. `git_net` is the only door to the network in this file, and
-  # nothing on this path opens it.
+  # nothing on this path opens it. FEATURE 007, T508: its one `lanes-index`
+  # call is `lanes-index mode`, asked once, only where a configuration exists,
+  # under its 2 s timer (`reg_session_read`), and it reads only the
+  # configuration (contract 3.1): no network, and no register call (R39).
   session-start)
     if [ -t 0 ]; then ss_json=""; else ss_json="$(cat 2>/dev/null || :)"; fi
     ss_win=""
