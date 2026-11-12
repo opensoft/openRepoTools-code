@@ -3294,7 +3294,8 @@ def _register_snapshot_args(args: list[str]) -> dict | None:
       --verb --args-sha256` (`--write-id <uuid>` without `--generation` is
       usage: O4, ratified by R08);
     - under `--at <k>`: `--generation <uuid>` alone, or all five (O13);
-      `--at` without `--generation` is usage;
+      `--at` without `--generation` is usage, and so is `--at` without
+      `--tree`, which would print `n=` as `k` with nothing rendered;
     - each of those with `--tree <dir> --checkout <c>`, the two together;
     - the image cache's: `--files <set>` or `--all`, with `--out <dir>`, and
       no other flag.
@@ -3376,6 +3377,9 @@ def _register_snapshot_args(args: list[str]) -> dict | None:
         if (write_id is None) != (not identity) or (write_id and len(identity) != 3):
             raise _SnapshotUsage("under --at, --generation <uuid> goes alone or with all four "
                                  "of --write-id, --lane, --verb and --args-sha256")
+        if opts["--tree"] is None:
+            raise _SnapshotUsage("--at <k> needs --tree <dir> --checkout <lane checkout>, or "
+                                 "n= would print k with nothing rendered (contract §3.2)")
     elif write_id is None:
         if generation is not None or identity:
             raise _SnapshotUsage("an identity flag needs --write-id: <uuid> with all five, "
@@ -21593,7 +21597,7 @@ the forms contracts/register-cli.md fixes; <id> is a write's identity,
 `--write-id <uuid> --generation <uuid> --lane <lane> --verb <verb>
 --args-sha256 <hex>`, and under `--at <k>` `--generation <uuid>` alone will do:
 {PROG} register snapshot [<id> | --write-id new --lane <lane> --verb <verb>
-                              --args-sha256 <hex>] [--tree <dir> --checkout <c>] [--at <k>]
+                              --args-sha256 <hex>] [--tree <dir> --checkout <c> [--at <k>]]
 {PROG} register snapshot (--files <set> | --all) --out <dir>
 {PROG} register commit   <id> --workstation <name> <attempt dir>
 {PROG} register classify                      register lines on stdin
