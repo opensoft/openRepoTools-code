@@ -20934,9 +20934,10 @@ EOF
   # last hop last (`canon_lane_walk`), and exits with these same codes, or with
   # 69 or 1 where its own read of the register failed (below). The walk
   # is asked only after `canon_lane` has answered 0, so every refusal and every
-  # note is `canon-lane`'s own, and a refusal prints no walk at all: part of one
-  # would under-list an act's scopes. The form is `canon-lane --walk <lane>`
-  # alone; `canon-lane <lane> --walk` stays the usage 64 it always was.
+  # note but its own failed read's is `canon-lane`'s own, and a refusal prints
+  # no walk at all: part of one would under-list an act's scopes. The form is
+  # `canon-lane --walk <lane>` alone; `canon-lane <lane> --walk` stays the usage
+  # 64 it always was.
   canon-lane)
     cl_walk=0
     if [ "${1-}" = --walk ]; then
