@@ -61,13 +61,13 @@
 # register, or a read that failed · `2` a refusal (clause (a), bad arguments, or
 # a `lanes-edit.sh` predating this amendment) · `3` in doubt: on primary the
 # rename "may not be written; run the printed `LANES_WRITE_ID` rerun, which
-# writes it once or finds it", and off primary the commit is local and this
-# attempt cannot confirm it reached origin · `4` the mutex · `5` a move refused
-# · `6` git · `69` the register cannot be reached, or refuses: nothing was
-# written, and a lane stops and tells Brett · `75` the register is busy, a lost
-# turn with nothing written. Never this file's own numbers: every one of them is
-# decided in the writer, and two tables of codes for one act is how they come to
-# disagree.
+# writes it once or finds it", and where the writer printed no such rerun (off
+# primary) the commit is local and may already be on origin · `4` the mutex ·
+# `5` a move refused · `6` git · `69` the register cannot be reached, or
+# refuses: nothing was written, and a lane stops and tells Brett · `75` the
+# register is busy, a lost turn with nothing written. Never this file's own
+# numbers: every one of them is decided in the writer, and two tables of codes
+# for one act is how they come to disagree.
 #
 # THE TEXTS FOR 3, 75 AND 69 ARE THE SQL REGISTER'S (feature 007, T433; design
 # D8, D7 and D10, Y:468-469, Y:455-456 and Y:511-512; Y:5738). On primary a 3 is
@@ -131,10 +131,10 @@ read could not be made.
 
 Exit: the writer's own codes — 0 done · 1 environment · 2 refused · 3 in doubt:
 on primary the rename "may not be written; run the printed `LANES_WRITE_ID`
-rerun, which writes it once or finds it", off primary committed and not
-confirmed pushed · 4 mutex · 5 a move refused · 6 git · 69 the register cannot
-be reached, or refuses (nothing written) · 75 the register is busy (nothing
-written).
+rerun, which writes it once or finds it", and where the writer printed no such
+rerun (off primary) the commit is local and may already be on origin · 4 mutex
+· 5 a move refused · 6 git · 69 the register cannot be reached, or refuses
+(nothing written) · 75 the register is busy (nothing written).
 USAGE
 }
 
