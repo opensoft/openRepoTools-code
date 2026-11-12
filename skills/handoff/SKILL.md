@@ -524,7 +524,9 @@ whatever code the writer gave, and its own 75 stays printed in its own stderr (l
 that held the writes. **A write that exits 69, and a block that sent none, print the same note:** ONE note that says how the
 record is completed later (`lane-handoff --late --at <UTC> --lane <L>`, run from a shell by whoever relaunches the
 lane, once the register answers and before the relaunch), after the third write however many of the three exited 69
-(spec:692; B12b tasks:1361 and :1375). Where `act-begin` exits 2 the helper predates feature 007 and the writes go as
+(spec:692; B12b tasks:1361 and :1375). **Where the object log's `PAUSED` line landed** under a seq base and a 69 came from
+the register's line or the row, the note is not `--late`'s but says to run `/handoff` again from step 1, because `--late`
+refuses once the lane's last line is a `PAUSED` and never writes the other two (below). Where `act-begin` exits 2 the helper predates feature 007 and the writes go as
 they always did, with `LANES_ACT` unset and `LANES_EXPECT` kept, which such a helper reads no more than it reads
 `LANES_ACT`; this skill sets no `SWAPPING`, so the note says the lane stays as it is. Off a SQL register the base
 reads `<id>@files` and both variables are ignored. Set `L`, `sread`, `lane`, `ws` and the rest as steps 1 and 2 have
@@ -552,7 +554,7 @@ them, as for every block here; `sread` is defined in the first block of this fil
 # names the verb and its code, none of the three is sent, the note prints and the
 # block ends 1. A container with no workstation writes nothing here, so it takes no base.
 unset LANES_ACT LANES_EXPECT
-act_line=""; act_scopes=""; act_down=""; act_exit=""; act_w69=""
+act_line=""; act_scopes=""; act_down=""; act_exit=""; act_w69=""; act_w9_landed=""
 # A WRITE THAT WAS SENT AND DID NOT END 0, 3 OR 69 UNDER A SEQ BASE ENDS THE BLOCK, AND THE ACT
 # (feature 007, T431; TP:5891-5894 "never 0"; tasks:1373, `:2817`'s rule; lane 3, #165
 # 6834271321, and 6835210568 on lane 4's question 4: THE SKILL'S STOP USES 2 ALONE).
@@ -575,12 +577,20 @@ act_re='^[0123456789abcdef]{32}@(files|(0|[123456789][0123456789]{0,17}):[012345
 # later: the late `PAUSED` path, who runs it and when, with `--lane <L>`, because a
 # shell outside the lane's window takes the workstation's newest swap, which can be
 # another lane's. THE SKILL SETS NO `SWAPPING` AND SAYS NONE: the lane stays as it is,
-# because `--late --lane` needs no `SWAPPING` (T431's question 4). THERE IS ONE TEXT
-# (`act_69_note`) AND IT PRINTS ONCE ON EVERY PATH. A write that exited 69 sets
+# because `--late --lane` needs no `SWAPPING` (T431's question 4). IT PRINTS ONCE ON
+# EVERY PATH, AND IT IS ONE OF TWO TEXTS. A write that exited 69 sets
 # `act_w69`, and the note prints after the third write, however many of the three
-# exited 69 (lane 3's round B12b, tasks:1361 and :1375). Where `act-begin`, an identity
+# exited 69 (lane 3's round B12b, tasks:1361 and :1375). `act_69_note` is the late
+# path's. WHERE THE OBJECT LOG'S PAUSED LINE LANDED under a seq base (`act_w9_landed`:
+# the first write exited 0) the 69 came from the register's line or the row, and `--late`
+# is no way to complete that: it writes the object log's `PAUSED` alone and refuses 2
+# where the lane's last line is already one. `act_69_landed_note` says so and says to
+# run the act again, as `lane-handoff`'s `paused_69_landed_note` does (T429's
+# `4534a4af`; lane 3, #165 6835210568, "the 69 note needs mending either way"; Y:5601).
+# Where `act-begin`, an identity
 # read or the walk stopped the writes, none was sent: the note prints at the end of the
-# reads, before anything is built, and the block ends there. `act_down_say` and
+# reads, before anything is built, and the block ends there, and it is always
+# `act_69_note`. `act_down_say` and
 # `act_hold` run here, not in a `$( )`, because they set `act_down`. They clear the
 # base and the scopes, which no write below will use.
 act_down_say() {   # act_down_say <the call that stopped the writes> <its exit code: 69, 75 or 3>
@@ -593,6 +603,9 @@ act_hold() {   # act_hold: the REFUSED line above held the writes (A2); the bloc
 }
 act_69_note() {
   echo "THE PAUSED RECORD IS INCOMPLETE, and the lane stays as it is, an interrupted swap. The record is completed later with \`lane-handoff --late --at <UTC> --lane ${lane:-<L>}\`, run from a shell by whoever relaunches the lane, once the register answers and BEFORE the relaunch (step 6 says why); the UTC is the moment this session ended."
+}
+act_69_landed_note() {
+  echo "THE PAUSED RECORD IS INCOMPLETE, and the lane stays as it is, an interrupted swap. The object log's PAUSED line is written, so \`lane-handoff --late\` is not the way to complete it: it refuses where the lane's last line is already a PAUSED, and it never writes the register's file-level line or the row. Once the register answers, run /handoff again from step 1 (Y:5601): it takes a new base."
 }
 # A WRITE THAT EXITED 3 IS IN DOUBT, NOT REFUSED (Y:5698, F9; lane 3, #165 6770733371,
 # T431's question 2 and its shared ruling 3). The act carries on, as it does after any
@@ -1050,6 +1063,7 @@ LANES_ACT="$act_line" LANES_EXPECT="$act_scopes" LANES_LANE="$lane" LANES_SESSIO
 [[ "$wr_rc" != 3 ]] || act_in_doubt "the object log's PAUSED line"
 act_again_say "the object log's PAUSED line" "$wr_rc"
 [[ "$wr_rc" != 69 ]] || act_w69=1
+[[ "$wr_rc" != 0 ]] || act_w9_landed=1
 # (b) the LANES.md file-level line, the shape every prior PAUSED/RESUMED used.
 # IT IS WRITTEN WHETHER OR NOT (a) COULD BE (A8(a) step 4, `R-A11-11`): a swap
 # is never left unwritten, so a lane whose object line was refused still gets
@@ -1116,8 +1130,15 @@ fi
 # THE 69 NOTE, ONCE (spec:692): after the third write, so a 69 from any one of the
 # three prints it one time and not once per write. The writers' own stderr, above,
 # says which write the register refused. Where none was sent, the note was printed
-# above, where the block ended.
-[[ -z "$act_w69" ]] || act_69_note
+# above, where the block ended. WHERE THE OBJECT LOG'S PAUSED LINE LANDED under a seq
+# base, the note is not `--late`'s (it would refuse 2 and never writes the other two):
+# `act_69_landed_note` says to run the act again, as `lane-handoff`'s own note does.
+if [[ -n "$act_w69" ]]; then
+  case "$act_line" in
+    ""|*@files) act_69_note ;;
+    *) if [[ -n "$act_w9_landed" ]]; then act_69_landed_note; else act_69_note; fi ;;
+  esac
+fi
 # A REFUSED WRITE ENDS THE BLOCK AND THE ACT (feature 007, T431; lane 3, #165 6834271321,
 # on lane 4's question 3, and 6835210568, which rules question 4 for the skill alone:
 # "the skill's stop uses 2 alone"; TP:5891-5894: the act exits with the code lane 4's
@@ -1182,8 +1203,14 @@ block goes on to the next write, as after any write that did not land, and after
 the record is completed later: the lane stays as it is, an interrupted swap, and whoever relaunches the lane runs
 `lane-handoff --late --at <UTC> --lane <L>` from a shell, once the register answers and before the relaunch. It
 prints one time whether one, two or all three writes exited 69, and the same one time where `act-begin`, a read or
-the walk stopped them. Say in the report which of the three exited 69; the writers' own stderr, above the note, names
-the refusal.
+the walk stopped them. **That note is `--late`'s only where the object log's `PAUSED` line did not land** (lane 3, #165
+6835210568, "the 69 note needs mending either way"; `lane-handoff`'s `paused_69_landed_note`). Where it landed under a seq
+base (the first write exited 0) and the 69 came from the register's line or the row, `lane-handoff --late` would refuse 2,
+because the lane's last line is already a `PAUSED`, and it writes neither the file-level line nor the row: the block
+prints `THE PAUSED RECORD IS INCOMPLETE` with the object log's line written, and says to run `/handoff` again from step 1
+once the register answers, which takes a new base (Y:5601). Say that in the report, and do not send the operator to
+`--late` then. A first write that exited 3, 2, 75 or any other code did not land, so the `--late` note stays for it. Say
+in the report which of the three exited 69; the writers' own stderr, above the note, names the refusal.
 
 **A block that ends with a code held the writes** (lane 3, #165 6774499606, A2 and T431's question 2; REV-ACT2 S2).
 Where `act-begin`, an identity read or the walk exited 69, 75 or 3, the block sent none of the three writes, printed
