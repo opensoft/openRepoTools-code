@@ -2003,6 +2003,38 @@ def test_canon_lane_walk_prints_each_hop_with_canon_lanes_exit_code(tmp_path, ca
         assert "differ only by case" in walk.stderr, f"[{case}] not canon-lane's refusal: {walk.stderr[-600:]}"
 
 
+def test_canon_lane_walk_whose_register_read_fails_off_primary_exits_1_and_prints_nothing(tmp_path):
+    """Off primary, where the register cannot be read, `canon-lane --walk`
+    exits 1 and prints nothing on stdout: a read that failed is never "no
+    row" (R22; Amendment 7(d)), so the walk lists no name from a register
+    nobody read (lane 3, #165 6827722997, Q-A and item 3; lane 4's E5;
+    T233b). A failed files read is never cached, so `canon_lane`, which
+    still reads that failure as no row, answers, and the walk's own read of
+    the register fails again. `canon-lane`'s own answer is not asserted: its
+    reading is a follow-up item for its own ruling.
+
+    The register is made unreadable as `test_lanes_index`'s `_unreadable`
+    makes a published object unreadable: the loose object of `lanes/LANES.md`
+    at `origin/main`, which the checkout wrote itself, is moved aside, so its
+    `git show` fails while every other object reads, the alias table among
+    them. First, with the register readable, the same walk prints its three
+    names, so the 1 is the failed read's."""
+    rows, aliases, typed, names = WALKS["two-hops"]
+    box = FilesBox(tmp_path / "box", rows, aliases)
+    walk = box.edit("canon-lane", "--walk", typed)
+    assert (walk.returncode, walk.stdout.splitlines()) == (0, names), (
+        f"with the register readable the walk exited {walk.returncode} and printed {walk.stdout!r}: "
+        f"{walk.stderr[-600:]}")
+    sha = box.git("-C", str(box.wip), "rev-parse", f"origin/main:{LANES_MD}").strip()
+    blob = box.wip / ".git" / "objects" / sha[:2] / sha[2:]
+    assert blob.is_file(), f"the register's blob {sha} is not a loose object of {box.wip}"
+    blob.rename(blob.with_name(blob.name + ".aside"))
+    walk = box.edit("canon-lane", "--walk", typed)
+    assert walk.returncode == 1, (
+        f"the walk over a register that could not be read exited {walk.returncode}, not 1: {walk.stderr[-600:]}")
+    assert walk.stdout == "", f"the walk over a register that could not be read printed {walk.stdout!r}"
+
+
 @CLIENT
 @pytest.mark.parametrize("case", ["present", "switch-at-files", "snapshot-fails"])
 def test_act_begin_on_primary_prints_id_seq_and_generation(estates, case):
