@@ -9386,10 +9386,12 @@ archive_local_text() {
 # NIT-3), which `retired_identity_hits` passes from `RETIRED_KEY_TRIM`: a
 # shell variable, never exported, unset and set empty here, so an inherited
 # value is neither read nor passed on. R45's one
-# line at the dispatcher sets it to 1, beside `rule6_primary_on`, where this
-# process's one mode answer is primary: the writers' branch before `pw_run`,
-# an attempt's child (its `REG_MODE` is `reg_scratch_take`'s), and a reader
-# whose `reg_open` (T504) answered primary. `retired_identity_hits` is this
+# line at the dispatcher, below `reg_open`, sets it to 1, beside
+# `rule6_primary_on`, where this process's one mode answer is primary: a
+# reader whose `reg_open` (T504) answered primary, a writing verb that the
+# write guard's arm lets through, and an attempt's child (its `REG_MODE` is
+# `reg_scratch_take`'s), which runs the verb of a write the arm sends into
+# `pw_run`. `retired_identity_hits` is this
 # program's one caller, so `add-row`'s check and the `retired-identity` read
 # both take it. Off primary `key()` is `(p + 0)`, byte for byte as before, so
 # files mode, index mode and an unconfigured workstation read as they did
@@ -22730,13 +22732,15 @@ reg_open "$cmd" ${1+"$@"}
 # mode answer this process holds sets the awk variables that read the
 # register as primary reads it: `rule6_primary_on`, Rule 6 with `LANDING
 # EXPIRED` (T425), and `RETIRED_KEY_TRIM`, `RETIRED_ROWS_AWK`'s `key()`
-# trimming a position's leading zeros as text (T426). The writers'
-# branch takes it before `pw_run` below, so the ask above is split from its
-# arm; an attempt's child takes it from `reg_scratch_take`'s `REG_MODE`
-# (`REG_ASK` is 0 there), since it asks no mode and its file at the
-# snapshot's seq is primary's; and a reader takes it from lane 5's `reg_open`
-# (T504), which runs above this line. It cannot be set where `REG_MODE` is:
-# `reg_scratch_take` runs before `RULE6_AWK` and `RETIRED_KEY_TRIM` are
+# trimming a position's leading zeros as text (T426). A reader takes it from
+# lane 5's `reg_open` (T504), which runs above this line (lane 3, #165
+# 6770688147), and a writing verb from the write guard's answer, where the
+# arm above lets it through. Where that arm runs `pw_run`, which ends the
+# process, the verb runs in an attempt's child, which takes it from
+# `reg_scratch_take`'s `REG_MODE` (`REG_ASK` is 0 there, and `reg_open`
+# leaves `REG_MODE` alone for a writing verb), since it asks no mode and its
+# file at the snapshot's seq is primary's. It cannot be set where `REG_MODE`
+# is: `reg_scratch_take` runs before `RULE6_AWK` and `RETIRED_KEY_TRIM` are
 # assigned, which would overwrite both, and inside `who_landing`'s pipeline a
 # variable set is lost. Off primary it sets nothing, and the programs are
 # today's.
