@@ -1502,10 +1502,13 @@ def _canned_read(version: int) -> str:
 #:   the switch, the resolved strays, and `mirror_state mir`'s `diverged_sha`
 #:   and `last_error`. That last SELECT holds `READ_MARK` too, so without a
 #:   rule of its own the fake gave it the rollback read's six answers, and
-#:   the head read failed: 69;
+#:   the head read failed: 69. Since T326's `01cd35c` the second SELECT also
+#:   reads the switch's `marker_state`, and any answer but those three fields
+#:   is refused (`ed8e7d2:lanes-index:14995`, `:15020-15023`; lane 3's #165
+#:   6814531692, a SHOULD from T326's fixer);
 #: - T301's image read at `m` (`register_render_queries`, `:2265`): five
 #:   SELECTs, which T322's image half replays and compares with the render
-#:   set at the commit carrying `m` (`render_pass`, `:15381-15399`). No rule
+#:   set at the commit carrying `m` (`render_pass`, `:15377-15398`). No rule
 #:   matched it, so the fake answered nothing: 69.
 #: Each mark is a text of that request alone among the case's requests.
 HEAD_READ_MARK, IMAGE_READ_MARK = "FROM mirror_state mir", "FROM journal_files f"
@@ -1532,9 +1535,11 @@ def _copy_answer(selects: list) -> str:
 
 def _canned_head_read(version: int) -> str:
     """T322's head read as the fake answers it, from the same canned register
-    as `_canned_read`: the window, the head 1 with the switch at `primary`,
-    no resolved stray, and neither a divergence nor a `last_error`."""
-    return _copy_answer([[(version, version, version)], [(1, "primary")], [], [(None, None)]])
+    as `_canned_read`: the window, the head 1 with the switch at `primary`
+    and the marker `present` (T326's three fields), no resolved stray, and
+    neither a divergence nor a `last_error`."""
+    return _copy_answer([[(version, version, version)], [(1, "primary", "present")], [],
+                         [(None, None)]])
 
 
 def _image_lines(data: bytes) -> tuple:
