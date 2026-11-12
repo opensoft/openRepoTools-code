@@ -8024,8 +8024,15 @@ pw_no_record_end() {   # <seq>
 # would already have had `abandon`, and the tail would be the replay's
 # (W9-T415's report, S1's one gap). Such an attempt now gets `abandon`, and
 # the match goes on to the next child.
+# PW_KEPT is split at each newline by parameter expansion, as
+# `pw_abandon_kept` splits it, never through a here-document: bash 3.2 writes
+# one to a temp file in /tmp, and where none can be made, as in a full /tmp,
+# the loop never ran and PW_KEPT was emptied, so no kept child was matched
+# or got `abandon`; each waited at its seam until its parent test or its cap,
+# and the tail was the replay's (review REV-W10a, M1's pattern; lane 4's
+# W10-MA report, `PT_EOF`).
 pw_tail() {   # <seq> <how it was learned> <the answer, in a file>
-  local pt_l="" pt_p="" pt_d="" pt_mp="" pt_md="" pt_rest="" pt_h=""
+  local pt_k="" pt_l="" pt_p="" pt_d="" pt_mp="" pt_md="" pt_rest="" pt_h=""
   pw_learned "$1"
   pw_entry_rows "$3"
   pw_tail_found "$1" || :
@@ -8034,7 +8041,13 @@ pw_tail() {   # <seq> <how it was learned> <the answer, in a file>
     pt_h="$(pw_dir_digest "$PW_DIR")" || pt_h=""
     if [ "$pt_h" = "$PW_E_DIGEST" ] && pw_dir_seq_ok "$PW_DIR" "$1"; then pt_mp="$PW_CHILD"; pt_md="$PW_DIR"; fi
   fi
-  while IFS= read -r pt_l; do
+  pt_k="$PW_KEPT"
+  while [ -n "$pt_k" ]; do
+    pt_l="${pt_k%%"$WR_NL"*}"
+    case "$pt_k" in
+      *"$WR_NL"*) pt_k="${pt_k#*"$WR_NL"}" ;;
+      *) pt_k="" ;;
+    esac
     [ -n "$pt_l" ] || continue
     pt_p="${pt_l%% *}"; pt_d="${pt_l#* }"
     pt_h=""
@@ -8044,9 +8057,7 @@ pw_tail() {   # <seq> <how it was learned> <the answer, in a file>
     else
       pt_rest="${pt_rest}${pt_rest:+$WR_NL}$pt_l"
     fi
-  done <<PT_EOF
-$PW_KEPT
-PT_EOF
+  done
   PW_KEPT="$pt_rest"
   pw_abandon_kept
   if [ -n "$PW_CHILD" ] && [ "$PW_CHILD" != "$pt_mp" ]; then
