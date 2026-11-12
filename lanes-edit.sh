@@ -575,7 +575,8 @@
 #      attempt loop (ERR-06; R16). Likewise: a staged set that git cannot
 #      list, or lists in a form the seam cannot read, or lists with no path
 #      the seam could read (REV-W9a M1); a blob id that is not 40 hex
-#      digits; and a case-only rename that is not one D line and one A line.
+#      digits; and a case-only rename, or `rename-lane`'s move of the log
+#      (`LOG_RENAMED_TO`, T422), that is not one D line and one A line.
 #      AND FEATURE 007'S PRIMARY BRANCH (T415; FR-018; Y:2459, Y:5014,
 #      Y:5603–5605; the contract's §3.2 and §3.3), the parent's, each with
 #      nothing written: a write that names no lane, or whose lane's own
@@ -3951,11 +3952,12 @@ EOF
 #   4. The attempt's directory gets the files contract §3.3 reads:
 #      `changes.tsv`, from `git diff --cached --no-renames --raw --no-abbrev
 #      HEAD` (`--no-abbrev`, since Y:5061's form abbreviates the ids; a
-#      missing side is git's 40 zeros); `renames.tsv` where the verb made a
-#      case-only rename (O5); `images/<path>` from the index for every `A` and
-#      `M`; `msg`, `$msg` verbatim; and `files`, the canonical rows, whose
-#      sha256 is the `call` line's `<files>` (§3.2's one digest rule). Then
-#      `ready`, last.
+#      missing side is git's 40 zeros); `renames.tsv` where the verb renamed
+#      the lane's log (O5): `ensure_log`'s case-only rename, or `rename-lane`'s
+#      move, whose new path is `LOG_RENAMED_TO` (T422); `images/<path>` from
+#      the index for every `A` and `M`; `msg`, `$msg` verbatim; and `files`,
+#      the canonical rows, whose sha256 is the `call` line's `<files>` (§3.2's
+#      one digest rule). Then `ready`, last.
 #   5. The handshake (Y:4999–5007). The parent made `seam.fifo`; it is opened
 #      read-write on fd 5 BEFORE `ready`, so the open cannot block and a line
 #      the parent writes once it sees `ready` is held in the pipe until it is
@@ -4077,6 +4079,7 @@ cp_seam_byte() {
 cp_seam() {
   local cs_tab="" cs_raw="" cs_l="" cs_meta="" cs_p="" cs_q="" cs_sm="" cs_dm="" cs_b="" cs_n="" \
         cs_st="" cs_x="" cs_i=0 cs_known=0 cs_extra="" cs_out="" cs_bad="" cs_ren="${LOG_RENAMED_FROM:-}" \
+        cs_rto="${LOG_RENAMED_TO:-}" \
         cs_to="" cs_ton=0 cs_fromd=0 cs_tsv="" cs_rows="" cs_img="" cs_h="" cs_d="$REG_SCRATCH" \
         cs_pl="" cs_ptok="" cs_tok="" cs_prc=0 cs_cap="" cs_t0=0 cs_msg="" cs_s="" cs_buf="" \
         cs_c="" cs_tt=0 cs_r="" cs_rc=0 cs_nb=0 cs_why="" cs_tw=0 cs_sl="" cs_sn=""
@@ -4160,18 +4163,31 @@ cp_seam() {
     die "refusing to send this write from the attempt's scratch tree under LANES_REGISTER_SCRATCH: it stages${cs_bad}, and changes.tsv carries only A, M or D with two 40-hex blob ids (contract §3.3). It is an internal error, never a commit. Nothing was sent." 2
   # THE CASE-ONLY RENAME (Amendment 15; O5): the old path's D line and its one
   # new spelling's A line, which `renames.tsv` pairs.
+  # AND `rename-lane`'S MOVE OF THE LOG (T422; O5, "one per rename the verb
+  # made"; Y:3446–3447; lane openRepoTools-3, #165 6834224496, question 1):
+  # where `LOG_RENAMED_TO` is set, only under the flag and only by that verb,
+  # the A line paired is that path's, and no other. So the entry carries the
+  # move as one `rename` and the new path's lines against the old path's, the
+  # `RENAMED` line's `append`, where `remove` plus `create` would send every
+  # line of the moved log again, as lines of this write (O5).
   if [ -n "$cs_ren" ]; then
     cs_i=0
     while [ "$cs_i" -lt "${#cs_ps[@]}" ]; do
       cs_p="${cs_ps[$cs_i]}"
       if [ "$cs_p" = "$cs_ren" ]; then
         [ "${cs_sts[$cs_i]}" != D ] || cs_fromd=1
+      elif [ -n "$cs_rto" ]; then
+        if [ "${cs_sts[$cs_i]}" = A ] && [ "$cs_p" = "$cs_rto" ]; then
+          cs_to="$cs_p"; cs_ton=$((cs_ton + 1))
+        fi
       elif [ "${cs_sts[$cs_i]}" = A ] && [ "$(lc "$cs_p")" = "$(lc "$cs_ren")" ]; then
         cs_to="$cs_p"; cs_ton=$((cs_ton + 1))
       fi
       cs_i=$((cs_i + 1))
     done
     if [ "$cs_fromd" != 1 ] || [ "$cs_ton" != 1 ]; then
+      [ -z "$cs_rto" ] ||
+        die "refusing to send this write's rename of ${cs_ren} to ${cs_rto} from the attempt's scratch tree under LANES_REGISTER_SCRATCH: renames.tsv pairs that path's D line with the A line of ${cs_rto} (contract §3.3, O5), and the index does not hold exactly that pair. It is an internal error, never a commit. Nothing was sent." 2
       die "refusing to send this write's case-only rename of ${cs_ren} from the attempt's scratch tree under LANES_REGISTER_SCRATCH: renames.tsv pairs that path's D line with one A line of its new spelling (contract §3.3, O5), and the index does not hold exactly that pair. It is an internal error, never a commit. Nothing was sent." 2
     fi
   fi
@@ -4322,10 +4338,12 @@ cp_seam() {
   REG_STORE=sql
   reg_flush
   # THE RENAME IS IN THE ENTRY, as files mode's index commit leaves it: the
-  # old path is no longer a pathspec of anything after the seam.
+  # old path is no longer a pathspec of anything after the seam, and neither
+  # half of the pair outlives the `committed` that sent it (T422).
   if [ -n "$cs_ren" ]; then
     CP_PATHS=(${cp_add[@]+"${cp_add[@]}"})
     LOG_RENAMED_FROM=""
+    LOG_RENAMED_TO=""
   fi
   return 0
 }
@@ -8924,6 +8942,13 @@ log_path_ci() {   # <lane> — 0 with the ONE path, 2 where two differ only by c
 # caller that has to put it in the same commit as the write. Empty on every
 # other run, and reset by every `ensure_log`, so "renamed" is never sticky.
 LOG_RENAMED_FROM=""
+# FEATURE 007, T422 — THE PATH `rename-lane` MOVED THE LOG TO, ON PRIMARY
+# ONLY: set with `LOG_RENAMED_FROM` under the flag, just before that verb's
+# `commit_publish`, so that the seam pairs the move's D and A lines in
+# `renames.tsv` (O5), and cleared by the seam on `committed`. Files mode
+# never sets it, so its index commit never sees it; and an exported value is
+# nothing, since it starts empty here.
+LOG_RENAMED_TO=""
 
 ensure_log() {
   lane="$1"; lf="$(log_file_for "$lane")"
