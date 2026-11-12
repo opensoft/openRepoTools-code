@@ -1240,7 +1240,9 @@ def test_the_later_hold_exits_2_and_prints_the_earlier_line(estates):
     later = next(w for w in writers if w is not first)
     assert (first.code, later.code) == (0, 2), [(w.lane, w.code, w.err[-400:]) for w in writers]
     assert texts[first.lane] in later.err, f"the later HOLD's stderr lacks the earlier line: {later.err!r}"
-    assert re.search(rf"\bseq {grew[0]['seq']}\b", later.err), f"no register seq in {later.err!r}"
+    # The relay names the earlier line's seq as `held-by=<seq>`, then the path
+    # and the line, tab-separated (register-cli.md:519; T243i).
+    assert f"held-by={grew[0]['seq']}\t" in later.err, f"no held-by=<seq> in {later.err!r}"
     assert all(not e.has_write(w) for w in later.write_ids())
 
 
