@@ -1452,7 +1452,7 @@ def test_guard_bind_computes_bound_s_from_c_n_a_and_the_service(estate, tmp_path
     answer 2 on the contract stub (T207), its `.head` set to `c=3`, `n_a=2`
     and `w_s_ms=300`, and the record at `mode=binding` holds the three as
     `.head` gives them, with `bound_s=620` and a `deadline_epoch` 625 s after
-    `started_utc`. It fails until L5-A2 (lane 5's T507), which copies them."""
+    `started_utc`. It fails until L5-A3 (lane 5's T507), which copies them."""
     if configuration == ANSWER_2:
         _bound_through_answer_2_on_the_stub(estate, tmp_path)
         return
@@ -1577,7 +1577,7 @@ def test_the_post_bind_refill_is_one_register_read_and_never_git(estate, tmp_pat
     `register read --for guard --prefetch`, at the offer's prompt and the
     answer's, are no refill (lane 5, #165 6809022654). A refill sent with
     `--for guard` is then no refill either, and the count of one refuses it.
-    Fails until L5-A2 (lane 5's T507)."""
+    Fails until L5-A3 (lane 5's T507)."""
     code = tmp_path / "code"
     code.mkdir()
     for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
