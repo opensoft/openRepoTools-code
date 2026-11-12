@@ -1733,12 +1733,15 @@ _ENV_LOGGER = r'''#!/usr/bin/env python3
 # T248's logging stand-in: its name, argv, whether the flag reached it, and
 # each seam.out it can see; then the real tool, where one is named. For `gh`
 # with `--body-file -` (`gh_comment`), the body it reads from stdin too, and
-# no other call's stdin is read (T248a).
+# no other call's stdin is read (T248a). A `tmux` given answers prints the
+# one its `display-message` format asks for, keyed `t:<format>` where the
+# call names a target with `-t` (T248b).
 import glob, json, os, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 NAME = os.path.basename(sys.argv[0])
 REAL = REAL_TOOL
 STATE = STATE_DIR
+ANSWERS = TMUX_ANSWERS
 ARGV = sys.argv[1:]
 seams = {p: open(p, encoding="utf-8", errors="replace").read()
          for p in glob.glob(os.path.join(STATE, "**", "seam.out"), recursive=True)}
@@ -1748,19 +1751,34 @@ if NAME == "gh" and "--body-file" in ARGV and ARGV[ARGV.index("--body-file") + 1
 with open(os.path.join(HERE, "tools.log"), "a", encoding="utf-8") as log:
     log.write(json.dumps({"tool": NAME, "argv": ARGV, "scratch": os.environ.get(
         "LANES_REGISTER_SCRATCH"), "seams": seams, "body": body}) + "\n")
+if ANSWERS and NAME == "tmux" and ARGV[:1] == ["display-message"]:
+    said = ANSWERS.get(("t:" if "-t" in ARGV else "") + ARGV[-1])
+    if said is not None:
+        print(said)
 if REAL:
     os.execv(REAL, [REAL] + ARGV)
 '''
 
+#: The answers of a `tmux` whose server holds the bound window live (T248b):
+#: any window asked for by `-t` is in session `t243`, `bound_line`'s, and runs
+#: `claude`, so `binding_window_state` reads it `live` and `guard_type` types
+#: into it; the asking pane is `asker:1`, window `@90`, never a bound one.
+TMUX_LIVE = {"t:#{session_name}": "t243", "t:#{pane_current_command}": "claude",
+             "#{session_name}:#{window_index}": "asker:1", "#{window_id}": "@90", "#{pane_id}": "%90"}
 
-def loggers(e: Estate) -> Path:
+
+def loggers(e: Estate, tmux_live: bool = False) -> Path:
     """`git` (a wrapper), `gh` and `tmux` (fakes), each logging to
-    `tools.log` beside them."""
+    `tools.log` beside them. With `tmux_live`, the fake `tmux` answers its
+    `display-message` reads from `TMUX_LIVE` (T248b); otherwise it prints
+    nothing, as before."""
     where = e.root / "loggers"
     where.mkdir(exist_ok=True)
     for tool, real in (("git", shutil.which("git")), ("gh", None), ("tmux", None)):
+        answers = repr(TMUX_LIVE) if tool == "tmux" and tmux_live else "None"
         (where / tool).write_text(_ENV_LOGGER.replace("REAL_TOOL", repr(real))
-                                  .replace("STATE_DIR", repr(str(e.state))), encoding="utf-8")
+                                  .replace("STATE_DIR", repr(str(e.state)))
+                                  .replace("TMUX_ANSWERS", answers), encoding="utf-8")
         (where / tool).chmod(0o755)
     return where
 
@@ -1777,6 +1795,13 @@ def comment_calls(where: Path) -> List[dict]:
     head; T248a)."""
     return [c for c in tool_calls(where, "gh") if c["argv"][:1] in (["issue"], ["pr"])
             and c["argv"][1:2] == ["comment"]]
+
+
+def typed_calls(where: Path) -> List[dict]:
+    """The fake `tmux`'s typing, `send-keys` (`guard_type`): the tail's
+    `tmux`, never its reads before the seam, `display-message` for the
+    asking window and the bound window's session and command (T248b)."""
+    return [c for c in tool_calls(where, "tmux") if c["argv"][:1] == ["send-keys"]]
 
 
 def register_writes(e: Estate) -> Path:
@@ -1808,14 +1833,16 @@ def test_a_writer_prints_its_output_once_however_many_attempts_it_made(estates):
 def test_a_refused_writer_replays_its_output_then_the_refusal(estates):
     """Test 4's case (a): the writer refused at its commit prints its
     buffered output, then the refusal, last, naming the holder, and no
-    success text."""
+    success text. The success text, claim's `register seq <s>` line, is a
+    `note`, on stderr (T421), so stderr is where its absence is read
+    (T248c)."""
     e = estates()
     barrier = Barrier(e.root, 2)
     writers = [e.launch(lane, claim(OBJ, "--no-github"), arms=[WINDOW], barrier=barrier) for lane in (LA, LB)]
     barrier.release()
     assert sorted(w.wait() for w in writers) == [0, 2]
     win, lose = sorted(writers, key=lambda w: w.code)
-    assert not SEQ_SAID.search(lose.out), f"the refused writer printed success text: {lose.out!r}"
+    assert not SEQ_SAID.search(lose.err), f"the refused writer printed success text: {lose.err!r}"
     lines = [l for l in lose.err.splitlines() if l.strip()]
     assert lines and win.lane in lines[-1], f"the refusal naming {win.lane} is not last: {lose.err!r}"
     assert len(lines) == len(set(lines)), f"the refused writer's stderr repeats lines: {lose.err!r}"
@@ -1827,9 +1854,19 @@ def test_a_side_effect_runs_once_after_commit_and_never_for_a_refusal(estates, e
     """[gh]: two claimants on O; the fake `gh` comments once, by the
     committed claim, its body citing its seq, never by the refused one
     (Rule 1's reads, which each claimant makes before the seam, are not
-    counted; T248a). [tmux]: two `request-handoff`s for one lane; the fake
-    `tmux` is called by the committed one only, after its COMMIT (the
-    journal holds it when `tmux` runs), and never by a refused one.
+    counted; T248a). [tmux]: two `request-handoff`s for lane C, which is
+    bound to a window this tmux server holds live; the fake `tmux` types
+    (`send-keys`) once per committed request, naming its requester, after
+    its COMMIT (the journal holds it when `tmux` runs), and never for an
+    attempt refused at its commit, whose child runs no tail.
+
+    [tmux] as the engine does it (T248b; N2-17b's reading 3): a request for a
+    bound or already requested lane is taken, so both requests may commit,
+    and the journal, not the exit, says which did. Each runs `--no-wait`, so
+    its wait ends at once, 2, "THE WAIT ENDED WITH NOTHING", after its
+    commit. The reads `tmux` answers before the seam (`display-message` for
+    the asking window, the bound window's session and its command) are not
+    counted: only `send-keys`, and the fake answers them from `TMUX_LIVE`.
 
     After COMMIT: when the call runs, a `seam.out` reads `tail`, so an
     attempt has taken `committed`, and none reads other than `tail` or
@@ -1837,24 +1874,31 @@ def test_a_side_effect_runs_once_after_commit_and_never_for_a_refusal(estates, e
     `none` by then, and the logger sees every `seam.out` under
     `register-writes/` (T248a)."""
     e = estates()
-    where = loggers(e)
+    where = loggers(e, tmux_live=effect == "tmux")
     barrier = Barrier(e.root, 2)
     if effect == "gh":
         writers = [e.launch(lane, claim(OBJ), arms=[WINDOW], barrier=barrier, first=[where])
                    for lane in (LA, LB)]
     else:
-        writers = [e.launch(lane, ["request-handoff", LC, "--session", session_of(LC)], arms=[WINDOW],
-                            barrier=barrier, first=[where]) for lane in (LA, LB)]
+        writers = [e.launch(lane, ["request-handoff", LC, "--session", session_of(lane), "--no-wait"],
+                            arms=[WINDOW], barrier=barrier, first=[where]) for lane in (LA, LB)]
     barrier.release()
     for w in writers:
         w.wait()
-    committed = [w for w in writers if w.code == 0]
     grew = e.journal_after()
+    if effect == "gh":
+        committed = [w.lane for w in writers if w.code == 0]
+    else:
+        assert {w.code for w in writers} <= {0, 2}, [(w.lane, w.code, w.err[-300:]) for w in writers]
+        committed = [r["lane"] for r in grew if r["verb"] == "request-handoff"]
     assert len(committed) == len(grew) >= 1, ([(w.lane, w.code, w.err[-300:]) for w in writers], grew)
-    calls = comment_calls(where) if effect == "gh" else tool_calls(where, effect)
+    calls = comment_calls(where) if effect == "gh" else typed_calls(where)
     assert len(calls) == len(committed), f"{effect} ran {len(calls)} times for {len(committed)} commits: {calls}"
     if effect == "gh":
         assert all(str(grew[0]["seq"]) in SEQ_SAID.findall(c["body"] or "") for c in calls), calls
+    else:
+        typed = sorted(lane for lane in (LA, LB) for c in calls if session_of(lane) in " ".join(c["argv"]))
+        assert typed == sorted(committed), f"tmux typed for {typed}, the journal's requests are {committed}: {calls}"
     for call in calls:
         said = [text.strip() for text in call["seams"].values()]
         assert "tail" in said and set(said) <= {"tail", "none"}, f"{effect} ran before COMMIT: {call}"
@@ -2352,7 +2396,9 @@ _HANDOFF = ("--lane", R_HERE, "T252b's race")
 #: `lane`'s `request-handoff`. The codes: `start-record`'s and W1's 2 die 2
 #: (T428, "any 2 dies"); W8's arm passes the code (T428); `:2817` keeps 2
 #: (T429); W13 under `set -e` and W14's note arm exit with the writer's code
-#: (T430); `lane`'s arm keeps 1 for a 2 (T432).
+#: (T430); `lane`'s arm keeps 1 for a 2 (T432); the handoff skill's step-4
+#: stop ends 2 alone, its writer's code staying in that writer's own stderr
+#: (T431; lane 3's question 4, #165 6835210568; T252n).
 ACT_WRITES = {
     "lane-start-w1-add-row": ActWrite("lane-start", ("repoZ", "1", "--no-launch"), R_NEW,
                                       verb_is("add-row"), rival="row", code=2),
@@ -2370,7 +2416,7 @@ ACT_WRITES = {
     "lane-end-w14-log-ended": ActWrite("lane-end", (R_HERE,), R_HERE, lane_line("ENDED", R_HERE), code=2),
     "lane-end-retire-rows": ActWrite("lane-end", ("--retire-dormant", "repoH", "--yes", "--reason=T252b's race"),
                                      R_DORMANT, verb_is("retire-rows"), env={"LANES_LANE": R_HERE}),
-    "skill-step-4-writes": ActWrite("skill", (), R_HERE, lane_line("PAUSED", R_HERE)),
+    "skill-step-4-writes": ActWrite("skill", (), R_HERE, lane_line("PAUSED", R_HERE), code=2),
     "guard-answer-2-child": ActWrite("guard", ("guard-bind", "--body", R_SID[R_PAUSED]), R_HERE,
                                      verb_is("set-row-state"), env={"LANES_LANE": R_PAUSED}),
     "lane-request-handoff": ActWrite("lane", (R_FAR, "--request-handoff"), R_FAR, verb_is("request-handoff"),
