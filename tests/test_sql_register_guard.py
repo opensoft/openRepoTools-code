@@ -1494,7 +1494,11 @@ def test_the_post_bind_refill_is_one_register_read_and_never_git(estate, tmp_pat
     register is the estate's own `lanes/LANES.md`, as `[answer-2]`'s is: on
     primary the guard reads the register from the prefetch's `.register`, and
     a register with no `lanes/LANES.md` is a failed read there (T505), which
-    would end the hook 2 at its text check before any offer.
+    would end the hook 2 at its text check before any offer. The refill's
+    filter leaves out every `--for` call: the two hooks' own form-2 reads,
+    `register read --for guard --prefetch`, at the offer's prompt and the
+    answer's, are no refill (lane 5, #165 6809022654). A refill sent with
+    `--for guard` is then no refill either, and the count of one refuses it.
     Fails until L5-A2 (lane 5's T507)."""
     code = tmp_path / "code"
     code.mkdir()
@@ -1518,7 +1522,8 @@ def test_the_post_bind_refill_is_one_register_read_and_never_git(estate, tmp_pat
     done_at = [e["t"] for e in est.log("lane-start.log") if e["event"] == "end"][0]
     calls = [json.loads(line) for line in (code / ARGV_LOG).read_text(
         encoding="utf-8").splitlines()] if (code / ARGV_LOG).exists() else []
-    refills = [c for c in calls if c[:2] == ["register", "read"] and "--prefetch" in c]
+    refills = [c for c in calls if c[:2] == ["register", "read"] and "--prefetch" in c
+               and "--for" not in c]
     assert len(refills) == 1, f"the refill was not one register read: {calls}"
     refill = refills[0]
     assert "--cache" in refill and refill[refill.index("--files") + 1] == "register,aliases" \
