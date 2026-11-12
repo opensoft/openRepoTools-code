@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The register sweeps and their reads fail closed: opensoft/openRepoTools#138
-(the `lanes-edit.sh` items) and #157 item 4b.
+(the `lanes-edit.sh` items) and #157 item 4b, and `next-free` counts the alias
+table's keys (lane 3's batch 8 Q47 on #165).
 
 Each case builds a throwaway register — a bare repository and a clone of it in
 a temporary directory, with a temporary `$HOME` — and runs the real
@@ -375,6 +376,82 @@ def test_item_5_a_register_path_that_renders_empty_offers_no_position(reg, kind)
     result = next_free(reg)
     assert result.returncode == 1, (result.stdout, result.stderr)
     assert result.stdout == ""
+
+
+# ------------- lane 3's batch 8 Q47 (#165): a former name's position is taken
+
+#: Two rows of `repoA` on stdin, so its next free position is 3 until a former
+#: name holds that position too.
+REPO_A_ROWS = "repoA-1\trow\nrepoA-2\trow\n"
+
+
+def aliases(reg: Register, *keys: str) -> Path:
+    """`lanes/aliases.tsv` holding one rename away from each key, published."""
+    path = reg.write("lanes/aliases.tsv", "".join(
+        f"{key}\trepoA-9\t2026-11-10T00:00:00Z\n" for key in keys))
+    reg.publish("rename lanes away from " + ", ".join(keys))
+    return path
+
+
+def next_free_a(reg: Register) -> subprocess.CompletedProcess:
+    return subprocess.run(["bash", str(REPO / "lanes-edit.sh"), "next-free", "repoA"],
+                          input=REPO_A_ROWS, cwd=str(reg.wip), env=dict(reg.env), text=True,
+                          capture_output=True, timeout=60, check=False)
+
+
+@pytest.mark.parametrize("key", ["repoA-3", "REPOA-3", "repoA-3b"],
+                         ids=["the same case", "another case", "a trailing letter"])
+def test_batch8_q47_an_alias_key_is_a_taken_position(reg, key):
+    """Batch 8 Q47: `lane_next_free` counted rows alone, so after `repoA-3 →
+    repoA-9` it offered 3 again, and a row there would end the former name's
+    resolution (Amendment 16(e)). A key is counted by the rows' own rule:
+    without regard to case, and with a trailing letter dropped."""
+    aliases(reg, key)
+    result = next_free_a(reg)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert result.stdout == "4\n"
+
+
+def test_batch8_q47_a_key_of_another_repository_is_not_counted(reg):
+    """The rows' rule for the repository, not a prefix: `repoA-foo-3` is a
+    former name of a `repoA-foo` lane, so `repoA`'s 3 is still free."""
+    aliases(reg, "repoA-foo-3")
+    result = next_free_a(reg)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert result.stdout == "3\n"
+
+
+def test_batch8_q47_an_absent_alias_table_changes_nothing(reg):
+    """An estate that never renamed a lane has no table, and the answer is the
+    rows' alone."""
+    assert not (reg.wip / "lanes/aliases.tsv").exists()
+    result = next_free_a(reg)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert result.stdout == "3\n"
+
+
+@pytest.mark.parametrize("mode", [
+    pytest.param("an unreadable local table", marks=UNPRIVILEGED_ONLY),
+    "git cannot show the published table",
+])
+def test_batch8_q47_an_alias_table_that_cannot_be_read_offers_no_position(reg, mode):
+    """A table that exists and cannot be read is `lane_next_free`'s 1, as a
+    register or an archive that cannot be read is (Amendment 7(d)): the note
+    names the table and the reason, and no number is printed."""
+    if mode == "an unreadable local table":
+        path = reg.write("lanes/aliases.tsv", "repoA-3\trepoA-9\t2026-11-10T00:00:00Z\n")
+        path.chmod(0)
+        reason = "aliases.tsv is there and could not be read"
+    else:
+        aliases(reg, "repoA-3")
+        reg.refuse_git("show origin/main:lanes/aliases.tsv")
+        reason = "git show origin/main:lanes/aliases.tsv failed"
+    result = next_free_a(reg)
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout == ""
+    assert "lanes/aliases.tsv could not be read (" in result.stderr
+    assert reason in result.stderr
+    assert "the FORMER names this position must avoid are not all known" in result.stderr
 
 
 # ------------------------------------------- #138: the listing's DORMANT class
