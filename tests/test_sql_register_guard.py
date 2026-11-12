@@ -475,10 +475,53 @@ def register_text(rows) -> str:
     return "\n".join(REGISTER_HEADER + list(rows) + [""])
 
 
+#: THE ESTATE'S STATE HOME: SHORT, AND OUTSIDE THE TEMPORARY ROOT. The
+#: service's one socket is `${XDG_STATE_HOME}/openRepoTools/run/register.sock`
+#: (lane 5's socket contract d8, section 2.1): `_Listener` binds it, `serve`
+#: binds it, and the client connects to it. `sun_path` holds 107 bytes on
+#: Linux and 103 on macOS, and the contract's client and `serve` refuse a
+#: path over 103 bytes (`path-too-long`). Under `tmp_path` the path followed
+#: the temporary root: on the runner, `run.sh`'s basetemp put it at about 147
+#: bytes, and both of `_Listener`'s cases failed with `OSError: AF_UNIX path
+#: too long` (lane 1's verify-r5-c2b, CI run 43140203269); every service case
+#: would meet `path-too-long` once T512 lands (line AN14). So each estate's
+#: `XDG_STATE_HOME` is a `mkdtemp` of its own in `/tmp`, as `tests/pgcluster.py`
+#: makes its socket directory: `/tmp/l2g-` and mkdtemp's 8 characters, 17
+#: bytes, which puts the socket at 49 whatever `TMPDIR` or `--basetemp` is.
+#: The estate removes it at its close (`Estate.close`), and one `atexit`
+#: handler removes any that an estate which failed to finish left.
+STATE_PARENT = "/tmp"
+STATE_PREFIX = "l2g-"
+#: The contract's bound on the socket's path, in bytes (section 2.1).
+SOCKET_MAX = 103
+#: Every state home made in this process, for the `atexit` handler.
+_STATE_HOMES: list = []
+
+
+def _remove_state_homes() -> None:
+    for home in _STATE_HOMES:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def _state_home() -> Path:
+    """A new state home (`STATE_PARENT`, `STATE_PREFIX`), 0700 as `mkdtemp`
+    makes it, whose socket path is within `SOCKET_MAX`."""
+    if not _STATE_HOMES:
+        atexit.register(_remove_state_homes)
+    home = Path(tempfile.mkdtemp(prefix=STATE_PREFIX, dir=STATE_PARENT))
+    _STATE_HOMES.append(home)
+    sock = home / "openRepoTools" / "run" / "register.sock"
+    assert len(os.fsencode(str(sock))) <= SOCKET_MAX, \
+        f"the service's socket path {sock} is over {SOCKET_MAX} bytes"
+    return home
+
+
 class Estate:
     """T203c's estate with the guard's offer for this session: the window is
     `FROM`, whose row names the session; the session is named `TO`, whose row
-    ends on another session; and the stand-ins above in `<root>/ctl`."""
+    ends on another session; and the stand-ins above in `<root>/ctl`. Its
+    `XDG_STATE_HOME` is a short directory of its own in `/tmp`, never under
+    `root` (`_state_home`), so the service's socket path is 49 bytes."""
 
     def __init__(self, root: Path, *, to=TO, to_row=True, guard=GUARD, path=None):
         self.root = root
@@ -496,10 +539,11 @@ class Estate:
         self.ctl = root / "ctl"
         for d in (self.wip.parent, root / "t", self.bin, self.ctl):
             d.mkdir(parents=True, exist_ok=True)
+        self.state_home = _state_home()
         env = guard_strip_env(os.environ)
         if path is not None:
             env["PATH"] = path
-        env.update(HOME=str(self.home), XDG_STATE_HOME=str(root / "state"),
+        env.update(HOME=str(self.home), XDG_STATE_HOME=str(self.state_home),
                    XDG_CONFIG_HOME=str(root / "config"), TMPDIR=str(root / "t"),
                    LANES_WORKSTATION=HOST, LANES_CONTAINER=CONTAINER, LANES_NO_GITHUB="1",
                    LANES_NO_FETCH="1", LANES_REPO=str(self.wip), LANES_LANE=FROM,
@@ -694,6 +738,7 @@ class Estate:
                 _kill(pid)
         for session in self.sessions:
             session.close()
+        shutil.rmtree(self.state_home, ignore_errors=True)
 
 
 @pytest.fixture
@@ -2381,7 +2426,8 @@ def _run_dir(est: Estate) -> Path:
     """The service's one directory, fixed by lane 5's socket contract d8
     (section 2.1): `${XDG_STATE_HOME:-~/.local/state}/openRepoTools/run/`,
     holding `register.sock`, `register.lock`, `register.owner`,
-    `register.failed` and `register.log` (section 2.3)."""
+    `register.failed` and `register.log` (section 2.3). Under the estate's
+    own state home (`_state_home`), its socket path is 49 bytes."""
     return Path(est.base["XDG_STATE_HOME"]) / "openRepoTools" / "run"
 
 
@@ -2929,7 +2975,9 @@ def test_a_service_that_cannot_start_falls_back_to_the_direct_read(estate, case)
     extra = {}
     if case == "start-fails":
         # A STATE PATH PAST 103 BYTES (section 2.1): the client starts nothing
-        # and reads directly, and `serve` refuses it with `path-too-long`.
+        # and reads directly, and `serve` refuses it with `path-too-long`. It
+        # is long on purpose, in place of the estate's short state home: its
+        # last part alone is 120 bytes, whatever the temporary root is.
         deep = est.root / ("s" * 120)
         deep.mkdir()
         extra["XDG_STATE_HOME"] = str(deep)
