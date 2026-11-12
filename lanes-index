@@ -18245,7 +18245,7 @@ def _cutover(opts: dict) -> int:
     st = _cutover_read(store)
     pair = (st["mode"], st["marker"])
     notes: list[str] = []          # this run's own notes, printed after its outcome
-    git = None                     # T327's checks before the transaction
+    git = ident = None             # T327's checks before the transaction
     if pair == ("primary", "adding"):
         return _cutover_standing(cfg, store, st, form, want, label)
     if pair == ("files", "removing"):
@@ -18268,7 +18268,21 @@ def _cutover(opts: dict) -> int:
             notes.append(f"cutover: the switch reads primary with the marker present, so this "
                          f"is the restore form's transaction (ops:379), and --import {want} "
                          f"names no import here")
-        git = cutover_git_preflight(cfg, _cutover_lane())
+        # T327: THE RENDER UP TO `b` PUSHES, so every refusal this run can know
+        # comes before it: N4's label, which the transaction would refuse with
+        # LR004 (ops:379), so that a host not yet re-pointed renders nothing
+        # and pushes no commit (AT-D22); whose entry it is; and the git half's
+        # checks.
+        if label == st["label"]:
+            raise Refusal(f"cutover: register_label={label} is the switch's own label, and the "
+                          f"switch reads primary: an after-loss cutover there is the restore "
+                          f"form, which needs the replacement's label, one that differs from the "
+                          f"lost database's, and its transaction refuses this one (LR004; N4, "
+                          f"ops:379); where this host's restore-form cutover has completed "
+                          f"already, the switch names its label and nothing is left to do. "
+                          f"Nothing was rendered, pushed or written")
+        ident = (_cutover_lane(), _cutover_workstation(), _cutover_author())
+        git = cutover_git_preflight(cfg, ident[0])
         notes.append(_cutover_render_to(cfg, store, git, st["head"]))
         base, commit, tree, sent = st["head"], st["import_commit"], st["import_tree"], "restore"
     elif pair == ("files", "absent"):
@@ -18300,7 +18314,8 @@ def _cutover(opts: dict) -> int:
     # BEFORE THE COMMIT CALL: whose entry it is (F12; Rule 10; D15), and
     # T327's checks of the git half, so that a cutover that could never push
     # its marker writes nothing.
-    lane, workstation, author = _cutover_lane(), _cutover_workstation(), _cutover_author()
+    lane, workstation, author = ident or (_cutover_lane(), _cutover_workstation(),
+                                          _cutover_author())
     if git is None:
         git = cutover_git_preflight(cfg, lane)
     timer = store.bounds("cutover")[1]
@@ -18399,19 +18414,40 @@ def _cutover_standing(cfg: dict, store, st: dict, form: str, want: str | None,
 
 
 def _cutover_render_to(cfg: dict, store, git: dict, b: int) -> str:
-    """THE RESTORE FORM'S RENDER (ops:382): every seq the mirror lacks, up to
-    the backup's head `b`, rendered as the rollback renders, before the
-    transaction, in the operator lane's checkout `git` names. Not in this
-    commit: while `RENDER_GIT_HALF` is False, so on a scratch schema, it
-    renders nothing and returns the note that says so; with the constant set
-    it refuses (2), so that no real restore's cutover can skip its render."""
-    if RENDER_GIT_HALF:
-        raise Refusal(f"cutover: the restore form renders every seq the mirror lacks, up to "
-                      f"{b}, before its transaction (ops:382), and this build has no such "
-                      f"render; nothing was written")
-    return (f"cutover: the restore form first renders every seq the mirror lacks, up to {b} "
-            f"(ops:382); that render is not in this build, so nothing was rendered for this "
-            f"scratch schema")
+    """THE RESTORE FORM'S RENDER (ops:382; T327's after-loss bullet, lane 3's
+    batch 12 A1, #165 6808010497): every seq the mirror lacks, up to the
+    backup's head `b`, rendered in the operator lane's checkout before the
+    transaction, as T326's step 2 renders to `k`: `render_to`, T322's passes
+    bounded by `b`, under the checkout's render lock. Returns the note that
+    says where origin stands.
+
+    Where origin does not reach `b`, nothing is written to the register: a
+    render whose read failed is 69 (Y:3527); every other end is refused (2),
+    with the pass's own outcome, which T322 recorded with the mirror state:
+    a divergence, a failed fetch, walk, build or push, six rejections, an
+    operator entry before `b`, the switch read at `files`, or a render lock
+    another render held past the wait."""
+    checkout = git["checkout"]
+    try:
+        result = render_to(checkout, cfg, store, b)
+    except OSError as exc:
+        raise Refusal(f"cutover: the render lock of {checkout} cannot be used "
+                      f"({exc.strerror or exc}), and the restore form renders every seq the "
+                      f"mirror lacks, up to {b}, before its transaction (ops:382); nothing was "
+                      f"written")
+    if result is None:
+        raise Refusal(f"cutover: another render held the render lock of {checkout} past the "
+                      f"wait, and the restore form renders every seq the mirror lacks, up to "
+                      f"{b}, before its transaction (ops:382); nothing was written: run it again")
+    if result.reached is not None and result.reached >= b:
+        return (f"cutover: the restore form rendered every seq the mirror lacked, up to {b} "
+                f"(ops:382): origin {RENDER_BRANCH} carries {REGISTER_SEQ_KEY} {result.reached}")
+    if result.outcome == "read-failed":
+        raise _CutoverEnd(EXIT_UNAVAILABLE, f"cutover: the restore form's render up to {b} could "
+                          f"not read the register ({result.detail}); nothing was written")
+    raise Refusal(f"cutover: the restore form renders every seq the mirror lacks, up to {b}, "
+                  f"before its transaction (ops:382), and its render ended {result.outcome}: "
+                  f"{result.detail}; nothing was written to the register")
 
 
 def _cutover_lane() -> str:
