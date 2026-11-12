@@ -95,6 +95,12 @@ READINGS, NOT FOUND IN A CONTRACT:
 - THE ABORT'S DUMP orders each of the twelve tables by its primary key's
   columns, as `pg_index` gives them, and holds each row as `to_jsonb` prints
   it. `stderr`'s first line naming the abort is read as carrying "abort".
+- `STATUS` AT A IS READ BY ITS REGISTER LINES, NOT ITS EXIT. The test plan
+  gives it no exit ("`status` shows a lag of `k - m`"; "`status` reads A at
+  `k`, recording `h`"). Its exit is #160's index's as well, and ws1 syncs no
+  index, so it is 1 there (`index: missing`) while it reads A. So A's lag
+  line, or its `n` at `k`, is the oracle, with 69, the register unread,
+  refused; with A stopped it is 69, as the loss asserts.
 - `bootstrap` on B runs with `--no-passwords`: no password of the indexer's
   is under test here, and the logins' are `login add`'s (as pgcluster's own
   bootstrap runs).
@@ -186,6 +192,9 @@ REGISTER_SEQ = re.compile(r"^Register-Seq: ([0-9]+)$", re.M)
 LAG_0 = re.compile(r"^\s*lag:\s+0 seq", re.M)
 LAG_N = re.compile(r"^\s*lag:\s+([0-9]+) seq\(s\)", re.M)
 LAG_AT_LEAST = re.compile(r"^\s*lag:\s+at least ([0-9]+) seq\(s\)", re.M)
+#: `status`'s `n`, the head it read and records as `h` (T117); where the
+#: register cannot be read its `n` is "unknown", which this does not match.
+REGISTER_N = re.compile(r"^\s*n:\s+(-?[0-9]+)\b", re.M)
 #: `status`'s two seqs where the register cannot be read (T117; ops 2.3, step 4).
 MIRROR_M = re.compile(r"^\s*mirror:\s+Register-Seq ([0-9]+) at ([0-9a-f]{12})", re.M)
 LAST_HEAD = re.compile(r"^\s*last head:\s+(-?[0-9]+),", re.M)
@@ -823,7 +832,8 @@ class Disaster:
             f"[A] a render reached origin while every fetch failed: {self.origin_seqs()[-4:]}")
         status = self.host.index("status", timeout=120)
         lag = LAG_N.search(status.stdout)
-        assert status.returncode == 0 and lag and int(lag.group(1)) == self.k - self.m, (
+        # Not its exit: that is #160's index's too, 1 on ws1 (see the readings).
+        assert status.returncode != 69 and lag and int(lag.group(1)) == self.k - self.m, (
             f"[A] `status` at A does not show a lag of k - m = {self.k - self.m} (lane 1's "
             f"T117):\n{_said(status)}")
         # Every renderer has exited: the wrapper lets git through again, for B.
@@ -886,7 +896,10 @@ class Disaster:
         """`status` at A records `h`; A stops; `status` prints `m` and `h` and
         exits 69; the outage is declared on ws1."""
         status = self.host.index("status", timeout=120)
-        assert status.returncode == 0, f"[loss] `status` at A (T117):\n{_said(status)}"
+        read = REGISTER_N.search(status.stdout)
+        assert status.returncode != 69 and read and int(read.group(1)) == self.k, (
+            f"[loss] `status` at A does not read A's head k = {self.k}, so it records no h "
+            f"(lane 1's T117):\n{_said(status)}")
         self.a.stop()
         status = self.host.index("status", timeout=120)
         mirror, last = MIRROR_M.search(status.stdout), LAST_HEAD.search(status.stdout)
