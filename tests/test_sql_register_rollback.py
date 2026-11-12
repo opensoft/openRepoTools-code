@@ -633,6 +633,12 @@ def test_rollback_steps_0_and_1_run_only_against_a_scratch_schema(rb_register, c
 #: - AT-F1's removal entry and rerun cases run on the clean estate, not after
 #:   a single-write import: what they check is step 1 and the rerun, which the
 #:   import does not change.
+#: - (h)'s FP register is a clean estate at `Register-Seq: 1`: the import at
+#:   0, whose images are the workspace's render set, and the cutover at 1, the
+#:   head, with no divergence. The fake answers from it every read a try makes
+#:   before step 1, T326's git half's two included (`HEAD_READ_MARK` and
+#:   `IMAGE_READ_MARK`), so each try's check passes and reaches step 1's lost
+#:   turn (lane 3's #165 6813528630).
 
 EM, DOT = chr(0x2014), chr(0xB7)
 #: AT-3's line, which the missed writer's refusal carries (TP:1651-1652).
@@ -1474,21 +1480,101 @@ def _canned_read(version: int) -> str:
     return "".join(f"{row}\n{NEXT}\n" for row in rows)
 
 
+#: STEP 0'S GIT HALF AS THE FAKE ANSWERS IT (FP; lane 3's #165 6813528630, a
+#: SHOULD from T326's builder). Right before step 1, T326 fetches `origin
+#: main` and checks it as T322 recognises a divergence (B15 tasks:1546, "Step
+#: 0's git half"). That makes two reads the rollback's own does not, each
+#: answered by its own rule, placed before `READ_MARK`'s:
+#: - T322's head read, after the fetch (`_render_read_head`,
+#:   `4353eb08:lanes-index:15025`): four SELECTs, the window, the head with
+#:   the switch, the resolved strays, and `mirror_state mir`'s `diverged_sha`
+#:   and `last_error`. That last SELECT holds `READ_MARK` too, so without a
+#:   rule of its own the fake gave it the rollback read's six answers, and
+#:   the head read failed: 69;
+#: - T301's image read at `m` (`register_render_queries`, `:2265`): five
+#:   SELECTs, which T322's image half replays and compares with the render
+#:   set at the commit carrying `m` (`render_pass`, `:15381-15399`). No rule
+#:   matched it, so the fake answered nothing: 69.
+#: Each mark is a text of that request alone among the case's requests.
+HEAD_READ_MARK, IMAGE_READ_MARK = "FROM mirror_state mir", "FROM journal_files f"
+
+
+def _copy_field(value) -> str:
+    """One field as `COPY ... TO STDOUT` writes it in TEXT format, which
+    `_pg_unescape` reads back: `\\N` for NULL, `t` or `f` for a boolean, and
+    a backslash, a tab, an LF or a CR escaped."""
+    if value is None:
+        return "\\N"
+    if isinstance(value, bool):
+        return "t" if value else "f"
+    return (str(value).replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
+            .replace("\r", "\\r"))
+
+
+def _copy_answer(selects: list) -> str:
+    """The fake's stdout for one request of SELECTs, as `_query_many` reads
+    it: each SELECT's rows, one line each, then the marker line."""
+    return "".join("".join("\t".join(_copy_field(field) for field in row) + "\n"
+                           for row in rows) + f"{NEXT}\n" for rows in selects)
+
+
+def _canned_head_read(version: int) -> str:
+    """T322's head read as the fake answers it, from the same canned register
+    as `_canned_read`: the window, the head 1 with the switch at `primary`,
+    no resolved stray, and neither a divergence nor a `last_error`."""
+    return _copy_answer([[(version, version, version)], [(1, "primary")], [], [(None, None)]])
+
+
+def _image_lines(data: bytes) -> tuple:
+    """A file's lines, and whether it ends with an LF, as T301's
+    `register_image_bytes` joins them back into `data`."""
+    text = data.decode("utf-8")
+    if not text:
+        return [], True
+    final = text.endswith("\n")
+    return (text[:-1] if final else text).split("\n"), final
+
+
+def _canned_images(version: int, rendered: dict, store: bytes) -> str:
+    """T301's image read at seq 1 as the fake answers it: the import at 0,
+    whose `create` and `append` edits rebuild `rendered`, the render set at
+    the commit carrying `Register-Seq: 1` (`{path: bytes}`), each path proved
+    by its `journal_files` row; then the cutover's entry at 1, which adds
+    `lanes/STORE`, outside the render set. So the images at `m` are the
+    render set there, and T322's image half finds no divergence."""
+    edits, files = [], []
+    for seq, paths in ((0, rendered), (1, {"lanes/STORE": store})):
+        ordinal = 0
+        for path in sorted(paths):
+            lines, final = _image_lines(paths[path])
+            ordinal += 1
+            edits.append((seq, ordinal, "create", path, None, None, None, None))
+            for number, line in enumerate(lines, 1):
+                ordinal += 1
+                edits.append((seq, ordinal, "append", path, number, None, line, None))
+            files.append((seq, path, True, hashlib.sha256(paths[path]).hexdigest(), final))
+    return _copy_answer([[(version, version, version)], [(1, 0)],
+                         [(0, "import"), (1, "cutover")], edits, files])
+
+
 @pytest.mark.parametrize("code", ["40001", "40P01", "55P03", "LR001"])
 def test_a_rollback_goes_back_to_its_check_on_each_lost_turn_code(tmp_path, code):
     """Test 8 (h), FP (TP:1700-1706): the register's fake `psql` answers the
-    rollback's reads from a canned register and every step-1 call with exit
-    3 and `ERROR:  <code>: <message>`, and `LANES_REGISTER_DEADLINE_S=6`
-    ends the tries: the fake's log shows two step-1 calls or more, each after
-    the first preceded by a head read, and the wrapper's a fetch of `origin
-    main` between each two; the exit is 75 (AT-D9's row holds its bound).
-    Runs by T203's flipped copy, on a files workspace whose origin carries
-    the cutover's `lanes/STORE` at `Register-Seq: 1`, the canned head. Needs
-    no engine; fails until T326, at its own assertion."""
+    rollback's reads, and step 0's git half's two, T322's head read and
+    T301's image read (`HEAD_READ_MARK`, `IMAGE_READ_MARK`), from a canned
+    register whose images at seq 1 are the workspace's render set there, and
+    every step-1 call with exit 3 and `ERROR:  <code>: <message>`, and
+    `LANES_REGISTER_DEADLINE_S=6` ends the tries: the fake's log shows two
+    step-1 calls or more, each after the first preceded by a head read, and
+    the wrapper's a fetch of `origin main` between each two; the exit is 75
+    (AT-D9's row holds its bound). Runs by T203's flipped copy, on a files
+    workspace whose origin carries the cutover's `lanes/STORE` at
+    `Register-Seq: 1`, the canned head. Needs no engine; fails until T326,
+    at its own assertion."""
     imp = _imp()
     ws = imp.Workspace(tmp_path / "w", imp.SEED)
-    ws.commit({"lanes/STORE": "store=primary\ndatabase=register-test\n"},
-              "LANES(repoA-2@Eagle): cutover\n\nRegister-Seq: 1")
+    cutover = ws.commit({"lanes/STORE": "store=primary\ndatabase=register-test\n"},
+                        "LANES(repoA-2@Eagle): cutover\n\nRegister-Seq: 1")
     copy = imp.flipped_indexer(tmp_path / "flip")
     version = int(re.search(r"^REGISTER_SCHEMA_VERSION = ([0-9]+)$",
                             copy.read_text(encoding="utf-8"), re.M).group(1))
@@ -1497,6 +1583,9 @@ def test_a_rollback_goes_back_to_its_check_on_each_lost_turn_code(tmp_path, code
     _script(bin_ / "git", GIT_WRAPPER)
     log, answers = tmp_path / "psql.log", tmp_path / "answers.json"
     answers.write_text(json.dumps([
+        {"match": HEAD_READ_MARK, "stdout": _canned_head_read(version)},
+        {"match": IMAGE_READ_MARK, "stdout": _canned_images(
+            version, ws.rendered(cutover), ws.blob(cutover, "lanes/STORE"))},
         {"match": READ_MARK, "stdout": _canned_read(version)},
         {"match": "commit_write", "exit": 3,
          "stderr": f"ERROR:  {code}: the test's lost turn ({code})\n"}]), encoding="utf-8")
