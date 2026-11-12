@@ -2998,7 +2998,7 @@ append_line_landing_expired() {   # <holder> --pr <n> --repo <r> --word <q> --wo
   local le_a="" le_o="" le_seen=" " le_rows="" le_rc=0 le_pass="" le_ch="" le_t="" le_a1="" le_a2="" le_a3="" le_a4="" le_a5=""
   local le_l="" le_p="" le_r="" le_u="" le_n=-1 le_age=0 le_line="" lane_tag="" le_left="" le_row="" le_open=""
   if [ "$REG_MODE" != primary ]; then
-    die "append-line --landing-expired: the release of a stale LANDING exists only on mode=primary, where the register's own check (F13) judges it when it is committed; this register's mode is ${REG_MODE:-files}. Nothing was written. Off primary a LANDING past Rule 6's thirty minutes is listed as STALE, and only its own lane's LANDED closes it." 2
+    die "append-line --landing-expired: the release of a stale LANDING exists only on mode=primary, where the register's own check (F13) judges it when it is committed; this register's mode is ${REG_MODE:-files}; nothing was written. Off primary a LANDING past Rule 6's thirty minutes is listed as STALE, and only its own lane's LANDED closes it." 2
   fi
   for le_a in ${1+"$@"}; do
     if [ "${le_a//[$'\n\r']/}" != "$le_a" ]; then
@@ -7828,7 +7828,7 @@ pw_decide() {
       PW_RELAY="$( { grep -E -e '^(ERROR|DETAIL):' -- "$PW_DIR/commit.err"; grep -E -e '^held-by=' -- "$PW_DIR/commit.out"; } 2>/dev/null || :)"
       if [ "$PW_RC" = 2 ]; then
         # T425: `append-line --landing-expired`'s LR005, by its token alone.
-        pw_end 2 "the register refused this write at attempt ${PW_K}'s commit (\`lanes-index register commit\` exited 2, above)$(landing_expired_refusal_text "$PW_DIR/commit.err"). Nothing was written" "$PW_DIR"
+        pw_end 2 "the register refused this write at attempt ${PW_K}'s commit (\`lanes-index register commit\` exited 2, above)$(landing_expired_refusal_text "$PW_DIR/commit.err"); nothing was written" "$PW_DIR"
       fi
       pw_end 69 "the register refused this write at attempt ${PW_K}'s commit (\`lanes-index register commit\` exited 69, above), a definitive refusal. Nothing was written. $(pw_rerun_line)" "$PW_DIR" ;;
     64)
