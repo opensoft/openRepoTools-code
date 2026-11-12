@@ -7999,6 +7999,16 @@ pw_tail_found() {   # <seq>
 # `wr_record_read` has checked is one of Y:5179's two forms (Q34), then gives
 # Y:5211-5213's effect check and the steps that may be owed (Y:5214).
 #
+# THE EFFECT CHECK'S `<lane>` is the lane the write is made for, PW_LANE
+# (`write_lane_of`'s, set by `pw_checkout` before the claim), which the
+# record's digest fixes with its arguments, not the writer's `LANES_LANE`,
+# which is the record's `lane=`: design:5257 (spec#17 B15 `6e534355`) puts
+# that rule on the effect check itself (lane openRepoTools-3, #165 6813027223,
+# batch g Q117, with batch e Q106). The effect is the write's. The journal
+# lookup's `--lane` keeps `WR_REC_LANE` (`wr_lookup_text`,
+# `pw_owner_live_end`), and the rerun keeps the writer's `LANES_LANE`
+# (`wr_rerun_plain_text`), since the digest takes it.
+#
 # WHERE THE EFFECT IS NOT THERE, THE WAIT (lane openRepoTools-3, #165
 # 6780753157, Q46): the same command again, with no LANES_WRITE_ID, after this
 # record's `updated_utc` plus its maximum age (`wr_max_age_s`,
@@ -8025,7 +8035,7 @@ pw_took_tail_refuse() {
   tr_when="once this record is more than ${tr_max} s, its maximum age, past its updated_utc, ${WR_REC_UPDATED_UTC}"
   [ -z "$tr_at" ] || tr_when="after ${tr_at}, when this record is more than ${tr_max} s, its maximum age, past its updated_utc, ${WR_REC_UPDATED_UTC}"
   pw_run_dir_done
-  wr_refuse "the pending record of this command, $WR_STATE/register-pending/$WR_D, holds write ${WR_REC_WRITE_ID} made at ${WR_REC_CREATED_UTC} against register generation ${WR_REC_GENERATION}, and its tail, ${WR_TOOK_TAIL}, says that write committed at seq ${tr_s}; but this register does not hold it: this run's first snapshot did not find it. A register restored from a backup carries the lost database's generation until its cutover (Y:1518), and a damaged record reads the same. Nothing was sent, no after-COMMIT step was run, and the record is left as it is. Look for its effect in the register as it stands: lanes-edit.sh history ${WR_REC_LANE} --since ${WR_REC_CREATED_UTC} for a log line, or lanes-edit.sh register-row ${WR_REC_LANE} for a row. If it is there, ${tr_steps} If it is not there, run the same command again, with no LANES_WRITE_ID, ${tr_when}: that rerun writes anew under a record of its own (Y:5207), and one before then takes this record over and is refused again: $(wr_rerun_plain_text)"
+  wr_refuse "the pending record of this command, $WR_STATE/register-pending/$WR_D, holds write ${WR_REC_WRITE_ID} made at ${WR_REC_CREATED_UTC} against register generation ${WR_REC_GENERATION}, and its tail, ${WR_TOOK_TAIL}, says that write committed at seq ${tr_s}; but this register does not hold it: this run's first snapshot did not find it. A register restored from a backup carries the lost database's generation until its cutover (Y:1518), and a damaged record reads the same. Nothing was sent, no after-COMMIT step was run, and the record is left as it is. Look for its effect in the register as it stands: lanes-edit.sh history ${PW_LANE} --since ${WR_REC_CREATED_UTC} for a log line, or lanes-edit.sh register-row ${PW_LANE} for a row. If it is there, ${tr_steps} If it is not there, run the same command again, with no LANES_WRITE_ID, ${tr_when}: that rerun writes anew under a record of its own (Y:5207), and one before then takes this record over and is refused again: $(wr_rerun_plain_text)"
 }
 
 # THE SAME COMMAND WITH NO `LANES_WRITE_ID` (Y:5207; lane openRepoTools-3, #165
