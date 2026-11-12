@@ -1951,17 +1951,39 @@ def test_the_texts_for_3_say_may_not_be_written_and_relay_the_writers_rerun(site
     with its backticks, relays the writer's printed rerun verbatim, and never
     prints its own hint, "was NOT added" or "NOT WRITTEN". Read from the
     scripts, with no engine: each must hold D8's text and none of the
-    refused hints, where its exit-3 arm stands."""
+    refused hints, where its exit-3 arm stands. A site may split the text
+    over adjacent string literals on consecutive source lines (T434's
+    `lane-worktrees` does, in one parenthesised Python string), so the
+    search also reads the file with each such seam joined. The refused hints
+    are looked for in what a site can print, so its full-line comments are
+    left out there: one may name a refused hint to forbid it, as T434's
+    `lane-worktrees:192` does at 3a5b303f."""
     from sql_register_helpers import REPO
     path = REPO / TEXTS_FOR_3[site]
     assert path.is_file(), f"{path.name} is not in the code root"
-    text = path.read_text(encoding="utf-8")
+    raw = path.read_text(encoding="utf-8")
+    views = [raw, joined_literals(raw)]
     forms = [D8_TEXT_3, D8_TEXT_3.replace("`", "\\`")]
-    assert any(form in text for form in forms), f"{path.name} does not hold D8's text for 3: {D8_TEXT_3!r}"
+    assert any(form in text for text in views for form in forms), (
+        f"{path.name} does not hold D8's text for 3: {D8_TEXT_3!r}")
     for refused in ("was NOT added", "NOT WRITTEN"):
-        near = [m.start() for form in forms for m in re.finditer(re.escape(form), text)]
-        assert not any(refused in text[max(0, k - 400):k + 400] for k in near), (
-            f"{path.name} prints {refused!r} beside D8's text for 3")
+        for text in map(uncommented, views):
+            near = [m.start() for form in forms for m in re.finditer(re.escape(form), text)]
+            assert not any(refused in text[max(0, k - 400):k + 400] for k in near), (
+                f"{path.name} prints {refused!r} beside D8's text for 3")
+
+
+def joined_literals(text: str) -> str:
+    """`text` with each seam of two adjacent string literals on consecutive
+    source lines joined: a closing quote, the line's end and the next line's
+    indent, and an opening quote of the same kind, are dropped, as Python
+    joins `("a " NEWLINE "b")`."""
+    return re.sub(r"""(["'])[ \t]*\n[ \t]*\1""", "", text)
+
+
+def uncommented(text: str) -> str:
+    """`text` without its full-line `#` comments, which a site never prints."""
+    return re.sub(r"(?m)^[ \t]*#.*\n?", "", text)
 
 
 # ============================================================ PHASE W (and N): AT-F3 (T246)
