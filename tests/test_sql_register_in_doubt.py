@@ -1614,31 +1614,37 @@ def test_a_pending_record_is_owned_through_numbered_claim_files_and_two_reruns_n
 
 
 # ------------------------------------------------------------ AT-F34: the tail, once
-#: [lr006]'s seam cap with the kept child gone (`learnt`): 12 s leaves the next
-#: attempt's child 11 s to reach its seam, and holds its commit call about
-#: 5 s where the gap between the two children's seams is r5's 7 s (T245i).
-LR006_SEAM_CAP_S = 12
+#: [lr006]'s seam cap with the kept child gone (`learnt`): 10 s leaves the next
+#: attempt's child 9 s to reach its seam, and holds its commit call about
+#: 4 to 6 s where the gap between the two children's seams is runs r5's and
+#: r7b's 7 s and 5.4 s (T245i, T245j).
+LR006_SEAM_CAP_S = 10
 
 
 def learnt(e: Estate, way: str, where: Path, *, gone: bool = False, script: Optional[Path] = None) -> Writer:
     """A `claim` whose first commit call committed while in doubt, learnt by
     [snapshot] (`after`, then the next snapshot), [lr006] (the first call
-    forked and held as AT-F3's orphan, the shim exiting 2 at once; the next
-    commit call held until the orphan has committed, so it gets LR006) or
-    [lookup] (`after`, the next snapshot failed, so AT-F3's lookup finds
-    it). The call that learns it is held; with `gone`, until the kept
-    child's `seam.out` says `none` under `LANES_REGISTER_SEAM_CAP_S=3`, or
-    `LR006_SEAM_CAP_S` for [lr006] (T245f, T245i). There the next attempt's
+    forked and held as AT-F3's orphan, the shim exiting 2 at once; the
+    orphan let go once the next attempt's snapshot has ended, having read
+    the write absent, and committed before that attempt's commit call, which
+    so gets LR006, as AT-LR006-1 orders them) or [lookup] (`after`, the next
+    snapshot failed, so AT-F3's lookup finds it). The call that learns it is
+    held; with `gone`, until the kept child's `seam.out` says `none` under
+    `LANES_REGISTER_SEAM_CAP_S=3`, or `LR006_SEAM_CAP_S` for [lr006].
+
+    [lr006]'s timing (T245f, T245i, T245j). The orphan carries the first
+    snapshot's clock plus 10 s as its `not_after` (`lanes-index`'s
+    `not_after=`), so it must commit within about 10 s of that snapshot:
+    let go only once the next commit call was held, it ended LR008 in line
+    ID17's run r7b, at 11 s on py-bench. With `gone`, the next attempt's
     child must reach its seam before the parent's wait ends, 1 s before the
     kept child's cap (Y:5004; `c8acf67c:lanes-edit.sh:9192`), and its commit
     call, sent at that seam and held until the kept child's `none`, should
     stay under its own 8 s timer, `C`: the cap must exceed the gap between
     the two children's seams by more than 1 s, and by less than about `C`.
-    Line ID17's run r5 measured that gap at about 7 s on py-bench (attempt
-    1's commit call 6.2 s after its snapshot, attempt 2's snapshot at
-    7.2 s, and the run ended 75 at 7 s), so 3 s and 7 s were both short.
-    Where the hold does pass `C`, the call is in doubt too, and the next
-    snapshot learns the write instead."""
+    Runs r5 and r7b measured that gap at about 7 s and 5.4 s, so 3 s and 7 s
+    were short and 12 s near `C`. Where the hold does pass `C`, that call is
+    in doubt too, and the next snapshot learns the write instead."""
     gate = fifo(e, f"learn-{way}")
     if way == "lr006":
         orphan = fifo(e, "orphan")
@@ -1651,10 +1657,12 @@ def learnt(e: Estate, way: str, where: Path, *, gone: bool = False, script: Opti
                 {"mode": "hold", "match": "find_write", "call": 1, "fifo": str(gate)}]
     extra = {"LANES_REGISTER_SEAM_CAP_S": str(LR006_SEAM_CAP_S if way == "lr006" else 3)} if gone else {}
     w = e.launch(LA, claim(OBJ), first=[where], arms=arms, extra=extra, script=script)
-    held = hold_point(gate, w)
     if way == "lr006":
+        until_seen("the next attempt's snapshot ended", lambda: len(w.snapshot_calls()) >= 2
+                   and w.snapshot_calls()[1]["call"] in w.ends(), w)
         hold_point(orphan, w).close()
         until_seen("the orphan's commit", lambda: e.journal_after(), w)
+    held = hold_point(gate, w)
     if gone:
         until_seen("the kept child's seam.out saying none", lambda: any(
             p.read_text(encoding="utf-8").strip() == "none" for p in e.state.rglob("seam.out")), w)
