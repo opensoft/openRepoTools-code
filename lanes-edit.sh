@@ -20833,6 +20833,173 @@ guard_bind_facts() {   # <facts file> [<line> …]
   return 0
 }
 
+# FEATURE 007, T510 - `start-record`'s PENDING RECORD SETTLED, where the lookup
+# shows its write did not commit under its id: `absent`, and LR007
+# `another-write` (W:5562-5565; `contracts/pending-record.md` §3.4, "Removed
+# ... where it holds one, only after F3's lookup has settled the write"). T412's
+# own steps, called and not edited (the plan's open point 6, its default: yes,
+# from outside a write run): this process's claim (`wr_claim_take`, waiting at
+# most D7's 30 s on a live owner), then the record and the claims up to its own
+# (`wr_record_remove`), then the attempt directories its `call=` lines named
+# (`pw_call_dirs_remove`). In a subshell, so a `die` of theirs ends the settle
+# and never the body. The record is `GBC_FILE`, read into `WR_REC_*`.
+#   0 settled · else not, and the record is kept
+guard_bind_settle() {
+  [ -n "$GBC_FILE" ] || return 1
+  ( WR_STATE="$(wr_state_dir)"; WR_D="${GBC_FILE##*/}"; WR_CALLS="$WR_REC_CALLS"
+    WR_CLAIM=""; WR_CLAIM_K=-1
+    wr_claim_take "$(( $(date -u +%s) + 30 ))" || exit $?
+    wr_record_remove || exit 1
+    pw_call_dirs_remove
+    exit 0 ) >&2
+}
+
+# FEATURE 007, T510 - PHASE 2's RERUN STEP, BEFORE `lane-start` (W:5558-5566,
+# "Reruns" and its table; tasks.md T510, "The lookup before a rerun", "`w₀`"
+# and "The reruns table"; the plan's §3 #6). The record's five copies say
+# which write of `start-record` the attempt before may have left in doubt:
+#   1. NO LOOKUP where the record holds no `write_id`, or where no whole
+#      `start-record` pending record of this transcript on this host and
+#      container still holds it (`guard_bind_copies <uuid> <id>`): 0, and
+#      `lane-start` binds anew; the outer's drop list then drops the copies.
+#   2. `w₀`: the child waits on its own clock until the record's `ended_utc`
+#      plus `C` = `n_a`·`c` + 6 s, from the record's `c` (at least 2, else 2)
+#      and `n_a` (at least 1, else 1) as `guard_bind_bound_s` reads them, and
+#      at most `C` from now; where `ended_utc` cannot be read, `C` from now.
+#      The record's `not_after` is at most `C` + 2 s after the stopped run's
+#      last snapshot, which came before `ended_utc` (W:5558; R05; tasks.md's
+#      `C`, not the design's fixed 8 s).
+#   3. THE LOOKUP, ONE CALL WITH NO CLOCK PAIR (W:5558): `lanes-index journal
+#      --write-id <id> --not-after <not_after> --generation <generation> --lane
+#      <write_lane> --verb start-record --args-sha256 <args_sha256>`, from the
+#      copies, through lane 4's one parser, T417's `pw_lookup` (the plan's open
+#      point 6, its default), with its answer in a fresh directory this step
+#      removes.
+#   4. THE TABLE (W:5560-5566):
+#      found      the pending record's `cmdline` is run, `eval`'d into an array
+#                 as `contracts/pending-record.md` §3.1 allows, under its
+#                 `write_id`, `generation`, `lane` and `session`, through
+#                 `LANES_EDIT` where it is set: it finds the entry and runs the
+#                 tail once (T418), and removes the record. Then 0, and
+#                 `lane-start` runs as usual, whose bind T503 makes write no
+#                 register line again (the plan's open point 9, its default).
+#                 A rerun that ends non-zero ends the bind with its code
+#      absent     the record settled (`guard_bind_settle`), then 0: `lane-start`
+#                 mints a new id. A record that cannot be settled is a 3
+#      doubt      3: LR011, no try within the window, any answer that settles
+#                 nothing. The record is kept, so the copies are
+#      LR007 `another-write`
+#                 the record settled, then 2 with the server's message: the
+#                 copies go with it
+#      LR007 `generation`
+#                 2 with a plain rerun's refusal of a record of another
+#                 generation (T412's text); the record and the copies are kept
+# A 2 or a 3 RETURNS, never `die`s (the exit-3 rule): its `why=` is in the
+# facts file, and the body exits with it.
+#   0 go on to `lane-start` · 2 or 3, or the found rerun's own code
+guard_bind_rerun() {   # <facts file>
+  gbe_facts="${1-}"
+  wr_is_uuid "$GBR_WRITE_ID" || return 0
+  guard_bind_copies "$G_ID" "$GBR_WRITE_ID"
+  [ -n "$GBC_FILE" ] || return 0
+  gbe_rec="$GBC_FILE"
+  if ! wr_is_count "$GBR_NOT_AFTER" || ! wr_is_uuid "$GBR_GENERATION" ||
+     ! wr_is_hex64 "$GBR_ARGS_SHA256" || [ -z "$GBR_WRITE_LANE" ]; then
+    gbe_why="the bind's record names write $GBR_WRITE_ID, which the pending record $gbe_rec still holds, but its copies of not_after, generation, write_lane and args_sha256 cannot make F3's lookup, so whether that write committed is not known. The pending record is kept"
+    note "guard-bind --body: $gbe_why."
+    [ -z "$gbe_facts" ] || guard_bind_facts "$gbe_facts" "why=$(guard_bind_oneline "$gbe_why")" || :
+    return 3
+  fi
+  # 2. `w₀`.
+  gbe_c="$(guard_bind_whole "$GBR_C" 6 || :)"
+  { [ -n "$gbe_c" ] && [ "$gbe_c" -ge 2 ]; } || gbe_c=2
+  gbe_n="$(guard_bind_whole "$GBR_N_A" 6 || :)"
+  { [ -n "$gbe_n" ] && [ "$gbe_n" -ge 1 ]; } || gbe_n=1
+  gbe_cs=$((gbe_n * gbe_c + 6))
+  gbe_now="$(date -u +%s)"
+  gbe_e=""
+  if wr_is_utc "$GBR_ENDED"; then gbe_e="$(epoch_of "$GBR_ENDED")"; fi
+  if wr_is_count "$gbe_e"; then gbe_until=$((gbe_e + gbe_cs)); else gbe_until=$((gbe_now + gbe_cs)); fi
+  [ "$gbe_until" -le "$((gbe_now + gbe_cs))" ] || gbe_until=$((gbe_now + gbe_cs))
+  while [ "$gbe_now" -lt "$gbe_until" ]; do
+    sleep "$((gbe_until - gbe_now))"
+    gbe_now="$(date -u +%s)"
+  done
+  # 3. THE LOOKUP, as T417's `pw_lookup` reads its `WR_*`: one `call` line
+  # carrying the copy's `not_after`, and no clock pair.
+  WR_STATE="$(wr_state_dir)"
+  WR_ID="$GBR_WRITE_ID"; WR_GEN="$GBR_GENERATION"; WR_LANE="$GBR_WRITE_LANE"
+  WR_VERB=start-record; WR_D="$GBR_ARGS_SHA256"
+  WR_CALLS="0 0 $GBR_NOT_AFTER $GBR_ARGS_SHA256 -"
+  PW_LK_CLK=()
+  PW_RUN_DIR="$( umask 077; mktemp -d "${TMPDIR:-/tmp}/guard-bind-lookup.XXXXXX" 2>/dev/null || printf '' )"
+  pw_lookup
+  gbe_msg=""
+  if [ "$PW_LK" != found ] && [ "$PW_LK" != absent ] && [ -n "$PW_LK_ERR" ] && [ -s "$PW_LK_ERR" ]; then
+    cat -- "$PW_LK_ERR" >&2
+    gbe_msg="$(grep -m 1 '^ERROR:  LR007:' -- "$PW_LK_ERR" 2>/dev/null || :)"
+  fi
+  [ -z "$PW_RUN_DIR" ] || rm -rf -- "$PW_RUN_DIR" 2>/dev/null || :
+  PW_RUN_DIR=""
+  gbe_look="lanes-index journal --write-id $WR_ID --not-after $GBR_NOT_AFTER --generation $WR_GEN --lane $(printf '%q' "$WR_LANE") --verb start-record --args-sha256 $WR_D"
+  # 4. THE TABLE.
+  gbe_why=""; gbe_rc=0
+  case "$PW_LK" in
+    found)
+      gbe_rr=()
+      eval "gbe_rr=($WR_REC_CMDLINE)" 2>/dev/null || gbe_rr=()
+      if [ "${gbe_rr[0]-}" != lanes-edit.sh ]; then
+        gbe_why="F3's lookup found write $WR_ID in the register at seq $PW_LK_SEQ, but its pending record's cmdline, in $gbe_rec, cannot be read as a lanes-edit.sh command, so its tail was not run. The pending record is kept"
+        gbe_rc=3
+      else
+        gbe_rr[0]="${LANES_EDIT:-$RESOLVED}"
+        note "guard-bind --body: F3's lookup found write $WR_ID at seq $PW_LK_SEQ, so its pending record's command runs once under that id, for its tail."
+        gbe_size=0
+        if [ -n "${GBR_OUT:-}" ] && [ -f "$GBR_OUT" ]; then
+          gbe_size="$(wc -c < "$GBR_OUT" 2>/dev/null | tr -d ' ' || :)"
+          case "$gbe_size" in ''|*[!0-9]*) gbe_size=0 ;; esac
+        fi
+        LANES_WRITE_ID="$WR_REC_WRITE_ID" LANES_WRITE_GENERATION="$WR_REC_GENERATION" \
+          LANES_LANE="$WR_REC_LANE" LANES_SESSION="$WR_REC_SESSION" \
+          "${gbe_rr[@]}" </dev/null >&2 || gbe_rc=$?
+        if [ "$gbe_rc" != 0 ]; then
+          gbe_said=""
+          if [ -n "${GBR_OUT:-}" ] && [ -f "$GBR_OUT" ]; then
+            gbe_said="$(tail -c +"$((gbe_size + 1))" "$GBR_OUT" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 1 || :)"
+          fi
+          gbe_why="F3's lookup found write $WR_ID at seq $PW_LK_SEQ, and the rerun of its pending record for its tail exited $gbe_rc${gbe_said:+: $gbe_said}"
+        fi
+      fi ;;
+    absent)
+      if guard_bind_settle; then
+        note "guard-bind --body: F3's lookup found no write $WR_ID with the head row's lock granted, so its pending record is settled and the bind runs anew under a new id."
+      else
+        gbe_why="F3's lookup found no write $WR_ID, but its pending record, $gbe_rec, could not be settled, so a new bind is not started beside it. The pending record is kept: $gbe_look"
+        gbe_rc=3
+      fi ;;
+    lr007)
+      if [ "$PW_LK_TOKEN" = generation ]; then
+        WR_LANE="$WR_REC_LANE"; WR_SESSION="$WR_REC_SESSION"; WR_CMDLINE="$WR_REC_CMDLINE"
+        WR_ARGS=(); PW_LANE="$GBR_WRITE_LANE"
+        gbe_why="$(wr_text_other_generation)"
+        gbe_rc=2
+      else
+        guard_bind_settle || note "guard-bind --body: the pending record $gbe_rec could not be removed after LR007 another-write; the next \`2\` looks it up again."
+        gbe_why="${gbe_msg:-ERROR:  LR007: another-write} (F3's lookup of write $WR_ID: that id is another write's in the register's journal, so no call of this bind's write can commit under it; its pending record is removed, and the next \`2\` binds anew)"
+        gbe_rc=2
+      fi ;;
+    *)
+      gbe_w3="$PW_LK_WHY"
+      [ -n "$gbe_w3" ] || gbe_w3="the lookup settled nothing"
+      gbe_why="cannot confirm whether the bind's register write $WR_ID committed: $gbe_w3. Its pending record, $gbe_rec, is kept, and so is the write id in this record, so the next \`2\` looks it up again. Look it up: $gbe_look"
+      gbe_rc=3 ;;
+  esac
+  [ "$gbe_rc" != 0 ] || return 0
+  note "guard-bind --body: $gbe_why"
+  [ -z "$gbe_facts" ] || guard_bind_facts "$gbe_facts" "why=$(guard_bind_oneline "$gbe_why")" || :
+  return "$gbe_rc"
+}
+
 # THE BODY, `guard-bind --body <uuid>`, IS WHAT THE GUARD'S CHOICE 2 USED TO DO
 # INSIDE THE HOOK, in the same order (Y:5397–5398): `lane-start --no-launch
 # --bind`, then, after a 0, the `set-row-state` on the lane the window left,
@@ -20873,6 +21040,12 @@ guard_bind_body() {   # <session uuid>
     gbb_facts="$(guard_bind_facts_of "$gbb_f" "$gbb_out" || :)"
     [ -z "$gbb_facts" ] || guard_bind_facts "$gbb_facts" || :
   fi
+  # FEATURE 007, T510 - PHASE 2's RERUN STEP: a write of the attempt before,
+  # still in doubt, is looked up before anything binds again
+  # (`guard_bind_rerun`). Its 2 or 3 ends the bind, with its `why=` written.
+  gbb_lrc=0
+  guard_bind_rerun "$gbb_facts" || gbb_lrc=$?
+  [ "$gbb_lrc" = 0 ] || return "$gbb_lrc"
   gbb_start="$(guard_lane_start)"
   [ -n "$gbb_start" ] || gbb_start=lane-start
   # WHERE `lane-start`'s OWN WORDS BEGIN in the attempt's output file, so that
