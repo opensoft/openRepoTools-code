@@ -6608,8 +6608,8 @@ def register_guard_declared(cfg: dict) -> dict | None:
 
 #: THE CAP ON EACH HOST in the guard's name (`register_guard_store_name`),
 #: in characters, before its `...` and its whole `:port` (lane 1's R07d NIT-1,
-#: #165 6813073600; its R07d2 SHOULD-1, #165 6814032524). Lane 3 rules the
-#: number.
+#: #165 6813073600; its R07d2 SHOULD-1, #165 6814032524). Lane 3 ruled 25
+#: (#165 6814260122).
 REGISTER_GUARD_NAME_HOST_CAP = 25
 
 
