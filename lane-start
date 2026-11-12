@@ -1445,7 +1445,17 @@ fi
 # Rung 6 — a checkout named for the repository, proved by its origin.
 if [ -z "$DIR" ] && [ -n "$ls_home" ]; then
   ls_name="${ls_home#*/}"
-  for ls_try in "$PROJECTS_ROOT/$ls_name" "$PROJECTS_ROOT"/*/"$ls_name" "$PROJECTS_ROOT"/*/*/"$ls_name"; do
+  # Repository identity is case-blind; its directory may retain an older case.
+  # Expand only this closed repository-name pattern, then prove the origin as
+  # before. Do not infer the home from a matching directory name.
+  ls_pattern="$(printf '%s' "$ls_name" | awk '{
+    for (i = 1; i <= length($0); i++) {
+      c = substr($0, i, 1)
+      if (c ~ /[A-Za-z]/) printf "[%s%s]", tolower(c), toupper(c)
+      else printf "%s", c
+    }
+  }')"
+  for ls_try in "$PROJECTS_ROOT"/$ls_pattern "$PROJECTS_ROOT"/*/$ls_pattern "$PROJECTS_ROOT"/*/*/$ls_pattern; do
     [ -d "$ls_try" ] || continue
     lane_dir_is_home "$ls_try" "$ls_home" || continue
     DIR="$ls_try"; DIR_SOURCE="the checkout of $ls_home under \$PROJECTS_ROOT (Evidence 7)"
