@@ -3155,18 +3155,29 @@ append_line_landing_expired() {   # <holder> --pr <n> --repo <r> --word <q> --wo
 # line at the commit, and refuses it with LR005 and one of three tokens. The
 # parent's end relays the `ERROR:` and `DETAIL:` lines verbatim (T415,
 # `pw_decide`), and this adds which of F13's three conditions the register
-# found, read from the first `DETAIL:  ` line of the commit's stderr. Since
-# the form copied the LANDING's fields from the file at the snapshot, each is
-# also a finding for D18's agreement tests: the file and the database
-# disagree. It prints nothing for any other run or any other token, and the
-# code stays 2 whatever it prints.
+# found. The token is LR005's own: the `DETAIL:  ` line right after the
+# `ERROR:  LR005:` line of the commit's stderr (register-cli.md [P]'s lines 1
+# and 2), cut at its first white space, as `pw_snapshot` reads LR007's. A
+# DETAIL anywhere else, or another error's, gives no token (lane
+# openRepoTools-3, #165 6813027223, batch g (118): "(110) governs LR005's
+# token too"). Since the form copied the LANDING's fields from the file at the
+# snapshot, each is also a finding for D18's agreement tests: the file and the
+# database disagree. It prints nothing for any other run or any other token,
+# and the code stays 2 whatever it prints.
 landing_expired_refusal_text() {   # <the commit's stderr file>
-  local lr_l="" lr_t=""
+  local lr_l="" lr_p="" lr_t=""
   [ "$WR_VERB" = append-line ] && [ "${WR_ARGS[0]-}" = --landing-expired ] || return 0
   [ -f "$1" ] && [ -r "$1" ] || return 0
   while IFS= read -r lr_l || [ -n "$lr_l" ]; do
-    case "$lr_l" in 'DETAIL:  '*) lr_t="${lr_l#DETAIL:  }"; break ;; esac
+    case "$lr_l" in
+      'DETAIL:  '*)
+        case "$lr_p" in
+          'ERROR:  LR005:'*) lr_t="${lr_l#DETAIL:  }"; break ;;
+        esac ;;
+    esac
+    lr_p="$lr_l"; lr_l=""
   done < "$1"
+  lr_t="${lr_t%%[[:space:]]*}"
   case "$lr_t" in
     expired-none)
       printf '%s' ": LR005 expired-none, the register found no open LANDING of that holder for that PR whose repo_key is the line's, though this form found one in the register's file at its snapshot and copied it: the LANDING is keyed another way, each writer by its own repos.tsv, or the file's pairing found a different newest take. That is a finding for D18's agreement tests" ;;
