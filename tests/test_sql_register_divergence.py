@@ -70,13 +70,19 @@ lets every other path through, `lanes/repos.tsv` and `lanes/log/README.md`
 among them. It is a model: the suite cannot reach GitHub. Its two tests need
 no engine.
 
-WHAT EACH FAILS UNTIL. The estate needs lane 1's T107 (`commit_write`,
-`record_marker`, `record_mirror_state`; L1-A6) and T115 (`import --at`,
-L1-A13), and each case reads `status` (T117, L1-A15) and runs the renderer's
-pass (lane 3's T321 to T323). Then:
+WHAT EACH FAILS UNTIL (T271's Order, B15 tasks:2487): it waits for T205,
+and its tests fail until L1-A6, L1-A15, T322, T324 and T326 land. Case by
+case: the estate needs lane 1's T107 (`commit_write`, `record_marker`,
+`record_mirror_state`; L1-A6) and T115 (`import --at`, L1-A13), and each
+case reads `status` (T117, L1-A15) and runs the renderer's pass (lane 3's
+T321 to T323). Then:
 
-- the stop, `status`, the row's two ids and the three commits outside the
-  render set fail until those alone;
+- the stop, the row's two ids and the three commits outside the render set
+  fail until those alone;
+- `test_status_prints_diverged_at_the_stray_sha_and_reconcile_imports_nothing`
+  also fails until T325, whose re-render gives `reconcile` the renderer's 1
+  for a recorded `diverged at`, where T117's check alone, like `--dry-run`,
+  exits 0 (lane 3, #165 6809045090, L2-6);
 - the two ways out, the strays and the `Register-Seq` above the head fail
   until T324 too;
 - `test_rollback_works_after_each_way_out` and the `Register-Seq` case's last
@@ -129,16 +135,26 @@ READINGS, NOT FOUND IN A CONTRACT:
   writer's six push attempts, three seconds apart, take no time; what it
   does at each attempt is unchanged.
 
-OPEN, FOR LANE 3 (each asserted as the test plan writes it):
+RULED BY LANE 3 (#165 6809045090; its RULINGS-batch-e-analysis-20261111.md,
+L2-6 and L2-7; B15 folds both):
 
-- AT-6's stop says `reconcile` "exits non-zero" while the mirror is diverged.
-  Lane 1's T117 `reconcile` on primary is read-only and "exits 0 once the
-  check is made, whatever it found" (its docstring at line R's round 4), so
-  that assertion holds only once T325's re-render, which stops `diverged`,
-  or another code says so; T325 is not in T271's Order.
-- The `Register-Seq` case says `status` prints "a lag of at least 1". With
-  `m` above the head, T117's `status` prints the lag as "none, and the
-  mirror's m is past n" (R2's N6), which no lag of 1 or more matches.
+- L2-6: AT-6's stop stands (TP:1285): `reconcile` exits non-zero on a
+  diverged mirror once T325 lands. T325 re-renders what the mirror lacks
+  through T322's pass, and the pass's recorded stop, `diverged at` among
+  them, is the renderer's 1 (exit-codes.md section 3.4's `reconcile` 1
+  row). T117's check alone, like `reconcile --dry-run`, exits 0 whatever it
+  found. So the status case asserts 1, the code the contract names, and
+  fails until T325.
+- L2-7: T117 is right. With `m` above the head there is no lag (Y:2850):
+  until a revert names `R`, its `Register-Seq` counts, so `m` = `h`+10 is
+  past `n` = `h`+1, and `status` prints the lag as "none, and the mirror's
+  <m> is past n <n>" (TP:1319 at B15: "no lag: its `m` is past `n`
+  (Y:2850), as `status` says"). The `Register-Seq` case asserts that line,
+  naming `h`+10 and `h`+1. The plain stray's "a lag of at least 1"
+  (TP:1284) stands: that stray carries no `Register-Seq`.
+
+OPEN, FOR LANE 3 (asserted as the test plan writes it):
+
 - AT-6 names the import's refusal where the edits no longer apply as "a case
   of its own", but no test name holds it beside
   `[stray-revives-a-pair]`'s LR005, so none is written here.
@@ -315,6 +331,9 @@ REGISTER_SEQ = re.compile(r"^Register-Seq: ([0-9]+)$", re.M)
 #: `status`'s lag line (lane 1's T117): at 0, and as a number of seqs.
 LAG_0 = re.compile(r"^\s*lag:\s+0 seq", re.M)
 LAG_N = re.compile(r"^\s*lag:\s+([0-9]+) seq", re.M)
+#: ... and with `m` above `n` at `primary`, no lag (R2's N6; Y:2850; lane 3's
+#: L2-7): "none, and the mirror's <m> is past n <n>".
+LAG_PAST_N = re.compile(r"^\s*lag:\s+none\b[^\n]*?\b([0-9]+) is past n ([0-9]+)", re.M)
 NO_DIVERGENCE = re.compile(r"^\s*divergence:\s+none recorded", re.M)
 
 
@@ -985,11 +1004,22 @@ def _assert_stopped(est: Estate, stray: str, render) -> None:
         f"\n{_said(render)}")
 
 
-def _assert_status_diverged(est: Estate, sha: str) -> None:
+def _assert_status_diverged(est: Estate, sha: str, past: tuple | None = None) -> None:
+    """`status` prints `diverged at <sha>` with the full sha, and the lag:
+    for a plain stray, a lag of at least 1 (TP:1284); with `past`, `(m, n)`
+    for a `Register-Seq` above the head, no lag, `m` past `n`, as `status`
+    says (TP:1319 at B15; lane 3's L2-7)."""
     proc = est.status()
     assert f"diverged at {sha}" in proc.stdout, (
         f"status does not print `diverged at {sha}` with the full sha (lane 1's T117):\n"
         f"{_said(proc)}")
+    if past is not None:
+        found = LAG_PAST_N.search(proc.stdout)
+        assert found and _lag(proc.stdout) is None and (
+            int(found.group(1)), int(found.group(2))) == past, (
+            f"status does not print no lag, the mirror's {past[0]} past n {past[1]} "
+            f"(TP:1319; Y:2850; lane 3's L2-7):\n{_said(proc)}")
+        return
     lag = _lag(proc.stdout)
     assert lag is not None and lag >= 1, (
         f"status does not print a lag of at least 1 seq (AT-6's stop):\n{_said(proc)}")
@@ -1156,8 +1186,11 @@ def test_status_prints_diverged_at_the_stray_sha_and_reconcile_imports_nothing(p
     """AT-6, the stop: after the renderer's exit, `status` prints `diverged
     at <the stray's full sha>` and a lag of at least 1; `reconcile` exits
     non-zero, the journal's count is unchanged, and `status` still prints
-    `diverged at` after it. Fails until T107, T115, T117 and T321 to T323
-    land; its `reconcile` exit, until T325 (see "Open, for lane 3")."""
+    `diverged at` after it. The non-zero is 1: T325's re-render runs T322's
+    pass, whose recorded stop is the renderer's 1 (exit-codes.md section
+    3.4's `reconcile` 1 row; lane 3's L2-6). Fails until T107, T115, T117
+    and T321 to T323 land, and also until T325, where T117's check alone
+    exits 0 (B15 tasks:2487)."""
     est = Estate(tmp_path / "e", pg)
     stray, _k, render = _stop(est)
     _assert_stopped(est, stray, render)
@@ -1165,8 +1198,10 @@ def test_status_prints_diverged_at_the_stray_sha_and_reconcile_imports_nothing(p
     count, head = est.count(), est.head()
     rec = est.reconcile()
     assert (est.count(), est.head()) == (count, head), "reconcile wrote to the journal"
-    assert rec.returncode != 0, (
-        f"reconcile exits 0 on a diverged mirror (AT-6: it exits non-zero):\n{_said(rec)}")
+    assert rec.returncode == 1, (
+        f"reconcile on a diverged mirror does not exit 1, the renderer's code for a recorded "
+        f"`diverged at` (AT-6: non-zero; exit-codes.md section 3.4; lane 3's T325, without "
+        f"which T117's check alone exits 0; L2-6):\n{_said(rec)}")
     after = est.status()
     assert f"diverged at {stray}" in after.stdout, (
         f"status no longer prints `diverged at {stray}` after reconcile:\n{_said(after)}")
@@ -1277,8 +1312,9 @@ def test_a_register_seq_above_the_head_stops_the_renderer_at_primary_and_the_rev
     person's commit of a file under `handoffs/` carrying `Register-Seq:
     <h+10>` in its final trailer block, then a write at `h+1` and its
     render. The pass records a divergence at that commit and pushes nothing;
-    `status` prints `diverged at` its full sha and a lag of at least 1 (see
-    "Open, for lane 3"); `render --revert <sha>` journals one entry with no
+    `status` prints `diverged at` its full sha and no lag, its `m` (`h`+10)
+    past `n` (`h`+1), as `status` says (TP:1319 at B15; Y:2850; lane 3's
+    L2-7); `render --revert <sha>` journals one entry with no
     edits naming it, and `diverged at` clears; the renderer then finds `m`
     at the last render commit before it and renders on, on top of it, to the
     revert's own seq; origin equals a full render, `reconcile` exits 0, and a
@@ -1296,7 +1332,7 @@ def test_a_register_seq_above_the_head_stops_the_renderer_at_primary_and_the_rev
     est.write("t271: a write after the forged trailer")
     render = est.render()
     _assert_stopped(est, forged, render)
-    _assert_status_diverged(est, forged)
+    _assert_status_diverged(est, forged, past=(h + 10, h + 1))
     seq = _way_out(est, forged, "revert")
     assert est.edits(seq) == [], f"the revert's entry has edits: {est.edits(seq)}"
     assert forged[:7] in (est.entry(seq)["message"] or "")
