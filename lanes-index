@@ -15230,7 +15230,7 @@ def render_build(checkout: str, git_dir: str, parent: str, parent_set: dict, seq
         shutil.rmtree(work, ignore_errors=True)
 
 
-def render_pass(checkout: str, cfg: dict, *, store=None) -> RenderPass:
+def render_pass(checkout: str, cfg: dict, *, store=None, until: int | None = None) -> RenderPass:
     """S2'S PASS in `checkout`, under its render lock (T322; S2's "A pass";
     D15; D16; FR-044; contracts/render-commit.md): fetch, read the head,
     find `m`, check for a divergence, take `t`, build `m+1 .. t` and push
@@ -15238,7 +15238,13 @@ def render_pass(checkout: str, cfg: dict, *, store=None) -> RenderPass:
     `render_store(cfg)` where it is not given. Returns a `RenderPass`; a
     refused configuration, from `render_store` or `render_push`, raises
     `Refusal` (2) after it is recorded where it can be. Section comment
-    above has the steps."""
+    above has the steps.
+
+    `until` BOUNDS THE TARGET (T327; lane 3's batch 12 A1, #165 6808010497):
+    `t = min(h, until, m + 64, o - 1)`, so no seq past `until` is rendered,
+    and a pass that finds origin at or past it ends `nothing-missing`.
+    `render_to` passes it, for the restore form's render up to `b`
+    (ops:382). Without it the pass is T322's, unchanged."""
     store = render_store(cfg) if store is None else store
 
     def stop(outcome: str, detail: str, *, diverged: str | None = None,
@@ -15324,8 +15330,9 @@ def render_pass(checkout: str, cfg: dict, *, store=None) -> RenderPass:
     if ended:
         return ended
 
-    # 5. THE TARGET, from the entries after `m`.
-    upto = min(head, m + RENDER_BATCH)
+    # 5. THE TARGET, from the entries after `m`, never past `until`.
+    limit = head if until is None else min(head, until)
+    upto = min(limit, m + RENDER_BATCH)
     try:
         entries = _render_read_entries(store, m, upto) if upto > m else []
     except RenderRefused as exc:
@@ -15363,6 +15370,10 @@ def render_pass(checkout: str, cfg: dict, *, store=None) -> RenderPass:
         if m >= head:
             return clean("nothing-missing", f"origin carries {REGISTER_SEQ_KEY} {m}, the "
                          f"journal's head; nothing to render", found=m, reached=m, target=m)
+        if m >= limit:
+            return clean("nothing-missing", f"origin carries {REGISTER_SEQ_KEY} {m}, at or "
+                         f"past seq {limit}, the bound this pass was given; nothing to render",
+                         found=m, reached=m, target=m)
         return clean("operator-next", f"seq {m + 1} is an operator entry, which its own command "
                      f"pushes (F2); nothing rendered past {REGISTER_SEQ_KEY} {m}", found=m,
                      reached=m, target=target)
@@ -15624,6 +15635,67 @@ def _render_checkout_main(args: list) -> int:
     except StoreUnusable as exc:
         note(f"{exc.kind}: {exc.detail}")
         return 1
+
+
+# ======================================== an operator's render to a seq (group C)
+#
+# THE OPERATOR COMMANDS RENDER IN THEIR OWN CHECKOUT, under the same render
+# lock as `render --checkout <c>` (T321), since T322's build clears and reuses
+# the checkout's one private index (feature 007's T327; lane 3's batch 12 A1,
+# #165 6808010497): the restore form of `cutover --after-loss` renders every
+# seq the mirror lacks, up to `b`, before its transaction (ops:382), as
+# T326's rollback renders to `k` (ops:337-338). An operator command WAITS for
+# the lock, a bounded while, where a writer's fork never waits: it is one run
+# on Brett's word, and its next step needs the render done. As a holder it
+# keeps T321's handshake: after it lets go, a rerun mark left meanwhile is
+# answered by a re-fork, as `_render_holding` answers one at its cap.
+
+def render_lock_wait(git_dir: str, seconds: float) -> RenderLock | None:
+    """`git_dir`'s render lock, taken within `seconds`, or None where another
+    render still holds it then. An error that is not "held" raises
+    `OSError`, as `RenderLock.acquire` does."""
+    lock = RenderLock(git_dir)
+    deadline = time.monotonic() + max(0.0, seconds)
+    while not lock.acquire():
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.25)
+    return lock
+
+
+def render_lock_release(lock: RenderLock, checkout: str) -> None:
+    """An operator command lets the render lock go, and answers a rerun mark
+    left while it held it with one re-fork (T321's handshake, second half:
+    the mark is looked for after the release, never before it)."""
+    lock.release()
+    if lock.has_rerun():
+        render_refork(checkout)
+
+
+def render_to(checkout: str, cfg: dict, store, k: int, *,
+              wait_s: float | None = None) -> RenderPass | None:
+    """RENDER UNTIL ORIGIN CARRIES SEQ `k` (T327; ops:382, :337-338), in
+    `checkout`, the operator lane's, under its render lock: T322's passes,
+    each bounded by `until=k`, one after another while a pass makes F15's
+    progress and origin's last `Register-Seq` is still below `k`.
+
+    Returns the last pass, or None where the lock could not be taken within
+    `wait_s` (`LANES_GIT_TIMEOUT`'s bound, 60 s where that is unbounded).
+    The render reached `k` where the last pass's `reached` is at least `k`;
+    every other end is the pass's own, recorded as T322 records it. A
+    refused configuration raises `Refusal` (2), as `render_pass` raises it;
+    a lock that cannot be used raises `OSError`."""
+    lock = render_lock_wait(render_git_dir(checkout),
+                            wait_s if wait_s is not None else (git_timeout_s() or 60))
+    if lock is None:
+        return None
+    try:
+        while True:
+            result = render_pass(checkout, cfg, store=store, until=k)
+            if (result.reached is not None and result.reached >= k) or not result.progressed:
+                return result
+    finally:
+        render_lock_release(lock, checkout)
 
 
 # ================================================================ the acts
