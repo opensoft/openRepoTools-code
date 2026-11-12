@@ -1670,9 +1670,13 @@ def test_a_landing_expired_on_primary_frees_main_and_who_landing_until_a_rollbac
     - Lane B's and lane C's `LANDING`s are committed as (i) commits its
       lines: one commit call each, the entry `append-line` would send.
     - "A ROLLBACK TO FILES" is `lanes-index rollback` as the operator lane,
-      then `set-mode index` on this workstation, as Brett runs it at the
-      rollback's step 5 (operations.md 2.3), so `who --landing` reads the
-      files: origin's `main` as the rollback rendered it.
+      through that lane's own register checkout, `<W>-lanes/<operator>`,
+      which `LANES_REPO` names, never W (D24); then `set-mode index` on this
+      workstation, as Brett runs it at the rollback's step 5 (operations.md
+      2.3), so `who --landing` reads the files: origin's `main` as the
+      rollback rendered it, after the harness's fetch of W (lane 3's ruling
+      (a), #165 6833830078), since the rollback pushed from the operator
+      lane's checkout.
 
     Fails until lane 1's T107, T111 and T112 (F13 and D18 in the commit),
     lane 4's T415 and T425 (L4-B10: the form and `RULE6_EXPIRED_AWK`), lane
@@ -1704,10 +1708,12 @@ def test_a_landing_expired_on_primary_frees_main_and_who_landing_until_a_rollbac
     env.update(LANES_INDEX_CONFIG=str(conf), PATH=str(reg.cluster.bindir) + os.pathsep + env["PATH"])
     env.pop("LANES_INDEX", None)
 
-    def run(argv: list, lane: str = None) -> subprocess.CompletedProcess:
+    def run(argv: list, lane: str = None, repo: Path = None) -> subprocess.CompletedProcess:
         child = dict(env)
         if lane:
             child.update(LANES_LANE=lane, LANES_SESSION=SESSIONS.get(lane, SID_W))
+        if repo is not None:
+            child["LANES_REPO"] = str(repo)
         return subprocess.run(argv, capture_output=True, encoding="utf-8", errors="replace",
                               env=child, timeout=300, cwd=str(checkout), check=False,
                               stdin=subprocess.DEVNULL)
@@ -1736,11 +1742,24 @@ def test_a_landing_expired_on_primary_frees_main_and_who_landing_until_a_rollbac
     assert any(f"  lane {OTHER}," in row for row in rows), (
         f"on primary who --landing does not list lane C's LANDING: {rows}")
 
-    rolled = run([sys.executable, str(copy), "rollback"], lane=OPERATOR)
+    # THE OPERATOR LANE'S OWN REGISTER CHECKOUT (D24; Amendment 23 S2 item 3):
+    # the rollback reads origin through it, never W, and refuses 2 where
+    # `LANES_REPO` names W itself (`lanes-index:19061-19106` at pair-m33a
+    # `8ba10b4e`, `lane_own_checkout`). `<W>-lanes/<operator>`, a clone of
+    # origin made after the case's last write, as T272d makes the cutover
+    # module's and T254s the guard module's; `LANES_REPO` names it for the
+    # rollback alone.
+    (operator_checkout,) = _lane_checkouts(origin, checkout, env, lanes=(OPERATOR,))
+    rolled = run([sys.executable, str(copy), "rollback"], lane=OPERATOR, repo=operator_checkout)
     assert rolled.returncode == 0, (
         f"the rollback to files exited {rolled.returncode} (T304, T326): {rolled.stderr[-800:]}")
     flipped = run([sys.executable, str(copy), "set-mode", "index"])
     assert flipped.returncode == 0, f"set-mode index exited {flipped.returncode}: {flipped.stderr}"
+    # THE READER'S FETCH OF W (lane 3's ruling (a), #165 6833830078; T272e's
+    # `fetch_w`): the rollback pushed from the operator lane's checkout, so
+    # W's `origin/main`, which `who` reads off primary (`register_text`) and
+    # whose `lanes/STORE` F17 checks as last fetched, moves only by a fetch.
+    git(checkout, "fetch", "-q", "origin", "main", env=env)
     rows = who()
     held = [row for row in rows if f"  lane {HOLDER}," in row]
     assert held and all(row.endswith(STALE_MARK) for row in held), (
