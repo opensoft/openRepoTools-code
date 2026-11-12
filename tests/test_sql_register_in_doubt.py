@@ -2460,6 +2460,23 @@ class Owner:
             self.ended_at = time.time()
 
 
+#: How long the stand-in owner lives once an identical run is launched (T247c).
+OWNER_LIVES_S = 3
+
+
+def owner_lives(w: Writer) -> None:
+    """Let the run meet the live owner's claim for `OWNER_LIVES_S`, then
+    check it is still waiting, having sent nothing (T247c; PM33A-TRIAGE L6).
+    The run takes and waits on its claim before its first snapshot
+    (`pw_run`: `wr_claim_take`, then `pw_owner_live_end`;
+    `8ba10b4e:lanes-edit.sh:10820`), so it makes no shim call while the owner
+    lives: ending the owner on the run's first call waited for a call that
+    never came, and the run ended 3 at its deadline."""
+    time.sleep(OWNER_LIVES_S)
+    assert w.ended is None, f"{w.name} exited {w.code} while the owner lived: {w.err[-400:]}"
+    assert w.calls() == [], f"{w.name} sent a call while the owner lived: {w.calls()[:1]}"
+
+
 def dead_pid() -> int:
     gone = subprocess.Popen([sys.executable, "-I", "-c", "pass"])
     gone.wait()
@@ -2586,7 +2603,7 @@ def test_a_lanes_write_id_run_waits_for_a_live_owner(estates, case):
         w = e.launch(LA, argv, extra=dict(DEADLINE if case == "live-at-deadline" else {},
                                           LANES_WRITE_ID=write_id, LANES_WRITE_GENERATION=generation))
         if case == "ends-in-time":
-            until_seen("the run's first call", lambda: w.calls(), w)
+            owner_lives(w)
             owner.end()
         code = w.wait()
     finally:
@@ -2624,7 +2641,7 @@ def test_a_claim_with_no_record_beside_it_is_waited_for(estates, case):
         write_claim(e, d, 0, owner.pid, owner.start, utc=utc)
         w = e.launch(LA, argv, extra=extra)
         if case == "ends-in-time":
-            until_seen("the run's first call", lambda: w.calls(), w)
+            owner_lives(w)
             owner.end()
         code = w.wait()
     finally:
