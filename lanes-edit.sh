@@ -7055,18 +7055,27 @@ pw_calls_dirs() {   # <call lines, one a line, without `call=`>
 # THE RECORD REMOVED: the attempt directories its `call` lines named, this
 # run's and those of a run whose record it took over, whose `<run>/` and then
 # `<d>/` go where each is left empty.
+#
+# `pw_calls_dirs`' list is split at each newline by parameter expansion, never
+# read from a here-document: bash 3.2 writes one to a temp file, and where none
+# can be made, as in a full TMPDIR, the loop never ran, and the directories
+# were left for `pw_runs_purge` (review REV-W10a M1's pattern).
 pw_call_dirs_remove() {
-  local cr_d=""
-  while IFS= read -r cr_d; do
+  local cr_d="" cr_r=""
+  cr_r="$(pw_calls_dirs "$WR_CALLS")"
+  while [ -n "$cr_r" ]; do
+    cr_d="${cr_r%%"$WR_NL"*}"
+    case "$cr_r" in
+      *"$WR_NL"*) cr_r="${cr_r#*"$WR_NL"}" ;;
+      *) cr_r="" ;;
+    esac
     [ -n "$cr_d" ] || continue
     pw_wdir_ok "$cr_d" attempt || continue
     rm -rf -- "$cr_d" 2>/dev/null
     if pw_wdir_ok "${cr_d%/*}" run; then
       rmdir -- "${cr_d%/*}" 2>/dev/null && rmdir -- "${cr_d%/*/*}" 2>/dev/null
     fi
-  done <<CR_EOF
-$(pw_calls_dirs "$WR_CALLS")
-CR_EOF
+  done
   return 0
 }
 
