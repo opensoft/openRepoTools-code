@@ -6320,6 +6320,26 @@ pw_run_dir() {
   return 0
 }
 
+# A `call` LINE'S FIELDS (Y:5172; the record's `<base> <clock> <not_after>
+# <files> <dir>`), into PW_CF_B, PW_CF_C, PW_CF_N, PW_CF_F and PW_CF_D, split
+# as `IFS=' ' read -r` splits them: a run of spaces between two fields, none
+# kept at either end, and the rest of the line in the last. It splits by
+# parameter expansion, never through a here-string: bash 3.2 writes one to a
+# temp file in /tmp, whatever TMPDIR names, as bash before 5.1 writes one past
+# a pipe's size, and where none can be made, as in a full /tmp, the read never
+# ran, every field was empty, and nothing checked it (review REV-W10a, M1).
+# T417's and T418's loops over `call` lines split them at each newline the
+# same way, as T414's seam and T415's `pw_abandon_kept` split theirs.
+PW_CF_B=""; PW_CF_C=""; PW_CF_N=""; PW_CF_F=""; PW_CF_D=""
+pw_call_fields() {   # <one call line, without `call=`>
+  local cf_x="${1-}"
+  cf_x="${cf_x#"${cf_x%%[! ]*}"}"; PW_CF_B="${cf_x%% *}"; cf_x="${cf_x#"$PW_CF_B"}"
+  cf_x="${cf_x#"${cf_x%%[! ]*}"}"; PW_CF_C="${cf_x%% *}"; cf_x="${cf_x#"$PW_CF_C"}"
+  cf_x="${cf_x#"${cf_x%%[! ]*}"}"; PW_CF_N="${cf_x%% *}"; cf_x="${cf_x#"$PW_CF_N"}"
+  cf_x="${cf_x#"${cf_x%%[! ]*}"}"; PW_CF_F="${cf_x%% *}"; cf_x="${cf_x#"$PW_CF_F"}"
+  cf_x="${cf_x#"${cf_x%%[! ]*}"}"; PW_CF_D="${cf_x%"${cf_x##*[! ]}"}"
+}
+
 # AN IDENTICAL WRITE'S OWNER STILL LIVE AT D7's DEADLINE (T417; Y:5216–5218;
 # T412's `wr_claim_take` returned 2, with WR_OWNER_* naming the highest claim).
 # This run sent nothing, and that write's outcome is not known, so it exits 3
@@ -6344,17 +6364,25 @@ pw_run_dir() {
 # pid cannot be tested here (lane 3, #165 6769061039, T417 item 2). So every
 # pid the second and third forms print is this host's.
 pw_owner_live_end() {
-  local po_rec="" po_rc=0 po_p="" po_utc="" po_look="" po_re="" po_then="" po_l="" po_b="" po_c="" po_n="" po_f="" po_d="" po_max="" po_last=""
+  local po_rec="" po_rc=0 po_p="" po_utc="" po_look="" po_re="" po_then="" po_k="" po_l="" po_n="" po_max="" po_last=""
   case "$WR_OWNER_WHY" in no-pid|no-start|other-host) pw_owner_untested_end ;; esac
   po_p="${WR_OWNER_PID:-<unknown>}"; po_utc="${WR_OWNER_UTC:-<unknown>}"
   po_rec="$WR_STATE/register-pending/$WR_D"
   wr_record_read "$po_rec"; po_rc=$?
   if [ "$po_rc" = 0 ]; then
-    while IFS= read -r po_l; do
+    # By parameter expansion, never a here-string (`pw_call_fields`), so a
+    # full /tmp cannot drop the lookup a `call` line asks for.
+    po_k="$WR_REC_CALLS"
+    while [ -n "$po_k" ]; do
+      po_l="${po_k%%"$WR_NL"*}"
+      case "$po_k" in
+        *"$WR_NL"*) po_k="${po_k#*"$WR_NL"}" ;;
+        *) po_k="" ;;
+      esac
       [ -n "$po_l" ] || continue
-      IFS=' ' read -r po_b po_c po_n po_f po_d <<<"$po_l"
+      pw_call_fields "$po_l"; po_n="$PW_CF_N"
       if [ -z "$po_max" ] || [ "$po_n" -gt "$po_max" ]; then po_max="$po_n"; fi
-    done <<<"$WR_REC_CALLS"
+    done
     po_re="$(wr_rerun_text "$WR_REC_WRITE_ID" "$WR_REC_GENERATION")"
     # With no `call` line the lookup has no `<n>` for its `--not-after` (§3.4;
     # LR011), and the live owner may yet write one, so the text names the
