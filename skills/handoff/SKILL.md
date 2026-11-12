@@ -1429,10 +1429,12 @@ line what had landed, and where it stands decides what to do.** One before the `
 refusal, a restart that another operation already owns, the window rename that did not take) prints no restart line,
 and nothing of the `PAUSED` record had been written: its line says what to fix, and to read `lane-handoff
 --restart-status --lane <lane>` where a restart owns the lane, or to run the same command again. A gate after the
-`READY` line leaves the pane as it is and has printed the restart line, but the record is not always written: where it
-says the `PAUSED` record is in doubt or was NOT written, settle that first, as it says, and where it says the row or the
-handoff was not set, or that the file-level line was NOT appended (its write exited 69), settle that, then run `--restart`
-again or restart by hand with the printed line, as it says. **Where it says the file-level line may not be written (its
+`READY` line leaves the pane as it is and has printed the restart line, but the record is not always written. **Run every
+rerun the line names first, in the order it names them** (under a seq base the gate that refuses first names the printed
+rerun of every write of the act that exited 3, W9's, W11's and W12's in that order, since the gates behind it never run;
+lane 3, #165 6837908956, T429's questions 1 to 3), and then take the way out it gives: where it says the `PAUSED` record is
+in doubt or was NOT written, settle that, as it says, and where it says the row or the handoff was not set, or that the
+file-level line was NOT appended (its write exited 69), settle that, then run `--restart` again or restart by hand with the printed line, as it says. **Where it says the file-level line may not be written (its
 write exited 3), run the rerun the writer printed for it and then restart by hand with the printed line, never `--restart`
 again:** that run would append a second line, since the line carries a UTC of its own (Y:5224), and the printed rerun is the
 only one that finds the first (Y:5222). Only where the record, the row and the handoff are written and the pane was still not taken (the
