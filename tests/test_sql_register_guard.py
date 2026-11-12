@@ -649,12 +649,27 @@ class Estate:
                               capture_output=True, text=True, timeout=60).stdout
 
     def push_register(self, rows, first=False) -> None:
-        (self.wip / "lanes" / "LANES.md").write_text(register_text(rows), encoding="utf-8")
+        """The register pushed to the bare origin. Once this estate has put its
+        register in the SQL store (`_seed_primary`, T254q), each line that
+        changed goes there too, one `write` entry per line (`_Register.replace`),
+        so a case's stand-in for what a bind leaves reads the same on primary
+        as in files mode (case 4)."""
+        text = register_text(rows)
+        (self.wip / "lanes" / "LANES.md").write_text(text, encoding="utf-8")
         if first:
             (self.wip / "lanes" / "log" / "README.md").write_text("logs.\n", encoding="utf-8")
         self._git(["add", "-A"], self.wip)
         self._git(["commit", "-q", "-m", "register"], self.wip)
         self._git(["push", "-q", "origin", "main"], self.wip)
+        sql = getattr(self, "sql_register", None)
+        if sql is not None:
+            path = "lanes/LANES.md"
+            old, new = sql.files[path].split("\n"), text.split("\n")
+            assert len(old) == len(new), \
+                f"the SQL store's register has {len(old)} lines and the new one {len(new)}"
+            for line_no, (was, now) in enumerate(zip(old, new), 1):
+                if was != now:
+                    sql.replace(path, line_no, now)
 
     def origin_head(self) -> str:
         return self._git(["rev-parse", "main"], self.origin).strip()
@@ -673,7 +688,11 @@ class Estate:
                         self.session.cwd, timeout)
 
     def make_offer(self) -> dict:
-        """The guard's first prompt makes the offer (`guard_offer`)."""
+        """The guard's first prompt makes the offer (`guard_offer`). On
+        primary, the register the estate pushed is put in the SQL store first
+        (`_seed_primary`, T254q), where the case has not put it there itself."""
+        if getattr(self, "pg", None) is not None:
+            _seed_primary(self)
         hook = self.hook("hello")
         record = read_record(self.offer)
         assert hook.code == 2 and OFFER in hook.text and record.get("mode") == "name-drift", \
@@ -754,11 +773,25 @@ class Estate:
 def estate(tmp_path, request):
     """The estate of the module's docstring, torn down with every process its
     bind left (the outer, its body, `timeout`, the stand-ins and their
-    children)."""
-    made = []
+    children).
 
-    def make(mode="files", **kwargs) -> Estate:
-        pg = request.getfixturevalue("pg") if mode == "primary" else None
+    ON PRIMARY, A DATABASE PER ESTATE (T254q): the first primary estate of a
+    case takes T205's `pg`; each later one a database of its own, cloned from
+    the same template and dropped at the teardown, as each estate has a bare
+    origin of its own in files mode, so case 9's rival reads its own register
+    and not the one the first bind changed. A caller that means two estates to
+    share one register passes `pg` (`_two_binds`)."""
+    made, own = [], []
+
+    def make(mode="files", pg=None, **kwargs) -> Estate:
+        if mode != "primary":
+            pg = None
+        elif pg is None:
+            pg = request.getfixturevalue("pg")
+            if any(getattr(e, "pg", None) is not None for e in made):
+                name = pg.cluster.new_database()
+                own.append((pg.cluster, name))
+                pg = type(pg)(pg.cluster, name)
         est = Estate(tmp_path / f"e{len(made)}", **kwargs)
         made.append(est)
         if pg is not None:
@@ -766,8 +799,12 @@ def estate(tmp_path, request):
         return est
 
     yield make
-    for est in made:
-        est.close()
+    try:
+        for est in made:
+            est.close()
+    finally:
+        for cluster, name in own:
+            cluster.drop_database(name)
 
 
 def _sleeper() -> subprocess.Popen:
@@ -1266,13 +1303,17 @@ def _seed_primary(est: Estate) -> None:
     A write on primary refuses the same switch with 69 at its snapshot's
     check 4 (line BD17's run e03).
 
-    ONCE PER DATABASE: an estate whose case already brought this `pg` to
-    `primary` (case 9's rival, on the same database) adds nothing."""
+    ONCE PER DATABASE: where the case, or an estate sharing its database,
+    already brought this `pg` to `primary`, nothing is sent. Otherwise the
+    `_Register` is kept as `est.sql_register`, and `Estate.push_register`
+    sends later changes through it (T254q). `Estate.make_offer` calls this
+    before the first offer, so every primary estate that makes one reads its
+    register there (T254q)."""
     out = est.pg.psql("SELECT mode FROM lanes_register.register_switch;",
                       check=False).stdout.split()
     if out and out[-1] == "primary":
         return
-    _Register(est)
+    est.sql_register = _Register(est)
 
 
 #: THE LANE'S HANDOFF (T214k), as a real lane's register holds it: the file
@@ -1322,9 +1363,12 @@ def _two_binds(estate, mode="files") -> tuple:
     """Two sessions, in windows `FROM` and `repoA-4`, each named `TO`, both
     answering `2` with the real `lane-start`: the two estates and their
     outcomes. On primary, the register goes into the SQL store once both
-    windows' rows are pushed (`_seed_primary`)."""
+    windows' rows are pushed (`_seed_primary`), and `two` runs the same
+    flipped build as `one` on `one`'s database (T254q): built in files mode,
+    it ran the checkout's `lanes-edit.sh`, whose `lanes-index` refuses
+    `mode=primary` (`Estate.primary`), so it could make no offer."""
     one = _real_estate(estate, register=False, mode=mode)
-    two = _real_estate(estate)
+    two = _real_estate(estate, register=False, mode=mode, pg=getattr(one, "pg", None))
     if mode == "primary":
         two.extra["LANES_INDEX_CONFIG"] = one.extra["LANES_INDEX_CONFIG"]
     two.home, two.wip, two.origin = one.home, one.wip, one.origin
