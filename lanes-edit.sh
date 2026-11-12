@@ -3361,9 +3361,16 @@ cs_refuse() {   # <what> <why> [<recovery line>…]
 # its new path alone (review REV415c, N3); without it, as before.
 # With `--rc` first, before `--no-renames`, it returns git's own exit status,
 # so a caller can tell a listing git could not make from an empty one; without
-# it, 0, as before, and a failed listing prints nothing. Only T415's
-# `pw_hand_edit_refuse` passes it: a read that failed is never "no hand edit"
-# there (Amendment 7(d); lane openRepoTools-3, #165 6813027223, batch g Q114).
+# it, 0, as before, and a failed listing prints nothing. Lane 3's rule: "each
+# primary refusal before the seam that looks for a pending change with
+# `cs_pending_of` passes `--rc`", since a read that failed is never "no hand
+# edit" there (Amendment 7(d); lane openRepoTools-3, #165 6813027223, batch g
+# Q114, and #165 6814531692, batch h Q123 and Q124). The three callers that
+# pass it: `pw_hand_edit_refuse` (T415), `commit_hand_edit_refuse` (T420) and
+# `rl_move_refuse_checks` (T422). The others pass none, by Q114:
+# `cs_own_pending`, `checkout_sync`'s two and the `commit` arm's carry test,
+# which run in files mode's S3, in T413's scratch tree, or, on primary, right
+# after `commit_hand_edit_refuse`.
 cs_pending_of() {   # [--rc] [--no-renames] <pathspec>…
   local cpo_r="" cpo_s=0 cpo_rc=0
   if [ "${1-}" = --rc ]; then cpo_s=1; shift; fi
@@ -4317,7 +4324,7 @@ EOF
 #      partial input (W7-T422's finding: `committed 8` was read as
 #      `ommitted 8`). A byte that races bash 3.2's alarm can still be lost,
 #      only the first, and the result is never a valid message, so
-#      `seam.out` is `none` and the run replays (Y:5053, Y:5388; lane
+#      `seam.out` is `none` and the run replays (Y:5007, Y:5342; lane
 #      openRepoTools-3's batch c, Q76). Nothing in the seam goes through a
 #      here-document or a here-string, which need a temp file on bash 3.2
 #      (REV-W9a M1).
@@ -4588,7 +4595,7 @@ cp_seam() {
   # The result is never a valid message: a cut `committed` or `abandon` is
   # neither, and so is a valid message with the wrong seq (below), as a lost
   # digit would leave it. So `seam.out` is `none` and the run replays
-  # (Y:5053, Y:5388).
+  # (Y:5007, Y:5342).
   # The parent and cap tests run after a turn that times out, and at most
   # once a second while bytes come with no newline. Where either says stop,
   # one more turn is read first (REV-W9a N3), so that a line that reached the
@@ -4636,12 +4643,12 @@ cp_seam() {
       wr_is_count "$cs_s" || cp_seam_stop "its parent's message is $(printf '%q' "$cs_msg"), which is neither committed <seq> nor abandon"
       # THIS ATTEMPT'S OWN SEQ (REV-W9a S1): a commit of this change set is at
       # the snapshot's `n=` plus 1, since `commit_write` refuses unless the
-      # head is still `n` (Y:2616) and commits at `n+1` (Y:2647); and the
+      # head is still `n` (Y:2570) and commits at `n+1` (Y:2601); and the
       # child a run sends `committed <s>` to took its snapshot at `s-1`, or
       # was built `--at <s-1>`, whose `n=` is `s-1` (contract §3.2). Any other
       # `<s>`, one with a leading zero included, is neither message: `none`,
-      # and the run replays (Y:5053, Y:5388). The reference is the snapshot,
-      # the attempt's own, and not the record's `tail=sent <s>` (Y:5339),
+      # and the run replays (Y:5007, Y:5342). The reference is the snapshot,
+      # the attempt's own, and not the record's `tail=sent <s>` (Y:5293),
       # which the child does not read.
       cs_sn=""
       if [ -f "$cs_d/snapshot" ] && [ -r "$cs_d/snapshot" ]; then
@@ -6466,7 +6473,7 @@ wr_id_plan() {
   WR_CREATED_UTC=""; WR_DATABASE=""
   wr_record_read "$ip_f"; ip_rc=$?
   if [ "$ip_rc" = 2 ]; then
-    wr_refuse "the pending record of this command, $ip_f, is there and cannot be read as one, so whether a write of it is in doubt is not known. Nothing was sent, and no run of this command gets past it, \`LANES_WRITE_ID=new\` included, until a person settles it. Read it: cat $ip_f. Where its \`format=\` is not 1, another lanes-edit.sh wrote it: run the command with that one, and leave the file. Otherwise, once the file is more than $(wr_max_age_s) s old by its own time, no commit call of it can still commit; look for its effect in the register as it stands, \`lanes-edit.sh history ${PW_LANE} --since <its created_utc, or earlier where that cannot be read>\` for a log line, or \`lanes-edit.sh register-row ${PW_LANE}\` for a row; then move the file out of register-pending/ and run the command again. If the effect is there, do by hand any of its after-COMMIT steps that did not run: those of \`lanes-edit.sh ${WR_VERB}\`. lanes-index status lists the pending records"
+    wr_refuse "the pending record of this command, $ip_f, is there and cannot be read as one, so whether a write of it is in doubt is not known. Nothing was sent, and no run of this command gets past it, \`LANES_WRITE_ID=new\` included, until a person settles it. Read it: cat $ip_f. Where its \`format=\` is not 1, another lanes-edit.sh wrote it: run the command with that one, and leave the file. Otherwise, once the file is more than $(wr_max_age_s) s old by its own time, no commit call of it can still commit; look for its effect in the register as it stands, \`lanes-edit.sh history ${PW_LANE} --since <its created_utc, or earlier where that cannot be read>\` for a log line, or \`lanes-edit.sh register-row ${PW_LANE}\` for a row; then move the file out of register-pending/ and run the command again. If the effect is there, do by hand any of its after-COMMIT steps that did not run: those of \`lanes-edit.sh ${WR_VERB}\`."
   fi
   case "$ip_e" in
     '')
@@ -6529,6 +6536,12 @@ wr_id_plan() {
 #           gives `LANES_WRITE_ID=new` only a record of another generation to
 #           replace; a plain rerun takes the record over, or writes anew once it
 #           is past its age
+# Each of these two refusals ends the run's directory first, `<d>/<run>/`
+# (`pw_run_dir_done`), as `pw_snapshot`'s refusal of a record of another
+# generation does: the first snapshot comes after `pw_run_dir`, so a refusal
+# here left that directory until a later run's `pw_runs_purge` (review
+# REV-W10a, N3). The check stays here, after that directory is made, since it
+# needs the generation this snapshot answers, which is written into it.
 #
 # 1 where the answer cannot be read (`format=` not 1, or no UUID where one is
 # owed), which the caller treats as a failed read, 69 (contract §2.8), or where
@@ -6556,12 +6569,16 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
       [ -n "$WR_CREATED_UTC" ] || WR_CREATED_UTC="$(wr_host_utc)"
       ;;
     aged)
-      [ "$WR_REC_GENERATION" = "$is_gen" ] || wr_refuse_other_generation "$is_gen"
+      if [ "$WR_REC_GENERATION" != "$is_gen" ]; then
+        pw_run_dir_done
+        wr_refuse_other_generation "$is_gen"
+      fi
       note "WARNING: the pending record of this command, write $WR_REC_WRITE_ID made at $WR_REC_CREATED_UTC against register generation $WR_REC_GENERATION, was last updated at $WR_REC_UPDATED_UTC, more than $(wr_max_age_s) s ago, so this run does not reuse its id: it writes anew, as write $is_wid, and replaces that record. $(wr_lookup_text)"
       WR_ID="$is_wid"; WR_GEN="$is_gen"; WR_CREATED_UTC="$(wr_host_utc)"
       ;;
     fresh)
       if [ "$WR_REC_GENERATION" = "$is_gen" ]; then
+        pw_run_dir_done
         wr_refuse "LANES_WRITE_ID=new, and the pending record of this command, write $WR_REC_WRITE_ID made at ${WR_REC_CREATED_UTC}, is of this register's generation, $is_gen. LANES_WRITE_ID=new replaces only a record of another generation, so this run neither replaces it nor writes anew. Nothing was sent. $(wr_lookup_text) Run the command without LANES_WRITE_ID to take that record over, or once it is $(wr_max_age_s) s past its last update, at ${WR_REC_UPDATED_UTC}, to write anew"
       fi
       WR_ID="$is_wid"; WR_GEN="$is_gen"; WR_CREATED_UTC="$(wr_host_utc)"
@@ -6988,7 +7005,7 @@ pw_snap_read() {   # <the snapshot's stdout, in a file>
 #        #165 6813027223, batch g Q115; pending-record.md:225 and :286 at
 #        bd871f57);
 #   64   usage: never sent by this file, so an internal error, 2 (CO-5);
-#   69, and any other end: the register could not be read, 69.
+#   69, and any other end: the register gave this write no snapshot, 69.
 # On a refusal or a failed read, what `lanes-index` said on stderr is passed
 # on first, verbatim. Then the first snapshot settles the write's id and writes
 # its record (T412's `wr_id_settle`; Y:5192), and a later one must echo this
@@ -7069,7 +7086,7 @@ pw_snap_end() {   # <2 | 69> <why>
     pw_end 2 "attempt ${PW_K}'s snapshot: $2. Nothing was sent by this run"
   fi
   [ "$PW_FIRST_DONE" = 1 ] || pw_first_69 "$2"
-  pw_end 69 "the register could not be read at attempt ${PW_K}'s snapshot: $2. Nothing was written by this run. $(pw_rerun_line)"
+  pw_end 69 "the register gave this write no snapshot at attempt ${PW_K}'s snapshot: $2. Nothing was written by this run. $(pw_rerun_line)"
 }
 
 # ---- (d) A 69 AT THE FIRST SNAPSHOT (open point 38, taken under R26; spec:318
@@ -7095,9 +7112,9 @@ pw_snap_end() {   # <2 | 69> <why>
 # from the run's start, and waits for F3's lookup (Y:5017–5023).
 pw_first_69() {   # <why>
   if [ "$WR_PLAN" = env ] || [ "$WR_PLAN" = reuse ]; then
-    pw_end 69 "the register could not be read at this write's first snapshot: $1. This run sent nothing for write $WR_ID of register generation $WR_GEN, and that says nothing of whether an earlier run committed it. Run it again by its write id, which settles the write with or without its record and never writes it twice: $(wr_rerun_text "$WR_ID" "$WR_GEN")"
+    pw_end 69 "the register gave this write no snapshot at this write's first snapshot: $1. This run sent nothing for write $WR_ID of register generation $WR_GEN, and that says nothing of whether an earlier run committed it. Run it again by its write id, which settles the write with or without its record and never writes it twice: $(wr_rerun_text "$WR_ID" "$WR_GEN")"
   fi
-  pw_end 69 "the register could not be read at this write's first snapshot: $1. No write id was minted and no pending record of this run was written: nothing was sent. Run it again as it was given: $(pw_given_text)"
+  pw_end 69 "the register gave this write no snapshot at this write's first snapshot: $1. No write id was minted and no pending record of this run was written: nothing was sent. Run it again as it was given: $(pw_given_text)"
 }
 
 # THE RERUN A 69 OR A 75 PRINTS (spec:318; open point 38): the write's id with
@@ -7516,10 +7533,11 @@ pw_record_done() {
 # name (`pw_call_dirs_remove`). A run that writes a record first removes each
 # `<run>/` under `register-writes/` that is older than the record's maximum age
 # and that no record's `call` line names (`pw_runs_purge`), as the done marks
-# are purged (Y:5183); that also takes a run that ended by a refusal inside
-# T412's functions, before its own end could remove it. Only a 0700 directory of
-# this uid, at its place under `<state>/register-writes/`, is ever removed
-# (`pw_wdir_ok`).
+# are purged (Y:5183); that also takes a run killed before its own end could
+# remove it. A refusal inside T412's functions after `pw_run_dir`,
+# `wr_id_settle`'s two, ends it first (review REV-W10a, N3). Only a 0700
+# directory of this uid, at its place under `<state>/register-writes/`, is ever
+# removed (`pw_wdir_ok`).
 
 # A `<d>/<run>/` (run) or `<d>/<run>/<k>/` (attempt) under this run's
 # `<state>/register-writes/`: `<d>` 64 lower hex, `<run>` 32, `<k>` digits;
