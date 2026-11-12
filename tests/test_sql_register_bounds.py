@@ -800,6 +800,25 @@ class Bench:
         self.session = None
         self.service_state = None
 
+    def lane_checkout(self) -> Path:
+        """`<c>`, lane `repoA-2`'s own register checkout, made once (T257l;
+        lane 4's triage, #165 6833813092, its group b1): on primary a write
+        runs from it, and where it is not there the write refuses with
+        nothing sent (`lanes-edit.sh`'s `pw_checkout`, T415's R17), since a
+        clone is a fetch (D12). It sits where `lane_checkout_path` puts it
+        (Amendment 23 S1), `<W>-lanes/<lane>`, W being the real path of this
+        bench's W, which `LANES_WORKSPACE_ROOT` names; and it is a clone of
+        W's origin, as `lane-checkout <lane> --create` makes one at a launch
+        and as `test_sql_register_writes.py`'s `make_lane_checkout` makes
+        it. A bench that runs no writer makes none."""
+        real = Path(os.path.realpath(self.w))
+        target = real.parent / f"{real.name}-lanes" / "repoA-2"
+        if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["git", "clone", "-q", str(self.origin), str(target)], check=True,
+                           env=self.env, capture_output=True, stdin=subprocess.DEVNULL)
+        return target
+
     def guard_session(self):
         """The guard rows' live session (T203c): a record on this workstation
         for a live pid, and a stand-in `tmux` that answers the guard's window
@@ -883,6 +902,7 @@ class Bench:
             argv = ["bash", str(tool / "lanes-edit.sh"), "set-row-state", "repoA-2",
                     f"PAUSED {DOT} T257's writer row"]
             env = dict(env, LANES_REGISTER_DEADLINE_S="3", LANES_LANE="repoA-2")
+            self.lane_checkout()
         elif row == "lookup":
             # THE LOOKUP'S FORM (AT-F6 case 19; lane 1's T114, `refs/l1/T114-fu3`):
             # `journal --write-id <id> --not-after <epoch s> --generation <g>
@@ -2021,7 +2041,9 @@ def _writer(bench: Bench, config: Path, state: str, *,
     """A writer's whole path, started: `lanes-edit.sh set-row-state` on the
     bench's lane, T257a's rows' path, which on primary is lane 4's L4-B3
     (T413 to T415). `deadline` is `LANES_REGISTER_DEADLINE_S`; unset, the
-    deadline is D7's 30 s, as in AT-4 (c)."""
+    deadline is D7's 30 s, as in AT-4 (c). The lane's own checkout is made
+    first, where the bench has none yet (`Bench.lane_checkout`, T257l)."""
+    bench.lane_checkout()
     env = dict(bench.env, LANES_INDEX_CONFIG=str(config), LANES_LANE="repoA-2")
     env.pop("LANES_REGISTER_DEADLINE_S", None)
     if deadline is not None:
@@ -2325,6 +2347,7 @@ def test_a_burst_of_ten_over_a_delayed_tls_link_commits_each_once_or_exits_75_wi
     with delayed_loopback(tls_cluster.port, DELAY_S) as relay:
         configs = {login: _link_config(tmp_path / "conf" / login / "lanes-index.conf", tls_cluster,
                                        relay.port, login) for login in set(writers)}
+        bench.lane_checkout()
         release = time.monotonic()
         procs = [_writer(bench, configs[login], f"PAUSED {DOT} T257's burst {i}")
                  for i, login in enumerate(writers)]
@@ -2606,15 +2629,32 @@ class Operator:
             self.exited = time.monotonic()
         return subprocess.CompletedProcess(argv, child.returncode, out, err), self.exited - start
 
+    def lane_checkout(self) -> Path:
+        """`<c>`, the operator lane's own register checkout, made once (T257l;
+        lane 4's triage, #165 6833813092, its group b1), as
+        `Bench.lane_checkout` makes the bench's: `<W>-lanes/<lane>`, W being
+        the real path of the fixture's `workspace.yaml` `path:`, its view of
+        the clone (`self.reg.ws`; Amendment 23 S5), and a clone of W's
+        origin. On primary a write refuses with nothing sent where it is not
+        there (`pw_checkout`, T415's R17). Only a writer makes it, after the
+        estate is built, so no operator command meets it."""
+        real = Path(os.path.realpath(self.reg.ws))
+        target = real.parent / f"{real.name}-lanes" / self.lane
+        if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            self._git("clone", "-q", str(self.reg.origin), str(target))
+        return target
+
     def write(self, config: Path) -> tuple:
         """A writer's whole path on this estate (T257j): `lanes-edit.sh
         set-row-state` on the operator's lane, from its checkout, at
         `LANES_REGISTER_DEADLINE_S=3`, D9's test value, as T257a's rows ran it
         on `Bench`; (the process, its elapsed seconds), its pid and exit
-        stamp kept."""
+        stamp kept. The lane's own checkout is made first (T257l)."""
         argv = ["bash", str(self.copy.parent / "lanes-edit.sh"), "set-row-state", self.lane,
                 f"PAUSED {DOT} T257's writer row"]
         env = dict(self.env, LANES_INDEX_CONFIG=str(config), LANES_REGISTER_DEADLINE_S="3")
+        self.lane_checkout()
         start = time.monotonic()
         with subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, text=True, env=env,
