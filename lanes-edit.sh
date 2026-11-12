@@ -667,7 +667,23 @@
 #      Every other failure of the question — a configuration `lanes-index`
 #      refuses, a `lanes-index` too old to know `mode`, none to run, a crash,
 #      no answer within 2 s — runs the verb in files mode with one warning,
-#      and is never 69.
+#      and is never 69. THE WRITERS' MARKER CHECK (feature 007, T419;
+#      FR-004) is 69 too, with nothing written: where that answer is not
+#      primary (no configuration, `index`, or a question that failed), a
+#      write whose fetched tip carries `lanes/STORE`, the marker of an
+#      estate whose register is SQL, refuses after Amendment 23 S3's fetch
+#      and before its step 2, and the publish act before it pushes, with
+#      "this estate's register is SQL; configure `mode=primary`". Under
+#      `LANES_NO_FETCH=1` it reads origin's tip as last fetched, and under
+#      `LANES_NO_GIT=1` the working tree. A READ THAT DECIDES (feature 007,
+#      T504; FR-033) is 69 with nothing on stdout where the register's read
+#      failed: on a configured workstation the read door asks `lanes-index
+#      register read --prefetch` once, before the arm, and its 69 or its 78
+#      is this 69, never the files instead. Off primary the door reads the
+#      marker on the ref the read reads, as last fetched, and a deciding read
+#      under it is 69 too, naming that fetch's age. The listings `lanes` and
+#      `history` read the mirror instead, with `read: mirror at ...` on
+#      stderr, and `managed-projection` answers 1, UNKNOWN.
 #      AND FEATURE 007'S ACTS (T410; FR-035; Y:5573): AN ACT'S BASE THAT
 #      COULD NOT BE READ. `act-begin` on primary makes one `lanes-index
 #      register snapshot` and exits 69 where it fails in any way — its own 69
@@ -892,8 +908,17 @@
 #   LANES_INDEX_CONFIG `lanes-index`'s configuration file, which only
 #                      `lanes-index` parses. Where it is set and non-empty, or
 #                      a file exists at its default path, a writer asks
-#                      `lanes-index mode` once (feature 007); where neither,
-#                      nothing is started
+#                      `lanes-index mode` once, and a reader `lanes-index
+#                      register read --prefetch` once (feature 007); where
+#                      neither, nothing is started
+#   LANES_READ_MIRROR=1  the reads that name a lane before its handoff is
+#                      published (`window-lane`, `swapped`, `register-row`,
+#                      `canon-lane`, `last-session`, `lane-state`,
+#                      `set-lane-state`, `handoff-path`, `write-handoff`, and
+#                      `managed-projection` at the ownership seam) read the
+#                      mirror, labelled `read: mirror at ...`, where the
+#                      register's read fails; every other verb ignores it
+#                      (feature 007, T504)
 #   AGENT_PROTOCOL_ROOT  dir holding workspace.yaml  (default: ~/.agents)
 #   LANES_PATH         pathspec of the register RELATIVE to LANES_REPO
 #                                           (default: `lanes/LANES.md`, derived
@@ -1488,6 +1513,12 @@ if [ -n "${LANES__MODE:-}" ] &&
   case "$LANES__MODE" in index|primary|files) REG_MODE="$LANES__MODE" ;; esac
 fi
 [ -n "$REG_MODE" ] || unset LANES__MODE
+# FEATURE 007, T504 - WHICH STORE ANSWERS THE READ SITES: `sql` (the cache
+# family at one `n`), `files` or `mirror`, set by the read door (`reg_open`)
+# just before the dispatcher, and empty where no door ran. Assigned empty here
+# and never read from the environment, as `REG_MODE` (lane 5's answer 11, #165
+# 6746507353).
+REG_STORE=""
 # AMENDMENT 23 S4 — THE REPLAY'S OWN MARKERS. A refused push drops this write's
 # commit and runs this file again with the same argv (`commit_publish`), and
 # `exec` keeps the pid: `LANES__REPLAY_PID` equal to `$$` is that re-run, and
@@ -1554,7 +1585,7 @@ unset LANES__REPLAY_PID LANES__ATTEMPT LANES__CLAIM_FROM LANES__CLAIM_DEAD LANES
 #     (Y:5039) and `LOCK` is the scratch tree's (Y:5044);
 #   * `REG_MODE` is `primary` (Y:5121; R45), set by assignment here, so the
 #     writers' question returns on a set answer and starts no `lanes-index`,
-#     and T425's and T426's one line reads it in the child as in the parent;
+#     and T425's and T426's one line reads it in the child;
 #   * ONE CLOCK (D13, Y:528–534): the snapshot's `clock=`, the database's time
 #     in whole epoch seconds, read here once from `<dir>/snapshot`, is what
 #     `now_epoch` and `utc_now` answer, so the lines the verb composes and the
@@ -2998,7 +3029,7 @@ append_line_landing_expired() {   # <holder> --pr <n> --repo <r> --word <q> --wo
   local le_a="" le_o="" le_seen=" " le_rows="" le_rc=0 le_pass="" le_ch="" le_t="" le_a1="" le_a2="" le_a3="" le_a4="" le_a5=""
   local le_l="" le_p="" le_r="" le_u="" le_n=-1 le_age=0 le_line="" lane_tag="" le_left="" le_row="" le_open=""
   if [ "$REG_MODE" != primary ]; then
-    die "append-line --landing-expired: the release of a stale LANDING exists only on mode=primary, where the register's own check (F13) judges it when it is committed; this register's mode is ${REG_MODE:-files}. Nothing was written. Off primary a LANDING past Rule 6's thirty minutes is listed as STALE, and only its own lane's LANDED closes it." 2
+    die "append-line --landing-expired: the release of a stale LANDING exists only on mode=primary, where the register's own check (F13) judges it when it is committed; this register's mode is ${REG_MODE:-files}; nothing was written. Off primary a LANDING past Rule 6's thirty minutes is listed as STALE, and only its own lane's LANDED closes it." 2
   fi
   for le_a in ${1+"$@"}; do
     if [ "${le_a//[$'\n\r']/}" != "$le_a" ]; then
@@ -3316,6 +3347,8 @@ remote_has_branch() {
 #   1. FETCH. A fetch that fails is a refusal (ratified choice 2): without a
 #      current origin the writer knows neither its base nor whether it could
 #      confirm a push. `LANES_NO_FETCH=1` is a fetch that failed, for a writer.
+#      Off primary, the tip it fetched is then read for the marker
+#      (`cs_marker_refuse`, feature 007), which refuses 69, not 2.
 #   2. An operation in progress, or unmerged entries.
 #   3. Not on the branch: a detached HEAD or another branch.
 #   4. Staged entries other than this write's own pathspecs. Never commit
@@ -3342,7 +3375,8 @@ remote_has_branch() {
 # whatever `remote.origin.fetch` says.
 #
 # `LANES_NO_GIT=1` (edit only: no commit, no push) skips all of it, as the
-# guard it replaces did — that mode publishes nothing to guard.
+# guard it replaces did — that mode publishes nothing to guard — but for the
+# marker check, which reads `$LANES_DIR/STORE` in the working tree there.
 CS_NO_ORIGIN_BRANCH=0
 CS_CARRY_DIFF=""
 CS_CARRY_ANCHORED=0
@@ -3512,11 +3546,83 @@ $CP_CARRY_COPIES
 CEC_EOF
   printf '%s' "$cec_out"
 }
+# FEATURE 007 — THE MARKER'S ONE READ (lane 3's #165 6755027994): does
+# <tip> carry `lanes/STORE`, the marker of an estate whose register is SQL?
+# The writers' marker check (`cs_marker_refuse`, T419) and the readers' F17
+# (T504) both ask it here, so the two never read the marker differently.
+#   reg_marker_read <repo> <tip>
+#     <repo>  the checkout git reads in, `$LANES_REPO`; the path is read from
+#             its top level (`--full-tree`), as `<tip>:lanes/STORE` reads it
+#     <tip>   the revision to read: a commit sha, or a ref the caller has
+#             resolved. EMPTY where there is no origin branch to read (no
+#             origin ref, or `LANES_NO_GIT=1`, which the caller decides): then
+#             `$LANES_DIR/STORE` in the working tree is read instead, F17's
+#             other half (Y:4946); a file, a directory or a link, dangling or
+#             not, counts as present
+# THE ANSWER IS THE EXIT CODE; nothing is printed on stdout, and git's stderr
+# is dropped:
+#   0  PRESENT — the marker is in <tip>'s tree (or the working tree);
+#   1  ABSENT — it is not;
+#   2  THE READ FAILED — git could not read <tip>'s tree: an object missing or
+#      unreadable, or a <tip> that names nothing. Nothing is known, so it is
+#      never ABSENT; each caller ends as its own rule says for a failed read.
+#      The working-tree read never fails.
+# `ls-tree`, not `cat-file -e`: `cat-file -e <tip>:lanes/STORE` is 128 for an
+# absent path and for a tree git cannot read alike, while `ls-tree` is 0 and
+# silent for an absent path.
+reg_marker_read() {   # <repo> <tip; empty: the working tree>
+  if [ -z "${2:-}" ]; then
+    [ -e "$LANES_DIR/STORE" ] || [ -L "$LANES_DIR/STORE" ] || return 1
+    return 0
+  fi
+  rmr_hit="$(git --no-replace-objects -C "$1" ls-tree --full-tree --name-only "$2" -- lanes/STORE 2>/dev/null)" || return 2
+  [ -n "$rmr_hit" ] || return 1
+  return 0
+}
+# FEATURE 007, T419 — THE WRITERS' MARKER CHECK (FR-004; the design's
+# requirement "A writer that is not `mode=primary` refuses under the marker",
+# spec:41–57; F17's test, Y:4946). Once an estate's register is SQL,
+# `lanes/STORE` is on origin, and a writer that is not on primary would write
+# files that are now only the mirror. So it reads the marker on the tip its
+# own S3 fetch returned (`checkout_sync`, after step 1), and the publish act
+# reads it again before it pushes (`cp_publish_act`). Where it is there, 69
+# with the requirement's text, and nothing written. ONLY OFF PRIMARY: where
+# T409's question answered `files` (no configuration, or a question that
+# failed) or `index`. On primary the marker is always on origin, and the
+# write path is SQL's. An empty `REG_MODE` was never asked, and is not
+# checked: `write-handoff`, whose S3 runs inside `$( )`, and an attempt's
+# child under `LANES_REGISTER_SCRATCH`. THE READ is `ls-tree`, which tells an
+# absent marker (0, nothing printed) from a tree git cannot read (not 0),
+# where `cat-file -e` is 128 for both; a read that fails refuses (2), since
+# it proves nothing. Under `LANES_NO_GIT=1`, or where there is no origin
+# branch to read, it is F17's other half: `$LANES_DIR/STORE` in the working
+# tree. Where the marker is absent it prints nothing and changes nothing.
+cs_marker_refuse() {   # <what> <the tip: a revision; empty: no origin branch> <whose tip it is>
+  case "$REG_ASK:$REG_MODE" in 1:files|1:index) : ;; *) return 0 ;; esac   # the write guard's 14 verbs only, never write-handoff (lane 3, #165 6754806910)
+  csm_tip=""
+  if [ "$NO_GIT" != 1 ] && [ -n "$2" ]; then
+    csm_tip="$(git -C "$LANES_REPO" rev-parse -q --verify "$2^{commit}" 2>/dev/null || :)"
+  fi
+  csm_rc=0; reg_marker_read "$LANES_REPO" "$csm_tip" || csm_rc=$?
+  [ "$csm_rc" != 1 ] || return 0
+  [ "$csm_rc" = 0 ] ||
+    cs_refuse "$1" "git could not read the tree of origin/$LANES_BRANCH at ${csm_tip:0:12}, $3, to look for lanes/STORE, the marker of an estate whose register is SQL, so whether this workstation may write the files is unknown (feature 007, FR-004)"
+  if [ -z "$csm_tip" ]; then
+    if [ "$NO_GIT" = 1 ]; then csm_where="$LANES_DIR/STORE is in the working tree (LANES_NO_GIT=1)"
+    else csm_where="$LANES_DIR/STORE is in the working tree, and there is no origin/$LANES_BRANCH here to read instead"
+    fi
+  else
+    csm_where="lanes/STORE is on origin/$LANES_BRANCH at ${csm_tip:0:12}, $3"
+  fi
+  csm_mode="files mode"; [ "$REG_MODE" = index ] && csm_mode="\`mode=index\`"
+  note "$csm_where. This workstation writes in $csm_mode, so \`$cmd\` refuses, and nothing was written (feature 007, FR-004)."
+  die "this estate's register is SQL; configure \`mode=primary\`" 69
+}
 checkout_sync() {   # <what> <lane> <write|carry|publish> [<pathspec it commits>…]
   cs_what="$1"; cs_lane="${2:-}"; cs_mode="$3"; shift 3
   CS_NO_ORIGIN_BRANCH=0; CS_CARRY_DIFF=""; CS_CARRY_BASE=""
   CS_LANE="$cs_lane"
-  [ "$NO_GIT" = 1 ] && return 0
+  [ "$NO_GIT" = 1 ] && { cs_marker_refuse "$cs_what" "" ""; return 0; }   # feature 007, T419
   # FEATURE 007, T413 — S3 IS SKIPPED WHOLE UNDER THE INTERNAL FLAG (Y:5040,
   # Y:5078; the plan's F-B4 and F-B5). The scratch tree is the register at the
   # snapshot's seq and has no origin to fetch from, so there is no fetch, no
@@ -3556,6 +3662,11 @@ checkout_sync() {   # <what> <lane> <write|carry|publish> [<pathspec it commits>
 
   # ---- 1. fetch
   if [ "${LANES_NO_FETCH:-0}" = 1 ]; then
+    # FEATURE 007, T419: a tip already carrying the marker is 69, not this 2
+    # (agreement test 3: "With `LANES_NO_FETCH=1` and the marker already in
+    # its tip, the writer still exits 69"). Read as last fetched, since no
+    # fetch is made; where the marker is absent, the 2 below as before.
+    cs_marker_refuse "$cs_what" "$cs_trk" "as this checkout last fetched it (LANES_NO_FETCH=1)"
     cs_refuse "$cs_what" "LANES_NO_FETCH=1 is set, and for a writer a fetch that did not run is a fetch that failed (Amendment 23 S3 step 1, ratified choice 2): without a current origin/$LANES_BRANCH this write knows neither its base nor whether it could confirm a push" \
       "run this write without LANES_NO_FETCH (reads may keep it)"
   fi
@@ -3590,6 +3701,12 @@ checkout_sync() {   # <what> <lane> <write|carry|publish> [<pathspec it commits>
   # landed at attempt 1. Made on this sha, the write's push is refused where
   # origin moved since, and S4's replay decides on the new tip.
   cs_now="$(git -C "$cs_c" rev-parse -q --verify "$cs_trk" 2>/dev/null || :)"
+  # FEATURE 007, T419 — THE MARKER, ON THE TIP THIS FETCH RETURNED, before the
+  # recheck's replay and before step 2: under the marker no verb's own checks
+  # run again (`cs_recheck`), and nothing is written. An origin with no branch
+  # has no tip, and the working tree is read instead (F17).
+  cs_mtip="$cs_now"; [ "$CS_NO_ORIGIN_BRANCH" != 1 ] || cs_mtip=""
+  cs_marker_refuse "$cs_what" "$cs_mtip" "the tip this write's own fetch returned"
   if [ "$CS_RECHECK" = 1 ] && [ "$CS_NO_ORIGIN_BRANCH" != 1 ]; then
     # AGAINST THE TIP THE CHECKS READ (`CS_SEEN`), and against the one just
     # before this fetch: in a shared checkout another process may have moved
@@ -5052,9 +5169,12 @@ cp_replay() {   # <sha> <subject>
 # refused and a rebase of a stack is the stale-base hazard #198 measured, so it
 # refuses, naming S6.3's archive. #214's fence still vouches for what the queue
 # holds, and the push sends the commit the fence read. Then the read-back, and
-# no replay: there is no edit to repeat.
+# no replay: there is no edit to repeat. FEATURE 007, T419: off primary, it
+# first reads the marker on origin's tip as it now stands, which S3 fetched
+# (`cs_marker_refuse`): under it, 69, and nothing is pushed.
 cp_publish_act() {
   cpa_trk="refs/remotes/origin/$LANES_BRANCH"; cpa_br="refs/heads/$LANES_BRANCH"
+  cs_marker_refuse publish "$cpa_trk" "the tip the publish act pushes onto"
   cpa_rc=0
   cpa_list="$(git --no-replace-objects -C "$LANES_REPO" --no-pager cherry -v "$cpa_trk" "$cpa_br" 2>/dev/null)" || cpa_rc=$?
   [ "$cpa_rc" = 0 ] || die "git could not compare $cpa_br with $cpa_trk, so what this publish would send is unknown; nothing was pushed (#194)" 2
@@ -5431,6 +5551,323 @@ reg_mode_query() {
 reg_mode_files() {   # <why>
   note "WARNING: \`lanes-index mode\` $1, so \`$cmd\` runs in files mode, as on a workstation with no lanes-index configuration (feature 007, D3)."
   REG_MODE=files
+}
+
+# FEATURE 007, T504 - THE READ DOOR'S CLASS TABLE (the design's "The readers'
+# SQL path"; lane 5's answer 12, #165 6746507353; R46). The ONE place that says
+# what each dispatcher arm is to the register: `reg_open` reads it, and so does
+# the hygiene test `test_every_dispatcher_arm_is_classified_for_the_read_door`,
+# which parses this function's rows. One arm per row, `<arm>) REG_CLASS=<class>`
+# on one line, and `*)` is decide. The six classes, and a failed read in each:
+#   decide      every arm that answers from the register and is not below: a
+#               failed read is 69, with nothing on stdout;
+#   mirror      the reads that decide nothing (`lanes`, `history`,
+#               `session-start`): `read: mirror at ...` on stderr, then the
+#               mirror read, with the arm's own exit;
+#   projection  `managed-projection`: 1, UNKNOWN, never 8 (S4);
+#   guard       `guard`, which makes its own read (T507): no door here;
+#   none        the arms that read no register (host-local facts, the filters
+#               that read stdin, the inventory's observation, `act-begin`, Q11,
+#               and `guard-bind`): no door and no call;
+#   writer      the write guard's verbs and `start-record` (R46): no door, since
+#               T409's question at the dispatcher serves them.
+# `REG_MIRROR_VAR=1` marks the arms that `LANES_READ_MIRROR=1` lowers to a
+# mirror read: lane 3's item 1 (#165 6746035594, as 6747422030 words it), with
+# `managed-projection` at the ownership seam (DEC-27, 6754522885). Every other
+# arm ignores the variable, `who` and `lane-last` among them. `REG_NO_CALL=1`
+# is `session-start`'s: a mirror arm with no register call (R39), whose read
+# T508 gives it. `lanes --decide` is decide, `reg_open`'s one flag rule (R38).
+# The table has no rows for the five arms its own tree lacks: T401's
+# `register-text` and `register-grep`, T410's `act-begin`, T427's
+# `start-record` and T502's `guard-bind`. Whichever of T504 and an arm's task
+# lands second adds that arm's row, and an integration merge that brings an
+# arm and this table together adds it in that merge (lane 3's ruling
+# 6782923063). B14 tasks:731-732 give each arm's class: `register-text` and
+# `register-grep` decide, `act-begin` none, `start-record` writer,
+# `guard-bind` none. Until its row is here an arm takes the `*)` row, decide.
+reg_class_of() {   # <arm>: sets REG_CLASS, REG_MIRROR_VAR and REG_NO_CALL
+  REG_MIRROR_VAR=0; REG_NO_CALL=0
+  case "$1" in
+    replace-in-row) REG_CLASS=writer ;;
+    append-session-id) REG_CLASS=writer ;;
+    append-line) REG_CLASS=writer ;;
+    add-row) REG_CLASS=writer ;;
+    set-row-state) REG_CLASS=writer ;;
+    migrate-state-cells) REG_CLASS=writer ;;
+    retire-rows) REG_CLASS=writer ;;
+    archive-rows) REG_CLASS=writer ;;
+    commit) REG_CLASS=writer ;;
+    log) REG_CLASS=writer ;;
+    claim) REG_CLASS=writer ;;
+    release) REG_CLASS=writer ;;
+    request-handoff) REG_CLASS=writer ;;
+    rename-lane) REG_CLASS=writer ;;
+    lanes) REG_CLASS=mirror ;;
+    history) REG_CLASS=mirror ;;
+    session-start) REG_CLASS=mirror; REG_NO_CALL=1 ;;
+    guard) REG_CLASS=guard ;;
+    managed-projection) REG_CLASS=projection; REG_MIRROR_VAR=1 ;;
+    window-lane) REG_CLASS=decide; REG_MIRROR_VAR=1 ;;
+    swapped) REG_CLASS=decide; REG_MIRROR_VAR=1 ;;
+    register-row) REG_CLASS=decide; REG_MIRROR_VAR=1 ;;
+    canon-lane) REG_CLASS=decide; REG_MIRROR_VAR=1 ;;
+    last-session) REG_CLASS=decide; REG_MIRROR_VAR=1 ;;
+    lane-state) REG_CLASS=decide; REG_MIRROR_VAR=1 ;;
+    set-lane-state) REG_CLASS=decide; REG_MIRROR_VAR=1 ;;
+    handoff-path) REG_CLASS=decide; REG_MIRROR_VAR=1 ;;
+    write-handoff) REG_CLASS=decide; REG_MIRROR_VAR=1 ;;
+    verify-row) REG_CLASS=decide ;;
+    who) REG_CLASS=decide ;;
+    idle-holders) REG_CLASS=decide ;;
+    live-holder) REG_CLASS=decide ;;
+    lane-holders) REG_CLASS=decide ;;
+    binding) REG_CLASS=decide ;;
+    lane-dir) REG_CLASS=decide ;;
+    lane-profile) REG_CLASS=decide ;;
+    lane-agent) REG_CLASS=decide ;;
+    lane-transcript) REG_CLASS=decide ;;
+    lane-last) REG_CLASS=decide ;;
+    forks) REG_CLASS=decide ;;
+    duplicate-holder) REG_CLASS=decide ;;
+    next-free) REG_CLASS=decide ;;
+    lane-objects) REG_CLASS=decide ;;
+    register-row-local) REG_CLASS=decide ;;
+    retired-identity) REG_CLASS=decide ;;
+    session-lane) REG_CLASS=decide ;;
+    resolve-home) REG_CLASS=decide ;;
+    restart-intent) REG_CLASS=decide ;;
+    publish-handoff) REG_CLASS=decide ;;
+    legacy-restart-check) REG_CLASS=decide ;;
+    set-restart-intent) REG_CLASS=decide ;;
+    lane-trees) REG_CLASS=decide ;;
+    set-lane-tree) REG_CLASS=decide ;;
+    lane-reconcile) REG_CLASS=decide ;;
+    worktrees) REG_CLASS=decide ;;
+    lane-checkout) REG_CLASS=decide ;;
+    append-row-status) REG_CLASS=none ;;
+    window-session) REG_CLASS=none ;;
+    transcript-holders) REG_CLASS=none ;;
+    workspace-root) REG_CLASS=none ;;
+    workstation) REG_CLASS=none ;;
+    fetch-age) REG_CLASS=none ;;
+    lane-groups) REG_CLASS=none ;;
+    sibling-filter) REG_CLASS=none ;;
+    resolve-repo) REG_CLASS=none ;;
+    lane-tree-now) REG_CLASS=none ;;
+    project-legs) REG_CLASS=none ;;
+    pathspec-check) REG_CLASS=none ;;
+    refresh-workspace) REG_CLASS=none ;;
+    act-begin) REG_CLASS=none ;;
+    *) REG_CLASS=decide ;;
+  esac
+}
+
+# FEATURE 007, T504 - THE READ DOOR (FR-033; the design's "The readers' SQL
+# path" and F17, W:4829-4849, W:4893-4898; contract sections 3.1 and 3.6). It
+# runs in the main shell, once, after the workspace check and 1a's routing and
+# just before the dispatcher, so what it sets outlives every `$( )` read the
+# arm makes, and a failed read ends the process with the arm's class, which no
+# command substitution can swallow. For a decide, mirror or projection arm:
+#   1. Under T413's honoured flag (`REG_SCRATCH` non-empty) it asks nothing,
+#      prefetches nothing, makes no marker check, and answers the files store
+#      though `REG_MODE` is primary (lane 3, #165 6755005268). It never tests
+#      `LANES_REGISTER_SCRATCH`, which T413 unsets at file scope.
+#   2. THE MODE, one answer per process (R17, R45): an `index` or `files`
+#      carried across an `exec` (`LANES__MODE`, taken at file scope) is kept and
+#      nothing is asked. Otherwise, where no configuration exists
+#      (`reg_config_present`, D3) nothing is started and the mode is `files`;
+#      where one does, the ONE call is the prefetch, `lanes-index register read
+#      --prefetch --cache "$SE_CACHE_FILE" --all`, whose first stdout line
+#      answers the mode too (contract 3.1: "There is no second mode query").
+#      On primary it writes the cache family at one `n`; in `mode index` it
+#      reads and writes nothing.
+#   3. ITS ENDS (contract 3.6's table): 0 with `mode primary`, the store is SQL
+#      at `n`; 0 with `mode index`, files; 69, primary's failed read; 78, Q6(c)'s
+#      refusal (`REG_MODE=refused`), a failed read; anything else (2, 64, 1, a
+#      crash, a signal, an answer it cannot read) is files mode with one
+#      warning, as with no configuration (W:4835).
+#   4. A FAILED READ ends by class (`reg_read_failed`).
+#   5. F17, OFF PRIMARY (`reg_marker_check`): the marker read on the ref the
+#      read reads, T419's `reg_marker_read`, ending by class where the marker is
+#      there or the read of it failed.
+# `REG_STORE` then says which store answers the read sites: `sql` (the family at
+# `n`), `files`, or `mirror`; empty where no door ran (a none, writer or guard
+# arm, `session-start`). `REG_MODE` and `REG_STORE` differ under
+# `LANES_READ_MIRROR=1` and in T413's child; the read sites test `REG_STORE`, and
+# the mode-keyed lines `REG_MODE` (lane 5's answer 11). `lanes-index` is
+# `lanes_index_bin`'s (Q-L5-2). No timer is set around the call: a register
+# call's timer runs inside `lanes-index` (contract 2.4).
+reg_open() {   # <arm> [<its arguments>...]
+  REG_STORE=""
+  reg_class_of "${1-}"
+  ro_arm="${1-}"; shift || :
+  RO_LANE="${1-}"
+  if [ "$ro_arm" = lanes ]; then
+    for ro_a in ${1+"$@"}; do
+      if [ "$ro_a" = --decide ]; then REG_CLASS=decide; fi
+    done
+  fi
+  if [ "${LANES_READ_MIRROR:-}" = 1 ] && [ "$REG_MIRROR_VAR" = 1 ]; then REG_CLASS=mirror; fi
+  case "$REG_CLASS" in decide|mirror|projection) : ;; *) return 0 ;; esac
+  [ "$REG_NO_CALL" != 1 ] || return 0
+  if [ -n "${REG_SCRATCH:-}" ]; then REG_STORE=files; return 0; fi
+  RO_FAILED=""; RO_WHY=""
+  case "$REG_MODE" in
+    index|files) : ;;
+    *) if reg_config_present; then reg_prefetch; else REG_MODE=files; fi ;;
+  esac
+  case "$REG_MODE" in index|primary|files) LANES__MODE="$REG_MODE"; export LANES__MODE ;; esac
+  if [ -n "$RO_FAILED" ]; then reg_read_failed "$RO_FAILED" "$RO_WHY"; return 0; fi
+  if [ "$REG_MODE" = primary ]; then REG_STORE=sql; return 0; fi
+  REG_STORE=files
+  reg_marker_check
+  return 0
+}
+
+# THE ONE CALL, form 1 (contract 3.6). Its stdout and stderr go to files beside
+# the cache, so a call that leaves a child behind holds no pipe open here, in
+# T409's one wrap form, whose subshell drops bash's job notice for a call a
+# signal ended (lane 3, #165 6755027994). Sets `REG_MODE`, and `RO_FAILED` (what
+# failed, for the refusal) and `RO_WHY` (the cause, for the mirror line) on a
+# failed read.
+reg_prefetch() {
+  RO_FAILED=""; RO_WHY=""
+  rp_bin="$(lanes_index_bin)"
+  if [ -z "$rp_bin" ]; then
+    reg_read_files "could not be run: there is no lanes-index beside $SCRIPT_DIR/lanes-edit.sh or on PATH"
+    return 0
+  fi
+  if [ -z "$SE_CACHE_FILE" ]; then
+    reg_read_files "could not be asked: no cache file could be made under ${TMPDIR:-/tmp} to hold its answer"
+    return 0
+  fi
+  rp_rc=0
+  ( "$rp_bin" register read --prefetch --cache "$SE_CACHE_FILE" --all </dev/null >"$SE_CACHE_FILE.door-out" 2>"$SE_CACHE_FILE.door-err"; exit "$?" ) 2>/dev/null || rp_rc=$?
+  rp_out="$(cat -v -- "$SE_CACHE_FILE.door-out" 2>/dev/null; printf .)"; rp_out="${rp_out%.}"
+  # WHAT IT SAID: its first line, the cause (contract 2.6), for the mirror line;
+  # all of it as one line, for a refusal or a warning. Control characters are
+  # dropped, at most 1000 bytes.
+  rp_why="$(head -n 1 -- "$SE_CACHE_FILE.door-err" 2>/dev/null | head -c 300 | tr -d '\000-\037' || :)"
+  rp_said="$(head -c 1000 -- "$SE_CACHE_FILE.door-err" 2>/dev/null | tr '\n\r\t' '   ' | tr -d '\000-\037' || :)"
+  while [ "${rp_said% }" != "$rp_said" ]; do rp_said="${rp_said% }"; done
+  rm -f -- "$SE_CACHE_FILE.door-out" "$SE_CACHE_FILE.door-err"
+  case "$rp_rc" in
+    0)
+      case "$rp_out" in
+        "mode index"|"mode index"$'\n') REG_MODE=index ;;
+        "mode primary"|"mode primary"$'\n') REG_MODE=primary ;;
+        *) reg_read_files "exited 0 without answering one line, mode index or mode primary" ;;
+      esac ;;
+    69)
+      # Form 1 reads only on primary ("In mode index, the call exits 0, reads
+      # nothing"), so a 69 is primary's failed read.
+      REG_MODE=primary
+      RO_WHY="${rp_why:-lanes-index printed no cause (exit 69)}"
+      RO_FAILED="the register could not be read: \`lanes-index register read --prefetch\` exited 69${rp_said:+ ($rp_said)}" ;;
+    78)
+      REG_MODE=refused
+      RO_WHY="lanes-index refuses mode=primary in this build (exit 78)${rp_why:+: $rp_why}"
+      RO_FAILED="the register could not be read: \`lanes-index register read --prefetch\` exited 78, EX_CONFIG, so lanes-index refuses this workstation's mode=primary in this build${rp_said:+ ($rp_said)}" ;;
+    *)
+      reg_read_files "exited $rp_rc${rp_said:+ ($rp_said)}" ;;
+  esac
+  return 0
+}
+
+# A QUESTION THAT FAILED, which is not a failed read: one warning line naming
+# it, then files mode, as on a workstation with no configuration (W:4835; D3).
+# F17 then runs, so under `lanes/STORE` the marker check refuses.
+reg_read_files() {   # <why>
+  note "WARNING: \`lanes-index register read --prefetch\` $1, so \`$cmd\` reads in files mode, as on a workstation with no lanes-index configuration (feature 007, D3)."
+  REG_MODE=files
+}
+
+# `read: mirror at <sha12>, <k> sequences behind or unknown (sql unreachable:
+# <why>)`, the `read:` family's third line (YS:626; Y's "The mirror reads"), on
+# stderr, never stdout. The mirror is `origin/$LANES_BRANCH` as last fetched;
+# where there is no origin ref to read, the checkout's HEAD; where origin's ref
+# names no commit git can resolve, no sha is claimed. This door never knows how
+# far behind it is, so `<k>` is `unknown`.
+reg_mirror_line() {   # <why>
+  rml_sha=""
+  if [ -n "$LANES_REPO" ]; then
+    if have_remote_ref; then
+      rml_sha="$(git -C "$LANES_REPO" rev-parse -q --verify "refs/remotes/origin/$LANES_BRANCH^{commit}" 2>/dev/null || :)"
+    else
+      rml_sha="$(git -C "$LANES_REPO" rev-parse -q --verify "HEAD^{commit}" 2>/dev/null || :)"
+    fi
+  fi
+  rml_show="no commit this checkout can name"
+  [ -z "$rml_sha" ] || rml_show="${rml_sha:0:12}"
+  printf 'read: mirror at %s, unknown (sql unreachable: %s)\n' "$rml_show" "$1" >&2
+}
+
+# A FAILED READ, BY CLASS (W:4841-4847; contract 3.6's table): decide 69, with
+# nothing on stdout; mirror, the line and then the mirror read; projection 1,
+# UNKNOWN, never 8 and never the legacy answer.
+reg_read_failed() {   # <what failed> <the cause, for the mirror line>
+  case "$REG_CLASS" in
+    mirror)
+      reg_mirror_line "$2"
+      REG_STORE=mirror ;;
+    projection)
+      die "whether the managed ledger owns lane ${RO_LANE:-?} is UNKNOWN: $1. That is never read as an answer: \`$cmd\` answers 1 (feature 007, the read door; S4)." 1 ;;
+    *)
+      die "$1. So \`$cmd\`, a read that decides, answers nothing, and never from the files instead (feature 007, the read door; FR-033)." 69 ;;
+  esac
+}
+
+# F17, THE READERS' MARKER CHECK (W:4893-4898; lane 4's B10 delta, edit 1, as
+# lane 5 confirmed it, #165 6766704266): run only off primary, in files mode
+# and `mode index`. It reads `lanes/STORE` with T419's `reg_marker_read`, the
+# one read the writers' check makes too (lane 3, #165 6755027994), in
+# `$LANES_REPO`: on `origin/$LANES_BRANCH` where `have_remote_ref` holds, and
+# with an empty tip under `LANES_NO_GIT=1` or with no origin ref, where it reads
+# `$LANES_DIR/STORE` in the working tree (W:4895's alternative). It runs on the
+# ref the read reads, as last fetched: readers do not fetch first, so the
+# refusal names how old that fetch is. 1, absent, says nothing and changes
+# nothing. 0, present, and 2, a tip git could not read, which is a failed read
+# and never "no marker" (ERR-47), end by class alike (Y:4948): decide 69 with
+# Amendment 22's text; mirror reads on with its line; projection 1. The guard's
+# is T507's. Where the workspace check did not run (`$LANES_REPO` or
+# `$LANES_DIR` empty), nothing is read: an empty `git -C` reads the current
+# directory, and the arm's own read answers (lane 5, #165 6746507353, item 10).
+reg_marker_check() {
+  [ -n "$LANES_REPO" ] && [ -n "$LANES_DIR" ] || return 0
+  rmc_tip=""; rmc_show=""
+  if have_remote_ref; then
+    rmc_tip="$(git -C "$LANES_REPO" rev-parse -q --verify "refs/remotes/origin/$LANES_BRANCH^{commit}" 2>/dev/null || :)"
+    rmc_show="${rmc_tip:0:12}"
+    # A ref that names no commit git can resolve is read as the ref, which
+    # `ls-tree` then fails: a failed read, never "no marker".
+    [ -n "$rmc_tip" ] || { rmc_tip="refs/remotes/origin/$LANES_BRANCH"; rmc_show="a tip git could not resolve"; }
+  fi
+  rmc_rc=0; reg_marker_read "$LANES_REPO" "$rmc_tip" || rmc_rc=$?
+  [ "$rmc_rc" != 1 ] || return 0
+  rmc_mode="files mode"; [ "$REG_MODE" = index ] && rmc_mode="\`mode=index\`"
+  if [ -z "$rmc_tip" ]; then
+    if [ "$NO_GIT" = 1 ]; then rmc_where="$LANES_DIR/STORE is in the working tree (LANES_NO_GIT=1)"
+    else rmc_where="$LANES_DIR/STORE is in the working tree, and there is no origin/$LANES_BRANCH here to read instead"
+    fi
+    rmc_short="lanes/STORE is in this checkout's working tree"
+  elif [ "$rmc_rc" = 0 ]; then
+    rmc_where="lanes/STORE is on origin/$LANES_BRANCH at $rmc_show, as this checkout last fetched it ($(fetch_age)): readers do not fetch first, so that is as current as this answer is"
+    rmc_short="lanes/STORE is on origin/$LANES_BRANCH at $rmc_show"
+  else
+    rmc_where="git could not read the tree of origin/$LANES_BRANCH at $rmc_show, as this checkout last fetched it ($(fetch_age)), to look for lanes/STORE, the marker of an estate whose register is SQL, so whether it is there is unknown"
+    rmc_short="git could not read origin/$LANES_BRANCH's tree to look for lanes/STORE"
+  fi
+  case "$REG_CLASS" in
+    mirror)
+      reg_mirror_line "this workstation reads in $rmc_mode, and $rmc_short, so the files are only the register's mirror (feature 007, F17)"
+      REG_STORE=mirror ;;
+    projection)
+      die "$rmc_where. This workstation reads in $rmc_mode, where the files are only the register's mirror, so whether the managed ledger owns lane ${RO_LANE:-?} is UNKNOWN: \`$cmd\` answers 1 (feature 007, F17; FR-004)." 1 ;;
+    *)
+      note "$rmc_where. This workstation reads in $rmc_mode, where the files are only the register's mirror, so \`$cmd\`, a read that decides, refuses and answers nothing (feature 007, F17; FR-004)."
+      if [ "$rmc_rc" = 0 ]; then die "this estate's register is SQL; configure \`mode=primary\`" 69; fi
+      die "whether this estate's register is SQL could not be read; nothing was answered" 69 ;;
+  esac
 }
 
 # Prints, to stdout, a comma-joined, de-duplicated list of the lane(s) whose
@@ -6473,7 +6910,7 @@ wr_id_plan() {
   WR_CREATED_UTC=""; WR_DATABASE=""
   wr_record_read "$ip_f"; ip_rc=$?
   if [ "$ip_rc" = 2 ]; then
-    wr_refuse "the pending record of this command, $ip_f, is there and cannot be read as one, so whether a write of it is in doubt is not known. Nothing was sent, and no run of this command gets past it, \`LANES_WRITE_ID=new\` included, until a person settles it. Read it: cat $ip_f. Where its \`format=\` is not 1, another lanes-edit.sh wrote it: run the command with that one, and leave the file. Otherwise, once the file is more than $(wr_max_age_s) s old by its own time, no commit call of it can still commit; look for its effect in the register as it stands, \`lanes-edit.sh history ${PW_LANE} --since <its created_utc, or earlier where that cannot be read>\` for a log line, or \`lanes-edit.sh register-row ${PW_LANE}\` for a row; then move the file out of register-pending/ and run the command again. If the effect is there, do by hand any of its after-COMMIT steps that did not run: those of \`lanes-edit.sh ${WR_VERB}\`."
+    wr_refuse "the pending record of this command, $ip_f, is there and cannot be read as one, so whether a write of it is in doubt is not known. Nothing was sent, and no run of this command gets past it, \`LANES_WRITE_ID=new\` included, until a person settles it. Read it: cat $(printf '%q' "$ip_f"). Where its \`format=\` is not 1, another lanes-edit.sh wrote it: run the command with that one, and leave the file. Otherwise, once the file is more than $(wr_max_age_s) s old by its own time, no commit call of it can still commit; look for its effect in the register as it stands, \`lanes-edit.sh history ${PW_LANE} --since <its created_utc, or earlier where that cannot be read>\` for a log line, or \`lanes-edit.sh register-row ${PW_LANE}\` for a row; then move the file out of register-pending/ and run the command again. If the effect is there, do by hand any of its after-COMMIT steps that did not run: those of \`lanes-edit.sh ${WR_VERB}\`."
   fi
   case "$ip_e" in
     '')
@@ -7056,7 +7493,7 @@ pw_snapshot() {
     64)
       pw_snap_end 2 "\`lanes-index register snapshot\` exited 64, a usage error this lanes-edit.sh never sends: an internal error" ;;
     *)
-      pw_snap_end 69 "\`lanes-index register snapshot\` exited ${ps_rc} and gave this write no snapshot to make its change on (its own words, where it gave any, are above)" ;;
+      pw_snap_end 69 "\`lanes-index register snapshot\` exited ${ps_rc} (its own words, where it gave any, are above)" ;;
   esac
   if [ "$PW_FIRST_DONE" = 0 ]; then
     [ -n "$PW_S_FOUND" ] || pw_runs_purge
@@ -7828,7 +8265,7 @@ pw_decide() {
       PW_RELAY="$( { grep -E -e '^(ERROR|DETAIL):' -- "$PW_DIR/commit.err"; grep -E -e '^held-by=' -- "$PW_DIR/commit.out"; } 2>/dev/null || :)"
       if [ "$PW_RC" = 2 ]; then
         # T425: `append-line --landing-expired`'s LR005, by its token alone.
-        pw_end 2 "the register refused this write at attempt ${PW_K}'s commit (\`lanes-index register commit\` exited 2, above)$(landing_expired_refusal_text "$PW_DIR/commit.err"). Nothing was written" "$PW_DIR"
+        pw_end 2 "the register refused this write at attempt ${PW_K}'s commit (\`lanes-index register commit\` exited 2, above)$(landing_expired_refusal_text "$PW_DIR/commit.err"); nothing was written" "$PW_DIR"
       fi
       pw_end 69 "the register refused this write at attempt ${PW_K}'s commit (\`lanes-index register commit\` exited 69, above), a definitive refusal. Nothing was written. $(pw_rerun_line)" "$PW_DIR" ;;
     64)
@@ -22240,22 +22677,6 @@ esac
 # "no state between T415 and T420 runs it in the loop"). `index` and `files`
 # run the verb as it runs today.
 if [ "$REG_ASK" = 1 ]; then reg_mode_ask; fi
-# FEATURE 007, T425 AND T426 — R45'S ONE LINE (Y:5121; Q-L5-4, answered; lane
-# 4's block, T425 and T426). Here, after the doors and before the arms, the one
-# mode answer this process holds sets the awk variables that read the
-# register as primary reads it: `rule6_primary_on`, Rule 6 with `LANDING
-# EXPIRED` (T425), and `RETIRED_KEY_TRIM`, `RETIRED_ROWS_AWK`'s `key()`
-# trimming a position's leading zeros as text (T426). The writers'
-# branch takes it before `pw_run` below, so the ask above is split from its
-# arm; an attempt's child takes it from `reg_scratch_take`'s `REG_MODE`
-# (`REG_ASK` is 0 there), since it asks no mode and its file at the
-# snapshot's seq is primary's; and a reader takes it from lane 5's `reg_open`
-# (T504), which runs above this line. It cannot be set where `REG_MODE` is:
-# `reg_scratch_take` runs before `RULE6_AWK` and `RETIRED_KEY_TRIM` are
-# assigned, which would overwrite both, and inside `who_landing`'s pipeline a
-# variable set is lost. Off primary it sets nothing, and the programs are
-# today's.
-[ "$REG_MODE" != primary ] || { rule6_primary_on; RETIRED_KEY_TRIM=1; }
 if [ "$REG_ASK" = 1 ]; then
   case "$REG_MODE" in
     primary)
@@ -22296,6 +22717,30 @@ if [ "$LANES_ROUTE_ON" = 1 ] && [ -z "$LANES_ROUTED" ] && [ -z "$REG_SCRATCH" ];
   wlo_lane="$(write_lane_of "$cmd" ${1+"$@"})" || wlo_rc=$?
   [ "$wlo_rc" = 1 ] || lane_checkout_enter "$wlo_rc" "$wlo_lane"
 fi
+
+# FEATURE 007, T504 - THE READ DOOR, in the main shell (W:4849, W:5070): after
+# the workspace check and after 1a's routing, which re-execs a routed
+# `write-handoff` (a door arm), so the prefetch's cache family is never made in
+# a process the `exec` then replaces; and before the dispatcher, so what it sets
+# outlives the arms' `$( )` reads (lane 5's answer 11, #165 6746507353).
+reg_open "$cmd" ${1+"$@"}
+
+# FEATURE 007, T425 AND T426 — R45'S ONE LINE (Y:5121; Q-L5-4, answered; lane
+# 4's block, T425 and T426). Here, after the doors and before the arms, the one
+# mode answer this process holds sets the awk variables that read the
+# register as primary reads it: `rule6_primary_on`, Rule 6 with `LANDING
+# EXPIRED` (T425), and `RETIRED_KEY_TRIM`, `RETIRED_ROWS_AWK`'s `key()`
+# trimming a position's leading zeros as text (T426). The writers'
+# branch takes it before `pw_run` below, so the ask above is split from its
+# arm; an attempt's child takes it from `reg_scratch_take`'s `REG_MODE`
+# (`REG_ASK` is 0 there), since it asks no mode and its file at the
+# snapshot's seq is primary's; and a reader takes it from lane 5's `reg_open`
+# (T504), which runs above this line. It cannot be set where `REG_MODE` is:
+# `reg_scratch_take` runs before `RULE6_AWK` and `RETIRED_KEY_TRIM` are
+# assigned, which would overwrite both, and inside `who_landing`'s pipeline a
+# variable set is lost. Off primary it sets nothing, and the programs are
+# today's.
+[ "$REG_MODE" != primary ] || { rule6_primary_on; RETIRED_KEY_TRIM=1; }
 
 case "$cmd" in
   verify-row)
