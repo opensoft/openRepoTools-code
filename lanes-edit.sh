@@ -6075,6 +6075,12 @@ wr_id_plan() {
 #           gives `LANES_WRITE_ID=new` only a record of another generation to
 #           replace; a plain rerun takes the record over, or writes anew once it
 #           is past its age
+# Each of these two refusals ends the run's directory first, `<d>/<run>/`
+# (`pw_run_dir_done`), as `pw_snapshot`'s refusal of a record of another
+# generation does: the first snapshot comes after `pw_run_dir`, so a refusal
+# here left that directory until a later run's `pw_runs_purge` (review
+# REV-W10a, N3). The check stays here, after that directory is made, since it
+# needs the generation this snapshot answers, which is written into it.
 #
 # 1 where the answer cannot be read (`format=` not 1, or no UUID where one is
 # owed), which the caller treats as a failed read, 69 (contract §2.8), or where
@@ -6102,12 +6108,16 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
       [ -n "$WR_CREATED_UTC" ] || WR_CREATED_UTC="$(wr_host_utc)"
       ;;
     aged)
-      [ "$WR_REC_GENERATION" = "$is_gen" ] || wr_refuse_other_generation "$is_gen"
+      if [ "$WR_REC_GENERATION" != "$is_gen" ]; then
+        pw_run_dir_done
+        wr_refuse_other_generation "$is_gen"
+      fi
       note "WARNING: the pending record of this command, write $WR_REC_WRITE_ID made at $WR_REC_CREATED_UTC against register generation $WR_REC_GENERATION, was last updated at $WR_REC_UPDATED_UTC, more than $(wr_max_age_s) s ago, so this run does not reuse its id: it writes anew, as write $is_wid, and replaces that record. $(wr_lookup_text)"
       WR_ID="$is_wid"; WR_GEN="$is_gen"; WR_CREATED_UTC="$(wr_host_utc)"
       ;;
     fresh)
       if [ "$WR_REC_GENERATION" = "$is_gen" ]; then
+        pw_run_dir_done
         wr_refuse "LANES_WRITE_ID=new, and the pending record of this command, write $WR_REC_WRITE_ID made at ${WR_REC_CREATED_UTC}, is of this register's generation, $is_gen. LANES_WRITE_ID=new replaces only a record of another generation, so this run neither replaces it nor writes anew. Nothing was sent. $(wr_lookup_text) Run the command without LANES_WRITE_ID to take that record over, or once it is $(wr_max_age_s) s past its last update, at ${WR_REC_UPDATED_UTC}, to write anew"
       fi
       WR_ID="$is_wid"; WR_GEN="$is_gen"; WR_CREATED_UTC="$(wr_host_utc)"
@@ -7062,10 +7072,11 @@ pw_record_done() {
 # name (`pw_call_dirs_remove`). A run that writes a record first removes each
 # `<run>/` under `register-writes/` that is older than the record's maximum age
 # and that no record's `call` line names (`pw_runs_purge`), as the done marks
-# are purged (Y:5183); that also takes a run that ended by a refusal inside
-# T412's functions, before its own end could remove it. Only a 0700 directory of
-# this uid, at its place under `<state>/register-writes/`, is ever removed
-# (`pw_wdir_ok`).
+# are purged (Y:5183); that also takes a run killed before its own end could
+# remove it. A refusal inside T412's functions after `pw_run_dir`,
+# `wr_id_settle`'s two, ends it first (review REV-W10a, N3). Only a 0700
+# directory of this uid, at its place under `<state>/register-writes/`, is ever
+# removed (`pw_wdir_ok`).
 
 # A `<d>/<run>/` (run) or `<d>/<run>/<k>/` (attempt) under this run's
 # `<state>/register-writes/`: `<d>` 64 lower hex, `<run>` 32, `<k>` digits;
