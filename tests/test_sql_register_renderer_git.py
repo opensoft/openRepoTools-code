@@ -1378,8 +1378,10 @@ def _walks(est: RenderEstate, lc) -> list:
 def test_the_renderer_finds_m_by_paging_form_c(request, tmp_path, depth):
     """Lane 4's section (TP:1040-1043, :1196-1203): at depth 0 the newest
     render commit is the tip, and the renderer finds it in one page, the
-    wrapper's log showing one walk with `-n 200`, no page after the first
-    and no `--grep`. At depth 250 it is 250 first-parent commits below the
+    wrapper's log showing each pass's walk as one page of `-n 200`, no page
+    after the first and no `--grep`; T323's holder runs a second pass after
+    a pass that made progress, F15, and that pass walks its first page
+    again from the new tip. At depth 250 it is 250 first-parent commits below the
     tip: the renderer pages with `--skip` and finds it, the log showing
     `-n 200`, the `--skip 200` page and no `--grep`. Either way it renders
     the seq after it on top of the tip. Fails until T320 to T322."""
@@ -1396,8 +1398,8 @@ def test_the_renderer_finds_m_by_paging_form_c(request, tmp_path, depth):
         f"form C's walk is not in pages of 200: {walks}")
     assert not any(grep for _n, _skip, grep in walks), f"form C's walk used --grep: {walks}"
     if depth == "depth-0":
-        assert len(walks) == 1 and walks[0][1] in (None, "0"), (
-            f"at depth 0 the walk took more than its first page: {walks}")
+        assert all(skip in (None, "0") for _n, skip, _g in walks), (
+            f"at depth 0 a pass's walk took more than its first page: {walks}")
     else:
         assert [skip or "0" for _n, skip, _g in walks[:2]] == ["0", "200"], (
             f"at depth 250 the walk did not page on with --skip 200: {walks}")
