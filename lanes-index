@@ -15727,8 +15727,9 @@ class OperatorPush:
     - `pushed`: this run pushed `commit`, and the read-back finds it on
       origin's first-parent line with its `Register-Seq` and the path as the
       entry left it;
-    - `found`: the read-back, made before anything else, finds `commit`
-      there already: an earlier run pushed it, and nothing is pushed again;
+    - `found`: the read-back, made before anything else or after a
+      rejected push, finds `commit` there: an earlier or concurrent run
+      pushed it, and nothing is pushed again;
     - `absent`: a read-back of this run proves the entry's commit absent from
       origin, and this run pushes it no more: origin's tip moved (the caller's
       `moved`, or a tip that does not descend from the base), a push failed
@@ -15879,7 +15880,8 @@ def operator_entry_push(checkout: str, cfg: dict, *, git_dir: str, seq: int, bas
     read-back's walk; `row` and `data` are `operator_entry_read`'s; `moved`
     is the caller's check of a tip, `moved(tip)`, which returns why the tip
     has moved under the entry, naming it, or None. It is asked of the first
-    tip and of each tip a rejected push finds. The build and the push hold
+    tip and of each tip a rejected push finds, after that tip is read back
+    for the entry's own commit. The build and the push hold
     the checkout's render lock (`render_lock_wait`), since T322's build reuses
     its private index. Returns an `OperatorPush`; it raises nothing a git act
     can cause."""
@@ -15946,8 +15948,21 @@ def operator_entry_push(checkout: str, cfg: dict, *, git_dir: str, seq: int, bas
                 return OperatorPush("unknown", pushed.detail, commit=built, tip=tip,
                                     attempts=attempts)
             # A LOST RACE: the read-back's fetch was the refetch, and origin
-            # does not carry `built`. Six attempts in all (ops:270).
+            # does not carry `built`. The tip that won may carry seq's own
+            # commit, pushed by a concurrent run of this command, so origin is
+            # read back again before anything else: a marker found there
+            # completes the command, with no abort and no second push
+            # (design:3243-3245; ops:275), and a read-back that cannot tell
+            # stays in doubt (3). Six attempts in all (ops:270).
             tip = pushed.origin_tip
+            state, said = operator_on_origin(checkout, base, tip, seq, path, blob)
+            if state == "present":
+                return OperatorPush("found", f"origin {RENDER_BRANCH} carries seq {seq}'s commit "
+                                    f"{said}, read back after the push of {built} was rejected",
+                                    commit=said, tip=tip, attempts=attempts)
+            if state == "unknown":
+                return OperatorPush("unknown", f"after the push of {built} was rejected: {said}",
+                                    tip=tip, attempts=attempts)
             if attempts >= RENDER_PUSH_ATTEMPTS:
                 return absent(f"{RENDER_PUSH_ATTEMPTS} push attempts were rejected, the last "
                               f"{pushed.detail}; origin {RENDER_BRANCH} is at {tip}, without "
