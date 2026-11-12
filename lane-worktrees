@@ -286,8 +286,13 @@ def _take_signals(handler, taken: dict) -> None:
     """Point each of INT, TERM and HUP that is at `SIG_DFL` - each would end
     this command with no `finally` run - at `handler`, and note in `taken`
     what to give back. One with a handler of its own (Python's ^C), or one
-    ignored (`nohup`'s HUP), is left as it is. Off the main thread nothing
-    is taken, since Python runs a handler only there."""
+    ignored (`nohup`'s HUP), is left as it is.
+
+    OFF THE MAIN THREAD NOTHING IS TAKEN, AND NOTHING CAN BE (RC-W11d N-c).
+    Python runs a signal handler only on the main thread of the main
+    interpreter, so `signal.signal` raises ValueError anywhere else: the
+    first try ends this loop, and `taken` is left empty. What that leaves
+    such a call is in `run_group`."""
     for name in ("SIGINT", "SIGTERM", "SIGHUP"):
         sig = getattr(signal, name, None)
         if sig is None or signal.getsignal(sig) != signal.SIG_DFL:
@@ -370,11 +375,27 @@ def run_group(argv, env=None, timeout=GIT_TIMEOUT):
     AN INTERRUPT ENDS THE WHOLE CALL TOO (RC-W10f N-b). A group of its own is
     out of reach of the caller's ^C, and of a TERM or HUP sent to the
     caller's group. So whatever is raised in the wait, KeyboardInterrupt
-    included, ends the group the same way and is then raised again. While
-    the call runs, an INT, TERM or HUP at `SIG_DFL` raises `CallerSignal`
-    instead of ending this command at once (`_take_signals`). The first one
-    raises; a later one while the group ends is the same end. The old
-    dispositions are back before this returns or raises."""
+    included, ends the group the same way and is then raised again. On the
+    main thread, while the call runs, an INT, TERM or HUP at `SIG_DFL`
+    raises `CallerSignal` instead of ending this command at once
+    (`_take_signals`). The first one raises; a later one while the group
+    ends is the same end. The old dispositions are back before this returns
+    or raises.
+
+    OFF THE MAIN THREAD, ONLY THE TIMEOUT OR AN EXCEPTION ENDS THE CALL
+    (RC-W11d N-c). No handler can be installed there (`_take_signals`), so
+    a signal goes where it would without this call: a TERM or HUP at
+    `SIG_DFL` ends the process at once, and a ^C raises KeyboardInterrupt
+    on the main thread, not in this wait. Neither reaches the call's group,
+    in a session of its own: a process that ends while such a call runs
+    leaves the group running and `register_grep`'s directory behind. The
+    timeout, and anything raised in this thread's wait, still end the group
+    as above, TERM and then KILL after `GROUP_GRACE`. So a caller that runs
+    a call on another thread keeps the process up until the call returns,
+    which its timeout bounds. On Python 3.12 a `join` that a ^C cut short
+    no longer waits for the thread, so such a caller waits on something of
+    its own, an Event the thread sets as it ends. This file starts no
+    thread."""
     try:
         proc = subprocess.Popen(
             [str(a) for a in argv], env=env, stdin=subprocess.DEVNULL,
@@ -642,7 +663,8 @@ class Helper:
         Amendment 23 S3 refuses it (2, ratified choice 2), so the sweep's
         NOTED line was refused after its first removal (#198, slice 1b).
         `group` runs the call in a process group of its own, which its
-        timeout, or an interrupt, ends whole (`run_group`)."""
+        timeout, or an interrupt on the main thread, ends whole
+        (`run_group`)."""
         if not self.path:
             return subprocess.CompletedProcess(args, 127, "", "no lanes-edit.sh beside this "
                                                "command or on PATH")
@@ -701,11 +723,13 @@ class Helper:
         unread. The bound stays the grep's own.
 
         A TIMEOUT ENDS THE CALL AND LEAVES NOTHING BEHIND (REV-W9h N1), and
-        so does a ^C, TERM or HUP to this command (RC-W10f N-b): the verb
-        runs in a process group of its own (`run_group`), which is ended
-        before the interrupt goes on, with a `TMPDIR` this command made for
-        that call alone and removes after it however it ended, so a `$TMPD`
-        the verb could not remove goes too.
+        so does a ^C, TERM or HUP to this command while the call runs on
+        the main thread (RC-W10f N-b; off it, only the timeout or an
+        exception does, `run_group`, RC-W11d N-c): the verb runs in a
+        process group of its own (`run_group`), which is ended before the
+        interrupt goes on, with a `TMPDIR` this command made for that call
+        alone and removes after it however it ended, so a `$TMPD` the verb
+        could not remove goes too.
         Where that directory cannot be made, the verb runs with the `TMPDIR`
         it was given, and its own `mktemp -d` answers for it, as before."""
         own = ""
