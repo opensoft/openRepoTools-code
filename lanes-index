@@ -14617,7 +14617,15 @@ def render_git_dir(checkout: str) -> str:
 #    time, or no trailer on the whole line: recorded, nothing pushed.
 #    AT `files` THE PASS ENDS HERE: it renders nothing and records no
 #    divergence, since nothing at `files` can clear one (lane 3's ruling on
-#    T322's open point 2). Every later step is at `primary`.
+#    T322's open point 2). Every later step is at `primary`, or at `files`
+#    WITH THE MARKER `removing` (T326): a rollback's entry `k+1` stands and
+#    the marker is still on origin, so no files-mode writer can have written,
+#    and the seqs up to `k` are SQL's writes, which the rollback's step 2
+#    renders before the marker goes (S5's rollback, step 2; ops:337-338), and
+#    which any pass may render, stopping before `k+1` (TP's AT-F2, "A
+#    rollback's entry at `k+1`"). There N6 does not apply (Y:2930), and a
+#    divergence is still never recorded: step 4 ends the pass, naming the
+#    commit in its why alone.
 # 4. CHECK FOR A DIVERGENCE, each recorded as `diverged at <sha>` through
 #    `record_mirror_state`, nothing pushed: an `m` above `h` at its commit
 #    `R` (R2's N6); a commit after `R` that changes a render-set path and is
@@ -14987,12 +14995,14 @@ def _render_ident(author: str, epoch: int, k: int) -> dict:
 def _render_read_head(store) -> tuple:
     """THE PASS'S FIRST READ, one request in one snapshot, D9's `render`
     row: the schema window, `h` and the switch in one read, the resolved
-    strays, and the mirror state's two columns. Returns `(h, mode, skip,
-    diverged_sha, last_error)`. Raises `RenderRefused` where the answer
-    cannot be read or the schema is outside this client's window."""
+    strays, and the mirror state's two columns. Returns `(h, mode, marker,
+    skip, diverged_sha, last_error)`, `marker` the switch's `marker_state`,
+    which tells a rollback's `files` from any other (T326). Raises
+    `RenderRefused` where the answer cannot be read or the schema is outside
+    this client's window."""
     answers = store._query_many([
         "SELECT version, writers_from, readers_from FROM schema_version WHERE id = 1",
-        "SELECT h.seq, s.mode FROM register_head h, register_switch s "
+        "SELECT h.seq, s.mode, s.marker_state FROM register_head h, register_switch s "
         "WHERE h.id = 1 AND s.id = 1",
         "SELECT j.git_commit FROM journal j WHERE j.kind IN ('stray-import', 'stray-revert') "
         "AND j.git_commit IS NOT NULL ORDER BY j.seq",
@@ -15007,13 +15017,15 @@ def _render_read_head(store) -> tuple:
                                          for v in version_rows[0]), write=True)
     if refusal:
         raise RenderRefused(refusal)
-    if len(head_rows) != 1 or len(head_rows[0]) != 2 or head_rows[0][1] not in ("files",
-                                                                                "primary"):
+    if (len(head_rows) != 1 or len(head_rows[0]) != 3
+            or head_rows[0][1] not in ("files", "primary")
+            or head_rows[0][2] not in ("absent", "adding", "present", "removing")):
         raise RenderRefused("the register's head and switch could not be read")
-    head, mode = _render_int(head_rows[0][0], "register_head.seq"), head_rows[0][1]
+    head, mode, marker = (_render_int(head_rows[0][0], "register_head.seq"), head_rows[0][1],
+                          head_rows[0][2])
     skip = frozenset(row[0] for row in stray_rows if row and row[0] and SHA_RE.match(row[0]))
     diverged, last_error = (mirror_rows[0] + [None, None])[:2] if mirror_rows else (None, None)
-    return head, mode, skip, diverged, last_error
+    return head, mode, marker, skip, diverged, last_error
 
 
 def _render_read_entries(store, m: int, upto: int) -> list:
@@ -15244,7 +15256,14 @@ def render_pass(checkout: str, cfg: dict, *, store=None, until: int | None = Non
     `t = min(h, until, m + 64, o - 1)`, so no seq past `until` is rendered,
     and a pass that finds origin at or past it ends `nothing-missing`.
     `render_to` passes it, for the restore form's render up to `b`
-    (ops:382). Without it the pass is T322's, unchanged."""
+    (ops:382), and the rollback's render up to `k` (T326). Without it the
+    pass is T322's, unchanged.
+
+    AT `files` WITH THE MARKER `removing` (T326; section comment, step 3)
+    the pass renders as at `primary`, up to the rollback's entry and never
+    past it, since that entry is an operator entry. N6 does not apply there,
+    and a stray or a render set at `R` that is not the images at `m` ends it
+    `diverged` with nothing recorded but its why in `last_error`."""
     store = render_store(cfg) if store is None else store
 
     def stop(outcome: str, detail: str, *, diverged: str | None = None,
@@ -15272,7 +15291,7 @@ def render_pass(checkout: str, cfg: dict, *, store=None, until: int | None = Non
 
     # 2. THE HEAD, THE SWITCH AND THE RESOLVED STRAYS, in one read.
     try:
-        head, mode, skip, _diverged, last_error = _render_read_head(store)
+        head, mode, marker, skip, _diverged, last_error = _render_read_head(store)
     except RenderRefused as exc:
         return stop("read-failed", f"the register's head could not be read: {exc}")
     except StoreUnusable as exc:
@@ -15285,18 +15304,36 @@ def render_pass(checkout: str, cfg: dict, *, store=None, until: int | None = Non
     except StoreUnusable as exc:
         return stop("walk-failed", f"{exc.detail}; nothing was pushed")
 
+    # A ROLLBACK'S `files` (T326): its entry stands, and the marker is still on
+    # origin. Every other `files` ends the pass below, rendering nothing.
+    removing = (mode, marker) == ("files", "removing")
+
+    def divergence(sha: str, detail: str, **fields) -> RenderPass:
+        """A divergence at `sha`: recorded at `primary` (D16); at a
+        rollback's `files` named in `last_error` alone, since nothing at
+        `files` can clear a recorded one (lane 3's ruling on T322's open
+        point 2), and S5 leaves a stray that lands during a rollback with no
+        journalled way out."""
+        if removing:
+            return stop("diverged", f"{detail}. The switch is at files with the marker removing, "
+                        f"a rollback's, where no divergence is recorded and nothing is rendered "
+                        f"over a stray (S5's remaining gap)", **fields)
+        return stop("diverged", detail, diverged=sha, **fields)
+
     def above_head(found: int, at: str):
         """R2's N6 at `found`, `at` its commit: a `Register-Seq` above the
-        journal's head while the switch is at `primary`."""
-        if found > head:
-            return stop("diverged", f"diverged at {at}: it carries {REGISTER_SEQ_KEY} {found}, "
-                        f"above the journal's head {head} while the switch is at primary "
-                        f"(R2's N6); nothing was pushed", diverged=at, found=found)
+        journal's head while the switch is at `primary`. At `files` the rule
+        does not apply (Y:2930)."""
+        if found > head and not removing:
+            return divergence(at, f"diverged at {at}: it carries {REGISTER_SEQ_KEY} {found}, "
+                              f"above the journal's head {head} while the switch is at primary "
+                              f"(R2's N6); nothing was pushed", found=found)
         return None
 
     def diverged_from(found: int, at: str, origin_tip: str):
         """The git half of the check at `found`, `at` its commit: R2's N6
-        and the strays after it. Reached at `primary` alone."""
+        and the strays after it. Reached at `primary`, or at a rollback's
+        `files`."""
         ended = above_head(found, at)
         if ended:
             return ended
@@ -15305,9 +15342,9 @@ def render_pass(checkout: str, cfg: dict, *, store=None, until: int | None = Non
         except StoreUnusable as exc:
             return stop("walk-failed", f"{exc.detail}; nothing was pushed", found=found)
         if stray:
-            return stop("diverged", f"diverged at {stray}: it changes the render set after "
-                        f"{at}, which carries {REGISTER_SEQ_KEY} {found}, and is no render "
-                        f"commit; nothing was pushed", diverged=stray, found=found)
+            return divergence(stray, f"diverged at {stray}: it changes the render set after "
+                              f"{at}, which carries {REGISTER_SEQ_KEY} {found}, and is no render "
+                              f"commit; nothing was pushed", found=found)
         return None
 
     def clean(outcome: str, detail: str, **fields) -> RenderPass:
@@ -15319,13 +15356,14 @@ def render_pass(checkout: str, cfg: dict, *, store=None, until: int | None = Non
 
     # AT `files` THE PASS RENDERS NOTHING AND RECORDS NO DIVERGENCE, since
     # nothing at `files` can clear one (lane 3's ruling on T322's open point
-    # 2). That covers (ii')'s marker-first window, `t <= h < m` (Y:2850).
-    if mode != "primary":
+    # 2). That covers (ii')'s marker-first window, `t <= h < m` (Y:2850). A
+    # rollback's `files`, the marker `removing`, goes on (T326).
+    if mode != "primary" and not removing:
         return clean("at-files", f"the switch is at {mode}, where nothing is rendered and no "
                      f"divergence is recorded: origin carries {REGISTER_SEQ_KEY} {m}, and the "
                      f"journal's head is {head}", found=m, reached=m)
 
-    # 4. THE DIVERGENCE CHECK'S GIT HALF. After it, `m <= h`.
+    # 4. THE DIVERGENCE CHECK'S GIT HALF. After it, `m <= h` at `primary`.
     ended = diverged_from(m, carrier, tip)
     if ended:
         return ended
@@ -15362,9 +15400,9 @@ def render_pass(checkout: str, cfg: dict, *, store=None, until: int | None = Non
     except RenderBuildFailed as exc:
         return stop("walk-failed", f"{exc}; nothing was pushed", found=m)
     if at_carrier != render_image_set(images[m]):
-        return stop("diverged", f"diverged at {carrier}: its render set is not the images at "
-                    f"seq {m}, the {REGISTER_SEQ_KEY} it carries; nothing was pushed",
-                    diverged=carrier, found=m)
+        return divergence(carrier, f"diverged at {carrier}: its render set is not the images at "
+                          f"seq {m}, the {REGISTER_SEQ_KEY} it carries; nothing was pushed",
+                          found=m)
 
     if target <= m:
         if m >= head:
@@ -15443,9 +15481,9 @@ def render_pass(checkout: str, cfg: dict, *, store=None, until: int | None = Non
         if now_m != base_m or now_carrier != carrier:
             try:
                 if render_tree_set(checkout, now_carrier) != render_image_set(images[now_m]):
-                    return stop("diverged", f"diverged at {now_carrier}: its render set is not "
-                                f"the images at seq {now_m}; nothing more was pushed",
-                                diverged=now_carrier, found=m)
+                    return divergence(now_carrier, f"diverged at {now_carrier}: its render set "
+                                      f"is not the images at seq {now_m}; nothing more was "
+                                      f"pushed", found=m)
             except RenderBuildFailed as exc:
                 return stop("walk-failed", f"{exc}; nothing more was pushed", found=m)
         base_m, carrier, base_set = now_m, now_carrier, None
