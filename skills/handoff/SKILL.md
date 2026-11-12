@@ -1417,7 +1417,7 @@ no `READY` line, restart intent, respawn or `/exit` follows. Exit 2 is a REFUSAL
 was: read the line, it names which of the four writes did not land, or says a restart is already in flight
 (`lane-handoff --restart-status --lane <lane>` reads that one), or that tmux would not take the pane. **A 2 or a
 75 whose line says the act stops there, and names the writes, is the stop under a seq base** (feature 007; lane 3,
-#165 6834271321 and 6835210568, questions 1 and 3): a write of the `PAUSED` record (the object log's line, the
+#165 6834271321 and 6835210568, question 3): a write of the `PAUSED` record (the object log's line, the
 register's line or the row's cell, W11's included) was sent and refused, so the act ends after the handoff file
 with no `READY` line, restart intent, respawn or `/exit`, and the lane is not recorded SWAPPED. It is 75 only where
 every write that stopped it gave 75 and none of the act's writes exited 3 (a 3 is in doubt, never "busy"), and 2
