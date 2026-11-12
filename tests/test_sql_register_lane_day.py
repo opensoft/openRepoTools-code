@@ -162,8 +162,10 @@ RESUME_REPO, RESUME_N = "repoA", "1"
 RESUME_LANE = f"{RESUME_REPO}-{RESUME_N}"
 #: THE LANE THE OUTAGE CASES ACT AS: the operator lane, `LIVE` here.
 OUTAGE_LANE = "repoA-2"
-#: The object `claim` names, held by no lane at C.
-CLAIMED = "opensoft/repoQ#11"
+#: The object `claim` names, held by no lane at C: the day's ONE object
+#: (T275f), PR #11 into opensoft/repoN main, which acts 6 and 7 land with
+#: `log LANDING` and `log LANDED`, so its own log closes it before `lane-end`.
+CLAIMED = "opensoft/repoN#11"
 #: Each poll's ceiling.
 SETTLE_S = 60.0
 #: The deadline the stamp shim's 75 and 3 cases set (AT-11; lane 4's corrected
@@ -533,10 +535,29 @@ class LaneDay:
         return {"LANES_EDIT": str(wrapper), "LOGGED_EDIT_LOG": str(log),
                 "LOGGED_EDIT_REAL": str(self.edit_path)}, log
 
+    def fetch_status_w(self) -> None:
+        """THE READER'S FETCH OF W (lane 3's ruling (a), #165 6833830078;
+        T275e): `status` reads `m` on `origin/main` as last fetched in the W
+        the register's own `workspace.yaml` names (`self.reg.ws`), never
+        fetches (tasks:545), and no write on primary fetches W (D12), so each
+        poll follows `git -C <that W> fetch -q origin main`, with plain git
+        and the register's environment. This is W3a's `fetch_w`
+        (`a1395613`), inline because this tree does not carry it. It is the
+        case's own act, not a write's; the lane acts' W (T275d) is not the
+        one `status` reads."""
+        proc = subprocess.run(["git", "-C", str(self.reg.ws), "fetch", "-q", "origin", "main"],
+                              capture_output=True, env=self.reg.env, check=False,
+                              stdin=subprocess.DEVNULL, timeout=120)
+        assert proc.returncode == 0, (
+            f"the harness's fetch of W, git -C {self.reg.ws} fetch -q origin main: "
+            f"{proc.stderr.decode(errors='replace')}")
+
     def settle(self, what: str) -> None:
-        """Open point 8's bounded poll: `status` until the lag is 0."""
+        """Open point 8's bounded poll: `status` until the lag is 0, each
+        poll after the harness's fetch of the W `status` reads (T275e)."""
         deadline = time.monotonic() + SETTLE_S
         while True:
+            self.fetch_status_w()
             proc = self.reg.index("status", conf=self.reg.primary_conf, timeout=60)
             if proc.returncode == 0 and self.imp.LAG_0.search(proc.stdout):
                 return
@@ -653,17 +674,17 @@ def _day_acts(estate: LaneDay) -> list:
         place_transcript(estate.env, day_dir, session)
         return estate.lane_start(DAY_REPO, DAY_N)
 
-    def append(kind: str):
-        session = estate.row_session(DAY_LANE) or "unknown"
-        text = {
-            "HOLD": f"HOLD {EM} lane {DAY_LANE} ({WS}), window w, {_utc()}: opensoft/repoN main "
-                    f"{estate.imp.TIP_A} for test 11",
-            "LANDING": f"LANDING {EM} lane {DAY_LANE}, session {session}@{WS}, {_utc()}, PR #11 "
-                       f"into opensoft/repoN main",
-            "LANDED": f"LANDED {EM} lane {DAY_LANE}, session {session}@{WS}, {_utc()}, PR #11 into "
-                      f"opensoft/repoN main {ARROW} 1111111",
-        }[kind]
+    def hold():
+        text = (f"HOLD {EM} lane {DAY_LANE} ({WS}), window w, {_utc()}: opensoft/repoN main "
+                f"{estate.imp.TIP_A} for test 11")
         return estate.edit("append-line", text, lane=DAY_LANE, cwd=day_dir)
+
+    def landing(kind: str):
+        """`log LANDING|LANDED <CLAIMED>` (T275f): one write that logs the
+        event on the claimed object in the lane's own log, which `lane-end`
+        reads, and renders Rule 6's line in LANES.md (`write_event`)."""
+        more = (ARROW, "1111111") if kind == "LANDED" else ()
+        return estate.edit("log", kind, CLAIMED, *more, lane=DAY_LANE, cwd=day_dir)
 
     return [
         ("act 1, lane-start for the new lane", lambda: estate.lane_start(DAY_REPO, DAY_N)),
@@ -671,9 +692,9 @@ def _day_acts(estate: LaneDay) -> list:
         ("act 3, lane-start resuming the lane", resume),
         ("act 4, claim", lambda: estate.edit("claim", CLAIMED, "--no-github", lane=DAY_LANE,
                                               cwd=day_dir)),
-        ("act 5, HOLD", lambda: append("HOLD")),
-        ("act 6, LANDING", lambda: append("LANDING")),
-        ("act 7, LANDED", lambda: append("LANDED")),
+        ("act 5, HOLD", hold),
+        ("act 6, LANDING", lambda: landing("LANDING")),
+        ("act 7, LANDED", lambda: landing("LANDED")),
         ("act 8, lane-handoff", lambda: estate.lane_handoff(DAY_LANE, "test 11: act 8")),
         ("act 9, lane-end", lambda: estate.lane_end(DAY_LANE)),
     ]
