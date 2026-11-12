@@ -3,7 +3,9 @@
 AT-F1; AT-8; T273; FR-051, FR-052, FR-059; also US6) (opensoft/openRepoTools#165).
 
 T273 writes this module: 21 tests, 20 from AT-8 (11), AT-F1 (7) and section
-4.2 (2), and T304's own (R-F10-34). T304's own test,
+4.2 (2), and T304's own (R-F10-34), and T273d a 22nd: AT-F2's rollback rerun
+after a 3 with a files-mode write between (lane 3's #165 6814260122), not yet
+in B15's T273 text. T304's own test,
 `test_rollback_steps_0_and_1_run_only_against_a_scratch_schema` (NOTES
 question 6; B10 tasks:1011-1024; `PLACEMENT.md` section 4), is phase 1's,
 and lane 3's T304 selects it with its word `sql_register_rollback and
@@ -658,11 +660,21 @@ REGISTER_SEQ = re.compile(r"^Register-Seq: ([0-9]+)$", re.M)
 #: The rollback's read, and its step-1 call, as the shim and the fake see them.
 READ_MARK, STEP_1_MARK = "diverged_sha", "commit_write("
 EXIT_BUSY = 75
+#: A push it cannot confirm (exit-codes.md's 3; ops:340).
+EXIT_IN_DOUBT = 3
 
 
 def _imp():
     """`test_sql_register_import`: test 7's fixture register and cutover host."""
     import test_sql_register_import as module
+    return module
+
+
+def _cut():
+    """`test_sql_register_cutover`: AT-F2's fixture, `F2Register`, test 7's
+    cutover host with test 5's `git` wrapper, whose arms leave a push
+    unconfirmed, and `_first_reach`."""
+    import test_sql_register_cutover as module
     return module
 
 
@@ -1773,6 +1785,68 @@ def test_a_rollback_rerun_resumes_after_its_own_entry(request, tmp_path):
     _assert_rolled_back(estate, again)
     assert estate.journal()[-1][0] == k + 1, "the rerun wrote an entry of its own"
     assert estate.outage_file().exists(), "the rerun did not declare first"
+
+
+def test_a_rerun_after_an_unconfirmed_removal_and_a_files_mode_write_ends_0_with_the_marker_absent(
+        pg, tmp_path):
+    """AT-F2, "Unconfirmed", the rollback's removal push (B15 TP:5563-5566), with
+    ops:338's files-mode write between the 3 and the rerun (lane 3's #165
+    6814260122: T326's review, MUST-1, and its probe). On AT-F2's fixture,
+    after a clean cutover and `rollback --hold-marker`, the removal is pushed
+    and the read-back's fetch fails: `rollback` exits 3, the marker stays
+    `removing`, and origin's tip is the removal, with `lanes/STORE` gone and
+    `Register-Seq: k+1`. With the marker gone from origin, a files-mode write
+    lands on it (ops:338, "after it, a files-mode write lands"), a commit of
+    `lanes/LANES.md` from another clone, as the probe makes it. The rerun
+    reads origin back first (ops:340; B15 tasks:1549), finds its removal, and
+    ends 0: the switch reads `files` with the marker `absent`, it pushes
+    nothing, the write stays origin's tip, and no divergence is recorded.
+    Fails until T326's fix round, and T327 for the cutover's marker."""
+    cut = _cut()
+    f2 = cut.F2Register(tmp_path / "e", pg)
+    reg, imp = f2.reg, f2.imp
+    cutover = reg.cutover(conf=f2.conf)
+    assert cutover.returncode == 0, f"[cutover] `cutover --import <C>` (T116):\n{_said(cutover)}"
+    switch = imp._switch(pg)
+    assert switch["marker_state"] == "present", (
+        f"[cutover] the marker reads {switch['marker_state']}: the cutover's push, its read-back "
+        f"and record_marker are lane 3's T327")
+    k = imp._head(pg)
+    held = reg.index("rollback", "--hold-marker", conf=f2.conf)
+    assert held.returncode == 0, f"[hold-marker] `rollback --hold-marker` (T326):\n{_said(held)}"
+    f2.arm({"call": "fetch", "mode": "fail", "after_push": True})
+    proc = reg.index("rollback", conf=f2.conf)
+    assert proc.returncode == EXIT_IN_DOUBT, (
+        f"[3] the removal pushed, its read-back's fetch failed: not in doubt (T326):\n"
+        f"{_said(proc)}")
+    switch = imp._switch(pg)
+    assert (switch["mode"], switch["marker_state"]) == ("files", "removing"), f"[3] {switch}"
+    removal = reg.origin_tip()
+    assert REGISTER_SEQ.findall(reg.origin_git("log", "-1", "--format=%B", removal)) == [
+        str(k + 1)], f"[3] origin's tip {removal} does not carry Register-Seq: {k + 1}"
+    assert "lanes/STORE" not in reg.origin_git("ls-tree", "-r", "--name-only", removal,
+                                               "lanes/"), "[3] the removal is not on origin"
+    f2.arm()
+    clone = reg.other_clone("files-mode")
+    path, line = "lanes/LANES.md", "a files-mode line, after the removal (ops:338)"
+    text = (clone / path).read_text(encoding="utf-8") + line + "\n"
+    wrote = reg.push_from(clone, path, text, "LANES(repoA-2@Raven): a files-mode write")
+    assert wrote != removal, "[files-mode write] it did not land on origin"
+    f2.arm()
+    rerun = reg.index("rollback", conf=f2.conf)
+    assert rerun.returncode == 0, (
+        f"[rerun] after the 3 and a files-mode write, the rerun did not end 0: it reads origin "
+        f"back first and finds its removal (T326's fix round, MUST-1):\n{_said(rerun)}")
+    calls = f2.calls()
+    assert cut._first_reach(calls) == "fetch", f"[rerun] it reached origin first by: {calls}"
+    assert not any(c["sub"] == "push" for c in calls), "[rerun] the rerun pushed again"
+    switch = imp._switch(pg)
+    assert (switch["mode"], switch["marker_state"]) == ("files", "absent"), f"[rerun] {switch}"
+    assert reg.origin_tip() == wrote, "[rerun] the files-mode write is no longer origin's tip"
+    assert line in reg.origin_git("show", f"{wrote}:{path}"), "[rerun] the write's line is gone"
+    mirror = imp._rows(pg, "SELECT diverged_sha FROM mirror_state")[0]
+    assert mirror["diverged_sha"] is None, (
+        f"[rerun] the files-mode write was recorded as a divergence: {mirror}")
 
 
 def test_a_reimport_after_a_rollback_continues_the_journal(request, tmp_path):
