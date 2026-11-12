@@ -1573,10 +1573,21 @@ class PhaseW:
         # THE LANE CHECKOUT, made first: on primary the writer takes `<c>` from
         # `lane_checkout_path` and refuses 2 where it does not exist, naming
         # `lane-checkout <lane> --create` (lane 4's T415, B14's text).
+        # `lane-checkout` reads the register through `canon_lane`, so it is a
+        # decide arm (`lanes-edit.sh:4369` at `refs/l1/V-round5`), and since
+        # T504 it prefetches on primary (B15 tasks:725), which needs a `psql`:
+        # T203's shim, with no arms, first on `PATH` in a directory of its
+        # own, as `launch()` gives a writer (AN13a's B2; line AF13b).
+        psql_dir = where / "psql-lane-checkout"
+        psql_dir.mkdir()
+        (psql_dir / "psql").write_text(PSQL_SHIM, encoding="utf-8")
+        (psql_dir / "psql").chmod(0o755)
+        (psql_dir / PSQL_SHIM_CONTROL).write_text(json.dumps(
+            {"psql": str(self.m.cluster.tool("psql")), "arms": []}), encoding="utf-8")
         made = subprocess.run(["bash", str(self.lanes_edit), "lane-checkout", lane, "--create"],
                               cwd=str(checkout), capture_output=True, text=True, timeout=120,
                               stdin=subprocess.DEVNULL, check=False,
-                              env=dict(env, PATH=os.pathsep.join([str(self.fakebin),
+                              env=dict(env, PATH=os.pathsep.join([str(psql_dir), str(self.fakebin),
                                                                   _masked_path()])))
         assert made.returncode == 0 and Path(made.stdout.strip()).is_dir(), (
             f"lane-checkout {lane} --create did not make {who}'s lane checkout:\n{_said(made)}")
