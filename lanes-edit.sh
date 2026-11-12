@@ -8694,10 +8694,14 @@ archive_local_text() {
 #
 # FEATURE 007, T426 — ON PRIMARY, `key()` TRIMS A POSITION'S LEADING ZEROS AS
 # TEXT (Y:6574–6577; R31; R45). Off primary it reads the position as a number,
-# `(p + 0)`, and awk prints a number past 2^53 with its low digits changed and
-# one past about 1e20 as `1.23457e+20`, so on 16 digits or more the key is not
-# the digits the row holds. Y:6575–6577 asks that the read and v2.5's keys
-# agree there, so on primary `key()` drops the leading zeros as text and keeps
+# `(p + 0)`, a double, and only a run past 2^53 (9007199254740992) can key to
+# digits the row does not hold: it can lose its last digits
+# (`foo-9007199254740993` keys to `foo-9007199254740992`), and a longer one
+# can print with an exponent (`foo-111111111111111111111` keys to
+# `foo-1.11111e+20`). Every run up to 2^53 keys to its own digits, its leading
+# zeros dropped, however long it is (mawk 1.3.4; Y:1499; review REV-W8d,
+# NIT-2). Y:6575–6577 asks that the read and v2.5's keys agree "on 16 digits
+# or more", so on primary `key()` drops the leading zeros as text and keeps
 # every other digit: `007` is `7`, `0` and `000` are `0`, `10` stays `10`. A
 # cell whose last part is not a number has no key in either mode.
 # THE SWITCH is the awk variable `trim`, which `retired_identity_hits` passes
