@@ -1645,22 +1645,36 @@ def test_the_burst_window_is_effective_a_short_deadline_sends_writers_busy(estat
 # `<XDG_STATE_HOME>/openRepoTools/register-writes/` (a reading: lane 4 names
 # `<state>/register-writes/`). They FAIL UNTIL L4-B3 and L4-B7 land (T413,
 # T414, T415), with T243's own; without PostgreSQL 16 each skips.
+#
+# THE TAIL'S `gh` CALL IS THE COMMENT (T248a; lane 4's triage, #165
+# 6827643168, item 3). `claim` also calls `gh` for Rule 1's three reads,
+# `issue view --comments` and `pr list` (`gh_reads_live`), at its step 2,
+# before `write_event` reaches the seam. Under the flag they are made once a
+# run, by its first attempt, and cached for the rest (T413; Y:5043), and they
+# decide nothing. So the cases count only `gh`'s comment calls
+# (`comment_calls`), `issue comment` or `pr comment` (`gh_comment`, T421).
 
 _ENV_LOGGER = r'''#!/usr/bin/env python3
 # T248's logging stand-in: its name, argv, whether the flag reached it, and
-# each seam.out it can see; then the real tool, where one is named.
+# each seam.out it can see; then the real tool, where one is named. For `gh`
+# with `--body-file -` (`gh_comment`), the body it reads from stdin too, and
+# no other call's stdin is read (T248a).
 import glob, json, os, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 NAME = os.path.basename(sys.argv[0])
 REAL = REAL_TOOL
 STATE = STATE_DIR
+ARGV = sys.argv[1:]
 seams = {p: open(p, encoding="utf-8", errors="replace").read()
          for p in glob.glob(os.path.join(STATE, "**", "seam.out"), recursive=True)}
+body = None
+if NAME == "gh" and "--body-file" in ARGV and ARGV[ARGV.index("--body-file") + 1:][:1] == ["-"]:
+    body = sys.stdin.read()
 with open(os.path.join(HERE, "tools.log"), "a", encoding="utf-8") as log:
-    log.write(json.dumps({"tool": NAME, "argv": sys.argv[1:], "scratch": os.environ.get(
-        "LANES_REGISTER_SCRATCH"), "seams": seams}) + "\n")
+    log.write(json.dumps({"tool": NAME, "argv": ARGV, "scratch": os.environ.get(
+        "LANES_REGISTER_SCRATCH"), "seams": seams, "body": body}) + "\n")
 if REAL:
-    os.execv(REAL, [REAL] + sys.argv[1:])
+    os.execv(REAL, [REAL] + ARGV)
 '''
 
 
@@ -1680,6 +1694,14 @@ def tool_calls(where: Path, tool: Optional[str] = None) -> List[dict]:
     log = where / "tools.log"
     calls = [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines() if l] if log.exists() else []
     return [c for c in calls if tool is None or c["tool"] == tool]
+
+
+def comment_calls(where: Path) -> List[dict]:
+    """The fake `gh`'s comment calls, `issue comment` or `pr comment`: the
+    tail's `gh` (`gh_comment`), never Rule 1's reads (see the section's
+    head; T248a)."""
+    return [c for c in tool_calls(where, "gh") if c["argv"][:1] in (["issue"], ["pr"])
+            and c["argv"][1:2] == ["comment"]]
 
 
 def register_writes(e: Estate) -> Path:
@@ -1726,11 +1748,18 @@ def test_a_refused_writer_replays_its_output_then_the_refusal(estates):
 @CLIENT
 @pytest.mark.parametrize("effect", ["tmux", "gh"])
 def test_a_side_effect_runs_once_after_commit_and_never_for_a_refusal(estates, effect):
-    """[gh]: two claimants on O; the fake `gh` is called once, by the
-    committed claim, citing its seq, never by the refused one. [tmux]: two
-    `request-handoff`s for one lane; the fake `tmux` is called by the
-    committed one only, after its COMMIT (the journal holds it when `tmux`
-    runs), and never by a refused one."""
+    """[gh]: two claimants on O; the fake `gh` comments once, by the
+    committed claim, its body citing its seq, never by the refused one
+    (Rule 1's reads, which each claimant makes before the seam, are not
+    counted; T248a). [tmux]: two `request-handoff`s for one lane; the fake
+    `tmux` is called by the committed one only, after its COMMIT (the
+    journal holds it when `tmux` runs), and never by a refused one.
+
+    After COMMIT: when the call runs, a `seam.out` reads `tail`, so an
+    attempt has taken `committed`, and none reads other than `tail` or
+    `none`: the refused claimant's abandoned attempt may have written its own
+    `none` by then, and the logger sees every `seam.out` under
+    `register-writes/` (T248a)."""
     e = estates()
     where = loggers(e)
     barrier = Barrier(e.root, 2)
@@ -1746,12 +1775,13 @@ def test_a_side_effect_runs_once_after_commit_and_never_for_a_refusal(estates, e
     committed = [w for w in writers if w.code == 0]
     grew = e.journal_after()
     assert len(committed) == len(grew) >= 1, ([(w.lane, w.code, w.err[-300:]) for w in writers], grew)
-    calls = tool_calls(where, effect)
+    calls = comment_calls(where) if effect == "gh" else tool_calls(where, effect)
     assert len(calls) == len(committed), f"{effect} ran {len(calls)} times for {len(committed)} commits: {calls}"
     if effect == "gh":
-        assert f"register seq {grew[0]['seq']}" in json.dumps(calls), calls
+        assert all(str(grew[0]["seq"]) in SEQ_SAID.findall(c["body"] or "") for c in calls), calls
     for call in calls:
-        assert set(call["seams"].values()) <= {"tail", "tail\n"}, f"{effect} ran before COMMIT: {call}"
+        said = [text.strip() for text in call["seams"].values()]
+        assert "tail" in said and set(said) <= {"tail", "none"}, f"{effect} ran before COMMIT: {call}"
 
 
 #: The test copy of `lanes-edit.sh` whose writes reach the seam twice: its
@@ -1822,9 +1852,10 @@ def test_the_scratch_flag_never_reaches_git_gh_or_tmux(estates):
 def test_a_child_at_the_seam_stops_with_none_and_runs_no_tail(estates, case):
     """With its parent killed ([parent-gone]) or stopped by SIGSTOP at the
     cap (`LANES_REGISTER_SEAM_CAP_S=3`, [cap]) while it waits at the seam,
-    the child writes `seam.out` as `none` and runs no tail: the fake `gh` is
-    not called, and nothing is written. The parent's commit call is held by
-    the shim and never sent."""
+    the child writes `seam.out` as `none` and runs no tail: the fake `gh`
+    makes no comment, and nothing is written. The parent's commit call is
+    held by the shim and never sent. Rule 1's reads, made before the seam,
+    are not the tail and are not counted (T248a)."""
     e = estates()
     where = loggers(e)
     fifo = e.root / "hold.fifo"
@@ -1839,7 +1870,7 @@ def test_a_child_at_the_seam_stops_with_none_and_runs_no_tail(estates, case):
             assert time.monotonic() < deadline, f"[{case}] no seam.out reads none: {seam_outs(e)}"
             time.sleep(0.1)
         time.sleep(0.5)
-        assert tool_calls(where, "gh") == [], f"[{case}] the tail ran: {tool_calls(where, 'gh')}"
+        assert comment_calls(where) == [], f"[{case}] the tail ran: {comment_calls(where)}"
         assert e.journal_after() == []
     finally:
         if case == "cap":
@@ -1851,22 +1882,23 @@ def test_a_child_at_the_seam_stops_with_none_and_runs_no_tail(estates, case):
 @pytest.mark.parametrize("decision", ["committed", "abandon"])
 def test_seam_out_is_written_once_before_the_child_acts(estates, decision):
     """`seam.out` is written once, with noclobber: `tail` before the child
-    acts on `committed` (the fake `gh`, the claim's tail, sees `tail`), and
-    `none` before it acts on `abandon` (the refused claim's child runs no
-    tail). No `seam.out` holds anything else."""
+    acts on `committed` (the fake `gh`'s comment, the claim's tail, sees
+    `tail`), and `none` before it acts on `abandon` (the refused claim's
+    child runs no tail). No `seam.out` holds anything else. Only `gh`'s
+    comment calls are read, never Rule 1's reads (T248a)."""
     e = estates()
     where = loggers(e)
     if decision == "committed":
         w = e.run(LA, claim(OBJ), first=[where])
         assert w.code == 0, w.err[-600:]
-        gh = tool_calls(where, "gh")
+        gh = comment_calls(where)
         assert gh and all(set(c["seams"].values()) == {"tail"} or set(c["seams"].values()) == {"tail\n"}
-                          for c in gh), f"gh saw no seam.out reading tail: {gh}"
+                          for c in gh), f"gh's comment saw no seam.out reading tail: {gh}"
     else:
         assert e.run(LB, claim(OBJ, "--no-github")).code == 0
         w = e.run(LA, claim(OBJ), first=[where])
         assert w.code == 2, w.err[-600:]
-        assert tool_calls(where, "gh") == [], "the abandoned attempt ran its tail"
+        assert comment_calls(where) == [], "the abandoned attempt ran its tail"
     for path, said in seam_outs(e).items():
         assert said.strip() in ("tail", "none") and said.count("\n") <= 1, f"{path}: {said!r}"
 
