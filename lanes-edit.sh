@@ -4999,7 +4999,15 @@ wr_refuse_other_generation() {   # [<g'>] [<owed>]
 #   - LANES_WRITE_ID without LANES_WRITE_GENERATION, where no record here holds
 #     that id, naming the printed rerun's form (Y:5200), so `lanes-index`'s 64
 #     for an id with no generation is never reached from here;
-#   - a record that cannot be read as one;
+#   - a record that cannot be read as one, naming its path (pending-record.md
+#     G8), and then, in lane 3's words, how a person settles it: read it; leave
+#     one whose `format=` is not 1 to the lanes-edit.sh that wrote it; past the
+#     record's age, `wr_max_age_s`, look for its effect, move the file out of
+#     register-pending/ and run again (lane openRepoTools-3, #165 6813027223,
+#     batch g Q116). Its `<lane>` is PW_LANE, the lane the write is made for,
+#     which `pw_checkout` sets before this runs, as `wr_text_other_generation`
+#     names it; its `<verb>` is this run's own, WR_VERB, since the record
+#     cannot be read for one;
 #   - two cases Y does not settle, each refused rather than guessed: an id whose
 #     record names another generation than LANES_WRITE_GENERATION, and an id
 #     whose digest's record holds another write.
@@ -5011,7 +5019,7 @@ wr_id_plan() {
   WR_CREATED_UTC=""; WR_DATABASE=""
   wr_record_read "$ip_f"; ip_rc=$?
   if [ "$ip_rc" = 2 ]; then
-    wr_refuse "the pending record of this command, $ip_f, is there and cannot be read as one, so whether a write of it is in doubt is not known. Nothing was sent. lanes-index status lists the pending records"
+    wr_refuse "the pending record of this command, $ip_f, is there and cannot be read as one, so whether a write of it is in doubt is not known. Nothing was sent, and no run of this command gets past it, \`LANES_WRITE_ID=new\` included, until a person settles it. Read it: cat $ip_f. Where its \`format=\` is not 1, another lanes-edit.sh wrote it: run the command with that one, and leave the file. Otherwise, once the file is more than $(wr_max_age_s) s old by its own time, no commit call of it can still commit; look for its effect in the register as it stands, \`lanes-edit.sh history ${PW_LANE} --since <its created_utc, or earlier where that cannot be read>\` for a log line, or \`lanes-edit.sh register-row ${PW_LANE}\` for a row; then move the file out of register-pending/ and run the command again. If the effect is there, do by hand any of its after-COMMIT steps that did not run: those of \`lanes-edit.sh ${WR_VERB}\`. lanes-index status lists the pending records"
   fi
   case "$ip_e" in
     '')
