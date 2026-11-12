@@ -3114,14 +3114,17 @@ def test_a_line_deriving_a_key_that_is_not_a_scope_exits_2_on_lr010_once(estates
     """`append-line` with a row-shaped line whose first backticked token holds
     a space or a no-break space: the commit refuses LR010, the writer exits
     2 naming the path, the line and the key, with one commit call, never
-    retried, and nothing written."""
+    retried, and nothing written. The key is named with each white-space
+    character as `[U+hhhh]` (Y:1504), `row:x[U+0020]y` and `row:x[U+00A0]y`
+    (T252m)."""
     e = estates()
     gap = " " if case == "space" else chr(0x00A0)
     line = f"| `x{gap}y` | T252 | a key that is not a scope |"
     state = e.c.state()
     w = e.run(LA, ["append-line", line])
     assert w.code == 2, f"[{case}] exit {w.code}: {w.err[-600:]}"
-    assert "LR010" in w.err and LANES_MD in w.err and f"row:x{gap}y" in w.err, w.err
+    key = f"row:x[U+{ord(gap):04X}]y"
+    assert "LR010" in w.err and LANES_MD in w.err and key in w.err, w.err
     assert len(w.commit_calls()) == 1 and e.c.state() == state
 
 
