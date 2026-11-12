@@ -924,7 +924,10 @@ def test_a_request_handoff_that_runs_none_of_its_tail_exits_2_and_writes_nothing
     pending-record.md §5.2, R08; T244d), finds its write id and exits 2,
     not 0; the journal holds one entry for the id (YS:685 as amended: the
     write committed, so the refusal names it), the fake `tmux` logs no
-    `send-keys` from the rerun, and stderr names the tail it did not run."""
+    `send-keys` from the rerun, and stderr names the tail it did not run: the
+    write's "after-COMMIT steps", the words every form of the engine's text
+    names it by (`8ba10b4e:lanes-edit.sh:10168`, `:10169` and `:10319`); it
+    never prints the word "tail" (T244g; PM33A-TRIAGE L1)."""
     e = estates()
     where = loggers(e)
     gate = fifo(e, "commit-1")
@@ -955,7 +958,7 @@ def test_a_request_handoff_that_runs_none_of_its_tail_exits_2_and_writes_nothing
     assert [r["write_id"] for r in e.journal_after()].count(write_id) == 1
     sent = [c for c in tool_calls(where, "tmux")[before:] if "send-keys" in c["argv"]]
     assert not sent, f"the rerun typed into a pane: {sent}"
-    assert "tail" in again.err, f"stderr names no tail: {again.err[-800:]}"
+    assert "after-COMMIT steps" in again.err, f"stderr names no after-COMMIT steps: {again.err[-800:]}"
 
 
 # ------------------------------------------------------------ section 4.3: the rival
