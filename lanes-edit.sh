@@ -7604,8 +7604,10 @@ pw_lookup_3() {   # <the end's code>
 # THE MATCH (Y:5300; the contract's §3.2 one digest rule): a child matches
 # where the sha256 of the `files` rows its seam wrote is the sha256 of the
 # `file=` rows the answer carries, each `<path>` TAB `<present>` TAB
-# `<sha256>`, LF-ended, without the `file=` prefix. An answer with no rows
-# matches no child (`already <s>` alone, where `lanes-index`'s second read
+# `<sha256>`, LF-ended, without the `file=` prefix, and only where its
+# attempt's snapshot's `n=` is `<s>` − 1, the one seq its seam takes
+# (`pw_dir_seq_ok`; lane openRepoTools-3, #165 6808937880, batch e (87)).
+# An answer with no rows matches no child (`already <s>` alone, where `lanes-index`'s second read
 # failed: the contract's §3.3), and so does a kept child that is gone. Every
 # child that does not take `committed <s>` gets `abandon` once the outcome is
 # known (Y:5314). With no match, the tail is the replay's (`pw_replay_tail`).
@@ -7668,6 +7670,25 @@ pw_entry_files() {   # <attempt dir>
 pw_dir_digest() {   # <attempt dir>
   [ -f "$1/files" ] && [ -r "$1/files" ] || return 1
   wr_sha256_stdin < "$1/files"
+}
+
+# A CHILD'S OWN SEQ: 0 where `<s>` is its attempt's snapshot's `n=` plus 1,
+# the one `committed <s>` its seam takes (`cp_seam`, item 6; REV-W9a S1), and
+# 1 otherwise, or where there is no such file. It is read as the seam reads
+# it: the first `n=` line of `<dir>/snapshot`, a count, and `<s>`, a count,
+# equal to it plus 1 as a string. So the parent never sends `committed <s>`
+# to a child that would call it neither message (lane openRepoTools-3, #165
+# 6808937880, batch e (87): "the child takes `committed <s>` only where `<s>`
+# is its own snapshot's `n=` + 1"; W9-T415's report, S1's one gap).
+pw_dir_seq_ok() {   # <attempt dir> <seq>
+  local dq_l="" dq_n=""
+  [ -f "$1/snapshot" ] && [ -r "$1/snapshot" ] || return 1
+  while IFS= read -r dq_l || [ -n "$dq_l" ]; do
+    case "$dq_l" in n=*) dq_n="${dq_l#n=}"; break ;; esac
+    dq_l=""
+  done 2>/dev/null < "$1/snapshot"
+  wr_is_count "$dq_n" && wr_is_count "${2-}" || return 1
+  [ "$2" = "$((10#$dq_n + 1))" ]
 }
 
 # THE WRITE IS IN THE REGISTER, LEARNED (lane openRepoTools-3, #165
@@ -7942,10 +7963,17 @@ pw_no_record_end() {   # <seq>
 }
 
 # THE WRITE FOUND IN THE REGISTER, by `already <s>`, a snapshot's `found=` or
-# F3's lookup (Y:5307–5309): the child whose change set is the entry's takes
-# `committed <s>`, the current attempt's (only at `already`, where it waits at
-# its seam) before the kept ones; every other child gets `abandon` (Y:5314);
-# and with no match the tail is the replay's. It never returns.
+# F3's lookup (Y:5307–5309): the child whose change set is the entry's, and
+# whose snapshot's `n=` is `<s>` − 1 (`pw_dir_seq_ok`), takes `committed <s>`,
+# the current attempt's (only at `already`, where it waits at its seam) before
+# the kept ones; every other child gets `abandon` (Y:5314); and with no match
+# the tail is the replay's. It never returns. The `n=` test is the seam's own
+# (lane openRepoTools-3, #165 6808937880, batch e (87)): an earlier attempt
+# with the same change set and an older snapshot would refuse `committed <s>`
+# as neither message and go to `none`, the later child that could take it
+# would already have had `abandon`, and the tail would be the replay's
+# (W9-T415's report, S1's one gap). Such an attempt now gets `abandon`, and
+# the match goes on to the next child.
 pw_tail() {   # <seq> <how it was learned> <the answer, in a file>
   local pt_l="" pt_p="" pt_d="" pt_mp="" pt_md="" pt_rest="" pt_h=""
   pw_learned "$1"
@@ -7954,14 +7982,14 @@ pw_tail() {   # <seq> <how it was learned> <the answer, in a file>
   pw_rec_here || pw_no_record_end "$1"
   if [ -n "$PW_E_DIGEST" ] && [ -n "$PW_CHILD" ]; then
     pt_h="$(pw_dir_digest "$PW_DIR")" || pt_h=""
-    if [ "$pt_h" = "$PW_E_DIGEST" ]; then pt_mp="$PW_CHILD"; pt_md="$PW_DIR"; fi
+    if [ "$pt_h" = "$PW_E_DIGEST" ] && pw_dir_seq_ok "$PW_DIR" "$1"; then pt_mp="$PW_CHILD"; pt_md="$PW_DIR"; fi
   fi
   while IFS= read -r pt_l; do
     [ -n "$pt_l" ] || continue
     pt_p="${pt_l%% *}"; pt_d="${pt_l#* }"
     pt_h=""
     if [ -z "$pt_mp" ] && [ -n "$PW_E_DIGEST" ]; then pt_h="$(pw_dir_digest "$pt_d")" || pt_h=""; fi
-    if [ -z "$pt_mp" ] && [ -n "$pt_h" ] && [ "$pt_h" = "$PW_E_DIGEST" ]; then
+    if [ -z "$pt_mp" ] && [ -n "$pt_h" ] && [ "$pt_h" = "$PW_E_DIGEST" ] && pw_dir_seq_ok "$pt_d" "$1"; then
       pt_mp="$pt_p"; pt_md="$pt_d"
     else
       pt_rest="${pt_rest}${pt_rest:+$WR_NL}$pt_l"
