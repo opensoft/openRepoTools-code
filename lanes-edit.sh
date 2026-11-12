@@ -4520,6 +4520,40 @@ reg_session_read() {
   return 0
 }
 
+# FEATURE 007, T513 - THE `SessionStart` BLOCK STARTS THE SERVICE (SVC-4 item
+# 1, SVC-12; W:3843-3848, W:4443-4455; R50; socket API §8.1 and §9). The
+# `session-start` arm calls this once `session_start_block` has returned, so
+# after the block's whole answer, and only where the block's own one mode
+# answer (`reg_session_read`) was primary: there is no second mode question.
+# A compact returns before that question, so it starts nothing; so do files
+# mode, `mode index`, the 78 and T413's flag. Its one call is `lanes-index
+# serve --start`, which loads the configuration, checks the run directory and
+# the socket path's length, holds back where a failure stamp is younger than
+# 60 s, and otherwise starts `serve` from Python, detached in a session of its
+# own with the reduced environment, and returns at once. So no bash code here
+# detaches anything (W:3857-3858; R50): no `&`, `setsid`, `nohup` or `disown`.
+# It asks the service nothing and never waits for it: `serve --start` makes no
+# socket try, and the service's connect is the service's own (socket API §7).
+# It is no register call (R39): like `mode`, it reads only the configuration
+# and the run directory. T409's one wrap form, under a 1 s timer, `timeout -k 1
+# 1`, so at most 2 s where the call ignores the stop (the arm's comment says
+# why 1 s), which `timeout` holds where it is installed; where it is not, the
+# call runs unbounded, as the mode question does. Its stdout and stderr go to
+# /dev/null, so neither a refusal's note nor a child left behind reaches the
+# hook's output or holds its pipe, and `lanes-index status` reports a stamp or
+# a failed directory. Its exit is ignored: the block always exits 0, and never
+# branches on the start (svc:93; R36).
+reg_service_start() {
+  rss_bin="$(lanes_index_bin)"
+  [ -n "$rss_bin" ] || return 0
+  if command -v timeout >/dev/null 2>&1; then
+    ( timeout -k 1 1 "$rss_bin" serve --start </dev/null >/dev/null 2>&1; exit "$?" ) 2>/dev/null || :
+  else
+    ( "$rss_bin" serve --start </dev/null >/dev/null 2>&1; exit "$?" ) 2>/dev/null || :
+  fi
+  return 0
+}
+
 # THE ONE CALL, form 1 (contract 3.6). Its stdout and stderr go to files beside
 # the cache, so a call that leaves a child behind holds no pipe open here, in
 # T409's one wrap form, whose subshell drops bash's job notice for a call a
@@ -22950,10 +22984,24 @@ EOF
   # under its 2 s timer (`reg_session_read`), and it reads only the
   # configuration (contract 3.1): no network, and no register call (R39).
   session-start)
+    # FEATURE 007, T513: the block's own clock, for the start's skip rule
+    # below. Reset here, so an inherited `SECONDS` counts for nothing.
+    SECONDS=0
     if [ -t 0 ]; then ss_json=""; else ss_json="$(cat 2>/dev/null || :)"; fi
     ss_win=""
     command -v tmux >/dev/null 2>&1 && ss_win="$(tmux display-message -p '#W' 2>/dev/null || :)"
     session_start_block "$ss_json" "$ss_win" || :
+    # FEATURE 007, T513 - THE START, LAST (`reg_service_start`): on primary,
+    # after the block's whole answer, keyed on the block's own one mode answer,
+    # and never branched on. THE HOOK'S 5 s, WITH MARGIN: the block stays
+    # under about 4.5 s at worst on primary (lane 5's bound). `mode`'s timer
+    # can take 3 s, `timeout -k 1 2`, and a start under the same timer 3 more,
+    # so the start runs under a 1 s timer, at most 2 s, and is skipped where
+    # `SECONDS` shows 2 s or more spent in this arm. `SECONDS` counts whole
+    # seconds, so a reading of 1 or less means under 2 s, and the block then
+    # ends within about 4 s. A skipped start costs only the warm start: a
+    # client that finds no socket starts the service (socket API §8.1).
+    [ "${REG_MODE:-}" != primary ] || [ "$SECONDS" -ge 2 ] || reg_service_start || :
     exit 0
     ;;
 
