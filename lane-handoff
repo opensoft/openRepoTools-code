@@ -3107,11 +3107,18 @@ command -v lclaude >/dev/null 2>&1 && lane_profile_word=lclaude
 # Where the tmux window's name is not `L` and the window-name read ran (no
 # `--lane` named the lane: `win_row_read`), the lane rests on that name's row
 # too (`register-row` of the window), so `row:<window name>` is listed as well,
-# and only then (#165 6774499606, REV-ACT's NIT). Each is a scope only where
-# the name is shaped like a lane's: a window named `my window` would put a token
-# in the list that is no scope, and the writer refuses a list with one in it,
-# with 2 and nothing sent. They are listed in lower case, once each, in the
-# order given (Y:5584: "sent in lower case, in the order given").
+# and only then (#165 6774499606, REV-ACT's NIT). The window's name is a scope
+# only where it is shaped like a lane's (`act_lane_shaped`): a window named
+# `my window` is no walk answer, and would put a token in the list that is no
+# scope, and the writer refuses a list with one in it, with 2 and nothing sent.
+# THE WALK'S NAMES ARE NOT FILTERED THAT WAY (T429; lane 3, #165 6836816821,
+# question 5): only an empty walk line is skipped, and any other name reaches
+# `LANES_EXPECT`, where the writer refuses it with 2, naming it, before any call
+# (Y:5600), since a token outside the forms "is never dropped" (Y:5583, Y:5587).
+# No tool writes such a name today (the register has no alias table, and
+# `rename-lane` checks both names), so this is a NIT. They are listed in lower
+# case, once each, in the order given (Y:5584: "sent in lower case, in the order
+# given").
 #
 # THEY ARE LISTED WHATEVER THE BASE: "it is never dropped, since dropping a token
 # under-checks" (Y:5587; lane 3, #165 6770733371, G1). Where `act-begin` answered
@@ -3138,7 +3145,8 @@ if [ -n "$win_row_read" ] && act_lane_shaped "$window_name"; then act_scope_add 
 # made (a full `/tmp`) the loop never ran. This script has no `set -e`, so it
 # went on, the walk's names got no `row:` and `alias:` key, and the writes went
 # out with a base that under-checks (Y:5587: "never dropped"). Nothing here
-# needs a temp file now.
+# needs a temp file now. A name that is no lane's is NOT dropped here (above): it
+# reaches `LANES_EXPECT`, and the writer refuses it with 2 before any call.
 act_wl="$act_walk"
 act_nl=$'\n'
 while [ -n "$act_wl" ]; do
@@ -3147,7 +3155,7 @@ while [ -n "$act_wl" ]; do
 	*"$act_nl"*) act_wl="${act_wl#*"$act_nl"}" ;;
 	*) act_wl="" ;;
 	esac
-	act_lane_shaped "$act_wn" || continue
+	[ -n "$act_wn" ] || continue   # only an empty line is no name (question 5)
 	act_scope_add "row:$act_wn"; act_scope_add "alias:$act_wn"
 done
 
