@@ -873,7 +873,7 @@ class Drill:
         """The cluster stopped: writes 69, the guard's refusal, the mirror
         line, `status` inside twice its bound, then the declaration, after
         which the guard answers from the mirror."""
-        self.stopped = count, tip = self.count(), self.origin_tip()
+        self.stopped = (self.count(), self.origin_tip())
         for ws in self.both:
             ws.git("fetch", "-q", "origin")
         self.cluster.stop()
@@ -891,8 +891,11 @@ class Drill:
             assert added and self.db.name in added.group(1), (
                 f"[step 6] the guard's refusal on {ws.name} does not name the database as "
                 f"register_url= gives it (T507): {_masked(out)[-600:]}")
-            assert f"lanes_w_{ws.engineer}" not in added.group(1), (
-                f"[step 6] the guard's added name carries the URL's user: {added.group(1)!r}")
+            users = [user for user in (f"lanes_w_{ws.engineer}", f"lanes_r_{ws.engineer}")
+                     if user in added.group(1)]
+            assert users == [], (
+                f"[step 6] the guard's added name carries a URL's user, {users}: "
+                f"{added.group(1)!r}")
             for words in ("lanes-index status", "lanes-index rollback", "CLAUDE_NO_LANE=1"):
                 assert words in out, (
                     f"[step 6] the guard's refusal on {ws.name} does not carry {words!r} (P3; "
