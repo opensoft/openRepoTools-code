@@ -6325,8 +6325,8 @@ pw_run_dir() {
 # as `IFS=' ' read -r` splits them: a run of spaces between two fields, none
 # kept at either end, and the rest of the line in the last. It splits by
 # parameter expansion, never through a here-string: bash 3.2 writes one to a
-# temp file in /tmp, whatever TMPDIR names, as bash before 5.1 writes one past
-# a pipe's size, and where none can be made, as in a full /tmp, the read never
+# temp file in /tmp, whatever TMPDIR names (bash 5.1 and later still do, past
+# a pipe's size), and where none can be made, as in a full /tmp, the read never
 # ran, every field was empty, and nothing checked it (review REV-W10a, M1).
 # T417's and T418's loops over `call` lines split them at each newline the
 # same way, as T414's seam and T415's `pw_abandon_kept` split theirs.
