@@ -1354,10 +1354,19 @@ and both refuse where step 4's `PAUSED` line did not land: *"a `/ctx` whose reco
 REFUSES before it kills anything (a pane is never respawned over an unrecorded lane)"* (Amendment 17(f)).
 **Neither act runs where step 4's block ended 1 or 2** (step 5's gate: the act stopped there and printed no `READY TO
 SWAP` line, and a `/exit` typed after it would end the session over a record that was refused or never written).
-**And under `--exit`, where step 4's (b), the register's `PAUSED` line, exited 3, the rerun the writer printed for it
-is run BEFORE `/exit`** (lane 3, #165 6835210568, question 1: W11's 3, which `lane-handoff`'s `--exit` refuses 2 for
-under a seq base, T429). `/exit` ends the session that holds that rerun, and the handoff's top block was written
-before the writes, so the next session never sees it. Say in the report what the rerun printed.
+**And under a seq base, `/exit` is typed only where `lane-handoff --exit`'s own gates would let it pass** (lane 3, #165
+6836816821, question 3; RC-W15c's SHOULD). A seq base shows in what step 4 printed: a write that exited 69, or one that
+exited 3 with a `LANES_WRITE_ID` rerun printed above its line, is only ever on a SQL register. The gates are step 4's three
+writes, which are `lane-handoff`'s W9, W11 and W12. `/exit` is withheld where the object log's `PAUSED` line did not land
+or is in doubt (the rule above), where the row's write exited 3 or 69 (`row_write_refused` is set), and where (b), the
+register's `PAUSED` line, exited 69: each of those leaves part of the record unwritten or in doubt, the lines above say what to do about it,
+and `/exit` would end the session that is told to do it. **Where (b) exited 3 and the other gates pass, the rerun the writer
+printed for it is run BEFORE `/exit`, and `/exit` is typed only if that rerun ends 0** (lane 3, #165 6835210568, question
+1, and 6836816821, question 3: W11's 3, which `lane-handoff`'s `--exit` refuses 2 for under a seq base, T429). `/exit` ends
+the session that holds that rerun, and the handoff's top block was written before the writes, so the next session never sees
+it; a rerun that ends 3, 69, 75 or 2 settles nothing. **On any other code the pane is left as it is and no `/exit` is
+typed: say in the report the rerun and its code.** Where `/exit` is withheld at any other gate, say in the report which write
+exited which code, and what its note or its `IN DOUBT` line says to do. Say in the report what the rerun printed.
 
 **`/ctx` (`/handoff --restart`) — the context clear, and the person types nothing else.** IT IS ONE COMMAND
 AND THIS STEP DOES NOT SPELL IT OUT IN SHELL:
@@ -1440,7 +1449,8 @@ relaunch a writer that is still live** — a worktree is one writer's for as lon
 **`/handoff --exit requested by <uuid>@<host>/<container>` — the handoff another place asked for.** After
 the record, `/exit` is typed into this lane's own pane (Amendment 12's M1, the one mechanism there is), and
 the session ENDS: *"a handoff to another place is a handoff and not a restart"* (Amendment 18(d)). The `why`
-is the requester, verbatim. Where step 4's (b) exited 3, the rerun it printed runs first (the lead above).
+is the requester, verbatim. Under a seq base `/exit` is typed only where the gates in the lead above let it pass, and where
+step 4's (b) exited 3, only after the rerun it printed has run and ended 0.
 
 ```sh
 tmux send-keys -t "$pane" '/exit' Enter
