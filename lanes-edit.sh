@@ -8102,7 +8102,7 @@ pw_tail() {   # <seq> <how it was learned> <the answer, in a file>
 # `preimages/` (lane openRepoTools-3, #165 6769061039, T415's question 5).
 PW_REPLAYED=0; PW_RP_RUN_DIR=""
 pw_replay_tail() {   # <seq> <how it was learned>
-  local rp_l="" rp_b="" rp_c="" rp_n="" rp_f="" rp_d="" rp_clock="" rp_cdir="" rp_run="" rp_dir="" \
+  local rp_k="" rp_l="" rp_c="" rp_f="" rp_d="" rp_clock="" rp_cdir="" rp_run="" rp_dir="" \
         rp_bin="" rp_rc=0 rp_at="" rp_h="" rp_last="" rp_p="" rp_t=""
   pw_abandon_all
   if [ "$PW_REPLAYED" = 1 ]; then
@@ -8110,11 +8110,19 @@ pw_replay_tail() {   # <seq> <how it was learned>
   fi
   PW_REPLAYED=1
   if [ -n "$PW_E_DIGEST" ]; then
-    while IFS= read -r rp_l; do
+    # By parameter expansion, never a here-string (`pw_call_fields`), so a
+    # full /tmp cannot leave the entry's change set with no call line.
+    rp_k="$WR_CALLS"
+    while [ -n "$rp_k" ]; do
+      rp_l="${rp_k%%"$WR_NL"*}"
+      case "$rp_k" in
+        *"$WR_NL"*) rp_k="${rp_k#*"$WR_NL"}" ;;
+        *) rp_k="" ;;
+      esac
       [ -n "$rp_l" ] || continue
-      IFS=' ' read -r rp_b rp_c rp_n rp_f rp_d <<<"$rp_l"
+      pw_call_fields "$rp_l"; rp_c="$PW_CF_C"; rp_f="$PW_CF_F"; rp_d="$PW_CF_D"
       if [ "$rp_f" = "$PW_E_DIGEST" ] && wr_is_count "$rp_c"; then rp_clock="$rp_c"; rp_cdir="$rp_d"; fi
-    done <<<"$WR_CALLS"
+    done
   fi
   if [ -z "$rp_clock" ]; then
     if [ -z "$PW_E_DIGEST" ]; then
