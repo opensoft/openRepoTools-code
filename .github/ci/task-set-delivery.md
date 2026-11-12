@@ -1,5 +1,9 @@
 # Shared Claude/Codex task-set instructions: manual full-CI delivery
 
+The [additive fast/candidate preparation](delivery-preparation.md) introduces
+no queue activation or CI skips. Continue requiring all current full checks;
+the prepared candidate entry has no live trigger or existing queue consumer.
+
 The separate [trusted shadow observer](shadow-classifier.md) reports only
 conservative event observations. It never enables fast-only CI, grants queue
 admission or replaces current-head review. The original pilot and all full-CI
