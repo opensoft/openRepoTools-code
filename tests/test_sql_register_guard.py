@@ -1417,21 +1417,62 @@ def test_a_bind_with_no_timeout_says_bounded_no_and_kill_stops_its_group_once(
     assert not _members("pgid", start[0]["pgid"]), "the body's group was left running"
 
 
+#: CASE 17'S READ CALLS (T214h). TP:6164-6166 bounds the `lanes-edit.sh`
+#: processes on the resume path that each make one `register read`, and Y:5443
+#: is that term of `bound_s`'s sum. Lane 3 ruled that the case counts those
+#: calls only, and that `N_r` = 17 stands (#165 6827853480), on lane 4's count of
+#: lane 5's 29 calls, 13 of them register reads (6827539379). A call whose verb
+#: is below is not counted, by its kind; every other verb is, so a read this
+#: table does not know still counts against 17:
+#: - "write": the bind's writes, which Y:5440-5450 bounds as terms of their own
+#:   (`S`, `M` + `W`, the stamp): `act-begin`, `start-record` and
+#:   `write-handoff` at lane 4's T428; at lane 5's T502, Y:5523's
+#:   `append-session-id`, `set-row-state LIVE` and `log RESUMED`, the stamp's
+#:   `publish-handoff`, and `add-row` for a new lane; and the guard child's own
+#:   `set-row-state` on the lane left;
+#: - "none": the arms that touch no register state, class "none" at Y:4898, "no
+#:   door, no call": the four it names, and `workspace-root`, which reads
+#:   `$HOME/.agents/workspace.yaml` and the checkout it names, never the
+#:   register (`lanes-edit.sh:21593`, `:1004` at `6050581`), and which R2B's
+#:   section 2, the inventory Y:4894 cites, lists as local-only;
+#: - "host-local": Y:5646's host-local reads that Y:4898 does not name, which
+#:   lane 4 counted apart from the 13. The case prints their count beside the
+#:   reads: Y:4894 would give these hybrid arms a door of their own.
+#: `LANES_INDEX=off` is set for the bind, so `index_nudge` returns at once
+#: (`lanes-edit.sh:3855` at `6050581`), and no detached `lanes-index sync` adds
+#: calls of its own after a write lands: 6 of the 29, varying with timing.
+CASE_17_NOT_A_READ = {
+    **{verb: "write" for verb in ("act-begin", "start-record", "write-handoff",
+                                  "append-session-id", "set-row-state", "log",
+                                  "publish-handoff", "add-row")},
+    **{verb: "none" for verb in ("workstation", "fetch-age", "window-session",
+                                 "transcript-holders", "workspace-root")},
+    **{verb: "host-local" for verb in ("live-holder", "lane-holders", "idle-holders",
+                                       "restart-intent")},
+}
+
+
 @pytest.mark.parametrize("mode", ["files", "primary"])
 def test_the_bind_resume_path_makes_at_most_n_r_read_calls(estate, mode):
     """AT-F6 case 17: a counting `LANES_EDIT` stand-in sees at most `N_r` = 17
-    calls on the real `lane-start --no-launch --bind`'s resume path, each a
-    `lanes-edit.sh` process that makes one register read; the test fails where
-    `N_r` must grow (lane 4's section, "The record, and its liveness test")."""
+    read calls on the real `lane-start --no-launch --bind`'s resume path, each
+    a `lanes-edit.sh` process that makes one `register read`; the test fails
+    where `N_r` must grow (lane 4's section, "The record, and its liveness
+    test"). It counts the read calls only (`CASE_17_NOT_A_READ`), with
+    `LANES_INDEX=off`, as lane 3 ruled (#165 6827853480)."""
     est = _real_estate(estate, mode=mode)
+    est.extra["LANES_INDEX"] = "off"
     est.make_offer()
     est.answer_2()
     record = est.ended(90)
     calls = [e["argv"] for e in est.log("lanes-edit.log")]
-    print(f"T214 case 17: {len(calls)} lanes-edit.sh calls on the resume path: "
-          f"{[a[:1] for a in calls]}")
+    kinds = [CASE_17_NOT_A_READ.get(a[0] if a else "", "read") for a in calls]
+    reads = [a[:1] for a, kind in zip(calls, kinds) if kind == "read"]
+    print(f"T214 case 17: {len(reads)} read calls of {len(calls)} lanes-edit.sh calls on the "
+          f"resume path, {kinds.count('host-local')} more host-local; the reads: {reads}; "
+          f"every call: {[(a[:1], kind) for a, kind in zip(calls, kinds)]}")
     assert record["mode"] == "bound", record
-    assert 0 < len(calls) <= 17, calls
+    assert 0 < len(reads) <= 17, reads
 
 
 def _record_with(est: Estate, keys) -> None:
