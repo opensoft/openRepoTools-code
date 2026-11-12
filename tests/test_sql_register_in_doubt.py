@@ -1097,12 +1097,23 @@ def comments(where: Path) -> List[dict]:
             and c["argv"][1:2] == ["comment"]]
 
 
+def sidecar_text(lane: str, generation: int, utc: str, state: str = "RUNNING") -> str:
+    """A whole lane-state snapshot, as `lane_state_put` writes one
+    (`c8acf67c:lanes-edit.sh:23002`): `schema: 1` and every key its writer
+    writes, none empty. A snapshot short of one is not a whole record, and
+    every writer refuses it (`lane_sidecar_schema_ok`, `:22826-22846`; #115),
+    so a sidecar of three keys was never followed (T245h; lane 4's triage,
+    #165 6833813092)."""
+    return (f"schema: 1\nlane: {lane}\nstate: {state}\ngeneration: {generation}\noperation: none\n"
+            f"owner: none\nagent: none\nprofile: none\nworkstation: none\nkind: none\nupdated: {utc}\n")
+
+
 def sidecars(e: Estate) -> Path:
     root = e.root / "lane-state"
+    utc = e.utc()
     for lane in (LA, LB, LC):
         (root / lane).mkdir(parents=True, exist_ok=True)
-        (root / lane / "lane-state.yaml").write_text(f"lane: {lane}\nstate: RUNNING\ngeneration: 1\n",
-                                                     encoding="utf-8")
+        (root / lane / "lane-state.yaml").write_text(sidecar_text(lane, 1, utc), encoding="utf-8")
     return root
 
 
@@ -1305,8 +1316,7 @@ def test_the_after_commit_tail_of_log_runs_once_when_a_rerun_finds_the_write(est
     _, write_id = killed(e, LA, argv, first=[where], extra=extra)
     assert generation_of(root, LA) == "1", "the tail ran before the rerun"
     if verb == "RESUMED-moved-since":
-        (root / LA / "lane-state.yaml").write_text(f"lane: {LA}\nstate: RUNNING\ngeneration: 7\n",
-                                                   encoding="utf-8")
+        (root / LA / "lane-state.yaml").write_text(sidecar_text(LA, 7, e.utc()), encoding="utf-8")
     again = e.run(LA, argv, first=[where], extra=extra)
     assert again.code == 0, again.err[-800:]
     assert [r["write_id"] for r in e.journal_after()].count(write_id) == 1
