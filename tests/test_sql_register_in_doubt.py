@@ -1337,7 +1337,11 @@ def test_a_sent_record_whose_child_never_read_committed_replays_and_an_owed_mark
     child's `seam.out` says `none`: the owner removes `tail` and replays,
     one comment, exit 0. [owed-mark]: a mark holding `owed <utc>`; a rerun
     under `LANES_WRITE_ID`, with its generation (T245d), runs no tail, adds
-    no comment, and names the steps as owed again."""
+    no comment, and names the steps as owed again. The mark is written in
+    its contract's form, one `key=value` a line, `write_id`, `seq`, `tail`,
+    `pid`, `host`, `container` and `utc` (pending-record.md §6), the form
+    the run reads (`wr_done_read`, `c8acf67c:lanes-edit.sh:7778`): one of
+    another form is no mark (T245f)."""
     e = estates()
     where = loggers(e)
     argv = claim(OBJ)
@@ -1353,7 +1357,11 @@ def test_a_sent_record_whose_child_never_read_committed_replays_and_an_owed_mark
     else:
         mark = mark_of(e, write_id)
         mark.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        mark.write_text(f"{write_id} {e.journal_after()[-1]['seq']} owed {e.utc()}\n", encoding="utf-8")
+        fields, utc = rec["fields"], e.utc()
+        mark.write_text(f"write_id={write_id}\nseq={e.journal_after()[-1]['seq']}\ntail=owed {utc}\n"
+                        f"pid={fields.get('pid', '')}\nhost={fields.get('host', '')}\n"
+                        f"container={fields.get('container', '')}\nutc={utc}\n", encoding="utf-8")
+        mark.chmod(0o600)
         rec["path"].unlink()
         again = e.run(LA, argv, first=[where], extra={"LANES_WRITE_ID": write_id,
                                                       "LANES_WRITE_GENERATION": e.c.switch()["generation"]})
@@ -1457,7 +1465,12 @@ def test_the_pending_records_call_lines_are_written_before_the_send_and_dropped_
     commit, the record read while the next call is held holds one line, the
     next call's, with base n+1. [refusal]: after a refusal the record is
     gone. [in-doubt]: after a call in doubt it keeps the line, and the
-    attempt directory keeps `snapshot`, `files` and `preimages`."""
+    attempt directory keeps the files `snapshot` and `files`, and
+    `preimages/`, a directory (B19 tasks:1104), where the attempt made one:
+    only a write with a lane-state sidecar does (`lane_state_preimage`,
+    `c8acf67c:lanes-edit.sh:23056`), and a `NOTE` line has none (T245f;
+    lane 4's triage, #165 6833813092). `<dir>` is the line's rest after its
+    four first fields (pending-record.md §3.2)."""
     e = estates()
     if case == "before-the-send":
         gate = fifo(e, "commit-1")
@@ -1489,8 +1502,9 @@ def test_the_pending_records_call_lines_are_written_before_the_send_and_dropped_
         w, _, _ = exit3(e, LA, note(LA, case))
         calls = the_record(e)["calls"]
         assert len(calls) == 1
-        attempt = Path(calls[0].split()[-1])
-        assert all((attempt / name).is_file() for name in ("snapshot", "files", "preimages")), attempt
+        attempt = Path(calls[0].split(" ", 4)[4])
+        assert all((attempt / name).is_file() for name in ("snapshot", "files")), sorted(attempt.iterdir())
+        assert not (attempt / "preimages").exists() or (attempt / "preimages").is_dir(), sorted(attempt.iterdir())
 
 
 @CLIENT
@@ -1548,7 +1562,13 @@ def learnt(e: Estate, way: str, where: Path, *, gone: bool = False, script: Opti
     commit call held until the orphan has committed, so it gets LR006) or
     [lookup] (`after`, the next snapshot failed, so AT-F3's lookup finds
     it). The call that learns it is held; with `gone`, until the kept
-    child's `seam.out` says `none` under `LANES_REGISTER_SEAM_CAP_S=3`."""
+    child's `seam.out` says `none` under `LANES_REGISTER_SEAM_CAP_S=3`, or
+    `C_S - 1`, 7, for [lr006] (T245f): there the next attempt's child must
+    reach its seam before the parent's wait ends, 1 s before the kept
+    child's cap (Y:5004; `c8acf67c:lanes-edit.sh:9192`), which 3 s left at
+    about 2 s, too short (lane 4's triage, #165 6833813092); and its commit
+    call, sent at that seam and held until the kept child's `none`, must
+    stay under its own 8 s timer, `C`."""
     gate = fifo(e, f"learn-{way}")
     if way == "lr006":
         orphan = fifo(e, "orphan")
@@ -1559,7 +1579,7 @@ def learnt(e: Estate, way: str, where: Path, *, gone: bool = False, script: Opti
     else:
         arms = [AFTER, {"mode": "fail-match", "match": SNAPSHOT_TEXT, "call": 2},
                 {"mode": "hold", "match": "find_write", "call": 1, "fifo": str(gate)}]
-    extra = {"LANES_REGISTER_SEAM_CAP_S": "3"} if gone else {}
+    extra = {"LANES_REGISTER_SEAM_CAP_S": str(C_S - 1 if way == "lr006" else 3)} if gone else {}
     w = e.launch(LA, claim(OBJ), first=[where], arms=arms, extra=extra, script=script)
     held = hold_point(gate, w)
     if way == "lr006":
