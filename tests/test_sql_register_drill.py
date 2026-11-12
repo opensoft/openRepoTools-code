@@ -70,7 +70,9 @@ also names the tasks its own verbs rest on, by their B15 bullets:
 On line R's `V-round5` (`e8804a4a`), which holds T110, T115, T116, T119, T120,
 T121, T304 and T320 to T323 but not T327, T326, T415 or T507, every test stops
 at step 3's assertion on the marker: `cutover` exits 0 with the marker
-`adding` and nothing pushed (T116's point 1).
+`adding` and nothing pushed (T116's point 1). On lane 3's `T326-m23`
+(`552c22d4`), which adds T327 and T326 but not T415, step 3 passes, and a
+test that runs step 4 stops there: `lanes-edit.sh` has no SQL write path.
 
 READINGS, NOT FOUND IN A CONTRACT:
 - "THE RENDERER'S IDENTITY" (AT-F4's fixture): a bare origin on disk cannot
@@ -103,9 +105,13 @@ READINGS, NOT FOUND IN A CONTRACT:
   and_files_mode_write` runs all ten. `test_a_workstation_not_yet_cleared_
   refuses_after_rollback` runs steps 1 to 4 and 8, then step 9's ws2 half
   with a fuller oracle. AT-F4's three run the order's steps they read: the
-  freeze, the import, the cutover and the flips, R3b's smoke test, so the
-  head is past the cutover, and step 8; never steps 1, 5, 6 or 7, whose
-  oracles are AT-13's.
+  freeze, the import, the cutover and the flips, and, for the two after the
+  rollback, step 8; never steps 1, 4, 5, 6 or 7, whose oracles are AT-13's.
+  So their rollback starts with the head at the cutover's seq: AT-F4's
+  oracle names no write on primary, and its Order (B17 tasks:2544, "Order:
+  waits for T229") has its tests fail until L1-A18, T326 and T327 alone,
+  where step 4's write would also need lane 4's T415 and T416 (T276d,
+  after line DR15's run on T326-m23 met T415's placeholder there).
 - STEP 10'S "EVERY OBJECT HAS AT MOST ONE HOLDER" is read for the objects the
   drill claims, across SQL's live holds and origin's logs, as T273b's
   `_claim_holders` reads one.
@@ -1224,18 +1230,18 @@ def test_the_ruleset_goes_on_after_the_last_paused_write_and_before_the_import(r
 
 def test_the_rollback_turns_the_ruleset_off_before_the_marker_removal_is_pushed(request,
                                                                                 tmp_path):
-    """AT-F4, the ruleset off: after the freeze, the import, the cutover, the
-    flips and R3b's smoke test, `rollback --hold-marker` exits 0 with the
-    mirror proved current and the marker still on origin, the switch at
-    `files` and the marker `removing`, while the model is on; it is then
+    """AT-F4, the ruleset off: after the freeze, the import, the cutover and
+    the flips, `rollback --hold-marker` exits 0 with the mirror proved
+    current at the cutover's seq and the marker still on origin, the switch
+    at `files` and the marker `removing`, while the model is on; it is then
     switched off, and the rerun pushes the removal and ends with the marker
-    `absent` (the drill's step 8, whose assertions are AT-F4's). Fails until
-    L1-A18, T326 and T327 land, and lane 4's T415 and T416."""
+    `absent` (the drill's step 8, whose assertions are AT-F4's). No write on
+    primary comes between, since AT-F4's oracle names none (T276d; see the
+    module's notes). Fails until L1-A18, T326 and T327 land."""
     drill = Drill(request, tmp_path)
     drill.freeze()
     drill.step_2_import()
     drill.step_3_cutover_and_flips()
-    drill.step_4_smoke_test()
     drill.step_8_rollback()
 
 
@@ -1243,13 +1249,13 @@ def test_a_files_mode_write_after_the_rollback_is_pushed(request, tmp_path):
     """AT-F4, after the removal: once the rollback has run through
     `--hold-marker` and its rerun with the model off, and `set-mode index`
     has cleared ws1, a files-mode write on ws1 exits 0 and is pushed, one
-    commit with no `Register-Seq` that the model let through. Fails until
-    L1-A18, T326 and T327 land, and lane 4's T415 and T416."""
+    commit with no `Register-Seq` that the model let through. As in the
+    test above, no write on primary comes before the rollback (T276d).
+    Fails until L1-A18, T326 and T327 land."""
     drill = Drill(request, tmp_path)
     drill.freeze()
     drill.step_2_import()
     drill.step_3_cutover_and_flips()
-    drill.step_4_smoke_test()
     drill.step_8_rollback()
     sha = drill.files_mode_write(drill.ws1, "[AT-F4]", "log", "NOTED", f"lane:{OPERATOR}",
                                  "a files-mode write after the rollback")
