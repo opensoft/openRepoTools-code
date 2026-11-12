@@ -921,6 +921,7 @@ class Estate:
         # before any write. The other lanes keep logs with no lane-kind line.
         self.files = estate_files(lanes, bound)
         self.files["lanes/aliases.tsv"] += aliases
+        self.lanes = list(lanes)
         import_files(c, self.files)
         # `confirmed` False leaves the cutover unconfirmed, the marker `adding` (T233's [switch-at-files]).
         assert c.to_primary(confirmed) == 1, "test 4's cutover is not at seq 1 (AT-4's fixture)"
@@ -990,6 +991,37 @@ class Estate:
                                                encoding="utf-8")
         return where, agents
 
+    def canon(self, lane: str) -> str:
+        """`lane` as `canon_lane` answers it over this estate's rows and alias
+        lines: a row wins at every hop, the last alias line for a name wins,
+        names compare in lower case, a cycle answers the typed name, and a
+        walk that meets no row answers its last hop. The rows are those the
+        estate was made with."""
+        rows = {name.lower() for name in self.lanes}
+        hops: Dict[str, str] = {}
+        for line in self.files["lanes/aliases.tsv"].splitlines():
+            parts = line.split("\t")
+            if line.startswith("#") or len(parts) < 2:
+                continue
+            hops[parts[0].lower()] = parts[1]
+        here, seen = lane, {lane.lower()}
+        while here.lower() not in rows and here.lower() in hops:
+            here = hops[here.lower()]
+            if here.lower() in seen:
+                return lane
+            seen.add(here.lower())
+        return here
+
+    def write_lanes(self, argv: Sequence[str], lane: Optional[str]) -> List[str]:
+        """`write_lanes_of`'s lanes, each followed by its `canon` name: T415's
+        `pw_checkout` runs `canon_lane` first and takes `<W>-lanes/<canon>`,
+        so a write for a name with no row of its own, such as `add-row` for a
+        name on an alias walk, needs its canonical lane's `<c>` (lane 4's
+        triage, #165 6833813092, TRIAGE-W13b o9; T243j). The typed name's
+        `<c>` is kept too."""
+        return list(dict.fromkeys(name for typed in write_lanes_of(argv, lane)
+                                  for name in (typed, self.canon(typed))))
+
     def lane_checkout(self, where: Path, lane: str, origin: Optional[Path] = None) -> Path:
         """`<c>`, lane `lane`'s own register checkout beside the checkout
         `where`, which `workspace.yaml` names as W: `<W>-lanes/<lane>`, W
@@ -1033,7 +1065,7 @@ class Estate:
                first: Sequence[Path] = (), script: Optional[Path] = None) -> Writer:
         name = f"{next(self._n):02d}-{lane}"
         given = (extra or {}).get("LANES_LANE", lane)
-        where, agents = self.checkout(name, origin, write_lanes_of(argv, given))
+        where, agents = self.checkout(name, origin, self.write_lanes(argv, given))
         psql = self.psql_dir(name, arms)
         env = dict(self.env)
         env.update(LANES_LANE=lane, LANES_SESSION=session_of(lane), LANES_REPO=str(where),
