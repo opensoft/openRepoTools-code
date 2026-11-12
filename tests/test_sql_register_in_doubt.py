@@ -905,7 +905,9 @@ def test_a_request_handoff_that_runs_none_of_its_tail_exits_2_and_writes_nothing
     `PATH`, is killed after its commit call returned, so the row has landed
     and its pending record holds a `call` line and no `tail` key. The rerun
     of the same command line, with the record at `tail=sent`, `tail=done`, or
-    removed and rerun under `LANES_WRITE_ID`, finds its write id and exits 2,
+    removed and rerun under `LANES_WRITE_ID` with its `LANES_WRITE_GENERATION`
+    (an id with no generation and no record is refused 2 before any call:
+    pending-record.md §5.2, R08; T244d), finds its write id and exits 2,
     not 0; the journal holds one entry for the id (YS:685 as amended: the
     write committed, so the refusal names it), the fake `tmux` logs no
     `send-keys` from the rerun, and stderr names the tail it did not run."""
@@ -928,7 +930,7 @@ def test_a_request_handoff_that_runs_none_of_its_tail_exits_2_and_writes_nothing
     if state == "no-record":
         for path in records[0].parent.glob(records[0].name + "*"):
             path.unlink()
-        extra = {"LANES_WRITE_ID": write_id}
+        extra = {"LANES_WRITE_ID": write_id, "LANES_WRITE_GENERATION": e.c.switch()["generation"]}
     else:
         with records[0].open("a", encoding="utf-8") as record:
             record.write(f"tail=sent {seq} {e.utc()}\n" if state == "tail-sent"
