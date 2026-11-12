@@ -2474,8 +2474,10 @@ def test_lanes_accepts_decide_and_reads_as_without_it(estate, primary):
     takes the flag and answers as if it were not there, the same exit,
     stdout byte for byte with the age column masked, and the same stderr. Its
     unknown-argument `die` still meets every other argument, before
-    `--decide` or after it, with 64."""
-    for where, edit in (("files", estate.edit), ("primary", primary.edit)):
+    `--decide` or after it, with 64. Files mode is `Primary.files_edit`:
+    the door's `mode=primary` file is in the estate's own configuration
+    folder, so `estate.edit` would run primary there (AN13a's B1)."""
+    for where, edit in (("files", primary.files_edit), ("primary", primary.edit)):
         bare = edit("lanes")
         assert bare.returncode == 0 and bare.stdout, (where, bare.returncode, bare.stderr)
         closed = edit("lanes", "--closed")
@@ -2907,8 +2909,13 @@ def origin_text(estate: Estate, path: str) -> str:
 
 def mode_runs(estate: Estate, primary: Primary) -> dict:
     """The three modes' runs of `lanes-edit.sh`: files, `mode=index`, and
-    primary with the store reachable (the contract stub, R2f4-S14)."""
-    return {"files": lambda *a: estate.edit(*a),
+    primary with the store reachable (the contract stub, R2f4-S14). Files
+    mode is `Primary.files_edit`, whose empty `XDG_CONFIG_HOME` leaves out
+    the door's `mode=primary` file, which `Primary` writes into the estate's
+    own configuration folder; `estate.edit` there is a primary run, refused
+    78 by the checkout's unflipped `lanes-index` (AN13a's B1, as T217m found
+    for `files_edit`). `mode=index` names its own file, so it keeps it."""
+    return {"files": lambda *a: primary.files_edit(*a),
             "index": lambda *a: estate.edit(*a, env=index_env(estate)),
             "primary": lambda *a: primary.edit(*a)}
 
@@ -2959,8 +2966,8 @@ def test_register_text_answers_the_bytes_the_scripts_read_today_and_69_on_a_fail
         primary.door.unreachable()
         result = runs["primary"]("register-text", "lanes/LANES.md")
         assert (result.returncode, result.stdout) == (69, ""), (result.returncode, result.stderr)
-        gone = estate.edit("register-text", "lanes/LANES.md",
-                           env={"LANES_REPO": str(estate.root / "no-such-checkout")})
+        gone = primary.files_edit("register-text", "lanes/LANES.md",
+                                  env={"LANES_REPO": str(estate.root / "no-such-checkout")})
         assert (gone.returncode, gone.stdout) == (69, ""), (gone.returncode, gone.stderr)
     else:
         for mode, run in runs.items():
@@ -3042,8 +3049,8 @@ def test_register_grep_prints_what_git_grep_prints_and_1_with_no_match(estate, p
         # workspace root `LANES_WORKSPACE_ROOT` or `workspace.yaml`'s `path:`
         # names, the same root `lane-worktrees` greps (T401; lane 4's INV401).
         # So the missing checkout goes in the variable the verb reads.
-        gone = estate.edit("register-grep", "-E", ere, "--", "lanes/log",
-                           env={"LANES_WORKSPACE_ROOT": str(estate.root / "no-such-checkout")})
+        gone = primary.files_edit("register-grep", "-E", ere, "--", "lanes/log",
+                                  env={"LANES_WORKSPACE_ROOT": str(estate.root / "no-such-checkout")})
         assert (gone.returncode, gone.stdout) == (69, ""), (gone.returncode, gone.stderr)
     elif case in OUTSIDE_PATHS:
         for mode, run in runs.items():
