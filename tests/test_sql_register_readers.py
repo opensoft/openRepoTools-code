@@ -1623,10 +1623,23 @@ def test_lane_worktrees_register_reads_go_through_a_verb_and_refuse_69(tmp_path,
 def test_index_flag_on_primary_changes_nothing_and_prints_no_index_line(primary):
     """On primary, `--index` changes nothing: with and without it, stdout
     and the exit are equal, and stderr has no index line (Wspec:641-646;
-    lane 5's T509)."""
-    for argv in (("lanes",), ("history",)):
+    lane 5's T509).
+
+    `history` TAKES `--all` (T217ze; lane 5, #165 6833182352). A bare
+    `history` exits 64 at the arm's selector check
+    (`81bd6d3:lanes-edit.sh:23738`), after the door's prefetch and before
+    T509's `--index` guard (:23751), so it compared two usage errors. With
+    `--all` the arm reads every log, and the estate's logs hold `NOTED` and
+    `RULED` lines, so each run answers a timeline. Each half forgets the
+    door's calls first, so `history`'s calls are its own, never those
+    `lanes --index` left."""
+    for argv in (("lanes",), ("history", "--all")):
+        primary.door.forget_calls()
         bare = primary.edit(*argv)
         assert primary.door.register_calls(), (argv, "the read never reached the store", bare.stderr)
+        if argv[0] == "history":
+            assert bare.returncode == 0 and bare.stdout, (
+                argv, "no timeline to compare", bare.returncode, bare.stderr[-1500:])
         primary.door.forget_calls()
         flagged = primary.edit(*argv, "--index")
         assert (flagged.returncode, flagged.stdout) == (bare.returncode, bare.stdout), \
@@ -2513,15 +2526,58 @@ def test_the_local_file_unions_are_skipped_on_primary(primary):
     assert LOCAL_SID not in result.stdout, ("a local row's id on primary", result.stdout)
 
 
+#: T509's footers (`81bd6d3:lanes:853-860`), as lane 5 quotes them (#165
+#: 6833182352) and lane 3 keeps them (6833266940): `<k> lane(s)`, then ` of
+#: <repo>` where the listing has one, then what answered.
+FOOTER_HEAD = r"^[0-9]+ lane\(s\)(?: of \S+)?, "
+MIRROR_FOOTER = ("read from the register's mirror and not from the register: the `read: mirror` "
+                 "line above says why.")
+FELL_BACK_LINE = ("  and the fetch did not answer, so the mirror is this checkout's own copy. "
+                  "What the helper said:")
+
+
 def test_the_lanes_footer_on_primary_names_the_register_and_claims_no_local_read(primary):
-    """T509 (R43): on primary the `lanes` script's footer says the listing
-    is as of the register at seq `<n>` and claims no local read."""
+    """T509 (R43): on primary the `lanes` script's footer names the store
+    that answered and claims no local read, in T509's strings (T217zf):
+      * the register answered: `read: register at seq <n>` on stderr, and
+        the footer `<k> lane(s), as of the register at seq <n>.`;
+      * the store unreachable, so the mirror answered: the `read: mirror`
+        line on stderr, the mirror footer, and no seq claimed;
+      * that again under `--fetch` with origin gone: the fallback line under
+        the mirror footer, then what the helper said, indented.
+    Each run has the script's capture file. Where it has none, T509 keeps
+    today's footer in every mode (lane 3, #165 6833266940), and no run here
+    takes that path."""
     result = primary.script("lanes")
     assert primary.door.register_calls(), ("the listing never reached the store", result.stderr)
     n, _gen = primary.door.head()
     out = result.stdout + result.stderr
-    assert re.search(rf"(?i)register at seq {n}\b", out), out[-1500:]
+    assert re.search(rf"^read: register at seq {n}$", result.stderr, re.M), (
+        result.returncode, result.stderr[-1500:])
+    assert re.search(rf"{FOOTER_HEAD}as of the register at seq {n}\.$", result.stdout, re.M), (
+        result.returncode, result.stdout[-1500:])
+    assert not MIRROR_LINE.search(result.stderr), result.stderr[-1500:]
     assert not re.search(r"(?i)\blocally\b", out), out[-1500:]
+    # THE MIRROR ANSWERED: the store is unreachable, and `lanes` is mirror.
+    primary.door.unreachable()
+    mirror = primary.script("lanes")
+    assert MIRROR_LINE.search(mirror.stderr), (mirror.returncode, mirror.stderr[-1500:])
+    assert re.search(FOOTER_HEAD + re.escape(MIRROR_FOOTER) + "$", mirror.stdout, re.M), (
+        mirror.returncode, mirror.stdout[-1500:])
+    assert "register at seq" not in mirror.stdout + mirror.stderr, mirror.stdout[-1500:]
+    # AND THE FETCH DID NOT ANSWER: origin is gone, under `--fetch`.
+    origin = primary.e.origin
+    origin.rename(origin.with_name("origin-aside.git"))
+    fell = primary.script("lanes", "--fetch")
+    lines = fell.stdout.splitlines()
+    at = [i for i, line in enumerate(lines)
+          if re.fullmatch(FOOTER_HEAD + re.escape(MIRROR_FOOTER) + "$", line)]
+    assert at, ("no mirror footer under --fetch", fell.returncode, fell.stdout[-1500:],
+                fell.stderr[-1500:])
+    assert lines[at[0] + 1:at[0] + 2] == [FELL_BACK_LINE], (fell.stdout[-1500:], fell.stderr[-1500:])
+    assert any(line.startswith("  ") and "reading the logs as they stand locally" in line
+               for line in lines[at[0] + 2:]), ("the helper's words are not under it",
+                                                fell.stdout[-1500:])
 
 
 def test_lanes_fetch_on_primary_prints_no_no_fetch_note(primary):
