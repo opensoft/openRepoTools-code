@@ -3225,6 +3225,17 @@ paused_69_note() {   # [<UTC>: the moment the session ended, where it is known]
 	fi
 	note "THE PAUSED RECORD IS INCOMPLETE and lane $lane stays SWAPPING, an interrupted swap that the late PAUSED path completes. Whoever relaunches the lane runs, from a shell, once the register answers and BEFORE the relaunch:  $prog --late --at $p69_at --lane $lane   $p69_why."
 }
+# THE 69 NOTE WHERE THE OBJECT LOG'S PAUSED LANDED (T429; lane 3, #165
+# 6835210568, "the 69 note needs mending either way"). `--late` is the act that
+# writes the object log's PAUSED, and it refuses 2 where the lane's last
+# lane-kind line is already a PAUSED (the late rule, above), so it is no way to
+# complete a record whose PAUSED is written: its one write is that line, and it
+# never writes the file-level line or the row. Where W9 landed and a 69 came
+# from W11 or W12, the way is the act again, once the register answers, as the
+# act's other notes say (Y:5601).
+paused_69_landed_note() {
+	note "THE PAUSED RECORD IS INCOMPLETE and lane $lane stays SWAPPING, an interrupted swap. The object log's PAUSED line is written, so \`$prog --late\` is not the way to complete it: it refuses where the lane's last line is already a PAUSED, and it never writes the LANES.md file-level line or the row. Once the register answers, run $prog again from its start (Y:5601): it takes a fresh base and supersedes this operation."
+}
 
 # ------------------------------------------------------------ the LATE branch
 if [ "$do_late" = 1 ]; then
@@ -3446,8 +3457,13 @@ else
 					w11_open=1
 					note "the LANES.md file-level PAUSED line was NOT appended — the helper's own words are above. Under this act's base no hand command is printed for it (Y:5587): run $prog again from its start (Y:5601)."
 					act_stops_at "the LANES.md file-level PAUSED line" "$w11_rc"
+				elif act_on_seq_base; then
+					# A SENT 69 (#165 6835210568, "the 69 note needs mending either way"):
+					# "busy" is 75's word, and a 69 is the database being unreachable.
+					# The note after the three writes names how the record is completed.
+					w11_open=1
+					note "the LANES.md file-level PAUSED line was NOT appended (its write exited 69) — the helper's own words are above. Under this act's base no hand command is printed for it (Y:5587); the note below names how the PAUSED record is completed."
 				else
-					if act_on_seq_base; then w11_open=1; fi
 					note "the LANES.md file-level PAUSED line was not appended (the register may be busy or behind); the object-log line above is the record readers take."
 				fi
 			fi
@@ -3502,7 +3518,13 @@ else
 			note "the row's state cell was NOT set to PAUSED (the write was refused — run it by hand to see what it says: lanes-edit.sh set-row-state $lane \"PAUSED · $hs_line\"). The restart line below carries --lane for that reason."
 		fi
 	fi
-	[ -z "$paused_69" ] || paused_69_note
+	# WHERE W9 LANDED, under a seq base, the note is not `--late`'s (T429; #165
+	# 6835210568): that act would refuse 2 and never writes W11 or the row.
+	if [ -n "$paused_69" ]; then
+		if [ "$record_written" = 1 ] && act_on_seq_base; then paused_69_landed_note
+		else paused_69_note
+		fi
+	fi
 fi
 
 # ------------------------- 4a. SWAPPING -> SWAPPED, the operation's commit point
