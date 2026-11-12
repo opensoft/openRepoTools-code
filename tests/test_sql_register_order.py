@@ -2062,7 +2062,7 @@ def acted(act: str, *scopes: str) -> dict:
 # THE WORLD is `test_lane_start_claude_current`'s `Sandbox` (fake `tmux`,
 # `claude` and `gh`) holding the register N1's arms run on (lane 2's T217):
 # repoA-1 PAUSED here, repoA-2 LIVE here, repoA-3 LIVE on Falcon, repoH-1
-# PAUSED here long ago, and no repoZ-1. It is imported into a clone of `tmpl`
+# DORMANT, and no repoZ-1. It is imported into a clone of `tmpl`
 # that `Clone.to_primary` brings to `primary`, with the flipped `lanes-index`
 # beside `lanes-edit.sh`, `mode=primary` configured, and its `PATH` masked
 # (`_masked_path`, its own bin spared its `lanes-index`), as test 4's estate is.
@@ -2095,6 +2095,12 @@ R_PAUSED, R_HERE, R_FAR, R_DORMANT, R_NEW = "repoA-1", "repoA-2", "repoA-3", "re
 R_SID = {R_PAUSED: "aaaaaaaa-0002-4000-8000-00000000a002", R_HERE: "aaaaaaaa-0003-4000-8000-00000000a003",
          R_FAR: "aaaaaaaa-0253-4000-8000-00000000a253", R_DORMANT: "aaaaaaaa-0254-4000-8000-00000000a254",
          R_NEW: "aaaaaaaa-0255-4000-8000-00000000a255"}
+#: repoH-1's state cell (T252j). `lane-end --retire-dormant <repo>` retires
+#: only DORMANT rows, "a row with no object log and no live session here"
+#: (Amendment 19(a); `lanes-edit.sh lanes --closed`), and a cell in Amendment
+#: 13's phrase whose word is not ENDED, RETIRED or MIGRATED keeps a row with
+#: no log listed. So repoH-1 has no log and this cell, which is no phrase.
+DORMANT_CELL = "parked long ago, before every lane had a log"
 #: For each lane, a lane that none of its acts' writes lists (the held case).
 R_OTHER = {R_PAUSED: R_FAR, R_HERE: R_FAR, R_FAR: R_HERE, R_DORMANT: R_FAR, R_NEW: R_FAR}
 
@@ -2144,7 +2150,7 @@ ACT_WRITES = {
     "lane-handoff-w12-set-row-state": ActWrite("lane-handoff", _HANDOFF, R_HERE, verb_is("set-row-state")),
     "lane-end-w13-set-row-state": ActWrite("lane-end", (R_HERE,), R_HERE, verb_is("set-row-state"), code=2),
     "lane-end-w14-log-ended": ActWrite("lane-end", (R_HERE,), R_HERE, lane_line("ENDED", R_HERE), code=2),
-    "lane-end-retire-rows": ActWrite("lane-end", ("--retire-dormant", "30", "--yes", "--reason=T252b's race"),
+    "lane-end-retire-rows": ActWrite("lane-end", ("--retire-dormant", "repoH", "--yes", "--reason=T252b's race"),
                                      R_DORMANT, verb_is("retire-rows"), env={"LANES_LANE": R_HERE}),
     "skill-step-4-writes": ActWrite("skill", (), R_HERE, lane_line("PAUSED", R_HERE)),
     "guard-answer-2-child": ActWrite("guard", ("guard-bind", "--body", R_SID[R_PAUSED]), R_HERE,
@@ -2170,7 +2176,7 @@ class ActWorld(Sandbox):
                 (R_HERE, seat, "2026-10-01T02:00Z", f"LIVE {DOT} 2026-10-01T02:00:00Z {DOT} working"),
                 (R_FAR, "Falcon / test / brett", "2026-10-01T02:30Z",
                  f"LIVE {DOT} 2026-10-01T02:30:00Z {DOT} working elsewhere"),
-                (R_DORMANT, seat, "2026-10-01T03:00Z", f"PAUSED {DOT} 2026-10-01T03:30:00Z {DOT} parked")]
+                (R_DORMANT, seat, "2026-10-01T03:00Z", DORMANT_CELL)]
         lanes = self.wip / "lanes"
         (lanes / "log").mkdir(exist_ok=True)
         with open(lanes / "LANES.md", "a", encoding="utf-8") as handle:
@@ -2178,6 +2184,8 @@ class ActWorld(Sandbox):
                 handle.write(f"| `{lane}` | harness `{R_SID[lane]}` | {ws} | {utc} | none "
                              f"| handoffs/{lane}.md | {state} |\n")
         for lane, ws, utc, state in rows:
+            if lane == R_DORMANT:
+                continue  # a dormant row has no object log (Amendment 19(a); T252j)
             host = ws.split(" ")[0]
             text = (f"STARTED {EM} lane {lane}, session {R_SID[lane]}@{host}, {utc[:-1]}:00Z, "
                     f"lane:{lane} {ARROW} home opensoft/repoA; dir {self.lane_dir}; profile team-01a\n")
