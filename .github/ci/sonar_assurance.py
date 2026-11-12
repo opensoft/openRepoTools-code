@@ -16,6 +16,8 @@ import xml.etree.ElementTree as ET
 
 PROJECT = "opensoft_openRepoTools"
 INVENTORY = "inventory.json"
+COVERAGE_REPORT = "coverage.xml"
+PROVENANCE_PROBE = "provenance-probe.json"
 GATE = {
     "new_security_rating": ("GT", "1"),
     "new_reliability_rating": ("GT", "1"),
@@ -100,7 +102,7 @@ def write_configuration(root, out, manifest):
         "sonar.lang.patterns.py": ",".join(patterns["py"]),
         "sonar.lang.patterns.shell": ",".join(patterns["shell"]),
         "sonar.coverage.exclusions": "",
-        "sonar.coverageReportPaths": str(out / "coverage.xml"),
+        "sonar.coverageReportPaths": str(out / COVERAGE_REPORT),
         "sonar.qualitygate.wait": "true", "sonar.qualitygate.timeout": "600",
         "sonar.scm.revision": manifest["commits"]["."],
     }
@@ -156,11 +158,11 @@ def rebind_evidence(root, out):
     recorded = json.loads((out / INVENTORY).read_text())
     if recorded != manifest:
         raise ValueError("test evidence differs from this exact checkout")
-    probe = json.loads((out / "provenance-probe.json").read_text())
+    probe = json.loads((out / PROVENANCE_PROBE).read_text())
     if set(probe) != {"exact", "modified"} or probe["exact"] <= 0 or probe["modified"] != 0:
         raise ValueError("test evidence has no successful source-copy provenance probe")
     expected = {item["path"]: item for item in manifest["files"] if not item["test"]}
-    summary = coverage_summary(ET.parse(out / "coverage.xml").getroot(), expected)
+    summary = coverage_summary(ET.parse(out / COVERAGE_REPORT).getroot(), expected)
     if summary != json.loads((out / "coverage-summary.json").read_text()):
         raise ValueError("coverage summary differs from the measured report")
     write_configuration(root, out, manifest)
@@ -177,7 +179,7 @@ def combine_evidence(root, out):
     for label in ("composed", "provider"):
         directory = Path(os.environ["RUNNER_TEMP"]).resolve() / ("sonar-" + label)
         summary = rebind_evidence(root, directory)
-        data = (directory / "coverage.xml").read_bytes()
+        data = (directory / COVERAGE_REPORT).read_bytes()
         for file in ET.fromstring(data):
             lines = measurements[file.attrib["path"]]
             for line in file:
@@ -186,14 +188,14 @@ def combine_evidence(root, out):
         inputs[label] = {
             "commits": manifest["commits"], "coverage_sha256": hashlib.sha256(data).hexdigest(),
             "summary": summary,
-            "probe": json.loads((directory / "provenance-probe.json").read_text())}
+            "probe": json.loads((directory / PROVENANCE_PROBE).read_text())}
     out.mkdir(parents=True, exist_ok=True)
     write_configuration(root, out, manifest)
     summary = write_report(out, manifest, measurements)
     # Both independent probes passed; diagnostic observations never enter
     # measurements. Retain each exact result plus a conservative roll-up.
     probe = {"exact": min(item["probe"]["exact"] for item in inputs.values()), "modified": 0}
-    (out / "provenance-probe.json").write_text(json.dumps(probe, indent=2) + "\n")
+    (out / PROVENANCE_PROBE).write_text(json.dumps(probe, indent=2) + "\n")
     (out / "evidence-inputs.json").write_text(json.dumps(inputs, indent=2) + "\n")
     return summary
 
