@@ -257,6 +257,18 @@ def _run_dir(cwd: str, args: list) -> str:
     return os.path.realpath(here)
 
 
+def _workspace_resolution(args: list) -> bool:
+    """`args` is one of `lanes_workspace_root`'s three calls (lane 5's F1):
+    `rev-parse --is-inside-work-tree`, `remote get-url origin` or
+    `rev-parse --show-toplevel`."""
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        i += 2 if args[i] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace") else 1
+    sub, rest = (args[i], args[i + 1:]) if i < len(args) else ("", [])
+    return ((sub == "rev-parse" and rest in (["--is-inside-work-tree"], ["--show-toplevel"]))
+            or (sub == "remote" and rest == ["get-url", "origin"]))
+
+
 def _bounded(args: list) -> bool:
     """`args` is form C: `log --first-parent` limited to 200, with no
     `--grep`."""
@@ -508,9 +520,18 @@ class Estate:
         call whose working directory is it: T121's three are `fetch -q origin
         <branch>`, `rev-parse --verify -q refs/remotes/origin/<branch>^{commit}`
         and the paged `log` given the tip's sha (lane 1, #165 comment
-        6755305741, reading 1)."""
+        6755305741, reading 1).
+
+        Left out: the three calls `lanes-edit.sh` makes at file scope on every
+        start where it resolves its workspace from `workspace.yaml`
+        (`lanes_workspace_root`): `rev-parse --is-inside-work-tree`, `remote
+        get-url origin` and `rev-parse --show-toplevel`. They read no mirror,
+        and they come before the guard's read (lane 5's F1, #165 6812547449).
+        This estate's `LANES_WORKSPACE_ROOT` (T215f) skips them, so they are
+        left out for a guard run whose workspace is the checkout itself."""
         root = os.path.realpath(self.wip)
-        return [c for c in self.git_calls() if _run_dir(c["cwd"], c["args"]) == root]
+        return [c for c in self.git_calls() if _run_dir(c["cwd"], c["args"]) == root
+                and not _workspace_resolution(c["args"])]
 
     def log_calls(self) -> list:
         return [c for c in self.git_calls() if _subcommand(c["args"]) == "log"]
