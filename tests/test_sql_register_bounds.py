@@ -1163,7 +1163,17 @@ def test_a_slow_statement_meets_57014_before_the_client_timer(pg, tmp_path, requ
         _service_57014(bench, spec, user)
         return
     statement_s = spec["statement_ms"] / 1000
-    _slow_statement(pg, spec["table"], spec["group"], 4 * statement_s + 5)
+    if row == "lookup":
+        # `find_write` is SECURITY DEFINER (`lanes-index:7863` at
+        # `refs/l1/V-round5`), so a policy for the writer's group never binds
+        # it: it locked the head row unslowed and refused LR007 on the row's
+        # random `--generation` at once (AN13b's cause 3). The lookup's F4 is
+        # `_slow_lookup`'s policy, forced on `journal` and `register_head`, as
+        # the lookup's own `[F4]` case meets it (AT-D9's F4: "a policy forced
+        # on `journal` for its owner, since `find_write` runs as the owner").
+        _slow_lookup(pg, 4 * statement_s + 5)
+    else:
+        _slow_statement(pg, spec["table"], spec["group"], 4 * statement_s + 5)
     proc, elapsed = bench.run(row, bench.config(quote(str(pg.host), safe=""), pg.port, user))
     ended = [c for c in bench.calls() if "57014" in c["first"]]
     assert ended, f"{row}: no call ended with 57014: {bench.calls()}"
