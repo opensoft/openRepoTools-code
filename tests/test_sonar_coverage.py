@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import subprocess
 import os
+import sys
 
 import pytest
 
@@ -93,3 +94,24 @@ def test_bash_collector_credits_exact_copy_without_recording_arguments(tmp_path,
     subprocess.run(["bash", str(copied)], env=env, cwd=tmp_path, capture_output=True, check=True)
     assert not list(tmp_path.glob("hits*"))
     assert not (tmp_path / "OWNED").exists()
+
+
+def test_collector_refuses_missing_coverage_before_starting_tests(collector, tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "coverage", None)
+    with pytest.raises(ModuleNotFoundError):
+        collector.prepare(tmp_path, tmp_path, tmp_path / "not-executed")
+
+
+def test_clean_python_environment_keeps_its_dependency_isolation(tmp_path):
+    target = tmp_path / "isolated"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(target)],
+                   check=True, capture_output=True)
+    python = target / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    env = dict(os.environ,
+               PYTHONPATH=str(HERE / ".github/ci/sonar_coverage"),
+               ORT_SONAR_INVENTORY=str(tmp_path / "intentionally-absent"),
+               COVERAGE_PROCESS_START=str(tmp_path / "intentionally-absent.rc"))
+    result = subprocess.run([str(python), "-c", "print('isolation-preserved')"],
+                            env=env, capture_output=True, text=True, check=True)
+    assert result.stdout.strip() == "isolation-preserved"
+    assert result.stderr == ""

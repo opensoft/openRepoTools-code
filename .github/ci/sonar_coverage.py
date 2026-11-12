@@ -101,6 +101,8 @@ def coverage_environment(root, out, hashes):
 
 
 def prepare(root, out, kcov):
+    import coverage
+    print("measurement tool: coverage.py", coverage.__version__)
     root, out = root.resolve(), out.resolve()
     manifest = json.loads((out / INVENTORY).read_text())
     checked_sources(root, manifest)
