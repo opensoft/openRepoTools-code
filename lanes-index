@@ -15698,6 +15698,289 @@ def render_to(checkout: str, cfg: dict, store, k: int, *,
         render_lock_release(lock, checkout)
 
 
+# ====================================== an operator entry's push (group C)
+#
+# THE OPERATOR ENTRIES' COMMITS (feature 007's T327: D23, D24; S5's cutover,
+# step 2; operations.md §2.1, ops:116; contracts/render-commit.md sections 1
+# to 3). The renderer never renders an operator entry (F2). Its own command
+# builds the commit of `lanes/STORE` on origin's tip, pushes it through T320's
+# one push function with the renderer identity, and confirms it by Amendment
+# 23's S4 read-back: "a fetch of `origin main` whose first-parent history
+# carries the commit, with its `Register-Seq`, and with `lanes/STORE` present
+# after a cutover or absent after a rollback" (ops:116). `cutover` calls it
+# for its entry; T326's `rollback` can call it for seq `k+1`, the removal.
+#
+# - THE COMMIT is T322's build (`render_build`) of the one seq on origin's
+#   tip: the path's image as the journal holds it after the entry, or its
+#   removal; D15's message with `Register-Seq: <seq>`, the journal's author
+#   and UTC; form C must read `<seq>` back from it.
+# - THE READ-BACK COMES FIRST, on every run: form C on the first-parent line
+#   after the command's base commit, so a rerun after a push it could not
+#   confirm finds that push and never pushes again (Y:3157-3159).
+# - ITS OUTCOMES, which the command maps to its own exit (`OperatorPush`).
+# - NO DATABASE TRANSACTION is held across any of it (F23): the command reads
+#   the entry before, and records the marker after, each a call of its own.
+
+class OperatorPush:
+    """What `operator_entry_push` found. `outcome` is one of:
+
+    - `pushed`: this run pushed `commit`, and the read-back finds it on
+      origin's first-parent line with its `Register-Seq` and the path as the
+      entry left it;
+    - `found`: the read-back, made before anything else, finds `commit`
+      there already: an earlier run pushed it, and nothing is pushed again;
+    - `absent`: a read-back of this run proves the entry's commit absent from
+      origin, and this run pushes it no more: origin's tip moved (the caller's
+      `moved`, or a tip that does not descend from the base), a push failed
+      otherwise, six pushes were rejected, or the build, the render lock or
+      the push's configuration refused. The caller's abort may follow;
+    - `unknown`: a read-back could not answer, or found what it cannot
+      confirm, such as a `Register-Seq` past the entry's: the command exits 3,
+      and its rerun reads origin back first.
+
+    `tip` is origin's tip as last read, `detail` one line saying why, and
+    `attempts` the pushes made."""
+
+    __slots__ = ("outcome", "detail", "commit", "tip", "attempts")
+
+    def __init__(self, outcome: str, detail: str, *, commit: str = "", tip: str = "",
+                 attempts: int = 0):
+        self.outcome = outcome
+        self.detail = detail
+        self.commit = commit
+        self.tip = tip
+        self.attempts = attempts
+
+    def __repr__(self) -> str:
+        return (f"OperatorPush(outcome={self.outcome!r}, commit={self.commit!r}, "
+                f"tip={self.tip!r}, attempts={self.attempts}, detail={self.detail!r})")
+
+
+def operator_entry_read(store, seq: int, path: str) -> tuple:
+    """THE OPERATOR ENTRY AT `seq`, from the journal as `commit_write` stored
+    it: `(row, data)`. `row` is `_render_read_entries`' `(seq, kind, operator,
+    author, message, utc)`, for D15's commit; `data` is the bytes `path` holds
+    after the entry, `render_file`'s, or None where the entry removes it.
+
+    Two reads, each one request in one snapshot under D9's `render` row: the
+    entry (`_render_read_entries`), and its `journal_edits` and
+    `journal_files` rows (T301's `_register_render_rows`). The edits replay as
+    step 6 applies them, `remove`, `create` and `append`; the bytes must give
+    the sha256 its `journal_files` row recorded, which `commit_write` proved
+    when it committed. Raises `RenderRefused` where the entry is not an
+    operator entry, edits another path or in another way, or fails that
+    proof; `PsqlFailed` or `StoreUnusable` where the register cannot be
+    read."""
+    rows = _render_read_entries(store, seq - 1, seq)
+    row = rows[0]
+    if not row[2]:
+        raise RenderRefused(f"seq {seq} is a {row[1]!r} entry that journal.operator does not "
+                            f"flag, so no operator command pushes it (D24)")
+    _journal, edits, files = _register_render_rows(store, seq, seq - 1, "render")
+    unset = object()
+    lines = unset
+    for _s, _ord, op, at, _line_no, _old, new_text, _to in sorted(
+            (e for e in edits if e[0] == seq), key=lambda e: e[1]):
+        if at != path:
+            raise RenderRefused(f"seq {seq}'s entry edits {at!r}, and an operator entry edits "
+                                f"{path} alone (D24)")
+        if op == "remove":
+            lines = None
+        elif op == "create":
+            lines = []
+        elif op == "append" and isinstance(lines, list) and new_text is not None:
+            lines.append(new_text)
+        else:
+            raise RenderRefused(f"seq {seq}'s edit of {path}, {op!r}, is not one an operator "
+                                f"entry makes on a file it created")
+    recorded = [f for f in files if f[0] == seq and f[1] == path]
+    if lines is unset or len(recorded) != 1:
+        raise RenderRefused(f"seq {seq}'s entry holds no edit of {path}, or not one "
+                            f"journal_files row for it")
+    _s, _p, present, sha256, final_newline = recorded[0]
+    if not present:
+        if lines is not None:
+            raise RenderRefused(f"seq {seq}'s journal_files row records {path} absent, and its "
+                                f"edits leave it present")
+        return row, None
+    if lines is None:
+        raise RenderRefused(f"seq {seq}'s journal_files row records {path} present, and its "
+                            f"edits remove it")
+    data = register_image_bytes(lines, bool(final_newline))
+    if hashlib.sha256(data).hexdigest() != sha256:
+        raise RenderRefused(f"seq {seq}'s {path}, replayed from its edits, does not give the "
+                            f"sha256 its journal_files row recorded")
+    return row, data
+
+
+def _operator_blob(checkout: str, commit: str, path: str) -> str | None:
+    """The blob id `commit` holds at `path`, or None where it holds none.
+    Raises `RenderBuildFailed` where git runs out of time."""
+    run = render_git(checkout, "rev-parse", "--verify", "-q", f"{commit}:{path}",
+                     timeout=git_timeout_s())
+    if run.timed_out:
+        raise RenderBuildFailed(f"`git rev-parse` of {commit}:{path} timed out after "
+                                f"{git_timeout_s()} s")
+    value = run.out.strip()
+    return value if run.rc == 0 and SHA_RE.match(value) else None
+
+
+def operator_on_origin(checkout: str, base: str, tip: str, seq: int, path: str,
+                       blob: str | None) -> tuple[str, str]:
+    """S4'S READ-BACK OF AN OPERATOR ENTRY (ops:116) on origin's `tip`, as
+    fetched: `("present", <its commit>)`, `("absent", <why>)` or
+    `("unknown", <why>)`. `blob` is the blob id `path` holds after the entry,
+    or None where the entry removes it.
+
+    Form C on `<base>..<tip>`'s first-parent line (`render_register_seq`,
+    bounded by `LANES_GIT_TIMEOUT`): only the commits after the command's
+    base, where the entry's commit is built, so the walk is short.
+    - The first `Register-Seq` found is `seq`, at a commit `R`, and both `R`
+      and `tip` hold `path` as `blob`: present, at `R`.
+    - None in the range, or one below `seq`, with `tip` not holding `blob`
+      as the entry would leave it: absent.
+    - One above `seq`; `seq` at a commit that does not hold `blob`; `tip`
+      holding the entry's `blob` with no commit carrying `seq`; or a walk
+      that failed: unknown, since none of these is proof either way."""
+    try:
+        try:
+            found, at = render_register_seq(checkout, f"{base}..{tip}", frozenset(),
+                                            _render_deadline())
+        except StoreUnusable as exc:
+            if exc.kind != "no-seq" or "not a seq" in exc.detail:
+                return "unknown", f"form C on origin {RENDER_BRANCH} could not be read: {exc.detail}"
+            found, at = None, ""
+        if found is not None and found > seq:
+            return "unknown", (f"origin {RENDER_BRANCH} carries {REGISTER_SEQ_KEY} {found} at {at}, "
+                               f"past seq {seq}, this entry's")
+        if found == seq:
+            held, at_tip = _operator_blob(checkout, at, path), _operator_blob(checkout, tip, path)
+            if held == blob and at_tip == blob:
+                return "present", at
+            return "unknown", (f"{at} carries {REGISTER_SEQ_KEY} {seq}, and it or origin's tip "
+                               f"{tip} does not hold {path} as seq {seq} leaves it")
+        if blob is not None and _operator_blob(checkout, tip, path) == blob:
+            return "unknown", (f"origin's tip {tip} holds {path} as seq {seq} leaves it, and no "
+                               f"commit after {base} carries {REGISTER_SEQ_KEY} {seq}")
+    except RenderBuildFailed as exc:
+        return "unknown", str(exc)
+    return "absent", (f"no commit on origin {RENDER_BRANCH}'s first-parent line after {base}, to "
+                      f"its tip {tip}, carries {REGISTER_SEQ_KEY} {seq}")
+
+
+def operator_entry_push(checkout: str, cfg: dict, *, git_dir: str, seq: int, base: str,
+                        row: tuple, path: str, data: bytes | None, moved) -> OperatorPush:
+    """STEP 2 OF AN OPERATOR COMMAND'S PUSH, the git half (S5; D23; D24;
+    ops:116; section comment above): read origin back, then, where the
+    entry's commit is not there, build it on origin's tip and push it through
+    `render_push`, six attempts in all, as the renderer is bounded.
+
+    `base` is the commit origin's tip must descend from, and the start of the
+    read-back's walk; `row` and `data` are `operator_entry_read`'s; `moved`
+    is the caller's check of a tip, `moved(tip)`, which returns why the tip
+    has moved under the entry, naming it, or None. It is asked of the first
+    tip and of each tip a rejected push finds. The build and the push hold
+    the checkout's render lock (`render_lock_wait`), since T322's build reuses
+    its private index. Returns an `OperatorPush`; it raises nothing a git act
+    can cause."""
+    blob = None if data is None else render_blob_sha(data)
+    answered, descends, tip, why = render_readback(checkout, base)
+    if not answered:
+        return OperatorPush("unknown", f"origin {RENDER_BRANCH} could not be read back: {why}",
+                            tip=tip)
+    state, said = operator_on_origin(checkout, base, tip, seq, path, blob)
+    if state == "present":
+        return OperatorPush("found", f"origin {RENDER_BRANCH} already carries seq {seq}'s commit "
+                            f"{said}, read back", commit=said, tip=tip)
+    if state == "unknown":
+        return OperatorPush("unknown", said, tip=tip)
+    images = {seq: {} if data is None else {path: data}}
+    parent_set = {} if data is not None else {path: ("100644", "blob", "")}
+    attempts, lock = 0, None
+
+    def absent(detail: str) -> OperatorPush:
+        return OperatorPush("absent", detail, tip=tip, attempts=attempts)
+
+    try:
+        while True:
+            if not descends:
+                return absent(f"origin {RENDER_BRANCH}'s tip {tip} does not descend from {base} "
+                              f"(R3's abort); nothing was pushed to it")
+            why = moved(tip)
+            if why:
+                return absent(why)
+            if lock is None:
+                try:
+                    lock = render_lock_wait(git_dir, git_timeout_s() or 60)
+                except OSError as exc:
+                    return absent(f"the render lock in {git_dir} cannot be taken "
+                                  f"({exc.strerror or exc}); nothing was pushed")
+                if lock is None:
+                    return absent(f"another render held the render lock in {git_dir} past the "
+                                  f"wait; nothing was pushed")
+            attempts += 1
+            try:
+                built = render_build(checkout, git_dir, tip, parent_set, [seq], images,
+                                     {seq: row})
+            except (RenderBuildFailed, RenderRefused) as exc:
+                return absent(f"seq {seq}'s commit could not be built on {tip}: {exc}; nothing "
+                              f"was pushed")
+            try:
+                pushed = render_push(checkout, built, cfg.get("render_key") or "")
+            except Refusal as exc:
+                return absent(f"the push of {built} was refused before it was made: {exc}")
+            if pushed.outcome == "pushed":
+                state, said = operator_on_origin(checkout, base, pushed.origin_tip, seq, path,
+                                                 blob)
+                if state == "present" and said == built:
+                    return OperatorPush("pushed", pushed.detail, commit=built,
+                                        tip=pushed.origin_tip, attempts=attempts)
+                return OperatorPush("unknown", f"{pushed.detail}, and the read-back cannot "
+                                    f"confirm it: {said}", commit=built, tip=pushed.origin_tip,
+                                    attempts=attempts)
+            if pushed.outcome != "rejected":
+                tip = pushed.origin_tip or tip
+                if pushed.outcome == "failed":
+                    return absent(f"{pushed.detail}; the read-back finds origin {RENDER_BRANCH} at "
+                                  f"{tip}, without {built}")
+                return OperatorPush("unknown", pushed.detail, commit=built, tip=tip,
+                                    attempts=attempts)
+            # A LOST RACE: the read-back's fetch was the refetch, and origin
+            # does not carry `built`. Six attempts in all (ops:270).
+            tip = pushed.origin_tip
+            if attempts >= RENDER_PUSH_ATTEMPTS:
+                return absent(f"{RENDER_PUSH_ATTEMPTS} push attempts were rejected, the last "
+                              f"{pushed.detail}; origin {RENDER_BRANCH} is at {tip}, without "
+                              f"seq {seq}'s commit")
+            carried = render_git(checkout, "merge-base", "--is-ancestor", base, tip,
+                                 timeout=git_timeout_s())
+            if carried.rc not in (0, 1):
+                return absent(f"after a rejected push, whether origin's tip {tip} descends from "
+                              f"{base} could not be read ({carried.last_line()}); nothing more "
+                              f"was pushed")
+            descends = carried.rc == 0
+    finally:
+        if lock is not None:
+            render_lock_release(lock, checkout)
+
+
+def operator_record_marker(store, row: str, seq: int, commit: str, workstation: str) -> str:
+    """`record_marker` (§1.3.1; S4's read-back, recorded): one call, in one
+    SERIALIZABLE transaction, as one request under D9's `row` (`cutover`,
+    Y:3534, or `rollback`, Y:3529). It sets the marker `present` after a
+    cutover's entry, or `absent` after a rollback's, with `marker_commit`
+    the commit read back. Returns the state psql answered, or "" where its
+    answer does not read as one. Raises `PsqlFailed` where the call did not
+    answer or the database refused it (LR002: no unconfirmed operator entry
+    at `seq`)."""
+    out = store.request(["BEGIN ISOLATION LEVEL SERIALIZABLE",
+                         f"SELECT {store.schema}.record_marker({REGISTER_SCHEMA_VERSION}, "
+                         f"{int(seq)}, {_pg_quote(commit)}, {_pg_quote(workstation)})",
+                         "COMMIT"], row)
+    answer = [line.strip() for line in out.splitlines() if line.strip()]
+    return answer[0] if len(answer) == 1 and answer[0] in ("present", "absent") else ""
+
+
 # ================================================================ the acts
 
 def resolve_source(requested: str | None, root: str) -> str:
