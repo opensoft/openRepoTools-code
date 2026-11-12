@@ -6527,7 +6527,7 @@ pw_snap_read() {   # <the snapshot's stdout, in a file>
 #        #165 6813027223, batch g Q115; pending-record.md:225 and :286 at
 #        bd871f57);
 #   64   usage: never sent by this file, so an internal error, 2 (CO-5);
-#   69, and any other end: the register could not be read, 69.
+#   69, and any other end: the register gave this write no snapshot, 69.
 # On a refusal or a failed read, what `lanes-index` said on stderr is passed
 # on first, verbatim. Then the first snapshot settles the write's id and writes
 # its record (T412's `wr_id_settle`; Y:5192), and a later one must echo this
@@ -6608,7 +6608,7 @@ pw_snap_end() {   # <2 | 69> <why>
     pw_end 2 "attempt ${PW_K}'s snapshot: $2. Nothing was sent by this run"
   fi
   [ "$PW_FIRST_DONE" = 1 ] || pw_first_69 "$2"
-  pw_end 69 "the register could not be read at attempt ${PW_K}'s snapshot: $2. Nothing was written by this run. $(pw_rerun_line)"
+  pw_end 69 "the register gave this write no snapshot at attempt ${PW_K}'s snapshot: $2. Nothing was written by this run. $(pw_rerun_line)"
 }
 
 # ---- (d) A 69 AT THE FIRST SNAPSHOT (open point 38, taken under R26; spec:318
@@ -6634,9 +6634,9 @@ pw_snap_end() {   # <2 | 69> <why>
 # from the run's start, and waits for F3's lookup (Y:5017–5023).
 pw_first_69() {   # <why>
   if [ "$WR_PLAN" = env ] || [ "$WR_PLAN" = reuse ]; then
-    pw_end 69 "the register could not be read at this write's first snapshot: $1. This run sent nothing for write $WR_ID of register generation $WR_GEN, and that says nothing of whether an earlier run committed it. Run it again by its write id, which settles the write with or without its record and never writes it twice: $(wr_rerun_text "$WR_ID" "$WR_GEN")"
+    pw_end 69 "the register gave this write no snapshot at this write's first snapshot: $1. This run sent nothing for write $WR_ID of register generation $WR_GEN, and that says nothing of whether an earlier run committed it. Run it again by its write id, which settles the write with or without its record and never writes it twice: $(wr_rerun_text "$WR_ID" "$WR_GEN")"
   fi
-  pw_end 69 "the register could not be read at this write's first snapshot: $1. No write id was minted and no pending record of this run was written: nothing was sent. Run it again as it was given: $(pw_given_text)"
+  pw_end 69 "the register gave this write no snapshot at this write's first snapshot: $1. No write id was minted and no pending record of this run was written: nothing was sent. Run it again as it was given: $(pw_given_text)"
 }
 
 # THE RERUN A 69 OR A 75 PRINTS (spec:318; open point 38): the write's id with
