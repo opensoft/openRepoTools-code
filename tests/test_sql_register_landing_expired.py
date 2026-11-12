@@ -543,9 +543,10 @@ def test_the_landing_expired_form_composes_its_line_from_the_open_landing(tmp_pa
     snapshot's UTC (D13); `for lane <holder>`; then the PR, the repository's
     token and the `LANDING`'s UTC copied byte for byte from the holder's
     newest open `LANDING` at `n`, also where `--repo` is a `repos.tsv` alias
-    or the `LANDING`'s lane is an old name or in another case; and Brett's
-    quote last. A writer who is also the holder is accepted. One `register
-    commit` is sent, and the line is the only change at `n+1`."""
+    or the `LANDING`'s lane is an old name or in another case; and the word
+    clause last, where and when Brett gave his word, then his quote (Y:5109).
+    A writer who is also the holder is accepted. One `register commit` is
+    sent, and the line is the only change at `n+1`."""
     lines, argv, writer, holder, token, landing_utc = COMPOSE[case]
     bench = Bench(tmp_path, lines)
     proc = bench.run(argv, lane=writer)
@@ -564,8 +565,13 @@ def test_the_landing_expired_form_composes_its_line_from_the_open_landing(tmp_pa
     assert -1 not in places, f"the line lacks one of {parts}: {line!r}"
     word_at = line.find(WORD)
     assert word_at > max(places), f"Brett's quote is not after the copied fields: {line!r}"
-    assert line.find(WHERE, word_at) > 0 and line.find(WORD_UTC, word_at) > 0, (
-        f"the line lacks where or when Brett gave his word: {line!r}")
+    # Where and when Brett gave his word sit between the copied fields and the
+    # quote, which is last (Y:5109, `lanes-edit.sh:3375`; lane 4's TRIAGE-W13c).
+    where_at, when_at = line.find(WHERE, max(places)), line.find(WORD_UTC, max(places))
+    assert max(places) < where_at < when_at < word_at, (
+        f"the line lacks where or when Brett gave his word before his quote: {line!r}")
+    assert line.endswith(f"; on Brett's word ({WHERE}, {WORD_UTC}): \"{WORD}\""), (
+        f"the line does not end with the form's word clause (Y:5109): {line!r}")
     for path, text in bench.files.items():
         if RENDER_SET.match(path) and path != "lanes/LANES.md":
             assert bench.register(bench.head(), path) == text, f"{path} changed"
@@ -580,8 +586,11 @@ WORD_REFUSALS = {
     "word-utc-missing": (dict(argv=form(omit=("--word-utc",))), "--word-utc"),
     "word-utc-empty": (dict(argv=form(empty=("--word-utc",))), "--word-utc"),
     "word-utc-not-a-utc": (dict(argv=form(word_utc="yesterday at noon")), "--word-utc"),
-    "newline-in-the-word": (dict(argv=form(word=WORD + "\nand more")), "--word"),
-    "cr-in-the-where": (dict(argv=form(where=WHERE + "\r")), "--word-where"),
+    # A newline or a CR in any argument is refused before any is parsed, so
+    # the refusal names the break, not the flag (Y:5114; TP (b)); as
+    # `[newline-in-the-holder]`.
+    "newline-in-the-word": (dict(argv=form(word=WORD + "\nand more")), "newline"),
+    "cr-in-the-where": (dict(argv=form(where=WHERE + "\r")), "newline"),
     "newline-in-the-holder": (dict(argv=form(holder=HOLDER + "\n")), "newline"),
     "lanes-lane-unset": (dict(argv=form(), drop=("LANES_LANE",)), "LANES_LANE"),
     "lanes-session-unset": (dict(argv=form(), drop=("LANES_SESSION",)), "LANES_SESSION"),
@@ -934,7 +943,9 @@ def test_off_primary_rule6_awk_is_the_pin_and_the_flag_cannot_be_inherited(tmp_p
     an unconfigured workstation and after F8's fall to files mode, lists the
     holder's `LANDING`, marked STALE, as today; a caller's environment
     carrying `RULE6_PRIMARY=1`, `RULE6_AWK` or `RULE6_EXPIRED_AWK` changes
-    nothing; and `RULE6_AWK`'s text is the pin's. The mode query was asked."""
+    nothing; and `RULE6_AWK`'s text is the pin's. The mode query was asked
+    where a configuration exists, and not on the unconfigured workstation,
+    which starts no process (D3)."""
     bench = Bench(tmp_path, [landing(minutes=45), expired()],
                   mode="fall" if mode == "fall-to-files" else mode)
     plain = bench.who()
@@ -948,9 +959,14 @@ def test_off_primary_rule6_awk_is_the_pin_and_the_flag_cannot_be_inherited(tmp_p
         f"[{mode}] an inherited RULE6_* changed who --landing: {flagged.stdout!r}")
     text = bench.lanes_edit.read_text(encoding="utf-8")
     assert _rule6_awk_sha(text) == RULE6_AWK_PIN, f"[{mode}] RULE6_AWK is not the pin"
-    assert bench.asked_the_mode(), (
-        f"[{mode}] the mode query was never asked (lane 5's T504, reg_open; T425's one "
-        f"line sets rule6_primary_on from its answer): {bench.calls()}")
+    # D3 (Y:368-371): `lanes-index mode` is asked only where a configuration
+    # exists, so the unconfigured workstation starts no process and asks
+    # nothing (T504's `asks_lanes_index_mode_only_where_a_configuration_exists`).
+    asked = mode != "unconfigured"
+    said = "was never asked" if asked else "was asked with no configuration, against D3"
+    assert bench.asked_the_mode() == asked, (
+        f"[{mode}] the mode query {said} (lane 5's T504, reg_open; T425's one line sets "
+        f"rule6_primary_on from its answer): {bench.calls()}")
 
 
 def _rule6_awk_sha(text: str) -> str:
@@ -1258,42 +1274,120 @@ def primary_program_rows(text: str, aliases: dict) -> set:
     return found
 
 
+#: THE FORM'S WORD CLAUSE, the line's last part as `lanes-edit.sh:3375` composes
+#: it (Y:5109): where and when Brett gave his word, then his quote.
+WORD_CLAUSE_RE = re.compile(r"; on Brett's word \([^()]+, [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:"
+                            r"[0-9]{2}:[0-9]{2}Z\): \"[^\"]+\"$")
+
+
+def composed(writer: str = OTHER, minutes: float = 10, holder: str = HOLDER, pr: int = PR,
+             repo: str = KEY, landing_minutes: float = 45, clause: bool = True) -> str:
+    """A `LANDING EXPIRED` line in the form's own shape (Y:5109;
+    `lanes-edit.sh:3375` at `c8acf67c`), as a re-import after a rollback
+    holds it or as one typed by hand in files mode copies it: the writer, the
+    session, its UTC `minutes` before the snapshot's clock, `for lane
+    <holder>:`, the PR, the repository, the `LANDING`'s UTC `landing_minutes`
+    before it, the minutes past Rule 6's 30, and the word clause last.
+    `clause=False` leaves the word clause off."""
+    sid = SESSIONS.get(writer, SID_O)
+    past = max(0, int(round(landing_minutes - minutes - 30)))
+    text = (f"LANDING EXPIRED {EM} lane {writer}, session {sid}@{WS}, {ago(minutes)}, "
+            f"for lane {holder}: PR #{pr} into {repo} main, its LANDING of {ago(landing_minutes)}, "
+            f"{past} min past Rule 6's 30")
+    if clause:
+        text += f"; on Brett's word ({WHERE}, {WORD_UTC}): \"{WORD}\""
+    return text
+
+
+def _epoch_of(utc: str):
+    """`utc` as epoch seconds, or None where the line carries no UTC."""
+    return calendar.timegm(time.strptime(utc, "%Y-%m-%dT%H:%M:%SZ")) if utc else None
+
+
+def f13_findings(rows: list) -> dict:
+    """LANE 2'S OWN CHECK of each imported `LANDING EXPIRED` (Y:5141, AT-F13
+    (j)): the import does not run F13's check, so a line typed by hand in
+    files mode would release a `LANDING` that F13 never judged, and both
+    readers would agree on it. A line is a finding unless it meets F13's
+    condition by its own UTC and its `LANDING`'s, matched as lane 1's check in
+    the commit matches them (`lanes-index:7690-7715` at `c8acf67c`): the
+    holder's newest `LANDING` before it for that PR and `repo_key`, the
+    holder compared case-blind; no close of that `LANDING` between; and more
+    than 30 minutes apart; and unless it ends with the form's word clause
+    (Y:5109). `rows` are `line_rows`' in file order; the answer is {the line:
+    what it fails}."""
+    found = {}
+    for k, row in enumerate(rows):
+        if row["kind"] != "LANDING EXPIRED":
+            continue
+        holder, why = (row["for_lane"] or "").lower(), []
+        takes = [j for j in range(k) if rows[j]["slot_role"] == "take"
+                 and rows[j]["slot_kind"] == "landing" and (rows[j]["lane"] or "").lower() == holder
+                 and rows[j]["pr"] == row["pr"] and rows[j]["repo_key"] == row["repo_key"]]
+        if not takes:
+            why.append("no LANDING of the holder for that PR and repo_key before it")
+        else:
+            take = rows[takes[-1]]
+            if any(c["slot_role"] == "close" and c["slot_kind"] == "landing"
+                   and (c["for_lane"] or c["lane"] or "").lower() == holder
+                   and c["pr"] == row["pr"] and c["repo_key"] == row["repo_key"]
+                   for c in rows[takes[-1] + 1:k]):
+                why.append("a close of its LANDING between")
+            own, its = _epoch_of(row["utc"]), _epoch_of(take["utc"])
+            if own is None or its is None or own - its <= 30 * 60:
+                why.append("not more than 30 minutes after its LANDING")
+        if not WORD_CLAUSE_RE.search(row["raw"]):
+            why.append("no word clause")
+        if why:
+            found[row["raw"]] = why
+    return found
+
+
 HISTORIES = {
-    # history: (its lines, whether the two must agree)
+    # history: (its lines, whether the two readers agree, and what lane 2's
+    # own check of F13's condition finds in its `LANDING EXPIRED`, or None)
     "today": ([landing(minutes=45), landing(lane=OTHER, minutes=50, pr=11), landed(lane=OTHER,
                                                                                    minutes=48,
-                                                                                   pr=11)], True),
-    "re-import-after-a-rollback": ([landing(minutes=45), expired(minutes=10)], True),
-    "typed-in-files-mode-meeting-f13": ([landing(minutes=45), expired(minutes=10)], True),
-    "typed-10-minutes-after-its-landing": ([landing(minutes=45), expired(minutes=35)], False),
-    "no-word-clause": ([landing(minutes=45), expired(minutes=10, clause=False)], False),
-    "naming-another-pr": ([landing(minutes=45), expired(minutes=10, pr=OTHER_PR)], False),
-    "holder-in-another-case": ([landing(minutes=45), expired(minutes=10, holder=HOLDER.lower())],
-                               False),
+                                                                                   pr=11)],
+              True, None),
+    "re-import-after-a-rollback": ([landing(minutes=45), composed(minutes=10)], True, None),
+    "typed-in-files-mode-meeting-f13": ([landing(minutes=45), composed(minutes=10)], True, None),
+    "typed-10-minutes-after-its-landing": ([landing(minutes=45), composed(minutes=35)], True,
+                                           "not more than 30 minutes"),
+    "no-word-clause": ([landing(minutes=45), composed(minutes=10, clause=False)], True,
+                       "no word clause"),
+    "naming-another-pr": ([landing(minutes=45), composed(minutes=10, pr=OTHER_PR)], True,
+                          "no LANDING"),
+    "holder-in-another-case": ([landing(minutes=45), composed(minutes=10, holder=HOLDER.lower())],
+                               False, None),
 }
 
 
 @pytest.mark.parametrize("history", list(HISTORIES))
 def test_rule6_with_the_expired_branch_agrees_with_main_slots_on_imported_history(registers,
                                                                                   history):
-    """(j), RE: D18's agreement on imported history. The primary program
-    (`RULE6_AWK` with `RULE6_EXPIRED_AWK`) and `main_slots` show no
-    difference on today's history (no `LANDING EXPIRED`), on a re-import that
-    holds a primary-written `LANDING EXPIRED`, and on one typed in files mode
-    that meets F13's condition by its own UTC and its `LANDING`'s and carries
-    the word clause. Each of the four others is a finding, and the comparison
+    """(j), RE: D18's agreement on imported history (Y:5141; lane 3's ruling,
+    #165 6833678789). The primary program (`RULE6_AWK` with
+    `RULE6_EXPIRED_AWK`) and `main_slots` show no difference, and lane 2's
+    own check of F13's condition (`f13_findings`) names nothing, on today's
+    history (no `LANDING EXPIRED`), on a re-import that holds a
+    primary-written `LANDING EXPIRED`, and on one typed in files mode that
+    meets F13's condition by its own UTC and its `LANDING`'s and carries the
+    form's word clause. Each of the four others is a finding, and the case
     shows it: one typed 10 minutes after its `LANDING`, one with no word
-    clause, one naming another PR, and one whose holder is in another case,
-    which `main_slots` closes and the awk does not."""
-    lines, agree = HISTORIES[history]
+    clause, and one naming another PR, each by the test's own check of F13's
+    condition, which names the line, since both readers agree on a typed
+    line; and one whose holder is in another case, by the readers'
+    difference, since `main_slots` closes it and the awk does not."""
+    lines, agree, finding = HISTORIES[history]
     reg = registers("tmpl")
     clock = reg.clock()
     shifted = [_shift(text, clock) for text in lines]
     files = register_files(shifted)
     body = files["lanes/LANES.md"]
     first = body.split("\n").index(shifted[0]) + 1
-    reg.import_files({p: t for p, t in files.items() if RENDER_SET.match(p)},
-                     line_rows(shifted, clock, {ALIAS: KEY, KEY.lower(): KEY}, first_line=first))
+    rows = line_rows(shifted, clock, {ALIAS: KEY, KEY.lower(): KEY}, first_line=first)
+    reg.import_files({p: t for p, t in files.items() if RENDER_SET.match(p)}, rows)
     reg.to_primary()
     program = primary_program_rows(body, {ALIAS: KEY, KEY.lower(): KEY})
     slots = reg.open_landings()
@@ -1303,6 +1397,16 @@ def test_rule6_with_the_expired_branch_agrees_with_main_slots_on_imported_histor
         assert program != slots, (
             f"[{history}] the awk and main_slots agree on a history that is a finding: "
             f"{program}")
+    findings = f13_findings(rows)
+    if finding is None:
+        assert findings == {}, (
+            f"[{history}] lane 2's check of F13's condition names a line it should not: {findings}")
+    else:
+        assert list(findings) == [shifted[-1]], (
+            f"[{history}] lane 2's check of F13's condition does not name the typed line, and "
+            f"only it: {findings}")
+        assert any(finding in why for why in findings[shifted[-1]]), (
+            f"[{history}] the check does not find {finding!r}: {findings}")
 
 
 def test_a_landed_between_the_forms_snapshot_and_commit_leaves_the_retry_nothing_to_release(
@@ -1370,8 +1474,10 @@ def test_a_landed_between_the_forms_snapshot_and_commit_leaves_the_retry_nothing
     assert proc.returncode == 2, f"the retry exited {proc.returncode}, not 2: {err[-800:]}"
     assert "no open" in err and "LANDING" in err, f"stderr does not say no open LANDING: {err!r}"
     assert reg.head() == released["seq"], "something was written after lane B's LANDED"
-    kinds = reg.rows("SELECT kind FROM register_lines WHERE path = 'lanes/LANES.md' "
-                     f"AND line_no > {start} ORDER BY line_no")
+    # `register_lines` is keyed by `line_id`, and the path and the line's place
+    # are `doc_lines`' (Y:1254; `lanes-index:7103`).
+    kinds = reg.rows("SELECT r.kind FROM register_lines r JOIN doc_lines d USING (line_id) "
+                     f"WHERE d.path = 'lanes/LANES.md' AND d.line_no > {start} ORDER BY d.line_no")
     assert [r["kind"] for r in kinds] == ["LANDING", "LANDED"], kinds
 
 
