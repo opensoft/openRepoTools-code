@@ -8,7 +8,7 @@ if [[ -n ${ORT_SONAR_SHELL_HITS:-} && -n ${ORT_SONAR_SHELL_HASHES:-} ]]; then
     local _ort_hash
     [[ -f "$_ort_path" && "$_ort_line" -gt 0 ]] || return 0
     if [[ ! ${_ort_sonar_hashes["$_ort_path"]+known} ]]; then
-      _ort_hash="$(sha256sum -- "$_ort_path" 2>/dev/null)" || return 0
+      _ort_hash="$(sha256sum < "$_ort_path" 2>/dev/null)" || return 0
       _ort_hash="${_ort_hash:0:64}"
       case ":$ORT_SONAR_SHELL_HASHES:" in
         *:"$_ort_hash":*) _ort_sonar_hashes["$_ort_path"]="$_ort_hash" ;;

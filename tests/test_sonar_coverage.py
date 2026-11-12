@@ -71,15 +71,17 @@ def test_shell_hits_require_known_hash_and_exact_baseline_bytes(collector, tmp_p
         collector.shell_lines(out, manifest)
 
 
-def test_bash_collector_credits_exact_copy_without_recording_arguments(tmp_path):
+@pytest.mark.parametrize("spelling", ["copied", "copy with spaces", "control", "copy$(touch OWNED)"])
+def test_bash_collector_credits_exact_copy_without_recording_arguments(tmp_path, spelling):
     manifest = source(tmp_path)
-    copied = tmp_path / "copied"
+    name = "copy" + chr(92) + chr(10) + "name" if spelling == "control" else spelling
+    copied = tmp_path / name
     copied.write_bytes((tmp_path / "command").read_bytes())
     env = dict(os.environ, BASH_ENV=str(HERE / ".github/ci/sonar_coverage/bash-env.sh"),
                ORT_SONAR_SHELL_HASHES=manifest["files"][0]["sha256"],
                ORT_SONAR_SHELL_HITS=str(tmp_path / "hits"))
     result = subprocess.run(["bash", str(copied), "private-argument"],
-                            env=env, capture_output=True, text=True, check=True)
+                            env=env, cwd=tmp_path, capture_output=True, text=True, check=True)
     assert result.stdout == "hello\n"
     rows = "".join(path.read_text() for path in tmp_path.glob("hits*"))
     assert manifest["files"][0]["sha256"] + "\t2\n" in rows
@@ -88,5 +90,6 @@ def test_bash_collector_credits_exact_copy_without_recording_arguments(tmp_path)
     for path in tmp_path.glob("hits*"):
         path.unlink()
     copied.write_text("#!/usr/bin/env bash\necho changed\n")
-    subprocess.run(["bash", str(copied)], env=env, capture_output=True, check=True)
+    subprocess.run(["bash", str(copied)], env=env, cwd=tmp_path, capture_output=True, check=True)
     assert not list(tmp_path.glob("hits*"))
+    assert not (tmp_path / "OWNED").exists()
