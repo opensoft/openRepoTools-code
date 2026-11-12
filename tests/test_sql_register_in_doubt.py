@@ -1300,7 +1300,10 @@ def test_a_rerun_that_finds_its_write_committed_runs_the_verbs_after_commit_tail
     extra = {"LANES_LANE_STATE_ROOT": str(root)}
     again, _, _ = tail_rerun(e, LA, ["rename-lane", LA, new, "T245", "--no-github"], where, extra)
     assert (root / new).is_dir() and not (root / LA).exists()
-    handoffs = list(e.root.glob(f"co-*/handoffs/{new}.md"))
+    # The move and stamp are made in the lane's own register checkout, `PW_C`,
+    # `<W>-lanes/<lane>` (`8ba10b4e:lanes-edit.sh:25251-25256`), which the
+    # estate makes at `co-<n>-lanes/<lane>`, never in W (T245l; PM33A-TRIAGE L2).
+    handoffs = list(e.root.glob(f"co-*-lanes/*/handoffs/{new}.md"))
     assert handoffs and all(h.read_text(encoding="utf-8").count(f"RENAMED from {LA}") <= 1 for h in handoffs)
     assert comments(where) == []
 
@@ -1468,7 +1471,7 @@ def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_n
             else ["rename-lane", LA, "repoA-9", "T245", "--no-github"])
     _, write_id = killed(e, LA, argv, first=[where], extra=extra)
     seq = e.journal_after()[-1]["seq"]
-    handoffs = list(e.root.glob(f"co-*/handoffs/{LA}.md"))
+    handoffs = list(e.root.glob(f"co-*-lanes/*/handoffs/{LA}.md"))   # the lane's own checkouts (T245l)
     if case == "rename-lane-stops":
         for h in handoffs:
             h.unlink()
