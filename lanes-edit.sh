@@ -612,6 +612,26 @@
 #      a rerun's act included, and the move is then owed. And a rerun's
 #      child whose snapshot gives no seq, or one where the row's handoff
 #      cell has a cache or bytecode part in either path (`rl_rerun`).
+#      AND FEATURE 007'S D10 ON PRIMARY (T420; FR-026; R16; Y:5820), outside
+#      the attempt loop: `commit` over a hand edit of the register (its carry
+#      form) or of any other file the register renders, refused before S3
+#      with nothing written (`commit_hand_edit_refuse`; spec:171–173); and
+#      `commit`'s publish act over a queued commit that changes a path under
+#      the register's directory other than `lanes/repos.tsv` and
+#      `lanes/log/README.md` (Brett's two-file allow-list), a divergence; one
+#      that writes either of those two beside any other path; one that is
+#      neither a handoff write nor a write of those two alone; or a path with
+#      a `.`, `..` or `.git` component, refused before any push, and the
+#      commits kept on HEAD (`cp_publish_fence`); and,
+#      at `commit_publish`'s push, the branch-wide push: a commit it would
+#      send that changes a path outside `handoffs/`, or, other than the
+#      write's own commit, one under it that is not an added or modified
+#      regular file, or is bytecode or a tool cache; in the write's own
+#      commit, bytecode or a tool cache other than as a deletion; a path with
+#      a `.`, `..` or `.git` component; a merge or
+#      root commit among them, a range it cannot read, or no origin branch,
+#      refused before any push is made, the write's commit kept
+#      on HEAD (`cp_primary_push_check`).
 #  64  usage — a caller's bad arguments to one of the reads Amendment 11 added
 #      (`window-lane`, `lane-dir`, `lane-profile`, `last-session`, `forks`,
 #      `duplicate-holder` (issue #39), `workstation`, `fetch-age`, `lanes`,
@@ -663,10 +683,12 @@
 #      exists, before any routing, clone, fetch or lock, and exit 69 on two
 #      answers: 78, `lanes-index`'s refusal of `mode=primary` while the
 #      renderer's git half is not installed, whose text they repeat (agreement
-#      test 14); and `primary` itself for `commit`, whose primary form is
-#      T420's, and for a form that writes nothing, a dry run, which has no
-#      primary path yet; every other write runs the primary branch (T415).
-#      Never files mode instead.
+#      test 14); and `primary` itself for a form that writes nothing, a dry
+#      run, which has no primary path yet (`pw_checkout`); every other
+#      write runs the primary branch (T415), but `commit`, which T420
+#      exempts from it and which never exits 69 on `primary` (2 over a hand
+#      edit of any rendered file, its carry form included, and its publish
+#      act outside the loop, R16). Never files mode instead.
 #      Every other failure of the question — a configuration `lanes-index`
 #      refuses, a `lanes-index` too old to know `mode`, none to run, a crash,
 #      no answer within 2 s — runs the verb in files mode with one warning,
@@ -3714,6 +3736,344 @@ BRT_EOF
   printf 'Nothing was staged or committed. Unstage or delete those paths, then re-run.'
 }
 
+# FEATURE 007, T420 — "ON PRIMARY, OUTSIDE THE FLAG" (D10; FR-026; R16): T409's
+# mode question answered `primary` (`REG_MODE`, carried across the routing's
+# and S4's `exec`), and this process is not an attempt's child under T413's
+# honoured flag, whose writes stop at T414's seam. Where it is true, D10's
+# refusals apply: `commit` over a hand edit of a rendered file, its carry form
+# included (the dispatcher's `commit` arm), the publish act's fence narrowed
+# to `handoffs/` and Brett's two git files (`cp_publish_fence`), and the
+# backstop at `commit_publish`'s push, narrowed to `handoffs/`. 0 true, 1 not.
+cp_on_primary() {
+  [ "$REG_MODE" = primary ] && [ -z "$REG_SCRATCH" ]
+}
+# `commit` OVER A HAND EDIT ON PRIMARY (T420; D10; FR-026; R16; Y:2459–2464;
+# F16, Y:5820: "`lanes-edit.sh commit` on primary | refused with 2 (D10)").
+# SR:171–173 GOVERNS (lane openRepoTools-3, #165 6770820384, T420 S2): its
+# scenario "A hand edit through `commit`" says that `commit` over a hand edit
+# of a file under `lanes/` refuses and nothing is written, and FR-026's "the
+# carry form" only restates it. So the files read are the register
+# (`$LANES_PATH`, the hand edit `commit`'s carry form exists to carry) and
+# every other file the register renders, the render set T415's
+# `pw_hand_edit_refuse` reads (`cp_seam_render_path`), each differing from
+# HEAD in the checkout this write goes through, staged or not. On primary
+# none is ever committed, carried or pushed. `lanes/repos.tsv` and
+# `lanes/log/README.md` are not rendered (Y:5049), and neither are
+# `lanes/STORE` and the handoffs, so a pending edit of those is not refused
+# here. Refused with 2 under the lock, before S3, so nothing is fetched, set
+# aside or written, and each edit stays where it is; `die`'s exit releases the
+# lock. The recovery is the one that works on primary, as
+# `pw_hand_edit_refuse` gives it, with the checkout and each path quoted for a
+# shell: read the edit, restore the file, make the change through its verb.
+# Its restore is `git restore --source=HEAD --staged --worktree`, not
+# `checkout HEAD --`, which fails for a staged new file that HEAD lacks
+# (REV420b N3). The restore deletes such a file, so reading it stays first.
+# THE LIST IS SPLIT BY PARAMETER EXPANSION, at each newline, never through a
+# here-document, as T415's `pw_hand_edit_refuse` and T414's seam split theirs
+# (review REV-W9a M1): bash 3.2 writes a here-document to a temp file, and
+# where none can be made, as in a full /tmp, the loop never ran, so `commit`
+# went on as though no hand edit were pending. Now a full /tmp changes
+# nothing here: the edit is refused as above (lane 4's MERGES-B2 report).
+commit_hand_edit_refuse() {
+  local ch_hits="" ch_p="" ch_l="" ch_q="" ch_c=""
+  ch_hits="$(cs_pending_of "$LANES_PATH" lanes/LANES.md lanes/aliases.tsv lanes/log lanes/archive)"
+  while [ -n "$ch_hits" ]; do
+    ch_p="${ch_hits%%"$WR_NL"*}"
+    case "$ch_hits" in
+      *"$WR_NL"*) ch_hits="${ch_hits#*"$WR_NL"}" ;;
+      *) ch_hits="" ;;
+    esac
+    [ -n "$ch_p" ] || continue
+    [ "$ch_p" = "$LANES_PATH" ] || cp_seam_render_path "$ch_p" || continue
+    ch_l="$ch_l $ch_p"
+    ch_q="$ch_q $(printf '%q' "$ch_p")"
+  done
+  [ -n "$ch_l" ] || return 0
+  ch_c="$(printf '%q' "$LANES_REPO")"
+  note "RECOVERY, in $LANES_REPO:"
+  note "  read it:      git -C $ch_c diff HEAD --$ch_q"
+  note "  restore it:   git -C $ch_c restore --source=HEAD --staged --worktree --$ch_q"
+  note "  then make the change through its verb (set-row-state, replace-in-row, append-line, log …), which writes it through the register"
+  die "refusing \`commit\` on primary (feature 007): $LANES_REPO holds an uncommitted edit of$ch_l, a hand edit of what the register renders, and on primary the register is the database and those files are its rendering, so a hand edit of them is never committed, carried or pushed (D10; FR-026; spec:171–173; R16). On primary \`commit\` runs only as the publish act, for queued handoff commits and a person's commits of lanes/repos.tsv or lanes/log/README.md, with every rendered file clean. Nothing was written." 2
+}
+# THE BACKSTOP AT `commit_publish`'S PUSH ON PRIMARY (T420; D10's branch-wide
+# push; spec:183–185; FR-026; R16 (d)). At 1b no write but the publish act can
+# push a queued commit (S3's step 5 refuses every other mode over one), so this
+# push sends the write's own commit; and on primary verbs stop at T414's seam
+# and `commit` over a hand edit is refused, so the one commit still meant to
+# reach it is `rename-lane`'s handoff move (T422), made outside the flag with
+# staged paths under `handoffs/`. Step 5 runs before the write's commit, so a
+# commit made on top after it meets the tip pinned here, which `write-handoff`
+# reaches once T504 gives it its mode (lane openRepoTools-3, #165 6770820384,
+# T420 S1). This holds that as a check, not a count: the commits the push
+# would send, those on the branch that origin's tip lacks (`rev-list
+# <origin>..<tip>`, each read against its parent with `--no-renames`, so a move
+# out of `lanes/` shows the path it leaves), change only paths under
+# `handoffs/`; or the push refuses with 2 before it is made. IT STAYS
+# HANDOFFS-ONLY (tasks:1238; lane openRepoTools-3, #165 6770820384): Brett's
+# two-file allow-list names the publish act, not this push, and SR:169's
+# branch-wide push refusal stands unamended, so `lanes/repos.tsv` and
+# `lanes/log/README.md` refuse here as every path outside `handoffs/` does. A
+# commit of those two alone caught in this push's window refuses 2 here, and
+# `commit`'s publish act sends it afterwards, each commit then allowed on its
+# own; BUT NOT BESIDE A MOVE (REV420b S2): where this write's own commit holds
+# a D, a T, a symlink or a gitlink under `handoffs/` (T422's move, `own` in the
+# read), the publish act refuses that commit with 2, so the refusal does not
+# offer it and gives S6.3's archive instead. SO TOO WHERE THIS WRITE'S OWN
+# COMMIT HOLDS A BYTECODE OR TOOL-CACHE PATH OTHER THAN AS A DELETION (`byte`
+# in the read), an added, a modified and a type-changed one alike: the act's
+# fence refuses each as this backstop does, so it passes in no act (#162),
+# and the refusal gives the archive with no offer (lane openRepoTools-3, #165
+# 6780753157, Q31 and Q45; #165 6808141050, batch c Q51). Every other path
+# this backstop refuses keeps the offer as before, `lanes/repos.tsv` and an
+# ordinary bad path included.
+# Whether such a move can be
+# published at all is put to lane openRepoTools-3 (REV420b S2), and nothing
+# more is built for it here. Under `handoffs/`, THE WRITE'S OWN COMMIT (`$1`)
+# passes any change, a deletion, a type change, a symlink or a gitlink
+# included, since T422's move deletes there; but a bytecode or tool-cache
+# path there passes only as a deletion, #162's cleanup, which is all
+# `bytecode_in_pathspec` lets through, so this backstop never passes what #162
+# refuses (lane openRepoTools-3, #165 6778890211, T420 new 1). EVERY OTHER
+# COMMIT keeps the fence's rule, each path an added or modified regular file
+# that is not bytecode or a tool cache (REV420 N1; REV420b N2). The read is
+# `-z`, and a
+# `.`, `..` or `.git` path component refuses in any commit (`cp_primary_read`;
+# REV420 N2, N5). A merge or root commit among them, a read that fails, a
+# commit `diff-tree` skips, or no origin branch to read
+# refuses too, since each proves nothing. The write's commit is then local and
+# kept on HEAD, and named, with the publish act where it can send the queue,
+# and S6.3's archive. CP_PRIMARY_TIP is the tip read here, and the push sends
+# exactly it, so a commit another writer makes on top between the read and
+# the push stays local, unread and unsent.
+CP_PRIMARY_TIP=""
+cp_primary_push_check() {   # <this write's commit> <its subject>
+  local pb_trk="refs/remotes/origin/$LANES_BRANCH" pb_br="refs/heads/$LANES_BRANCH" \
+        pb_base="" pb_tip="" pb_revs="" pb_odd="" pb_pairs="" pb_n=0 pb_bad="" pb_rc=0 \
+        pb_rows="" pb_own="" pb_byte="" pb_why="" pb_until="" pb_lane="${LANES_LANE:-${CS_LANE:-}}"
+  CP_PRIMARY_TIP=""
+  if [ "$CS_NO_ORIGIN_BRANCH" = 1 ]; then
+    die "refusing to push on primary (feature 007): origin has no branch $LANES_BRANCH, so this push would publish the whole branch, and on primary this push sends only handoff changes onto origin's tip (D10; FR-026; R16 (d)). Nothing was pushed; this write's commit is local and kept on HEAD: $1 $2" 2
+  fi
+  pb_base="$(git --no-replace-objects -C "$LANES_REPO" rev-parse -q --verify "$pb_trk^{commit}")" || pb_rc=$?
+  pb_tip="$(git --no-replace-objects -C "$LANES_REPO" rev-parse -q --verify "$pb_br^{commit}")" || pb_rc=$?
+  if [ "$pb_rc" = 0 ] && [ -n "$pb_base" ] && [ -n "$pb_tip" ]; then
+    pb_revs="$(git --no-replace-objects -C "$LANES_REPO" rev-list --parents "$pb_base..$pb_tip")" || pb_rc=$?
+  else
+    pb_rc=1
+  fi
+  pb_odd="$(printf '%s\n' "$pb_revs" | awk 'NF > 0 && NF != 2 { printf "  %s %s\n", substr($1, 1, 12), (NF > 2 ? "is a merge commit" : "is a root commit") }')" || pb_rc=$?
+  pb_pairs="$(printf '%s\n' "$pb_revs" | awk 'NF == 2')" || pb_rc=$?
+  # `diff-tree --stdin` SKIPS A COMMIT IT CANNOT READ and still exits 0, so
+  # every commit handed to it must come back as a header, as in the fence.
+  if [ -n "$pb_pairs" ]; then
+    pb_n="$(printf '%s\n' "$pb_pairs" | awk 'END { print NR }')" || pb_rc=$?
+    pb_rows="$(printf '%s\n' "$pb_pairs" | cp_primary_read push "$pb_n" "$1")" || pb_rc=$?
+    pb_bad="$(printf '%s\n' "$pb_rows" | sed -n -e 's/^bad//p')" || pb_rc=$?
+    pb_own="$(printf '%s\n' "$pb_rows" | sed -n -e 's/^own//p')" || pb_rc=$?
+    pb_byte="$(printf '%s\n' "$pb_rows" | sed -n -e 's/^byte//p')" || pb_rc=$?
+  fi
+  [ "$pb_rc" = 0 ] ||
+    die "refusing to push on primary (feature 007): git could not read, or this helper could not classify, the commits on $pb_br that refs/remotes/origin/$LANES_BRANCH lacks, so whether each changes only paths under handoffs/ is unknown (D10; FR-026; R16 (d)). Nothing was pushed; this write's commit is local and kept on HEAD: $1 $2" 2
+  if [ -n "$pb_odd$pb_bad$pb_byte" ]; then
+    note "of the commits this push would send to origin/$LANES_BRANCH, these are not changes it sends on primary (a merge or root commit; a path outside handoffs/, lanes/repos.tsv and lanes/log/README.md included; a path with a \`.\`, \`..\` or \`.git\` component; or, in a commit other than this write's own, a change under handoffs/ that is not an added or modified regular file, or is bytecode or a tool cache; or, in this write's own commit, bytecode or a tool cache other than as a deletion):"
+    [ -z "$pb_odd" ] || printf '%s\n' "$pb_odd" >&2
+    [ -z "$pb_bad" ] || printf '%s\n' "$pb_bad" >&2
+    [ -z "$pb_byte" ] || printf '%s\n' "$pb_byte" >&2
+    note "look at them: git -C $LANES_REPO log --stat refs/remotes/origin/$LANES_BRANCH..$pb_br"
+    if [ -n "$pb_own$pb_byte" ]; then
+      # A bytecode or tool-cache path in the write's own commit, other than
+      # as a deletion, takes this arm too (#165 6780753157, Q31 and Q45; #165
+      # 6808141050, batch c Q51): it passes in no act.
+      pb_why=""
+      [ -z "$pb_own" ] || pb_why="changes these under handoffs/ other than as an added or modified regular file (a deletion, a move's or bytecode's, a type change, a symlink or a gitlink), which only this push sends"
+      [ -z "$pb_byte" ] || pb_why="${pb_why:+$pb_why, or }holds a bytecode or tool-cache path other than as a deletion, which passes in no act (#162), listed above"
+      note "this write's own commit $pb_why: \`commit\`'s publish act refuses such a change with 2 in any queue, so it cannot send this one. Archive the queue and drop it instead:"
+      [ -z "$pb_own" ] || printf '%s\n' "$pb_own" >&2
+      pb_until="archived and dropped"
+    else
+      note "\`commit\`'s publish act sends a queue whose every commit is a handoff write or a write of lanes/repos.tsv or lanes/log/README.md alone, this write's commit with it, and refuses with 2, sending nothing, over any other queue. Run it first: ${pb_lane:+LANES_LANE=$pb_lane }$SELF commit \"publish the queue\". Where it refuses:"
+      pb_until="published or archived and dropped"
+    fi
+    cp_recovery_steps
+    die "refusing to push on primary (feature 007): this push sends only commits whose every path is under handoffs/, an added or modified regular file and no bytecode outside this write's own commit, and in it bytecode or a tool cache only as a deletion, #162's cleanup, and never lanes/repos.tsv or lanes/log/README.md, which \`commit\`'s publish act sends (D10's branch-wide push; spec:169; spec:183–185; FR-026; R16 (d); lane openRepoTools-3, #165 6770820384). Nothing was pushed; this write's commit is local and kept on HEAD, and every write that makes a git commit from this checkout refuses over it (S3's unpushed row) until it is $pb_until, as above: $1 $2" 2
+  fi
+  CP_PRIMARY_TIP="$pb_tip"
+}
+
+# FEATURE 007, T420 — THE TWO READS ON PRIMARY OF WHAT A PUSH WOULD SEND, WITH
+# `-z` (lane openRepoTools-3, #165 6770820384: REV420 N1, N2 and N5). The
+# publish act's fence (`fence`) and the backstop at `commit_publish`'s push
+# (`push`) share it, and only on primary; off primary the fence's read is
+# #194's, as it was. stdin: the `<commit> <parent>` pairs of the range, one a
+# line, merges and roots already set aside. `diff-tree --stdin --raw -z
+# --no-renames` reads each against its parent, so a path comes as git stores
+# it, never C-quoted (a path with a tab, a newline, a `"` or a `\` came quoted,
+# and so was read as outside `lanes/`: N2), and a move is the D and the A it
+# is. The fields are read in bash, `read -d ''`, since an awk's NUL record
+# separator is not portable. stdout: one line for each change that does not
+# pass, `<class>  <commit, 12> <status> <mode> <path, quoted for a shell>`,
+# class `div`, `mix` or `bad`, and in `push` an `own` line for each change
+# that passes as the write's own alone, and a `byte` line (refused like `bad`)
+# for a bytecode or tool-cache path in the write's own commit other than as a
+# deletion, which no act sends (#162; Q31, Q45; batch c Q51). Non-zero where
+# git fails, where a
+# commit handed to it never came back as a header, or where the stream does
+# not parse.
+#
+# IN BOTH READS a path with a `.`, `..` or `.git` component (`.git` in any
+# case) is `bad`: git's own checkout never writes through one, and an origin
+# that took one would wedge every checkout's fast-forward (N5).
+#
+# THE FENCE (`fence`), path by path, then commit by commit:
+#   * `lanes/repos.tsv` and `lanes/log/README.md`, Brett's two git files, pass
+#     as an added or modified regular file, and are `bad` as any other change
+#     (#194's rule, a move read as a D and an A).
+#   * Any other path under the register's directory (`lanes/`, as
+#     `$LANES_PREFIX` derives it, its log directory, the register and the alias
+#     table) is a divergence, `div`.
+#   * A path under `handoffs/` passes as an added or modified regular file that
+#     is not bytecode (#194, #162), and is `bad` as any other change.
+#   * Any other path is `bad`.
+#   * TO THE LETTER OF BRETT'S WORD: Brett Heap chose the option "Allow those
+#     two files" in a dialog in lane openRepoTools-3's session (answered by
+#     13:55:34Z, 2026-11-10), whose description read "The publish act lets a
+#     commit that touches only lanes/repos.tsv or lanes/log/README.md through
+#     on primary." So a commit that changes either file may change nothing
+#     else but the two (lane openRepoTools-3, #165 6770820384): in a commit
+#     holding either beside any other path, every change that would pass is
+#     `mix`, and the publish act refuses it with 2.
+# THE BACKSTOP (`push`): a path under `handoffs/` passes, as any change in the
+# write's own commit (`$3`) but bytecode or a tool cache, which passes there
+# only as a deletion, #162's cleanup (lane openRepoTools-3, #165 6778890211,
+# T420 new 1), and as an added or modified regular file that is
+# not bytecode or a tool cache in every other, as in the fence (REV420b N2);
+# every other path, the two git files included, is `bad`. A change the
+# write's own commit alone may make, one under `handoffs/` that is not an
+# added or modified regular file (T422's move), passes as `own`, printed so
+# the backstop's refusal can tell that the publish act would refuse it
+# (REV420b S2).
+cp_primary_read() {   # fence|push <how many commits> [<the write's own commit>]
+  local cpr_ps=""
+  git --no-replace-objects -C "$LANES_REPO" diff-tree --stdin --always -r --no-renames --raw -z --ignore-submodules=none |
+    cp_primary_classify "$@"
+  cpr_ps="${PIPESTATUS[*]}"
+  [ "$cpr_ps" = "0 0" ]
+}
+cp_primary_classify() {   # fence|push <how many commits> [<the write's own commit>]
+  local cq_role="$1" cq_want="$2" cq_own="${3:-}" cq_t="" cq_p="" cq_q="" cq_c="" cq_seen=0 \
+        cq_st="" cq_mode="" cq_k="" cq_rows="" cq_git=0 cq_other=0 cq_lanes=0 cq_byte=0 cq_am=0 \
+        cq_reg="${LANES_PREFIX:+${LANES_PREFIX%/}/}" cq_logp="${LANES_LOG_PREFIX:+${LANES_LOG_PREFIX%/}/}"
+  while IFS= read -r -d '' cq_t; do
+    case "$cq_t" in
+      :*)
+        # A RAW RECORD, `:<mode> <mode> <blob> <blob> <status>`, and its one
+        # path in the next field (`--no-renames`: never two).
+        [ -n "$cq_c" ] || return 3
+        IFS= read -r -d '' cq_p || return 3
+        cq_st="${cq_t##* }"; cq_mode="${cq_t#:* }"; cq_mode="${cq_mode%% *}"
+        cq_am=0
+        case "$cq_st" in A|M) case "$cq_mode" in 100644|100755) cq_am=1 ;; esac ;; esac
+        if [ "$cq_p" = lanes/repos.tsv ] || [ "$cq_p" = lanes/log/README.md ]; then cq_git=1; else cq_other=1; fi
+        cq_k=ok; cq_byte=0
+        case "/$cq_p/" in
+          */./*|*/../*|*/.[gG][iI][tT]/*) cq_k=comp ;;
+        esac
+        # Bytecode and tool caches (#194, #162), read before the role split so
+        # the backstop holds a commit other than the write's own to the
+        # fence's test too (REV420b N2), and the write's own to #162's: there
+        # such a path passes only as a deletion (T420 new 1).
+        case "$cq_p" in *.pyc|*.pyo) cq_byte=1 ;; esac
+        case "/$cq_p/" in
+          */__pycache__/*|*/.pytest_cache/*|*/.mypy_cache/*|*/.ruff_cache/*|*/node_modules/*|*/.venv/*|*/venv/*|*/site-packages/*) cq_byte=1 ;;
+        esac
+        if [ "$cq_k" = ok ] && [ "$cq_role" = push ]; then
+          case "$cq_p" in
+            handoffs/*)
+              if [ "$cq_c" = "$cq_own" ]; then
+                if [ "$cq_byte" = 1 ] && [ "$cq_st" != D ]; then
+                  # Any status but D is `byte`, an added, a modified and a
+                  # type-changed one alike: refused here, and refused by the
+                  # act's fence too, so the refusal withholds the publish
+                  # act's offer (#165 6780753157, Q31 and Q45; #165
+                  # 6808141050, batch c Q51).
+                  cq_k=byte
+                else
+                  [ "$cq_am" = 1 ] || cq_k=own
+                fi
+              else
+                [ "$cq_am" = 1 ] && [ "$cq_byte" = 0 ] || cq_k=bad
+              fi ;;
+            *) cq_k=bad ;;
+          esac
+        elif [ "$cq_k" = ok ]; then
+          cq_lanes=0
+          case "$cq_p" in lanes/*) cq_lanes=1 ;; esac
+          [ -z "$cq_reg" ] || case "$cq_p" in "$cq_reg"*) cq_lanes=1 ;; esac
+          [ -z "$cq_logp" ] || case "$cq_p" in "$cq_logp"*) cq_lanes=1 ;; esac
+          [ "$cq_p" != "${LANES_PATH:-}" ] || cq_lanes=1
+          [ "$cq_p" != "${LANES_ALIASES_PATH:-}" ] || cq_lanes=1
+          if [ "$cq_p" = lanes/repos.tsv ] || [ "$cq_p" = lanes/log/README.md ]; then
+            [ "$cq_am" = 1 ] || cq_k=bad
+          elif [ "$cq_lanes" = 1 ]; then
+            cq_k=div
+          else
+            case "$cq_p" in
+              handoffs/*) [ "$cq_am" = 1 ] && [ "$cq_byte" = 0 ] || cq_k=bad ;;
+              *) cq_k=bad ;;
+            esac
+          fi
+        fi
+        printf -v cq_q '%q' "$cq_p"
+        cq_rows="$cq_rows$cq_k $cq_st $cq_mode $cq_q
+"
+        ;;
+      *)
+        # A COMMIT'S HEADER, its id alone: the commit before it is complete.
+        case "$cq_t" in ''|*[!0-9a-f]*) return 3 ;; esac
+        [ "${#cq_t}" = 40 ] || [ "${#cq_t}" = 64 ] || return 3
+        cp_primary_rows
+        cq_c="$cq_t"; cq_seen=$((cq_seen + 1)); cq_rows=""; cq_git=0; cq_other=0
+        ;;
+    esac
+  done
+  [ -z "$cq_t" ] || return 3
+  cp_primary_rows
+  [ "$cq_seen" = "$cq_want" ] || return 3
+}
+# One commit's lines, read from `cp_primary_classify`'s locals: what passes is
+# not printed, except as `mix` in a fence commit that holds a git file beside
+# any other path, and as `own` in the backstop; a component is printed `bad`,
+# with its reason. THE ROWS ARE SPLIT BY PARAMETER EXPANSION, at each newline,
+# never through a here-document, as `commit_hand_edit_refuse`'s list is
+# (review REV-W9a M1's pattern): these printed rows are all that the fence and
+# the backstop learn of each commit's paths, and `cp_primary_classify` does
+# not read this function's status, so where bash 3.2 could make no temp file
+# for a here-document, as in a full /tmp, no row was printed and both passed
+# what they refuse (lane 4's MERGES-B2 report). Each row is one line, its path
+# quoted by `%q`; the split reads a copy, and leaves `cq_rows` as it was.
+cp_primary_rows() {
+  local cw_r="$cq_rows" cw_l="" cw_k=""
+  [ -n "$cq_rows" ] || return 0
+  while [ -n "$cw_r" ]; do
+    cw_l="${cw_r%%"$WR_NL"*}"
+    case "$cw_r" in
+      *"$WR_NL"*) cw_r="${cw_r#*"$WR_NL"}" ;;
+      *) cw_r="" ;;
+    esac
+    [ -n "$cw_l" ] || continue
+    cw_k="${cw_l%% *}"; cw_l="${cw_l#* }"
+    if [ "$cw_k" = ok ]; then
+      [ "$cq_role" = fence ] && [ "$cq_git" = 1 ] && [ "$cq_other" = 1 ] || continue
+      cw_k=mix
+    fi
+    if [ "$cw_k" = comp ]; then
+      cw_k=bad; cw_l="$cw_l   (a \".\", \"..\" or \".git\" path component)"
+    fi
+    printf '%s  %s %s\n' "$cw_k" "${cq_c:0:12}" "$cw_l"
+  done
+}
+
 # #194, AS #214's ADVERSARIAL CHECK HARDENED IT — WHAT `commit` MAY PUBLISH
 # WITH NOTHING STAGED, read from the objects the push will send and nothing
 # else. Three ordinary checkout states got a deletion past the first fence,
@@ -3753,8 +4113,41 @@ BRT_EOF
 # it read, and the publish pushes exactly that commit (`<sha>:refs/heads/<b>`).
 # A commit another lane makes in this shared checkout between the read and the
 # push stays local.
+#
+# FEATURE 007, T420 — ON PRIMARY THE FENCE IS NARROWED TO `handoffs/` AND TWO
+# GIT FILES (D10; FR-026; spec:169–181; lane openRepoTools-3's R16; Brett
+# Heap's two-file allow-list). On primary the register is the database. Under
+# the register's directory origin holds its rendering (the register, each
+# lane's log, the alias table and the archive), which only `lanes-index
+# render` writes, from the database; `STORE`, the deploy key's alone (D23);
+# and git files a person commits, `repos.tsv` and `log/README.md` (Q18(A);
+# Y:258–260, Y:5048–5050). The publish act, which R16 keeps, sends on primary
+# only handoff writes, each path an added or modified regular file under
+# `handoffs/`, and commits of those two git files alone, each added or
+# modified as a regular file. Brett Heap chose the option "Allow those two
+# files", whose description read "The publish act lets a commit that touches
+# only lanes/repos.tsv or lanes/log/README.md through on primary." (#165
+# 6769217709), and lane openRepoTools-3 holds the build to its letter (#165
+# 6770820384): a commit that changes either file may change nothing else but
+# the two, so one that writes either beside a handoff, or beside any other
+# path, refuses with 2, and its two halves pass as two commits. A queued
+# change to any other path under the register's directory (`lanes/`, as
+# `$LANES_PREFIX` derives it, its log directory, the register and the alias
+# table), of any status, is a DIVERGENCE, never published (spec:169): it
+# refuses with 2 and its own words, and S6.3's archive (Y:5820, F16: "the
+# publish act refuses a `lanes/` commit on primary"). Its words call no path
+# the rendering that is not one (lane openRepoTools-3, #165 6769061039, T420
+# item 1). A deletion, a type change or a move of either git file refuses as
+# a handoff's does (#194): read with `--no-renames`, a move is a D and an A,
+# and a D never passes. On primary the read is `cp_primary_read`'s, with
+# `-z`, and a `.`, `..` or `.git` path component refuses too (REV420 N2, N5).
+# Any other change refuses as above, in primary's words. "On primary" is
+# T409's answer, outside T413's flag (`cp_on_primary`); off it, every path,
+# text and code here is #194's, as it was.
 cp_publish_fence() {
   cpf_ref="refs/heads/$LANES_BRANCH"
+  cpf_prim=0; cpf_div=""; cpf_mix=""
+  if cp_on_primary; then cpf_prim=1; fi
   cpf_head="$(git -C "$LANES_REPO" symbolic-ref -q HEAD 2>/dev/null || :)"
   [ "$cpf_head" = "$cpf_ref" ] || die "refusing to publish: HEAD is ${cpf_head:-detached}, not $cpf_ref, and the push sends $cpf_ref while every read of the queue starts at HEAD, so what would be published is not what HEAD shows, and nothing was pushed (#194). Whoever moved this shared checkout off $LANES_BRANCH puts it back; never reset or check out over their work." 2
   cpf_rc=0
@@ -3766,34 +4159,77 @@ cp_publish_fence() {
   # `diff-tree --stdin` SKIPS A COMMIT IT CANNOT READ and still exits 0, and
   # prints no header for an empty diff unless told `--always`: so every commit
   # handed to it must come back as a header, or the read refuses.
-  cpf_raw=""; cpf_n=0
+  cpf_raw=""; cpf_n=0; cpf_bad=""
   if [ -n "$cpf_pairs" ]; then
     cpf_n="$(printf '%s\n' "$cpf_pairs" | awk 'END { print NR }')" || cpf_rc=$?
-    cpf_raw="$(printf '%s\n' "$cpf_pairs" | git --no-replace-objects -C "$LANES_REPO" -c core.quotePath=false diff-tree --stdin --always -r --no-renames --raw --ignore-submodules=none)" || cpf_rc=$?
+    if [ "$cpf_prim" = 1 ]; then
+      cpf_bad="$(printf '%s\n' "$cpf_pairs" | cp_primary_read fence "$cpf_n")" || cpf_rc=$?
+    else
+      cpf_raw="$(printf '%s\n' "$cpf_pairs" | git --no-replace-objects -C "$LANES_REPO" -c core.quotePath=false diff-tree --stdin --always -r --no-renames --raw --ignore-submodules=none)" || cpf_rc=$?
+    fi
   fi
-  cpf_reg="${LANES_PREFIX:+${LANES_PREFIX%/}/}"; cpf_logp="${LANES_LOG_PREFIX:+${LANES_LOG_PREFIX%/}/}"
-  cpf_bad="$(printf '%s\n' "$cpf_raw" | awk -F '\t' -v want="$cpf_n" -v reg="$cpf_reg" -v logp="$cpf_logp" \
-      -v reg_path="$LANES_PATH" -v alias_path="$LANES_ALIASES_PATH" '
-    function inside(p) {
-      return (reg != "" && index(p, reg) == 1) || (logp != "" && index(p, logp) == 1) ||
-             index(p, "handoffs/") == 1 || p == reg_path || p == alias_path
-    }
-    function bytecode(p,   n, part, i) {
-      if (p ~ /\.py[co]$/) return 1
-      n = split(p, part, "/")
-      for (i = 1; i <= n; i++)
-        if (part[i] == "__pycache__" || part[i] == ".pytest_cache" || part[i] == ".mypy_cache" ||
-            part[i] == ".ruff_cache" || part[i] == "node_modules" || part[i] == ".venv" ||
-            part[i] == "venv" || part[i] == "site-packages") return 1
-      return 0
-    }
-    NF == 0 { next }
-    NF == 1 && $1 ~ /^[0-9a-f]+$/ { c = substr($1, 1, 12); seen++; next }
-    { split($1, f, " "); st = f[5]; mode = f[2]
-      if (!(NF == 2 && (st == "A" || st == "M") && (mode == "100644" || mode == "100755") && inside($2) && !bytecode($2)))
-        printf "  %s %s %s %s\n", c, st, mode, $2 }
-    END { if (seen != want) exit 3 }')" || cpf_rc=$?
+  if [ "$cpf_prim" = 1 ]; then
+    cpf_div="$(printf '%s\n' "$cpf_bad" | sed -n -e 's/^div//p')" || cpf_rc=$?
+    cpf_mix="$(printf '%s\n' "$cpf_bad" | sed -n -e 's/^mix//p')" || cpf_rc=$?
+    cpf_bad="$(printf '%s\n' "$cpf_bad" | sed -n -e 's/^bad//p')" || cpf_rc=$?
+  else
+    cpf_reg="${LANES_PREFIX:+${LANES_PREFIX%/}/}"; cpf_logp="${LANES_LOG_PREFIX:+${LANES_LOG_PREFIX%/}/}"
+    cpf_bad="$(printf '%s\n' "$cpf_raw" | awk -F '\t' -v want="$cpf_n" -v reg="$cpf_reg" -v logp="$cpf_logp" \
+        -v reg_path="$LANES_PATH" -v alias_path="$LANES_ALIASES_PATH" '
+      function inside(p) {
+        return (reg != "" && index(p, reg) == 1) || (logp != "" && index(p, logp) == 1) ||
+               index(p, "handoffs/") == 1 || p == reg_path || p == alias_path
+      }
+      function bytecode(p,   n, part, i) {
+        if (p ~ /\.py[co]$/) return 1
+        n = split(p, part, "/")
+        for (i = 1; i <= n; i++)
+          if (part[i] == "__pycache__" || part[i] == ".pytest_cache" || part[i] == ".mypy_cache" ||
+              part[i] == ".ruff_cache" || part[i] == "node_modules" || part[i] == ".venv" ||
+              part[i] == "venv" || part[i] == "site-packages") return 1
+        return 0
+      }
+      NF == 0 { next }
+      NF == 1 && $1 ~ /^[0-9a-f]+$/ { c = substr($1, 1, 12); seen++; next }
+      { split($1, f, " "); st = f[5]; mode = f[2]
+        if (!(NF == 2 && (st == "A" || st == "M") && (mode == "100644" || mode == "100755") && inside($2) && !bytecode($2)))
+          printf "  %s %s %s %s\n", c, st, mode, $2 }
+      END { if (seen != want) exit 3 }')" || cpf_rc=$?
+  fi
   [ "$cpf_rc" = 0 ] || die "git could not read, or this helper could not classify, the local commits on $cpf_ref ahead of refs/remotes/origin/$LANES_BRANCH, so whether they are \`commit\`'s to publish is unknown; nothing was pushed (#194)" 2
+  if [ -n "$cpf_div" ]; then
+    note "of the local commits on $cpf_ref ahead of origin/$LANES_BRANCH, these change a path under the register's directory, ${LANES_PREFIX:-lanes/}, other than lanes/repos.tsv and lanes/log/README.md, and on primary the publish act sends none of them: the register's rendering (the register, each lane's log, the alias table and the archive) is written only from the database, STORE is the deploy key's alone (D23), and any other path there is refused with them:"
+    printf '%s\n' "$cpf_div" >&2
+    if [ -n "$cpf_odd$cpf_bad$cpf_mix" ]; then
+      note "and these are not publishable there either (a merge or root commit; a change that is not an added or modified regular file under handoffs/ or at lanes/repos.tsv or lanes/log/README.md; a path with a \`.\`, \`..\` or \`.git\` component; or a change in a commit that writes one of those two files beside another path):"
+      [ -z "$cpf_odd" ] || printf '%s\n' "$cpf_odd" >&2
+      [ -z "$cpf_bad" ] || printf '%s\n' "$cpf_bad" >&2
+      [ -z "$cpf_mix" ] || printf '%s\n' "$cpf_mix" >&2
+    fi
+    cp_recovery_steps
+    die "refusing to publish: on primary (feature 007) a local commit that changes a path under the register's directory other than lanes/repos.tsv and lanes/log/README.md is a divergence, and is never published: \`commit\`'s publish act sends only handoff writes and those two files there (D10; FR-026; R16; spec:169, as Brett's two-file allow-list amends it). Nothing was pushed, and the commits stay on HEAD; every write that makes a git commit from this checkout refuses over them (S3's unpushed row) until they are archived and dropped, as above." 2
+  fi
+  # A COMMIT THAT WRITES EITHER GIT FILE BESIDE ANY OTHER PATH (T420; Brett's
+  # word to its letter, lane openRepoTools-3, #165 6770820384): each of its
+  # changes that would pass alone is listed, and the other paths with their
+  # own lists.
+  if [ -n "$cpf_mix" ]; then
+    note "of the local commits on $cpf_ref ahead of origin/$LANES_BRANCH, these write lanes/repos.tsv or lanes/log/README.md beside another path, and on primary a commit that writes either of those two may change nothing else but the two:"
+    printf '%s\n' "$cpf_mix" >&2
+    if [ -n "$cpf_odd$cpf_bad" ]; then
+      note "and these are not publishable there either (a merge or root commit; a change that is not an added or modified regular file under handoffs/ or at lanes/repos.tsv or lanes/log/README.md; or a path with a \`.\`, \`..\` or \`.git\` component):"
+      [ -z "$cpf_odd" ] || printf '%s\n' "$cpf_odd" >&2
+      [ -z "$cpf_bad" ] || printf '%s\n' "$cpf_bad" >&2
+    fi
+    cp_recovery_steps
+    die "refusing to publish: on primary (feature 007) \`commit\`'s publish act sends a commit that writes lanes/repos.tsv or lanes/log/README.md only where it changes nothing else but those two (D10; FR-026; R16; spec:169, as Brett's two-file allow-list amends it, to its letter: lane openRepoTools-3, #165 6770820384). Nothing was pushed, and the commits stay on HEAD; every write that makes a git commit from this checkout refuses over them (S3's unpushed row) until they are archived and dropped, as above. Then make again, each in a commit of its own, the write of those two files and each other change that is still wanted." 2
+  fi
+  if [ -n "$cpf_odd$cpf_bad" ] && [ "$cpf_prim" = 1 ]; then
+    note "of the local commits on $cpf_ref ahead of origin/$LANES_BRANCH, these are not changes the publish act sends on primary (a merge or root commit; a change that is not an added or modified regular file under handoffs/ or at lanes/repos.tsv or lanes/log/README.md; or a path with a \`.\`, \`..\` or \`.git\` component):"
+    [ -z "$cpf_odd" ] || printf '%s\n' "$cpf_odd" >&2
+    [ -z "$cpf_bad" ] || printf '%s\n' "$cpf_bad" >&2
+    die "refusing to publish: on primary (feature 007) \`commit\`'s publish act sends only handoff writes and a person's lanes/repos.tsv and lanes/log/README.md, each an added or modified regular file under handoffs/ or at one of those two paths (D10; FR-026; R16; spec:169's two-file allow-list; #194), so nothing was pushed. Anything else, whoever queued it publishes it; never reset it away. Read them: git -C $LANES_REPO log --stat refs/remotes/origin/$LANES_BRANCH..$cpf_ref" 2
+  fi
   if [ -n "$cpf_odd$cpf_bad" ]; then
     note "of the local commits on $cpf_ref ahead of origin/$LANES_BRANCH, these are not register or handoff writes (a merge or root commit, or a change that is not an added or modified regular file under ${LANES_PREFIX:-the register directory} or handoffs/):"
     [ -z "$cpf_odd" ] || printf '%s\n' "$cpf_odd" >&2
@@ -3973,6 +4409,14 @@ EOF
 
   # ---- 2. THE PUSH: the branch as S3 left it plus this one commit, no pull.
   cp_spec="refs/heads/$LANES_BRANCH:refs/heads/$LANES_BRANCH"
+  # FEATURE 007, T420 — THE BACKSTOP ON PRIMARY (spec:183–185; FR-026; R16
+  # (d)): outside the flag, the push sends only commits whose every path is
+  # under `handoffs/`, and exactly the tip that was read
+  # (`cp_primary_push_check`).
+  if cp_on_primary; then
+    cp_primary_push_check "$cp_sha" "$msg"
+    cp_spec="$CP_PRIMARY_TIP:refs/heads/$LANES_BRANCH"
+  fi
   cp_u=""
   [ "$CS_NO_ORIGIN_BRANCH" = 1 ] && cp_u="-u"
   cp_prc=0
@@ -7274,8 +7718,9 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
 # site where the renderer's fork goes (`pw_learned`).
 #
 # NOT HERE: the renderer's fork itself (T416's `pw_render_fork`, which goes
-# into `pw_learned`); and `commit` on primary, which keeps T409's 69 until
-# T420.
+# into `pw_learned`); and `commit` on primary, which T420 exempts from the
+# loop at the dispatcher (R16): its carry form is refused with 2 and its
+# publish act runs outside it.
 PW_LANE=""; PW_C=""; PW_AUTHOR=""; PW_D_S=30; PW_T0=0; PW_RUN=""; PW_RUN_DIR=""
 PW_LOCK=""; PW_REC_OURS=0; PW_PURGED=0
 PW_K=0; PW_DIR=""; PW_CHILD=""; PW_KEPT=""; PW_FIRST_DONE=0; PW_RELAY=""; PW_RC=0
@@ -24731,17 +25176,24 @@ esac
 # arm below and never a files-mode write (Y:5034).
 # PHASE 2'S ARM (T415): `primary` runs the write through the register's attempt
 # loop, `pw_run`, which ends this process and never writes the files instead.
-# `commit` keeps phase 1's 69 until T420 gives it its primary form (T415's line:
-# "no state between T415 and T420 runs it in the loop"). `index` and `files`
-# run the verb as it runs today.
+# `commit` IS EXEMPT FROM THE LOOP (T420; R16; review M2; ERR-06). It journals
+# nothing: its carry form, the hand edit of Rule 9(d), and a hand edit of any
+# other rendered file are refused with 2 in its arm below (D10; spec:171–173),
+# and its publish act, the publish of queued handoff commits and of a person's
+# commits of `lanes/repos.tsv` and `lanes/log/README.md` alone, runs as a git
+# act outside the loop, with S3's fetch (R16 (b)) and the fence narrowed to
+# `handoffs/` and those two files (`cp_publish_fence`). So it goes on from
+# here to 1a's routing, `lane_checkout_enter` included, since it needs
+# `LANES_LANE`'s checkout (R16 (c)); T415's skip of that routing (R17) is not
+# its. `index` and `files` run the verb as it runs today.
 if [ "$REG_ASK" = 1 ]; then
   reg_mode_ask
   case "$REG_MODE" in
     primary)
-      [ "$cmd" != commit ] ||
-        die "this lanes-edit.sh has no SQL write path: \`lanes-index mode\` answered primary, which only a lanes-index newer than this lanes-edit.sh answers. \`$cmd\` wrote nothing, and wrote no files instead. Install the lanes-edit.sh that ships with that lanes-index." 69
-      REG_PW=1
-      pw_run ${1+"$@"} ;;
+      if [ "$cmd" != commit ]; then
+        REG_PW=1
+        pw_run ${1+"$@"}
+      fi ;;
   esac
 fi
 # THE PRIMARY ARM NEVER FALLS THROUGH (Y:4885: primary is "never files"; review
@@ -24760,6 +25212,10 @@ fi
 # handoff act (T422; R18): `REG_ASK=0` skips the question and the arm, so it
 # never sets `REG_PW` and needs no exemption of its own here (lane
 # openRepoTools-3, #165 6774499606, A1; #165 6778890211, T422 (2)).
+# `commit` never enters the loop (T420; R16; review M2), so its `REG_PW`
+# stays 0 and it goes on to 1a's routing by design, as the arm above says.
+# So the guard has no `commit` exemption of its own: T420's
+# `[ "$cmd" != commit ]` goes (A1).
 if [ "$REG_PW" = 1 ]; then
   die "\`lanes-index mode\` answered primary, and \`$cmd\` left the register's attempt loop without ending, which is an internal error of this lanes-edit.sh. Whether it reached the register is not known: a write already made reads as found when the command is run again. \`$cmd\` wrote no files instead." 69
 fi
@@ -25146,6 +25602,16 @@ Nothing was written." 2
     # A clean register is THE PUBLISH ACT (#194's remedy 1): it writes nothing
     # new, so S3 runs with every row but the unpushed one and no fast-forward,
     # and `commit_publish` publishes the queue (S4, "the publish act").
+    # FEATURE 007, T420 — ON PRIMARY A HAND EDIT IS REFUSED (D10; FR-026;
+    # R16; spec:171–173, which governs: lane openRepoTools-3, #165 6770820384,
+    # T420 S2): the register is the database there and the files it renders
+    # are its rendering, so a hand edit of the register, the carry form, or of
+    # any other rendered file is never committed, carried or pushed. It
+    # refuses with 2 before S3, writing nothing, with Y:2459's recovery
+    # (`commit_hand_edit_refuse`). The publish act stays (`cp_publish_fence`
+    # narrows it to `handoffs/` and Brett's two git files, `lanes/repos.tsv`
+    # and `lanes/log/README.md`, which are not rendered).
+    if [ "$NO_GIT" != 1 ] && cp_on_primary; then commit_hand_edit_refuse; fi
     if [ "$NO_GIT" != 1 ] && [ -n "$(cs_pending_of "$LANES_PATH")" ]; then
       checkout_sync commit "${LANES_LANE:-}" carry "$LANES_PATH"
       CP_REPLAY_KEEPS_EDIT=1
