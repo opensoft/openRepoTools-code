@@ -3226,8 +3226,10 @@ act_stops_at() {   # <the write, in words> <its code>
 # unreachable": the note "SHALL name how the `SWAPPING` lane's `PAUSED` record is
 # completed later: the late `PAUSED` path, who runs it, and when"; Y:3020; lane 3,
 # #165 6770733371, T429's question 5). Printed once, where a PAUSED write exited
-# 69 or was not sent. Where the session's end is already known — the late
-# arm's `--at` — it is named in place of `<UTC>` (REV429b SHOULD-2).
+# 69 or was not sent (under a seq base, only where W9 itself exited 69 or was not
+# sent: the notes below take the other cases). Where the session's end is
+# already known — the late arm's `--at` — it is named in place of `<UTC>`
+# (REV429b SHOULD-2).
 paused_69=""
 paused_69_note() {   # [<UTC>: the moment the session ended, where it is known]
 	if [ -n "${1-}" ]; then
@@ -3247,6 +3249,22 @@ paused_69_note() {   # [<UTC>: the moment the session ended, where it is known]
 # act's other notes say (Y:5601).
 paused_69_landed_note() {
 	note "THE PAUSED RECORD IS INCOMPLETE and lane $lane stays SWAPPING, an interrupted swap. The object log's PAUSED line is written, so \`$prog --late\` is not the way to complete it: it refuses where the lane's last line is already a PAUSED, and it never writes the LANES.md file-level line or the row. Once the register answers, run $prog again from its start (Y:5601): it takes a fresh base and supersedes this operation."
+}
+# THE TWO OTHER NOTES UNDER A SEQ BASE, where W9 did not exit 69 and did not
+# land (T429; lane 3, #165 6836816821, question 1). `--late` writes W9's line
+# alone, so it is the way only where W9 itself exited 69 or was not sent, and
+# there `paused_69_note` stands. Where W9 stopped the act with its 2 or 75, the
+# note says to run the act again from its start once the register answers
+# (Y:5601), as the stop does: a late PAUSED would be a first PAUSED, and the act
+# run again would write a second. Where W9 exited 3, it names W9's printed
+# `LANES_WRITE_ID` rerun first, and then the act again (Y:5199, Y:5222): before
+# the rerun settles it `--late` would write a late PAUSED that the rerun then
+# repeats, and after it `--late` refuses, since the line is the lane's last.
+paused_69_w9_stopped_note() {
+	note "THE PAUSED RECORD IS INCOMPLETE and lane $lane stays SWAPPING, an interrupted swap. The object log's PAUSED line was NOT written (the helper's own words are above), so \`$prog --late\` is not the way to complete it: it would write that one line and never the LANES.md file-level line or the row, and the act run again would then write a second PAUSED. Once the register answers, run $prog again from its start (Y:5601): it takes a fresh base and supersedes this operation."
+}
+paused_69_w9_3_note() {
+	note "THE PAUSED RECORD IS INCOMPLETE and lane $lane stays SWAPPING, an interrupted swap. The object log's PAUSED line may or may not have landed (its write exited 3), so \`$prog --late\` is not the way to complete it: where the line landed it refuses, and where it did not it would write a late PAUSED that the rerun the writer printed above would then repeat. Run that rerun first, which writes the line once or finds it (Y:5222). Then, once the register answers, run $prog again from its start (Y:5601): it takes a fresh base and supersedes this operation."
 }
 
 # ------------------------------------------------------------ the LATE branch
@@ -3530,11 +3548,19 @@ else
 			note "the row's state cell was NOT set to PAUSED (the write was refused — run it by hand to see what it says: lanes-edit.sh set-row-state $lane \"PAUSED · $hs_line\"). The restart line below carries --lane for that reason."
 		fi
 	fi
-	# WHERE W9 LANDED, under a seq base, the note is not `--late`'s (T429; #165
-	# 6835210568): that act would refuse 2 and never writes W11 or the row.
+	# UNDER A SEQ BASE THE NOTE NAMES `--late` ONLY WHERE W9 ITSELF EXITED 69 OR
+	# WAS NOT SENT (T429; #165 6835210568 and, for the rest, #165 6836816821,
+	# question 1): that act writes W9's line alone, and refuses 2 where the lane's
+	# last lane-kind line is already a PAUSED. Where W9 landed, or stopped the act
+	# with its 2 or 75, the note says to run the act again from its start once
+	# the register answers (Y:5601), and where W9 exited 3 it names W9's printed
+	# rerun first (Y:5199, Y:5222). Under `@files`, or after `act-begin`'s 2,
+	# there is no such rule, and the `--late` note stands, as it was.
 	if [ -n "$paused_69" ]; then
-		if [ "$record_written" = 1 ] && act_on_seq_base; then paused_69_landed_note
-		else paused_69_note
+		if ! act_on_seq_base || [ "$w9_rc" = 69 ]; then paused_69_note
+		elif [ "$record_written" = 1 ]; then paused_69_landed_note
+		elif [ -n "$record_in_doubt" ]; then paused_69_w9_3_note
+		else paused_69_w9_stopped_note
 		fi
 	fi
 fi
