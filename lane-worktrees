@@ -152,6 +152,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -262,6 +263,57 @@ def run(argv, cwd=None, env=None, timeout=GIT_TIMEOUT, input_text=None):
         return subprocess.CompletedProcess(argv, 124, "", f"timed out after {timeout}s")
     except OSError as exc:
         return subprocess.CompletedProcess(argv, 127, "", str(exc))
+
+
+#: How long a timed-out call's process group has to end on TERM, its own
+#: traps included, before it is sent KILL (`run_group`).
+GROUP_GRACE = 5
+
+
+def run_group(argv, env=None, timeout=GIT_TIMEOUT):
+    """`run`, with `argv` in a process group of its own, so A TIMEOUT ENDS THE
+    WHOLE CALL (REV-W9h N1). `subprocess.run` kills only the process it
+    started: a `lanes-edit.sh` killed that way left its `git grep` running,
+    and its `$TMPD` behind, since a KILL runs no trap.
+
+    On a timeout the group gets TERM, which ends the grep, and then
+    `lanes-edit.sh`'s TERM trap removes its `$TMPD`; whatever is left after
+    `GROUP_GRACE` seconds gets KILL. Each signal goes while the call's own
+    process is not yet reaped, so the group's id names this call's group
+    and no other. The exits are `run`'s: 124 a timeout, 127 a program that
+    could not be started."""
+    try:
+        proc = subprocess.Popen(
+            [str(a) for a in argv], env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8",
+            errors="surrogateescape", start_new_session=True)
+    except OSError as exc:
+        return subprocess.CompletedProcess(argv, 127, "", str(exc))
+    try:
+        out, err = proc.communicate(timeout=timeout)
+        return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+    except subprocess.TimeoutExpired:
+        pass
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(proc.pid, sig)
+        except OSError:
+            pass
+        try:
+            proc.communicate(timeout=GROUP_GRACE)
+            break
+        except subprocess.TimeoutExpired:
+            continue
+    else:
+        # A PIPE HELD PAST THE KILL is held from outside the group: it is no
+        # longer read, and the call's own process is reaped where it can be.
+        for pipe in (proc.stdout, proc.stderr):
+            pipe.close()
+        try:
+            proc.wait(timeout=GROUP_GRACE)
+        except subprocess.TimeoutExpired:
+            pass
+    return subprocess.CompletedProcess(argv, 124, "", f"timed out after {timeout}s")
 
 
 #: Repositories read as a git directory ALONE (#174, Copilot round 2): a
@@ -493,12 +545,14 @@ class Helper:
         self._fetched = False
 
     def call(self, *args: str, env_extra: dict | None = None, fetch: bool = False,
-             write: bool = False, timeout: int = 300):
+             write: bool = False, timeout: int = 300, group: bool = False):
         """`fetch` asks for one fetch per session; every later read is made
         with `LANES_NO_FETCH=1`. A `write` is never given it: for a writer, a
         fetch that did not run is a fetch that failed, and lanes-edit.sh's
         Amendment 23 S3 refuses it (2, ratified choice 2), so the sweep's
-        NOTED line was refused after its first removal (#198, slice 1b)."""
+        NOTED line was refused after its first removal (#198, slice 1b).
+        `group` runs the call in a process group of its own, which its
+        timeout ends whole (`run_group`)."""
         if not self.path:
             return subprocess.CompletedProcess(args, 127, "", "no lanes-edit.sh beside this "
                                                "command or on PATH")
@@ -508,7 +562,7 @@ class Helper:
             env["LANES_NO_FETCH"] = "1"
         if env_extra:
             env.update(env_extra)
-        proc = run([self.path, *args], env=env, timeout=timeout)
+        proc = (run_group if group else run)([self.path, *args], env=env, timeout=timeout)
         if fetch:
             self._fetched = True
         return proc
@@ -554,8 +608,26 @@ class Helper:
         takes any exit but 0 and 1 as a register it could not read: the sweep
         then takes no recorded directory from it and lets no tree or branch go
         on `gh`'s word alone (lane 3's (L2-3)), and the report names it
-        unread. The bound stays the grep's own."""
-        return self.call("register-grep", *args, timeout=GIT_TIMEOUT)
+        unread. The bound stays the grep's own.
+
+        A TIMEOUT ENDS THE CALL AND LEAVES NOTHING BEHIND (REV-W9h N1): the
+        verb runs in a process group of its own (`run_group`), with a
+        `TMPDIR` this command made for that call alone and removes after it
+        however it ended, so a `$TMPD` the verb could not remove goes too.
+        Where that directory cannot be made, the verb runs with the `TMPDIR`
+        it was given, and its own `mktemp -d` answers for it, as before."""
+        own = ""
+        try:
+            own = tempfile.mkdtemp(prefix="lane-worktrees-grep.",
+                                   dir=os.environ.get("TMPDIR") or "/tmp")
+        except OSError:
+            own = ""
+        try:
+            return self.call("register-grep", *args, timeout=GIT_TIMEOUT, group=True,
+                             env_extra={"TMPDIR": own} if own else None)
+        finally:
+            if own:
+                shutil.rmtree(own, ignore_errors=True)
 
     def lane_facts(self, lane: str) -> LaneFacts:
         facts = LaneFacts(lane)
