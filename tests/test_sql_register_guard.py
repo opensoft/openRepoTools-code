@@ -1895,6 +1895,18 @@ HOLD_LIMIT = 10.0
 #: `lanes-index:6081`). Form 2, the whole-file fetch and the render read
 #: send no such bound.
 FORM_4_SQL = "WHERE i.kind = 'import' AND i.seq <= "
+#: THE WINDOW'S LANE, SPELLED ANOTHER WAY IN ITS ROW (lane 5's call 4, #165
+#: 6813284257 and 6813607794): `RepoA-2` under the window `repoA-2`. The
+#: guard's prefetch, form 2, asks with `--lane=` the window's name, and
+#: `lanes-index` writes `.log.<that key>` even where the lane has no log; the
+#: binding scan takes the row's own spelling from its case-insensitive match
+#: (`G_LANE="$gr_hits"`), and only a key the cache lacks reaches form 4.
+ROW_SPELLING = FROM[:1].upper() + FROM[1:]
+#: The guard's note where a lane's object log could not be read, in today's
+#: words (contract 4.19 section 3.6, B4: "the guard notes it as today", at
+#: `lanes-edit.sh:10707-10710` at pin `2a057a6d`), which form 4's every end
+#: but 0 reaches.
+LOG_UNREAD = "object log could not be read"
 
 
 def _silent_listener(host="127.0.0.1"):
@@ -2175,22 +2187,56 @@ def test_a_second_read_past_the_start_line_is_noted_not_refused(estate, case):
     refuse (B4); `[under-a-declaration]`: its cut stays `T0 + 3.75 s` under
     an unexpired declaration (B5); `[no-declaration-read]`: it reads no
     declaration. The case's database holds the estate's register at primary
-    (`_Register`; lane 5's F2, #165 6812547449), so form 2 answers and the
-    guard reaches its second read."""
+    (`_Register`; lane 5's F2, #165 6812547449), so form 2 answers.
+
+    FORM 4 IS ASKED ONLY FOR A KEY FORM 2 DID NOT FILL (lane 5's call 4, #165
+    6813284257 and 6813607794): the window's row is spelled `ROW_SPELLING`,
+    so the binding scan asks for `.log.RepoA-2`, which the prefetch's
+    `--lane=repoA-2` did not write, and the guard makes its second read.
+
+    THE CUT, in `[at-the-cap]` and `[under-a-declaration]`: the shim holds
+    form 4's request 3.9 s (`FORM_4_SQL`), so it would reach the database
+    only past `T0 + 3.75 s`, and the read's own cut ends it 2, too late to
+    verify (T113's fix round, MUST-2). `[under-a-declaration]` does so under
+    an unexpired declaration that names this database, `database=` the
+    configuration's `register_label=` (config.md section 6.4), so the
+    declaration counts; there form 4 still starts, is cut and is noted. Both
+    end inside the budget, noted as today (`LOG_UNREAD`; B4).
+    `[no-declaration-read]` has no declaration and no hold: its form 4 ends
+    0, and the guard notes no log it could not read.
+
+    NOT REFUSED, in the module's estate, is the guard's own answer to it: the
+    name offer, 2 with the offer's text and the record at `name-drift`. A
+    refusal on the read makes no offer. `.log.<key>` is not asserted: the
+    guard removes its cache files when it exits (`cleanup`)."""
     est = estate(mode="primary")
+    est.push_register([_row(ROW_SPELLING, est.sid, "LIVE"), _row(est.to, est.other, "PAUSED")])
     _Register(est)
-    est.shim([{"mode": "window", "ms": 3900, "match": FORM_4_SQL}] if case == "at-the-cap"
-             else [])
+    cut = case in ("at-the-cap", "under-a-declaration")
+    est.shim([{"mode": "window", "ms": 3900, "match": FORM_4_SQL}] if cut else [])
     if case == "under-a-declaration":
         conf = Path(est.extra["LANES_INDEX_CONFIG"])
+        label = next((line.split("=", 1)[1] for line in conf.read_text(encoding="utf-8")
+                      .splitlines() if line.startswith("register_label=")), "")
+        assert label, f"the estate's configuration names no register_label=: {conf}"
         (conf.parent / "register-outage").write_text(
-            "format=1\nkind=word\ndatabase=register\nutc=2026-11-10T00:00:00Z\nhost=Eagle\n"
+            f"format=1\nkind=word\ndatabase={label}\nutc=2026-11-10T00:00:00Z\nhost={HOST}\n"
             f"until={_utc(time.time() + 3600)}\nmirror-seq=1\nwhy=test\n", encoding="utf-8")
     hook = est.hook("hello")
     assert not hook.killed and hook.t_exit - hook.t0 < BUDGET, repr(hook)
-    assert "second read" not in hook.err or hook.code != 2, repr(hook)
+    record = est.record()
+    assert hook.code == 2 and OFFER in hook.text and record.get("mode") == "name-drift", \
+        f"the guard did not answer with its name offer (a refusal on its read makes none): " \
+        f"{record}\n{hook!r}"
     forms = [c for c in est.shim_calls() if FORM_4_SQL in c.get("sent", "")]
     assert forms, "the guard made no second read (no call in the shim's log is form 4's SQL)"
+    if cut:
+        assert "window" in forms[0].get("arms", []), f"the shim did not hold form 4: {forms[0]}"
+        assert LOG_UNREAD in hook.err, \
+            f"the guard did not note the log its cut second read left unread: {hook!r}"
+    else:
+        assert LOG_UNREAD not in hook.err, \
+            f"form 4 was made, yet the guard noted the log as unread: {hook!r}"
 
 
 def test_the_guards_last_budget_line_is_below_guard_timeout():
