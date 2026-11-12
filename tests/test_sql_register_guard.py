@@ -49,6 +49,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -1156,13 +1157,76 @@ def test_an_unreadable_bind_record_is_dropped_with_exit_2(estate):
     assert hook.code == 2 and OFFER in hook.err, repr(hook)
 
 
+#: THE STAND-IN `tmux` OF A REAL BIND (T214g): T203c's stand-in, kept beside
+#: it as `tmux.t203c` and run for every call, so its log and its answers are
+#: unchanged, but for one thing: this window's name follows `rename-window`, as
+#: tmux's does. Answer 2 renames the window to `<to>` before the bind's child
+#: runs, and the real `lane-start --no-launch --bind` then reads `#W`; T203c's
+#: stand-in answers it with the name it was made with, `<from>`, a lane with
+#: a row, so `lane-start` refuses with its veto 2, "this window is named
+#: 'repoA-2', which is another lane the register has a row for"
+#: (`lane-start:2274` at lane 5's `6050581`).
+_FOLLOW_TMUX = r'''#!/bin/sh
+# T214g: T203c's stand-in tmux (beside this file as tmux.t203c), with this
+# window's name following rename-window, as tmux's does.
+name=@NAME@
+out="$(@ORIG@ "$@")"; rc=$?
+if [ "$rc" = 0 ] && [ "${1-}" = rename-window ]; then
+  target=""; prev=""; last=""
+  for a in "$@"; do
+    [ "$prev" = -t ] && target="$a"
+    prev="$a"; last="$a"
+  done
+  case "$target" in
+    ''|@ID@|@SESSION@:@ID@|@PANE@|@SESSION@:@ID@.@PANE@) printf '%s\n' "$last" > "$name" ;;
+  esac
+fi
+if [ "$rc" = 0 ] && [ "${1-}" = display-message ] && [ "$out" = @WINDOW@ ] && [ -f "$name" ]; then
+  cat "$name"
+  exit 0
+fi
+[ -z "$out" ] || printf '%s\n' "$out"
+exit "$rc"
+'''
+
+
+def _follow_renames(session) -> None:
+    """Put `_FOLLOW_TMUX` in front of `session`'s stand-in `tmux`, once: a
+    stand-in `guard_session` writes again is wrapped again."""
+    tmux = Path(session.tmux)
+    if "T214g" in tmux.read_text(encoding="utf-8"):
+        return
+    orig = tmux.with_name("tmux.t203c")
+    _script(orig, tmux.read_text(encoding="utf-8"))
+    _, window_id, pane = re.split(r"[:.]", session.target)
+    words = {"NAME": tmux.with_name("tmux.window-name"), "ORIG": orig, "ID": window_id,
+             "SESSION": session.target.split(":", 1)[0], "PANE": pane, "WINDOW": session.window}
+    _script(tmux, _FOLLOW_TMUX, **{k: shlex.quote(str(v)) for k, v in words.items()})
+
+
 def _real_estate(estate, **kwargs) -> Estate:
     """The estate with the checkout's own `lane-start` in place of the
     stand-in: the bind's real `lane-start --no-launch --bind`, the copy
-    beside the guard on primary (`Estate.primary`), so it runs that build."""
+    beside the guard on primary (`Estate.primary`), so it runs that build.
+
+    TWO THINGS THE REAL `lane-start` NEEDS THAT THE STAND-IN DID NOT (T214g;
+    lane 5's CI run 43239525007, where case 17 and row (d) ended `bind-failed`
+    with 2 on T502's tree):
+    - THE LANE'S CHECKOUT. Its ladder (`lane-start:1331-1460` at `6050581`)
+      reads the swap record, the lane's log and `$PROJECTS_ROOT/<repo>`, and
+      proves a candidate only against a recorded home. This estate has no swap
+      record, no log line for `<to>`, no home and no `PROJECTS_ROOT`
+      (`GUARD_ENV_STRIP`), so it refused at `:1475`: "lane repoA-3 has no
+      recorded checkout and none could be PROVED, so nothing was started."
+      So `$HOME/projects/<repo>` is made, the ladder's default (rung 4); it
+      writes nothing to the register.
+    - THE WINDOW'S NEW NAME: the stand-in `tmux` follows the hook's rename
+      (`_follow_renames`), as tmux does."""
     est = estate(**kwargs)
     est.extra["LANES_LANE_START"] = str(est.guard.parent / "lane-start")
     est.set("edit-real")
+    (est.home / "projects" / est.to.rsplit("-", 1)[0]).mkdir(exist_ok=True)
+    _follow_renames(est.session)
     return est
 
 
@@ -1183,6 +1247,7 @@ def _two_binds(estate, mode="files") -> tuple:
         session.close()
     two.session = guard_session(one.home, two.bin, one.wip, window="repoA-4",
                                 session_id=two.sid, name=TO)
+    _follow_renames(two.session)
     two.sessions.append(two.session)
     one.make_offer()
     two.hook("hello")
