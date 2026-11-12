@@ -261,8 +261,8 @@ os.execv(sys.executable, [sys.executable, TARGET] + argv)
 #: The `read: mirror` line (design S3, "The mirror reads"), on stderr.
 MIRROR_LINE = re.compile(r"^read: mirror at [0-9a-f]{12}, .*$", re.M)
 
-#: THE GUARD'S WINDOW (lane 3's T507 ruling (1), #165 6783977598; lane 1's
-#: finding of this case, 6809022654). The guard keeps its order: with no
+#: THE GUARD'S WINDOW (lane 3's T507 ruling (1), #165 6783977598; lane 5's
+#: post that found this case, 6809022654). The guard keeps its order: with no
 #: window, or no live session record in it, it refuses 2 before any read, and
 #: T507's prefetch, the first call that asks `lanes-index`, comes after the
 #: session-record check (lane 5, #165 6755266457). So `[guard]` runs in the
@@ -270,7 +270,7 @@ MIRROR_LINE = re.compile(r"^read: mirror at [0-9a-f]{12}, .*$", re.M)
 #: gave AT-P3's case in the outage module (T203c's `guard_session`; built
 #: here in its form, since this module runs on lines that lack that helper).
 #: The window's stand-in `tmux` answers `display-message` as a real one does,
-#: with each `@…@` word below filled in.
+#: with each `@...@` word below filled in.
 GUARD_WINDOW, GUARD_TMUX_SESSION, GUARD_WINDOW_ID, GUARD_PANE = "repoA-2", "testsess", "@1", "%1"
 GUARD_TMUX = r'''#!/bin/sh
 # TEST 14's STAND-IN tmux for the guard's window (feature 007, T507 ruling
