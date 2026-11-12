@@ -1456,7 +1456,8 @@ class LabelRules:
     def state(self) -> dict:
         return {"switch": self.switch(), "head": self.head(),
                 "journal": _rows(self.db, "SELECT seq, kind FROM journal ORDER BY seq"),
-                "files": _rows(self.db, "SELECT path, present FROM files ORDER BY path")}
+                "files": _rows(self.db, "SELECT path, final_newline, sha256, last_seq FROM files "
+                                        "ORDER BY path")}
 
     def send(self, base: int, entry: dict) -> subprocess.CompletedProcess:
         literal = json.dumps(entry, ensure_ascii=True).replace("'", "''")
