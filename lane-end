@@ -310,8 +310,10 @@
 #      rerun is the writer's, above; any other code says the row was NOT closed);
 #      W14 (`log ENDED|RETIRED`) ends it once the handoff fragment
 #      has printed in full on stdout, W13 having committed. On primary a 2 is a
-#      scope another act changed after the base (an expectation), and a 3 a
-#      commit that may or may not have landed (D8; the writer's rerun is above)
+#      scope another act changed after the base (an expectation), a token the
+#      client's own check refuses (Y:5600) or a base of another generation
+#      (Y:5591), and a 3 a commit that may or may not have landed (D8; the
+#      writer's rerun is above)
 #   130, 143  stopped by INT or TERM (128 plus the signal): the run ends where
 #      the signal found it and removes its temporary file, never resumes
 #
