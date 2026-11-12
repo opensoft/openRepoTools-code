@@ -6962,7 +6962,7 @@ canon_lane() {   # <typed name>
 # a list that could under-list an act's scopes. `rows_named_ci` answers 0 and
 # nothing for "no row", and 1 where the register could not be read (69 on
 # primary, feature 007 T505 Q3), so any status but 0 ends the walk with that
-# status. The hop's 69 is passed on too, as `rows_named_ci_alias` passes both;
+# status. The hop's 69 is passed on too, as T505's `rows_named_ci_alias` does;
 # the hop's 1 is still "no alias", the walk's end. Where every read works, the
 # names and the 0 are what they were.
 #   0 + the names · 5 the alias table could not be read · the register read's
