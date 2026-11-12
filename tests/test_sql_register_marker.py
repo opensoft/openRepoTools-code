@@ -838,10 +838,15 @@ if ANSWER.get("signal"):
 sys.exit(ANSWER.get("exit", 0))
 '''
 
-#: One warning that the mode query failed and the write runs in files mode.
-#: No contract fixes its words; this is the loosest reading: a line naming
-#: the mode and files mode.
-MODE_WARNING = re.compile(r"\bmode\b.*\bfiles\b|\bfiles\b.*\bmode\b", re.I)
+#: One warning that the mode query failed and the write runs in files mode
+#: (D3). No contract fixes its words, so this counts only a warning line of
+#: `lanes-edit.sh`'s that names the query: one that starts
+#: `lanes-edit: WARNING:` and names `lanes-index mode`. A line naming the
+#: mode and files mode alone also matched T419's refusal note on a SQL
+#: estate, "This workstation writes in files mode, so `log` refuses"
+#: (`lanes-edit.sh:2771` at `refs/l1/V-round5`), and counted 2 for AT-F8's
+#: `[*-sql]` ids (AN13b's cause 1; line AF13b).
+MODE_WARNING = re.compile(r"^lanes-edit: WARNING: .*\blanes-index mode\b")
 TIMEOUT_WORDS = re.compile(r"tim(e|ed)[ -]?out|timer|\b2 ?s\b|seconds?\b", re.I)
 
 
