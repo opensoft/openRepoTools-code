@@ -1525,11 +1525,18 @@ def test_a_run_killed_after_its_call_line_or_mid_call_is_taken_over_in_doubt_and
     assert len(rec["calls"]) == 1, "the call line was not written before the send"
     os.killpg(w.proc.pid, signal.SIGKILL)
     w.wait()
+    write_id = rec["fields"]["write_id"].lower()
     if admin is not None:
         e.unlock(admin)
+        # THE KILLED CALL'S BACKEND RUNS ON (T245n; PM33A-TRIAGE L4): its
+        # client is gone, but once the head row is let go it finishes the
+        # request it was sent, COMMIT included, so `landed` is read only once
+        # no backend carries the write's id.
+        until_seen("the killed call's backend ended", lambda: e.c.value(
+            f"SELECT count(*) FROM pg_stat_activity WHERE query LIKE '%{write_id}%' "
+            "AND pid <> pg_backend_pid();") == "0")
     else:
         held.close()
-    write_id = rec["fields"]["write_id"].lower()
     not_after = rec["calls"][0].split()[2]
     landed = e.has_write(write_id)
     rival = e.run(LB, argv)
