@@ -19,9 +19,10 @@ WHAT IT HOLDS, by task:
       6747929926 point 1); every other command this build has that reads the
       configuration exits 2 with the same text: `status`, `sync` and
       `reconcile` with `LANES_INDEX` unset, and `export`, which writes it to
-      `<out>/why`; `cutover`, `rollback` and `set-mode primary` exit 2 with
-      it too, once a build has them (TP:2598-2600). No `psql` runs, no store
-      is made, and the files, the HEAD and origin are unchanged;
+      `<out>/why`; `cutover --import <sha>`, `rollback` and `set-mode
+      primary` exit 2 with it too, once a build has them (TP:2598-2600). No
+      `psql` runs, no store is made, and the files, the HEAD and origin are
+      unchanged;
     - `[mode-under-index-off]`: with `LANES_INDEX=off` kept set over the same
       file, `lanes-index mode` still exits 78 with the text, never `index`
       (lane 3, #165 6747957479; lane 1, 6748099727). Its `[J3]` word is
@@ -779,8 +780,14 @@ def refusing_case(state: Refusing) -> None:
                                                why, shown(proc))
     assert not (out / "meta").exists(), "export wrote an image under the refusal"
     # THE OPERATOR'S ACTS on a schema that is not a scratch schema (TP:2598-
-    # 2600): 2 with the text, in a build that has them; before that, 64.
-    for argv in (("cutover",), ("rollback",), ("set-mode", "primary")):
+    # 2600): 2 with the text, in a build that has them; before that, 64. Each
+    # is given an argument list that parses, since a build checks a verb's
+    # arguments before it reads the configuration (lane 1's T116, opensoft/
+    # openRepoTools#165 6810924785): a bare `cutover` is a 64, "needs
+    # --import <C> ... or --after-loss", and never reaches the refusal.
+    # `--import` takes a full 40-digit sha, which names no commit here.
+    imported = "0123456789abcdef0123456789abcdef01234567"
+    for argv in (("cutover", "--import", imported), ("rollback",), ("set-mode", "primary")):
         proc = state.index(state.copy, *argv, LANES_INDEX=None)
         if proc.returncode == usage and NOT_BUILT in proc.stderr:
             continue
