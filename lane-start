@@ -415,6 +415,15 @@ set -euo pipefail
 
 prog=lane-start
 
+# FEATURE 007, T428: `LANES_EXPECT` IS NEVER EXPORTED (Y:5581). An act's
+# scopes ride as a prefix on the one write they belong to, so one this
+# command inherited was written for nothing it calls. It is removed before
+# the first call, not at the act's base: until then `refresh-workspace`,
+# the `lanes --prefix` listing and the `lane` that a bare `lane-start`
+# `exec`s all ran with a caller's scopes (W11-T428, the probe for lane 2's
+# note, #165 6812474015).
+unset LANES_EXPECT
+
 SELF="${BASH_SOURCE[0]}"
 RESOLVED="$(readlink -f -- "$SELF" 2>/dev/null || printf '%s' "$SELF")"
 SCRIPT_DIR="$(cd -- "$(dirname -- "$RESOLVED")" && pwd)"
@@ -1302,7 +1311,8 @@ ls_late_refuse() {   # <the read, as run> <its exit> <what it would have told>
 # variable (Y:5596); another act goes on without a base there, but
 # `lane-start` refuses, because no such helper has `start-record`. And
 # `LANES_EXPECT` is never exported (Y:5581): an act's scopes ride as a
-# prefix on the one call they belong to, so none is inherited.
+# prefix on the one call they belong to, so none is inherited; the one a
+# caller exported was unset at the top of this file.
 # THE LINE'S FORM (Y:5577-5579), read as `lanes-edit.sh`'s `act_parse`
 # reads it, with `case` patterns of spelled-out bracket lists:
 # `<act-id>@files`, or `<act-id>@<seq>:<generation>`.
@@ -1329,7 +1339,6 @@ ls_act_form() (   # <the line>: 0 where it is a base
   esac
   return 1
 )
-unset LANES_EXPECT
 LS_TMP="$(mktemp)"
 ls_act=""; ls_act_rc=0
 ls_act="$("$LANES_EDIT" act-begin 2>"$LS_TMP")" || ls_act_rc=$?
