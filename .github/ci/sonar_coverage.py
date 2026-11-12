@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import json
 import os
 from pathlib import Path
@@ -73,14 +74,14 @@ def shell_baseline(out, sources, kcov):
 def coverage_environment(root, out, hashes):
     config = out / "coverage.rc"
     config.write_text(
-        "[run]\nparallel = true\nsigterm = true\nplugins = provenance\n"
+        "[run]\ncore = ctrace\nparallel = true\nsigterm = true\nplugins = provenance\n"
         "data_file = " + str(out / ".coverage") + "\n"
         "omit =\n    */site-packages/*\n    /usr/*\n"
         "disable_warnings = no-data-collected, module-not-measured\n",
         encoding="utf-8")
     env = {
         "ORT_SONAR_ROOT": str(root), "ORT_SONAR_INVENTORY": str(out / INVENTORY),
-        "COVERAGE_PROCESS_START": str(config),
+        "COVERAGE_PROCESS_START": str(config), "COVERAGE_CORE": "ctrace",
         "PYTHONPATH": str(HELPERS) + (os.pathsep + os.environ["PYTHONPATH"]
                                     if os.environ.get("PYTHONPATH") else ""),
         "BASH_ENV": str(HELPERS / "bash-env.sh"),
@@ -103,6 +104,12 @@ def coverage_environment(root, out, hashes):
 def prepare(root, out, kcov):
     import coverage
     print("measurement tool: coverage.py", coverage.__version__)
+    try:
+        tracer = importlib.import_module("coverage.tracer")
+    except ImportError as exc:
+        raise RuntimeError("source-copy attribution requires coverage's C tracer") from exc
+    if not getattr(tracer, "CTracer", None):
+        raise RuntimeError("source-copy attribution requires coverage's C tracer")
     root, out = root.resolve(), out.resolve()
     manifest = json.loads((out / INVENTORY).read_text())
     checked_sources(root, manifest)
