@@ -42,7 +42,9 @@ whose oracle is today's text and today's drop.
 
 from __future__ import annotations
 
+import atexit
 import calendar
+import errno
 import hashlib
 import json
 import os
@@ -51,6 +53,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -322,6 +325,28 @@ def _until(predicate, limit: float, step: float = 0.05):
         time.sleep(step)
 
 
+def _release(fifo: Path, limit: float) -> bool:
+    """Let go the call the shim holds on `fifo` (its `hold` arm, which reads
+    the FIFO to its end): open it for writing and close it, inside `limit`
+    seconds. True where a call was held and is let go; False where no call
+    held the FIFO in that time. A plain `open(fifo, "w")` waits until a
+    reader opens the FIFO, which is for ever where the engine never made the
+    call the arm names, or the call died before it reached the FIFO; that
+    open hung test 10's case 6 in lane 1's CI rounds 3, 4 and 5 (#165
+    6810924785). So the open is `O_NONBLOCK`, which fails at once with ENXIO
+    while no reader holds the FIFO, and it is tried again until `limit`."""
+    def once() -> bool:
+        try:
+            fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError as exc:
+            if exc.errno == errno.ENXIO:
+                return False
+            raise
+        os.close(fd)
+        return True
+    return bool(_until(once, limit))
+
+
 def _utc(epoch: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
 
@@ -356,7 +381,9 @@ def run_hook(argv, stdin_text: str, env: dict, cwd, timeout: float = HOOK_TIMEOU
     the hook as the leader of a process group of its own, feeds its JSON on
     stdin, and at `timeout` sends `SIGTERM` to that whole group; it never
     waits on a pipe a child inherited, only for the hook's own exit, and it
-    logs when each stream reached EOF."""
+    logs when each stream reached EOF. Every wait is bounded: 10 s after the
+    `SIGTERM`, then `SIGKILL` to the group and 10 s more, and a hook that
+    outlives that is a `TimeoutExpired`, never a wait without end."""
     t0 = time.monotonic()
     proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, cwd=str(cwd), env=env,
@@ -398,7 +425,7 @@ def run_hook(argv, stdin_text: str, env: dict, cwd, timeout: float = HOOK_TIMEOU
             code = proc.wait(10)
         except subprocess.TimeoutExpired:
             os.killpg(proc.pid, signal.SIGKILL)
-            code = proc.wait()
+            code = proc.wait(10)
     t_exit = time.monotonic()
     for reader in readers:
         reader.join(timeout=1.0)
@@ -459,6 +486,9 @@ class Estate:
         self.other = str(uuid.uuid4())
         self.to = to
         self.guard = guard
+        #: The `lanes-index` the estate's own calls run (`_index`, `_Service`):
+        #: the checkout's, or on primary the flipped copy beside the guard.
+        self.index = REPO / "lanes-index"
         self.home = root / "home"
         self.wip = self.home / "projects" / "wip"
         self.origin = root / "origin.git"
@@ -505,7 +535,35 @@ class Estate:
         URLs naming this test's database). The register's tables come from
         T227's `tmpl_imported` and its logins from T228, so a primary case
         waits for both besides lane 4's and lane 5's code; the bind's own
-        calls go through T203's `PSQL_SHIM`, whose log the case reads."""
+        calls go through T203's `PSQL_SHIM`, whose log the case reads.
+
+        THE BUILD IS FLIPPED (lane 5's F2, #165 6812547449): the checkout's
+        `lanes-index` keeps lane 1's `RENDER_GIT_HALF = False`, so its
+        `load_config` refuses `mode=primary` with 78 before any request, and
+        no case here would reach the database. So, as the outage module's
+        `Estate` does (`tests/test_sql_register_outage.py:303-311` at W4a's
+        `bc6e00a4`), the estate runs `flipped_copy`'s `lanes-index` with
+        copies of `lanes-edit.sh`, `repos.tsv` and `lane-start` beside it
+        (the copy rule, CLI4.5:885): the guard, the stand-in `LANES_EDIT`'s
+        real verbs, the bind's real `lane-start` (`_real_estate`) and the
+        estate's own `lanes-index` calls all run that build. A case that
+        names its own guard keeps it. The database's switch stays at
+        `files` until a case brings its register to primary (`_Register`)."""
+        if self.guard == GUARD:
+            from sql_register_helpers import flipped_copy
+            tool = self.root / "tool"
+            try:
+                self.index = flipped_copy(REPO / "lanes-index", tool, True)
+            except ValueError as exc:
+                raise AssertionError(f"lanes-index cannot be flipped to its git half ({exc}): "
+                                     f"lane 1's RENDER_GIT_HALF (T105) has not landed, and "
+                                     f"mode=primary is refused without it") from exc
+            for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
+                if (REPO / name).exists():
+                    shutil.copy2(REPO / name, tool / name)
+            self.guard = tool / "lanes-edit.sh"
+            self.edit = _script(self.root / "stub-lanes-edit", _STUB_EDIT, PY=sys.executable,
+                                CTL=_q(self.ctl), REAL=_q(self.guard))
         conf = self.root / "conf" / "lanes-index.conf"
         conf.parent.mkdir(mode=0o700)
         url = pg.url()
@@ -535,7 +593,7 @@ class Estate:
 
     def _git(self, argv, cwd) -> str:
         return subprocess.run(["git", *argv], cwd=str(cwd), env=self.base, check=True,
-                              capture_output=True, text=True).stdout
+                              capture_output=True, text=True, timeout=60).stdout
 
     def push_register(self, rows, first=False) -> None:
         (self.wip / "lanes" / "LANES.md").write_text(register_text(rows), encoding="utf-8")
@@ -667,9 +725,10 @@ def _sleeper() -> subprocess.Popen:
 
 
 def _dead_pid() -> int:
-    """A pid that has exited and been reaped."""
+    """A pid that has exited and been reaped. The wait is bounded, as every
+    wait in this module is."""
     proc = subprocess.Popen([sys.executable, "-I", "-c", "pass"])
-    proc.wait()
+    proc.wait(30)
     return proc.pid
 
 
@@ -1053,9 +1112,10 @@ def test_an_unreadable_bind_record_is_dropped_with_exit_2(estate):
 
 def _real_estate(estate, **kwargs) -> Estate:
     """The estate with the checkout's own `lane-start` in place of the
-    stand-in: the bind's real `lane-start --no-launch --bind`."""
+    stand-in: the bind's real `lane-start --no-launch --bind`, the copy
+    beside the guard on primary (`Estate.primary`), so it runs that build."""
     est = estate(**kwargs)
-    est.extra["LANES_LANE_START"] = str(REPO / "lane-start")
+    est.extra["LANES_LANE_START"] = str(est.guard.parent / "lane-start")
     est.set("edit-real")
     return est
 
@@ -1449,7 +1509,7 @@ def test_pid_start_of_answers_live_dead_and_unreadable(tmp_path, case):
                 assert token != str(int(token) + 7)
         finally:
             holder.kill()
-            holder.wait()
+            holder.wait(10)
     elif case == "dead":
         assert ask(_dead_pid())[0] == 1
     else:
@@ -1466,7 +1526,11 @@ def test_the_post_bind_refill_is_one_register_read_and_never_git(estate, tmp_pat
     register is the estate's own `lanes/LANES.md`, as `[answer-2]`'s is: on
     primary the guard reads the register from the prefetch's `.register`, and
     a register with no `lanes/LANES.md` is a failed read there (T505), which
-    would end the hook 2 at its text check before any offer.
+    would end the hook 2 at its text check before any offer. The refill's
+    filter leaves out every `--for` call: the two hooks' own form-2 reads,
+    `register read --for guard --prefetch`, at the offer's prompt and the
+    answer's, are no refill (lane 5, #165 6809022654). A refill sent with
+    `--for guard` is then no refill either, and the count of one refuses it.
     Fails until L5-A2 (lane 5's T507)."""
     code = tmp_path / "code"
     code.mkdir()
@@ -1490,7 +1554,8 @@ def test_the_post_bind_refill_is_one_register_read_and_never_git(estate, tmp_pat
     done_at = [e["t"] for e in est.log("lane-start.log") if e["event"] == "end"][0]
     calls = [json.loads(line) for line in (code / ARGV_LOG).read_text(
         encoding="utf-8").splitlines()] if (code / ARGV_LOG).exists() else []
-    refills = [c for c in calls if c[:2] == ["register", "read"] and "--prefetch" in c]
+    refills = [c for c in calls if c[:2] == ["register", "read"] and "--prefetch" in c
+               and "--for" not in c]
     assert len(refills) == 1, f"the refill was not one register read: {calls}"
     refill = refills[0]
     assert "--cache" in refill and refill[refill.index("--files") + 1] == "register,aliases" \
@@ -1772,6 +1837,19 @@ def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate):
 BUDGET = 4.5
 #: The parse's start line, `T0 + 3.75 s` (SVC-8), asserted at twice it.
 START_LINE = 3.75
+#: How long case 6 waits, once the hook has exited, for the shim to hold the
+#: whole-file fetch on its FIFO. The fetch starts before the cut, so it is
+#: held by then; this is a margin, the outer's 10 s (`Estate.outer`).
+HOLD_LIMIT = 10.0
+#: FORM 4 AS THE SHIM SEES IT (lane 5's F2b, #165 6812547449). The shim logs
+#: `psql`'s own argv, never `lanes-index`'s, so no `--for` is ever in it;
+#: form 4 is known by its SQL instead, which the shim logs as `sent` and
+#: which an arm's `match` reads. It is the one request that reads the
+#: latest import at or below `n` (contract section 3.6's form 4;
+#: `register_read_queries(at=n)` in lane 5's writer A, T507A `319cd928`,
+#: `lanes-index:6081`). Form 2, the whole-file fetch and the render read
+#: send no such bound.
+FORM_4_SQL = "WHERE i.kind = 'import' AND i.seq <= "
 
 
 def _silent_listener(host="127.0.0.1"):
@@ -1888,19 +1966,58 @@ def test_a_connect_timeout_above_the_direct_reads_share_is_cut_at_the_parse_star
             svc.stop()
 
 
+#: Where the too-late case's guard arrives at its prefetch: just past the
+#: start line, `T0 + 3.8 s` from the runner's own start (lane 3, #165
+#: 6812673125, on lane 5's F3, 6812547449).
+ARRIVAL = 3.8
+#: The stand-in `tmux`'s hold for that case, put in before its `case "$fmt"`:
+#: on the guard's last query before its prefetch, `record_window_state`'s
+#: targeted `#{session_name}`, once, it sleeps until the wall time in
+#: `@DEADLINE@`, then writes the time it woke to `@ARRIVED@`.
+_TOO_LATE_HOLD = r'''if [ "$fmt" = '#{session_name}' ] && [ -n "$target" ] && [ ! -e @ARRIVED@ ]; then
+  : > @ARRIVED@
+  rem=$(awk -v d="$(cat @DEADLINE@)" -v n="$(date +%s.%N)" 'BEGIN { r = d - n; if (r < 0) r = 0; printf "%.3f", r }')
+  sleep "$rem"
+  date +%s.%N > @ARRIVED@
+fi
+'''
+
+
 def test_a_guard_that_starts_too_late_refuses_2_without_a_read(estate):
     """AT-10: a guard that starts at or past the direct read's cap refuses 2
     and makes no read (the 5 s is one budget, spent once). The stand-in
-    `tmux` holds the hook's fixed parts past the start line, so `T0` is
-    early and the read would start too late."""
-    est = estate(mode="primary")
+    `tmux` holds the guard's last query before its prefetch,
+    `record_window_state`'s targeted `#{session_name}`, until `T0 + 3.8 s`
+    from the runner's own start (`ARRIVAL`), once, so `T0` is early and the
+    read would start just past the start line; the arrival and the exit
+    are printed beside the 4.5 s, which is asserted as stated (lane 3, #165
+    6812673125; design:6181-6183 records every measured time). A sleep on
+    every `tmux` call put four of them, 5.2 s, before the prefetch, so the
+    runner killed the hook first (lane 5's F3, #165 6812547449). The estate
+    is G1's, `to=FROM, to_row=False`, so the guard's only refusal is the
+    late start's, never the name offer's (lane 3's reason in #165
+    6812490130)."""
+    est = estate(mode="primary", to=FROM, to_row=False)
     est.shim()
+    deadline, arrived = est.bin / "tmux-deadline", est.bin / "tmux-arrived"
+    hold = _TOO_LATE_HOLD.replace("@ARRIVED@", f"'{arrived}'").replace(
+        "@DEADLINE@", f"'{deadline}'")
     tmux = est.session.tmux
     text = tmux.read_text(encoding="utf-8")
-    tmux.write_text(text.replace("[ \"${1-}\" = display-message ] || exit 0",
-                                 "sleep 1.3\n[ \"${1-}\" = display-message ] || exit 0", 1),
-                    encoding="utf-8")
+    assert text.count('case "$fmt" in') == 1, "the stand-in tmux has changed its shape"
+    tmux.write_text(text.replace('case "$fmt" in', hold + 'case "$fmt" in'), encoding="utf-8")
+    mono0, wall0 = time.monotonic(), time.time()
+    deadline.write_text(f"{wall0 + ARRIVAL:.6f}\n", encoding="utf-8")
     hook = est.hook("hello")
+    woke = arrived.read_text(encoding="utf-8").strip() if arrived.exists() else ""
+    took = hook.t_exit - hook.t0
+    if woke:
+        at = float(woke) - wall0 - (hook.t0 - mono0)
+        print(f"T213: the guard's last tmux query before its prefetch returned at T0 + "
+              f"{at:.3f} s (set for {ARRIVAL} s); the hook exited {hook.code} at T0 + "
+              f"{took:.3f} s (budget {BUDGET} s)")
+    assert woke, ("the guard made no targeted `#{session_name}` query (record_window_state's), "
+                  f"or was stopped in it, so nothing held it to the start line\n{hook!r}")
     _refuses_inside_the_budget(hook)
     assert not est.shim_calls(), "a guard past its start line still read"
 
@@ -1912,15 +2029,30 @@ def test_a_whole_file_fetch_the_start_line_cuts_fills_the_image_cache_for_the_ne
     fetch on a FIFO; the hook exits 2 at the cut inside the budget; the fetch
     runs on in a detached child, and once released writes the file to the
     image cache, so the next prompt's read fetches no whole file and
-    answers."""
-    est = estate(mode="primary")
+    answers. The FIFO is let go by `_release`, bounded at `HOLD_LIMIT`, so
+    where no call is held on it the case fails, and never waits. The estate
+    is G1's, `to=FROM, to_row=False`, as T213c built it for cases 1, 3, 4
+    and 5: with the default estate the first prompt's 2 is the name offer's,
+    and an oracle's refusal must come from the fault under test alone (lane
+    3, #165 6812490130). The case's database holds the estate's register at
+    primary (`_Register`; lane 5's F2, #165 6812547449): at `files` the
+    first request ends 69, `switch-files`, and no whole-file fetch is ever
+    made."""
+    est = estate(mode="primary", to=FROM, to_row=False)
+    _Register(est)
     fifo = tmp_path / "whole-file"
     os.mkfifo(fifo)
     est.shim([{"mode": "hold", "match": "lanes/LANES.md", "call": 1, "fifo": str(fifo)}])
-    hook = est.hook("hello")
-    _refuses_inside_the_budget(hook)
-    with open(fifo, "w"):
-        pass
+    try:
+        hook = est.hook("hello")
+        _refuses_inside_the_budget(hook)
+        assert _release(fifo, HOLD_LIMIT), (
+            f"no call naming lanes/LANES.md was held on the FIFO {HOLD_LIMIT:.0f} s after the "
+            f"hook exited, so the guard's direct read started no whole-file fetch for the cut "
+            f"to leave running (fails until lane 5's T507); the shim logged "
+            f"{len(est.shim_calls())} call(s)\n{hook!r}")
+    finally:
+        _release(fifo, 0)
     before = len(est.shim_calls())
     time.sleep(1.0)
     hook = est.hook("hello")
@@ -1997,9 +2129,12 @@ def test_a_second_read_past_the_start_line_is_noted_not_refused(estate, case):
     `.log.<key>`, and the guard notes the log as unreadable and does not
     refuse (B4); `[under-a-declaration]`: its cut stays `T0 + 3.75 s` under
     an unexpired declaration (B5); `[no-declaration-read]`: it reads no
-    declaration."""
+    declaration. The case's database holds the estate's register at primary
+    (`_Register`; lane 5's F2, #165 6812547449), so form 2 answers and the
+    guard reaches its second read."""
     est = estate(mode="primary")
-    est.shim([{"mode": "window", "ms": 3900, "match": "--for guard"}] if case == "at-the-cap"
+    _Register(est)
+    est.shim([{"mode": "window", "ms": 3900, "match": FORM_4_SQL}] if case == "at-the-cap"
              else [])
     if case == "under-a-declaration":
         conf = Path(est.extra["LANES_INDEX_CONFIG"])
@@ -2009,8 +2144,8 @@ def test_a_second_read_past_the_start_line_is_noted_not_refused(estate, case):
     hook = est.hook("hello")
     assert not hook.killed and hook.t_exit - hook.t0 < BUDGET, repr(hook)
     assert "second read" not in hook.err or hook.code != 2, repr(hook)
-    forms = [c for c in est.shim_calls() if "--for" in " ".join(c.get("argv", []))]
-    assert forms, "the guard made no second read"
+    forms = [c for c in est.shim_calls() if FORM_4_SQL in c.get("sent", "")]
+    assert forms, "the guard made no second read (no call in the shim's log is form 4's SQL)"
 
 
 def test_the_guards_last_budget_line_is_below_guard_timeout():
@@ -2228,6 +2363,8 @@ def test_the_guards_register_parse_is_timed_on_a_real_sized_register_beside_toda
 # (8.6) and the request's first line (12). `status`'s `service` lines are
 # T512's in `cmd_status` (R44), whose words the contract does not fix.
 
+#: The checkout's `lanes-index`, which a case loads in process. A case's own
+#: calls run its estate's (`Estate.index`), the flipped copy on primary.
 INDEX = REPO / "lanes-index"
 #: The fallback line, printed once wherever the service was unavailable and
 #: the client then read directly (svc:104; lane 5's socket contract, draft 8,
@@ -2236,7 +2373,7 @@ FALLBACK = "guard: direct (service unavailable)"
 
 
 def _index(est: Estate, *args, env=None, timeout=60) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, str(INDEX), *args], capture_output=True, text=True,
+    return subprocess.run([sys.executable, str(est.index), *args], capture_output=True, text=True,
                           env=env or est.env(), cwd=str(est.wip), timeout=timeout)
 
 
@@ -2304,7 +2441,7 @@ class _Service:
 
     def __init__(self, est: Estate, **extra):
         self.est = est
-        self.proc = subprocess.Popen([sys.executable, str(INDEX), "serve"],
+        self.proc = subprocess.Popen([sys.executable, str(est.index), "serve"],
                                      stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE, env=est.env(**extra),
                                      cwd=str(est.wip), start_new_session=True)
@@ -2679,6 +2816,50 @@ def test_a_write_between_two_requests_is_in_the_next_answer(estate):
                                        if line != FALLBACK], (second.err, direct.err)
 
 
+#: `_masked_path`'s mirrors, by each directory's real path (None where the
+#: directory holds no masked name), and the one temporary root they share.
+_PATH_MIRRORS: dict = {}
+_PATH_MIRROR_ROOT: list = []
+
+
+def _masked_path(path: str) -> str:
+    """`path` with every directory kept in its place, and each one that holds
+    a `psql`, a `lanes-index` or a name that starts `pg_` swapped for a
+    private mirror of it: a directory of links, one to each of its entries
+    by its absolute path, those names left out. The case below runs `serve`
+    with no `psql` on a `PATH` of Python's own directory and `/bin`; on a
+    GitHub runner `postgresql-16`'s client puts `psql` in `/usr/bin` with
+    `git` and `bash`, and `/bin` is a link to it, so that `PATH` held a
+    `psql` there (lane 1's census, #165 6807454856). A directory that holds
+    none of those names passes through unchanged. Each mirror is made once
+    per process, under one `mkdtemp` that an `atexit` handler removes."""
+    parts = []
+    for part in path.split(os.pathsep):
+        if not part:
+            continue
+        real = os.path.realpath(part)
+        if real not in _PATH_MIRRORS:
+            try:
+                names = os.listdir(real)
+            except OSError:
+                names = []
+            masked = {name for name in names
+                      if name in ("psql", "lanes-index") or name.startswith("pg_")}
+            mirror = None
+            if masked:
+                if not _PATH_MIRROR_ROOT:
+                    _PATH_MIRROR_ROOT.append(tempfile.mkdtemp(prefix="l2-pathmask-"))
+                    atexit.register(shutil.rmtree, _PATH_MIRROR_ROOT[0], ignore_errors=True)
+                mirror = os.path.join(_PATH_MIRROR_ROOT[0], str(len(_PATH_MIRRORS)))
+                os.mkdir(mirror)
+                for name in names:
+                    if name not in masked:
+                        os.symlink(os.path.join(real, name), os.path.join(mirror, name))
+            _PATH_MIRRORS[real] = mirror
+        parts.append(_PATH_MIRRORS[real] or part)
+    return os.pathsep.join(parts)
+
+
 def test_the_service_reaches_the_database_only_through_psql(estate):
     """OP-10 (R-F10-20): every answer from the database is a call in the
     shim's log; with no `psql` at the start, `serve` stamps `no-psql` and
@@ -2690,10 +2871,10 @@ def test_the_service_reaches_the_database_only_through_psql(estate):
     est.hook("hello")
     svc.stop()
     assert len(est.shim_calls()) > before, "an answer came from the database without psql"
-    nopsql = subprocess.run([sys.executable, str(INDEX), "serve"], capture_output=True,
+    nopsql = subprocess.run([sys.executable, str(est.index), "serve"], capture_output=True,
                             text=True, timeout=30, cwd=str(est.wip),
-                            env=est.env(PATH=os.pathsep.join([os.path.dirname(sys.executable),
-                                                              "/bin"])))
+                            env=est.env(PATH=_masked_path(os.pathsep.join(
+                                [os.path.dirname(sys.executable), "/bin"]))))
     stamp = (_run_dir(est) / "register.failed").read_text(encoding="utf-8").split()
     # THE STAMP HOLDS THE UTC AND THE FIXED CAUSE, AND NO OTHER TEXT (section 8.6).
     assert nopsql.returncode == 2 and "no-psql" in stamp and len(stamp) == 2, (nopsql, stamp)
