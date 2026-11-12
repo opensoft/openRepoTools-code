@@ -80,3 +80,23 @@ def test_gate_rejects_relaxed_thresholds_and_accepts_computed_result(assurance):
     thresholds[0]["error"] = "5"
     with pytest.raises(ValueError, match="thresholds"):
         assurance.verify_gate(status, thresholds)
+
+
+def test_ci_paths_refuse_other_checkouts_and_arbitrary_report_paths(assurance, tmp_path, monkeypatch):
+    root = tmp_path / "checkout"
+    runner = tmp_path / "runner"
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(root))
+    monkeypatch.setenv("RUNNER_TEMP", str(runner))
+    assert assurance.ci_paths(root, runner / "sonar") == (root, runner / "sonar")
+    with pytest.raises(ValueError, match="paths must match"):
+        assurance.ci_paths(tmp_path / "other", runner / "sonar")
+    with pytest.raises(ValueError, match="paths must match"):
+        assurance.ci_paths(root, runner / "elsewhere")
+
+
+def test_pr_gate_is_computed_without_a_main_branch_period(assurance):
+    thresholds = [{"metric": key, "op": op, "error": threshold}
+                  for key, (op, threshold) in assurance.GATE.items()]
+    status = {"projectStatus": {"status": "OK", "periods": [],
+                                "conditions": [{"metricKey": "new_coverage", "status": "OK"}]}}
+    assert assurance.verify_gate(status, thresholds, require_period=False)["status"] == "OK"

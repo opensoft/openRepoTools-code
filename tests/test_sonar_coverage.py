@@ -59,16 +59,16 @@ def test_shell_hits_require_known_hash_and_exact_baseline_bytes(collector, tmp_p
     (out / "shell-baseline.xml").write_text(
         '<coverage version="1"><file path="' + str(staged / "command")
         + '"><lineToCover lineNumber="2" covered="false"/></file></coverage>')
-    hits = out / "shell-hits.1"
+    hits = out / "shell-hits"
     hits.write_text(manifest["files"][0]["sha256"] + "\t2\n")
-    assert collector.shell_lines(root, out, manifest) == {"command": {2: True}}
+    assert collector.shell_lines(out, manifest) == {"command": {2: True}}
     hits.write_text("0" * 64 + "\t2\n")
     with pytest.raises(ValueError, match="unknown shell hit"):
-        collector.shell_lines(root, out, manifest)
+        collector.shell_lines(out, manifest)
     hits.unlink()
     (staged / "command").write_text("modified")
     with pytest.raises(ValueError, match="denominator bytes"):
-        collector.shell_lines(root, out, manifest)
+        collector.shell_lines(out, manifest)
 
 
 def test_bash_collector_credits_exact_copy_without_recording_arguments(tmp_path):
@@ -81,11 +81,12 @@ def test_bash_collector_credits_exact_copy_without_recording_arguments(tmp_path)
     result = subprocess.run(["bash", str(copied), "private-argument"],
                             env=env, capture_output=True, text=True, check=True)
     assert result.stdout == "hello\n"
-    rows = "".join(path.read_text() for path in tmp_path.glob("hits.*"))
+    rows = "".join(path.read_text() for path in tmp_path.glob("hits*"))
     assert manifest["files"][0]["sha256"] + "\t2\n" in rows
-    assert "private-argument" not in rows and "hello" not in rows
-    for path in tmp_path.glob("hits.*"):
+    assert "private-argument" not in rows
+    assert "hello" not in rows
+    for path in tmp_path.glob("hits*"):
         path.unlink()
     copied.write_text("#!/usr/bin/env bash\necho changed\n")
     subprocess.run(["bash", str(copied)], env=env, capture_output=True, check=True)
-    assert not list(tmp_path.glob("hits.*"))
+    assert not list(tmp_path.glob("hits*"))

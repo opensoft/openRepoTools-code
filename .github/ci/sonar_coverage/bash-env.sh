@@ -17,7 +17,7 @@ if [[ -n ${ORT_SONAR_SHELL_HITS:-} && -n ${ORT_SONAR_SHELL_HASHES:-} ]]; then
     fi
     _ort_hash="${_ort_sonar_hashes["$_ort_path"]}"
     if [[ -n "$_ort_hash" ]]; then
-      printf '%s\t%s\n' "$_ort_hash" "$_ort_line" >> "$ORT_SONAR_SHELL_HITS.$BASHPID"
+      printf '%s\t%s\n' "$_ort_hash" "$_ort_line" >> "$ORT_SONAR_SHELL_HITS"
     fi
     return 0
   }

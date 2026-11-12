@@ -11,6 +11,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import time
+
+INVENTORY = "inventory.json"
 import xml.etree.ElementTree as ET
 
 HERE = Path(__file__).resolve().parent
@@ -28,10 +30,7 @@ def checked_sources(root, manifest):
             raise ValueError("coverage source changed: " + item["path"])
 
 
-def prepare(root, out, kcov):
-    root, out = root.resolve(), out.resolve()
-    manifest = json.loads((out / "inventory.json").read_text())
-    checked_sources(root, manifest)
+def stage_shell_sources(root, out, manifest):
     sources = out / "shell-sources"
     sources.mkdir()
     hashes = []
@@ -42,6 +41,10 @@ def prepare(root, out, kcov):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(root / item["path"], target)
         hashes.append(item["sha256"])
+    return sources, hashes
+
+
+def shell_baseline(out, sources, kcov):
     launcher = out / "parse-shell.sh"
     launcher.write_text("#!/usr/bin/env bash\n:\n", encoding="utf-8")
     subprocess.run([
@@ -65,6 +68,9 @@ def prepare(root, out, kcov):
                 raise
             time.sleep(0.1)
     shutil.copyfile(reports[0], out / "shell-baseline.xml")
+
+
+def coverage_environment(root, out, hashes):
     config = out / "coverage.rc"
     config.write_text(
         "[run]\nparallel = true\nsigterm = true\nplugins = provenance\n"
@@ -73,7 +79,7 @@ def prepare(root, out, kcov):
         "disable_warnings = no-data-collected, module-not-measured\n",
         encoding="utf-8")
     env = {
-        "ORT_SONAR_ROOT": str(root), "ORT_SONAR_INVENTORY": str(out / "inventory.json"),
+        "ORT_SONAR_ROOT": str(root), "ORT_SONAR_INVENTORY": str(out / INVENTORY),
         "COVERAGE_PROCESS_START": str(config),
         "PYTHONPATH": str(HELPERS) + (os.pathsep + os.environ["PYTHONPATH"]
                                     if os.environ.get("PYTHONPATH") else ""),
@@ -93,40 +99,60 @@ def prepare(root, out, kcov):
     return env
 
 
-def shell_lines(root, out, manifest):
+
+def prepare(root, out, kcov):
+    root, out = root.resolve(), out.resolve()
+    manifest = json.loads((out / INVENTORY).read_text())
+    checked_sources(root, manifest)
+    sources, hashes = stage_shell_sources(root, out, manifest)
+    shell_baseline(out, sources, kcov)
+    return coverage_environment(root, out, hashes)
+
+
+def shell_denominators(out, by_path):
     result = {}
-    by_hash = {}
-    for item in manifest["files"]:
-        if item["language"] == "shell" and not item["test"]:
-            result[item["path"]] = {}
-            by_hash.setdefault(item["sha256"], []).append(item)
     sources = (out / "shell-sources").resolve()
     for element in ET.parse(out / "shell-baseline.xml").getroot().findall("file"):
         path = Path(element.attrib["path"]).resolve()
         relative = path.relative_to(sources).as_posix()
-        if relative not in result:
+        if relative not in by_path:
             raise ValueError("unknown shell denominator source: " + relative)
-        expected = next(item for item in manifest["files"] if item["path"] == relative)
-        if digest(path) != expected["sha256"]:
+        if digest(path) != by_path[relative]["sha256"]:
             raise ValueError("shell denominator bytes changed: " + relative)
         result[relative] = {
             int(line.attrib["lineNumber"]): False
             for line in element.findall("lineToCover")}
-    absent = [name for name, lines in result.items() if not lines]
+    absent = [name for name in by_path if not result.get(name)]
     if absent:
         raise ValueError("kcov omitted shell source denominators: " + ", ".join(absent))
-    for path in out.glob("shell-hits.*"):
-        for row in path.read_text().splitlines():
-            checksum, value = row.split("\t")
-            if checksum not in by_hash:
-                raise ValueError("unknown shell hit source")
-            number = int(value)
-            for item in by_hash[checksum]:
-                if not 1 <= number <= item["lines"]:
-                    raise ValueError("shell hit outside source: " + item["path"])
-                # Real DEBUG events can include closing constructs kcov's static
-                # parser omitted. Retain those events rather than invent a hit.
-                result[item["path"]][number] = True
+    return result
+
+
+def apply_shell_hits(out, by_hash, result):
+    path = out / "shell-hits"
+    if not path.exists():
+        return
+    for row in path.read_text().splitlines():
+        checksum, value = row.split("\t")
+        if checksum not in by_hash:
+            raise ValueError("unknown shell hit source")
+        number = int(value)
+        for item in by_hash[checksum]:
+            if not 1 <= number <= item["lines"]:
+                raise ValueError("shell hit outside source: " + item["path"])
+            # Keep actual DEBUG events even when kcov's static parser omitted
+            # a closing construct. No unexecuted line receives a hit.
+            result[item["path"]][number] = True
+
+
+def shell_lines(out, manifest):
+    by_path = {item["path"]: item for item in manifest["files"]
+               if item["language"] == "shell" and not item["test"]}
+    by_hash = {}
+    for item in by_path.values():
+        by_hash.setdefault(item["sha256"], []).append(item)
+    result = shell_denominators(out, by_path)
+    apply_shell_hits(out, by_hash, result)
     return result
 
 
@@ -134,7 +160,7 @@ def python_lines(root, out, manifest):
     import sys
     sys.path.insert(0, str(HELPERS))
     os.environ["ORT_SONAR_ROOT"] = str(root)
-    os.environ["ORT_SONAR_INVENTORY"] = str(out / "inventory.json")
+    os.environ["ORT_SONAR_INVENTORY"] = str(out / INVENTORY)
     from coverage import Coverage
     from coverage.parser import PythonParser
 
@@ -193,25 +219,21 @@ def write_report(out, manifest, measurements):
 
 
 def main():
+    from sonar_assurance import ci_paths
+
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("prepare", "report", "run"))
+    parser.add_argument("command", choices=("prepare", "report"))
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--kcov", type=Path)
-    parser.add_argument("test_args", nargs="*")
-    args = parser.parse_intermixed_args()
-    root, out = args.root.resolve(), args.out.resolve()
+    args = parser.parse_args()
+    root, out = ci_paths(args.root, args.out)
     if args.command == "prepare":
-        prepare(root, out, args.kcov)
-    elif args.command == "run":
-        env = json.loads((out / "environment.json").read_text())
-        subprocess.run(["bash", "code/tests/run.sh", *args.test_args],
-                       cwd=root, env={**os.environ, **env}, check=True)
+        prepare(root, out, Path(os.environ["RUNNER_TEMP"]) / "kcov-build/src/kcov")
     else:
-        manifest = json.loads((out / "inventory.json").read_text())
+        manifest = json.loads((out / INVENTORY).read_text())
         checked_sources(root, manifest)
         measurements = python_lines(root, out, manifest)
-        measurements.update(shell_lines(root, out, manifest))
+        measurements.update(shell_lines(out, manifest))
         write_report(out, manifest, measurements)
 
 

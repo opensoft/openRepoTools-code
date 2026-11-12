@@ -38,8 +38,28 @@ def language(path, data):
     return None
 
 
+def source_record(repo, prefix, metadata, name):
+    mode, kind, oid = metadata.split()
+    path = repo / name
+    relative = prefix + name
+    if kind == "commit":
+        if git(path, "rev-parse", "HEAD").decode().strip() != oid:
+            raise ValueError("gitlink mismatch: " + relative)
+        return path, relative + "/"
+    if mode not in ("100644", "100755"):
+        return None
+    data = path.read_bytes()
+    if git(repo, "hash-object", "--", name).decode().strip() != oid:
+        raise ValueError("source bytes differ from commit: " + relative)
+    lang = language(relative, data)
+    if not lang:
+        return None
+    data.decode("utf-8")
+    return {"path": relative, "language": lang, "test": "tests" in Path(relative).parts,
+            "sha256": hashlib.sha256(data).hexdigest(), "lines": len(data.splitlines())}
+
+
 def inventory(root):
-    root = Path(root).resolve()
     records, commits = [], {}
 
     def visit(repo, prefix=""):
@@ -50,29 +70,12 @@ def inventory(root):
             if not row:
                 continue
             metadata, raw_path = row.split(b"\t", 1)
-            mode, kind, oid = metadata.decode().split()
-            name = raw_path.decode("utf-8")
-            path = repo / name
-            relative = prefix + name
-            if kind == "commit":
-                if git(path, "rev-parse", "HEAD").decode().strip() != oid:
-                    raise ValueError("gitlink mismatch: " + relative)
-                visit(path, relative + "/")
-            elif mode in ("100644", "100755"):
-                data = path.read_bytes()
-                if git(repo, "hash-object", "--", name).decode().strip() != oid:
-                    raise ValueError("source bytes differ from commit: " + relative)
-                lang = language(relative, data)
-                if lang:
-                    data.decode("utf-8")  # analysis must not silently replace bytes
-                    parts = Path(relative).parts
-                    records.append({
-                        "path": relative, "language": lang,
-                        "test": "tests" in parts,
-                        "sha256": hashlib.sha256(data).hexdigest(),
-                        "lines": len(data.splitlines()),
-                    })
-    visit(root)
+            record = source_record(repo, prefix, metadata.decode(), raw_path.decode("utf-8"))
+            if isinstance(record, tuple):
+                visit(*record)
+            elif record:
+                records.append(record)
+    visit(Path(root).resolve())
     return {"schema": 1, "commits": commits,
             "files": sorted(records, key=lambda item: item["path"])}
 
@@ -131,8 +134,8 @@ def sonar_api(endpoint, parameters):
 
 
 def verify_analysis(out, task_file, pull_request=None):
-    task = dict(line.split("=", 1) for line in task_file.read_text().splitlines()
-                if "=" in line)
+    task = {key: value for line in task_file.read_text().splitlines() if "=" in line
+            for key, value in [line.split("=", 1)]}
     if task.get("projectKey") != PROJECT:
         raise ValueError("scanner submitted a different project")
     completed = sonar_api("ce/task", {"id": task["ceTaskId"]})["task"]
@@ -140,9 +143,9 @@ def verify_analysis(out, task_file, pull_request=None):
         raise ValueError("Sonar compute task did not succeed")
     analysis_id = completed["analysisId"]
     status = sonar_api("qualitygates/project_status", {"analysisId": analysis_id})
-    assigned = sonar_api("qualitygates/get_by_project", {"project": PROJECT})
+    assigned = sonar_api("qualitygates/get_by_project", {"project": PROJECT, "organization": "opensoft"})
     gate_id = assigned["qualityGate"]["id"]
-    gate = sonar_api("qualitygates/show", {"id": gate_id})
+    gate = sonar_api("qualitygates/show", {"id": gate_id, "organization": "opensoft"})
     verify_gate(status, gate["conditions"], require_period=not pull_request)
     scope = {"component": PROJECT}
     if pull_request:
@@ -176,35 +179,34 @@ def verify_analysis(out, task_file, pull_request=None):
     return receipt
 
 
+def ci_paths(root, out):
+    """CLI arguments must agree with the CI-owned checkout and report directory."""
+    expected_root = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+    expected_out = Path(os.environ["RUNNER_TEMP"]).resolve() / "sonar"
+    if root.resolve() != expected_root or out.resolve() != expected_out:
+        raise ValueError("analysis paths must match this CI checkout and RUNNER_TEMP/sonar")
+    return expected_root, expected_out
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    sub = parser.add_subparsers(dest="command", required=True)
-    prepare = sub.add_parser("prepare")
-    prepare.add_argument("--root", type=Path, required=True)
-    prepare.add_argument("--out", type=Path, required=True)
-    acceptance = sub.add_parser("verify-analysis")
-    acceptance.add_argument("--out", type=Path, required=True)
-    acceptance.add_argument("--scanner-task", type=Path, required=True)
-    acceptance.add_argument("--pull-request")
-    gate = sub.add_parser("verify-gate")
-    gate.add_argument("--status", type=Path, required=True)
-    gate.add_argument("--gate", type=Path, required=True)
+    parser.add_argument("command", choices=("prepare", "verify-analysis"))
+    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--pull-request")
     args = parser.parse_args()
+    root, out = ci_paths(args.root, args.out)
     if args.command == "prepare":
-        manifest = inventory(args.root)
-        write_configuration(args.root, args.out, manifest)
+        manifest = inventory(root)
+        write_configuration(root, out, manifest)
         print(json.dumps({"commits": manifest["commits"],
                           "files": len(manifest["files"]),
                           "commands_without_suffix": [
                               item["path"] for item in manifest["files"]
                               if not Path(item["path"]).suffix and not item["test"]]},
                          indent=2))
-    elif args.command == "verify-analysis":
-        verify_analysis(args.out, args.scanner_task, args.pull_request)
     else:
-        result = verify_gate(json.loads(args.status.read_text()),
-                             json.loads(args.gate.read_text())["qualityGate"]["conditions"])
-        print(json.dumps(result, indent=2))
+        verify_analysis(out, root / ".scannerwork/report-task.txt", args.pull_request)
 
 
 if __name__ == "__main__":
