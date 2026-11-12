@@ -2167,21 +2167,47 @@ def test_claude_no_lane_still_skips_before_any_input(estate):
 
 
 def test_the_guard_maps_69_75_and_3_to_2(estate, tmp_path):
-    """AT-10: where the guard's register read ends 69, 75 or 3, the guard
-    exits 2 (the hook's only refusal), never the read's own code. Through
-    the contract's stub `lanes-index`, beside a copy of `lanes-edit.sh`,
-    with each end injected by `stub_outcome`. The estate is G1's, `to=FROM,
-    to_row=False`: the session is named for the window's lane, whose row
-    names it, so the guard's answer with a register it could read is 0, and
-    its 2 can only be the read's (lane 3's reason in #165 6812490130). The
-    module's default estate makes the name offer, whose own 2 would pass this
-    case wherever the guard went on past a failed read (line AN14)."""
+    """AT-10, "The codes the guard maps (D10)" (TP:1958-1963;
+    exit-codes.md:294): the guard exits 2 (the hook's only refusal), never
+    the code it met.
+
+    75 AND 3 ARE THE BIND'S (lane 5, #165 6814614032): `register read` never
+    ends 75 (a lost turn, from `register commit` only, register-cli.md:337)
+    or 3 (in doubt, from two commands only, :335), and the guard reads any
+    read code outside 0, 2, 69 and 78 as files mode with a warning (:340).
+    So answer 2's detached bind is made to exit 75, then 3, by the module's
+    stand-in `lane-start` (`rc`, the AT-F6 fixture case 5 uses, in place of
+    test 12's shim): the child records `mode=bind-failed` with `rc=` that
+    code, and the next prompt's hook exits 2 with "THE BIND TO LANE `<to>`
+    FAILED (exit `<rc>`)". In files mode, with the module's estate, whose
+    offer the `2` answers. They fail until L5-A1 (lane 5's T502, its
+    `bind-failed` arm).
+
+    69 STAYS AT THE READ, where it is the outage's 2: through the contract's
+    stub `lanes-index`, beside a copy of `lanes-edit.sh`, the end injected by
+    `stub_outcome`. The estate is G1's, `to=FROM, to_row=False`: the session
+    is named for the window's lane, whose row names it, so the guard's
+    answer with a register it could read is 0, and its 2 can only be the
+    read's (lane 3's reason in #165 6812490130). The module's default estate
+    makes the name offer, whose own 2 would pass this half wherever the
+    guard went on past a failed read (line AN14). It fails until L5-A3
+    (lane 5's T507)."""
+    for end in (75, 3):
+        est = estate()
+        est.set("rc", end)
+        est.make_offer()
+        est.answer_2()
+        record = est.ended()
+        assert record["mode"] == "bind-failed" and record["rc"] == str(end), (end, record)
+        hook = est.hook("after the failure")
+        assert hook.code == 2 and not hook.killed, (end, repr(hook))
+        assert f"THE BIND TO LANE {TO} FAILED (exit {end})" in hook.err, (end, repr(hook))
     from sql_register_helpers import stub_outcome
     code = tmp_path / "code"
     contract_stub(code)
     for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
         shutil.copy2(REPO / name, code / name)
-    for end in (69, 75, 3):
+    for end in (69,):
         est = estate(guard=code / "lanes-edit.sh", to=FROM, to_row=False)
         conf = tmp_path / f"lanes-index-{end}.conf"
         conf.write_text(f"register_url=postgresql:///register?host={tmp_path}/sock\n",
