@@ -3247,12 +3247,17 @@ def test_a_record_marker_that_expires_leaves_the_marker_adding_and_writes_refusi
     so it is never sent and the cutover's 15 s timer ends it: 69. The push
     stands, the marker reads `adding`, and a writer's commit, `lanes-edit.sh
     set-row-state` on the operator's lane with `mode=primary` (lane 3's batch
-    11 (7)(d), #165 6783909985), refuses with 69, its stderr naming LR002,
-    the marker's refusal (TP:4182-4183; Y:3580): T409's placeholder exits 69
-    on primary too (B14 tasks:937), so the exit alone proves nothing. The
+    11 (7)(d), #165 6783909985), refuses with 69, its stderr naming the
+    marker's refusal (TP:4182-4183; Y:3580): LR002, or its snapshot's words
+    on the switch it read, the marker `adding` (TP:4230-4231 at B17; T278f).
+    T409's placeholder exits 69 on primary too (B14 tasks:937), so the exit
+    alone proves nothing. The
     rerun, the fault removed, records the marker once: one `record_marker`
-    call, 0, the marker `present`. It fails until lane 1's L1-A14, lane 3's
-    T327 and lane 4's L4-B2 land, and its writer until lane 4's T415."""
+    call, 0, the marker `present`. The writer runs from the operator lane's
+    own checkout, made first (`Operator.lane_checkout`, T278f; lane 4's
+    triage, #165 6833813092, b1): without it T415's write refuses before
+    any call (R17). It fails until lane 1's L1-A14, lane 3's T327 and lane
+    4's L4-B2 land, and its writer until lane 4's T415."""
     op = Operator(pg, tmp_path, request, "imported")
     fifo = tmp_path / "hold-record-marker"
     os.mkfifo(fifo)
@@ -3266,14 +3271,21 @@ def test_a_record_marker_that_expires_leaves_the_marker_adding_and_writes_refusi
     _arm(where, op, [])
     config = op.config()
     config.write_text(config.read_text().replace("mode=index", "mode=primary"))
+    op.lane_checkout()
     writer = subprocess.run(["bash", str(op.copy.parent / "lanes-edit.sh"), "set-row-state",
                              op.lane, f"PAUSED {DOT} T278's write behind the marker"],
                             capture_output=True, text=True, timeout=300, cwd=str(op.reg.wip),
                             stdin=subprocess.DEVNULL,
                             env=dict(op.env, LANES_INDEX_CONFIG=str(config)))
     assert writer.returncode == 69, f"the writer's commit: {writer.returncode}: {writer.stderr}"
-    assert "LR002" in writer.stderr, \
-        f"the writer's 69 is the marker's refusal, LR002, not T409's placeholder: {writer.stderr}"
+    # THE MARKER'S REFUSAL (T278f; line BD17): the write "exits 69 on the switch
+    # its snapshot reads, or on LR002" (TP:4230-4231 at B17). T415's writer meets
+    # the marker at its first snapshot, whose own words name the switch it read,
+    # the marker `adding`, before any commit call; a commit call would get LR002.
+    # Either is the marker's, never T409's placeholder, which names no marker.
+    assert "LR002" in writer.stderr or "marker adding" in writer.stderr, \
+        (f"the writer's 69 is the marker's refusal, at its snapshot or LR002, not T409's "
+         f"placeholder: {writer.stderr}")
     mark = len(_shim_calls(where))
     proc, _ = op.run(op.argv("record-marker"), op.config())
     recorded = [e for e in _shim_calls(where)[mark:] if "record_marker(" in e["stdin"]]
