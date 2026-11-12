@@ -1013,8 +1013,9 @@ def test_each_database_path_exits_inside_its_bound(pg, tmp_path, request, case):
     bound, under F1 (a silent listener, met at the connect), F2 (a relay
     silent after the startup) and F3 (a lock on the table it reads). It owns
     test 10's per-path cases (section 4.4). `migration` is the dedicated
-    test's below, and its F1 case here is the migration's connect, which
-    `test_a_waiting_migration_gives_up_at_its_own_lock_timeout` runs."""
+    test's below, `test_a_waiting_migration_gives_up_at_its_own_lock_timeout`,
+    and its F1 case here is the migration's connect, through T109's
+    `bootstrap` (`_migration`)."""
     row, fault = case.rsplit("-", 1)
     spec = ROWS[row]
     if row in OPERATOR_ROWS:
@@ -1296,39 +1297,87 @@ def _in_pty(argv: list, env: dict, cwd: Path, *, timeout: float = 120) -> tuple:
     return proc.wait(), time.monotonic() - start, timed_out
 
 
+def _own_migration(number: int) -> str:
+    """THE CASE'S OWN MIGRATION `number` (line AF13b; AN13b's cause 4), in
+    section 1.5's step 3 form (Y:2342), sent by the admin through `psql` as
+    T221's migration test sends its own (`migration_script` in
+    `test_sql_register_schema.py`; B15 tasks:2121): one transaction that
+    sets its own `lock_timeout`, 2000 ms, touches the head row, checks that
+    `version` is one below its own (else LR003), makes its DDL, raises
+    `version` and the floors, and records its `migrations` row. Its DDL alters
+    `register_head`, the table the reader's open transaction read, since an
+    ACCESS EXCLUSIVE lock on such a table is what a migration waits for
+    behind a reader; T221's new table waits for no reader. `VERBOSITY
+    verbose` puts the SQLSTATE in the kept output."""
+    return ("\\set VERBOSITY verbose\n"
+            "BEGIN;\nSET LOCAL ROLE lanes_register_owner;\n"
+            f"SET LOCAL search_path TO {SCHEMA}, pg_catalog;\n"
+            "SET LOCAL lock_timeout = '2000ms';\n"
+            "UPDATE register_head SET seq = seq WHERE id = 1;\n"
+            f"DO $m$ BEGIN IF (SELECT version FROM schema_version WHERE id = 1) <> {number - 1} "
+            f"THEN RAISE EXCEPTION 'migration {number} needs schema version {number - 1}, not %', "
+            "(SELECT version FROM schema_version WHERE id = 1) USING ERRCODE = 'LR003'; "
+            "END IF; END $m$;\n"
+            f"ALTER TABLE register_head ADD COLUMN t220_migration_{number} integer;\n"
+            f"UPDATE schema_version SET version = {number}, writers_from = {number}, "
+            f"readers_from = {number}, applied_utc = date_trunc('second', clock_timestamp()) "
+            "WHERE id = 1;\n"
+            "INSERT INTO migrations (version, script_sha256, by_lane, by_ws) "
+            f"VALUES ({number}, '{'f' * 64}', 'repoA-2', 't220');\n"
+            "COMMIT;\n")
+
+
 def test_a_waiting_migration_gives_up_at_its_own_lock_timeout(pg, tmp_path, request):
     """A migration waiting behind a reader's open transaction is refused at
     its own `lock_timeout`, and a rerun succeeds once the reader's
     transaction ends; a new plain read is not held longer than that
-    `lock_timeout` (AT-D9's migration row)."""
+    `lock_timeout` (AT-D9's migration row).
+
+    The migration is the case's own next one (`_own_migration`), migration 2
+    while this build ships migration 1 alone (`REGISTER_SCHEMA_VERSION = 1`,
+    `lanes-index:6867` at `refs/l1/V-round5`): the case's database is
+    already at that version, so T109's `bootstrap` has nothing to migrate and
+    no `lock_timeout` to meet (round 5: "gave up after 0.22 s"). It is sent
+    once the reader's transaction holds `register_head`, and each
+    assertion shows the `psql` call's exit and stderr. `[migration-F1]`
+    still runs `bootstrap`, for the migration's connect."""
     bench = Bench(pg, tmp_path, request)
     reader = bench.login("lanes_register_reader")
+    number = int(pg.psql(f"SELECT version FROM {SCHEMA}.schema_version WHERE id = 1;").stdout) + 1
     held = pg.session(user=reader, appname="t220-reader")
     held.stdin.write(f"BEGIN;\nSELECT seq FROM {SCHEMA}.register_head;\n")
     held.stdin.flush()
-    time.sleep(1)
-    service = tmp_path / "pg_service.conf"
-    service.write_text(f"[t220-admin]\nhost={pg.host}\nport={pg.port}\ndbname={pg.name}\n"
-                       f"user=lanes_test\n", encoding="utf-8")
-    env = dict(bench.env, PGSERVICEFILE=str(service))
-    argv = [sys.executable, str(bench.copy), "bootstrap", *BOOTSTRAP_FLAGS]
     try:
-        code, elapsed, timed_out = _in_pty(argv, env, bench.wip, timeout=60)
-        assert not timed_out, "the migration waited past 60 s instead of giving up"
-        assert code != 0, "the waiting migration is refused"
+        deadline = time.monotonic() + 30
+        while pg.psql("SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid) "
+                      "WHERE a.application_name = 't220-reader' AND l.granted "
+                      f"AND l.relation = '{SCHEMA}.register_head'::regclass "
+                      "AND l.mode = 'AccessShareLock';").stdout.strip() in ("", "0"):
+            assert time.monotonic() < deadline, "the reader's transaction never read register_head"
+            time.sleep(0.1)
+        start = time.monotonic()
+        proc = pg.psql(_own_migration(number), check=False)
+        elapsed = time.monotonic() - start
+        said = f": migration {number} exited {proc.returncode}: {proc.stderr.strip()}"
+        assert proc.returncode != 0, "the waiting migration is refused" + said
+        assert "55P03" in proc.stderr, "the migration gave up at its lock_timeout, 55P03" + said
         # Y:2342 (design 1.5 step 3): each migration is one transaction that
         # begins `SET LOCAL lock_timeout = '2000ms'`: it gives up no sooner
         # than that, and well before 10 s.
         assert 1.9 <= elapsed < 10, (f"the migration gave up after {elapsed:.2f} s, "
-                                     f"against its 2000 ms lock_timeout")
+                                     f"against its 2000 ms lock_timeout" + said)
         _record("migration-lock", elapsed, 2, "its own lock_timeout, 2000 ms (Y:2342)")
         start = time.monotonic()
         pg.psql(f"SELECT seq FROM {SCHEMA}.register_head;", user=reader)
         assert time.monotonic() - start < 60, "a plain read was held"
     finally:
         _end(held)
-    code, _, timed_out = _in_pty(argv, env, bench.wip)
-    assert not timed_out and code == 0, "the rerun succeeds once the reader's transaction ends"
+    proc = pg.psql(_own_migration(number), check=False)
+    assert proc.returncode == 0, ("the rerun succeeds once the reader's transaction ends: "
+                                  f"migration {number} exited {proc.returncode}: "
+                                  f"{proc.stderr.strip()}")
+    version = pg.psql(f"SELECT version FROM {SCHEMA}.schema_version WHERE id = 1;").stdout
+    assert int(version) == number, f"the rerun left version {version.strip()}, not {number}"
 
 
 def test_import_and_reconcile_set_their_bounds_at_connect(tmp_path):
