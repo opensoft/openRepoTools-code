@@ -72,6 +72,10 @@
 #                                         under S3-S4; `<file><TAB><sha256>` on stdout)
 #   lanes-edit.sh                      handoff-path       <lane> [--create]   # where write-handoff writes it
 #
+# FEATURE 007 — THE LISTING'S TWO FLAGS FOR ITS CALLERS (T509)
+#   lanes-edit.sh lanes … --decide       # a read that decides: 69 where the register cannot answer (R38)
+#   lanes-edit.sh lanes … --store-line   # on primary, `read: register at seq <n>` on stderr (R43)
+#
 # AMENDMENT 19 — A CLOSED OR DORMANT LANE LEAVES THE LISTING
 #   lanes-edit.sh lanes [--closed]                 # CLOSED and DORMANT rows too
 #   lane-end --retire-dormant <repo> [--reason "<why>"] [--yes]
@@ -131,6 +135,9 @@
 #   lanes-edit.sh lanes     … --index        # the listing, out of the index
 #   lanes-edit.sh history   … --index        # the diary, out of the index
 #   lanes-edit.sh worktrees … --index        # the inventory, out of its table (#161)
+#
+#   On `mode=primary` the listing's and the diary's `--index` change nothing
+#   and say no `read: index` line (feature 007, T509; Wspec:641-646).
 #
 #   The register's truth stays where it is. `lanes-index` (placed by
 #   `openRepoTools --install`) keeps a DERIVED copy — SQLite, or QA Postgres
@@ -4454,6 +4461,9 @@ reg_open() {   # <arm> [<its arguments>...]
   reg_class_of "${1-}"
   ro_arm="${1-}"; shift || :
   RO_LANE="${1-}"
+  # `lanes --decide` IS THE DECIDE CLASS (R38; T504's flip, which T509 gives
+  # its meaning): the callers that act on the listing's answer pass it, so a
+  # register that cannot answer them is 69, never the mirror's rows.
   if [ "$ro_arm" = lanes ]; then
     for ro_a in ${1+"$@"}; do
       if [ "$ro_a" = --decide ]; then REG_CLASS=decide; fi
@@ -4606,6 +4616,24 @@ reg_mirror_say() {   # <what the parenthesis says>
   rml_show="no commit this checkout can name"
   [ -z "$rml_sha" ] || rml_show="${rml_sha:0:12}"
   printf 'read: mirror at %s, unknown (%s)\n' "$rml_show" "$1" >&2
+}
+
+# THE REGISTER'S LINE (feature 007, T509; R43; tasks:841): `read: register at
+# seq <n>` on stderr, which the `lanes` script asks for with `lanes
+# --store-line` and names in its footer. It is said only where the register
+# answered the listing: on primary (`REG_STORE=sql`); with no failed second
+# read in this process (`.rfail`), after which a mirror arm has said its own
+# line and read the files while `REG_STORE` stays `sql`; and where the read
+# answered, 0 or 8. `<n>` is `.head`'s `n=`, the family's `n` after any second
+# read. A `.head` with no `n=` in digits names no `n`, so nothing is said and
+# the footer claims nothing.
+reg_store_say() {   # <the listing's exit>
+  [ "${REG_STORE:-}" = sql ] && [ -n "${SE_CACHE_FILE:-}" ] || return 0
+  [ ! -e "$SE_CACHE_FILE.rfail" ] && [ -f "$SE_CACHE_FILE.head" ] || return 0
+  case "${1-}" in 0|8) : ;; *) return 0 ;; esac
+  rss_n="$(sed -n -e 's/^n=//p' "$SE_CACHE_FILE.head" 2>/dev/null | head -n 1)"
+  case "$rss_n" in "" | *[!0-9]*) return 0 ;; esac
+  printf 'read: register at seq %s\n' "$rss_n" >&2
 }
 
 # A FAILED READ, BY CLASS (W:4841-4847; contract 3.6's table): decide 69, with
@@ -8993,9 +9021,9 @@ log_sync() {
   # sets `LOG_SYNC_FETCH` itself, on every call, to the phrase: never `yes`,
   # which `lanes --fetch` and `lane_row_gate` read as a fetch made just now,
   # never empty, and never a value an earlier call left (lane 3, #165
-  # 6807910478, T506 Q2). Until T509 removes the note on primary, `lanes
-  # --fetch` prints it as the note's reason. No `cs_seen_mark`: no S3 runs on
-  # primary. T423 calls `reg_flush` itself before each poll's read.
+  # 6807910478, T506 Q2). `lanes --fetch` prints no note over it on primary,
+  # since its arm tests `REG_STORE` itself (T509). No `cs_seen_mark`: no S3
+  # runs on primary. T423 calls `reg_flush` itself before each poll's read.
   if [ "${REG_STORE:-}" = sql ]; then
     LOG_SYNC_FETCH='this register is SQL, so a read never fetches (feature 007)'
     return 0
@@ -23717,8 +23745,10 @@ EOF
     # THE INDEX FIRST, and where it answers there is no fetch: the read is the
     # index's, and a network round trip in front of it is the cost the flag is
     # for avoiding. Where it does not answer, the source read below is exactly
-    # the one this arm always made, the fetch included.
-    if [ "$hi_index" = 1 ] && index_open; then LANES_NO_FETCH=1; fi
+    # the one this arm always made, the fetch included. ON `mode=primary` THE
+    # FLAG CHANGES NOTHING AND SAYS NO LINE (feature 007, T509; Wspec:641-646):
+    # the default read is already the register, so there is no index to open.
+    if [ "$hi_index" = 1 ] && [ "${REG_MODE:-}" != primary ] && index_open; then LANES_NO_FETCH=1; fi
     log_sync
     if [ -n "$lane" ]; then
       lane="$(canon_lane "$lane")" || reg_exit $? 2          # Amendment 15
@@ -23944,10 +23974,10 @@ EOF
   # over reads that failed among them, which is never none (#290) - and 64 a
   # usage error of its own.
   lanes)
-    lns_args=(); lns_fetch=0; lns_index=0
+    lns_args=(); lns_fetch=0; lns_index=0; lns_store_line=0
     while [ $# -gt 0 ]; do
       case "$1" in
-        --repo|--dir|--ws|--lane|--prefix) [ -n "${2-}" ] || die "$1 needs a value (usage: lanes [--repo <owner/repo>] [--dir <path>] [--prefix <repo>] [--ws <workstation>] [--lane <lane>] [--here] [--all] [--closed] [--fetch] [--index])" 64
+        --repo|--dir|--ws|--lane|--prefix) [ -n "${2-}" ] || die "$1 needs a value (usage: lanes [--repo <owner/repo>] [--dir <path>] [--prefix <repo>] [--ws <workstation>] [--lane <lane>] [--here] [--all] [--closed] [--fetch] [--index] [--decide] [--store-line])" 64
                            lns_args+=("$1" "$2"); shift 2 ;;
         --all|--here|--closed) lns_args+=("$1"); shift ;;
         --fetch)           lns_fetch=1; shift ;;
@@ -23956,14 +23986,23 @@ EOF
         # live session records, tmux and this checkout's own files are read
         # exactly as they are without it, so the rows are the same rows.
         --index)           lns_index=1; shift ;;
-        # `--decide`, ACCEPTED AND IGNORED (feature 007, T502, `tasks.md:627`;
-        # R38, as lane 3 amended it): the listing reads exactly as it reads
-        # without the flag. T509 gives the flag its meaning. Lane 4's `--decide`
-        # callers, T408's `lane` and T403's `lane-end --retire-dormant`, land
-        # after T502 and not after T509.
+        # `--decide`, A READ THAT DECIDES (feature 007, T509; R38, as lane 3
+        # amended it): the callers that act on the listing's answer, T408's
+        # `lane` and T403's `lane-end --retire-dormant`, pass it. `reg_open`
+        # reads it before the door and makes the arm's class decide, so a
+        # register that cannot answer is 69 with nothing on stdout, and never
+        # the mirror; without it the arm is mirror. T502 parsed it first, so
+        # those callers land after T502 and not after T509. Here it is only
+        # taken off the line.
         --decide)          shift ;;
+        # `--store-line` (feature 007, T509; R43): the `lanes` script asks for
+        # the store's line, and on primary, where the register answered, the
+        # arm says `read: register at seq <n>` on stderr (`reg_store_say`).
+        # Off primary, and where the mirror answered, it says nothing. `lane`'s
+        # `read_rows` never passes it, so `lane` stays quiet.
+        --store-line)      lns_store_line=1; shift ;;
         --)                shift ;;
-        *)                 die "unknown argument '$1' for lanes (usage: lanes [--repo <owner/repo>] [--dir <path>] [--prefix <repo>] [--ws <workstation>] [--here] [--all] [--closed] [--fetch] [--index])" 64 ;;
+        *)                 die "unknown argument '$1' for lanes (usage: lanes [--repo <owner/repo>] [--dir <path>] [--prefix <repo>] [--ws <workstation>] [--here] [--all] [--closed] [--fetch] [--index] [--decide] [--store-line])" 64 ;;
       esac
     done
     # THE ONE READ IN THIS FILE WHOSE DEFAULT IS LOCAL (SPEC rev 4 §15). Every
@@ -23986,12 +24025,23 @@ EOF
     # (SPEC rev 4 §15) and the notice would be a line saying it did what it was
     # asked — which is why the wrapper renders the fetch path's stderr and not
     # the local path's.
-    if [ "$lns_fetch" = 1 ] && [ "$LOG_SYNC_FETCH" != yes ] && [ "$LOG_SYNC_FETCH" != fell-back ]; then
+    #
+    # AND NEVER WHERE THE REGISTER ANSWERS (feature 007, T509; tasks:836): on
+    # primary the arm makes no fetch because none is owed, since the register
+    # is read at one `n`, which no fetch moves, and the footer names that `n`.
+    # A mirror read on primary (`REG_STORE=mirror`) reads the files, so it
+    # fetches and notes as files mode does.
+    if [ "$lns_fetch" = 1 ] && [ "${REG_STORE:-}" != sql ] && [ "$LOG_SYNC_FETCH" != yes ] && [ "$LOG_SYNC_FETCH" != fell-back ]; then
       note "--fetch was asked for and NO FETCH WAS MADE: $LOG_SYNC_FETCH — reading the logs as they stand locally"
     fi
     # AFTER the fetch, so `<k> commits behind` is counted against the
     # `origin/<branch>` this run has just brought up to date where it asked to.
-    if [ "$lns_index" = 1 ]; then index_open || :; fi
+    # ON `mode=primary` IT CHANGES NOTHING AND SAYS NO LINE (feature 007, T509;
+    # Wspec:641-646): the default read is already the register. So
+    # `index_open` is not run there, nor its `reg_flush`, which would empty the
+    # family the door wrote at `n`. `worktrees --index` is not the register's
+    # read, and keeps its flag.
+    if [ "$lns_index" = 1 ] && [ "${REG_MODE:-}" != primary ]; then index_open || :; fi
     # AMENDMENT 15 — `--lane <name>` IS A `<lane>` ARGUMENT AND GOES THROUGH THE
     # RESOLVER. The filter inside `lanes_rows` has always joined on the name
     # lower-cased, so the ROWS came back either way; what a typed spelling used
@@ -24030,10 +24080,13 @@ EOF
     done
     lns_args=(${lns_new[@]+"${lns_new[@]}"})
     lns_out="$(lanes_rows ${lns_args[@]+"${lns_args[@]}"})"; lns_rc=$?
+    # THE STORE'S LINE, BEFORE THE 8 LEAVES (feature 007, T509; R43): 0 and 8
+    # are both the register's answer.
+    if [ "$lns_store_line" = 1 ]; then reg_store_say "$lns_rc"; fi
     case "$lns_rc" in
       0)  : ;;
       8)  exit 8 ;;
-      64) die "usage: lanes [--repo <owner/repo>] [--dir <path>] [--prefix <repo>] [--ws <workstation>] [--here] [--all] [--closed] [--fetch] [--index]" 64 ;;
+      64) die "usage: lanes [--repo <owner/repo>] [--dir <path>] [--prefix <repo>] [--ws <workstation>] [--here] [--all] [--closed] [--fetch] [--index] [--decide] [--store-line]" 64 ;;
       *)  reg_fail_end "$lns_rc"; die "the lane listing could not be read (exit $lns_rc)" 1 ;;
     esac
     [ -n "$lns_out" ] || exit 8
