@@ -473,7 +473,14 @@
 #      branch's (T415), each with nothing sent by it: an attempt's directory
 #      under `register-writes/`, or a file the parent writes there, that
 #      cannot be made, and a `call` line the pending record cannot take
-#      before its commit call (`pw_attempt_dir`, `pw_commit`)
+#      before its commit call (`pw_attempt_dir`, `pw_commit`); and feature
+#      007's `rename-lane` on primary (T422), in a rerun's handoff act whose
+#      `<from>` is gone and whose `<to>` is not named for its lane: a read of
+#      origin's history of the register, for the row's handoff cell when the
+#      rename was rendered, that failed or was not made (`rl_cell_at_rename`;
+#      LANES_NO_GIT=1 is one), with nothing moved or stamped (lane
+#      openRepoTools-3, #165 6827722997, the 7(d) point; Amendment 7(d)).
+#      The act's code is said in one WARNING, never the run's (`pw_rl_move`)
 #   2  refusal: bad arguments, the object is held, an unknown alias, —
 #      Amendment 15 — a register holding
 #      two rows whose lane names differ only by case, which every writer and
@@ -21000,13 +21007,19 @@ pw_rl_move() {   # <seq> <the child's attempt dir> [rerun]
 # case): origin's oldest commit whose `LANES.md` holds the renamed key cell,
 # ``*(ex `<old>`, renamed <utc>)*``, which the rename writes and nothing else
 # does; that row's sixth cell, read as the arm reads it. 0 where it is
-# `<path>`; 1 where it is another, or no such commit is read.
+# `<path>`; 1 where it is another, or no commit holds the mark; 3 where that
+# history was not read: `LANES_NO_GIT=1`, or a `git log` or `git show` that
+# failed, each one's status taken before `head`. A history read that failed,
+# or was not made, is no answer (lane openRepoTools-3, #165 6827722997, the
+# 7(d) point; Amendment 7(d)).
 rl_cell_at_rename() {   # <path> <old> <utc>
-  local ca_mark="*(ex \`$2\`, renamed $3)*" ca_sha="" ca_row=""
-  [ "$NO_GIT" != 1 ] || return 1
-  ca_sha="$(git -C "$LANES_REPO" log --reverse --format=%H -S"$ca_mark" "refs/remotes/origin/$LANES_BRANCH" -- "$LANES_PATH" 2>/dev/null | head -n 1)"
+  local ca_mark="*(ex \`$2\`, renamed $3)*" ca_out="" ca_sha="" ca_row=""
+  [ "$NO_GIT" != 1 ] || return 3
+  ca_out="$(git -C "$LANES_REPO" log --reverse --format=%H -S"$ca_mark" "refs/remotes/origin/$LANES_BRANCH" -- "$LANES_PATH" 2>/dev/null)" || return 3
+  ca_sha="$(printf '%s\n' "$ca_out" | head -n 1)"
   [ -n "$ca_sha" ] || return 1
-  ca_row="$(git -C "$LANES_REPO" show "$ca_sha:$LANES_PATH" 2>/dev/null | grep -F -- "$ca_mark" | head -n 1)"
+  ca_out="$(git -C "$LANES_REPO" show "$ca_sha:$LANES_PATH" 2>/dev/null)" || return 3
+  ca_row="$(printf '%s\n' "$ca_out" | grep -F -- "$ca_mark" | head -n 1)"
   [ -n "$ca_row" ] && [ "$(row_cell "$ca_row" 7 | sed 's/^ *//; s/ *$//')" = "$1" ]
 }
 
@@ -21024,7 +21037,8 @@ rl_cell_at_rename() {   # <path> <old> <utc>
 # already moved and stamped is 0 with nothing written. It exits.
 rl_move_act() {
   local ma_l="" ma_c="" ma_from="" ma_to="" ma_st="" ma_old="" ma_new="" ma_seq="" ma_p="" ma_rc=0 ma_rerun=0 \
-        ma_creal="" ma_real="" ma_hf="" ma_ht="" ma_msg="" ma_what="" ma_kind="" ma_hand=""
+        ma_creal="" ma_real="" ma_hf="" ma_ht="" ma_msg="" ma_what="" ma_kind="" ma_hand="" \
+        ma_cell=0 ma_why=""
   [ -f "$RL_MOVE" ] && [ -r "$RL_MOVE" ] ||
     die "refusing rename-lane's handoff act: the move its parent named, $RL_MOVE, cannot be read, an internal error of the primary write path. Nothing was written." 2
   while IFS= read -r ma_l || [ -n "$ma_l" ]; do
@@ -21092,7 +21106,9 @@ rl_move_act() {
   #   the row naming it then (`rl_cell_at_rename`). Any other handoff the cell
   #   names since never takes the old stamp: 0, no hand steps. Its note
   #   offers the stamp by hand only where `<to>` is a regular file (lane
-  #   openRepoTools-3, #165 6827722997, Q-a; below).
+  #   openRepoTools-3, #165 6827722997, Q-a; below). A read of that render
+  #   that failed or was not made is no answer: 1, with nothing moved or
+  #   stamped (the same post, the 7(d) point; below).
   if [ "$ma_rerun" = 1 ] && { [ -z "$ma_hf" ] || { [ ! -e "$ma_hf" ] && [ ! -L "$ma_hf" ]; }; }; then
     if [ ! -e "$ma_ht" ] && [ ! -L "$ma_ht" ]; then
       note "the handoff the row names is not at $ma_ht, so nothing was moved or stamped and the row's handoff column is left exactly as it is. If it turns up, rename it — ${ma_from:-$ma_to} → $ma_to — and stamp it: $ma_st"
@@ -21122,19 +21138,33 @@ rl_move_act() {
       release_lock
       exit 0
     fi
-    if ! rl_cell_at_rename "$ma_to" "$ma_old" "${ma_st##* at }"; then
-      # A `<to>` THAT IS NOT A REGULAR FILE IS STILL NOT THIS RENAME'S HERE:
-      # origin's render says so, not a read of `<to>` (lane openRepoTools-3,
-      # #165 6827722997, question 127's Q-a). It is given no stamp line to
-      # apply by hand: Rule 3's stamp is never written through a link
-      # (Amendment 16(d)), and only a regular file takes one.
-      ma_hand="If it is the handoff the rename left unstamped, stamp it by hand: $ma_st"
-      [ ! -L "$ma_ht" ] && [ -f "$ma_ht" ] ||
-        ma_hand="It is not a regular file there, so it takes no stamp by hand either: Rule 3's stamp is never written through a link (Amendment 16(d)), and only a regular file takes one."
-      note "the handoff the row names, $ma_to, is not named for its lane, and origin's render of this rename does not show the row naming it then, so it is not this rename's to stamp, and no stamp is owed. Nothing was moved or stamped. $ma_hand"
-      release_lock
-      exit 0
-    fi
+    rl_cell_at_rename "$ma_to" "$ma_old" "${ma_st##* at }" || ma_cell=$?
+    case "$ma_cell" in
+      0) : ;;
+      1)
+        # A `<to>` THAT IS NOT A REGULAR FILE IS STILL NOT THIS RENAME'S HERE:
+        # origin's render says so, not a read of `<to>` (lane openRepoTools-3,
+        # #165 6827722997, question 127's Q-a). It is given no stamp line to
+        # apply by hand: Rule 3's stamp is never written through a link
+        # (Amendment 16(d)), and only a regular file takes one.
+        ma_hand="If it is the handoff the rename left unstamped, stamp it by hand: $ma_st"
+        [ ! -L "$ma_ht" ] && [ -f "$ma_ht" ] ||
+          ma_hand="It is not a regular file there, so it takes no stamp by hand either: Rule 3's stamp is never written through a link (Amendment 16(d)), and only a regular file takes one."
+        note "the handoff the row names, $ma_to, is not named for its lane, and origin's render of this rename does not show the row naming it then, so it is not this rename's to stamp, and no stamp is owed. Nothing was moved or stamped. $ma_hand"
+        release_lock
+        exit 0
+        ;;
+      *)
+        # A HISTORY READ THAT FAILED, OR WAS NOT MADE, IS NO ANSWER (lane
+        # openRepoTools-3, #165 6827722997, the 7(d) point; Amendment 7(d)):
+        # never "not named", so never the note's "no stamp is owed". The act
+        # refuses with row 1's code, with nothing moved or stamped, and
+        # `pw_rl_move` says it in its one WARNING, the run's code unchanged.
+        ma_why="git could not read origin's history of $LANES_PATH at refs/remotes/origin/$LANES_BRANCH"
+        [ "$NO_GIT" != 1 ] || ma_why="LANES_NO_GIT=1 is set, so it was never read"
+        die "refusing to $ma_what in ${LANES_REPO}: $ma_to, the handoff the row names, is not named for its lane, and whether origin's render of this rename shows the row naming it then is unknown: ${ma_why}, and a read that failed or was not made is never \"not named\" (Amendment 7(d)). The rename is in the register at seq ${ma_seq}, and the row's handoff column names $ma_to. Nothing was moved or stamped, and nothing was sent. Re-run where that history can be read." 1
+        ;;
+    esac
   fi
   ma_p="${ma_hf:-$ma_ht}"
   [ ! -L "$ma_p" ] ||
