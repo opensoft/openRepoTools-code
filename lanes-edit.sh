@@ -6511,7 +6511,12 @@ pw_snap_read() {   # <the snapshot's stdout, in a file>
 #        belongs to another write (LR007 `another-write`), or a refused
 #        configuration. On the first snapshot of a record taken over, LR007
 #        `generation` is that record's other generation (T412's
-#        `wr_refuse_other_generation`; Y:5209);
+#        `wr_refuse_other_generation`; Y:5209): a plain rerun's (`reuse`) or
+#        a `LANES_WRITE_ID` run's with that record's id (`env`), which is
+#        where PW_REC_OURS is 1 before it (`pw_run`). A by-id run with no
+#        record has none to name, and keeps the relay (lane openRepoTools-3,
+#        #165 6813027223, batch g Q115; pending-record.md:225 and :286 at
+#        bd871f57);
 #   64   usage: never sent by this file, so an internal error, 2 (CO-5);
 #   69, and any other end: the register could not be read, 69.
 # On a refusal or a failed read, what `lanes-index` said on stderr is passed
@@ -6556,7 +6561,7 @@ pw_snapshot() {
       pw_snap_read "$PW_DIR/snapshot" ||
         pw_snap_end 69 "\`lanes-index register snapshot\` exited 0 with an answer this lanes-edit.sh cannot read (not format=1, a key twice or missing, or not switch=primary with marker=present), which is a failed read" ;;
     2)
-      if [ "$PW_FIRST_DONE" = 0 ] && [ "$WR_PLAN" = reuse ] && [ "$ps_det" = generation ]; then
+      if [ "$PW_FIRST_DONE" = 0 ] && [ "$PW_REC_OURS" = 1 ] && [ "$ps_det" = generation ]; then
         pw_run_dir_done
         wr_refuse_other_generation
       fi
