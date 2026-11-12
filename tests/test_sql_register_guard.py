@@ -707,9 +707,13 @@ class Estate:
 
     def answer_2(self, **extra) -> Hook:
         """The person's `2`; the case's first assertion is always that the hook
-        printed "BINDING" and exited 2, which today's in-hook bind never does."""
+        printed "BINDING" and exited 2, which today's in-hook bind never does.
+        The line names the lane this estate's offer binds, `self.to` (T214l):
+        `repoA-5` for the bind-failed test's `new` kind, which `BINDING`, on
+        `TO`, never matched (lane 5, #165 6837268276)."""
         hook = self.hook("2", **extra)
-        assert not hook.killed and hook.code == 2 and BINDING in hook.err, \
+        binding = f"BINDING: this window is now named {self.to}"
+        assert not hook.killed and hook.code == 2 and binding in hook.err, \
             f"answer 2 did not exit 2 with BINDING: {hook!r}"
         return hook
 
