@@ -20983,6 +20983,15 @@ pw_rl_move() {   # <seq> <the child's attempt dir> [rerun]
     LANES__RL_MOVE="$pm_f" LANES__RL_MOVE_PID="$$" \
     "${BASH:-bash}" "$RESOLVED" ${ORIG_ARGV[@]+"${ORIG_ARGV[@]}"} </dev/null || pm_rc=$?
   [ "$pm_rc" != 0 ] || return 0
+  # A `<to>` THAT IS THERE IS NEVER "NOT THERE YET" (lane openRepoTools-3,
+  # #165 6827722997, question 127's Q-b): the act's refusal above says why it
+  # stopped, and the hand steps end in this verb again, which meets that
+  # refusal again until a person has settled what it names. The run's code
+  # is the same either way.
+  if [ -n "$pm_to" ] && { [ -e "$PW_C/$pm_to" ] || [ -L "$PW_C/$pm_to" ]; }; then
+    note "WARNING: ${pm_lead}; its handoff's move and RENAMED stamp in $PW_C did not complete (exit ${pm_rc}, above), and the row's handoff column names ${pm_to}, which is there: the refusal above says why the act stopped. Once a person has settled what it names, what this rename still owes is made by hand: $(rl_move_hand_steps "$PW_C" "${pm_old:-<old>}" "${pm_new:-<new>}")."
+    return 0
+  fi
   note "WARNING: ${pm_lead}; its handoff's move and RENAMED stamp in $PW_C did not complete (exit ${pm_rc}, above), so the row's handoff column names ${pm_to}, which is not there yet. The move is owed: $(rl_move_hand_steps "$PW_C" "${pm_old:-<old>}" "${pm_new:-<new>}")."
   return 0
 }
@@ -21015,7 +21024,7 @@ rl_cell_at_rename() {   # <path> <old> <utc>
 # already moved and stamped is 0 with nothing written. It exits.
 rl_move_act() {
   local ma_l="" ma_c="" ma_from="" ma_to="" ma_st="" ma_old="" ma_new="" ma_seq="" ma_p="" ma_rc=0 ma_rerun=0 \
-        ma_creal="" ma_real="" ma_hf="" ma_ht="" ma_msg="" ma_what="" ma_kind=""
+        ma_creal="" ma_real="" ma_hf="" ma_ht="" ma_msg="" ma_what="" ma_kind="" ma_hand=""
   [ -f "$RL_MOVE" ] && [ -r "$RL_MOVE" ] ||
     die "refusing rename-lane's handoff act: the move its parent named, $RL_MOVE, cannot be read, an internal error of the primary write path. Nothing was written." 2
   while IFS= read -r ma_l || [ -n "$ma_l" ]; do
@@ -21081,7 +21090,9 @@ rl_move_act() {
   # - A FILE AT `<to>` AND NO `<from>`, a handoff not named for its lane: it
   #   takes this rename's stamp only where origin's render of the rename shows
   #   the row naming it then (`rl_cell_at_rename`). Any other handoff the cell
-  #   names since never takes the old stamp: 0, no hand steps.
+  #   names since never takes the old stamp: 0, no hand steps. Its note
+  #   offers the stamp by hand only where `<to>` is a regular file (lane
+  #   openRepoTools-3, #165 6827722997, Q-a; below).
   if [ "$ma_rerun" = 1 ] && { [ -z "$ma_hf" ] || { [ ! -e "$ma_hf" ] && [ ! -L "$ma_hf" ]; }; }; then
     if [ ! -e "$ma_ht" ] && [ ! -L "$ma_ht" ]; then
       note "the handoff the row names is not at $ma_ht, so nothing was moved or stamped and the row's handoff column is left exactly as it is. If it turns up, rename it — ${ma_from:-$ma_to} → $ma_to — and stamp it: $ma_st"
@@ -21095,7 +21106,9 @@ rl_move_act() {
       # (Amendment 7(d)). A symlink is refused even where it leads to a
       # regular file: DONE ALREADY never reads the stamp through one, and
       # Rule 3's stamp is never written through one (Amendment 16(d)), so
-      # the note's stamp line could not be applied there either.
+      # the note's stamp line could not be applied there either. It ends with
+      # its way out and the stamp line, for a regular file put there by hand
+      # (lane openRepoTools-3, #165 6827722997, Q-b: lane 4's addition).
       if [ -L "$ma_ht" ] || [ ! -f "$ma_ht" ]; then
         if [ -L "$ma_ht" ]; then
           ma_kind="a symlink"; [ -e "$ma_ht" ] || ma_kind="a symlink to nothing"
@@ -21103,14 +21116,22 @@ rl_move_act() {
         elif [ -p "$ma_ht" ]; then ma_kind="a FIFO"
         else ma_kind="a special file"
         fi
-        die "refusing to $ma_what in ${LANES_REPO}: $ma_to, the handoff the row names, is ${ma_kind} there now, at origin's tip, not a regular file, and $ma_from, the file this rename would move there, is not there, so whether $ma_to holds this rename's stamp cannot be read, and a read that cannot be made is never \"without the stamp\" (Amendment 7(d)). The rename is in the register at seq ${ma_seq}, and the row's handoff column names $ma_to. Nothing was moved or stamped, and nothing was sent." 2
+        die "refusing to $ma_what in ${LANES_REPO}: $ma_to, the handoff the row names, is ${ma_kind} there now, at origin's tip, not a regular file, and $ma_from, the file this rename would move there, is not there, so whether $ma_to holds this rename's stamp cannot be read, and a read that cannot be made is never \"without the stamp\" (Amendment 7(d)). The rename is in the register at seq ${ma_seq}, and the row's handoff column names $ma_to. Nothing was moved or stamped, and nothing was sent. Put the handoff there as a regular file, not a link to one, or point the row's column at one, and re-run. If it is this rename's handoff, moved by hand without its stamp, stamp it by hand once it is a regular file there, since neither a link nor a directory takes one (Amendment 16(d)): $ma_st" 2
       fi
       note "the handoff the row names is at $ma_to, without this rename's stamp, and $ma_from, the file this rename would move there, is not at origin's tip, so this rerun takes $ma_to for a later handoff the cell names since, and no move is owed. Nothing was moved or stamped. If it is this rename's handoff, moved by hand without its stamp, stamp it by hand: $ma_st"
       release_lock
       exit 0
     fi
     if ! rl_cell_at_rename "$ma_to" "$ma_old" "${ma_st##* at }"; then
-      note "the handoff the row names, $ma_to, is not named for its lane, and origin's render of this rename does not show the row naming it then, so it is not this rename's to stamp, and no stamp is owed. Nothing was moved or stamped. If it is the handoff the rename left unstamped, stamp it by hand: $ma_st"
+      # A `<to>` THAT IS NOT A REGULAR FILE IS STILL NOT THIS RENAME'S HERE:
+      # origin's render says so, not a read of `<to>` (lane openRepoTools-3,
+      # #165 6827722997, question 127's Q-a). It is given no stamp line to
+      # apply by hand: Rule 3's stamp is never written through a link
+      # (Amendment 16(d)), and only a regular file takes one.
+      ma_hand="If it is the handoff the rename left unstamped, stamp it by hand: $ma_st"
+      [ ! -L "$ma_ht" ] && [ -f "$ma_ht" ] ||
+        ma_hand="It is not a regular file there, so it takes no stamp by hand either: Rule 3's stamp is never written through a link (Amendment 16(d)), and only a regular file takes one."
+      note "the handoff the row names, $ma_to, is not named for its lane, and origin's render of this rename does not show the row naming it then, so it is not this rename's to stamp, and no stamp is owed. Nothing was moved or stamped. $ma_hand"
       release_lock
       exit 0
     fi
