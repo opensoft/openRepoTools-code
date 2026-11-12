@@ -1471,7 +1471,7 @@ def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_n
     e = estates()
     where, root = loggers(e), sidecars(e)
     extra = {"LANES_LANE_STATE_ROOT": str(root)}
-    argv = (["request-handoff", LC, "--session", session_of(LC)] if case.startswith("request")
+    argv = (["request-handoff", LC, "--session", session_of(LC), "--no-wait"] if case.startswith("request")
             else ["rename-lane", LA, "repoA-9", "T245", "--no-github"])
     _, write_id = killed(e, LA, argv, first=[where], extra=extra)
     seq = e.journal_after()[-1]["seq"]
