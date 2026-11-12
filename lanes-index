@@ -12342,8 +12342,9 @@ def cmd_register_commit(args: list[str]) -> int:
 
     In order: the argv (64); the configuration (2, Q6(c)'s refusal
     included); `LANES_ACT` and `LANES_EXPECT`, checked again (2); the attempt
-    directory (2); the shipped `repos.tsv`, Rule 6's first table (2 where it
-    is there and cannot be read); the store, as this engineer's
+    directory (2), one whose `changes.tsv` names no path included; the
+    shipped `repos.tsv`, Rule 6's first table (2 where it is there and cannot
+    be read); the store, as this engineer's
     REGISTER-WRITER login; then the call, made once. Exits 0 `committed
     <seq>` or `already <seq>`, 75, 69, 2 and 3, as `_register_commit_end`
     and, after an LR004, `_register_commit_lr004` read them."""
@@ -12367,6 +12368,14 @@ def cmd_register_commit(args: list[str]) -> int:
         env_act = register_act_of_env(os.environ.get("LANES_ACT", ""),
                                       os.environ.get("LANES_EXPECT", ""))
         att = read_attempt_dir(directory, ident, env_act)
+        # AN EMPTY CHANGE SET: this arm's entry is always a `write`, and the
+        # seam sends none that names no path (Y:5060), so it is refused here,
+        # before the store opens. `read_attempt_dir` pairs every `files` row
+        # with a `changes.tsv` line, so `files` is empty too. The shared read
+        # takes no such check: T324's in-process entries with no edits still
+        # journal (lane 3, #165 6808937880, batch e Q88).
+        if not att["changes"]:
+            raise RegisterAttemptRefused("changes.tsv names no path")
         entry, view = _register_build_entry(att, ident, register_shipped_repos_text())
         store = PostgresStore(cfg, "register_writer")
     except Refusal as exc:
