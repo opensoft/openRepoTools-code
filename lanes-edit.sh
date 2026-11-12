@@ -594,7 +594,9 @@
 #      R18), each with nothing sent: in an attempt's child, before the seam,
 #      a handoff the row names that is not under `handoffs/` in the lane's
 #      checkout, has a cache, bytecode or environment part in its path, or
-#      has a pending change there (`rl_move_refuse_checks`), a
+#      has a pending change there, or that checkout's listing failed, named
+#      with git's code (`rl_move_refuse_checks`, by `cs_pending_of --rc`;
+#      lane openRepoTools-3, #165 6814531692, batch h Q124), a
 #      lane checkout that is not there (`rl_handoff_repo`), and a write that
 #      returned with no `committed <seq>` (`rl_after_committed`); and in the
 #      handoff act its parent runs after COMMIT (`rl_move_act`), with the
@@ -20658,8 +20660,14 @@ rl_cache_part_refuse() {   # <the row's lane> <its handoff cell> <the path> <its
 # refuses before anything is sent (Y:5138; lane 4's REV422c N1); and no
 # pending change to either path in `<c>`, which the move's own S3 step 4
 # would refuse after COMMIT. 2, nothing sent.
+# A LISTING GIT CANNOT MAKE IS NO ANSWER: `cs_pending_of --rc` returns git's
+# status, taken here before the list is piped into `tr`, and where it is not
+# 0 the rename refuses with 2, naming the read and its code, before the seam.
+# Until then a failed listing read as "no pending change", so the rename
+# committed and the move failed after COMMIT (lane openRepoTools-3, #165
+# 6814531692, batch h Q124, by Q114's reason).
 rl_move_refuse_checks() {
-  rmr_p=""; rmr_hits=""
+  rmr_p=""; rmr_hits=""; rmr_rc=0; rmr_c=""
   for rmr_p in "$rl_h_rel" "$rl_h_rel_new"; do
     case "$rmr_p" in
       handoffs/?*) : ;;
@@ -20668,7 +20676,12 @@ rl_move_refuse_checks() {
     rl_cache_part_refuse "$rl_old" "$rl_hcell" "$rmr_p" "$rl_hrepo"
   done
   [ "$NO_GIT" != 1 ] || return 0
-  rmr_hits="$(LANES_REPO="$rl_hrepo" cs_pending_of "$rl_h_rel" "$rl_h_rel_new" | tr '\n' ' ')"
+  rmr_hits="$(LANES_REPO="$rl_hrepo" cs_pending_of --rc "$rl_h_rel" "$rl_h_rel_new")" || rmr_rc=$?
+  if [ "$rmr_rc" != 0 ]; then
+    rmr_c="$(printf '%q' "$rl_hrepo") diff --name-only HEAD -- $(printf '%q' "$rl_h_rel") $(printf '%q' "$rl_h_rel_new")"
+    die "refusing to rename lane $rl_old on primary: git could not list the uncommitted changes to the handoff its row names in its checkout $rl_hrepo: \`git -C $rmr_c\` exited $rmr_rc. So whether that handoff holds a change is not known, and a read that failed is never 'no pending change' (Amendment 7(d)): on primary the register commits this rename first, and the handoff's move and Rule 3 stamp follow as a git commit in that checkout, whose S3 would refuse such a change after COMMIT (Amendment 23 S3 step 4). Fix the read, then re-run. Nothing was sent." 2
+  fi
+  rmr_hits="$(printf '%s\n' "$rmr_hits" | tr '\n' ' ')"
   [ -z "${rmr_hits// /}" ] ||
     die "the handoff lane $rl_old's row names holds an uncommitted change in its checkout $rl_hrepo: ${rmr_hits}— and on primary its move and Rule 3 stamp are a commit by pathspec in that checkout once the register has committed this rename, which would carry that change under the rename's subject, so its S3 would refuse it then, after COMMIT (Amendment 23 S3 step 4). Read it: git -C $rl_hrepo diff HEAD. Whoever made it commits it first, as its own write (\`handoff(<lane>@<workstation>): <what>\`), and re-run. Nothing was sent." 2
 }
