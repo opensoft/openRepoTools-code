@@ -579,8 +579,9 @@ def test_a_marker_only_entry_is_an_operator_entry_the_renderer_skips(pg, tmp_pat
     """Clean: seq 1, the cutover's entry, touches `lanes/STORE` alone and
     carries the operator flag, and no write entry does. A render forked
     after it, by the first write, pushes no commit for seq 1: on origin only
-    the cutover's own marker commit carries `Register-Seq: 1`. `status`
-    shows no lag (AT-F2, "Clean", TP:5534-5537; D24)."""
+    the cutover's own marker commit carries `Register-Seq: 1`. `status`,
+    read after the harness's fetch of W (`fetch_w`; lane 3's ruling (a),
+    #165 6833830078), shows no lag (AT-F2, "Clean", TP:5534-5537; D24)."""
     f2 = F2Register(tmp_path / "e", pg)
     reg, imp = f2.reg, f2.imp
     proc = reg.cutover(conf=f2.conf)
@@ -598,6 +599,7 @@ def test_a_marker_only_entry_is_an_operator_entry_the_renderer_skips(pg, tmp_pat
     seqs = reg.seqs_on_origin()
     assert [sha for sha, s in seqs.items() if "1" in s] == [switch["marker_commit"]], seqs
     assert [s for sha, s in seqs.items() if sha != switch["marker_commit"]] == [["2"]], seqs
+    reg.fetch_w()   # `status` reads W as last fetched, and the render pushed from <c>
     status = reg.index("status", conf=f2.conf)
     assert imp.LAG_0.search(status.stdout), f"{status.stdout}{status.stderr}"
 
