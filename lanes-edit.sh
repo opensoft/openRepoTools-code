@@ -5619,15 +5619,21 @@ wr_claim_release() {
 # space between fields, `<s>` and `<rc>` counts and `<utc>` this file's UTC
 # form naming a real time, which `epoch_of` reads, as `updated_utc` must
 # (review REV-W8b, N1); no other value is one. `owed` belongs to a done mark
-# only (Y:5181) (lane openRepoTools-3, #165 6780753157, Q34).
+# only (Y:5181) (lane openRepoTools-3, #165 6780753157, Q34). The fields are
+# split by parameter expansion, never through a here-string: bash 3.2 writes
+# one to a temp file in /tmp, and where none can be made, as in a full /tmp,
+# every field was empty, so a whole record read as one that cannot be read
+# (review REV-W10a, M1's pattern). The value is still rebuilt from its fields
+# and compared, so one space between fields is all this takes.
 wr_is_tail() {   # <value>
-  local it_w="" it_s="" it_r="" it_u=""
+  local it_s="" it_r="" it_u=""
   case "${1-}" in
     'sent '*)
-      IFS=' ' read -r it_w it_s it_u <<<"$1"
+      it_s="${1#sent }"; it_u="${it_s#* }"; it_s="${it_s%% *}"
       [ "$1" = "sent $it_s $it_u" ] && wr_is_count "$it_s" && wr_is_utc "$it_u" || return 1 ;;
     'done '*)
-      IFS=' ' read -r it_w it_s it_r it_u <<<"$1"
+      it_s="${1#done }"; it_r="${it_s#* }"; it_s="${it_s%% *}"
+      it_u="${it_r#* }"; it_r="${it_r%% *}"
       [ "$1" = "done $it_s $it_r $it_u" ] && wr_is_count "$it_s" && wr_is_count "$it_r" && wr_is_utc "$it_u" || return 1 ;;
     *) return 1 ;;
   esac
