@@ -2991,7 +2991,7 @@ append_line_landing_expired_usage() {   # <what is wrong>
 }
 append_line_landing_expired() {   # <holder> --pr <n> --repo <r> --word <q> --word-where <w> --word-utc <u>
   local le_a="" le_o="" le_seen=" " le_rows="" le_rc=0 le_pass="" le_ch="" le_t="" le_a1="" le_a2="" le_a3="" le_a4="" le_a5=""
-  local le_l="" le_p="" le_r="" le_u="" le_n=-1 le_age=0 le_line="" lane_tag=""
+  local le_l="" le_p="" le_r="" le_u="" le_n=-1 le_age=0 le_line="" lane_tag="" le_left="" le_row=""
   if [ "$REG_MODE" != primary ]; then
     die "append-line --landing-expired: the release of a stale LANDING exists only on mode=primary, where the register's own check (F13) judges it when it is committed; this register's mode is ${REG_MODE:-files}. Nothing was written. Off primary a LANDING past Rule 6's thirty minutes is listed as STALE, and only its own lane's LANDED closes it." 2
   fi
@@ -3066,13 +3066,36 @@ append_line_landing_expired() {   # <holder> --pr <n> --repo <r> --word <q> --wo
   # `canon_lane` resolves to the same lane (Amendment 16(e)), as for a LANDING
   # posted under a name the lane had before a rename. Of several, the newest
   # post, which Rule 6 dates the hold by.
+  # THE ROWS ARE SPLIT BY PARAMETER EXPANSION, at each newline and then at
+  # each US, never read through a here-document, as T415's
+  # `pw_hand_edit_refuse` and T412's `wr_call_fields` split theirs (review
+  # REV-W9a M1, REV-W10a M1). Bash 3.2 writes a here-document to a temp file
+  # in /tmp, and where none can be made, as in a full /tmp, this loop never
+  # ran: an open LANDING the snapshot held was refused as "holds no open
+  # LANDING", closed but with the wrong words (lane 4's MERGES-B2 note). A row
+  # is `OPEN` and five fields more, the last the rest of the row, as `read`
+  # split it; any other row was passed over, and still is.
   for le_pass in exact canon; do
     if [ "$le_pass" = canon ]; then
       le_ch="$(canon_lane "$LE_HOLDER" 2>/dev/null)" || le_ch=""
       [ -n "$le_ch" ] || break
     fi
-    while IFS="$US" read -r le_t le_a1 le_a2 le_a3 le_a4 le_a5; do
-      [ "$le_t" = OPEN ] || continue
+    le_left="$le_rows"
+    while [ -n "$le_left" ]; do
+      le_row="${le_left%%"$WR_NL"*}"
+      case "$le_left" in
+        *"$WR_NL"*) le_left="${le_left#*"$WR_NL"}" ;;
+        *) le_left="" ;;
+      esac
+      case "$le_row" in
+        "OPEN$US"*"$US"*"$US"*"$US"*"$US"*) : ;;
+        *) continue ;;
+      esac
+      le_row="${le_row#*"$US"}"
+      le_a1="${le_row%%"$US"*}"; le_row="${le_row#*"$US"}"
+      le_a2="${le_row%%"$US"*}"; le_row="${le_row#*"$US"}"
+      le_a3="${le_row%%"$US"*}"; le_row="${le_row#*"$US"}"
+      le_a4="${le_row%%"$US"*}"; le_a5="${le_row#*"$US"}"
       if [ "$le_pass" = exact ]; then
         [ "$le_a1" = "$LE_HOLDER" ] || continue
       else
@@ -3080,9 +3103,7 @@ append_line_landing_expired() {   # <holder> --pr <n> --repo <r> --word <q> --wo
       fi
       [ "$le_a5" -gt "$le_n" ] || continue
       le_l="$le_a1"; le_p="$le_a2"; le_r="$le_a3"; le_u="$le_a4"; le_n="$le_a5"
-    done <<EOF
-$le_rows
-EOF
+    done
     [ -z "$le_l" ] || break
   done
   [ -n "$le_l" ] ||
