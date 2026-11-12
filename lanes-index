@@ -7846,6 +7846,11 @@ REGISTER_SERVE_OPTIONS = "-c lock_timeout=150 -c statement_timeout=180"
 #: before it is killed (Y:4013-4016).
 REGISTER_SERVE_KILL_S = 0.1
 
+#: THE BACKGROUND WHOLE-FILE FETCH'S BOUNDS (lane 3's ruling, #165
+#: 6746655077, OP-15; ERR-29, D9's row for it): `lock_timeout` 1000 ms and
+#: `statement_timeout` 10 s, the renderer's row (Y:3527), and an 11 s timer.
+REGISTER_SERVE_FETCH_BOUNDS = (1000, 10000, 11.0)
+
 #: A CHILD THAT FAILED IS STARTED AGAIN IN THE BACKGROUND, never on a
 #: request's time (Y:4014-4016, svc:124): lazily, by the next request, after
 #: a failure met while serving or a connect that failed, and at once after a
@@ -8457,11 +8462,57 @@ class RegisterService:
             self.last_used = time.monotonic()
 
     def fetch_due(self) -> bool:
-        """Whether a background whole-file fetch waits for the child."""
-        return False
+        """Whether a request's miss waits for the background fetch."""
+        return bool(self.wanted)
 
     def fetch(self) -> None:
-        """The background whole-file fetch."""
+        """THE BACKGROUND WHOLE-FILE FETCH (Y:4046-4050; OP-15, ERR-29; socket
+        API §7): the files a request missed, read whole on the held
+        connection, between requests, in a transaction of its own, by the
+        guard's fetch's one request (`register_guard_fetch_queries`), with
+        `SET LOCAL lock_timeout = '1000ms'` and `statement_timeout = '10s'`
+        and an 11 s timer. A request that arrives meanwhile is `unavailable`
+        at once, and no request's `SIGINT` reaches it. On expiry it is
+        dropped, and the next miss tries again. What it read goes to memory
+        and, THE WRITE-THROUGH (Y:4054-4062; Question 13; FR-057), to T302's
+        cache: each image by `image_cache_put`, then `image_cache_record` at
+        its head, as the writers' snapshot reads them."""
+        with self.cond:
+            paths, self.wanted = sorted(self.wanted, key=os.fsencode), set()
+            schema = self.store.schema
+        lock_ms, statement_ms, timer_s = REGISTER_SERVE_FETCH_BOUNDS
+        nonce = f"fetch-{os.urandom(6).hex()}"
+        queries = register_guard_fetch_queries(paths)
+        status, out, _state = self.run(
+            register_serve_query_text(schema, queries, nonce, bounds=(lock_ms, statement_ms)),
+            nonce, time.monotonic() + timer_s, timer=False)
+        answers = register_serve_sections(out, nonce, len(queries)) if status == "ok" else None
+        try:
+            snap = _register_read_snapshot(answers) if answers is not None else None
+        except RegisterReadFailed:
+            snap = None
+        if snap is None:
+            register_serve_log(self.paths, "the background fetch was dropped")
+            return
+        fetched, manifest = {}, {}
+        for path in paths:
+            if path not in snap["listing"]:
+                continue
+            digest, final_newline = snap["listing"][path]
+            data = register_image_bytes(snap["lines"].get(path, []), final_newline)
+            if hashlib.sha256(data).hexdigest() != digest:
+                continue
+            image_cache_put(data)
+            fetched[path], manifest[path] = data, digest
+        if manifest and snap["head"] >= 0:
+            image_cache_record(snap["head"], manifest)
+        with self.cond:
+            held = {path: entry for path, entry in self.images.items()
+                    if entry[1] == snap["generation"] and entry[0] == snap["head"]}
+            held.update({path: (snap["head"], snap["generation"], manifest[path], data)
+                         for path, data in fetched.items()})
+            self.images = held
+        register_serve_log(self.paths, f"fetched {len(fetched)} file(s) whole in the background")
 
     def serve_job(self, job) -> None:
         """ONE REQUEST ON THE HELD CHILD: answered `unavailable slow`, with no
