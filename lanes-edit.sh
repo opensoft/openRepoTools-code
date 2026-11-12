@@ -20471,11 +20471,14 @@ rl_stamp_publish() {   # <the handoff>
 # lifecycle directory's move, the comments and the handoff's move would speak
 # for a rename the register does not hold. So under the flag, with no seq, the
 # child stops here: 2, before `ready`, so its parent makes no commit call
-# (Y:5016). Off the flag `REG_SCRATCH` is empty and this returns at once. The
-# same rule as `claim`'s and `request-handoff`'s (T421, T423).
+# (Y:5016). It is a backstop that no input reaches now, since T415's
+# `pw_no_git_refuse` refuses LANES_NO_GIT=1 in the parent before its claim
+# (`pw_run`; review REV-W9f, N2). Off the flag `REG_SCRATCH` is empty and this
+# returns at once. The same rule as `claim`'s and `request-handoff`'s (T421,
+# T423).
 rl_after_committed() {
   [ -z "$REG_SCRATCH" ] || [ -n "$REGISTER_SEQ" ] ||
-    die "refusing to run rename-lane's steps after its write in an attempt's child under LANES_REGISTER_SCRATCH: the write took no \`committed <seq>\` from the seam (LANES_NO_GIT=1 stops it before the seam), so moving the lane's lifecycle directory, posting its comments and moving its handoff would act for a rename the register does not hold. An internal error of the write path. Nothing was sent." 2
+    die "refusing to run rename-lane's steps after its write in an attempt's child under LANES_REGISTER_SCRATCH: the write took no \`committed <seq>\` from the seam (LANES_NO_GIT=1 stops it before the seam, though the parent's \`pw_no_git_refuse\` refuses that flag before its claim), so moving the lane's lifecycle directory, posting its comments and moving its handoff would act for a rename the register does not hold. An internal error of the write path. Nothing was sent." 2
 }
 
 # THE MOVE, HANDED TO THE PARENT (R18): `<attempt dir>/rl-move`, written after
