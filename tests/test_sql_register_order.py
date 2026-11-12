@@ -2514,8 +2514,13 @@ class ActWorld(Sandbox):
     def act(self, write: ActWrite, arms: Sequence[dict]) -> Writer:
         """The act that makes `write`, run by its own tool."""
         if write.tool == "skill":
-            block = skill_step_4_block()
-            return self.launch("skill", ["bash", "-c", block], write.lane, arms, write.env)
+            # Step 4's block with the skill's prelude and steps 1 and 2's
+            # values, as the flow case runs it, `L` being this world's
+            # `lanes-edit.sh`: alone, the block's `"$L" act-begin` ran an
+            # empty command and exited 127 (T252p).
+            command, extra = skill_step_4_command(self, skill_prelude_block(), skill_step_4_block(),
+                                                  write.lane, "race", self.bin / "lanes-edit.sh")
+            return self.launch("skill", command, write.lane, arms, dict(extra, **write.env))
         if write.tool == "guard":
             return self.launch("guard", ["bash", str(self.bin / "lanes-edit.sh"), *write.argv], write.lane,
                                arms, write.env)
@@ -2903,10 +2908,14 @@ def lane_end_gate_holds(world: ActWorld) -> None:
     assert swept[0]["seq"] < mine[0]["seq"], f"the NOTED line did not commit before W13: {entries}"
 
 
-def skill_step_4(world: ActWorld, prelude: str, block: str, lane: str, tag: str) -> Tuple[Writer, List[dict]]:
-    """Step 4's block, run in the window named for the world's live lane,
-    with step 1's `lane` given: the run, and its `$L` calls."""
-    edit = act_logger(world.root / f"skill-{tag}", "lanes-edit.sh", world.bin / "lanes-edit.sh")
+def skill_step_4_command(world: ActWorld, prelude: str, block: str, lane: str, tag: str,
+                         edit: Path) -> Tuple[List[str], dict]:
+    """Step 4's block as the agent runs it, in the window named for the
+    world's live lane: the skill's prelude, then steps 1 and 2's values, with
+    `L` as `edit` and step 1's `lane` given, then the block, in one `bash`,
+    and a `tmux` first on `PATH` naming that window. The command and the
+    environment it adds. The flow case (`skill_step_4`, T252f) and the race's
+    skill act (`ActWorld.act`, T252b) both run it (T252p)."""
     tmux_dir = world.root / f"skill-{tag}-tmux"
     tmux_dir.mkdir()
     (tmux_dir / "tmux").write_text(_SKILL_TMUX.replace("WINDOW_NAME", R_HERE)
@@ -2914,8 +2923,16 @@ def skill_step_4(world: ActWorld, prelude: str, block: str, lane: str, tag: str)
     (tmux_dir / "tmux").chmod(0o755)
     bound = [f"L={shlex.quote(str(edit))}", f"window={R_HERE}", f"lane={lane}", f"ws={W_WS}", "ws_missing=''",
              f"uuid={R_SID[R_HERE]}", "uuid_missing=''", "why='T252f skill case'", "kind=unknown"]
-    run = world.launch(f"skill-{tag}", ["bash", "-c", "\n".join([prelude, *bound, block])], R_HERE,
-                       extra={"PATH": str(tmux_dir) + os.pathsep + world.env["PATH"]})
+    command = ["bash", "-c", "\n".join([prelude, *bound, block])]
+    return command, {"PATH": str(tmux_dir) + os.pathsep + world.env["PATH"]}
+
+
+def skill_step_4(world: ActWorld, prelude: str, block: str, lane: str, tag: str) -> Tuple[Writer, List[dict]]:
+    """Step 4's block, run in the window named for the world's live lane,
+    with step 1's `lane` given: the run, and its `$L` calls."""
+    edit = act_logger(world.root / f"skill-{tag}", "lanes-edit.sh", world.bin / "lanes-edit.sh")
+    command, extra = skill_step_4_command(world, prelude, block, lane, tag, edit)
+    run = world.launch(f"skill-{tag}", command, R_HERE, extra=extra)
     run.wait(240)
     return run, act_calls(edit)
 
