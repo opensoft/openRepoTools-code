@@ -141,6 +141,11 @@ def ago(minutes: float, clock: int = CLOCK) -> str:
     return utc_of(clock - int(round(minutes * 60)))
 
 
+def _epoch_of(utc: str):
+    """`utc` as epoch seconds, or None where the line carries no UTC."""
+    return calendar.timegm(time.strptime(utc, "%Y-%m-%dT%H:%M:%SZ")) if utc else None
+
+
 def landing(lane: str = HOLDER, minutes: float = 31, pr: int = PR, repo: str = KEY,
             session: str = None) -> str:
     sid = session or SESSIONS.get(lane, SID_H)
@@ -156,15 +161,24 @@ def landed(lane: str = HOLDER, minutes: float = 40, pr: int = PR, repo: str = KE
 def expired(writer: str = OTHER, minutes: float = 5, holder: str = HOLDER, pr: int = PR,
             repo: str = KEY, landing_utc: str = None, word: str = WORD, where: str = WHERE,
             word_utc: str = WORD_UTC, clause: bool = True) -> str:
-    """A `LANDING EXPIRED` line in the form this module reads lane 4's
-    section to give (case (a)): the writer's `lane` first, the session, the
-    UTC, `for lane <holder>`, the copied PR, repository and `LANDING` UTC,
-    and Brett's quote last."""
+    """A `LANDING EXPIRED` line in the form's own shape (Y:5109;
+    `lanes-edit.sh:3375` at `c8acf67c`), as the form composes it (case (a)),
+    a re-import after a rollback holds it, or a line typed by hand in files
+    mode copies it: `lane <writer>` first, the session, its UTC `minutes`
+    before the snapshot's clock, `for lane <holder>:`, the PR, the
+    repository, `its LANDING of <landing UTC>` (`landing_utc`, 45 minutes
+    before the clock where it is not given), the whole minutes past Rule 6's
+    30 (0 where the two are 30 minutes apart or less, which only a line typed
+    by hand can be), and the word clause last: where and when Brett gave his
+    word, then his quote. `clause=False` leaves the word clause off."""
     sid = SESSIONS.get(writer, SID_O)
+    landing_utc = landing_utc or ago(45)
+    apart = _epoch_of(ago(minutes)) - _epoch_of(landing_utc)
     text = (f"LANDING EXPIRED {EM} lane {writer}, session {sid}@{WS}, {ago(minutes)}, "
-            f"for lane {holder}, PR #{pr} into {repo} main, LANDING of {landing_utc or ago(45)}")
+            f"for lane {holder}: PR #{pr} into {repo} main, its LANDING of {landing_utc}, "
+            f"{max(0, (apart - 30 * 60) // 60)} min past Rule 6's 30")
     if clause:
-        text += f" {EM} Brett's word \"{word}\" ({where}, {word_utc})"
+        text += f"; on Brett's word ({where}, {word_utc}): \"{word}\""
     return text
 
 
@@ -1280,30 +1294,6 @@ WORD_CLAUSE_RE = re.compile(r"; on Brett's word \([^()]+, [0-9]{4}-[0-9]{2}-[0-9
                             r"[0-9]{2}:[0-9]{2}Z\): \"[^\"]+\"$")
 
 
-def composed(writer: str = OTHER, minutes: float = 10, holder: str = HOLDER, pr: int = PR,
-             repo: str = KEY, landing_minutes: float = 45, clause: bool = True) -> str:
-    """A `LANDING EXPIRED` line in the form's own shape (Y:5109;
-    `lanes-edit.sh:3375` at `c8acf67c`), as a re-import after a rollback
-    holds it or as one typed by hand in files mode copies it: the writer, the
-    session, its UTC `minutes` before the snapshot's clock, `for lane
-    <holder>:`, the PR, the repository, the `LANDING`'s UTC `landing_minutes`
-    before it, the minutes past Rule 6's 30, and the word clause last.
-    `clause=False` leaves the word clause off."""
-    sid = SESSIONS.get(writer, SID_O)
-    past = max(0, int(round(landing_minutes - minutes - 30)))
-    text = (f"LANDING EXPIRED {EM} lane {writer}, session {sid}@{WS}, {ago(minutes)}, "
-            f"for lane {holder}: PR #{pr} into {repo} main, its LANDING of {ago(landing_minutes)}, "
-            f"{past} min past Rule 6's 30")
-    if clause:
-        text += f"; on Brett's word ({WHERE}, {WORD_UTC}): \"{WORD}\""
-    return text
-
-
-def _epoch_of(utc: str):
-    """`utc` as epoch seconds, or None where the line carries no UTC."""
-    return calendar.timegm(time.strptime(utc, "%Y-%m-%dT%H:%M:%SZ")) if utc else None
-
-
 def f13_findings(rows: list) -> dict:
     """LANE 2'S OWN CHECK of each imported `LANDING EXPIRED` (Y:5141, AT-F13
     (j)): the import does not run F13's check, so a line typed by hand in
@@ -1350,15 +1340,15 @@ HISTORIES = {
                                                                                    minutes=48,
                                                                                    pr=11)],
               True, None),
-    "re-import-after-a-rollback": ([landing(minutes=45), composed(minutes=10)], True, None),
-    "typed-in-files-mode-meeting-f13": ([landing(minutes=45), composed(minutes=10)], True, None),
-    "typed-10-minutes-after-its-landing": ([landing(minutes=45), composed(minutes=35)], True,
+    "re-import-after-a-rollback": ([landing(minutes=45), expired(minutes=10)], True, None),
+    "typed-in-files-mode-meeting-f13": ([landing(minutes=45), expired(minutes=10)], True, None),
+    "typed-10-minutes-after-its-landing": ([landing(minutes=45), expired(minutes=35)], True,
                                            "not more than 30 minutes"),
-    "no-word-clause": ([landing(minutes=45), composed(minutes=10, clause=False)], True,
+    "no-word-clause": ([landing(minutes=45), expired(minutes=10, clause=False)], True,
                        "no word clause"),
-    "naming-another-pr": ([landing(minutes=45), composed(minutes=10, pr=OTHER_PR)], True,
+    "naming-another-pr": ([landing(minutes=45), expired(minutes=10, pr=OTHER_PR)], True,
                           "no LANDING"),
-    "holder-in-another-case": ([landing(minutes=45), composed(minutes=10, holder=HOLDER.lower())],
+    "holder-in-another-case": ([landing(minutes=45), expired(minutes=10, holder=HOLDER.lower())],
                                False, None),
 }
 
