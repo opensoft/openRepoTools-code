@@ -576,7 +576,10 @@
 #      empty or out-of-class LANES_LANE (`pw_lane_given`); LANES_NO_GIT=1,
 #      since on primary the write is its commit (`pw_no_git_refuse`); a hand
 #      edit of a rendered file pending in that checkout (`pw_hand_edit_refuse`);
-#      no author identity there (`pw_author_read`); each of these six but for
+#      a listing of that checkout's pending edits that git cannot make, named
+#      with git's code (`pw_hand_edit_refuse`, by `cs_pending_of --rc`; lane
+#      openRepoTools-3, #165 6813027223, batch g Q114); no author identity
+#      there (`pw_author_read`); each of these seven but for
 #      `request-handoff`, whose refusal there is 64 (below, `pw_pre_rc`), though
 #      a lane name out of class keeps files mode's 2 for it too; an act whose
 #      generation is
@@ -618,7 +621,9 @@
 #      `pw_pre_rc`, its lane's missing checkout (`pw_checkout`), an unset,
 #      empty or out-of-class LANES_LANE (`pw_lane_given`), LANES_NO_GIT=1
 #      (`pw_no_git_refuse`), a pending hand edit of a rendered file in that
-#      checkout (`pw_hand_edit_refuse`), and no author identity there
+#      checkout (`pw_hand_edit_refuse`), a listing of that checkout's pending
+#      edits that git cannot make (`pw_hand_edit_refuse`, batch g Q114), and
+#      no author identity there
 #      (`pw_author_read`) (Q35; lane openRepoTools-3, #165 6807881675, batch c
 #      Q67). Its callers read its 2 as "still bound". A lane name out of class
 #      keeps files mode's 2, the act's checks keep Y:5643's 2, and the
@@ -2986,11 +2991,19 @@ cs_refuse() {   # <what> <why> [<recovery line>…]
 # and in the C locale, because they are compared as strings. With
 # `--no-renames` first, a rename among them is listed as both its paths, not
 # its new path alone (review REV415c, N3); without it, as before.
-cs_pending_of() {   # [--no-renames] <pathspec>…
-  local cpo_r=""
+# With `--rc` first, before `--no-renames`, it returns git's own exit status,
+# so a caller can tell a listing git could not make from an empty one; without
+# it, 0, as before, and a failed listing prints nothing. Only T415's
+# `pw_hand_edit_refuse` passes it: a read that failed is never "no hand edit"
+# there (Amendment 7(d); lane openRepoTools-3, #165 6813027223, batch g Q114).
+cs_pending_of() {   # [--rc] [--no-renames] <pathspec>…
+  local cpo_r="" cpo_s=0 cpo_rc=0
+  if [ "${1-}" = --rc ]; then cpo_s=1; shift; fi
   if [ "${1-}" = --no-renames ]; then cpo_r="--no-renames"; shift; fi
   [ "$#" -gt 0 ] || return 0
-  LC_ALL=C git -C "$LANES_REPO" -c "$CP_EXACT" -c core.quotePath=false diff ${cpo_r:+"$cpo_r"} --name-only HEAD -- "$@" 2>/dev/null || :
+  LC_ALL=C git -C "$LANES_REPO" -c "$CP_EXACT" -c core.quotePath=false diff ${cpo_r:+"$cpo_r"} --name-only HEAD -- "$@" 2>/dev/null || cpo_rc=$?
+  [ "$cpo_s" = 1 ] || cpo_rc=0
+  return "$cpo_rc"
 }
 # A PENDING HAND EDIT OF THE REGISTER REFUSES EVERY WRITER BUT `commit` (S3
 # step 4, ratified choice 9). A lane's session and its subagents share this
@@ -3008,13 +3021,22 @@ cs_refuse_register() {   # <what> <lane>
 # HEAD before the verb has edited it is a fault of the write path, never a
 # person's hand edit: refused with 2, nothing sent, never captured or
 # committed, and no recovery is printed, since there is nothing to recover.
+# THE LIST IS SPLIT BY PARAMETER EXPANSION, at each newline, never through a
+# here-document, as `pw_hand_edit_refuse`'s and the seam's are (review REV-W9a
+# M1's class): bash 3.2 writes a here-document to a temp file in /tmp, and
+# where none can be made, as in a full /tmp, the loop never ran, so this 2
+# named no path and bash printed its own error first. Now a full /tmp changes
+# nothing here: the same paths are named, with the same 2.
 reg_scratch_dirty() {   # <what> <the paths, one a line>
-  rsdy_l=""
-  while IFS= read -r rsdy_p; do
+  rsdy_s="$2"; rsdy_l=""
+  while [ -n "$rsdy_s" ]; do
+    rsdy_p="${rsdy_s%%"$WR_NL"*}"
+    case "$rsdy_s" in
+      *"$WR_NL"*) rsdy_s="${rsdy_s#*"$WR_NL"}" ;;
+      *) rsdy_s="" ;;
+    esac
     [ -z "$rsdy_p" ] || rsdy_l="$rsdy_l $rsdy_p"
-  done <<RSDY_EOF
-$2
-RSDY_EOF
+  done
   die "refusing to $1 in $LANES_REPO, the attempt's scratch tree under LANES_REGISTER_SCRATCH: an internal error, since these paths differ from its HEAD before the write has edited any:${rsdy_l}. That tree is built fresh from the register at the snapshot, so this is a fault in the write path, never a hand edit to capture or commit (T413; Y:5078). Nothing was sent." 2
 }
 # S3 STEP 4 FOR THE PATHS A WRITE LEARNS ONLY IN ITS SCAN (the sweeps,
@@ -6158,7 +6180,7 @@ wr_owed_text() {   # <verb>
 # effect check's `<lane>` is the lane the write is made for, `write_lane_of`'s,
 # PW_LANE, which the record's digest fixes with its arguments, not the
 # writer's `LANES_LANE` (lane openRepoTools-3, #165 6808937880, batch e Q106;
-# Y:5257): every caller runs after `pw_checkout` has set it. The rerun keeps
+# design:5257): every caller runs after `pw_checkout` has set it. The rerun keeps
 # the writer's `LANES_LANE` (`wr_rerun_new_text`), which its digest takes.
 wr_text_other_generation() {   # [<g'>] [<owed>]
   local og_now og_owed og_tail og_utc og_steps
@@ -6208,7 +6230,15 @@ wr_refuse_other_generation() {   # [<g'>] [<owed>]
 #   - LANES_WRITE_ID without LANES_WRITE_GENERATION, where no record here holds
 #     that id, naming the printed rerun's form (Y:5200), so `lanes-index`'s 64
 #     for an id with no generation is never reached from here;
-#   - a record that cannot be read as one;
+#   - a record that cannot be read as one, naming its path (pending-record.md
+#     G8), and then, in lane 3's words, how a person settles it: read it; leave
+#     one whose `format=` is not 1 to the lanes-edit.sh that wrote it; past the
+#     record's age, `wr_max_age_s`, look for its effect, move the file out of
+#     register-pending/ and run again (lane openRepoTools-3, #165 6813027223,
+#     batch g Q116). Its `<lane>` is PW_LANE, the lane the write is made for,
+#     which `pw_checkout` sets before this runs, as `wr_text_other_generation`
+#     names it; its `<verb>` is this run's own, WR_VERB, since the record
+#     cannot be read for one;
 #   - two cases Y does not settle, each refused rather than guessed: an id whose
 #     record names another generation than LANES_WRITE_GENERATION, and an id
 #     whose digest's record holds another write.
@@ -6220,7 +6250,7 @@ wr_id_plan() {
   WR_CREATED_UTC=""; WR_DATABASE=""
   wr_record_read "$ip_f"; ip_rc=$?
   if [ "$ip_rc" = 2 ]; then
-    wr_refuse "the pending record of this command, $ip_f, is there and cannot be read as one, so whether a write of it is in doubt is not known. Nothing was sent. lanes-index status lists the pending records"
+    wr_refuse "the pending record of this command, $ip_f, is there and cannot be read as one, so whether a write of it is in doubt is not known. Nothing was sent, and no run of this command gets past it, \`LANES_WRITE_ID=new\` included, until a person settles it. Read it: cat $ip_f. Where its \`format=\` is not 1, another lanes-edit.sh wrote it: run the command with that one, and leave the file. Otherwise, once the file is more than $(wr_max_age_s) s old by its own time, no commit call of it can still commit; look for its effect in the register as it stands, \`lanes-edit.sh history ${PW_LANE} --since <its created_utc, or earlier where that cannot be read>\` for a log line, or \`lanes-edit.sh register-row ${PW_LANE}\` for a row; then move the file out of register-pending/ and run the command again. If the effect is there, do by hand any of its after-COMMIT steps that did not run: those of \`lanes-edit.sh ${WR_VERB}\`. lanes-index status lists the pending records"
   fi
   case "$ip_e" in
     '')
@@ -6447,8 +6477,9 @@ PW_DRY=0
 # 6780753157, Q35): 2, or 64 for `request-handoff`, which refuses 64, never 2,
 # for each refusal the primary branch adds before its claim: its missing lane
 # (the arm's own 64, in `pw_checkout`), LANES_NO_GIT=1, `pw_lane_given`'s
-# refusal, a missing `<c>`, a pending hand edit in `<c>`
-# (`pw_hand_edit_refuse`) and no author identity there (`pw_author_read`)
+# refusal, a missing `<c>`, a pending hand edit in `<c>` or a listing of it git
+# cannot make (`pw_hand_edit_refuse`; batch g Q114) and no author identity
+# there (`pw_author_read`)
 # (lane openRepoTools-3, #165 6807881675, batch c Q67), so that it never
 # refuses 2 there but for its binding. Its callers read its 2 as "still bound"
 # (`lane`:1253, `lane-start`:2875). A lane name out of class keeps files
@@ -6559,9 +6590,19 @@ pw_no_git_refuse() {
 # TMPDIR, the loop never ran, so the write went on as though no hand edit were
 # pending. Now a full TMPDIR changes nothing here: the edit is refused as
 # above (lane 4's W9-T415 report, §6).
+# A LISTING GIT CANNOT MAKE IS NO ANSWER: `cs_pending_of --rc` returns git's
+# status, and where it is not 0 the write refuses the same way, 2, or 64 for
+# `request-handoff` (`pw_pre_rc`), naming the read and its code, before
+# anything is sent. Until then a failed listing read as "no hand edit", and the
+# write went on (Amendment 7(d); lane openRepoTools-3, #165 6813027223, batch g
+# Q114, as `pw_author_read`, git's other read of `<c>`, refuses).
 pw_hand_edit_refuse() {
-  local ph_hits="" ph_p="" ph_l="" ph_q="" ph_c=""
-  ph_hits="$(LANES_REPO="$PW_C" cs_pending_of --no-renames lanes/LANES.md lanes/aliases.tsv lanes/log lanes/archive)"
+  local ph_hits="" ph_p="" ph_l="" ph_q="" ph_c="" ph_rc=0
+  ph_hits="$(LANES_REPO="$PW_C" cs_pending_of --rc --no-renames lanes/LANES.md lanes/aliases.tsv lanes/log lanes/archive)" || ph_rc=$?
+  if [ "$ph_rc" != 0 ]; then
+    ph_c="$(printf '%q' "$PW_C")"
+    die "refusing to write on primary: git could not list the uncommitted edits in lane ${PW_LANE}'s checkout, $PW_C: \`git -C $ph_c diff --no-renames --name-only HEAD -- lanes/LANES.md lanes/aliases.tsv lanes/log lanes/archive\` exited $ph_rc. So whether that checkout holds a hand edit of a file the register renders is not known, and a read that failed is never 'no hand edit' (Amendment 7(d)). Fix the read, then run \`$cmd\` again. Nothing was sent." "$(pw_pre_rc)"
+  fi
   while [ -n "$ph_hits" ]; do
     ph_p="${ph_hits%%"$WR_NL"*}"
     case "$ph_hits" in
@@ -6847,7 +6888,12 @@ pw_snap_read() {   # <the snapshot's stdout, in a file>
 #        belongs to another write (LR007 `another-write`), or a refused
 #        configuration. On the first snapshot of a record taken over, LR007
 #        `generation` is that record's other generation (T412's
-#        `wr_refuse_other_generation`; Y:5209);
+#        `wr_refuse_other_generation`; Y:5209): a plain rerun's (`reuse`) or
+#        a `LANES_WRITE_ID` run's with that record's id (`env`), which is
+#        where PW_REC_OURS is 1 before it (`pw_run`). A by-id run with no
+#        record has none to name, and keeps the relay (lane openRepoTools-3,
+#        #165 6813027223, batch g Q115; pending-record.md:225 and :286 at
+#        bd871f57);
 #   64   usage: never sent by this file, so an internal error, 2 (CO-5);
 #   69, and any other end: the register could not be read, 69.
 # On a refusal or a failed read, what `lanes-index` said on stderr is passed
@@ -6895,7 +6941,7 @@ pw_snapshot() {
       pw_snap_read "$PW_DIR/snapshot" ||
         pw_snap_end 69 "\`lanes-index register snapshot\` exited 0 with an answer this lanes-edit.sh cannot read (not format=1, a key twice or missing, or not switch=primary with marker=present), which is a failed read" ;;
     2)
-      if [ "$PW_FIRST_DONE" = 0 ] && [ "$WR_PLAN" = reuse ] && [ "$ps_det" = generation ]; then
+      if [ "$PW_FIRST_DONE" = 0 ] && [ "$PW_REC_OURS" = 1 ] && [ "$ps_det" = generation ]; then
         pw_run_dir_done
         wr_refuse_other_generation
       fi
@@ -6903,7 +6949,7 @@ pw_snapshot() {
     64)
       pw_snap_end 2 "\`lanes-index register snapshot\` exited 64, a usage error this lanes-edit.sh never sends: an internal error" ;;
     *)
-      pw_snap_end 69 "\`lanes-index register snapshot\` exited ${ps_rc}: the register could not be read" ;;
+      pw_snap_end 69 "\`lanes-index register snapshot\` exited ${ps_rc} and gave this write no snapshot to make its change on (its own words, where it gave any, are above)" ;;
   esac
   # THE LAST SNAPSHOT'S CLOCK, for F3's lookup (T417; Y:5236; contract §3.4):
   # the database clock of the last snapshot whose answer was read, and the
@@ -8069,6 +8115,16 @@ pw_tail_found() {   # <seq>
 # `wr_record_read` has checked is one of Y:5179's two forms (Q34), then gives
 # Y:5211-5213's effect check and the steps that may be owed (Y:5214).
 #
+# THE EFFECT CHECK'S `<lane>` is the lane the write is made for, PW_LANE
+# (`write_lane_of`'s, set by `pw_checkout` before the claim), which the
+# record's digest fixes with its arguments, not the writer's `LANES_LANE`,
+# which is the record's `lane=`: design:5257 (spec#17 B15 `6e534355`) puts
+# that rule on the effect check itself (lane openRepoTools-3, #165 6813027223,
+# batch g Q117, with batch e Q106). The effect is the write's. The journal
+# lookup's `--lane` keeps `WR_REC_LANE` (`wr_lookup_text`,
+# `pw_owner_live_end`), and the rerun keeps the writer's `LANES_LANE`
+# (`wr_rerun_plain_text`), since the digest takes it.
+#
 # WHERE THE EFFECT IS NOT THERE, THE WAIT (lane openRepoTools-3, #165
 # 6780753157, Q46): the same command again, with no LANES_WRITE_ID, after this
 # record's `updated_utc` plus its maximum age (`wr_max_age_s`,
@@ -8095,7 +8151,7 @@ pw_took_tail_refuse() {
   tr_when="once this record is more than ${tr_max} s, its maximum age, past its updated_utc, ${WR_REC_UPDATED_UTC}"
   [ -z "$tr_at" ] || tr_when="after ${tr_at}, when this record is more than ${tr_max} s, its maximum age, past its updated_utc, ${WR_REC_UPDATED_UTC}"
   pw_run_dir_done
-  wr_refuse "the pending record of this command, $WR_STATE/register-pending/$WR_D, holds write ${WR_REC_WRITE_ID} made at ${WR_REC_CREATED_UTC} against register generation ${WR_REC_GENERATION}, and its tail, ${WR_TOOK_TAIL}, says that write committed at seq ${tr_s}; but this register does not hold it: this run's first snapshot did not find it. A register restored from a backup carries the lost database's generation until its cutover (Y:1518), and a damaged record reads the same. Nothing was sent, no after-COMMIT step was run, and the record is left as it is. Look for its effect in the register as it stands: lanes-edit.sh history ${WR_REC_LANE} --since ${WR_REC_CREATED_UTC} for a log line, or lanes-edit.sh register-row ${WR_REC_LANE} for a row. If it is there, ${tr_steps} If it is not there, run the same command again, with no LANES_WRITE_ID, ${tr_when}: that rerun writes anew under a record of its own (Y:5207), and one before then takes this record over and is refused again: $(wr_rerun_plain_text)"
+  wr_refuse "the pending record of this command, $WR_STATE/register-pending/$WR_D, holds write ${WR_REC_WRITE_ID} made at ${WR_REC_CREATED_UTC} against register generation ${WR_REC_GENERATION}, and its tail, ${WR_TOOK_TAIL}, says that write committed at seq ${tr_s}; but this register does not hold it: this run's first snapshot did not find it. A register restored from a backup carries the lost database's generation until its cutover (Y:1518), and a damaged record reads the same. Nothing was sent, no after-COMMIT step was run, and the record is left as it is. Look for its effect in the register as it stands: lanes-edit.sh history ${PW_LANE} --since ${WR_REC_CREATED_UTC} for a log line, or lanes-edit.sh register-row ${PW_LANE} for a row. If it is there, ${tr_steps} If it is not there, run the same command again, with no LANES_WRITE_ID, ${tr_when}: that rerun writes anew under a record of its own (Y:5207), and one before then takes this record over and is refused again: $(wr_rerun_plain_text)"
 }
 
 # THE SAME COMMAND WITH NO `LANES_WRITE_ID` (Y:5207; lane openRepoTools-3, #165
