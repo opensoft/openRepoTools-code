@@ -19950,18 +19950,42 @@ def rollback_step_4(cfg: dict, store, git: dict, ident: dict, k: int, seq: int) 
 def _rollback_record(store, seq: int, result: OperatorPush, workstation: str) -> int:
     """`record_marker` after a read-back that found the removal's commit
     (`result.commit`) on origin, under D9's rollback row (Y:3529): 0 once it
-    answers `absent`. Any other end is 69: the push stands, the marker stays
-    `removing` where the call did not commit, and the rerun reads origin
-    back and records it again (contracts/exit-codes.md §3.2)."""
+    answers `absent`.
+
+    THE RACE TO RECORD IT (NIT-1 of lane 3's review of T326): two runs that
+    both find the removal on origin both call `record_marker`, and the one
+    that comes second gets LR002, no unconfirmed operator entry at `seq`,
+    though the rollback is complete. On LR002 the switch is read again
+    (`_rollback_push_read`): where it reads the marker `absent` at this
+    rollback's entry, recorded by the other run, it is 0, as step 4's own
+    start says of a marker another run recorded.
+
+    Any other end is 69: the push stands, the marker stays `removing` where
+    the call did not commit, and the rerun reads origin back and records it
+    again (contracts/exit-codes.md §3.2)."""
     commit = result.commit
     how = ("pushed by this run" if result.outcome == "pushed"
            else "pushed by an earlier run, whose read-back this run made")
     stands = (f"The removal's commit {commit} stands on origin, {how}; while the marker reads "
               f"removing no write commits, and a rerun reads origin back and records it again")
+    after = (f"Next: `{PROG} set-mode index` on each configured workstation (step 5), a "
+             f"files-mode write, then `{PROG} outage clear` on each (operations.md §2.3)")
     try:
         state = operator_record_marker(store, "rollback", seq, commit, workstation)
     except PsqlFailed as exc:
         err = register_definitive_error(exc)
+        if err is not None and err.sqlstate == "LR002":
+            try:
+                again = _rollback_push_read(store, seq)
+            except _RollbackEnd:
+                again = None                        # its 69 is this call's, below
+            if again is not None and again["marker"] == "absent":
+                say(f"rollback: record_marker found no unconfirmed entry at seq {seq} (LR002), "
+                    f"and the switch read again reads the marker absent at this rollback's "
+                    f"entry: another run recorded it, with the commit {again['base']}. Seq "
+                    f"{seq}'s commit {commit}, removing {CUTOVER_STORE_PATH}, is on origin "
+                    f"{RENDER_BRANCH}, {how}: the rollback is complete (S5's step 4). {after}")
+                return EXIT_OK
         for line in ((err.error_line,) + ((err.detail_line,) if err.detail_line else ())
                      if err else ()):
             sys.stderr.write(line + "\n")
@@ -19976,8 +20000,7 @@ def _rollback_record(store, seq: int, result: OperatorPush, workstation: str) ->
         return EXIT_UNAVAILABLE
     say(f"rollback: seq {seq}'s commit {commit}, removing {CUTOVER_STORE_PATH}, is on origin "
         f"{RENDER_BRANCH}, {how}, read back and recorded: the marker is absent (S5's step 4). "
-        f"Next: `{PROG} set-mode index` on each configured workstation (step 5), a files-mode "
-        f"write, then `{PROG} outage clear` on each (operations.md §2.3)")
+        f"{after}")
     return EXIT_OK
 
 
