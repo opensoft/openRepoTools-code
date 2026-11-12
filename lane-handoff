@@ -3678,6 +3678,21 @@ fi
 # lane)"* — so both branches below test `record_written` before they touch tmux,
 # and a lane whose PAUSED line did not land keeps its pane and its session.
 if [ "$do_restart" = 1 ] || [ "$do_exit" = 1 ]; then
+	# THE TWO WAYS OUT OF A 69 UNDER A SEQ BASE (T429; lane 3, #165 6836816821,
+	# question 2), which W11's 69 gate and W12's 69 gate both end with. Both are
+	# reached only with W9 landed, so the note above is the landed note, and what
+	# it says is to run the act again from its start (Y:5601). That is this
+	# command again with the same flag: it takes a fresh base, and restarts the
+	# pane (or ends the session) once its writes land, and a re-run is accepted
+	# (`--restart`'s reservation is set to `failed` by its EXIT trap, so one
+	# that stopped here does not hold it). The other way is a restart by hand,
+	# which leaves the lane SWAPPING. Neither names `--late`, which refuses where
+	# W9 landed, nor a hand flip of the row, which the note above rules out
+	# (Y:5587).
+	if [ "$do_exit" = 1 ]; then gate_flag="--exit"; gate_ends="ends the session"
+	else gate_flag="--restart"; gate_ends="restarts the pane"
+	fi
+	gate_69_ways="Once the register answers, run this command again from its start, with the same flag ($gate_flag; Y:5601): it takes a fresh base, and $gate_ends once its writes land. Or restart by hand, which leaves the lane SWAPPING:  $restart_cmd"
 	if [ "$record_written" != 1 ]; then
 		[ -z "$record_in_doubt" ] ||
 			die "the lane's PAUSED record $d8_text So this pane is left exactly as it is: a pane is never respawned over an unrecorded lane, and a session is never ended without one (Amendment 17(f)). Run the printed rerun above, then re-run this." 2
@@ -3702,6 +3717,14 @@ if [ "$do_restart" = 1 ] || [ "$do_exit" = 1 ]; then
 	if [ -n "$row_write_refused" ]; then
 		[ -z "$row_in_doubt" ] ||
 			die "the lane's PAUSED line is written and the row's state cell $d8_text So this pane is left exactly as it is: respawning it could leave the register reading RUNNING for a session that has just been replaced, and every other lane reads the row. Run the printed rerun above and re-run this, or restart by hand:  $restart_cmd" 2
+		# A 69 UNDER A SEQ BASE (T429; #165 6836816821, question 2): "Flip it and
+		# re-run" is a hand `set-row-state`, which the note above rules out (no hand
+		# command is printed, Y:5587), so this says the two ways above instead.
+		# Where W12 is a 3 the gate above has it, and any other code stopped the act
+		# before here. Under `@files`, or after `act-begin`'s 2, the words stand.
+		if act_on_seq_base && [ "${w12_rc:-}" = 69 ]; then
+			die "the lane's PAUSED line is written and the ROW WAS NOT FLIPPED (its write exited 69 or was not sent: the note above says why), so this pane is left exactly as it is: respawning it would leave the register reading RUNNING for a session that has just been replaced, and every other lane reads the row. $gate_69_ways" 2
+		fi
 		die "the lane's PAUSED line is written and the ROW WAS NOT FLIPPED (the note above says why), so this pane is left exactly as it is: respawning it would leave the register reading RUNNING for a session that has just been replaced, and every other lane reads the row. Flip it and re-run, or restart by hand:  $restart_cmd" 2
 	fi
 	# THE FILE-LEVEL LINE'S 3 AND 69 UNDER A SEQ BASE (T429; lane 3, #165
@@ -3715,11 +3738,14 @@ if [ "$do_restart" = 1 ] || [ "$do_exit" = 1 ]; then
 	# that holds that rerun is the one a respawn or an `/exit` would end, and the
 	# next session never sees it, because the handoff's top block was written
 	# first. A 2, a 75 or any other code never gets here: the act stopped above.
+	# The 69 gate says the two ways out outright (`gate_69_ways`, above; #165
+	# 6836816821, question 2): W9 landed to get here, so the note above is the
+	# landed note, and its way is this command again from its start.
 	if [ -n "$w11_open" ]; then
 		[ -z "$w11_in_doubt" ] ||
 			die "the lane's PAUSED record and the row are written and the LANES.md file-level PAUSED line $d8_text So this pane is left exactly as it is: respawning it, or ending its session, would end the process that holds the printed rerun, and the next session never sees it, because the handoff's top block was written before the writes. Run the printed rerun above, which writes the line once or finds it (this command run again would append a second line, since the line carries a UTC of its own), and then restart by hand:  $restart_cmd" 2
 		[ "$w11_rc" != 69 ] ||
-			die "the lane's PAUSED record and the row are written and the LANES.md file-level PAUSED line was NOT appended (its write exited 69), and the lane stays SWAPPING for it, so this pane is left exactly as it is: respawning it, or ending its session, would take the process that holds the note above away. The note above names how the record is completed. Do that, and then restart by hand:  $restart_cmd" 2
+			die "the lane's PAUSED record and the row are written and the LANES.md file-level PAUSED line was NOT appended (its write exited 69), and the lane stays SWAPPING for it, so this pane is left exactly as it is: respawning it, or ending its session, would take the process that holds the note above away. $gate_69_ways" 2
 	fi
 	[ "$handoff_written" = 1 ] ||
 		die "the lane's PAUSED line is written and the HANDOFF WAS NOT REFRESHED (the note above says why), so this pane is left exactly as it is: the top block of that file is what the new session is started with, and respawning now would hand it the block of a handoff this act has replaced. Put the block printed above at the head of the handoff, then re-run — or restart by hand once you have:  $restart_cmd" 2
