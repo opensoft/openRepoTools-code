@@ -33,11 +33,18 @@ wait on pipes a child inherits.
 EVERY CASE BUT TWO IS RED TODAY by its own assertion: today's answer 2 runs
 `lane-start` inside the hook, so no "BINDING" is printed and the runner stops
 the hook at 5 s; today's guard has no bind modes, no `guard-bind` and no
-`pid_start_of`. They fail until L5-A1 and L5-A2 (lane 5's T502 and T507); the
-ones that run the real `lane-start` fail until lane 4's `start-record` (L4-B9)
-as well. The two are `test_the_hook_string_and_guard_timeout_are_unchanged`,
-an invariant that holds today, and `test_an_unreadable_bind_record_is_dropped_with_exit_2`,
-whose oracle is today's text and today's drop.
+`pid_start_of`. They fail until L5-A1, lane 5's T502. Case 22's
+`test_guard_bind_computes_bound_s_from_c_n_a_and_the_service` and lane 5's
+`test_the_post_bind_refill_is_one_register_read_and_never_git` also fail until
+L5-A3, lane 5's T507, which copies `c`, `n_a` and `w_s_ms` from `.head` and
+makes the post-bind refill. Of the `[files]` cases that run the real
+`lane-start`, only `test_the_bind_child_records_bind_failed_with_the_code_and_binds_nothing`
+also fails until lane 4's `start-record` (L4-B9, T427 and T428), whose calls it
+asserts; case 17 and row (d) need nothing more, and pass on lane 5's `6050581`
+with T214g's estate (T214h, T214i). The two are
+`test_the_hook_string_and_guard_timeout_are_unchanged`, an invariant that holds
+today, and `test_an_unreadable_bind_record_is_dropped_with_exit_2`, whose
+oracle is today's text and today's drop.
 """
 
 from __future__ import annotations
@@ -1221,13 +1228,64 @@ def _real_estate(estate, **kwargs) -> Estate:
       So `$HOME/projects/<repo>` is made, the ladder's default (rung 4); it
       writes nothing to the register.
     - THE WINDOW'S NEW NAME: the stand-in `tmux` follows the hook's rename
-      (`_follow_renames`), as tmux does."""
+      (`_follow_renames`), as tmux does.
+
+    AND RULE 3'S STAMP NEEDS THE LANE'S HANDOFF (T214k): where the lane has a
+    row, `_handoff` commits the file that row names, so the bind's
+    `write-handoff --stamp` writes the stamp as it does on a real lane. A new
+    lane (`to_row=False`) has no handoff yet, and its `lane-start` writes no
+    stamp (`lane-start:4352-4356` at `6050581`)."""
     est = estate(**kwargs)
     est.extra["LANES_LANE_START"] = str(est.guard.parent / "lane-start")
     est.set("edit-real")
     (est.home / "projects" / est.to.rsplit("-", 1)[0]).mkdir(exist_ok=True)
     _follow_renames(est.session)
+    if kwargs.get("to_row", True):
+        _handoff(est)
     return est
+
+
+#: THE LANE'S HANDOFF (T214k), as a real lane's register holds it: the file
+#: its row's handoff cell names (`_row`'s `handoffs/<lane>.md`; `lane-start`
+#: reads the cell as field 7, `lane-start:4413` at `6050581`), whose head is
+#: the one `lane-handoff`'s `top_block` writes (`lane-handoff:2559-2563`): the
+#: lane header on line 1, the blank line that ends the header block, then the
+#: resume prompt. `write-handoff --stamp` puts Rule 3's stamp immediately
+#: after that blank (`lanes-edit.sh:22439`; `lane-start:4358-4361`).
+DASH = chr(0x2014)
+HANDOFF_HEAD = (
+    "Lane: {lane} (test, session {sid}) " + DASH + " single-use resume prompt: stamp "
+    "RESUMED-by before acting (lane-collision-protocol rule 3)\n"
+    "\n"
+    "## RESUME PROMPT " + DASH + " PAUSED 2026-10-01T02:00:00Z (T214's estate), agent claude, "
+    "transcript {sid}, kind unknown\n"
+    "\n"
+    "**STATE at 2026-10-01T02:00:00Z.** Lane {lane} is paused, and the guard's answer 2 "
+    "resumes it.\n")
+
+
+def _handoff(est: Estate) -> Path:
+    """Commit and push the lane's handoff (`HANDOFF_HEAD`) where the row for
+    `est.to` names it, so that `write-handoff --stamp` finds a tracked file
+    to stamp, as on a real lane. Without it the stamp exits 8, "lane
+    repoA-3's handoff is not at ..., so there is nothing to write into"
+    (`lanes-edit.sh:22426-22428` at `6050581`), `lane-start` goes on with the
+    stamp owed (`lane-start:4481-4483`), and a case passed on a path where
+    the stamp stopped early (G17's doubt, wave 17). It is a commit of its own
+    after the estate's first, so the estate every other case builds is
+    unchanged; an untracked file would not do, since `write-handoff` refuses
+    a handoff git has never had (`lanes-edit.sh:22414`)."""
+    rel = f"handoffs/{est.to}.md"
+    register = (est.wip / "lanes" / "LANES.md").read_text(encoding="utf-8")
+    assert f"| `{est.to}` | harness `{est.other}` |" in register and f"| {rel} |" in register, \
+        f"the register names no handoff {rel} for {est.to}:\n{register}"
+    path = est.wip / rel
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(HANDOFF_HEAD.format(lane=est.to, sid=est.other), encoding="utf-8")
+    est._git(["add", "--", rel], est.wip)
+    est._git(["commit", "-q", "-m", f"handoff({est.to}): the lane's handoff", "--", rel], est.wip)
+    est._git(["push", "-q", "origin", "main"], est.wip)
+    return path
 
 
 def _two_binds(estate, mode="files") -> tuple:
@@ -1257,19 +1315,28 @@ def _two_binds(estate, mode="files") -> tuple:
     return one, two, [one.ended(60), two.ended(60)]
 
 
-def test_two_sessions_binding_one_lane_in_files_mode_the_second_is_refused_at_the_reread(
-        estate):
+def test_two_sessions_binding_one_lane_in_files_mode_both_binds_land(estate):
     """Row (d): two sessions answer `2` for one lane on the files-mode
-    fixture. The bind that reaches `lane-start`'s re-read of `binding` second
-    is refused there, the other record ends `bound`, and there is one
-    `RESUMED` line and one stamp for the lane. Lane 4's table gives no exit
-    code for the re-read, so the code seen is recorded, not asserted."""
+    fixture, and both binds land, which is what files mode does (lane 3's
+    ruling (a), #165 6827853480, on lane 4's check, 6827539379). Each bind
+    reads `binding` once on `lane-start --no-launch --bind`, before either
+    writes, and finds the lane free; nothing in files mode refuses the second:
+    only a handoff wait or a Claude resolution sets `bind_recheck` for a second
+    read (`lane-start:2654-2655`, `:2751` at `6050581`), and neither runs here:
+    the lane has no live holder to wait for, and the resolution never runs
+    under `--no-launch` (`:708`). So the race is one read wide, the log
+    carries two bindings, and the reservation stays #84's
+    (`lane-start:2724-2733` at `6050581`). Both records end `bound`, and the
+    lane's log holds two `RESUMED` lines, one for each bind. Primary keeps its
+    own case, case 8, `test_two_sessions_binding_one_lane_one_start_record_commits`,
+    where `bind:<to>` refuses whichever bind commits second. Each record's
+    code and notes are printed, not asserted."""
     one, two, ends = _two_binds(estate)
-    modes = sorted(r["mode"] for r in ends)
-    print(f"T214 row (d): the second bind's code: {[r.get('rc') for r in ends]}")
-    assert modes == ["bind-failed", "bound"], ends
+    print(f"T214 row (d): the codes {[r.get('rc') for r in ends]}, "
+          f"the notes {[r.get('note') for r in ends]}")
+    assert [r["mode"] for r in ends] == ["bound", "bound"], ends
     log = one._git(["show", f"main:lanes/log/{TO}.md"], one.origin)
-    assert log.count("RESUMED") == 1, log
+    assert log.count("RESUMED") == 2, log
 
 
 @pytest.mark.parametrize("kind,code,mode", [
@@ -1417,21 +1484,62 @@ def test_a_bind_with_no_timeout_says_bounded_no_and_kill_stops_its_group_once(
     assert not _members("pgid", start[0]["pgid"]), "the body's group was left running"
 
 
+#: CASE 17'S READ CALLS (T214h). TP:6164-6166 bounds the `lanes-edit.sh`
+#: processes on the resume path that each make one `register read`, and Y:5443
+#: is that term of `bound_s`'s sum. Lane 3 ruled that the case counts those
+#: calls only, and that `N_r` = 17 stands (#165 6827853480), on lane 4's count of
+#: lane 5's 29 calls, 13 of them register reads (6827539379). A call whose verb
+#: is below is not counted, by its kind; every other verb is, so a read this
+#: table does not know still counts against 17:
+#: - "write": the bind's writes, which Y:5440-5450 bounds as terms of their own
+#:   (`S`, `M` + `W`, the stamp): `act-begin`, `start-record` and
+#:   `write-handoff` at lane 4's T428; at lane 5's T502, Y:5523's
+#:   `append-session-id`, `set-row-state LIVE` and `log RESUMED`, the stamp's
+#:   `publish-handoff`, and `add-row` for a new lane; and the guard child's own
+#:   `set-row-state` on the lane left;
+#: - "none": the arms that touch no register state, class "none" at Y:4898, "no
+#:   door, no call": the four it names, and `workspace-root`, which reads
+#:   `$HOME/.agents/workspace.yaml` and the checkout it names, never the
+#:   register (`lanes-edit.sh:21593`, `:1004` at `6050581`), and which R2B's
+#:   section 2, the inventory Y:4894 cites, lists as local-only;
+#: - "host-local": Y:5646's host-local reads that Y:4898 does not name, which
+#:   lane 4 counted apart from the 13. The case prints their count beside the
+#:   reads: Y:4894 would give these hybrid arms a door of their own.
+#: `LANES_INDEX=off` is set for the bind, so `index_nudge` returns at once
+#: (`lanes-edit.sh:3855` at `6050581`), and no detached `lanes-index sync` adds
+#: calls of its own after a write lands: 6 of the 29, varying with timing.
+CASE_17_NOT_A_READ = {
+    **{verb: "write" for verb in ("act-begin", "start-record", "write-handoff",
+                                  "append-session-id", "set-row-state", "log",
+                                  "publish-handoff", "add-row")},
+    **{verb: "none" for verb in ("workstation", "fetch-age", "window-session",
+                                 "transcript-holders", "workspace-root")},
+    **{verb: "host-local" for verb in ("live-holder", "lane-holders", "idle-holders",
+                                       "restart-intent")},
+}
+
+
 @pytest.mark.parametrize("mode", ["files", "primary"])
 def test_the_bind_resume_path_makes_at_most_n_r_read_calls(estate, mode):
     """AT-F6 case 17: a counting `LANES_EDIT` stand-in sees at most `N_r` = 17
-    calls on the real `lane-start --no-launch --bind`'s resume path, each a
-    `lanes-edit.sh` process that makes one register read; the test fails where
-    `N_r` must grow (lane 4's section, "The record, and its liveness test")."""
+    read calls on the real `lane-start --no-launch --bind`'s resume path, each
+    a `lanes-edit.sh` process that makes one `register read`; the test fails
+    where `N_r` must grow (lane 4's section, "The record, and its liveness
+    test"). It counts the read calls only (`CASE_17_NOT_A_READ`), with
+    `LANES_INDEX=off`, as lane 3 ruled (#165 6827853480)."""
     est = _real_estate(estate, mode=mode)
+    est.extra["LANES_INDEX"] = "off"
     est.make_offer()
     est.answer_2()
     record = est.ended(90)
     calls = [e["argv"] for e in est.log("lanes-edit.log")]
-    print(f"T214 case 17: {len(calls)} lanes-edit.sh calls on the resume path: "
-          f"{[a[:1] for a in calls]}")
+    kinds = [CASE_17_NOT_A_READ.get(a[0] if a else "", "read") for a in calls]
+    reads = [a[:1] for a, kind in zip(calls, kinds) if kind == "read"]
+    print(f"T214 case 17: {len(reads)} read calls of {len(calls)} lanes-edit.sh calls on the "
+          f"resume path, {kinds.count('host-local')} more host-local; the reads: {reads}; "
+          f"every call: {[(a[:1], kind) for a, kind in zip(calls, kinds)]}")
     assert record["mode"] == "bound", record
-    assert 0 < len(calls) <= 17, calls
+    assert 0 < len(reads) <= 17, reads
 
 
 def _record_with(est: Estate, keys) -> None:
