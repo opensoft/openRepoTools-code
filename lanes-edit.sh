@@ -4936,7 +4936,12 @@ wr_lookup_text() {
 # and the text says "another generation". `<owed>` is the record's verb's row of
 # F14's table, T418's text; until it is given, the text names the verb's
 # after-COMMIT steps. Where the record's `tail` is `sent` or `done`, the text
-# says they may have run, or ran, at its UTC (Y:5214).
+# says they may have run, or ran, at its UTC (Y:5214). The effect check's
+# `<lane>` is the lane the write is made for, `write_lane_of`'s, PW_LANE, which
+# the record's digest fixes with its arguments, not the writer's `LANES_LANE`
+# (lane openRepoTools-3, #165 6808937880, batch e Q106; Y:5257): every caller
+# runs after `pw_checkout` has set it. The rerun keeps the writer's
+# `LANES_LANE` (`wr_rerun_new_text`), which its digest takes.
 wr_text_other_generation() {   # [<g'>] [<owed>]
   local og_now og_owed og_tail og_utc og_steps
   if [ -n "${1-}" ]; then og_now="generation ${1}"; else og_now="another generation"; fi
@@ -4948,7 +4953,7 @@ wr_text_other_generation() {   # [<g'>] [<owed>]
     done) og_steps="its after-COMMIT steps ran at ${og_utc}." ;;
     *) og_steps="its after-COMMIT steps may be owed: ${og_owed}. Do by hand any that did not run." ;;
   esac
-  printf '%s\n' "a pending record of this command, write ${WR_REC_WRITE_ID} made at ${WR_REC_CREATED_UTC} against register generation ${WR_REC_GENERATION}, is here, and this register is ${og_now}. That write may already be in it: an import carries every write the mirror held (D22), and a restored database holds every write up to its backup. Nothing was sent. Look for its effect in the register as it stands: lanes-edit.sh history ${WR_REC_LANE} --since ${WR_REC_CREATED_UTC} for a log line, or lanes-edit.sh register-row ${WR_REC_LANE} for a row. If it is there, ${og_steps} If it is not there, run the same command with LANES_WRITE_ID=new, which mints a new id and replaces this record: $(wr_rerun_new_text)"
+  printf '%s\n' "a pending record of this command, write ${WR_REC_WRITE_ID} made at ${WR_REC_CREATED_UTC} against register generation ${WR_REC_GENERATION}, is here, and this register is ${og_now}. That write may already be in it: an import carries every write the mirror held (D22), and a restored database holds every write up to its backup. Nothing was sent. Look for its effect in the register as it stands: lanes-edit.sh history ${PW_LANE} --since ${WR_REC_CREATED_UTC} for a log line, or lanes-edit.sh register-row ${PW_LANE} for a row. If it is there, ${og_steps} If it is not there, run the same command with LANES_WRITE_ID=new, which mints a new id and replaces this record: $(wr_rerun_new_text)"
 }
 
 # A REFUSAL OF THIS LIBRARY'S OWN, with 2: this run's claim goes first, since
