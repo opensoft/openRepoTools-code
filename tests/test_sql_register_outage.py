@@ -478,7 +478,7 @@ class Estate:
             os.killpg(proc.pid, signal.SIGKILL)
             out, err = proc.communicate()
         return {"exit": None if killed else proc.returncode, "killed": killed,
-                "out": out + err, "t0": t0, "elapsed": time.monotonic() - start}
+                "out": out + err, "err": err, "t0": t0, "elapsed": time.monotonic() - start}
 
     def reference(self) -> int:
         """The same guard on the same checkout in files mode: the mirror's
@@ -1176,10 +1176,16 @@ def test_the_guards_outage_refusal_names_the_store_the_cause_and_both_ways_out(t
     THE NAME (lane 3's ruling on lane 5's seam question, #165 6809045090):
     under `--for guard`, the cause line names the database as
     `register_url=` gives it, without credentials, not `register_label=`.
-    So the refusal names `register_db`, the URL's database, and the label
-    alone does not do; and neither the URL's user, `t215_login`, nor the
-    password file's password appears. It fails until lane 5's follow-up on
-    T507's writer A half, which puts that name in the cause line."""
+    Lane 3 set this oracle exactly (#165 6812459759):
+    - the database name is in the added name, the text after "the register
+      could not be read (" and before ")" (lane 5's form, `database <db> at
+      <host>:<port>`), so the label alone does not do;
+    - no password appears anywhere on stderr;
+    - no user, `t215_login`, appears in the added name;
+    - there is no assert on `psql`'s own cause, which is relayed whole.
+    So the cause is asserted in `lanes-index`'s own words, "the register
+    could not be read", and no longer by `psql`'s "Connection refused". It
+    fails until lane 5's T507A-fix1 (`373d481`, A6), which adds that name."""
     estate = Estate(tmp_path, [_render(1)])
     estate.passfile.write_text(f"127.0.0.1:55432:register_db:t215_login:{SECRET}\n",
                                encoding="utf-8")
@@ -1190,11 +1196,13 @@ def test_the_guards_outage_refusal_names_the_store_the_cause_and_both_ways_out(t
     assert estate.psql_starts(), (
         f"the guard made no direct read: the fake psql has no call: {out[-600:]}")
     assert result["exit"] == 2, f"the guard exited {result['exit']}"
-    assert "register_db" in out, (
-        f"the refusal does not name the database as register_url= gives it: {out[-600:]}")
-    assert SECRET not in out and "t215_login" not in out, (
-        f"the refusal carries a credential, the URL's user or its password: {out[-600:]}")
-    assert "unreachable" in out or "Connection refused" in out, f"no cause: {out[-600:]}"
+    added = re.search(r"the register could not be read \(([^)]*)\)", out)
+    assert added, f"the refusal adds no name after `the register could not be read`: {out[-600:]}"
+    assert "register_db" in added.group(1), (
+        f"the added name {added.group(1)!r} does not name the database as register_url= gives it")
+    assert "t215_login" not in added.group(1), (
+        f"the added name {added.group(1)!r} carries the URL's user")
+    assert SECRET not in result["err"], f"stderr carries the password: {result['err'][-600:]}"
     for words in ("lanes-index status", "lanes-index rollback", "CLAUDE_NO_LANE=1"):
         assert words in out, f"the refusal does not carry {words!r}: {out[-600:]}"
 
