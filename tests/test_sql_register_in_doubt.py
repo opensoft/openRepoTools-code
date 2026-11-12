@@ -1346,9 +1346,13 @@ def test_the_after_commit_tail_of_release_runs_once_when_a_rerun_finds_the_write
 def test_the_after_commit_tail_of_request_handoff_types_once_in_the_kept_child_and_polls(estates):
     """`request-handoff`: the kept child ran the tail, so the fake `tmux`
     logs one `send-keys`, and the poll reads and ends the run; the request is
-    in the register once. Run with `--wait 2` and `LANES_POLL_SECONDS=1`."""
+    in the register once. Run with `--wait 2` and `LANES_POLL_SECONDS=1`.
+    The fake `tmux` answers the bound window as live (T248b's
+    `loggers(e, tmux_live=True)`): the silent one answers no window read, so
+    the window never reads live and nothing is typed (T245m; PM33A-TRIAGE L3;
+    N2-17b's reading 2)."""
     e = estates()
-    where = loggers(e)
+    where = loggers(e, tmux_live=True)
     w = e.run(LA, ["request-handoff", LC, "--session", session_of(LC), "--wait", "2"], arms=[AFTER],
               first=[where], extra={"LANES_POLL_SECONDS": "1"})
     assert w.code in (0, 2), w.err[-800:]
