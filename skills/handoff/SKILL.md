@@ -749,10 +749,21 @@ if [[ -z "$ws_missing" && -z "$act_down" ]]; then
                 printf 'REFUSED: `%s canon-lane --walk %s` exited 0 and printed no name, so the names lane %s was found through are NOT known, and the writes below would leave their keys out: a change to one of them would not refuse them (Y:5624). Nothing of step 4 was written.\n' "$L" "$id_typed" "$lane" >&2
                 act_hold
               else
-                while IFS= read -r aw_n; do
+                # THE NAMES ARE PEELED BY PARAMETER EXPANSION, one line at a time, with no
+                # here-string (RC-W10d's SHOULD): bash 3.2 backs a here-string with a temp
+                # file in /tmp, and where none can be made the redirection fails, the loop
+                # never runs, and the block goes on with no `row:<n>` or `alias:<n>` key for
+                # any name the walk found (Y:5587: "never dropped"). No redirection, no file.
+                aw_nl=$'\n'; aw_rest="$act_walk"
+                while [[ -n "$aw_rest" ]]; do
+                  aw_n="${aw_rest%%"$aw_nl"*}"
+                  case "$aw_rest" in
+                    *"$aw_nl"*) aw_rest="${aw_rest#*"$aw_nl"}" ;;
+                    *) aw_rest="" ;;
+                  esac
                   [[ "$aw_n" =~ $name_re ]] || continue
                   act_scope_add "row:$aw_n"; act_scope_add "alias:$aw_n"
-                done <<< "$act_walk"
+                done
               fi ;;
           69|75|3) act_down_say "$L canon-lane --walk $id_typed" "$aw_rc" ;;
           *)  printf 'REFUSED: `%s canon-lane --walk %s` failed (exit %s), so the names lane %s was found through are NOT known, and the writes below would leave their keys out: a change to one of them would not refuse them (Y:5624). Nothing of step 4 was written. A `lanes-edit.sh` with no `--walk` is older than this skill.\n' "$L" "$id_typed" "$aw_rc" "$lane" >&2
