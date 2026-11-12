@@ -629,11 +629,33 @@ BEFORE = {"mode": "before", "match": "commit_write", "call": 1}
 C_S, WINDOW_S, T_L_S = 8, 10, 9
 #: The tries' spacing, with lane 2's tolerance (T246's bullet; NOTES question 34).
 GAP_S, LATE_S = 0.75, 1.25
+#: The earliest exit 3 after `no-reconnect`, from the snapshot call's start
+#: (TP:2346-2349, "no earlier than about 17 s": 8 s of waiting, and the 10 s
+#: window less up to 1 s). The client's wait may itself end up to 1 s early,
+#: since its estimate adds whole `SECONDS` to a whole-second clock, which is
+#: why try 1 is allowed at `C_S - 1`; so the exit is allowed 1 s early too:
+#: 16 s (T244e; lane 4's triage, #165 6833813092: 16.96 s on CI).
+EXIT3_EARLIEST_S = (C_S - 1) + (WINDOW_S - 1)
 PENDING = Path("openRepoTools") / "register-pending"
 WRITE_ID_SAID = re.compile(r"LANES_WRITE_ID=(" + UUID_RE + r")")
 GENERATION_SAID = re.compile(r"LANES_WRITE_GENERATION=(" + UUID_RE + r")")
 NOT_AFTER_SAID = re.compile(r'"not_after"\s*:\s*"([^"]+)"')
-LAST_COMMIT = re.compile(r"\bCOMMIT\b[ \t]*;?(?![\s\S]*\bCOMMIT\b)", re.I)
+#: The commit call's last COMMIT, with the `\;` that joins it to the statement
+#: before it. `lanes-index` sends the commit as ONE request, `BEGIN ISOLATION
+#: LEVEL SERIALIZABLE \; SELECT ...commit_write(...) \; COMMIT;`
+#: (`PostgresStore.request`; contract §2.3; Y:1419), and `psql` sends its query
+#: buffer only at a `;` that is not `\;`: a replay left ending ` \;` is never
+#: sent, and its session never holds the head row (T244c; lane 4's triage,
+#: #165 6833813092).
+LAST_COMMIT = re.compile(r"(?:[ \t]*\\;)?[ \t]*\bCOMMIT\b[ \t]*;?(?![\s\S]*\bCOMMIT\b)", re.I)
+
+
+def without_commit(script: str) -> str:
+    """The commit call's script with its last COMMIT dropped, and sent whole:
+    a ` \\; COMMIT;` becomes `;`, so `psql` sends the BEGIN and the
+    `commit_write` call as one request and the session is left idle in its
+    transaction; a `COMMIT;` of its own is dropped (`LAST_COMMIT`)."""
+    return LAST_COMMIT.sub(lambda m: ";" if "\\;" in m.group(0) else "", script, count=1)
 
 
 def note(lane: str, tag: str) -> List[str]:
@@ -687,7 +709,12 @@ def first_not_after(w: Writer) -> str:
 
 
 def db_past(e: Estate, utc: str) -> bool:
-    return e.c.value(f"SELECT clock_timestamp() >= '{utc}'::timestamptz;") == "t"
+    """Whether the database's clock has passed `utc`: an entry's
+    `not_after`, UTC text, or a `call` line's, whole epoch seconds
+    (pending-record.md §3.2), which `::timestamptz` cannot read, so it is
+    read with `to_timestamp` (T244f; lane 4's triage, #165 6833813092)."""
+    when = f"to_timestamp({int(utc)})" if re.fullmatch(r"[0-9]+", utc) else f"'{utc}'::timestamptz"
+    return e.c.value(f"SELECT clock_timestamp() >= {when};") == "t"
 
 
 # ------------------------------------------------------------ AT-12: after, before, timer
@@ -744,8 +771,10 @@ def test_a_retry_with_the_old_connection_still_open_writes_no_second_row(estates
     w = e.launch(LA, note(LA, f"half-open {ending}"),
                  arms=[BEFORE, {"mode": "hold", "match": SNAPSHOT_TEXT, "call": 2, "fifo": str(gate)}])
     first = until_seen("the first commit call", lambda: w.commit_calls()[:1], w)[0]
-    script = LAST_COMMIT.sub("", first["stdin"], count=1)
+    script = without_commit(first["stdin"])
     assert "commit_write" in script and script != first["stdin"], "the first commit call has no COMMIT to drop"
+    assert script.rstrip().endswith(";") and not script.rstrip().endswith("\\;"), (
+        f"the replay does not end in a `;` that psql sends: {script[-80:]!r}")
     session = e.c.db.session(WRITER_LOGIN, "t244-half-open")
     try:
         if ending != "idle":
@@ -784,7 +813,8 @@ def test_a_callers_rerun_after_a_failed_reconnect_reuses_the_write_id(estates, r
     exits 2. The writer waits about 8 s, makes at least two lookup tries in
     the 10 s window, each at least 1 s after the last (with lane 2's 0.75 s
     tolerance) and none past 20 s from the first, and exits 3 no earlier than
-    about 17 s after its snapshot and under 54 s. Its report names the id and
+    about 17 s after its snapshot (asserted at `EXIT3_EARLIEST_S`, 16 s) and
+    under 54 s. Its report names the id and
     the rerun, read from it. [write-id]: the rerun under `LANES_WRITE_ID`
     and `LANES_WRITE_GENERATION`; [plain]: the same command line, which finds
     the pending record. Either exits 0, never mints a new id, never 69, and
@@ -801,7 +831,8 @@ def test_a_callers_rerun_after_a_failed_reconnect_reuses_the_write_id(estates, r
         assert this["t"] - last["t"] >= GAP_S, f"try {k} started {this['t'] - last['t']:.2f} s after the last"
     assert tries[-1]["t"] - tries[0]["t"] <= 2 * WINDOW_S, "a try started past twice the window"
     took = time.time() - (time.monotonic() - w.ended) - snap
-    assert 17 <= took < 2 * (C_S + WINDOW_S + T_L_S), f"exit 3 after {took:.1f} s"
+    assert EXIT3_EARLIEST_S <= took < 2 * (C_S + WINDOW_S + T_L_S), (
+        f"exit 3 after {took:.1f} s, not in [{EXIT3_EARLIEST_S}, {2 * (C_S + WINDOW_S + T_L_S)}) s")
     print(f"[T244 no-reconnect] exit3={took:.1f}s against {C_S + WINDOW_S + T_L_S}s, "
           f"spread={tries[-1]['t'] - tries[0]['t']:.1f}s against {WINDOW_S}s")
     ids, gens = WRITE_ID_SAID.findall(w.err), GENERATION_SAID.findall(w.err)
@@ -888,7 +919,9 @@ def test_a_request_handoff_that_runs_none_of_its_tail_exits_2_and_writes_nothing
     `PATH`, is killed after its commit call returned, so the row has landed
     and its pending record holds a `call` line and no `tail` key. The rerun
     of the same command line, with the record at `tail=sent`, `tail=done`, or
-    removed and rerun under `LANES_WRITE_ID`, finds its write id and exits 2,
+    removed and rerun under `LANES_WRITE_ID` with its `LANES_WRITE_GENERATION`
+    (an id with no generation and no record is refused 2 before any call:
+    pending-record.md §5.2, R08; T244d), finds its write id and exits 2,
     not 0; the journal holds one entry for the id (YS:685 as amended: the
     write committed, so the refusal names it), the fake `tmux` logs no
     `send-keys` from the rerun, and stderr names the tail it did not run."""
@@ -911,7 +944,7 @@ def test_a_request_handoff_that_runs_none_of_its_tail_exits_2_and_writes_nothing
     if state == "no-record":
         for path in records[0].parent.glob(records[0].name + "*"):
             path.unlink()
-        extra = {"LANES_WRITE_ID": write_id}
+        extra = {"LANES_WRITE_ID": write_id, "LANES_WRITE_GENERATION": e.c.switch()["generation"]}
     else:
         with records[0].open("a", encoding="utf-8") as record:
             record.write(f"tail=sent {seq} {e.utc()}\n" if state == "tail-sent"
@@ -983,6 +1016,11 @@ def test_a_lookup_never_mistakes_a_rivals_row_for_the_lost_write(estates):
 # no-record reruns choose Y:5347's text for this host or another by
 # `workstation=`, naming the entry's UTC from `utc=`.
 #
+# THE TAIL'S `gh` CALL IS THE COMMENT (T245c; lane 4's triage, #165
+# 6833813092): a case counts only `gh issue comment` and `gh pr comment`
+# (`comments`), never `claim`'s Rule 1 reads, which every run of `claim`
+# makes before the seam, a killed one and a refused one included.
+#
 # They FAIL UNTIL L4-B2, L4-B5 and L4-B6 land; `[snapshot-fails]` until lane
 # 4's T417 and lane 1's T114 take the record's clock (Q-L1-1); the texts for 3
 # until lane 4's T417, T433 and T434; the `tail` record a takeover cannot use
@@ -1049,15 +1087,33 @@ def mark_of(e: Estate, write_id: str) -> Path:
 
 
 def comments(where: Path) -> List[dict]:
-    return [c for c in tool_calls(where, "gh") if "comment" in " ".join(c["argv"])]
+    """The fake `gh`'s comment calls, `issue comment` or `pr comment`: a
+    verb's tail (`gh_comment`, T421). Never Rule 1's reads, `issue view
+    --comments` and `pr list`, which `claim` makes at its step 2, before the
+    seam (`gh_reads_live`; Y:5043), and which decide nothing (T245c; lane
+    4's triage, #165 6833813092; T248a's `comment_calls` has the same
+    shape)."""
+    return [c for c in tool_calls(where, "gh") if c["argv"][:1] in (["issue"], ["pr"])
+            and c["argv"][1:2] == ["comment"]]
+
+
+def sidecar_text(lane: str, generation: int, utc: str, state: str = "RUNNING") -> str:
+    """A whole lane-state snapshot, as `lane_state_put` writes one
+    (`c8acf67c:lanes-edit.sh:23002`): `schema: 1` and every key its writer
+    writes, none empty. A snapshot short of one is not a whole record, and
+    every writer refuses it (`lane_sidecar_schema_ok`, `:22826-22846`; #115),
+    so a sidecar of three keys was never followed (T245h; lane 4's triage,
+    #165 6833813092)."""
+    return (f"schema: 1\nlane: {lane}\nstate: {state}\ngeneration: {generation}\noperation: none\n"
+            f"owner: none\nagent: none\nprofile: none\nworkstation: none\nkind: none\nupdated: {utc}\n")
 
 
 def sidecars(e: Estate) -> Path:
     root = e.root / "lane-state"
+    utc = e.utc()
     for lane in (LA, LB, LC):
         (root / lane).mkdir(parents=True, exist_ok=True)
-        (root / lane / "lane-state.yaml").write_text(f"lane: {lane}\nstate: RUNNING\ngeneration: 1\n",
-                                                     encoding="utf-8")
+        (root / lane / "lane-state.yaml").write_text(sidecar_text(lane, 1, utc), encoding="utf-8")
     return root
 
 
@@ -1072,7 +1128,13 @@ def tail_rerun(e: Estate, lane: str, argv: Sequence[str], where: Path, extra: Op
     """AT-D8's tail oracle around a killed write: no effect before the rerun;
     the rerun exits 0 with one row; the record wrote `tail=sent`, then
     `tail=done`, and is removed; the mark holds `done`; a second rerun under
-    the id runs nothing. Returns the rerun and the id."""
+    the id, with its generation (an id with no generation and no record is
+    refused 2 before any call: pending-record.md §5.2, R08; T245d), finds
+    the mark and runs none of the tail, so the effects stay at one
+    (TP:3366-3367): no comment and no `tmux` call of its own, and the
+    callers' checks of the sidecars and the handoff come after it. The
+    logging `git` wrapper logs every `git` call a run makes, so its count is
+    no oracle of the tail. Returns the rerun and the id."""
     _, write_id = killed(e, lane, argv, first=[where], extra=extra)
     before = len(tool_calls(where))
     again = e.run(lane, argv, first=[where], extra=extra)
@@ -1080,9 +1142,11 @@ def tail_rerun(e: Estate, lane: str, argv: Sequence[str], where: Path, extra: Op
     assert [r["write_id"] for r in e.journal_after()].count(write_id) == 1
     assert pending(e) == [] and take_files(e) == []
     assert "done" in mark_of(e, write_id).read_text(encoding="utf-8")
-    after = len(tool_calls(where))
-    third = e.run(lane, argv, first=[where], extra=dict(extra or {}, LANES_WRITE_ID=write_id))
-    assert third.code == 0 and len(tool_calls(where)) == after, "a second rerun ran the tail again"
+    effects = len(comments(where)), len(tool_calls(where, "tmux"))
+    third = e.run(lane, argv, first=[where], extra=dict(extra or {}, LANES_WRITE_ID=write_id,
+                                                         LANES_WRITE_GENERATION=e.c.switch()["generation"]))
+    assert third.code == 0, f"the second rerun exited {third.code}: {third.err[-800:]}"
+    assert (len(comments(where)), len(tool_calls(where, "tmux"))) == effects, "a second rerun ran the tail again"
     return again, write_id, before
 
 
@@ -1151,16 +1215,51 @@ def test_a_rerun_with_other_arguments_does_not_take_the_pending_id(estates):
 
 
 @CLIENT
-def test_lanes_write_id_wins_over_a_pending_record(estates):
-    """`LANES_WRITE_ID`, set explicitly, wins over the record of the same
-    command line."""
+def test_lanes_write_id_of_another_write_is_refused_2_and_the_pending_record_kept(estates):
+    """G6 (pending-record.md §5.2, T412's G6; lane 3's ruling "G6 stands",
+    #165 6834271321; T245g): after exit 3 the record of a command line holds
+    write P and its `call` line. `LANES_WRITE_ID`, set to a fresh id with
+    its generation, is refused with 2: the fresh id is never sent, no
+    commit call is made, the record still holds P and its `call` line, and
+    stderr names P and its lookup, `lanes-index journal --write-id P`. A
+    fresh id cannot win: it would drop another write's in-doubt record
+    without F3's lookup, or write with no record, and Y forbids both
+    (Y:5171, Y:5196-5198, Y:5215). The test was
+    `test_lanes_write_id_wins_over_a_pending_record`, from the test plan's
+    "wins over a record" (TP:3350 at B19, :3359 at `a91df2c4`), which
+    predates the contract and G6."""
     e = estates()
     argv = note(LA, "explicit id")
     _, pending_id, generation = exit3(e, LA, argv)
+    rec = the_record(e)
     mine = str(uuid.uuid4())
     w = e.run(LA, argv, extra={"LANES_WRITE_ID": mine, "LANES_WRITE_GENERATION": generation})
+    assert w.code == 2, f"exit {w.code}, not 2: {w.err[-800:]}"
+    sent = [c for c in w.calls() if mine in (c.get("stdin") or "")]
+    assert w.commit_calls() == [] and not sent, (w.commit_calls(), sent)
+    kept = the_record(e)
+    assert kept["fields"].get("write_id", "").lower() == pending_id and kept["calls"] == rec["calls"], kept
+    assert pending_id in w.err and f"lanes-index journal --write-id {pending_id}" in w.err, w.err[-800:]
+
+
+@CLIENT
+def test_lanes_write_id_of_the_records_own_write_takes_it_over_past_its_age(estates):
+    """The case that holds under G6 (pending-record.md §5.2, :225: an id
+    whose record holds it is "the record taken over, at any age"; T245g):
+    after exit 3, with the record past the maximum age
+    (`LANES_REGISTER_PENDING_MAX_AGE_S=2`), where a plain rerun writes anew
+    under a new id, the printed rerun, `LANES_WRITE_ID` of the record's own
+    write with its generation, takes it over: exit 0, every commit call
+    under that id, one row for it, and the record removed."""
+    e = estates()
+    argv = note(LA, "own id past the age")
+    _, pending_id, generation = exit3(e, LA, argv)
+    time.sleep(3)
+    w = e.run(LA, argv, extra=dict(MAX_AGE, LANES_WRITE_ID=pending_id, LANES_WRITE_GENERATION=generation))
     assert w.code == 0, w.err[-800:]
-    assert set(w.write_ids()) == {mine} and pending_id not in w.write_ids()
+    assert set(w.write_ids()) == {pending_id}, w.write_ids()
+    assert [r["write_id"] for r in e.journal_after()].count(pending_id) == 1
+    assert pending(e) == [] and take_files(e) == []
 
 
 @CLIENT
@@ -1217,8 +1316,7 @@ def test_the_after_commit_tail_of_log_runs_once_when_a_rerun_finds_the_write(est
     _, write_id = killed(e, LA, argv, first=[where], extra=extra)
     assert generation_of(root, LA) == "1", "the tail ran before the rerun"
     if verb == "RESUMED-moved-since":
-        (root / LA / "lane-state.yaml").write_text(f"lane: {LA}\nstate: RUNNING\ngeneration: 7\n",
-                                                   encoding="utf-8")
+        (root / LA / "lane-state.yaml").write_text(sidecar_text(LA, 7, e.utc()), encoding="utf-8")
     again = e.run(LA, argv, first=[where], extra=extra)
     assert again.code == 0, again.err[-800:]
     assert [r["write_id"] for r in e.journal_after()].count(write_id) == 1
@@ -1297,8 +1395,12 @@ def test_a_sent_record_whose_child_never_read_committed_replays_and_an_owed_mark
     """[sent-child-never-read]: a record holding `tail=sent` while the dead
     child's `seam.out` says `none`: the owner removes `tail` and replays,
     one comment, exit 0. [owed-mark]: a mark holding `owed <utc>`; a rerun
-    under `LANES_WRITE_ID` runs no tail, adds no comment, and names the
-    steps as owed again."""
+    under `LANES_WRITE_ID`, with its generation (T245d), runs no tail, adds
+    no comment, and names the steps as owed again. The mark is written in
+    its contract's form, one `key=value` a line, `write_id`, `seq`, `tail`,
+    `pid`, `host`, `container` and `utc` (pending-record.md §6), the form
+    the run reads (`wr_done_read`, `c8acf67c:lanes-edit.sh:7778`): one of
+    another form is no mark (T245f)."""
     e = estates()
     where = loggers(e)
     argv = claim(OBJ)
@@ -1314,9 +1416,14 @@ def test_a_sent_record_whose_child_never_read_committed_replays_and_an_owed_mark
     else:
         mark = mark_of(e, write_id)
         mark.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        mark.write_text(f"{write_id} {e.journal_after()[-1]['seq']} owed {e.utc()}\n", encoding="utf-8")
+        fields, utc = rec["fields"], e.utc()
+        mark.write_text(f"write_id={write_id}\nseq={e.journal_after()[-1]['seq']}\ntail=owed {utc}\n"
+                        f"pid={fields.get('pid', '')}\nhost={fields.get('host', '')}\n"
+                        f"container={fields.get('container', '')}\nutc={utc}\n", encoding="utf-8")
+        mark.chmod(0o600)
         rec["path"].unlink()
-        again = e.run(LA, argv, first=[where], extra={"LANES_WRITE_ID": write_id})
+        again = e.run(LA, argv, first=[where], extra={"LANES_WRITE_ID": write_id,
+                                                      "LANES_WRITE_GENERATION": e.c.switch()["generation"]})
         assert again.code == 0 and comments(where) == [] and "owed" in again.err, again.err[-800:]
 
 
@@ -1417,7 +1524,12 @@ def test_the_pending_records_call_lines_are_written_before_the_send_and_dropped_
     commit, the record read while the next call is held holds one line, the
     next call's, with base n+1. [refusal]: after a refusal the record is
     gone. [in-doubt]: after a call in doubt it keeps the line, and the
-    attempt directory keeps `snapshot`, `files` and `preimages`."""
+    attempt directory keeps the files `snapshot` and `files`, and
+    `preimages/`, a directory (B19 tasks:1104), where the attempt made one:
+    only a write with a lane-state sidecar does (`lane_state_preimage`,
+    `c8acf67c:lanes-edit.sh:23056`), and a `NOTE` line has none (T245f;
+    lane 4's triage, #165 6833813092). `<dir>` is the line's rest after its
+    four first fields (pending-record.md §3.2)."""
     e = estates()
     if case == "before-the-send":
         gate = fifo(e, "commit-1")
@@ -1449,8 +1561,9 @@ def test_the_pending_records_call_lines_are_written_before_the_send_and_dropped_
         w, _, _ = exit3(e, LA, note(LA, case))
         calls = the_record(e)["calls"]
         assert len(calls) == 1
-        attempt = Path(calls[0].split()[-1])
-        assert all((attempt / name).is_file() for name in ("snapshot", "files", "preimages")), attempt
+        attempt = Path(calls[0].split(" ", 4)[4])
+        assert all((attempt / name).is_file() for name in ("snapshot", "files")), sorted(attempt.iterdir())
+        assert not (attempt / "preimages").exists() or (attempt / "preimages").is_dir(), sorted(attempt.iterdir())
 
 
 @CLIENT
@@ -1501,14 +1614,37 @@ def test_a_pending_record_is_owned_through_numbered_claim_files_and_two_reruns_n
 
 
 # ------------------------------------------------------------ AT-F34: the tail, once
+#: [lr006]'s seam cap with the kept child gone (`learnt`): 10 s leaves the next
+#: attempt's child 9 s to reach its seam, and holds its commit call about
+#: 4 to 6 s where the gap between the two children's seams is runs r5's and
+#: r7b's 7 s and 5.4 s (T245i, T245j).
+LR006_SEAM_CAP_S = 10
+
+
 def learnt(e: Estate, way: str, where: Path, *, gone: bool = False, script: Optional[Path] = None) -> Writer:
     """A `claim` whose first commit call committed while in doubt, learnt by
     [snapshot] (`after`, then the next snapshot), [lr006] (the first call
-    forked and held as AT-F3's orphan, the shim exiting 2 at once; the next
-    commit call held until the orphan has committed, so it gets LR006) or
-    [lookup] (`after`, the next snapshot failed, so AT-F3's lookup finds
-    it). The call that learns it is held; with `gone`, until the kept
-    child's `seam.out` says `none` under `LANES_REGISTER_SEAM_CAP_S=3`."""
+    forked and held as AT-F3's orphan, the shim exiting 2 at once; the
+    orphan let go once the next attempt's snapshot has ended, having read
+    the write absent, and committed before that attempt's commit call, which
+    so gets LR006, as AT-LR006-1 orders them) or [lookup] (`after`, the next
+    snapshot failed, so AT-F3's lookup finds it). The call that learns it is
+    held; with `gone`, until the kept child's `seam.out` says `none` under
+    `LANES_REGISTER_SEAM_CAP_S=3`, or `LR006_SEAM_CAP_S` for [lr006].
+
+    [lr006]'s timing (T245f, T245i, T245j). The orphan carries the first
+    snapshot's clock plus 10 s as its `not_after` (`lanes-index`'s
+    `not_after=`), so it must commit within about 10 s of that snapshot:
+    let go only once the next commit call was held, it ended LR008 in line
+    ID17's run r7b, at 11 s on py-bench. With `gone`, the next attempt's
+    child must reach its seam before the parent's wait ends, 1 s before the
+    kept child's cap (Y:5004; `c8acf67c:lanes-edit.sh:9192`), and its commit
+    call, sent at that seam and held until the kept child's `none`, should
+    stay under its own 8 s timer, `C`: the cap must exceed the gap between
+    the two children's seams by more than 1 s, and by less than about `C`.
+    Runs r5 and r7b measured that gap at about 7 s and 5.4 s, so 3 s and 7 s
+    were short and 12 s near `C`. Where the hold does pass `C`, that call is
+    in doubt too, and the next snapshot learns the write instead."""
     gate = fifo(e, f"learn-{way}")
     if way == "lr006":
         orphan = fifo(e, "orphan")
@@ -1519,12 +1655,14 @@ def learnt(e: Estate, way: str, where: Path, *, gone: bool = False, script: Opti
     else:
         arms = [AFTER, {"mode": "fail-match", "match": SNAPSHOT_TEXT, "call": 2},
                 {"mode": "hold", "match": "find_write", "call": 1, "fifo": str(gate)}]
-    extra = {"LANES_REGISTER_SEAM_CAP_S": "3"} if gone else {}
+    extra = {"LANES_REGISTER_SEAM_CAP_S": str(LR006_SEAM_CAP_S if way == "lr006" else 3)} if gone else {}
     w = e.launch(LA, claim(OBJ), first=[where], arms=arms, extra=extra, script=script)
-    held = hold_point(gate, w)
     if way == "lr006":
+        until_seen("the next attempt's snapshot ended", lambda: len(w.snapshot_calls()) >= 2
+                   and w.snapshot_calls()[1]["call"] in w.ends(), w)
         hold_point(orphan, w).close()
         until_seen("the orphan's commit", lambda: e.journal_after(), w)
+    held = hold_point(gate, w)
     if gone:
         until_seen("the kept child's seam.out saying none", lambda: any(
             p.read_text(encoding="utf-8").strip() == "none" for p in e.state.rglob("seam.out")), w)
@@ -1536,17 +1674,23 @@ def learnt(e: Estate, way: str, where: Path, *, gone: bool = False, script: Opti
 @pytest.mark.parametrize("way", ["snapshot", "lr006", "lookup"])
 def test_a_call_in_doubt_that_committed_runs_its_tail_once_from_the_kept_child(estates, way):
     """The call in doubt committed, learnt by [snapshot], [lr006] or
-    [lookup] (`learnt`). The kept child's `seam.out` says `tail` and every
-    other child's `none`; the fake `gh` is called once, after the COMMIT;
-    the mark keeps `done`; exit 0, one row."""
+    [lookup] (`learnt`). The fake `gh` comments once, after the COMMIT, and
+    the `seam.out` files it saw then hold the kept child's `tail`, once,
+    and no other child's anything but `none`; the mark keeps `done`; exit
+    0, one row. The seams are read as the comment saw them, during the run
+    (the logging stand-in reads every `seam.out` under the state directory
+    at each call): at its end the run removes its own `<d>/<run>/`, its
+    attempt directories and their `seam.out` with it (B19 tasks:1179, T415;
+    T245e; lane 4's triage, #165 6833813092)."""
     e = estates()
     where = loggers(e)
     w = learnt(e, way, where)
     assert w.wait() == 0, w.err[-800:]
     write_id = one_entry(e, w)
-    seams = sorted(p.read_text(encoding="utf-8").strip() for p in e.state.rglob("seam.out"))
+    said = comments(where)
+    assert len(said) == 1, said
+    seams = sorted(text.strip() for text in said[0]["seams"].values())
     assert seams.count("tail") == 1 and set(seams) <= {"tail", "none"}, seams
-    assert len(comments(where)) == 1, comments(where)
     assert "done" in mark_of(e, write_id).read_text(encoding="utf-8")
 
 
@@ -1646,8 +1790,13 @@ def test_a_replay_that_stops_or_differs_runs_no_tail_and_warns(estates, case):
 @pytest.mark.parametrize("case", ["done-mark", "this-host", "other-host"])
 def test_a_run_with_no_record_runs_no_tail_and_names_it(estates, case):
     """A rerun under `LANES_WRITE_ID` of a write committed and settled, with
-    no record here, exits 0 and runs no tail. [done-mark]: it says what the
-    mark's `tail` says; [this-host]: with the mark removed and
+    no record here, and so with its `LANES_WRITE_GENERATION` (an id with no
+    generation and no record is refused 2 before any call: pending-record.md
+    §5.2, R08; T245d), exits 0 and runs no tail. [done-mark]: it says what the
+    mark's `tail` says, that the steps ran at `<utc>` in pid `<p>` (TP:7048-7049
+    at `a91df2c4`), the mark's `tail=done <s> <rc> <utc>` and `pid=` (T245i;
+    line ID17's run r3 printed "its after-COMMIT steps ran at <utc> in pid
+    <p>"); [this-host]: with the mark removed and
     `journal.workstation` this host (`found`'s `workstation=`), it says the
     steps may already have run here, naming the entry's UTC from `utc=`;
     [other-host]: the write made from ws2, it names ws2 and says to rerun
@@ -1659,17 +1808,23 @@ def test_a_run_with_no_record_runs_no_tail_and_names_it(estates, case):
     w = e.run(LA, argv, first=[where], extra=extra)
     assert w.code == 0
     write_id = w.write_ids()[-1]
+    said = mark_of(e, write_id).read_text(encoding="utf-8")
     if case != "done-mark":
         mark_of(e, write_id).unlink()
     before = len(comments(where))
-    again = e.run(LA, argv, first=[where], extra={"LANES_WRITE_ID": write_id})
+    again = e.run(LA, argv, first=[where], extra={"LANES_WRITE_ID": write_id,
+                                                  "LANES_WRITE_GENERATION": e.c.switch()["generation"]})
     assert again.code == 0 and len(comments(where)) == before, again.err[-800:]
     if case == "other-host":
         assert "ws2" in again.err and "rerun" in again.err, again.err[-800:]
     elif case == "this-host":
         assert "may already have run" in again.err, again.err[-800:]
     else:
-        assert "done" in again.err, again.err[-800:]
+        mark = dict(line.split("=", 1) for line in said.splitlines() if "=" in line)
+        tail = mark.get("tail", "").split()
+        assert tail[:1] == ["done"] and len(tail) == 4, f"the mark's tail is not done <s> <rc> <utc>: {said}"
+        assert f"ran at {tail[3]}" in again.err and f"pid {mark.get('pid')}" in again.err, (
+            f"the text does not say the steps ran at {tail[3]} in pid {mark.get('pid')}: {again.err[-800:]}")
 
 
 # ------------------------------------------------------------ D8: a `tail` record a takeover cannot use
@@ -1771,10 +1926,19 @@ def test_the_texts_for_3_say_may_not_be_written_and_relay_the_writers_rerun(site
 # test 12's half-open case at `LANES_REGISTER_DEADLINE_S=1` (`HalfOpen`): the
 # first commit call lost by `before`; the test's session, as `lanes_w_fx`
 # with `idle_in_transaction_session_timeout = 0`, replaying that call's script
-# without its COMMIT, so it holds the head row with the row inserted; the
+# without its COMMIT, ended in a `;` that `psql` sends (`without_commit`,
+# T244c), so it holds the head row with the row inserted; the
 # next snapshot held until the replay returned; and the lookup's first try
 # held on a FIFO while the case decides. `<n>` is the first call's
 # `not_after`. Its timer is D9's 9 s (open point 37).
+#
+# AT MOST ONE RETRY (TP:5634-5636): at a 1 s deadline the lost first call
+# may end past it, and then no attempt starts and the writer goes straight
+# to the lookup, with no next snapshot (T246c; on `pair-m23t` `c8acf67c` the
+# shim logged the lookup's two tries after the lost call, and no snapshot).
+# So `HalfOpen` waits for the writer's next call after its first commit
+# call, that snapshot or the lookup's first try, and releases the snapshot's
+# hold only where the snapshot came.
 #
 # THE TRIES (R26, lane 4's answer to 40): each try starts at least 0.75 s
 # after the last one's start, never before the last one has ended, the k-th
@@ -1789,6 +1953,11 @@ def test_the_texts_for_3_say_may_not_be_written_and_relay_the_writers_rerun(site
 # TOO EARLY (R26, 36): `[too-early]` takes over a record written on another
 # host, so the run has no clock to age and calls at once: LR011's 3, the
 # record kept. On this host the takeover waits (T245's `[snapshot-fails]`).
+# The killed run's claim names that host, so it counts as live for the
+# seam's cap, 120 s, from the later of its `utc` and the record's
+# `updated_utc` (Y:5220; pending-record.md §4.3), and the rerun sets the
+# cap's test variable, `LANES_REGISTER_SEAM_CAP_S`, to 1 s to take it over
+# at once (T246d; lane 4's triage, #165 6833813092).
 #
 # They FAIL UNTIL L1-A6, L1-A12 and L4-B5 land. Without PostgreSQL 16 each
 # skips; the direct calls (LR011 at once, LR008's engine half) are phase N on
@@ -1876,7 +2045,9 @@ class HalfOpen:
                           arms=[BEFORE, {"mode": "hold", "match": SNAPSHOT_TEXT, "call": 2, "fifo": str(snap)},
                                 *held, *arms])
         call = until_seen("the first commit call", lambda: self.w.commit_calls()[:1], self.w)[0]
-        script = LAST_COMMIT.sub("", call["stdin"], count=1)
+        script = without_commit(call["stdin"])
+        assert "commit_write" in script and script.rstrip().endswith(";") and not script.rstrip().endswith("\\;"), (
+            f"the replay does not end in a `;` that psql sends: {script[-80:]!r}")
         self.session = e.c.db.session(WRITER_LOGIN, "t246-held")
         self.session.stdin.write("SET idle_in_transaction_session_timeout = 0;\n"
                                  + (alter(script) if alter else script).rstrip() + "\n")
@@ -1885,8 +2056,23 @@ class HalfOpen:
             "SELECT count(*) FROM pg_stat_activity WHERE application_name = 't246-held' "
             "AND state = 'idle in transaction';") == "1", self.w)
         self.write_id, self.n = self.w.write_ids()[0], first_not_after(self.w)
-        hold_point(snap, self.w).close()
+        after = until_seen("the writer's next call after its first commit call: its next snapshot, held, "
+                           "or its lookup's first try", self.next_call, self.w)
+        if SNAPSHOT_TEXT in (after.get("stdin") or ""):
+            hold_point(snap, self.w).close()
         self.held = hold_point(look, self.w) if hold_lookup else None
+
+    def next_call(self) -> Optional[dict]:
+        """The writer's first snapshot or lookup try after its first commit
+        call, as the shim logs each at its start, before any hold: a next
+        attempt's snapshot, or, where the deadline passed with no attempt
+        started, the lookup's first try (at most one retry, TP:5634-5636;
+        T246c)."""
+        calls = self.w.calls()
+        commits = [k for k, c in enumerate(calls) if "commit_write" in (c.get("stdin") or "")]
+        later = calls[commits[0] + 1:] if commits else []
+        return next((c for c in later if SNAPSHOT_TEXT in (c.get("stdin") or "")
+                     or "find_write" in (c.get("stdin") or "")), None)
 
     def end(self, how: str) -> None:
         self.session.stdin.write(f"{how};\n")
@@ -2060,14 +2246,21 @@ def test_a_lookup_made_too_early_exits_3_and_keeps_the_record(estates):
     another host, keeps its `call` line. A plain rerun here, whose snapshot
     the shim fails, takes the record over with no clock to age and calls at
     once: LR011, exit 3 naming the id with the server's message, the record
-    kept, one try. Once snapshots pass, a plain rerun exits 0 with one row."""
+    kept, one try. Once snapshots pass, a plain rerun exits 0 with one row.
+    The other host's claim lives the seam's cap, so the first rerun runs at
+    `LANES_REGISTER_SEAM_CAP_S=1` (see the section's head; T246d), and so
+    does the last: the first rerun's 3 removes its own claim
+    (`c8acf67c:lanes-edit.sh:9734`), so the last meets the other host's
+    claim again, its cap counted afresh from the record's `updated_utc`,
+    which the takeover rewrote (T246e)."""
     e = estates()
     argv = note(LA, "F3 too early")
+    cap = {"LANES_REGISTER_SEAM_CAP_S": "1"}
     _, write_id = killed(e, LA, argv, extra={"LANES_HOST": "eagle-2"})
-    early = e.run(LA, argv, arms=[{"mode": "fail-match", "match": SNAPSHOT_TEXT, "call": 1}])
+    early = e.run(LA, argv, arms=[{"mode": "fail-match", "match": SNAPSHOT_TEXT, "call": 1}], extra=cap)
     assert early.code == 3 and write_id in early.err and "LR011" in early.err, early.err[-800:]
     assert len(lookups(early)) == 1 and len(pending(e)) == 1
-    again = e.run(LA, argv)
+    again = e.run(LA, argv, extra=cap)
     assert again.code == 0 and [r["write_id"] for r in e.journal_after()].count(write_id) == 1
 
 
@@ -2188,8 +2381,10 @@ def test_lr008_alone_never_gives_3_or_69(estates, case):
 # argument, NUL-separated; it is owned by the run in its highest-numbered
 # claim file `<d>.take.<k>`, whose liveness is tested on that claim's pid
 # and start time, never on the record's `pid`. The claims the test writes
-# hold `pid=`, `start=`, `host=`, `container=` and `utc=`, one per line, each
-# owner a live stand-in (`Owner`) where it is on this host.
+# hold `pid=`, `pid_start=`, `host=`, `container=` and `utc=`, one per line,
+# in that order (pending-record.md §4.1, the key `lanes-edit.sh` reads,
+# `wr_claim_read`; T247b, lane 4's triage, #165 6833813092), each owner a live
+# stand-in (`Owner`) where it is on this host.
 #
 # A CLAIM WITH NO RECORD BESIDE IT (Q-L2-6; R26, lane 4's answer to 42):
 # `[live-at-deadline]` asserts the 3's text: it names the claim by pid, host
@@ -2236,8 +2431,8 @@ def write_claim(e: Estate, d: str, k: int, pid: int, start: str = "", *, host: s
     where = e.state / PENDING
     where.mkdir(mode=0o700, parents=True, exist_ok=True)
     claim_file = where / f"{d}.take.{k}"
-    claim_file.write_text(f"pid={pid}\nstart={start}\nhost={host}\ncontainer={container}\nutc={utc or e.utc()}\n",
-                          encoding="utf-8")
+    claim_file.write_text(f"pid={pid}\npid_start={start}\nhost={host}\ncontainer={container}\n"
+                          f"utc={utc or e.utc()}\n", encoding="utf-8")
     return claim_file
 
 
