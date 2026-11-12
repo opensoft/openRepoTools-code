@@ -706,6 +706,16 @@
 #      site whose member the prefetch did not cache makes one more `register
 #      read` (feature 007, T505), and where that fails, the read is this 69
 #      by the same classes, passed on by every caller, never the files instead.
+#      AND A REGISTER READ THAT COULD NOT BE MADE (feature 007,
+#      T401; FR-036). `register-text` and `register-grep`, the two verbs the
+#      lifecycle scripts' own reads move behind, spend it in every mode: the
+#      file could not be read, `git grep` on `origin/<branch>` ended other than
+#      0 or 1 (a ref that does not resolve, a repository git cannot read), or
+#      no workspace repository was found. Nothing is printed on stdout, never a
+#      partial answer. It is not 1, which is `register-grep`'s "no match" and
+#      which `lane-worktrees` reads as an answer, and it is never 8: a read that
+#      could not be made is not "none" (R22). So `lane-worktrees` deletes
+#      nothing on it (Y:4926).
 #      AND FEATURE 007'S ACTS (T410; FR-035; Y:5573): AN ACT'S BASE THAT
 #      COULD NOT BE READ. `act-begin` on primary makes one `lanes-index
 #      register snapshot` and exits 69 where it fails in any way — its own 69
@@ -13067,6 +13077,10 @@ lane_alias_keys() {
 # is propagated and each caller decides what to do with it.
 # ON PRIMARY A FAILED READ'S 69 IS CARRIED THE SAME WAY, before any other code
 # (feature 007, T505 Q3).
+#
+# `canon_lane_walk`, below `canon_lane`, walks THIS loop again to print the
+# names it visits (`canon-lane --walk`, 007 T411): a change to one is a change
+# to both.
 rows_named_ci_alias() {   # <typed name>
   rna_hrc=0; rna_hits="$(rows_named_ci "$1" 2>/dev/null)" || rna_hrc=$?
   [ "$rna_hrc" != 69 ] || return 69
@@ -13194,6 +13208,48 @@ canon_lane() {   # <typed name>
     esac
   fi
   printf '%s' "$cl_out"
+  return 0
+}
+
+# canon_lane_walk <typed> — THE NAMES `canon_lane`'S WALK VISITS, one per line,
+# the typed name first and the last hop last: `canon-lane --walk` (007 T411,
+# FR-035; the SQL register's design, "The acts and their expectations"). An act
+# that decides on `canon-lane` lists `row:<n>` and `alias:<n>` for every name on
+# it, because the answer changes when a row or an alias line appears for ANY
+# name on the walk, not only for the answer.
+#
+# IT IS `rows_named_ci_alias`'S LOOP, STEP FOR STEP: the same row test on the
+# typed name and after every hop (a row wins at every hop), the same
+# `lane_alias_hop` (the last line for a key wins), and the same `seen` list,
+# which ends the walk BEFORE a name it has already visited. Where no name on it
+# has a row, `lane_alias_target` follows the same hops over the same map to the
+# same end, so this is `canon_lane`'s whole walk in both of its branches. A
+# CYCLE lists each name it visited once: `canon_lane` then answers the typed
+# name with its note, and a row or an alias line for any of those names would
+# change that answer. It reads through `canon_lane`'s own two reads
+# (`register_text_checked`, `lane_alias_text`), which keep what they read for
+# the life of the process where it has its cache file.
+#   0 + the names · 5 the alias table could not be read, and nothing is printed
+canon_lane_walk() {   # <typed name>
+  clwk_cur="${1-}"
+  [ -n "$clwk_cur" ] || return 0
+  clwk_out="$clwk_cur"
+  if [ -z "$(rows_named_ci "$clwk_cur" 2>/dev/null || :)" ]; then
+    clwk_seen="$US$(lc "$clwk_cur")$US"
+    while :; do
+      clwk_rc=0
+      clwk_next="$(lane_alias_hop "$clwk_cur" 2>/dev/null)" || clwk_rc=$?
+      [ "$clwk_rc" = 5 ] && return 5
+      [ "$clwk_rc" = 0 ] && [ -n "$clwk_next" ] || break
+      case "$clwk_seen" in *"$US$(lc "$clwk_next")$US"*) break ;; esac
+      clwk_seen="$clwk_seen$(lc "$clwk_next")$US"
+      clwk_out="$clwk_out
+$clwk_next"
+      [ -z "$(rows_named_ci "$clwk_next" 2>/dev/null || :)" ] || break
+      clwk_cur="$clwk_next"
+    done
+  fi
+  printf '%s\n' "$clwk_out"
   return 0
 }
 
@@ -26415,6 +26471,31 @@ RWS_LIST
   return 0
 }
 
+# FEATURE 007, T401 — THE SET THE TWO READERS ANSWER (FR-036; Y:4920–4926).
+# `register-text` and `register-grep` are the verbs the lifecycle scripts'
+# direct reads move behind: `lane-start`'s and `lane-end`'s awk over
+# `$LANES_FILE`, and `lane-worktrees`' three `git grep`s of `origin/<branch>`.
+# Their set is O21's option (a), closed by lane 4's decision, with the log set
+# by lane 4's ruling: `lanes/LANES.md`, `lanes/aliases.tsv` and each
+# `lanes/log/<lane>.md`, which is Y's Q18 (A) render set without
+# `lanes/archive/` (Y:258–259), and, for `register-grep` alone, `lanes/log`,
+# which stands for exactly those logs. Any other path is 2 in every mode,
+# `lanes/log/README.md` and `lanes/repos.tsv` among them, so that no caller
+# comes to depend on files mode reading more than the primary image holds.
+# A log is one path segment, matched exactly as `register-grep`'s pathspec
+# matches it (`*` never crosses `/`, and README.md is out by its exact name).
+# Prints the path's kind: `register`, `aliases`, `log`, or with `grep`, `logs`.
+reg_reader_kind() {   # <path> [grep] — 2 for a path outside the set
+  case "$1" in
+    lanes/LANES.md) printf 'register\n' ;;
+    lanes/aliases.tsv) printf 'aliases\n' ;;
+    lanes/log) [ "${2-}" = grep ] || return 2; printf 'logs\n' ;;
+    lanes/log/README.md | lanes/log/*/*) return 2 ;;
+    lanes/log/?*.md) printf 'log\n' ;;
+    *) return 2 ;;
+  esac
+}
+
 # ---------------------------------------------------------------- subcommands
 
 cmd="${1-}"
@@ -26519,7 +26600,12 @@ case "$cmd" in
   # AND `guard-bind` (feature 007, T502): its outer writes the bind's outcome
   # into the offer file whatever else fails, and a `die … 1` here would leave
   # a record with no outcome, held at BINDING IN PROGRESS until its deadline.
-  session-start|guard|guard-bind|lane-groups|next-free|append-row-status|project-legs) : ;;
+  # AND 007's TWO READERS (T401) MAKE THIS CHECK THEMSELVES, after their own
+  # usage check, and answer it with 69: their exits are 0, 1 (`register-grep`'s
+  # "no match"), 2 (usage, or a path outside the set) and 69 (a read that could
+  # not be made). This refusal's 1 would read as "no match" to `lane-worktrees`,
+  # which acts on that answer, and would come before a usage error's 2.
+  session-start|guard|guard-bind|lane-groups|next-free|append-row-status|project-legs|register-text|register-grep) : ;;
   *)
     # AND W ITSELF UNDER THE OPT-IN, an explicit `LANES_REPO` or not
     # (Amendment 23): S5 refuses a write whose checkout is W, and the sidecar
@@ -29772,6 +29858,102 @@ EOF
     printf '%s\n' "$rr_row"
     ;;
 
+  # FEATURE 007, T401 — ONE REGISTER FILE, ITS BYTES (the set is
+  # `reg_reader_kind`'s). In files and `index` mode it prints exactly what the
+  # scripts read today, so each keeps its own awk unchanged (spec:59):
+  # `lanes/LANES.md` is `$LANES_FILE`, the working tree `lane-start` and
+  # `lane-end` read; the alias table and a log are the files beside it,
+  # `$LANES_ALIASES_TSV` and `$LANES_LOG_DIR/<lane>.md`. Nothing is fetched and
+  # nothing is cached. The file is copied whole before a byte is printed, so a
+  # read that fails prints nothing.
+  #   0   the file's bytes
+  #   2   usage, or a path outside the set
+  #   69  the file could not be read: no workspace, or a file that is not there
+  #       or cannot be opened (never an empty answer)
+  # On primary it prints lane 5's `reg_image <path>` (T505; Q-L5-3), under the
+  # read door's `decide` class, a row in T504's table (Q-L5-5). Neither exists
+  # yet, so every mode reads the files here.
+  register-text)
+    [ "$#" = 1 ] || die "usage: register-text <path>   (lanes/LANES.md, lanes/aliases.tsv or lanes/log/<lane>.md)" 2
+    rtx_kind="$(reg_reader_kind "$1")" || die "register-text reads lanes/LANES.md, lanes/aliases.tsv or one lanes/log/<lane>.md, and '$1' is none of them (O21 (a))" 2
+    [ -n "$LANES_DIR" ] || die "$1 could not be read: $(lanes_workspace_why)" 69
+    case "$rtx_kind" in
+      register) rtx_src="$LANES_FILE" ;;
+      aliases)  rtx_src="$LANES_ALIASES_TSV" ;;
+      *)        rtx_src="$LANES_LOG_DIR/${1#lanes/log/}" ;;
+    esac
+    TMPD="$(mktemp -d)" || die "$1 could not be read: no temporary directory could be made under ${TMPDIR:-/tmp} to hold it whole before printing it" 69
+    cat -- "$rtx_src" > "$TMPD/text" || die "$1 could not be read at $rtx_src (above)" 69
+    cat -- "$TMPD/text" || exit 69
+    ;;
+
+  # FEATURE 007, T401 — A GREP OF THE REGISTER, exactly as `lane-worktrees` runs
+  # it today: `git grep [-h] -E -e <ERE> origin/<branch> -- <pathspecs>` in the
+  # workspace root (`workspace-root`'s answer), under `LC_ALL=C` as that
+  # script's git calls run, on the ref as it was last fetched (nothing is
+  # fetched here). So its output is byte for byte what that `git grep` prints,
+  # and the script's own parsing stays as it is (spec:59). Its paths are
+  # `reg_reader_kind`'s set. `lanes/log` is the pathspec pair
+  # `:(glob)lanes/log/*.md` `:(exclude)lanes/log/README.md`, exactly the lane
+  # logs (README.md holds no line the three greps match, so their output does
+  # not change), and one log is taken literally. The four pathspec switches git
+  # reads from the environment are cleared for the call, so that no inherited
+  # one widens or narrows the set. The answer is held whole before a byte of it
+  # is printed.
+  #   0   the matches, as `git grep` prints them
+  #   1   no match, and nothing printed
+  #   2   usage (the form below, or an ERE `git grep -E` cannot compile), or a
+  #       path outside the set
+  #   69  the read could not be made: no workspace, a ref that does not resolve,
+  #       a repository git cannot read; nothing on stdout
+  # On primary it greps lane 5's `reg_image` of each path (T505; Q-L5-3), under
+  # the read door's `decide` class (T504's table; Q-L5-5). Neither exists yet.
+  register-grep)
+    rgr_usage="usage: register-grep [-h] -E <ERE> -- <path>…   (lanes/LANES.md, lanes/aliases.tsv, lanes/log, or one lanes/log/<lane>.md)"
+    rgr_h=""
+    if [ "${1-}" = -h ]; then rgr_h=-h; shift; fi
+    [ "${1-}" = -E ] && [ "$#" -ge 2 ] || die "$rgr_usage" 2
+    rgr_ere="$2"; shift 2
+    [ "${1-}" = -- ] && [ "$#" -ge 2 ] || die "$rgr_usage" 2
+    shift
+    # THE `--` HEADS THE PATHSPEC LIST. It is git's own line between the
+    # revision and the pathspecs, which `git grep` needs where a pathspec such as
+    # `:(glob)…` could read as a revision; it is not BSD getopt's end of options,
+    # which `git grep` never reaches. Held in the list, the call's own line pairs
+    # no `grep` word with a late `--` (`test_no_shipped_bash_ends_its_options_after_an_operand`).
+    rgr_specs=(--)
+    for rgr_p in "$@"; do
+      rgr_kind="$(reg_reader_kind "$rgr_p" grep)" || die "register-grep reads lanes/LANES.md, lanes/aliases.tsv, lanes/log and one lanes/log/<lane>.md, and '$rgr_p' is none of them (O21 (a))" 2
+      case "$rgr_kind" in
+        logs) rgr_specs+=(':(glob)lanes/log/*.md' ':(exclude)lanes/log/README.md') ;;
+        log)  rgr_specs+=(":(literal)$rgr_p") ;;
+        *)    rgr_specs+=("$rgr_p") ;;
+      esac
+    done
+    rgr_root="$LANES_WS_ROOT"
+    [ -n "$rgr_root" ] || die "the register could not be read: $(lanes_workspace_why)" 69
+    TMPD="$(mktemp -d)" || die "the register could not be read: no temporary directory could be made under ${TMPDIR:-/tmp} to hold the answer whole" 69
+    rgr_rc=0
+    env -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS -u GIT_NOGLOB_PATHSPECS -u GIT_ICASE_PATHSPECS \
+      LC_ALL=C GIT_OPTIONAL_LOCKS=0 \
+      git -C "$rgr_root" grep ${rgr_h:+"$rgr_h"} -E -e "$rgr_ere" "origin/$LANES_BRANCH" "${rgr_specs[@]}" \
+      > "$TMPD/grep" || rgr_rc=$?
+    case "$rgr_rc" in
+      0) cat -- "$TMPD/grep" || exit 69; exit 0 ;;
+      1) exit 1 ;;
+    esac
+    # A MALFORMED ERE IS THE CALLER'S USAGE ERROR, never an unreadable register.
+    # Where the ref resolves, the same ERE is asked of the empty tree, which
+    # reads nothing, so a 128 there is the pattern's alone.
+    if git -C "$rgr_root" rev-parse -q --verify "origin/$LANES_BRANCH^{tree}" >/dev/null 2>&1; then
+      rgr_erc=0
+      rgr_empty="$(git -C "$rgr_root" hash-object -t tree /dev/null 2>/dev/null)" &&
+        { LC_ALL=C git -C "$rgr_root" grep -q -E -e "$rgr_ere" "$rgr_empty" >/dev/null 2>&1 || rgr_erc=$?; }
+      [ "$rgr_erc" != 128 ] || die "$rgr_usage — '$rgr_ere' is not an ERE that git grep -E can compile (above)" 2
+    fi
+    die "the register could not be read: git grep on origin/$LANES_BRANCH in $rgr_root exited $rgr_rc (above)" 69
+    ;;
+
   # 0 with archived spellings, 8 absent, 1 when either archive cannot be read
   # or carries a line that is not a row (#122, named above the refusal).
   retired-identity)
@@ -29843,7 +30025,21 @@ EOF
   # every other read here is; the four callers fall through to the typed
   # spelling there, and each has its own refusal for a register that really does
   # hold two such rows.
+  #
+  # `--walk <lane>` (007 T411, FR-035) prints the names `canon_lane`'s walk
+  # visits in place of its answer, one per line, the typed name first and the
+  # last hop last (`canon_lane_walk`), and exits with these same codes. The walk
+  # is asked only after `canon_lane` has answered 0, so every refusal and every
+  # note is `canon-lane`'s own, and a refusal prints no walk at all: part of one
+  # would under-list an act's scopes. The form is `canon-lane --walk <lane>`
+  # alone; `canon-lane <lane> --walk` stays the usage 64 it always was.
   canon-lane)
+    cl_walk=0
+    if [ "${1-}" = --walk ]; then
+      shift; cl_walk=1
+      [ -n "${1-}" ] || die "usage: canon-lane --walk <lane>" 64
+      [ "$#" -le 1 ] || die "canon-lane --walk takes one lane: canon-lane --walk <lane>" 64
+    fi
     cl_in="${1-}"; [ -n "$cl_in" ] || die "usage: canon-lane <lane>" 64
     [ "$#" -le 1 ] || die "canon-lane takes one lane: canon-lane <lane>" 64
     check_lane_name "$cl_in"
@@ -29851,7 +30047,19 @@ EOF
     # THE CODE IS CARRIED, not flattened to 2: 66 is the alias table that could
     # not be read and its four callers tell it from 2 by that number alone.
     cl_res="$(canon_lane "$cl_in")" || exit $?
-    printf '%s\n' "$cl_res"
+    if [ "$cl_walk" = 1 ]; then
+      # 66, IN `canon_lane`'S OWN WORDS FOR ITS SECOND READER OF THE TABLE: the
+      # walk reads again the table `canon_lane` has just read (from this
+      # process's cache, where it has one), so a failure here is a read that
+      # failed the second time, and it is never an answer.
+      cl_names="$(canon_lane_walk "$cl_in")" || {
+        note "${LANES_ALIASES_PATH:-lanes/aliases.tsv} could not be read ($(lane_alias_err))."
+        exit 66
+      }
+      printf '%s\n' "$cl_names"
+    else
+      printf '%s\n' "$cl_res"
+    fi
     ;;
 
   # `--home`'s validation, WITHOUT a write — the same `resolve_home` the writers
@@ -31518,6 +31726,6 @@ EOF
     ;;
 
   *)
-    die "unknown subcommand '$cmd' (verify-row|set-row-state|append-row-status|replace-in-row|append-session-id|append-line|add-row|start-record|retire-rows|archive-rows|migrate-state-cells|commit|rename-lane|log|claim|release|who|history|swapped|session-start|guard|guard-bind|idle-holders|live-holder|window-session|transcript-holders|binding|request-handoff|session-lane|window-lane|lane-dir|lane-profile|lane-agent|lane-transcript|lane-last|workspace-root|last-session|forks|duplicate-holder|workstation|fetch-age|lanes|lane-groups|next-free|sibling-filter|resolve-repo|lane-objects|register-row|register-row-local|retired-identity|canon-lane|act-begin|resolve-home|managed-projection|lane-state|set-lane-state|lane-trees|set-lane-tree|lane-tree-now|project-legs|lane-reconcile|lane-holders|legacy-restart-check|publish-handoff|restart-intent|set-restart-intent|worktrees|pathspec-check|lane-checkout|refresh-workspace|write-handoff|handoff-path)" 2
+    die "unknown subcommand '$cmd' (verify-row|set-row-state|append-row-status|replace-in-row|append-session-id|append-line|add-row|start-record|retire-rows|archive-rows|migrate-state-cells|commit|rename-lane|log|claim|release|who|history|swapped|session-start|guard|guard-bind|idle-holders|live-holder|window-session|transcript-holders|binding|request-handoff|session-lane|window-lane|lane-dir|lane-profile|lane-agent|lane-transcript|lane-last|workspace-root|last-session|forks|duplicate-holder|workstation|fetch-age|lanes|lane-groups|next-free|sibling-filter|resolve-repo|lane-objects|register-row|register-row-local|register-text|register-grep|retired-identity|canon-lane|act-begin|resolve-home|managed-projection|lane-state|set-lane-state|lane-trees|set-lane-tree|lane-tree-now|project-legs|lane-reconcile|lane-holders|legacy-restart-check|publish-handoff|restart-intent|set-restart-intent|worktrees|pathspec-check|lane-checkout|refresh-workspace|write-handoff|handoff-path)" 2
     ;;
 esac
