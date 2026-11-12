@@ -58,6 +58,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -475,10 +476,53 @@ def register_text(rows) -> str:
     return "\n".join(REGISTER_HEADER + list(rows) + [""])
 
 
+#: THE ESTATE'S STATE HOME: SHORT, AND OUTSIDE THE TEMPORARY ROOT. The
+#: service's one socket is `${XDG_STATE_HOME}/openRepoTools/run/register.sock`
+#: (lane 5's socket contract d8, section 2.1): `_Listener` binds it, `serve`
+#: binds it, and the client connects to it. `sun_path` holds 107 bytes on
+#: Linux and 103 on macOS, and the contract's client and `serve` refuse a
+#: path over 103 bytes (`path-too-long`). Under `tmp_path` the path followed
+#: the temporary root: on the runner, `run.sh`'s basetemp put it at about 147
+#: bytes, and both of `_Listener`'s cases failed with `OSError: AF_UNIX path
+#: too long` (lane 1's verify-r5-c2b, CI run 43140203269); every service case
+#: would meet `path-too-long` once T512 lands (line AN14). So each estate's
+#: `XDG_STATE_HOME` is a `mkdtemp` of its own in `/tmp`, as `tests/pgcluster.py`
+#: makes its socket directory: `/tmp/l2g-` and mkdtemp's 8 characters, 17
+#: bytes, which puts the socket at 49 whatever `TMPDIR` or `--basetemp` is.
+#: The estate removes it at its close (`Estate.close`), and one `atexit`
+#: handler removes any that an estate which failed to finish left.
+STATE_PARENT = "/tmp"
+STATE_PREFIX = "l2g-"
+#: The contract's bound on the socket's path, in bytes (section 2.1).
+SOCKET_MAX = 103
+#: Every state home made in this process, for the `atexit` handler.
+_STATE_HOMES: list = []
+
+
+def _remove_state_homes() -> None:
+    for home in _STATE_HOMES:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def _state_home() -> Path:
+    """A new state home (`STATE_PARENT`, `STATE_PREFIX`), 0700 as `mkdtemp`
+    makes it, whose socket path is within `SOCKET_MAX`."""
+    if not _STATE_HOMES:
+        atexit.register(_remove_state_homes)
+    home = Path(tempfile.mkdtemp(prefix=STATE_PREFIX, dir=STATE_PARENT))
+    _STATE_HOMES.append(home)
+    sock = home / "openRepoTools" / "run" / "register.sock"
+    assert len(os.fsencode(str(sock))) <= SOCKET_MAX, \
+        f"the service's socket path {sock} is over {SOCKET_MAX} bytes"
+    return home
+
+
 class Estate:
     """T203c's estate with the guard's offer for this session: the window is
     `FROM`, whose row names the session; the session is named `TO`, whose row
-    ends on another session; and the stand-ins above in `<root>/ctl`."""
+    ends on another session; and the stand-ins above in `<root>/ctl`. Its
+    `XDG_STATE_HOME` is a short directory of its own in `/tmp`, never under
+    `root` (`_state_home`), so the service's socket path is 49 bytes."""
 
     def __init__(self, root: Path, *, to=TO, to_row=True, guard=GUARD, path=None):
         self.root = root
@@ -496,10 +540,11 @@ class Estate:
         self.ctl = root / "ctl"
         for d in (self.wip.parent, root / "t", self.bin, self.ctl):
             d.mkdir(parents=True, exist_ok=True)
+        self.state_home = _state_home()
         env = guard_strip_env(os.environ)
         if path is not None:
             env["PATH"] = path
-        env.update(HOME=str(self.home), XDG_STATE_HOME=str(root / "state"),
+        env.update(HOME=str(self.home), XDG_STATE_HOME=str(self.state_home),
                    XDG_CONFIG_HOME=str(root / "config"), TMPDIR=str(root / "t"),
                    LANES_WORKSTATION=HOST, LANES_CONTAINER=CONTAINER, LANES_NO_GITHUB="1",
                    LANES_NO_FETCH="1", LANES_REPO=str(self.wip), LANES_LANE=FROM,
@@ -694,6 +739,7 @@ class Estate:
                 _kill(pid)
         for session in self.sessions:
             session.close()
+        shutil.rmtree(self.state_home, ignore_errors=True)
 
 
 @pytest.fixture
@@ -1406,7 +1452,7 @@ def test_guard_bind_computes_bound_s_from_c_n_a_and_the_service(estate, tmp_path
     answer 2 on the contract stub (T207), its `.head` set to `c=3`, `n_a=2`
     and `w_s_ms=300`, and the record at `mode=binding` holds the three as
     `.head` gives them, with `bound_s=620` and a `deadline_epoch` 625 s after
-    `started_utc`. It fails until L5-A2 (lane 5's T507), which copies them."""
+    `started_utc`. It fails until L5-A3 (lane 5's T507), which copies them."""
     if configuration == ANSWER_2:
         _bound_through_answer_2_on_the_stub(estate, tmp_path)
         return
@@ -1531,7 +1577,7 @@ def test_the_post_bind_refill_is_one_register_read_and_never_git(estate, tmp_pat
     `register read --for guard --prefetch`, at the offer's prompt and the
     answer's, are no refill (lane 5, #165 6809022654). A refill sent with
     `--for guard` is then no refill either, and the count of one refuses it.
-    Fails until L5-A2 (lane 5's T507)."""
+    Fails until L5-A3 (lane 5's T507)."""
     code = tmp_path / "code"
     code.mkdir()
     for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
@@ -1850,6 +1896,18 @@ HOLD_LIMIT = 10.0
 #: `lanes-index:6081`). Form 2, the whole-file fetch and the render read
 #: send no such bound.
 FORM_4_SQL = "WHERE i.kind = 'import' AND i.seq <= "
+#: THE WINDOW'S LANE, SPELLED ANOTHER WAY IN ITS ROW (lane 5's call 4, #165
+#: 6813284257 and 6813607794): `RepoA-2` under the window `repoA-2`. The
+#: guard's prefetch, form 2, asks with `--lane=` the window's name, and
+#: `lanes-index` writes `.log.<that key>` even where the lane has no log; the
+#: binding scan takes the row's own spelling from its case-insensitive match
+#: (`G_LANE="$gr_hits"`), and only a key the cache lacks reaches form 4.
+ROW_SPELLING = FROM[:1].upper() + FROM[1:]
+#: The guard's note where a lane's object log could not be read, in today's
+#: words (contract 4.19 section 3.6, B4: "the guard notes it as today", at
+#: `lanes-edit.sh:10707-10710` at pin `2a057a6d`), which form 4's every end
+#: but 0 reaches.
+LOG_UNREAD = "object log could not be read"
 
 
 def _silent_listener(host="127.0.0.1"):
@@ -1924,8 +1982,19 @@ def test_a_database_that_does_not_answer_is_2_inside_4_5_s(estate, case):
             closers.append(close)
             _db_config(est, f"postgresql://reader@127.0.0.1:{port}/{est.pg.name}")
         elif case.startswith("2-"):
-            relay = pytest.importorskip("pgcluster").__dict__.get("silent_after_startup")
-            assert relay is not None, "tests/pgcluster.py has no silent-after-startup relay"
+            # T229c's RELAY in front of the case's own database: it passes the
+            # startup on, then goes silent at the first ReadyForQuery, so the
+            # read connects and logs in and its query is never answered. Its
+            # login is the estate's own `reader_url=`'s (`pg.url()`'s), which
+            # the cluster has; case 1's `reader` reaches no server, but here
+            # a login the cluster lacks would end the read at once on its
+            # FATAL, a refusal that is not this case's fault.
+            silent = pytest.importorskip("pgcluster").__dict__.get("silent_after_startup")
+            assert silent is not None, "tests/pgcluster.py has no silent-after-startup relay"
+            relay = silent(est.pg.port, socket_dir=est.pg.host)
+            closers.append(relay.close)
+            login = urlsplit(est.pg.url()).username
+            _db_config(est, f"postgresql://{login}@127.0.0.1:{relay.port}/{est.pg.name}")
         elif case.startswith("3-"):
             holder = est.pg.session()
             closers.append(holder.kill)
@@ -2101,14 +2170,19 @@ def test_the_guard_maps_69_75_and_3_to_2(estate, tmp_path):
     """AT-10: where the guard's register read ends 69, 75 or 3, the guard
     exits 2 (the hook's only refusal), never the read's own code. Through
     the contract's stub `lanes-index`, beside a copy of `lanes-edit.sh`,
-    with each end injected by `stub_outcome`."""
+    with each end injected by `stub_outcome`. The estate is G1's, `to=FROM,
+    to_row=False`: the session is named for the window's lane, whose row
+    names it, so the guard's answer with a register it could read is 0, and
+    its 2 can only be the read's (lane 3's reason in #165 6812490130). The
+    module's default estate makes the name offer, whose own 2 would pass this
+    case wherever the guard went on past a failed read (line AN14)."""
     from sql_register_helpers import stub_outcome
     code = tmp_path / "code"
     contract_stub(code)
     for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
         shutil.copy2(REPO / name, code / name)
     for end in (69, 75, 3):
-        est = estate(guard=code / "lanes-edit.sh")
+        est = estate(guard=code / "lanes-edit.sh", to=FROM, to_row=False)
         conf = tmp_path / f"lanes-index-{end}.conf"
         conf.write_text(f"register_url=postgresql:///register?host={tmp_path}/sock\n",
                         encoding="utf-8")
@@ -2130,22 +2204,56 @@ def test_a_second_read_past_the_start_line_is_noted_not_refused(estate, case):
     refuse (B4); `[under-a-declaration]`: its cut stays `T0 + 3.75 s` under
     an unexpired declaration (B5); `[no-declaration-read]`: it reads no
     declaration. The case's database holds the estate's register at primary
-    (`_Register`; lane 5's F2, #165 6812547449), so form 2 answers and the
-    guard reaches its second read."""
+    (`_Register`; lane 5's F2, #165 6812547449), so form 2 answers.
+
+    FORM 4 IS ASKED ONLY FOR A KEY FORM 2 DID NOT FILL (lane 5's call 4, #165
+    6813284257 and 6813607794): the window's row is spelled `ROW_SPELLING`,
+    so the binding scan asks for `.log.RepoA-2`, which the prefetch's
+    `--lane=repoA-2` did not write, and the guard makes its second read.
+
+    THE CUT, in `[at-the-cap]` and `[under-a-declaration]`: the shim holds
+    form 4's request 3.9 s (`FORM_4_SQL`), so it would reach the database
+    only past `T0 + 3.75 s`, and the read's own cut ends it 2, too late to
+    verify (T113's fix round, MUST-2). `[under-a-declaration]` does so under
+    an unexpired declaration that names this database, `database=` the
+    configuration's `register_label=` (config.md section 6.4), so the
+    declaration counts; there form 4 still starts, is cut and is noted. Both
+    end inside the budget, noted as today (`LOG_UNREAD`; B4).
+    `[no-declaration-read]` has no declaration and no hold: its form 4 ends
+    0, and the guard notes no log it could not read.
+
+    NOT REFUSED, in the module's estate, is the guard's own answer to it: the
+    name offer, 2 with the offer's text and the record at `name-drift`. A
+    refusal on the read makes no offer. `.log.<key>` is not asserted: the
+    guard removes its cache files when it exits (`cleanup`)."""
     est = estate(mode="primary")
+    est.push_register([_row(ROW_SPELLING, est.sid, "LIVE"), _row(est.to, est.other, "PAUSED")])
     _Register(est)
-    est.shim([{"mode": "window", "ms": 3900, "match": FORM_4_SQL}] if case == "at-the-cap"
-             else [])
+    cut = case in ("at-the-cap", "under-a-declaration")
+    est.shim([{"mode": "window", "ms": 3900, "match": FORM_4_SQL}] if cut else [])
     if case == "under-a-declaration":
         conf = Path(est.extra["LANES_INDEX_CONFIG"])
+        label = next((line.split("=", 1)[1] for line in conf.read_text(encoding="utf-8")
+                      .splitlines() if line.startswith("register_label=")), "")
+        assert label, f"the estate's configuration names no register_label=: {conf}"
         (conf.parent / "register-outage").write_text(
-            "format=1\nkind=word\ndatabase=register\nutc=2026-11-10T00:00:00Z\nhost=Eagle\n"
+            f"format=1\nkind=word\ndatabase={label}\nutc=2026-11-10T00:00:00Z\nhost={HOST}\n"
             f"until={_utc(time.time() + 3600)}\nmirror-seq=1\nwhy=test\n", encoding="utf-8")
     hook = est.hook("hello")
     assert not hook.killed and hook.t_exit - hook.t0 < BUDGET, repr(hook)
-    assert "second read" not in hook.err or hook.code != 2, repr(hook)
+    record = est.record()
+    assert hook.code == 2 and OFFER in hook.text and record.get("mode") == "name-drift", \
+        f"the guard did not answer with its name offer (a refusal on its read makes none): " \
+        f"{record}\n{hook!r}"
     forms = [c for c in est.shim_calls() if FORM_4_SQL in c.get("sent", "")]
     assert forms, "the guard made no second read (no call in the shim's log is form 4's SQL)"
+    if cut:
+        assert "window" in forms[0].get("arms", []), f"the shim did not hold form 4: {forms[0]}"
+        assert LOG_UNREAD in hook.err, \
+            f"the guard did not note the log its cut second read left unread: {hook!r}"
+    else:
+        assert LOG_UNREAD not in hook.err, \
+            f"form 4 was made, yet the guard noted the log as unread: {hook!r}"
 
 
 def test_the_guards_last_budget_line_is_below_guard_timeout():
@@ -2159,10 +2267,24 @@ def test_the_guards_last_budget_line_is_below_guard_timeout():
     assert max(int(v) for v in found) < 5000, found
 
 
+#: A MIRROR READ'S LABEL, in the form the text gives it: `read: mirror at
+#: <sha12>, …` on stderr (the test plan's AT-11 oracle, TP:2878-2881, which
+#: names `session-start`; B15 tasks:728's mirror class). The words after the
+#: comma are not fixed for the `SessionStart` block on primary (lane 5's
+#: point 2 to lane 3, #165 6814032480), so only the prefix, the 12 hex digits
+#: and the comma are pinned, as the readers module's `MIRROR_LINE` pins them.
+MIRROR_LINE = re.compile(r"^read: mirror at [0-9a-f]{12}, .*$", re.M)
+
+
 def test_the_session_start_block_makes_no_register_call_on_primary(estate):
     """Lane 5's (A5; R39): the `SessionStart` block, in the mirror class,
     makes no register call on primary: the shim logs no call while it
-    runs."""
+    runs. And it reads the mirror offline, labelled `read: mirror` (T508,
+    B15 tasks:822): its stderr carries the label (`MIRROR_LINE`), its stdout
+    does not, and it exits 0. A build with no SQL path makes no register
+    call either, so the call count alone passed at the base and proved
+    nothing for T508 (lane 5's point 4, #165 6814032480); the label is T508's
+    own, so the case fails at the base on it, until T508 (L5-A4)."""
     est = estate(mode="primary")
     est.shim()
     proc = subprocess.run(["bash", str(est.guard), "session-start"],
@@ -2170,6 +2292,9 @@ def test_the_session_start_block_makes_no_register_call_on_primary(estate):
                           env=est.env(), cwd=str(est.wip), timeout=60)
     assert proc.returncode == 0, proc.stderr
     assert not est.shim_calls(), est.shim_calls()
+    assert MIRROR_LINE.search(proc.stderr), \
+        f"the block printed no `read: mirror at <sha12>, ...` line on stderr (T508): {proc.stderr}"
+    assert not MIRROR_LINE.search(proc.stdout), proc.stdout
 
 
 # ============================================================ T226: the guard's measured parts
@@ -2381,7 +2506,8 @@ def _run_dir(est: Estate) -> Path:
     """The service's one directory, fixed by lane 5's socket contract d8
     (section 2.1): `${XDG_STATE_HOME:-~/.local/state}/openRepoTools/run/`,
     holding `register.sock`, `register.lock`, `register.owner`,
-    `register.failed` and `register.log` (section 2.3)."""
+    `register.failed` and `register.log` (section 2.3). Under the estate's
+    own state home (`_state_home`), its socket path is 49 bytes."""
     return Path(est.base["XDG_STATE_HOME"]) / "openRepoTools" / "run"
 
 
@@ -2389,6 +2515,20 @@ def _service_dir(est: Estate):
     """The run directory, where the service's socket is bound."""
     run = _run_dir(est)
     return run if (run / "register.sock").exists() else None
+
+
+def _failure_stamp(est: Estate, done: subprocess.CompletedProcess) -> list:
+    """The words of `serve`'s failure stamp, `register.failed` (section 8.6),
+    read only once `serve` has exited 2 and the stamp exists. Until lane 5's
+    T512 adds `serve` (L5-S1), `lanes-index` answers it 64, unknown
+    subcommand, and writes no stamp: the case then ends on this assertion,
+    never on a missing file (line AN14)."""
+    path = _run_dir(est) / "register.failed"
+    assert done.returncode == 2 and path.is_file(), (
+        f"`lanes-index serve` exited {done.returncode} and wrote "
+        f"{'a' if path.is_file() else 'no'} failure stamp; lane 5's T512 (L5-S1) exits 2 "
+        f"and stamps it: {done.stdout}{done.stderr}")
+    return path.read_text(encoding="utf-8").split()
 
 
 class _Listener:
@@ -2875,9 +3015,9 @@ def test_the_service_reaches_the_database_only_through_psql(estate):
                             text=True, timeout=30, cwd=str(est.wip),
                             env=est.env(PATH=_masked_path(os.pathsep.join(
                                 [os.path.dirname(sys.executable), "/bin"]))))
-    stamp = (_run_dir(est) / "register.failed").read_text(encoding="utf-8").split()
+    stamp = _failure_stamp(est, nopsql)
     # THE STAMP HOLDS THE UTC AND THE FIXED CAUSE, AND NO OTHER TEXT (section 8.6).
-    assert nopsql.returncode == 2 and "no-psql" in stamp and len(stamp) == 2, (nopsql, stamp)
+    assert "no-psql" in stamp and len(stamp) == 2, (nopsql, stamp)
     assert not (_run_dir(est) / "register.sock").exists(), "serve left a socket"
     assert est.hook("hello").code in (0, 2)
 
@@ -2922,14 +3062,16 @@ def test_a_service_that_cannot_start_falls_back_to_the_direct_read(estate, case)
         data["version"] = "psql (PostgreSQL) 14.11"
         control.write_text(json.dumps(data), encoding="utf-8")
         done = _index(est, "serve", timeout=30)
-        stamp = (_run_dir(est) / "register.failed").read_text(encoding="utf-8").split()
-        assert done.returncode == 2 and "no-psql" in stamp and len(stamp) == 2, (done, stamp)
+        stamp = _failure_stamp(est, done)
+        assert "no-psql" in stamp and len(stamp) == 2, (done, stamp)
         assert not (_run_dir(est) / "register.sock").exists(), "serve left a socket"
         assert not [c for c in est.shim_calls()], "a request was sent past an old psql"
     extra = {}
     if case == "start-fails":
         # A STATE PATH PAST 103 BYTES (section 2.1): the client starts nothing
-        # and reads directly, and `serve` refuses it with `path-too-long`.
+        # and reads directly, and `serve` refuses it with `path-too-long`. It
+        # is long on purpose, in place of the estate's short state home: its
+        # last part alone is 120 bytes, whatever the temporary root is.
         deep = est.root / ("s" * 120)
         deep.mkdir()
         extra["XDG_STATE_HOME"] = str(deep)
