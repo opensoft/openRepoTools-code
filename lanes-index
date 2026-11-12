@@ -7405,6 +7405,459 @@ def cmd_register_guard_fetch(args: list[str]) -> int:
     return EXIT_OK
 
 
+# ===== the SQL register: the service, `lanes-index serve`, and its client (007, T512)
+#
+# THE REGISTER SERVICE (feature 007, opensoft/openRepoTools#165; T512; SVC-1 to
+# SVC-8 and SVC-11, design Y:3701-4300), in the bytes and the rules of lane 5's
+# socket contract, T511's `contracts/socket-api.md`, draft 8 (`563157a7`), with
+# what draft 9 folds: lane 3's OP-14, which stands (#165 6746215510, upheld in
+# 6827356485); the connect at listen (lane 3, #165 6827356485, point 3); and
+# lane 1's S-b for form 3 (#165 6828035829). One service per environment,
+# `lanes-index serve`, only on `mode=primary`: it holds one `psql` child on
+# pipes, logged in as this engineer's READER login, and answers the register's
+# text at `n` on a Unix socket under this state directory, `run/`. The reader
+# runs today's parser on that text and decides (Y:4093-4100); the service
+# decides nothing, writes nothing to the register and never reads a host-local
+# fact (SVC-11). `register read` is its one client (forms 1 to 3; form 4 never
+# asks it, B7), and every failure of the service is a direct read.
+
+#: THE SERVICE'S ONE DIRECTORY and its five files (socket API §2.1-§2.3;
+#: Y:3753-3768): `${XDG_STATE_HOME:-~/.local/state}/openRepoTools/run/`.
+REGISTER_SERVE_DIR = "run"
+REGISTER_SERVE_FILES = {"sock": "register.sock", "lock": "register.lock",
+                        "owner": "register.owner", "failed": "register.failed",
+                        "log": "register.log"}
+
+#: THE SOCKET PATH'S BOUND in bytes, macOS's (Y:3774-3781): over it the client
+#: reads directly and starts nothing, and `serve` stamps `path-too-long`.
+#: Nothing shortens a path silently.
+REGISTER_SERVE_SOCKET_MAX = 103
+
+#: A FAILURE STAMP YOUNGER THAN THIS holds back every start, the client's and
+#: `serve --start`'s (Y:3934-3936).
+REGISTER_SERVE_STAMP_HOLD_S = 60
+
+#: THE GUARD'S FALLBACK LINE (svc:104; socket API §11.2), printed by form 2
+#: once wherever the service was unavailable and the client then read
+#: directly, after the cause line on a 69, and never after a `refuse db`.
+REGISTER_GUARD_FALLBACK = "guard: direct (service unavailable)"
+
+#: THE STARTER'S REDUCED ENVIRONMENT (SVC-4 item 2, Y:3887-3889; R37): these
+#: names, and every `XDG_*`, where they are set; no URL and no password.
+REGISTER_SERVE_ENV_KEEP = ("PATH", "HOME", "LANG", "LANES_INDEX_CONFIG",
+                           "LANES_REGISTER_SERVE_IDLE_CHECK_S",
+                           "LANES_REGISTER_SERVE_IDLE_STOP_S")
+
+
+def register_serve_paths() -> dict:
+    """`run/` and its five files, by name (`REGISTER_SERVE_FILES`), with
+    `run` the directory itself."""
+    run = os.path.join(state_dir(), REGISTER_SERVE_DIR)
+    paths = {key: os.path.join(run, name) for key, name in REGISTER_SERVE_FILES.items()}
+    paths["run"] = run
+    return paths
+
+
+def register_serve_possible() -> bool:
+    """Whether this platform can hold the service at all: a Unix socket and a
+    uid. Where it cannot, every read is direct and nothing is started."""
+    import socket
+    return hasattr(socket, "AF_UNIX") and hasattr(os, "getuid")
+
+
+def register_serve_dir_check(run: str, create: bool = True) -> str | None:
+    """SVC-2'S DIRECTORY CHECK, made on every use, by the service before it
+    binds and by the client before it connects or starts one (Y:3761-3766;
+    socket API §2.2): `run` must be a directory, not a symlink (`lstat`),
+    owned by this uid, with mode 0700. Where it is absent and `create`, it is
+    made so (Y:3763-3764). Returns None where it passes, else why it does
+    not, in words that follow its path. A directory that fails is never used
+    and never repaired, and is never stamped (ERR-28)."""
+    try:
+        st = os.lstat(run)
+    except FileNotFoundError:
+        if not create:
+            return "does not exist"
+        try:
+            os.makedirs(os.path.dirname(run), mode=0o700, exist_ok=True)
+            os.mkdir(run, 0o700)
+            # THE MODE, WHATEVER THE UMASK, set through a descriptor that
+            # never follows a symlink planted since the mkdir.
+            fd = os.open(run, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fchmod(fd, 0o700)
+            finally:
+                os.close(fd)
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            return f"could not be made ({exc.strerror or exc})"
+        try:
+            st = os.lstat(run)
+        except OSError as exc:
+            return f"cannot be read ({exc.strerror or exc})"
+    except OSError as exc:
+        return f"cannot be read ({exc.strerror or exc})"
+    if stat.S_ISLNK(st.st_mode):
+        return "is a symlink"
+    if not stat.S_ISDIR(st.st_mode):
+        return "is not a directory"
+    if st.st_uid != os.getuid():
+        return f"is owned by uid {st.st_uid}, not this uid, {os.getuid()}"
+    if stat.S_IMODE(st.st_mode) != 0o700:
+        return f"is mode {oct(stat.S_IMODE(st.st_mode))[2:]}, not 700"
+    return None
+
+
+def register_serve_too_long(paths: dict) -> int:
+    """The socket path's length in bytes where it is over
+    `REGISTER_SERVE_SOCKET_MAX`, else 0 (Y:3777-3781)."""
+    size = len(os.fsencode(paths["sock"]))
+    return size if size > REGISTER_SERVE_SOCKET_MAX else 0
+
+
+def _register_serve_write(path: str, data: bytes) -> None:
+    """`path` written whole by a temp file beside it and `os.replace`, mode
+    0600. Raises `OSError`."""
+    temp = f"{path}.tmp-{os.getpid()}-{os.urandom(4).hex()}"
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        os.replace(temp, path)
+    except BaseException:
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        raise
+
+
+def register_serve_stamp(paths: dict, cause: str) -> None:
+    """THE FAILURE STAMP, `register.failed` (Y:3926-3931; socket API §8.6):
+    the UTC and the fixed cause, and no other text, for the three causes that
+    end `serve` before it listens: `path-too-long`, `config-refused` and
+    `no-psql`. A stamp that cannot be written is passed over."""
+    try:
+        _register_serve_write(paths["failed"], f"{utc_now()} {cause}\n".encode("ascii"))
+    except OSError:
+        pass
+
+
+def register_serve_stamp_read(paths: dict) -> tuple | None:
+    """The stamp as (its UTC, its cause, its age in s), or None where there
+    is none or it is out of form. A stamp dated ahead of this clock counts as
+    old, so a clock step never holds back starts for longer than the hold."""
+    try:
+        with open(paths["failed"], "rb") as handle:
+            words = handle.read(200).decode("ascii").split()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if len(words) != 2:
+        return None
+    epoch = register_utc_epoch(words[0])
+    if epoch is None:
+        return None
+    return words[0], words[1], time.time() - epoch
+
+
+def register_serve_stamp_fresh(paths: dict) -> bool:
+    """Whether a failure stamp younger than `REGISTER_SERVE_STAMP_HOLD_S`
+    stands, so that nothing is started (Y:3934-3936)."""
+    stamp = register_serve_stamp_read(paths)
+    return stamp is not None and 0 <= stamp[2] < REGISTER_SERVE_STAMP_HOLD_S
+
+
+def register_serve_unstamp(paths: dict) -> None:
+    """Removes the stamp, once the service listens and again at its first
+    successful connect (Y:3936-3938)."""
+    try:
+        os.unlink(paths["failed"])
+    except OSError:
+        pass
+
+
+def register_serve_log(paths: dict, phrase: str) -> None:
+    """One line of `register.log`: the UTC and a FIXED PHRASE, never `psql`'s
+    message text and never a URL (Y:3797-3799)."""
+    try:
+        fd = os.open(paths["log"], os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
+                     0o600)
+    except OSError:
+        return
+    try:
+        os.write(fd, f"{utc_now()} {phrase}\n".encode("ascii", "replace"))
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def register_peercred(conn) -> int | None:
+    """THE PEER'S UID ON A CONNECTED UNIX SOCKET, the service's check of each
+    client and the client's of the service (Y:3789-3796; socket API §3), read
+    in this one function: `SO_PEERCRED` on Linux; `LOCAL_PEERCRED` on macOS,
+    which is NOT SHOWN (OP-12, closed: lane 3, #165 6754633102; no macOS test
+    bed, under Brett's decision of 2026-10-15). Returns None where the
+    platform has neither, and then the directory's owner and mode are the
+    whole protection (Y:3794-3796). Raises `OSError` where the read fails,
+    which its callers take as another uid."""
+    import socket
+    import struct
+    if hasattr(socket, "SO_PEERCRED"):
+        size = struct.calcsize("3i")
+        _pid, uid, _gid = struct.unpack("3i", conn.getsockopt(socket.SOL_SOCKET,
+                                                              socket.SO_PEERCRED, size))
+        return uid
+    if hasattr(socket, "LOCAL_PEERCRED"):
+        # `struct xucred`: `cr_version`, then `cr_uid` (sys/ucred.h).
+        data = conn.getsockopt(getattr(socket, "SOL_LOCAL", 0), socket.LOCAL_PEERCRED,
+                               struct.calcsize("IIh16I"))
+        return struct.unpack_from("II", data)[1]
+    return None
+
+
+def register_serve_psql(store) -> str | None:
+    """SVC-6'S START-TIME CHECK, before `serve` listens (lane 3's ruling, #165
+    6754338646, OP-10 (a); lane 1's N-5, #165 6828035829): T106's own version
+    check (`PostgresStore._check_psql_version`, `_psql_version_of` and
+    `PSQL_MIN_MAJOR`), so that `serve` and every register call read one
+    vendor's version string alike. Returns None for a usable `psql`, else
+    why not: none on `PATH`, one that cannot be run or names no version
+    this build can read, or one older than 15, whose `\\;` join a request
+    needs (CLI411:234)."""
+    if not store.psql:
+        return "there is no psql on PATH"
+    options, _timer = store.bounds("read")
+    try:
+        store._check_psql_version(store._env(register=True, options=options),
+                                  time.monotonic() + 10)
+    except PsqlFailed as exc:
+        return exc.detail
+    return None
+
+
+def register_serve_env() -> dict:
+    """THE STARTER'S REDUCED ENVIRONMENT (SVC-4 item 2, Y:3887-3889; socket
+    API §8.2): `REGISTER_SERVE_ENV_KEEP` and the `XDG_*` variables, each
+    where it is set, and nothing else, so no URL and no password."""
+    return {key: value for key, value in os.environ.items()
+            if key in REGISTER_SERVE_ENV_KEEP or key.startswith("XDG_")}
+
+
+def register_serve_launch(paths: dict) -> str | None:
+    """THE STARTER (SVC-4 item 2, Y:3884-3898; socket API §8.2): this
+    `lanes-index`'s `serve`, started from Python and never waited for, in a
+    session of its own (`start_new_session`, which is `setsid`), so a group
+    kill of its caller or a timed-out hook's SIGTERM never reaches it; stdin
+    and stdout on `/dev/null`, stderr appended to `register.log`; the
+    working directory `/`; and the reduced environment. Returns None where it
+    was started, else why not."""
+    try:
+        log = os.open(paths["log"], os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW
+                      | os.O_CLOEXEC, 0o600)
+    except OSError as exc:
+        return f"{paths['log']} could not be opened ({exc.strerror or exc})"
+    try:
+        subprocess.Popen([sys.executable or "python3", os.path.abspath(__file__), "serve"],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
+                         cwd="/", env=register_serve_env(), close_fds=True,
+                         start_new_session=True)
+    except OSError as exc:
+        return f"it could not be started ({exc.strerror or exc})"
+    finally:
+        os.close(log)
+    return None
+
+
+def register_serve_start_only() -> int:
+    """`lanes-index serve --start` (R50; socket API §9): the start a client
+    runs on `ENOENT`, and nothing else, for T513's `SessionStart` block, which
+    so detaches nothing itself. It asks the service nothing and makes no
+    socket try of its own. It loads the configuration, refusing 2 for a
+    refused one, Q6(c)'s included, or a mode other than `primary`; checks the
+    directory and the path's length, refusing 2 for either; exits 0 where a
+    failure stamp younger than 60 s stands, starting none; and otherwise
+    starts `serve` (`register_serve_launch`) and exits 0. A live service is
+    left as it is: the `serve` it starts finds `register.lock` held and exits
+    0. It writes no stamp of its own."""
+    if not register_serve_possible():
+        note("serve --start: REFUSED: this platform has no Unix socket, so no service runs")
+        return EXIT_REFUSED
+    try:
+        cfg = load_config()
+    except Refusal as exc:
+        note(f"serve --start: REFUSED: {exc}")
+        return EXIT_REFUSED
+    if cfg["mode"] != "primary":
+        note(f"serve --start: REFUSED: the register service runs only on mode=primary, and "
+             f"this workstation's configuration is mode={cfg['mode']}")
+        return EXIT_REFUSED
+    paths = register_serve_paths()
+    why = register_serve_dir_check(paths["run"])
+    if why:
+        note(f"serve --start: REFUSED: the service's directory {paths['run']} {why}, so it is "
+             f"never used (socket API §2.2)")
+        return EXIT_REFUSED
+    size = register_serve_too_long(paths)
+    if size:
+        note(f"serve --start: REFUSED: the service's socket path {paths['sock']} is {size} "
+             f"bytes, over {REGISTER_SERVE_SOCKET_MAX}, so no service runs here (Y:3777-3781)")
+        return EXIT_REFUSED
+    if register_serve_stamp_fresh(paths):
+        return EXIT_OK
+    why = register_serve_launch(paths)
+    if why:
+        note(f"serve --start: REFUSED: the service was not started: {why}")
+        return EXIT_REFUSED
+    return EXIT_OK
+
+
+def cmd_serve(args: list[str]) -> int:
+    """`lanes-index serve [--start]` (SVC-3 to SVC-6; socket API §8 and §9).
+    With `--start`, the start-only form (`register_serve_start_only`).
+
+    `serve` itself checks, IN THIS ORDER, so that no refusal depends on a
+    check after it:
+    1. the directory (`register_serve_dir_check`): exit 2 naming it, and
+       nothing written in it (ERR-28);
+    2. the configuration and the mode: a refused configuration, Q6(c)'s
+       included (R36), a mode other than `primary`, or a URL SVC-2's mapping
+       refuses: stamp `config-refused`, exit 2;
+    3. the socket path's length: stamp `path-too-long`, exit 2;
+    4. `psql`, by T106's check (`register_serve_psql`): stamp `no-psql`, exit
+       2, as with no `psql` (OP-10);
+    and then runs the service (`register_serve_run`). Exits 64 for usage."""
+    start_only = False
+    for arg in args:
+        if arg in ("-h", "--help"):
+            say(USAGE)
+            return EXIT_OK
+        if arg == "--start" and not start_only:
+            start_only = True
+            continue
+        note(f"serve takes only --start, and was given '{arg}' - see {PROG} --help")
+        return EXIT_USAGE
+    if start_only:
+        return register_serve_start_only()
+    if not register_serve_possible():
+        note("serve: REFUSED: this platform has no Unix socket, so no service runs")
+        return EXIT_REFUSED
+    paths = register_serve_paths()
+    why = register_serve_dir_check(paths["run"])
+    if why:
+        note(f"serve: REFUSED: the service's directory {paths['run']} {why}: a directory that "
+             f"fails its check is never used and never repaired, and nothing was written in "
+             f"it (socket API §2.2)")
+        return EXIT_REFUSED
+    try:
+        cfg = load_config()
+        if cfg["mode"] != "primary":
+            raise Refusal(f"this workstation's configuration is mode={cfg['mode']}")
+        store = PostgresStore(cfg, "register_reader")
+    except Refusal as exc:
+        register_serve_stamp(paths, "config-refused")
+        note(f"serve: REFUSED: {exc}. The register service runs only where the configuration "
+             f"is mode=primary and loads; stamped config-refused")
+        return EXIT_REFUSED
+    size = register_serve_too_long(paths)
+    if size:
+        register_serve_stamp(paths, "path-too-long")
+        note(f"serve: REFUSED: the service's socket path {paths['sock']} is {size} bytes, over "
+             f"{REGISTER_SERVE_SOCKET_MAX}, and nothing shortens it (Y:3777-3781); stamped "
+             f"path-too-long")
+        return EXIT_REFUSED
+    why = register_serve_psql(store)
+    if why:
+        register_serve_stamp(paths, "no-psql")
+        note(f"serve: REFUSED: no usable psql: {why}; stamped no-psql")
+        return EXIT_REFUSED
+    return register_serve_run(cfg, store, paths)
+
+
+def register_serve_run(cfg: dict, store, paths: dict) -> int:
+    """The service once its four checks have passed. Not built in this
+    part: it refuses, writing nothing."""
+    note("serve: REFUSED: the service's listener is not built in this commit")
+    return EXIT_REFUSED
+
+
+def status_service(cfg: dict) -> None:
+    """`status`'s SERVICE LINES (T512, in T117's `cmd_status`, under lane 1's
+    review, R44): a `service:` line in every mode, then on `mode=primary` a
+    failure stamp and its cause (W:3731, W:3904; Y:3939), and a directory
+    that fails its check, which has no stamp (OP-9; ERR-28). It connects to
+    a socket that is there, sending nothing, and creates nothing."""
+    if cfg["mode"] != "primary":
+        say(f"service: none - the register service runs only on mode=primary, and this "
+            f"workstation is mode={cfg['mode']}")
+        return
+    if not register_serve_possible():
+        say("service: none - this platform has no Unix socket, so every read is direct")
+        return
+    paths = register_serve_paths()
+    why = register_serve_dir_check(paths["run"], create=False)
+    size = register_serve_too_long(paths)
+    if why == "does not exist":
+        say(f"service: not running - no service has made its directory {paths['run']} yet; "
+            f"the next read starts one")
+    elif why:
+        say(f"service: none - its directory {paths['run']} {why}: it is never used and never "
+            f"repaired, so every read is direct (socket API §2.2)")
+    elif size:
+        say(f"service: none - its socket path {paths['sock']} is {size} bytes, over "
+            f"{REGISTER_SERVE_SOCKET_MAX}, so every read is direct and none is started")
+    else:
+        say(f"service: {register_serve_state(paths)}")
+    stamp = register_serve_stamp_read(paths) if not why else None
+    if stamp is not None:
+        utc, cause, age = stamp
+        held = (f"it holds back every start for {REGISTER_SERVE_STAMP_HOLD_S} s, until "
+                f"{max(0, int(REGISTER_SERVE_STAMP_HOLD_S - age))} s from now"
+                if 0 <= age < REGISTER_SERVE_STAMP_HOLD_S else "it no longer holds back a start")
+        say(f"service stamp: {_register_shown(cause, 40)} at {utc} ({held})")
+
+
+def register_serve_state(paths: dict) -> str:
+    """One phrase for `status`: whether a service answers the socket's
+    connect, and the pid and start the owner file names."""
+    import socket
+    owner = register_serve_owner_read(paths)
+    conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        conn.settimeout(0.5)
+        conn.connect(paths["sock"])
+    except FileNotFoundError:
+        return f"not running - no socket at {paths['sock']}; the next read starts one"
+    except ConnectionRefusedError:
+        return (f"not running - a stale socket at {paths['sock']}, which the next start "
+                f"unlinks under its lock")
+    except OSError as exc:
+        return f"unknown - the socket {paths['sock']} could not be reached ({exc.strerror or exc})"
+    finally:
+        conn.close()
+    if owner is None:
+        return f"running at {paths['sock']}, and its owner file cannot be read"
+    return (f"running, pid {_register_shown(owner.get('pid', '?'), 20)} since "
+            f"{_register_shown(owner.get('started', '?'), 40)}, at {paths['sock']}")
+
+
+def register_serve_owner_read(paths: dict) -> dict | None:
+    """`register.owner`'s `key=value` lines, or None where it cannot be
+    read."""
+    try:
+        with open(paths["owner"], "rb") as handle:
+            text = handle.read(4096).decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    out = {}
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            out[key] = value
+    return out
+
+
 # ===== the SQL register: schema, roles, bootstrap and logins (007)
 #
 # THE SQL REGISTER'S SCHEMA, WHICH THE BOOTSTRAP ALONE APPLIES (feature 007,
@@ -18391,6 +18844,9 @@ def cmd_status() -> int:
         say(f"  last sync:   {entry.get('last_sync_utc') or 'never, from this workstation'}"
             f"{' (' + entry['last_result'] + ')' if entry.get('last_result') else ''}")
         say(f"  last error:  {entry.get('last_error') or 'none'}")
+    # THE SERVICE'S LINES (T512, under lane 1's review, R44): in every mode,
+    # with no effect on the exit.
+    status_service(cfg)
     # THE SQL REGISTER'S BLOCK (T117; Y:4853), where it is configured, in either
     # mode: 69 where it cannot be read, over #160's own exit (Y:3528).
     if cfg["register_url"]:
@@ -21065,7 +21521,7 @@ the forms contracts/register-cli.md fixes; <id> is a write's identity,
 {PROG} login    revoke <engineer> --admin-service <service>
 {PROG} ready    --expect index|primary --release <version> --env <name>
 {PROG} set-mode index|primary [--config <path>]
-{PROG} serve
+{PROG} serve    [--start]
 
 Not for people, and not among the forms contracts/register-cli.md fixes: the
 guard's own read starts this one, detached, for the whole files it lacks:
@@ -21137,7 +21593,11 @@ unknown subcommand does, and does nothing.
               divergence: see `{PROG} import --single --help`.
   bootstrap, login, ready, set-mode
               The operator tools (operations.md section 2.4).
-  serve       The register service (SVC-3), on `mode=primary` only.
+  serve       The register service (SVC-3), on `mode=primary` only: one per
+              environment, on a socket in the state directory's `run/`,
+              started on demand by `register read` and stopped after 15
+              minutes idle. `--start` starts one and returns at once, for the
+              SessionStart block. Not for people.
 
   While this build refuses `mode=primary` (Q6(c): the renderer's git half is
   not installed), `mode` and `register read` exit 78 with that text, and every
@@ -21237,6 +21697,8 @@ def main(argv: list[str]) -> int:
         return cmd_register_commit(args[1:])
     if verb == "journal":
         return cmd_journal(args)
+    if verb == "serve":
+        return cmd_serve(args)
     # A SUBCOMMAND THIS BUILD DOES NOT HAVE, one of 007's not built yet among
     # them, is usage before any argument is read: it does nothing and says so,
     # and the 64 is what F8 reads from a `lanes-index` too old to have a verb.
