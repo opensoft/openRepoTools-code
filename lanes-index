@@ -16133,13 +16133,19 @@ def _stray_apply(form: str, sha: str, n: int, path: str, base: bytes | None,
     SHOULD-1): each `replace` or `delete` at its line, in the image the edits
     before it left, must find there the text the parent had; each `append`
     goes at that image's end, as step 6 takes an append with no line number
-    (design:1837-1839 at `6e534355`), so SQL's file having grown since the
-    stray's parent refuses nothing (lane 3's call on the review's open point
-    1). A final newline the stray changes must be the parent's in SQL's
-    image; a path the stray adds must be absent from SQL; and one it removes
-    must be the parent's, byte for byte, since a `remove` takes every line.
-    Anything else no longer applies, a `Refusal` (2) naming the edit and the
-    revert (L2-8)."""
+    (design:1837-1839 at `6e534355`), so where appends are the stray's only
+    edits of the file (a log line, a row added at the end), SQL's file
+    having grown since the stray's parent refuses nothing (lane 3's call on
+    the review's open point 1). WHERE THE STRAY'S EDITS OF THE FILE MIX A
+    `replace` OR `delete` WITH APPENDS, and SQL's file has more lines than
+    the stray's parent's, the appends would land after lines the stray never
+    saw, reordering the file (ERR-48's rewrite of every later line), so it
+    no longer applies (lane 3's call on the fix round's observation); where
+    SQL's file has not grown, mixed edits apply as the rest. A final newline
+    the stray changes must be the parent's in SQL's image; a path the stray
+    adds must be absent from SQL; and one it removes must be the parent's,
+    byte for byte, since a `remove` takes every line. Anything else no longer
+    applies, a `Refusal` (2) naming the edit and the revert (L2-8)."""
     where = f"{form}: {sha}'s line edits no longer apply to SQL's images at seq {n} (S2; FR-047)"
     way_out = f"its way out is `{PROG} render --revert {sha}` (PC-4); nothing was written"
     if base is None:
@@ -16161,6 +16167,14 @@ def _stray_apply(form: str, sha: str, n: int, path: str, base: bytes | None,
         raise Refusal(f"{where}: {path} is not UTF-8 on one side; {way_out}")
     state = {path: [list(held[0]), held[1]]}
     ops, _written = register_line_edits(old[0], edited[0])
+    appends = [number for number, op in enumerate(ops, 1) if op[0] == "append"]
+    if appends and len(appends) < len(ops) and len(held[0]) > len(old[0]):
+        number = appends[0]
+        raise Refusal(f"{where}: its edit {number} of {path} is an append at line "
+                      f"{ops[number - 1][1]}, among edits that replace or delete lines of it, "
+                      f"and SQL's {path} has grown past the stray's parent's end ({len(held[0])} "
+                      f"lines, the parent's {len(old[0])}), so its appends would land after "
+                      f"lines the stray never saw; {way_out}")
     for number, (op, line_no, text, replacement) in enumerate(ops, 1):
         try:
             _register_apply_edit(
