@@ -1510,11 +1510,16 @@ def landed_gh(log: Path, tip: str) -> str:
 def test_lane_worktrees_register_reads_go_through_a_verb_and_refuse_69(tmp_path, read):
     """Each of `lane-worktrees`' three direct reads of `origin/<branch>`
     (`:711`, `:1002`, `:5596`) goes through `register-grep`, and a 69 from it
-    is the register unreadable: the sweep deletes nothing, exits non-zero
-    and names the register (Y:4926; the design's S3). `[landed-1002]` also
-    keeps the tree and the branch its failed `LANDED` read would have let go,
-    and its stderr names `register-grep`'s 69 (lane 3's (L2-3), #165
-    6808937880)."""
+    is the register unreadable (Y:4926; the design's S3). In TP:2847-2848's
+    new words (lane 2's TX13b item 1; lane 3, #165 6812295982): "on the
+    verb's 69 nothing is deleted and the register is named as unreadable,
+    and `lane-worktrees` ends with that site's own code, 0 under
+    `--report`". So the 69 is the verb's, never the run's. The read is named
+    on stdout, where `lane-worktrees` names every read that failed (lane 3's
+    ruling on question 121, #165 6813290335: "Stdout stands").
+    `[landed-1002]` also keeps the tree and the branch its failed `LANDED`
+    read would have let go, and its stdout names `register-grep` and its 69
+    (lane 3's (L2-3), #165 6808937880, its stream re-ruled by 6813290335)."""
     argv, match = WORKTREE_READS[read]
     world = ArmWorld(tmp_path / "w")
     stray = world.home / "projects" / "repoA-2-stray"
@@ -1559,25 +1564,39 @@ def test_lane_worktrees_register_reads_go_through_a_verb_and_refuse_69(tmp_path,
         assert re.search(r"Records the report could not read[\s\S]*register-grep` exited 69",
                          result.stdout), (read, result.stdout[-2000:])
     else:
-        assert result.returncode != 0, (read, result.stdout[-2000:], result.stderr[-2000:])
-        assert re.search(r"(?i)register", result.stdout + result.stderr), (read, result.stderr[-2000:])
+        # THAT SITE'S OWN CODE (TP:2847-2848's new words): on a lane with a tree, a failed read
+        # refuses the sweep with `lane-worktrees`' own 2, its exit table's "2 refused: ... or a
+        # read failed" (another lane's claim, `:711`'s read, at the base; the register's
+        # `LANDED` lines too, at lane 4's T404 `51eeed8d`), never the verb's 69.
+        assert result.returncode == 2, (read, "not the site's own code, 2", result.returncode,
+                                        result.stdout[-2000:], result.stderr[-2000:])
+        # THE REGISTER NAMED AS UNREADABLE, ON STDOUT (lane 3, #165 6813290335). A bare
+        # "register" proved nothing: every sweep's "merged means: the register's LANDED line
+        # ..." header holds the word.
+        assert any(re.search(r"(?i)\bregister\b.*\b(could not be read|unreadable)\b", line)
+                   for line in result.stdout.splitlines()), (
+            read, "stdout does not name the register as unreadable", result.stdout[-2000:],
+            result.stderr[-2000:])
     assert stray.is_dir(), (read, "the sweep deleted on a failed read")
     if read == "lifecycle-events-711":
         assert tree.is_dir(), (read, "the sweep deleted a tree on a failed read")
     if read == "landed-1002":
-        # LANE 3'S (L2-3) (#165 6808937880): a failed `LANDED` read keeps the trees it would
-        # have let go, and names the read (B15 tasks:897, T404's "On 69,": "deletes nothing,
-        # and names the register as unreadable"). So the tree and its branch remain, and
-        # stderr names `register-grep`'s 69. The non-zero exit is no longer the whole oracle:
-        # another refusal, such as no #97 snapshot (2), gives one too.
+        # LANE 3'S (L2-3) (#165 6808937880), ITS STREAM RE-RULED (#165 6813290335): a failed
+        # `LANDED` read keeps the trees it would have let go, and names the read (B15 tasks:897,
+        # T404's "On 69,": "deletes nothing, and names the register as unreadable"). So the
+        # tree and its branch remain, and stdout names `register-grep` and its 69: T404's note,
+        # "the register's LANDED lines could not be read: `lanes-edit.sh register-grep` exited
+        # 69: ", then the read's first stderr line. Nothing need echo it on stderr. Here repoA-2
+        # has no #97 snapshot, which refuses with the same 2 (at T404 `51eeed8d` it is the
+        # REFUSED line), so the code alone does not tell the two apart: this line names the read.
         assert tree.is_dir(), (read, "the sweep let the tree go on a failed LANDED read")
         branch = world.git("-C", str(world.lane_dir), "for-each-ref", "--format=%(refname)",
                            f"refs/heads/{LANDED_BRANCH}").strip()
         assert branch == f"refs/heads/{LANDED_BRANCH}", (
             read, "the sweep let the branch go on a failed LANDED read", branch)
         assert any("register-grep" in line and names_the_code(line, 69)
-                   for line in result.stderr.splitlines()), (
-            read, "stderr does not name register-grep's 69", result.returncode,
+                   for line in result.stdout.splitlines()), (
+            read, "stdout does not name register-grep's 69", result.returncode,
             result.stdout[-2000:], result.stderr[-2000:])
 
 
