@@ -7246,7 +7246,7 @@ pw_end() {   # <code> <message, or empty> [<attempt dir whose output is replayed
 #   - neither: no clock, and `journal` calls at once (Y:5236), where LR011
 #     gives 3 with the record kept.
 pw_lookup_clock() {
-  local lc_l="" lc_last="" lc_b="" lc_c="" lc_n="" lc_f="" lc_d="" lc_u="" lc_age=0
+  local lc_k="" lc_l="" lc_last="" lc_c="" lc_u="" lc_age=0
   PW_LK_CLK=()
   if wr_is_count "$PW_L_CLOCK" && wr_is_count "$PW_L_END"; then
     PW_LK_CLK=(--clock "$PW_L_CLOCK" --clock-age "$(( SECONDS - PW_L_END ))")
@@ -7256,10 +7256,18 @@ pw_lookup_clock() {
   [ -n "$WR_REC_CALLS" ] && [ "$WR_REC_WRITE_ID" = "$WR_ID" ] || return 0
   wr_here
   [ -n "$WR_REC_HOST" ] && [ "$WR_REC_HOST" = "$WR_HERE_HOST" ] || return 0
-  while IFS= read -r lc_l; do
+  # By parameter expansion, never a here-string (`pw_call_fields`), so a
+  # full /tmp cannot leave the lookup with no clock to wait on.
+  lc_k="$WR_REC_CALLS"
+  while [ -n "$lc_k" ]; do
+    lc_l="${lc_k%%"$WR_NL"*}"
+    case "$lc_k" in
+      *"$WR_NL"*) lc_k="${lc_k#*"$WR_NL"}" ;;
+      *) lc_k="" ;;
+    esac
     [ -z "$lc_l" ] || lc_last="$lc_l"
-  done <<<"$WR_REC_CALLS"
-  IFS=' ' read -r lc_b lc_c lc_n lc_f lc_d <<<"$lc_last"
+  done
+  pw_call_fields "$lc_last"; lc_c="$PW_CF_C"
   wr_is_count "$lc_c" || return 0
   wr_is_utc "$WR_REC_UPDATED_UTC" || return 0
   lc_u="$(epoch_of "$WR_REC_UPDATED_UTC")"
