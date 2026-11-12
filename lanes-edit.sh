@@ -21054,7 +21054,7 @@ rl_cell_at_rename() {   # <path> <old> <utc>
 rl_move_act() {
   local ma_l="" ma_c="" ma_from="" ma_to="" ma_st="" ma_old="" ma_new="" ma_seq="" ma_p="" ma_rc=0 ma_rerun=0 \
         ma_creal="" ma_real="" ma_hf="" ma_ht="" ma_msg="" ma_what="" ma_kind="" ma_hand="" \
-        ma_cell=0 ma_why=""
+        ma_cell=0 ma_why="" ma_read=""
   [ -f "$RL_MOVE" ] && [ -r "$RL_MOVE" ] ||
     die "refusing rename-lane's handoff act: the move its parent named, $RL_MOVE, cannot be read, an internal error of the primary write path. Nothing was written." 2
   while IFS= read -r ma_l || [ -n "$ma_l" ]; do
@@ -21138,17 +21138,21 @@ rl_move_act() {
       # (Amendment 7(d)). A symlink is refused even where it leads to a
       # regular file: DONE ALREADY never reads the stamp through one, and
       # Rule 3's stamp is never written through one (Amendment 16(d)), so
-      # the note's stamp line could not be applied there either. It ends with
-      # its way out and the stamp line, for a regular file put there by hand
-      # (lane openRepoTools-3, #165 6827722997, Q-b: lane 4's addition).
+      # the note's stamp line could not be applied there either. So for a
+      # link the refusal says the stamp is not read through one, never that
+      # it cannot be read (lane 4's review RC-W12c, N2). It ends with its way
+      # out and the stamp line, for a regular file put there by hand (lane
+      # openRepoTools-3, #165 6827722997, Q-b: lane 4's addition).
       if [ -L "$ma_ht" ] || [ ! -f "$ma_ht" ]; then
+        ma_read="cannot be read, and a read that cannot be made"
         if [ -L "$ma_ht" ]; then
           ma_kind="a symlink"; [ -e "$ma_ht" ] || ma_kind="a symlink to nothing"
+          ma_read="is not read through a link (Amendment 16(d)), and a read that is not made"
         elif [ -d "$ma_ht" ]; then ma_kind="a directory"
         elif [ -p "$ma_ht" ]; then ma_kind="a FIFO"
         else ma_kind="a special file"
         fi
-        die "refusing to $ma_what in ${LANES_REPO}: $ma_to, the handoff the row names, is ${ma_kind} there now, at origin's tip, not a regular file, and $ma_from, the file this rename would move there, is not there, so whether $ma_to holds this rename's stamp cannot be read, and a read that cannot be made is never \"without the stamp\" (Amendment 7(d)). The rename is in the register at seq ${ma_seq}, and the row's handoff column names $ma_to. Nothing was moved or stamped, and nothing was sent. Put the handoff there as a regular file, not a link to one, or point the row's column at one, and re-run. If it is this rename's handoff, moved by hand without its stamp, stamp it by hand once it is a regular file there, since neither a link nor a directory takes one (Amendment 16(d)): $ma_st" 2
+        die "refusing to $ma_what in ${LANES_REPO}: $ma_to, the handoff the row names, is ${ma_kind} there now, at origin's tip, not a regular file, and $ma_from, the file this rename would move there, is not there, so whether $ma_to holds this rename's stamp ${ma_read} is never \"without the stamp\" (Amendment 7(d)). The rename is in the register at seq ${ma_seq}, and the row's handoff column names $ma_to. Nothing was moved or stamped, and nothing was sent. Put the handoff there as a regular file, not a link to one, or point the row's column at one, and re-run. If it is this rename's handoff, moved by hand without its stamp, stamp it by hand once it is a regular file there, since neither a link nor a directory takes one (Amendment 16(d)): $ma_st" 2
       fi
       note "the handoff the row names is at $ma_to, without this rename's stamp, and $ma_from, the file this rename would move there, is not at origin's tip, so this rerun takes $ma_to for a later handoff the cell names since, and no move is owed. Nothing was moved or stamped. If it is this rename's handoff, moved by hand without its stamp, stamp it by hand: $ma_st"
       release_lock
