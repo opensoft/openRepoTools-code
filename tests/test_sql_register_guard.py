@@ -486,6 +486,9 @@ class Estate:
         self.other = str(uuid.uuid4())
         self.to = to
         self.guard = guard
+        #: The `lanes-index` the estate's own calls run (`_index`, `_Service`):
+        #: the checkout's, or on primary the flipped copy beside the guard.
+        self.index = REPO / "lanes-index"
         self.home = root / "home"
         self.wip = self.home / "projects" / "wip"
         self.origin = root / "origin.git"
@@ -532,7 +535,35 @@ class Estate:
         URLs naming this test's database). The register's tables come from
         T227's `tmpl_imported` and its logins from T228, so a primary case
         waits for both besides lane 4's and lane 5's code; the bind's own
-        calls go through T203's `PSQL_SHIM`, whose log the case reads."""
+        calls go through T203's `PSQL_SHIM`, whose log the case reads.
+
+        THE BUILD IS FLIPPED (lane 5's F2, #165 6812547449): the checkout's
+        `lanes-index` keeps lane 1's `RENDER_GIT_HALF = False`, so its
+        `load_config` refuses `mode=primary` with 78 before any request, and
+        no case here would reach the database. So, as the outage module's
+        `Estate` does (`tests/test_sql_register_outage.py:303-311` at W4a's
+        `bc6e00a4`), the estate runs `flipped_copy`'s `lanes-index` with
+        copies of `lanes-edit.sh`, `repos.tsv` and `lane-start` beside it
+        (the copy rule, CLI4.5:885): the guard, the stand-in `LANES_EDIT`'s
+        real verbs, the bind's real `lane-start` (`_real_estate`) and the
+        estate's own `lanes-index` calls all run that build. A case that
+        names its own guard keeps it. The database's switch stays at
+        `files` until a case brings its register to primary (`_Register`)."""
+        if self.guard == GUARD:
+            from sql_register_helpers import flipped_copy
+            tool = self.root / "tool"
+            try:
+                self.index = flipped_copy(REPO / "lanes-index", tool, True)
+            except ValueError as exc:
+                raise AssertionError(f"lanes-index cannot be flipped to its git half ({exc}): "
+                                     f"lane 1's RENDER_GIT_HALF (T105) has not landed, and "
+                                     f"mode=primary is refused without it") from exc
+            for name in ("lanes-edit.sh", "repos.tsv", "lane-start"):
+                if (REPO / name).exists():
+                    shutil.copy2(REPO / name, tool / name)
+            self.guard = tool / "lanes-edit.sh"
+            self.edit = _script(self.root / "stub-lanes-edit", _STUB_EDIT, PY=sys.executable,
+                                CTL=_q(self.ctl), REAL=_q(self.guard))
         conf = self.root / "conf" / "lanes-index.conf"
         conf.parent.mkdir(mode=0o700)
         url = pg.url()
@@ -1081,9 +1112,10 @@ def test_an_unreadable_bind_record_is_dropped_with_exit_2(estate):
 
 def _real_estate(estate, **kwargs) -> Estate:
     """The estate with the checkout's own `lane-start` in place of the
-    stand-in: the bind's real `lane-start --no-launch --bind`."""
+    stand-in: the bind's real `lane-start --no-launch --bind`, the copy
+    beside the guard on primary (`Estate.primary`), so it runs that build."""
     est = estate(**kwargs)
-    est.extra["LANES_LANE_START"] = str(REPO / "lane-start")
+    est.extra["LANES_LANE_START"] = str(est.guard.parent / "lane-start")
     est.set("edit-real")
     return est
 
@@ -1953,8 +1985,11 @@ def test_a_whole_file_fetch_the_start_line_cuts_fills_the_image_cache_for_the_ne
     where no call is held on it the case fails, and never waits: on an
     engine without lane 5's T507 the guard makes no direct read, and the
     first prompt's 2 is the name offer's, as T213c found for cases 1, 3, 4
-    and 5."""
+    and 5. The case's database holds the estate's register at primary
+    (`_Register`; lane 5's F2, #165 6812547449): at `files` the first request
+    ends 69, `switch-files`, and no whole-file fetch is ever made."""
     est = estate(mode="primary")
+    _Register(est)
     fifo = tmp_path / "whole-file"
     os.mkfifo(fifo)
     est.shim([{"mode": "hold", "match": "lanes/LANES.md", "call": 1, "fifo": str(fifo)}])
@@ -2044,8 +2079,11 @@ def test_a_second_read_past_the_start_line_is_noted_not_refused(estate, case):
     `.log.<key>`, and the guard notes the log as unreadable and does not
     refuse (B4); `[under-a-declaration]`: its cut stays `T0 + 3.75 s` under
     an unexpired declaration (B5); `[no-declaration-read]`: it reads no
-    declaration."""
+    declaration. The case's database holds the estate's register at primary
+    (`_Register`; lane 5's F2, #165 6812547449), so form 2 answers and the
+    guard reaches its second read."""
     est = estate(mode="primary")
+    _Register(est)
     est.shim([{"mode": "window", "ms": 3900, "match": "--for guard"}] if case == "at-the-cap"
              else [])
     if case == "under-a-declaration":
@@ -2275,6 +2313,8 @@ def test_the_guards_register_parse_is_timed_on_a_real_sized_register_beside_toda
 # (8.6) and the request's first line (12). `status`'s `service` lines are
 # T512's in `cmd_status` (R44), whose words the contract does not fix.
 
+#: The checkout's `lanes-index`, which a case loads in process. A case's own
+#: calls run its estate's (`Estate.index`), the flipped copy on primary.
 INDEX = REPO / "lanes-index"
 #: The fallback line, printed once wherever the service was unavailable and
 #: the client then read directly (svc:104; lane 5's socket contract, draft 8,
@@ -2283,7 +2323,7 @@ FALLBACK = "guard: direct (service unavailable)"
 
 
 def _index(est: Estate, *args, env=None, timeout=60) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, str(INDEX), *args], capture_output=True, text=True,
+    return subprocess.run([sys.executable, str(est.index), *args], capture_output=True, text=True,
                           env=env or est.env(), cwd=str(est.wip), timeout=timeout)
 
 
@@ -2351,7 +2391,7 @@ class _Service:
 
     def __init__(self, est: Estate, **extra):
         self.est = est
-        self.proc = subprocess.Popen([sys.executable, str(INDEX), "serve"],
+        self.proc = subprocess.Popen([sys.executable, str(est.index), "serve"],
                                      stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE, env=est.env(**extra),
                                      cwd=str(est.wip), start_new_session=True)
@@ -2781,7 +2821,7 @@ def test_the_service_reaches_the_database_only_through_psql(estate):
     est.hook("hello")
     svc.stop()
     assert len(est.shim_calls()) > before, "an answer came from the database without psql"
-    nopsql = subprocess.run([sys.executable, str(INDEX), "serve"], capture_output=True,
+    nopsql = subprocess.run([sys.executable, str(est.index), "serve"], capture_output=True,
                             text=True, timeout=30, cwd=str(est.wip),
                             env=est.env(PATH=_masked_path(os.pathsep.join(
                                 [os.path.dirname(sys.executable), "/bin"]))))
