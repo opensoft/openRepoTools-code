@@ -264,8 +264,15 @@
 #   `act-begin`'s 1 or 64, an exit 0 with no line or with a malformed one, and
 #   any walk code other than 0, 69, 75 and 3, or a walk's 0 that prints no
 #   name (#165 6779688808, Q10).
-#   W13 is covered by `set -e`: a refused or in-doubt write ends this command
-#   with the writer's own code. W14 does it by hand: the object-log line is the
+#   W13 ENDS THIS COMMAND WITH THE WRITER'S OWN CODE, before W14 and the
+#   fragment: through `set -e` under `@files` or after `act-begin`'s 2, and under
+#   a seq base through its own arm, which keeps the writer's stderr and prints
+#   one note. For a 3 the note relays the writer's rerun (G3) and says the
+#   object-log line and the fragment are still owed, so this command is run again
+#   from its start once the rerun has settled the row; for any other code it says
+#   the row was NOT closed and that neither W14 nor the fragment ran, so this
+#   command is run again from its start (Y:5601; Y:5692's partial states; lane
+#   3's Q4, #165 6836816821). W14 does it by hand: the object-log line is the
 #   one write this command used to NOTE and carry on past, and on primary a
 #   failed write is not "written by the next push". It prints the writer's own
 #   words (the writer's rerun where the code is 3, whose note says what D8 says,
@@ -298,8 +305,10 @@
 #      so every write of the act would be refused too: nothing was written, and
 #      the helper's words are above (G1; T403's set)
 #   W13's or W14's code  the writer's own, its words above. W13 (`set-row-state
-#      ENDED|RETIRED`) ends this command under `set -e`, before W14 and the
-#      fragment; W14 (`log ENDED|RETIRED`) ends it once the handoff fragment
+#      ENDED|RETIRED`) ends this command before W14 and the fragment, under
+#      `set -e`, and under a seq base with one note of this command's own (a 3's
+#      rerun is the writer's, above; any other code says the row was NOT closed);
+#      W14 (`log ENDED|RETIRED`) ends it once the handoff fragment
 #      has printed in full on stdout, W13 having committed. On primary a 2 is a
 #      scope another act changed after the base (an expectation), and a 3 a
 #      commit that may or may not have landed (D8; the writer's rerun is above)
@@ -2721,9 +2730,10 @@ state_line="$(cut_to_line "$state_line")"
 # never dropped, since dropping a token under-checks (Y:5587): where there is no
 # base a SQL register refuses each write with 2 and sends nothing, and files
 # mode and an older helper read neither variable. A refusal of W13 by its
-# expectation (2), or a 3 or 75 or 69, ends this command through `set -e` with
-# the writer's own code; the writer's words, its rerun for a 3 among them, are on
-# stderr above it.
+# expectation (2), or a 3 or 75 or 69, ends this command with the writer's own
+# code, through `set -e` under `@files` or after `act-begin`'s 2 and through W13's
+# own arm (below) under a seq base; the writer's words, its rerun for a 3 among
+# them, are on stderr above it.
 le_expect=""
 le_scope_add() {   # <scope>: appended once, in lower case
   lsa_s="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
@@ -2743,10 +2753,42 @@ done <<LE_WALK_NAMES
 $le_walk
 LE_WALK_NAMES
 
+# FEATURE 007, T430 (lane 3's Q4, #165 6836816821; Y:5692, Y:5601): W13 HAS ITS
+# OWN ARM UNDER A SEQ BASE. W13 is the act's first write, since the close-out
+# gate writes nothing (Y:5669), and a 3 from it leaves one of Y:5692's partial
+# states, a row that may read `ENDED` while its object log has no `ENDED` line;
+# under `set -e` alone the command ended with the writer's words and nothing of
+# its own, and nothing said that W14 and the handoff fragment had not run. So
+# under a seq base W13 keeps the writer's stderr, prints one note, and exits
+# with the writer's code before W14 and the fragment:
+#   a 3  relays the writer's rerun (G3, as W14's note does) and says the
+#        object-log line and the fragment are still owed, so this command is run
+#        again from its start once the rerun has settled the row;
+#   any other code, 69 and 75 included, says the row was NOT closed, that
+#        neither W14 nor the fragment ran, and that this command is run again
+#        from its start (Y:5601); no hand command is printed (Y:5587).
+# Under `@files`, or after `act-begin`'s 2 (no base), the plain call and
+# `set -e` stay, so files mode is exactly what it was (TP:5861-5864).
 if (( dry_run )); then
   plan "lanes-edit.sh set-row-state $LANE \"$state_word · $state_line\""
 else
-  LANES_LANE="$LANE" LANES_EXPECT="$le_expect" "$LANES_EDIT" set-row-state "$LANE" "$state_word · $state_line"
+  w13_seq=0
+  case "${LANES_ACT:-}" in '' | *@files) : ;; *) w13_seq=1 ;; esac
+  if [ "$w13_seq" = 1 ]; then
+    w13_rc=0
+    LANES_LANE="$LANE" LANES_EXPECT="$le_expect" "$LANES_EDIT" set-row-state "$LANE" "$state_word · $state_line" || w13_rc=$?
+    if [ "$w13_rc" != 0 ]; then
+      case "$w13_rc" in
+        3)
+          note "the row's closing write ($state_word) may not have landed: the writer answered 3, and its printed \`LANES_WRITE_ID\` rerun is above; run it, which writes the row once or finds it. The object log's line ($state_word) and the handoff fragment are still owed: this command ended here, so neither was written or printed. Once the rerun has settled the row, run this \`lane-end\` again from its start, as it was typed: it takes a new base and reads again what it rests on." ;;
+        *)
+          note "the row was NOT closed ($state_word): the writer answered $w13_rc under this act's base (its words are above), and this command ended here, so neither the object log's line nor the handoff fragment ran. No hand command is printed, since one without this act's base and expectations would write unchecked, and one with them would only be refused again. Run this \`lane-end\` again from its start, as it was typed: it takes a new base and reads again what it rests on." ;;
+      esac
+      exit "$w13_rc"
+    fi
+  else
+    LANES_LANE="$LANE" LANES_EXPECT="$le_expect" "$LANES_EDIT" set-row-state "$LANE" "$state_word · $state_line"
+  fi
   step "row closed: $state_word"
 fi
 
