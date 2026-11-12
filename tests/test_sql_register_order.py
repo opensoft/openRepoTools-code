@@ -2394,7 +2394,9 @@ _HANDOFF = ("--lane", R_HERE, "T252b's race")
 #: `lane`'s `request-handoff`. The codes: `start-record`'s and W1's 2 die 2
 #: (T428, "any 2 dies"); W8's arm passes the code (T428); `:2817` keeps 2
 #: (T429); W13 under `set -e` and W14's note arm exit with the writer's code
-#: (T430); `lane`'s arm keeps 1 for a 2 (T432).
+#: (T430); `lane`'s arm keeps 1 for a 2 (T432); the handoff skill's step-4
+#: stop ends 2 alone, its writer's code staying in that writer's own stderr
+#: (T431; lane 3's question 4, #165 6835210568; T252n).
 ACT_WRITES = {
     "lane-start-w1-add-row": ActWrite("lane-start", ("repoZ", "1", "--no-launch"), R_NEW,
                                       verb_is("add-row"), rival="row", code=2),
@@ -2412,7 +2414,7 @@ ACT_WRITES = {
     "lane-end-w14-log-ended": ActWrite("lane-end", (R_HERE,), R_HERE, lane_line("ENDED", R_HERE), code=2),
     "lane-end-retire-rows": ActWrite("lane-end", ("--retire-dormant", "repoH", "--yes", "--reason=T252b's race"),
                                      R_DORMANT, verb_is("retire-rows"), env={"LANES_LANE": R_HERE}),
-    "skill-step-4-writes": ActWrite("skill", (), R_HERE, lane_line("PAUSED", R_HERE)),
+    "skill-step-4-writes": ActWrite("skill", (), R_HERE, lane_line("PAUSED", R_HERE), code=2),
     "guard-answer-2-child": ActWrite("guard", ("guard-bind", "--body", R_SID[R_PAUSED]), R_HERE,
                                      verb_is("set-row-state"), env={"LANES_LANE": R_PAUSED}),
     "lane-request-handoff": ActWrite("lane", (R_FAR, "--request-handoff"), R_FAR, verb_is("request-handoff"),
