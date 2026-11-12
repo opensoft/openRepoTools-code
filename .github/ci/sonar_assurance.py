@@ -4,10 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import os
 import hashlib
 import json
 from pathlib import Path
 import subprocess
+import urllib.parse
+import urllib.request
 
 PROJECT = "opensoft_openRepoTools"
 GATE = {
@@ -101,7 +105,7 @@ def write_configuration(root, out, manifest):
     return properties
 
 
-def verify_gate(status, conditions):
+def verify_gate(status, conditions, require_period=True):
     actual = {row["metric"]: (row["op"], str(row["error"]))
               for row in conditions}
     if actual != GATE:
@@ -109,9 +113,67 @@ def verify_gate(status, conditions):
     gate = status["projectStatus"]
     if gate.get("status") != "OK" or not gate.get("conditions"):
         raise ValueError("quality gate did not compute and pass: " + json.dumps(gate))
-    if not gate.get("periods") and not gate.get("period"):
+    if require_period and not gate.get("periods") and not gate.get("period"):
         raise ValueError("quality gate has no new-code period")
     return gate
+
+
+
+def sonar_api(endpoint, parameters):
+    token = os.environ["SONAR_TOKEN"]
+    query = urllib.parse.urlencode(parameters)
+    request = urllib.request.Request(
+        "https://sonarcloud.io/api/" + endpoint + "?" + query,
+        headers={"Authorization": "Basic " + base64.b64encode(
+            (token + ":").encode()).decode()})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        return json.load(response)
+
+
+def verify_analysis(out, task_file, pull_request=None):
+    task = dict(line.split("=", 1) for line in task_file.read_text().splitlines()
+                if "=" in line)
+    if task.get("projectKey") != PROJECT:
+        raise ValueError("scanner submitted a different project")
+    completed = sonar_api("ce/task", {"id": task["ceTaskId"]})["task"]
+    if completed["status"] != "SUCCESS":
+        raise ValueError("Sonar compute task did not succeed")
+    analysis_id = completed["analysisId"]
+    status = sonar_api("qualitygates/project_status", {"analysisId": analysis_id})
+    assigned = sonar_api("qualitygates/get_by_project", {"project": PROJECT})
+    gate_id = assigned["qualityGate"]["id"]
+    gate = sonar_api("qualitygates/show", {"id": gate_id})
+    verify_gate(status, gate["conditions"], require_period=not pull_request)
+    scope = {"component": PROJECT}
+    if pull_request:
+        scope["pullRequest"] = pull_request
+    components = []
+    page = 1
+    while True:
+        result = sonar_api("components/tree", {
+            **scope, "strategy": "leaves", "ps": 500, "p": page})
+        components.extend(result["components"])
+        if len(components) >= result["paging"]["total"]:
+            break
+        page += 1
+    manifest = json.loads((out / "inventory.json").read_text())
+    actual = {item["path"]: item.get("language") for item in components if "path" in item}
+    missing = [item["path"] for item in manifest["files"]
+               if actual.get(item["path"]) != item["language"]]
+    if missing:
+        raise ValueError("Sonar omitted or misclassified sources: " + ", ".join(missing))
+    measures = sonar_api("measures/component", {
+        **scope, "metricKeys": "coverage,lines_to_cover,uncovered_lines,new_coverage"})
+    measured = {row["metric"]: row for row in measures["component"]["measures"]}
+    if "coverage" not in measured or int(measured.get("lines_to_cover", {}).get("value", "0")) <= 0:
+        raise ValueError("Sonar did not import measured coverage")
+    receipt = {"analysisId": analysis_id, "taskId": task["ceTaskId"],
+               "revision": manifest["commits"]["."], "indexed_sources": len(manifest["files"]),
+               "qualityGate": gate, "projectStatus": status["projectStatus"],
+               "measures": measures["component"]["measures"]}
+    (out / "acceptance.json").write_text(json.dumps(receipt, indent=2) + "\n")
+    print(json.dumps(receipt, indent=2))
+    return receipt
 
 
 def main():
@@ -120,6 +182,10 @@ def main():
     prepare = sub.add_parser("prepare")
     prepare.add_argument("--root", type=Path, required=True)
     prepare.add_argument("--out", type=Path, required=True)
+    acceptance = sub.add_parser("verify-analysis")
+    acceptance.add_argument("--out", type=Path, required=True)
+    acceptance.add_argument("--scanner-task", type=Path, required=True)
+    acceptance.add_argument("--pull-request")
     gate = sub.add_parser("verify-gate")
     gate.add_argument("--status", type=Path, required=True)
     gate.add_argument("--gate", type=Path, required=True)
@@ -133,6 +199,8 @@ def main():
                               item["path"] for item in manifest["files"]
                               if not Path(item["path"]).suffix and not item["test"]]},
                          indent=2))
+    elif args.command == "verify-analysis":
+        verify_analysis(args.out, args.scanner_task, args.pull_request)
     else:
         result = verify_gate(json.loads(args.status.read_text()),
                              json.loads(args.gate.read_text())["qualityGate"]["conditions"])

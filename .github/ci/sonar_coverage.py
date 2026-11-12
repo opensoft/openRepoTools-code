@@ -53,8 +53,8 @@ def prepare(root, out, kcov):
     # XML document; an absent/truncated report is never an empty denominator.
     deadline = time.monotonic() + 15
     while True:
-        reports = [path for path in (out / "shell-baseline").glob("*/sonarqube.xml")
-                   if path.parent.name != "kcov-merged"]
+        reports = sorted({path.resolve() for path in (out / "shell-baseline").glob("*/sonarqube.xml")
+                          if path.parent.name != "kcov-merged"})
         try:
             if len(reports) != 1:
                 raise ValueError("expected exactly one kcov shell denominator report")
@@ -129,6 +129,10 @@ def shell_lines(root, out, manifest):
 
 
 def python_lines(root, out, manifest):
+    import sys
+    sys.path.insert(0, str(HELPERS))
+    os.environ["ORT_SONAR_ROOT"] = str(root)
+    os.environ["ORT_SONAR_INVENTORY"] = str(out / "inventory.json")
     from coverage import Coverage
     from coverage.parser import PythonParser
 
@@ -193,7 +197,7 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--kcov", type=Path)
     parser.add_argument("test_args", nargs="*")
-    args = parser.parse_args()
+    args = parser.parse_intermixed_args()
     root, out = args.root.resolve(), args.out.resolve()
     if args.command == "prepare":
         prepare(root, out, args.kcov)
