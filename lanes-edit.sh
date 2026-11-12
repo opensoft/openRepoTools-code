@@ -2901,9 +2901,16 @@ cs_refuse() {   # <what> <why> [<recovery line>…]
 # its new path alone (review REV415c, N3); without it, as before.
 # With `--rc` first, before `--no-renames`, it returns git's own exit status,
 # so a caller can tell a listing git could not make from an empty one; without
-# it, 0, as before, and a failed listing prints nothing. Only T415's
-# `pw_hand_edit_refuse` passes it: a read that failed is never "no hand edit"
-# there (Amendment 7(d); lane openRepoTools-3, #165 6813027223, batch g Q114).
+# it, 0, as before, and a failed listing prints nothing. Lane 3's rule: "each
+# primary refusal before the seam that looks for a pending change with
+# `cs_pending_of` passes `--rc`", since a read that failed is never "no hand
+# edit" there (Amendment 7(d); lane openRepoTools-3, #165 6813027223, batch g
+# Q114, and #165 6814531692, batch h Q123 and Q124). The three callers that
+# pass it: `pw_hand_edit_refuse` (T415), `commit_hand_edit_refuse` (T420) and
+# `rl_move_refuse_checks` (T422). The others pass none, by Q114:
+# `cs_own_pending`, `checkout_sync`'s two and the `commit` arm's carry test,
+# which run in files mode's S3, in T413's scratch tree, or, on primary, right
+# after `commit_hand_edit_refuse`.
 cs_pending_of() {   # [--rc] [--no-renames] <pathspec>…
   local cpo_r="" cpo_s=0 cpo_rc=0
   if [ "${1-}" = --rc ]; then cpo_s=1; shift; fi
