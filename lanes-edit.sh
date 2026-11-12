@@ -18520,6 +18520,9 @@ guard_bind_load() {   # <offer file>
   GBR_BIND=""; GBR_STARTED=""; GBR_BOUND=""; GBR_BOUNDED=""; GBR_DEADLINE=""
   GBR_PID=""; GBR_HAS_PID=0; GBR_PIDSTART=""; GBR_HOST=""; GBR_CONTAINER=""
   GBR_OUT=""; GBR_DETACH=""; GBR_RC=""; GBR_WHY=""; GBR_ENDED=""; GBR_NOTES=""
+  # T510's: the offer's `act`, T507's `c` and `n_a`, and the five copies.
+  GBR_ACT=""; GBR_C=""; GBR_N_A=""; GBR_WRITE_ID=""; GBR_GENERATION=""
+  GBR_NOT_AFTER=""; GBR_WRITE_LANE=""; GBR_ARGS_SHA256=""
   [ -r "${1-}" ] && [ -f "${1-}" ] || return 1
   gbl_seen=" "
   while IFS= read -r gbl_line || [ -n "$gbl_line" ]; do
@@ -18554,6 +18557,14 @@ guard_bind_load() {   # <offer file>
       rc)             GBR_RC="$gbl_v" ;;
       why)            GBR_WHY="$gbl_v" ;;
       ended_utc)      GBR_ENDED="$gbl_v" ;;
+      act)            GBR_ACT="$gbl_v" ;;
+      c)              GBR_C="$gbl_v" ;;
+      n_a)            GBR_N_A="$gbl_v" ;;
+      write_id)       GBR_WRITE_ID="$gbl_v" ;;
+      generation)     GBR_GENERATION="$gbl_v" ;;
+      not_after)      GBR_NOT_AFTER="$gbl_v" ;;
+      write_lane)     GBR_WRITE_LANE="$gbl_v" ;;
+      args_sha256)    GBR_ARGS_SHA256="$gbl_v" ;;
     esac
   done < "$1"
   return 0
@@ -18703,6 +18714,102 @@ guard_bind_head_copy() {   # <offer file>
   [ "${#ghc_kv[@]}" -gt 0 ] || return 0
   guard_bind_rewrite "${1-}" "" "${ghc_kv[@]}"
 }
+
+# FEATURE 007, T510 - THE OFFER'S `act` (W:5378, the bind record's keys;
+# tasks.md T510, "`act`"; T410's grammar): `<act-id>@<n>:<generation>`, a new
+# id from `act_mint_id` on the `n` and `generation` of the prefetch that made
+# this offer, `.head`'s. Only where that read was SQL: `REG_STORE=sql` with no
+# failed second read (`.rfail`). Never off primary: files mode and `mode
+# index` write no `.head`, and the mirror path flushes it and sets
+# `REG_STORE=mirror` (the plan's open point 8, its default: no `act` where the
+# offer's read was not SQL, and the bind's `set-row-state` then goes without
+# `LANES_ACT` and `LANES_EXPECT`). Printed only where `act_parse` accepts it;
+# nothing otherwise, and never a refusal: the offer is made either way.
+guard_offer_act() {
+  [ "${REG_STORE:-}" = sql ] && [ -n "${SE_CACHE_FILE:-}" ] || return 0
+  [ ! -e "$SE_CACHE_FILE.rfail" ] && [ -f "$SE_CACHE_FILE.head" ] || return 0
+  goa_n="$(sed -n -e 's/^n=//p' "$SE_CACHE_FILE.head" 2>/dev/null | head -n 1)"
+  goa_g="$(reg_head_generation)"
+  goa_id="$(act_mint_id)" || return 0
+  goa_v="$goa_id@$goa_n:$goa_g"
+  ( act_parse plain "$goa_v" ) >/dev/null 2>&1 || return 0
+  printf '%s\n' "$goa_v"
+}
+
+# FEATURE 007, T510 - THE FIVE COPIES FROM `start-record`'s PENDING RECORD
+# (W:5380, the bind record's keys; `contracts/pending-record.md` §3.1-3.2;
+# tasks.md T510, "The five copies"). A READ-ONLY scan of
+# `<state>/register-pending/`, which it never makes, as `wr_pending_dir` would:
+# names of 64 hex digits only, so no claim and no temporary file is read; ONE
+# `awk` pass keeps those with `verb=start-record` and `session=<uuid>`; each of
+# those is then read by T412's `wr_record_read` and taken only where it is
+# whole (0), its `host` and `container` are this run's (`wr_here`: a record
+# from another host or container gets none), and it holds a `call=` line,
+# without which no call of the write can have been sent. Among them, the
+# newest by `updated_utc`. Its `write_id`, `generation`, `lane` (as
+# `write_lane`) and `args_sha256`, and the largest `not_after` among its
+# `call=` lines, go into `GBC_KV` as `key=value` words; its path into
+# `GBC_FILE`, with `WR_REC_*` left as its read. Where none passes, both are
+# empty, and a caller whose drop list names the five keys then drops them, so
+# the record mirrors the pending record (the plan's §3 #4).
+# With <write id>, the record must hold that id instead, and need hold no
+# `call=` line: the body's "a record whose `write_id` no pending record still
+# holds" (tasks.md T510, "The lookup before a rerun").
+#   always 0
+GBC_KV=(); GBC_FILE=""
+guard_bind_copies() {   # <session uuid> [<write id>]
+  GBC_KV=(); GBC_FILE=""
+  gbc_sid="${1-}"; gbc_wid="${2-}"
+  guard_bind_uuid_ok "$gbc_sid" || return 0
+  gbc_dir="$(wr_state_dir)/register-pending"
+  [ -d "$gbc_dir" ] || return 0
+  gbc_names=()
+  for gbc_x in "$gbc_dir"/*; do
+    [ -f "$gbc_x" ] || continue
+    wr_is_hex64 "${gbc_x##*/}" || continue
+    gbc_names+=("$gbc_x")
+  done
+  [ "${#gbc_names[@]}" -gt 0 ] || return 0
+  gbc_list="$(awk -v s="session=$gbc_sid" 'FNR == 1 { v = 0; m = 0 } $0 == "verb=start-record" { v = 1 } $0 == s { m = 1 } v && m && !(FILENAME in p) { p[FILENAME] = 1; print FILENAME }' "${gbc_names[@]}" 2>/dev/null || :)"
+  [ -n "$gbc_list" ] || return 0
+  wr_here
+  [ -n "$WR_HERE_HOST" ] && [ -n "$WR_HERE_CONTAINER" ] || return 0
+  gbc_best=""; gbc_bt=-1; gbc_bna=""
+  while [ -n "$gbc_list" ]; do
+    gbc_x="${gbc_list%%"$WR_NL"*}"
+    case "$gbc_list" in *"$WR_NL"*) gbc_list="${gbc_list#*"$WR_NL"}" ;; *) gbc_list="" ;; esac
+    [ -n "$gbc_x" ] || continue
+    wr_record_read "$gbc_x" || continue
+    [ "$WR_REC_VERB" = start-record ] && [ "$WR_REC_SESSION" = "$gbc_sid" ] || continue
+    [ "$WR_REC_HOST" = "$WR_HERE_HOST" ] && [ "$WR_REC_CONTAINER" = "$WR_HERE_CONTAINER" ] || continue
+    if [ -n "$gbc_wid" ]; then [ "$WR_REC_WRITE_ID" = "$gbc_wid" ] || continue
+    else [ -n "$WR_REC_CALLS" ] || continue
+    fi
+    gbc_t="$(epoch_of "$WR_REC_UPDATED_UTC")"
+    wr_is_count "$gbc_t" || continue
+    [ "$gbc_t" -gt "$gbc_bt" ] || continue
+    # THE LARGEST `not_after` among its `call=` lines (v3f's case 20), split
+    # by parameter expansion as T412's readers split them.
+    gbc_na=""; gbc_r="$WR_REC_CALLS"
+    while [ -n "$gbc_r" ]; do
+      gbc_l="${gbc_r%%"$WR_NL"*}"
+      case "$gbc_r" in *"$WR_NL"*) gbc_r="${gbc_r#*"$WR_NL"}" ;; *) gbc_r="" ;; esac
+      wr_call_fields "$gbc_l" || continue
+      wr_is_count "$WR_CF_NOT_AFTER" || continue
+      if [ -z "$gbc_na" ] || [ "$WR_CF_NOT_AFTER" -gt "$gbc_na" ]; then gbc_na="$WR_CF_NOT_AFTER"; fi
+    done
+    gbc_best="$gbc_x"; gbc_bt="$gbc_t"; gbc_bna="$gbc_na"
+  done
+  [ -n "$gbc_best" ] || return 0
+  wr_record_read "$gbc_best" || return 0
+  GBC_FILE="$gbc_best"
+  GBC_KV=("write_id=$WR_REC_WRITE_ID" "generation=$WR_REC_GENERATION")
+  [ -z "$gbc_bna" ] || GBC_KV+=("not_after=$gbc_bna")
+  GBC_KV+=("write_lane=$WR_REC_LANE" "args_sha256=$WR_REC_ARGS_SHA256")
+  return 0
+}
+# The five keys, as every drop list that mirrors the pending record names them.
+GBC_KEYS="write_id generation not_after write_lane args_sha256"
 
 # `lane-start`, found the way every word in this toolset finds its siblings:
 # beside this file first — `--install` places them in one directory — then on
@@ -19704,6 +19811,8 @@ guard_offer() {   # <offer file> <pane>
   # UNDER `umask 077` (feature 007, lane 3's ruling on the bind record, point
   # 1): the offer is the record answer 2's bind then runs from, so it is 0600
   # and a new `offers/` is 0700. An existing `offers/` is not `chmod`'d.
+  # FEATURE 007, T510: the offer's `act`, on primary only (`guard_offer_act`).
+  go_act="$(guard_offer_act || :)"
   ( umask 077
     mkdir -p -- "${go_f%/*}" 2>/dev/null || :
     { printf 'mode=name-drift\n'
@@ -19714,6 +19823,7 @@ guard_offer() {   # <offer file> <pane>
       printf 'utc=%s\n'  "$(utc_now)"
       printf 'window=%s\n' "$G_WINREF"
       printf 'pane=%s\n'   "$go_pane"
+      [ -z "$go_act" ] || printf 'act=%s\n' "$go_act"
     } > "$go_f" ) 2>/dev/null || :
   guard_triple
   note "WARNING: the lane and Claude session names disagree. This prompt is paused until you choose how to repair or explicitly allow this lane."
@@ -20115,7 +20225,9 @@ EOF
       return 2
     fi
     gbt_back=0
-    guard_bind_rewrite "$gbt_f" "" mode=name-drift rc=unknown "ended_utc=$(utc_now)" || gbt_back=1
+    # CASE 10 IS STALE WITH NO COPIES (W:5458's row; tasks.md T510): the
+    # pending record is that host's, so the five keys are dropped.
+    guard_bind_rewrite "$gbt_f" "$GBC_KEYS" mode=name-drift rc=unknown "ended_utc=$(utc_now)" || gbt_back=1
     guard_triple
     note "THE BIND STARTED AT ${GBR_STARTED:-a time the record does not give} ON $GBR_HOST/$GBR_CONTAINER IS NO LONGER RUNNING AND LEFT NO OUTCOME by 60 s past its deadline, $gbt_dlu, so what it wrote is not known; the next \`2\` finds out first. This window is not renamed: that bind ran on another host or container."
     if [ "$gbt_back" = 1 ]; then
@@ -20167,7 +20279,13 @@ EOF
 
   if [ "$gbt_state" = stale ]; then
     gbt_back=0
-    guard_bind_rewrite "$gbt_f" "" mode=name-drift rc=unknown "ended_utc=$(utc_now)" || gbt_back=1
+    # THE STALE ROW TAKES THE FIVE COPIES (W:5456's row; tasks.md T510, "The
+    # five copies"; v3f's case 20), as the outer would have at its outcome:
+    # from this transcript's newest `start-record` pending record on this host
+    # and container that holds a `call=` line, `not_after` the largest among
+    # them, and none where there is no such record (`guard_bind_copies`).
+    guard_bind_copies "$G_ID"
+    guard_bind_rewrite "$gbt_f" "$GBC_KEYS" mode=name-drift rc=unknown "ended_utc=$(utc_now)" ${GBC_KV[@]+"${GBC_KV[@]}"} || gbt_back=1
     guard_triple
     note "THE BIND STARTED AT ${GBR_STARTED:-a time the record does not give} (attempt $gbt_k) IS NO LONGER RUNNING AND LEFT NO OUTCOME: $gbt_why. What it wrote is not known; the next \`2\` finds out first."
     # CASE 9 RENAMES THE WINDOW BACK TOO (ERR-23); case 10, above, does not.
@@ -20684,7 +20802,20 @@ guard_bind_outer() {   # <session uuid>
     [ -z "$gbo_facts" ] || rm -f -- "$gbo_facts"
     return 0
   fi
-  if ! guard_bind_rewrite "$gbo_f" "mode rc why note ended_utc" "${gbo_out[@]}"; then
+  # FEATURE 007, T510 - THE FIVE COPIES MIRROR `start-record`'s PENDING RECORD
+  # (W:5380, the bind record's keys; tasks.md T510, "The five copies"): on
+  # every outcome but 0 they are copied from this transcript's newest
+  # `start-record` pending record on this host and container that holds a
+  # `call=` line (`guard_bind_copies`), and on every outcome they are in the
+  # drop list. So a record kept by a 3 or by LR007 `generation` keeps them; a
+  # record removed, by `absent`, LR007 `another-write`, a 0 or a refusal, takes
+  # them away; and a bound record holds none.
+  gbo_copies=()
+  if [ "${gbo_out[0]}" != mode=bound ]; then
+    guard_bind_copies "$gbo_u"
+    gbo_copies=(${GBC_KV[@]+"${GBC_KV[@]}"})
+  fi
+  if ! guard_bind_rewrite "$gbo_f" "mode rc why note ended_utc $GBC_KEYS" "${gbo_out[@]}" ${gbo_copies[@]+"${gbo_copies[@]}"}; then
     note "guard-bind: the outcome could not be written to $gbo_f: ${gbo_out[*]}"
     return 1
   fi
