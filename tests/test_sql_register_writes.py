@@ -60,6 +60,7 @@ from urllib.parse import quote
 import pytest
 
 from conftest import WINDOWS_SKIP
+from pgcluster import Database
 from sql_register_helpers import PSQL_SHIM, PSQL_SHIM_CONTROL, PSQL_SHIM_LOG
 from test_sql_register_render import (AUTHOR, DOT, EM, LOGIN_READER, LOGIN_WRITER, SCHEMA, SEED,
                                       SID_A1, SID_A2, TIP, WRITER, WS, Estate, _canonical_rows,
@@ -901,6 +902,28 @@ def test_each_write_exits_69_when_the_database_refuses_the_transaction(pg, tmp_p
         assert len(_commit_calls(ws)) - calls <= 1, "a refused commit call was sent again"
 
 
+def _unarmed_control(pg, tmp_path: Path, write: str) -> None:
+    """THE CONTROL (T241j; lane 3's ruling, #165 6833755920): `write`, with no
+    arm, on an estate of its own in a database of its own on the same cluster,
+    made the way the armed case makes its own, must exit 0 on primary. Where
+    it does not, the write fails there by itself, and the armed case could
+    not tell its injected row's 23514 from the write's own, so the case fails
+    here, saying that it is the control."""
+    name = pg.cluster.new_database()
+    try:
+        control = RegisterWorkstation(Database(pg.cluster, name), tmp_path / "control",
+                                      PREPS.get(write))
+        argv, lane = LATE_WRITES[write]
+        proc = control.run(argv, lane)
+    finally:
+        pg.cluster.drop_database(name)
+    assert proc.returncode == 0, (
+        f"THE CONTROL FAILED, NOT THE INJECTED ROW: {write} with no edit-entry arm, on an "
+        f"estate and a database of its own, exited {proc.returncode} on primary, so the "
+        f"armed case cannot show that a 23514 is its injected row's. Its stderr ends: "
+        f"{proc.stderr[-800:]}")
+
+
 @pytest.mark.parametrize("write", list(LATE_WRITES))
 def test_a_failure_in_a_late_statement_leaves_journal_lines_and_head_unchanged(pg, tmp_path,
                                                                                write):
@@ -923,7 +946,17 @@ def test_a_failure_in_a_late_statement_leaves_journal_lines_and_head_unchanged(p
     `exempt` break a CHECK on a write: `commit_write` stores it only for an
     import (`v_kind = 'import' AND coalesce(x.exempt, false)`,
     a2935aee:lanes-index:7656). It needs T203d's shim, which names a list's
-    element by its index, a negative one from the list's end."""
+    element by its index, a negative one from the list's end.
+
+    THE CONTROL COMES FIRST (T241j; lane 3's ruling, #165 6833755920): the
+    same write, unarmed, on an estate and a database of its own, must exit
+    0 (`_unarmed_control`). Where the write fails on primary by itself, its
+    own 23514 would pass this case for the injected row's, so the case fails
+    at the control instead. `[rename-lane]` and `[migrate-state-cells]` fail
+    there until their own causes are fixed, by a task lanes 4 and 1 name
+    (HW17: the renamed log's lines go out as unreadable `log_lines` rows
+    stamped primary, and migrated lines carry a time with no seconds)."""
+    _unarmed_control(pg, tmp_path, write)
     ws = RegisterWorkstation(pg, tmp_path, PREPS.get(write))
     field, value = LATE_ROWS[write]
     ws.arm([{"mode": "edit-entry", "match": "commit_write", "call": 1,
