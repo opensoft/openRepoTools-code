@@ -100,7 +100,9 @@
 #   8  NO LANE TO PICK: nothing in scope that this word would offer
 #   2  REFUSED — no such lane, a lane bound elsewhere, no directory or profile
 #      recorded yet, no launcher on PATH, an answer that is not one of the
-#      choices, a recorded window that no longer resolves
+#      choices, a recorded window that no longer resolves, or, at the attach to
+#      a live lane, a register row (its own, or its window name's) that could
+#      not be read, with any code but 69, 75 and 3
 #   1  a read failed, which is never "there are no lanes" (Amendment 7(d))
 #   69, 75 or 3: the register's own code, passed on, where a read of the register
 #      failed with one of them; every other failed read is still 1
@@ -137,9 +139,11 @@ lc() { printf '%s' "${1-}" | tr 'A-Z' 'a-z'; }
 # "callers' default arms", as lane 3's ruling (a) of 2026-11-09 narrows them):
 # where a read of the register failed with 69 (its store could not be read), 75
 # or 3, the refusal exits with that code, so that a caller can tell it from any
-# other failure. EVERY OTHER CODE KEEPS THE EXIT OF TODAY, 1. Files mode emits
-# none of the three, so what it prints and exits with does not change there.
-register_code() { case "${1-}" in 69 | 75 | 3) printf '%s' "$1" ;; *) printf '1' ;; esac; }
+# other failure. EVERY OTHER CODE KEEPS THE EXIT OF TODAY: 1, or the arm's own
+# where that is not 1, which it passes as the second word (`go_live`'s four
+# reads, whose refusal is a 2). Files mode emits none of the three, so what it
+# prints and exits with does not change there.
+register_code() { case "${1-}" in 69 | 75 | 3) printf '%s' "$1" ;; *) printf '%s' "${2:-1}" ;; esac; }
 
 usage() {
 	cat <<'USAGE'
@@ -863,8 +867,20 @@ go_live() {
 	# switch can leave a live transcript newer than the row, and a renamed
 	# session can belong to another lane. The prompt guard would refuse both;
 	# do not conceal either mismatch by renaming the window on the way in.
-	gl_row="$(LANES_NO_FETCH=1 "$LANES_EDIT" register-row "$R_LANE" 2>/dev/null)" ||
-		die "lane $R_LANE has no readable register row, so its live window cannot be bound safely. Read it with: lanes --all" 2
+	#
+	# THE FOUR REGISTER READS BELOW PASS 69, 75 AND 3, AND KEEP THEIR 2 FOR EVERY
+	# OTHER CODE (feature 007, T408; lane 3's ruling on question 102, opensoft/
+	# openRepoTools#165, comment 6808937880: "`go_live`'s four register reads
+	# (...) pass 69, 75 and 3 and keep their 2 for every other code"). They are
+	# this one, the local row of the lane, and the window's name's published and
+	# local rows. The design's readers table (Y@a6497d00:3014) gives `lane` a 69 with
+	# the register's store unreachable, and a 2 there says "refused", which an
+	# outage is not. Their refusal prints on stderr and nothing on stdout, and
+	# the code that leaves is `register_code`'s, with 2 as its other.
+	gl_rc=0
+	gl_row="$(LANES_NO_FETCH=1 "$LANES_EDIT" register-row "$R_LANE" 2>/dev/null)" || gl_rc=$?
+	[ "$gl_rc" = 0 ] ||
+		die "lane $R_LANE has no readable register row (exit $gl_rc), so its live window cannot be bound safely. Read it with: lanes --all" "$(register_code "$gl_rc" 2)"
 	gl_cell="$(printf '%s\n' "$gl_row" | awk -F'|' 'NR == 1 { print $3 }')"
 	gl_last="$(printf '%s\n' "$gl_cell" | grep -Eoi '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tail -n1 || :)"
 	gl_pub_ids="$(printf '%s\n' "$gl_cell" | grep -Eoi '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tr 'A-F' 'a-f' | tr '\n' ' ' || :)"
@@ -876,7 +892,7 @@ go_live() {
 		gl_local_last="$(printf '%s\n' "$gl_local_cell" | grep -Eoi '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tail -n1 || :)"
 		gl_local_ids="$(printf '%s\n' "$gl_local_cell" | grep -Eoi '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tr 'A-F' 'a-f' | tr '\n' ' ' || :)" ;;
 	8) gl_local_last=""; gl_local_ids="" ;;
-	*) die "lane $R_LANE's local register row could not be read (exit $gl_local_rc). Nothing was renamed or attached." 2 ;;
+	*) die "lane $R_LANE's local register row could not be read (exit $gl_local_rc). Nothing was renamed or attached." "$(register_code "$gl_local_rc" 2)" ;;
 	esac
 	gl_rc=0
 	gl_record="$("$LANES_EDIT" window-session "$W_SESS:$W_ID" 2>/dev/null)" || gl_rc=$?
@@ -937,7 +953,7 @@ EOF
 				case "$gl_rc" in
 				0) die "window $W_SESS:$W_ID is named $gl_name, which has its own lane row. Renaming it to $R_LANE would take another lane's tmux address; nothing was renamed or attached." 2 ;;
 				8) : ;;
-				*) die "whether window name $gl_name belongs to another lane could not be read from the published or the local register (exit $gl_rc). Nothing was renamed or attached." 2 ;;
+				*) die "whether window name $gl_name belongs to another lane could not be read from the published or the local register (exit $gl_rc). Nothing was renamed or attached." "$(register_code "$gl_rc" 2)" ;;
 				esac ;;
 			esac
 		fi
