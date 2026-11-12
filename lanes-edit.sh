@@ -695,13 +695,13 @@
 #      LANES_REGISTER_SEAM_CAP_S sets it for tests), or the parent's line
 #      was neither `committed <seq>` nor `abandon` (a `committed` whose seq
 #      is not the attempt's snapshot `n=` plus 1 is neither, as is a line
-#      longer than 28 bytes), or `seam.out` could not be written as `tail`. `seam.out` then reads `none`, unless it could
-#      not be written at all, and but for `abandon` one line on the real
-#      stderr says "attempt <k> of write <id> stopped waiting at the seam
-#      (<why>); nothing after the seam ran". Only that child exits it. Its
-#      parent, the primary write path (T415), acts on `seam.out`, never on
-#      this code (Y:5007): `none` sends the run to a replay, and the code is
-#      never passed on.
+#      longer than 28 bytes), or `seam.out` could not be written as `tail`.
+#      `seam.out` then reads `none`, unless it could not be written at all,
+#      and but for `abandon` one line on the real stderr says "attempt <k> of
+#      write <id> stopped waiting at the seam (<why>); nothing after the seam
+#      ran". Only that child exits it. Its parent, the primary write path
+#      (T415), acts on `seam.out`, never on this code (Y:5007): `none` sends
+#      the run to a replay, and the code is never passed on.
 #
 # --no-sweep is accepted and changes nothing. It named the default of the
 #   capture that came in on 2026-09-09 after 0d84d34/a1f2438 swept another
@@ -3662,7 +3662,7 @@ EOF
 #      partial input (W7-T422's finding: `committed 8` was read as
 #      `ommitted 8`). A byte that races bash 3.2's alarm can still be lost,
 #      only the first, and the result is never a valid message, so
-#      `seam.out` is `none` and the run replays (Y:5053, Y:5388; lane
+#      `seam.out` is `none` and the run replays (Y:5007, Y:5342; lane
 #      openRepoTools-3's batch c, Q76). Nothing in the seam goes through a
 #      here-document or a here-string, which need a temp file on bash 3.2
 #      (REV-W9a M1).
@@ -3933,7 +3933,7 @@ cp_seam() {
   # The result is never a valid message: a cut `committed` or `abandon` is
   # neither, and so is a valid message with the wrong seq (below), as a lost
   # digit would leave it. So `seam.out` is `none` and the run replays
-  # (Y:5053, Y:5388).
+  # (Y:5007, Y:5342).
   # The parent and cap tests run after a turn that times out, and at most
   # once a second while bytes come with no newline. Where either says stop,
   # one more turn is read first (REV-W9a N3), so that a line that reached the
@@ -3981,12 +3981,12 @@ cp_seam() {
       wr_is_count "$cs_s" || cp_seam_stop "its parent's message is $(printf '%q' "$cs_msg"), which is neither committed <seq> nor abandon"
       # THIS ATTEMPT'S OWN SEQ (REV-W9a S1): a commit of this change set is at
       # the snapshot's `n=` plus 1, since `commit_write` refuses unless the
-      # head is still `n` (Y:2616) and commits at `n+1` (Y:2647); and the
+      # head is still `n` (Y:2570) and commits at `n+1` (Y:2601); and the
       # child a run sends `committed <s>` to took its snapshot at `s-1`, or
       # was built `--at <s-1>`, whose `n=` is `s-1` (contract §3.2). Any other
       # `<s>`, one with a leading zero included, is neither message: `none`,
-      # and the run replays (Y:5053, Y:5388). The reference is the snapshot,
-      # the attempt's own, and not the record's `tail=sent <s>` (Y:5339),
+      # and the run replays (Y:5007, Y:5342). The reference is the snapshot,
+      # the attempt's own, and not the record's `tail=sent <s>` (Y:5293),
       # which the child does not read.
       cs_sn=""
       if [ -f "$cs_d/snapshot" ] && [ -r "$cs_d/snapshot" ]; then
