@@ -1,5 +1,10 @@
 # Shared Claude/Codex task-set instructions: manual full-CI delivery
 
+The separate [trusted shadow observer](shadow-classifier.md) reports only
+conservative event observations. It never enables fast-only CI, grants queue
+admission or replaces current-head review. The original pilot and all full-CI
+gates remain unchanged; candidate/landing qualification is a later stage.
+
 Read the assembly's AGENTS.md and AGENTS-shape.md first. This is a code-local
 supplement for both agents, not replacement governance or a second specification
 store. Canonical feature 008 and its OpenSpec change live in openRepoTools-spec.
