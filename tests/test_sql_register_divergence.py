@@ -131,6 +131,13 @@ READINGS, NOT FOUND IN A CONTRACT:
   `status`'s `divergence:  none recorded` line, where the row is empty.
 - `[stray-revives-a-pair]`'s "writes nothing" also leaves `mirror_state`
   recording the stray.
+- The ways out run "on a person's word from the operator lane's checkout"
+  (TP:1276-1277), where that person's git names an author: the checkout's
+  own `user.name` and `user.email` name `AUTHOR`, set once C is made. A way
+  out removes every inherited `GIT_*` variable before it asks git (D12), so
+  the module's `GIT_AUTHOR_*` variables, which still sign the estate's own
+  commits, cannot name it; T324 as built refuses with 2 where git names no
+  author there.
 - The stale clone's `sleep` is a stub that returns at once, so the v1.1.0
   writer's six push attempts, three seconds apart, take no time; what it
   does at each attempt is unchanged.
@@ -227,7 +234,8 @@ WRITER = "lanes_register_writer"
 #: lane>`, through that lane's checkout"), its workstation and git's author.
 OPERATOR = "repoA-2"
 WS = "Eagle"
-AUTHOR = "T271 operator <t271@example.invalid>"
+AUTHOR_NAME, AUTHOR_EMAIL = "T271 operator", "t271@example.invalid"
+AUTHOR = f"{AUTHOR_NAME} <{AUTHOR_EMAIL}>"
 #: The label the configuration's `register_label=` and `lanes/STORE` carry.
 LABEL = "t271"
 #: The stale workstation's lane and name.
@@ -755,6 +763,12 @@ class Estate(Workspace):
                          env={"LANES_LANE": OPERATOR})
         assert proc.returncode == 0, f"lanes-edit.sh log NOTED: {_said(proc)}"
         self.c = self.tip()
+        # The operator lane's git author, in its checkout's own configuration:
+        # a way out names its entry's author as git does there, with every
+        # inherited `GIT_*` variable removed first (D12), so this module's
+        # `GIT_AUTHOR_*` never reach it (the module's readings).
+        self.git("config", "user.name", AUTHOR_NAME)
+        self.git("config", "user.email", AUTHOR_EMAIL)
         self.pg = pg
         self.bin = root / "bin"
         self.bin.mkdir()
