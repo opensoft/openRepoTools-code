@@ -101,6 +101,47 @@ def coverage_environment(root, out, hashes):
 
 
 
+
+def probe_python_copy_attribution(root, out, manifest, env):
+    """Refuse an engine that silently drops the provenance file-tracer plug-in."""
+    import sys
+    from coverage import Coverage
+
+    sys.path.insert(0, str(HELPERS))
+    os.environ["ORT_SONAR_ROOT"] = str(root)
+    os.environ["ORT_SONAR_INVENTORY"] = str(out / INVENTORY)
+    source = (root / "code/lanes-index").read_bytes()
+    checksum = hashlib.sha256(source).hexdigest()
+    canonical = next(root / item["path"] for item in manifest["files"]
+                     if item["language"] == "py" and not item["test"]
+                     and item["sha256"] == checksum)
+    results = {}
+    for kind in ("exact", "modified"):
+        directory = out / "provenance-probe" / kind
+        directory.mkdir(parents=True)
+        command = directory / "copied-python-command"
+        command.write_bytes(source if kind == "exact" else source + b"\n# changed copy\n")
+        config = directory / "coverage.rc"
+        settings = (out / "coverage.rc").read_text()
+        config.write_text(settings.replace(str(out / ".coverage"), str(directory / ".coverage")))
+        child_env = {**os.environ, **env, "COVERAGE_PROCESS_START": str(config),
+                     "COVERAGE_FILE": str(directory / ".coverage")}
+        result = subprocess.run([sys.executable, str(command), "--help"], cwd=directory,
+                                env=child_env, capture_output=True, text=True, timeout=30,
+                                check=True)
+        if result.stderr:
+            raise RuntimeError("coverage provenance probe emitted diagnostics: " + result.stderr)
+        measured = Coverage(config_file=str(config), data_file=str(directory / ".coverage"))
+        measured.combine(data_paths=[str(directory)], strict=True, keep=True)
+        results[kind] = len(measured.get_data().lines(str(canonical)) or [])
+    if results["exact"] <= 0 or results["modified"] != 0:
+        raise RuntimeError("Python source-copy attribution failed: " + json.dumps(results))
+    # Diagnostic probe data stays in its own nested directories; it is never
+    # combined into the suite's coverage or credited toward the quality gate.
+    (out / "provenance-probe.json").write_text(json.dumps(results, indent=2) + "\n")
+    print("Python copy attribution:", json.dumps(results))
+
+
 def prepare(root, out, kcov):
     import coverage
     print("measurement tool: coverage.py", coverage.__version__)
@@ -115,7 +156,9 @@ def prepare(root, out, kcov):
     checked_sources(root, manifest)
     sources, hashes = stage_shell_sources(root, out, manifest)
     shell_baseline(out, sources, kcov)
-    return coverage_environment(root, out, hashes)
+    env = coverage_environment(root, out, hashes)
+    probe_python_copy_attribution(root, out, manifest, env)
+    return env
 
 
 def shell_denominators(out, by_path):
