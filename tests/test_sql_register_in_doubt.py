@@ -1614,6 +1614,12 @@ def test_a_pending_record_is_owned_through_numbered_claim_files_and_two_reruns_n
 
 
 # ------------------------------------------------------------ AT-F34: the tail, once
+#: [lr006]'s seam cap with the kept child gone (`learnt`): 12 s leaves the next
+#: attempt's child 11 s to reach its seam, and holds its commit call about
+#: 5 s where the gap between the two children's seams is r5's 7 s (T245i).
+LR006_SEAM_CAP_S = 12
+
+
 def learnt(e: Estate, way: str, where: Path, *, gone: bool = False, script: Optional[Path] = None) -> Writer:
     """A `claim` whose first commit call committed while in doubt, learnt by
     [snapshot] (`after`, then the next snapshot), [lr006] (the first call
@@ -1622,12 +1628,17 @@ def learnt(e: Estate, way: str, where: Path, *, gone: bool = False, script: Opti
     [lookup] (`after`, the next snapshot failed, so AT-F3's lookup finds
     it). The call that learns it is held; with `gone`, until the kept
     child's `seam.out` says `none` under `LANES_REGISTER_SEAM_CAP_S=3`, or
-    `C_S - 1`, 7, for [lr006] (T245f): there the next attempt's child must
-    reach its seam before the parent's wait ends, 1 s before the kept
-    child's cap (Y:5004; `c8acf67c:lanes-edit.sh:9192`), which 3 s left at
-    about 2 s, too short (lane 4's triage, #165 6833813092); and its commit
-    call, sent at that seam and held until the kept child's `none`, must
-    stay under its own 8 s timer, `C`."""
+    `LR006_SEAM_CAP_S` for [lr006] (T245f, T245i). There the next attempt's
+    child must reach its seam before the parent's wait ends, 1 s before the
+    kept child's cap (Y:5004; `c8acf67c:lanes-edit.sh:9192`), and its commit
+    call, sent at that seam and held until the kept child's `none`, should
+    stay under its own 8 s timer, `C`: the cap must exceed the gap between
+    the two children's seams by more than 1 s, and by less than about `C`.
+    Line ID17's run r5 measured that gap at about 7 s on py-bench (attempt
+    1's commit call 6.2 s after its snapshot, attempt 2's snapshot at
+    7.2 s, and the run ended 75 at 7 s), so 3 s and 7 s were both short.
+    Where the hold does pass `C`, the call is in doubt too, and the next
+    snapshot learns the write instead."""
     gate = fifo(e, f"learn-{way}")
     if way == "lr006":
         orphan = fifo(e, "orphan")
@@ -1638,7 +1649,7 @@ def learnt(e: Estate, way: str, where: Path, *, gone: bool = False, script: Opti
     else:
         arms = [AFTER, {"mode": "fail-match", "match": SNAPSHOT_TEXT, "call": 2},
                 {"mode": "hold", "match": "find_write", "call": 1, "fifo": str(gate)}]
-    extra = {"LANES_REGISTER_SEAM_CAP_S": str(C_S - 1 if way == "lr006" else 3)} if gone else {}
+    extra = {"LANES_REGISTER_SEAM_CAP_S": str(LR006_SEAM_CAP_S if way == "lr006" else 3)} if gone else {}
     w = e.launch(LA, claim(OBJ), first=[where], arms=arms, extra=extra, script=script)
     held = hold_point(gate, w)
     if way == "lr006":
@@ -1774,7 +1785,10 @@ def test_a_run_with_no_record_runs_no_tail_and_names_it(estates, case):
     no record here, and so with its `LANES_WRITE_GENERATION` (an id with no
     generation and no record is refused 2 before any call: pending-record.md
     §5.2, R08; T245d), exits 0 and runs no tail. [done-mark]: it says what the
-    mark's `tail` says; [this-host]: with the mark removed and
+    mark's `tail` says, that the steps ran at `<utc>` in pid `<p>` (TP:7048-7049
+    at `a91df2c4`), the mark's `tail=done <s> <rc> <utc>` and `pid=` (T245i;
+    line ID17's run r3 printed "its after-COMMIT steps ran at <utc> in pid
+    <p>"); [this-host]: with the mark removed and
     `journal.workstation` this host (`found`'s `workstation=`), it says the
     steps may already have run here, naming the entry's UTC from `utc=`;
     [other-host]: the write made from ws2, it names ws2 and says to rerun
@@ -1786,6 +1800,7 @@ def test_a_run_with_no_record_runs_no_tail_and_names_it(estates, case):
     w = e.run(LA, argv, first=[where], extra=extra)
     assert w.code == 0
     write_id = w.write_ids()[-1]
+    said = mark_of(e, write_id).read_text(encoding="utf-8")
     if case != "done-mark":
         mark_of(e, write_id).unlink()
     before = len(comments(where))
@@ -1797,7 +1812,11 @@ def test_a_run_with_no_record_runs_no_tail_and_names_it(estates, case):
     elif case == "this-host":
         assert "may already have run" in again.err, again.err[-800:]
     else:
-        assert "done" in again.err, again.err[-800:]
+        mark = dict(line.split("=", 1) for line in said.splitlines() if "=" in line)
+        tail = mark.get("tail", "").split()
+        assert tail[:1] == ["done"] and len(tail) == 4, f"the mark's tail is not done <s> <rc> <utc>: {said}"
+        assert f"ran at {tail[3]}" in again.err and f"pid {mark.get('pid')}" in again.err, (
+            f"the text does not say the steps ran at {tail[3]} in pid {mark.get('pid')}: {again.err[-800:]}")
 
 
 # ------------------------------------------------------------ D8: a `tail` record a takeover cannot use
