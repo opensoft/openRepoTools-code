@@ -1228,24 +1228,46 @@ def test_claude_no_lane_lets_a_session_through_before_any_input(tmp_path):
     assert estate.psql_starts() == [], "the skipped hook read the database"
 
 
-@pytest.mark.parametrize("verb", ["status"])
+#: AT-D9's rows for the two ways out: `status`, 8 s, and `rollback`, 15 s for
+#: each call (TP's AT-D9 table).
+WAY_OUT_BOUND = {"status": 8, "rollback": 15}
+
+
+@pytest.mark.parametrize("verb", ["status", "rollback"])
 def test_status_and_rollback_run_with_no_lane_session_and_no_guard(tmp_path, verb):
-    """AT-P3: `status` runs with no lane session (no window, no lane, no
-    session record) and no guard; with the database stopped it answers
-    inside twice its bound, AT-D9's `status` row, 8 s (timing rule 2), with
-    its own exit, 69, naming the unreachable store without credentials.
-    T279 adds `[rollback]`."""
+    """AT-P3: `status` and `rollback` run with no lane session (no window and
+    no session record) and no guard; with the database stopped each answers
+    inside twice its bound, AT-D9's row (timing rule 2), with its own exit,
+    69, and no credential in its output.
+
+    - `[status]` (T219) runs with no lane either, and names the unreachable
+      store (AT-P3's oracle).
+    - `[rollback]` (T279) runs as the operator lane from a shell: B15
+      tasks:1033's T304 bullet, "It runs with `LANES_LANE=<operator lane>`,
+      from a shell or a `CLAUDE_NO_LANE=1` session", so `LANES_LANE` is the
+      lane's name and there is still no window and no session record. It is
+      refused with the database down, rather than blocked by a guard
+      (AT-P3's oracle; Q4(b)(iii)): T304's "With the database unreachable,
+      it exits 69 and changes neither the switch nor the marker". Its bound
+      is AT-D9's `rollback` row, 15 s for each call. AT-P3's oracle names
+      the store for `status` alone, so `[rollback]` asserts no name. The
+      estate's `lanes-index` is the flipped copy, so the scratch-schema rule
+      of T304, which holds only while Q6(c)'s constant is unset, does not
+      apply. It needs T304, which line R holds since its merge14."""
     estate = Estate(tmp_path, [_render(1)])
     estate.passfile.write_text(f"127.0.0.1:55432:register_db:t215_login:{SECRET}\n",
                                encoding="utf-8")
     config = estate.config()
-    env = estate.guard_env(config, TMUX=None, TMUX_PANE=None, LANES_LANE=None)
+    lane = WINDOW if verb == "rollback" else None
+    env = estate.guard_env(config, TMUX=None, TMUX_PANE=None, LANES_LANE=lane)
     proc, elapsed = _index(estate, config, verb, env=env)
     out = proc.stdout + proc.stderr
-    assert elapsed < 2 * 8, f"{verb} took {elapsed:.2f} s"
-    _record(f"{verb} with the database stopped", elapsed, 8, "timing rule 2")
+    bound = WAY_OUT_BOUND[verb]
+    assert elapsed < 2 * bound, f"{verb} took {elapsed:.2f} s"
+    _record(f"{verb} with the database stopped", elapsed, bound, "timing rule 2")
     assert proc.returncode == 69, f"{verb} exited {proc.returncode}: {out[-600:]}"
-    assert _names_the_store(out), f"{verb} names no store: {out[-600:]}"
+    if verb == "status":
+        assert _names_the_store(out), f"{verb} names no store: {out[-600:]}"
     assert SECRET not in out
 
 
@@ -1556,3 +1578,457 @@ def test_status_reports_a_declaration_left_in_place(pg, tmp_path, request):
     assert re.search(r"^index: missing - .+ does not exist$", proc.stdout, re.M), (
         f"stdout has no `index: missing - ... does not exist` line, #160's: {said}")
     assert proc.returncode == 1, f"status exited {proc.returncode}, not #160's 1: {said}"
+
+
+# ===================================================================== T279
+#
+# The rollback's cases of D20 (AT-D20 in phase G; L2-N5; B15 tasks:2557,
+# "Write the rollback's cases of D20, P3 and AT-F13"): a rollback's start
+# declares the outage, writable and read-only, and a rollback rerun declares
+# before it goes on, on test 8's estate. TP's AT-D20 "Fixture": "For the
+# rollback's cases, test 8's estate, its rollback held at its push by the
+# `git` wrapper; once with a writable configuration directory, and once with
+# it read-only. For the rerun, the rollback is killed on the shim's FIFO
+# signal right after its transaction returns, so no declaration was written."
+#
+# TEST 8'S ESTATE is copied from `tests/test_sql_register_rollback.py` at DV's
+# tip `92fbaf27` (RB's T273b), since the modules share no helper file: its
+# `RollbackEstate` (the parts these cases use), its `git` wrapper (here
+# `ROLLBACK_GIT_WRAPPER`), `_estate` (here `_rollback_estate`),
+# `_held_at_push`, `_open_when_held`, `_said` and `_jsonl`. `unhold` is this
+# module's own: the wrapper's hold is taken off before a held call is
+# released, so a second call of that subcommand never blocks on a FIFO no
+# one opens. Like the rollback module, the estate builds on test 7's cutover
+# host, `test_sql_register_import.py`'s `CutoverRegister`, imported when a
+# case runs.
+#
+# Its tests fail until L1-A18, L4-B10, T304 and T326 land (T279's Order),
+# and test 8's estate until T327, T321 to T323, T415 and T416, as its
+# `prepare()` says.
+
+#: TEST 5'S `git` WRAPPER as test 8 has it (TP:1060-1080): each call is one
+#: JSON line of `git-wrapper.log`, its subcommand, its argv, its pid, and
+#: `psql_before`, the number of requests the `psql` log named in the control
+#: file held when it started. `hold`, `{"call": <subcommand>, "fifo": path}`,
+#: blocks that call on the FIFO until the test closes its end.
+ROLLBACK_GIT_WRAPPER = r'''#!/usr/bin/env -S python3 -I
+import json, os, subprocess, sys
+HERE = os.path.dirname(os.path.abspath(__file__))
+CONTROL = os.path.join(HERE, "git-wrapper.json")
+LOG = os.path.join(HERE, "git-wrapper.log")
+WITH_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path",
+              "--config-env"}
+
+
+def subcommand(args):
+    i = 0
+    while i < len(args):
+        if args[i] in WITH_VALUE:
+            i += 2
+        elif args[i].startswith("-"):
+            i += 1
+        else:
+            return args[i]
+    return ""
+
+
+def requests(path):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return sum(1 for line in handle
+                       if line.strip() and json.loads(line).get("kind") != "version")
+    except (OSError, ValueError):
+        return 0
+
+
+def log(record):
+    with open(LOG, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record) + "\n")
+
+
+def main():
+    args = sys.argv[1:]
+    with open(CONTROL, encoding="utf-8") as handle:
+        control = json.load(handle)
+    sub = subcommand(args)
+    record = {"sub": sub, "argv": args, "pid": os.getpid(),
+              "psql_before": requests(control.get("psql_log") or "")}
+    hold = control.get("hold")
+    if hold and hold.get("call") == sub:
+        log(dict(record, outcome="held"))
+        with open(hold["fifo"], "rb") as fifo:
+            fifo.read()
+    rc = subprocess.run([control["git"]] + args).returncode
+    log(dict(record, outcome="ran", rc=rc))
+    return rc
+
+
+sys.exit(main())
+'''
+
+#: The rollback's declaration's file name, beside its configuration (D20;
+#: config.md section 6.1).
+OUTAGE_FILE = "register-outage"
+
+
+def _rb_imp():
+    """`test_sql_register_import`: test 7's fixture register and cutover host."""
+    import test_sql_register_import as module
+    return module
+
+
+def _said(proc) -> str:
+    return (f"exit {proc.returncode}\n--- stdout ---\n{(proc.stdout or '')[-3000:]}"
+            f"\n--- stderr ---\n{(proc.stderr or '')[-3000:]}")
+
+
+def _jsonl(path: Path) -> list:
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+
+
+def _open_when_held(fifo: Path, proc: subprocess.Popen, seconds: float = 120):
+    """The FIFO's write end, opened once a call is held on it; None where
+    `proc` ends, or the time runs out, first. Closing it releases the call."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline and proc.poll() is None:
+        try:
+            return os.open(str(fifo), os.O_WRONLY | os.O_NONBLOCK)
+        except OSError:
+            time.sleep(0.05)
+    return None
+
+
+def _ended(proc: subprocess.Popen, seconds: float = 300) -> tuple:
+    """`proc`'s stdout and stderr once it ends, killed at `seconds`, so a
+    case never waits without a bound."""
+    try:
+        return proc.communicate(timeout=seconds)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, err = proc.communicate()
+        return out, f"{err}\n(killed: still running after {seconds} s)"
+
+
+class RollbackEstate:
+    """TEST 8'S ESTATE (TP:1592-1636), on test 7's cutover host, copied from
+    the rollback module (see this section's head). `prepare()` makes the
+    cutover and the writes; until their tasks land it fails at its own
+    assertion, naming them."""
+
+    def __init__(self, root: Path, db, *, writes: int = 2):
+        from sql_register_helpers import PSQL_SHIM
+        imp = _rb_imp()
+        self.imp, self.db, self.root, self.writes = imp, db, root, writes
+        self.bin = root / "bin"
+        _script(self.bin / "git", ROLLBACK_GIT_WRAPPER)
+        _script(self.bin / "psql", PSQL_SHIM)
+        self.real_git = shutil.which("git")
+        assert self.real_git, "no git on PATH"
+        self.arm()
+        self.reg = imp.CutoverRegister(root / "ws1", db, extra_path=self.bin)
+        self.k = None
+
+    # ------------------------------------------------------------ the wrapper and the shim
+    def arm(self, arms=(), hold: dict | None = None) -> None:
+        """The shim's arms and the wrapper's hold, each log started afresh."""
+        from sql_register_helpers import PSQL_SHIM_CONTROL, PSQL_SHIM_LOG
+        (self.bin / PSQL_SHIM_CONTROL).write_text(
+            json.dumps({"psql": self.db.psql_bin, "arms": list(arms)}), encoding="utf-8")
+        for name in (PSQL_SHIM_LOG, "psql-shim.ends", "git-wrapper.log"):
+            (self.bin / name).write_text("", encoding="utf-8")
+        (self.bin / "psql-shim.state").write_text("{}", encoding="utf-8")
+        self._control(hold)
+
+    def _control(self, hold: dict | None) -> None:
+        from sql_register_helpers import PSQL_SHIM_LOG
+        control = {"git": self.real_git, "psql_log": str(self.bin / PSQL_SHIM_LOG)}
+        if hold:
+            control["hold"] = hold
+        (self.bin / "git-wrapper.json").write_text(json.dumps(control), encoding="utf-8")
+
+    def unhold(self) -> None:
+        """The wrapper's hold taken off, its logs kept (this module's own)."""
+        self._control(None)
+
+    def git_calls(self) -> list:
+        return [c for c in _jsonl(self.bin / "git-wrapper.log") if c.get("outcome") == "ran"
+                or c.get("outcome") == "held"]
+
+    # ------------------------------------------------------------ the database
+    def rows(self, sql: str) -> list:
+        return self.imp._rows(self.db, sql)
+
+    def switch(self) -> dict:
+        return self.rows("SELECT * FROM register_switch")[0]
+
+    def head(self) -> int:
+        return self.rows("SELECT seq FROM register_head")[0]["seq"]
+
+    def journal(self) -> list:
+        return [[r["seq"], r["kind"], r["operator"]]
+                for r in self.rows("SELECT seq, kind, operator FROM journal ORDER BY seq")]
+
+    # ------------------------------------------------------------ the commands
+    def prepare(self) -> None:
+        """The cutover, then `writes` writes on primary from ws1, each
+        rendered: `k` is the head."""
+        proc = self.reg.cutover()
+        assert proc.returncode == 0, f"the cutover (T116) failed:\n{_said(proc)}"
+        switch = self.switch()
+        assert (switch["mode"], switch["marker_state"]) == ("primary", "present"), (
+            f"after the cutover the switch reads {switch['mode']} with the marker "
+            f"{switch['marker_state']}: the marker's push, read-back and record_marker are lane "
+            f"3's T327, so test 8's estate fails until it lands")
+        for n in range(1, self.writes + 1):
+            proc = self.reg.write(f"test 8: write {n}")
+            assert proc.returncode == 0, (
+                f"write {n} on primary from ws1 failed (lane 4's T415 and T416):\n{_said(proc)}")
+        self.k = self.head()
+        assert self.reg.wait_for_seq(self.k), (
+            f"no mirror commit carries Register-Seq: {self.k} (lane 3's T321 to T323): "
+            f"{self.reg.seqs_on_origin()}")
+        self.arm()
+
+    def popen_rollback(self) -> subprocess.Popen:
+        return self.reg.popen("rollback", conf=self.reg.primary_conf)
+
+    def outage_file(self) -> Path:
+        return self.reg.primary_conf.parent / OUTAGE_FILE
+
+
+def _rollback_estate(request, root: Path) -> RollbackEstate:
+    """A prepared `RollbackEstate` on a database of the session cluster's
+    own, dropped at the case's end."""
+    from pgcluster import Database
+    cluster = request.getfixturevalue("pg_cluster")
+    name = cluster.new_database()
+    request.addfinalizer(lambda: cluster.drop_database(name) if cluster.ready() else None)
+    estate = RollbackEstate(root, Database(cluster, name))
+    estate.cluster = cluster
+    estate.prepare()
+    return estate
+
+
+def _held_at_push(estate: RollbackEstate):
+    """The rollback from ws1, held by the wrapper at its push: (the process,
+    the FIFO's write end), or a failure where it ends first."""
+    fifo = estate.root / "push.fifo"
+    if not fifo.exists():
+        os.mkfifo(str(fifo), 0o600)
+    estate.arm(hold={"call": "push", "fifo": str(fifo)})
+    proc = estate.popen_rollback()
+    fd = _open_when_held(fifo, proc, 300)
+    if fd is None:
+        out, err = _ended(proc, 60)
+        pytest.fail(f"the rollback never reached its push: exit {proc.returncode}\n{out}\n{err}")
+    return proc, fd
+
+
+def _read_only(directory: Path, request) -> None:
+    """`directory` made read-only, as a bench's mount is (Q23(a)), and given
+    its mode back when the case ends. An account that still creates a file
+    there (root) cannot run a read-only case, and the case says so."""
+    mode = directory.stat().st_mode & 0o777
+    directory.chmod(0o555)
+    request.addfinalizer(lambda: directory.chmod(mode))
+    probe = directory / ".t279-probe"
+    try:
+        probe.write_text("", encoding="utf-8")
+    except OSError:
+        return
+    probe.unlink()
+    raise AssertionError(f"{directory} is 0555 and this account still writes in it: a "
+                         f"read-only case needs an account the mode binds")
+
+
+def _conf_value(conf: Path, key: str, default: str | None = None) -> str:
+    for line in conf.read_text(encoding="utf-8").splitlines():
+        if line.startswith(key + "="):
+            return line.split("=", 1)[1]
+    assert default is not None, f"{conf} has no {key}="
+    return default
+
+
+def _rollback_fields(fields: dict, k: int, where: str) -> None:
+    """A rollback's declaration (config.md section 6.3): marked as from a
+    rollback, `mirror-seq=<k>`, and no expiry."""
+    assert fields.get("format") == "1" and fields.get("kind") == "rollback", (
+        f"{where}: the declaration is not marked as from a rollback: {fields}")
+    assert fields.get("mirror-seq") == str(k), (
+        f"{where}: mirror-seq is {fields.get('mirror-seq')}, not k = {k}, the head the "
+        f"rollback's transaction found: {fields}")
+    assert "until" not in fields, f"{where}: a rollback's declaration carries an expiry: {fields}"
+
+
+def _guard_for(estate: RollbackEstate, request, root: Path) -> tuple:
+    """The guard's workstation for a rollback's declaration, as
+    `[found-files]` builds its own: an `Estate` whose origin carries renders
+    up to `k`, so its mirror is at the declaration's `mirror-seq`, and a
+    `mode=primary` configuration naming test 8's database through a reader
+    login of its own, with the label of the rollback's configuration, which
+    the declaration's `database=` names. Returns (the estate, its
+    configuration, the `PATH` with the real `psql`)."""
+    guard = Estate(root, [_render(s) for s in range(1, estate.k + 1)])
+    reader = f"t279_{uuid.uuid4().hex[:12]}"
+    estate.db.psql(f"CREATE ROLE {reader} LOGIN IN ROLE lanes_register_reader;")
+    request.addfinalizer(lambda: estate.cluster.psql(f"DROP ROLE IF EXISTS {reader};",
+                                                     check=False))
+    conf = estate.reg.primary_conf
+    url = estate.db.url(reader)
+    guard_conf = _private(root / "conf-guard" / "lanes-index.conf", "\n".join([
+        "mode=primary", f"register_url={url}", f"register_passfile={guard.passfile}",
+        f"reader_url={url}", f"reader_passfile={guard.passfile}",
+        f"register_label={_conf_value(conf, 'register_label')}",
+        f"register_schema={_conf_value(conf, 'register_schema', SCHEMA)}", ""]))
+    path = os.pathsep.join([str(guard.bin), str(Path(estate.db.psql_bin).parent),
+                            os.environ.get("PATH", os.defpath)])
+    return guard, guard_conf, path
+
+
+@pytest.mark.parametrize("mode", ["writable", "read-only"])
+def test_a_rollbacks_start_declares_the_outage(request, tmp_path, mode):
+    """AT-D20, the rollback's start (TP's AT-D20 oracle, "The rollback's
+    start"; operations.md 2.3, step 2's "The declaration"), on test 8's
+    estate, the rollback held at its push by the `git` wrapper. `k` is the
+    estate's head, and the rollback's own entry is `k+1` (T304's step 1).
+
+    - `[writable]`: while the rollback is held, `register-outage` is beside
+      its configuration, marked as from a rollback, with `mirror-seq=<k>`,
+      the head its transaction found (the switch's `set_seq` less 1), and
+      no expiry; the guard, whose read finds the switch at `files`, answers
+      from the mirror, with the declared line. Released, the rollback ends 0,
+      and step 6's `outage clear` (operations.md 2.3, step 6: "Brett then
+      runs `lanes-index outage clear`"), run here as Brett runs it, removes
+      the file.
+    - `[read-only]`: the configuration's directory is read-only, as a
+      bench's mount is (Q23(a)): no file is written, while it is held or
+      after, and stdout carries `outage declare --rollback --mirror-seq <k>`.
+
+    Fails until T304 and T326, and test 8's estate until T327, T321 to T323,
+    T415 and T416; the guard's half until T507 (L5-A3, L5-A5)."""
+    estate = _rollback_estate(request, tmp_path / "rollback")
+    k, conf, path = estate.k, estate.reg.primary_conf, estate.outage_file()
+    guard = guard_conf = guard_path = reference = None
+    if mode == "writable":
+        guard, guard_conf, guard_path = _guard_for(estate, request, tmp_path / "guard")
+        reference = guard.reference()
+    else:
+        _read_only(conf.parent, request)
+    proc, fd = _held_at_push(estate)
+    result = None
+    try:
+        switch = estate.switch()
+        declared = path.exists()
+        fields = _fields(path) if declared else {}
+        if guard is not None and declared:
+            shutil.copy2(path, guard_conf.parent / OUTAGE_FILE)
+            result = guard.guard(guard_conf, PATH=guard_path)
+    finally:
+        estate.unhold()
+        os.close(fd)
+        out, err = _ended(proc)
+    ended = f"exit {proc.returncode}\n--- stdout ---\n{out[-3000:]}\n--- stderr ---\n{err[-3000:]}"
+    assert (switch["mode"], switch["set_seq"]) == ("files", k + 1), (
+        f"held at its push, the switch is {switch}, not files at the rollback's own seq {k + 1}")
+    if mode == "read-only":
+        assert not declared and not path.exists(), (
+            f"a declaration was written beside a read-only configuration:\n{ended}")
+        printed = f"outage declare --rollback --mirror-seq {k}"
+        assert printed in out, f"stdout does not carry {printed!r}:\n{ended}"
+        assert proc.returncode == 0, f"the rollback did not end 0:\n{ended}"
+        return
+    assert declared, f"held at its push, the rollback had declared no outage at {path}:\n{ended}"
+    _rollback_fields(fields, switch["set_seq"] - 1, "held at its push")
+    _answers_from_the_mirror(guard, result, fields, reference, guard.tip())
+    assert proc.returncode == 0, f"the rollback did not end 0:\n{ended}"
+    cleared = estate.reg.index("outage", "clear", conf=conf)
+    assert cleared.returncode == 0 and not path.exists(), (
+        f"step 6's `outage clear` did not remove the declaration:\n{_said(cleared)}")
+
+
+@pytest.mark.parametrize("mode", ["writable", "read-only"])
+def test_a_rollback_rerun_declares_before_it_goes_on(request, tmp_path, mode):
+    """AT-D20, the rollback's rerun (TP's AT-D20 oracle, "The rollback's
+    rerun"; operations.md 2.3, step 2's "A rerun"), on test 8's estate.
+
+    THE FIRST RUN is killed on the shim's FIFO signal right after its
+    transaction returns: the shim's `timer` arm with a FIFO, on step 1's
+    call (the first that carries `commit_write`), runs the real `psql` and
+    then blocks before it answers; the test kills the rollback there, so it
+    never declared. The switch is then at `files`, the marker `removing`,
+    and the rollback's own entry, `k+1`, the last seq.
+
+    THE RERUN declares first, with the `git` wrapper holding it at its first
+    render call:
+    - `[writable]`: the file exists by then, marked as from a rollback, with
+      `mirror-seq=<k>` for `k = set_seq - 1`, and no expiry;
+    - `[read-only]`: the configuration's directory is read-only, no file is
+      written, and the rerun's stdout carries `outage declare --rollback
+      --mirror-seq <k>`.
+    Then it goes on from the render: released, it ends 0, with no entry of
+    its own past `k+1`.
+
+    THE FIRST RENDER CALL is read as the render's `git fetch`: a rerun goes
+    on from step 2 (B15 tasks:1033, T304's "A rerun ... declares first, and
+    goes on from step 2"), which renders as T322's pass does (T326's step
+    2), and that pass fetches first (exit-codes.md section 3.4, `reconcile`'s
+    1: "a failed fetch, walk, build or push"). A rerun runs no step 0 or 1,
+    so its first `fetch` is the render's.
+
+    Fails until T304 and T326, and test 8's estate until T327, T321 to T323,
+    T415 and T416."""
+    estate = _rollback_estate(request, tmp_path / "rollback")
+    k, conf, path = estate.k, estate.reg.primary_conf, estate.outage_file()
+    step_1 = tmp_path / "step-1.fifo"
+    os.mkfifo(str(step_1), 0o600)
+    estate.arm([{"mode": "timer", "match": "commit_write", "call": 1, "fifo": str(step_1)}])
+    first = estate.popen_rollback()
+    fd = _open_when_held(step_1, first, 300)
+    if fd is None:
+        out, err = _ended(first, 60)
+        pytest.fail(f"the first run's step-1 call never returned to the shim's FIFO: exit "
+                    f"{first.returncode}\n{out}\n{err}")
+    first.kill()
+    first.wait()
+    os.close(fd)
+    switch, last = estate.switch(), estate.journal()[-1]
+    assert (switch["mode"], switch["marker_state"], last) == ("files", "removing",
+                                                              [k + 1, "rollback", True]), (
+        f"after the kill the switch is {switch} and the last entry {last}, not files, removing "
+        f"and the rollback's own entry at {k + 1}")
+    assert not path.exists(), (
+        "the first run declared before its transaction returned, so no rerun can show that it "
+        "declares first")
+    if mode == "read-only":
+        _read_only(conf.parent, request)
+    render = tmp_path / "render.fifo"
+    os.mkfifo(str(render), 0o600)
+    estate.arm(hold={"call": "fetch", "fifo": str(render)})
+    rerun = estate.popen_rollback()
+    fd = _open_when_held(render, rerun, 300)
+    if fd is None:
+        out, err = _ended(rerun, 60)
+        pytest.fail(f"the rerun made no render call (its fetch): exit {rerun.returncode}\n"
+                    f"{out}\n{err}")
+    try:
+        seen = estate.switch()
+        declared = path.exists()
+        fields = _fields(path) if declared else {}
+    finally:
+        estate.unhold()
+        os.close(fd)
+        out, err = _ended(rerun)
+    ended = f"exit {rerun.returncode}\n--- stdout ---\n{out[-3000:]}\n--- stderr ---\n{err[-3000:]}"
+    if mode == "read-only":
+        assert not declared and not path.exists(), (
+            f"a declaration was written beside a read-only configuration:\n{ended}")
+        printed = f"outage declare --rollback --mirror-seq {seen['set_seq'] - 1}"
+        assert printed in out, f"the rerun's stdout does not carry {printed!r}:\n{ended}"
+    else:
+        assert declared, f"at its first render call the rerun had not declared:\n{ended}"
+        _rollback_fields(fields, seen["set_seq"] - 1, "at the rerun's first render call")
+    assert rerun.returncode == 0, f"the rerun did not go on from the render to its end:\n{ended}"
+    assert estate.journal()[-1] == [k + 1, "rollback", True], (
+        f"the rerun wrote an entry of its own: {estate.journal()[-3:]}")
