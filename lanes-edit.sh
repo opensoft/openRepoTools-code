@@ -13456,10 +13456,27 @@ reg_guard_prefetch() {
   # a 69's first stderr line is the cause the guard quotes), and all of it as
   # one line for a refusal or a warning, control characters dropped, at most
   # 1000 bytes, as `reg_prefetch` keeps them.
-  RG_WHY="$(head -n 1 -- "$SE_CACHE_FILE.door-err" 2>/dev/null | head -c 300 | tr -d '\000-\037' || :)"
-  RG_SAID="$(head -c 1000 -- "$SE_CACHE_FILE.door-err" 2>/dev/null | tr '\n\r\t' '   ' | tr -d '\000-\037' || :)"
+  # THE FALLBACK LINE (svc:104: with the service unavailable the hook "SHALL
+  # print `guard: direct (service unavailable)` on stderr, with the same exit
+  # code"; contract 5.4 and 11.2; AT-10). Form 2 prints it once, on a line of
+  # its own, wherever the service was unavailable and it then read directly,
+  # whatever its exit (T512's client). The guard relays that one line as it
+  # stands, once, on a line of its own, before it says anything of form 2's
+  # end, and quotes the rest of what form 2 said without it, so no refusal or
+  # warning carries it a second time. Where form 2 printed none, the service
+  # having answered or not been asked, the guard prints nothing more.
+  rgp_fb='guard: direct (service unavailable)'; rgp_fell=0
+  if LC_ALL=C grep -a -q -x -F -- "$rgp_fb" "$SE_CACHE_FILE.door-err" 2>/dev/null; then rgp_fell=1; fi
+  if [ "$rgp_fell" = 1 ]; then
+    RG_WHY="$(LC_ALL=C grep -a -v -x -F -- "$rgp_fb" "$SE_CACHE_FILE.door-err" 2>/dev/null | head -n 1 | head -c 300 | tr -d '\000-\037' || :)"
+    RG_SAID="$(LC_ALL=C grep -a -v -x -F -- "$rgp_fb" "$SE_CACHE_FILE.door-err" 2>/dev/null | head -c 1000 | tr '\n\r\t' '   ' | tr -d '\000-\037' || :)"
+  else
+    RG_WHY="$(head -n 1 -- "$SE_CACHE_FILE.door-err" 2>/dev/null | head -c 300 | tr -d '\000-\037' || :)"
+    RG_SAID="$(head -c 1000 -- "$SE_CACHE_FILE.door-err" 2>/dev/null | tr '\n\r\t' '   ' | tr -d '\000-\037' || :)"
+  fi
   while [ "${RG_SAID% }" != "$RG_SAID" ]; do RG_SAID="${RG_SAID% }"; done
   rm -f -- "$SE_CACHE_FILE.door-out" "$SE_CACHE_FILE.door-err"
+  [ "$rgp_fell" = 0 ] || printf '%s\n' "$rgp_fb" >&2
   case "$rgp_rc" in
     0)
       case "$rgp_out" in
