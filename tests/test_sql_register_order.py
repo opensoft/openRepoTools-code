@@ -624,9 +624,22 @@ def w_row(lane: str) -> str:
             f"| none | handoffs/{lane}.md | LIVE {DOT} 2026-05-01T00:00:00Z {DOT} working |")
 
 
-def estate_files(lanes: Sequence[str]) -> Dict[str, str]:
+def bound_line(lane: str) -> str:
+    """A `STARTED` line binding `lane` on this workstation, as `lane-start`
+    writes one with Amendment 18(a)'s sub-fields: host `eagle` (the estate's
+    `LANES_HOST`), no container, and a window with its `@id`. `request-handoff`
+    asks only a bound lane: one whose last lane-kind line is none at all is
+    FREE, exit 8 (`lanes-edit.sh`'s `request-handoff` arm; T243g)."""
+    k = W_LANES.index(lane) + 1 if lane in W_LANES else 99
+    return (f"STARTED {EM} lane {lane}, session {session_of(lane)}@{W_WS}, 2026-05-01T00:00:00Z, "
+            f"lane:{lane} {ARROW} home {KEY}; dir /work/{lane}; profile team-01a; window t243:{k} @{k}; "
+            f"host eagle; container none; os linux\n")
+
+
+def estate_files(lanes: Sequence[str], bound: Sequence[str] = ()) -> Dict[str, str]:
     """The register's render set: a row per lane, an empty event list, the
-    aliases table and a log per lane."""
+    aliases table and a log per lane; each lane of `bound` is bound, its log
+    holding `bound_line` (T243g)."""
     table = "\n".join([f"# LANES.md {EM} test 4's register (T243)", "",
                        "| lane | session id | workstation / env / user | started (UTC) "
                        "| objects owned | handoff path | state |",
@@ -634,7 +647,8 @@ def estate_files(lanes: Sequence[str]) -> Dict[str, str]:
     files = {LANES_MD: table, "lanes/aliases.tsv": "# old\tnew\tutc\n",
              "lanes/log/README.md": "# the object logs\n"}
     for lane in lanes:
-        files[f"lanes/log/{lane}.md"] = f"# lane {lane} {EM} object log (Amendment 7)\n"
+        files[f"lanes/log/{lane}.md"] = (f"# lane {lane} {EM} object log (Amendment 7)\n"
+                                          + (bound_line(lane) if lane in bound else ""))
     return files
 
 
@@ -896,9 +910,13 @@ class Estate:
     head)."""
 
     def __init__(self, root: Path, c: Clone, lanes: Sequence[str] = W_LANES,
-                 repos: str = REPOS_T0, aliases: str = "", confirmed: bool = True) -> None:
+                 repos: str = REPOS_T0, aliases: str = "", confirmed: bool = True,
+                 bound: Sequence[str] = (LC,)) -> None:
         self.root, self.c = root, c
-        self.files = estate_files(lanes)
+        # LANE C IS BOUND (T243g; lane 4's triage, #165 6833813092): every
+        # `request-handoff` here asks it, and a FREE lane is refused with 8
+        # before any write. The other lanes keep logs with no lane-kind line.
+        self.files = estate_files(lanes, bound)
         self.files["lanes/aliases.tsv"] += aliases
         import_files(c, self.files)
         # `confirmed` False leaves the cutover unconfirmed, the marker `adding` (T233's [switch-at-files]).
