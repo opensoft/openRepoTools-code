@@ -629,6 +629,13 @@ BEFORE = {"mode": "before", "match": "commit_write", "call": 1}
 C_S, WINDOW_S, T_L_S = 8, 10, 9
 #: The tries' spacing, with lane 2's tolerance (T246's bullet; NOTES question 34).
 GAP_S, LATE_S = 0.75, 1.25
+#: The earliest exit 3 after `no-reconnect`, from the snapshot call's start
+#: (TP:2346-2349, "no earlier than about 17 s": 8 s of waiting, and the 10 s
+#: window less up to 1 s). The client's wait may itself end up to 1 s early,
+#: since its estimate adds whole `SECONDS` to a whole-second clock, which is
+#: why try 1 is allowed at `C_S - 1`; so the exit is allowed 1 s early too:
+#: 16 s (T244e; lane 4's triage, #165 6833813092: 16.96 s on CI).
+EXIT3_EARLIEST_S = (C_S - 1) + (WINDOW_S - 1)
 PENDING = Path("openRepoTools") / "register-pending"
 WRITE_ID_SAID = re.compile(r"LANES_WRITE_ID=(" + UUID_RE + r")")
 GENERATION_SAID = re.compile(r"LANES_WRITE_GENERATION=(" + UUID_RE + r")")
@@ -801,7 +808,8 @@ def test_a_callers_rerun_after_a_failed_reconnect_reuses_the_write_id(estates, r
     exits 2. The writer waits about 8 s, makes at least two lookup tries in
     the 10 s window, each at least 1 s after the last (with lane 2's 0.75 s
     tolerance) and none past 20 s from the first, and exits 3 no earlier than
-    about 17 s after its snapshot and under 54 s. Its report names the id and
+    about 17 s after its snapshot (asserted at `EXIT3_EARLIEST_S`, 16 s) and
+    under 54 s. Its report names the id and
     the rerun, read from it. [write-id]: the rerun under `LANES_WRITE_ID`
     and `LANES_WRITE_GENERATION`; [plain]: the same command line, which finds
     the pending record. Either exits 0, never mints a new id, never 69, and
@@ -818,7 +826,8 @@ def test_a_callers_rerun_after_a_failed_reconnect_reuses_the_write_id(estates, r
         assert this["t"] - last["t"] >= GAP_S, f"try {k} started {this['t'] - last['t']:.2f} s after the last"
     assert tries[-1]["t"] - tries[0]["t"] <= 2 * WINDOW_S, "a try started past twice the window"
     took = time.time() - (time.monotonic() - w.ended) - snap
-    assert 17 <= took < 2 * (C_S + WINDOW_S + T_L_S), f"exit 3 after {took:.1f} s"
+    assert EXIT3_EARLIEST_S <= took < 2 * (C_S + WINDOW_S + T_L_S), (
+        f"exit 3 after {took:.1f} s, not in [{EXIT3_EARLIEST_S}, {2 * (C_S + WINDOW_S + T_L_S)}) s")
     print(f"[T244 no-reconnect] exit3={took:.1f}s against {C_S + WINDOW_S + T_L_S}s, "
           f"spread={tries[-1]['t'] - tries[0]['t']:.1f}s against {WINDOW_S}s")
     ids, gens = WRITE_ID_SAID.findall(w.err), GENERATION_SAID.findall(w.err)
