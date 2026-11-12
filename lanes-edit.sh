@@ -4234,7 +4234,15 @@ reg_config_present() {
 # command in `( )`, or `( …; )`, in place, which would put the notice back
 # here. Its one cost: bash's message for a redirection that fails goes to
 # /dev/null too, and `$rmq_dir` is a fresh `mktemp`.
-reg_mode_query() {
+# THE MIRROR FORM, `reg_mode_query mirror` (T508), is `session-start`'s
+# (`reg_session_read`), where a 78 is a failed read and never a refusal: it sets
+# `REG_MODE=refused`, `RO_WHY` and `RO_FAILED`, as the prefetch's 78 sets them,
+# and returns 0, so the block reads the mirror with a note (W:4833). It is keyed
+# on the argument, never on `REG_CLASS`: the writers ask before any door sets
+# that, and an inherited `REG_CLASS=mirror` would turn a writer's 78 into a
+# files-mode write. The writers' form (`reg_mode_ask`) passes none and keeps
+# its 69.
+reg_mode_query() {   # [mirror]
   rmq_bin="$(lanes_index_bin)"
   if [ -z "$rmq_bin" ]; then
     reg_mode_files "could not be run: there is no lanes-index beside $SCRIPT_DIR/lanes-edit.sh or on PATH"
@@ -4266,6 +4274,11 @@ reg_mode_query() {
       esac ;;
     78)
       REG_MODE=refused
+      if [ "${1-}" = mirror ]; then
+        RO_WHY="lanes-index refuses mode=primary in this build (exit 78)${rmq_said:+: ${rmq_said:0:300}}"
+        RO_FAILED="the register's mode could not be read: \`lanes-index mode\` exited 78, EX_CONFIG, so lanes-index refuses this workstation's mode=primary in this build${rmq_said:+ ($rmq_said)}"
+        return 0
+      fi
       [ -n "$rmq_said" ] || rmq_said="lanes-index printed no text"
       die "$rmq_said (\`lanes-index mode\` exited 78, EX_CONFIG: lanes-index refuses this workstation's mode=primary in this build. \`$cmd\` wrote nothing, and wrote no files instead.)" 69 ;;
     # 124 AND 137 EACH SAY WHAT THEY CAN MEAN, in `classify`'s words (T424):
@@ -4312,8 +4325,9 @@ reg_mode_files() {   # <why>
 # mirror read: lane 3's item 1 (#165 6746035594, as 6747422030 words it), with
 # `managed-projection` at the ownership seam (DEC-27, 6754522885). Every other
 # arm ignores the variable, `who` and `lane-last` among them. `REG_NO_CALL=1`
-# is `session-start`'s: a mirror arm with no register call (R39), whose read
-# T508 gives it. `lanes --decide` is decide, `reg_open`'s one flag rule (R38).
+# is `session-start`'s: a mirror arm with no register call (R39), whose read is
+# its block's own, `reg_session_read` (T508), never `reg_open`'s.
+# `lanes --decide` is decide, `reg_open`'s one flag rule (R38).
 # The table has no rows for the five arms its own tree lacks: T401's
 # `register-text` and `register-grep`, T410's `act-begin`, T427's
 # `start-record` and T502's `guard-bind`. Whichever of T504 and an arm's task
@@ -4429,7 +4443,8 @@ reg_class_of() {   # <arm>: sets REG_CLASS, REG_MIRROR_VAR and REG_NO_CALL
 #      there or the read of it failed.
 # `REG_STORE` then says which store answers the read sites: `sql` (the family at
 # `n`), `files`, or `mirror`; empty where no door ran (a none, writer or guard
-# arm, `session-start`). `REG_MODE` and `REG_STORE` differ under
+# arm), and for `session-start` until its block's own read, `reg_session_read`
+# (T508), sets it. `REG_MODE` and `REG_STORE` differ under
 # `LANES_READ_MIRROR=1` and in T413's child; the read sites test `REG_STORE`, and
 # the mode-keyed lines `REG_MODE` (lane 5's answer 11). `lanes-index` is
 # `lanes_index_bin`'s (Q-L5-2). No timer is set around the call: a register
@@ -4456,6 +4471,50 @@ reg_open() {   # <arm> [<its arguments>...]
   case "$REG_MODE" in index|primary|files) LANES__MODE="$REG_MODE"; export LANES__MODE ;; esac
   if [ -n "$RO_FAILED" ]; then reg_read_failed "$RO_FAILED" "$RO_WHY"; return 0; fi
   if [ "$REG_MODE" = primary ]; then REG_STORE=sql; reg_err_keep; return 0; fi
+  REG_STORE=files
+  reg_marker_check
+  return 0
+}
+
+# FEATURE 007, T508 - THE `SessionStart` BLOCK'S READ (FR-033; R39; W:3001,
+# W:4443-4455, W:4896). `session-start` is the mirror class with no register
+# call (`reg_class_of`'s `REG_NO_CALL=1`), so `reg_open` opens no door for it,
+# and `session_start_block` calls this instead, after a compact's return and
+# before its first read. The block decides nothing, and a database in its path
+# would add a failure mode to a hook that must exit 0 (W:4443-4446), so this
+# makes no prefetch and no register call, prints nothing on stdout, and reaches
+# no `die`: the class is set here from the table's own row, so a failed read
+# and the marker take their `mirror` arms, each of which reads on. It sets
+# `REG_STORE`, never `sql`:
+#   1. Under T413's honoured flag (`REG_SCRATCH` non-empty), files, as
+#      `reg_open` answers it.
+#   2. THE MODE, one answer per process: one this process already holds is
+#      kept. Otherwise, where no configuration exists (`reg_config_present`,
+#      D3) nothing is started and the mode is files; where one does, ONE
+#      `lanes-index mode`, under the 2 s timer (`reg_mode_query mirror`), which
+#      reads only the configuration (contract 3.1): no network, and no register
+#      call. A question that fails is files mode with one warning, as for a
+#      writer.
+#   3. 78, Q6(c)'s refusal: a failed read, so the mirror, with its line naming
+#      the cause (W:4833).
+#   4. PRIMARY: the mirror, with its line on stderr in the words below, since
+#      nothing was unreachable where nothing was asked.
+#   5. OFF PRIMARY, files mode and `mode index`: F17 (`reg_marker_check`,
+#      W:4896), whose `mirror` arm reads on with its line under the marker.
+reg_session_read() {
+  reg_class_of session-start
+  REG_STORE=""; RO_FAILED=""; RO_WHY=""
+  if [ -n "${REG_SCRATCH:-}" ]; then REG_STORE=files; return 0; fi
+  case "$REG_MODE" in
+    index|primary|files) : ;;
+    *) if reg_config_present; then reg_mode_query mirror; else REG_MODE=files; fi ;;
+  esac
+  if [ -n "$RO_FAILED" ]; then reg_read_failed "$RO_FAILED" "$RO_WHY"; return 0; fi
+  if [ "$REG_MODE" = primary ]; then
+    reg_mirror_say "the SessionStart block reads the mirror offline and makes no register call, R39"
+    REG_STORE=mirror
+    return 0
+  fi
   REG_STORE=files
   reg_marker_check
   return 0
@@ -4529,6 +4588,13 @@ reg_read_files() {   # <why>
 # names no commit git can resolve, no sha is claimed. This door never knows how
 # far behind it is, so `<k>` is `unknown`.
 reg_mirror_line() {   # <why>
+  reg_mirror_say "sql unreachable: $1"
+}
+
+# THE LINE ITSELF, with what its parenthesis says (T508): the door's `sql
+# unreachable: <why>` above, and the `SessionStart` block's primary label
+# (`reg_session_read`), where nothing was unreachable, since nothing was asked.
+reg_mirror_say() {   # <what the parenthesis says>
   rml_sha=""
   if [ -n "$LANES_REPO" ]; then
     if have_remote_ref; then
@@ -4539,7 +4605,7 @@ reg_mirror_line() {   # <why>
   fi
   rml_show="no commit this checkout can name"
   [ -z "$rml_sha" ] || rml_show="${rml_sha:0:12}"
-  printf 'read: mirror at %s, unknown (sql unreachable: %s)\n' "$rml_show" "$1" >&2
+  printf 'read: mirror at %s, unknown (%s)\n' "$rml_show" "$1" >&2
 }
 
 # A FAILED READ, BY CLASS (W:4841-4847; contract 3.6's table): decide 69, with
@@ -12249,6 +12315,13 @@ row_stamp_is_unknown() {   # <lane>
   rsu_lane="${1-}"; rsu_n=""; rsu_row=""; rsu_last=""
   [ "${REG_STORE:-}" != sql ] || return 1
   [ -n "$rsu_lane" ] || return 1
+  # FEATURE 007, T508 - ON PRIMARY IT READS NOTHING AND ANSWERS 1 (lane 3, #165
+  # 6807910478, T506 Q4): the stamp is never read from the register, and the
+  # one caller, `session_start_block`, may make no register call (R39), so
+  # there the cure is the relaunch. The key is this path's own test of primary,
+  # `REG_MODE` as `reg_session_read` set it, since `REG_STORE` is never `sql`
+  # here.
+  [ "${REG_MODE:-}" != primary ] || return 1
   rsu_n="$(row_line "$rsu_lane" 2>/dev/null)" || return 1
   case "$rsu_n" in ''|*[!0-9]*) return 1 ;; esac
   rsu_row="$(sed -n -e "${rsu_n}p" "$LANES_FILE" 2>/dev/null || :)"
@@ -12272,11 +12345,24 @@ row_stamp_is_unknown() {   # <lane>
 # DIRECTORY CONFERS NO LANE (Amendment 6(a)) — two lanes share one all day, and
 # every nested checkout in the xFactory estate shares its parent's. The WINDOW
 # and the REGISTER decide, in that order.
+#
+# FEATURE 007, T508 — ITS READ (`reg_session_read`; R39; W:4896) comes after a
+# compact's return and before the first read below. On primary, and under
+# `lanes-index`'s 78, the block reads the mirror, with the `read: mirror` line
+# on stderr and no prefetch and no register call; off primary it runs F17,
+# which reads on with its line under the marker. Every read below reads the
+# files either way, since `REG_STORE` is never `sql` here. On primary
+# `row_stamp_is_unknown` reads nothing, and `lane_forks`' fence takes no local
+# half (lane 3, #165 6814531692).
 session_start_block() {
   ssb_json="${1-}"; ssb_win="${2-}"
   ssb_id="$(lc "$(jstr "$ssb_json" session_id)")"
   ssb_src="$(jstr "$ssb_json" source)"
   case "$ssb_src" in compact) return 0 ;; esac
+  # FEATURE 007, T508: the block's read, before its first read, so a compact
+  # still prints nothing and the `read: mirror` line comes first
+  # (`reg_session_read`; R39; F17 off primary, W:4896).
+  reg_session_read
 
   # AMENDMENT 15 — THE WINDOW NAME, THE SESSION NAME AND THE ROW KEY ARE
   # COMPARED CASE-INSENSITIVELY, AND EVERY LINE BELOW PRINTS THE ROW'S OWN
@@ -12411,7 +12497,19 @@ session_start_block() {
   # retirement is a person's act (Amendment 8(f)), so the line NAMES and does
   # nothing.
   ssb_fk=""; ssb_fkrc=0
-  ssb_fk="$(lane_forks "$ssb_lane" 2>/dev/null)" || ssb_fkrc=$?
+  # FEATURE 007, T508 - ON PRIMARY THE FENCE'S LOCAL HALF IS SKIPPED (lane 3,
+  # #165 6814531692; W:4865: "the local half is skipped: no local row can be
+  # ahead of SQL", D11), under `row_stamp_is_unknown`'s test of primary: the
+  # block hands `lane_forks` the fence from `session_ids_of_lane` alone, built
+  # as `lane_forks` builds its own, so no working-tree row is read for it. Off
+  # primary, under a 78 and under F17's marker, `lane_forks` builds its fence
+  # as it always has.
+  if [ "${REG_MODE:-}" = primary ]; then
+    ssb_fids=" $( { session_ids_of_lane "$ssb_lane" 2>/dev/null || :; } | awk 'NF && !seen[$0]++' | tr '\n' ' ')"
+    ssb_fk="$(lane_forks "$ssb_lane" "$ssb_fids" 2>/dev/null)" || ssb_fkrc=$?
+  else
+    ssb_fk="$(lane_forks "$ssb_lane" 2>/dev/null)" || ssb_fkrc=$?
+  fi
   # AND THE SAME HERE, for the same reason: this block is the first thing a
   # session that starts into a lane reads, and "no fork" is a fact it acts on.
   case "$ssb_fkrc" in
@@ -22847,7 +22945,10 @@ EOF
   # and it must be fast and offline-safe instead. It reads the checkout AS LAST
   # FETCHED and says how old that is, so a reader can tell a current answer from
   # a stale one. `git_net` is the only door to the network in this file, and
-  # nothing on this path opens it.
+  # nothing on this path opens it. FEATURE 007, T508: its one `lanes-index`
+  # call is `lanes-index mode`, asked once, only where a configuration exists,
+  # under its 2 s timer (`reg_session_read`), and it reads only the
+  # configuration (contract 3.1): no network, and no register call (R39).
   session-start)
     if [ -t 0 ]; then ss_json=""; else ss_json="$(cat 2>/dev/null || :)"; fi
     ss_win=""
