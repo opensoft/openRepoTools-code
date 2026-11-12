@@ -15417,7 +15417,7 @@ def render_build(checkout: str, git_dir: str, parent: str, parent_set: dict, seq
         shutil.rmtree(work, ignore_errors=True)
 
 
-def render_pass(checkout: str, cfg: dict, *, store=None) -> RenderPass:
+def render_pass(checkout: str, cfg: dict, *, store=None, until: int | None = None) -> RenderPass:
     """S2'S PASS in `checkout`, under its render lock (T322; S2's "A pass";
     D15; D16; FR-044; contracts/render-commit.md): fetch, read the head,
     find `m`, check for a divergence, take `t`, build `m+1 .. t` and push
@@ -15425,7 +15425,13 @@ def render_pass(checkout: str, cfg: dict, *, store=None) -> RenderPass:
     `render_store(cfg)` where it is not given. Returns a `RenderPass`; a
     refused configuration, from `render_store` or `render_push`, raises
     `Refusal` (2) after it is recorded where it can be. Section comment
-    above has the steps."""
+    above has the steps.
+
+    `until` BOUNDS THE TARGET (T327; lane 3's batch 12 A1, #165 6808010497):
+    `t = min(h, until, m + 64, o - 1)`, so no seq past `until` is rendered,
+    and a pass that finds origin at or past it ends `nothing-missing`.
+    `render_to` passes it, for the restore form's render up to `b`
+    (ops:382). Without it the pass is T322's, unchanged."""
     store = render_store(cfg) if store is None else store
 
     def stop(outcome: str, detail: str, *, diverged: str | None = None,
@@ -15511,8 +15517,9 @@ def render_pass(checkout: str, cfg: dict, *, store=None) -> RenderPass:
     if ended:
         return ended
 
-    # 5. THE TARGET, from the entries after `m`.
-    upto = min(head, m + RENDER_BATCH)
+    # 5. THE TARGET, from the entries after `m`, never past `until`.
+    limit = head if until is None else min(head, until)
+    upto = min(limit, m + RENDER_BATCH)
     try:
         entries = _render_read_entries(store, m, upto) if upto > m else []
     except RenderRefused as exc:
@@ -15550,6 +15557,10 @@ def render_pass(checkout: str, cfg: dict, *, store=None) -> RenderPass:
         if m >= head:
             return clean("nothing-missing", f"origin carries {REGISTER_SEQ_KEY} {m}, the "
                          f"journal's head; nothing to render", found=m, reached=m, target=m)
+        if m >= limit:
+            return clean("nothing-missing", f"origin carries {REGISTER_SEQ_KEY} {m}, at or "
+                         f"past seq {limit}, the bound this pass was given; nothing to render",
+                         found=m, reached=m, target=m)
         return clean("operator-next", f"seq {m + 1} is an operator entry, which its own command "
                      f"pushes (F2); nothing rendered past {REGISTER_SEQ_KEY} {m}", found=m,
                      reached=m, target=target)
@@ -15841,6 +15852,455 @@ def _render_checkout_main(args: list) -> int:
     except StoreUnusable as exc:
         note(f"{exc.kind}: {exc.detail}")
         return 1
+
+
+# ======================================== an operator's render to a seq (group C)
+#
+# THE OPERATOR COMMANDS RENDER IN THEIR OWN CHECKOUT, under the same render
+# lock as `render --checkout <c>` (T321), since T322's build clears and reuses
+# the checkout's one private index (feature 007's T327; lane 3's batch 12 A1,
+# #165 6808010497): the restore form of `cutover --after-loss` renders every
+# seq the mirror lacks, up to `b`, before its transaction (ops:382), as
+# T326's rollback renders to `k` (ops:337-338). An operator command WAITS for
+# the lock, a bounded while, where a writer's fork never waits: it is one run
+# on Brett's word, and its next step needs the render done. As a holder it
+# keeps T321's handshake: after it lets go, a rerun mark left meanwhile is
+# answered by a re-fork, as `_render_holding` answers one at its cap.
+
+def render_lock_wait(git_dir: str, seconds: float) -> RenderLock | None:
+    """`git_dir`'s render lock, taken within `seconds`, or None where another
+    render still holds it then. An error that is not "held" raises
+    `OSError`, as `RenderLock.acquire` does."""
+    lock = RenderLock(git_dir)
+    deadline = time.monotonic() + max(0.0, seconds)
+    while not lock.acquire():
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.25)
+    return lock
+
+
+def render_lock_release(lock: RenderLock, checkout: str) -> None:
+    """An operator command lets the render lock go, and answers a rerun mark
+    left while it held it with one re-fork (T321's handshake, second half:
+    the mark is looked for after the release, never before it)."""
+    lock.release()
+    if lock.has_rerun():
+        render_refork(checkout)
+
+
+def render_to(checkout: str, cfg: dict, store, k: int, *,
+              wait_s: float | None = None) -> RenderPass | None:
+    """RENDER UNTIL ORIGIN CARRIES SEQ `k` (T327; ops:382, :337-338), in
+    `checkout`, the operator lane's, under its render lock: T322's passes,
+    each bounded by `until=k`, one after another while a pass makes F15's
+    progress and origin's last `Register-Seq` is still below `k`.
+
+    Returns the last pass, or None where the lock could not be taken within
+    `wait_s` (`LANES_GIT_TIMEOUT`'s bound, 60 s where that is unbounded).
+    The render reached `k` where the last pass's `reached` is at least `k`;
+    every other end is the pass's own, recorded as T322 records it. A
+    refused configuration raises `Refusal` (2), as `render_pass` raises it;
+    a lock that cannot be used raises `OSError`."""
+    lock = render_lock_wait(render_git_dir(checkout),
+                            wait_s if wait_s is not None else (git_timeout_s() or 60))
+    if lock is None:
+        return None
+    try:
+        while True:
+            result = render_pass(checkout, cfg, store=store, until=k)
+            if (result.reached is not None and result.reached >= k) or not result.progressed:
+                return result
+    finally:
+        render_lock_release(lock, checkout)
+
+
+# ====================================== an operator entry's push (group C)
+#
+# THE OPERATOR ENTRIES' COMMITS (feature 007's T327: D23, D24; S5's cutover,
+# step 2; operations.md §2.1, ops:116; contracts/render-commit.md sections 1
+# to 3). The renderer never renders an operator entry (F2). Its own command
+# builds the commit of `lanes/STORE` on origin's tip, pushes it through T320's
+# one push function with the renderer identity, and confirms it by Amendment
+# 23's S4 read-back: "a fetch of `origin main` whose first-parent history
+# carries the commit, with its `Register-Seq`, and with `lanes/STORE` present
+# after a cutover or absent after a rollback" (ops:116). `cutover` calls it
+# for its entry; T326's `rollback` can call it for seq `k+1`, the removal.
+#
+# - THE COMMIT is T322's build (`render_build`) of the one seq on origin's
+#   tip: the path's image as the journal holds it after the entry, or its
+#   removal; D15's message with `Register-Seq: <seq>`, the journal's author
+#   and UTC; form C must read `<seq>` back from it.
+# - THE READ-BACK COMES FIRST, on every run: form C on the first-parent line
+#   after the command's base commit, so a rerun after a push it could not
+#   confirm finds that push and never pushes again (Y:3157-3159).
+# - ITS OUTCOMES, which the command maps to its own exit (`OperatorPush`).
+# - NO DATABASE TRANSACTION is held across any of it (F23): the command reads
+#   the entry before, and records the marker after, each a call of its own.
+# - WHILE `RENDER_GIT_HALF` IS FALSE, every URL git would reach must be local
+#   (`operator_local_origin_check`, lane 3's ruling, MUST-2 of its review of
+#   T327): the command checks it before its transaction (Q6(c); ops:229).
+
+class OperatorPush:
+    """What `operator_entry_push` found. `outcome` is one of:
+
+    - `pushed`: this run pushed `commit`, and the read-back finds it on
+      origin's first-parent line with its `Register-Seq` and the path as the
+      entry left it;
+    - `found`: the read-back, made before anything else or after a
+      rejected push, finds `commit` there: an earlier or concurrent run
+      pushed it, and nothing is pushed again;
+    - `absent`: a read-back of this run proves the entry's commit absent from
+      origin, and this run pushes it no more: origin's tip moved (the caller's
+      `moved`, or a tip that does not descend from the base), a push failed
+      otherwise and the read-back after it finds no commit carrying the
+      entry's seq, six pushes were rejected, or the build, the render lock or
+      the push's configuration refused. The caller's abort may follow;
+    - `unknown`: a read-back could not answer, or found what it cannot
+      confirm, such as a `Register-Seq` past the entry's, or the caller's
+      `moved` could not read a tip: the command exits 3, and its rerun reads
+      origin back first.
+
+    `tip` is origin's tip as last read, `detail` one line saying why, and
+    `attempts` the pushes made."""
+
+    __slots__ = ("outcome", "detail", "commit", "tip", "attempts")
+
+    def __init__(self, outcome: str, detail: str, *, commit: str = "", tip: str = "",
+                 attempts: int = 0):
+        self.outcome = outcome
+        self.detail = detail
+        self.commit = commit
+        self.tip = tip
+        self.attempts = attempts
+
+    def __repr__(self) -> str:
+        return (f"OperatorPush(outcome={self.outcome!r}, commit={self.commit!r}, "
+                f"tip={self.tip!r}, attempts={self.attempts}, detail={self.detail!r})")
+
+
+def operator_entry_read(store, seq: int, path: str) -> tuple:
+    """THE OPERATOR ENTRY AT `seq`, from the journal as `commit_write` stored
+    it: `(row, data)`. `row` is `_render_read_entries`' `(seq, kind, operator,
+    author, message, utc)`, for D15's commit; `data` is the bytes `path` holds
+    after the entry, `render_file`'s, or None where the entry removes it.
+
+    Two reads, each one request in one snapshot under D9's `render` row: the
+    entry (`_render_read_entries`), and its `journal_edits` and
+    `journal_files` rows (T301's `_register_render_rows`). The edits replay as
+    step 6 applies them, `remove`, `create` and `append`; the bytes must give
+    the sha256 its `journal_files` row recorded, which `commit_write` proved
+    when it committed. Raises `RenderRefused` where the entry is not an
+    operator entry, edits another path or in another way, or fails that
+    proof; `PsqlFailed` or `StoreUnusable` where the register cannot be
+    read."""
+    rows = _render_read_entries(store, seq - 1, seq)
+    row = rows[0]
+    if not row[2]:
+        raise RenderRefused(f"seq {seq} is a {row[1]!r} entry that journal.operator does not "
+                            f"flag, so no operator command pushes it (D24)")
+    _journal, edits, files = _register_render_rows(store, seq, seq - 1, "render")
+    unset = object()
+    lines = unset
+    for _s, _ord, op, at, _line_no, _old, new_text, _to in sorted(
+            (e for e in edits if e[0] == seq), key=lambda e: e[1]):
+        if at != path:
+            raise RenderRefused(f"seq {seq}'s entry edits {at!r}, and an operator entry edits "
+                                f"{path} alone (D24)")
+        if op == "remove":
+            lines = None
+        elif op == "create":
+            lines = []
+        elif op == "append" and isinstance(lines, list) and new_text is not None:
+            lines.append(new_text)
+        else:
+            raise RenderRefused(f"seq {seq}'s edit of {path}, {op!r}, is not one an operator "
+                                f"entry makes on a file it created")
+    recorded = [f for f in files if f[0] == seq and f[1] == path]
+    if lines is unset or len(recorded) != 1:
+        raise RenderRefused(f"seq {seq}'s entry holds no edit of {path}, or not one "
+                            f"journal_files row for it")
+    _s, _p, present, sha256, final_newline = recorded[0]
+    if not present:
+        if lines is not None:
+            raise RenderRefused(f"seq {seq}'s journal_files row records {path} absent, and its "
+                                f"edits leave it present")
+        return row, None
+    if lines is None:
+        raise RenderRefused(f"seq {seq}'s journal_files row records {path} present, and its "
+                            f"edits remove it")
+    data = register_image_bytes(lines, bool(final_newline))
+    if hashlib.sha256(data).hexdigest() != sha256:
+        raise RenderRefused(f"seq {seq}'s {path}, replayed from its edits, does not give the "
+                            f"sha256 its journal_files row recorded")
+    return row, data
+
+
+def _operator_blob(checkout: str, commit: str, path: str) -> str | None:
+    """The blob id `commit` holds at `path`, or None where it holds none.
+    Raises `RenderBuildFailed` where git runs out of time."""
+    run = render_git(checkout, "rev-parse", "--verify", "-q", f"{commit}:{path}",
+                     timeout=git_timeout_s())
+    if run.timed_out:
+        raise RenderBuildFailed(f"`git rev-parse` of {commit}:{path} timed out after "
+                                f"{git_timeout_s()} s")
+    value = run.out.strip()
+    return value if run.rc == 0 and SHA_RE.match(value) else None
+
+
+def operator_on_origin(checkout: str, base: str, tip: str, seq: int, path: str,
+                       blob: str | None) -> tuple[str, str]:
+    """S4'S READ-BACK OF AN OPERATOR ENTRY (ops:116) on origin's `tip`, as
+    fetched: `("present", <its commit>)`, `("absent", <why>)` or
+    `("unknown", <why>)`. `blob` is the blob id `path` holds after the entry,
+    or None where the entry removes it.
+
+    Form C on `<base>..<tip>`'s first-parent line (`render_register_seq`,
+    bounded by `LANES_GIT_TIMEOUT`): only the commits after the command's
+    base, where the entry's commit is built, so the walk is short.
+    - The first `Register-Seq` found is `seq`, at a commit `R`, and both `R`
+      and `tip` hold `path` as `blob`: present, at `R`.
+    - None in the range, or one below `seq`, with `tip` not holding `blob`
+      as the entry would leave it: absent.
+    - One above `seq`; `seq` at a commit that does not hold `blob`; `tip`
+      holding the entry's `blob` with no commit carrying `seq`; or a walk
+      that failed: unknown, since none of these is proof either way."""
+    try:
+        try:
+            found, at = render_register_seq(checkout, f"{base}..{tip}", frozenset(),
+                                            _render_deadline())
+        except StoreUnusable as exc:
+            if exc.kind != "no-seq" or "not a seq" in exc.detail:
+                return "unknown", f"form C on origin {RENDER_BRANCH} could not be read: {exc.detail}"
+            found, at = None, ""
+        if found is not None and found > seq:
+            return "unknown", (f"origin {RENDER_BRANCH} carries {REGISTER_SEQ_KEY} {found} at {at}, "
+                               f"past seq {seq}, this entry's")
+        if found == seq:
+            held, at_tip = _operator_blob(checkout, at, path), _operator_blob(checkout, tip, path)
+            if held == blob and at_tip == blob:
+                return "present", at
+            return "unknown", (f"{at} carries {REGISTER_SEQ_KEY} {seq}, and it or origin's tip "
+                               f"{tip} does not hold {path} as seq {seq} leaves it")
+        if blob is not None and _operator_blob(checkout, tip, path) == blob:
+            return "unknown", (f"origin's tip {tip} holds {path} as seq {seq} leaves it, and no "
+                               f"commit after {base} carries {REGISTER_SEQ_KEY} {seq}")
+    except RenderBuildFailed as exc:
+        return "unknown", str(exc)
+    return "absent", (f"no commit on origin {RENDER_BRANCH}'s first-parent line after {base}, to "
+                      f"its tip {tip}, carries {REGISTER_SEQ_KEY} {seq}")
+
+
+def operator_entry_push(checkout: str, cfg: dict, *, git_dir: str, seq: int, base: str,
+                        row: tuple, path: str, data: bytes | None, moved) -> OperatorPush:
+    """STEP 2 OF AN OPERATOR COMMAND'S PUSH, the git half (S5; D23; D24;
+    ops:116; section comment above): read origin back, then, where the
+    entry's commit is not there, build it on origin's tip and push it through
+    `render_push`, six attempts in all, as the renderer is bounded.
+
+    `base` is the commit origin's tip must descend from, and the start of the
+    read-back's walk; `row` and `data` are `operator_entry_read`'s; `moved`
+    is the caller's check of a tip, `moved(tip)`, which returns why the tip
+    has moved under the entry, naming it, or None, and raises
+    `RenderBuildFailed` where it cannot read the tip, which is unknown (3),
+    since a failed read proves no move. It is asked of the first
+    tip and of each tip a rejected push finds, after that tip is read back
+    for the entry's own commit. The build and the push hold
+    the checkout's render lock (`render_lock_wait`), since T322's build reuses
+    its private index. Returns an `OperatorPush`; it raises nothing a git act
+    can cause."""
+    blob = None if data is None else render_blob_sha(data)
+    answered, descends, tip, why = render_readback(checkout, base)
+    if not answered:
+        return OperatorPush("unknown", f"origin {RENDER_BRANCH} could not be read back: {why}",
+                            tip=tip)
+    state, said = operator_on_origin(checkout, base, tip, seq, path, blob)
+    if state == "present":
+        return OperatorPush("found", f"origin {RENDER_BRANCH} already carries seq {seq}'s commit "
+                            f"{said}, read back", commit=said, tip=tip)
+    if state == "unknown":
+        return OperatorPush("unknown", said, tip=tip)
+    images = {seq: {} if data is None else {path: data}}
+    parent_set = {} if data is not None else {path: ("100644", "blob", "")}
+    attempts, lock = 0, None
+
+    def absent(detail: str) -> OperatorPush:
+        return OperatorPush("absent", detail, tip=tip, attempts=attempts)
+
+    try:
+        while True:
+            if not descends:
+                return absent(f"origin {RENDER_BRANCH}'s tip {tip} does not descend from {base} "
+                              f"(R3's abort); nothing was pushed to it")
+            try:
+                why = moved(tip)
+            except RenderBuildFailed as exc:
+                # A tip `moved` could not read proves nothing either way (3).
+                return OperatorPush("unknown", f"{exc}; nothing was pushed to {tip}", tip=tip,
+                                    attempts=attempts)
+            if why:
+                return absent(why)
+            if lock is None:
+                try:
+                    lock = render_lock_wait(git_dir, git_timeout_s() or 60)
+                except OSError as exc:
+                    return absent(f"the render lock in {git_dir} cannot be taken "
+                                  f"({exc.strerror or exc}); nothing was pushed")
+                if lock is None:
+                    return absent(f"another render held the render lock in {git_dir} past the "
+                                  f"wait; nothing was pushed")
+            attempts += 1
+            try:
+                built = render_build(checkout, git_dir, tip, parent_set, [seq], images,
+                                     {seq: row})
+            except (RenderBuildFailed, RenderRefused) as exc:
+                return absent(f"seq {seq}'s commit could not be built on {tip}: {exc}; nothing "
+                              f"was pushed")
+            try:
+                pushed = render_push(checkout, built, cfg.get("render_key") or "")
+            except Refusal as exc:
+                return absent(f"the push of {built} was refused before it was made: {exc}")
+            if pushed.outcome == "pushed":
+                state, said = operator_on_origin(checkout, base, pushed.origin_tip, seq, path,
+                                                 blob)
+                if state == "present" and said == built:
+                    return OperatorPush("pushed", pushed.detail, commit=built,
+                                        tip=pushed.origin_tip, attempts=attempts)
+                return OperatorPush("unknown", f"{pushed.detail}, and the read-back cannot "
+                                    f"confirm it: {said}", commit=built, tip=pushed.origin_tip,
+                                    attempts=attempts)
+            if pushed.outcome != "rejected":
+                tip = pushed.origin_tip or tip
+                # ANY PUSH THAT WAS MADE is read back for the entry's own
+                # commit before anything else (design:3243-3245), not only a
+                # rejected one: origin's tip may carry seq's commit, pushed by
+                # a concurrent run of this command. A marker found there
+                # completes the command; a read-back that cannot tell is 3,
+                # naming the push and the read; absent goes on as before.
+                if pushed.origin_tip:
+                    state, said = operator_on_origin(checkout, base, tip, seq, path, blob)
+                    if state == "present":
+                        return OperatorPush("found", f"origin {RENDER_BRANCH} carries seq {seq}'s "
+                                            f"commit {said}, read back after the push of {built} "
+                                            f"ended {pushed.outcome} ({pushed.detail})",
+                                            commit=said, tip=tip, attempts=attempts)
+                    if state == "unknown":
+                        return OperatorPush("unknown", f"{pushed.detail}, and the read-back of "
+                                            f"origin's tip {tip} cannot tell whether seq {seq}'s "
+                                            f"commit is there: {said}", tip=tip,
+                                            attempts=attempts)
+                if pushed.outcome == "failed":
+                    return absent(f"{pushed.detail}; the read-back finds origin {RENDER_BRANCH} at "
+                                  f"{tip}, without {built}")
+                return OperatorPush("unknown", pushed.detail, commit=built, tip=tip,
+                                    attempts=attempts)
+            # A LOST RACE: the read-back's fetch was the refetch, and origin
+            # does not carry `built`. The tip that won may carry seq's own
+            # commit, pushed by a concurrent run of this command, so origin is
+            # read back again before anything else: a marker found there
+            # completes the command, with no abort and no second push
+            # (design:3243-3245; ops:275), and a read-back that cannot tell
+            # stays in doubt (3). Six attempts in all (ops:270).
+            tip = pushed.origin_tip
+            state, said = operator_on_origin(checkout, base, tip, seq, path, blob)
+            if state == "present":
+                return OperatorPush("found", f"origin {RENDER_BRANCH} carries seq {seq}'s commit "
+                                    f"{said}, read back after the push of {built} was rejected",
+                                    commit=said, tip=tip, attempts=attempts)
+            if state == "unknown":
+                return OperatorPush("unknown", f"after the push of {built} was rejected: {said}",
+                                    tip=tip, attempts=attempts)
+            if attempts >= RENDER_PUSH_ATTEMPTS:
+                return absent(f"{RENDER_PUSH_ATTEMPTS} push attempts were rejected, the last "
+                              f"{pushed.detail}; origin {RENDER_BRANCH} is at {tip}, without "
+                              f"seq {seq}'s commit")
+            carried = render_git(checkout, "merge-base", "--is-ancestor", base, tip,
+                                 timeout=git_timeout_s())
+            if carried.rc not in (0, 1):
+                return absent(f"after a rejected push, whether origin's tip {tip} descends from "
+                              f"{base} could not be read ({carried.last_line()}); nothing more "
+                              f"was pushed")
+            descends = carried.rc == 0
+    finally:
+        if lock is not None:
+            render_lock_release(lock, checkout)
+
+
+def operator_record_marker(store, row: str, seq: int, commit: str, workstation: str) -> str:
+    """`record_marker` (§1.3.1; S4's read-back, recorded): one call, in one
+    SERIALIZABLE transaction, as one request under D9's `row` (`cutover`,
+    Y:3534, or `rollback`, Y:3529). It sets the marker `present` after a
+    cutover's entry, or `absent` after a rollback's, with `marker_commit`
+    the commit read back. Returns the state psql answered, or "" where its
+    answer does not read as one. Raises `PsqlFailed` where the call did not
+    answer or the database refused it (LR002: no unconfirmed operator entry
+    at `seq`)."""
+    out = store.request(["BEGIN ISOLATION LEVEL SERIALIZABLE",
+                         f"SELECT {store.schema}.record_marker({REGISTER_SCHEMA_VERSION}, "
+                         f"{int(seq)}, {_pg_quote(commit)}, {_pg_quote(workstation)})",
+                         "COMMIT"], row)
+    answer = [line.strip() for line in out.splitlines() if line.strip()]
+    return answer[0] if len(answer) == 1 and answer[0] in ("present", "absent") else ""
+
+
+def _git_url_is_local(url: str) -> bool:
+    """Whether git reaches `url` without a network: an absolute path, or a
+    `file://` URL (git 2.43 reads a `file://` URL's host as nothing)."""
+    return url.startswith("file://") or os.path.isabs(url)
+
+
+def operator_local_origin_check(checkout: str, render_key: str, *, who: str = "cutover",
+                                left: str = "nothing was written") -> None:
+    """WHILE `RENDER_GIT_HALF` IS FALSE, AN OPERATOR COMMAND REACHES ONLY A
+    LOCAL ORIGIN (lane 3's ruling on point 1 of its review of T327, MUST-2;
+    Q6(c), design Y:4872). Before the git half is installed, the only run of
+    `cutover` or `rollback` that pushes is act 3 step 8's rehearsal and
+    drill, from a scratch clone whose origin is a local bare copy of the
+    workspace repository (ops:229); the scratch-schema refusal guards only
+    the database, and `_import_checkout` without `LANES_REPO` takes the
+    lane's checkout of the real register. So every URL git would reach from
+    `checkout` must be an absolute path or a `file://` URL, each read in its
+    own act's environment, after every `insteadOf` git applies:
+    - the read-back's fetch (`render_readback`, `render_git_env()`):
+      `git ls-remote --get-url origin`;
+    - the push, with `render_key=`: `git ls-remote --get-url` of
+      `render_push_url`'s URL, in `render_push_env`'s environment without
+      the key's `GIT_SSH_COMMAND`;
+    - the push, without it: `git remote get-url --push --all origin`, in
+      the same environment, since a push to `origin` goes to every push URL.
+    Anything else, or a URL that cannot be read, is a `Refusal` (2) naming
+    the URL, with `left` said, before the command's transaction, render or
+    push. It does nothing once T328 sets `RENDER_GIT_HALF` True. `who` names
+    the command; T327's `cutover_git_preflight` calls it, and T326's
+    `rollback` can call it the same way."""
+    if RENDER_GIT_HALF:
+        return
+    push_env = {name: value for name, value in render_push_env(render_key).items()
+                if name != "GIT_SSH_COMMAND"}
+    if render_key:
+        push = ("ls-remote", "--get-url", render_push_url(checkout, render_key))
+    else:
+        push = ("remote", "get-url", "--push", "--all", "origin")
+    for what, args, env in (("the fetch URL", ("ls-remote", "--get-url", "origin"),
+                             render_git_env()),
+                            ("the push URL", push, push_env)):
+        run = render_git(checkout, *args, env=env, timeout=git_timeout_s())
+        urls = [line.strip() for line in run.out.splitlines() if line.strip()]
+        if run.rc != 0 or run.timed_out or not urls:
+            how = (f"timed out after {git_timeout_s()} s" if run.timed_out
+                   else f"exited {run.rc}: {_redact_url(run.last_line())}")
+            raise Refusal(f"{who}: {what} of {checkout} cannot be read (`git {' '.join(args)}` "
+                          f"{how}), so it cannot be shown to be local while the renderer's git "
+                          f"half is not installed (RENDER_GIT_HALF is False; Q6(c)); {left}")
+        for url in urls:
+            if not _git_url_is_local(url):
+                raise Refusal(
+                    f"{who}: {what} of {checkout} is {_redact_url(url)}, which is not local "
+                    f"(an absolute path or a file:// URL). While the renderer's git half is "
+                    f"not installed (RENDER_GIT_HALF is False; Q6(c)), {who} runs only as act "
+                    f"3 step 8's rehearsal, from a scratch clone whose origin is a local bare "
+                    f"copy of the workspace repository (ops:229); this check lifts with T328's "
+                    f"flip of RENDER_GIT_HALF; {left}")
 
 
 # ========================== S2's two ways out of a divergence (group C, T324)
@@ -17930,9 +18390,10 @@ def _import_checkout(lane: str, *, who: str = "import",
     at all: the checkout is `lanes-edit.sh lane-checkout <lane>`'s
     `<W>-lanes/<lane>/`, which that helper derives from `W` and which is
     never `W`, and a `W` that cannot be read refuses there as a lane with no
-    checkout of its own. `who` and `nothing` are `_import_lane`'s. The rule
-    is `lane_own_checkout`'s, which `reconcile`'s re-render shares (T325),
-    each command in its own words."""
+    checkout of its own. `who` and `nothing` are `_import_lane`'s, or the
+    cutover's, which finds its checkout the same way (T327; D24, F12). The
+    rule is `lane_own_checkout`'s, which `reconcile`'s re-render shares
+    (T325), each command in its own words."""
     return lane_own_checkout(lane, _IMPORT_CHECKOUT_WORDS, who=who, nothing=nothing)
 
 
@@ -18628,18 +19089,39 @@ def import_proof(source: dict, staged: dict, entry: dict, records: dict,
 # schema, a `register_schema=` other than `lanes_register`, and exits 2 on
 # `lanes_register` before anything connects.
 #
-# EXIT 0 IN THIS BUILD: the entry committed; or a rerun found this cutover's
-# own entry standing; or the register is already cut over at the same import
-# with the same label. Nothing is pushed, so the marker stays `adding` and
-# every write refuses (LR002) until T327's read-back calls `record_marker`.
-# The restore form's render of every seq the mirror lacks up to `b` (ops:382)
-# is the renderer's git half, which this build does not have: on a scratch
-# schema it renders nothing and says so, and with the constant set it refuses.
+# THE GIT HALF (lane 3's T327; S5's steps 2 and 3; D21, D23, D24; FR-050;
+# ops:116, act 4's step 7):
+#   - BEFORE THE TRANSACTION, `cutover_git_preflight`: the operator lane's
+#     checkout, found as the import finds it and never `W`, with
+#     `render_key=` the push's destination and the checkout's configuration,
+#     and while `RENDER_GIT_HALF` is False a local origin for every URL git
+#     would reach (`operator_local_origin_check`; ops:229), each refused (2)
+#     with nothing written. The restore form then renders
+#     every seq the mirror lacks, up to `b` (ops:382), at `_cutover_render_to`.
+#   - STEP 2, `cutover_step_2`, after the transaction or from a rerun that
+#     found this cutover's own entry standing at `primary`/`adding` (Y:3532):
+#     the read-back first, then the marker's commit on origin's tip, which
+#     must descend from the import's commit and carry its `lanes` tree (the
+#     restore form: a render set equal to the images at `b`), pushed as a
+#     fast-forward with the renderer identity through T320, read back, and
+#     recorded with `record_marker`, setting the marker `present`.
+#   - STEP 3, THE ABORT, once a read-back of this run proves the marker absent
+#     from origin and this run pushes it no more: `cutover_abort`, lane 1's
+#     `switch_to_files`.
+# The commit carries the entry's `Register-Seq`, D15's message, and the
+# journal's author and UTC; `lanes/STORE`'s bytes are those the entry
+# committed, read back from the journal, so a rerun pushes the same file.
 #
-# ITS ENDS (contracts/exit-codes.md §3.2): 0; 2 for each refusal, an LR004
-# from the transaction, and `cutover_abort`'s `EXIT_CUTOVER_ABORTED`; 69 for
-# a register it cannot read or that refuses, and for an expired timer, after
-# which the switch is unknown and a rerun reads it first; 64 for usage.
+# ITS ENDS (contracts/exit-codes.md §3.2): 0 for the whole row: the marker's
+# commit on origin, read back, and recorded `present`, or a register already
+# cut over at the same import with the same label; 2 for each refusal, an
+# LR004 from the transaction, and `cutover_abort`'s `EXIT_CUTOVER_ABORTED`;
+# 3 where a read-back can neither confirm the marker nor prove it absent, or
+# a tip's `lanes` cannot be read, the rerun reading origin back first; 69
+# for a register it cannot read or that refuses, and for an expired timer:
+# the transaction's, after which the switch is unknown and a rerun reads it
+# first; `record_marker`'s, after which the push stands, the marker stays
+# `adding` and a rerun records it; and `switch_to_files`'; 64 for usage.
 
 #: PC-10'S CODE FOR THE CUTOVER'S ABORT (contracts/exit-codes.md §1 and §4;
 #: T102): 2, and only once `switch_to_files` has committed. It shares 2 with
@@ -18689,17 +19171,25 @@ _CUTOVER_USAGE = f"""\
 
 Sets the SQL register's switch to primary with the marker adding, and writes the
 operator entry that makes lanes/STORE name this database, in one transaction
-(operations.md §2.2, act 4's step 7, and §2.3). Run it as the operator lane, with
-LANES_LANE=<lane>, from that lane's checkout. The label it sends is the one
+(operations.md §2.2, act 4's step 7, and §2.3). Then it pushes that entry's
+commit of lanes/STORE as a fast-forward of origin's main, with the renderer
+identity, reads it back and records the marker present; where a read-back
+proves the marker absent and it pushes no more (origin moved under lanes/, or
+the push failed), it aborts through switch_to_files. Run it as the operator
+lane, with LANES_LANE=<lane>, from that lane's checkout (LANES_REPO, or
+lanes-edit.sh lane-checkout <lane>; never W). The label it sends is the one
 register_label= names, and nothing else. While this build refuses mode=primary,
-it runs only against a scratch schema (register_schema=), for act 3's rehearsal.
-The marker's push is lane 3's T327.
+it runs only against a scratch schema (register_schema=), for act 3's rehearsal,
+whose checkout's origin is a local copy.
 
   --import <C>   the imported commit, its full sha: the latest import's
   --after-loss   the disaster path's form, after a re-import or a restore
 
-Exit: 0 committed, or found standing · 2 refused, nothing written · 64 usage ·
-69 the register cannot be read or refused, or the call's timer expired."""
+Exit: 0 the marker pushed, read back and recorded, or already cut over ·
+2 refused, nothing written, or aborted (stderr's first line says ABORTED) ·
+3 a push its read-back can neither confirm nor disprove: rerun it, and it reads
+origin back first · 64 usage · 69 the register cannot be read or refused, or a
+call's timer expired: rerun it."""
 
 
 class _CutoverUsage(Exception):
@@ -18800,8 +19290,9 @@ def _cutover(opts: dict) -> int:
     st = _cutover_read(store)
     pair = (st["mode"], st["marker"])
     notes: list[str] = []          # this run's own notes, printed after its outcome
+    git = ident = None             # T327's checks before the transaction
     if pair == ("primary", "adding"):
-        return _cutover_standing(st, form, want, label)
+        return _cutover_standing(cfg, store, st, form, want, label)
     if pair == ("files", "removing"):
         raise Refusal(
             f"cutover: a rollback's entry stands at seq {st['marker_seq']} with the marker "
@@ -18822,7 +19313,22 @@ def _cutover(opts: dict) -> int:
             notes.append(f"cutover: the switch reads primary with the marker present, so this "
                          f"is the restore form's transaction (ops:379), and --import {want} "
                          f"names no import here")
-        notes.append(_cutover_render_to(st["head"]))
+        # T327: THE RENDER UP TO `b` PUSHES, so every refusal this run can know
+        # comes before it: N4's label, which the transaction would refuse with
+        # LR004 (ops:379), so that a host not yet re-pointed renders nothing
+        # and pushes no commit (AT-D22); whose entry it is; and the git half's
+        # checks.
+        if label == st["label"]:
+            raise Refusal(f"cutover: register_label={label} is the switch's own label, and the "
+                          f"switch reads primary: an after-loss cutover there is the restore "
+                          f"form, which needs the replacement's label, one that differs from the "
+                          f"lost database's, and its transaction refuses this one (LR004; N4, "
+                          f"ops:379); where this host's restore-form cutover has completed "
+                          f"already, the switch names its label and nothing is left to do. "
+                          f"Nothing was rendered, pushed or written")
+        ident = (_cutover_lane(), _cutover_workstation(), _cutover_author())
+        git = cutover_git_preflight(cfg, ident[0])
+        notes.append(_cutover_render_to(cfg, store, git, st["head"]))
         base, commit, tree, sent = st["head"], st["import_commit"], st["import_tree"], "restore"
     elif pair == ("files", "absent"):
         if form == "restore":
@@ -18870,8 +19376,13 @@ def _cutover(opts: dict) -> int:
         raise _CutoverEnd(EXIT_UNAVAILABLE, f"cutover: the switch reads {st['mode']} with the "
                           f"marker {st['marker']}, which this build does not know; nothing "
                           f"was written")
-    # BEFORE THE COMMIT CALL: whose entry it is (F12; Rule 10; D15).
-    lane, workstation, author = _cutover_lane(), _cutover_workstation(), _cutover_author()
+    # BEFORE THE COMMIT CALL: whose entry it is (F12; Rule 10; D15), and
+    # T327's checks of the git half, so that a cutover that could never push
+    # its marker writes nothing.
+    lane, workstation, author = ident or (_cutover_lane(), _cutover_workstation(),
+                                          _cutover_author())
+    if git is None:
+        git = cutover_git_preflight(cfg, lane)
     timer = store.bounds("cutover")[1]
     not_after = _dt.datetime.fromtimestamp(st["clock"] + timer + 2, _dt.timezone.utc).isoformat()
     entry = cutover_entry(sent, lane=lane, workstation=workstation, author=author, label=label,
@@ -18882,7 +19393,7 @@ def _cutover(opts: dict) -> int:
     except _CutoverEnd as exc:
         exc.notes = notes
         raise
-    return _cutover_done(seq, sent, label, "committed", notes)
+    return _cutover_done(cfg, store, git, seq, sent, label, "committed", notes)
 
 
 def _cutover_read(store) -> dict:
@@ -18944,13 +19455,15 @@ def _cutover_psql_lines(exc: PsqlFailed) -> tuple[str, tuple]:
     return "", ()
 
 
-def _cutover_standing(st: dict, form: str, want: str | None, label: str) -> int:
+def _cutover_standing(cfg: dict, store, st: dict, form: str, want: str | None,
+                      label: str) -> int:
     """At `primary` with the marker `adding`, a cutover's entry stands
     unconfirmed. Where it is this cutover's own, a rerun after an expired
-    timer finds it and goes on from it (D9, Y:3532; F12): the same label, the
-    entry at the head, and the import it names, or `restore_prior` in the
-    restore form. Any other is refused (2): its push and read-back, or its
-    abort, come first."""
+    timer, an unconfirmed push or an expired `record_marker` finds it and
+    goes on to step 2 (D9, Y:3532; F12; T327's last bullet), which reads
+    origin back first: the same label, the entry at the head, and the import
+    it names, or `restore_prior` in the restore form. Any other is refused
+    (2): its push and read-back, or its abort, come first."""
     if form == "restore":
         own = st["restore_prior"]
     elif form == "reimport":
@@ -18959,27 +19472,50 @@ def _cutover_standing(st: dict, form: str, want: str | None, label: str) -> int:
         own = not st["restore_prior"] and st["import_commit"] == want
     if (own and st["label"] == label and st["marker_seq"] == st["head"]
             and st["head_kind"] == "cutover"):
-        return _cutover_done(st["head"], "restore" if st["restore_prior"] else form, label,
+        git = cutover_git_preflight(cfg, _cutover_lane())
+        return _cutover_done(cfg, store, git, st["head"],
+                             "restore" if st["restore_prior"] else form, label,
                              "stands, committed by an earlier run")
     raise Refusal(f"cutover: a cutover's entry stands unconfirmed at seq {st['marker_seq']}, "
                   f"database {st['label']}, import {st['import_commit']}, and it is not this "
                   f"cutover's: its push and read-back, or its abort, come first (S5)")
 
 
-def _cutover_render_to(b: int) -> str:
-    """THE RESTORE FORM'S RENDER (ops:382): every seq the mirror lacks, up to
-    the backup's head `b`, rendered as the rollback renders, before the
-    transaction. That is the renderer's git half, which this build does not
-    have. While `RENDER_GIT_HALF` is False, so on a scratch schema, it renders
-    nothing and returns the note that says so; with the constant set it
-    refuses (2), so that no real restore's cutover can skip its render."""
-    if RENDER_GIT_HALF:
-        raise Refusal(f"cutover: the restore form renders every seq the mirror lacks, up to "
-                      f"{b}, before its transaction (ops:382), and this build has no such "
-                      f"render; nothing was written")
-    return (f"cutover: the restore form first renders every seq the mirror lacks, up to {b} "
-            f"(ops:382); that render is the renderer's git half, which this build does not "
-            f"have, so nothing was rendered for this scratch schema")
+def _cutover_render_to(cfg: dict, store, git: dict, b: int) -> str:
+    """THE RESTORE FORM'S RENDER (ops:382; T327's after-loss bullet, lane 3's
+    batch 12 A1, #165 6808010497): every seq the mirror lacks, up to the
+    backup's head `b`, rendered in the operator lane's checkout before the
+    transaction, as T326's step 2 renders to `k`: `render_to`, T322's passes
+    bounded by `b`, under the checkout's render lock. Returns the note that
+    says where origin stands.
+
+    Where origin does not reach `b`, nothing is written to the register: a
+    render whose read failed is 69 (Y:3527); every other end is refused (2),
+    with the pass's own outcome, which T322 recorded with the mirror state:
+    a divergence, a failed fetch, walk, build or push, six rejections, an
+    operator entry before `b`, the switch read at `files`, or a render lock
+    another render held past the wait."""
+    checkout = git["checkout"]
+    try:
+        result = render_to(checkout, cfg, store, b)
+    except OSError as exc:
+        raise Refusal(f"cutover: the render lock of {checkout} cannot be used "
+                      f"({exc.strerror or exc}), and the restore form renders every seq the "
+                      f"mirror lacks, up to {b}, before its transaction (ops:382); nothing was "
+                      f"written")
+    if result is None:
+        raise Refusal(f"cutover: another render held the render lock of {checkout} past the "
+                      f"wait, and the restore form renders every seq the mirror lacks, up to "
+                      f"{b}, before its transaction (ops:382); nothing was written: run it again")
+    if result.reached is not None and result.reached >= b:
+        return (f"cutover: the restore form rendered every seq the mirror lacked, up to {b} "
+                f"(ops:382): origin {RENDER_BRANCH} carries {REGISTER_SEQ_KEY} {result.reached}")
+    if result.outcome == "read-failed":
+        raise _CutoverEnd(EXIT_UNAVAILABLE, f"cutover: the restore form's render up to {b} could "
+                          f"not read the register ({result.detail}); nothing was written")
+    raise Refusal(f"cutover: the restore form renders every seq the mirror lacks, up to {b}, "
+                  f"before its transaction (ops:382), and its render ended {result.outcome}: "
+                  f"{result.detail}; nothing was written to the register")
 
 
 def _cutover_lane() -> str:
@@ -19138,14 +19674,214 @@ def _cutover_commit(store, base: int, generation: str, entry: dict) -> int:
     return int(answer[0])
 
 
-def _cutover_done(seq: int, form: str, label: str, how: str, notes: list | tuple = ()) -> int:
+def _cutover_done(cfg: dict, store, git: dict, seq: int, form: str, label: str, how: str,
+                  notes: list | tuple = ()) -> int:
+    """The entry stands at `seq`: say so, then T327's step 2 and, where it
+    proves the marker absent, step 3. This run's own notes follow the
+    outcome, so that an abort's line is stderr's first (exit-codes.md §4)."""
     say(f"cutover: seq {seq} {how}, {_CUTOVER_FORMS[form]}: the switch is primary with the "
         f"marker adding, and lanes/STORE names database {label}")
-    for text in notes:
-        note(text)
-    note("cutover: the marker's push, its read-back and record_marker are lane 3's T327, which "
-         "this build does not have: nothing was pushed, and the marker stays adding, so no "
-         "write commits, until a read-back is recorded")
+    try:
+        return cutover_step_2(cfg, store, git, seq)
+    finally:
+        for text in notes:
+            note(text)
+
+
+def cutover_git_preflight(cfg: dict, lane: str) -> dict:
+    """T327'S CHECKS OF THE GIT HALF, BEFORE THE TRANSACTION (F12; D23; D24),
+    and before a rerun's step 2: the operator lane's checkout, found as the
+    import finds it (`_import_checkout`: `LANES_REPO`, else `lanes-edit.sh
+    lane-checkout <lane>`; never `W`), its git directory, and, with
+    `render_key=`, T320's own checks of the push: its destination
+    (`render_push_url`: a GitHub origin that is this workstation's register)
+    and the checkout's configuration (`_render_push_config_check`); then,
+    while `RENDER_GIT_HALF` is False, `operator_local_origin_check`: every
+    URL git would reach is local (MUST-2 of lane 3's review of T327). Each is
+    a `Refusal` (2) with nothing written, so a cutover that could never push
+    its marker does not commit its entry, and the restore form renders
+    nothing. `render_push` makes T320's checks again at the push. Returns
+    `{"checkout": <top>, "git_dir": <git dir>}`."""
+    checkout = _import_checkout(lane, who="cutover", nothing="nothing was written")
+    git_dir = render_git_dir(checkout)
+    key = cfg.get("render_key") or ""
+    if key:
+        destination = render_push_url(checkout, key)
+        _render_push_config_check(checkout, destination,
+                                  {name: value for name, value in render_push_env(key).items()
+                                   if name != "GIT_SSH_COMMAND"})
+    operator_local_origin_check(checkout, key, who="cutover", left="nothing was written")
+    return {"checkout": checkout, "git_dir": git_dir}
+
+
+def _cutover_entry_state(store, seq: int) -> dict:
+    """The switch read again before step 2 (`_cutover_read`): it must hold this
+    cutover's entry at `seq`, unconfirmed, the head, with the marker `adding`.
+    Anything else, or a read that fails, is 69 with nothing pushed: the entry
+    stands, and a rerun reads the switch first."""
+    try:
+        st = _cutover_read(store)
+    except _CutoverEnd as exc:
+        raise _CutoverEnd(EXIT_UNAVAILABLE, f"cutover: seq {seq}'s entry stands, and the switch "
+                          f"could not be read again before its push ({exc}); nothing was pushed, "
+                          f"and a rerun reads the switch first and goes on from its own entry "
+                          f"(D9, Y:3532)", exc.psql_lines)
+    if ((st["mode"], st["marker"]) != ("primary", "adding") or st["marker_seq"] != seq
+            or st["head"] != seq or st["head_kind"] != "cutover"):
+        raise _CutoverEnd(EXIT_UNAVAILABLE, f"cutover: the switch reads {st['mode']} with the "
+                          f"marker {st['marker']} at marker_seq {st['marker_seq']}, head "
+                          f"{st['head']}, and not this cutover's entry at seq {seq} with the marker "
+                          f"adding; nothing was pushed, and a rerun reads the switch first")
+    return st
+
+
+def cutover_step_2(cfg: dict, store, git: dict, seq: int) -> int:
+    """STEP 2, AND STEP 3'S TRIGGER (S5; D21, D24; FR-050; ops:116; act 4's
+    step 7), for this cutover's entry at `seq`, standing at `primary` with the
+    marker `adding`:
+
+    1. The switch read again (`_cutover_entry_state`), and the entry read from
+       the journal (`operator_entry_read`): D15's author, message and UTC, and
+       `lanes/STORE`'s bytes as the entry committed them. A register that
+       cannot be read, or an entry that is not this cutover's, is 69 with
+       nothing pushed.
+    2. `operator_entry_push` (T320's push; the read-back first), with the
+       base the import's commit, which origin's tip must descend from, and
+       `moved`: in the first and re-import forms, a tip whose `lanes` tree is
+       not the import's (R3's abort, S5's "moved under `lanes/`"), where a
+       tip whose `lanes` cannot be read is unknown; in the
+       restore form, a tip whose render set is not the images at `b`, the
+       seq before the entry (ops:340's rule, as the rollback builds), since
+       its render to `b` moved the tree on purpose.
+    3. Its outcome:
+       - `pushed` or `found`: `record_marker`, setting the marker `present`:
+         0; its timer, or any other end, 69, the push standing;
+       - `absent`: the abort, `cutover_abort` (`switch_to_files`): its 2,
+         `EXIT_CUTOVER_ABORTED`, or 69;
+       - `unknown`: 3, with nothing more changed, and the rerun reads origin
+         back first (Y:3157-3159)."""
+    st = _cutover_entry_state(store, seq)
+    lane, workstation = _cutover_lane(), _cutover_workstation()
+    checkout, base, tree = git["checkout"], st["import_commit"], st["import_tree"]
+    restore = st["restore_prior"]
+    try:
+        row, data = operator_entry_read(store, seq, CUTOVER_STORE_PATH)
+        if data is None:
+            raise RenderRefused(f"seq {seq}'s entry removes {CUTOVER_STORE_PATH}")
+        want = render_image_set(render_images_span(store, seq - 1, seq - 1)[0][seq - 1]) \
+            if restore else None
+    except (RenderRefused, StoreUnusable) as exc:
+        why = exc.detail if isinstance(exc, StoreUnusable) else str(exc)
+        raise _CutoverEnd(EXIT_UNAVAILABLE, f"cutover: seq {seq}'s entry could not be read from "
+                          f"the journal for its push ({why}); nothing was pushed, the entry stands "
+                          f"with the marker adding, and a rerun goes on from it")
+    if not SHA_RE.match(base or ""):
+        raise _CutoverEnd(EXIT_UNAVAILABLE, f"cutover: the switch names no import commit for "
+                          f"seq {seq}'s marker to descend from; nothing was pushed")
+
+    def moved(tip: str) -> str | None:
+        if restore:
+            try:
+                at_tip = render_tree_set(checkout, tip)
+            except RenderBuildFailed as exc:
+                # A failed read proves nothing about a move, as below: 3.
+                raise RenderBuildFailed(f"the render set at origin {RENDER_BRANCH}'s tip {tip} "
+                                        f"could not be read ({exc}), so whether that tip has "
+                                        f"moved under lanes/ since the restore form's render is "
+                                        f"not known") from exc
+            if at_tip == want:
+                return None
+            return (f"origin {RENDER_BRANCH}'s tip {tip} has moved under lanes/: its render set "
+                    f"is not the images at seq {seq - 1}, the backup's head, which the restore "
+                    f"form rendered; nothing was pushed")
+        got = render_git(checkout, "rev-parse", "--verify", "-q", f"{tip}:lanes",
+                         timeout=git_timeout_s())
+        have = got.out.strip() if got.rc == 0 and not got.timed_out else ""
+        if have == tree:
+            return None
+        if not have:
+            # NIT-2 of lane 3's review of T327: a read that failed proves
+            # nothing about a move, so it is unknown (3), never the abort.
+            # `rev-parse --verify -q` exits 1 silently both where the tip
+            # holds no `lanes` and where the read failed, so the tip's commit
+            # is read once more: one that reads, with no `lanes`, has moved.
+            how = (f"timed out after {git_timeout_s()} s" if got.timed_out
+                   else f"exited {got.rc}: {got.last_line()}")
+            if got.rc == 1 and not got.timed_out:
+                whole = render_git(checkout, "cat-file", "-e", f"{tip}^{{commit}}",
+                                   timeout=git_timeout_s())
+                if whole.rc == 0 and not whole.timed_out:
+                    return (f"origin {RENDER_BRANCH}'s tip {tip} has moved under lanes/ since "
+                            f"the import's commit {base}: it holds no lanes tree, where {base} "
+                            f"holds {tree} (R3's abort; S5's \"moved under lanes/\"); nothing "
+                            f"was pushed")
+                how += (f", and `git cat-file -e {tip}^{{commit}}` "
+                        + (f"timed out after {git_timeout_s()} s" if whole.timed_out
+                           else f"exited {whole.rc}"))
+            raise RenderBuildFailed(f"`git rev-parse {tip}:lanes`, the read of origin "
+                                    f"{RENDER_BRANCH}'s tip under lanes/, {how}, so whether that "
+                                    f"tip has moved under lanes/ since {base} is not known")
+        return (f"origin {RENDER_BRANCH}'s tip {tip} has moved under lanes/ since the import's "
+                f"commit {base}: its lanes tree is {have}, not {tree} (R3's abort; S5's "
+                f"\"moved under lanes/\"); nothing was pushed")
+
+    result = operator_entry_push(checkout, cfg, git_dir=git["git_dir"], seq=seq, base=base,
+                                 row=row, path=CUTOVER_STORE_PATH, data=data, moved=moved)
+    if result.outcome in ("pushed", "found"):
+        return _cutover_record(store, seq, result, workstation)
+    if result.outcome == "absent":
+        tip = result.tip
+        why = result.detail if not tip or tip in result.detail else \
+            f"{result.detail} (origin {RENDER_BRANCH} at {tip})"
+        return cutover_abort(store, seq, lane=lane, workstation=workstation,
+                             why=f"seq {seq}'s marker commit is not on origin, and this run "
+                                 f"pushes it no more: {why}")
+    note(f"cutover: this run can neither confirm seq {seq}'s marker on origin nor take the "
+         f"abort: {result.detail}. Seq {seq} stands with the marker adding, so no write "
+         f"commits. A rerun reads origin back first: it records the marker where it finds it "
+         f"there, and where the read-back proves it absent it builds and pushes it again on "
+         f"origin's tip, or aborts where that tip has moved under lanes/ (Y:3157-3159; "
+         f"Y:3532; tasks:1566)")
+    return EXIT_IN_DOUBT
+
+
+def _cutover_record(store, seq: int, result: OperatorPush, workstation: str) -> int:
+    """`record_marker` after a read-back that found the marker's commit
+    (`result.commit`) on origin, under D9's cutover row (Y:3534): 0 once it
+    answers `present`. Any other end is 69: the push stands, the marker stays
+    `adding` where the call did not commit, and the rerun reads origin back
+    and records it again (contracts/exit-codes.md §3.2)."""
+    commit = result.commit
+    how = ("pushed by this run" if result.outcome == "pushed"
+           else "pushed by an earlier run, whose read-back this run made")
+    stands = (f"The marker's commit {commit} stands on origin, {how}; while the marker reads "
+              f"adding no write commits, and a rerun reads origin back and records it again")
+    try:
+        state = operator_record_marker(store, "cutover", seq, commit, workstation)
+    except PsqlFailed as exc:
+        code, lines = _cutover_psql_lines(exc)
+        for line in lines:
+            sys.stderr.write(line + "\n")
+        if exc.timer_expired:
+            what = "record_marker's timer expired (D9, Y:3534), so whether it committed is not known"
+        elif not exc.ran:
+            what = f"record_marker's call was not sent ({exc.detail})"
+        elif code and exc.psql_exit == 3:
+            what = f"the database refused record_marker ({code}, above)"
+        else:
+            what = (f"record_marker's call ended with psql's exit {exc.psql_exit} ({exc.detail}), "
+                    f"so whether it committed is not known")
+        note(f"cutover: {what}. {stands}")
+        return EXIT_UNAVAILABLE
+    except StoreUnusable as exc:
+        note(f"cutover: record_marker could not be called ({exc.kind}: {exc.detail}). {stands}")
+        return EXIT_UNAVAILABLE
+    if state != "present":
+        note(f"cutover: record_marker answered {state or 'nothing it could read'}, not present. "
+             f"{stands}")
+        return EXIT_UNAVAILABLE
+    say(f"cutover: seq {seq}'s marker commit {commit} is on origin {RENDER_BRANCH}, {how}, read "
+        f"back and recorded: the marker is present (S5's step 2; D21)")
     return EXIT_OK
 
 
