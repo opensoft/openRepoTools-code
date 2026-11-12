@@ -495,8 +495,16 @@ READERS = {
     "guard": (("guard",), 2),
 }
 
-GUARD_INPUT = json.dumps({"session_id": UUID_A2, "prompt": "hello", "hook_event_name":
-                          "UserPromptSubmit", "transcript_path": "/dev/null", "cwd": "/"})
+#: THE GUARD'S SESSION (AN13a's B3). The hook's JSON is compact, as the harness
+#: sends it, since the guard's `jstr` reads `"cwd":"<dir>"` with no blank after
+#: the colon; and the guard runs in the lane's window, `repoA-2`, whose row names
+#: `UUID_A2`, with a live session record whose `cwd` is under `$HOME/projects`.
+#: Without that record it refuses 2 before any read, and T507's prefetch comes
+#: after the session-record check (lane 3's T507 ruling (1), #165 6783977598).
+#: T203c's `helpers.guard_session` makes both, as W4a's T215e runs AT-P3's
+#: guard; it is looked up only when the case runs, so the module loads on a
+#: tree whose helpers predate T203c.
+GUARD_BIN = "guard-bin"
 
 
 @pytest.mark.parametrize("reader", sorted(READERS))
@@ -508,8 +516,14 @@ def test_each_reader_follows_the_table_when_the_store_is_unreachable(primary, re
     store's, not a git read's."""
     argv, code = READERS[reader]
     primary.door.unreachable()
-    kw = {"input_text": GUARD_INPUT} if reader == "guard" else {}
-    result = primary.edit(*argv, **kw)
+    if reader == "guard":
+        with helpers.guard_session(primary.e.home, primary.e.root / GUARD_BIN, primary.e.wip,
+                                   session_id=UUID_A2) as session:
+            result = primary.e.run("bash", primary.edit_path, *argv,
+                                   env=session.env(primary.env(), LANES_LANE=session.window),
+                                   input_text=session.hook_input())
+    else:
+        result = primary.edit(*argv)
     assert primary.door.register_calls(), \
         (reader, "the door never asked the store", result.returncode, result.stderr)
     assert result.returncode == code, (reader, result.returncode, result.stdout, result.stderr)
