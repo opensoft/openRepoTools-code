@@ -19143,7 +19143,11 @@ _CUTOVER_ERROR_RE = re.compile(r"^(?:ERROR|FATAL|PANIC):\s+([0-9A-Z]{5}):\s")
 #: THE ONE READ before the commit call, in one REPEATABLE READ snapshot, as
 #: REGISTER-WRITER under D9's cutover row: the version window, the switch, the
 #: head, the latest import, the kind of the entry at the head, whether
-#: `lanes/STORE` has a row, and the database's clock, for `not_after` (F3).
+#: `lanes/STORE` has a row, the database's clock, for `not_after` (F3), and
+#: each `HOLD` take open in `main_slots` whose own time, `utc_ts`, is more
+#: than 30 minutes before the database's clock, as `main_slots`' `stale`
+#: measures a landing's, or cannot be read (NULL), which counts (T116's
+#: open-`HOLD` check, below).
 _CUTOVER_READS = (
     "SELECT version, writers_from, readers_from FROM schema_version WHERE id = 1",
     "SELECT mode, marker_state, marker_seq, generation, database_label, import_commit, "
@@ -19154,6 +19158,10 @@ _CUTOVER_READS = (
     "SELECT j.kind FROM journal j JOIN register_head h ON h.id = 1 AND j.seq = h.seq",
     "SELECT count(*) FROM files WHERE path = 'lanes/STORE'",
     "SELECT extract(epoch FROM clock_timestamp())",
+    "SELECT lane, repo_key, to_char(utc_ts AT TIME ZONE 'UTC', "
+    "'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), raw FROM main_slots WHERE slot_kind = 'hold' "
+    "AND (utc_ts IS NULL OR clock_timestamp() - utc_ts > interval '30 minutes') "
+    "ORDER BY line_id",
 )
 
 _CUTOVER_USAGE = f"""\
@@ -19343,6 +19351,26 @@ def _cutover(opts: dict) -> int:
             raise Refusal(f"cutover: the head is {st['head']}, past the latest import's seq "
                           f"{imp['seq']}: after a rollback, import again before a cutover "
                           f"(design.md §1.3)")
+        # THE OPEN-HOLD CHECK, before step 1, the transaction (design.md S5's
+        # "Cutover", Y:3185): while main_slots holds a HOLD take open that is
+        # more than 30 minutes old, or whose time cannot be read, the first
+        # form refuses with 2 and sets nothing (Brett's "Holders release +
+        # check (Recommended)", as lane 3 relays it, #165 6782534165;
+        # tasks:532; exit-codes:137). Only the first form's run that will make
+        # step 1 takes it: a rerun that finds its own entry, the "already cut
+        # over" no-op and the after-loss forms skip it, and a NULL time counts
+        # (lane 3, #165 6813195977). This branch is not the restore form's, so
+        # T327's `_cutover_render_to` there cannot come before it; anything
+        # T327 adds here before step 1 goes after it (lane 3, #165 6813027223).
+        if form == "first" and st["old_holds"]:
+            raise Refusal(
+                f"cutover: {len(st['old_holds'])} HOLD take(s) more than 30 minutes old by "
+                f"the database's clock, or with no readable time, are open in main_slots; "
+                f"their holders release them before the freeze (operations.md act 4's steps 1 "
+                f"and 3), and nothing was set:"
+                + "".join(f"\n  HOLD lane={hold_lane} repo={repo} "
+                          f"{'time unreadable' if utc is None else 'utc=' + utc}: {raw}"
+                          for hold_lane, repo, utc, raw in st["old_holds"]))
         base, commit, tree, sent = imp["seq"], imp["commit"], imp["tree"], form
     else:
         raise _CutoverEnd(EXIT_UNAVAILABLE, f"cutover: the switch reads {st['mode']} with the "
@@ -19382,9 +19410,11 @@ def _cutover_read(store) -> dict:
     try:
         if len(res) != len(_CUTOVER_READS):
             raise ValueError(len(res))
-        (version,), (switch,), (head,), imports, at_head, (stored,), (clock,) = res
+        (version,), (switch,), (head,), imports, at_head, (stored,), (clock,), holds = res
         if len(imports) > 1 or len(at_head) > 1:
             raise ValueError("more than one row")
+        if any(len(hold) != 4 for hold in holds):
+            raise ValueError("a HOLD row")
         st = {"version": int(version[0]), "writers_from": int(version[1]),
               "readers_from": int(version[2]),
               "mode": switch[0], "marker": switch[1],
@@ -19395,7 +19425,8 @@ def _cutover_read(store) -> dict:
               "import": ({"seq": int(imports[0][0]), "commit": imports[0][1],
                           "tree": imports[0][2]} if imports else None),
               "head_kind": at_head[0][0] if at_head else None,
-              "store_present": int(stored[0]) > 0, "clock": float(clock[0])}
+              "store_present": int(stored[0]) > 0, "clock": float(clock[0]),
+              "old_holds": [tuple(hold) for hold in holds]}
         if not UUID_FULL_RE.match(st["generation"] or "") or not st["label"]:
             raise ValueError("the switch's generation or label")
     except (ValueError, TypeError, IndexError):
