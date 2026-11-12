@@ -6822,16 +6822,27 @@ pw_abandon_one() {   # <pid> <attempt dir>
 }
 
 # THE KEPT CHILDREN, each still at its seam after a commit call in doubt
-# (Y:5014), one `<pid> <attempt dir>` a line in PW_KEPT, all abandoned.
+# (Y:5014), one `<pid> <attempt dir>` a line in PW_KEPT, all abandoned: before
+# any end but 0 (Y:5026), once the outcome is known (Y:5314), and before a
+# stop at the bound (`pw_child_hung_end`). The list is split at each newline
+# by parameter expansion, as `pw_abandon_live` splits it, never through a
+# here-document: bash 3.2 writes one to a temp file, and where none can be
+# made, as in a full TMPDIR, the loop never ran, so no kept child got
+# `abandon` or was reaped: each stopped only at a parent test after the run
+# had ended, or at its cap, with Y:5006's stop line on fd 4 (lane 4's W9-T415
+# report, §6).
 pw_abandon_kept() {
-  local pa_l="" pa_p="" pa_d=""
-  while IFS= read -r pa_l; do
+  local pa_k="$PW_KEPT" pa_l="" pa_p="" pa_d=""
+  while [ -n "$pa_k" ]; do
+    pa_l="${pa_k%%"$WR_NL"*}"
+    case "$pa_k" in
+      *"$WR_NL"*) pa_k="${pa_k#*"$WR_NL"}" ;;
+      *) pa_k="" ;;
+    esac
     [ -n "$pa_l" ] || continue
     pa_p="${pa_l%% *}"; pa_d="${pa_l#* }"
     pw_abandon_one "$pa_p" "$pa_d"
-  done <<PA_EOF
-$PW_KEPT
-PA_EOF
+  done
   PW_KEPT=""; PW_KEPT_END=""; PW_KEPT_K=""
 }
 
