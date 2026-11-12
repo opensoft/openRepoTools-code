@@ -57,11 +57,11 @@ name: tests
 # `reopened`. The obsolete `labeled` trigger belonged to the removed macOS
 # job; no job here reads labels now. Mergify adding `queued` (or any other
 # label) must not start duplicate full CI or publish skipped replacement gates.
-# Every PR code update still runs full CI, even while queued, on any base and
-# for draft merge candidates: no path, branch, draft or label filter is added.
-# `on:` is shared by the whole workflow and no job has a condition that skips
-# it (the two `if: ${{ always() }}` below run gates even when shards fail).
-# EVERY TRIGGER RUNS ALL FOUR JOBS: `guard-launch-mode`, `tests`,
+# No trigger filter is added. Prepared routing is disabled on trusted main;
+# every event currently runs all full jobs. Future omission requires both an
+# approved flag and verified migrated effective protection, with immutable proof.
+# Reusable, release, nightly and manual invocations always remain full.
+# FULL MODE RUNS ALL FOUR JOBS: `guard-launch-mode`, `tests`,
 # `tests-no-submodule` and `package`. The two test gates aggregate shard jobs.
 # `push` covers `main` and every `release/v*` branch (#228): the release
 # workflow builds only a commit whose push or dispatch run of those four is
@@ -90,10 +90,81 @@ env:
   OPENREPOTOOLS_COMPOSED: '0'
 
 jobs:
+  delivery-route:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      actions: read
+    outputs:
+      mode: ${{ steps.route.outputs.mode }}
+      omit_full: ${{ steps.route.outputs.omit_full }}
+      proof: ${{ steps.route.outputs.proof }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Route with trusted main or bootstrap full
+        id: route
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -f .github/ci/delivery_route.py ]; then
+            python3 .github/ci/delivery_route.py route
+          else
+            printf '%s\n' 'mode=full' 'omit_full=false' 'proof=' >> "$GITHUB_OUTPUT"
+          fi
+
+  delivery-gate:
+    name: openrepotools-delivery
+    needs: [delivery-route, guard-launch-mode, tests, tests-no-submodule, package]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require full success or reverify omitted-work proof
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OMIT_FULL: ${{ needs.delivery-route.outputs.omit_full }}
+          ROUTE_MODE: ${{ needs.delivery-route.outputs.mode }}
+          ROUTE_PROOF: ${{ needs.delivery-route.outputs.proof }}
+          GUARD_RESULT: ${{ needs.guard-launch-mode.result }}
+          TESTS_RESULT: ${{ needs.tests.result }}
+          NO_SUBMODULE_RESULT: ${{ needs.tests-no-submodule.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+        run: |
+          set -euo pipefail
+          if [ -f .github/ci/delivery_route.py ]; then
+            python3 .github/ci/delivery_route.py gate
+          else
+            test "$OMIT_FULL" != true
+            test "$GUARD_RESULT" = success
+            test "$TESTS_RESULT" = success
+            test "$NO_SUBMODULE_RESULT" = success
+            test "$PACKAGE_RESULT" = success
+          fi
+
   # Keep the process launch contract independently visible while the full
   # lane-helper suite runs. Each GitHub job has its own workstation runner;
   # the canonical wrapper still serializes any pytest processes on that runner.
   guard-launch-mode:
+    needs: [delivery-route]
+    if: ${{ !cancelled() && !(needs.delivery-route.result == 'success' && needs.delivery-route.outputs.omit_full == 'true') }}
     # EVERY UBUNTU RUNNER IS ON 24.04: `ubuntu-latest` became Ubuntu 26.04 on
     # 2026-10-21. There setup-python has no Python 3.9 and the `[host]` case of
     # the TERM-ignoring kill test fails. Pinned until 26.04 support is decided.
@@ -131,6 +202,8 @@ jobs:
   # makes it RUN when a shard fails or is cancelled, and so go red; a skipped
   # job would count as passing for a required check.
   tests-shard:
+    needs: [delivery-route]
+    if: ${{ !cancelled() && !(needs.delivery-route.result == 'success' && needs.delivery-route.outputs.omit_full == 'true') }}
     runs-on: ubuntu-24.04
     # A hung pytest would otherwise hold the required check for GitHub's
     # 360-minute default. A shard takes 10 to 26 minutes.
@@ -200,8 +273,8 @@ jobs:
           if-no-files-found: error
 
   tests:
-    needs: tests-shard
-    if: ${{ always() }}
+    needs: [tests-shard, delivery-route]
+    if: ${{ always() && !(needs.delivery-route.result == 'success' && needs.delivery-route.outputs.omit_full == 'true') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
@@ -242,6 +315,8 @@ jobs:
   # checking out without the submodule and proving it, and
   # `tests-no-submodule` is the gate over them, as `tests` is.
   tests-no-submodule-shard:
+    needs: [delivery-route]
+    if: ${{ !cancelled() && !(needs.delivery-route.result == 'success' && needs.delivery-route.outputs.omit_full == 'true') }}
     runs-on: ubuntu-24.04
     # A hung pytest would otherwise hold the required check for GitHub's
     # 360-minute default. A shard takes 10 to 26 minutes.
@@ -288,8 +363,8 @@ jobs:
           if-no-files-found: error
 
   tests-no-submodule:
-    needs: tests-no-submodule-shard
-    if: ${{ always() }}
+    needs: [tests-no-submodule-shard, delivery-route]
+    if: ${{ always() && !(needs.delivery-route.result == 'success' && needs.delivery-route.outputs.omit_full == 'true') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
@@ -334,6 +409,8 @@ jobs:
   # hatchling and pipx reaches it for its shared pip; the `--install` run
   # reaches nothing.
   package:
+    needs: [delivery-route]
+    if: ${{ !cancelled() && !(needs.delivery-route.result == 'success' && needs.delivery-route.outputs.omit_full == 'true') }}
     runs-on: ubuntu-24.04
     steps:
       # The same two commits the other jobs pin.

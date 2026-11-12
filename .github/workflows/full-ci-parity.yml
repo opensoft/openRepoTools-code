@@ -11,6 +11,14 @@ on:
       - .github/ci/full-ci-baseline.json
       - .github/ci/ci_shards.py
       - .github/ci/weights.json
+      - .github/ci/delivery-policy.json
+      - .github/ci/delivery_route.py
+      - .github/ci/delivery_evidence.py
+      - .github/ci/delivery_verify.py
+      - .github/workflows/task-set-candidate.yml
+      - .github/workflows/task-set-candidate-shadow.yml
+      - .mergify.yml
+      - tests/test_ci_cutover.py
       - tests/test_tests_workflow.py
       - tests/test_ci_shards.py
       - tests/test_full_ci_coverage_parity.py
@@ -37,8 +45,13 @@ jobs:
 
   full-ci:
     needs: parity
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      actions: read
     # Local reuse selects this caller's exact commit, not a mutable branch.
-    # All six job definitions / 13 expanded jobs run, with no selector input.
+    # All original 13 integration jobs plus controls, with no selector input.
     uses: ./.github/workflows/tests.yml
 
   qualification:

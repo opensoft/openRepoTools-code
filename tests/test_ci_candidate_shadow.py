@@ -28,15 +28,16 @@ def caller():
 def test_ci_candidate_shadow_push_only_non_gating_graph(caller):
     assert caller["on"] == {"push": {"branches": ["mergify/merge-queue/*"]}}
     assert caller["permissions"] == {}
-    assert set(caller["jobs"]) == {"probe", "candidate"}
+    assert set(caller["jobs"]) == {"probe", "candidate", "heavy"}
     probe = caller["jobs"]["probe"]
     assert probe["timeout-minutes"] == 15
     assert probe["runs-on"] == "ubuntu-24.04"
     assert probe["permissions"] == {
         "contents": "read", "pull-requests": "read", "checks": "read", "actions": "read"}
     assert probe["outputs"] == {"qualify": "${{ steps.scope.outputs.qualify }}"}
-    assert len(probe["steps"]) == 2
-    checkout, step = probe["steps"]
+    assert len(probe["steps"]) == 3
+    checkout, step, artifact = probe["steps"]
+    assert artifact["with"]["if-no-files-found"] == "error"
     assert checkout == {
         "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
         "with": {"ref": "main", "fetch-depth": 0, "persist-credentials": False}}
@@ -64,11 +65,13 @@ def test_ci_candidate_shadow_actual_probe_shell(caller, tmp_path, policy, expect
     policy_dir = tmp_path / ".github/ci"
     policy_dir.mkdir(parents=True)
     if policy is not None:
+        (policy_dir / "delivery_evidence.py").touch()
         (policy_dir / "delivery_verify.py").write_text(
-            "import sys\nassert sys.argv[1:] == ['candidate']\n" + policy)
+            "import sys\nassert sys.argv[1:4] == ['candidate', '--proof-kind', 'admission']\n" + policy)
     output, summary = tmp_path / "output", tmp_path / "summary"
     result = subprocess.run(["bash", "-euo", "pipefail", "-c", script], cwd=tmp_path,
                             env=dict(os.environ, GITHUB_OUTPUT=str(output),
+                                     RUNNER_TEMP=str(tmp_path),
                                      GITHUB_STEP_SUMMARY=str(summary)),
                             capture_output=True, timeout=10)
     assert result.returncode == 0
@@ -96,8 +99,9 @@ def test_ci_candidate_shadow_scheduling_condition_contract(caller, probe_result,
 def test_ci_candidate_shadow_keeps_reusable_proof_and_full_coverage(caller):
     # The independently tested existing entry must remain the only heavy caller.
     assert caller["jobs"]["candidate"]["uses"] == "./.github/workflows/task-set-candidate.yml"
-    assert "openrepotools-batch-heavy" not in (REPO / ".mergify.yml").read_text()
-    assert "openrepotools-pr-fast" not in (REPO / ".mergify.yml").read_text()
+    assert caller["jobs"]["heavy"]["name"] == "openrepotools-batch-heavy"
+    assert caller["jobs"]["heavy"]["needs"] == ["probe", "candidate"]
+    assert caller["jobs"]["heavy"]["if"] == "${{ always() }}"
     instructions = (REPO / ".github/ci/delivery-preparation.md").read_text()
     assert "task-set-candidate-shadow.yml" in instructions
     assert "does not save heavy runs" in instructions

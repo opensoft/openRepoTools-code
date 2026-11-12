@@ -89,7 +89,8 @@ def test_manual_mergify_queue_is_bounded_and_has_no_automatic_admission(config):
         "mode": "serial", "max_parallel_checks": 1, "queue_controls_comment": False,
         "reset_on_external_merge": "always", "skip_intermediate_results": False}
     assert [q["name"] for q in config["queue_rules"]] == [
-        "openrepotools-docs-pilot", "openrepotools-real-code-35-36", "openrepotools-code"]
+        "openrepotools-docs-pilot", "openrepotools-real-code-35-36", "openrepotools-code",
+        "openrepotools-claude-current"]
     queue = config["queue_rules"][0]
     assert queue["name"] == "openrepotools-docs-pilot"
     assert queue["batch_size"] == 2
@@ -122,7 +123,10 @@ def test_manual_mergify_queue_uses_existing_full_ci_on_every_pr_base(reader):
     assert GATES <= set(workflow["jobs"])
     for name in GATES:
         # Existing aggregators run even on shard failure; no draft/path skip.
-        assert workflow["jobs"][name].get("if") in (None, "${{ always() }}")
+        from test_full_ci_coverage_parity import ROOT_GUARD, AGGREGATE_GUARD
+        assert workflow["jobs"][name].get("if") in (ROOT_GUARD, AGGREGATE_GUARD)
+    import json
+    assert json.loads((REPO / ".github/ci/delivery-policy.json").read_text())["enabled"] is False
 
 
 @pytest.mark.parametrize("files", [REFERENCES[:1], REFERENCES[1:], REFERENCES])

@@ -23,6 +23,13 @@ FAST = "openrepotools-pr-fast"
 FAST_WORKFLOW = ".github/workflows/task-set-fast.yml"
 
 
+def delivery_intended(text):
+    if not policy.intended(text):
+        return False
+    lines = re.findall(r"(?m)^CI-Delivery:[^\n]*", text)
+    return [line.rstrip(" \t\r") for line in lines] == ["CI-Delivery: claude-current"]
+
+
 class Refused(ValueError):
     """A fixed-vocabulary refusal safe to expose in the CI log."""
 
@@ -231,7 +238,8 @@ def verify_candidate(env, event, root, request=policy.github, threads=read_threa
         tree = policy.sha(policy.git(root, "rev-parse", prefix + "^{tree}").decode().strip())
         require(expected == tree and policy.regular_scope(root, previous, prefix),
                 "Candidate prefix is not the expected clean scoped merge")
-        members.append({"number": pr["number"], "head": head, "prefix": prefix, "tree": tree})
+        members.append({"number": pr["number"], "head": head, "prefix": prefix, "tree": tree,
+                        "delivery": delivery_intended(pr["body"])})
         snapshots.append((pr, evidence))
     for pr, evidence in snapshots:
         require(policy.snapshot(pr) == policy.snapshot(
@@ -251,11 +259,25 @@ def verify_candidate(env, event, root, request=policy.github, threads=read_threa
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("fast", "candidate"))
-    mode = parser.parse_args().mode
+    parser.add_argument("--proof-kind", choices=("admission", "qualified"))
+    parser.add_argument("--proof-output", type=Path)
+    parser.add_argument("--require-delivery", action="store_true")
+    args = parser.parse_args()
+    mode = args.mode
     try:
         event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
         result = (verify_fast(os.environ, event, Path.cwd()) if mode == "fast"
                   else verify_candidate(os.environ, event, Path(__file__).resolve().parents[2]))
+        if args.require_delivery:
+            require(mode == "candidate" and all(row["delivery"] is True for row in result["members"]),
+                    "Member delivery intent is missing")
+        if args.proof_kind or args.proof_output:
+            require(mode == "candidate" and args.proof_kind and args.proof_output,
+                    "Proof output requires a candidate phase and path")
+            # Imported lazily to keep the existing standalone fast CLI unchanged.
+            from delivery_evidence import make_record
+            record = make_record(result, args.proof_kind, os.environ)
+            args.proof_output.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
     except Refused as error:
         parser.exit(1, f"Delivery verification refused: {error}.\n")
     except policy.ERRORS:
