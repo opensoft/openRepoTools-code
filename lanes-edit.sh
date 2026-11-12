@@ -4733,6 +4733,12 @@ cp_archive_steps() {
 # and an attempt's child never reaches one (Y:5042), so this is the rule for
 # any push a primary process makes. Any other mode, or none asked, is today's
 # nudge, unchanged.
+#
+# NEITHER FORK CARRIES AN ACT (feature 007, T416; lane openRepoTools-3's ruling
+# on question 122, #165 6814531692, by its G5): each subshell unsets
+# `LANES_ACT` and `LANES_EXPECT` before it starts `lanes-index`, in every
+# mode, since the sync outlives the act whose write it follows. This process
+# keeps both (Y:5599's check 2).
 index_nudge() {
   in_reg="${LANES_INDEX_NUDGE:-0}"; in_inv="${LANES_INDEX_NUDGE_INV:-0}"
   LANES_INDEX_NUDGE=0; LANES_INDEX_NUDGE_INV=0
@@ -4741,10 +4747,12 @@ index_nudge() {
   in_bin="$(command -v lanes-index 2>/dev/null || :)"
   [ -n "$in_bin" ] || return 0
   if [ "$in_reg" = 1 ]; then
-    ( "$in_bin" sync </dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- & ) >/dev/null 2>&1
+    ( unset LANES_ACT LANES_EXPECT
+      "$in_bin" sync </dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- & ) >/dev/null 2>&1
   fi
   if [ "$in_inv" = 1 ]; then
-    ( "$in_bin" sync --source inventory </dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- & ) >/dev/null 2>&1
+    ( unset LANES_ACT LANES_EXPECT
+      "$in_bin" sync --source inventory </dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- & ) >/dev/null 2>&1
   fi
   return 0
 }
@@ -7414,6 +7422,11 @@ pw_keep() {
 # and stderr on /dev/null, and descriptors 3 to 9 closed, so it holds no
 # descriptor of this run's and keeps no caller's pipe open. `LANES_NO_FETCH` is
 # removed from its environment (D12), so the renderer fetches origin.
+# `LANES_ACT` AND `LANES_EXPECT` ARE REMOVED TOO (lane openRepoTools-3's ruling
+# on question 122, #165 6814531692, by its G5): the fork outlives the act, so
+# it carries neither the act's base nor this write's scopes, as T428 has
+# `lane-start` do for 5e's daily-report sweep. This process keeps both
+# (Y:5599's check 2).
 # NOT BEHIND `LANES_INDEX=off`, which `index_nudge` honours: `lane-worktrees`
 # sets that variable on every call it makes, and it must never skip the fork
 # (Y:5377; FR-027). It stays in this process's group, as `index_nudge`'s fork
@@ -7432,7 +7445,7 @@ pw_render_fork() {
   PW_RENDERED=1
   rf_bin="$(lanes_index_bin)"
   [ -n "$rf_bin" ] || return 0
-  ( unset LANES_NO_FETCH
+  ( unset LANES_NO_FETCH LANES_ACT LANES_EXPECT
     "$rf_bin" render --checkout "$PW_C" </dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- & ) >/dev/null 2>&1
   return 0
 }
