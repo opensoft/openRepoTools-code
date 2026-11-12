@@ -127,9 +127,7 @@ def test_analysis_verifies_the_submitted_task_sources_and_coverage(
     (tmp_path / "inventory.json").write_text(json.dumps(manifest))
     task = tmp_path / "report-task.txt"
     project = "wrong" if failure == "wrong-project" else assurance.PROJECT
-    task.write_text("projectKey=" + project + "
-ceTaskId=task-123
-")
+    task.write_text("projectKey=" + project + "\nceTaskId=task-123\n")
     conditions = [{"metric": key, "op": op, "error": threshold}
                   for key, (op, threshold) in assurance.GATE.items()]
     calls = []
