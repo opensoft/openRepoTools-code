@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import time
 import xml.etree.ElementTree as ET
 
 HERE = Path(__file__).resolve().parent
@@ -48,10 +49,21 @@ def prepare(root, out, kcov):
         "--bash-parse-files-in-dir=" + str(sources),
         "--include-path=" + str(sources), "--output-interval=0",
         str(out / "shell-baseline"), str(launcher)], check=True)
-    reports = [path for path in (out / "shell-baseline").glob("*/sonarqube.xml")
-               if path.parent.name != "kcov-merged"]
-    if len(reports) != 1:
-        raise ValueError("expected exactly one kcov shell denominator report")
+    # kcov's report writer may outlive its launcher. Accept only a complete
+    # XML document; an absent/truncated report is never an empty denominator.
+    deadline = time.monotonic() + 15
+    while True:
+        reports = [path for path in (out / "shell-baseline").glob("*/sonarqube.xml")
+                   if path.parent.name != "kcov-merged"]
+        try:
+            if len(reports) != 1:
+                raise ValueError("expected exactly one kcov shell denominator report")
+            ET.parse(reports[0])
+            break
+        except (ValueError, ET.ParseError, OSError):
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.1)
     shutil.copyfile(reports[0], out / "shell-baseline.xml")
     config = out / "coverage.rc"
     config.write_text(
