@@ -1906,7 +1906,7 @@ esac
 # `<repo> <n>` to translate while the script holds both (F-B6's rule, on this
 # side of the seam). A lane named before the `<repo>-<position>` rule has no
 # position to print and is started through `--dir`, exactly as it was here.
-if [ -n "$n" ]; then self_args="$repo $n"; else self_args="--dir $DIR $LANE"; fi
+if [ -n "$n" ]; then self_args="$repo $n"; else self_args="--dir $(quoted "$DIR") $LANE"; fi
 
 step "lane $LANE · dir $DIR · estate $estate"
 
