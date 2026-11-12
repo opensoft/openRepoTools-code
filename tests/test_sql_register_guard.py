@@ -1211,7 +1211,7 @@ def _follow_renames(session) -> None:
     _script(tmux, _FOLLOW_TMUX, **{k: shlex.quote(str(v)) for k, v in words.items()})
 
 
-def _real_estate(estate, **kwargs) -> Estate:
+def _real_estate(estate, register=True, **kwargs) -> Estate:
     """The estate with the checkout's own `lane-start` in place of the
     stand-in: the bind's real `lane-start --no-launch --bind`, the copy
     beside the guard on primary (`Estate.primary`), so it runs that build.
@@ -1234,7 +1234,11 @@ def _real_estate(estate, **kwargs) -> Estate:
     row, `_handoff` commits the file that row names, so the bind's
     `write-handoff --stamp` writes the stamp as it does on a real lane. A new
     lane (`to_row=False`) has no handoff yet, and its `lane-start` writes no
-    stamp (`lane-start:4352-4356` at `6050581`)."""
+    stamp (`lane-start:4352-4356` at `6050581`).
+
+    AND ON PRIMARY, THE REGISTER IN ITS SQL STORE (T254p): `_seed_primary`,
+    unless `register` is false, for a caller that seeds it later itself
+    (`_two_binds`)."""
     est = estate(**kwargs)
     est.extra["LANES_LANE_START"] = str(est.guard.parent / "lane-start")
     est.set("edit-real")
@@ -1242,7 +1246,33 @@ def _real_estate(estate, **kwargs) -> Estate:
     _follow_renames(est.session)
     if kwargs.get("to_row", True):
         _handoff(est)
+    if register and kwargs.get("mode") == "primary":
+        _seed_primary(est)
     return est
+
+
+def _seed_primary(est: Estate) -> None:
+    """Bring the primary estate's register into its SQL store (T254p), as the
+    service cases do (`_guard_state`): `_Register` imports the `lanes/LANES.md`
+    the estate pushed, cuts over and records the marker, so the switch reads
+    `primary` with the marker `present`.
+
+    WHY: `Estate.primary` leaves `tmpl`'s switch at `files`. From lane 5's T507
+    on (line R's merge25), the guard on `mode=primary` reads the register's
+    SQL store, which refuses that switch: `lanes-index register read --for
+    guard --prefetch` exits 69, "the register's switch is `files`, not
+    `primary`", and the guard refuses the prompt with 2, so no offer is made
+    (G-18's run A, case 17 `[primary]`, on lane 4's `pair-m33a` `afc6c67d`).
+    A write on primary refuses the same switch with 69 at its snapshot's
+    check 4 (line BD17's run e03).
+
+    ONCE PER DATABASE: an estate whose case already brought this `pg` to
+    `primary` (case 9's rival, on the same database) adds nothing."""
+    out = est.pg.psql("SELECT mode FROM lanes_register.register_switch;",
+                      check=False).stdout.split()
+    if out and out[-1] == "primary":
+        return
+    _Register(est)
 
 
 #: THE LANE'S HANDOFF (T214k), as a real lane's register holds it: the file
@@ -1291,8 +1321,9 @@ def _handoff(est: Estate) -> Path:
 def _two_binds(estate, mode="files") -> tuple:
     """Two sessions, in windows `FROM` and `repoA-4`, each named `TO`, both
     answering `2` with the real `lane-start`: the two estates and their
-    outcomes."""
-    one = _real_estate(estate, mode=mode)
+    outcomes. On primary, the register goes into the SQL store once both
+    windows' rows are pushed (`_seed_primary`)."""
+    one = _real_estate(estate, register=False, mode=mode)
     two = _real_estate(estate)
     if mode == "primary":
         two.extra["LANES_INDEX_CONFIG"] = one.extra["LANES_INDEX_CONFIG"]
@@ -1301,6 +1332,8 @@ def _two_binds(estate, mode="files") -> tuple:
     two.base.update(HOME=str(one.home), LANES_REPO=str(one.wip))
     two.push_register([_row(FROM, one.sid, "LIVE"), _row("repoA-4", two.sid, "LIVE"),
                        _row(TO, one.other, "PAUSED")])
+    if mode == "primary":
+        _seed_primary(one)
     for session in two.sessions:
         session.close()
     two.session = guard_session(one.home, two.bin, one.wip, window="repoA-4",
