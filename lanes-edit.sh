@@ -4391,12 +4391,16 @@ wr_claim_read() {   # <claim file>
 
 # THE HIGHEST CLAIM on `<d>` in `<dir>`: WR_HIGHEST_K, -1 where there is none,
 # and WR_HIGHEST_FILE. Only a name this file makes counts: `.take.` and a
-# number with no leading zero.
+# number with no leading zero. A name that is there counts even where it is a
+# dangling symbolic link, as `wr_claim_live` counts it and as `ln` finds the
+# name taken: one passed over here made `wr_claim_take` create that same name
+# again and again, with no sleep and past its deadline (review REV-W10a S1).
+# Such a claim names no pid, so it is live for the seam's cap only (DEC-25).
 wr_claim_highest() {   # <dir>
   local ch_f ch_k
   WR_HIGHEST_K=-1; WR_HIGHEST_FILE=""
   for ch_f in "$1/$WR_D".take.*; do
-    [ -e "$ch_f" ] || continue
+    [ -e "$ch_f" ] || [ -L "$ch_f" ] || continue
     ch_k="${ch_f##*.take.}"
     case "$ch_k" in ''|*[!0123456789]*|0?*) continue ;; esac
     [ "${#ch_k}" -le 9 ] || continue
@@ -4845,15 +4849,17 @@ wr_record_drop_call() {   # <dir>
 
 # THE RECORD REMOVED, the outcome known (Y:5193-5198): the record, then the
 # claims beside it, by its owner only. A claim numbered above the owner's own is
-# left: no run takes one while the owner lives (Y:5185; R49). On 0 the caller
-# writes the done mark first (T418).
+# left: no run takes one while the owner lives (Y:5185; R49). A dangling
+# symbolic link among the claims is removed with them, since
+# `wr_claim_highest` counts it (review REV-W10a S1). On 0 the caller writes the
+# done mark first (T418).
 wr_record_remove() {
   local rm_dir rm_f rm_k
   wr_claim_owns || return 1
   rm_dir="${WR_CLAIM%/*}"
   rm -f -- "$rm_dir/$WR_D" 2>/dev/null || return 1
   for rm_f in "$rm_dir/$WR_D".take.*; do
-    [ -e "$rm_f" ] || continue
+    [ -e "$rm_f" ] || [ -L "$rm_f" ] || continue
     rm_k="${rm_f##*.take.}"
     case "$rm_k" in ''|*[!0123456789]*|0?*) continue ;; esac
     [ "${#rm_k}" -le 9 ] || continue
