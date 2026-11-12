@@ -1,0 +1,50 @@
+name: Non-gating task-set candidate qualification
+
+# Preparation only: ordinary full CI and Mergify requirements are unchanged.
+# No queue/ruleset consumes this observation. No dispatch or auto-enqueue.
+on:
+  push:
+    branches: ['mergify/merge-queue/*']
+
+permissions: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      actions: read
+    outputs:
+      qualify: ${{ steps.scope.outputs.qualify }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Probe only trusted-main candidate policy
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -f .github/ci/delivery_verify.py ] && python3 .github/ci/delivery_verify.py candidate; then
+            printf '%s\n' 'qualify=true' >> "$GITHUB_OUTPUT"
+            printf '%s\n' 'Scoped probe passed; full CI remains required. No queue admission. Additional qualification will independently verify again.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '%s\n' 'qualify=false' >> "$GITHUB_OUTPUT"
+            printf '%s\n' 'Candidate observation fell back; full CI remains required. No queue admission. No additional qualification scheduled.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  candidate:
+    needs: probe
+    if: ${{ needs.probe.result == 'success' && needs.probe.outputs.qualify == 'true' }}
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      actions: read
+    uses: ./.github/workflows/task-set-candidate.yml

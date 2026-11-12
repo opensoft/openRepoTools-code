@@ -2,7 +2,10 @@
 
 The [additive fast/candidate preparation](delivery-preparation.md) introduces
 no queue activation or CI skips. Continue requiring all current full checks;
-the prepared candidate entry has no live trigger or existing queue consumer.
+the prepared candidate entry has no existing queue consumer. The proposed
+[non-gating shadow caller](delivery-preparation.md#proposed-non-gating-caller-candidate-shadow-08)
+does not exempt CI or grant admission; it requires separate merge authority
+before any queue observation and does not authorize a live canary.
 
 The separate [trusted shadow observer](shadow-classifier.md) reports only
 conservative event observations. It never enables fast-only CI, grants queue
