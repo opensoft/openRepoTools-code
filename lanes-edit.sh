@@ -6522,7 +6522,8 @@ pw_lane_given() {
 # 6; #165 6780753157, Q35). A dry run meets it too, since a dry run takes the write's
 # whole path and refuses wherever the real write would (lane 3, #165
 # 6770820384, T415's question 2). `commit` never reaches the loop (T420), so it
-# is unchanged; T421's and T423's guards stay as backstops.
+# is unchanged; T421's and T423's guards, and T422's `rl_after_committed`,
+# stay as backstops.
 pw_no_git_refuse() {
   local pg_w="" pg_cmd="lanes-edit.sh" pg_rc=2
   [ "$NO_GIT" = 1 ] || return 0
