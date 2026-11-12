@@ -3339,12 +3339,16 @@ row_write_refused=""
 record_in_doubt=""; row_in_doubt=""   # a 3: the write may or may not have landed (D8)
 w9_held=""; w12_held=""               # not sent: `paused_held` (G1)
 # THE FILE-LEVEL LINE'S OWN FLAGS (feature 007, T429; lane 3, #165 6834271321,
-# "two gaps for T429 to close"): W9 has `record_written` and W12 has
-# `row_write_refused`, and W11 had none, so a refused W11 was missing from the
-# lifecycle's unfinished list and the lane went SWAPPED over it. `w11_open` is
-# a sent W11 that ended with any code but 0, 3 and 69 under a seq base, which
-# is the case that stops the act (`act_stops_at`); `w11_in_doubt` is its 3.
-w11_open=""; w11_in_doubt=""; w11_held=""
+# "two gaps for T429 to close", and its ruling on lane 4's question 1, #165
+# 6835210568): W9 has `record_written` and W12 has `row_write_refused`, and W11
+# had none, so a refused W11 was missing from the lifecycle's unfinished list
+# and the lane went SWAPPED over it. `w11_open` is a SENT W11 that ended with
+# any code but 0 under a seq base, and it puts the lane's SWAPPING down to that
+# write, in W9's and W12's form: a 2, a 75 or any other code also stops the act
+# (`act_stops_at`), while a 3 and a 69 keep their own paths, with the lane left
+# SWAPPING for them and `--restart` and `--exit` refused below. `w11_in_doubt`
+# is its 3 under any base, and `w11_rc` is its code.
+w11_open=""; w11_in_doubt=""; w11_held=""; w11_rc=""
 if [ -n "$ws_missing" ]; then
 	note "NOT WRITTEN: the PAUSED line, the LANES.md line and the row's state cell all stop where there is no configured workstation (clause (k) rule (d), \`R-A11-14\`). The handoff refreshed above names the gap, and the restart line below carries --lane, because a restart cannot resolve this lane from a row that was never set."
 	row_write_refused=1
@@ -3419,6 +3423,13 @@ else
 			[ "$w11_rc" != 69 ] || paused_69=1
 			if [ "$w11_rc" = 3 ]; then
 				w11_in_doubt=1
+				# UNDER A SEQ BASE A 3 JOINS THE LIFECYCLE'S UNFINISHED LIST, as W9's
+				# and W12's 3s do (T429; lane 3, #165 6835210568, question 1): the
+				# pending record stays, and only the writer's printed `LANES_WRITE_ID`
+				# rerun settles it, since this line carries a UTC of its own (Y:5199,
+				# Y:5222, Y:5224). Under `@files`, or after `act-begin`'s 2, it stays
+				# off the list, as today (question 2).
+				if act_on_seq_base; then w11_open=1; fi
 				note "the LANES.md file-level PAUSED line $d8_text"
 			elif [ -z "$w11_held" ]; then
 				# UNDER A SEQ BASE A SENT W11 THAT ENDED WITH ANY CODE BUT 0, 3 AND 69
@@ -3426,14 +3437,17 @@ else
 				# are (T429; lane 3, #165 6834271321, the first of its two gaps): it
 				# joins the lifecycle's unfinished list below, so the lane stays
 				# SWAPPING for it, and its note says to run the act again, as W9's and
-				# W12's do (Q4, Q11). A 3 relays the writer's rerun (G3) and a 69 prints
-				# the late-path note, each as before, and so do a held write and every
-				# write under `@files` or after `act-begin`'s 2.
+				# W12's do (Q4, Q11). A 3 relays the writer's rerun (G3), and a 69
+				# prints the late-path note; each of those joins the same list under
+				# a seq base (#165 6835210568, question 1), and neither stops the act.
+				# A held write and every write under `@files` or after `act-begin`'s 2
+				# are as they were.
 				if act_on_seq_base && [ "$w11_rc" != 69 ]; then
 					w11_open=1
 					note "the LANES.md file-level PAUSED line was NOT appended — the helper's own words are above. Under this act's base no hand command is printed for it (Y:5587): run $prog again from its start (Y:5601)."
 					act_stops_at "the LANES.md file-level PAUSED line" "$w11_rc"
 				else
+					if act_on_seq_base; then w11_open=1; fi
 					note "the LANES.md file-level PAUSED line was not appended (the register may be busy or behind); the object-log line above is the record readers take."
 				fi
 			fi
@@ -3521,10 +3535,19 @@ if [ -n "$row_write_refused" ]; then
 	else lc_unfinished="${lc_unfinished:+$lc_unfinished; }the row's state cell was not flipped"
 	fi
 fi
-# W11 JOINS THE LIST UNDER A SEQ BASE (T429; lane 3, #165 6834271321): a sent
-# file-level line that ended with any code but 0, 3 and 69 leaves the lane
-# SWAPPING. Its 3 and 69 keep their paths, and `w11_open` is set for neither.
-[ -z "$w11_open" ] || lc_unfinished="${lc_unfinished:+$lc_unfinished; }the LANES.md file-level PAUSED line was not appended"
+# W11 JOINS THE LIST UNDER A SEQ BASE (T429; lane 3, #165 6834271321 and, for
+# its 3 and its 69, #165 6835210568, question 1): a sent file-level line that
+# ended with any code but 0 leaves the lane SWAPPING, in W9's and W12's form:
+# a 3 says D8's cause, and a 69 says its write exited 69 (the PAUSED record's
+# three writes "SHALL exit 69 … and the lane SHALL stay `SWAPPING`", the delta's
+# spec.md:697; Y:3020). A held W11 is not here: W9's and W12's held entries
+# already name it, and it is held only where they are.
+if [ -n "$w11_open" ]; then
+	if [ -n "$w11_in_doubt" ]; then lc_unfinished="${lc_unfinished:+$lc_unfinished; }the LANES.md file-level PAUSED line $d8_cause"
+	elif [ "$w11_rc" = 69 ]; then lc_unfinished="${lc_unfinished:+$lc_unfinished; }the LANES.md file-level PAUSED line was not appended (its write exited 69)"
+	else lc_unfinished="${lc_unfinished:+$lc_unfinished; }the LANES.md file-level PAUSED line was not appended"
+	fi
+fi
 [ "$handoff_written" = 1 ] || lc_unfinished="${lc_unfinished:+$lc_unfinished; }the handoff file was not refreshed"
 [ -z "$lc_inventory_missed" ] || lc_unfinished="${lc_unfinished:+$lc_unfinished; }the worktree inventory was not recorded for $lc_inventory_missed"
 [ -z "$legs_unread" ] || lc_unfinished="${lc_unfinished:+$lc_unfinished; }the assembly's legs could not be read, so its paired feature trees were not polled"
@@ -3611,6 +3634,23 @@ if [ "$do_restart" = 1 ] || [ "$do_exit" = 1 ]; then
 		[ -z "$row_in_doubt" ] ||
 			die "the lane's PAUSED line is written and the row's state cell $d8_text So this pane is left exactly as it is: respawning it could leave the register reading RUNNING for a session that has just been replaced, and every other lane reads the row. Run the printed rerun above and re-run this, or restart by hand:  $restart_cmd" 2
 		die "the lane's PAUSED line is written and the ROW WAS NOT FLIPPED (the note above says why), so this pane is left exactly as it is: respawning it would leave the register reading RUNNING for a session that has just been replaced, and every other lane reads the row. Flip it and re-run, or restart by hand:  $restart_cmd" 2
+	fi
+	# THE FILE-LEVEL LINE'S 3 AND 69 UNDER A SEQ BASE (T429; lane 3, #165
+	# 6835210568, question 1): W11 is on the lifecycle's unfinished list for each,
+	# as W9's and W12's are, so these two gates are theirs (the two above) one more
+	# time, and a refused W11 no longer lets the pane be respawned, or the session
+	# ended, over it. A 3's text names the writer's printed rerun and then a restart
+	# by hand, and never "re-run this": a re-run of this command appends a second
+	# file-level line, since the line carries its own UTC (Y:5224), and the rerun
+	# the writer printed is the only one that finds the first (Y:5222). The process
+	# that holds that rerun is the one a respawn or an `/exit` would end, and the
+	# next session never sees it, because the handoff's top block was written
+	# first. A 2, a 75 or any other code never gets here: the act stopped above.
+	if [ -n "$w11_open" ]; then
+		[ -z "$w11_in_doubt" ] ||
+			die "the lane's PAUSED record and the row are written and the LANES.md file-level PAUSED line $d8_text So this pane is left exactly as it is: respawning it, or ending its session, would end the process that holds the printed rerun, and the next session never sees it, because the handoff's top block was written before the writes. Run the printed rerun above, which writes the line once or finds it (this command run again would append a second line, since the line carries a UTC of its own), and then restart by hand:  $restart_cmd" 2
+		[ "$w11_rc" != 69 ] ||
+			die "the lane's PAUSED record and the row are written and the LANES.md file-level PAUSED line was NOT appended (its write exited 69), and the lane stays SWAPPING for it, so this pane is left exactly as it is: respawning it, or ending its session, would take the process that holds the note above away. The note above names how the record is completed. Do that, and then restart by hand:  $restart_cmd" 2
 	fi
 	[ "$handoff_written" = 1 ] ||
 		die "the lane's PAUSED line is written and the HANDOFF WAS NOT REFRESHED (the note above says why), so this pane is left exactly as it is: the top block of that file is what the new session is started with, and respawning now would hand it the block of a handoff this act has replaced. Put the block printed above at the head of the handoff, then re-run — or restart by hand once you have:  $restart_cmd" 2
