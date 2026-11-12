@@ -93,7 +93,7 @@
 # EXIT CODES, in this family's convention (clause (f)'s, which excludes 3
 # because `lanes-edit.sh` already spends it on an unpushed commit and a code
 # that means two things is a code a caller cannot act on), except a 3 passed
-# on from `lanes-edit.sh`:
+# on from `lanes-edit.sh`, which keeps that writer's meaning:
 #
 #   0  the lane was reached — this process replaced by the launcher, or the
 #      attach performed — or the listing printed, or the pick declined
@@ -105,7 +105,9 @@
 #      not be read, with any code but 69, 75 and 3
 #   1  a read failed, which is never "there are no lanes" (Amendment 7(d))
 #   69, 75 or 3: the register's own code, passed on, where a read of the register
-#      failed with one of them; every other failed read is still 1
+#      failed with one of them; any other code of a read keeps that arm's own
+#      exit (1, or the 2 of a refusal, or the 64 of a `lanes` too old for
+#      `--decide`)
 #   64 usage — an unknown option, or a flag with no value
 #
 #   $LANES_EDIT      the register's reader (default: lanes-edit.sh beside this)
