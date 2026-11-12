@@ -9,6 +9,7 @@ Successful verification still requires the entire heavy suite and a final rechec
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -42,6 +43,18 @@ def read_threads(number):
     return json.loads(data)["data"]["repository"]["pullRequest"]["reviewThreads"]
 
 
+def read_base_changes(number):
+    require(type(number) is int and number > 0, "Invalid PR identity")
+    query = ('query { repository(owner:"opensoft",name:"openRepoTools-code") { '
+             f'pullRequest(number:{number}) {{ timelineItems(first:100, '
+             'itemTypes:[BASE_REF_CHANGED_EVENT]) { pageInfo { hasNextPage } '
+             'nodes { ... on BaseRefChangedEvent { createdAt } } } } } }')
+    data = subprocess.run(["gh", "api", "--hostname", "github.com", "graphql",
+                           "-f", "query=" + query], check=True, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, timeout=15).stdout
+    return json.loads(data)["data"]["repository"]["pullRequest"]["timelineItems"]
+
+
 def clean_review(number, head, request, threads):
     comments = request(REPOSITORY, f"issues/{number}/comments?per_page=100")
     require(isinstance(comments, list) and len(comments) < 100,
@@ -67,11 +80,12 @@ def clean_review(number, head, request, threads):
             and isinstance(response["nodes"], list) and len(response["nodes"]) <= 100
             and all(row["isResolved"] is True for row in response["nodes"]),
             "Unresolved or incomplete review threads")
+    return max(receipts, key=lambda entry: entry[0]), response
 
 
-def fast_receipt(pr, head, request):
-    response = request(REPOSITORY,
-                       f"commits/{head}/check-runs?check_name={FAST}&filter=latest&per_page=100")
+def fast_receipt(pr, head, request, base_changes):
+    endpoint = f"commits/{head}/check-runs?check_name={FAST}&filter=latest&per_page=100"
+    response = request(REPOSITORY, endpoint)
     checks = response["check_runs"]
     require(type(response["total_count"]) is int and response["total_count"] == len(checks) == 1,
             "Missing or ambiguous fast check")
@@ -95,15 +109,42 @@ def fast_receipt(pr, head, request):
             and type(run["run_attempt"]) is int and run["run_attempt"] >= 1
             and run["status"] == "completed" and run["conclusion"] == "success",
             "Fast run belongs to another workflow/head or is incomplete")
+    associated = run["pull_requests"]
+    require(isinstance(associated, list) and len(associated) == 1,
+            "Fast run has no unique source PR")
+    source = associated[0]
+    api = "https://api.github.com/repos/" + REPOSITORY
+    require(type(source["number"]) is int and source["number"] == pr["number"]
+            and source["url"] == f"{api}/pulls/{pr['number']}"
+            and source["head"]["sha"] == head
+            and source["head"]["ref"] == pr["head"]["ref"]
+            and source["head"]["repo"]["url"] == api
+            and source["base"]["ref"] == "main"
+            and source["base"]["sha"] == pr["base"]["sha"]
+            and source["base"]["repo"]["url"] == api,
+            "Fast run source association differs")
+    history = base_changes(pr["number"])
+    require(history["pageInfo"]["hasNextPage"] is False
+            and isinstance(history["nodes"], list) and len(history["nodes"]) <= 100,
+            "Incomplete base-change history")
+    # Run PR associations are mutable. Its immutable creation time plus complete
+    # retarget history proves the current base was already selected for this run.
+    created = datetime.strptime(run["created_at"], "%Y-%m-%dT%H:%M:%SZ")
+    require(all(datetime.strptime(row["createdAt"], "%Y-%m-%dT%H:%M:%SZ") < created
+                for row in history["nodes"]), "Fast run predates a base change")
     job = request(REPOSITORY, f"actions/jobs/{job_id}")
     require(type(job["id"]) is int and job["id"] == job_id
             and type(job["run_id"]) is int and job["run_id"] == run_id and job["head_sha"] == head
             and job["run_attempt"] == run["run_attempt"] and job["name"] == FAST
             and job["status"] == "completed" and job["conclusion"] == "success",
             "Fast job does not match the current successful run")
+    require(run == request(REPOSITORY, f"actions/runs/{run_id}")
+            and response == request(REPOSITORY, endpoint),
+            "Fast run/check changed during verification")
+    return response, run, job, history
 
 
-def source_pr(head, main, root, request, threads):
+def source_pr(head, main, root, request, threads, base_changes):
     associated = request(REPOSITORY, f"commits/{head}/pulls?per_page=100")
     require(isinstance(associated, list) and len(associated) < 100,
             "Incomplete source PR discovery")
@@ -124,9 +165,9 @@ def source_pr(head, main, root, request, threads):
             "Member scope/identity/topology is not the independent pilot")
     policy.git(root, "merge-base", "--is-ancestor", main, head)
     require(policy.regular_scope(root, main, head), "Member changes unsupported paths or modes")
-    fast_receipt(pr, head, request)
-    clean_review(number, head, request, threads)
-    return pr
+    evidence = (fast_receipt(pr, head, request, base_changes),
+                clean_review(number, head, request, threads))
+    return pr, evidence
 
 
 def verify_fast(env, event, root):
@@ -145,7 +186,8 @@ def verify_fast(env, event, root):
     return {"tested": tested, "base": base, "head": head, "full_ci_required": True}
 
 
-def verify_candidate(env, event, root, request=policy.github, threads=read_threads):
+def verify_candidate(env, event, root, request=policy.github, threads=read_threads,
+                     base_changes=read_base_changes):
     require(env["GITHUB_REPOSITORY"] == REPOSITORY and env["GITHUB_EVENT_NAME"] == "push"
             and env["GITHUB_ACTOR"] == "mergify[bot]"
             and event["sender"]["login"] == "mergify[bot]"
@@ -178,8 +220,11 @@ def verify_candidate(env, event, root, request=policy.github, threads=read_threa
     members, snapshots, seen_heads = [], [], set()
     for previous, head, prefix in reversed(chain):
         require(head not in seen_heads, "Duplicate source head")
+        for other in seen_heads:
+            require(policy.git(root, "merge-base", "--all", other, head).decode().split() == [main],
+                    "Source members share non-main history")
         seen_heads.add(head)
-        pr = source_pr(head, main, root, request, threads)
+        pr, evidence = source_pr(head, main, root, request, threads, base_changes)
         require(pr["number"] not in [row["number"] for row in members], "Duplicate source member")
         expected = policy.sha(policy.git(
             root, "merge-tree", "--write-tree", previous, head).decode().strip())
@@ -187,10 +232,15 @@ def verify_candidate(env, event, root, request=policy.github, threads=read_threa
         require(expected == tree and policy.regular_scope(root, previous, prefix),
                 "Candidate prefix is not the expected clean scoped merge")
         members.append({"number": pr["number"], "head": head, "prefix": prefix, "tree": tree})
-        snapshots.append(pr)
-    for pr in snapshots:
+        snapshots.append((pr, evidence))
+    for pr, evidence in snapshots:
         require(policy.snapshot(pr) == policy.snapshot(
             request(REPOSITORY, f"pulls/{pr['number']}")), "Source changed during verification")
+        require(evidence == (fast_receipt(pr, pr["head"]["sha"], request, base_changes),
+                             clean_review(pr["number"], pr["head"]["sha"], request, threads)),
+                "Source evidence changed during verification")
+        require(policy.snapshot(pr) == policy.snapshot(
+            request(REPOSITORY, f"pulls/{pr['number']}")), "Source changed during evidence recheck")
     require(policy.sha(request(REPOSITORY, endpoint)["object"]["sha"]) == candidate
             and policy.sha(request(REPOSITORY, "git/ref/heads/main")["object"]["sha"]) == main,
             "Candidate/main changed during verification")

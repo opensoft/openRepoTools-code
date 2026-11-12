@@ -96,7 +96,13 @@ def batch(tmp_path):
             "id": run_id, "event": "pull_request", "path": ".github/workflows/task-set-fast.yml",
             "head_sha": head, "head_branch": pr["head"]["ref"],
             "head_repository": {"full_name": REPOSITORY}, "check_suite_id": run_id,
-            "status": "completed", "conclusion": "success", "run_attempt": 1}
+            "status": "completed", "conclusion": "success", "run_attempt": 1,
+            "created_at": "2026-11-11T00:00:01Z", "pull_requests": [{
+                "number": number, "url": f"https://api.github.com/repos/{REPOSITORY}/pulls/{number}",
+                "head": {"sha": head, "ref": pr["head"]["ref"],
+                         "repo": {"url": f"https://api.github.com/repos/{REPOSITORY}"}},
+                "base": {"sha": base, "ref": "main",
+                         "repo": {"url": f"https://api.github.com/repos/{REPOSITORY}"}}}]}
         data[f"actions/jobs/{job_id}"] = {
             "id": job_id, "run_id": run_id, "run_attempt": 1, "head_sha": head,
             "name": FAST, "status": "completed", "conclusion": "success"}
@@ -128,9 +134,13 @@ def threads(_number):
     return {"pageInfo": {"hasNextPage": False}, "nodes": []}
 
 
-def verify(delivery, batch, request=None, read_threads=threads):
+def base_changes(_number):
+    return {"pageInfo": {"hasNextPage": False}, "nodes": []}
+
+
+def verify(delivery, batch, request=None, read_threads=threads, read_base_changes=base_changes):
     return delivery.verify_candidate(batch["env"], batch["event"], batch["root"],
-                                     request or request_for(batch), read_threads)
+                                     request or request_for(batch), read_threads, read_base_changes)
 
 
 def test_ci_delivery_exact_independent_batch_has_immutable_prefix_proof(delivery, batch):
@@ -288,6 +298,105 @@ def test_ci_delivery_reverification_catches_changes_after_initial_success(delive
     batch["prs"][7]["state"] = "closed"
     with pytest.raises(ValueError):
         verify(delivery, batch)
+
+
+@pytest.mark.parametrize("shared_history", [False, True])
+def test_ci_delivery_hidden_dependent_or_shared_non_main_history_refuses(
+        delivery, batch, shared_history):
+    root, (first, second) = batch["root"], batch["heads"]
+    left = (git(root, "commit-tree", first + "^{tree}", "-p", first, "-m", "left")
+            if shared_history else first)
+    right = git(root, "commit-tree", batch["candidate"] + "^{tree}",
+                "-p", first, "-m", "dependent right")
+    batch["data"] = json.loads(json.dumps(batch["data"]).replace(first, left).replace(second, right))
+    previous = batch["base"]
+    for head in (left, right):
+        tree = git(root, "merge-tree", "--write-tree", previous, head)
+        previous = git(root, "commit-tree", tree, "-p", previous, "-p", head, "-m", "candidate")
+    batch["env"]["GITHUB_SHA"] = batch["event"]["after"] = previous
+    batch["data"]["git/ref/heads/" + QUEUE]["object"]["sha"] = previous
+    with pytest.raises(ValueError, match="non-main history"):
+        verify(delivery, batch)
+
+
+@pytest.mark.parametrize("failure", ["wrong-base", "wrong-pr", "ambiguous", "foreign-repo"])
+def test_ci_delivery_fast_source_association_refuses(delivery, batch, failure):
+    run = batch["data"]["actions/runs/107"]
+    source = run["pull_requests"][0]
+    if failure == "wrong-base":
+        source["base"]["ref"] = "alternate-base"
+    elif failure == "wrong-pr":
+        source["number"] = 99
+    elif failure == "foreign-repo":
+        source["base"]["repo"]["url"] = "https://api.github.com/repos/fork/other"
+    else:
+        run["pull_requests"].append(copy.deepcopy(source))
+    with pytest.raises(ValueError):
+        verify(delivery, batch)
+
+
+@pytest.mark.parametrize("created,expected", [
+    ("2026-11-11T00:00:00Z", False), ("2026-11-11T00:00:01Z", False),
+    ("2026-11-11T00:00:02Z", True),
+])
+def test_ci_delivery_mutable_association_requires_run_created_after_retarget(
+        delivery, batch, created, expected):
+    # An OLD run's mutable association can already report the current main base.
+    batch["data"]["actions/runs/107"]["created_at"] = created
+    history = {"pageInfo": {"hasNextPage": False},
+               "nodes": [{"createdAt": "2026-11-11T00:00:01Z"}]}
+    reader = lambda number: copy.deepcopy(history if number == 7 else base_changes(number))
+    if expected:
+        assert verify(delivery, batch, read_base_changes=reader)["verified"] is True
+    else:
+        with pytest.raises(ValueError, match="predates a base change"):
+            verify(delivery, batch, read_base_changes=reader)
+
+
+@pytest.mark.parametrize("history", [
+    {"pageInfo": {"hasNextPage": True}, "nodes": []},
+    {"pageInfo": {"hasNextPage": False}, "nodes": [{"createdAt": "invalid"}]},
+])
+def test_ci_delivery_incomplete_or_malformed_base_history_refuses(delivery, batch, history):
+    with pytest.raises(ValueError):
+        verify(delivery, batch, read_base_changes=lambda _number: history)
+
+
+def test_ci_delivery_fast_attempt_changes_after_run_read_refuses(delivery, batch):
+    original = request_for(batch)
+    def request(repo, endpoint):
+        answer = original(repo, endpoint)
+        if endpoint == "actions/jobs/907":
+            batch["data"]["actions/runs/107"].update(
+                run_attempt=2, status="in_progress", conclusion=None)
+        return answer
+    with pytest.raises(ValueError, match="changed during verification"):
+        verify(delivery, batch, request)
+
+
+@pytest.mark.parametrize("failure", ["thread", "review", "run", "history"])
+def test_ci_delivery_member_evidence_changes_during_second_member_refuses(delivery, batch, failure):
+    original, state = request_for(batch), {"changed": False}
+    def request(repo, endpoint):
+        answer = original(repo, endpoint)
+        if endpoint == "pulls/8":
+            state["changed"] = True
+            if failure == "review":
+                batch["data"]["issues/7/comments?per_page=100"][0]["body"] = "quota reached"
+            if failure == "run":
+                batch["data"]["actions/runs/107"].update(
+                    run_attempt=2, status="in_progress", conclusion=None)
+        return answer
+    def read_threads(number):
+        return {"pageInfo": {"hasNextPage": False}, "nodes":
+                [{"isResolved": False}] if failure == "thread" and number == 7
+                and state["changed"] else []}
+    def read_history(number):
+        return {"pageInfo": {"hasNextPage": False}, "nodes":
+                [{"createdAt": "2026-11-12T00:00:00Z"}] if failure == "history"
+                and number == 7 and state["changed"] else []}
+    with pytest.raises(ValueError):
+        verify(delivery, batch, request, read_threads, read_history)
 
 
 @pytest.mark.parametrize("mode", ["fast", "candidate"])

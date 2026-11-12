@@ -24,3 +24,9 @@ from local fixtures or additive fast source runs.
 Disposition: accepted preparation. Activation/ruleset migration/canary and later
 dependent/wider scope require separate approval and qualification. No lane/tool/
 session takeover, release change or bypass is authorized.
+
+Local-review repair: enforce independent Git history, bind fast-run creation to
+complete PR base-change history instead of mutable current associations alone,
+and revalidate mutable fast/run/check/review/thread evidence at the final source
+boundary. Four review reproducers and fresh-after-retarget positive cases are
+regression contracts. Existing gates and prepared-only authority are unchanged.

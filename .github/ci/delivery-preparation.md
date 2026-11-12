@@ -48,6 +48,16 @@ but is never reported as a two-member canary. No retry or historical scan hides
 a failed attempt. Live membership and landed prefix/final trees still need
 separate observed acceptance before widening.
 
+Independent means the members share no Git history beyond current main, not
+merely that their bodies omit Depends-On. Fast provenance also requires one
+current source PR/main association and complete bounded base-change history.
+The run's immutable creation time must be strictly later than every retarget;
+current associations alone can change and do not prove a historical base. A
+fresh reopened run can qualify after retargeting; a historical rerun cannot
+erase the retarget. Equal-second ordering is ambiguous and refuses. Successful
+run/check state is reread after job lookup, and fast/base-history/Codex/thread
+snapshots are revalidated before final source/ref consistency acceptance.
+
 ## Activation remains a separate decision
 
 The current main rules require four full source checks. They remain intact.
