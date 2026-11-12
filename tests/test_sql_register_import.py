@@ -150,6 +150,15 @@ TAKE_LINES = {
     "bad-stamp": f"LANDING — lane repoA-1, session {UUID_A1}@Eagle, 2026-13-45T99:99Z, PR #12 "
                  f"into opensoft/repoS main",
 }
+#: THE DEAD `HOLD`'S RELEASE (lane 3's B16 post, #165 6814260122): the take
+#: `TAKE_LINES["hold-no-utc"]` has no readable time, and lane 1's open-`HOLD`
+#: check (T116 follow-up 6, line R's merge21f6) counts it as open, on lane 3's
+#: ruling (#165 6813195977), so a first-form cutover over it refuses with 2.
+#: Its holder, the operator lane, releases it, as an operator releases a dead
+#: one before the freeze (operations.md act 4's steps 1 and 3), by
+#: `lanes-edit.sh append-line`, before `CutoverRegister`'s import.
+HOLD_NO_UTC_RELEASE = (f"HOLD RELEASED — lane repoA-2 (Eagle), 2026-10-01T05:20:00Z: "
+                       f"opensoft/repoH main {TIP_A}")
 #: The `LANDING EXPIRED` shape with no `for lane`: it names repoA-2's open
 #: take, PR #9 on opensoft/repoE, and must release nothing (U3; F13).
 EXPIRED_NO_HOLDER = (f"LANDING EXPIRED — lane repoA-1, session {UUID_A1}@Eagle, "
@@ -1146,10 +1155,23 @@ class CutoverRegister(FixtureRegister):
     for the import, `cutover` and `status`, and `mode=primary` for a write.
     Each command runs as the operator lane, `LANES_LANE=repoA-2`, through
     its checkout (F12; section 2.1), by the flipped copy. `extra_path` goes
-    first on those commands' `PATH` (AT-F2's `git` wrapper)."""
+    first on those commands' `PATH` (AT-F2's `git` wrapper).
 
-    def __init__(self, root: Path, pg, *, extra_path: Path | None = None):
+    Before the import, the operator lane releases the fixture's `HOLD` with
+    no readable time, `HOLD_NO_UTC_RELEASE` in files mode, so C is the tip
+    after that release and no `HOLD` is open in `main_slots`: lane 1's
+    open-`HOLD` check would refuse the first form otherwise (lane 3, #165
+    6814260122). `release_hold=False` keeps it open, for the one case that
+    expects the refusal."""
+
+    def __init__(self, root: Path, pg, *, extra_path: Path | None = None,
+                 release_hold: bool = True):
         super().__init__(root)
+        if release_hold:
+            proc = self.edit("append-line", HOLD_NO_UTC_RELEASE, env={"LANES_LANE": OPERATOR})
+            assert proc.returncode == 0, (
+                f"the dead HOLD's release, lanes-edit.sh append-line: {proc.stdout}{proc.stderr}")
+            self.c = self.tip()
         self.pg = pg
         self.extra_path = extra_path
         self.copy = flipped_indexer(root / "flip")
@@ -1382,3 +1404,29 @@ def test_a_handoff_commit_on_the_tip_does_not_abort_the_cutover(pg, tmp_path):
     assert (fields.get("import"), fields.get("lanes-tree")) == (reg.c, reg.tree(reg.c)), fields
     switch = _switch(pg)
     assert (switch["mode"], switch["marker_state"]) == ("primary", "present"), switch
+
+
+def test_a_first_cutover_over_a_hold_with_no_readable_time_is_refused_2_and_sets_nothing(pg,
+                                                                                          tmp_path):
+    """The fixture's `HOLD` with no readable time, `TAKE_LINES["hold-no-utc"]`,
+    left open (`release_hold=False`): the first-form cutover refuses with 2
+    before its step 1, its listed line naming the take with "time
+    unreadable", and sets nothing: the journal holds the import alone, the
+    head is 0, the switch reads `files` with the marker `absent`, and origin's
+    tip is still C, with no `lanes/STORE` (lane 1's T116 follow-up 6, its
+    probe 5; lane 3's ruling, #165 6813195977, kept by its B16 post,
+    6814260122). It fails until that follow-up lands (line R's merge21f6):
+    before it, the cutover goes on over the open take."""
+    reg = CutoverRegister(tmp_path / "e", pg, release_hold=False)
+    proc = reg.cutover()
+    assert proc.returncode == 2, (
+        f"a first-form cutover over an open HOLD with no readable time is not refused with 2 "
+        f"(lane 1's T116 follow-up 6): exit {proc.returncode}: {proc.stderr}")
+    listed = [line for line in proc.stderr.splitlines() if "time unreadable" in line]
+    assert len(listed) == 1 and TAKE_LINES["hold-no-utc"] in listed[0], (
+        f"the refusal does not list the take with no readable time: {proc.stderr}")
+    assert _seqs(pg) == [(0, "import")] and _head(pg) == 0, "the refused cutover wrote an entry"
+    switch = _switch(pg)
+    assert (switch["mode"], switch["marker_state"]) == ("files", "absent"), switch
+    assert reg.origin_tip() == reg.c, "the refused cutover pushed"
+    assert "lanes/STORE" not in reg.origin_git("ls-tree", "-r", "--name-only", reg.c, "lanes/")
