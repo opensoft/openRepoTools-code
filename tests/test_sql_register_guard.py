@@ -58,6 +58,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -1981,8 +1982,19 @@ def test_a_database_that_does_not_answer_is_2_inside_4_5_s(estate, case):
             closers.append(close)
             _db_config(est, f"postgresql://reader@127.0.0.1:{port}/{est.pg.name}")
         elif case.startswith("2-"):
-            relay = pytest.importorskip("pgcluster").__dict__.get("silent_after_startup")
-            assert relay is not None, "tests/pgcluster.py has no silent-after-startup relay"
+            # T229c's RELAY in front of the case's own database: it passes the
+            # startup on, then goes silent at the first ReadyForQuery, so the
+            # read connects and logs in and its query is never answered. Its
+            # login is the estate's own `reader_url=`'s (`pg.url()`'s), which
+            # the cluster has; case 1's `reader` reaches no server, but here
+            # a login the cluster lacks would end the read at once on its
+            # FATAL, a refusal that is not this case's fault.
+            silent = pytest.importorskip("pgcluster").__dict__.get("silent_after_startup")
+            assert silent is not None, "tests/pgcluster.py has no silent-after-startup relay"
+            relay = silent(est.pg.port, socket_dir=est.pg.host)
+            closers.append(relay.close)
+            login = urlsplit(est.pg.url()).username
+            _db_config(est, f"postgresql://{login}@127.0.0.1:{relay.port}/{est.pg.name}")
         elif case.startswith("3-"):
             holder = est.pg.session()
             closers.append(holder.kill)
