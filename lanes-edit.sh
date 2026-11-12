@@ -4293,9 +4293,18 @@ wr_seam_cap_s() {
 # A 0700 directory this uid owns, made where it is missing (Y:5172, Y:5180: "in
 # a 0700 directory"). 1 where it cannot be made, is not a directory, or is not
 # this uid's.
+#
+# `<state>` ITSELF IS ONLY MADE WHERE IT IS MISSING, NEVER CHMODDED: it is
+# `lanes-index`'s own directory, which `lanes-index` makes 0700 and never
+# chmods (`lanes-index:1492`), and the contract says only that every directory
+# is "made where it is missing, under `umask 077`, and must be a directory this
+# uid owns" (§1). Made here, under umask 077, it is 0700 already. The
+# directories under it, `register-*/` and the attempt directories, are made
+# 0700 or set to it (review REV-W10a N1).
 wr_dir_0700() {   # <dir>
   ( umask 077 && mkdir -p -- "$1" ) 2>/dev/null || return 1
   [ -d "$1" ] && [ -O "$1" ] || return 1
+  [ "$1" != "$WR_STATE" ] || return 0
   chmod 700 -- "$1" 2>/dev/null
 }
 
