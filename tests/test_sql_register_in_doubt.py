@@ -1788,7 +1788,8 @@ def test_the_texts_for_3_say_may_not_be_written_and_relay_the_writers_rerun(site
 # test 12's half-open case at `LANES_REGISTER_DEADLINE_S=1` (`HalfOpen`): the
 # first commit call lost by `before`; the test's session, as `lanes_w_fx`
 # with `idle_in_transaction_session_timeout = 0`, replaying that call's script
-# without its COMMIT, so it holds the head row with the row inserted; the
+# without its COMMIT, ended in a `;` that `psql` sends (`without_commit`,
+# T244c), so it holds the head row with the row inserted; the
 # next snapshot held until the replay returned; and the lookup's first try
 # held on a FIFO while the case decides. `<n>` is the first call's
 # `not_after`. Its timer is D9's 9 s (open point 37).
@@ -1893,7 +1894,9 @@ class HalfOpen:
                           arms=[BEFORE, {"mode": "hold", "match": SNAPSHOT_TEXT, "call": 2, "fifo": str(snap)},
                                 *held, *arms])
         call = until_seen("the first commit call", lambda: self.w.commit_calls()[:1], self.w)[0]
-        script = LAST_COMMIT.sub("", call["stdin"], count=1)
+        script = without_commit(call["stdin"])
+        assert "commit_write" in script and script.rstrip().endswith(";") and not script.rstrip().endswith("\\;"), (
+            f"the replay does not end in a `;` that psql sends: {script[-80:]!r}")
         self.session = e.c.db.session(WRITER_LOGIN, "t246-held")
         self.session.stdin.write("SET idle_in_transaction_session_timeout = 0;\n"
                                  + (alter(script) if alter else script).rstrip() + "\n")
