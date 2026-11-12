@@ -105,7 +105,8 @@ def route_fixture(cutover, batch, env, event):
 def test_ci_cutover_verified_source_selects_fast_but_not_merge_authority(cutover, batch):
     env, event = source_fixture(cutover, batch)
     result = route_fixture(cutover, batch, env, event)
-    assert result["mode"] == "source" and result["omit_full"] is True
+    assert result["mode"] == "source"
+    assert result["omit_full"] is True
     assert len(result["proof"]) == 64
     assert "queue_admission" not in result
 
@@ -243,6 +244,41 @@ def test_ci_cutover_top_heavy_cli_requires_current_delivery_intent(delivery, tmp
         assert refused.value.code == 1
 
 
+def test_ci_cutover_proof_writer_uses_only_exclusive_fixed_temp_file(delivery, tmp_path):
+    record = {"fixture": "validated record"}
+    delivery.write_record(record, {"RUNNER_TEMP": str(tmp_path)})
+    destination = tmp_path / "proof.json"
+    assert json.loads(destination.read_text()) == record
+    with pytest.raises(FileExistsError):
+        delivery.write_record({"fixture": "replacement"}, {"RUNNER_TEMP": str(tmp_path)})
+    assert json.loads(destination.read_text()) == record
+
+
+@pytest.mark.parametrize("failure", ["relative-directory", "missing-directory", "symlink-directory", "symlink-file", "oversized"])
+def test_ci_cutover_proof_writer_refuses_redirection_and_overwrite(delivery, tmp_path, failure):
+    destination, record = tmp_path, {"fixture": "record"}
+    sentinel = tmp_path / "sentinel"
+    sentinel.write_text("preserve")
+    if failure == "relative-directory": destination = "../outside"
+    elif failure == "missing-directory": destination = tmp_path / "absent"
+    elif failure == "symlink-directory":
+        destination = tmp_path / "alias"
+        destination.symlink_to(tmp_path, target_is_directory=True)
+    elif failure == "symlink-file": (tmp_path / "proof.json").symlink_to(sentinel)
+    elif failure == "oversized": record = {"fixture": "x" * 40000}
+    with pytest.raises((ValueError, FileExistsError)):
+        delivery.write_record(record, {"RUNNER_TEMP": str(destination)})
+    assert sentinel.read_text() == "preserve"
+
+
+def test_ci_cutover_cli_no_longer_accepts_an_output_path(delivery, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["delivery_verify.py", "candidate", "--proof-kind", "admission",
+                                      "--proof-output", "/outside/credentials"])
+    with pytest.raises(SystemExit) as refused:
+        delivery.main()
+    assert refused.value.code == 2
+
+
 @pytest.mark.parametrize("failure", ["wrong-name", "expired", "oversized", "digest", "foreign-repo",
     "head", "run", "traversal", "extra-member", "bad-json", "schema", "attempt", "duplicate",
     "artifact-race", "run-race", "zip-bomb", "duplicate-json-key", "bad-zip"])
@@ -313,7 +349,8 @@ def test_ci_cutover_candidate_duplicate_requires_real_admission(cutover, batch, 
     env, event, data = duplicate_fixture(cutover, batch, artifact)
     result = cutover.route(env, event, batch["root"], request_for(batch), lambda _id: data,
                            threads, base_changes)
-    assert result["mode"] == "candidate" and result["omit_full"] is True
+    assert result["mode"] == "candidate"
+    assert result["omit_full"] is True
 
 
 @pytest.mark.parametrize("failure", ["no-admission", "no-intent", "source-closed", "candidate-author",
@@ -416,7 +453,8 @@ def test_ci_cutover_controls_are_read_only_trusted_and_unfiltered(yaml_reader):
 def test_ci_cutover_top_level_heavy_shell_fails_closed(yaml_reader, tmp_path, probe, qualify, candidate, ok):
     workflow = yaml_reader(REPO / ".github/workflows/task-set-candidate-shadow.yml")
     job = workflow["jobs"]["heavy"]
-    assert job["name"] == "openrepotools-batch-heavy" and job["if"] == "${{ always() }}"
+    assert job["name"] == "openrepotools-batch-heavy"
+    assert job["if"] == "${{ always() }}"
     result = subprocess.run(["bash", "-euo", "pipefail", "-c", job["steps"][0]["run"]], cwd=tmp_path,
         env=dict(os.environ, PROBE=probe, QUALIFY=qualify, CANDIDATE=candidate), capture_output=True, timeout=10)
     assert (result.returncode == 0) is ok
@@ -429,8 +467,10 @@ def test_ci_cutover_manual_queue_holds_heavy_and_preserves_older_queues(yaml_rea
     queue = config["queue_rules"][3]
     assert queue["name"] == "openrepotools-claude-current"
     assert queue["branch_protection_injection_mode"] == "queue"
-    assert queue["batch_size"] == 2 and queue["batch_max_failure_resolution_attempts"] == 0
-    assert queue["max_checks_retries"] == 0 and queue["checks_timeout"] == "90 minutes"
+    assert queue["batch_size"] == 2
+    assert queue["batch_max_failure_resolution_attempts"] == 0
+    assert queue["max_checks_retries"] == 0
+    assert queue["checks_timeout"] == "90 minutes"
     assert queue["merge_conditions"] == ["check-success=@github-actions/openrepotools-batch-heavy"]
     context = {"draft": False, "closed": False, "from-fork": False, "head": "feature/scoped", "base": "main",
                "body": "CI-Shadow: claude-current\nCI-Delivery: claude-current",
@@ -479,7 +519,8 @@ def test_ci_cutover_exact_closed_landing_prefix_uses_completed_proof(cutover, ba
     env, event, data, _jobs, _row = qualified_fixture(cutover, batch, artifact, count)
     result = cutover.route(env, event, batch["root"], request_for(batch), lambda _id: data,
                            threads, base_changes)
-    assert result["mode"] == "landing" and result["omit_full"] is True
+    assert result["mode"] == "landing"
+    assert result["omit_full"] is True
 
 
 @pytest.mark.parametrize("failure", ["job-failed", "job-skipped", "job-cancelled", "job-missing",

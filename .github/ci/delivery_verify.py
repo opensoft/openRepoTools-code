@@ -256,11 +256,23 @@ def verify_candidate(env, event, root, request=policy.github, threads=read_threa
             "tree": members[-1]["tree"], "members": members}
 
 
+def write_record(record, env):
+    # The CLI cannot select a destination. Only the Actions-owned canonical
+    # temp directory is accepted; exclusive creation refuses files/symlinks.
+    directory = Path(env["RUNNER_TEMP"])
+    require(directory.is_absolute() and directory.is_dir()
+            and directory.resolve(strict=True) == directory and not directory.is_symlink(),
+            "Proof directory is not a canonical runner temporary directory")
+    data = json.dumps(record, sort_keys=True) + "\n"
+    require(len(data.encode("utf-8")) <= 32768, "Proof record is oversized")
+    with (directory / "proof.json").open("x", encoding="utf-8") as output:
+        output.write(data)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("fast", "candidate"))
     parser.add_argument("--proof-kind", choices=("admission", "qualified"))
-    parser.add_argument("--proof-output", type=Path)
     parser.add_argument("--require-delivery", action="store_true")
     args = parser.parse_args()
     mode = args.mode
@@ -271,13 +283,12 @@ def main():
         if args.require_delivery:
             require(mode == "candidate" and all(row["delivery"] is True for row in result["members"]),
                     "Member delivery intent is missing")
-        if args.proof_kind or args.proof_output:
-            require(mode == "candidate" and args.proof_kind and args.proof_output,
-                    "Proof output requires a candidate phase and path")
+        if args.proof_kind:
+            require(mode == "candidate", "Proof output requires a candidate phase")
             # Imported lazily to keep the existing standalone fast CLI unchanged.
             from delivery_evidence import make_record
             record = make_record(result, args.proof_kind, os.environ)
-            args.proof_output.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+            write_record(record, os.environ)
     except Refused as error:
         parser.exit(1, f"Delivery verification refused: {error}.\n")
     except policy.ERRORS:

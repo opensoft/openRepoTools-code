@@ -447,7 +447,7 @@ def test_ci_delivery_workflows_are_additive_and_candidate_has_no_live_trigger():
     assert gate["name"] == "Candidate full-suite qualification"
     assert heavy["jobs"]["verify"]["steps"][0]["with"]["ref"] == "main"
     assert gate["steps"][1]["with"]["ref"] == "main"
-    assert gate["steps"][-2]["run"] == 'python3 policy/.github/ci/delivery_verify.py candidate --proof-kind qualified --proof-output "$RUNNER_TEMP/proof.json"'
+    assert gate["steps"][-2]["run"] == 'python3 policy/.github/ci/delivery_verify.py candidate --proof-kind qualified'
     assert gate["steps"][-1]["with"]["if-no-files-found"] == "error"
     assert all("GH_TOKEN" not in step.get("env", {}) for step in fast["jobs"]["fast"]["steps"])
 

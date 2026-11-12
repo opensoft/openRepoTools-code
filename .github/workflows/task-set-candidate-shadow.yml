@@ -30,7 +30,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [ -f .github/ci/delivery_evidence.py ] && python3 .github/ci/delivery_verify.py candidate --proof-kind admission --proof-output "$RUNNER_TEMP/proof.json"; then
+          if [ -f .github/ci/delivery_evidence.py ] && python3 .github/ci/delivery_verify.py candidate --proof-kind admission; then
             printf '%s\n' 'qualify=true' >> "$GITHUB_OUTPUT"
             printf '%s\n' 'Scoped probe passed; full CI remains required. No queue admission from this probe. Additional qualification will independently verify again.' >> "$GITHUB_STEP_SUMMARY"
           else

@@ -20,6 +20,7 @@ FULL = {"mode": "full", "omit_full": False}
 LEGACY = {"guard-launch-mode", "tests", "tests-no-submodule", "package"}
 GATE = "openrepotools-delivery"
 DIRECT = ".github/workflows/tests.yml"
+PARENTS = "--format=%P"
 ERRORS = policy.ERRORS + (zipfile.BadZipFile, RuntimeError)
 require = verifier.require
 
@@ -81,7 +82,7 @@ def source(env, event, root, main, request, base_changes):
             and policy.regular_scope(root, main, head), "Source is outside fixed scope")
     policy.git(root, "merge-base", "--is-ancestor", main, head)
     tested = policy.sha(env["GITHUB_SHA"])
-    require(policy.git(root, "show", "-s", "--format=%P", tested).decode().split() == [main, head],
+    require(policy.git(root, "show", "-s", PARENTS, tested).decode().split() == [main, head],
             "Source test-merge identity differs")
     fast = verifier.fast_receipt(pr, head, request, base_changes)
     require(pr == request(REPOSITORY, f"pulls/{number}")
@@ -100,7 +101,7 @@ def duplicate(env, event, root, main, request, fetch, threads, base_changes):
             and pr["user"]["login"] == "mergify[bot]"
             and policy.side(pr, "base") == (main, "main")
             and policy.QUEUE.fullmatch(branch) is not None, "Not a current draft candidate")
-    require(policy.git(root, "show", "-s", "--format=%P", policy.sha(env["GITHUB_SHA"])).decode().split()
+    require(policy.git(root, "show", "-s", PARENTS, policy.sha(env["GITHUB_SHA"])).decode().split()
             == [main, head], "Candidate test-merge identity differs")
     run = evidence.candidate_runs(head, request)
     evidence.run_identity(run, head, branch)
@@ -121,7 +122,7 @@ def duplicate(env, event, root, main, request, fetch, threads, base_changes):
 
 def landed(env, event, root, request, fetch):
     after = policy.sha(env["GITHUB_SHA"])
-    pair = policy.git(root, "show", "-s", "--format=%P", after).decode().split()
+    pair = policy.git(root, "show", "-s", PARENTS, after).decode().split()
     require(len(pair) == 2, "Main event is not a merge")
     response = request(REPOSITORY,
                        "actions/workflows/task-set-candidate-shadow.yml/runs?per_page=20&page=1")

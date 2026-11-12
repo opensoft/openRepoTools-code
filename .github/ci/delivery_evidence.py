@@ -24,6 +24,8 @@ REPOSITORY_ID = 1434660228
 CALLER = ".github/workflows/task-set-candidate-shadow.yml"
 CALLEES = {".github/workflows/task-set-candidate.yml", ".github/workflows/tests.yml"}
 HEAVY = "openrepotools-batch-heavy"
+MERGIFY = "mergify[bot]"
+TIMESTAMP = "%Y-%m-%dT%H:%M:%SZ"
 FULL_JOBS = {"guard-launch-mode", "tests", "tests-no-submodule", "package",
              "delivery-route", "openrepotools-delivery"} | {
     f"{name} ({shard})" for name, shards in {
@@ -64,8 +66,8 @@ def run_identity(run, candidate=None, branch=None, completed=False):
             and run["head_repository"]["full_name"] == REPOSITORY
             and run["head_repository"]["id"] == REPOSITORY_ID
             and run["event"] == "push" and run["path"] == CALLER
-            and run["actor"]["login"] == "mergify[bot]"
-            and run["triggering_actor"]["login"] == "mergify[bot]"
+            and run["actor"]["login"] == MERGIFY
+            and run["triggering_actor"]["login"] == MERGIFY
             and type(run["run_attempt"]) is int and run["run_attempt"] == 1
             and policy.QUEUE.fullmatch(run["head_branch"]) is not None,
             "Run is not an authentic first-attempt candidate caller")
@@ -204,7 +206,7 @@ def completed_jobs(run, request=policy.github):
                 and row["head_sha"] == run["head_sha"]
                 and row["status"] == "completed" and row["conclusion"] == "success",
                 "Candidate job did not complete successfully")
-        datetime.strptime(row["completed_at"], "%Y-%m-%dT%H:%M:%SZ")
+        datetime.strptime(row["completed_at"], TIMESTAMP)
     return max(row["completed_at"] for row in rows)
 
 
@@ -253,8 +255,8 @@ def candidate_runs(candidate, request):
 def landing(record, run, env, event, root, request=policy.github):
     """Closed records are historical proof, never open candidate admission."""
     require(env["GITHUB_EVENT_NAME"] == "push" and env["GITHUB_REF"] == "refs/heads/main"
-            and env["GITHUB_ACTOR"] == "mergify[bot]"
-            and event["sender"]["login"] == "mergify[bot]"
+            and env["GITHUB_ACTOR"] == MERGIFY
+            and event["sender"]["login"] == MERGIFY
             and event["repository"]["full_name"] == REPOSITORY
             and event["ref"] == env["GITHUB_REF"] and event["forced"] is False
             and event["deleted"] is False, "Not an authentic main landing event")
@@ -289,8 +291,8 @@ def landing(record, run, env, event, root, request=policy.github):
                 and pr["merged"] is True and pr["merge_commit_sha"] == commit
                 and policy.side(pr, "head")[0] == member["head"]
                 and policy.side(pr, "base")[1] == "main"
-                and datetime.strptime(pr["merged_at"], "%Y-%m-%dT%H:%M:%SZ")
-                >= datetime.strptime(finished, "%Y-%m-%dT%H:%M:%SZ"),
+                and datetime.strptime(pr["merged_at"], TIMESTAMP)
+                >= datetime.strptime(finished, TIMESTAMP),
                 "Landed source/merge record differs from completed qualification")
         snapshots.append(pr)
     require(all(pr == request(REPOSITORY, f"pulls/{pr['number']}") for pr in snapshots)

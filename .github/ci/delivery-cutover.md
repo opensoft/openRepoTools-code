@@ -52,8 +52,11 @@ Release branches, nightly and manual runs force full. No release workflow change
 The queue-push caller writes immutable admission and qualified JSON artifacts
 from trusted verification into runner.temp, using the existing pinned upload
 action. Records contain validated IDs, hashes and opt-in flags, not raw PR/review
-bodies or secrets. Readers bind numeric artifact ID/name/archive SHA256/run/head/
-repository/current first attempt and reread provenance. Archives are size-limited,
+bodies or secrets.
+The CLI accepts no output path: it exclusively creates the fixed proof.json in
+the canonical Actions runner.temp, refusing existing files and symlinks.
+Readers bind numeric artifact ID/name/archive SHA256/run/head/repository/current
+first attempt and reread provenance. Archives are size-limited,
 one exact JSON member only, never extracted. All Git/API operations are bounded.
 If a queue branch was deleted, the validated immutable public candidate commit
 may be fetched by SHA from the fixed public repository, without credentials,

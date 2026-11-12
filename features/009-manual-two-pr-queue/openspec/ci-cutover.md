@@ -14,3 +14,9 @@ Local verification: 741 focused tests passed, zero skips, through tests/run.sh
 as UID1000 in an offline disposable 2CPU/2GiB existing bench image. Workflow lint,
 strict OpenSpec and whitespace checks passed. Hosted CI/reuse qualification,
 exact-head review and every live acceptance gate remain separate.
+
+Sonar follow-up: remove the arbitrary proof-output CLI argument. The writer now
+exclusively creates only proof.json in the canonical Actions runner temporary
+directory, refusing files/symlinks/redirection. Seven new rejection/exclusive
+creation regressions bring the focused result to748 passed, zero skips; lint and
+whitespace remain clean. Latest-head hosted reanalysis/review remain separate.
