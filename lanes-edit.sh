@@ -7565,7 +7565,7 @@ pw_doubt_end() {   # <the end's code> <its message, or empty> [<attempt dir>]
   pw_run_dir_done
   if [ "$PW_LK" = lr007 ] && [ "$PW_LK_TOKEN" = generation ]; then
     WR_REC_WRITE_ID="$WR_ID"; WR_REC_GENERATION="$WR_GEN"; WR_REC_CREATED_UTC="$WR_CREATED_UTC"
-    WR_REC_LANE="${WR_LANE:-$PW_LANE}"; WR_REC_VERB="$WR_VERB"; WR_REC_TAIL="$WR_TAIL"
+    WR_REC_VERB="$WR_VERB"; WR_REC_TAIL="$WR_TAIL"
     note "F3's lookup of write $WR_ID was refused with LR007 generation, above: this register is not the generation the write was made against. This run's end was exit $1."
     wr_refuse_other_generation
   fi
