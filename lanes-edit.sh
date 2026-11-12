@@ -552,6 +552,12 @@
 #      carry both without the caller guessing, so the newer reads spend a number
 #      of their own and the older half of this file keeps 2 where it always was.
 #      Clause (h)'s table is the contract for which read uses which.
+#
+#  69  EX_UNAVAILABLE — A READ THAT DECIDES, WHERE THE REGISTER'S READ FAILED
+#      ON PRIMARY (feature 007, T504 and T505 Q3; FR-033): nothing on stdout,
+#      and never the files instead. `canon-lane --walk` (T411; FR-035) exits
+#      69 where its walk's read of the register, or an alias hop, answers 69,
+#      and prints no walk; off primary that failed read is 1 (see 1).
 #   3  PUSHED, NOT CONFIRMED: <sha> (Amendment 23 S4, its one cause). The write
 #      committed and pushed — or its push timed out, and a hung push often
 #      lands — and the read-back could not confirm the commit on origin: the
