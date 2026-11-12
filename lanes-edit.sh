@@ -550,12 +550,13 @@
 #      pending record that cannot be read as one; and three cases the design
 #      leaves open, refused rather than guessed (`wr_id_plan`, `wr_id_settle`).
 #      AND FEATURE 007'S INTERNAL FLAG (T413; F22, Y:5078), with nothing
-#      sent, two faults under a flag that is honoured: an attempt directory
-#      whose `snapshot` gives no `clock=` in whole seconds to date the attempt
-#      by (`reg_scratch_fault`), and a pathspec that differs from HEAD in the
-#      attempt's scratch tree before the verb has edited it, an internal
-#      error and never a capture (`reg_scratch_dirty`). A value that is not
-#      honoured is never a 2: it is ignored.
+#      sent, three faults under a flag that is honoured: an attempt directory
+#      whose `snapshot` gives no `clock=` in whole seconds, written with no
+#      leading zero, to date the attempt by, or whose scratch tree has no
+#      `lanes/LANES.md` (both `reg_scratch_fault`), and a pathspec that
+#      differs from HEAD in the attempt's scratch tree before the verb has
+#      edited it, an internal error and never a capture (`reg_scratch_dirty`).
+#      A value that is not honoured is never a 2: it is ignored.
 #      AND FEATURE 007'S SEAM (T414; Y:5060, Y:5097; `cp_seam`), in an
 #      attempt's child under the flag, each an internal error refused before
 #      `ready`, so that reach sends nothing: a staged path outside the write's
@@ -1531,8 +1532,10 @@ unset LANES__REPLAY_PID LANES__ATTEMPT LANES__CLAIM_FROM LANES__CLAIM_DEAD LANES
 # and the run goes on as any write and asks the mode (Y:5034; YT:6869–6873;
 # the same ruling, item 1). A stray export is then nothing, and never blocks a
 # prompt through `guard`'s 2. Exit 2, nothing sent, is kept for a fault under
-# a flag that IS honoured: a `snapshot` with no whole-seconds `clock=` here
-# (item 3), and a dirty scratch tree (`reg_scratch_dirty`, Y:5078).
+# a flag that IS honoured: a `snapshot` with no whole-seconds `clock=`, or one
+# with a leading zero, here (item 3; REV-W9c N1), a scratch tree with no
+# `lanes/LANES.md`, here too (REV-W9c N2), and a dirty scratch tree
+# (`reg_scratch_dirty`, Y:5078).
 #
 # FIELD 2 IS NOT COMPARED with `pid_start_of "$PPID"`, which the ruling leaves
 # optional. Lane 5's `pid_start_of` (T502) is defined far below this file
@@ -1615,7 +1618,12 @@ reg_scratch_take() {
   # HONOURED FROM HERE ON. THE CLOCK: the first `clock=` of the snapshot's
   # stdout, saved verbatim by the parent (contract §3.2: "clock=<epoch s>  the
   # database clock, in whole seconds"), as this file's UTC stamp. None, or one
-  # that is not whole seconds, is a fault, 2 (ruling item 3).
+  # that is not whole seconds, is a fault, 2 (ruling item 3). So is one with a
+  # leading zero, though `lanes-index` prints none: `$(( ))` reads `0100` as
+  # octal, 64, where GNU `date -d @0100` writes 100 seconds, so `now_epoch` and
+  # `utc_now` would be two clocks, and a leading-zero clock with an 8 or a 9
+  # in it aborts the arithmetic with "value too great for base" (REV-W9c N1).
+  # A lone `0` is whole seconds, and both read it alike.
   rst_l=""
   if [ -f "$rst_d/snapshot" ] && [ -r "$rst_d/snapshot" ]; then
     while IFS= read -r rst_l || [ -n "$rst_l" ]; do
@@ -1625,6 +1633,7 @@ reg_scratch_take() {
   fi
   case "$rst_c" in
     ''|*[!0123456789]*) reg_scratch_fault "$rst_d" "snapshot gives no clock= in whole seconds (it reads $(printf '%q' "$rst_c")), and that clock is the one this attempt's lines and durations are read on" ;;
+    0?*) reg_scratch_fault "$rst_d" "snapshot's clock=${rst_c} has a leading zero, which this shell's arithmetic reads as octal and GNU date as decimal, so this attempt's lines and durations would not be read on one clock" ;;
   esac
   [ "${#rst_c}" -le 18 ] ||
     reg_scratch_fault "$rst_d" "snapshot's clock=${rst_c} is too long to be a time"
@@ -1634,6 +1643,16 @@ reg_scratch_take() {
     [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) : ;;
     *) reg_scratch_fault "$rst_d" "snapshot's clock=${rst_c} is a time this host's date cannot write as a UTC" ;;
   esac
+  # THE SCRATCH TREE'S REGISTER. `LANES_REPO` is `<dir>/tree` below, so the
+  # resolver's `LANES_FILE` is `<dir>/tree/lanes/LANES.md`, which `register
+  # snapshot --tree` writes from SQL before the parent starts this child
+  # (contract §3.2). Without it the workspace guard would answer 1, "registry
+  # not found", with a person's words ("re-run it … or pull that checkout")
+  # about a `workspace.yaml` that has no part in it. Under a flag that is
+  # honoured that is a fault of the write path, 2, nothing sent (ruling items
+  # 1 and 7; REV-W9c N2).
+  [ -f "$rst_d/tree/lanes/LANES.md" ] ||
+    reg_scratch_fault "$rst_d" "tree has no lanes/LANES.md, the register this verb edits, which lanes-index register snapshot --tree writes there before the child is started"
   # THE RUN'S DIRECTORY, `<d>/<run>/`, which every attempt of this run shares:
   # where `gh_reads` is cached, only where it too is under `register-writes/`,
   # this uid's and 0700. Otherwise nothing is cached there.
@@ -5542,6 +5561,7 @@ WR_REC_LANE=""; WR_REC_SESSION=""; WR_REC_VERB=""; WR_REC_ARGS_SHA256=""
 WR_REC_CMDLINE=""; WR_REC_CREATED_UTC=""; WR_REC_UPDATED_UTC=""; WR_REC_PID=""
 WR_REC_PID_START=""; WR_REC_HOST=""; WR_REC_CONTAINER=""; WR_REC_ATTEMPTS=""
 WR_REC_CALLS=""; WR_REC_TAIL=""
+WR_CF_BASE=""; WR_CF_CLOCK=""; WR_CF_NOT_AFTER=""; WR_CF_FILES=""; WR_CF_DIR=""
 
 # A LOWER-CASE UUID, as `lanes-index` prints a write id and a generation
 # (contract §4: "printed as a lowercase UUID"). The digits are spelled out, not
@@ -5651,9 +5671,18 @@ wr_seam_cap_s() {
 # A 0700 directory this uid owns, made where it is missing (Y:5172, Y:5180: "in
 # a 0700 directory"). 1 where it cannot be made, is not a directory, or is not
 # this uid's.
+#
+# `<state>` ITSELF IS ONLY MADE WHERE IT IS MISSING, NEVER CHMODDED: it is
+# `lanes-index`'s own directory, which `lanes-index` makes 0700 and never
+# chmods (`lanes-index:1492`), and the contract says only that every directory
+# is "made where it is missing, under `umask 077`, and must be a directory this
+# uid owns" (§1). Made here, under umask 077, it is 0700 already. The
+# directories under it, `register-*/` and the attempt directories, are made
+# 0700 or set to it (review REV-W10a N1).
 wr_dir_0700() {   # <dir>
   ( umask 077 && mkdir -p -- "$1" ) 2>/dev/null || return 1
   [ -d "$1" ] && [ -O "$1" ] || return 1
+  [ "$1" != "$WR_STATE" ] || return 0
   chmod 700 -- "$1" 2>/dev/null
 }
 
@@ -5749,12 +5778,16 @@ wr_claim_read() {   # <claim file>
 
 # THE HIGHEST CLAIM on `<d>` in `<dir>`: WR_HIGHEST_K, -1 where there is none,
 # and WR_HIGHEST_FILE. Only a name this file makes counts: `.take.` and a
-# number with no leading zero.
+# number with no leading zero. A name that is there counts even where it is a
+# dangling symbolic link, as `wr_claim_live` counts it and as `ln` finds the
+# name taken: one passed over here made `wr_claim_take` create that same name
+# again and again, with no sleep and past its deadline (review REV-W10a S1).
+# Such a claim names no pid, so it is live for the seam's cap only (DEC-25).
 wr_claim_highest() {   # <dir>
   local ch_f ch_k
   WR_HIGHEST_K=-1; WR_HIGHEST_FILE=""
   for ch_f in "$1/$WR_D".take.*; do
-    [ -e "$ch_f" ] || continue
+    [ -e "$ch_f" ] || [ -L "$ch_f" ] || continue
     ch_k="${ch_f##*.take.}"
     case "$ch_k" in ''|*[!0123456789]*|0?*) continue ;; esac
     [ "${#ch_k}" -le 9 ] || continue
@@ -5994,6 +6027,29 @@ wr_claim_release() {
   return 0
 }
 
+# A `call=` LINE'S FIVE FIELDS (Y:5173; contract §3.2): the first four split off
+# at single spaces, and the rest is `<dir>`, which may hold spaces. They go into
+# WR_CF_BASE, WR_CF_CLOCK, WR_CF_NOT_AFTER, WR_CF_FILES and WR_CF_DIR. 1, with
+# all five empty, where the line has fewer than five fields.
+#
+# BY PARAMETER EXPANSION, NEVER `read` FROM A HERE-STRING, and so are the loops
+# below over the record's lines: bash before 5.1 writes a here-string or a
+# here-document to a temp file, and where none can be made, as in a full
+# TMPDIR, such a loop never ran. A `call=` line was then written, kept, dropped
+# or read as though the record held none, and the call was sent with its doubt
+# lost (review REV-W10a M1). T414's `cp_seam` and T415's `pw_hand_edit_refuse`
+# split the same way.
+wr_call_fields() {   # <line>
+  local cf_r="${1-}"
+  WR_CF_BASE=""; WR_CF_CLOCK=""; WR_CF_NOT_AFTER=""; WR_CF_FILES=""; WR_CF_DIR=""
+  case "$cf_r" in *' '*' '*' '*' '*) : ;; *) return 1 ;; esac
+  WR_CF_BASE="${cf_r%% *}"; cf_r="${cf_r#* }"
+  WR_CF_CLOCK="${cf_r%% *}"; cf_r="${cf_r#* }"
+  WR_CF_NOT_AFTER="${cf_r%% *}"; cf_r="${cf_r#* }"
+  WR_CF_FILES="${cf_r%% *}"; WR_CF_DIR="${cf_r#* }"
+  return 0
+}
+
 # THE RECORD READ (Y:5172) into WR_REC_*: 0 when it is whole, 1 when there is no
 # record, 2 when there is one and it cannot be read as one, which names nothing
 # a run can rely on.
@@ -6004,7 +6060,7 @@ wr_claim_release() {
 # `<base> <clock> <not_after> <files> <dir>`, three counts, a sha256 and a
 # directory. A key it does not know is passed over.
 wr_record_read() {   # <record file>
-  local rr_l="" rr_b rr_c rr_n rr_f rr_d
+  local rr_l="" rr_r=""
   WR_REC_FORMAT=""; WR_REC_WRITE_ID=""; WR_REC_GENERATION=""; WR_REC_DATABASE=""
   WR_REC_LANE=""; WR_REC_SESSION=""; WR_REC_VERB=""; WR_REC_ARGS_SHA256=""
   WR_REC_CMDLINE=""; WR_REC_CREATED_UTC=""; WR_REC_UPDATED_UTC=""; WR_REC_PID=""
@@ -6040,12 +6096,18 @@ wr_record_read() {   # <record file>
   [ "$WR_REC_ARGS_SHA256" = "${1##*/}" ] || return 2
   wr_is_utc "$WR_REC_CREATED_UTC" && wr_is_utc "$WR_REC_UPDATED_UTC" || return 2
   [ -n "$(epoch_of "$WR_REC_UPDATED_UTC")" ] || return 2
-  while IFS= read -r rr_l; do
+  rr_r="$WR_REC_CALLS"
+  while [ -n "$rr_r" ]; do
+    rr_l="${rr_r%%"$WR_NL"*}"
+    case "$rr_r" in
+      *"$WR_NL"*) rr_r="${rr_r#*"$WR_NL"}" ;;
+      *) rr_r="" ;;
+    esac
     [ -n "$rr_l" ] || continue
-    IFS=' ' read -r rr_b rr_c rr_n rr_f rr_d <<<"$rr_l"
-    wr_is_count "$rr_b" && wr_is_count "$rr_c" && wr_is_count "$rr_n" || return 2
-    wr_is_hex64 "$rr_f" && [ -n "$rr_d" ] || return 2
-  done <<<"$WR_REC_CALLS"
+    wr_call_fields "$rr_l" || return 2
+    wr_is_count "$WR_CF_BASE" && wr_is_count "$WR_CF_CLOCK" && wr_is_count "$WR_CF_NOT_AFTER" || return 2
+    wr_is_hex64 "$WR_CF_FILES" && [ -n "$WR_CF_DIR" ] || return 2
+  done
   return 0
 }
 
@@ -6095,7 +6157,7 @@ wr_done_purge() {
 # openRepoTools-3, #165 6774499606, T412 (1)). So no `call=` line is added to
 # it, and no call is sent for it.
 wr_record_write() {
-  local rw_dir rw_now rw_tmp rw_body rw_v rw_l
+  local rw_dir rw_now rw_tmp rw_body rw_v rw_l rw_r
   [ -z "$WR_TOOK_TAIL" ] || return 1
   wr_claim_owns || return 1
   wr_done_purge
@@ -6110,10 +6172,16 @@ wr_record_write() {
     "$WR_ID" "$WR_GEN" "$WR_DATABASE" "$WR_LANE" "$WR_SESSION" "$WR_VERB" "$WR_D" \
     "$WR_CMDLINE" "$WR_CREATED_UTC" "$rw_now" "$WR_CLAIM_PID" "$WR_CLAIM_START" \
     "$WR_CLAIM_HOST" "$WR_CLAIM_CONTAINER" "$WR_ATTEMPTS")"
-  while IFS= read -r rw_l; do
+  rw_r="$WR_CALLS"
+  while [ -n "$rw_r" ]; do
+    rw_l="${rw_r%%"$WR_NL"*}"
+    case "$rw_r" in
+      *"$WR_NL"*) rw_r="${rw_r#*"$WR_NL"}" ;;
+      *) rw_r="" ;;
+    esac
     [ -n "$rw_l" ] || continue
     rw_body="$rw_body${WR_NL}call=$rw_l"
-  done <<<"$WR_CALLS"
+  done
   [ -n "$WR_TAIL" ] && rw_body="$rw_body${WR_NL}tail=$WR_TAIL"
   rw_tmp="$(mktemp "$rw_dir/.$WR_D.XXXXXX" 2>/dev/null)" || rw_tmp=""
   [ -n "$rw_tmp" ] || return 1
@@ -6148,14 +6216,18 @@ wr_record_add_call() {   # <base> <clock> <not_after> <files> <dir>
 # which answers those are (T415). 1, with the record and WR_CALLS as they were,
 # where the write failed.
 wr_record_drop_call() {   # <dir>
-  local dc_was dc_new dc_l dc_b dc_c dc_n dc_f dc_d
-  dc_was="$WR_CALLS"; dc_new=""
-  while IFS= read -r dc_l; do
+  local dc_was dc_new dc_l dc_r
+  dc_was="$WR_CALLS"; dc_new=""; dc_r="$WR_CALLS"
+  while [ -n "$dc_r" ]; do
+    dc_l="${dc_r%%"$WR_NL"*}"
+    case "$dc_r" in
+      *"$WR_NL"*) dc_r="${dc_r#*"$WR_NL"}" ;;
+      *) dc_r="" ;;
+    esac
     [ -n "$dc_l" ] || continue
-    IFS=' ' read -r dc_b dc_c dc_n dc_f dc_d <<<"$dc_l"
-    [ "$dc_d" = "${1-}" ] && continue
+    wr_call_fields "$dc_l" && [ "$WR_CF_DIR" = "${1-}" ] && continue
     dc_new="${dc_new}${dc_new:+$WR_NL}$dc_l"
-  done <<<"$WR_CALLS"
+  done
   WR_CALLS="$dc_new"
   wr_record_write && return 0
   WR_CALLS="$dc_was"
@@ -6164,15 +6236,17 @@ wr_record_drop_call() {   # <dir>
 
 # THE RECORD REMOVED, the outcome known (Y:5193-5198): the record, then the
 # claims beside it, by its owner only. A claim numbered above the owner's own is
-# left: no run takes one while the owner lives (Y:5185; R49). On 0 the caller
-# writes the done mark first (T418).
+# left: no run takes one while the owner lives (Y:5185; R49). A dangling
+# symbolic link among the claims is removed with them, since
+# `wr_claim_highest` counts it (review REV-W10a S1). On 0 the caller writes the
+# done mark first (T418).
 wr_record_remove() {
   local rm_dir rm_f rm_k
   wr_claim_owns || return 1
   rm_dir="${WR_CLAIM%/*}"
   rm -f -- "$rm_dir/$WR_D" 2>/dev/null || return 1
   for rm_f in "$rm_dir/$WR_D".take.*; do
-    [ -e "$rm_f" ] || continue
+    [ -e "$rm_f" ] || [ -L "$rm_f" ] || continue
     rm_k="${rm_f##*.take.}"
     case "$rm_k" in ''|*[!0123456789]*|0?*) continue ;; esac
     [ "${#rm_k}" -le 9 ] || continue
@@ -6221,12 +6295,17 @@ wr_rerun_new_text() {
 # or, where it holds no `call=` line, the sentence that none of its commit calls
 # can have committed (Y:5176: a line is exactly a call that may have).
 wr_lookup_text() {
-  local lt_l lt_b lt_c lt_n lt_f lt_d lt_max=""
-  while IFS= read -r lt_l; do
-    [ -n "$lt_l" ] || continue
-    IFS=' ' read -r lt_b lt_c lt_n lt_f lt_d <<<"$lt_l"
-    if [ -z "$lt_max" ] || [ "$lt_n" -gt "$lt_max" ]; then lt_max="$lt_n"; fi
-  done <<<"$WR_REC_CALLS"
+  local lt_l lt_r lt_max=""
+  lt_r="$WR_REC_CALLS"
+  while [ -n "$lt_r" ]; do
+    lt_l="${lt_r%%"$WR_NL"*}"
+    case "$lt_r" in
+      *"$WR_NL"*) lt_r="${lt_r#*"$WR_NL"}" ;;
+      *) lt_r="" ;;
+    esac
+    wr_call_fields "$lt_l" && wr_is_count "$WR_CF_NOT_AFTER" || continue
+    if [ -z "$lt_max" ] || [ "$WR_CF_NOT_AFTER" -gt "$lt_max" ]; then lt_max="$WR_CF_NOT_AFTER"; fi
+  done
   if [ -z "$lt_max" ]; then
     printf 'It holds no call line, so none of its commit calls can have committed.\n'
     return 0
@@ -6244,7 +6323,12 @@ wr_lookup_text() {
 # and the text says "another generation". `<owed>` is the record's verb's row of
 # F14's table, T418's text; until it is given, the text names the verb's
 # after-COMMIT steps. Where the record's `tail` is `sent` or `done`, the text
-# says they may have run, or ran, at its UTC (Y:5214).
+# says they may have run, or ran, at its UTC (Y:5214). The effect check's
+# `<lane>` is the lane the write is made for, `write_lane_of`'s, PW_LANE, which
+# the record's digest fixes with its arguments, not the writer's `LANES_LANE`
+# (lane openRepoTools-3, #165 6808937880, batch e Q106; Y:5257): every caller
+# runs after `pw_checkout` has set it. The rerun keeps the writer's
+# `LANES_LANE` (`wr_rerun_new_text`), which its digest takes.
 wr_text_other_generation() {   # [<g'>] [<owed>]
   local og_now og_owed og_tail og_utc og_steps
   if [ -n "${1-}" ]; then og_now="generation ${1}"; else og_now="another generation"; fi
@@ -6256,7 +6340,7 @@ wr_text_other_generation() {   # [<g'>] [<owed>]
     done) og_steps="its after-COMMIT steps ran at ${og_utc}." ;;
     *) og_steps="its after-COMMIT steps may be owed: ${og_owed}. Do by hand any that did not run." ;;
   esac
-  printf '%s\n' "a pending record of this command, write ${WR_REC_WRITE_ID} made at ${WR_REC_CREATED_UTC} against register generation ${WR_REC_GENERATION}, is here, and this register is ${og_now}. That write may already be in it: an import carries every write the mirror held (D22), and a restored database holds every write up to its backup. Nothing was sent. Look for its effect in the register as it stands: lanes-edit.sh history ${WR_REC_LANE} --since ${WR_REC_CREATED_UTC} for a log line, or lanes-edit.sh register-row ${WR_REC_LANE} for a row. If it is there, ${og_steps} If it is not there, run the same command with LANES_WRITE_ID=new, which mints a new id and replaces this record: $(wr_rerun_new_text)"
+  printf '%s\n' "a pending record of this command, write ${WR_REC_WRITE_ID} made at ${WR_REC_CREATED_UTC} against register generation ${WR_REC_GENERATION}, is here, and this register is ${og_now}. That write may already be in it: an import carries every write the mirror held (D22), and a restored database holds every write up to its backup. Nothing was sent. Look for its effect in the register as it stands: lanes-edit.sh history ${PW_LANE} --since ${WR_REC_CREATED_UTC} for a log line, or lanes-edit.sh register-row ${PW_LANE} for a row. If it is there, ${og_steps} If it is not there, run the same command with LANES_WRITE_ID=new, which mints a new id and replaces this record: $(wr_rerun_new_text)"
 }
 
 # A REFUSAL OF THIS LIBRARY'S OWN, with 2: this run's claim goes first, since
@@ -7367,30 +7451,64 @@ pw_wdir_ok() {   # <dir> <run | attempt>
 
 # The attempt directories named by `call` lines, one a line, from WR_CALLS or
 # a record's `call=` lines: the fifth field and the rest of the line.
+#
+# Split by parameter expansion, never `read` from a here-string: bash 3.2
+# writes one to a temp file, and where none can be made, as in a full TMPDIR,
+# the loop never ran and named no directory. Then `pw_run_dir_done` removed a
+# kept attempt's `snapshot`, `files` and `preimages`, which a rerun that takes
+# the record over reads (Y:5177), and `pw_runs_purge` removed an old `<run>/`
+# that a record's `call` line names (review REV-W10a M1's pattern). The split
+# is `read`'s with IFS=' ', exactly: blanks at either end dropped, four fields
+# each ended by a run of blanks, the rest the directory. `pw_runs_purge` gives
+# it a record's lines as they are, which `wr_record_read` has not judged, so a
+# line it names a directory by is named the same as before.
 pw_calls_dirs() {   # <call lines, one a line, without `call=`>
-  local cd_l="" cd_x=""
-  while IFS= read -r cd_l; do
-    [ -n "$cd_l" ] || continue
-    IFS=' ' read -r cd_x cd_x cd_x cd_x cd_l <<<"$cd_l"
+  local cd_l="" cd_r="${1-}" cd_i=0
+  while [ -n "$cd_r" ]; do
+    cd_l="${cd_r%%"$WR_NL"*}"
+    case "$cd_r" in
+      *"$WR_NL"*) cd_r="${cd_r#*"$WR_NL"}" ;;
+      *) cd_r="" ;;
+    esac
+    cd_i=0
+    while [ "$cd_i" -lt 4 ]; do
+      cd_l="${cd_l#"${cd_l%%[! ]*}"}"
+      case "$cd_l" in
+        *' '*) cd_l="${cd_l#*' '}" ;;
+        *) cd_l="" ;;
+      esac
+      cd_i=$((cd_i + 1))
+    done
+    cd_l="${cd_l#"${cd_l%%[! ]*}"}"
+    cd_l="${cd_l%"${cd_l##*[! ]}"}"
     [ -z "$cd_l" ] || printf '%s\n' "$cd_l"
-  done <<<"${1-}"
+  done
 }
 
 # THE RECORD REMOVED: the attempt directories its `call` lines named, this
 # run's and those of a run whose record it took over, whose `<run>/` and then
 # `<d>/` go where each is left empty.
+#
+# `pw_calls_dirs`' list is split at each newline by parameter expansion, never
+# read from a here-document: bash 3.2 writes one to a temp file, and where none
+# can be made, as in a full TMPDIR, the loop never ran, and the directories
+# were left for `pw_runs_purge` (review REV-W10a M1's pattern).
 pw_call_dirs_remove() {
-  local cr_d=""
-  while IFS= read -r cr_d; do
+  local cr_d="" cr_r=""
+  cr_r="$(pw_calls_dirs "$WR_CALLS")"
+  while [ -n "$cr_r" ]; do
+    cr_d="${cr_r%%"$WR_NL"*}"
+    case "$cr_r" in
+      *"$WR_NL"*) cr_r="${cr_r#*"$WR_NL"}" ;;
+      *) cr_r="" ;;
+    esac
     [ -n "$cr_d" ] || continue
     pw_wdir_ok "$cr_d" attempt || continue
     rm -rf -- "$cr_d" 2>/dev/null
     if pw_wdir_ok "${cr_d%/*}" run; then
       rmdir -- "${cr_d%/*}" 2>/dev/null && rmdir -- "${cr_d%/*/*}" 2>/dev/null
     fi
-  done <<CR_EOF
-$(pw_calls_dirs "$WR_CALLS")
-CR_EOF
+  done
   return 0
 }
 
@@ -7491,13 +7609,24 @@ pw_end() {   # <code> <message, or empty> [<attempt dir whose output is replayed
 # it could not settle, and ends with 75, the busy code, with the record KEPT: a
 # rerun within its age takes the record over and settles the write by its id,
 # and never writes it twice (Y:5206).
+#
+# The lookup's `--not-after` is the highest of the `call` lines', split from
+# WR_CALLS by parameter expansion and `wr_call_fields`, as `wr_lookup_text`
+# takes it, never `read` from a here-string: bash 3.2 writes one to a temp
+# file, and where none can be made, as in a full TMPDIR, the loop never ran,
+# and the lookup was printed with an empty `--not-after` (review REV-W10a M1).
 pw_doubt_end() {   # <the end's code> <its message, or empty> [<attempt dir>]
-  local dd_l="" dd_b="" dd_c="" dd_n="" dd_f="" dd_d="" dd_max=""
-  while IFS= read -r dd_l; do
-    [ -n "$dd_l" ] || continue
-    IFS=' ' read -r dd_b dd_c dd_n dd_f dd_d <<<"$dd_l"
-    if [ -z "$dd_max" ] || [ "$dd_n" -gt "$dd_max" ]; then dd_max="$dd_n"; fi
-  done <<<"$WR_CALLS"
+  local dd_l="" dd_r="" dd_max=""
+  dd_r="$WR_CALLS"
+  while [ -n "$dd_r" ]; do
+    dd_l="${dd_r%%"$WR_NL"*}"
+    case "$dd_r" in
+      *"$WR_NL"*) dd_r="${dd_r#*"$WR_NL"}" ;;
+      *) dd_r="" ;;
+    esac
+    wr_call_fields "$dd_l" && wr_is_count "$WR_CF_NOT_AFTER" || continue
+    if [ -z "$dd_max" ] || [ "$WR_CF_NOT_AFTER" -gt "$dd_max" ]; then dd_max="$WR_CF_NOT_AFTER"; fi
+  done
   pw_run_dir_done
   die "write $WR_ID of register generation $WR_GEN may be in the register: its pending record, $WR_STATE/register-pending/$WR_D, holds a commit call that may have committed, so this run's end (exit $1) is not that write's answer until the call is looked up. This lanes-edit.sh makes no such lookup yet: the record is kept, and a rerun settles the write by its id and never writes it twice. Look it up: lanes-index journal --write-id $WR_ID --not-after $dd_max --generation $WR_GEN --lane $(printf '%q' "$WR_LANE") --verb $(printf '%q' "$WR_VERB") --args-sha256 $WR_D. Or run it again: $(wr_rerun_text "$WR_ID" "$WR_GEN")" 75
 }
