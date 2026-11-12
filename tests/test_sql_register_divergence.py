@@ -5,9 +5,10 @@ gating case; AT-6; AT-MIR; T271; FR-047, FR-048, FR-059; US6)
 (opensoft/openRepoTools#165).
 
 T271 writes this module: 11 tests, 10 from AT-6 (9) and AT-MIR (1), and one
-new since v3f, R-F10-34's, which holds lane 3's two strays for T324 and
-R-F13c-10's third id. Lane 3's T324 runs the whole module by its word,
-`sql_register_divergence`.
+new since v3f, R-F10-34's, which holds lane 3's two strays for T324,
+R-F13c-10's third id and, new in B15, lane 3's L2-8 fourth,
+`[stray-no-longer-applies]`. Lane 3's T324 runs the whole module by its
+word, `sql_register_divergence`.
 
 THE V1.1.0 WRITER (PC-12; the test plan's open point 5).
 `tests/fixtures/lanes-edit-v1.1.0/lanes-edit.sh` is `lanes-edit.sh` byte for
@@ -88,7 +89,9 @@ T321 to T323). Then:
 - `test_rollback_works_after_each_way_out` and the `Register-Seq` case's last
   part fail until T326 (the rollback's render and push);
 - `[stray-revives-a-pair]` fails until T324's refusal and T107's
-  `one_live_claim`; the other two strays' oracle needs T115's `import --at`;
+  `one_live_claim`; `[stray-no-longer-applies]` also fails until T324's
+  `import --single` refusal (lane 3, #165 6809045090, L2-8); the other two
+  strays' oracle needs T115's `import --at`;
 - the gate model's seven ids wait for nothing: they test the model and the
   pinned copy, and pass now.
 
@@ -131,6 +134,20 @@ READINGS, NOT FOUND IN A CONTRACT:
   `status`'s `divergence:  none recorded` line, where the row is empty.
 - `[stray-revives-a-pair]`'s "writes nothing" also leaves `mirror_state`
   recording the stray.
+- `[stray-no-longer-applies]`'s "a primary write changes a line after the
+  stray commit changed it": the stray retitles `lanes/LANES.md`'s first
+  line, its heading, a line of no kind, by hand; then a `commit_write` of a
+  `write` entry replaces the same line in SQL with other text, by its old
+  text's digest. So the stray's one edit, a `replace` at line 1, finds there
+  a line its parent never held.
+- Its "sends no commit call" is read through a `psql` first on the import's
+  `PATH` that logs each call's stdin, where `lanes-index` sends each request:
+  no request holds `commit_write(`, and at least one was sent, since the
+  refusal reads SQL's images. Its "naming the edit" is stderr naming the
+  edit's path and that its edits "no longer apply" (TP:1292). Its "writes
+  nothing" is the head, the journal's count, the four structured tables and
+  SQL's images as they were, `mirror_state` still recording the stray, and
+  origin's tip still the stray.
 - The ways out run "on a person's word from the operator lane's checkout"
   (TP:1276-1277), where that person's git names an author: the checkout's
   own `user.name` and `user.email` name `AUTHOR`, set once C is made. A way
@@ -143,7 +160,7 @@ READINGS, NOT FOUND IN A CONTRACT:
   does at each attempt is unchanged.
 
 RULED BY LANE 3 (#165 6809045090; its RULINGS-batch-e-analysis-20261111.md,
-L2-6 and L2-7; B15 folds both):
+L2-6 to L2-8; B15 folds them):
 
 - L2-6: AT-6's stop stands (TP:1285): `reconcile` exits non-zero on a
   diverged mirror once T325 lands. T325 re-renders what the mirror lacks
@@ -159,12 +176,14 @@ L2-6 and L2-7; B15 folds both):
   (Y:2850), as `status` says"). The `Register-Seq` case asserts that line,
   naming `h`+10 and `h`+1. The plain stray's "a lag of at least 1"
   (TP:1284) stands: that stray carries no `Register-Seq`.
-
-OPEN, FOR LANE 3 (asserted as the test plan writes it):
-
-- AT-6 names the import's refusal where the edits no longer apply as "a case
-  of its own", but no test name holds it beside
-  `[stray-revives-a-pair]`'s LR005, so none is written here.
+- L2-8: AT-6's "case of its own", the import's refusal where the stray's
+  edits no longer apply to SQL's images (TP:1292-1293), is
+  `[stray-no-longer-applies]`, a fourth id of the strays' function beside
+  `[stray-revives-a-pair]`, whose LR005 is the other refusal: `import
+  --single` refuses with 2 before any commit call, naming `render --revert
+  <sha>` as the way out (PC-4; T324 `9a664ef`:16115-16117), writes nothing,
+  and leaves the tables unchanged (B15 tasks:2486). It fails until T324's
+  refusal.
 """
 
 from __future__ import annotations
@@ -175,6 +194,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -287,12 +307,17 @@ RELEASED_X = _line("RELEASED", "repoX-1", UUID_X1, "2026-10-01T03:00:00Z", PAIR_
 #: The line the second stray inserts before its log's end.
 INSERTED_I = _line("NOTED", "repoI-1", UUID_I1, "2026-10-03T00:00:00Z", "lane:repoI-1",
                    "a line a person inserted by hand")
+#: `lanes/LANES.md`'s first line, a heading of no kind. The fourth stray
+#: retitles it by hand, then a primary write retitles it in SQL (L2-8).
+TITLE = f"# LANES.md {EM} test 6's register"
+TITLE_BY_HAND = TITLE + ", retitled by hand"
+TITLE_IN_SQL = TITLE + ", retitled by a primary write"
 
 #: C's files, before the `lanes-edit.sh` write on top. `lanes/repos.tsv` and
 #: `lanes/log/README.md` are outside the render set (Q18 (A)).
 SEED = {
     "lanes/LANES.md": "\n".join([
-        f"# LANES.md {EM} test 6's register",
+        TITLE,
         "",
         "| lane | session id | workstation / env / user | started (UTC) | objects owned | "
         "handoff path | state |",
@@ -407,6 +432,18 @@ def _script(path: Path, text: str) -> Path:
     path.write_text(text, encoding="utf-8")
     path.chmod(0o755)
     return path
+
+
+def _logging_psql(directory: Path, real: str, log: Path) -> Path:
+    """A directory for the front of one command's `PATH`, holding a `psql`
+    that appends `--- psql <its argv>` and then its stdin to `log` as it
+    streams them, through `tee`, to the real `psql` at `real`, whose exit it
+    keeps. `lanes-index` sends each request as one `psql` call with its SQL on
+    stdin, so `log` holds every request the command sent."""
+    _script(directory / "psql", "#!/bin/sh\n"
+            f"printf '%s\\n' \"--- psql $*\" >> {shlex.quote(str(log))}\n"
+            f"tee -a {shlex.quote(str(log))} | {shlex.quote(str(real))} \"$@\"\n")
+    return directory
 
 
 # ------------------------------------------------------------------ the workspace
@@ -889,6 +926,27 @@ class Estate(Workspace):
         """A primary write (the module's docstring): its seq."""
         base = self.head()
         seq = self.committed(base, self.write_body(text), f"a primary write, {text!r}")
+        assert seq == base + 1, f"the write took seq {seq}, not {base + 1}"
+        return seq
+
+    def replace_line(self, path: str, line_no: int, text: str) -> int:
+        """A primary write that replaces line `line_no` of `path`, a line of
+        no kind, with `text`: one `replace` edit, naming the line by its old
+        text's digest (section 1.3), and no structured row. Its seq."""
+        image = self.renders()[path]
+        lines = image.decode("utf-8").split("\n")
+        assert image.endswith(b"\n") and 1 <= line_no < len(lines), (path, line_no, lines)
+        old, lines[line_no - 1] = lines[line_no - 1], text
+        after = "\n".join(lines).encode("utf-8")
+        base = self.head()
+        seq = self.committed(base, _entry(
+            "write", "log", f"LANES({OPERATOR}@{WS}): t271: {path} line {line_no} replaced",
+            journal={"args_sha256": ARGS_SHA256},
+            edits=[{"ord": 1, "op": "replace", "path": path, "line_no": line_no,
+                    "old_sha256": _sha256(old.encode("utf-8")), "new_text": text}],
+            files=[{"path": path, "present": True, "sha256": _sha256(after),
+                    "final_newline": True}]),
+            f"a primary write replacing line {line_no} of {path}")
         assert seq == base + 1, f"the write took seq {seq}, not {base + 1}"
         return seq
 
@@ -1392,13 +1450,16 @@ def _stray_files(est: Estate, stray: str) -> tuple:
     repoD-1's row with no archive copy; `[stray-inserts-before-the-end]`
     inserts a line in repoI-1's log after its `STARTED`, above its claims;
     `[stray-revives-a-pair]` deletes repoX-1's `RELEASED`, so its `CLAIMED`
-    on `PAIR_OBJECT` is live beside repoY-1's."""
+    on `PAIR_OBJECT` is live beside repoY-1's; `[stray-no-longer-applies]`
+    retitles `lanes/LANES.md`'s heading by hand."""
     if stray == "stray-deletes-a-row":
         path, old, new = "lanes/LANES.md", ROW_D + "\n", ""
     elif stray == "stray-inserts-before-the-end":
         path = "lanes/log/repoI-1.md"
         old = _started("repoI-1", UUID_I1, "opensoft/repoI") + "\n"
         new = old + INSERTED_I + "\n"
+    elif stray == "stray-no-longer-applies":
+        path, old, new = "lanes/LANES.md", TITLE + "\n", TITLE_BY_HAND + "\n"
     else:
         path, old, new = "lanes/log/repoX-1.md", RELEASED_X + "\n", ""
     text = est.origin_text(path)
@@ -1406,8 +1467,41 @@ def _stray_files(est: Estate, stray: str) -> tuple:
     return path, {path: text.replace(old, new)}
 
 
+def _assert_no_longer_applies(est: Estate, sha: str, path: str) -> None:
+    """L2-8'S REFUSAL (TP:1292-1293; B15 tasks:2486): `import --single <sha>`,
+    where the stray's edits no longer apply to SQL's images, refuses with 2
+    on stderr, naming the edit's path, that its edits no longer apply, and
+    `render --revert <sha>` as the way out (PC-4); it sends no commit call;
+    and it writes nothing (the module's readings)."""
+    before = (est.head(), est.count(), structured(est.pg), est.renders())
+    log = est.root / "psql-calls.log"
+    front = _logging_psql(est.root / "psql-log-bin", est.pg.psql_bin, log)
+    proc = est.index("import", "--single", sha,
+                     env={"PATH": str(front) + os.pathsep + est.env["PATH"]})
+    assert proc.returncode == 2 and all(w in proc.stderr for w in (
+            "no longer apply", path, f"render --revert {sha}")), (
+        f"import --single of a stray whose edits no longer apply to SQL's images is not "
+        f"refused with 2 on stderr, naming {path}, that they no longer apply, and "
+        f"`render --revert {sha}` (lane 3's T324; L2-8):\n{_said(proc)}")
+    calls = (log.read_text(encoding="utf-8", errors="replace").split("--- psql ")[1:]
+             if log.exists() else [])
+    requests = [call for call in calls if not call.startswith("--version")]
+    assert requests, (
+        "the refused import sent no request through the psql first on its PATH, so the log "
+        "cannot show that it sent no commit call")
+    sent = [call for call in requests if "commit_write(" in call]
+    assert not sent, (
+        f"the refused import sent {len(sent)} commit call(s): it refuses before any (TP:1292; "
+        f"B15 tasks:2486):\n{sent[0][:1500]}")
+    assert (est.head(), est.count(), structured(est.pg), est.renders()) == before, (
+        "the refused import changed the head, the journal, the structured tables or SQL's "
+        "images")
+    assert est.mirror()["diverged_sha"] == sha, "the refused import cleared the divergence"
+    assert est.origin_tip() == sha, "the refused import moved origin's main"
+
+
 @pytest.mark.parametrize("stray", ["stray-deletes-a-row", "stray-inserts-before-the-end",
-                                   "stray-revives-a-pair"])
+                                   "stray-revives-a-pair", "stray-no-longer-applies"])
 def test_a_strays_single_write_import_leaves_the_tables_equal_to_the_imports_derivation(
         pg, tmp_path, stray):
     """T324'S STRAYS (R-F10-34; lane 3, #165 6755386771; ERR-48) and a stray
@@ -1429,9 +1523,17 @@ def test_a_strays_single_write_import_leaves_the_tables_equal_to_the_imports_der
     and leaves the four tables as they were. Its way out is the revert,
     which `test_the_renderers_revert_resumes_it_and_reconcile_passes` covers.
 
+    `[stray-no-longer-applies]` (lane 3, #165 6809045090, L2-8; AT-6,
+    TP:1292-1293; B15 tasks:2486): a primary write changes a line after the
+    stray commit changed it, so the stray's edits no longer apply to SQL's
+    images; `import --single` refuses with 2, naming the edit and `render
+    --revert <sha>` as the way out (PC-4), sends no commit call, writes
+    nothing, and leaves the four tables as they were.
+
     Fail until T324 (and T107, T115, T117, T321 to T323); the oracle, until
     T115's `import --at`; `[stray-revives-a-pair]`, until T324's refusal and
-    T107's `one_live_claim`."""
+    T107's `one_live_claim`; `[stray-no-longer-applies]`, until T324's
+    `import --single` refusal."""
     est = Estate(tmp_path / "e", pg)
     if stray == "stray-revives-a-pair":
         holds = {(h["lane_key"], h["verb"], h["exempt"]) for h in est.rows(
@@ -1443,9 +1545,15 @@ def test_a_strays_single_write_import_leaves_the_tables_equal_to_the_imports_der
     path, files = _stray_files(est, stray)
     sha = est.push_as_person(files, f"t271: a stray edit of {path}, by hand")
     assert est.origin_changed(sha) == [path]
-    est.write("t271: a primary write after the stray")
+    if stray == "stray-no-longer-applies":
+        est.replace_line(path, 1, TITLE_IN_SQL)
+    else:
+        est.write("t271: a primary write after the stray")
     render = est.render()
     _assert_stopped(est, sha, render)
+    if stray == "stray-no-longer-applies":
+        _assert_no_longer_applies(est, sha, path)
+        return
     if stray == "stray-revives-a-pair":
         before, head, count = structured(est.pg), est.head(), est.count()
         proc = est.import_single(sha)
