@@ -14,6 +14,8 @@ import subprocess
 import time
 
 INVENTORY = "inventory.json"
+COVERAGE_CONFIG = "coverage.rc"
+COVERAGE_DATA = ".coverage"
 import xml.etree.ElementTree as ET
 
 HERE = Path(__file__).resolve().parent
@@ -72,10 +74,10 @@ def shell_baseline(out, sources, kcov):
 
 
 def coverage_environment(root, out, hashes):
-    config = out / "coverage.rc"
+    config = out / COVERAGE_CONFIG
     config.write_text(
         "[run]\ncore = ctrace\nparallel = true\nsigterm = true\nplugins = provenance\n"
-        "data_file = " + str(out / ".coverage") + "\n"
+        "data_file = " + str(out / COVERAGE_DATA) + "\n"
         "omit =\n    */site-packages/*\n    /usr/*\n"
         "disable_warnings = no-data-collected, module-not-measured\n",
         encoding="utf-8")
@@ -121,17 +123,17 @@ def probe_python_copy_attribution(root, out, manifest, env):
         directory.mkdir(parents=True)
         command = directory / "copied-python-command"
         command.write_bytes(source if kind == "exact" else source + b"\n# changed copy\n")
-        config = directory / "coverage.rc"
-        settings = (out / "coverage.rc").read_text()
-        config.write_text(settings.replace(str(out / ".coverage"), str(directory / ".coverage")))
+        config = directory / COVERAGE_CONFIG
+        settings = (out / COVERAGE_CONFIG).read_text()
+        config.write_text(settings.replace(str(out / COVERAGE_DATA), str(directory / COVERAGE_DATA)))
         child_env = {**os.environ, **env, "COVERAGE_PROCESS_START": str(config),
-                     "COVERAGE_FILE": str(directory / ".coverage")}
+                     "COVERAGE_FILE": str(directory / COVERAGE_DATA)}
         result = subprocess.run([sys.executable, str(command), "--help"], cwd=directory,
                                 env=child_env, capture_output=True, text=True, timeout=30,
                                 check=True)
         if result.stderr:
             raise RuntimeError("coverage provenance probe emitted diagnostics: " + result.stderr)
-        measured = Coverage(config_file=str(config), data_file=str(directory / ".coverage"))
+        measured = Coverage(config_file=str(config), data_file=str(directory / COVERAGE_DATA))
         measured.combine(data_paths=[str(directory)], strict=True, keep=True)
         results[kind] = len(measured.get_data().lines(str(canonical)) or [])
     if results["exact"] <= 0 or results["modified"] != 0:
@@ -216,7 +218,7 @@ def python_lines(root, out, manifest):
     from coverage import Coverage
     from coverage.parser import PythonParser
 
-    cov = Coverage(config_file=str(out / "coverage.rc"))
+    cov = Coverage(config_file=str(out / COVERAGE_CONFIG))
     cov.combine(data_paths=[str(out)], strict=True)
     cov.save()
     data = cov.get_data()

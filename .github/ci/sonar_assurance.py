@@ -15,6 +15,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 PROJECT = "opensoft_openRepoTools"
+INVENTORY = "inventory.json"
 GATE = {
     "new_security_rating": ("GT", "1"),
     "new_reliability_rating": ("GT", "1"),
@@ -85,7 +86,7 @@ def write_configuration(root, out, manifest):
     out = Path(out).resolve()
     root = Path(root).resolve()
     out.mkdir(parents=True, exist_ok=True)
-    (out / "inventory.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    (out / INVENTORY).write_text(json.dumps(manifest, indent=2) + "\n")
     patterns = {}
     for lang in ("py", "shell"):
         patterns[lang] = [item["path"] for item in manifest["files"]
@@ -109,17 +110,23 @@ def write_configuration(root, out, manifest):
     return properties
 
 
-def rebind_evidence(root, out):
-    """Accept test evidence only for the identical commits and source bytes."""
-    manifest = inventory(root)
-    recorded = json.loads((out / "inventory.json").read_text())
-    if recorded != manifest:
-        raise ValueError("test evidence differs from this exact checkout")
-    probe = json.loads((out / "provenance-probe.json").read_text())
-    if set(probe) != {"exact", "modified"} or probe["exact"] <= 0 or probe["modified"] != 0:
-        raise ValueError("test evidence has no successful source-copy provenance probe")
-    expected = {item["path"]: item for item in manifest["files"] if not item["test"]}
-    report = ET.parse(out / "coverage.xml").getroot()
+def coverage_lines(file, item):
+    numbers = set()
+    total = {"covered": 0, "lines": 0}
+    for line in file:
+        number = int(line.get("lineNumber", "0"))
+        covered = line.get("covered")
+        if (line.tag != "lineToCover" or number in numbers or
+                not 1 <= number <= item["lines"] or
+                covered not in ("true", "false")):
+            raise ValueError("invalid coverage line for " + item["path"])
+        numbers.add(number)
+        total["lines"] += 1
+        total["covered"] += covered == "true"
+    return total
+
+
+def coverage_summary(report, expected):
     if report.tag != "coverage" or report.attrib != {"version": "1"}:
         raise ValueError("invalid coverage report")
     seen = set()
@@ -129,25 +136,31 @@ def rebind_evidence(root, out):
         if file.tag != "file" or path not in expected or path in seen:
             raise ValueError("coverage source inventory differs from the tested checkout")
         seen.add(path)
-        numbers = set()
+        measured = coverage_lines(file, expected[path])
         total = summary["languages"].setdefault(
             expected[path]["language"], {"covered": 0, "lines": 0})
-        for line in file:
-            number = int(line.get("lineNumber", "0"))
-            covered = line.get("covered")
-            if (line.tag != "lineToCover" or number in numbers or
-                    not 1 <= number <= expected[path]["lines"] or
-                    covered not in ("true", "false")):
-                raise ValueError("invalid coverage line for " + path)
-            numbers.add(number)
-            total["lines"] += 1
-            total["covered"] += covered == "true"
+        for key, value in measured.items():
+            total[key] += value
     if seen != set(expected):
         raise ValueError("coverage source inventory is incomplete")
     if set(summary["languages"]) != {"py", "shell"} or any(
             not value["covered"] or not value["lines"]
             for value in summary["languages"].values()):
         raise ValueError("coverage is missing measured Python or shell execution")
+    return summary
+
+
+def rebind_evidence(root, out):
+    """Accept test evidence only for the identical commits and source bytes."""
+    manifest = inventory(root)
+    recorded = json.loads((out / INVENTORY).read_text())
+    if recorded != manifest:
+        raise ValueError("test evidence differs from this exact checkout")
+    probe = json.loads((out / "provenance-probe.json").read_text())
+    if set(probe) != {"exact", "modified"} or probe["exact"] <= 0 or probe["modified"] != 0:
+        raise ValueError("test evidence has no successful source-copy provenance probe")
+    expected = {item["path"]: item for item in manifest["files"] if not item["test"]}
+    summary = coverage_summary(ET.parse(out / "coverage.xml").getroot(), expected)
     if summary != json.loads((out / "coverage-summary.json").read_text()):
         raise ValueError("coverage summary differs from the measured report")
     write_configuration(root, out, manifest)
@@ -240,7 +253,7 @@ def verify_analysis(out, task_file, pull_request=None):
         if len(components) >= result["paging"]["total"]:
             break
         page += 1
-    manifest = json.loads((out / "inventory.json").read_text())
+    manifest = json.loads((out / INVENTORY).read_text())
     actual = {item["path"]: item.get("language") for item in components if "path" in item}
     # Sonar's PR component API returns changed files only. Main is the
     # authoritative complete-index receipt; a PR must not pretend to prove it.
