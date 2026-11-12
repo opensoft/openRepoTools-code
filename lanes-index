@@ -19064,7 +19064,8 @@ def cutover_abort(store, seq: int, *, lane: str, workstation: str, why: str) -> 
 #
 # A RERUN that finds the switch at `files`, the marker `removing` and the
 # rollback's own entry last, at `set_seq` = `marker_seq` = the head, declares
-# first, with `k = set_seq - 1`, and goes on from step 2 (Y:3264; ops:336).
+# first, with `k = set_seq - 1` (Y:3264; Y:3310-3311; ops:336), then makes the
+# git half's checks, reads origin back for its removal, and goes on from step 2.
 #
 # WHILE `RENDER_GIT_HALF` IS FALSE (Y:4872) it runs only against a scratch
 # schema, a `register_schema=` other than `lanes_register`, and exits 2 on
@@ -19073,8 +19074,9 @@ def cutover_abort(store, seq: int, *, lane: str, workstation: str, why: str) -> 
 #
 # T326, THE GIT HALF (S5's rollback, steps 0, 2, 3 and 4; ops:331, :337-340;
 # FR-051; contracts/render-commit.md), with the constant set:
-#   - THE CHECKOUT, once a run, before step 1 and before a rerun's step 2:
-#     T327's `cutover_git_preflight`, naming the rollback (D24; F12).
+#   - THE CHECKOUT, once a run: T327's `cutover_git_preflight`, naming the
+#     rollback (D24; F12); before step 0 and step 1, and on a rerun after its
+#     declaration and before its read-back (SHOULD-1 of lane 3's review of T326).
 #   - STEP 0'S GIT HALF, on every try, right before step 1: T322's pass
 #     bounded at seq 0, which fetches, reads the head after the fetch, and
 #     recognises and records a divergence as the renderer does, rendering
@@ -19252,6 +19254,7 @@ def _rollback(opts: dict) -> int:
     deadline = time.monotonic() + limit
     ident: dict = {}
     git: dict | None = None
+    checked = False
     tries = 0
     while True:
         st = _rollback_read(store, "nothing was written, and the switch and the marker are "
@@ -19262,10 +19265,15 @@ def _rollback(opts: dict) -> int:
         if not ident:
             ident = {"lane": _rollback_lane(), "workstation": _rollback_workstation(),
                      "author": _rollback_author()}
-            # T326: THE GIT HALF'S CHECKS, once, before step 1 and before a rerun's
-            # step 2: the operator lane's checkout and T320's push checks (D24; F12).
-            git = rollback_git_preflight(cfg, ident["lane"])
         pair = (st["mode"], st["marker"])
+        # T326: THE GIT HALF'S CHECKS, once a run: the operator lane's checkout and
+        # T320's push checks (D24; F12). Here, before step 0 and step 1, so that a
+        # rollback that could never push its removal commits nothing (MUST-2 of lane
+        # 3's review of T327). Not on a rerun: a rerun declares first (Y:3310-3311;
+        # ops:336; SHOULD-1 of lane 3's review of T326), so it makes them after its
+        # declaration, in `_rollback_after_step_1`.
+        if not checked and pair != ("files", "removing"):
+            git, checked = rollback_git_preflight(cfg, ident["lane"]), True
         if pair == ("files", "removing"):
             if _rollback_own_entry(st):
                 say(f"rollback: seq {st['head']}, this rollback's entry, stands: the switch "
@@ -19273,7 +19281,7 @@ def _rollback(opts: dict) -> int:
                     f"reads origin back for its removal, and goes on from step 2 where the "
                     f"removal is not there (operations.md §2.3; tasks:1549)")
                 return _rollback_after_step_1(cfg, store, opts, ident, st["head"] - 1,
-                                              st["head"], git)
+                                              st["head"], git, preflight=not checked)
             raise _RollbackEnd(EXIT_UNAVAILABLE, f"rollback: the switch reads files with the "
                                f"marker removing at set_seq {st['set_seq']}, but the head "
                                f"{st['head']} is not a rollback's entry at that seq, which "
@@ -19511,14 +19519,20 @@ def _rollback_step_1(store, k: int, generation: str, write_id: str, entry: dict)
     return int(answer[0])
 
 
-def rollback_git_preflight(cfg: dict, lane: str) -> dict | None:
-    """T326: THE GIT HALF'S CHECKS, once a run, before step 1 and before a
-    rerun's step 2 (D24; F12; FR-052): T327's `cutover_git_preflight`, naming
-    the rollback. The operator lane's checkout (`LANES_REPO`, else
-    `lanes-edit.sh lane-checkout <lane>`; never `W`), its git directory, and,
-    with `render_key=`, T320's checks of the push; each a `Refusal` (2) with
-    nothing written, so a rollback that could never push its removal does not
-    commit its entry. Returns `{"checkout": ..., "git_dir": ...}`.
+def rollback_git_preflight(cfg: dict, lane: str, rerun_seq: int | None = None) -> dict | None:
+    """T326: THE GIT HALF'S CHECKS, once a run (D24; F12; FR-052): T327's
+    `cutover_git_preflight`, naming the rollback. The operator lane's
+    checkout (`LANES_REPO`, else `lanes-edit.sh lane-checkout <lane>`; never
+    `W`), its git directory, and, with `render_key=`, T320's checks of the
+    push; each a `Refusal` (2). Returns `{"checkout": ..., "git_dir": ...}`.
+
+    - OFF A RERUN, before step 0 and step 1, with nothing written, so a
+      rollback that could never push its removal does not commit its entry
+      (MUST-2 of lane 3's review of T327).
+    - ON A RERUN (`rerun_seq`, its entry's seq), after its declaration and
+      before the read-back that comes before step 2 (Y:3310-3311; ops:336;
+      SHOULD-1 of lane 3's review of T326). A refusal there says that the
+      entry stands and the outage was declared first.
 
     WHILE `RENDER_GIT_HALF` IS FALSE it returns None and checks nothing. The
     rollback then runs only against a scratch schema, which no mirror
@@ -19531,7 +19545,16 @@ def rollback_git_preflight(cfg: dict, lane: str) -> dict | None:
     the constant is unset, and does nothing once it is set."""
     if not RENDER_GIT_HALF:
         return None
-    return cutover_git_preflight(cfg, lane, who="rollback")
+    if rerun_seq is None:
+        return cutover_git_preflight(cfg, lane, who="rollback")
+    try:
+        return cutover_git_preflight(cfg, lane, who="rollback")
+    except Refusal as exc:
+        raise Refusal(f"{exc}. This rerun made its declaration first, above, or printed its "
+                      f"line (ops:336); seq {rerun_seq}, this rollback's entry, stands with the "
+                      f"marker removing, so every write still refuses. Run `{PROG} rollback` "
+                      f"again once the check passes: it declares, checks and reads origin back "
+                      f"first") from exc
 
 
 def rollback_step_0_git_half(cfg: dict, store, k: int, git: dict | None,
@@ -19623,10 +19646,17 @@ def _rollback_declare(cfg: dict, k: int) -> None:
 
 
 def _rollback_after_step_1(cfg: dict, store, opts: dict, ident: dict, k: int, seq: int,
-                           git: dict | None) -> int:
+                           git: dict | None, preflight: bool = False) -> int:
     """After step 1, or a rerun that found it standing: the declaration, then
-    steps 2 to 4."""
+    steps 2 to 4. A rerun that has not yet made the git half's checks
+    (`preflight`) makes them here, after its declaration, which comes first
+    (Y:3310-3311, "declares first, since the run before it may have died
+    before it declared"; ops:336; SHOULD-1 of lane 3's review of T326): a
+    check that refuses ends it 2 with the outage declared, or its line
+    printed, and seq `seq` standing with the marker `removing`."""
     _rollback_declare(cfg, k)
+    if preflight:
+        git = rollback_git_preflight(cfg, ident["lane"], rerun_seq=seq)
     return rollback_steps_2_to_4(cfg, store, opts, ident, k, seq, git)
 
 
