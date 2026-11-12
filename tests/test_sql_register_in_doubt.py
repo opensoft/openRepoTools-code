@@ -1199,16 +1199,51 @@ def test_a_rerun_with_other_arguments_does_not_take_the_pending_id(estates):
 
 
 @CLIENT
-def test_lanes_write_id_wins_over_a_pending_record(estates):
-    """`LANES_WRITE_ID`, set explicitly, wins over the record of the same
-    command line."""
+def test_lanes_write_id_of_another_write_is_refused_2_and_the_pending_record_kept(estates):
+    """G6 (pending-record.md §5.2, T412's G6; lane 3's ruling "G6 stands",
+    #165 6834271321; T245g): after exit 3 the record of a command line holds
+    write P and its `call` line. `LANES_WRITE_ID`, set to a fresh id with
+    its generation, is refused with 2: the fresh id is never sent, no
+    commit call is made, the record still holds P and its `call` line, and
+    stderr names P and its lookup, `lanes-index journal --write-id P`. A
+    fresh id cannot win: it would drop another write's in-doubt record
+    without F3's lookup, or write with no record, and Y forbids both
+    (Y:5171, Y:5196-5198, Y:5215). The test was
+    `test_lanes_write_id_wins_over_a_pending_record`, from the test plan's
+    "wins over a record" (TP:3350 at B19, :3359 at `a91df2c4`), which
+    predates the contract and G6."""
     e = estates()
     argv = note(LA, "explicit id")
     _, pending_id, generation = exit3(e, LA, argv)
+    rec = the_record(e)
     mine = str(uuid.uuid4())
     w = e.run(LA, argv, extra={"LANES_WRITE_ID": mine, "LANES_WRITE_GENERATION": generation})
+    assert w.code == 2, f"exit {w.code}, not 2: {w.err[-800:]}"
+    sent = [c for c in w.calls() if mine in (c.get("stdin") or "")]
+    assert w.commit_calls() == [] and not sent, (w.commit_calls(), sent)
+    kept = the_record(e)
+    assert kept["fields"].get("write_id", "").lower() == pending_id and kept["calls"] == rec["calls"], kept
+    assert pending_id in w.err and f"lanes-index journal --write-id {pending_id}" in w.err, w.err[-800:]
+
+
+@CLIENT
+def test_lanes_write_id_of_the_records_own_write_takes_it_over_past_its_age(estates):
+    """The case that holds under G6 (pending-record.md §5.2, :225: an id
+    whose record holds it is "the record taken over, at any age"; T245g):
+    after exit 3, with the record past the maximum age
+    (`LANES_REGISTER_PENDING_MAX_AGE_S=2`), where a plain rerun writes anew
+    under a new id, the printed rerun, `LANES_WRITE_ID` of the record's own
+    write with its generation, takes it over: exit 0, every commit call
+    under that id, one row for it, and the record removed."""
+    e = estates()
+    argv = note(LA, "own id past the age")
+    _, pending_id, generation = exit3(e, LA, argv)
+    time.sleep(3)
+    w = e.run(LA, argv, extra=dict(MAX_AGE, LANES_WRITE_ID=pending_id, LANES_WRITE_GENERATION=generation))
     assert w.code == 0, w.err[-800:]
-    assert set(w.write_ids()) == {mine} and pending_id not in w.write_ids()
+    assert set(w.write_ids()) == {pending_id}, w.write_ids()
+    assert [r["write_id"] for r in e.journal_after()].count(pending_id) == 1
+    assert pending(e) == [] and take_files(e) == []
 
 
 @CLIENT
