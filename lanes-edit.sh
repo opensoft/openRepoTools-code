@@ -9388,10 +9388,9 @@ archive_local_text() {
 # value is neither read nor passed on. R45's one
 # line at the dispatcher, below `reg_open`, sets it to 1, beside
 # `rule6_primary_on`, where this process's one mode answer is primary: a
-# reader whose `reg_open` (T504) answered primary, a writing verb that the
-# write guard's arm lets through, and an attempt's child (its `REG_MODE` is
-# `reg_scratch_take`'s), which runs the verb of a write the arm sends into
-# `pw_run`. `retired_identity_hits` is this
+# reader whose `reg_open` (T504) answered primary, and an attempt's child (its
+# `REG_MODE` is `reg_scratch_take`'s), which runs the verb of a write the
+# write guard's arm sends into `pw_run`. `retired_identity_hits` is this
 # program's one caller, so `add-row`'s check and the `retired-identity` read
 # both take it. Off primary `key()` is `(p + 0)`, byte for byte as before, so
 # files mode, index mode and an unconfigured workstation read as they did
