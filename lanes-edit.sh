@@ -22259,12 +22259,25 @@ EOF
 
   # This checkout's row can be ahead of origin after a local transcript stamp.
   # The live attach checks both copies; an unreadable local row is not absence.
+  # ON PRIMARY IT READS THE DATABASE AS `register-row` DOES, 8 included, and
+  # exits 69, never 8, where the read fails (feature 007, T506; D11, W:506-512;
+  # B14 tasks:773): through `row_of_lane` in place of `row_of_lane_local`, with
+  # no `canon_lane` and no `log_sync`, as files mode's arm has neither. Its
+  # three callers ask `register-row` first or beside it, which resolves a former
+  # name. The refusal of more than one row (2) stays common to both modes, and
+  # on primary its words drop "local" (lane 3, #165 6807910478, T506 Q5).
   register-row-local)
     lane="${1-}"; [ -n "$lane" ] || die "usage: register-row-local <lane>" 2
     check_lane_name "$lane"
-    rr_row="$(row_of_lane_local "$lane")" || die "could not read local register row for $lane" 1
+    rrl_local="local "
+    if [ "${REG_STORE:-}" = sql ]; then
+      rrl_local=""
+      rr_row="$(row_of_lane "$lane")" || reg_fail_end "$?"
+    else
+      rr_row="$(row_of_lane_local "$lane")" || die "could not read local register row for $lane" 1
+    fi
     [ -n "$rr_row" ] || exit 8
-    case "$rr_row" in *$'\n'*) die "more than one local row names $lane" 2 ;; esac
+    case "$rr_row" in *$'\n'*) die "more than one ${rrl_local}row names $lane" 2 ;; esac
     printf '%s\n' "$rr_row"
     ;;
 
