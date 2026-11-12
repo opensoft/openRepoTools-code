@@ -95,8 +95,8 @@ def fast_receipt(pr, head, request, base_changes):
             and check["status"] == "completed" and check["conclusion"] == "success",
             "Fast check is not successful exact-head Actions evidence")
     link = re.fullmatch(
-        r"https://github[.]com/opensoft/openRepoTools-code/actions/runs/([1-9][0-9]*)/job/([1-9][0-9]*)",
-        check["details_url"])
+        r"https://github[.]com/opensoft/openRepoTools-code/actions/runs/([1-9]\d*)/job/([1-9]\d*)",
+        check["details_url"], flags=re.ASCII)
     require(link is not None, "Unrecognized fast workflow identity")
     run_id, job_id = (int(value) for value in link.groups())
     require(type(check["id"]) is int and check["id"] == job_id, "Fast job identity differs")

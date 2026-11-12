@@ -145,13 +145,16 @@ def verify(delivery, batch, request=None, read_threads=threads, read_base_change
 
 def test_ci_delivery_exact_independent_batch_has_immutable_prefix_proof(delivery, batch):
     proof = verify(delivery, batch)
-    assert proof["verified"] is True and proof["full_ci_required"] is True
-    assert proof["base"] == batch["base"] and proof["candidate"] == batch["candidate"]
+    assert proof["verified"] is True
+    assert proof["full_ci_required"] is True
+    assert proof["base"] == batch["base"]
+    assert proof["candidate"] == batch["candidate"]
     assert [row["number"] for row in proof["members"]] == [7, 8]
     assert [row["head"] for row in proof["members"]] == batch["heads"]
     assert [row["prefix"] for row in proof["members"]] == batch["prefixes"]
     assert proof["tree"] == git(batch["root"], "rev-parse", batch["candidate"] + "^{tree}")
-    assert "queue_admission" not in proof and "skip_ci" not in proof
+    assert "queue_admission" not in proof
+    assert "skip_ci" not in proof
 
 
 @pytest.mark.parametrize("failure", [
@@ -281,7 +284,8 @@ def test_ci_delivery_singleton_is_valid_but_not_two_member_qualification(deliver
     batch["candidate"] = batch["env"]["GITHUB_SHA"] = batch["event"]["after"] = first
     batch["data"]["git/ref/heads/" + QUEUE]["object"]["sha"] = first
     proof = verify(delivery, batch)
-    assert len(proof["members"]) == 1 and proof["members"][0]["number"] == 7
+    assert len(proof["members"]) == 1
+    assert proof["members"][0]["number"] == 7
 
 
 def test_ci_delivery_third_member_is_outside_initial_bound(delivery, batch):
@@ -427,12 +431,18 @@ def test_ci_delivery_workflows_are_additive_and_candidate_has_no_live_trigger():
     heavy = reader.load_yaml(REPO / ".github/workflows/task-set-candidate.yml")
     assert fast["on"] == {"pull_request": {"types": ["opened", "synchronize", "reopened"]}}
     assert fast["permissions"] == {"contents": "read"}
-    assert set(heavy["on"]) == {"workflow_call"} and heavy["on"]["workflow_call"] is None
+    assert set(heavy["on"]) == {"workflow_call"}
+    assert heavy["on"]["workflow_call"] is None
+    assert heavy["permissions"] == {"contents": "read"}
+    for job in ("verify", "qualification"):
+        assert heavy["jobs"][job]["permissions"] == {
+            "contents": "read", "pull-requests": "read", "checks": "read", "actions": "read"}
     assert set(heavy["jobs"]) == {"verify", "full-ci", "qualification"}
     assert heavy["jobs"]["full-ci"] == {
         "needs": "verify", "uses": "./.github/workflows/tests.yml"}
     gate = heavy["jobs"]["qualification"]
-    assert gate["if"] == "${{ always() }}" and gate["needs"] == ["verify", "full-ci"]
+    assert gate["if"] == "${{ always() }}"
+    assert gate["needs"] == ["verify", "full-ci"]
     assert gate["name"] == "openrepotools-batch-heavy"
     assert heavy["jobs"]["verify"]["steps"][0]["with"]["ref"] == "main"
     assert gate["steps"][1]["with"]["ref"] == "main"
