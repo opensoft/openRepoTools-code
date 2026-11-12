@@ -2379,7 +2379,15 @@ def test_the_flush_helper_drops_the_whole_read_family(tmp_path):
 def test_swapped_ranks_through_journal_last_on_primary(primary):
     """T506 (C7, C8): on primary, `swapped`'s rank is the head less
     `lanes-index journal --last --path <log> --grep <key> --at <n>
-    --generation <g>`, with `.head`'s `n` and generation, never `git log -S`."""
+    --generation <g>`, with `.head`'s `n` and generation, never `git log -S`.
+    The store's `repoA-2` log ends on a swap's `PAUSED` on Eagle, since
+    `swapped` ranks only such a lane and exits 8 where none is (lane 5's T506
+    finding, #165 6812983568; the record in T217z's `SWAP_LOG` shape)."""
+    log = "lanes/log/repoA-2.md"
+    primary.door.commit({log: primary.door.register[log].decode("utf-8") + (
+        f"PAUSED — lane repoA-2, session {UUID_A2}@Eagle, 2026-10-01T05:00:00Z, lane:repoA-2 → "
+        f"swap; window sess:1 @3; workstation Eagle; dir /work/repoA2; profile team-01b; "
+        f"agent claude; transcript {UUID_A2}\n")})
     helpers.stub_outcome(primary.door.store, "journal --last", exit=0, stdout="seq=1\n")
     trace = primary.e.root / "git-trace"
     result = primary.edit("swapped", env={"GIT_TRACE": str(trace)})
