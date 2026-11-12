@@ -7787,6 +7787,96 @@ REGISTER_SERVE_IDLE_STOP = ("LANES_REGISTER_SERVE_IDLE_STOP_S", 900, None)
 #: A REQUEST'S BOUND in bytes, its `end` line included (socket API §13.3).
 REGISTER_SERVE_REQUEST_MAX = 65536
 
+#: THE SERVICE CHILD'S ARGV, exactly (Y:3971-3973; socket API §7): the
+#: service's own, not the one-shot argv of the register calls
+#: (`REGISTER_PSQL_ARGS`), and the only one with `VERBOSITY=sqlstate` (lane 1's
+#: post, #165 6752661856, point 2). No connection string: the connection is
+#: the environment's alone.
+REGISTER_SERVE_PSQL_ARGS = ("-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=0",
+                            "-v", "VERBOSITY=sqlstate")
+
+#: THE SERVER'S BOUNDS ON EACH REQUEST, in `PGOPTIONS` (Y:4017-4020; socket
+#: API §6.2): 150 ms `lock_timeout` and 180 ms `statement_timeout`, so the
+#: server cancels its own query just inside the 200 ms timer.
+REGISTER_SERVE_OPTIONS = "-c lock_timeout=150 -c statement_timeout=180"
+
+#: After its `SIGINT`, how long `psql` has to print the request's marker
+#: before it is killed (Y:4013-4016).
+REGISTER_SERVE_KILL_S = 0.1
+
+#: A CHILD THAT FAILED IS STARTED AGAIN IN THE BACKGROUND, never on a
+#: request's time (Y:4014-4016, svc:124), and no sooner than this after the
+#: last start, so a database that stays down costs one `psql` a second.
+REGISTER_SERVE_RETRY_S = 1.0
+
+#: The marker that ends each exchange with the child, on its stderr by
+#: `\warn` with the exchange's `:SQLSTATE`, and the one that opens a
+#: request's own COPY rows on its stdout; `_query_many`'s separator,
+#: `REGISTER_MARKER_COPY`, parts the SELECTs.
+_REGISTER_SERVE_MARK = b"\x1eLANES-SERVE "
+_REGISTER_SERVE_BEGIN = b"\x1eLANES-SERVE-BEGIN "
+
+
+def register_serve_query_text(schema: str, queries: list, nonce: str, *,
+                              bounds: tuple | None = None) -> bytes:
+    """ONE REQUEST TO THE HELD CHILD (Y:3982-3988; socket API §5.1, §7): the
+    statements from `BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY` to
+    `COMMIT`, joined by `psql`'s `\\;` into one Query, so one round trip,
+    each SELECT as `_query_many` sends it; then `\\warn` of the per-request
+    marker with `:SQLSTATE`, which `psql` prints on stderr and never sends
+    to the server. `bounds`, (lock ms, statement ms), are the background
+    fetch's own, set by `SET LOCAL` in its transaction (OP-15, ERR-29)."""
+    parts = [f'SET search_path TO "{schema}"', "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY"]
+    if bounds:
+        parts += [f"SET LOCAL lock_timeout = '{int(bounds[0])}ms'",
+                  f"SET LOCAL statement_timeout = '{int(bounds[1])}ms'"]
+    parts.append(f"COPY (SELECT E'\\x1eLANES-SERVE-BEGIN {nonce}') TO STDOUT")
+    for query in queries:
+        parts += [f"COPY ({query}) TO STDOUT", REGISTER_MARKER_COPY]
+    parts.append("COMMIT")
+    return (" \\; ".join(parts) + ";\n"
+            + f"\\warn '\\036LANES-SERVE {nonce}' :SQLSTATE\n").encode("utf-8")
+
+
+def register_serve_sections(out: bytes, nonce: str, count: int) -> list | None:
+    """A request's stdout as `_query_many` parses its own: `count` lists of
+    rows, each a list of unescaped fields, read from the request's opening
+    marker on; None where they are not all there or not UTF-8."""
+    begin = _REGISTER_SERVE_BEGIN + nonce.encode("ascii")
+    at = out.find(begin + b"\n")
+    if at < 0:
+        return None
+    try:
+        text = out[at + len(begin) + 1:].decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    results, current = [], []
+    for line in text.split("\n"):
+        if line == "\x1eLANES-INDEX-NEXT":
+            results.append(current)
+            current = []
+        elif line:
+            current.append([_pg_unescape(field) for field in line.split("\t")])
+    return results if len(results) == count and not current else None
+
+
+class _RegisterServeJob:
+    """One request waiting for the held child: its items, its arrival, and
+    the answer the worker gives it, once."""
+
+    def __init__(self, items: list, arrival: float):
+        import threading
+        self.items, self.arrival = items, arrival
+        self.answer = None
+        self.done = threading.Event()
+        self.lock = threading.Lock()
+
+    def give(self, answer: bytes) -> None:
+        with self.lock:
+            if self.answer is None:
+                self.answer = answer
+                self.done.set()
+
 
 def register_serve_seconds(spec: tuple) -> tuple[int, bool]:
     """One test-only variable's interval in s (`REGISTER_SERVE_IDLE_CHECK`,
@@ -7978,10 +8068,281 @@ class RegisterService:
         return EXIT_OK
 
     def begin(self) -> None:
-        """What starts once the socket listens."""
+        """THE CONNECT AT LISTEN (lane 3, #165 6827356485, point 3; draft 9's
+        reading of d8:238, "by the first request at the latest; T512 may
+        start it as soon as it listens"): the worker starts, and with it the
+        child's connect, in the background. The connect starts no fetch."""
+        import threading
+        self.child = None
+        self.state = "down"          # down, connecting, ready or busy
+        self.epoch = 0               # moves on every kill, so a late connect is dropped
+        self.retry_at = 0.0
+        self.last_used = time.monotonic()
+        self.queue = []
+        self.fetching = False
+        self.worker = threading.Thread(target=self.work, daemon=True)
+        self.worker.start()
 
     def end(self) -> None:
-        """What stops before the service exits."""
+        """The child stopped by a signal, never by closing its stdin, so a
+        stand-in that reads its stdin to the end runs nothing."""
+        with self.cond:
+            child, self.child, self.state = self.child, None, "down"
+            self.epoch += 1
+            queued, self.queue = self.queue, []
+            self.cond.notify_all()
+        for job in queued:
+            job.give(b"unavailable\n")
+        self.kill(child)
+
+    # -- the held child (SVC-6; socket API §7)
+
+    def spawn(self):
+        """One `psql` child on pipes, in the register environment
+        (`PostgresStore._env`: every inherited `PG*` dropped, then the URL's
+        mapping, `PGPASSFILE`, `PGCONNECT_TIMEOUT` at `c`, the bounds in
+        `PGOPTIONS` and `PGAPPNAME`; ERR-39). Raises `OSError`."""
+        with self.cond:
+            store = self.store
+        return subprocess.Popen([store.psql, *REGISTER_SERVE_PSQL_ARGS], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                env=store._env(register=True, options=REGISTER_SERVE_OPTIONS),
+                                close_fds=True)
+
+    @staticmethod
+    def kill(child, first=None) -> None:
+        """`child` ended: `first`, where given, then `SIGKILL` if it lives on
+        a moment later; its pipes closed only once it is gone."""
+        import signal
+        if child is None:
+            return
+        for sig, wait in ((first, 0.3), (signal.SIGKILL, 2.0)):
+            if sig is None or child.poll() is not None:
+                continue
+            try:
+                child.send_signal(sig)
+            except OSError:
+                pass
+            try:
+                child.wait(wait)
+            except subprocess.TimeoutExpired:
+                pass
+        for pipe in (child.stdin, child.stdout, child.stderr):
+            try:
+                pipe.close()
+            except OSError:
+                pass
+
+    @staticmethod
+    def exchange(child, text: bytes, nonce: str, deadline: float) -> tuple:
+        """`text` to the child, then its stdout and stderr read until the
+        exchange's marker line on stderr, the end of a stream, or `deadline`.
+        Returns (`ok`, `eof` or `timeout`; stdout's bytes; the marker's
+        SQLSTATE or "")."""
+        import select
+        mark = _REGISTER_SERVE_MARK + nonce.encode("ascii")
+        try:
+            child.stdin.write(text)
+            child.stdin.flush()
+        except (OSError, ValueError):
+            return "eof", b"", ""
+        out, err = bytearray(), bytearray()
+        streams = {child.stdout.fileno(): out, child.stderr.fileno(): err}
+        while True:
+            at = err.find(mark)
+            if at >= 0 and err.find(b"\n", at) >= 0:
+                tail = bytes(err[at + len(mark):err.find(b"\n", at)]).decode("ascii", "replace")
+                return "ok", bytes(out), tail.strip()
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return "timeout", bytes(out), ""
+            try:
+                ready, _, _ = select.select(list(streams), [], [], left)
+            except (OSError, ValueError):
+                return "eof", bytes(out), ""
+            for fd in ready:
+                try:
+                    chunk = os.read(fd, 1 << 20)
+                except OSError:
+                    chunk = b""
+                if not chunk:
+                    return "eof", bytes(out), ""
+                streams[fd] += chunk
+
+    def connect(self, epoch: int) -> None:
+        """THE BACKGROUND CONNECT (Y:3971-3975, svc:124): a new child, then a
+        `\\warn` marker, which `psql` reads only once it has connected, at
+        `c` for each of the `N_a` addresses; a child that ends first, or is
+        still connecting past `N_a`·`c` + 2 s, failed. The first connect
+        removes any stamp (Y:3936-3938)."""
+        try:
+            child = self.spawn()
+        except OSError:
+            child = None
+        status = "eof"
+        if child is not None:
+            with self.cond:
+                bound = self.store.addresses * self.store.connect_timeout + 2
+            nonce = f"connect-{os.urandom(4).hex()}"
+            status, _out, _state = self.exchange(
+                child, f"\\warn '\\036LANES-SERVE {nonce}'\n".encode("ascii"), nonce,
+                time.monotonic() + bound)
+        with self.cond:
+            if status == "ok" and epoch == self.epoch and not self.stopping:
+                self.child, self.state, self.last_used = child, "ready", time.monotonic()
+                child = None
+                register_serve_unstamp(self.paths)
+                register_serve_log(self.paths, "connected")
+            elif epoch == self.epoch:
+                self.state = "down"
+                register_serve_log(self.paths, "connect failed")
+            self.cond.notify_all()
+        self.kill(child)
+
+    def lost(self, why: str) -> None:
+        """The held child gone: killed, and started again in the background
+        (Y:4014-4016)."""
+        with self.cond:
+            child, self.child, self.state = self.child, None, "down"
+            self.epoch += 1
+            self.cond.notify_all()
+        register_serve_log(self.paths, why)
+        self.kill(child)
+
+    def reconnect(self) -> None:
+        """A changed configuration's connection: the held child replaced, at
+        once, in the background."""
+        with self.cond:
+            self.retry_at = 0.0
+        self.lost("the configuration changed: reconnecting")
+
+    def run(self, text: bytes, nonce: str, deadline: float, *, timer: bool = True) -> tuple:
+        """ONE EXCHANGE ON THE HELD CHILD, by the worker alone. At `deadline`,
+        the timer: `SIGINT`, which cancels the query, then the kill where the
+        marker has not come within 100 ms more (Y:4012-4016). A failed
+        statement leaves its transaction open, so a `ROLLBACK` follows it, on
+        the same rule. Returns (`ok`, `failed`, `slow` or `lost`; stdout;
+        SQLSTATE)."""
+        import signal
+        with self.cond:
+            child = self.child
+        if child is None:
+            return "lost", b"", ""
+        status, out, state = self.exchange(child, text, nonce, deadline)
+        if status == "timeout":
+            child.send_signal(signal.SIGINT)
+            status, out, state = self.exchange(child, b"", nonce,
+                                               time.monotonic() + REGISTER_SERVE_KILL_S)
+            self.lost("a request's timer expired: psql was stopped")
+            return ("slow" if timer else "lost"), b"", ""
+        if status != "ok":
+            self.lost("the held connection was lost")
+            return "lost", b"", ""
+        if state != "00000":
+            nonce2 = f"rollback-{os.urandom(4).hex()}"
+            again, _out, cleared = self.exchange(
+                child, f"ROLLBACK;\n\\warn '\\036LANES-SERVE {nonce2}' :SQLSTATE\n".encode(),
+                nonce2, time.monotonic() + register_serve_timer_ms(self.cfg) / 1000)
+            if again != "ok" or cleared != "00000":
+                self.lost("the held connection could not roll back")
+            return "failed", out, state
+        return "ok", out, state
+
+    def work(self) -> None:
+        """THE WORKER, the held child's one user: one query at a time
+        (Y:3982-3984). It takes each request in arrival order, answering one
+        whose timer expired while it waited `unavailable slow`, dropped with
+        no `SIGINT` (lane 1's U5 review, S1); between requests, the idle
+        check; and where the child is gone, a new connect, in the background
+        and no sooner than `REGISTER_SERVE_RETRY_S` after the last."""
+        import threading
+        while True:
+            job = None
+            with self.cond:
+                while not self.stopping:
+                    now = time.monotonic()
+                    if self.state == "down" and now >= self.retry_at:
+                        self.state, self.retry_at = "connecting", now + REGISTER_SERVE_RETRY_S
+                        threading.Thread(target=self.connect, args=(self.epoch,),
+                                         daemon=True).start()
+                    if self.state == "ready" and self.queue:
+                        job, self.state = self.queue.pop(0), "busy"
+                        break
+                    if self.state == "ready" and self.idle_due(now):
+                        job, self.state = "idle", "busy"
+                        break
+                    if self.state == "ready" and self.fetch_due():
+                        job, self.state, self.fetching = "fetch", "busy", True
+                        break
+                    waits = [self.last_used + self.idle_check_s - now]
+                    if self.state == "down":
+                        waits.append(self.retry_at - now)
+                    self.cond.wait(max(0.01, min(waits)))
+                if self.stopping:
+                    return
+            if job == "idle":
+                self.idle_check()
+            elif job == "fetch":
+                self.fetch()
+            else:
+                self.serve_job(job)
+            with self.cond:
+                self.fetching = False
+                if self.state == "busy":
+                    self.state = "ready" if self.child is not None else "down"
+                self.cond.notify_all()
+
+    def idle_due(self, now: float) -> bool:
+        """THE IDLE CHECK'S TIME (Y:3993-3995): `idle_check_s` from the held
+        connection's last use, its connect or its last request or check,
+        whether or not a request has come (draft 9, at d8:245)."""
+        return now - self.last_used >= self.idle_check_s
+
+    def idle_check(self) -> None:
+        """`SELECT 1` on the held connection, under the request's timer, its
+        row kept in a psql variable so nothing reaches stdout (`\\gset`); a
+        failure restarts the child in the background (Y:3993-3995)."""
+        nonce = f"idle-{os.urandom(4).hex()}"
+        status, _out, _state = self.run(
+            f"SELECT 1 AS alive \\gset lanes_serve_\n\\warn '\\036LANES-SERVE {nonce}' "
+            f":SQLSTATE\n".encode("ascii"), nonce,
+            time.monotonic() + register_serve_timer_ms(self.cfg) / 1000, timer=False)
+        if status == "failed":
+            self.lost("the idle check failed")
+        with self.cond:
+            self.last_used = time.monotonic()
+
+    def fetch_due(self) -> bool:
+        """Whether a background whole-file fetch waits for the child."""
+        return False
+
+    def fetch(self) -> None:
+        """The background whole-file fetch."""
+
+    def serve_job(self, job) -> None:
+        """ONE REQUEST ON THE HELD CHILD: answered `unavailable slow`, with no
+        `SIGINT`, where its timer expired while it waited (S1); else its one
+        Query, under the timer from its arrival (socket API §13.3)."""
+        timer = register_serve_timer_ms(self.cfg) / 1000
+        if time.monotonic() >= job.arrival + timer:
+            job.give(b"unavailable slow\n")
+            return
+        try:
+            job.give(self.query(job, job.arrival + timer))
+        finally:
+            job.give(b"unavailable\n")
+            with self.cond:
+                self.last_used = time.monotonic()
+
+    def query(self, job, deadline: float) -> bytes:
+        """The request's snapshot, read on the held child; its answer is
+        `unavailable` until the answers are built."""
+        with self.cond:
+            schema = self.store.schema
+        nonce = f"q-{os.urandom(6).hex()}"
+        status, _out, _state = self.run(register_serve_query_text(
+            schema, register_read_queries(texts=()), nonce), nonce, deadline)
+        return b"unavailable slow\n" if status == "slow" else b"unavailable\n"
 
     # -- a connection
 
@@ -8073,9 +8434,21 @@ class RegisterService:
         """What a changed configuration restarts."""
 
     def request(self, items: list, arrival: float) -> bytes:
-        """A request the service can take. Until its `psql` child is held,
-        `unavailable` (Y:4014-4016)."""
-        return b"unavailable\n"
+        """A REQUEST THE SERVICE CAN TAKE, queued for the held child. It is
+        answered `unavailable` at once where there is no held connection, at
+        the start or after a restart (Y:4014-4016; draft 9, at d8:173), or a
+        background whole-file fetch holds it (OP-15)."""
+        with self.cond:
+            if self.fetching or self.state in ("down", "connecting"):
+                self.cond.notify_all()
+                return b"unavailable\n"
+            job = _RegisterServeJob(items, arrival)
+            self.queue.append(job)
+            self.cond.notify_all()
+        timer = register_serve_timer_ms(self.cfg) / 1000
+        job.done.wait(max(0.0, arrival + timer + REGISTER_SERVE_KILL_S + 1.0 - time.monotonic()))
+        job.give(b"unavailable slow\n")
+        return job.answer
 
 
 def register_serve_run(cfg: dict, store, paths: dict) -> int:
