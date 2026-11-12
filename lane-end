@@ -128,7 +128,9 @@
 #                       lists them as an ended lane's; the row's closing phrase
 #                       and the lane's ENDED (or RETIRED) line say that this
 #                       door was taken and what the gate found. Where the gate
-#                       passes it changes nothing
+#                       passes it changes nothing. A register that could not be
+#                       read (`lane-dir`'s 69, 75 or 3) is not passed: the run
+#                       ends with that code
 #   --sweep             NOT BUILT, and refused with that said. Retiring the
 #                       trees in the same run as the ending is not one act:
 #                       `lane-worktrees sweep <lane> --yes` retires them first,
