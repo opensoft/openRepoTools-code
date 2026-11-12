@@ -1841,6 +1841,15 @@ START_LINE = 3.75
 #: whole-file fetch on its FIFO. The fetch starts before the cut, so it is
 #: held by then; this is a margin, the outer's 10 s (`Estate.outer`).
 HOLD_LIMIT = 10.0
+#: FORM 4 AS THE SHIM SEES IT (lane 5's F2b, #165 6812547449). The shim logs
+#: `psql`'s own argv, never `lanes-index`'s, so no `--for` is ever in it;
+#: form 4 is known by its SQL instead, which the shim logs as `sent` and
+#: which an arm's `match` reads. It is the one request that reads the
+#: latest import at or below `n` (contract section 3.6's form 4;
+#: `register_read_queries(at=n)` in lane 5's writer A, T507A `319cd928`,
+#: `lanes-index:6081`). Form 2, the whole-file fetch and the render read
+#: send no such bound.
+FORM_4_SQL = "WHERE i.kind = 'import' AND i.seq <= "
 
 
 def _silent_listener(host="127.0.0.1"):
@@ -2084,7 +2093,7 @@ def test_a_second_read_past_the_start_line_is_noted_not_refused(estate, case):
     guard reaches its second read."""
     est = estate(mode="primary")
     _Register(est)
-    est.shim([{"mode": "window", "ms": 3900, "match": "--for guard"}] if case == "at-the-cap"
+    est.shim([{"mode": "window", "ms": 3900, "match": FORM_4_SQL}] if case == "at-the-cap"
              else [])
     if case == "under-a-declaration":
         conf = Path(est.extra["LANES_INDEX_CONFIG"])
@@ -2094,8 +2103,8 @@ def test_a_second_read_past_the_start_line_is_noted_not_refused(estate, case):
     hook = est.hook("hello")
     assert not hook.killed and hook.t_exit - hook.t0 < BUDGET, repr(hook)
     assert "second read" not in hook.err or hook.code != 2, repr(hook)
-    forms = [c for c in est.shim_calls() if "--for" in " ".join(c.get("argv", []))]
-    assert forms, "the guard made no second read"
+    forms = [c for c in est.shim_calls() if FORM_4_SQL in c.get("sent", "")]
+    assert forms, "the guard made no second read (no call in the shim's log is form 4's SQL)"
 
 
 def test_the_guards_last_budget_line_is_below_guard_timeout():
