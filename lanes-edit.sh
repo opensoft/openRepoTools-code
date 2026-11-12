@@ -468,7 +468,11 @@
 #      that lock (360: lane-end's sweep of a CLOSED lane), said at once;
 #      `handoff-path` and `write-handoff`, a register that could not be read
 #      (R22: never 8), and `write-handoff`'s target under a repository that
-#      git could not read (R22: never "no repository")
+#      git could not read (R22: never "no repository"); and, feature 007's
+#      pending record (F10), each with nothing sent: a host with neither
+#      `sha256sum` nor `shasum` to make a write's digest (`wr_begin`), and a
+#      `register-pending/` directory that cannot be made, or a claim in it
+#      that cannot be written whole (`wr_claim_take`, ERR-42)
 #   2  refusal: bad arguments, the object is held, an unknown alias, —
 #      Amendment 15 — a register holding
 #      two rows whose lane names differ only by case, which every writer and
@@ -537,6 +541,14 @@
 #      rewrite the record at its start and so ran nothing; its body,
 #      `guard-bind --body`, exits `lane-start`'s own code, which the outer
 #      reads as that `rc`.
+#      AND FEATURE 007'S PENDING RECORD (F10; the `wr_` functions, which the
+#      primary branch calls), each before any commit call, with nothing sent:
+#      a `LANES_WRITE_ID` that is neither a lower-case UUID nor `new`, or a
+#      `LANES_WRITE_GENERATION` that is not one; a `LANES_WRITE_ID` with no
+#      generation that no pending record here holds; a pending record of
+#      another register generation, at any age, until `LANES_WRITE_ID=new`; a
+#      pending record that cannot be read as one; and three cases the design
+#      leaves open, refused rather than guessed (`wr_id_plan`, `wr_id_settle`).
 #  64  usage — a caller's bad arguments to one of the reads Amendment 11 added
 #      (`window-lane`, `lane-dir`, `lane-profile`, `last-session`, `forks`,
 #      `duplicate-holder` (issue #39), `workstation`, `fetch-age`, `lanes`,
@@ -1253,6 +1265,40 @@ lanes_binding_value_ok() {   # <value>
     *[!A-Za-z0-9._:-]*) return 1 ;;
   esac
   return 0
+}
+
+# THE STATE DIRECTORY OF FEATURE 007'S WRITE PATH, `lanes-index`'s own (007 T412;
+# Y:5171 "`<state>` is `lanes-index`'s state directory"; contract §7, Q5). Its
+# `state_dir()` (`lanes-index:173-175`) is `$XDG_STATE_HOME`, else
+# `$HOME/.local/state`, joined to `openRepoTools` as Python's `os.path.join`
+# joins: no second slash where the base ends in one, the password entry's home
+# where `HOME` is unset, and the root where it is set and empty. This is the
+# same answer in bash, so the pending records, their claims, the done marks and
+# the attempt directories are where `lanes-index status` looks, with no Python
+# start for each write. A hygiene test holds the two to one answer; lane
+# openRepoTools-1 adds its `lanes-index` side (Q5). The citations are keyed
+# with the rest of F10, after `utc_now`.
+#
+# IT IS DEFINED HERE, ABOVE THE RESOLVER, because the resolver checks an
+# attempt's `<state>/register-writes/` at file scope (T413), and a function
+# defined below its first call is a call to nothing (review m3).
+wr_state_dir() {
+  local wsd_base wsd_home
+  wsd_base="${XDG_STATE_HOME:-}"
+  if [ -z "$wsd_base" ]; then
+    if [ -n "${HOME:-}" ]; then wsd_home="$HOME"
+    elif [ -n "${HOME+set}" ]; then wsd_home=/
+    else wsd_home=~
+    fi
+    case "$wsd_home" in
+      */) wsd_base="${wsd_home}.local/state" ;;
+      *) wsd_base="$wsd_home/.local/state" ;;
+    esac
+  fi
+  case "$wsd_base" in
+    */) printf '%sopenRepoTools\n' "$wsd_base" ;;
+    *) printf '%s/openRepoTools\n' "$wsd_base" ;;
+  esac
 }
 
 # The register is no longer the whole of its own worktree: since Amendment 5
@@ -5309,6 +5355,997 @@ table_lookup() {   # <fenced table> <lower-cased lane>
 }
 
 utc_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# ----------------------------------- F10: THE WRITE ID AND THE PENDING RECORD
+#
+# 007 T412 (FR-021; Y:5169-5224, Y:2466-2502; contract §3.2 and §4). The
+# formats of the record, its claims and the done mark, and the texts below, are
+# lane openRepoTools-4's `contracts/pending-record.md` (R34).
+#
+# THE CITATIONS. `Y:<n>` is line `<n>` of the add-sql-register change's
+# `design.md` at spec commit `a6497d00`; `FR-<n>` is feature 007's `spec.md`;
+# "the contract" is its `contracts/register-cli.md`; `R<nn>` is lane
+# openRepoTools-3's ruling of that number (#165 6726556972); and `T<nnn>` is
+# a task of feature 007's `tasks.md`.
+#
+# INERT UNTIL T415: nothing in this file calls these yet. T415's primary branch
+# calls them once per writer process, in this order:
+#
+#   wr_begin                      the digest and the run's identity
+#   wr_claim_take <deadline>      the claim chain, BEFORE the first snapshot
+#   wr_id_plan                    the record read; the first snapshot's flags
+#   (the first snapshot)          register snapshot "${WR_SNAP_ARGS[@]}" ...
+#   wr_id_settle <stdout file>    the id and the generation; the record written
+#   wr_record_add_call ...        a `call=` line, before each commit call
+#   wr_record_drop_call <dir>     a call an answer shows did not commit
+#   wr_claim_release              a new write's 69 at its first snapshot
+#   wr_record_remove              the outcome known: the record and its claims
+#
+# NOT HERE: the 3 for an owner still live at D7's deadline (Y:5218) is T417's,
+# with the exit-3 rule (review M8). The `tail` key's values, the done mark's
+# writer and the owed texts are T418's ("The tail, once", Y:5289).
+WR_NL="$(printf '\nx')"; WR_NL="${WR_NL%x}"; WR_CR="$(printf '\r')"
+WR_STATE=""; WR_D=""; WR_LANE=""; WR_SESSION=""; WR_VERB=""; WR_CMDLINE=""
+WR_ARGS=()
+WR_PLAN=""; WR_SNAP_ARGS=()
+WR_ID=""; WR_GEN=""; WR_DATABASE=""; WR_CREATED_UTC=""; WR_UPDATED_UTC=""
+WR_ATTEMPTS=0; WR_CALLS=""; WR_TAIL=""; WR_TOOK_TAIL=""
+WR_CLAIM=""; WR_CLAIM_K=-1; WR_CLAIM_PID=""; WR_CLAIM_START=""
+WR_CLAIM_HOST=""; WR_CLAIM_CONTAINER=""; WR_CLAIM_UTC=""
+WR_HERE_HOST=""; WR_HERE_CONTAINER=""
+WR_HIGHEST_K=-1; WR_HIGHEST_FILE=""
+WR_C_PID=""; WR_C_START=""; WR_C_HOST=""; WR_C_CONTAINER=""; WR_C_UTC=""
+WR_OWNER_FILE=""; WR_OWNER_PID=""; WR_OWNER_START=""; WR_OWNER_HOST=""
+WR_OWNER_CONTAINER=""; WR_OWNER_UTC=""; WR_OWNER_WHY=""; WR_OWNER_TAKE_AFTER=""
+WR_LIVE_WHY=""; WR_LIVE_UNTIL=""
+WR_REC_FORMAT=""; WR_REC_WRITE_ID=""; WR_REC_GENERATION=""; WR_REC_DATABASE=""
+WR_REC_LANE=""; WR_REC_SESSION=""; WR_REC_VERB=""; WR_REC_ARGS_SHA256=""
+WR_REC_CMDLINE=""; WR_REC_CREATED_UTC=""; WR_REC_UPDATED_UTC=""; WR_REC_PID=""
+WR_REC_PID_START=""; WR_REC_HOST=""; WR_REC_CONTAINER=""; WR_REC_ATTEMPTS=""
+WR_REC_CALLS=""; WR_REC_TAIL=""
+WR_CF_BASE=""; WR_CF_CLOCK=""; WR_CF_NOT_AFTER=""; WR_CF_FILES=""; WR_CF_DIR=""
+
+# A LOWER-CASE UUID, as `lanes-index` prints a write id and a generation
+# (contract §4: "printed as a lowercase UUID"). The digits are spelled out, not
+# ranged, so no locale's collation can widen `[a-f]`.
+wr_is_uuid() {   # <value>
+  local h='[0123456789abcdef]'
+  case "${1-}" in
+    $h$h$h$h$h$h$h$h-$h$h$h$h-$h$h$h$h-$h$h$h$h-$h$h$h$h$h$h$h$h$h$h$h$h) return 0 ;;
+  esac
+  return 1
+}
+
+# 64 lower-case hex digits: a sha256, as `<d>` and a `call=` line's `<files>`.
+wr_is_hex64() {   # <value>
+  case "${1-}" in ''|*[!0123456789abcdef]*) return 1 ;; esac
+  [ "${#1}" -eq 64 ]
+}
+
+# Whole decimal digits, few enough for the shell's arithmetic.
+wr_is_count() {   # <value>
+  case "${1-}" in ''|*[!0123456789]*) return 1 ;; esac
+  [ "${#1}" -le 18 ]
+}
+
+# A UTC as this file writes one, `YYYY-MM-DDTHH:MM:SSZ`. It is checked before
+# `epoch_of` reads it, since GNU `date -d ''` answers today's midnight, not
+# nothing.
+wr_is_utc() {   # <value>
+  local d='[0123456789]'
+  case "${1-}" in
+    ${d}${d}${d}${d}-${d}${d}-${d}${d}T${d}${d}:${d}${d}:${d}${d}Z) return 0 ;;
+  esac
+  return 1
+}
+
+# One `key=value` value: no line feed and no carriage return, either of which
+# would end its line early and make the rest a line of its own.
+wr_value_ok() {   # <value>
+  case "${1-}" in *"$WR_NL"*|*"$WR_CR"*) return 1 ;; esac
+  return 0
+}
+
+# The sha256 of stdin, in lower-case hex. `shasum -a 256` is macOS's spelling
+# and `sha256sum` GNU's, as `lane_handoff_digest` asks them. 1 where neither is
+# here or the answer is not a sha256.
+wr_sha256_stdin() {
+  local ws_h=""
+  if command -v sha256sum >/dev/null 2>&1; then
+    ws_h="$(sha256sum 2>/dev/null | awk '{print $1; exit}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    ws_h="$(shasum -a 256 2>/dev/null | awk '{print $1; exit}')"
+  else
+    return 1
+  fi
+  wr_is_hex64 "$ws_h" || return 1
+  printf '%s\n' "$ws_h"
+}
+
+# THE DIGEST, `<d>` (Y:5171): the sha256 of `lanes-pending/1`, then a NUL before
+# each of the lane, the session, the verb and every argument in order, with no
+# NUL after the last. It names the record's file, and it is the journal's
+# `args_sha256`, which every register call of the write passes; `lanes-index`
+# never recomputes it (contract §4).
+wr_digest() {   # <lane> <session> <verb> [<arg>...]
+  { printf 'lanes-pending/1'; printf '\0%s' "$@"; } | wr_sha256_stdin
+}
+
+# THE HOST'S CLOCK, as UTC. Never `utc_now`, which under T413's flag answers the
+# snapshot's database clock in the child: `updated_utc` is always this host's,
+# since a takeover ages the record's newest `call=` clock by it, on this host
+# (open point 36, taken under R26; contract §3.4).
+wr_host_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# A record's and a done mark's maximum age, 15 minutes (Y:5183, Y:5207).
+# `LANES_REGISTER_PENDING_MAX_AGE_S` sets it for tests, read and printed in base
+# 10 as `wr_seam_cap_s` is, so `08` is 8 s in every compare and every message
+# that names it (#165 6770820384, T415's 4).
+wr_max_age_s() {
+  if wr_is_count "${LANES_REGISTER_PENDING_MAX_AGE_S:-}"; then
+    printf '%s\n' "$((10#$LANES_REGISTER_PENDING_MAX_AGE_S))"
+  else
+    printf '900\n'
+  fi
+}
+
+# THE SEAM'S CAP, 2 x (D + 30 s), 120 s at D7's 30 s (Y:5001), where D is D7's
+# deadline: 30 s, or `LANES_REGISTER_DEADLINE_S` for tests (Y:2632-2644), read
+# as T415's `pw_deadline_s` reads it. DEC-25 keeps this one cap: it is also how
+# long a claim that cannot be tested here counts as live, another host's among
+# them (Y:5220) (lane openRepoTools-3, #165 6774499606, T415 (1)).
+# `LANES_REGISTER_SEAM_CAP_S` sets the cap itself, for tests (Y:5001). Each is
+# read in base 10, so a leading zero is neither octal nor an arithmetic error
+# in `wr_claim_capped`'s `$(( ))`: `08` is 8 s (#165 6770820384, T415's 4). A
+# value that is not a count of at most 18 digits (`wr_is_count`) is not read,
+# so twice D + 30 stays inside the shell's arithmetic.
+wr_seam_cap_s() {
+  local sc_d=30
+  if wr_is_count "${LANES_REGISTER_SEAM_CAP_S:-}"; then
+    printf '%s\n' "$((10#$LANES_REGISTER_SEAM_CAP_S))"
+    return 0
+  fi
+  if wr_is_count "${LANES_REGISTER_DEADLINE_S:-}"; then
+    sc_d="$((10#$LANES_REGISTER_DEADLINE_S))"
+  fi
+  printf '%s\n' "$(( 2 * (sc_d + 30) ))"
+}
+
+# A 0700 directory this uid owns, made where it is missing (Y:5172, Y:5180: "in
+# a 0700 directory"). 1 where it cannot be made, is not a directory, or is not
+# this uid's.
+#
+# `<state>` ITSELF IS ONLY MADE WHERE IT IS MISSING, NEVER CHMODDED: it is
+# `lanes-index`'s own directory, which `lanes-index` makes 0700 and never
+# chmods (`lanes-index:1492`), and the contract says only that every directory
+# is "made where it is missing, under `umask 077`, and must be a directory this
+# uid owns" (§1). Made here, under umask 077, it is 0700 already. The
+# directories under it, `register-*/` and the attempt directories, are made
+# 0700 or set to it (review REV-W10a N1).
+wr_dir_0700() {   # <dir>
+  ( umask 077 && mkdir -p -- "$1" ) 2>/dev/null || return 1
+  [ -d "$1" ] && [ -O "$1" ] || return 1
+  [ "$1" != "$WR_STATE" ] || return 0
+  chmod 700 -- "$1" 2>/dev/null
+}
+
+# WHICH HOST AND CONTAINER THIS RUN IS ON, by the same probes the writer stamps
+# its lines with, and through the same fence. A value that fails the fence is
+# left empty, and an empty one never matches: a claim is judged by its pid only
+# where both sides name the same host and the same container.
+wr_here() {
+  WR_HERE_HOST="$(lanes_host_pair | cut -f1)"
+  WR_HERE_CONTAINER="$(lanes_container_pair | cut -f1)"
+  lanes_binding_value_ok "$WR_HERE_HOST" || WR_HERE_HOST=""
+  lanes_binding_value_ok "$WR_HERE_CONTAINER" || WR_HERE_CONTAINER=""
+  return 0
+}
+
+# THE RUN'S F10 IDENTITY, made once, before its claim (Y:5171; contract §4): the
+# state directory, the digest `<d>` and what goes into it, and the record's
+# `cmdline`.
+#
+# The digest is over the words AS THEY ARRIVED (`ORIG_ARGV`), less the global
+# flags the parser at the top of this file takes before the verb, which are
+# neither the verb nor its arguments (Y:2476). The lane and the session are
+# `LANES_LANE` and `LANES_SESSION` as given, empty where unset (Y:5171).
+# `cmdline` keeps every word, each shell-quoted.
+#
+# LANES_WRITE_ID and LANES_WRITE_GENERATION are checked for shape here, before
+# any call: an id is a lower-case UUID or `new`, and a generation a lower-case
+# UUID. Another shape is refused with 2, nothing sent. A host with no sha256
+# is refused with 1.
+wr_begin() {
+  local wb_w wb_k wb_flags wb_v wb_q
+  WR_STATE="$(wr_state_dir)"
+  WR_LANE="${LANES_LANE:-}"; WR_SESSION="${LANES_SESSION:-}"
+  WR_VERB=""; WR_ARGS=(); wb_k=0; wb_flags=1
+  WR_CMDLINE="lanes-edit.sh"
+  for wb_w in ${ORIG_ARGV[@]+"${ORIG_ARGV[@]}"}; do
+    wb_q="$(printf '%q' "$wb_w")"
+    WR_CMDLINE="$WR_CMDLINE $wb_q"
+    if [ "$wb_flags" = 1 ]; then
+      case "$wb_w" in --no-sweep|--sweep|--no-github) continue ;; esac
+      wb_flags=0; WR_VERB="$wb_w"
+      continue
+    fi
+    WR_ARGS[$wb_k]="$wb_w"; wb_k=$((wb_k + 1))
+  done
+  WR_D="$(wr_digest "$WR_LANE" "$WR_SESSION" "$WR_VERB" ${WR_ARGS[@]+"${WR_ARGS[@]}"})" || WR_D=""
+  wr_is_hex64 "$WR_D" || die "this write's digest, which its pending record and every register call of it are keyed by, could not be computed: this host has neither sha256sum nor shasum. Nothing was sent" 1
+  wb_v="${LANES_WRITE_ID:-}"
+  case "$wb_v" in
+    ''|new) : ;;
+    *)
+      wb_q="$(printf '%q' "$wb_v")"
+      wr_is_uuid "$wb_v" || die "LANES_WRITE_ID is $wb_q, which is neither a write id (a lower-case UUID, as a printed rerun gives it) nor new. Nothing was sent" 2
+      ;;
+  esac
+  wb_v="${LANES_WRITE_GENERATION:-}"
+  if [ -n "$wb_v" ] && ! wr_is_uuid "$wb_v"; then
+    wb_q="$(printf '%q' "$wb_v")"
+    die "LANES_WRITE_GENERATION is $wb_q, which is not a register generation (a lower-case UUID, as a printed rerun gives it). Nothing was sent" 2
+  fi
+  return 0
+}
+
+# THE PENDING RECORDS' DIRECTORY, `<state>/register-pending/` (Y:5171), 0700.
+# It prints the path, and answers 1 where the directory cannot be made.
+wr_pending_dir() {
+  wr_dir_0700 "$WR_STATE" || return 1
+  wr_dir_0700 "$WR_STATE/register-pending" || return 1
+  printf '%s\n' "$WR_STATE/register-pending"
+}
+
+# A CLAIM, `<d>.take.<k>` (Y:5184): five `key=value` lines, `pid`, `pid_start`,
+# `host`, `container` and `utc`. Its values go into WR_C_*. 0 when it names a
+# pid; 1 when it cannot be read or names none. Since ERR-42 a claim is made
+# whole, so a run never sees its maker's half-written body; a claim with no pid
+# is a crash's, a failed disk's or another tool's (DEC-25).
+wr_claim_read() {   # <claim file>
+  local cr_l=""
+  WR_C_PID=""; WR_C_START=""; WR_C_HOST=""; WR_C_CONTAINER=""; WR_C_UTC=""
+  [ -f "$1" ] && [ -r "$1" ] || return 1
+  while IFS= read -r cr_l || [ -n "$cr_l" ]; do
+    case "$cr_l" in
+      pid=*) WR_C_PID="${cr_l#pid=}" ;;
+      pid_start=*) WR_C_START="${cr_l#pid_start=}" ;;
+      host=*) WR_C_HOST="${cr_l#host=}" ;;
+      container=*) WR_C_CONTAINER="${cr_l#container=}" ;;
+      utc=*) WR_C_UTC="${cr_l#utc=}" ;;
+    esac
+    cr_l=""
+  done < "$1" 2>/dev/null
+  wr_is_count "$WR_C_PID"
+}
+
+# THE HIGHEST CLAIM on `<d>` in `<dir>`: WR_HIGHEST_K, -1 where there is none,
+# and WR_HIGHEST_FILE. Only a name this file makes counts: `.take.` and a
+# number with no leading zero. A name that is there counts even where it is a
+# dangling symbolic link, as `wr_claim_live` counts it and as `ln` finds the
+# name taken: one passed over here made `wr_claim_take` create that same name
+# again and again, with no sleep and past its deadline (review REV-W10a S1).
+# Such a claim names no pid, so it is live for the seam's cap only (DEC-25).
+wr_claim_highest() {   # <dir>
+  local ch_f ch_k
+  WR_HIGHEST_K=-1; WR_HIGHEST_FILE=""
+  for ch_f in "$1/$WR_D".take.*; do
+    [ -e "$ch_f" ] || [ -L "$ch_f" ] || continue
+    ch_k="${ch_f##*.take.}"
+    case "$ch_k" in ''|*[!0123456789]*|0?*) continue ;; esac
+    [ "${#ch_k}" -le 9 ] || continue
+    if [ "$ch_k" -gt "$WR_HIGHEST_K" ]; then
+      WR_HIGHEST_K="$ch_k"; WR_HIGHEST_FILE="$ch_f"
+    fi
+  done
+  return 0
+}
+
+# The record's `updated_utc` as epoch seconds, empty where there is no record or
+# no readable stamp in it.
+wr_record_updated_epoch() {   # <record file>
+  local ru_l="" ru_u=""
+  [ -f "$1" ] && [ -r "$1" ] || return 0
+  while IFS= read -r ru_l || [ -n "$ru_l" ]; do
+    case "$ru_l" in updated_utc=*) ru_u="${ru_l#updated_utc=}" ;; esac
+    ru_l=""
+  done < "$1" 2>/dev/null
+  wr_is_utc "$ru_u" || return 0
+  epoch_of "$ru_u"
+}
+
+# A file's mtime, in epoch seconds, as `fetch-age` reads `FETCH_HEAD`'s: GNU
+# `stat -c %Y`, else BSD `stat -f %m`. Empty where neither answers.
+wr_file_mtime() {   # <file>
+  local fm_t
+  fm_t="$(stat -c %Y -- "$1" 2>/dev/null || stat -f %m -- "$1" 2>/dev/null || :)"
+  wr_is_count "$fm_t" || fm_t=""
+  printf '%s' "$fm_t"
+}
+
+# Epoch seconds as this file's UTC stamp: GNU `date -d @<s>`, else BSD
+# `date -j -r <s>`. Empty where neither answers.
+wr_utc_of_epoch() {   # <epoch seconds>
+  wr_is_count "${1-}" || return 0
+  date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null ||
+    date -u -j -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || :
+}
+
+# A CLAIM WHOSE OWNER CANNOT BE TESTED HERE is live for the seam's cap,
+# 2 x (D + 30 s), 120 s at D7's 30 s (`wr_seam_cap_s`; Y:5001), and dead after
+# it: Y:5220 for a claim from another host or container, "since its pid cannot
+# be tested here", and DEC-25 for the two of this host that cannot be tested
+# either. The cap runs from the later of
+# `<from>`, the claim's own time, and the record's `updated_utc`; where neither
+# can be read, from the claim file's mtime; where even that cannot be read, the
+# claim is live. WR_LIVE_WHY is `<why>`, and WR_LIVE_UNTIL the epoch second from
+# which a run may take the claim. 0 live, 1 dead.
+wr_claim_capped() {   # <why> <from, epoch seconds, or empty> <record file> <claim file>
+  local cp_from cp_b
+  WR_LIVE_WHY="${1-}"; WR_LIVE_UNTIL=""
+  cp_from="${2-}"
+  cp_b="$(wr_record_updated_epoch "$3")"
+  if [ -n "$cp_b" ] && { [ -z "$cp_from" ] || [ "$cp_b" -gt "$cp_from" ]; }; then cp_from="$cp_b"; fi
+  [ -n "$cp_from" ] || cp_from="$(wr_file_mtime "$4")"
+  [ -n "$cp_from" ] || return 0
+  WR_LIVE_UNTIL=$(( cp_from + $(wr_seam_cap_s) ))
+  [ "$(date -u +%s)" -lt "$WR_LIVE_UNTIL" ]
+}
+
+# IS THE CLAIM'S OWNER LIVE? 0 live, 1 dead or its pid reused (Y:5185, Y:5220;
+# DEC-25; contract §4.3). WR_LIVE_WHY says why it is live, for T417's 3:
+#
+#   pid           here: `pid_start_of` answered 0 with the claim's own token
+#   start-unread  here: `pid_start_of` answered 2, a start that cannot be read,
+#                 which is live with no bound (R49)
+#   untested      here: any other answer, the 127 of a host where
+#                 `pid_start_of` is not yet defined among them, also unbounded
+#   other-host    from another host or container, or where either side's host
+#                 or container is not known (Y:5220)
+#   no-pid        it names no pid, or cannot be read (DEC-25)
+#   no-start      here: its pid lives, and the claim recorded no start token, so
+#                 a reused pid cannot be told (DEC-25)
+#
+# The last three are live only for the seam's cap (`wr_claim_capped`), with
+# WR_LIVE_UNTIL set; `other-host` and `no-start` from the later of the claim's
+# `utc` and the record's `updated_utc`, and `no-pid` from the later of the
+# claim file's mtime and `updated_utc`. Exit 1 of `pid_start_of`, and another
+# token than the claim's, are dead. A claim that has gone is dead, since only
+# its owner removes it; and one naming this run's own pid, which this run did
+# not make, is a dead run's, since the pid is this run's now.
+wr_claim_live() {   # <claim file>
+  local cl_rec cl_a cl_tok cl_rc
+  WR_LIVE_WHY=""; WR_LIVE_UNTIL=""
+  cl_rec="${1%.take.*}"
+  if ! wr_claim_read "$1"; then
+    [ -e "$1" ] || [ -L "$1" ] || return 1
+    wr_claim_capped no-pid "$(wr_file_mtime "$1")" "$cl_rec" "$1"
+    return $?
+  fi
+  cl_a=""
+  wr_is_utc "$WR_C_UTC" && cl_a="$(epoch_of "$WR_C_UTC")"
+  wr_here
+  if [ -z "$WR_C_HOST" ] || [ -z "$WR_C_CONTAINER" ] || [ -z "$WR_HERE_HOST" ] || [ -z "$WR_HERE_CONTAINER" ] ||
+     [ "$WR_C_HOST" != "$WR_HERE_HOST" ] || [ "$WR_C_CONTAINER" != "$WR_HERE_CONTAINER" ]; then
+    wr_claim_capped other-host "$cl_a" "$cl_rec" "$1"
+    return $?
+  fi
+  [ "$WR_C_PID" = "$$" ] && [ "$1" != "$WR_CLAIM" ] && return 1
+  cl_tok="$(pid_start_of "$WR_C_PID" 2>/dev/null)"; cl_rc=$?
+  case "$cl_rc" in
+    0)
+      if [ -z "$WR_C_START" ]; then
+        wr_claim_capped no-start "$cl_a" "$cl_rec" "$1"
+        return $?
+      fi
+      [ "$cl_tok" = "$WR_C_START" ] || return 1
+      WR_LIVE_WHY=pid
+      return 0
+      ;;
+    1) return 1 ;;
+    2) WR_LIVE_WHY=start-unread; return 0 ;;
+  esac
+  WR_LIVE_WHY=untested
+  return 0
+}
+
+# A CLAIM MADE WHOLE (Y:5184, as ERR-42 reads it). Its body is written to a
+# temporary file beside it, `.<d>.claim.XXXXXX`, and read back, and the file is
+# then linked to `<d>.take.<k>` with `ln`. The link fails where the name exists,
+# as noclobber's create does, so only one run's create of a name succeeds
+# (Y:5188), and no run ever meets the name with less than the whole body. The
+# temporary file is removed whether the link succeeds or fails. Its name begins
+# with a dot, so no reader takes it for a record or a claim: a record is read by
+# its exact name, `<d>`, and a claim only as `<d>.take.<k>`. 0600, as the record
+# is.
+#
+# 0 made; 1 the name is taken; 2 the body could not be written whole, or the
+# link failed with the name still free, for which the caller exits 1 (ERR-42),
+# never waiting on a claim of its own.
+wr_claim_create() {   # <path>
+  local cc_tmp cc_rc
+  cc_tmp="$(mktemp "${1%/*}/.$WR_D.claim.XXXXXX" 2>/dev/null)" || cc_tmp=""
+  [ -n "$cc_tmp" ] || return 2
+  if ! printf 'pid=%s\npid_start=%s\nhost=%s\ncontainer=%s\nutc=%s\n' \
+         "$WR_CLAIM_PID" "$WR_CLAIM_START" "$WR_CLAIM_HOST" "$WR_CLAIM_CONTAINER" "$WR_CLAIM_UTC" \
+         > "$cc_tmp" 2>/dev/null ||
+     ! wr_claim_read "$cc_tmp" || [ "$WR_C_PID" != "$WR_CLAIM_PID" ] || [ "$WR_C_UTC" != "$WR_CLAIM_UTC" ]; then
+    rm -f -- "$cc_tmp" 2>/dev/null
+    return 2
+  fi
+  if ln -- "$cc_tmp" "$1" 2>/dev/null; then
+    cc_rc=0
+  elif [ -e "$1" ] || [ -L "$1" ]; then
+    cc_rc=1
+  else
+    cc_rc=2
+  fi
+  rm -f -- "$cc_tmp" 2>/dev/null
+  return "$cc_rc"
+}
+
+# THE CLAIM CHAIN (Y:5184-5191, Y:5219-5220), taken before the first snapshot
+# by every run: a new write, a plain rerun, and a run under LANES_WRITE_ID,
+# since two live runs must never share an id. The owner is the run in the
+# HIGHEST-numbered claim:
+#
+#   - no claim: this run creates `<d>.take.0` (Y:5186);
+#   - the highest claim's owner live (`wr_claim_live`): this run waits, reading
+#     the claims again each second, until it ends, its claim's cap runs out
+#     (DEC-25), or `<deadline>` passes;
+#   - its owner dead or its pid reused: `<d>.take.<k+1>` (Y:5187);
+#   - a create that finds the name taken lists the claims again (Y:5188).
+#
+# A claim with no record beside it is a record being made, and its owner is
+# waited for the same way (Y:5189). Only the run whose create succeeded owns
+# the record, so two runs that read one dead pid together cannot both take it
+# over (Y:5191).
+#
+# 0 with WR_CLAIM its own claim. 2 where `<deadline>`, epoch seconds on this
+# host's clock (D7's, the caller's), passed while the highest claim's owner
+# lived. WR_OWNER_* then name it for the caller's exit 3 (T417; Y:5218, and
+# open point 42's text for a claim with no record beside it): its file, its
+# five values, WR_OWNER_WHY (`wr_claim_live`'s WR_LIVE_WHY) and, for a claim
+# live only for the seam's cap, WR_OWNER_TAKE_AFTER, the UTC from which a run
+# may take it; the form that names those two is T417's. Exits 1, with nothing
+# sent, where the directory cannot be made or this run's own claim cannot be
+# written whole (ERR-42).
+wr_claim_take() {   # <deadline, epoch seconds>
+  local ct_dir ct_k ct_new ct_rc
+  ct_dir="$(wr_pending_dir)" || die "this write's pending record cannot be kept: $WR_STATE/register-pending is not a 0700 directory of this user's, and cannot be made one. Nothing was sent" 1
+  wr_here
+  WR_CLAIM=""; WR_CLAIM_K=-1
+  WR_OWNER_FILE=""; WR_OWNER_PID=""; WR_OWNER_START=""; WR_OWNER_HOST=""
+  WR_OWNER_CONTAINER=""; WR_OWNER_UTC=""; WR_OWNER_WHY=""; WR_OWNER_TAKE_AFTER=""
+  WR_CLAIM_PID="$$"
+  WR_CLAIM_START="$(pid_start_of "$$" 2>/dev/null)" || WR_CLAIM_START=""
+  wr_value_ok "$WR_CLAIM_START" || WR_CLAIM_START=""
+  WR_CLAIM_HOST="$WR_HERE_HOST"; WR_CLAIM_CONTAINER="$WR_HERE_CONTAINER"
+  while : ; do
+    wr_claim_highest "$ct_dir"
+    if [ "$WR_HIGHEST_K" -ge 0 ]; then
+      if wr_claim_live "$WR_HIGHEST_FILE"; then
+        if [ "$(date -u +%s)" -ge "${1:-0}" ]; then
+          WR_OWNER_FILE="$WR_HIGHEST_FILE"; WR_OWNER_PID="$WR_C_PID"
+          WR_OWNER_START="$WR_C_START"; WR_OWNER_HOST="$WR_C_HOST"
+          WR_OWNER_CONTAINER="$WR_C_CONTAINER"; WR_OWNER_UTC="$WR_C_UTC"
+          WR_OWNER_WHY="$WR_LIVE_WHY"
+          [ -n "$WR_LIVE_UNTIL" ] && WR_OWNER_TAKE_AFTER="$(wr_utc_of_epoch "$WR_LIVE_UNTIL")"
+          return 2
+        fi
+        sleep 1
+        continue
+      fi
+      ct_k=$((WR_HIGHEST_K + 1))
+    else
+      ct_k=0
+    fi
+    ct_new="$ct_dir/$WR_D.take.$ct_k"
+    WR_CLAIM_UTC="$(wr_host_utc)"
+    wr_claim_create "$ct_new"; ct_rc=$?
+    case "$ct_rc" in
+      0) WR_CLAIM="$ct_new"; WR_CLAIM_K="$ct_k"; return 0 ;;
+      1) continue ;;
+    esac
+    die "this run's claim on its pending record, $ct_new, could not be written whole (a full disk, a quota, or a directory that refuses links), so this run cannot own the record. Nothing was sent" 1
+  done
+}
+
+# 0 while this run's own claim is still the highest, so that it still owns the
+# record (Y:5185); 1 once a higher claim exists or its own is gone. Only the
+# owner writes the record (Y:5190).
+wr_claim_owns() {
+  [ -n "$WR_CLAIM" ] && [ -f "$WR_CLAIM" ] || return 1
+  wr_claim_highest "${WR_CLAIM%/*}"
+  [ "$WR_HIGHEST_K" = "$WR_CLAIM_K" ]
+}
+
+# THIS RUN'S OWN CLAIM, REMOVED, where it leaves no record: a new write whose
+# first snapshot ended 69 (FR-021; open point 38), and a refusal below. The
+# record, where there is one, and every other claim stay.
+wr_claim_release() {
+  [ -n "$WR_CLAIM" ] || return 0
+  rm -f -- "$WR_CLAIM" 2>/dev/null || return 1
+  WR_CLAIM=""; WR_CLAIM_K=-1
+  return 0
+}
+
+# A `call=` LINE'S FIVE FIELDS (Y:5173; contract §3.2): the first four split off
+# at single spaces, and the rest is `<dir>`, which may hold spaces. They go into
+# WR_CF_BASE, WR_CF_CLOCK, WR_CF_NOT_AFTER, WR_CF_FILES and WR_CF_DIR. 1, with
+# all five empty, where the line has fewer than five fields.
+#
+# BY PARAMETER EXPANSION, NEVER `read` FROM A HERE-STRING, and so are the loops
+# below over the record's lines: bash before 5.1 writes a here-string or a
+# here-document to a temp file, and where none can be made, as in a full
+# TMPDIR, such a loop never ran. A `call=` line was then written, kept, dropped
+# or read as though the record held none, and the call was sent with its doubt
+# lost (review REV-W10a M1). T414's `cp_seam` and T415's `pw_hand_edit_refuse`
+# split the same way.
+wr_call_fields() {   # <line>
+  local cf_r="${1-}"
+  WR_CF_BASE=""; WR_CF_CLOCK=""; WR_CF_NOT_AFTER=""; WR_CF_FILES=""; WR_CF_DIR=""
+  case "$cf_r" in *' '*' '*' '*' '*) : ;; *) return 1 ;; esac
+  WR_CF_BASE="${cf_r%% *}"; cf_r="${cf_r#* }"
+  WR_CF_CLOCK="${cf_r%% *}"; cf_r="${cf_r#* }"
+  WR_CF_NOT_AFTER="${cf_r%% *}"; cf_r="${cf_r#* }"
+  WR_CF_FILES="${cf_r%% *}"; WR_CF_DIR="${cf_r#* }"
+  return 0
+}
+
+# THE RECORD READ (Y:5172) into WR_REC_*: 0 when it is whole, 1 when there is no
+# record, 2 when there is one and it cannot be read as one, which names nothing
+# a run can rely on.
+#
+# Whole is: `format=1`; a write id and a generation, each a lower-case UUID;
+# `args_sha256` equal to its own file's name, `<d>`; `created_utc` and
+# `updated_utc` in this file's UTC form; and every `call=` line
+# `<base> <clock> <not_after> <files> <dir>`, three counts, a sha256 and a
+# directory. A key it does not know is passed over.
+wr_record_read() {   # <record file>
+  local rr_l="" rr_r=""
+  WR_REC_FORMAT=""; WR_REC_WRITE_ID=""; WR_REC_GENERATION=""; WR_REC_DATABASE=""
+  WR_REC_LANE=""; WR_REC_SESSION=""; WR_REC_VERB=""; WR_REC_ARGS_SHA256=""
+  WR_REC_CMDLINE=""; WR_REC_CREATED_UTC=""; WR_REC_UPDATED_UTC=""; WR_REC_PID=""
+  WR_REC_PID_START=""; WR_REC_HOST=""; WR_REC_CONTAINER=""; WR_REC_ATTEMPTS=""
+  WR_REC_CALLS=""; WR_REC_TAIL=""
+  [ -e "$1" ] || [ -L "$1" ] || return 1
+  [ -f "$1" ] && [ -r "$1" ] || return 2
+  while IFS= read -r rr_l || [ -n "$rr_l" ]; do
+    case "$rr_l" in
+      format=*) WR_REC_FORMAT="${rr_l#format=}" ;;
+      write_id=*) WR_REC_WRITE_ID="${rr_l#write_id=}" ;;
+      generation=*) WR_REC_GENERATION="${rr_l#generation=}" ;;
+      database=*) WR_REC_DATABASE="${rr_l#database=}" ;;
+      lane=*) WR_REC_LANE="${rr_l#lane=}" ;;
+      session=*) WR_REC_SESSION="${rr_l#session=}" ;;
+      verb=*) WR_REC_VERB="${rr_l#verb=}" ;;
+      args_sha256=*) WR_REC_ARGS_SHA256="${rr_l#args_sha256=}" ;;
+      cmdline=*) WR_REC_CMDLINE="${rr_l#cmdline=}" ;;
+      created_utc=*) WR_REC_CREATED_UTC="${rr_l#created_utc=}" ;;
+      updated_utc=*) WR_REC_UPDATED_UTC="${rr_l#updated_utc=}" ;;
+      pid=*) WR_REC_PID="${rr_l#pid=}" ;;
+      pid_start=*) WR_REC_PID_START="${rr_l#pid_start=}" ;;
+      host=*) WR_REC_HOST="${rr_l#host=}" ;;
+      container=*) WR_REC_CONTAINER="${rr_l#container=}" ;;
+      attempts=*) WR_REC_ATTEMPTS="${rr_l#attempts=}" ;;
+      call=*) WR_REC_CALLS="${WR_REC_CALLS}${WR_REC_CALLS:+$WR_NL}${rr_l#call=}" ;;
+      tail=*) WR_REC_TAIL="${rr_l#tail=}" ;;
+    esac
+    rr_l=""
+  done < "$1" 2>/dev/null
+  [ "$WR_REC_FORMAT" = 1 ] || return 2
+  wr_is_uuid "$WR_REC_WRITE_ID" && wr_is_uuid "$WR_REC_GENERATION" || return 2
+  [ "$WR_REC_ARGS_SHA256" = "${1##*/}" ] || return 2
+  wr_is_utc "$WR_REC_CREATED_UTC" && wr_is_utc "$WR_REC_UPDATED_UTC" || return 2
+  [ -n "$(epoch_of "$WR_REC_UPDATED_UTC")" ] || return 2
+  rr_r="$WR_REC_CALLS"
+  while [ -n "$rr_r" ]; do
+    rr_l="${rr_r%%"$WR_NL"*}"
+    case "$rr_r" in
+      *"$WR_NL"*) rr_r="${rr_r#*"$WR_NL"}" ;;
+      *) rr_r="" ;;
+    esac
+    [ -n "$rr_l" ] || continue
+    wr_call_fields "$rr_l" || return 2
+    wr_is_count "$WR_CF_BASE" && wr_is_count "$WR_CF_CLOCK" && wr_is_count "$WR_CF_NOT_AFTER" || return 2
+    wr_is_hex64 "$WR_CF_FILES" && [ -n "$WR_CF_DIR" ] || return 2
+  done
+  return 0
+}
+
+# THE AGE (Y:5207): 0 where the record read last was updated more than
+# `wr_max_age_s` seconds ago, by this host's clock, as `updated_utc` is.
+wr_record_aged() {
+  local ra_t
+  ra_t="$(epoch_of "$WR_REC_UPDATED_UTC")"
+  [ -n "$ra_t" ] || return 1
+  [ "$(( $(date -u +%s) - ra_t ))" -gt "$(wr_max_age_s)" ]
+}
+
+# THE DONE MARKS' AGE (Y:5183): any run that writes a record or a mark first
+# removes the marks in `<state>/register-done/` older than the record's maximum
+# age, by their `utc`. Only marks go by age: no record is ever purged (T412). A
+# name that is not a write id, and a mark whose `utc` cannot be read, are left.
+wr_done_purge() {
+  local dp_dir dp_f dp_l dp_u dp_t dp_now dp_max
+  dp_dir="$WR_STATE/register-done"
+  [ -d "$dp_dir" ] || return 0
+  dp_now="$(date -u +%s)"; dp_max="$(wr_max_age_s)"
+  for dp_f in "$dp_dir"/*; do
+    [ -f "$dp_f" ] || continue
+    wr_is_uuid "${dp_f##*/}" || continue
+    dp_u=""; dp_l=""
+    while IFS= read -r dp_l || [ -n "$dp_l" ]; do
+      case "$dp_l" in utc=*) dp_u="${dp_l#utc=}" ;; esac
+      dp_l=""
+    done < "$dp_f" 2>/dev/null
+    wr_is_utc "$dp_u" || continue
+    dp_t="$(epoch_of "$dp_u")"
+    [ -n "$dp_t" ] || continue
+    [ "$(( dp_now - dp_t ))" -gt "$dp_max" ] && rm -f -- "$dp_f" 2>/dev/null
+  done
+  return 0
+}
+
+# THE RECORD WRITTEN (Y:5172): by its owner only, by a temporary file and `mv`,
+# mode 0600 in the 0700 `register-pending/`, one `key=value` a line in Y's
+# order, `call=` lines and `tail` last. `updated_utc` is rewritten from this
+# host's clock on every write, a `call=` line's included (T412; open point 36).
+# The done marks past their age go first (Y:5183). 1, with nothing written,
+# where this run no longer owns the record, a value would break its line, or
+# the file cannot be written; and where the record this run took over holds
+# `tail` (WR_TOOK_TAIL): a takeover rewrites nothing in such a record, since
+# its `pid` is the run that wrote `tail` (Y:5179, Y:5342; lane
+# openRepoTools-3, #165 6774499606, T412 (1)). So no `call=` line is added to
+# it, and no call is sent for it.
+wr_record_write() {
+  local rw_dir rw_now rw_tmp rw_body rw_v rw_l rw_r
+  [ -z "$WR_TOOK_TAIL" ] || return 1
+  wr_claim_owns || return 1
+  wr_done_purge
+  rw_dir="$(wr_pending_dir)" || return 1
+  rw_now="$(wr_host_utc)"
+  for rw_v in "$WR_ID" "$WR_GEN" "$WR_DATABASE" "$WR_LANE" "$WR_SESSION" "$WR_VERB" \
+              "$WR_CMDLINE" "$WR_CREATED_UTC" "$WR_CLAIM_START" "$WR_TAIL"; do
+    wr_value_ok "$rw_v" || return 1
+  done
+  wr_is_count "$WR_ATTEMPTS" || return 1
+  rw_body="$(printf 'format=1\nwrite_id=%s\ngeneration=%s\ndatabase=%s\nlane=%s\nsession=%s\nverb=%s\nargs_sha256=%s\ncmdline=%s\ncreated_utc=%s\nupdated_utc=%s\npid=%s\npid_start=%s\nhost=%s\ncontainer=%s\nattempts=%s' \
+    "$WR_ID" "$WR_GEN" "$WR_DATABASE" "$WR_LANE" "$WR_SESSION" "$WR_VERB" "$WR_D" \
+    "$WR_CMDLINE" "$WR_CREATED_UTC" "$rw_now" "$WR_CLAIM_PID" "$WR_CLAIM_START" \
+    "$WR_CLAIM_HOST" "$WR_CLAIM_CONTAINER" "$WR_ATTEMPTS")"
+  rw_r="$WR_CALLS"
+  while [ -n "$rw_r" ]; do
+    rw_l="${rw_r%%"$WR_NL"*}"
+    case "$rw_r" in
+      *"$WR_NL"*) rw_r="${rw_r#*"$WR_NL"}" ;;
+      *) rw_r="" ;;
+    esac
+    [ -n "$rw_l" ] || continue
+    rw_body="$rw_body${WR_NL}call=$rw_l"
+  done
+  [ -n "$WR_TAIL" ] && rw_body="$rw_body${WR_NL}tail=$WR_TAIL"
+  rw_tmp="$(mktemp "$rw_dir/.$WR_D.XXXXXX" 2>/dev/null)" || rw_tmp=""
+  [ -n "$rw_tmp" ] || return 1
+  if ! printf '%s\n' "$rw_body" > "$rw_tmp" 2>/dev/null ||
+     ! mv -f -- "$rw_tmp" "$rw_dir/$WR_D" 2>/dev/null; then
+    rm -f -- "$rw_tmp" 2>/dev/null
+    return 1
+  fi
+  WR_UPDATED_UTC="$rw_now"
+  return 0
+}
+
+# A `call=` LINE (Y:5173-5174): `<base> <clock> <not_after> <files> <dir>`, the
+# call's base seq `n`, the snapshot's database clock, its `not_after`, the
+# sha256 of the `files` it sends, and its attempt directory. Written to the
+# record, by temporary file and `mv`, BEFORE the call is sent: the caller sends
+# it only on 0. 1, with the record and WR_CALLS as they were, on a malformed
+# field or a write that failed.
+wr_record_add_call() {   # <base> <clock> <not_after> <files> <dir>
+  local ac_was
+  wr_is_count "${1-}" && wr_is_count "${2-}" && wr_is_count "${3-}" || return 1
+  wr_is_hex64 "${4-}" && [ -n "${5-}" ] && wr_value_ok "$5" || return 1
+  ac_was="$WR_CALLS"
+  WR_CALLS="${WR_CALLS}${WR_CALLS:+$WR_NL}$1 $2 $3 $4 $5"
+  wr_record_write && return 0
+  WR_CALLS="$ac_was"
+  return 1
+}
+
+# A `call=` LINE DROPPED, the one naming `<dir>`, where an answer shows that call
+# did not commit: a lost turn, a refusal, or LR008 (Y:5175). The caller decides
+# which answers those are (T415). 1, with the record and WR_CALLS as they were,
+# where the write failed.
+wr_record_drop_call() {   # <dir>
+  local dc_was dc_new dc_l dc_r
+  dc_was="$WR_CALLS"; dc_new=""; dc_r="$WR_CALLS"
+  while [ -n "$dc_r" ]; do
+    dc_l="${dc_r%%"$WR_NL"*}"
+    case "$dc_r" in
+      *"$WR_NL"*) dc_r="${dc_r#*"$WR_NL"}" ;;
+      *) dc_r="" ;;
+    esac
+    [ -n "$dc_l" ] || continue
+    wr_call_fields "$dc_l" && [ "$WR_CF_DIR" = "${1-}" ] && continue
+    dc_new="${dc_new}${dc_new:+$WR_NL}$dc_l"
+  done
+  WR_CALLS="$dc_new"
+  wr_record_write && return 0
+  WR_CALLS="$dc_was"
+  return 1
+}
+
+# THE RECORD REMOVED, the outcome known (Y:5193-5198): the record, then the
+# claims beside it, by its owner only. A claim numbered above the owner's own is
+# left: no run takes one while the owner lives (Y:5185; R49). A dangling
+# symbolic link among the claims is removed with them, since
+# `wr_claim_highest` counts it (review REV-W10a S1). On 0 the caller writes the
+# done mark first (T418).
+wr_record_remove() {
+  local rm_dir rm_f rm_k
+  wr_claim_owns || return 1
+  rm_dir="${WR_CLAIM%/*}"
+  rm -f -- "$rm_dir/$WR_D" 2>/dev/null || return 1
+  for rm_f in "$rm_dir/$WR_D".take.*; do
+    [ -e "$rm_f" ] || [ -L "$rm_f" ] || continue
+    rm_k="${rm_f##*.take.}"
+    case "$rm_k" in ''|*[!0123456789]*|0?*) continue ;; esac
+    [ "${#rm_k}" -le 9 ] || continue
+    [ "$rm_k" -le "$WR_CLAIM_K" ] || continue
+    rm -f -- "$rm_f" 2>/dev/null
+  done
+  WR_CLAIM=""; WR_CLAIM_K=-1
+  return 0
+}
+
+# THE RECORD TAKEN OVER (Y:5206): its id, generation, `call=` lines, `tail`,
+# `attempts`, `created_utc` and `database` become this run's. Its `pid`,
+# `pid_start`, `host` and `container` become this run's claim's when it is next
+# written (Y:5185) -- but only where it holds no `tail`. A record that holds
+# `tail` is never rewritten (Y:5342; lane openRepoTools-3, #165 6774499606,
+# T412 (1)): WR_TOOK_TAIL keeps its value, `wr_record_write` writes nothing
+# while it does, and the record stays as found, its `pid`, `host` and
+# `container` those of the run that wrote `tail` (Y:5179), for T418's done
+# mark. Only its removal (`wr_record_remove`) is left to this run.
+wr_record_take_over() {
+  WR_ID="$WR_REC_WRITE_ID"; WR_GEN="$WR_REC_GENERATION"
+  WR_CALLS="$WR_REC_CALLS"; WR_TAIL="$WR_REC_TAIL"; WR_TOOK_TAIL="$WR_REC_TAIL"
+  WR_CREATED_UTC="$WR_REC_CREATED_UTC"; WR_DATABASE="$WR_REC_DATABASE"
+  WR_ATTEMPTS="$WR_REC_ATTEMPTS"
+  wr_is_count "$WR_ATTEMPTS" || WR_ATTEMPTS=0
+  return 0
+}
+
+# THE PRINTED RERUN (Y:5200): `LANES_WRITE_ID=<id> LANES_WRITE_GENERATION=<g>
+# LANES_LANE=<lane> LANES_SESSION=<uuid> lanes-edit.sh <the same arguments>`.
+# The lane and the session are the ones this run's digest took, so the rerun's
+# digest, and so its `args_sha256`, are this run's.
+wr_rerun_text() {   # <id> <generation>
+  printf 'LANES_WRITE_ID=%s LANES_WRITE_GENERATION=%s LANES_LANE=%s LANES_SESSION=%s %s\n' \
+    "${1-}" "${2-}" "$(printf '%q' "$WR_LANE")" "$(printf '%q' "$WR_SESSION")" "$WR_CMDLINE"
+}
+
+# THE SAME COMMAND WITH `LANES_WRITE_ID=new` (Y:5213, Y:5215), which mints a new
+# id and replaces a record of another generation.
+wr_rerun_new_text() {
+  printf 'LANES_WRITE_ID=new LANES_LANE=%s LANES_SESSION=%s %s\n' \
+    "$(printf '%q' "$WR_LANE")" "$(printf '%q' "$WR_SESSION")" "$WR_CMDLINE"
+}
+
+# THE LOOKUP OF THE RECORD READ LAST (contract §3.4), at its largest `not_after`,
+# or, where it holds no `call=` line, the sentence that none of its commit calls
+# can have committed (Y:5176: a line is exactly a call that may have).
+wr_lookup_text() {
+  local lt_l lt_r lt_max=""
+  lt_r="$WR_REC_CALLS"
+  while [ -n "$lt_r" ]; do
+    lt_l="${lt_r%%"$WR_NL"*}"
+    case "$lt_r" in
+      *"$WR_NL"*) lt_r="${lt_r#*"$WR_NL"}" ;;
+      *) lt_r="" ;;
+    esac
+    wr_call_fields "$lt_l" && wr_is_count "$WR_CF_NOT_AFTER" || continue
+    if [ -z "$lt_max" ] || [ "$WR_CF_NOT_AFTER" -gt "$lt_max" ]; then lt_max="$WR_CF_NOT_AFTER"; fi
+  done
+  if [ -z "$lt_max" ]; then
+    printf 'It holds no call line, so none of its commit calls can have committed.\n'
+    return 0
+  fi
+  printf 'It may be in the register; look it up: lanes-index journal --write-id %s --not-after %s --generation %s --lane %s --verb %s --args-sha256 %s\n' \
+    "$WR_REC_WRITE_ID" "$lt_max" "$WR_REC_GENERATION" "$(printf '%q' "$WR_REC_LANE")" \
+    "$(printf '%q' "$WR_REC_VERB")" "$WR_REC_ARGS_SHA256"
+}
+
+# A RECORD OF ANOTHER GENERATION, REFUSED (Y:5209-5215, Y:2487-2491), with 2 and
+# nothing sent, at any age, until `LANES_WRITE_ID=new`. The record is left as it
+# is. `<g'>` is the register's generation where the run knows it, which is where
+# its first snapshot answered 0 (the over-age path, `wr_id_settle`); where the
+# refusal is that snapshot's LR007 `generation`, §3.2 prints no `generation=`,
+# and the text says "another generation". `<owed>` is the record's verb's row of
+# F14's table, T418's text; until it is given, the text names the verb's
+# after-COMMIT steps. Where the record's `tail` is `sent` or `done`, the text
+# says they may have run, or ran, at its UTC (Y:5214). The effect check's
+# `<lane>` is the lane the write is made for, `write_lane_of`'s, PW_LANE, which
+# the record's digest fixes with its arguments, not the writer's `LANES_LANE`
+# (lane openRepoTools-3, #165 6808937880, batch e Q106; design:5257): every caller
+# runs after `pw_checkout` has set it. The rerun keeps the writer's
+# `LANES_LANE` (`wr_rerun_new_text`), which its digest takes.
+wr_text_other_generation() {   # [<g'>] [<owed>]
+  local og_now og_owed og_tail og_utc og_steps
+  if [ -n "${1-}" ]; then og_now="generation ${1}"; else og_now="another generation"; fi
+  og_owed="${2-}"
+  [ -n "$og_owed" ] || og_owed="those of lanes-edit.sh $WR_REC_VERB"
+  og_tail="${WR_REC_TAIL%% *}"; og_utc="${WR_REC_TAIL##* }"
+  case "$og_tail" in
+    sent) og_steps="its after-COMMIT steps may have run at ${og_utc}: ${og_owed}. Do by hand any that did not run." ;;
+    done) og_steps="its after-COMMIT steps ran at ${og_utc}." ;;
+    *) og_steps="its after-COMMIT steps may be owed: ${og_owed}. Do by hand any that did not run." ;;
+  esac
+  printf '%s\n' "a pending record of this command, write ${WR_REC_WRITE_ID} made at ${WR_REC_CREATED_UTC} against register generation ${WR_REC_GENERATION}, is here, and this register is ${og_now}. That write may already be in it: an import carries every write the mirror held (D22), and a restored database holds every write up to its backup. Nothing was sent. Look for its effect in the register as it stands: lanes-edit.sh history ${PW_LANE} --since ${WR_REC_CREATED_UTC} for a log line, or lanes-edit.sh register-row ${PW_LANE} for a row. If it is there, ${og_steps} If it is not there, run the same command with LANES_WRITE_ID=new, which mints a new id and replaces this record: $(wr_rerun_new_text)"
+}
+
+# A REFUSAL OF THIS LIBRARY'S OWN, with 2: this run's claim goes first, since
+# it sent nothing and leaves no record of its own.
+wr_refuse() {   # <message>
+  wr_claim_release
+  die "${1-}" 2
+}
+
+wr_refuse_other_generation() {   # [<g'>] [<owed>]
+  wr_refuse "$(wr_text_other_generation "${1-}" "${2-}")"
+}
+
+# THE FIRST SNAPSHOT'S IDENTITY (Y:2468-2473; contract §3.2 and §4), decided by
+# the owner after its claim, from LANES_WRITE_ID, LANES_WRITE_GENERATION and the
+# record at `<d>`. It sets WR_SNAP_ARGS to the identity flags of the first
+# snapshot, and WR_PLAN to what the run is doing:
+#
+#   new     no id yet: `--write-id new`, and the id is the one the snapshot
+#           mints; the record is written after it (Y:5192)
+#   reuse   a plain rerun takes the record over within its age, with its id,
+#           its generation and its `call=` lines, and says so (Y:5206); a 2
+#           with LR007 `generation` at this snapshot is a record of another
+#           generation, which the caller refuses by `wr_refuse_other_generation`
+#   aged    a plain rerun past the record's age: `--write-id new`, and the
+#           generation the snapshot answers decides (`wr_id_settle`; Y:5207)
+#   env     LANES_WRITE_ID's id, with LANES_WRITE_GENERATION, or with the
+#           generation of the record that holds that id (the contract's O4,
+#           ratified by R08); such a record is taken over at any age
+#   fresh   LANES_WRITE_ID=new over a record: `--write-id new`, and the
+#           record's generation decides (`wr_id_settle`; Y:5213, Y:5215)
+#
+# It refuses with 2, sending nothing:
+#   - LANES_WRITE_ID without LANES_WRITE_GENERATION, where no record here holds
+#     that id, naming the printed rerun's form (Y:5200), so `lanes-index`'s 64
+#     for an id with no generation is never reached from here;
+#   - a record that cannot be read as one, naming its path (pending-record.md
+#     G8), and then, in lane 3's words, how a person settles it: read it; leave
+#     one whose `format=` is not 1 to the lanes-edit.sh that wrote it; past the
+#     record's age, `wr_max_age_s`, look for its effect, move the file out of
+#     register-pending/ and run again (lane openRepoTools-3, #165 6813027223,
+#     batch g Q116). Its `<lane>` is PW_LANE, the lane the write is made for,
+#     which `pw_checkout` sets before this runs, as `wr_text_other_generation`
+#     names it; its `<verb>` is this run's own, WR_VERB, since the record
+#     cannot be read for one;
+#   - two cases Y does not settle, each refused rather than guessed: an id whose
+#     record names another generation than LANES_WRITE_GENERATION, and an id
+#     whose digest's record holds another write.
+wr_id_plan() {
+  local ip_e ip_g ip_f ip_rc ip_n
+  ip_e="${LANES_WRITE_ID:-}"; ip_g="${LANES_WRITE_GENERATION:-}"
+  ip_f="$WR_STATE/register-pending/$WR_D"
+  WR_ID=""; WR_GEN=""; WR_CALLS=""; WR_TAIL=""; WR_TOOK_TAIL=""; WR_ATTEMPTS=0
+  WR_CREATED_UTC=""; WR_DATABASE=""
+  wr_record_read "$ip_f"; ip_rc=$?
+  if [ "$ip_rc" = 2 ]; then
+    wr_refuse "the pending record of this command, $ip_f, is there and cannot be read as one, so whether a write of it is in doubt is not known. Nothing was sent, and no run of this command gets past it, \`LANES_WRITE_ID=new\` included, until a person settles it. Read it: cat $(printf '%q' "$ip_f"). Where its \`format=\` is not 1, another lanes-edit.sh wrote it: run the command with that one, and leave the file. Otherwise, once the file is more than $(wr_max_age_s) s old by its own time, no commit call of it can still commit; look for its effect in the register as it stands, \`lanes-edit.sh history ${PW_LANE} --since <its created_utc, or earlier where that cannot be read>\` for a log line, or \`lanes-edit.sh register-row ${PW_LANE}\` for a row; then move the file out of register-pending/ and run the command again. If the effect is there, do by hand any of its after-COMMIT steps that did not run: those of \`lanes-edit.sh ${WR_VERB}\`."
+  fi
+  case "$ip_e" in
+    '')
+      if [ "$ip_rc" = 1 ]; then
+        WR_PLAN=new
+      elif wr_record_aged; then
+        WR_PLAN=aged
+      else
+        wr_record_take_over
+        ip_n=0
+        [ -n "$WR_CALLS" ] && ip_n="$(printf '%s\n' "$WR_CALLS" | awk 'END { print NR }')"
+        note "reusing write $WR_ID of register generation $WR_GEN, from the pending record of this command made at $WR_REC_CREATED_UTC and last updated at $WR_REC_UPDATED_UTC; this run takes it over, with its $ip_n call line(s)"
+        WR_PLAN=reuse
+      fi
+      ;;
+    new)
+      if [ "$ip_rc" = 1 ]; then WR_PLAN=new; else WR_PLAN=fresh; fi
+      ;;
+    *)
+      if [ "$ip_rc" = 0 ] && [ "$WR_REC_WRITE_ID" = "$ip_e" ]; then
+        if [ -n "$ip_g" ] && [ "$ip_g" != "$WR_REC_GENERATION" ]; then
+          wr_refuse "LANES_WRITE_ID=$ip_e and LANES_WRITE_GENERATION=$ip_g, but the pending record of this command that holds write $ip_e names register generation $WR_REC_GENERATION, so which generation the write was made against is not known. Nothing was sent"
+        fi
+        wr_record_take_over
+      elif [ -z "$ip_g" ]; then
+        wr_refuse "LANES_WRITE_ID=$ip_e is set and LANES_WRITE_GENERATION is not, and no pending record of this command here holds write $ip_e, so the register generation it was made against is not known. Nothing was sent. Run the rerun as it was printed, with both: $(wr_rerun_text "$ip_e" '<generation>')"
+      elif [ "$ip_rc" = 0 ]; then
+        wr_refuse "LANES_WRITE_ID=$ip_e names write $ip_e, and the pending record of this command holds another, write $WR_REC_WRITE_ID made at $WR_REC_CREATED_UTC against register generation ${WR_REC_GENERATION}; this run does not replace it. Nothing was sent. $(wr_lookup_text)"
+      else
+        WR_ID="$ip_e"; WR_GEN="$ip_g"
+      fi
+      WR_PLAN=env
+      ;;
+  esac
+  case "$WR_PLAN" in
+    new|aged|fresh)
+      WR_SNAP_ARGS=(--write-id new --lane "$WR_LANE" --verb "$WR_VERB" --args-sha256 "$WR_D") ;;
+    *)
+      WR_SNAP_ARGS=(--write-id "$WR_ID" --generation "$WR_GEN" --lane "$WR_LANE" --verb "$WR_VERB" --args-sha256 "$WR_D") ;;
+  esac
+  return 0
+}
+
+# AFTER THE FIRST SNAPSHOT ANSWERED 0 (contract §3.2): its stdout, in a file,
+# gives the generation and the write id, minted or echoed, so the record is
+# written now, after that snapshot and before any commit call (Y:5192) -- unless
+# the snapshot found the write in the register (`found=`), or the record taken
+# over holds `tail` (WR_TOOK_TAIL), which is never rewritten (Y:5342; lane
+# openRepoTools-3, #165 6774499606, T412 (1)). Both are the tail's case (T418),
+# and write no record here.
+#
+#   new     the minted id; the record is new
+#   reuse, env
+#           the echoed id and generation must be this run's own
+#   aged    the record's generation is not the register's: refused with 2, at
+#           any age (Y:5207-5209). It is: the run warns, prints the lookup, and
+#           writes anew under the minted id, replacing the record (Y:5207)
+#   fresh   the record's generation is not the register's: replaced, under
+#           the minted id (Y:5213, Y:5215). It is: refused with 2, since Y
+#           gives `LANES_WRITE_ID=new` only a record of another generation to
+#           replace; a plain rerun takes the record over, or writes anew once it
+#           is past its age
+#
+# 1 where the answer cannot be read (`format=` not 1, or no UUID where one is
+# owed), which the caller treats as a failed read, 69 (contract §2.8), or where
+# the record could not be written.
+wr_id_settle() {   # <the first snapshot's stdout, in a file>
+  local is_l="" is_fmt="" is_gen="" is_wid="" is_found=""
+  [ -f "${1-}" ] && [ -r "$1" ] || return 1
+  while IFS= read -r is_l || [ -n "$is_l" ]; do
+    case "$is_l" in
+      format=*) is_fmt="${is_l#format=}" ;;
+      generation=*) is_gen="${is_l#generation=}" ;;
+      write_id=*) is_wid="${is_l#write_id=}" ;;
+      found=*) is_found="${is_l#found=}" ;;
+    esac
+    is_l=""
+  done < "$1" 2>/dev/null
+  [ "$is_fmt" = 1 ] || return 1
+  wr_is_uuid "$is_gen" && wr_is_uuid "$is_wid" || return 1
+  case "$WR_PLAN" in
+    new)
+      WR_ID="$is_wid"; WR_GEN="$is_gen"; WR_CREATED_UTC="$(wr_host_utc)"
+      ;;
+    reuse|env)
+      [ "$is_wid" = "$WR_ID" ] && [ "$is_gen" = "$WR_GEN" ] || return 1
+      [ -n "$WR_CREATED_UTC" ] || WR_CREATED_UTC="$(wr_host_utc)"
+      ;;
+    aged)
+      [ "$WR_REC_GENERATION" = "$is_gen" ] || wr_refuse_other_generation "$is_gen"
+      note "WARNING: the pending record of this command, write $WR_REC_WRITE_ID made at $WR_REC_CREATED_UTC against register generation $WR_REC_GENERATION, was last updated at $WR_REC_UPDATED_UTC, more than $(wr_max_age_s) s ago, so this run does not reuse its id: it writes anew, as write $is_wid, and replaces that record. $(wr_lookup_text)"
+      WR_ID="$is_wid"; WR_GEN="$is_gen"; WR_CREATED_UTC="$(wr_host_utc)"
+      ;;
+    fresh)
+      if [ "$WR_REC_GENERATION" = "$is_gen" ]; then
+        wr_refuse "LANES_WRITE_ID=new, and the pending record of this command, write $WR_REC_WRITE_ID made at ${WR_REC_CREATED_UTC}, is of this register's generation, $is_gen. LANES_WRITE_ID=new replaces only a record of another generation, so this run neither replaces it nor writes anew. Nothing was sent. $(wr_lookup_text) Run the command without LANES_WRITE_ID to take that record over, or once it is $(wr_max_age_s) s past its last update, at ${WR_REC_UPDATED_UTC}, to write anew"
+      fi
+      WR_ID="$is_wid"; WR_GEN="$is_gen"; WR_CREATED_UTC="$(wr_host_utc)"
+      ;;
+    *) return 1 ;;
+  esac
+  [ -n "$is_found" ] && return 0
+  [ -z "$WR_TOOK_TAIL" ] || return 0
+  wr_record_write
+}
 
 # ---------------------------------------------------------------- the verbs
 #
