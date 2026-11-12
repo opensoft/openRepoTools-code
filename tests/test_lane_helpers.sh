@@ -9246,8 +9246,15 @@ hasnt "…never calling that a helper failure" "$err" "register-row repolate-1 f
 # says nothing about any amendment, so the relay above must not fire for it —
 # and `lane-end`'s own row scan is then the whole of the refusal, which is what
 # it was written to be.
+#
+# ONE VERB IS ANSWERED. `register-text <path>` prints `$LANES_FILE`, the working
+# tree's register, and exits 0, so a `lane-end` that reads its rows through
+# `register-text` (spec 007 T403) gets the register it read before, and meets
+# the helper's 2 on `canon-lane` alone, as this case means it to. Every other
+# verb keeps the unknown-subcommand 2.
 A15_OLD="$SANDBOX/old-lanes-edit.sh"
 { printf '#!/bin/sh\n'
+  printf 'case "$1" in register-text) cat "$LANES_FILE"; exit 0 ;; esac\n'
   printf 'printf "lanes-edit.sh: unknown subcommand '\''%%s'\''\\n" "$1" >&2\n'
   printf 'exit 2\n'
 } > "$A15_OLD"
