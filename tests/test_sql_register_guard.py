@@ -2803,10 +2803,41 @@ def _run_dir(est: Estate) -> Path:
     return Path(est.base["XDG_STATE_HOME"]) / "openRepoTools" / "run"
 
 
-def _service_dir(est: Estate):
-    """The run directory, where the service's socket is bound."""
+def _service_dir(est: Estate, stale=None):
+    """The run directory, where the service's socket is bound; with `stale`,
+    a socket's inode, only once the socket there is another one (T237zi)."""
     run = _run_dir(est)
-    return run if (run / "register.sock").exists() else None
+    sock = run / "register.sock"
+    if not sock.exists():
+        return None
+    if stale is not None:
+        try:
+            if os.lstat(sock).st_ino == stale:
+                return None
+        except OSError:
+            return None
+    return run
+
+
+def _stale_socket(est: Estate):
+    """The inode of a socket in the run directory that no process answers on,
+    a dead service's (SVC-4), or None (T237zi): a connect refused, or a file
+    that is not a socket, is stale; one that connects is a live service's."""
+    import socket as _socket
+    path = _run_dir(est) / "register.sock"
+    try:
+        inode = os.lstat(path).st_ino
+    except OSError:
+        return None
+    probe = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    try:
+        probe.settimeout(1.0)
+        probe.connect(str(path))
+    except OSError:
+        return inode
+    finally:
+        probe.close()
+    return None
 
 
 def _failure_stamp(est: Estate, done: subprocess.CompletedProcess) -> list:
@@ -2875,12 +2906,16 @@ class _Service:
         self.est = est
         if getattr(est, "pg", None) is not None:
             _seed_primary(est)
+        # A DEAD SERVICE'S SOCKET IS NOT THIS ONE'S (T237zi; lane 5, #165
+        # 6837268276): where one is left, the wait is for the socket that
+        # replaces it, so a case never reads the stale inode as the new one.
+        stale = _stale_socket(est)
         self.proc = subprocess.Popen([sys.executable, str(est.index), "serve"],
                                      stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE, env=est.env(**extra),
                                      cwd=str(est.wip), start_new_session=True)
         est.spare.append(self.proc.pid)
-        self.dir = _until(lambda: _service_dir(est), 10)
+        self.dir = _until(lambda: _service_dir(est, stale), 10)
         if not self.dir:
             # WHAT `serve` SAID, where it has exited: until lane 5's T512
             # (L5-S1), `lanes-index` answers 64, "unknown subcommand 'serve'".
