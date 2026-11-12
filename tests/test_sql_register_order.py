@@ -1833,14 +1833,16 @@ def test_a_writer_prints_its_output_once_however_many_attempts_it_made(estates):
 def test_a_refused_writer_replays_its_output_then_the_refusal(estates):
     """Test 4's case (a): the writer refused at its commit prints its
     buffered output, then the refusal, last, naming the holder, and no
-    success text."""
+    success text. The success text, claim's `register seq <s>` line, is a
+    `note`, on stderr (T421), so stderr is where its absence is read
+    (T248c)."""
     e = estates()
     barrier = Barrier(e.root, 2)
     writers = [e.launch(lane, claim(OBJ, "--no-github"), arms=[WINDOW], barrier=barrier) for lane in (LA, LB)]
     barrier.release()
     assert sorted(w.wait() for w in writers) == [0, 2]
     win, lose = sorted(writers, key=lambda w: w.code)
-    assert not SEQ_SAID.search(lose.out), f"the refused writer printed success text: {lose.out!r}"
+    assert not SEQ_SAID.search(lose.err), f"the refused writer printed success text: {lose.err!r}"
     lines = [l for l in lose.err.splitlines() if l.strip()]
     assert lines and win.lane in lines[-1], f"the refusal naming {win.lane} is not last: {lose.err!r}"
     assert len(lines) == len(set(lines)), f"the refused writer's stderr repeats lines: {lose.err!r}"
