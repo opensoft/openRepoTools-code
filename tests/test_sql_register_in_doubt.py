@@ -1576,17 +1576,23 @@ def learnt(e: Estate, way: str, where: Path, *, gone: bool = False, script: Opti
 @pytest.mark.parametrize("way", ["snapshot", "lr006", "lookup"])
 def test_a_call_in_doubt_that_committed_runs_its_tail_once_from_the_kept_child(estates, way):
     """The call in doubt committed, learnt by [snapshot], [lr006] or
-    [lookup] (`learnt`). The kept child's `seam.out` says `tail` and every
-    other child's `none`; the fake `gh` is called once, after the COMMIT;
-    the mark keeps `done`; exit 0, one row."""
+    [lookup] (`learnt`). The fake `gh` comments once, after the COMMIT, and
+    the `seam.out` files it saw then hold the kept child's `tail`, once,
+    and no other child's anything but `none`; the mark keeps `done`; exit
+    0, one row. The seams are read as the comment saw them, during the run
+    (the logging stand-in reads every `seam.out` under the state directory
+    at each call): at its end the run removes its own `<d>/<run>/`, its
+    attempt directories and their `seam.out` with it (B19 tasks:1179, T415;
+    T245e; lane 4's triage, #165 6833813092)."""
     e = estates()
     where = loggers(e)
     w = learnt(e, way, where)
     assert w.wait() == 0, w.err[-800:]
     write_id = one_entry(e, w)
-    seams = sorted(p.read_text(encoding="utf-8").strip() for p in e.state.rglob("seam.out"))
+    said = comments(where)
+    assert len(said) == 1, said
+    seams = sorted(text.strip() for text in said[0]["seams"].values())
     assert seams.count("tail") == 1 and set(seams) <= {"tail", "none"}, seams
-    assert len(comments(where)) == 1, comments(where)
     assert "done" in mark_of(e, write_id).read_text(encoding="utf-8")
 
 
