@@ -1373,8 +1373,18 @@ every write that stopped it gave 75 and none of the act's writes exited 3 (a 3 i
 otherwise; where a write also exited 3, the line says to run that write's printed rerun first. **For that 1 and
 that stop alike nothing was started and no restart line was printed, so there is none to fall back to:** read the
 line, fix what it names (or wait for the register to answer, after a 75), and run `lane-handoff --restart` again
-from its start, which takes a fresh base and supersedes the operation it left. In every OTHER refusal the record is
-already written, so the fallback is the printed restart line and never a second `--restart`.
+from its start, which takes a fresh base and supersedes the operation it left. **Every OTHER refusal says in its own
+line what had landed, and where it stands decides what to do.** One before the `READY` line (an identity or ownership
+refusal, a restart that another operation already owns, the window rename that did not take) prints no restart line,
+and nothing of the `PAUSED` record had been written: its line says what to fix, and to read `lane-handoff
+--restart-status --lane <lane>` where a restart owns the lane, or to run the same command again. A gate after the
+`READY` line leaves the pane as it is and has printed the restart line, but the record is not always written: where it
+says the `PAUSED` record is in doubt or was NOT written, settle that first, as it says, and where it says the row, the
+file-level line or the handoff was not set, settle that, then run `--restart` again or restart by hand with the printed
+line, as it says. Only where the record, the row and the handoff are written and the pane was still not taken (the
+restart intent could not be written or read back, the supervisor could not be found, tmux refused the pane) is the
+printed restart line the fallback, and never a second `--restart`; a restart already in flight is read with
+`lane-handoff --restart-status --lane <lane>` first.
 
 **`lane <name>` IS STILL A PERSON'S DOOR AND IS NO LONGER THIS ONE** (Amendment 18 Addendum 2 (i-8) names
 two doors: `lane <name>`, *"or through the launcher directly"*). The supervisor takes the second, because
