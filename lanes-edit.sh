@@ -3492,17 +3492,26 @@ cp_on_primary() {
 # Its restore is `git restore --source=HEAD --staged --worktree`, not
 # `checkout HEAD --`, which fails for a staged new file that HEAD lacks
 # (REV420b N3). The restore deletes such a file, so reading it stays first.
+# THE LIST IS SPLIT BY PARAMETER EXPANSION, at each newline, never through a
+# here-document, as T415's `pw_hand_edit_refuse` and T414's seam split theirs
+# (review REV-W9a M1): bash 3.2 writes a here-document to a temp file, and
+# where none can be made, as in a full /tmp, the loop never ran, so `commit`
+# went on as though no hand edit were pending. Now a full /tmp changes
+# nothing here: the edit is refused as above (lane 4's MERGES-B2 report).
 commit_hand_edit_refuse() {
   local ch_hits="" ch_p="" ch_l="" ch_q="" ch_c=""
   ch_hits="$(cs_pending_of "$LANES_PATH" lanes/LANES.md lanes/aliases.tsv lanes/log lanes/archive)"
-  while IFS= read -r ch_p; do
+  while [ -n "$ch_hits" ]; do
+    ch_p="${ch_hits%%"$WR_NL"*}"
+    case "$ch_hits" in
+      *"$WR_NL"*) ch_hits="${ch_hits#*"$WR_NL"}" ;;
+      *) ch_hits="" ;;
+    esac
     [ -n "$ch_p" ] || continue
     [ "$ch_p" = "$LANES_PATH" ] || cp_seam_render_path "$ch_p" || continue
     ch_l="$ch_l $ch_p"
     ch_q="$ch_q $(printf '%q' "$ch_p")"
-  done <<CH_EOF
-$ch_hits
-CH_EOF
+  done
   [ -n "$ch_l" ] || return 0
   ch_c="$(printf '%q' "$LANES_REPO")"
   note "RECOVERY, in $LANES_REPO:"
