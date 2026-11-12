@@ -2773,9 +2773,9 @@ def test_act_variables_change_nothing_in_files_mode(estates):
 # with `act-begin` and re-runs the identity's register reads before its
 # first write (TP:5876-5877; Y:5724): for a window with a row these are step
 # 1's `register-row` and `canon-lane`. Where step 1's `lane` is not the lane
-# the window now names, it refuses before its first write: none of its three
-# writes (`SKILL.md:735`, `:743`, `:786`) is sent, and the journal is as it
-# was. With the same lane, the three commit, each carrying the act's
+# the window now names, it refuses with 2 before its first write: none of
+# its three writes (`SKILL.md:735`, `:743`, `:786`) is sent, and the journal
+# is as it was. With the same lane, the three commit, each carrying the act's
 # `act_id`. Readings: step 1's lane reaches step 4 as `lane`, the name both
 # steps use, and the case makes it differ by giving the agent's `lane` as
 # another lane with a row while the window still names its own.
@@ -2933,7 +2933,10 @@ def skill_step_4_holds(world: ActWorld, prelude: str, block: str) -> None:
     assert {"register-row", "canon-lane"} <= set(verbs[1:]), (
         f"step 4 did not run the identity's register reads again after act-begin (T431): {verbs}")
     sent = [v for v in verbs if v in SKILL_WRITES]
-    assert run.code != 0 and sent == [] and run.commit_calls() == [], (
+    # The identity refusal is a step-4 stop, and the stop ends 2 (T431; lane
+    # 3's question 4, #165 6835210568: step 5 runs only where the block ended
+    # 0, 3, 69 or 75; T252o).
+    assert run.code == 2 and sent == [] and run.commit_calls() == [], (
         f"with step 1's lane {R_PAUSED} and the window's {R_HERE}, step 4 exited {run.code} and sent {sent} "
         f"(T431): {run.err[-600:]}")
     assert world.c.head() == head, f"the journal grew from {head} though step 1's lane differs"
