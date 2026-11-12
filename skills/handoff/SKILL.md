@@ -748,8 +748,9 @@ if [[ -z "$ws_missing" && -z "$act_down" ]]; then
   # `lane-handoff`'s own PAUSED writes carry (its W9, W11 and W12), because the
   # `append-line` below is W11's. `row:<window name>` is added where the window's
   # name is not the lane: step 1's first read asked the register for a row of that
-  # name. A name `check_lane_name` would refuse is never listed, where one token
-  # outside the six forms refuses every write with 2.
+  # name. A WINDOW NAME `check_lane_name` would refuse is never listed, because a window
+  # named `my window` is no walk answer and one token outside the six forms refuses every
+  # write with 2. A walk's names are not filtered this way (below).
   #
   # `alias:L` STANDS FOR THE WALK'S KEYS (Y:5624; lane 3, #165 6770733371, its shared
   # ruling G2 and T431's question 4): `canon-lane`'s answer changes when a row or an
@@ -799,6 +800,13 @@ if [[ -z "$ws_missing" && -z "$act_down" ]]; then
                 # file in /tmp, and where none can be made the redirection fails, the loop
                 # never runs, and the block goes on with no `row:<n>` or `alias:<n>` key for
                 # any name the walk found (Y:5587: "never dropped"). No redirection, no file.
+                # ONLY AN EMPTY LINE IS SKIPPED (lane 3, #165 6836816821, question 5, a NIT: no
+                # tool writes a name outside `check_lane_name`'s class today, since the register
+                # has no alias table and `rename-lane` checks both names). Any other name goes on
+                # to `act_scope_add`, and so into `LANES_EXPECT`, where the writer refuses a token
+                # outside the forms with 2 before any call (Y:5600), and the block ends 2 after
+                # `THIS ACT STOPS`: a name is never dropped, since dropping a token under-checks
+                # (Y:5583, Y:5587). The window name's own filter, above, stays.
                 aw_nl=$'\n'; aw_rest="$act_walk"
                 while [[ -n "$aw_rest" ]]; do
                   aw_n="${aw_rest%%"$aw_nl"*}"
@@ -806,7 +814,7 @@ if [[ -z "$ws_missing" && -z "$act_down" ]]; then
                     *"$aw_nl"*) aw_rest="${aw_rest#*"$aw_nl"}" ;;
                     *) aw_rest="" ;;
                   esac
-                  [[ "$aw_n" =~ $name_re ]] || continue
+                  [[ -n "$aw_n" ]] || continue
                   act_scope_add "row:$aw_n"; act_scope_add "alias:$aw_n"
                 done
               fi ;;
