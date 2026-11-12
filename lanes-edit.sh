@@ -7142,13 +7142,24 @@ pw_end() {   # <code> <message, or empty> [<attempt dir whose output is replayed
 # it could not settle, and ends with 75, the busy code, with the record KEPT: a
 # rerun within its age takes the record over and settles the write by its id,
 # and never writes it twice (Y:5206).
+#
+# The lookup's `--not-after` is the highest of the `call` lines', split from
+# WR_CALLS by parameter expansion and `wr_call_fields`, as `wr_lookup_text`
+# takes it, never `read` from a here-string: bash 3.2 writes one to a temp
+# file, and where none can be made, as in a full TMPDIR, the loop never ran,
+# and the lookup was printed with an empty `--not-after` (review REV-W10a M1).
 pw_doubt_end() {   # <the end's code> <its message, or empty> [<attempt dir>]
-  local dd_l="" dd_b="" dd_c="" dd_n="" dd_f="" dd_d="" dd_max=""
-  while IFS= read -r dd_l; do
-    [ -n "$dd_l" ] || continue
-    IFS=' ' read -r dd_b dd_c dd_n dd_f dd_d <<<"$dd_l"
-    if [ -z "$dd_max" ] || [ "$dd_n" -gt "$dd_max" ]; then dd_max="$dd_n"; fi
-  done <<<"$WR_CALLS"
+  local dd_l="" dd_r="" dd_max=""
+  dd_r="$WR_CALLS"
+  while [ -n "$dd_r" ]; do
+    dd_l="${dd_r%%"$WR_NL"*}"
+    case "$dd_r" in
+      *"$WR_NL"*) dd_r="${dd_r#*"$WR_NL"}" ;;
+      *) dd_r="" ;;
+    esac
+    wr_call_fields "$dd_l" && wr_is_count "$WR_CF_NOT_AFTER" || continue
+    if [ -z "$dd_max" ] || [ "$WR_CF_NOT_AFTER" -gt "$dd_max" ]; then dd_max="$WR_CF_NOT_AFTER"; fi
+  done
   pw_run_dir_done
   die "write $WR_ID of register generation $WR_GEN may be in the register: its pending record, $WR_STATE/register-pending/$WR_D, holds a commit call that may have committed, so this run's end (exit $1) is not that write's answer until the call is looked up. This lanes-edit.sh makes no such lookup yet: the record is kept, and a rerun settles the write by its id and never writes it twice. Look it up: lanes-index journal --write-id $WR_ID --not-after $dd_max --generation $WR_GEN --lane $(printf '%q' "$WR_LANE") --verb $(printf '%q' "$WR_VERB") --args-sha256 $WR_D. Or run it again: $(wr_rerun_text "$WR_ID" "$WR_GEN")" 75
 }
