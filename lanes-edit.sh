@@ -20962,7 +20962,10 @@ rl_rerun() {   # <the typed old name>
 # names `<to>`. The WARNING says `<to>` is not there yet and the move is owed
 # (spec:372–376), unless the act ran in `PW_C`, failed, and something is at
 # `<to>` there: then it says `<to>` is there and puts the act's refusal first
-# (lane openRepoTools-3, #165 6827722997, Q127 Q-b).
+# (lane openRepoTools-3, #165 6827722997, Q127 Q-b). An act that exits 3 has
+# not refused: the WARNING says its push was not confirmed, and that a re-run
+# of the hand steps confirms the move on origin or makes it (lane
+# openRepoTools-3, #165 6828797873, item 3).
 # A RERUN'S MOVE (`rerun`, from `pw_child_end`; `rl_rerun`): this run wrote no
 # register line, its child looked at no checkout and names none, and the move
 # is made in this run's own `<c>`, `PW_C`, at the seq of the snapshot that
@@ -20995,6 +20998,14 @@ pw_rl_move() {   # <seq> <the child's attempt dir> [rerun]
     LANES__RL_MOVE="$pm_f" LANES__RL_MOVE_PID="$$" \
     "${BASH:-bash}" "$RESOLVED" ${ORIG_ARGV[@]+"${ORIG_ARGV[@]}"} </dev/null || pm_rc=$?
   [ "$pm_rc" != 0 ] || return 0
+  # AN ACT THAT EXITS 3 HAS NOT REFUSED (lane openRepoTools-3, #165
+  # 6828797873, item 3): its push was not confirmed (exit row 3), so its
+  # WARNING points at no refusal above, and a re-run of the hand steps
+  # confirms the move on origin or makes it. The run's code is the same.
+  if [ "$pm_rc" = 3 ]; then
+    note "WARNING: ${pm_lead}; the push of its handoff's move and RENAMED stamp in $PW_C was not confirmed (exit ${pm_rc}, above). A re-run of these steps confirms the move on origin or makes it: $(rl_move_hand_steps "$PW_C" "${pm_old:-<old>}" "${pm_new:-<new>}")."
+    return 0
+  fi
   # A `<to>` THAT IS THERE IS NEVER "NOT THERE YET" (lane openRepoTools-3,
   # #165 6827722997, question 127's Q-b): the act's refusal above says why it
   # stopped, and the hand steps end in this verb again, which meets that
