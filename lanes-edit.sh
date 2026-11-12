@@ -4182,6 +4182,7 @@ WR_REC_LANE=""; WR_REC_SESSION=""; WR_REC_VERB=""; WR_REC_ARGS_SHA256=""
 WR_REC_CMDLINE=""; WR_REC_CREATED_UTC=""; WR_REC_UPDATED_UTC=""; WR_REC_PID=""
 WR_REC_PID_START=""; WR_REC_HOST=""; WR_REC_CONTAINER=""; WR_REC_ATTEMPTS=""
 WR_REC_CALLS=""; WR_REC_TAIL=""
+WR_CF_BASE=""; WR_CF_CLOCK=""; WR_CF_NOT_AFTER=""; WR_CF_FILES=""; WR_CF_DIR=""
 
 # A LOWER-CASE UUID, as `lanes-index` prints a write id and a generation
 # (contract §4: "printed as a lowercase UUID"). The digits are spelled out, not
@@ -4635,6 +4636,29 @@ wr_claim_release() {
   return 0
 }
 
+# A `call=` LINE'S FIVE FIELDS (Y:5173; contract §3.2): the first four split off
+# at single spaces, and the rest is `<dir>`, which may hold spaces. They go into
+# WR_CF_BASE, WR_CF_CLOCK, WR_CF_NOT_AFTER, WR_CF_FILES and WR_CF_DIR. 1, with
+# all five empty, where the line has fewer than five fields.
+#
+# BY PARAMETER EXPANSION, NEVER `read` FROM A HERE-STRING, and so are the loops
+# below over the record's lines: bash before 5.1 writes a here-string or a
+# here-document to a temp file, and where none can be made, as in a full
+# TMPDIR, such a loop never ran. A `call=` line was then written, kept, dropped
+# or read as though the record held none, and the call was sent with its doubt
+# lost (review REV-W10a M1). T414's `cp_seam` and T415's `pw_hand_edit_refuse`
+# split the same way.
+wr_call_fields() {   # <line>
+  local cf_r="${1-}"
+  WR_CF_BASE=""; WR_CF_CLOCK=""; WR_CF_NOT_AFTER=""; WR_CF_FILES=""; WR_CF_DIR=""
+  case "$cf_r" in *' '*' '*' '*' '*) : ;; *) return 1 ;; esac
+  WR_CF_BASE="${cf_r%% *}"; cf_r="${cf_r#* }"
+  WR_CF_CLOCK="${cf_r%% *}"; cf_r="${cf_r#* }"
+  WR_CF_NOT_AFTER="${cf_r%% *}"; cf_r="${cf_r#* }"
+  WR_CF_FILES="${cf_r%% *}"; WR_CF_DIR="${cf_r#* }"
+  return 0
+}
+
 # THE RECORD READ (Y:5172) into WR_REC_*: 0 when it is whole, 1 when there is no
 # record, 2 when there is one and it cannot be read as one, which names nothing
 # a run can rely on.
@@ -4645,7 +4669,7 @@ wr_claim_release() {
 # `<base> <clock> <not_after> <files> <dir>`, three counts, a sha256 and a
 # directory. A key it does not know is passed over.
 wr_record_read() {   # <record file>
-  local rr_l="" rr_b rr_c rr_n rr_f rr_d
+  local rr_l="" rr_r=""
   WR_REC_FORMAT=""; WR_REC_WRITE_ID=""; WR_REC_GENERATION=""; WR_REC_DATABASE=""
   WR_REC_LANE=""; WR_REC_SESSION=""; WR_REC_VERB=""; WR_REC_ARGS_SHA256=""
   WR_REC_CMDLINE=""; WR_REC_CREATED_UTC=""; WR_REC_UPDATED_UTC=""; WR_REC_PID=""
@@ -4681,12 +4705,18 @@ wr_record_read() {   # <record file>
   [ "$WR_REC_ARGS_SHA256" = "${1##*/}" ] || return 2
   wr_is_utc "$WR_REC_CREATED_UTC" && wr_is_utc "$WR_REC_UPDATED_UTC" || return 2
   [ -n "$(epoch_of "$WR_REC_UPDATED_UTC")" ] || return 2
-  while IFS= read -r rr_l; do
+  rr_r="$WR_REC_CALLS"
+  while [ -n "$rr_r" ]; do
+    rr_l="${rr_r%%"$WR_NL"*}"
+    case "$rr_r" in
+      *"$WR_NL"*) rr_r="${rr_r#*"$WR_NL"}" ;;
+      *) rr_r="" ;;
+    esac
     [ -n "$rr_l" ] || continue
-    IFS=' ' read -r rr_b rr_c rr_n rr_f rr_d <<<"$rr_l"
-    wr_is_count "$rr_b" && wr_is_count "$rr_c" && wr_is_count "$rr_n" || return 2
-    wr_is_hex64 "$rr_f" && [ -n "$rr_d" ] || return 2
-  done <<<"$WR_REC_CALLS"
+    wr_call_fields "$rr_l" || return 2
+    wr_is_count "$WR_CF_BASE" && wr_is_count "$WR_CF_CLOCK" && wr_is_count "$WR_CF_NOT_AFTER" || return 2
+    wr_is_hex64 "$WR_CF_FILES" && [ -n "$WR_CF_DIR" ] || return 2
+  done
   return 0
 }
 
@@ -4736,7 +4766,7 @@ wr_done_purge() {
 # openRepoTools-3, #165 6774499606, T412 (1)). So no `call=` line is added to
 # it, and no call is sent for it.
 wr_record_write() {
-  local rw_dir rw_now rw_tmp rw_body rw_v rw_l
+  local rw_dir rw_now rw_tmp rw_body rw_v rw_l rw_r
   [ -z "$WR_TOOK_TAIL" ] || return 1
   wr_claim_owns || return 1
   wr_done_purge
@@ -4751,10 +4781,16 @@ wr_record_write() {
     "$WR_ID" "$WR_GEN" "$WR_DATABASE" "$WR_LANE" "$WR_SESSION" "$WR_VERB" "$WR_D" \
     "$WR_CMDLINE" "$WR_CREATED_UTC" "$rw_now" "$WR_CLAIM_PID" "$WR_CLAIM_START" \
     "$WR_CLAIM_HOST" "$WR_CLAIM_CONTAINER" "$WR_ATTEMPTS")"
-  while IFS= read -r rw_l; do
+  rw_r="$WR_CALLS"
+  while [ -n "$rw_r" ]; do
+    rw_l="${rw_r%%"$WR_NL"*}"
+    case "$rw_r" in
+      *"$WR_NL"*) rw_r="${rw_r#*"$WR_NL"}" ;;
+      *) rw_r="" ;;
+    esac
     [ -n "$rw_l" ] || continue
     rw_body="$rw_body${WR_NL}call=$rw_l"
-  done <<<"$WR_CALLS"
+  done
   [ -n "$WR_TAIL" ] && rw_body="$rw_body${WR_NL}tail=$WR_TAIL"
   rw_tmp="$(mktemp "$rw_dir/.$WR_D.XXXXXX" 2>/dev/null)" || rw_tmp=""
   [ -n "$rw_tmp" ] || return 1
@@ -4789,14 +4825,18 @@ wr_record_add_call() {   # <base> <clock> <not_after> <files> <dir>
 # which answers those are (T415). 1, with the record and WR_CALLS as they were,
 # where the write failed.
 wr_record_drop_call() {   # <dir>
-  local dc_was dc_new dc_l dc_b dc_c dc_n dc_f dc_d
-  dc_was="$WR_CALLS"; dc_new=""
-  while IFS= read -r dc_l; do
+  local dc_was dc_new dc_l dc_r
+  dc_was="$WR_CALLS"; dc_new=""; dc_r="$WR_CALLS"
+  while [ -n "$dc_r" ]; do
+    dc_l="${dc_r%%"$WR_NL"*}"
+    case "$dc_r" in
+      *"$WR_NL"*) dc_r="${dc_r#*"$WR_NL"}" ;;
+      *) dc_r="" ;;
+    esac
     [ -n "$dc_l" ] || continue
-    IFS=' ' read -r dc_b dc_c dc_n dc_f dc_d <<<"$dc_l"
-    [ "$dc_d" = "${1-}" ] && continue
+    wr_call_fields "$dc_l" && [ "$WR_CF_DIR" = "${1-}" ] && continue
     dc_new="${dc_new}${dc_new:+$WR_NL}$dc_l"
-  done <<<"$WR_CALLS"
+  done
   WR_CALLS="$dc_new"
   wr_record_write && return 0
   WR_CALLS="$dc_was"
@@ -4862,12 +4902,17 @@ wr_rerun_new_text() {
 # or, where it holds no `call=` line, the sentence that none of its commit calls
 # can have committed (Y:5176: a line is exactly a call that may have).
 wr_lookup_text() {
-  local lt_l lt_b lt_c lt_n lt_f lt_d lt_max=""
-  while IFS= read -r lt_l; do
-    [ -n "$lt_l" ] || continue
-    IFS=' ' read -r lt_b lt_c lt_n lt_f lt_d <<<"$lt_l"
-    if [ -z "$lt_max" ] || [ "$lt_n" -gt "$lt_max" ]; then lt_max="$lt_n"; fi
-  done <<<"$WR_REC_CALLS"
+  local lt_l lt_r lt_max=""
+  lt_r="$WR_REC_CALLS"
+  while [ -n "$lt_r" ]; do
+    lt_l="${lt_r%%"$WR_NL"*}"
+    case "$lt_r" in
+      *"$WR_NL"*) lt_r="${lt_r#*"$WR_NL"}" ;;
+      *) lt_r="" ;;
+    esac
+    wr_call_fields "$lt_l" && wr_is_count "$WR_CF_NOT_AFTER" || continue
+    if [ -z "$lt_max" ] || [ "$WR_CF_NOT_AFTER" -gt "$lt_max" ]; then lt_max="$WR_CF_NOT_AFTER"; fi
+  done
   if [ -z "$lt_max" ]; then
     printf 'It holds no call line, so none of its commit calls can have committed.\n'
     return 0
