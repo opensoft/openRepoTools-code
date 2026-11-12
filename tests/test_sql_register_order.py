@@ -1379,7 +1379,8 @@ def test_a_hold_line_that_names_no_repository_is_refused_with_2(estates, case):
     matching `HOLD ` or `LANDING ` from which no repository can be read exits
     2 and writes nothing, and so does a take whose UTC cannot be read (U3;
     its client half is AT-F13 (b)). A line of another shape is written as free
-    text."""
+    text: [free-text] commits 0, and as a line of no kind it gets no
+    `register_lines` row and takes or frees nothing (T243k)."""
     append_line_case(estates(), case, NO_REPO[case])
 
 
@@ -1409,7 +1410,9 @@ def append_line_case(e: Estate, case: str, row: tuple) -> None:
         assert e.open_slots(LA) == [[("landing" if "LANDING" in before_lines[0] else "hold"), KEY,
                                      PR if "LANDING" in before_lines[0] else None]], e.open_slots(LA)
     head, state = e.c.head(), e.c.state()
-    w = e.run(LA, ["append-line", spell(text)])
+    slots_before = e.rows(f"SELECT * FROM {REGISTER}.main_slots ORDER BY line_id")
+    line = spell(text)
+    w = e.run(LA, ["append-line", line])
     assert w.code == code, f"[{case}] exit {w.code}, not {code}: {w.err[-600:]}"
     if code == 2:
         assert e.c.state() == state, f"[{case}] the refusal changed the register"
@@ -1417,6 +1420,23 @@ def append_line_case(e: Estate, case: str, row: tuple) -> None:
         return
     assert e.c.head() == head + 1
     said = e.rows(f"SELECT kind, slot_role FROM {REGISTER}.register_lines WHERE seq = {head + 1}")
+    if case == "free-text":
+        # A LINE OF NO KIND GETS NO `register_lines` ROW (lane 1, #165
+        # 6834413025, which lanes 3 and 4 agree; ERR-49, B19 tasks:515,
+        # "`register_lines` for kinds only"): `parse_register_line` gives None
+        # for it, and the commit sends no row. So the oracle is the line
+        # written, no row, `main_slots` as it was, and another lane's `HOLD`
+        # still committing (T243k).
+        assert said == [], f"[{case}] a line of no kind got register_lines rows: {said}"
+        sent = e.rows(f"SELECT path, new_text FROM {REGISTER}.journal_edits WHERE seq = {head + 1} "
+                      "AND op = 'append'")
+        assert {"path": LANES_MD, "new_text": line} in sent, f"[{case}] the line was not written: {sent}"
+        after = e.rows(f"SELECT * FROM {REGISTER}.main_slots ORDER BY line_id")
+        assert after == slots_before, f"[{case}] main_slots moved: {slots_before} -> {after}"
+        other = e.run(LB, ["append-line", f"HOLD {EM} lane {LB} ({W_WS}), {e.utc()}: {KEY} main for T243's "
+                                          "free-text case"])
+        assert other.code == 0, f"[{case}] another lane's HOLD exited {other.code}: {other.err[-600:]}"
+        return
     role = "close" if case == "landed-no-repo" else None
     assert len(said) == 1 and said[0]["slot_role"] == role, f"[{case}] {said}, its slot_role not {role}"
     assert e.open_slots(LA) == slots, f"[{case}] main_slots for {LA}: {e.open_slots(LA)}, not {slots}"
