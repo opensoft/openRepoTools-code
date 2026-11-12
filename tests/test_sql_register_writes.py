@@ -60,6 +60,7 @@ from urllib.parse import quote
 import pytest
 
 from conftest import WINDOWS_SKIP
+from pgcluster import Database
 from sql_register_helpers import PSQL_SHIM, PSQL_SHIM_CONTROL, PSQL_SHIM_LOG
 from test_sql_register_render import (AUTHOR, DOT, EM, LOGIN_READER, LOGIN_WRITER, SCHEMA, SEED,
                                       SID_A1, SID_A2, TIP, WRITER, WS, Estate, _canonical_rows,
@@ -314,6 +315,33 @@ LATE_WRITES = {
     "retire-rows": WRITE_VERBS["retire-rows"],
     "archive-rows": WRITE_VERBS["archive-rows"],
     "migrate-state-cells": WRITE_VERBS["migrate-state-cells"],
+}
+
+#: EACH LATE WRITE'S LAST STRUCTURED ROW, AND HOW IT IS BROKEN (TP:686-690,
+#: "its last structured row breaks a CHECK"; T241i): the `edit-entry` arm's
+#: `field` and `value` for the last row of the last list the write's entry
+#: carries, in the order `commit_write`'s step 7 applies them, `lanes`,
+#: `log_lines`, `register_lines`, then `object_holds` (a2935aee:lanes-index:7282).
+#: - A `LANDING` or `LANDED` that `append-line` writes changes `lanes/LANES.md`
+#:   alone: one `register_lines` row (lane 4's TRIAGE-W12 run 2 logged
+#:   LANDED's entry: `lanes`, `log_lines` and `object_holds` empty).
+#: - `rename-lane`, `retire-rows` and `migrate-state-cells` end with the
+#:   `log_lines` rows of the lines they add to a log.
+#: - `archive-rows` writes `lanes/LANES.md` and the archive alone: its last
+#:   row is the archived lane's `lanes` row.
+#: The `register_lines` and `log_lines` rows lose their `workstation`, which
+#: each table's primary CHECK requires (`mode = 'files' OR
+#: coalesce(workstation, '') <> ''`, a2935aee:lanes-index:7122 and :7065); the
+#: database stamps `mode`, so the row breaks it on primary alone. A `lanes`
+#: row has no such CHECK, so it gets a `lane` that is not its key
+#: (`lower(lane) = lane_key`, :7038).
+LATE_ROWS = {
+    "LANDING": ("register_lines.-1.workstation", ""),
+    "LANDED": ("register_lines.-1.workstation", ""),
+    "rename-lane": ("log_lines.-1.workstation", ""),
+    "retire-rows": ("log_lines.-1.workstation", ""),
+    "archive-rows": ("lanes.-1.lane", "t241i-not-its-key"),
+    "migrate-state-cells": ("log_lines.-1.workstation", ""),
 }
 
 #: AT-3's line, which a writer prints where the switch is not `primary`.
@@ -874,31 +902,76 @@ def test_each_write_exits_69_when_the_database_refuses_the_transaction(pg, tmp_p
         assert len(_commit_calls(ws)) - calls <= 1, "a refused commit call was sent again"
 
 
+def _unarmed_control(pg, tmp_path: Path, write: str) -> None:
+    """THE CONTROL (T241j; lane 3's ruling, #165 6833755920): `write`, with no
+    arm, on an estate of its own in a database of its own on the same cluster,
+    made the way the armed case makes its own, must exit 0 on primary. Where
+    it does not, the write fails there by itself, and the armed case could
+    not tell its injected row's 23514 from the write's own, so the case fails
+    here, saying that it is the control."""
+    name = pg.cluster.new_database()
+    try:
+        control = RegisterWorkstation(Database(pg.cluster, name), tmp_path / "control",
+                                      PREPS.get(write))
+        argv, lane = LATE_WRITES[write]
+        proc = control.run(argv, lane)
+    finally:
+        pg.cluster.drop_database(name)
+    assert proc.returncode == 0, (
+        f"THE CONTROL FAILED, NOT THE INJECTED ROW: {write} with no edit-entry arm, on an "
+        f"estate and a database of its own, exited {proc.returncode} on primary, so the "
+        f"armed case cannot show that a 23514 is its injected row's. Its stderr ends: "
+        f"{proc.stderr[-800:]}")
+
+
 @pytest.mark.parametrize("write", list(LATE_WRITES))
 def test_a_failure_in_a_late_statement_leaves_journal_lines_and_head_unchanged(pg, tmp_path,
                                                                                write):
-    """AT-2, "Partway" (P11; D6): the shim's `edit-entry` rewrites the commit
-    call's entry so that its last structured row breaks a CHECK. The entry's
-    lists end with `object_holds` (lane 1's `register_commit_entry` at T112),
-    and its rows carry `exempt` but no `mode`, which the database stamps, so
-    the last hold row is made `exempt`, which `object_holds`' `CHECK (NOT
-    exempt OR mode = 'files')` refuses on primary: the transaction fails with
-    23514 after the head row, the line edits and the earlier rows changed
-    inside it. The write exits 69; the journal, the line store and the head
-    row are unchanged (each table's digest); git is unchanged; the refused
-    call is never sent again. It needs the shim's `edit-entry` to name a
-    list's last element (`object_holds.-1.exempt`), which T203's shim does
-    not do yet."""
+    """AT-2, "Partway" (P11; D6; TP:686-690): the shim's `edit-entry` rewrites
+    commit call 1's entry so that its last structured row breaks a CHECK, as
+    `LATE_ROWS` names it for each write: the transaction fails with 23514
+    after the head row, the line edits and the earlier rows changed inside
+    it. The shim's log shows the arm applied to commit call 1 with no error,
+    so an arm the shim cannot apply fails here first, not as an exit 0 when
+    the next attempt commits unarmed. The write exits 69; the journal, the
+    line store and the head row are unchanged (each table's digest); git is
+    unchanged; the refused call is never sent again.
+
+    NO WRITE HERE CARRIES A HOLD ROW (T241i; lane 4's #165 6827643168, item
+    5): every log line these writes add, or carry through a rename, names a
+    lane's own object, `lane:<name>` (a LANDING or LANDED adds none), and
+    `register_hold_object` gives no hold for those
+    (a2935aee:lanes-index:11570), so T241b's
+    `object_holds.-1.exempt` found an empty list. Nor could a hold row's
+    `exempt` break a CHECK on a write: `commit_write` stores it only for an
+    import (`v_kind = 'import' AND coalesce(x.exempt, false)`,
+    a2935aee:lanes-index:7656). It needs T203d's shim, which names a list's
+    element by its index, a negative one from the list's end.
+
+    THE CONTROL COMES FIRST (T241j; lane 3's ruling, #165 6833755920): the
+    same write, unarmed, on an estate and a database of its own, must exit
+    0 (`_unarmed_control`). Where the write fails on primary by itself, its
+    own 23514 would pass this case for the injected row's, so the case fails
+    at the control instead. `[rename-lane]` and `[migrate-state-cells]` fail
+    there until their own causes are fixed, by a task lanes 4 and 1 name
+    (HW17: the renamed log's lines go out as unreadable `log_lines` rows
+    stamped primary, and migrated lines carry a time with no seconds)."""
+    _unarmed_control(pg, tmp_path, write)
     ws = RegisterWorkstation(pg, tmp_path, PREPS.get(write))
+    field, value = LATE_ROWS[write]
     ws.arm([{"mode": "edit-entry", "match": "commit_write", "call": 1,
-             "field": "object_holds.-1.exempt", "value": True}])
+             "field": field, "value": value}])
     before_db, before_git = ws.db_digest(), ws.git_state()
     argv, lane = LATE_WRITES[write]
     proc = ws.run(argv, lane)
+    commits = _commit_calls(ws)
+    assert commits and commits[0]["arms"] == ["edit-entry"] and "error" not in commits[0], \
+        f"the shim did not rewrite {field} in commit call 1: " \
+        f"{commits[0].get('error') if commits else 'no commit call'}"
     assert proc.returncode == 69, f"{write} exited {proc.returncode}: {proc.stderr[-800:]}"
     assert "23514" in proc.stderr, proc.stderr
     assert ws.db_digest() == before_db and ws.git_state() == before_git
-    assert len(_commit_calls(ws)) == 1, "the failed commit call was sent again"
+    assert len(commits) == 1, "the failed commit call was sent again"
 
 
 @pytest.mark.parametrize("verb", list(WRITE_VERBS))
