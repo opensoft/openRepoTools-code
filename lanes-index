@@ -13367,7 +13367,7 @@ class SyncLock:
 # these (R44).
 #
 # RECONCILE, on `mode=primary` and for the register's source, checks the mirror
-# against SQL and writes nothing (`reconcile_register`; Y:4854). It compares the
+# in W against SQL and writes nothing (`reconcile_check`; Y:4854). It compares the
 # render set at `R`, the commit on `origin/<branch>` that carries `m`, with each
 # render-set path's latest `journal_files` digest at or below `m`. It names
 # each commit after `R` that changes the render set and carries no
@@ -13376,8 +13376,17 @@ class SyncLock:
 # (Y:3527). A resolved stray is passed over when `m` is found and set aside
 # after `R`, as in `status`; where the walk's first value is a resolved
 # stray's, the walk runs again past them and the request is made again, at
-# most `RECONCILE_READS` in all. A mirror that differs is reported with 0
-# (exit-codes.md §3.4, [P]). The re-render is lane 3's T325, in phase 3.
+# most `RECONCILE_READS` in all. The check alone, under `--dry-run`, reports a
+# mirror that differs with 0 (exit-codes.md §3.4, [P]). Without `--dry-run`,
+# after every check that was made, lane 3's T325 RE-RENDERS, through the
+# renderer's own pass, which fetches origin itself, under the render lock of
+# THE LANE'S OWN REGISTER CHECKOUT, never W (`reconcile_render`; FR-048;
+# Y:2930-2931; Amendment 23 S2 item 3 and S5; design.md D24): the checkout
+# `lane_own_checkout` takes, as `import` takes its own, with `LANES_LANE` set.
+# The check's view of W, as last fetched, decides nothing there. It exits as
+# the renderer does: "nothing was missing" is the pass's own 0, and a
+# difference it cannot render over, `diverged at` among them, is 1. It
+# imports nothing.
 #
 # SYNC of the register's source on `mode=primary` does nothing and says so
 # (`sync_register_on_primary`). It makes no `psql` call, takes no lock and
@@ -13874,7 +13883,7 @@ def _register_strays(root: str, commit: str, tip: str) -> tuple[list[str], int]:
     the render set, and how many commits come after it. None of them carries
     a `Register-Seq` that counts, since `commit` is the newest that does, so
     none is a render commit (Y:2921-2930). A resolved stray among them, which
-    may carry one, is its caller's to set aside (`reconcile_register`;
+    may carry one, is its caller's to set aside (`reconcile_check`;
     Y:2848-2850)."""
     count = git(root, "rev-list", "--first-parent", "--count", f"{commit}..{tip}")
     proc = git(root, "-c", "log.showSignature=false", "log", "--first-parent", "--format=%H",
@@ -13927,10 +13936,16 @@ def _reconcile_settled(mirror: dict, resolved: frozenset[str]) -> bool:
             and all(sha in resolved for sha, _value in mirror["passed"]))
 
 
-def reconcile_register(cfg: dict, requested: str | None, dry_run: bool) -> int:
-    """`reconcile` on `mode=primary`, for the register's source: the mirror
-    checked against SQL, READ-ONLY (Y:4854; exit-codes.md §3.4). Nothing is
-    written, and no lock is taken, here or in the database.
+def reconcile_check(cfg: dict, requested: str | None, dry_run: bool) -> int:
+    """`reconcile`'s first half on `mode=primary`, for the register's source:
+    the mirror in W checked against SQL, READ-ONLY (Y:4854; exit-codes.md
+    §3.4; T117). Nothing is written, and no lock is taken, here or in the
+    database. Its 0 says the check was made, and `reconcile_register` then
+    re-renders (T325) unless `dry_run`; so its result line says "nothing was
+    written: this check is read-only" only where nothing follows it, under
+    `--dry-run` or where the check could not be made, and "the check wrote
+    nothing" before a re-render that may write (NIT-2 of lane 3's review of
+    T325).
 
     THE RESOLVED STRAYS (Y:2848-2850; lane 3's item 5): the read names them,
     the walk passes over their `Register-Seq` when it finds `m`, and the
@@ -13987,17 +14002,21 @@ def reconcile_register(cfg: dict, requested: str | None, dry_run: bool) -> int:
             state, why = None, (str(exc) if isinstance(exc, RegisterUnavailable) else
                                 "psql answered a journal extent this build cannot read")
     say(f"{PROG} reconcile: {source} on primary - the mirror against the SQL register, "
-        f"read-only{' - DRY RUN' if dry_run else ''}")
+        f"read-only" + (" - DRY RUN, so nothing is re-rendered" if dry_run else
+                        ", then the renderer's pass in this lane's own register checkout"))
     if unchecked:
         say(f"  source:      {_register_shown(requested)} went unchecked: the workspace root is "
             f"unknown here (the mirror line says why), so whether it names this "
             f"workstation's register was not checked")
     say(f"  mirror:      {mirror['text']}"
         + (f"; the tip is {tip[:12]}" if tip and commit and tip != commit else ""))
-    nothing = "nothing was written: this check is read-only"
+    # NIT-2: "read-only" where the check is all that runs; before a re-render,
+    # which may write, only what the check itself wrote.
+    alone = "nothing was written: this check is read-only"
+    nothing = alone if dry_run else "the check wrote nothing, and the renderer's pass follows"
     if state is None:
         say(f"  register:    cannot be read - {_register_shown(why, 400)}")
-        say(f"  result:      the check could not be made; {nothing}")
+        say(f"  result:      the check could not be made; {alone}")
         return EXIT_UNAVAILABLE
     say(f"  register:    switch {state['mode']}, marker {state['marker']}; n {state['n']}; "
         f"generation {state['generation']}")
@@ -14017,7 +14036,7 @@ def reconcile_register(cfg: dict, requested: str | None, dry_run: bool) -> int:
             say(f"  result:      the mirror carries no Register-Seq, so it has no seq to be "
                 f"compared at, and it is no mirror of this register; {nothing}")
             return EXIT_OK
-        say(f"  result:      the mirror cannot be read, so it was not compared; {nothing}")
+        say(f"  result:      the mirror cannot be read, so it was not compared; {alone}")
         return 1
     differences, rows = [], []
     if first is None:
@@ -14085,9 +14104,139 @@ def reconcile_register(cfg: dict, requested: str | None, dry_run: bool) -> int:
         say(f"  result:      the mirror equals SQL at seq {m}, and the divergence recorded "
             f"stands until a person resolves it (D16); {nothing}")
     else:
-        say(f"  result:      the mirror equals SQL at seq {m}; {nothing}, and T325 re-renders "
-            f"what the mirror lacks, in phase 3")
+        say(f"  result:      the mirror equals SQL at seq {m}; {nothing}")
     return EXIT_OK
+
+
+def reconcile_register(cfg: dict, requested: str | None, dry_run: bool) -> int:
+    """`reconcile` on `mode=primary`, for the register's source (FR-048):
+    the mirror in W checked against SQL, read-only (`reconcile_check`,
+    T117), and then the renderer's pass, which RE-RENDERS what the mirror
+    lacks, in this lane's own register checkout, never W
+    (`reconcile_render`, T325). It imports nothing: no journal entry, and
+    the mirror is never indexed back into SQL.
+
+    THE PASS FOLLOWS EVERY CHECK THAT WAS MADE (SHOULD-1 of lane 3's review
+    of T325, lane 3's call): the check reads W as it was last fetched, which
+    is no answer about origin, and the pass fetches origin itself, so a
+    mirror that lacks nothing is the pass's own 0, "nothing was missing"
+    (exit-codes.md §3.4's `reconcile` 0 row). Never under `--dry-run`, which
+    is the check alone, and never after a check that could not be made: a
+    register that cannot be read is 69 at the check's own timer, with no
+    git act after it (Y:3527).
+
+    Exits: the check's 69, #160's 1 for a mirror's checkout that cannot be
+    read, and 2 for a `--source` that is not this workstation's register;
+    the check's 0 under `--dry-run`; otherwise the re-render's
+    (`reconcile_render`), its 2 where this lane has no checkout of its own
+    to render in."""
+    rc = reconcile_check(cfg, requested, dry_run)
+    if dry_run:
+        say("  re-render:   none: --dry-run makes the check alone")
+        return rc
+    if rc != EXIT_OK:
+        say("  re-render:   none: the check could not be made, so what the mirror lacks is not "
+            "known (D10)")
+        return rc
+    return reconcile_render(cfg)
+
+
+#: `lane_own_checkout`'s refusals in `reconcile`'s words (MUST-1 of lane 3's
+#: review of T325): each is 2, after the check, with nothing re-rendered.
+_RECONCILE_CHECKOUT_WORDS = {
+    "unfound": ("reconcile: lane {lane}'s checkout cannot be found ({why}); the re-render runs "
+                "only in the lane's own register checkout, never in W (Amendment 23 S5); "
+                "nothing was re-rendered"),
+    "none": ("reconcile: lane {lane} has no checkout of its own (`lanes-edit.sh lane-checkout "
+             "{lane}` exited {rc}: {why}). Make it with `lanes-edit.sh lane-checkout {lane} "
+             "--create`, or name one with LANES_REPO; the re-render never runs in W (Amendment "
+             "23 S5); nothing was re-rendered"),
+    "not-git": ("reconcile: {where} is not a git checkout, so the renderer's pass cannot run "
+                "in it; nothing was re-rendered"),
+    "w-unread": ("reconcile: LANES_REPO is set, and W cannot be read to check that it is not W "
+                 "itself ({why}); a read that failed is not an answer (Amendment 7(d)), so the "
+                 "re-render does not run in {root}; nothing was re-rendered"),
+    "is-w": ("reconcile: LANES_REPO names W itself ({root}), the readers' copy; the re-render "
+             "fetches, writes and pushes in the lane's own register checkout, never in W "
+             "(Amendment 23 S5); nothing was re-rendered"),
+}
+
+
+def reconcile_checkout() -> str:
+    """WHERE `reconcile` RE-RENDERS (MUST-1 of lane 3's review of T325): this
+    lane's own register checkout, never W, by the rule `import` takes its
+    own by (`lane_own_checkout`; Amendment 23 S2 item 3 and S5; design.md
+    D24; tasks.md T416's `<c>`, 1a's `lane_checkout_path`). The re-render
+    pushes, so `LANES_LANE` must name a lane, as the import's must (S2, "no
+    lane, no write"). Every refusal is 2, raised before the render lock,
+    the fetch or any other git act of the re-render, so nothing is written."""
+    lane = os.environ.get("LANES_LANE", "").strip()
+    if not lane:
+        raise Refusal("reconcile: LANES_LANE is not set: the re-render pushes, so it runs with "
+                      "LANES_LANE=<lane>, in that lane's own register checkout, never in W "
+                      "(Amendment 23's S2, \"no lane, no write\", and S5); nothing was "
+                      "re-rendered. `reconcile --dry-run` is the check alone, and needs no lane")
+    if re.search(r"[\s<>@]", lane) or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in lane):
+        raise Refusal("reconcile: LANES_LANE is not a lane's name: it holds a space, a control "
+                      "character, '<', '>' or '@'; nothing was re-rendered")
+    return lane_own_checkout(lane, _RECONCILE_CHECKOUT_WORDS)
+
+
+def reconcile_render(cfg: dict) -> int:
+    """`reconcile`'s RE-RENDER (T325; FR-048; Y:2930-2931; the phase plan's
+    `reconcile` row, Y:5757): the renderer itself, in-process, in THIS
+    LANE'S OWN REGISTER CHECKOUT, `reconcile_checkout`'s, never in W, the
+    readers' copy the check read (MUST-1 of lane 3's review of T325;
+    Amendment 23 S5: "No tool edits, stages, commits, stashes, resets,
+    rebases, switches or pushes there"). It reuses the render line whole,
+    and copies none of it:
+    - `render_scrub_environ` first (D12; Y:5776), as `render --checkout`;
+    - `render_locked`: that checkout's render lock, one render at a time
+      per checkout (T321), the handshake's first half where another render
+      holds it, which then renders again for this one before it is done;
+    - T323's holder loop, `_render_holding`: T322's pass, `render_pass`,
+      again after each pass that made progress, so a backlog over one
+      pass's 64 seqs is rendered, at most 16 passes (F15); every stop of the
+      renderer is a stop here too, `diverged at` recorded (D16), with
+      nothing on any HEAD;
+    - each pass's push through T320's `render_push`, and its build through
+      the private index and `commit-tree`.
+    It closes F15's known gap, six lost races that leave the last write
+    unrendered until the next write anywhere, or `reconcile` (Y:2905-2907;
+    research.md's PC-3).
+
+    Exits are `render --checkout`'s (`cmd_render_checkout`): 0 where the
+    last pass rendered, or found nothing missing, an operator seq next or
+    the switch at `files`, or where another render holds the lock and
+    renders again; 1 for a stop recorded with the mirror state (`diverged
+    at`, a failed fetch, walk, build or push, six rejected pushes) or a lock
+    that cannot be used; 69 where the register cannot be read (Y:3527).
+    A push `render_push` refuses raises `Refusal` (2), and so does a lane
+    with no checkout of its own, before any git act. The checkout is made
+    absolute first, as `render --checkout` makes its own, so the cap's
+    re-fork names the same one wherever it starts."""
+    render_scrub_environ()
+    checkout = os.path.abspath(reconcile_checkout())
+    say(f"  re-render:   in {checkout}, this lane's own register checkout, never W, by the "
+        f"renderer's pass under that checkout's render lock (T322; T323); it imports nothing")
+    results: list = []
+    rc = render_locked(checkout, cfg, results, caller="reconcile's re-render in")
+    if not results:
+        if rc == EXIT_OK:
+            say("  re-render:   another render holds the lock, and renders again for this one "
+                "before it is done (D14); no pass was run here")
+        else:
+            say("  re-render:   no pass was run: the render lock or its rerun mark could not be "
+                "used (stderr says why)")
+    else:
+        last = results[-1]
+        moved = sum(1 for result in results if result.progressed)
+        say(f"  re-render:   {len(results)} pass(es), {moved} of them moving origin's "
+            f"{REGISTER_SEQ_KEY}; the last ended {last.outcome}: "
+            f"{_register_shown(last.detail, 400)}")
+    say(f"  result:      the re-render exits {rc}"
+        + ("" if rc == EXIT_OK or not results else f"; `{PROG} status` shows what it recorded"))
+    return rc
 
 
 def register_primary_config() -> dict | None:
@@ -15522,9 +15671,12 @@ def render_refork(checkout: str) -> bool:
     return True
 
 
-def _render_holding(lock: RenderLock, checkout: str, cfg: dict) -> int:
+def _render_holding(lock: RenderLock, checkout: str, cfg: dict,
+                    results: list | None = None) -> int:
     """The holder's side of the handshake, bounded by F15 (T323). Each turn
-    clears the rerun mark, the pass's first act (S2), and runs a pass.
+    clears the rerun mark, the pass's first act (S2), and runs a pass. Where
+    the caller hands over a list, `results`, each pass's `RenderPass` is
+    appended to it, so `reconcile` can say how its re-render ended (T325).
 
     - A PASS THAT MADE PROGRESS is followed by another, the lock still held.
     - ANY OTHER END is a stop: the holder releases, looks for a mark once
@@ -15548,6 +15700,8 @@ def _render_holding(lock: RenderLock, checkout: str, cfg: dict) -> int:
                  f"({exc.strerror or exc}); nothing rendered")
             return 1
         result = render_pass(checkout, cfg)
+        if results is not None:
+            results.append(result)
         rc = result.rc
         passes += 1
         if passes >= RENDER_PASS_CAP:
@@ -15625,10 +15779,35 @@ def cmd_render_checkout(args: list) -> int:
     # `GIT_*` reaches `load_config`, `source_of` or any child (SHOULD-2 of lane
     # 3's review of T321): both are gone before anything here reads a
     # repository or starts a child.
+    render_scrub_environ()
+    cfg = load_config()
+    return render_locked(os.path.abspath(checkout), cfg)
+
+
+def render_scrub_environ() -> None:
+    """D12 AND Y:5776 for this process itself: every inherited `GIT_*`
+    variable and `LANES_NO_FETCH` removed from `os.environ`, so none reaches
+    `source_of`'s git read or any child, as `_render_child_env` keeps them
+    from each git call. `render --checkout` makes it its first act, and
+    `reconcile` before its re-render (T325)."""
     for name in [key for key in os.environ if key.startswith("GIT_") or key == "LANES_NO_FETCH"]:
         os.environ.pop(name, None)
-    cfg = load_config()
-    checkout = os.path.abspath(checkout)
+
+
+def render_locked(checkout: str, cfg: dict, results: list | None = None,
+                  caller: str = "render --checkout") -> int:
+    """THE RENDERER IN `checkout`, an absolute path, under its render lock
+    (T321), as `render --checkout <c>` runs it and `reconcile`'s re-render
+    reuses it (T325): the lock taken at once or, where another render holds
+    it, the handshake's first half, the mark and one more try; then
+    `_render_holding` (T322's pass, bounded by T323), `results` gathering
+    each pass's `RenderPass`. `caller` names the command that called the
+    pass, before `checkout`, where the lock cannot be taken (NIT-1 of lane
+    3's review of T325). Returns `cmd_render_checkout`'s exits: 0 where
+    another render holds the lock and renders again for this one, with no
+    pass run here; 1 where the lock cannot be taken; otherwise the last
+    pass's. A `checkout` that is no git checkout, and a push `render_push`
+    refuses, raise `Refusal` (2)."""
     lock = RenderLock(render_git_dir(checkout))
     try:
         held = lock.acquire()
@@ -15640,7 +15819,7 @@ def cmd_render_checkout(args: list) -> int:
             held = lock.acquire()
     except OSError as exc:
         lock.release()
-        note(f"render --checkout {checkout}: the render lock {lock.path} cannot be taken: "
+        note(f"{caller} {checkout}: the render lock {lock.path} cannot be taken: "
              f"{exc.strerror or exc}")
         return 1
     if not held:
@@ -15648,7 +15827,7 @@ def cmd_render_checkout(args: list) -> int:
             f"is done")
         return 0
     try:
-        return _render_holding(lock, checkout, cfg)
+        return _render_holding(lock, checkout, cfg, results)
     finally:
         lock.release()
 
@@ -17040,7 +17219,9 @@ def cmd_reconcile(requested: str | None, dry_run: bool) -> int:
         return 0
     kind = "inventory" if is_inventory(requested) else "register"
     # ON PRIMARY, THE REGISTER'S RECONCILE IS THE MIRROR'S READ-ONLY CHECK
-    # AGAINST SQL (T117; Y:4854): no lock, and nothing written.
+    # AGAINST SQL (T117; Y:4854), with no index lock, and then the re-render
+    # of what the mirror lacks, in the lane's own register checkout under its
+    # render lock, never in W (T325; FR-048); `--dry-run` is the check alone.
     if kind == "register":
         primary = register_primary_config()
         if primary is not None:
@@ -17749,7 +17930,50 @@ def _import_checkout(lane: str, *, who: str = "import",
     at all: the checkout is `lanes-edit.sh lane-checkout <lane>`'s
     `<W>-lanes/<lane>/`, which that helper derives from `W` and which is
     never `W`, and a `W` that cannot be read refuses there as a lane with no
-    checkout of its own. `who` and `nothing` are `_import_lane`'s."""
+    checkout of its own. `who` and `nothing` are `_import_lane`'s. The rule
+    is `lane_own_checkout`'s, which `reconcile`'s re-render shares (T325),
+    each command in its own words."""
+    return lane_own_checkout(lane, _IMPORT_CHECKOUT_WORDS, who=who, nothing=nothing)
+
+
+#: `lane_own_checkout`'s refusals in the words of `_import_checkout`'s caller,
+#: `who` (`import`, or T324's `import --single` and `render --revert`), each
+#: 2 and ending in its `nothing`.
+_IMPORT_CHECKOUT_WORDS = {
+    "unfound": "{who}: lane {lane}'s checkout cannot be found ({why}); {nothing}",
+    "none": ("{who}: lane {lane} has no checkout of its own (`lanes-edit.sh lane-checkout "
+             "{lane}` exited {rc}: {why}). Make it with `lanes-edit.sh lane-checkout {lane} "
+             "--create`, or name one with LANES_REPO; the {who} never reads W (D24); "
+             "{nothing}"),
+    "not-git": ("{who}: {where} is not a git checkout, so origin's objects cannot be read "
+                "through it; {nothing}"),
+    "w-unread": ("{who}: LANES_REPO is set, and W cannot be read to check that it is not W "
+                 "itself ({why}); a read that failed is not an answer (Amendment 7(d)), so the "
+                 "{who} reads nothing through {root}; {nothing}"),
+    "is-w": ("{who}: LANES_REPO names W itself ({root}); the {who} reads origin through the "
+             "operator lane's own checkout, never W (D24); {nothing}"),
+}
+
+
+def lane_own_checkout(lane: str, words: dict, **fields: str) -> str:
+    """THE LANE'S OWN REGISTER CHECKOUT, NEVER W (Amendment 23 S2 item 3 and
+    S5; D24, Y:653; design.md's operator commands, "through that lane's
+    checkout"), the one rule `import --at` (T115), T324's ways out and
+    `reconcile`'s re-render (T325) take theirs by: `LANES_REPO` where it is
+    set, the operator's override that `lanes-edit.sh` honours too, else the
+    checkout `lanes-edit.sh lane-checkout <lane>` names, `<W>-lanes/<lane>/`,
+    1a's `lane_checkout_path`. Returns its top directory.
+
+    Each refusal is a `Refusal` (2) in the caller's own `words`, keyed
+    `unfound` (the helper could not be run), `none` (no checkout of its
+    own), `not-git`, `w-unread` and `is-w`, and formatted with `lane`, `rc`,
+    `why`, `where` and `root`, and with the caller's own `fields`, such as
+    the import's `who` and `nothing`. A `LANES_REPO` that is `W` by real
+    path is refused, and so is one set where `W` cannot be read, since a
+    read that failed is never an answer (Amendment 7(d); lane 3's ruling,
+    opensoft/openRepoTools#165 6781033556). With `LANES_REPO` unset no `W`
+    read is made here: `lanes-edit.sh lane-checkout` derives the path from
+    `W`, and it is never `W`."""
     named = os.environ.get("LANES_REPO", "")
     if named:
         where = named
@@ -17757,20 +17981,15 @@ def _import_checkout(lane: str, *, who: str = "import",
         try:
             proc = _helper_run(["lane-checkout", lane], 60, f"lane {lane}'s checkout")
         except StoreUnusable as exc:
-            raise Refusal(f"{who}: lane {lane}'s checkout cannot be found ({exc.detail}); "
-                          f"{nothing}")
+            raise Refusal(words["unfound"].format(lane=lane, why=exc.detail, **fields))
         where = proc.stdout.strip()
         if proc.returncode != 0 or not where:
             why = (proc.stderr.strip().splitlines() or ["no answer"])[0].strip()
-            raise Refusal(f"{who}: lane {lane} has no checkout of its own (`lanes-edit.sh "
-                          f"lane-checkout {lane}` exited {proc.returncode}: {why}). Make it "
-                          f"with `lanes-edit.sh lane-checkout {lane} --create`, or name one with "
-                          f"LANES_REPO; the {who} never reads W (D24); {nothing}")
+            raise Refusal(words["none"].format(lane=lane, rc=proc.returncode, why=why, **fields))
     top = git(where, "rev-parse", "--show-toplevel", check=False)
     root = top.stdout.strip()
     if top.returncode != 0 or not root:
-        raise Refusal(f"{who}: {where} is not a git checkout, so origin's objects cannot be "
-                      f"read through it; {nothing}")
+        raise Refusal(words["not-git"].format(where=where, **fields))
     if named:
         try:
             w = workspace_root()
@@ -17778,14 +17997,9 @@ def _import_checkout(lane: str, *, who: str = "import",
             # A read that failed is never an answer (Amendment 7(d)): "W could
             # not be read" is not "LANES_REPO is not W", so it is refused (2).
             why = exc.detail if isinstance(exc, StoreUnusable) else str(exc)
-            raise Refusal(f"{who}: LANES_REPO is set, and W cannot be read to check that it "
-                          f"is not W itself ({why}); a read that failed is not an answer "
-                          f"(Amendment 7(d)), so the {who} reads nothing through {root}; "
-                          f"{nothing}")
+            raise Refusal(words["w-unread"].format(why=why, root=root, **fields))
         if os.path.realpath(w) == os.path.realpath(root):
-            raise Refusal(f"{who}: LANES_REPO names W itself ({root}); the {who} reads "
-                          f"origin through the operator lane's own checkout, never W (D24); "
-                          f"{nothing}")
+            raise Refusal(words["is-w"].format(root=root, **fields))
     return root
 
 
@@ -19530,6 +19744,13 @@ that decides nothing, and never a gate: no lane act reads it or waits on it.
   reconcile   Reads the source whole, compares every stored row by its
               CONTENT, upserts what differs and removes what is gone: on a
               wiped index, the rebuild. `--dry-run` prints the counts only.
+              On mode=primary, for the register: the mirror in W checked
+              against the SQL register, read-only, then the renderer's own
+              pass, which fetches origin and re-renders what the mirror
+              lacks, in the lane's own register checkout - LANES_REPO, else
+              `lanes-edit.sh lane-checkout $LANES_LANE`, never W - under its
+              render lock. It needs LANES_LANE and imports nothing;
+              `--dry-run` is the check alone.
   status      The store, each source's provenance against its tip, the lag in
               commits, and this workstation's last sync and last error.
   export      Writes the index's image of the register into <dir> for
