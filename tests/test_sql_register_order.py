@@ -850,7 +850,10 @@ class Writer:
         return found
 
     def seq_said(self) -> Optional[int]:
-        m = SEQ_SAID.search(self.out)
+        """The seq `claim` names in its line, `lane <L> now holds <obj>
+        (register seq <s>)`, which it prints by `note`, on stderr, where files
+        mode printed the log commit's sha (T421; Y@a6497d00:266; T243h)."""
+        m = SEQ_SAID.search(self.err)
         return int(m.group(1)) if m else None
 
 
@@ -1211,7 +1214,7 @@ def test_two_claimants_one_claimed_and_the_other_exits_2(estates):
     assert all(not e.has_write(w) for w in lose.write_ids()), "the loser's write id is in the journal"
     assert e.c.value(f"SELECT count(*) FROM {REGISTER}.doc_lines WHERE text LIKE '%CLAIM-LOST%';") == "0"
     seq = grew[0]["seq"]
-    assert win.seq_said() == seq, f"the winner printed {win.seq_said()}, its entry is seq {seq}: {win.out!r}"
+    assert win.seq_said() == seq, f"the winner printed {win.seq_said()}, its entry is seq {seq}: {win.err!r}"
     cites = [g for g in e.gh_calls() if f"register seq {seq}" in json.dumps(g)]
     assert cites, f"no claim comment through gh cites register seq {seq}: {e.gh_calls()}"
 
@@ -1445,7 +1448,7 @@ def test_claim_prints_its_register_seq(estates):
     assert w.code == 0, w.err[-600:]
     grew = e.journal_after()
     assert [(r["seq"], r["verb"]) for r in grew] == [(2, "claim")], grew
-    assert w.seq_said() == 2, f"claim printed {w.out!r}"
+    assert w.seq_said() == 2, f"claim printed {w.err!r}"
 
 
 @CLIENT
@@ -1733,14 +1736,15 @@ def seam_outs(e: Estate) -> Dict[str, str]:
 
 @CLIENT
 def test_a_writer_prints_its_output_once_however_many_attempts_it_made(estates):
-    """Test 4's burst of ten: each committed writer's stdout carries its
-    success text exactly once, however many attempts it made, and its stderr
-    no line twice (only the deciding attempt's)."""
+    """Test 4's burst of ten: each committed writer's success text, claim's
+    `register seq <s>` line, is printed exactly once, however many attempts
+    it made, and its stderr no line twice (only the deciding attempt's). The
+    line is a `note`, on stderr (T421; T243h)."""
     e = estates()
     writers, _ = burst(e, [f"{KEY}#{400 + k}" for k in range(10)], 200)
     assert [w.code for w in writers] == [0] * 10, [(w.lane, w.code, w.err[-300:]) for w in writers]
     for w in writers:
-        assert len(SEQ_SAID.findall(w.out)) == 1, f"{w.lane} printed its success text not once: {w.out!r}"
+        assert len(SEQ_SAID.findall(w.err)) == 1, f"{w.lane} printed its success text not once: {w.err!r}"
         lines = [l for l in w.err.splitlines() if l.strip()]
         assert len(lines) == len(set(lines)), f"{w.lane}'s stderr repeats an attempt's lines: {w.err!r}"
     record("output-once", attempts={w.lane: len(w.snapshot_calls()) for w in writers})
