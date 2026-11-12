@@ -1544,6 +1544,25 @@ def test_lane_worktrees_register_reads_go_through_a_verb_and_refuse_69(tmp_path,
         world.git("-C", str(world.lane_dir), "worktree", "add", "-q", "-b", LANDED_BRANCH, str(tree))
         _write(world.fakebin / "gh",
                landed_gh(gh_log, world.git("-C", str(tree), "rev-parse", "HEAD").strip()))
+        # A #97 SNAPSHOT WHOSE INVENTORY HOLDS THE TREE (lane 3's batch h, #165 6814531692, N1
+        # question 2), so that the sweep's 2 is the failed `LANDED` read's alone. Without one,
+        # `_lane_claims()` refuses first, "lane repoA-2 has no #97 snapshot (state NONE), yet 1
+        # tree(s) are its", and the first refusal set wins (`51eeed8d:lane-worktrees:2508-2509`,
+        # `:2531`, `:2656-2661`): an oracle's refusal must come from the fault under test alone
+        # (6812490130). It is recorded as a handoff records it, by the checkout's own
+        # `lanes-edit.sh`: SWAPPING, the tree, then SWAPPED, which `lane-reconcile` reads as
+        # `resumable`, with no live holder.
+        for step in (("set-lane-state", "repoA-2", "SWAPPING", "--expect", "none",
+                      "--owner", UUID_A2),
+                     ("set-lane-tree", "repoA-2", str(tree), "--checkout", str(world.lane_dir)),
+                     ("set-lane-state", "repoA-2", "SWAPPED", "--expect", "SWAPPING")):
+            done = world.run("lanes-edit.sh", *step)
+            assert done.returncode == 0, (read, "the #97 snapshot was not recorded: fix the "
+                                          "case's scenario", step, done.stdout, done.stderr)
+        listed = world.run("lanes-edit.sh", "lane-trees", "repoA-2")
+        assert listed.returncode == 0 and str(tree) in listed.stdout, (
+            read, "the snapshot's inventory does not hold the tree: fix the case's scenario",
+            listed.returncode, listed.stdout, listed.stderr)
     env = world.arm_env("register-grep", 69, match=match, stderr=UNREACHABLE_STDERR.rstrip("\n"))
     if read == "landed-1002":
         env["LANES_NO_GITHUB"] = None
@@ -1586,9 +1605,9 @@ def test_lane_worktrees_register_reads_go_through_a_verb_and_refuse_69(tmp_path,
         # T404's "On 69,": "deletes nothing, and names the register as unreadable"). So the
         # tree and its branch remain, and stdout names `register-grep` and its 69: T404's note,
         # "the register's LANDED lines could not be read: `lanes-edit.sh register-grep` exited
-        # 69: ", then the read's first stderr line. Nothing need echo it on stderr. Here repoA-2
-        # has no #97 snapshot, which refuses with the same 2 (at T404 `51eeed8d` it is the
-        # REFUSED line), so the code alone does not tell the two apart: this line names the read.
+        # 69: ", then the read's first stderr line. Nothing need echo it on stderr. The
+        # scenario's #97 snapshot (above) leaves the failed read the run's only refusal, so the
+        # 2 is the read's (lane 3, #165 6814531692).
         assert tree.is_dir(), (read, "the sweep let the tree go on a failed LANDED read")
         branch = world.git("-C", str(world.lane_dir), "for-each-ref", "--format=%(refname)",
                            f"refs/heads/{LANDED_BRANCH}").strip()
