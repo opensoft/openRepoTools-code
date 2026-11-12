@@ -588,8 +588,11 @@
 #      before `ready`, is the run's end with that child's code and output.
 #      AND FEATURE 007'S D10 ON PRIMARY (T420; FR-026; R16; Y:5820), outside
 #      the attempt loop: `commit` over a hand edit of the register (its carry
-#      form) or of any other file the register renders, refused before S3
-#      with nothing written (`commit_hand_edit_refuse`; spec:171–173); and
+#      form) or of any other file the register renders in its checkout, or
+#      that checkout's listing failed, named with git's code (by
+#      `cs_pending_of --rc`; lane openRepoTools-3, #165 6814531692, batch h
+#      Q123), refused before S3 with nothing written
+#      (`commit_hand_edit_refuse`; spec:171–173); and
 #      `commit`'s publish act over a queued commit that changes a path under
 #      the register's directory other than `lanes/repos.tsv` and
 #      `lanes/log/README.md` (Brett's two-file allow-list), a divergence; one
@@ -3520,9 +3523,23 @@ cp_on_primary() {
 # where none can be made, as in a full /tmp, the loop never ran, so `commit`
 # went on as though no hand edit were pending. Now a full /tmp changes
 # nothing here: the edit is refused as above (lane 4's MERGES-B2 report).
+# A LISTING GIT CANNOT MAKE IS NO ANSWER (lane openRepoTools-3, #165
+# 6814531692, batch h Q123, by batch g Q114's own reason):
+# `cs_pending_of --rc` returns git's status, and where it is not 0, as with
+# no repository there, an unborn HEAD or a corrupt index, `commit` refuses
+# with 2, its own D10 code, before S3, so nothing is written. The refusal
+# names the read, with the checkout and the register's path quoted by
+# `printf '%q'`, as `pw_hand_edit_refuse` quotes its checkout, and git's
+# code. Until then a failed listing read as "no hand edit", and `commit` went
+# on (Amendment 7(d)).
 commit_hand_edit_refuse() {
-  local ch_hits="" ch_p="" ch_l="" ch_q="" ch_c=""
-  ch_hits="$(cs_pending_of "$LANES_PATH" lanes/LANES.md lanes/aliases.tsv lanes/log lanes/archive)"
+  local ch_hits="" ch_p="" ch_l="" ch_q="" ch_c="" ch_rc=0 ch_rq=""
+  ch_hits="$(cs_pending_of --rc "$LANES_PATH" lanes/LANES.md lanes/aliases.tsv lanes/log lanes/archive)" || ch_rc=$?
+  if [ "$ch_rc" != 0 ]; then
+    ch_c="$(printf '%q' "$LANES_REPO")"
+    ch_rq="$(printf '%q' "$LANES_PATH")"
+    die "refusing \`commit\` on primary (feature 007): git could not list the uncommitted edits in $LANES_REPO: \`git -C $ch_c diff --name-only HEAD -- $ch_rq lanes/LANES.md lanes/aliases.tsv lanes/log lanes/archive\` exited $ch_rc. So whether that checkout holds a hand edit of the register or of a file it renders is not known, and a read that failed is never 'no hand edit' (Amendment 7(d)). Fix the read, then run \`commit\` again. Nothing was written." 2
+  fi
   while [ -n "$ch_hits" ]; do
     ch_p="${ch_hits%%"$WR_NL"*}"
     case "$ch_hits" in
