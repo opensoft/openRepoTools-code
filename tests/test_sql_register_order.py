@@ -2017,10 +2017,10 @@ def test_the_client_refuses_a_bad_act_with_2_before_any_call(estates, case):
 # their own (T252b, below). The other cases run on test 4's estate (T243's
 # `Estate`), where the writes are `append-line` of a row-shaped line
 # (`row:<L>`) and `log` (`objects:<L>`), a reading of lane 1's derived keys.
-# `[lane-start-reread]` and the launches are read from lane 4's tools' text (a
-# reading: their flows are T428-T432's, and lane 3's batch 7 asks that they
-# run the flows); `[lane-end-gate]` and `[skill-step-4]` run theirs on
-# T252b's world (T252f, at the three conditions below). They FAIL UNTIL
+# `[lane-start-reread]` is read from lane 4's tool's text (a reading: its flow
+# is T428's, and lane 3's batch 7 asks that it run the flow); `[lane-end-gate]`
+# and `[skill-step-4]` (T252f, at the three conditions below) and the two
+# launches (T252h, after them) run theirs on T252b's world. They FAIL UNTIL
 # L1-A6, L4-A2 (T410), L4-B3 and L4-B14 land; without PostgreSQL 16 the RE
 # cases skip.
 
@@ -2238,6 +2238,18 @@ class ActWorld(Sandbox):
         if write.tool == "lane-end":
             extra.setdefault("LANE_WORKTREES", str(self.gate_stand_in()))
         return self.launch(write.tool, [str(self.bin / write.tool), *argv], write.lane, arms, extra)
+
+    def handoff(self, lane: str) -> None:
+        """The lane's handoff file, at the path its row names, committed and
+        published, as a live lane has one (T252h): `lane-handoff --restart`
+        respawns nothing over a handoff it could not refresh."""
+        path = self.wip / "handoffs" / f"{lane}.md"
+        path.write_text(f"# handoff {EM} lane {lane}\n\nT252h's world: the lane's handoff before its /ctx.\n",
+                        encoding="utf-8")
+        self.git("-C", str(self.wip), "add", "--", f"handoffs/{lane}.md")
+        self.git("-C", str(self.wip), "commit", "-q", "-m", f"handoff({lane}): T252h's world")
+        self.git("-C", str(self.wip), "push", "-q", "origin", "main")
+        self.git("-C", str(self.ws), "pull", "-q", "--ff-only")
 
     def gate_stand_in(self) -> Path:
         """`lane-end`'s close-out gate for the race's acts (T252g): a
@@ -2467,13 +2479,14 @@ SKILL_WRITES = ("log", "append-line", "set-row-state")
 
 _ACT_LOGGER = r'''#!/usr/bin/env python3
 # T252f's logging stand-in: its argv, and LANES_ACT and LANES_EXPECT as it
-# saw them (null where unset); then the real tool, where one is named.
+# saw them (null where unset), and its pid (T252h); then the real tool, where
+# one is named.
 import json, os, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 REAL = REAL_TOOL
 with open(os.path.join(HERE, "acts.log"), "a", encoding="utf-8") as log:
     log.write(json.dumps({"argv": sys.argv[1:], "act": os.environ.get("LANES_ACT"),
-                          "expect": os.environ.get("LANES_EXPECT")}) + "\n")
+                          "expect": os.environ.get("LANES_EXPECT"), "pid": os.getpid()}) + "\n")
 if REAL:
     os.execv(REAL, [REAL] + sys.argv[1:])
 '''
@@ -2642,25 +2655,109 @@ def test_each_of_the_three_conditions_holds(condition, request):
         assert need in text, f"[{condition}] {path} does not hold {need!r}"
 
 
-#: Before a launch `LANES_ACT` is unset: the tool, and the launch's word.
-LAUNCHES = {"exec": ("lane-start", "exec"), "respawn-pane": ("lane-handoff", "respawn-pane")}
+# ---------------------------------------- the launches (T252, T252h)
+#
+# TP:5889-5892 (Y:5596): before a launch `LANES_ACT` is unset (`exec`,
+# `respawn-pane`), so the session and its guard do not inherit it: the fake
+# `claude` started by `exec`, and the command the fake `tmux` logs for
+# `respawn-pane`, see no `LANES_ACT`, in a run where `act-begin` had exported
+# one. Both run their flows on T252b's world (lane 3's batch 7, item 5), with
+# `$LANES_EDIT` a logging stand-in (T252f's `act_logger`). Its log is the
+# proof that the act exported one: a verb call after `act-begin` ran with a
+# seq base.
+#
+# [exec]: `lane-start repoA 1`, the resume of the world's paused lane, run to
+# its launch. `claude-current` names a logging stand-in as the `claude` to
+# launch, and the one that ran in `lane-start`'s own process, by its pid, is
+# the one `exec` started. It saw neither `LANES_ACT` nor `LANES_EXPECT`
+# (T428: both are unset before the launch; Y:5581: `LANES_EXPECT` "is never
+# exported").
+#
+# [respawn-pane]: `lane-handoff --restart --lane repoA-2`, the live lane's
+# `/ctx`, run to its respawn, with `$TMUX_PANE` naming its pane and the
+# lane's handoff file in the world (`ActWorld.handoff`), since a restart
+# respawns nothing over a handoff it could not refresh. A `tmux`
+# wrapper logs `respawn-pane`'s argv, with the two variables as tmux saw them,
+# and answers 0; every other call is the Sandbox's fake. Neither variable was
+# in its environment (T429), and its command names neither, since a `-e` or a
+# prefix in the respawn line would hand them on too.
+#
+# Readings: the export is read from the act's verb calls, so an act that
+# passed its base only as a prefix on each call would pass too; the oracle,
+# what the launch saw, is the same. 5e's daily report, which T428 also has
+# unset both for, stays off in the world (conftest's
+# `LANE_WORKTREES_REPORT=off`), so it is not asserted.
+#
+# They FAIL UNTIL L1-A6, L4-A2 (T410, T411), L4-B3 and L4-B5 land, `[exec]`
+# until T428 and `[respawn-pane]` until T429. Without PostgreSQL 16 each
+# skips.
+
+#: Each launch: the act's tool, its argv and its lane in T252b's world.
+LAUNCHES = {"exec": ("lane-start", ("repoA", "1"), R_PAUSED),
+            "respawn-pane": ("lane-handoff", ("--restart", "--lane", R_HERE, "T252h's restart"), R_HERE)}
+
+_RESPAWN_TMUX = r'''#!/usr/bin/env bash
+# T252h: respawn-pane is logged, with LANES_ACT and LANES_EXPECT as tmux saw
+# them, and answers 0; every other call is the Sandbox's fake.
+if [ "${1-}" = respawn-pane ]; then exec RESPAWN_LOGGER "$@"; fi
+exec FAKE_TMUX "$@"
+'''
+
+
+def act_exported(calls: List[dict], who: str, task: str) -> Tuple[str, int]:
+    """The act's id and base, from the first verb call after `act-begin`
+    that ran with a seq base: the proof that the act exported one."""
+    verbs = verbs_of(calls)
+    assert "act-begin" in verbs, f"{who} never ran act-begin ({task}): {verbs}"
+    acts = [c["act"] for c in calls[verbs.index("act-begin") + 1:] if c["act"]]
+    based = [a for a in acts if ACT_RE.match(a)] or acts
+    return seq_base(based[0] if based else None, f"{who}'s verb calls after act-begin", task)
+
+
+def launch_flow(world: ActWorld, launch: str) -> Tuple[Writer, List[dict], List[dict]]:
+    """The act that launches, run to its launch (see the section's head):
+    the run, its verb calls, and what its launch saw."""
+    tool, argv, lane = LAUNCHES[launch]
+    edit = act_logger(world.root / f"{launch}-edit", "lanes-edit.sh", world.bin / "lanes-edit.sh")
+    seen = act_logger(world.root / f"{launch}-seen", "claude" if launch == "exec" else "tmux-respawn")
+    extra = {"LANES_EDIT": str(edit)}
+    if launch == "exec":
+        extra["FAKE_CC_PATH"] = str(seen)
+    else:
+        wrapper = world.root / f"{launch}-tmux"
+        wrapper.mkdir()
+        (wrapper / "tmux").write_text(_RESPAWN_TMUX.replace("RESPAWN_LOGGER", shlex.quote(str(seen)))
+                                      .replace("FAKE_TMUX", shlex.quote(str(world.fakebin / "tmux"))),
+                                      encoding="utf-8")
+        (wrapper / "tmux").chmod(0o755)
+        extra.update(PATH=str(wrapper) + os.pathsep + world.env["PATH"], TMUX_PANE="%1")
+        world.handoff(lane)
+    run = world.launch(launch, [str(world.bin / tool), *argv], lane, extra=extra)
+    run.wait(240)
+    saw = act_calls(seen)
+    if launch == "exec":
+        saw = [c for c in saw if c.get("pid") == run.proc.pid]
+    return run, act_calls(edit), saw
 
 
 @pytest.mark.parametrize("launch", list(LAUNCHES))
-def test_lanes_act_is_unset_before_a_launch(launch):
+def test_lanes_act_is_unset_before_a_launch(launch, request):
     """`LANES_ACT` is unset before `exec` (`lane-start`) and before
     `respawn-pane` (`lane-handoff`), so the session and its guard never
-    inherit it: every line carrying the launch's word unsets it, or runs
-    under `env -u LANES_ACT`, within the five lines before. Read from the
-    tool's text (FP): red until T428 and T429 land."""
-    path, word = LAUNCHES[launch]
-    lines = (REPO / path).read_text(encoding="utf-8", errors="replace").split("\n")
-    sites = [k for k, l in enumerate(lines) if re.search(rf"\b{re.escape(word)}\b", l)
-             and not l.lstrip().startswith("#")]
-    assert sites, f"[{launch}] {path} has no {word}"
-    bare = [k + 1 for k in sites
-            if not any("unset LANES_ACT" in l or "-u LANES_ACT" in l for l in lines[max(0, k - 5):k + 1])]
-    assert bare == [], f"[{launch}] {path}:{bare} launch without unsetting LANES_ACT"
+    inherit it: in a run whose verb calls carried the act's seq base, the
+    `claude` that `exec` started, and tmux's `respawn-pane`, saw neither
+    `LANES_ACT` nor `LANES_EXPECT`, and the respawn's command names
+    neither. Both run their flows on T252b's world (see the section's
+    head): red until T428 and T429 land."""
+    tool, task = LAUNCHES[launch][0], {"exec": "T428", "respawn-pane": "T429"}[launch]
+    run, calls, saw = launch_flow(request.getfixturevalue("act_worlds")(), launch)
+    act_exported(calls, tool, task)
+    what = "no claude ran in its own process" if launch == "exec" else "tmux was asked for no respawn-pane"
+    assert saw, f"[{launch}] {tool} exited {run.code} before its launch: {what}: {run.err[-900:]}"
+    assert (saw[0]["act"], saw[0]["expect"]) == (None, None), (
+        f"[{launch}] the launch saw LANES_ACT={saw[0]['act']!r} and LANES_EXPECT={saw[0]['expect']!r} ({task})")
+    named = [a for a in saw[0]["argv"] if "LANES_ACT" in a or "LANES_EXPECT" in a]
+    assert named == [], f"[{launch}] the launch's command hands on {named} ({task})"
 
 
 @CLIENT
