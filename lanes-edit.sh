@@ -6403,7 +6403,7 @@ pw_snap_read() {   # <the snapshot's stdout, in a file>
 # its record (T412's `wr_id_settle`; Y:5192), and a later one must echo this
 # write's id and generation.
 pw_snapshot() {
-  local ps_bin="" ps_rc=0 ps_l="" ps_det=""
+  local ps_bin="" ps_rc=0 ps_l="" ps_det="" ps_p=""
   local -a ps_a
   if [ "$PW_FIRST_DONE" = 0 ]; then
     ps_a=(${WR_SNAP_ARGS[@]+"${WR_SNAP_ARGS[@]}"})
@@ -6417,10 +6417,23 @@ pw_snapshot() {
       </dev/null >"$PW_DIR/snapshot" 2>"$PW_DIR/snapshot.err"; exit "$?" ) 2>/dev/null || ps_rc=$?
   if [ "$ps_rc" != 0 ]; then
     [ ! -s "$PW_DIR/snapshot.err" ] || cat -- "$PW_DIR/snapshot.err" >&2
+    # The token is LR007's own: the `DETAIL:` line right after the
+    # `ERROR:  LR007:` line (register-cli.md [P]'s lines 1 and 2, and [B′]
+    # for the snapshot's two refusals), cut at its first white space, as
+    # `pw_lookup` reads it (T417 d7c57af). Never another error's DETAIL
+    # elsewhere on stderr: a DETAIL anywhere else settles nothing, and gives
+    # no token (lane openRepoTools-3, #165 6809964029, batch f (110); review
+    # REV-W9b, N3's twin).
     while IFS= read -r ps_l || [ -n "$ps_l" ]; do
-      case "$ps_l" in 'DETAIL:  '*) ps_det="${ps_l#DETAIL:  }"; break ;; esac
-      ps_l=""
+      case "$ps_l" in
+        'DETAIL:  '*)
+          case "$ps_p" in
+            'ERROR:  LR007:'*) ps_det="${ps_l#DETAIL:  }"; break ;;
+          esac ;;
+      esac
+      ps_p="$ps_l"; ps_l=""
     done < "$PW_DIR/snapshot.err" 2>/dev/null
+    ps_det="${ps_det%%[[:space:]]*}"
   fi
   case "$ps_rc" in
     0)
