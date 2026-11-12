@@ -1867,6 +1867,11 @@ def test_the_texts_for_3_say_may_not_be_written_and_relay_the_writers_rerun(site
 # TOO EARLY (R26, 36): `[too-early]` takes over a record written on another
 # host, so the run has no clock to age and calls at once: LR011's 3, the
 # record kept. On this host the takeover waits (T245's `[snapshot-fails]`).
+# The killed run's claim names that host, so it counts as live for the
+# seam's cap, 120 s, from the later of its `utc` and the record's
+# `updated_utc` (Y:5220; pending-record.md §4.3), and the rerun sets the
+# cap's test variable, `LANES_REGISTER_SEAM_CAP_S`, to 1 s to take it over
+# at once (T246d; lane 4's triage, #165 6833813092).
 #
 # They FAIL UNTIL L1-A6, L1-A12 and L4-B5 land. Without PostgreSQL 16 each
 # skips; the direct calls (LR011 at once, LR008's engine half) are phase N on
@@ -2155,11 +2160,14 @@ def test_a_lookup_made_too_early_exits_3_and_keeps_the_record(estates):
     another host, keeps its `call` line. A plain rerun here, whose snapshot
     the shim fails, takes the record over with no clock to age and calls at
     once: LR011, exit 3 naming the id with the server's message, the record
-    kept, one try. Once snapshots pass, a plain rerun exits 0 with one row."""
+    kept, one try. Once snapshots pass, a plain rerun exits 0 with one row.
+    The other host's claim lives the seam's cap, so the first rerun runs at
+    `LANES_REGISTER_SEAM_CAP_S=1` (see the section's head; T246d)."""
     e = estates()
     argv = note(LA, "F3 too early")
     _, write_id = killed(e, LA, argv, extra={"LANES_HOST": "eagle-2"})
-    early = e.run(LA, argv, arms=[{"mode": "fail-match", "match": SNAPSHOT_TEXT, "call": 1}])
+    early = e.run(LA, argv, arms=[{"mode": "fail-match", "match": SNAPSHOT_TEXT, "call": 1}],
+                  extra={"LANES_REGISTER_SEAM_CAP_S": "1"})
     assert early.code == 3 and write_id in early.err and "LR011" in early.err, early.err[-800:]
     assert len(lookups(early)) == 1 and len(pending(e)) == 1
     again = e.run(LA, argv)
