@@ -1284,7 +1284,8 @@ def _real_estate(estate, register=True, **kwargs) -> Estate:
 
     AND ON PRIMARY, THE REGISTER IN ITS SQL STORE (T254p): `_seed_primary`,
     unless `register` is false, for a caller that seeds it later itself
-    (`_two_binds`)."""
+    (`_two_binds`). AND EACH LANE'S OWN REGISTER CHECKOUT (T254s):
+    `_lane_checkouts`."""
     est = estate(**kwargs)
     est.extra["LANES_LANE_START"] = str(est.guard.parent / "lane-start")
     est.set("edit-real")
@@ -1292,6 +1293,8 @@ def _real_estate(estate, register=True, **kwargs) -> Estate:
     _follow_renames(est.session)
     if kwargs.get("to_row", True):
         _handoff(est)
+    if kwargs.get("mode") == "primary":
+        _lane_checkouts(est, [FROM] + ([est.to] if kwargs.get("to_row", True) else []))
     if register and kwargs.get("mode") == "primary":
         _seed_primary(est)
     return est
@@ -1334,6 +1337,31 @@ def _seed_primary(est: Estate) -> None:
     if not (out and out[-1] == "primary"):
         est.sql_register = _Register(est)
     est.seeded = True
+
+
+def _lane_checkouts(est: Estate, lanes) -> None:
+    """EACH LANE'S OWN REGISTER CHECKOUT ON PRIMARY (T254s), `<W>-lanes/<lane>/`,
+    made by `lanes-edit.sh lane-checkout <lane> --create` (the estate's build),
+    as the real layout has one register checkout per lane.
+
+    WHY: on primary, T415's `pw_checkout` asks every write for its lane's
+    own checkout, even under an explicit `LANES_REPO`
+    (`lanes-edit.sh:8578-8583` at G-18c's `050dc9b4`), while `lane-start`
+    makes it only under `LANES_ROUTE_WRITES=1` and its default resolution
+    (`lane-start:1146-1147`, `:3981-3990`). The estate names `LANES_REPO`,
+    so each of the bind's writes refused with 2, "lane repoA-3's own
+    register checkout, ... is not here, and on primary a write makes no
+    clone"; the session cell never ended on the bound uuid, and T503's rerun
+    rule could not hold (case 11; G-18c's run cL). A slice of its own, so a
+    later one can reverse it if lanes 3 and 4 rule that the tools should
+    agree instead. The clone is a fetch, so `LANES_NO_FETCH` is left out."""
+    env = {k: v for k, v in est.base.items() if k != "LANES_NO_FETCH"}
+    for lane in lanes:
+        done = subprocess.run(["bash", str(est.guard), "lane-checkout", lane, "--create"],
+                              cwd=str(est.wip), env=env, capture_output=True, text=True,
+                              timeout=120)
+        assert done.returncode == 0, \
+            f"lane-checkout {lane} --create exited {done.returncode}: {done.stderr}"
 
 
 #: THE LANE'S HANDOFF (T214k), as a real lane's register holds it: the file
@@ -1404,6 +1432,8 @@ def _two_binds(estate, mode="files") -> tuple:
                                 session_id=two.sid, name=TO)
     _follow_renames(two.session)
     two.sessions.append(two.session)
+    if mode == "primary":
+        _lane_checkouts(two, ["repoA-4"])
     one.make_offer()
     two.hook("hello")
     assert read_record(two.offer).get("mode") == "name-drift", read_record(two.offer)
