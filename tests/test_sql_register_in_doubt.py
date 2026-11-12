@@ -633,7 +633,22 @@ PENDING = Path("openRepoTools") / "register-pending"
 WRITE_ID_SAID = re.compile(r"LANES_WRITE_ID=(" + UUID_RE + r")")
 GENERATION_SAID = re.compile(r"LANES_WRITE_GENERATION=(" + UUID_RE + r")")
 NOT_AFTER_SAID = re.compile(r'"not_after"\s*:\s*"([^"]+)"')
-LAST_COMMIT = re.compile(r"\bCOMMIT\b[ \t]*;?(?![\s\S]*\bCOMMIT\b)", re.I)
+#: The commit call's last COMMIT, with the `\;` that joins it to the statement
+#: before it. `lanes-index` sends the commit as ONE request, `BEGIN ISOLATION
+#: LEVEL SERIALIZABLE \; SELECT ...commit_write(...) \; COMMIT;`
+#: (`PostgresStore.request`; contract §2.3; Y:1419), and `psql` sends its query
+#: buffer only at a `;` that is not `\;`: a replay left ending ` \;` is never
+#: sent, and its session never holds the head row (T244c; lane 4's triage,
+#: #165 6833813092).
+LAST_COMMIT = re.compile(r"(?:[ \t]*\\;)?[ \t]*\bCOMMIT\b[ \t]*;?(?![\s\S]*\bCOMMIT\b)", re.I)
+
+
+def without_commit(script: str) -> str:
+    """The commit call's script with its last COMMIT dropped, and sent whole:
+    a ` \\; COMMIT;` becomes `;`, so `psql` sends the BEGIN and the
+    `commit_write` call as one request and the session is left idle in its
+    transaction; a `COMMIT;` of its own is dropped (`LAST_COMMIT`)."""
+    return LAST_COMMIT.sub(lambda m: ";" if "\\;" in m.group(0) else "", script, count=1)
 
 
 def note(lane: str, tag: str) -> List[str]:
@@ -744,8 +759,10 @@ def test_a_retry_with_the_old_connection_still_open_writes_no_second_row(estates
     w = e.launch(LA, note(LA, f"half-open {ending}"),
                  arms=[BEFORE, {"mode": "hold", "match": SNAPSHOT_TEXT, "call": 2, "fifo": str(gate)}])
     first = until_seen("the first commit call", lambda: w.commit_calls()[:1], w)[0]
-    script = LAST_COMMIT.sub("", first["stdin"], count=1)
+    script = without_commit(first["stdin"])
     assert "commit_write" in script and script != first["stdin"], "the first commit call has no COMMIT to drop"
+    assert script.rstrip().endswith(";") and not script.rstrip().endswith("\\;"), (
+        f"the replay does not end in a `;` that psql sends: {script[-80:]!r}")
     session = e.c.db.session(WRITER_LOGIN, "t244-half-open")
     try:
         if ending != "idle":
