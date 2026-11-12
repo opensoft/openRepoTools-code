@@ -684,10 +684,11 @@
 #      (Y:5216–5218; T417): this run sent nothing, that write's outcome is
 #      not known, and its record and claims are left as they are. With a
 #      pending record: "an identical write is still running in pid <p>
-#      (write <id>, started <utc>)", with its lookup and its printed rerun
-#      (ERR-38). With none yet (open point 42): "an identical write is being
-#      started in pid <p> on <host>/<container> (claimed <utc>)", with the
-#      effect check, `history <lane> --since <utc>` or `register-row <lane>`.
+#      (write <id>, started <utc>)", with its lookup where the record holds a
+#      `call` line, and its printed rerun (ERR-38). With none yet (open point
+#      42): "an identical write is being started in pid <p> on
+#      <host>/<container> (claimed <utc>)", with the effect check,
+#      `history <lane> --since <utc>` or `register-row <lane>`.
 #      And where that owner cannot be tested here (DEC-25: the claim names no
 #      pid or cannot be read, its pid lives with no start time, or it is from
 #      another host or container, Y:5220), "an identical write holds the claim
@@ -6009,7 +6010,12 @@ wr_owed_text() {   # <verb>
 # refusal is that snapshot's LR007 `generation`, §3.2 prints no `generation=`,
 # and the text says "another generation". `<owed>` is the record's verb's row of
 # F14's table, T418's `wr_owed_text`. Where the record's `tail` is `sent` or
-# `done`, the text says they may have run, or ran, at its UTC (Y:5214).
+# `done`, the text says they may have run, or ran, at its UTC (Y:5214). The
+# effect check's `<lane>` is the lane the write is made for, `write_lane_of`'s,
+# PW_LANE, which the record's digest fixes with its arguments, not the
+# writer's `LANES_LANE` (lane openRepoTools-3, #165 6808937880, batch e Q106;
+# Y:5257): every caller runs after `pw_checkout` has set it. The rerun keeps
+# the writer's `LANES_LANE` (`wr_rerun_new_text`), which its digest takes.
 wr_text_other_generation() {   # [<g'>] [<owed>]
   local og_now og_owed og_tail og_utc og_steps
   if [ -n "${1-}" ]; then og_now="generation ${1}"; else og_now="another generation"; fi
@@ -6021,7 +6027,7 @@ wr_text_other_generation() {   # [<g'>] [<owed>]
     done) og_steps="its after-COMMIT steps ran at ${og_utc}." ;;
     *) og_steps="its after-COMMIT steps may be owed: ${og_owed}. Do by hand any that did not run." ;;
   esac
-  printf '%s\n' "a pending record of this command, write ${WR_REC_WRITE_ID} made at ${WR_REC_CREATED_UTC} against register generation ${WR_REC_GENERATION}, is here, and this register is ${og_now}. That write may already be in it: an import carries every write the mirror held (D22), and a restored database holds every write up to its backup. Nothing was sent. Look for its effect in the register as it stands: lanes-edit.sh history ${WR_REC_LANE} --since ${WR_REC_CREATED_UTC} for a log line, or lanes-edit.sh register-row ${WR_REC_LANE} for a row. If it is there, ${og_steps} If it is not there, run the same command with LANES_WRITE_ID=new, which mints a new id and replaces this record: $(wr_rerun_new_text)"
+  printf '%s\n' "a pending record of this command, write ${WR_REC_WRITE_ID} made at ${WR_REC_CREATED_UTC} against register generation ${WR_REC_GENERATION}, is here, and this register is ${og_now}. That write may already be in it: an import carries every write the mirror held (D22), and a restored database holds every write up to its backup. Nothing was sent. Look for its effect in the register as it stands: lanes-edit.sh history ${PW_LANE} --since ${WR_REC_CREATED_UTC} for a log line, or lanes-edit.sh register-row ${PW_LANE} for a row. If it is there, ${og_steps} If it is not there, run the same command with LANES_WRITE_ID=new, which mints a new id and replaces this record: $(wr_rerun_new_text)"
 }
 
 # A REFUSAL OF THIS LIBRARY'S OWN, with 2: this run's claim goes first, since
@@ -6402,17 +6408,26 @@ pw_no_git_refuse() {
 # names both its paths, and one restore undoes it; without it, rename
 # detection named the new path alone, and the old one's deletion was left for
 # a second refusal (review REV415c, N3).
+# THE LIST IS SPLIT BY PARAMETER EXPANSION, at each newline, never through a
+# here-document, as the seam's is (T414, review REV-W9a M1): bash 3.2 writes a
+# here-document to a temp file, and where none can be made, as in a full
+# TMPDIR, the loop never ran, so the write went on as though no hand edit were
+# pending. Now a full TMPDIR changes nothing here: the edit is refused as
+# above (lane 4's W9-T415 report, §6).
 pw_hand_edit_refuse() {
   local ph_hits="" ph_p="" ph_l="" ph_q="" ph_c=""
   ph_hits="$(LANES_REPO="$PW_C" cs_pending_of --no-renames lanes/LANES.md lanes/aliases.tsv lanes/log lanes/archive)"
-  while IFS= read -r ph_p; do
+  while [ -n "$ph_hits" ]; do
+    ph_p="${ph_hits%%"$WR_NL"*}"
+    case "$ph_hits" in
+      *"$WR_NL"*) ph_hits="${ph_hits#*"$WR_NL"}" ;;
+      *) ph_hits="" ;;
+    esac
     [ -n "$ph_p" ] || continue
     cp_seam_render_path "$ph_p" || continue
     ph_l="$ph_l $ph_p"
     ph_q="$ph_q $(printf '%q' "$ph_p")"
-  done <<PH_EOF
-$ph_hits
-PH_EOF
+  done
   [ -n "$ph_l" ] || return 0
   ph_c="$(printf '%q' "$PW_C")"
   note "RECOVERY, in $PW_C:"
@@ -6474,9 +6489,10 @@ pw_run_dir() {
 #   - a claim whose owner cannot be tested here (DEC-25): `no-pid`,
 #     `no-start` or `other-host`, live only for the seam's cap, which D7's
 #     deadline beat: `pw_owner_untested_end`;
-#   - a pending record beside the claim: Y:5218's text, with its write id, its
-#     lookup and its printed rerun, whose `LANES_SESSION` is the value the
-#     digest took (ERR-38). A record there that cannot be read names no id,
+#   - a pending record beside the claim: Y:5218's text, with its write id and
+#     its printed rerun, whose `LANES_SESSION` is the value the digest took
+#     (ERR-38), and its lookup only where the record holds a `call` line
+#     (batch e Q107). A record there that cannot be read names no id,
 #     and the text says so;
 #   - no record beside it (open point 42, taken under R26; the plan's §11.4):
 #     a record being made, so no write id is known. The text names the claim
@@ -6490,7 +6506,7 @@ pw_run_dir() {
 # pid cannot be tested here (lane 3, #165 6769061039, T417 item 2). So every
 # pid the second and third forms print is this host's.
 pw_owner_live_end() {
-  local po_rec="" po_rc=0 po_p="" po_utc="" po_look="" po_re="" po_l="" po_b="" po_c="" po_n="" po_f="" po_d="" po_max="" po_last=""
+  local po_rec="" po_rc=0 po_p="" po_utc="" po_look="" po_re="" po_then="" po_l="" po_b="" po_c="" po_n="" po_f="" po_d="" po_max="" po_last=""
   case "$WR_OWNER_WHY" in no-pid|no-start|other-host) pw_owner_untested_end ;; esac
   po_p="${WR_OWNER_PID:-<unknown>}"; po_utc="${WR_OWNER_UTC:-<unknown>}"
   po_rec="$WR_STATE/register-pending/$WR_D"
@@ -6501,10 +6517,17 @@ pw_owner_live_end() {
       IFS=' ' read -r po_b po_c po_n po_f po_d <<<"$po_l"
       if [ -z "$po_max" ] || [ "$po_n" -gt "$po_max" ]; then po_max="$po_n"; fi
     done <<<"$WR_REC_CALLS"
-    po_look="lanes-index journal --write-id $WR_REC_WRITE_ID"
-    [ -z "$po_max" ] || po_look="$po_look --not-after $po_max --generation $WR_REC_GENERATION --lane $(printf '%q' "$WR_REC_LANE") --verb $(printf '%q' "$WR_REC_VERB") --args-sha256 $WR_REC_ARGS_SHA256"
     po_re="$(wr_rerun_text "$WR_REC_WRITE_ID" "$WR_REC_GENERATION")"
-    die "an identical write is still running in pid ${po_p} (write ${WR_REC_WRITE_ID}, started ${po_utc}); this run sent nothing, and that write's outcome is not known. Once pid ${po_p} has ended, look it up (${po_look}), or run ${po_re}, which finds it or writes it once." 3
+    # With no `call` line the lookup has no `<n>` for its `--not-after` (§3.4;
+    # LR011), and the live owner may yet write one, so the text names the
+    # rerun alone (lane openRepoTools-3, #165 6808937880, batch e Q107; B15
+    # Y:5264).
+    po_then="run ${po_re}"
+    if [ -n "$po_max" ]; then
+      po_look="lanes-index journal --write-id $WR_REC_WRITE_ID --not-after $po_max --generation $WR_REC_GENERATION --lane $(printf '%q' "$WR_REC_LANE") --verb $(printf '%q' "$WR_REC_VERB") --args-sha256 $WR_REC_ARGS_SHA256"
+      po_then="look it up (${po_look}), or ${po_then}"
+    fi
+    die "an identical write is still running in pid ${po_p} (write ${WR_REC_WRITE_ID}, started ${po_utc}); this run sent nothing, and that write's outcome is not known. Once pid ${po_p} has ended, ${po_then}, which finds it or writes it once." 3
   fi
   if [ "$po_rc" = 2 ]; then
     die "an identical write is still running in pid ${po_p} (started ${po_utc}), and its pending record, ${po_rec}, cannot be read as one, so its write id is not known here; this run sent nothing, and that write's outcome is not known. Once pid ${po_p} has ended, lanes-index status lists the pending records." 3
@@ -6661,7 +6684,7 @@ pw_snap_read() {   # <the snapshot's stdout, in a file>
 # goes to the done mark where its first snapshot finds the write (`pw_tail`),
 # and refuses 2 where it answers 0 without `found=` (`pw_took_tail_refuse`).
 pw_snapshot() {
-  local ps_bin="" ps_rc=0 ps_l="" ps_det="" ps_end=""
+  local ps_bin="" ps_rc=0 ps_l="" ps_det="" ps_end="" ps_p=""
   local -a ps_a
   if [ "$PW_FIRST_DONE" = 0 ]; then
     ps_a=(${WR_SNAP_ARGS[@]+"${WR_SNAP_ARGS[@]}"})
@@ -6676,10 +6699,23 @@ pw_snapshot() {
   ps_end="$SECONDS"
   if [ "$ps_rc" != 0 ]; then
     [ ! -s "$PW_DIR/snapshot.err" ] || cat -- "$PW_DIR/snapshot.err" >&2
+    # The token is LR007's own: the `DETAIL:` line right after the
+    # `ERROR:  LR007:` line (register-cli.md [P]'s lines 1 and 2, and [B′]
+    # for the snapshot's two refusals), cut at its first white space, as
+    # `pw_lookup` reads it (T417 d7c57af). Never another error's DETAIL
+    # elsewhere on stderr: a DETAIL anywhere else settles nothing, and gives
+    # no token (lane openRepoTools-3, #165 6809964029, batch f (110); review
+    # REV-W9b, N3's twin).
     while IFS= read -r ps_l || [ -n "$ps_l" ]; do
-      case "$ps_l" in 'DETAIL:  '*) ps_det="${ps_l#DETAIL:  }"; break ;; esac
-      ps_l=""
+      case "$ps_l" in
+        'DETAIL:  '*)
+          case "$ps_p" in
+            'ERROR:  LR007:'*) ps_det="${ps_l#DETAIL:  }"; break ;;
+          esac ;;
+      esac
+      ps_p="$ps_l"; ps_l=""
     done < "$PW_DIR/snapshot.err" 2>/dev/null
+    ps_det="${ps_det%%[[:space:]]*}"
   fi
   case "$ps_rc" in
     0)
@@ -7089,16 +7125,27 @@ pw_abandon_one() {   # <pid> <attempt dir>
 }
 
 # THE KEPT CHILDREN, each still at its seam after a commit call in doubt
-# (Y:5014), one `<pid> <attempt dir>` a line in PW_KEPT, all abandoned.
+# (Y:5014), one `<pid> <attempt dir>` a line in PW_KEPT, all abandoned: before
+# any end but 0 (Y:5026), once the outcome is known (Y:5314), and before a
+# stop at the bound (`pw_child_hung_end`). The list is split at each newline
+# by parameter expansion, as `pw_abandon_live` splits it, never through a
+# here-document: bash 3.2 writes one to a temp file, and where none can be
+# made, as in a full TMPDIR, the loop never ran, so no kept child got
+# `abandon` or was reaped: each stopped only at a parent test after the run
+# had ended, or at its cap, with Y:5006's stop line on fd 4 (lane 4's W9-T415
+# report, §6).
 pw_abandon_kept() {
-  local pa_l="" pa_p="" pa_d=""
-  while IFS= read -r pa_l; do
+  local pa_k="$PW_KEPT" pa_l="" pa_p="" pa_d=""
+  while [ -n "$pa_k" ]; do
+    pa_l="${pa_k%%"$WR_NL"*}"
+    case "$pa_k" in
+      *"$WR_NL"*) pa_k="${pa_k#*"$WR_NL"}" ;;
+      *) pa_k="" ;;
+    esac
     [ -n "$pa_l" ] || continue
     pa_p="${pa_l%% *}"; pa_d="${pa_l#* }"
     pw_abandon_one "$pa_p" "$pa_d"
-  done <<PA_EOF
-$PW_KEPT
-PA_EOF
+  done
   PW_KEPT=""; PW_KEPT_END=""; PW_KEPT_K=""
 }
 
