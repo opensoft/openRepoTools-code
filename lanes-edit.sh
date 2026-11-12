@@ -8704,9 +8704,11 @@ archive_local_text() {
 # or more", so on primary `key()` drops the leading zeros as text and keeps
 # every other digit: `007` is `7`, `0` and `000` are `0`, `10` stays `10`. A
 # cell whose last part is not a number has no key in either mode.
-# THE SWITCH is the awk variable `trim`, which `retired_identity_hits` passes
-# from `RETIRED_KEY_TRIM`: a shell variable, never exported, unset and set
-# empty here, so an inherited value is neither read nor passed on. R45's one
+# THE SWITCH is the awk variable `ztrim` (not `trim`, which names a function
+# in `LOG_AWK`, `RULE6_AWK` and `LANES_REGISTER_INDEX_AWK`; review REV-W8d,
+# NIT-3), which `retired_identity_hits` passes from `RETIRED_KEY_TRIM`: a
+# shell variable, never exported, unset and set empty here, so an inherited
+# value is neither read nor passed on. R45's one
 # line at the dispatcher sets it to 1, beside `rule6_primary_on`, where this
 # process's one mode answer is primary: the writers' branch before `pw_run`,
 # an attempt's child (its `REG_MODE` is `reg_scratch_take`'s), and a reader
@@ -8721,7 +8723,7 @@ RETIRED_ROWS_AWK='
     p = n; sub(/^.*-/, "", p); sub(/[A-Za-z]$/, "", p)
     h = n; sub(/-[^-]*$/, "", h)
     if (h == n || p !~ /^[0-9]+$/) return ""
-    if (trim) { sub(/^0+/, "", p); if (p == "") p = "0"; return tolower(h) "-" p }
+    if (ztrim) { sub(/^0+/, "", p); if (p == "") p = "0"; return tolower(h) "-" p }
     return tolower(h) "-" (p + 0)
   }
   BEGIN { wk = key(want) }
@@ -8741,9 +8743,9 @@ retired_identity_hits() { # <lane>; stdout: matching retired spellings · 1 not 
   ri_local=""
   ri_local="$(archive_local_text 2>/dev/null)" || return 1
   ri_scan=""
-  ri_scan="$(printf '%s\n' "$ri_pub" | awk -v want="$ri_lane" -v sep="$US" -v trim="$RETIRED_KEY_TRIM" "$RETIRED_ROWS_AWK")" || return 1
+  ri_scan="$(printf '%s\n' "$ri_pub" | awk -v want="$ri_lane" -v sep="$US" -v ztrim="$RETIRED_KEY_TRIM" "$RETIRED_ROWS_AWK")" || return 1
   ri_scan2=""
-  ri_scan2="$(printf '%s\n' "$ri_local" | awk -v want="$ri_lane" -v sep="$US" -v trim="$RETIRED_KEY_TRIM" "$RETIRED_ROWS_AWK")" || return 1
+  ri_scan2="$(printf '%s\n' "$ri_local" | awk -v want="$ri_lane" -v sep="$US" -v ztrim="$RETIRED_KEY_TRIM" "$RETIRED_ROWS_AWK")" || return 1
   # WHICH COPY `archive_text` ANSWERED WITH: the index's under `--index`, else
   # origin's where the tree publishes one, else this checkout's (its own rungs,
   # read the same way; a read that failed has already returned 1 above).
