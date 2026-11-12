@@ -2500,6 +2500,20 @@ def _service_dir(est: Estate):
     return run if (run / "register.sock").exists() else None
 
 
+def _failure_stamp(est: Estate, done: subprocess.CompletedProcess) -> list:
+    """The words of `serve`'s failure stamp, `register.failed` (section 8.6),
+    read only once `serve` has exited 2 and the stamp exists. Until lane 5's
+    T512 adds `serve` (L5-S1), `lanes-index` answers it 64, unknown
+    subcommand, and writes no stamp: the case then ends on this assertion,
+    never on a missing file (line AN14)."""
+    path = _run_dir(est) / "register.failed"
+    assert done.returncode == 2 and path.is_file(), (
+        f"`lanes-index serve` exited {done.returncode} and wrote "
+        f"{'a' if path.is_file() else 'no'} failure stamp; lane 5's T512 (L5-S1) exits 2 "
+        f"and stamps it: {done.stdout}{done.stderr}")
+    return path.read_text(encoding="utf-8").split()
+
+
 class _Listener:
     """A socket of the test's own at the contract's fixed path (section
     2.1), in a 0700 directory of this uid (section 2.2): it records what a
@@ -2984,9 +2998,9 @@ def test_the_service_reaches_the_database_only_through_psql(estate):
                             text=True, timeout=30, cwd=str(est.wip),
                             env=est.env(PATH=_masked_path(os.pathsep.join(
                                 [os.path.dirname(sys.executable), "/bin"]))))
-    stamp = (_run_dir(est) / "register.failed").read_text(encoding="utf-8").split()
+    stamp = _failure_stamp(est, nopsql)
     # THE STAMP HOLDS THE UTC AND THE FIXED CAUSE, AND NO OTHER TEXT (section 8.6).
-    assert nopsql.returncode == 2 and "no-psql" in stamp and len(stamp) == 2, (nopsql, stamp)
+    assert "no-psql" in stamp and len(stamp) == 2, (nopsql, stamp)
     assert not (_run_dir(est) / "register.sock").exists(), "serve left a socket"
     assert est.hook("hello").code in (0, 2)
 
@@ -3031,8 +3045,8 @@ def test_a_service_that_cannot_start_falls_back_to_the_direct_read(estate, case)
         data["version"] = "psql (PostgreSQL) 14.11"
         control.write_text(json.dumps(data), encoding="utf-8")
         done = _index(est, "serve", timeout=30)
-        stamp = (_run_dir(est) / "register.failed").read_text(encoding="utf-8").split()
-        assert done.returncode == 2 and "no-psql" in stamp and len(stamp) == 2, (done, stamp)
+        stamp = _failure_stamp(est, done)
+        assert "no-psql" in stamp and len(stamp) == 2, (done, stamp)
         assert not (_run_dir(est) / "register.sock").exists(), "serve left a socket"
         assert not [c for c in est.shim_calls()], "a request was sent past an old psql"
     extra = {}
