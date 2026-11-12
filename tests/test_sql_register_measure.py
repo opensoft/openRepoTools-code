@@ -97,6 +97,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -1352,35 +1353,62 @@ def _path_m10(reg, root: Path):
     assert proc.returncode == 0, proc.stderr
 
 
+#: `[m5]`'S STATE HOME: SHORT, AND OUTSIDE THE TEMPORARY ROOT. The service's
+#: one socket is `${XDG_STATE_HOME}/openRepoTools/run/register.sock` (lane 5's
+#: socket contract d8, section 2.1): `serve` binds it, and the client
+#: connects to it. `sun_path` holds 107 bytes on Linux and 103 on macOS, and
+#: the contract's `serve` refuses a path over 103 bytes (`path-too-long`,
+#: exit 2). Under `tmp_path` the path followed the temporary root, about 147
+#: bytes on the runner, where lane 1's guard rerun met `OSError: AF_UNIX path
+#: too long` (verify-r5-c2b, CI run 43140203269; line AN14). So `[m5]`'s
+#: `XDG_STATE_HOME` is a `mkdtemp` of its own in `/tmp`, as line G's estates
+#: make theirs (T213i): `/tmp/l2m-` and mkdtemp's 8 characters, 17 bytes,
+#: which puts the socket at 49 whatever `TMPDIR` or `--basetemp` is. The case
+#: removes it when it ends.
+STATE_PARENT = "/tmp"
+STATE_PREFIX = "l2m-"
+#: The contract's bound on the socket's path, in bytes (section 2.1).
+SOCKET_MAX = 103
+
+
 def _path_m5(reg, root: Path):
     """M13's `[m5]`, T237's (R1's M1): the guard's register read through the
     service. `lanes-index serve` starts on the reader's configuration at the
     one socket path lane 5's socket contract d8 fixes,
-    `${XDG_STATE_HOME}/openRepoTools/run/register.sock` (its section 2.1);
-    then form 2, the guard's prefetch, with the service up, so the counting
-    cluster logs the service's connection and its one Query per request
-    (section 5.6). Fails until L5-S1 (lane 5's T512) and T229."""
-    env = dict(reg.env, XDG_STATE_HOME=str(root / "m5" / "state"))
-    sock = root / "m5" / "state" / "openRepoTools" / "run" / "register.sock"
-    serve = subprocess.Popen([sys.executable, str(reg.copy), "serve"], env=env,
-                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
+    `${XDG_STATE_HOME}/openRepoTools/run/register.sock` (its section 2.1),
+    under a short state home of the case's own (`STATE_PREFIX`); then form 2,
+    the guard's prefetch, with the service up, so the counting cluster logs
+    the service's connection and its one Query per request (section 5.6).
+    The cache file's directory is made first, as `[m10]`'s is. Fails until
+    L5-S1 (lane 5's T512) and T229."""
+    state = Path(tempfile.mkdtemp(prefix=STATE_PREFIX, dir=STATE_PARENT))
     try:
-        end = time.monotonic() + 10
-        while not sock.exists() and time.monotonic() < end and serve.poll() is None:
-            time.sleep(0.05)
-        assert sock.exists(), f"lanes-index serve bound no socket at {sock}: {serve.poll()}"
-        proc = run_index(reg.copy, ["register", "read", "--for", "guard", "--prefetch", "--cache",
-                                    root / "m5" / "cache", "--pid", os.getpid(), "--repo",
-                                    reg.estate.checkout, "--lane=repoA-1"], env)
-        assert proc.returncode == 0, proc.stderr
-        assert "guard: direct (service unavailable)" not in proc.stderr, proc.stderr
-    finally:
-        serve.terminate()
+        sock = state / "openRepoTools" / "run" / "register.sock"
+        assert len(os.fsencode(str(sock))) <= SOCKET_MAX, \
+            f"the service's socket path {sock} is over {SOCKET_MAX} bytes"
+        env = dict(reg.env, XDG_STATE_HOME=str(state))
+        (root / "m5").mkdir(parents=True, exist_ok=True)
+        serve = subprocess.Popen([sys.executable, str(reg.copy), "serve"], env=env,
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
         try:
-            serve.wait(10)
-        except subprocess.TimeoutExpired:
-            serve.kill()
+            end = time.monotonic() + 10
+            while not sock.exists() and time.monotonic() < end and serve.poll() is None:
+                time.sleep(0.05)
+            assert sock.exists(), f"lanes-index serve bound no socket at {sock}: {serve.poll()}"
+            proc = run_index(reg.copy, ["register", "read", "--for", "guard", "--prefetch",
+                                        "--cache", root / "m5" / "cache", "--pid", os.getpid(),
+                                        "--repo", reg.estate.checkout, "--lane=repoA-1"], env)
+            assert proc.returncode == 0, proc.stderr
+            assert "guard: direct (service unavailable)" not in proc.stderr, proc.stderr
+        finally:
+            serve.terminate()
+            try:
+                serve.wait(10)
+            except subprocess.TimeoutExpired:
+                serve.kill()
+    finally:
+        shutil.rmtree(state, ignore_errors=True)
 
 
 M13_PATHS = {"m1": _path_m1, "m2": _path_m2, "m5": _path_m5, "m6": _path_m6, "m7": _path_m7,
