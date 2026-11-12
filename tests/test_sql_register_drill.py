@@ -37,6 +37,14 @@ THE ESTATE, `Drill` (the test plan's AT-13, "Fixture"):
   lane 3's T328 has not set the constant), with `lanes-edit.sh`, `lanes`,
   `lane-start` and `repos.tsv` beside it, and check 1's digest list naming
   both tools.
+- EACH LANE'S OWN REGISTER CHECKOUT, `<c>` (lane 3's batch g Q119, #165
+  6813027223): on primary a write reads its author, its pending hand edits
+  and its `repos.tsv` from `<W>-lanes/<lane>`, W being the real path of its
+  workstation's `workspace.yaml` `path:`, and refuses 2 where it is not there
+  (B15 tasks:1154; lane 4's T415). So each workstation makes its own lane's,
+  `repoA-2` on ws1 and `repoW-1` on ws2, a clone of origin, as step 3 flips
+  it to `mode=primary`, after the cutover's push and before any write on
+  primary (`Workstation.lane_checkout`; T276e).
 - THE RULESET'S MODEL (AT-F4; Q21(b), the render set and `lanes/STORE`,
   Brett's "Render set + STORE", comment 6721583757): `RULESET_HOOK`, T271's
   pre-receive hook (test 6) with a switch file the drill's runbook steps set,
@@ -51,28 +59,37 @@ the rerun pushes the removal of `lanes/STORE`.
 
 WHAT EACH FAILS UNTIL. B15's Order (tasks:2542): it waits for T229, and its
 tests fail until L1-A18, T326 and T327 land. Each step's labelled assertion
-also names the tasks its own verbs rest on, by their B15 bullets:
+also names the tasks its own verbs rest on, by their B15 bullets, and lane
+4's by lane 4's reading of its own code (#165 6826679959, item 1):
   1. `ready` (T119), the logins (T110) and the TLS cluster (T229);
   2. `import --at` (T115, L1-A13);
   3. `cutover` (T116, L1-A14) and its marker's push, read-back and
      `record_marker` (lane 3's T327); the flips (T120);
   4. a write on primary (lane 4's T415), its render fork (T416) and the
      renderer (lane 3's T321 to T323); `status`'s lag (T117);
-  5. `claim` on primary (lane 4's T421);
+  5. `claim` and `log` on primary from both workstations (lane 4's T415),
+     each rendered and settled as at step 4 (T416);
   6. a write's 69 (T415); the guard's direct read and its refusal (lane 5's
      T507); the mirror line (lane 5's T505); `status` (T117); `outage
      declare` (T121, L1-A18) and the guard's declared path (T507's SVC-12);
   7. `rollback`'s 69 (T304) and `outage clear` (T121);
   8. `rollback --hold-marker` and its rerun (lane 3's T326), and its
      declaration (T121, T304);
-  9. the writer not yet cleared, 69 (lane 4's T420);
+  9. the writer not yet cleared, 69, ended at its snapshot (lane 4's T415);
   10. the rollback's last render (T326).
+The drill runs no `commit`, and no step reads the `register seq` text of
+`claim`, so lane 4's T420 and T421 are none of its waits (lane 4, #165
+6826679959, item 1). Lane 5's T507 is step 6's alone: only `step_6_outage`
+calls the guard (lane 5, #165 6826891706).
 On line R's `V-round5` (`e8804a4a`), which holds T110, T115, T116, T119, T120,
 T121, T304 and T320 to T323 but not T327, T326, T415 or T507, every test stops
 at step 3's assertion on the marker: `cutover` exits 0 with the marker
 `adding` and nothing pushed (T116's point 1). On lane 3's `T326-m23`
 (`552c22d4`), which adds T327 and T326 but not T415, step 3 passes, and a
 test that runs step 4 stops there: `lanes-edit.sh` has no SQL write path.
+With lane 4's `pair-m23s` (`d949b78`) on it too, step 4 refused 2 where its
+lane's `<c>` was not there (line RB15's run e03), which step 3 now makes
+(T276e).
 
 READINGS, NOT FOUND IN A CONTRACT:
 - "THE RENDERER'S IDENTITY" (AT-F4's fixture): a bare origin on disk cannot
@@ -496,6 +513,13 @@ class Workstation:
             (home / ".agents" / "workspace.yaml").write_text(
                 f"repository: {drill.origin}\npath: {w}\n", encoding="utf-8")
         self.home, self.checkout = home, checkout
+        # W, as this workstation's `workspace.yaml` names it: ws1's is the
+        # estate's, ws2's the view above. Its lane's `<c>` goes beside it.
+        named = [line[len("path:"):].strip() for line in
+                 (home / ".agents" / "workspace.yaml").read_text(encoding="utf-8").splitlines()
+                 if line.startswith("path:")]
+        assert len(named) == 1, f"[estate] {name}'s workspace.yaml names no one W: {named}"
+        self.w = Path(named[0])
         # THE INSTALLED TOOLS: the flipped copy, its companions, check 1's list.
         self.tools = self.root / "tools"
         try:
@@ -536,6 +560,20 @@ class Workstation:
                                   *inherited]))
         self.env = env
         self._session = None
+
+    def lane_checkout(self) -> Path:
+        """`<c>`, THIS LANE'S OWN REGISTER CHECKOUT (the module's notes; lane
+        3's batch g Q119, #165 6813027223): `<W>-lanes/<lane>`, W being the
+        real path of `workspace.yaml`'s `path:`, as `lanes-edit.sh`'s
+        `lane_checkout_path` puts it (Amendment 23 S1). A clone of origin, as
+        `lane-checkout <lane> --create` makes one, in LX's T253f style; one
+        that is already there is kept."""
+        real = Path(os.path.realpath(self.w))
+        target = real.parent / f"{real.name}-lanes" / self.lane
+        if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            self.drill.git("clone", "-q", str(self.drill.origin), str(target))
+        return target
 
     # ------------------------------------------------------------ configuration
     def conf_text(self, mode: str) -> str:
@@ -842,7 +880,8 @@ class Drill:
     def step_3_cutover_and_flips(self) -> None:
         """The cutover sets the switch and pushes the marker; then `set-mode
         primary` in each workstation changes only that line, and the file
-        stays 0600."""
+        stays 0600. Each workstation, once flipped, has its lane's own
+        register checkout, made after the cutover's push (`lane_checkout`)."""
         proc = self.ws1.index("cutover", "--import", self.c)
         assert proc.returncode == 0, (
             f"[step 3] `cutover --import {self.c[:12]}` failed (lane 1's T116, "
@@ -869,6 +908,7 @@ class Drill:
                 f"[step 3] the flip in {ws.name} changed more than the mode= line: "
                 f"{lines} -> {after}")
             assert mode == mode_after == 0o600, f"[step 3] {ws.name}'s file is {oct(mode_after)}"
+            ws.lane_checkout()
 
     def step_4_smoke_test(self) -> None:
         """R3b's smoke test: `log NOTED` gives its row at the cutover's seq
@@ -892,8 +932,8 @@ class Drill:
                 count = self.count()
                 proc = ws.edit(*args)
                 assert proc.returncode == 0, (
-                    f"[step 5] `{verb}` on primary from {ws.name} failed (lane 4's T415"
-                    f"{', T421' if verb == 'claim' else ''}):\n{_said(proc)}")
+                    f"[step 5] `{verb}` on primary from {ws.name} failed (lane 4's "
+                    f"T415):\n{_said(proc)}")
                 assert self.count() == count + 1, f"[step 5] {ws.name}'s {verb} journaled no entry"
                 self.settled(f"[step 5] after {ws.name}'s {verb}")
 
@@ -1080,7 +1120,8 @@ class Drill:
         count, tip = self.count(), self.origin_tip()
         refused = self.ws2.edit("claim", OBJECTS["ws2-files"], "--no-github")
         assert refused.returncode == 69, (
-            f"[step 9] a write on ws2, not yet cleared, is not 69 (lane 4's T420):\n"
+            f"[step 9] a write on ws2, not yet cleared, is not 69, ended at its snapshot "
+            f"(lane 4's T415):\n"
             f"{_said(refused)}")
         assert (self.count(), self.origin_tip()) == (count, tip), (
             "[step 9] ws2's refused write changed the journal or origin")
@@ -1154,7 +1195,7 @@ def test_a_workstation_not_yet_cleared_refuses_after_rollback(request, tmp_path)
     and for `log`, and changes neither the journal, nor origin, nor its own
     files under `lanes/`; once `set-mode index` clears it, its files-mode
     write exits 0 and is pushed. Runs the drill's steps 1 to 4 and 8. Fails
-    until L1-A18, T326 and T327 land, and lane 4's T415 and T420."""
+    until L1-A18, T326 and T327 land, and lane 4's T415 and T416."""
     drill = Drill(request, tmp_path)
     drill.step_1_ready()
     drill.freeze()
@@ -1168,7 +1209,8 @@ def test_a_workstation_not_yet_cleared_refuses_after_rollback(request, tmp_path)
                        ("log", ["log", "NOTED", f"lane:{ws2.lane}", "not yet cleared"])):
         proc = ws2.edit(*args)
         assert proc.returncode == 69, (
-            f"[not yet cleared] ws2's {verb} after the rollback is not 69 (lane 4's T420):\n"
+            f"[not yet cleared] ws2's {verb} after the rollback is not 69, ended at its "
+            f"snapshot (lane 4's T415):\n"
             f"{_said(proc)}")
     assert drill.count() == count, "[not yet cleared] ws2's refused writes journaled"
     assert drill.origin_tip() == tip, "[not yet cleared] ws2's refused writes moved origin"
