@@ -143,7 +143,7 @@ EXISTING_JOBS = {
         "checkout": {"submodules": True, "fetch-depth": 1},
         "python": "3.x",
         "runs": [
-            "python3 -m pip install --disable-pip-version-check pytest==8.3.4",
+            "python3 -m pip install --disable-pip-version-check --only-binary=:all: pytest==8.3.4",
             "{\n"
             '  echo "GIT_AUTHOR_NAME=openRepoTools CI"\n'
             '  echo "GIT_AUTHOR_EMAIL=ci@openrepotools.invalid"\n'
@@ -157,7 +157,7 @@ EXISTING_JOBS = {
         "checkout": {"submodules": False, "fetch-depth": 1},
         "python": "3.x",
         "runs": [
-            "python3 -m pip install --disable-pip-version-check pytest==8.3.4",
+            "python3 -m pip install --disable-pip-version-check --only-binary=:all: pytest==8.3.4",
             "set -euo pipefail\n"
             "if [ -f upstream/openRepoShape/scripts/repo_shape.py ]; then\n"
             '  echo "the submodule IS checked out; this job proves nothing" >&2\n'
