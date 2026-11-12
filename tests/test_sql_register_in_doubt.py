@@ -94,8 +94,8 @@ import pytest
 
 from pgcluster import SUPERUSER, TEMPLATE, Database
 from sql_register_helpers import _proc_start
-from test_sql_register_order import (CLIENT, EM, LA, LB, LC, OBJ, UUID_RE, Barrier, Estate, Writer,  # noqa: F401
-                                     claim, estates, hold_point, kind_line, loggers, session_of,
+from test_sql_register_order import (BURST, CLIENT, DOT, EM, LA, LB, LC, OBJ, UUID_RE, Barrier, Estate,  # noqa: F401
+                                     Writer, claim, estates, hold_point, kind_line, loggers, session_of,
                                      tool_calls)
 
 REGISTER = "lanes_register"
@@ -1108,10 +1108,10 @@ def sidecar_text(lane: str, generation: int, utc: str, state: str = "RUNNING") -
             f"owner: none\nagent: none\nprofile: none\nworkstation: none\nkind: none\nupdated: {utc}\n")
 
 
-def sidecars(e: Estate) -> Path:
+def sidecars(e: Estate, lanes: Sequence[str] = (LA, LB, LC)) -> Path:
     root = e.root / "lane-state"
     utc = e.utc()
-    for lane in (LA, LB, LC):
+    for lane in lanes:
         (root / lane).mkdir(parents=True, exist_ok=True)
         (root / lane / "lane-state.yaml").write_text(sidecar_text(lane, 1, utc), encoding="utf-8")
     return root
@@ -1352,14 +1352,35 @@ def test_the_after_commit_tail_of_request_handoff_types_once_in_the_kept_child_a
     assert len(tool_calls(where, "tmux")) > 1, "the poll never read the pane"
 
 
+#: The two rows `retire-rows` retires: lane B, and the first burst lane, which
+#: no estate binds (T243g binds lane C, whose `STARTED` line `retire-rows`
+#: refuses; T245k).
+DORMANT = (LB, BURST[0])
+
+
 @CLIENT
 def test_the_after_commit_tail_of_retire_rows_runs_once_when_a_rerun_finds_the_write(estates):
     """`retire-rows`: each retired lane's sidecar goes through its follow
-    once, with its own pre-image."""
+    once, with its own pre-image.
+
+    THE ROWS ARE DORMANT FIRST (Amendment 19(a); T245k; lane 4's triage,
+    #165 6833813092). `retire-rows` takes only a dormant row: its object log
+    carries no lane-kind line at all, an `ENDED` or `RETIRED` last line
+    included, which it refuses as a lane already CLOSED
+    (`c8acf67c:lanes-edit.sh:21966-21977`), and its state cell is not
+    Amendment 13(a)'s phrase naming anything but `ENDED`, `RETIRED` or
+    `MIGRATED` (`:21995-21999`). Test 4's rows read `LIVE` (`w_row`), so each
+    lane's cell is first set to `ENDED` by `set-row-state`, which replaces the
+    row line alone, writes no log line and has no tail (TP:3368-3371). Its
+    log keeps no lane-kind line. Lane C is not one of them: T243g's estate
+    binds it with a `STARTED` line."""
     e = estates()
-    where, root = loggers(e), sidecars(e)
-    tail_rerun(e, LA, ["retire-rows", LB, LC, "--reason", "T245"], where, {"LANES_LANE_STATE_ROOT": str(root)})
-    assert generation_of(root, LB) == "2" and generation_of(root, LC) == "2"
+    where, root = loggers(e), sidecars(e, (LA, *DORMANT))
+    for lane in DORMANT:
+        ended = e.run(lane, ["set-row-state", lane, f"ENDED {DOT} dormant, for T245's retire-rows tail"])
+        assert ended.code == 0, f"set-row-state {lane} exited {ended.code}: {ended.err[-800:]}"
+    tail_rerun(e, LA, ["retire-rows", *DORMANT, "--reason", "T245"], where, {"LANES_LANE_STATE_ROOT": str(root)})
+    assert [generation_of(root, lane) for lane in DORMANT] == ["2", "2"]
 
 
 @CLIENT
