@@ -1585,7 +1585,7 @@ unset LANES__REPLAY_PID LANES__ATTEMPT LANES__CLAIM_FROM LANES__CLAIM_DEAD LANES
 #     (Y:5039) and `LOCK` is the scratch tree's (Y:5044);
 #   * `REG_MODE` is `primary` (Y:5121; R45), set by assignment here, so the
 #     writers' question returns on a set answer and starts no `lanes-index`,
-#     and T425's and T426's one line reads it in the child as in the parent;
+#     and T425's and T426's one line reads it in the child;
 #   * ONE CLOCK (D13, Y:528–534): the snapshot's `clock=`, the database's time
 #     in whole epoch seconds, read here once from `<dir>/snapshot`, is what
 #     `now_epoch` and `utc_now` answer, so the lines the verb composes and the
@@ -22649,20 +22649,6 @@ esac
 # "no state between T415 and T420 runs it in the loop"). `index` and `files`
 # run the verb as it runs today.
 if [ "$REG_ASK" = 1 ]; then reg_mode_ask; fi
-# FEATURE 007, T425 — R45'S ONE LINE (Y:5121; Q-L5-4, answered; lane 4's
-# block, T425 and T426). Here, after the doors and before the arms, the one
-# mode answer this process holds sets the awk variables that read the
-# register as primary reads it: `rule6_primary_on`, Rule 6 with `LANDING
-# EXPIRED` (T425), and T426 adds `key()`'s to this same line. The writers'
-# branch takes it before `pw_run` below, so the ask above is split from its
-# arm; an attempt's child takes it from `reg_scratch_take`'s `REG_MODE`
-# (`REG_ASK` is 0 there), since it asks no mode and its file at the
-# snapshot's seq is primary's; and a reader takes it from lane 5's `reg_open`
-# (T504), which runs above this line. It cannot be set where `REG_MODE` is:
-# `reg_scratch_take` runs before `RULE6_AWK` is assigned, which would
-# overwrite the append, and inside `who_landing`'s pipeline a variable set is
-# lost. Off primary it sets nothing, and the programs are today's.
-[ "$REG_MODE" != primary ] || rule6_primary_on
 if [ "$REG_ASK" = 1 ]; then
   case "$REG_MODE" in
     primary)
@@ -22710,6 +22696,23 @@ fi
 # a process the `exec` then replaces; and before the dispatcher, so what it sets
 # outlives the arms' `$( )` reads (lane 5's answer 11, #165 6746507353).
 reg_open "$cmd" ${1+"$@"}
+
+# FEATURE 007, T425 — R45'S ONE LINE (Y:5121; Q-L5-4, answered; lane 4's
+# block, T425 and T426). Here, after the doors and before the arms, the one
+# mode answer this process holds sets the awk variables that read the
+# register as primary reads it: `rule6_primary_on`, Rule 6 with `LANDING
+# EXPIRED` (T425), and T426 adds `key()`'s to this same line. A reader takes
+# it from lane 5's `reg_open` (T504), which runs above this line (lane 3,
+# #165 6770688147), and a writing verb from the write guard's answer, where
+# the arm above lets it through. Where that arm runs `pw_run`, which ends the
+# process, the verb runs in an attempt's child, which takes it from
+# `reg_scratch_take`'s `REG_MODE` (`REG_ASK` is 0 there, and `reg_open`
+# leaves `REG_MODE` alone for a writing verb), since it asks no mode and its
+# file at the snapshot's seq is primary's. It cannot be set where `REG_MODE`
+# is: `reg_scratch_take` runs before `RULE6_AWK` is assigned, which would
+# overwrite the append, and inside `who_landing`'s pipeline a variable set is
+# lost. Off primary it sets nothing, and the programs are today's.
+[ "$REG_MODE" != primary ] || rule6_primary_on
 
 case "$cmd" in
   verify-row)
