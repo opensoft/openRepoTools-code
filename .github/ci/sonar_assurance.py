@@ -108,7 +108,7 @@ def write_configuration(root, out, manifest):
     return properties
 
 
-def verify_gate(status, conditions, require_period=True):
+def verify_gate(status, conditions, require_period=True, require_coverage=True):
     actual = {row["metric"]: (row["op"], str(row["error"]))
               for row in conditions}
     if actual != GATE:
@@ -117,7 +117,7 @@ def verify_gate(status, conditions, require_period=True):
     if gate.get("status") != "OK" or not gate.get("conditions"):
         raise ValueError("quality gate did not compute and pass: " + json.dumps(gate))
     evaluated = {row["metricKey"] for row in gate["conditions"]}
-    if "new_coverage" not in evaluated or gate.get("ignoredConditions"):
+    if require_coverage and ("new_coverage" not in evaluated or gate.get("ignoredConditions")):
         raise ValueError("quality gate did not evaluate new coverage")
     if require_period and not gate.get("periods") and not gate.get("period"):
         raise ValueError("quality gate has no new-code period")
@@ -136,6 +136,39 @@ def sonar_api(endpoint, parameters):
         return json.load(response)
 
 
+
+def measure_value(measure):
+    if "value" in measure:
+        return measure["value"]
+    if "period" in measure:
+        return measure["period"]["value"]
+    return measure["periods"][0]["value"]
+
+
+def verify_coverage_measures(measured, pull_request):
+    if not pull_request:
+        if "coverage" not in measured or int(measured.get("lines_to_cover", {}).get("value", "0")) <= 0:
+            raise ValueError("Sonar did not import measured coverage")
+        return True
+    # PR APIs expose new-code metrics only. A root PR changing YAML/gitlinks
+    # has no eligible new lines; it cannot establish complete main coverage.
+    if "new_lines_to_cover" not in measured:
+        raise ValueError("Sonar did not report PR coverage eligibility")
+    eligible = int(measure_value(measured["new_lines_to_cover"]))
+    if eligible < 0 or eligible > 0 and "new_coverage" not in measured:
+        raise ValueError("Sonar did not compute eligible PR coverage")
+    return eligible > 0
+
+
+def verify_main_revision(analysis_id, revision):
+    analyses = sonar_api("project_analyses/search", {
+        "project": PROJECT, "branch": "main", "ps": 100})["analyses"]
+    selected = next((item for item in analyses if item["key"] == analysis_id), None)
+    if selected is None or selected.get("revision") != revision:
+        raise ValueError("Sonar analysis revision differs from the tested assembly")
+    return selected["revision"]
+
+
 def verify_analysis(out, task_file, pull_request=None):
     task = {key: value for line in task_file.read_text().splitlines() if "=" in line
             for key, value in [line.split("=", 1)]}
@@ -149,7 +182,6 @@ def verify_analysis(out, task_file, pull_request=None):
     assigned = sonar_api("qualitygates/get_by_project", {"project": PROJECT, "organization": "opensoft"})
     gate_id = assigned["qualityGate"]["id"]
     gate = sonar_api("qualitygates/show", {"id": gate_id, "organization": "opensoft"})
-    verify_gate(status, gate["conditions"], require_period=not pull_request)
     scope = {"component": PROJECT}
     if pull_request:
         scope["pullRequest"] = pull_request
@@ -173,13 +205,18 @@ def verify_analysis(out, task_file, pull_request=None):
     if missing:
         raise ValueError("Sonar omitted or misclassified sources: " + ", ".join(missing))
     measures = sonar_api("measures/component", {
-        **scope, "metricKeys": "coverage,lines_to_cover,uncovered_lines,new_coverage"})
+        **scope, "metricKeys": "coverage,lines_to_cover,uncovered_lines,new_coverage,new_lines_to_cover"})
     measured = {row["metric"]: row for row in measures["component"]["measures"]}
-    if "coverage" not in measured or int(measured.get("lines_to_cover", {}).get("value", "0")) <= 0:
-        raise ValueError("Sonar did not import measured coverage")
+    require_coverage = verify_coverage_measures(measured, pull_request)
+    verify_gate(status, gate["conditions"], require_period=not pull_request,
+                require_coverage=require_coverage)
+    server_revision = (None if pull_request else
+                       verify_main_revision(analysis_id, manifest["commits"]["."]))
     receipt = {"analysisId": analysis_id, "taskId": task["ceTaskId"],
                "revision": manifest["commits"]["."], "indexed_sources": len(verified),
                "configured_sources": len(expected), "full_index_verified": not bool(pull_request),
+               "coverage_import_verified": not bool(pull_request),
+               "coverage_condition_evaluated": require_coverage, "server_revision": server_revision,
                "qualityGate": gate, "projectStatus": status["projectStatus"],
                "measures": measures["component"]["measures"]}
     (out / "acceptance.json").write_text(json.dumps(receipt, indent=2) + "\n")

@@ -118,7 +118,8 @@ def test_gate_refuses_unevaluated_or_ignored_coverage(assurance, conditions, ign
 
 @pytest.mark.parametrize("failure", [
     None, "wrong-project", "compute-pending", "missing-source",
-    "wrong-language", "missing-coverage", "neutral-gate",
+    "wrong-language", "missing-coverage", "neutral-gate", "wrong-revision",
+    "pr-zero-coverage", "pr-covered", "pr-no-metric",
 ])
 def test_analysis_verifies_the_submitted_task_sources_and_coverage(
         assurance, tmp_path, monkeypatch, failure):
@@ -131,6 +132,8 @@ def test_analysis_verifies_the_submitted_task_sources_and_coverage(
     conditions = [{"metric": key, "op": op, "error": threshold}
                   for key, (op, threshold) in assurance.GATE.items()]
     calls = []
+    pull_request = "361" if failure and failure.startswith("pr-") else None
+    positive = failure in (None, "pr-zero-coverage", "pr-covered")
 
     def api(endpoint, parameters):
         calls.append((endpoint, parameters))
@@ -140,7 +143,9 @@ def test_analysis_verifies_the_submitted_task_sources_and_coverage(
         if endpoint == "qualitygates/project_status":
             return {"projectStatus": {
                 "status": "NONE" if failure == "neutral-gate" else "OK",
-                "periods": [{"index": 1}], "conditions": [{"metricKey": "new_coverage"}]}}
+                "periods": [] if pull_request else [{"index": 1}],
+                "conditions": [{"metricKey": "new_reliability_rating" if failure == "pr-zero-coverage"
+                                else "new_coverage"}]}}
         if endpoint == "qualitygates/get_by_project":
             assert parameters["organization"] == "opensoft"
             return {"qualityGate": {"id": 9}}
@@ -148,23 +153,34 @@ def test_analysis_verifies_the_submitted_task_sources_and_coverage(
             assert parameters["organization"] == "opensoft"
             return {"id": 9, "conditions": conditions}
         if endpoint == "components/tree":
-            files = [] if failure == "missing-source" else [{
+            files = [] if failure in ("missing-source", "pr-zero-coverage") else [{
                 "path": "code/lane", "language": "py" if failure == "wrong-language" else "shell"}]
             return {"paging": {"total": len(files)}, "components": files}
         if endpoint == "measures/component":
             measures = [] if failure == "missing-coverage" else [
                 {"metric": "coverage", "value": "90.0"}, {"metric": "lines_to_cover", "value": "100"}]
+            if pull_request:
+                measures = [] if failure == "pr-no-metric" else [{
+                    "metric": "new_lines_to_cover", "periods": [
+                        {"index": 1, "value": "0" if failure == "pr-zero-coverage" else "100"}]}]
+                if failure == "pr-covered":
+                    measures.append({"metric": "new_coverage", "periods": [{"index": 1, "value": "90.0"}]})
             return {"component": {"measures": measures}}
+        if endpoint == "project_analyses/search":
+            revision = "c" * 40 if failure == "wrong-revision" else "b" * 40
+            return {"analyses": [{"key": "analysis-123", "revision": revision}]}
         raise AssertionError(endpoint)
 
     monkeypatch.setattr(assurance, "sonar_api", api)
-    if failure:
+    if not positive:
         with pytest.raises(ValueError):
-            assurance.verify_analysis(tmp_path, task)
+            assurance.verify_analysis(tmp_path, task, pull_request)
         assert not (tmp_path / "acceptance.json").exists()
     else:
-        receipt = assurance.verify_analysis(tmp_path, task)
+        receipt = assurance.verify_analysis(tmp_path, task, pull_request)
         assert receipt["analysisId"] == "analysis-123"
-        assert receipt["indexed_sources"] == 1
+        assert receipt["indexed_sources"] == (0 if failure == "pr-zero-coverage" else 1)
+        assert receipt["full_index_verified"] == (not bool(pull_request))
+        assert receipt["coverage_import_verified"] == (not bool(pull_request))
         assert calls[1][1] == {"analysisId": "analysis-123"}
         assert (tmp_path / "acceptance.json").exists()
