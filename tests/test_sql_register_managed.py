@@ -58,6 +58,7 @@ is `*:*:<database>:<login>:<password>`; `login`'s argv is `login add|rotate
 from __future__ import annotations
 
 import atexit
+import contextlib
 import errno
 import hashlib
 import itertools
@@ -1077,6 +1078,8 @@ def test_ready_check_11_needs_tls_and_the_primary(tmp_path, request, case):
 # answers. FP: nothing connects. A refused file is 2 from `mode`, naming the
 # key and what is missing and printing no URL; 3 from `journal --write-id`
 # (CO-3); and 1 under `register read --for guard`'s prefetch, form 2 (O14).
+# That read's `--pid` is a stand-in for the hook started just before it
+# (`hook_pid`), so the 1 is the refused file's and never the hook's age.
 
 #: A TCP host that is not loopback, and the loopback stand-ins.
 REMOTE = "db.t230.invalid"
@@ -1113,6 +1116,32 @@ def _tls_files(root: Path) -> dict:
     }
 
 
+@contextlib.contextmanager
+def hook_pid():
+    """THE HOOK'S `$$`, FOR A GUARD READ'S `--pid` (contract section 3.6:
+    "`--pid <pid>` ... is the hook's own pid, `$$`, in forms 2 and 4", and
+    "the client reads `T0` from it"). It yields the pid of a stand-in for the
+    hook, a `sleep` started just before the read, as a hook's own start is,
+    and stops it after the read. T507 cuts a guard read at `T0` + 3.75 s
+    from that start, and an age at or above the cut exits 2, "too late to
+    verify" (section 3.6's 2; `register_guard_t0`). The pytest process's own
+    pid is minutes old on a runner, and with it the measure module's `[m10]`
+    ended 2 (lane 1's round 6b census, #165 6827592167, item 2). Here
+    `[for-guard]`'s file is refused at load, which merge27's client answers
+    1 before it checks the age, so the old pid did not change that case's
+    exit there; the stand-in makes its read the hook's, as the contract
+    says, whatever order a client checks in. It is AT-F7's stand-in,
+    `test_sql_register_outage.py`'s `_stand_in`, at an age of 0, as the
+    measure and readers modules' `hook_pid` are."""
+    standin = subprocess.Popen(["sleep", "120"], start_new_session=True,
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+    try:
+        yield str(standin.pid)
+    finally:
+        standin.kill()
+        standin.wait()
+
+
 #: The items, and the two that read the refused file through another verb.
 TLS_AT_LOAD = ["no-sslmode", "system-root", "missing-root", "root-file", "socket", "loopback",
                "no-register-url", "reader-url", "two-hosts", "journal-write-id", "for-guard"]
@@ -1134,9 +1163,10 @@ def test_tls_at_load_refuses_a_url_off_loopback_without_verify_full_and_a_root_f
     elif item == "for-guard":
         repo = tmp_path / "repo"
         repo.mkdir()
-        proc = bench.run(["register", "read", "--for", "guard", "--prefetch", "--cache",
-                          str(tmp_path / "cache"), "--pid", str(os.getpid()), "--repo", str(repo)],
-                         pty_run=False)
+        with hook_pid() as pid:
+            proc = bench.run(["register", "read", "--for", "guard", "--prefetch", "--cache",
+                              str(tmp_path / "cache"), "--pid", pid, "--repo", str(repo)],
+                             pty_run=False)
         assert proc.returncode == 1, (
             f"[{item}] register read --for guard --prefetch on a refused file is not 1:\n{_said(proc)}")
     else:
