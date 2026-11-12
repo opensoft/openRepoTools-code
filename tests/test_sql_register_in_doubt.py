@@ -709,7 +709,12 @@ def first_not_after(w: Writer) -> str:
 
 
 def db_past(e: Estate, utc: str) -> bool:
-    return e.c.value(f"SELECT clock_timestamp() >= '{utc}'::timestamptz;") == "t"
+    """Whether the database's clock has passed `utc`: an entry's
+    `not_after`, UTC text, or a `call` line's, whole epoch seconds
+    (pending-record.md §3.2), which `::timestamptz` cannot read, so it is
+    read with `to_timestamp` (T244f; lane 4's triage, #165 6833813092)."""
+    when = f"to_timestamp({int(utc)})" if re.fullmatch(r"[0-9]+", utc) else f"'{utc}'::timestamptz"
+    return e.c.value(f"SELECT clock_timestamp() >= {when};") == "t"
 
 
 # ------------------------------------------------------------ AT-12: after, before, timer
