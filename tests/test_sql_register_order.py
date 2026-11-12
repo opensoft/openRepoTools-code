@@ -574,6 +574,9 @@ def test_the_for_lane_checks_refuse_a_for_lane_off_a_landing_expired_and_a_landi
 #   * a bare origin at the register's files with `lanes/repos.tsv` beside
 #     them, and one checkout per writer (a reading: AT-4 names one
 #     configuration, and the writers' git fetches are kept off one index);
+#   * beside each writer's checkout W, the own register checkout `<c>` of
+#     each lane its write is made for, `<W>-lanes/<lane>`, a clone of W's
+#     origin made with W (lane 3's (119); `write_lanes_of`, below);
 #   * a fake `gh` that logs each call with its body (AT-D8's form);
 #   * the test's own `PATH` behind it, every directory kept in its place,
 #     with `psql`, `lanes-index` and every `pg_*` masked out (`_masked_path`);
@@ -837,6 +840,57 @@ class Writer:
         return int(m.group(1)) if m else None
 
 
+# EACH WRITE LANE'S OWN REGISTER CHECKOUT, `<c>` (lane 3, #165 6813027223,
+# batch g Q119; T241e's `WRITE_LANES` in `test_sql_register_writes.py` is the
+# model). On primary a write reads its author, its pending hand edits and its
+# `repos.tsv` from the checkout of the lane it is made for, `<W>-lanes/<lane>`
+# (`lanes-edit.sh`'s `lane_checkout_path`, `R-merge20:lanes-edit.sh:18342`),
+# W being the real path of `workspace.yaml`'s `path:`. Where that is not there
+# the write refuses with 2, or 64 for `request-handoff`, sending nothing, since
+# a clone there would be D12's fetch (B15 tasks:1154; T415's `pw_checkout`).
+# So the estates make it, as `lane-start` does at a launch: beside each
+# writer's W, a clone of W's own origin, for each lane `write_lanes_of` names.
+# A W kept behind a push (`mirror_at_t0`: AT-C10, AT-D19) keeps `<c>` behind
+# it too, at the same commit, and a W cloned before a push has `<c>` cloned
+# with it. Until T415 nothing reads `<c>`: these estates set no
+# `LANES_ROUTE_WRITES`, so each write goes through `LANES_REPO` as before.
+def write_lanes_of(argv: Sequence[str], lane: Optional[str]) -> List[str]:
+    """The lanes a run of `lanes-edit.sh <argv>` writes for, `lane` being its
+    `LANES_LANE`: `write_lane_of`'s answer (`R-merge20:lanes-edit.sh:18553`),
+    as T415's `pw_checkout` takes it, so a dry run's lane is included. Empty
+    for a run that is no write (a read, `act-begin`), and for an
+    `append-line` with no `LANES_LANE`, whose lane is in its text (every run
+    here sets `LANES_LANE`). `rename-lane` gives both names, the old one
+    first: `canon_lane` reads the old as the new once the rename is known."""
+    verb, args = (argv[0], [str(a) for a in argv[1:]]) if argv else ("", [])
+    first = args[0] if args else ""
+    if verb in ("set-row-state", "replace-in-row", "append-session-id", "request-handoff"):
+        return [first] if first else []
+    if verb == "write-handoff":
+        return [first] if first and not first.startswith("-") else []
+    if verb == "rename-lane":
+        names, words = [], iter(args)
+        for word in words:
+            if word == "--why":
+                next(words, None)
+            elif not word.startswith("-"):
+                names.append(word)
+        return names[:2]
+    if verb == "add-row":
+        m = re.match(r"[^`]*`([^`]*)`", first)
+        return [m.group(1)] if m and m.group(1) else []
+    if verb == "retire-rows":
+        for k, word in enumerate(args):
+            if word == "--writer" and k + 1 < len(args):
+                return [args[k + 1]]
+            if word.startswith("--writer="):
+                return [word.split("=", 1)[1]]
+    if verb in ("append-line", "commit", "log", "claim", "release", "retire-rows", "archive-rows",
+                "migrate-state-cells"):
+        return [lane] if lane else []
+    return []
+
+
 class Estate:
     """Test 4's workstation over one clone at `primary` (see the section's
     head)."""
@@ -900,15 +954,33 @@ class Estate:
         self.writers: List[Writer] = []
 
     # -------------------------------------------------- the workstation's parts
-    def checkout(self, name: str, origin: Optional[Path] = None) -> Tuple[Path, Path]:
-        """A clone of the origin, and the protocol root naming it."""
+    def checkout(self, name: str, origin: Optional[Path] = None,
+                 lanes: Sequence[str] = ()) -> Tuple[Path, Path]:
+        """A clone of the origin, and the protocol root naming it; and, made
+        with it, each of `lanes`' own register checkouts beside it
+        (`lane_checkout`)."""
         where = self.root / f"co-{name}"
         run_git(self.root, "clone", "-q", str(origin or self.origin), str(where), env=self.env)
+        for lane in dict.fromkeys(lanes):
+            self.lane_checkout(where, lane, origin)
         agents = self.root / f"agents-{name}"
         agents.mkdir()
         (agents / "workspace.yaml").write_text(f"repository: {origin or self.origin}\npath: {where}\n",
                                                encoding="utf-8")
         return where, agents
+
+    def lane_checkout(self, where: Path, lane: str, origin: Optional[Path] = None) -> Path:
+        """`<c>`, lane `lane`'s own register checkout beside the checkout
+        `where`, which `workspace.yaml` names as W: `<W>-lanes/<lane>`, W
+        being `where`'s real path, as `lane_checkout_path` puts it
+        (Amendment 23 S1). A clone of W's own origin, as `lane-checkout
+        <lane> --create` makes one, so it is at W's commit (lane 3's (119);
+        see `write_lanes_of`)."""
+        real = Path(os.path.realpath(where))
+        target = real.parent / f"{real.name}-lanes" / lane
+        target.parent.mkdir(parents=True, exist_ok=True)
+        run_git(target.parent, "clone", "-q", str(origin or self.origin), str(target), env=self.env)
+        return target
 
     def psql_dir(self, name: str, arms: Sequence[dict] = ()) -> Path:
         where = self.root / f"psql-{name}"
@@ -939,7 +1011,8 @@ class Estate:
                barrier: Optional[Barrier] = None, origin: Optional[Path] = None,
                first: Sequence[Path] = (), script: Optional[Path] = None) -> Writer:
         name = f"{next(self._n):02d}-{lane}"
-        where, agents = self.checkout(name, origin)
+        given = (extra or {}).get("LANES_LANE", lane)
+        where, agents = self.checkout(name, origin, write_lanes_of(argv, given))
         psql = self.psql_dir(name, arms)
         env = dict(self.env)
         env.update(LANES_LANE=lane, LANES_SESSION=session_of(lane), LANES_REPO=str(where),
@@ -2066,6 +2139,8 @@ def acted(act: str, *scopes: str) -> dict:
 # that `Clone.to_primary` brings to `primary`, with the flipped `lanes-index`
 # beside `lanes-edit.sh`, `mode=primary` configured, and its `PATH` masked
 # (`_masked_path`, its own bin spared its `lanes-index`), as test 4's estate is.
+# Each of its five lanes has its own register checkout beside W, the
+# `workspace.yaml` checkout `ws` (`ActWorld.lane_checkout`; lane 3's (119)).
 # Readings: each act's argv (N1's arms at `2a057a6d`, with `--no-launch` for
 # W1, `lane-end --retire-dormant` and `lane --request-handoff`); the write's
 # commit call, found by a text its entry's JSON carries (its verb, or its
@@ -2198,6 +2273,8 @@ class ActWorld(Sandbox):
         self.git("-C", str(self.wip), "commit", "-q", "-m", "T252b's register")
         self.git("-C", str(self.wip), "push", "-q", "origin", "main")
         self.git("-C", str(self.ws), "pull", "-q", "--ff-only")
+        # Each world lane's own register checkout beside W (lane 3's (119)).
+        self.checkouts = [self.lane_checkout(lane) for lane in R_SID]
         import_files(c, {str(p.relative_to(self.wip)): p.read_text(encoding="utf-8")
                          for p in sorted(lanes.rglob("*.md"))})
         assert c.to_primary() == 1, "T252b's cutover is not at seq 1"
@@ -2215,6 +2292,19 @@ class ActWorld(Sandbox):
                         LANES_HOST="eagle", LANES_OS="linux", LANES_CONTAINER="none", LANES_IN_CONTAINER="0")
         self._n = itertools.count(1)
         self.writers: List[Writer] = []
+
+    def lane_checkout(self, lane: str) -> Path:
+        """`<c>`, lane `lane`'s own register checkout beside this world's W,
+        `ws`, which `workspace.yaml` names: `<W>-lanes/<lane>`, a clone of
+        the world's origin, as `Estate.lane_checkout` makes one (lane 3's
+        (119); see `write_lanes_of`). Each of the world's lanes gets one,
+        made once the register is pushed, and each is pulled with W after a
+        later push (`handoff`), so it is at W's commit."""
+        real = Path(os.path.realpath(self.ws))
+        target = real.parent / f"{real.name}-lanes" / lane
+        target.parent.mkdir(parents=True, exist_ok=True)
+        self.git("clone", "-q", str(self.origin), str(target))
+        return target
 
     def psql_dir(self, name: str, arms: Sequence[dict] = ()) -> Path:
         return Estate.psql_dir(self, name, arms)  # the same stamp and shim as test 4's
@@ -2258,6 +2348,8 @@ class ActWorld(Sandbox):
         self.git("-C", str(self.wip), "commit", "-q", "-m", f"handoff({lane}): T252h's world")
         self.git("-C", str(self.wip), "push", "-q", "origin", "main")
         self.git("-C", str(self.ws), "pull", "-q", "--ff-only")
+        for checkout in self.checkouts:
+            self.git("-C", str(checkout), "pull", "-q", "--ff-only")
 
     def gate_stand_in(self) -> Path:
         """`lane-end`'s close-out gate for the race's acts (T252g): a
