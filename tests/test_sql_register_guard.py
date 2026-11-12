@@ -683,6 +683,11 @@ class Estate:
         return self.session.env(self.base, **merged)
 
     def hook(self, prompt="hello", timeout=HOOK_TIMEOUT, **extra) -> Hook:
+        """One guard run. On primary, the register is put in the SQL store
+        before the first one (`_seed_primary`, T254r), so a case that reads
+        without making an offer, rows (a) and (b) among them, reads it there."""
+        if getattr(self, "pg", None) is not None:
+            _seed_primary(self)
         return run_hook(["bash", str(self.guard), "guard"],
                         self.session.hook_input(prompt=prompt), self.env(**extra),
                         self.session.cwd, timeout)
@@ -1308,12 +1313,23 @@ def _seed_primary(est: Estate) -> None:
     `_Register` is kept as `est.sql_register`, and `Estate.push_register`
     sends later changes through it (T254q). `Estate.make_offer` calls this
     before the first offer, so every primary estate that makes one reads its
-    register there (T254q)."""
+    register there (T254q).
+
+    AND BEFORE ANY READ (T254r): `Estate.hook` calls it before every guard
+    run, and `_Service` before it starts `serve`, so the cases that read
+    without an offer read a register at `primary` too: rows (a) and (b), the
+    service and read cases, and SVC-10, which measured the refusal path
+    (lane 5, #165 6837268276). A case that seeds its register itself does so
+    before its first read (`_Register`; `_guard_state`), so this finds it at
+    `primary` and sends nothing. The answer is kept on the estate
+    (`est.seeded`), so the switch is asked once per estate."""
+    if getattr(est, "seeded", False):
+        return
     out = est.pg.psql("SELECT mode FROM lanes_register.register_switch;",
                       check=False).stdout.split()
-    if out and out[-1] == "primary":
-        return
-    est.sql_register = _Register(est)
+    if not (out and out[-1] == "primary"):
+        est.sql_register = _Register(est)
+    est.seeded = True
 
 
 #: THE LANE'S HANDOFF (T214k), as a real lane's register holds it: the file
@@ -2857,6 +2873,8 @@ class _Service:
 
     def __init__(self, est: Estate, **extra):
         self.est = est
+        if getattr(est, "pg", None) is not None:
+            _seed_primary(est)
         self.proc = subprocess.Popen([sys.executable, str(est.index), "serve"],
                                      stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE, env=est.env(**extra),
