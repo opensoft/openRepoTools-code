@@ -138,7 +138,9 @@ MODE_PRIMARY_REFUSED_TEXT = (
 
 #: Amendment 22's S1 line (delta spec sql-register:42; register-cli.md's check
 #: 4 row; TP:694-697), the bytes `lanes-edit.sh` dies with: `register
-#: snapshot`'s check 4 prints it as its own note (lane 3, #165 6828023371).
+#: snapshot`'s check 4 prints it as its own note (lane 3, #165 6828023371), and
+#: so does `register commit`'s LR002 refusal, each only where the switch reads
+#: other than `primary` (lane 3, #165 6833961066).
 REGISTER_IS_SQL_TEXT = "this estate's register is SQL; configure `mode=primary`"
 
 #: THE EXIT CODES, NAMED (contracts/exit-codes.md section 1): the tests read
@@ -11243,6 +11245,11 @@ _REGISTER_DETAIL_LINE_RE = re.compile(r"DETAIL:  (.*)")
 #: `psql:<file>:<line>: `. Stdin gets none (Y:2590); it is passed over all
 #: the same, so a register call never reads a refusal as in doubt for it.
 _REGISTER_PSQL_WHERE_RE = re.compile(r"psql:.*?:[0-9]+: ")
+#: `commit_write`'s LR002 message, from its check 3, the switch: "register
+#: switch is % with the marker %". `_register_commit_end` reads the mode from
+#: it, and a message that does not match whole prints no Amendment 22 line.
+_REGISTER_LR002_SWITCH_RE = re.compile(
+    r"register switch is (files|primary) with the marker (absent|adding|present|removing)")
 
 
 def register_error_of(stderr: str) -> RegisterError | None:
@@ -12764,6 +12771,13 @@ def _register_commit_end(store: PostgresStore, ident: dict, entry: dict, code: i
                    err.sqlstate, "the database refused the transaction")
         note(f"the register ({store.label}, schema {store.schema}) refused write {write} "
              f"with {err.sqlstate}: {why}; nothing was written")
+        # AMENDMENT 22'S LINE, S1's second half (sql-register:42), only where
+        # the switch reads other than `primary`, as the refusal's own message
+        # names it; one that does not parse prints none (lane 3, #165 6833961066).
+        if err.sqlstate == "LR002":
+            switch = _REGISTER_LR002_SWITCH_RE.fullmatch(err.message)
+            if switch is not None and switch.group(1) != "primary":
+                note(REGISTER_IS_SQL_TEXT)
     return code
 
 
