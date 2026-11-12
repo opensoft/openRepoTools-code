@@ -109,7 +109,11 @@
 #      and 69 (feature 007, T429; #165 6834271321): the handoff file is written,
 #      the lifecycle step has run and the act stops before its restart line,
 #      with no READY, restart intent, respawn or `/exit` in any mode, and exits
-#      75 in place of that 2 where a writer gave 75 (`:2817`'s rule)
+#      75 in place of that 2 only where EVERY write that stopped it gave 75 and
+#      none of the act's writes exited 3 (`:2817`'s rule; #165 6835210568,
+#      question 3): a mix of stopping codes exits 2, and so does a 75 beside a
+#      write in doubt, since 75 promises that nothing was written and that a
+#      retry in seconds is safe
 #   1  a read failed, which is never "nothing to report" (Amendment 7(d)); or
 #      the act was refused by A2 (feature 007, T429; #165 6774499606):
 #      `act-begin` answered anything but a base, 69, 75, 3 or an old helper's 2,
@@ -3200,13 +3204,21 @@ act_on_seq_base() {
 # but 0, 3 and 69 (W9, W11 or W12: a 2, a 75, any other) marks the act
 # unfinished here, and the lines that follow the lifecycle step below stop it:
 # no READY, no restart intent, no respawn and no `/exit`, in any mode, and an
-# exit of 2, or of 75 where a writer gave 75. 3 and 69 keep their own paths,
-# as does every write under `@files` or after `act-begin`'s 2.
-act_stop=""; act_stop_rc=2; act_stop_names=""
+# exit of 2, or of 75 only where EVERY write that stopped it gave 75 and none of
+# the act's writes exited 3 (lane 3, #165 6835210568, question 3). 75 promises
+# that nothing was written and that a retry in seconds is safe (exit-codes.md:31;
+# the delta's spec.md:229); a mix holds a refusal that a retry will meet again,
+# which is 2's (exit-codes.md:27; D10, Y:508–511), and a write that exited 3 is
+# in doubt, which the spec forbids to be called "busy" (spec.md:229). So this
+# counts the stopping writes and how many of them gave 75, and the exit code is
+# taken where the act stops, once every write is known. 3 and 69 keep their own
+# paths, as does every write under `@files` or after `act-begin`'s 2.
+act_stop=""; act_stop_rc=2; act_stop_names=""; act_stop_n=0; act_stop_n75=0
 act_stops_at() {   # <the write, in words> <its code>
 	act_stop=1
 	act_stop_names="${act_stop_names:+$act_stop_names, }$1"
-	[ "$2" != 75 ] || act_stop_rc=75
+	act_stop_n=$((act_stop_n + 1))
+	[ "$2" != 75 ] || act_stop_n75=$((act_stop_n75 + 1))
 	return 0
 }
 
@@ -3591,13 +3603,22 @@ lifecycle_finish "$lc_unfinished"
 # has run (the lane stays SWAPPING for each write named, W11's included), and the
 # act ends BEFORE the restart line, so it prints no READY, writes no restart
 # intent, does not respawn and does not type `/exit`, in any mode. The code is
-# `:2817`'s rule: 75 where a writer gave 75, else 2. A 3 and a 69 are not here:
-# they keep the paths above, and so does every write under `@files` or after
-# `act-begin`'s 2 (`act_stops_at` flags none of them).
+# `:2817`'s rule where one write stopped the act (its own 75, else 2), and for a
+# mix it is lane 3's ruling on question 3 (#165 6835210568): 75 only where EVERY
+# write that stopped the act gave 75 and none of the act's writes exited 3, else
+# 2. A 75 beside a 2 is 2, a 75 beside a write that exited 3 is 2, and so is any
+# other mix. A 3 and a 69 are not here: they keep the paths above, and so does
+# every write under `@files` or after `act-begin`'s 2 (`act_stops_at` flags none
+# of them).
 if [ -n "$act_stop" ]; then
+	act_stop_rc=2
+	if [ "$act_stop_n75" = "$act_stop_n" ] && [ -z "$record_in_doubt$row_in_doubt$w11_in_doubt" ]; then act_stop_rc=75; fi
 	as_text="a write of this act ended with a code other than 0, 3 and 69 under its seq base ($act_stop_names; the helper's own words are above), so this act stops here with $act_stop_rc: the handoff file is written, and no READY line, restart intent, respawn or \`/exit\` follows, in any mode. Nothing else was done, this pane is left as it is, and the lane is not recorded SWAPPED. Run $prog again from its start (Y:5601): it takes a fresh base and supersedes this operation."
 	if [ -n "$record_in_doubt$row_in_doubt$w11_in_doubt" ]; then
 		as_text="$as_text A write of this act also exited 3 (the notes above): run the rerun the writer printed for it, which writes it once or finds it, before that."
+	fi
+	if [ "$act_stop_rc" = 2 ] && [ "$act_stop_n75" != 0 ]; then
+		as_text="$as_text A write that gave 75 is among them, but this act exits 75 only where every write that stopped it gave 75 and none of its writes exited 3, because 75 promises that nothing was written and that a retry in seconds is safe: another refusal here, or a write in doubt, may not clear in seconds, so the code is 2."
 	fi
 	die "$as_text" "$act_stop_rc"
 fi
