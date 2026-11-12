@@ -2415,9 +2415,25 @@ class Operator:
     `lanes/STORE` on a bare origin)": the imported estate cut over by the
     real `cutover --import <C>` (lane 3's T327), whose marker commit, with
     its `Register-Seq`, is pushed to origin, read back and recorded (T278d);
-    or `stray`, `primary` with test 6's stray commit, a files-mode
-    `lanes-edit.sh log NOTED` pushed to origin by the operator's checkout
-    with no configuration, so that it never reached the register.
+    or `stray`, `cutover-done` with test 6's stray commit on origin after
+    the marker commit, so that it never reached the register (T278e,
+    `_stand_in_stray`).
+
+    THE STRAY IS A STAND-IN (T278e; line BD15; TP open point 5's second
+    choice, "a stand-in stray commit, which does not prove the real old
+    writer"): AT-6's stray is the v1.1.0 `lanes-edit.sh`'s `log NOTED`,
+    pushed by a stale workstation that knows no marker, and its pinned copy
+    is test 6's, in another module's fixtures. Today's `lanes-edit.sh`
+    refuses a files-mode write once origin carries `lanes/STORE` (FR-004's
+    marker check), so it can make no stray on this estate. So a clone of
+    origin with no configuration appends one `NOTED` line, in the form the
+    fixture's own `log NOTED` wrote at C, to the same `lanes/log/` file, and
+    pushes it by plain `git`. T278 made its stray with today's writer on
+    `_to_primary`'s estate, whose origin carried no `Register-Seq`, so both
+    ways out refused 2 there ("origin main's last Register-Seq could not be
+    found"). Line BD15 saw that only on a scratch probe: on T326-m23 both
+    ways out end 1 first, a traceback, since T324's `_stray_recognised`
+    unpacks five of the six values T326 made `_render_read_head` return.
 
     WHY THE ROLLBACK'S ESTATE IS `cutover-done` (T278d; line BD15): T326's
     step 0 fetches `origin main` on every try and walks its first-parent
@@ -2432,13 +2448,14 @@ class Operator:
         from test_sql_register_import import OPERATOR, TIP_A, FixtureRegister, _to_primary
         self.pg, self.root, self.request, self.lane = pg, tmp_path, request, OPERATOR
         self.reg = FixtureRegister(tmp_path / "reg")
-        if estate in ("imported", "cutover-done"):
+        noted = self.reg.c
+        if estate in ("imported", "cutover-done", "stray"):
             # THE SEED'S HOLD WITH NO TIME IS RELEASED BEFORE THE IMPORT (line HC14; W3a's
             # T211n `3fe23d7`, whose `HOLD_NO_UTC_RELEASE` this inlines, since BD's import
             # module predates it): lane 1's open-`HOLD` check (merge21f6) counts
             # `TAKE_LINES["hold-no-utc"]` as open, so a first-form cutover over it refuses 2.
             # Its holder, the operator lane, releases it in files mode, and C is the tip after.
-            # `imported` and `cutover-done` cut over; `primary` and `stray` come through
+            # `imported`, `cutover-done` and `stray` cut over; `primary` comes through
             # `_to_primary`.
             proc = self.reg.edit("append-line", "HOLD RELEASED — lane repoA-2 (Eagle), "
                                  f"2026-10-01T05:20:00Z: opensoft/repoH main {TIP_A}",
@@ -2466,10 +2483,10 @@ class Operator:
         self.env = dict(self.reg.env, T220_REAL_PSQL=pg.psql_bin, LANES_LANE=OPERATOR,
                         PATH=str(self.bin) + os.pathsep + self.reg.env["PATH"])
         self.mode, self.stray = "index", None
-        if estate in ("primary", "stray"):
+        if estate == "primary":
             _to_primary(pg, self.reg, load_indexer())
             self.mode = "primary"
-        if estate == "cutover-done":
+        if estate in ("cutover-done", "stray"):
             # THE REAL CUTOVER (T278d), off `TIMING_PSQL`: the setup's own calls never
             # reach the logs the test reads, and no fault is armed by its `commit_write`.
             proc, _ = self.run(self.argv("cutover"), self.config(),
@@ -2482,11 +2499,44 @@ class Operator:
             assert self.origin_tip() != self.reg.c, "the cutover's marker commit is not on origin"
             self.mode = "primary"
         if estate == "stray":
-            proc = self.reg.edit("log", "NOTED", f"lane:{OPERATOR}", "T278's stray commit",
-                                 env={"LANES_LANE": OPERATOR})
-            assert proc.returncode == 0, f"the stray's files-mode write: {proc.stderr}"
-            self.stray = self.origin_tip()
-            assert self.stray != self.reg.c, "the stray commit reached origin"
+            marker = self.origin_tip()
+            self.stray = self._stand_in_stray(noted)
+            assert self.stray not in (self.reg.c, marker), "the stray commit reached origin"
+
+    def _git(self, *argv: str) -> str:
+        """`git` with the fixture's environment; its stdout."""
+        return subprocess.run(["git", *argv], capture_output=True, text=True, check=True,
+                              env=self.reg.env, stdin=subprocess.DEVNULL).stdout
+
+    def _stand_in_stray(self, noted: str) -> str:
+        """Test 6's stray, a stand-in (T278e; the class's docstring): a
+        clone of origin with no configuration appends one line to the
+        `lanes/log/` file that the fixture's `log NOTED` at `noted` changed,
+        that commit's own added line with its text made the stray's, and
+        pushes it to origin's `main` by plain `git`. Returns origin's tip,
+        the stray."""
+        wip = str(self.reg.wip)
+        paths = [p for p in self._git("-C", wip, "diff-tree", "--no-commit-id", "--name-only",
+                                      "-r", noted).split() if p.startswith("lanes/log/")]
+        assert len(paths) == 1, f"the fixture's log NOTED changed one log file: {paths}"
+        added = [line[1:] for line in self._git("-C", wip, "diff", f"{noted}^", noted, "--",
+                                                paths[0]).splitlines()
+                 if line.startswith("+") and not line.startswith("+++")
+                 and "the import's fixture, at C" in line]
+        assert len(added) == 1, f"the fixture's log NOTED added one line of its text: {added}"
+        clone = self.root / "stale"
+        self._git("clone", "-q", str(self.reg.origin), str(clone))
+        target = clone / paths[0]
+        text = target.read_text(encoding="utf-8")
+        target.write_text(text + ("" if text.endswith("\n") else "\n")
+                          + added[0].replace("the import's fixture, at C", "T278's stray commit")
+                          + "\n", encoding="utf-8")
+        message = self._git("-C", wip, "log", "-1", "--format=%B", noted).replace(
+            "the import's fixture, at C", "T278's stray commit")
+        self._git("-C", str(clone), "add", "--", paths[0])
+        self._git("-C", str(clone), "commit", "-q", "-m", message)
+        self._git("-C", str(clone), "push", "-q", "origin", "HEAD:main")
+        return self.origin_tip()
 
     def origin_tip(self) -> str:
         """The bare origin's `main`, read there, so a push from any checkout
@@ -3203,8 +3253,11 @@ def test_a_stray_ways_out_commit_call_is_in_doubt_like_a_writers(pg, tmp_path, r
     tries meet it too, and 3. The snapshot reached the cluster, a call met
     the relay, and nothing was written; from the commit call's start, inside
     twice the commit's F2 row's 35.5 s (`C` + `S` + `R` + `T_L` + `p`), and
-    no call begins after D7's 30 s deadline, at twice it. It fails until
-    lane 1's L1-A14 and lane 3's T324 land."""
+    no call begins after D7's 30 s deadline, at twice it. The stray sits on
+    the `cutover-done` estate, after the marker commit (T278e). It fails
+    until lane 1's L1-A14 and lane 3's T324 and T327 land, and until T326's
+    `_render_read_head` and T324's `_stray_recognised` agree on its values
+    (line BD15: on T326-m23 `552c22d4` both forms end 1, a traceback)."""
     op = Operator(pg, tmp_path, request, "stray")
     before = op.state()
     relay = ArmedFault(f"{pg.host}/.s.PGSQL.{pg.port}", "F2", op.armed_for("commit_write"))
