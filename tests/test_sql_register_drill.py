@@ -129,6 +129,11 @@ READINGS, NOT FOUND IN A CONTRACT:
   waits for T229") has its tests fail until L1-A18, T326 and T327 alone,
   where step 4's write would also need lane 4's T415 and T416 (T276d,
   after line DR15's run on T326-m23 met T415's placeholder there).
+- OPEN POINT 8'S POLL READS A FETCHED W: `status` reads `m` on W's
+  `origin/main` as last fetched and never fetches (tasks:545), and no write
+  on primary fetches W (D12), while the render pushes from the lane's `<c>`.
+  So `wait_lag_0` fetches ws1's W with plain git before each poll (lane 3's
+  ruling (a), #165 6833830078), as the drill's act, not a write's.
 - STEP 10'S "EVERY OBJECT HAS AT MOST ONE HOLDER" is read for the objects the
   drill claims, across SQL's live holds and origin's logs, as T273b's
   `_claim_holders` reads one.
@@ -635,6 +640,19 @@ class Workstation:
     def tip(self) -> str:
         return self.git("rev-parse", "refs/remotes/origin/main").strip()
 
+    def fetch_w(self) -> None:
+        """THE READER'S FETCH OF W (lane 3's ruling (a), #165 6833830078):
+        `git -C <W> fetch -q origin main`, with plain git, so that `status`,
+        which reads `m` on W's `origin/main` as last fetched and never
+        fetches (tasks:545), reads the render the lane's `<c>` pushed. It is
+        the drill's own act, not a write's (D12)."""
+        proc = subprocess.run(["git", "-C", str(self.w), "fetch", "-q", "origin", "main"],
+                              env=self.env, capture_output=True, text=True, timeout=120,
+                              stdin=subprocess.DEVNULL, check=False)
+        assert proc.returncode == 0, (
+            f"the harness's fetch of {self.name}'s W, git -C {self.w} fetch -q origin "
+            f"main:\n{_said(proc)}")
+
     def lanes_files(self) -> dict:
         """The bytes of every file under `lanes/` in the work tree, by digest."""
         return {str(p.relative_to(self.checkout)): hashlib.sha256(p.read_bytes()).hexdigest()
@@ -802,15 +820,19 @@ class Drill:
             time.sleep(0.25)
 
     def wait_lag_0(self, ws: Workstation, label: str) -> None:
-        """Open point 8's poll: `status` until it shows a lag of 0."""
+        """Open point 8's poll: `status` until it shows a lag of 0, each poll
+        after the harness's fetch of the W `status` reads (`fetch_w`; lane
+        3's ruling (a), #165 6833830078): `status` never fetches, and no
+        write on primary fetches W."""
         deadline = time.monotonic() + SETTLE_S
         while True:
+            ws.fetch_w()
             proc = ws.index("status", timeout=120)
             if LAG_0.search(proc.stdout):
                 return
             assert time.monotonic() < deadline, (
-                f"{label}: `status` on {ws.name} shows no lag of 0 within {SETTLE_S} s (lane 1's "
-                f"T117):\n{_said(proc)}")
+                f"{label}: `status` on {ws.name}, each read after a fetch of its W, shows no "
+                f"lag of 0 within {SETTLE_S} s (open point 8):\n{_said(proc)}")
             time.sleep(0.25)
 
     def settled(self, label: str) -> None:
