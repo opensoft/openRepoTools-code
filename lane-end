@@ -2729,7 +2729,13 @@ state_line="$(cut_to_line "$state_line")"
 # are listed in lower case, once each, in the order given (Y:5584), and are
 # never dropped, since dropping a token under-checks (Y:5587): where there is no
 # base a SQL register refuses each write with 2 and sends nothing, and files
-# mode and an older helper read neither variable. A refusal of W13 by its
+# mode and an older helper read neither variable. ONLY AN EMPTY WALK LINE IS
+# SKIPPED (a files-mode walk is empty, and adds nothing): any other name reaches
+# `LANES_EXPECT` as it is, where the writer refuses a token outside the forms
+# with 2, naming it, before any call (Y:5583, Y:5587, Y:5600; lane 3's Q5, #165
+# 6836816821). No tool writes such a name today: `rename-lane` checks both of its
+# names, and the register has no alias table, so this keeps the spec's rule
+# rather than meeting a case. A refusal of W13 by its
 # expectation (2), or a 3 or 75 or 69, ends this command with the writer's own
 # code, through `set -e` under `@files` or after `act-begin`'s 2 and through W13's
 # own arm (below) under a seq base; the writer's words, its rerun for a 3 among
@@ -2741,13 +2747,9 @@ le_scope_add() {   # <scope>: appended once, in lower case
   le_expect="${le_expect:+$le_expect }$lsa_s"
   return 0
 }
-le_lane_shaped() {   # <name>: 0 where `check_lane_name` would take it
-  case "${1-}" in '' | *[!A-Za-z0-9._-]* | .* | -*) return 1 ;; esac
-  return 0
-}
 le_scope_add "row:$LANE"; le_scope_add "bind:$LANE"; le_scope_add "objects:$LANE"; le_scope_add "alias:$LANE"
 while IFS= read -r le_wn; do
-  le_lane_shaped "$le_wn" || continue
+  [ -n "$le_wn" ] || continue
   le_scope_add "row:$le_wn"; le_scope_add "alias:$le_wn"
 done <<LE_WALK_NAMES
 $le_walk
