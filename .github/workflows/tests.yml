@@ -170,7 +170,7 @@ jobs:
       # result depends on the day it ran, which is the same objection this
       # family makes to pinning a tag instead of a commit.
       - name: install the test runner
-        run: python3 -m pip install --disable-pip-version-check pytest==8.3.4
+        run: python3 -m pip install --disable-pip-version-check --only-binary=:all: pytest==8.3.4
 
       # Per-invocation identity, never `git config --global`: a lane that
       # mirrors this step on a workstation must not be able to rewrite the
@@ -264,7 +264,7 @@ jobs:
           python-version: '3.x'
 
       - name: install the test runner
-        run: python3 -m pip install --disable-pip-version-check pytest==8.3.4
+        run: python3 -m pip install --disable-pip-version-check --only-binary=:all: pytest==8.3.4
 
       - name: the submodule really is not materialized
         run: |
