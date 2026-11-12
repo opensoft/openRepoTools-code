@@ -179,6 +179,15 @@ if os.fork() == 0:
 os.execv(real, [real] + sys.argv[1:])
 '''
 
+#: THE WATCHER'S LAG (lane 5, #165 6813898970): `TIMING_PSQL`'s watcher polls
+#: `os.getppid()` every 5 ms, so the `end` it logs trails the call's real end
+#: by up to one poll, and by its own wake-up besides on a busy runner (T507's
+#: CI round 3 saw the mirror's first `git` 2.2 ms before a logged end). Each
+#: comparison of that `end` with another clock allows 10 ms, two polls: one
+#: for the poll, one for the wake-up. A mirror path started during the read,
+#: which runs on to its cut, still fails: it starts far more than 10 ms early.
+WATCHER_LAG_S = 0.010
+
 
 def _script(path: Path, text: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -717,12 +726,16 @@ def test_under_a_declaration_a_silent_database_is_capped_and_the_mirror_answers_
     read = starts[0]
     assert read["call"] in ends, "the direct read never ended"
     cut = ends[read["call"]] - result["t0"]
-    assert cut < 2 * CAP_DECLARED, f"the direct read ended {cut:.2f} s after T0"
+    # The logged end trails the real one by up to `WATCHER_LAG_S`.
+    assert cut - WATCHER_LAG_S < 2 * CAP_DECLARED, f"the direct read ended {cut:.2f} s after T0"
     _record("the direct read's end after T0, its timer included", cut, CAP_DECLARED,
             "timing rule 2")
     mirror = estate.mirror_calls()
     assert mirror, "the guard made no mirror call"
-    assert mirror[0]["t"] >= ends[read["call"]], "the mirror path started before the read ended"
+    # Writer A runs form C's first `git` only once the cut `psql` is killed
+    # and reaped; the logged end may trail that by up to `WATCHER_LAG_S`.
+    assert mirror[0]["t"] >= ends[read["call"]] - WATCHER_LAG_S, (
+        "the mirror path started before the read ended")
     line = mirror[0]["t"] - result["t0"]
     assert line < 2 * START_LINE, f"the mirror path started {line:.2f} s after T0"
     _record("the mirror path's first git call after T0", line, START_LINE, "timing rule 2")
