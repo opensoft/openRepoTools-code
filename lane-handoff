@@ -3701,7 +3701,22 @@ if [ "$do_restart" = 1 ] || [ "$do_exit" = 1 ]; then
 	else gate_flag="--restart"; gate_ends="restarts the pane"
 	fi
 	gate_69_ways="Once the register answers, run this command again from its start, with the same flag ($gate_flag; Y:5601): it takes a fresh base, and $gate_ends once its writes land. Or restart by hand, which leaves the lane SWAPPING:  $restart_cmd"
+	# WHERE W9'S OR W12'S 3 GATE REFUSES FIRST BESIDE W11'S 3 UNDER A SEQ BASE
+	# (T429; RC-W15c's NIT 1, "also name W11's rerun", lane 3's #165 6836816821
+	# item 4): W11's own gate is behind them, so it never ran, and the rerun it
+	# names (the file-level line's, which only that rerun settles, Y:5222) was
+	# never printed by these two. They name it, and give W11's reason for not
+	# saying "re-run this" in their place: this command run again appends a second
+	# file-level line, since the line carries a UTC of its own (Y:5224). W11's 3
+	# is on the lifecycle's unfinished list (`w11_open`) only under a seq base,
+	# so under `@files`, or after `act-begin`'s 2, both gates keep their words.
+	w11_rerun_too=""
+	if [ -n "$w11_open" ] && [ -n "$w11_in_doubt" ]; then w11_rerun_too=1; fi
+	w11_rerun_words="Run the printed rerun above, and the one printed for the LANES.md file-level PAUSED line, which write their lines once or find them (this command run again would append a second file-level line, since that line carries a UTC of its own), and then restart by hand:  $restart_cmd"
 	if [ "$record_written" != 1 ]; then
+		if [ -n "$record_in_doubt" ] && [ -n "$w11_rerun_too" ]; then
+			die "the lane's PAUSED record $d8_text So this pane is left exactly as it is: a pane is never respawned over an unrecorded lane, and a session is never ended without one (Amendment 17(f)). $w11_rerun_words" 2
+		fi
 		[ -z "$record_in_doubt" ] ||
 			die "the lane's PAUSED record $d8_text So this pane is left exactly as it is: a pane is never respawned over an unrecorded lane, and a session is never ended without one (Amendment 17(f)). Run the printed rerun above, then re-run this." 2
 		# After the PAUSED line's 69, held or sent, no write is there to fix, and a
@@ -3723,6 +3738,9 @@ if [ "$do_restart" = 1 ] || [ "$do_exit" = 1 ]; then
 	# this command may create and then kill the only process that could fix it,
 	# so both are gates, and each names the act that clears it.
 	if [ -n "$row_write_refused" ]; then
+		if [ -n "$row_in_doubt" ] && [ -n "$w11_rerun_too" ]; then
+			die "the lane's PAUSED line is written and the row's state cell $d8_text So this pane is left exactly as it is: respawning it could leave the register reading RUNNING for a session that has just been replaced, and every other lane reads the row. $w11_rerun_words" 2
+		fi
 		[ -z "$row_in_doubt" ] ||
 			die "the lane's PAUSED line is written and the row's state cell $d8_text So this pane is left exactly as it is: respawning it could leave the register reading RUNNING for a session that has just been replaced, and every other lane reads the row. Run the printed rerun above and re-run this, or restart by hand:  $restart_cmd" 2
 		# A 69 UNDER A SEQ BASE (T429; #165 6836816821, question 2): "Flip it and
