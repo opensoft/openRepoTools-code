@@ -22,16 +22,40 @@ THE FIXTURES:
   * `pg_engine`, session-scoped: the binaries, found once. EVERY CLUSTER
     DEPENDS ON IT, so a test whose fixture closure holds it is a real-engine
     test, which is how `test_sql_register_fixture.py` tells one apart;
-  * `pg_template_sql`, session-scoped and overridable: the SQL that builds the
-    template's schema, empty until the bootstrap lands (T227);
+  * `pg_template_sql`, session-scoped and overridable: how the template is
+    built. By default it is `Bootstrap()`, P8's bootstrap (T227, below); a
+    module may return SQL of its own instead, run on an empty `tmpl`;
   * `pg_cluster`, session-scoped: the session's cluster, with the template
-    `tmpl` built, then closed to connections;
-  * `pg`, one database per test, `CREATE DATABASE t_<n> TEMPLATE tmpl`, and
-    dropped `WITH (FORCE)` at its teardown;
+    `tmpl` built, then closed to connections, and `tmpl_imported` beside it;
+  * `pg`, one database per test, `CREATE DATABASE t_<n> TEMPLATE tmpl`, then
+    section 1.4's two database-level statements, and dropped `WITH (FORCE)`
+    at its teardown;
   * `stoppable_cluster`, a cluster of the test's own, built like the
     session's, for the tests that stop the database: `stop()` is a fast
     shutdown, SIGINT and a wait, and `start_again()` starts it on the same
     data and socket directories.
+
+THE TEMPLATES (T227; the test plan's section 3.1, "The templates"). `tmpl` is
+built on each cluster by P8's bootstrap, `lanes-index bootstrap --no-passwords`
+(lane 1's T109, L1-A7), run through the admin service as AT-P8's fixture runs
+it: a libpq service in `~/.pg_service.conf` of the cluster's own 0700 `admin`
+home, naming the cluster's socket, its superuser and the database, so no
+connection string is ever an argument. It makes the schema, the owner, the
+groups REGISTER-WRITER and READER, the indexer's login and their GRANTs, and
+labels the switch `register-test`. Then the fixture's logins are made (T228:
+`lanes-index login add fx` and `login add --dump-job`, through the same service
+under a pty, since `login` refuses off a terminal): `lanes_w_fx` and
+`lanes_r_fx`, as which every session a test runs as REGISTER-WRITER or as
+READER logs in, and `lanes_register_dump`; their passwords stay in memory for
+`passfile()`. Then `tmpl` is marked `IS_TEMPLATE true
+ALLOW_CONNECTIONS false`. A clone does not copy `pg_database.datacl`, so each
+clone runs section 1.4's `REVOKE ALL ON DATABASE` and `GRANT CONNECT`, with
+`-v db=` its name; the first run prints what a clone's `datacl` held before
+them (open point 12). On the session cluster, `tmpl_imported` is cloned from
+`tmpl`, with test 7's fixture register (T211's `FixtureRegister`) imported by
+`lanes-index import --at` (lane 1's T115, L1-A13). Until that imports, there is
+no `tmpl_imported`, the run's foot says why, and the cases that clone it fail;
+a bootstrap that fails fails each real-engine test, saying so.
 
 The binaries' directory goes first on `PATH` while a cluster is up, so the
 code under test runs the `psql` of the server it talks to, and every
@@ -64,13 +88,16 @@ name it does not know.
 from __future__ import annotations
 
 import os
+import queue
 import re
 import shutil
 import signal
+import socket
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -100,6 +127,45 @@ DIE_WITH_PYTEST = True                    # Linux: PR_SET_PDEATHSIG(SIGQUIT) on 
 DEVNULL = subprocess.DEVNULL
 _SKIPPED: List[str] = []
 _SWEPT: List[str] = []
+
+#: THE CODE UNDER TEST'S `lanes-index`, which the template's build runs.
+REPO = Path(__file__).resolve().parent.parent
+LANES_INDEX = REPO / "lanes-index"
+
+#: THE TEMPLATES (T227): the imported template's name, and the bootstrap's
+#: inputs. The label is the one the import, outage and bounds modules name in
+#: their `register_label=`; the others fill the switch's and the migrations
+#: row's columns, whose CHECKs ask only that each is not empty.
+IMPORTED = "tmpl_imported"
+FX_LABEL = "register-test"
+FX_REPOSITORY = "opensoft/openRepoTools-fixture"
+FX_LANE = "fixture"
+FX_WORKSTATION = "fixture"
+
+#: SECTION 1.4'S TWO DATABASE-LEVEL STATEMENTS, as lane 1's role block holds
+#: them (Y:2243-2244; `lanes-index`'s `_REGISTER_ROLE_BLOCK`), with `-v db=`.
+DATABASE_LEVEL = ('REVOKE ALL ON DATABASE :"db" FROM PUBLIC;\n'
+                  'GRANT CONNECT ON DATABASE :"db" TO lanes_register_writer, '
+                  'lanes_register_reader, lanes_indexer;\n')
+
+#: What the admin's `lanes-index` never inherits: the configuration's and the
+#: workspace's variables. `PG*` goes too, as everywhere here.
+ADMIN_ENV_DROPPED = ("LANES_", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "AGENT_PROTOCOL_ROOT",
+                     "PROJECTS_", "TMUX", "CLAUDE_")
+_DATACL: List[str] = []
+_IMPORTED: List[str] = []
+
+#: THE FIXTURE'S LOGINS (T228): the engineer `login add` is run for, and the
+#: three logins it and `login add --dump-job` make. Every session a test runs
+#: as REGISTER-WRITER or as READER logs in as the writer or the reader.
+FX_ENGINEER = "fx"
+FX_WRITER, FX_READER, FX_DUMP = "lanes_w_fx", "lanes_r_fx", "lanes_register_dump"
+FX_LOGINS = (FX_WRITER, FX_READER, FX_DUMP)
+
+#: A password-file line as `login add` prints it once, to a terminal:
+#: `*:*:<database>:<login>:<password>` (lane 1's `_register_pgpass_line`).
+PASSWORD_LINE = re.compile(r"^\*:\*:(?:[^:\\\n]|\\.)*:(lanes_[a-z0-9_]+):([^:\s]+)$", re.M)
+_SECRET_FIELD = re.compile(r"^(\*:\*:.*:)[^:\n]*$", re.M)
 
 
 def _fixture(**options):
@@ -287,9 +353,35 @@ class ClusterError(Exception):
     pass
 
 
-def _client_env(host: Path, user: str, dbname: str, appname: str, bindir: Path) -> dict:
+class Bootstrap:
+    """`pg_template_sql`'S DEFAULT (T227): build `tmpl` by P8's bootstrap,
+    then make the fixture's logins (T228) unless `logins` is False, then run
+    `sql`, if any, on it. A plain string instead is SQL run on an empty
+    `tmpl`, as the smokes' clusters have it."""
+
+    def __init__(self, sql: str = "", logins: bool = True) -> None:
+        self.sql, self.logins = sql, logins
+
+    def __repr__(self) -> str:
+        return f"Bootstrap(sql={self.sql!r}, logins={self.logins!r})"
+
+
+def _masked(text: str) -> str:
+    """`text` with each password-file line's last field, the password, hidden."""
+    return _SECRET_FIELD.sub(lambda m: m.group(1) + "<password>", text or "")
+
+
+def _tail(proc: subprocess.CompletedProcess, size: int = 800) -> str:
+    """A command's last words, stdout then stderr, on one line."""
+    said = " | ".join(line.strip() for line in f"{proc.stdout or ''}\n{proc.stderr or ''}".splitlines()
+                      if line.strip())
+    return said[-size:] or "<nothing>"
+
+
+def _client_env(host: Path, user: str, dbname: str, appname: str, bindir: Path,
+                port: int = PORT) -> dict:
     env = _without_pg()
-    env.update(PGHOST=str(host), PGPORT=str(PORT), PGUSER=user, PGDATABASE=dbname,
+    env.update(PGHOST=str(host), PGPORT=str(port), PGUSER=user, PGDATABASE=dbname,
                PGAPPNAME=appname, PGCONNECT_TIMEOUT="10", LC_ALL="C",
                PATH=_engine_first(bindir, env.get("PATH", os.defpath)))
     return env
@@ -311,11 +403,24 @@ def _die_with_parent(parent: int):
 class Cluster:
     """One cluster: its private directory, its postmaster and its template."""
 
-    def __init__(self, bindir: Path, template_sql: str = "") -> None:
-        self.bindir, self.template_sql = bindir, template_sql
+    def __init__(self, bindir: Path, template_sql="", imported: bool = False) -> None:
+        """`template_sql` is `pg_template_sql`'s value: a `Bootstrap`, or SQL
+        for an empty `tmpl` (the smokes' default). `imported` builds
+        `tmpl_imported` too."""
+        self.bindir, self.template_sql, self.imported = bindir, template_sql, imported
+        #: The port (T229): it names the socket file, and a TLS cluster's TCP
+        #: listener uses it too. `listen` and `settings` are `prepare()`'s.
+        self.port, self.listen, self.settings = PORT, "", []
         self.root: Optional[Path] = None
         self.proc: Optional[subprocess.Popen] = None
         self.count, self.timings = 0, {}
+        #: The switch's label where the bootstrap built `tmpl`, else None.
+        self.label: Optional[str] = None
+        #: Why there is no `tmpl_imported`, where it was asked for and is not.
+        self.imported_problem: Optional[str] = None
+        #: The fixture's logins' passwords, as `login add` printed them once
+        #: (T228). Kept in memory for `passfile()`, never printed.
+        self.passwords: Dict[str, str] = {}
 
     def tool(self, name: str) -> str:
         return str(self.bindir / name)
@@ -326,10 +431,14 @@ class Cluster:
         return env
 
     def psql(self, sql: str, dbname: str = "postgres", user: str = SUPERUSER,
-             check: bool = True, appname: str = "pytest") -> subprocess.CompletedProcess:
-        proc = subprocess.run([self.tool("psql"), "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1",
-                               "-f", "-"], input=sql, capture_output=True, text=True, timeout=120,
-                              env=_client_env(self.root, user, dbname, appname, self.bindir),
+             check: bool = True, appname: str = "pytest",
+             variables: Optional[Dict[str, str]] = None) -> subprocess.CompletedProcess:
+        argv = [self.tool("psql"), "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1"]
+        for name, value in (variables or {}).items():
+            argv += ["-v", f"{name}={value}"]
+        proc = subprocess.run([*argv, "-f", "-"], input=sql, capture_output=True, text=True,
+                              timeout=120, env=_client_env(self.root, user, dbname, appname,
+                                                           self.bindir, self.port),
                               check=False)
         if check and proc.returncode != 0:
             raise ClusterError(f"psql as {user} on {dbname} exited {proc.returncode}: {proc.stderr.strip()}")
@@ -355,7 +464,7 @@ class Cluster:
         _SWEPT.extend(sweep_stale())
         self.root = Path(tempfile.mkdtemp(prefix=PREFIX, dir=SOCKET_PARENT))   # mode 0700
         (self.root / "owner").write_text(f"{os.getpid()} {_ticks(os.getpid())}\n")
-        sock = self.root / f".s.PGSQL.{PORT}"
+        sock = self.root / f".s.PGSQL.{self.port}"
         if len(os.fsencode(str(sock))) > SOCKET_MAX:
             raise ClusterError(f"the socket path {sock} is over {SOCKET_MAX} bytes")
         t1 = time.monotonic()
@@ -366,20 +475,206 @@ class Cluster:
         if init.returncode != 0:
             raise ClusterError(f"initdb exited {init.returncode}: {init.stderr.strip()}")
         t2 = time.monotonic()
+        self.prepare()
         self.launch()
         t3 = time.monotonic()
-        self.psql(f"CREATE DATABASE {TEMPLATE};")
-        if self.template_sql.strip():
-            self.psql(self.template_sql, dbname=TEMPLATE)
-        self.psql(f"ALTER DATABASE {TEMPLATE} WITH IS_TEMPLATE true ALLOW_CONNECTIONS false;")
+        self.build_template()
         t4 = time.monotonic()
         self.timings = {"initdb": t2 - t1, "ready": t3 - t2, "template": t4 - t3, "start": t4 - t0}
 
+    # -------------------------------------------------------- the templates (T227)
+    def build_template(self) -> None:
+        """`tmpl`, by the bootstrap or by SQL, then `tmpl_imported` where it
+        was asked for, then `tmpl` closed to connections."""
+        self.psql(f"CREATE DATABASE {TEMPLATE};")
+        sql = self.template_sql
+        if isinstance(sql, Bootstrap):
+            self.bootstrap(TEMPLATE, FX_LABEL)
+            self.label = FX_LABEL
+            if sql.logins:
+                self.make_logins(TEMPLATE)
+            sql = sql.sql
+        if sql.strip():
+            self.psql(sql, dbname=TEMPLATE)
+        if self.imported:
+            self.build_imported()
+        self.psql(f"ALTER DATABASE {TEMPLATE} WITH IS_TEMPLATE true ALLOW_CONNECTIONS false;")
+
+    def admin_env(self) -> dict:
+        """THE ADMIN'S `lanes-index` ENVIRONMENT: no `PG*`, no configuration or
+        workspace variable, `HOME` the cluster's own `admin` directory (where
+        `~/.pg_service.conf` is, and no `lanes-index.conf`, so `load_config`
+        reads its defaults), the workstation named, and the engine's tools
+        first on `PATH`, so its `psql` is the server's."""
+        env = {k: v for k, v in _without_pg().items() if not k.startswith(ADMIN_ENV_DROPPED)}
+        env.update(HOME=str(self.root / "admin"), LANES_WORKSTATION=FX_WORKSTATION, LC_ALL="C",
+                   TZ="UTC", PATH=_engine_first(self.bindir, env.get("PATH", os.defpath)))
+        return env
+
+    def admin_service(self, database: str) -> str:
+        """The admin service naming `database`: a section of the admin home's
+        `.pg_service.conf`, 0600, with the cluster's socket and superuser.
+        The socket's trust needs no `~/.pgpass`."""
+        home = self.root / "admin"
+        home.mkdir(mode=0o700, exist_ok=True)
+        name, path = f"fx_{database}", home / ".pg_service.conf"
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
+        if f"[{name}]\n" not in text:
+            text += (f"[{name}]\nhost={self.root}\nport={self.port}\nuser={SUPERUSER}\n"
+                     f"dbname={database}\n\n")
+            path.write_text(text, encoding="utf-8")
+            path.chmod(0o600)
+        return name
+
+    def lanes_index(self, argv: List[str]) -> subprocess.CompletedProcess:
+        """The code under test's `lanes-index`, as the admin, from the
+        cluster's directory."""
+        return subprocess.run([sys.executable, str(LANES_INDEX), *argv], stdin=DEVNULL,
+                              capture_output=True, text=True, env=self.admin_env(),
+                              cwd=str(self.root), timeout=300, check=False)
+
+    def lanes_index_tty(self, argv: List[str]) -> Tuple[int, str, str]:
+        """`lanes_index` with its stdout a pty, for `login`, which refuses off
+        a terminal (operations.md section 2.4): (exit, stdout, stderr), the
+        pty's CR LF read back as LF. A run that outlasts the admin's 300 s is
+        killed."""
+        import pty
+        import select
+        primary, secondary = pty.openpty()
+        try:
+            proc = subprocess.Popen([sys.executable, str(LANES_INDEX), *argv], stdin=DEVNULL,
+                                    stdout=secondary, stderr=subprocess.PIPE,
+                                    env=self.admin_env(), cwd=str(self.root))
+        except OSError:
+            os.close(primary)
+            raise
+        finally:
+            os.close(secondary)
+        out, end = [], time.monotonic() + 300
+        try:
+            while time.monotonic() < end:
+                ready, _, _ = select.select([primary], [], [], max(0.0, end - time.monotonic()))
+                if not ready:
+                    break
+                try:
+                    chunk = os.read(primary, 65536)
+                except OSError:                     # EIO: the child closed its end
+                    break
+                if not chunk:
+                    break
+                out.append(chunk)
+        finally:
+            os.close(primary)
+        if proc.poll() is None and time.monotonic() >= end:
+            proc.kill()
+        err = proc.stderr.read().decode("utf-8", "replace")
+        proc.stderr.close()
+        code = proc.wait(timeout=DEADLINE)
+        return code, b"".join(out).decode("utf-8", "replace").replace("\r\n", "\n"), err
+
+    def make_logins(self, database: str) -> None:
+        """THE FIXTURE'S LOGINS (T228; section 3.1, "The fixture's logins"),
+        once per cluster, after the bootstrap: `lanes-index login add fx`,
+        then `login add --dump-job`, each through the admin service on
+        `database` and under a pty (lane 1's T110, L1-A8). They make
+        `lanes_w_fx` in REGISTER-WRITER and `lanes_r_fx` in READER, each with
+        its own floors, and `lanes_register_dump` in READER, each with a
+        SCRAM verifier lane 1's code computes. The passwords each prints
+        once are kept for `passfile()`: the socket's trust ignores them, a
+        TLS cluster's SCRAM does not. No error text here holds one."""
+        service = self.admin_service(database)
+        for argv in (["login", "add", FX_ENGINEER, "--admin-service", service],
+                     ["login", "add", "--dump-job", "--admin-service", service]):
+            code, out, err = self.lanes_index_tty(argv)
+            if code != 0:
+                raise ClusterError(f"`lanes-index {' '.join(argv[:3])}` through the admin service "
+                                   f"on {database} exited {code}, so the fixture has no logins "
+                                   f"(lane 1's T110, L1-A8, builds `login`): "
+                                   f"{_masked(out)[-400:]} | {_masked(err)[-400:]}")
+            self.passwords.update(PASSWORD_LINE.findall(out))
+        names = ", ".join(f"'{login}'" for login in FX_LOGINS)
+        can = self.psql(f"SELECT rolname FROM pg_catalog.pg_roles WHERE rolcanlogin AND "
+                        f"rolname IN ({names}) ORDER BY 1;").stdout.split()
+        missing = sorted(set(FX_LOGINS) - set(can)) + sorted(set(FX_LOGINS) - set(self.passwords))
+        if missing:
+            raise ClusterError(f"after `login add`, these logins cannot log in or printed no "
+                               f"password line: {', '.join(missing)}")
+
+    def passfile(self, login: str) -> Path:
+        """A 0600 libpq password file holding `login`'s line at any host,
+        port and database, in the cluster's private `secrets` directory:
+        what a `register_passfile=` or `reader_passfile=` names."""
+        if login not in self.passwords:
+            raise ClusterError(f"no password for {login}: only the fixture's logins have one")
+        secrets = self.root / "secrets"
+        secrets.mkdir(mode=0o700, exist_ok=True)
+        path = secrets / f"{login}.pgpass"
+        path.write_text(f"*:*:*:{login}:{self.passwords[login]}\n", encoding="utf-8")
+        path.chmod(0o600)
+        return path
+
+    def bootstrap(self, database: str, label: str) -> str:
+        """P8's bootstrap on `database`, through the admin service, with
+        `--no-passwords`: the roles are global, so a second run on a cluster
+        finds them `unchanged`. Its output, which holds no secret."""
+        proc = self.lanes_index(["bootstrap", "--admin-service", self.admin_service(database),
+                                 "--label", label, "--repository", FX_REPOSITORY,
+                                 "--lane", FX_LANE, "--no-passwords"])
+        if proc.returncode != 0:
+            raise ClusterError(f"`lanes-index bootstrap --no-passwords` through the admin "
+                               f"service on {database} exited {proc.returncode}, so the "
+                               f"template has no register (lane 1's T109, L1-A7, builds the "
+                               f"bootstrap): {_tail(proc)}")
+        return proc.stdout
+
+    def build_imported(self) -> None:
+        """`tmpl_imported`: a clone of `tmpl`, with section 1.4's two
+        statements, and test 7's fixture register imported into it by
+        `lanes-index import --at <C>` as T211 runs it (its `FixtureRegister`,
+        on the cluster's socket as the superuser), then closed to
+        connections. Where any step fails, there is no `tmpl_imported`, and
+        `imported_problem` says why: the session goes on, and only the cases
+        that clone it fail."""
+        if self.label is None:
+            self.imported_problem = "tmpl was not built by the bootstrap, so it holds no register"
+        else:
+            try:
+                from test_sql_register_import import FixtureRegister
+            except ImportError as exc:
+                self.imported_problem = (f"test 7's fixture register, T211's FixtureRegister in "
+                                         f"tests/test_sql_register_import.py, cannot be loaded: {exc}")
+        if self.imported_problem is None:
+            self.psql(f"CREATE DATABASE {IMPORTED} TEMPLATE {TEMPLATE};")
+            self.psql(DATABASE_LEVEL, variables={"db": IMPORTED})
+            path = os.environ.get("PATH", os.defpath)
+            os.environ["PATH"] = _engine_first(self.bindir, path)   # the import's `psql`
+            try:
+                register = FixtureRegister(self.root / "imported")
+                proc = register.import_at(Database(self, IMPORTED), register.c)
+                if proc.returncode != 0:
+                    self.imported_problem = (f"`lanes-index import --at {register.c}` exited "
+                                             f"{proc.returncode} (lane 1's T115, L1-A13, builds "
+                                             f"it): {_tail(proc)}")
+            except Exception as exc:          # the register's own build: git, lanes-edit.sh
+                self.imported_problem = f"test 7's fixture register was not built: {exc!r}"[:1200]
+            finally:
+                os.environ["PATH"] = path
+            if self.imported_problem is not None:
+                self.drop_database(IMPORTED)
+        if self.imported_problem is not None:
+            _IMPORTED.append(self.imported_problem)
+            return
+        self.psql(f"ALTER DATABASE {IMPORTED} WITH IS_TEMPLATE true ALLOW_CONNECTIONS false;")
+
+    def prepare(self) -> None:
+        """Between `initdb` and the first start: nothing here; T229's TLS and
+        counting clusters set their files and settings."""
+
     def launch(self) -> None:
         """`postgres` by `Popen` on this cluster's directories, and wait until it is ready."""
-        argv = [self.tool("postgres"), "-D", str(self.root / "data"), "-p", str(PORT),
-                "-c", "listen_addresses=", "-c", f"unix_socket_directories={self.root}"]
-        for setting in FAST:
+        argv = [self.tool("postgres"), "-D", str(self.root / "data"), "-p", str(self.port),
+                "-c", f"listen_addresses={self.listen}", "-c", f"unix_socket_directories={self.root}"]
+        for setting in [*FAST, *self.settings]:
             argv += ["-c", setting]
         with open(self.root / "server.log", "ab") as log:
             self.proc = subprocess.Popen(argv, stdin=DEVNULL, stdout=log, stderr=subprocess.STDOUT,
@@ -409,10 +704,23 @@ class Cluster:
             raise ClusterError("the cluster is running, so it cannot be started again")
         self.launch()
 
-    def new_database(self) -> str:
+    def new_database(self, template: str = TEMPLATE) -> str:
+        """`CREATE DATABASE t_<n> TEMPLATE <template>`, then, where the
+        bootstrap built the template, section 1.4's two database-level
+        statements with `-v db=t_<n>`, since a clone does not copy
+        `pg_database.datacl`. The first such clone of a run records what its
+        `datacl` held before them, which the run's foot prints (open point
+        12)."""
         self.count += 1
         name = f"t_{self.count}"
-        self.psql(f"CREATE DATABASE {name} TEMPLATE {TEMPLATE};")
+        self.psql(f"CREATE DATABASE {name} TEMPLATE {template};")
+        if self.label is not None:
+            if not _DATACL:
+                acl = self.psql("SELECT coalesce(datacl::text, 'NULL') FROM pg_catalog.pg_database "
+                                "WHERE datname = :'db';", variables={"db": name}).stdout.strip()
+                _DATACL.append(f"{'empty (NULL)' if acl == 'NULL' else acl}, on {name}, a clone "
+                               f"of {template}")
+            self.psql(DATABASE_LEVEL, variables={"db": name})
         return name
 
     def drop_database(self, name: str) -> None:
@@ -437,14 +745,14 @@ class Database:
     """One test's database, and how to reach it as each role."""
 
     def __init__(self, cluster: Cluster, name: str) -> None:
-        self.cluster, self.name, self.host, self.port = cluster, name, cluster.root, PORT
+        self.cluster, self.name, self.host, self.port = cluster, name, cluster.root, cluster.port
         self.psql_bin = cluster.tool("psql")
 
     def url(self, user: str = SUPERUSER) -> str:
-        return f"postgresql://{user}@{quote(str(self.host), safe='')}:{PORT}/{self.name}"
+        return f"postgresql://{user}@{quote(str(self.host), safe='')}:{self.port}/{self.name}"
 
     def env(self, user: str = SUPERUSER, appname: str = "pytest") -> dict:
-        return _client_env(self.host, user, self.name, appname, self.cluster.bindir)
+        return _client_env(self.host, user, self.name, appname, self.cluster.bindir, self.port)
 
     def psql(self, sql: str, user: str = SUPERUSER, check: bool = True) -> subprocess.CompletedProcess:
         return self.cluster.psql(sql, dbname=self.name, user=user, check=check)
@@ -454,6 +762,326 @@ class Database:
         return subprocess.Popen([self.psql_bin, "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1"],
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, env=self.env(user, appname))
+
+
+# ------------------------------------------------------------ section 5.6's clusters (T229)
+#: THE TLS CLUSTER'S `pg_hba.conf`, first match wins: the admin's socket by
+#: trust; any TCP connect without TLS rejected (the fixture's model of
+#: FR-011's server half, R09); TLS on loopback by SCRAM-SHA-256.
+TLS_HBA = ("local     all all              trust\n"
+           "hostnossl all all 0.0.0.0/0    reject\n"
+           "hostnossl all all ::/0         reject\n"
+           "hostssl   all all 127.0.0.1/32 scram-sha-256\n")
+
+#: The test CA's `openssl` configuration: no system `openssl.cnf` is read.
+CA_CONFIG = ("[req]\ndistinguished_name = dn\nprompt = no\nx509_extensions = v3_root\n[dn]\n"
+             "CN = openRepoTools test root\n[v3_root]\nbasicConstraints = critical,CA:TRUE\n"
+             "keyUsage = critical,keyCertSign,cRLSign\nsubjectKeyIdentifier = hash\n")
+CA_INTERMEDIATE = ("basicConstraints = critical,CA:TRUE,pathlen:0\nkeyUsage = critical,keyCertSign,"
+                   "cRLSign\nsubjectKeyIdentifier = hash\nauthorityKeyIdentifier = keyid\n")
+CA_LEAF = ("basicConstraints = critical,CA:FALSE\nkeyUsage = critical,digitalSignature\n"
+           "extendedKeyUsage = serverAuth\nsubjectAltName = DNS:localhost,IP:127.0.0.1\n"
+           "subjectKeyIdentifier = hash\nauthorityKeyIdentifier = keyid\n")
+
+
+def _openssl(args: List[str], cwd: Path) -> None:
+    env = {k: v for k, v in os.environ.items() if not k.startswith("OPENSSL_")}
+    proc = subprocess.run(["openssl", *args], cwd=str(cwd), stdin=DEVNULL, capture_output=True,
+                          text=True, env=env, timeout=60, check=False)
+    if proc.returncode != 0:
+        raise ClusterError(f"openssl {' '.join(args[:2])} exited {proc.returncode}: {_tail(proc)}")
+
+
+def make_test_ca(directory: Path) -> Dict[str, Path]:
+    """THE TEST CA (T229; [X: hosting]): a chain, as the install's private CA
+    issues the endpoint's certificate, made by `openssl` with P-256 keys for
+    two days: a root, an intermediate and a leaf for `localhost` and
+    `127.0.0.1`. `chain` holds the leaf and the intermediate, as the
+    install's `tls.crt` does; `root` alone is what `sslrootcert=` names."""
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    (directory / "ca.cnf").write_text(CA_CONFIG, encoding="utf-8")
+    (directory / "int.ext").write_text(CA_INTERMEDIATE, encoding="utf-8")
+    (directory / "leaf.ext").write_text(CA_LEAF, encoding="utf-8")
+    key = ["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes"]
+    _openssl(["req", "-x509", "-config", "ca.cnf", *key, "-keyout", "root.key", "-out", "root.crt",
+              "-days", "2"], directory)
+    for name, subject, issuer, serial in (("int", "openRepoTools test intermediate", "root", "2"),
+                                          ("leaf", "localhost", "int", "3")):
+        _openssl(["req", "-new", "-config", "ca.cnf", *key, "-keyout", f"{name}.key", "-out",
+                  f"{name}.csr", "-subj", f"/CN={subject}"], directory)
+        _openssl(["x509", "-req", "-in", f"{name}.csr", "-CA", f"{issuer}.crt", "-CAkey",
+                  f"{issuer}.key", "-set_serial", serial, "-days", "2", "-extfile", f"{name}.ext",
+                  "-out", f"{name}.crt"], directory)
+    for name in ("root.key", "int.key", "leaf.key"):
+        (directory / name).chmod(0o600)
+    chain = directory / "chain.crt"
+    chain.write_bytes((directory / "leaf.crt").read_bytes() + (directory / "int.crt").read_bytes())
+    return {"root": directory / "root.crt", "chain": chain, "leaf": directory / "leaf.crt",
+            "key": directory / "leaf.key"}
+
+
+def scram_verifier(password: str, iterations: int = 4096) -> str:
+    """A SCRAM-SHA-256 verifier for `password`, computed here as lane 1's
+    `register_scram_verifier` and psql's `\\password` compute it (RFC 5802,
+    RFC 7677), so no statement or log holds the password."""
+    import base64
+    import hashlib
+    import hmac
+    import secrets
+    salt = secrets.token_bytes(16)
+    salted = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    client = hmac.new(salted, b"Client Key", hashlib.sha256).digest()
+    server = hmac.new(salted, b"Server Key", hashlib.sha256).digest()
+
+    def b64(raw: bytes) -> str:
+        return base64.b64encode(raw).decode("ascii")
+    return (f"SCRAM-SHA-256${iterations}:{b64(salt)}${b64(hashlib.sha256(client).digest())}:"
+            f"{b64(server)}")
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe_socket:
+        probe_socket.bind(("127.0.0.1", 0))
+        return probe_socket.getsockname()[1]
+
+
+class TLSCluster(Cluster):
+    """SECTION 5.6'S TLS CLUSTER (T229): a cluster of its own, built like the
+    session's (its template, its logins), that also listens on 127.0.0.1 at
+    a free port, with `ssl=on`, `ssl_min_protocol_version = TLSv1.3` (CNPG's
+    default), the test CA's chain, and `TLS_HBA`. The admin keeps its
+    socket. `leaf_only` serves the leaf without the intermediate (T230's
+    `[leaf-only]`). At its start it clones one database, `database_name`.
+    Clients use lane 1's conninfo form, `sslmode=verify-full` with the root
+    alone as `sslrootcert=`; the logins authenticate by the SCRAM verifiers
+    `login add` set (T228)."""
+
+    def __init__(self, bindir: Path, template_sql="", imported: bool = False,
+                 leaf_only: bool = False) -> None:
+        super().__init__(bindir, template_sql, imported)
+        self.leaf_only = leaf_only
+        self.root_cert: Optional[Path] = None
+        self.database_name: Optional[str] = None
+        self.labels: Dict[str, str] = {}
+
+    def prepare(self) -> None:
+        self.tls = make_test_ca(self.root / "tls")
+        self.root_cert = self.tls["root"]
+        (self.root / "data" / "pg_hba.conf").write_text(TLS_HBA, encoding="utf-8")
+        self.port, self.listen = _free_port(), "127.0.0.1"
+        self._tls_settings()
+
+    def _tls_settings(self) -> None:
+        served = self.tls["leaf"] if self.leaf_only else self.tls["chain"]
+        self.settings = ["ssl=on", f"ssl_cert_file={served}", f"ssl_key_file={self.tls['key']}",
+                         "ssl_min_protocol_version=TLSv1.3", "password_encryption=scram-sha-256"]
+
+    def start_again(self, leaf_only: Optional[bool] = None) -> None:
+        """The start option T229 names: start the stopped cluster again on the
+        same directories and port, serving the leaf alone where `leaf_only`
+        is True, or the chain again where it is False."""
+        if leaf_only is not None:
+            self.leaf_only = leaf_only
+            self._tls_settings()
+        super().start_again()
+
+    def launch(self) -> None:
+        """The start, with a new free port where another process took the
+        one chosen before the postmaster bound it."""
+        for attempt in range(3):
+            try:
+                return super().launch()
+            except ClusterError as exc:
+                if attempt == 2 or "bind" not in str(exc).lower():
+                    raise
+                self.port = _free_port()
+
+    def start(self) -> None:
+        super().start()
+        self.database_name = self.new_database()
+
+    def client_env(self, user: str = FX_WRITER, dbname: Optional[str] = None,
+                   appname: str = "pytest") -> dict:
+        """A client's environment for `user` over TLS: `host=localhost` for
+        the name check and `hostaddr=127.0.0.1`, so one connect (section
+        5.6), `verify-full`, the root alone, and the login's password file."""
+        env = _without_pg()
+        env.update(PGHOST="localhost", PGHOSTADDR="127.0.0.1", PGPORT=str(self.port), PGUSER=user,
+                   PGDATABASE=dbname or self.database_name, PGSSLMODE="verify-full",
+                   PGSSLROOTCERT=str(self.root_cert), PGPASSFILE=str(self.passfile(user)),
+                   PGAPPNAME=appname, PGCONNECT_TIMEOUT="10", LC_ALL="C",
+                   PATH=_engine_first(self.bindir, env.get("PATH", os.defpath)))
+        return env
+
+    def url(self, user: str = FX_WRITER, dbname: Optional[str] = None) -> str:
+        """Lane 1's URL form for `user` (Y:2326), at 127.0.0.1, since its six
+        URL parameters hold no `hostaddr`."""
+        return (f"postgresql://{user}@127.0.0.1:{self.port}/{dbname or self.database_name}"
+                f"?sslmode=verify-full&sslrootcert={self.root_cert}")
+
+    def label_of(self, dbname: Optional[str] = None) -> Optional[str]:
+        return self.labels.get(dbname or self.database_name, self.label)
+
+    def configuration(self, directory: Path, database: Optional[str] = None,
+                      mode: str = "index") -> Path:
+        """A 0600 `lanes-index.conf` in `directory`, naming `database` (by
+        default `database_name`): `register_url=` as `lanes_w_fx` and
+        `reader_url=` as `lanes_r_fx`, each with its password file, and the
+        database's switch label as `register_label=`."""
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path = directory / "lanes-index.conf"
+        path.write_text("\n".join([
+            f"mode={mode}", f"register_url={self.url(FX_WRITER, database)}",
+            f"register_passfile={self.passfile(FX_WRITER)}", f"reader_url={self.url(FX_READER, database)}",
+            f"reader_passfile={self.passfile(FX_READER)}", f"register_label={self.label_of(database)}",
+            "register_schema=lanes_register", ""]), encoding="utf-8")
+        path.chmod(0o600)
+        return path
+
+    def second_database(self, label: str) -> "Database":
+        """A database of its own on this cluster, made empty and built by the
+        bootstrap with `label` in its switch (T218b's check 10)."""
+        self.count += 1
+        name = f"t_{self.count}"
+        self.psql(f"CREATE DATABASE {name};")
+        self.bootstrap(name, label)
+        self.labels[name] = label
+        return Database(self, name)
+
+
+class CountingCluster(Cluster):
+    """SECTION 5.6'S COUNTING CLUSTER (T229; M13): a cluster of its own,
+    built like the session's, started with `log_connections=on` and
+    `log_statement=all`, its log in `server.log` beside its data: one
+    `connection authorized` line per connection, and one `statement:` line
+    per Query message."""
+
+    def prepare(self) -> None:
+        self.settings = ["log_connections=on", "log_statement=all"]
+
+    def log(self) -> Path:
+        return self.root / "server.log"
+
+
+class DelayedLoopback:
+    """THE DELAYED-LOOPBACK RELAY (T229; R-P23, lane 3's option B, #165
+    6741861590): standard library only, needing no root. It listens on
+    127.0.0.1 at a free port, `port`, connects each client to 127.0.0.1 at
+    `target_port`, and delivers each byte `delay_s` after it read it, in each
+    direction, untouched, so TLS passes through and the client meets the
+    server's own certificate. An end's close reaches the other end after the
+    delay; when both directions have ended, both sockets close. It models no
+    slow start and no loss. `close()`, or leaving its `with`, ends it."""
+
+    def __init__(self, target_port: int, delay_s: float, target_host: str = "127.0.0.1") -> None:
+        self.target, self.delay = (target_host, int(target_port)), float(delay_s)
+        self.lock = threading.Lock()
+        self.sockets: set = set()
+        self.threads: List[threading.Thread] = []
+        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(16)
+        self.port = self.listener.getsockname()[1]
+        self._spawn(self._accept, "accept")
+
+    def _spawn(self, target, name: str, *args) -> threading.Thread:
+        thread = threading.Thread(target=target, args=args, daemon=True,
+                                  name=f"delayed-loopback-{self.port}-{name}")
+        with self.lock:
+            self.threads = [t for t in self.threads if t.is_alive()] + [thread]
+        thread.start()
+        return thread
+
+    def _accept(self) -> None:
+        while True:
+            try:
+                client, _ = self.listener.accept()
+            except OSError:
+                return
+            try:
+                upstream = socket.create_connection(self.target, timeout=10)
+                upstream.settimeout(None)
+            except OSError:
+                client.close()
+                continue
+            pair = {"open": 2, "sockets": (client, upstream)}
+            with self.lock:
+                self.sockets.update((client, upstream))
+            self._spawn(self._read, "up", client, upstream, pair)
+            self._spawn(self._read, "down", upstream, client, pair)
+
+    def _read(self, source, sink, pair) -> None:
+        held: "queue.Queue" = queue.Queue()
+        writer = self._spawn(self._deliver, "deliver", held, sink, pair)
+        while True:
+            try:
+                data = source.recv(65536)
+            except OSError:
+                data = b""
+            held.put((time.monotonic() + self.delay, data))
+            if not data:
+                break
+        writer.join()
+
+    def _deliver(self, held, sink, pair) -> None:
+        while True:
+            due, data = held.get()
+            wait = due - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            try:
+                if not data:
+                    sink.shutdown(socket.SHUT_WR)
+                    break
+                sink.sendall(data)
+            except OSError:
+                for end in pair["sockets"]:
+                    self._shut(end)
+                break
+        with self.lock:
+            pair["open"] -= 1
+            done = pair["open"] == 0
+            if done:
+                self.sockets.difference_update(pair["sockets"])
+        if done:
+            for end in pair["sockets"]:
+                end.close()
+
+    @staticmethod
+    def _shut(end) -> None:
+        try:
+            end.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def alive(self) -> List[str]:
+        """The relay's threads still running."""
+        with self.lock:
+            return [t.name for t in self.threads if t.is_alive()]
+
+    def close(self, wait: float = 10.0) -> None:
+        self._shut(self.listener)
+        self.listener.close()
+        with self.lock:
+            ends, threads = list(self.sockets), list(self.threads)
+        for end in ends:
+            self._shut(end)
+        end_by = time.monotonic() + wait + self.delay
+        for thread in threads:
+            thread.join(max(0.0, end_by - time.monotonic()))
+
+    def __enter__(self) -> "DelayedLoopback":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+def delayed_loopback(target_port: int, delay_s: float) -> DelayedLoopback:
+    """T229's relay in front of `target_port` on 127.0.0.1, `delay_s` each
+    way: `with delayed_loopback(port, 0.075) as relay:` connect to
+    `relay.port`."""
+    return DelayedLoopback(target_port, delay_s)
 
 
 # ------------------------------------------------------------ pytest
@@ -480,10 +1108,16 @@ def pytest_terminal_summary(terminalreporter) -> None:
     if _SWEPT:
         terminalreporter.write_line(f"real-engine: removed {len(_SWEPT)} cluster(s) a killed "
                                     f"session left: {', '.join(_SWEPT)}")
+    if _DATACL:
+        terminalreporter.write_line(f"real-engine: a clone's datacl before section 1.4's two "
+                                    f"statements (open point 12): {_DATACL[0]}")
+    for why in _IMPORTED:
+        terminalreporter.write_line(f"real-engine: no {IMPORTED}, so the cases that clone it "
+                                    f"fail: {why}")
 
 
-def _started(found: Probe, template_sql: str) -> Cluster:
-    cluster = Cluster(found.bindir, template_sql)
+def _started(found: Probe, template_sql, imported: bool = False, kind=None, **options) -> Cluster:
+    cluster = (kind or Cluster)(found.bindir, template_sql, imported, **options)
     try:
         cluster.start()
     except (ClusterError, OSError, subprocess.SubprocessError) as exc:
@@ -506,15 +1140,18 @@ def pg_engine() -> Probe:
 
 
 @_fixture(scope="session")
-def pg_template_sql() -> str:
-    """The template's schema. Empty until L1-A7 lands: T227 overrides this
-    with the bootstrap's roles, migrations and grants."""
-    return ""
+def pg_template_sql():
+    """How `tmpl` is built (T227): P8's bootstrap, `lanes-index bootstrap
+    --no-passwords` through the admin service, which makes the schema, the
+    roles and their GRANTs. A module may override it with `Bootstrap(sql)`,
+    to run its SQL after the bootstrap, or with plain SQL for an empty
+    `tmpl`."""
+    return Bootstrap()
 
 
 @_fixture(scope="session")
 def pg_cluster(pg_engine, pg_template_sql):
-    cluster = _started(pg_engine, pg_template_sql)
+    cluster = _started(pg_engine, pg_template_sql, imported=True)
     patch = pytest.MonkeyPatch()
     patch.setenv("PATH", _engine_first(pg_engine.bindir, os.environ.get("PATH", os.defpath)))
     try:
@@ -543,6 +1180,37 @@ def stoppable_cluster(pg_engine, pg_template_sql):
     finally:
         patch.undo()
         cluster.destroy()
+
+
+def _own_cluster(found: Probe, template_sql, kind, **options):
+    """A started cluster of `kind` for one test, its tools first on `PATH`
+    while it is up, destroyed at the end."""
+    cluster = _started(found, template_sql, kind=kind, **options)
+    patch = pytest.MonkeyPatch()
+    patch.setenv("PATH", _engine_first(found.bindir, os.environ.get("PATH", os.defpath)))
+    try:
+        yield cluster
+    finally:
+        patch.undo()
+        cluster.destroy()
+
+
+@_fixture()
+def tls_cluster(pg_engine, pg_template_sql, request):
+    """Section 5.6's TLS cluster (T229), the test's own: a `TLSCluster` built
+    like the session's. `@pytest.mark.parametrize("tls_cluster",
+    [{"leaf_only": True}], indirect=True)` starts it serving the leaf
+    alone."""
+    options = dict(getattr(request, "param", None) or {})
+    yield from _own_cluster(pg_engine, pg_template_sql, TLSCluster,
+                            leaf_only=bool(options.get("leaf_only")))
+
+
+@_fixture()
+def counting_cluster(pg_engine, pg_template_sql):
+    """Section 5.6's counting cluster (T229), the test's own: a
+    `CountingCluster` built like the session's."""
+    yield from _own_cluster(pg_engine, pg_template_sql, CountingCluster)
 
 
 # ------------------------------------------------------------ the smoke
@@ -579,7 +1247,58 @@ def _smoke_stoppable(found: Probe) -> str:
         cluster.destroy()
 
 
-SMOKES = {"session": _smoke_session, "stoppable": _smoke_stoppable}
+def _smoke_tls(found: Probe) -> str:
+    """A `verify-full` connect to the TLS cluster, the root alone as
+    `sslrootcert=`, by SCRAM, whose `pg_stat_ssl` row says TLSv1.3; and the
+    same connect without TLS, refused by the `hostnossl` line."""
+    import secrets
+    cluster = TLSCluster(found.bindir)
+    try:
+        cluster.start()
+        password = secrets.token_urlsafe(24)
+        cluster.psql(f"CREATE ROLE fx_smoke LOGIN PASSWORD '{scram_verifier(password)}';")
+        cluster.passwords["fx_smoke"] = password
+        env = dict(cluster.client_env("fx_smoke"), PGREQUIREAUTH="scram-sha-256")
+        argv = [cluster.tool("psql"), "-X", "-A", "-t", "-F", "|", "-c",
+                "SELECT ssl, version FROM pg_stat_ssl WHERE pid = pg_backend_pid()"]
+        said = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=60, check=False)
+        if (said.returncode, said.stdout.strip()) != (0, "t|TLSv1.3"):
+            raise ClusterError(f"the verify-full connect answered {said.returncode}: {_tail(said)}")
+        plain = subprocess.run(argv, capture_output=True, text=True, timeout=60, check=False,
+                               env=dict(env, PGSSLMODE="disable"))
+        if plain.returncode == 0:
+            raise ClusterError("a connect without TLS was let in: the hostnossl line did not reject it")
+        return (f"verify-full by SCRAM on 127.0.0.1:{cluster.port} answered t|TLSv1.3, and "
+                f"sslmode=disable was refused")
+    finally:
+        cluster.destroy()
+
+
+def _smoke_counting(found: Probe) -> str:
+    """Two connects and a query on the counting cluster, whose log holds
+    their `connection authorized` lines and the query's `statement:` line."""
+    import uuid
+    cluster = CountingCluster(found.bindir)
+    try:
+        cluster.start()
+        name = cluster.new_database()
+        offset = cluster.log().stat().st_size
+        marker = f"counting-smoke-{uuid.uuid4().hex[:8]}"
+        _select_1(cluster, name)
+        cluster.psql(f"SELECT '{marker}';", dbname=name)
+        time.sleep(0.2)                       # the logger's last line
+        text = cluster.log().read_bytes()[offset:].decode("utf-8", "replace")
+        connections = len(re.findall(r"connection authorized", text))
+        if connections < 2 or f"statement: SELECT '{marker}';" not in text:
+            raise ClusterError(f"the counting cluster's log holds {connections} connection(s) and "
+                               f"{'a' if marker in text else 'no'} statement line for the query")
+        return f"{connections} connection lines and the query's statement line in {cluster.log()}"
+    finally:
+        cluster.destroy()
+
+
+SMOKES = {"session": _smoke_session, "stoppable": _smoke_stoppable, "tls": _smoke_tls,
+          "counting": _smoke_counting}
 
 
 def main(argv: List[str]) -> int:
