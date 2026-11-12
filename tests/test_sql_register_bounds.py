@@ -663,9 +663,11 @@ ROWS = {
     # #165 6783909985, which adds "the rollback's step 1" to TP's F4 list):
     # step 1 is `commit_write` with the `rollback` entry (T304), whose
     # `INSERT INTO journal` meets the trigger, as the cutover's entry does.
+    # Its estate is `cutover-done` (T278d): T326's step 0 walks origin for the
+    # cutover's marker commit, which `_to_primary` never pushes.
     "rollback":        dict(group=None, exit=69, bound=30, strict=False, faults=("F1",),
                             statement_ms=10000, table="journal", f4_exit=69,
-                            slow=("journal", "INSERT"), estate="primary", after=None,
+                            slow=("journal", "INSERT"), estate="cutover-done", after=None,
                             target=None),
     "cutover":         dict(group=None, exit=69, bound=15, strict=False, faults=("F1",),
                             statement_ms=10000, table="journal", f4_exit=69,
@@ -2407,23 +2409,37 @@ class Operator:
 
     `estate`: `imported`, as the import leaves it, the switch at `files` with
     the marker `absent`; `primary`, brought to `primary` with the marker
-    `present` by AT-LR006's route (the import module's `_to_primary`); or
-    `stray`, `primary` with test 6's stray commit, a files-mode
+    `present` by AT-LR006's route (the import module's `_to_primary`), which
+    pushes nothing, so origin carries no marker commit (T257's writer rows);
+    `cutover-done`, AT-6's "the cutover done (the switch at `primary`, and
+    `lanes/STORE` on a bare origin)": the imported estate cut over by the
+    real `cutover --import <C>` (lane 3's T327), whose marker commit, with
+    its `Register-Seq`, is pushed to origin, read back and recorded (T278d);
+    or `stray`, `primary` with test 6's stray commit, a files-mode
     `lanes-edit.sh log NOTED` pushed to origin by the operator's checkout
-    with no configuration, so that it never reached the register."""
+    with no configuration, so that it never reached the register.
+
+    WHY THE ROLLBACK'S ESTATE IS `cutover-done` (T278d; line BD15): T326's
+    step 0 fetches `origin main` on every try and walks its first-parent
+    line for the last `Register-Seq` (`rollback_step_0_git_half`, T322's
+    pass bounded at seq 0). On `_to_primary`'s estate no commit carries one,
+    so the rollback refused 2, "walk-failed", before step 1 ever ran. The
+    setup cutover runs with `TIMING_PSQL` off its `PATH`, so the timing,
+    send and begin logs hold the test's own command alone."""
 
     def __init__(self, pg, tmp_path: Path, request, estate: str = "imported"):
         from sql_register_helpers import flipped_copy
         from test_sql_register_import import OPERATOR, TIP_A, FixtureRegister, _to_primary
         self.pg, self.root, self.request, self.lane = pg, tmp_path, request, OPERATOR
         self.reg = FixtureRegister(tmp_path / "reg")
-        if estate == "imported":
+        if estate in ("imported", "cutover-done"):
             # THE SEED'S HOLD WITH NO TIME IS RELEASED BEFORE THE IMPORT (line HC14; W3a's
             # T211n `3fe23d7`, whose `HOLD_NO_UTC_RELEASE` this inlines, since BD's import
             # module predates it): lane 1's open-`HOLD` check (merge21f6) counts
             # `TAKE_LINES["hold-no-utc"]` as open, so a first-form cutover over it refuses 2.
             # Its holder, the operator lane, releases it in files mode, and C is the tip after.
-            # Only `imported` cuts over; `primary` and `stray` come through `_to_primary`.
+            # `imported` and `cutover-done` cut over; `primary` and `stray` come through
+            # `_to_primary`.
             proc = self.reg.edit("append-line", "HOLD RELEASED — lane repoA-2 (Eagle), "
                                  f"2026-10-01T05:20:00Z: opensoft/repoH main {TIP_A}",
                                  env={"LANES_LANE": OPERATOR})
@@ -2452,6 +2468,18 @@ class Operator:
         self.mode, self.stray = "index", None
         if estate in ("primary", "stray"):
             _to_primary(pg, self.reg, load_indexer())
+            self.mode = "primary"
+        if estate == "cutover-done":
+            # THE REAL CUTOVER (T278d), off `TIMING_PSQL`: the setup's own calls never
+            # reach the logs the test reads, and no fault is armed by its `commit_write`.
+            proc, _ = self.run(self.argv("cutover"), self.config(),
+                               {"PATH": self.reg.env["PATH"]})
+            assert proc.returncode == 0, (
+                f"the estate's cutover --import C (lane 3's T327): {proc.returncode}: "
+                f"{proc.stderr}")
+            switch = self.state()[0].split("|")[:2]
+            assert switch == ["primary", "present"], f"the estate's cutover left {switch}"
+            assert self.origin_tip() != self.reg.c, "the cutover's marker commit is not on origin"
             self.mode = "primary"
         if estate == "stray":
             proc = self.reg.edit("log", "NOTED", f"lane:{OPERATOR}", "T278's stray commit",
@@ -2926,28 +2954,40 @@ def _primary_writer_57014(pg, tmp_path: Path, request, row: str) -> None:
 def test_a_rollback_whose_first_call_expires_rereads_the_switch(pg, tmp_path, request):
     """AT-D9's `rollback` row (TP:3604): "Where step 1's call expires, the
     rollback reads the switch again and never goes on to step 2 on an
-    unknown switch." On a `primary` estate, F2 is armed once the rollback's
-    first call, its check's head read, has ended (TP:3586-3589), so step
-    1's call expires at its 15 s timer, and so does the switch's re-read:
-    69, inside twice 15 + 15 = 30 s from step 1's start; exactly two calls
-    after the check's, step 1's and the re-read, and none after them; the
-    switch, the head and origin unchanged. The rollback's first database call
-    is its check's head read, T304's `_rollback_read`, so this arming stands
-    (lane 3's batch 11 (7)(b), #165 6783909985). It fails until lane 3's T304
-    and T326 land."""
-    op = Operator(pg, tmp_path, request, "primary")
+    unknown switch." On the `cutover-done` estate (T278d), F2 is armed at
+    step 1's own send, its `commit_write` (TP:3586-3589, "once the shim's
+    log shows the earlier call's end"), so every call of the check before
+    it reaches the cluster, and step 1's call expires at its 15 s timer, and
+    so does the switch's re-read: 69, inside twice 15 + 15 = 30 s from step
+    1's start; exactly two calls after the check's last, step 1's and then
+    the re-read, a read that calls no write function, and none after them;
+    the switch, the head and origin unchanged.
+
+    THE ARMING (T278d; line BD15): T278 armed F2 once the rollback's first
+    call had ended, its head read (lane 3's batch 11 (7)(b), #165
+    6783909985). Since T326 the check is that read, then step 0's fetch of
+    `origin main` and the head read after it (`rollback_step_0_git_half`),
+    so that arming put F2 on step 0's read, and the rollback ended 69 with
+    one call after the first, never reaching step 1. It fails until lane 3's
+    T304, T326 and T327 land (the estate's cutover is T327's)."""
+    op = Operator(pg, tmp_path, request, "cutover-done")
     before = op.state()
-    relay = ArmedFault(f"{pg.host}/.s.PGSQL.{pg.port}", "F2", lambda: bool(op.calls()))
+    relay = ArmedFault(f"{pg.host}/.s.PGSQL.{pg.port}", "F2", op.armed_for("commit_write"))
     try:
         proc, _ = op.run(["rollback"], op.config("127.0.0.1", relay.port))
     finally:
         relay.close()
     assert proc.returncode == 69, f"rollback: {proc.returncode}: {proc.stderr}"
     calls = op.calls()
-    assert calls and calls[0]["exit"] == 0, f"the check's head read never answered: {calls}"
-    later = [b["begin"] for b in op.begins() if b["begin"] >= calls[0]["end"]]
+    assert calls and all(c["exit"] == 0 for c in calls), \
+        f"a call of the check before step 1 did not answer: {calls}"
+    healthy = max(c["end"] for c in calls)
+    later = [b["begin"] for b in op.begins() if b["begin"] >= healthy]
     assert len(later) == 2, \
         f"step 1's call and the switch's re-read, and nothing after: {len(later)} calls"
+    sends = [s for s in op.sent() if s["ppid"] == op.pid and s["sent"] >= healthy]
+    assert [s["calls"] for s in sends] == [["commit_write"], []], \
+        f"step 1's commit_write, then a read of the switch: {sends}"
     assert op.state() == before, f"the rollback wrote: {before} -> {op.state()}"
     elapsed = op.exited - later[0]
     assert elapsed < 2 * 30, f"rollback: {elapsed:.2f} s against 15 + 15 s"
@@ -2967,8 +3007,11 @@ def test_a_rollback_that_keeps_losing_its_turn_exits_75_at_the_deadline_with_not
     try's head read and its fetch of `origin main`, timed from the shim's
     log and the `git` wrapper's (`GIT_TIMING`), and the bound takes the last
     try's as measured, not a fixed 15 s (lane 3's batch 11 (7)(b),
-    `_rollback_checks`). It fails until lane 3's T304 and T326 land."""
-    op = Operator(pg, tmp_path, request, "primary")
+    `_rollback_checks`). It runs on the `cutover-done` estate (T278d): on
+    `_to_primary`'s, T326's step 0 found no `Register-Seq` on origin and
+    refused 2 before step 1. It fails until lane 3's T304, T326 and T327
+    land (the estate's cutover is T327's)."""
+    op = Operator(pg, tmp_path, request, "cutover-done")
     before = op.state()
     op.time_git()
     session = _hold_head(pg)
