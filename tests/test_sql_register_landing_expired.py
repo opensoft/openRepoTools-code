@@ -40,7 +40,10 @@ directory (the fake-`psql` host rule, L1v4.5:525; lane 1, #165 6741670709 item
 9). "Nothing sent" is read here as: no `register commit` reached the stub and
 no `psql` call was made; on primary T424's and T425's refusals run in the
 attempt's child, after the parent's snapshot and before its seam, so a
-snapshot call may precede a refusal (B11 tasks:1087, :1152, :1271).
+snapshot call may precede a refusal (B11 tasks:1087, :1152, :1271). Beside
+the checkout, each lane the module writes for has its own register checkout,
+`<W>-lanes/<lane>`, a clone of the same origin (`WRITE_LANES`; lane 3's
+(119), #165 6813027223), as every estate at primary does.
 
 WHAT THEY FAIL UNTIL. At this base `lanes-edit.sh` never asks `lanes-index`
 its mode and writes the files whatever it would say, and its `append-line`
@@ -247,14 +250,50 @@ def _masked_path() -> str:
     return os.pathsep.join(parts)
 
 
-def _workspace(root: Path, fakebin: Path, files: dict, source: Path = None) -> tuple:
+#: EACH WRITE LANE'S OWN REGISTER CHECKOUT, `<c>` (lane 3, #165 6813027223,
+#: batch g Q119; T241e's `WRITE_LANES` in `test_sql_register_writes.py` is the
+#: model). On primary a write reads its author, its pending hand edits and its
+#: `repos.tsv` from the checkout of the lane it is made for, `<W>-lanes/<lane>`
+#: (`lanes-edit.sh`'s `lane_checkout_path`, `R-merge20:lanes-edit.sh:18342`),
+#: W being the real path of `workspace.yaml`'s `path:`, and refuses with 2,
+#: sending nothing, where that is not there, since a clone there would be
+#: D12's fetch (B15 tasks:1154; T415's `pw_checkout`). So `_workspace` makes
+#: it, as `lane-start` does at a launch, for each lane this module's writes
+#: are made for (`write_lane_of`'s): `WRITER`, the `LANES_LANE` of every form
+#: and take, and `HOLDER`, (a)'s `[writer-is-the-holder]`. Until T415 nothing
+#: reads it: no case sets `LANES_ROUTE_WRITES`, so each write goes through
+#: `LANES_REPO` as before.
+WRITE_LANES = (WRITER, HOLDER)
+
+
+def _lane_checkouts(origin: Path, checkout: Path, env: dict, lanes=WRITE_LANES) -> list:
+    """`<c>` for each of `lanes`, beside the checkout `workspace.yaml` names
+    as W: `<W>-lanes/<lane>`, W being its real path, as `lane_checkout_path`
+    puts it (Amendment 23 S1). Each is a clone of W's own origin, as
+    `lane-checkout <lane> --create` makes one, so it is at W's commit when
+    made after the case's last push from W (T241e's "after the case's
+    prep")."""
+    real = Path(os.path.realpath(checkout))
+    made = []
+    for lane in lanes:
+        target = real.parent / f"{real.name}-lanes" / lane
+        target.parent.mkdir(parents=True, exist_ok=True)
+        git(target.parent, "clone", "-q", str(origin), str(target), env=env)
+        made.append(target)
+    return made
+
+
+def _workspace(root: Path, fakebin: Path, files: dict, source: Path = None,
+               lanes=WRITE_LANES) -> tuple:
     """A files-mode workspace on a bare origin at `files`, in test 1's sync
     form (`test_sql_register_render.py`'s `workspace`): `workspace.yaml`
     names the origin and the checkout, a fake `tmux` and `fakebin` are first
     on `PATH`, and the workstation is configured. Where `source` is given
     (T279's case (h)), the origin is a bare clone of that repository and
-    `files` is not written. Returns (the origin, the checkout, the
-    environment)."""
+    `files` is not written. Each of `lanes` has its own register checkout
+    beside the checkout (`_lane_checkouts`); a case that pushes from the
+    checkout afterwards passes none and makes them after its push. Returns
+    (the origin, the checkout, the environment)."""
     home = root / "home"
     home.mkdir(parents=True, exist_ok=True)
     env = {k: v for k, v in os.environ.items()
@@ -277,6 +316,7 @@ def _workspace(root: Path, fakebin: Path, files: dict, source: Path = None) -> t
         git(checkout, "add", "-A", env=env)
         git(checkout, "commit", "-q", "-m", "C: AT-F13's register", env=env)
         git(checkout, "push", "-q", "origin", "main", env=env)
+    _lane_checkouts(origin, checkout, env, lanes)
     agents = home / ".agents"
     agents.mkdir(parents=True, exist_ok=True)
     (agents / "workspace.yaml").write_text(f"repository: {origin}\npath: {checkout}\n",
@@ -1546,8 +1586,9 @@ def test_a_landing_expired_on_primary_frees_main_and_who_landing_until_a_rollbac
     source = pg_cluster.imported_register
     assert source is not None, f"no repository for tmpl_imported: {pg_cluster.imported_problem}"
     origin, checkout, env = _workspace(tmp_path / "ws", tmp_path / "fakebin", {},
-                                       source=source.origin)
+                                       source=source.origin, lanes=())
     _to_primary_with_the_marker(reg, checkout, env)
+    _lane_checkouts(origin, checkout, env)  # after the marker's push, at W's commit (119)
     clock = reg.clock()
     _commit_line(reg, clock, HOLDER, _shift(landing(minutes=31), clock))
     taken = (HOLDER, str(PR), KEY)
