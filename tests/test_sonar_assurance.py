@@ -184,3 +184,49 @@ def test_analysis_verifies_the_submitted_task_sources_and_coverage(
         assert receipt["coverage_import_verified"] == (not bool(pull_request))
         assert calls[1][1] == {"analysisId": "analysis-123"}
         assert (tmp_path / "acceptance.json").exists()
+
+
+@pytest.mark.parametrize("failure", [
+    None, "revision", "source", "missing-probe", "modified-probe",
+    "missing-source", "duplicate-source", "bad-line", "empty-language", "summary",
+])
+def test_evidence_rebind_requires_exact_commits_sources_and_complete_reports(
+        assurance, tmp_path, failure):
+    root = repo(tmp_path / "checkout", {
+        "command": b"#!/usr/bin/env bash\necho hello\n",
+        "index": b"#!/usr/bin/env python3\nprint(1)\n"})
+    out = tmp_path / "evidence"
+    out.mkdir()
+    manifest = assurance.inventory(root)
+    recorded = json.loads(json.dumps(manifest))
+    if failure == "revision":
+        recorded["commits"]["."] = "f" * 40
+    if failure == "source":
+        recorded["files"][0]["sha256"] = "f" * 64
+    (out / "inventory.json").write_text(json.dumps(recorded))
+    (out / "provenance-probe.json").write_text(json.dumps({
+        "exact": 1, "modified": 1 if failure == "modified-probe" else 0}))
+    if failure == "missing-probe":
+        (out / "provenance-probe.json").unlink()
+    files = ['<file path="' + item["path"] + '"><lineToCover lineNumber="' +
+             ("999" if failure == "bad-line" else "2") + '" covered="' +
+             ("false" if failure == "empty-language" and item["language"] == "py"
+              else "true") + '"/></file>' for item in manifest["files"]]
+    if failure == "missing-source":
+        files.pop()
+    if failure == "duplicate-source":
+        files.append(files[0])
+    (out / "coverage.xml").write_text('<coverage version="1">' + "".join(files) + '</coverage>')
+    summary = {"files": 2, "languages": {
+        "py": {"covered": 1, "lines": 1}, "shell": {"covered": 1, "lines": 1}}}
+    if failure == "summary":
+        summary["files"] = 3
+    (out / "coverage-summary.json").write_text(json.dumps(summary))
+    if failure:
+        with pytest.raises((ValueError, FileNotFoundError)):
+            assurance.rebind_evidence(root, out)
+        assert not (out / "scanner.properties").exists()
+    else:
+        assert assurance.rebind_evidence(root, out) == summary
+        assert "sonar.coverageReportPaths=" + str(out / "coverage.xml") in (
+            out / "scanner.properties").read_text()

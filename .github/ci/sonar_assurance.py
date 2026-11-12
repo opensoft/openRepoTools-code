@@ -12,6 +12,7 @@ from pathlib import Path
 import subprocess
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 
 PROJECT = "opensoft_openRepoTools"
 GATE = {
@@ -106,6 +107,51 @@ def write_configuration(root, out, manifest):
         "".join(key + "=" + value + "\n" for key, value in properties.items()),
         encoding="utf-8")
     return properties
+
+
+def rebind_evidence(root, out):
+    """Accept test evidence only for the identical commits and source bytes."""
+    manifest = inventory(root)
+    recorded = json.loads((out / "inventory.json").read_text())
+    if recorded != manifest:
+        raise ValueError("test evidence differs from this exact checkout")
+    probe = json.loads((out / "provenance-probe.json").read_text())
+    if set(probe) != {"exact", "modified"} or probe["exact"] <= 0 or probe["modified"] != 0:
+        raise ValueError("test evidence has no successful source-copy provenance probe")
+    expected = {item["path"]: item for item in manifest["files"] if not item["test"]}
+    report = ET.parse(out / "coverage.xml").getroot()
+    if report.tag != "coverage" or report.attrib != {"version": "1"}:
+        raise ValueError("invalid coverage report")
+    seen = set()
+    summary = {"files": len(expected), "languages": {}}
+    for file in report:
+        path = file.get("path")
+        if file.tag != "file" or path not in expected or path in seen:
+            raise ValueError("coverage source inventory differs from the tested checkout")
+        seen.add(path)
+        numbers = set()
+        total = summary["languages"].setdefault(
+            expected[path]["language"], {"covered": 0, "lines": 0})
+        for line in file:
+            number = int(line.get("lineNumber", "0"))
+            covered = line.get("covered")
+            if (line.tag != "lineToCover" or number in numbers or
+                    not 1 <= number <= expected[path]["lines"] or
+                    covered not in ("true", "false")):
+                raise ValueError("invalid coverage line for " + path)
+            numbers.add(number)
+            total["lines"] += 1
+            total["covered"] += covered == "true"
+    if seen != set(expected):
+        raise ValueError("coverage source inventory is incomplete")
+    if set(summary["languages"]) != {"py", "shell"} or any(
+            not value["covered"] or not value["lines"]
+            for value in summary["languages"].values()):
+        raise ValueError("coverage is missing measured Python or shell execution")
+    if summary != json.loads((out / "coverage-summary.json").read_text()):
+        raise ValueError("coverage summary differs from the measured report")
+    write_configuration(root, out, manifest)
+    return summary
 
 
 def verify_gate(status, conditions, require_period=True, require_coverage=True):
@@ -235,7 +281,7 @@ def ci_paths(root, out):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("prepare", "verify-analysis"))
+    parser.add_argument("command", choices=("prepare", "rebind", "verify-analysis"))
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--pull-request")
@@ -250,6 +296,8 @@ def main():
                               item["path"] for item in manifest["files"]
                               if not Path(item["path"]).suffix and not item["test"]]},
                          indent=2))
+    elif args.command == "rebind":
+        print(json.dumps(rebind_evidence(root, out), indent=2))
     else:
         verify_analysis(out, root / ".scannerwork/report-task.txt", args.pull_request)
 
