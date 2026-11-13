@@ -2314,7 +2314,11 @@ def test_the_bind_childs_lookup_sends_the_five_copied_values(estate, case):
     takes the row's back, while a lookup whose lane came from `to` would
     send the respelling, which `find_write` compares exactly
     (`f9e1449c:lanes-index:10442`), and would end `rc=2` with LR007
-    `another-write`, not `bound`; and the lookup must not carry it."""
+    `another-write`, not `bound`; and the lookup must not carry it. The
+    guard itself never writes such a record, since it writes `to=` as the
+    row spells it (lane 5, #165 6867385794: `lanes-edit.sh:21606` at
+    merge97), so the respelled record stands for a damaged or hand-edited
+    one (lane 3's ruling, #165 6867533114)."""
     est = _real_estate(estate, mode="primary")
     # CASE 10's `[found]` ARMS (T254t, T254w): every call after the commit
     # call fails, and the guard's own prefetch calls before it do not.
