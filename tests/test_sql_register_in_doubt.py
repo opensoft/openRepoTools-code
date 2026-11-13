@@ -1098,11 +1098,17 @@ def gh_reads(where: Path) -> List[dict]:
 
 def comments(where: Path) -> List[dict]:
     """The fake `gh`'s comment calls, `issue comment` or `pr comment`: a
-    verb's tail (`gh_comment`, T421). Never Rule 1's reads, `issue view
-    --comments` and `pr list`, which `claim` makes at its step 2, before the
-    seam (`gh_reads_live`; Y:5043), and which decide nothing (T245c; lane
-    4's triage, #165 6833813092; T248a's `comment_calls` has the same
-    shape)."""
+    verb's tail. `claim`'s is its step 6, `gh_comment` once `write_event`
+    returns (`91bfa229:lanes-edit.sh:24731-24737`), which under the flag is
+    after the commit, from T414's seam: `commit_publish` returns through
+    `cp_seam` (`:3710-3716`), whose committed step writes `tail`, sets
+    `REGISTER_SEQ` and returns 0 (`:4247-4264`). This module counts those
+    calls and never reads their text; T421 changes that text, and the order
+    module's cases for T243 and T421 assert it (lane 4, #165 6852035770).
+    Never Rule 1's reads, `issue view --comments` and `pr list`, which
+    `claim` makes at its step 2, before the seam (`gh_reads_live`; Y:5043),
+    and which decide nothing (T245c; lane 4's triage, #165 6833813092;
+    T248a's `comment_calls` has the same shape)."""
     return [c for c in tool_calls(where, "gh") if c["argv"][:1] in (["issue"], ["pr"])
             and c["argv"][1:2] == ["comment"]]
 
@@ -1919,6 +1925,89 @@ def test_with_the_kept_child_gone_a_replay_runs_the_tail_once(estates, way):
 
 
 @CLIENT
+def test_two_matching_calls_of_one_change_set_leave_the_replays_tail_owed(estates):
+    """NIT-4 (b) (lane 3, #165 6851422597; T418 `91bfa229`): a takeover whose
+    record holds two `call` lines whose `<files>` is the entry's, and whose
+    own commit never answered `committed`, does not replay. Y:5317 takes
+    "the `call` line whose `<files>` is the entry's", one line. Two are
+    resends of one change set whose snapshots read the same database
+    second; their `preimages/` need not agree, and which of their calls
+    committed is not known. So the tail is owed: one WARNING naming the two
+    lines, exit 0, the mark `owed <utc>`, the record removed, no comment,
+    and no replay child, so `claim`'s Rule 1 reads (`gh issue view`) stay
+    at the killed run's count. T418 ends it before `pw_wdir_ok` and the
+    `replayed` token (`91bfa229:lanes-edit.sh:8470-8471`).
+
+    No fixture makes two such calls today: the `[lr006]` fixture moves the
+    clock past a second (TP:6981-6982). So the case writes the second line
+    itself. The killed `claim` leaves one `call=` line and no `tail`
+    (`killed`). The case adds a line with the same `<base> <clock>
+    <not_after> <files>`, naming its own attempt directory, `<run>/2`, as a
+    resend in the same second would, since matching lines are never
+    byte-identical (lane 3, the same post). That directory holds a copy of
+    the first's `snapshot`, `files` and `preimages` (Y:5177), mode 0700, so
+    it passes `pw_wdir_ok`, and the record's `attempts` goes up by one. The
+    rerun's snapshot finds the write, and with the killed child gone
+    `pw_tail` goes to the replay (`:8367`).
+
+    It fails until T418 `91bfa229`. Before NIT-4 the replay took the last
+    matching line (`9a314c09:lanes-edit.sh:8546`), so it replayed from the
+    second directory and ran the tail: one comment and `tail=done`. Its
+    name holds `tail`, so T418's verify selects it and T417's, which
+    leaves out `tail`, does not (tasks:1231 and :1199 at `94fab177`).
+
+    The exception, where the run whose own commit answered `committed`
+    keeps that call's line (Y:5306), is not built here. It needs that run's
+    own in-memory `call` lines to hold a second matching line, from an
+    earlier call of its own in the same database second, with its kept
+    child gone. A line written into the record file never reaches a live
+    run, and no fixture pins two calls to one second."""
+    e = estates()
+    where = loggers(e)
+    argv = claim(OBJ)
+    _, write_id = killed(e, LA, argv, first=[where])
+    seq = e.journal_after()[-1]["seq"]
+    rec = the_record(e)
+    assert len(rec["calls"]) == 1 and "tail" not in rec["fields"], rec
+    base, clock, not_after, files, first = rec["calls"][0].split(None, 4)
+    first_dir = Path(first.strip())
+    assert first_dir.name.isdigit() and (first_dir / "files").is_file(), f"{first_dir} is not a kept call's directory"
+    second = first_dir.parent / str(int(first_dir.name) + 1)
+    second.mkdir(mode=0o700)
+    second.chmod(0o700)
+    kept = [first_dir / "snapshot", first_dir / "files", first_dir / "preimages"]
+    if kept[2].is_dir() and not kept[2].is_symlink():
+        kept += sorted(kept[2].rglob("*"))
+    for src in kept:
+        if src.is_symlink() or not src.exists():
+            continue
+        dst = second / src.relative_to(first_dir)
+        if src.is_dir():
+            dst.mkdir(mode=0o700, parents=True, exist_ok=True)
+        elif src.is_file():
+            dst.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            dst.write_bytes(src.read_bytes())
+            dst.chmod(src.stat().st_mode & 0o777)
+    text = re.sub(r"(?m)^attempts=(\d+)$", lambda m: f"attempts={int(m.group(1)) + 1}",
+                  rec["path"].read_text(encoding="utf-8"))
+    rec["path"].write_text(f"{text}call={base} {clock} {not_after} {files} {second}\n", encoding="utf-8")
+    assert len(the_record(e)["calls"]) == 2
+    killed_reads = len(gh_reads(where))
+    again = e.run(LA, argv, first=[where])
+    assert again.code == 0 and again.err.count("WARNING") == 1, again.err[-800:]
+    owed = (re.escape(f"register write {write_id} is in the register at seq {seq}; 2 call lines of its pending "
+                      "record sent the entry's change set")
+            + r"[^\n]*?" + re.escape("so it cannot be replayed, so its after-COMMIT steps did NOT run: ") + r"\w")
+    assert re.search(owed, again.err) and "replayed at seq" not in again.err, (
+        f"the replay was not left owed for two matching call lines: {again.err[-800:]}")
+    assert comments(where) == [] and len(gh_reads(where)) == killed_reads, (
+        f"a replay ran: {len(comments(where))} comment(s), {len(gh_reads(where)) - killed_reads} new Rule 1 read(s)")
+    mark = mark_of(e, write_id).read_text(encoding="utf-8")
+    assert re.search(r"(?m)^tail=owed ", mark), f"the mark does not hold owed: {mark!r}"
+    assert pending(e) == []
+
+
+@CLIENT
 def test_a_replay_of_request_handoff_types_into_no_pane(estates):
     """With the kept child gone, `request-handoff`'s replay runs its tail
     with no `guard_type`: the fake `tmux` logs no `send-keys`, and the poll
@@ -2276,6 +2365,16 @@ class HalfOpen:
                           arms=[BEFORE, {"mode": "hold", "match": SNAPSHOT_TEXT, "call": 2, "fifo": str(snap)},
                                 *held, *arms])
         call = until_seen("the first commit call", lambda: self.w.commit_calls()[:1], self.w)[0]
+        # The replay waits for that call's end. The shim logs a call at its
+        # start, before the real `psql` runs, so a replay sent then could take
+        # the head row first: the writer's own `commit_write` then waits out
+        # the commit row's 2000 ms `lock_timeout` and ends 55P03, a lost turn,
+        # and with the 1 s deadline past the run ends 75, "register busy",
+        # before any next call (round 6h's `[connect]`; lane 2's TR21, 2c).
+        # The `before` arm's lost call ends 2, its backend gone and its
+        # transaction rolled back, so the head row is free for the replay.
+        ended = until_seen("the first commit call's end", lambda: self.w.ends().get(call["call"]), self.w)
+        assert ended.get("exit") == 2, f"the first commit call ended {ended}, not 2, the `before` arm's lost call"
         script = without_commit(call["stdin"])
         assert "commit_write" in script and script.rstrip().endswith(";") and not script.rstrip().endswith("\\;"), (
             f"the replay does not end in a `;` that psql sends: {script[-80:]!r}")
