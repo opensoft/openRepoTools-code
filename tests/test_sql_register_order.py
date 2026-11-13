@@ -2546,7 +2546,9 @@ _HANDOFF = ("--lane", R_HERE, "T252b's race")
 #: (T429); W13 under `set -e` and W14's note arm exit with the writer's code
 #: (T430); `lane`'s arm keeps 1 for a 2 (T432); the handoff skill's step-4
 #: stop ends 2 alone, its writer's code staying in that writer's own stderr
-#: (T431; lane 3's question 4, #165 6835210568; T252n).
+#: (T431; lane 3's question 4, #165 6835210568; T252n); and the guard's child
+#: ends 0, its refused `set-row-state` a `note=`, since the bind landed (lane
+#: 3's point 4(b), #165 6841918192; T252s).
 ACT_WRITES = {
     "lane-start-w1-add-row": ActWrite("lane-start", ("repoZ", "1", "--no-launch"), R_NEW,
                                       verb_is("add-row"), rival="row", code=2),
@@ -2630,6 +2632,7 @@ class ActWorld(Sandbox):
         self._n = itertools.count(1)
         self.writers: List[Writer] = []
         self.sessions: list = []  # the guard's live sessions (T252q), closed by `act_worlds`
+        self.record: Optional[Path] = None  # the guard child's bind record (`offer`; T252s)
 
     def lane_checkout(self, lane: str) -> Path:
         """`<c>`, lane `lane`'s own register checkout beside this world's W,
@@ -2680,7 +2683,7 @@ class ActWorld(Sandbox):
             # says nothing)"; with the record alone, `lane-start --bind`
             # refused 2, "no live session record names this window" (T252q).
             sid, to = write.argv[-1], dict(self.env, **write.env)["LANES_LANE"]
-            self.offer(sid, write.lane, to)
+            self.record = self.offer(sid, write.lane, to)
             live = guard_session(self.home, self.root / "guard-session", self.lane_dir, window=to,
                                  session_id=sid)
             self.sessions.append(live)
@@ -2705,8 +2708,21 @@ class ActWorld(Sandbox):
         empty `.bind.1.out`, which the outer's fork creates. No prefetch ran,
         so the record has no `c`, `n_a` or `w_s_ms`, and `bound_s` is
         `guard_bind_bound_s`'s default, 500. `guard_bind_body` reads `mode`,
-        `from`, `to` and `out`, binds `to` with `lane-start --no-launch
-        --bind`, and then sets `left`'s row (T252q)."""
+        `from`, `to`, `out` and `act`, binds `to` with `lane-start --no-launch
+        --bind`, and then sets `left`'s row (T252q).
+
+        ITS `act` is the guard's base at the offer, `<act-id>@<n>:<generation>`
+        (tasks:1426; W:5378), which `guard_offer` writes after `pane`; here it
+        is taken from `act-begin` on primary (Y:5572), before the rival
+        commits. Without it the `set-row-state` on `left` sends `LANES_EXPECT`
+        with no `LANES_ACT`, which the client refuses with 2 before any commit
+        call (T510's part 5), so the race never reaches its hold (lane 3,
+        #165 6841918192, point 4(b); lane 5, #165 6842157774; T252s)."""
+        begun = self.launch("act-begin", ["bash", str(self.bin / "lanes-edit.sh"), "act-begin"], left)
+        begun.wait(60)
+        act = begun.out.strip()
+        assert begun.code == 0 and ACT_RE.match(act), (
+            f"act-begin for the offer's act exited {begun.code}, printed {begun.out!r}: {begun.err[-300:]}")
         offers = Path(self.env.get("CLAUDE_CONFIG_DIR") or Path(self.env["HOME"]) / ".claude") / "lanes" / "offers"
         offers.mkdir(parents=True, exist_ok=True)
         offers.chmod(0o700)
@@ -2715,7 +2731,7 @@ class ActWorld(Sandbox):
         utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
         bound_s = 500
         lines = ["mode=binding", f"from={left}", f"to={to}", f"session={to}", f"uuid={sid}", f"utc={utc}",
-                 "window=", "pane=", "bind=1", f"started_utc={utc}", f"bound_s={bound_s}", "bounded=yes",
+                 "window=", "pane=", f"act={act}", "bind=1", f"started_utc={utc}", f"bound_s={bound_s}", "bounded=yes",
                  f"deadline_epoch={now + bound_s + 5}", f"host={self.env['LANES_WORKSTATION']}",
                  f"container={self.env['LANES_CONTAINER']}", f"out={record}.bind.1.out", "detach=setsid"]
         for path, text in ((record, "\n".join(lines) + "\n"), (Path(f"{record}.bind.1.out"), "")):
@@ -2799,16 +2815,17 @@ def act_worlds(pg_cluster, tmp_path):
         pg_cluster.drop_database(name)
 
 
-def race(world: ActWorld, write: ActWrite, rival_lane: str) -> Tuple[Writer, Writer, List[str]]:
+def race(world: ActWorld, write: ActWrite, rival_lane: str) -> Tuple[Writer, Writer, List[str], int]:
     """The act run to `write`, its commit call held while the rival commits
     on `rival_lane`; then let go. Returns the act, which may still run (a
-    `lane-start` whose W8 committed waits for the holder), the rival, and
-    the held write's id, read from the shim's log, which logs a call before
-    its hold."""
+    `lane-start` whose W8 committed waits for the holder), the rival, the
+    held write's id, read from the shim's log, which logs a call before
+    its hold, and the head at the hold, before the rival commits (T252s)."""
     fifo = world.root / "hold.fifo"
     os.mkfifo(str(fifo))
     act = world.act(write, [{"mode": "hold", "match": write.match, "call": 1, "fifo": str(fifo)}])
     held = hold_point(fifo, act)
+    base = world.c.head()
     calls = [c.get("stdin") or "" for c in act.commit_calls() if write.match in (c.get("stdin") or "")]
     ids = [m.group(1) for m in (re.search(r"commit_write\(\s*-?[0-9]+\s*,\s*'(" + UUID_RE + ")'", s)
                                 for s in calls[:1]) if m]
@@ -2816,7 +2833,7 @@ def race(world: ActWorld, write: ActWrite, rival_lane: str) -> Tuple[Writer, Wri
     rival = world.rival(write.rival, rival_lane)
     assert rival.code == 0, f"the rival exited {rival.code}: {rival.err[-400:]}"
     held.close()
-    return act, rival, ids
+    return act, rival, ids, base
 
 
 @CLIENT
@@ -2827,10 +2844,17 @@ def test_an_act_whose_scope_changed_before_its_commit_writes_nothing(act_worlds,
     commit refuses with 2 and `expectation: <scope> changed at seq <k> by
     <lane>/<verb>`, naming the rival's seq, lane and verb; the held write is
     not in the journal; and the act exits with the code lane 4's arm gives,
-    never 0."""
+    never 0.
+
+    `[guard-answer-2-child]` alone ends 0 (lane 3's point 4(b), #165
+    6841918192; tasks:1438): the bind landed, so the guard's body exits 0;
+    its record holds one `note=`, for the refused write, in the facts file
+    beside `out=` that the outer folds into the record (`guard_bind_facts`);
+    the `set-row-state` itself exited 2, with its `expectation:` line; and
+    the journal grew only by the rival's entry after the hold (T252s)."""
     world = act_worlds()
     w = ACT_WRITES[write]
-    act, rival, ids = race(world, w, w.lane)
+    act, rival, ids, base = race(world, w, w.lane)
     act.wait(240)
     k = max(int(r["seq"]) for r in world.c.json(
         f"SELECT coalesce(jsonb_agg(q), '[]'::jsonb) FROM (SELECT seq FROM {REGISTER}.journal "
@@ -2841,6 +2865,18 @@ def test_an_act_whose_scope_changed_before_its_commit_writes_nothing(act_worlds,
     assert said in act.err + act.out, f"[{write}] {said!r} is not in {act.err[-900:]!r}"
     assert all(world.c.value(f"SELECT count(*) FROM {REGISTER}.journal WHERE write_id = '{x}';") == "0"
                for x in ids), f"[{write}] the held write is in the journal"
+    if w.tool == "guard":
+        assert act.code == 0, f"[{write}] the guard's body exited {act.code}, not 0: {act.err[-600:]}"
+        facts = Path(f"{world.record}.bind.1.facts")
+        assert facts.is_file(), f"[{write}] the body left no facts file at {facts}: {act.err[-600:]}"
+        notes = [n for n in facts.read_text(encoding="utf-8").splitlines() if n.startswith("note=")]
+        assert len(notes) == 1 and "set-row-state" in notes[0] and "exit 2" in notes[0], (
+            f"[{write}] the record's notes are not one for the set-row-state's 2: {notes}")
+        grew = [int(r["seq"]) for r in world.c.json(
+            f"SELECT coalesce(jsonb_agg(q ORDER BY q.seq), '[]'::jsonb) FROM (SELECT seq FROM {REGISTER}.journal "
+            f"WHERE seq > {base}) q;")]
+        assert grew == [k], f"[{write}] after the hold at {base} the journal grew by {grew}, not the rival's {k} alone"
+        return
     if w.code is not None:
         assert act.code == w.code, f"[{write}] the act exited {act.code}, not {w.code}: {act.err[-600:]}"
     assert act.code != 0, f"[{write}] the act exited 0 after its write was refused: {act.err[-600:]}"
@@ -2853,7 +2889,7 @@ def test_an_act_whose_scopes_held_commits(act_worlds, write):
     another lane's `PAUSED` (or row line), the held write commits."""
     world = act_worlds()
     w = ACT_WRITES[write]
-    act, _, ids = race(world, w, R_OTHER[w.lane])
+    act, _, ids, _ = race(world, w, R_OTHER[w.lane])
     deadline = time.monotonic() + 60
     while True:
         ended = act.ended is not None
