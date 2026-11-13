@@ -738,10 +738,41 @@ def _path_mirror(real: str, masked: Tuple[str, ...]) -> str:
 
 _STAMP = r'''#!/usr/bin/env python3
 # T243's stamp: each psql call's start time and argv, then T203's shim.
-import json, os, sys, time
+# Where `tee` is in this directory (a burst's writer, T243m), a forked child
+# also passes the call's stderr through, and at its end logs to `tee.log`,
+# keyed by the start time, the SQLSTATE of each `ERROR:` line (the register's
+# VERBOSITY=verbose) and the time the call's stderr closed. The shim is still
+# this process, so its pid and its exit are the call's, as before.
+import json, os, re, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__))
+start = time.time()
 with open(os.path.join(HERE, "stamps.log"), "a", encoding="utf-8") as log:
-    log.write(json.dumps({"t": time.time(), "argv": sys.argv[1:]}) + "\n")
+    log.write(json.dumps({"t": start, "argv": sys.argv[1:]}) + "\n")
+if sys.argv[1:] != ["--version"] and os.path.exists(os.path.join(HERE, "tee")):
+    rd, wr = os.pipe()
+    if os.fork() == 0:
+        os.close(wr)
+        os.close(0)
+        os.close(1)
+        seen, out = b"", True
+        while True:
+            chunk = os.read(rd, 65536)
+            if not chunk:
+                break
+            seen += chunk
+            view = memoryview(chunk)
+            while out and view:
+                try:
+                    view = view[os.write(2, view):]
+                except OSError:
+                    out = False
+        states = re.findall(r"^ERROR:\s+([0-9A-Z]{5}):", seen.decode("utf-8", "replace"), re.M)
+        with open(os.path.join(HERE, "tee.log"), "a", encoding="utf-8") as log:
+            log.write(json.dumps({"t": start, "end": time.time(), "states": states}) + "\n")
+        os._exit(0)
+    os.close(rd)
+    os.dup2(wr, 2)
+    os.close(wr)
 shim = os.path.join(HERE, "shim", "psql")
 os.execv(shim, [shim] + sys.argv[1:])
 '''
@@ -1214,19 +1245,75 @@ def burst(e: Estate, objects: Sequence[str], window_ms: int, extra: dict = None,
     asserts anything, it records the drain and each writer's attempts,
     counted as snapshot calls in the shim's log, and its seconds from the
     release to its exit, never asserted (TP:3783-3787 at `0c3750a5`; lane 3,
-    #165 6838735040; T243l): `record("burst", node, ...)`."""
+    #165 6838735040; T243l): `record("burst", node, ...)`. Beside them, for
+    lane 1's two points (#165 6840891258; T243m), also never asserted: each
+    writer's calls in order with their exits, its commits' losses by
+    SQLSTATE, and its commits' seconds, as `burst_calls` reads them, and the
+    longest commit of the burst. `attempts` keeps its meaning, every call
+    that is not a commit or a lookup, the render's own calls among them."""
     barrier = Barrier(e.root, len(objects))
     arms = [dict(WINDOW, ms=window_ms)]
     writers = [e.launch(lane, claim(obj, "--no-github"), arms=arms, barrier=barrier, extra=extra)
                for lane, obj in zip(BURST, objects)]
+    for w in writers:
+        (w.psql_dir / "tee").write_text("", encoding="utf-8")  # the stamp's tee (T243m)
     released = barrier.release()
     for w in writers:
         w.wait()
     drain = max(w.ended for w in writers) - released
+    read = {w.lane: burst_calls(w) for w in writers}
     record("burst", node, drain_s=round(drain, 2), margin_vs_30s=round(D7_S / max(drain, 0.01), 2),
            attempts={w.lane: len(w.snapshot_calls()) for w in writers},
-           seconds={w.lane: round(w.ended - released, 2) for w in writers})
+           seconds={w.lane: round(w.ended - released, 2) for w in writers},
+           calls={lane: r[0] for lane, r in read.items()}, losses={lane: r[1] for lane, r in read.items()},
+           commit_s={lane: r[2] for lane, r in read.items()},
+           longest_commit_s=max((x for r in read.values() for x in r[2]), default=None))
     return writers, drain
+
+
+def burst_calls(w: Writer) -> Tuple[str, Dict[str, int], List[float]]:
+    """Lane 1's two points (#165 6840891258; T243m), read from `w`'s logs:
+
+    - its calls in order, each `<kind><code>`, the code `psql`'s own exit
+      in the shim's ends (`?` where it has none): `s` the snapshot, the
+      request just before a commit; `c` a commit (`commit_write`); `l` a
+      lookup (`find_write`); `m` the render's `record_mirror_state`; `r`
+      any other request, the render's head read, a snapshot's second
+      request or LR004's re-read among them;
+    - its commits' losses, each failed commit counted under the SQLSTATE of
+      each `ERROR:` line its stderr carried (LR001, 40001, 55P03, 40P01,
+      LR008 or another), as the stamp's tee logs them, or `unread` where
+      the tee logged none;
+    - each commit's seconds, from the stamp's start to its stderr's close,
+      the shim's window included, where the tee logged its end.
+
+    A burst's figures, never asserted."""
+    calls, ends = w.stamps(), w.ends()
+    tees = {x["t"]: x for x in w._jsonl("tee.log")}
+    letters: List[str] = []
+    losses: Dict[str, int] = {}
+    seconds: List[float] = []
+    for k, call in enumerate(calls):
+        text = call.get("stdin") or ""
+        after = (calls[k + 1].get("stdin") or "") if k + 1 < len(calls) else ""
+        if "commit_write" in text:
+            kind = "c"
+        elif "find_write" in text:
+            kind = "l"
+        elif "record_mirror_state" in text:
+            kind = "m"
+        else:
+            kind = "s" if "commit_write" in after else "r"
+        end = ends.get(call["call"], {})
+        code = end.get("psql", end.get("exit", "?"))
+        letters.append(f"{kind}{code}")
+        tee = tees.get(call["t"])
+        if kind == "c" and tee:
+            seconds.append(round(tee["end"] - call["t"], 2))
+        if kind == "c" and code != 0:
+            for state in (tee or {}).get("states") or ["unread"]:
+                losses[state] = losses.get(state, 0) + 1
+    return " ".join(letters), losses, seconds
 
 
 def record(name: str, node: Optional[pytest.Item] = None, **figures) -> str:
