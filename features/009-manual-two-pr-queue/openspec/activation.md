@@ -46,3 +46,22 @@ Classic protection remains disabled with off/empty contexts/checks. No new
 permission, bypass, app, release, assembly or lane act was performed.
 
 This is a service-migration receipt, not flag enablement or live efficiency.
+
+## Enablement test boundaries
+
+The committed-state assertion now expects the owner-approved true policy. The
+existing disabled/no-network case uses an explicit false fixture and verifies
+that state before calling the router. Three new default-on cases require full
+fallback for absent, unbound or legacy-retaining protection.
+
+The old local-review and queue preparation checks also asserted a false global
+default. Their phase expectations now match true; their read-only-reader and
+full-entry/queue assertions are preserved. The local-review case is renamed to
+describe the current approved phase. These two intentional test-identity renames
+and three added protection cases are not dropped runtime/full-suite coverage.
+
+Red-first default-on checks failed four assertions against the old false policy,
+while the explicit disabled case passed. The first broad run found the remaining
+historical local-review phase assertion (483 passed/1 failed); a complete policy
+reference search identified the queue assertion too. Final validation follows
+the corrected phase expectations; no failure is recast as passing qualification.

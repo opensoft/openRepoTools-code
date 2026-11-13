@@ -349,8 +349,9 @@ def test_ci_local_review_cannot_replace_unresolved_or_incomplete_threads(deliver
         read_review(delivery, batch, read_threads=read)
 
 
-def test_ci_local_review_preparation_keeps_flag_jobs_and_queue_unchanged():
-    assert json.loads((REPO / ".github/ci/delivery-policy.json").read_text())["enabled"] is False
+def test_ci_local_review_contract_keeps_approved_flag_and_read_only_boundary():
+    # Enablement is separately owner-approved; the review reader remains read-only.
+    assert json.loads((REPO / ".github/ci/delivery-policy.json").read_text())["enabled"] is True
     # No new write-capable workflow or custom success check accompanies the reader.
     text = (REPO / ".github/ci/delivery_verify.py").read_text()
     assert '"-X", "POST"' not in text and '"-X", "PATCH"' not in text
