@@ -2212,7 +2212,14 @@ def test_the_bind_childs_lookup_sends_the_five_copied_values(estate, case):
     the record's `args_sha256` copy changed, LR007 `another-write` ends `rc=2`
     with the server's message and the copies dropped; `[generation]`: the
     `generation` copy changed, `rc=2` with a plain rerun's refusal and the
-    copies kept."""
+    copies kept.
+
+    `[found]` SENDS NO SECOND COMMIT (T254zh; lane 2's review RV22,
+    finding 1): after the second `2`, no `start-record` commit is sent, as
+    case 10 checks, so a lookup that missed its write and bound anew fails.
+    NOT SHOWN HERE (RV22, finding 1): the estate does not spell the window
+    otherwise, and its `to`, `repoA-3`, is also the write's lane, so "never
+    derived from `to`" is read only as the copies being sent as copied."""
     est = _real_estate(estate, mode="primary")
     # CASE 10's `[found]` ARMS (T254t, T254w): every call after the commit
     # call fails, and the guard's own prefetch calls before it do not.
@@ -2259,6 +2266,10 @@ def test_the_bind_childs_lookup_sends_the_five_copied_values(estate, case):
         assert copies[key] in sent, (key, copies[key])
     if case == "found":
         assert record["mode"] == "bound", record
+        again = [c.get("call") for c in est.shim_calls()[before:]
+                 if "start-record" in c.get("sent", "")
+                 and "commit_write" in c.get("sent", "")]
+        assert not again, f"the found write was committed again, call(s) {again}"
     elif case == "another-write":
         assert record["rc"] == "2" and not [k for k in COPIES if k in record], record
     else:
