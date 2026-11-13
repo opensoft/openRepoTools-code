@@ -1968,11 +1968,25 @@ def _commits(est: Estate) -> list:
 def test_two_sessions_binding_one_lane_one_start_record_commits(estate):
     """AT-F6 case 8: two sessions answer `2` for one lane on the primary
     fixture: one `start-record` commits, and the other is refused 2 by its
-    `bind:<to>` expectation."""
+    `bind:<to>` expectation.
+
+    THE SCOPE IS READ IN THE ATTEMPT'S `out` FILE (T254y): the writer's
+    `expectation:` line names `bind:<L>` in lower case (Y:5584, Y:5589),
+    and a failed bind keeps that line in its attempt's `out` file, while
+    the record's `why=` stays `lane-start`'s last refusal line, which
+    names no scope (Y:5487; lane 3, #165 6841918192). The `out` file's
+    `expectation:` and `row:` lines are printed, for lane 3's check that
+    `start-record` lists `row:<L>` first (Y:5528)."""
     one, two, ends = _two_binds(estate, mode="primary")
     assert sorted(r["mode"] for r in ends) == ["bind-failed", "bound"], ends
-    failed = [r for r in ends if r["mode"] == "bind-failed"][0]
-    assert failed["rc"] == "2" and f"bind:{TO}" in failed["why"], failed
+    (est, failed), = [(e, r) for e, r in zip((one, two), ends) if r["mode"] == "bind-failed"]
+    assert failed["rc"] == "2", failed
+    out = Path(failed.get("out") or f"{est.offer}.bind.{failed.get('bind', 1)}.out")
+    text = out.read_text(encoding="utf-8", errors="replace") if out.exists() else ""
+    for line in text.splitlines():
+        if "expectation" in line or "row:" in line:
+            print(f"T254 case 8, {out.name}: {line}")
+    assert f"bind:{TO.lower()}" in text, (str(out), failed, text[-2000:])
 
 
 def test_the_bind_is_one_register_write_and_refuses_a_changed_row(estate):
