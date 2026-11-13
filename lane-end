@@ -362,7 +362,9 @@
 #      (a former name's `canon-lane`, and `sc_still`'s `lanes --decide` re-read
 #      and `canon-lane`) hold only their own checkout, and a 69 or 75 at one
 #      ends the run with that code, after its summary and its NOTED line, where
-#      it would end 0, or 3 in the dry run (lane 3, #165 6852014823). The sweep
+#      it would end 0, or 3 in the dry run (lane 3, #165 6852014823); where
+#      they met more than one of 69, 75 and 3, a 69 wins over a 75 and a 75 over
+#      a 3, whatever order they came in (lane 3, #165 6858653912). The sweep
 #      passes no read's 3, which its dry run spends on "something is removable"
 #      (research.md ERR-52): at the listing, the runner's `canon-lane`,
 #      `last-session` and those three reads a 3 ends 1, naming it, and 69 and 75
