@@ -27324,6 +27324,9 @@ worktree_rows() {   # [<canonical lane> [register-unread]]
     # each read that succeeds here is the text every read of the listing below
     # is handed, as the register's is its cache. `x` keeps the text's last
     # newline through the substitution.
+    # ON PRIMARY THE HEAD PAIR IS TAKEN BEFORE THE PINS, so it brackets them
+    # (lane 3, #165 6851977580, Q2; its NIT, 6858701980).
+    [ "${REG_STORE:-}" != sql ] || wr_h0="$(reg_head_n) $(reg_head_generation)"
     wr_pin=""; wr_atc=0
     wr_pin="$(archive_text 2>/dev/null && printf x)" || wr_atc=$?
     [ "$wr_atc" != 69 ] || return 69
@@ -27351,7 +27354,6 @@ worktree_rows() {   # [<canonical lane> [register-unread]]
       wr_pin=""
       wr_pin="$(reg_log_paths && printf x)" || return 69
       PIN_LOGS_TEXT="${wr_pin%x}"; PIN_LOGS=1
-      wr_h0="$(reg_head_n) $(reg_head_generation)"   # lane 3, #165 6851977580, Q2
     elif have_remote_ref; then
       wr_pin=""
       if wr_pin="$(git -C "$LANES_REPO" ls-tree --name-only "origin/$LANES_BRANCH" -- "$LANES_LOG_PREFIX" 2>/dev/null && printf x)"; then
@@ -27373,17 +27375,31 @@ worktree_rows() {   # [<canonical lane> [register-unread]]
     [ "$wr_evrc" = 0 ] || wr_lp="$(log_path_ci "$wr_one" 2>/dev/null || log_path_for "$wr_one")"
   fi
   # ON PRIMARY THE PINNED LIST AND THE LISTING ARE ONE SNAPSHOT (lane 3, #165
-  # 6851977580, Q2): the head pair taken after the list's pin is taken again
-  # after the listing's reads, whose out-of-class form 3 reads can move the
-  # family to `n'`. Where either moved, the listing is dropped and the archive
-  # and the list are pinned again; the head only moves forward within a
+  # 6851977580, Q2): the head pair taken before the pins is taken again after
+  # the listing's reads, whose out-of-class form 3 reads can move the family
+  # to `n'`. Where either moved, the listing is dropped and the archive and
+  # the list are pinned again; the head only moves forward within a
   # generation, so an unchanged pair is one snapshot. Three runs at most, then
   # 69 with nothing on stdout, the class's failed read (`reg_fail`).
-  wr_run=0
+  # A RERUN REUSES THE EVENTS `state_events` CACHED in the run that moved the
+  # head. That is sound only while the events build is `lanes_rows`' one
+  # source of a form 3: the build that moved the head is then one snapshot
+  # at the head it moved to (`reg_remote_log_events`), and the pins taken
+  # again are taken at that head (lane 3, #165 6858701980).
+  # AND EACH RUN'S NOTES ARE HELD until the run is kept, as
+  # `reg_remote_log_events`' are, so a dropped run's notes are not said twice.
+  wr_run=0; wr_w=""
+  if [ "$wr_sql" = 1 ]; then
+    wr_w="$SE_CACHE_FILE.wrw.${BASHPID:-$$}"
+    : > "$wr_w" 2>/dev/null || wr_w=""
+  fi
   while :; do
   wr_run=$((wr_run + 1))
   wr_lanes=""; wr_lrc=0
-  if [ -n "$wr_one" ]; then
+  if [ -n "$wr_w" ]; then
+    : > "$wr_w" 2>/dev/null || :
+    wr_lanes="$(lanes_rows --all --closed 2>>"$wr_w")" || wr_lrc=$?
+  elif [ -n "$wr_one" ]; then
     wr_lanes="$(lanes_rows --lane "$wr_one" --closed)" || wr_lrc=$?
   else
     wr_lanes="$(lanes_rows --all --closed)" || wr_lrc=$?
@@ -27392,20 +27408,25 @@ worktree_rows() {   # [<canonical lane> [register-unread]]
   [ "$(reg_head_n) $(reg_head_generation)" != "$wr_h0" ] || break
   PIN_ARCHIVE=0; PIN_ARCHIVE_TEXT=""; PIN_LOGS=0; PIN_LOGS_TEXT=""; wr_lanes=""
   if [ "$wr_run" -ge 3 ]; then
+    [ -z "$wr_w" ] || rm -f -- "$wr_w"
     reg_fail "the register could not be read: its head moved during each of three reads of the worktree listing, so no listing is one snapshot (feature 007, T505; lane 3, #165 6851977580, Q2)" "the register's head kept moving" || :
     return 69
   fi
+  wr_h0="$(reg_head_n) $(reg_head_generation)"
   wr_pin=""; wr_atc=0
   wr_pin="$(archive_text 2>/dev/null && printf x)" || wr_atc=$?
-  [ "$wr_atc" != 69 ] || return 69
-  if [ "$wr_atc" = 0 ]; then PIN_ARCHIVE_TEXT="${wr_pin%x}"; PIN_ARCHIVE=1; fi
+  [ "$wr_atc" = 0 ] || return 69                 # any other end, as `.paths`' below (lane 3, #165 6858701980)
+  PIN_ARCHIVE_TEXT="${wr_pin%x}"; PIN_ARCHIVE=1
   wr_m=0; reg_member paths || wr_m=$?
   [ "$wr_m" = 0 ] || return 69
   wr_pin=""
   wr_pin="$(reg_log_paths && printf x)" || return 69
   PIN_LOGS_TEXT="${wr_pin%x}"; PIN_LOGS=1
-  wr_h0="$(reg_head_n) $(reg_head_generation)"
   done
+  if [ -n "$wr_w" ]; then
+    cat -- "$wr_w" >&2 2>/dev/null || :
+    rm -f -- "$wr_w"
+  fi
   PIN_ARCHIVE=0; PIN_ARCHIVE_TEXT=""; PIN_LOGS=0; PIN_LOGS_TEXT=""
   PIN_LANE_LOG=0; PIN_LANE_LOG_TEXT=""; PIN_LANE_LOG_RC=0
   # 1 IS ALSO A LISTING THAT READS THAT FAILED LEFT EMPTY (#290), which the
