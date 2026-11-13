@@ -3572,15 +3572,19 @@ else
 		p69_also3=" A write of this act also exited 3 (the notes above): run the rerun the writer printed for it, which writes it once or finds it, before that."
 	fi
 	# UNDER A SEQ BASE THE NOTE NAMES `--late` ONLY WHERE W9 ITSELF EXITED 69 OR
-	# WAS NOT SENT (T429; #165 6835210568 and, for the rest, #165 6836816821,
-	# question 1): that act writes W9's line alone, and refuses 2 where the lane's
-	# last lane-kind line is already a PAUSED. Where W9 landed, or stopped the act
-	# with its 2 or 75, the note says to run the act again from its start once
-	# the register answers (Y:5601), and where W9 exited 3 it names W9's printed
-	# rerun first (Y:5199, Y:5222). Under `@files`, or after `act-begin`'s 2,
-	# there is no such rule, and the `--late` note stands, as it was.
+	# WAS NOT SENT, AND NO WRITE STOPPED THE ACT (T429; #165 6835210568 and, for
+	# the rest, #165 6836816821, question 1; #165 6837908956, Q4): that act writes
+	# W9's line alone, and refuses 2 where the lane's last lane-kind line is
+	# already a PAUSED. Where W9 landed, or a write stopped the act (W9's own 2 or
+	# 75, or W11's or W12's beside W9's 69), the note says to run the act again
+	# from its start once the register answers (Y:5601), as the stop does: `--late`
+	# followed by the act run again writes two PAUSED lines. Where W9 exited 3 it
+	# names W9's printed rerun first (Y:5199, Y:5222). A W9 that was not sent
+	# exited 69 (`w9_held`), so `w9_rc` covers it. Under `@files`, or after
+	# `act-begin`'s 2, there is no such rule, and the `--late` note stands, as it
+	# was.
 	if [ -n "$paused_69" ]; then
-		if ! act_on_seq_base || [ "$w9_rc" = 69 ]; then paused_69_note
+		if ! act_on_seq_base || { [ "$w9_rc" = 69 ] && [ -z "$act_stop" ]; }; then paused_69_note
 		elif [ "$record_written" = 1 ]; then paused_69_landed_note
 		elif [ -n "$record_in_doubt" ]; then paused_69_w9_3_note
 		else paused_69_w9_stopped_note
