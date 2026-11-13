@@ -1647,11 +1647,14 @@ def test_the_render_read_with_start_returns_the_images_and_a_bad_start_costs_one
 # every UTC masked in both, in a line or in a path (`migrate-state-cells`'
 # archive is named by its UTC): open point 4 leaves the mask in place until a
 # test can fix the database's clock. The journal entry's message is the twin's
-# commit message.
+# commit message, but `rename-lane`'s, which on primary is the message the
+# design names under Q13(a) (lane 3's ruling (A), #165 6859179515).
 #
 # GB SECTION 4.3'S CASES (R29), each an assertion of a named test: D12, the
-# fake `git`'s log holding no `fetch` on primary for any verb, in the mirror
-# case; `rename-lane`'s `register seq` and its tail under Q13(a), the
+# fake `git`'s log holding no `fetch` on primary that the verb itself makes,
+# for any verb, the renderer the write forks left out by the process above
+# the call (lane 3, #165 6859073786), in the mirror case; `rename-lane`'s
+# `register seq` and its tail under Q13(a), the
 # transaction first and then the move, in
 # `test_rename_lane_commits_the_transaction_then_a_rerun_makes_only_the_move`;
 # and `start-record` in both modes, its twin run once more under
@@ -1782,16 +1785,27 @@ TWIN_VERBS = {**{verb: (argv, lane, {}) for verb, (argv, lane) in W_VERBS.items(
                                 ARROW, W_BINDING], "repoA-2", {"LANES_SESSION": SID_A2})}
 
 
-def _logging_git(path: Path, log: Path) -> None:
-    """A `git` at `path` that appends each call's arguments to `log`, each
-    argument ended by a US (0x1f) and the call by an RS (0x1e) and a LF, then
-    runs the real `git` with them (D12's oracle: GB section 4.3, "the fake
-    `git`'s log")."""
-    real = shutil.which("git")
+def _logging_git(path: Path, log: Path, real: str = None) -> None:
+    """A `git` at `path` that appends each call to `log`, then runs the real
+    `git` (or `real`) with its arguments (D12's oracle: GB section 4.3, "the
+    fake `git`'s log"). A call is one record, written by one `printf`, so a
+    forked renderer's calls and the verb's never interleave: the pid above
+    the call; where any argument is `fetch` or `pull`, that process's command
+    line, as open point 8's wrapper reads it (`ps -ww -o command=`; TP:8799-8800,
+    test 5's wrapper in `test_sql_register_renderer_git.py`), and the
+    directory the call runs in; then its arguments. Each field is ended by a
+    US (0x1f) and the record by an RS (0x1e) and a LF."""
+    real = real or shutil.which("git")
     assert real, "no git on PATH"
     path.write_text("#!/bin/sh\n"
-                    "{ for a in \"$@\"; do printf '%s\\037' \"$a\"; done; printf '\\036\\n'; } "
-                    f">> {shlex.quote(str(log))}\n"
+                    "u='\x1f' above=$PPID command= here=\n"
+                    "for a in \"$@\"; do case $a in fetch|pull)\n"
+                    "  command=$(ps -ww -o command= -p \"$above\" 2>/dev/null"
+                    " | tr '\\n\\036\\037' '   ')\n"
+                    "  here=$PWD; break ;; esac; done\n"
+                    "record=\"$above$u$command$u$here$u\"\n"
+                    "for a in \"$@\"; do record=\"$record$a$u\"; done\n"
+                    f"printf '%s\\036\\n' \"$record\" >> {shlex.quote(str(log))}\n"
                     f"exec {shlex.quote(real)} \"$@\"\n", encoding="utf-8")
     path.chmod(0o755)
 
@@ -1801,22 +1815,72 @@ _GIT_VALUE_OPTIONS = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--names
                                 "--exec-path", "--super-prefix", "--config-env"})
 
 
+def _render_checkout(command: str):
+    """The `<c>` of a `lanes-index render --checkout <c>` command line, the
+    renderer a write forks (`pw_render_fork`, T416), or None for any other
+    process."""
+    words = command.split()
+    for i in range(len(words) - 3):
+        if (words[i].rsplit("/", 1)[-1] == "lanes-index"
+                and words[i + 1:i + 3] == ["render", "--checkout"]):
+            return words[i + 3]
+    return None
+
+
 def _git_calls(log: Path) -> list:
-    """`_logging_git`'s log: each call as (its subcommand, its arguments),
-    the subcommand being the first argument that is not one of `git`'s own
-    options or such an option's value."""
+    """`_logging_git`'s log: each call as a dict, its subcommand (`sub`, the
+    first argument that is not one of `git`'s own options or such an
+    option's value), its arguments (`args`), the pid above it (`above`), and,
+    for a `fetch` or a `pull`, the `<c>` of the `lanes-index render
+    --checkout` process above it, or None (`render`), and the real path of
+    the repository it ran in, its directory moved by each `-C` (`where`)."""
     if not log.exists():
         return []
     calls = []
     for record in log.read_bytes().decode("utf-8", "replace").split("\x1e\n"):
         if not record:
             continue
-        args = record.split("\x1f")[:-1]
+        above, command, here, *args = record.split("\x1f")[:-1]
         i = 0
+        where = here
         while i < len(args) and args[i].startswith("-"):
+            if args[i] == "-C" and i + 1 < len(args):
+                where = os.path.join(where, args[i + 1])
             i += 2 if args[i] in _GIT_VALUE_OPTIONS else 1
-        calls.append((args[i] if i < len(args) else "", args))
+        calls.append({"sub": args[i] if i < len(args) else "", "args": args, "above": above,
+                      "render": _render_checkout(command),
+                      "where": os.path.realpath(where) if here else ""})
     return calls
+
+
+def _d12_control(root: Path, checkout: str) -> None:
+    """D12's control: the render pass's own fetch argv (`lanes-index`'s
+    `render_pass`, step 1), in `checkout`, logged by `_logging_git` with
+    `true` for `git`, so nothing is fetched. Once from this test, which is
+    no renderer: kept, as a fetch of the verb's would be. Once from a
+    stand-in whose command line is `lanes-index render --checkout
+    <checkout>`: left out, with its `<c>`. The same argv both times, so the
+    two are told apart by the process above the call alone."""
+    root.mkdir(parents=True, exist_ok=True)
+    log, shim, stand_in = root / "git-calls.log", root / "git", root / "lanes-index"
+    _logging_git(shim, log, real=shutil.which("true"))
+    stand_in.write_text("#!/bin/sh\nshift 4\n\"$D12_SHIM\" \"$@\"\nexit $?\n",
+                        encoding="utf-8")
+    stand_in.chmod(0o755)
+    argv = ["-C", checkout, "-c", "gc.auto=0", "-c", "maintenance.auto=false", "fetch",
+            "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "-q", "origin",
+            "+refs/heads/main:refs/remotes/origin/main"]
+    env = dict(os.environ, D12_SHIM=str(shim))
+    for command in ([str(shim), *argv],
+                    [str(stand_in), "render", "--checkout", checkout, "--", *argv]):
+        done = subprocess.run(command, cwd=str(root), env=env, capture_output=True,
+                              timeout=60, check=False)
+        assert done.returncode == 0, f"the D12 control's {command[0]}: {done.stderr!r}"
+    got = [(call["sub"], call["args"], call["render"], call["where"])
+           for call in _git_calls(log)]
+    assert got == [("fetch", argv, None, checkout), ("fetch", argv, checkout, checkout)], (
+        f"the D12 control: the renderer's fetch argv run by no renderer must be kept, "
+        f"and under a `lanes-index render --checkout` left out: {got}")
 
 
 def _git_bytes(cwd: Path, env: dict, *args: str) -> bytes:
@@ -1886,7 +1950,11 @@ def _stamped_utcs(before: dict, after: dict, argv: list) -> list:
     """Each UTC in whole seconds or finer that a write put on a line of the
     render set, (path, line, utc): one not already anywhere in the register
     before it, and not one the caller typed. A UTC in whole minutes is a row's
-    `started` cell, never a write's clock."""
+    `started` cell, never a write's clock; nor is a minute already in the
+    register with `:00` added, which `migrate-state-cells` writes on primary
+    for an entry's minute-only time or its row's `started` cell (design.md:5114
+    at `94fab177`; `f9e1449c:lanes-edit.sh:23463-23476`; lane 3, #165
+    6859073786)."""
     old = set(_UTC_ANY.findall("\n".join(d.decode("utf-8", "replace") for d in before.values())))
     typed = set(_UTC_ANY.findall(" ".join(argv)))
     found = []
@@ -1896,7 +1964,8 @@ def _stamped_utcs(before: dict, after: dict, argv: list) -> list:
             if line in lines_before:
                 continue
             for utc in _UTC_ANY.findall(line):
-                if utc.count(":") == 2 and utc not in old and utc not in typed:
+                if (utc.count(":") == 2 and utc not in old and utc not in typed
+                        and not (utc.endswith(":00Z") and utc[:-4] + "Z" in old)):
                     found.append((path, line, utc))
     return found
 
@@ -2007,9 +2076,14 @@ class FilesTwin:
     moves nothing the primary case reads, and the environment `workspace`
     sets, with no `lanes-index.conf`: `lanes-edit.sh` beside the flipped copy
     asks its mode, and `files` answers. Made before the primary write, so it
-    is at C whatever a forked render pushes to W's origin."""
+    is at C whatever a forked render pushes to W's origin. A `routed` twin
+    runs under `LANES_ROUTE_WRITES=1` with `LANES_REPO` unset, so each write
+    goes through its lane's own checkout, `<W>-lanes/<lane>`, made on first
+    use: an explicit `LANES_REPO` naming W is refused there (Amendment 23 S2,
+    S5; `f9e1449c:lanes-edit.sh:28132-28160`; lane 3, #165 6859073786). The
+    lane is named by `LANES_LANE`, as `run` sets it."""
 
-    def __init__(self, root: Path, estate: Estate, lanes_edit: Path):
+    def __init__(self, root: Path, estate: Estate, lanes_edit: Path, routed: bool = False):
         self.root = root
         self.home = root / "home"
         self.home.mkdir(parents=True, exist_ok=True)
@@ -2042,6 +2116,9 @@ class FilesTwin:
                         PATH=str(fakebin) + os.pathsep + _masked_path())
         self.env.pop("LANES_INDEX", None)
         self.env.pop("LANES_INDEX_CONFIG", None)
+        if routed:
+            self.env.pop("LANES_REPO")
+            self.env.update(LANES_ROUTE_WRITES="1")
         self.lanes_edit = lanes_edit
 
     def run(self, argv: list, lane: str, **extra) -> subprocess.CompletedProcess:
@@ -2060,6 +2137,29 @@ class FilesTwin:
 
     def message(self) -> str:
         return _raw_message(self.origin, self.git_env)
+
+
+#: Files mode's `rename-lane` subject, "... the row, <log>, the handoff and
+#: <aliases> in one commit" (`f9e1449c:lanes-edit.sh:30289`).
+_RENAME_FILES_SUBJECT = re.compile(
+    r"^(LANES\(\S+\): RENAMED lane .+ the row, )(\S+), the handoff and (\S+) in one commit$",
+    re.M)
+
+
+def _primary_message(verb: str, message: str) -> str:
+    """The journal message a primary write of `verb` composes, from its
+    files-mode twin's commit `message`: the same, but `rename-lane`'s, whose
+    handoff is not in the entry (Q13(a)), so T422 composes "... the row,
+    <log> and <aliases> in one register write; the handoff's move and stamp
+    follow in the lane's checkout (Q13(a))" (`f9e1449c:lanes-edit.sh:30293-30294`),
+    the message the design names (lane 3's ruling (A), #165 6859179515)."""
+    if verb != "rename-lane":
+        return message
+    named, n = _RENAME_FILES_SUBJECT.subn(
+        r"\1\2 and \3 in one register write; the handoff's move and stamp follow in "
+        r"the lane's checkout (Q13(a))", message, count=1)
+    assert n == 1, f"rename-lane: the twin's message has no files-mode subject: {message!r}"
+    return named
 
 
 def _journal_since(db, seq: int) -> list:
@@ -2115,8 +2215,14 @@ def test_each_write_leaves_the_mirror_byte_identical_to_a_full_render(pg, tmp_pa
     them; the write changed a rendered file; each UTC the write put on a line
     is the database's, in whole seconds, between its clock read before the
     write and after it (S6; D13). And D12 (GB section 4.3): the fake `git`'s
-    log holds no `fetch` (nor a `pull`) for any verb on primary. Fails until
-    L4-B4, L4-B8 and L4-B13."""
+    log holds no `fetch` (nor a `pull`) on primary that the verb itself
+    makes, for any verb. The renderer the write forks fetches origin, as each
+    pass does (Y:2839; AT-C8, TP:3187-3188), so a call with a `lanes-index
+    render --checkout` process above it is left out, by that process, never
+    by the call's argv, since the pass's read-back fetch has the same argv;
+    each one left out ran in the writing lane's checkout (lane 3, #165
+    6859073786). A control shows the test tells them apart by process. Fails
+    until L4-B4, L4-B8 and L4-B13."""
     argv, lane = W_VERBS[verb]
     ws = PrimaryWrites(pg, tmp_path, W_PREPS.get(verb))
     before_head = head(pg)
@@ -2144,9 +2250,19 @@ def test_each_write_leaves_the_mirror_byte_identical_to_a_full_render(pg, tmp_pa
             f"{verb} wrote {utc} in {path}, outside the database's clock "
             f"[{utc_of(clock_before)}, {utc_of(clock_after)}]: {line!r}")
 
-    # D12: NO FETCH ON PRIMARY.
-    fetches = [args for sub, args in ws.git_calls() if sub in ("fetch", "pull")]
-    assert fetches == [], f"{verb} fetched on primary (D12): {fetches}"
+    # D12: NO FETCH ON PRIMARY BY THE VERB ITSELF. The forked renderer's own
+    # fetches are left out by the process above them, each in the writing
+    # lane's checkout.
+    fetches = [call for call in ws.git_calls() if call["sub"] in ("fetch", "pull")]
+    own = [call["args"] for call in fetches if call["render"] is None]
+    assert own == [], f"{verb} fetched on primary (D12): {own}"
+    checkout = os.path.realpath(ws.lane_checkout(lane))
+    astray = [call for call in fetches
+              if os.path.realpath(call["render"]) != checkout or call["where"] != checkout]
+    assert astray == [], (
+        f"{verb}: its forked renderer fetched outside the writing lane's checkout "
+        f"{checkout} (D12): {astray}")
+    _d12_control(tmp_path / "d12-control", checkout)
 
 
 @pytest.mark.parametrize("verb", list(TWIN_VERBS))
@@ -2157,37 +2273,38 @@ def test_each_write_matches_its_files_mode_twin_byte_for_byte(pg, tmp_path, verb
     scratch mirror at the entry's seq equals the render set on the twin's
     origin, path set and bytes, every UTC masked in both (open point 4); and
     the entry's message is the twin's commit message, byte for byte, or but
-    for the one LF git ends a stored message with. GB section 4.3's
+    for the one LF git ends a stored message with; for `rename-lane`, the
+    message the design names under Q13(a), `_primary_message`'s. GB section 4.3's
     `start-record` (lane 4's T427, L4-B9) is `[start-record]`, a resume of
     repoA-2 in both modes, whose twin runs once more, in a second clone at C,
-    under `LANES_ROUTE_WRITES=1`, with the same render set and message. Fails
+    under `LANES_ROUTE_WRITES=1` with `LANES_REPO` unset, through the lane's
+    own checkout (Amendment 23 S2, S5), with the same render set and message. Fails
     until L4-B4, L4-B8 and L4-B13; `[start-record]` until L4-B9 too."""
     argv, lane, extra = TWIN_VERBS[verb]
     ws = PrimaryWrites(pg, tmp_path, W_PREPS.get(verb))
     twin = FilesTwin(tmp_path / "twin", ws.estate, ws.lanes_edit)
-    routed = (FilesTwin(tmp_path / "twin-routed", ws.estate, ws.lanes_edit)
+    routed = (FilesTwin(tmp_path / "twin-routed", ws.estate, ws.lanes_edit, routed=True)
               if verb == "start-record" else None)
     before_head = head(pg)
     proc = ws.run(argv, lane, **extra)
     entry = _one_entry(pg, before_head, proc, verb)
     mirror = _mirror(ws, entry["seq"], tmp_path / "mirror")
 
-    for label, files_twin, more in (("the twin", twin, {}),
-                                    ("the routed twin", routed, {"LANES_ROUTE_WRITES": "1"})):
+    for label, files_twin in (("the twin", twin), ("the routed twin", routed)):
         if files_twin is None:
             continue
-        done = files_twin.run(argv, lane, **extra, **more)
+        done = files_twin.run(argv, lane, **extra)
         assert done.returncode == 0, (
             f"{label}'s {verb} in files mode exited {done.returncode}: {done.stderr[-800:]}")
         assert len(files_twin.commits()) == 1, (
             f"{label}'s {verb} pushed {len(files_twin.commits())} commits, not one")
         _assert_same_files(_utc_masked(mirror), _utc_masked(files_twin.render_set()),
                            f"{verb}: the mirror and {label}'s files, every UTC masked")
-        message = files_twin.message()
+        message = _primary_message(verb, files_twin.message())
         bare = message[:-1] if message.endswith("\n") else message
         assert entry["message"] in (message, bare), (
             f"{verb}: the journal's message {entry['message']!r} is not {label}'s commit "
-            f"message {message!r}")
+            f"message, as primary composes it, {message!r}")
 
 
 @pytest.mark.parametrize("verb", list(W_VERBS))
