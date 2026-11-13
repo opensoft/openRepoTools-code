@@ -8370,7 +8370,9 @@ pw_tail() {   # <seq> <how it was learned> <the answer, in a file>
 # THE REPLAY (Y:5316–5326), where no waiting child matches, once per run:
 #   1. it takes the `call` line of the pending record whose `<files>` is the
 #      entry's change set; where none is, there is no replay (Y:5317), and so
-#      where the answer carried no rows; and it makes that line's directory's
+#      where the answer carried no rows; where two or more are, it takes this
+#      run's own committed call's, else none, and the tail is owed (#165
+#      6851422597); and it makes that line's directory's
 #      `seam.out` read `replayed`, so a later takeover reads no `none` (below);
 #   2. it makes a FRESH run segment, `<d>/<nonce>/1/`, never the committing
 #      run's (Y:5156, Y:5326; lane openRepoTools-3, #165 6755005268, T413's
@@ -8399,7 +8401,7 @@ pw_tail() {   # <seq> <how it was learned> <the answer, in a file>
 # set, runs none of the tail (Y:5328–5331): `pw_tail_owed`. It reads only what
 # a kept `call` line keeps: the record's line, and its directory's
 # `preimages/` (lane openRepoTools-3, #165 6769061039, T415's question 5).
-PW_REPLAYED=0; PW_RP_RUN_DIR=""
+PW_REPLAYED=0; PW_RP_RUN_DIR=""; PW_COMMITTED_DIR=""
 
 # THE `replayed` TOKEN in a call's attempt directory (lane openRepoTools-3,
 # #165 6841366245, T418 (3); #165 6841844102, point 1): its `seam.out`
@@ -8423,7 +8425,7 @@ pw_seam_token() {   # <the call's attempt dir>
 }
 pw_replay_tail() {   # <seq> <how it was learned>
   local rp_k="" rp_l="" rp_c="" rp_f="" rp_d="" rp_clock="" rp_cdir="" rp_run="" rp_dir="" \
-        rp_bin="" rp_rc=0 rp_at="" rp_h="" rp_last="" rp_p="" rp_t=""
+        rp_bin="" rp_rc=0 rp_at="" rp_h="" rp_last="" rp_p="" rp_t="" rp_n=0 rp_oclock="" rp_odir=""
   pw_abandon_all
   if [ "$PW_REPLAYED" = 1 ]; then
     pw_tail_owed "$1" "its replay's child, at seq $(( $1 - 1 )), did not take the message at its seam (its seam.out does not read tail)"
@@ -8441,7 +8443,10 @@ pw_replay_tail() {   # <seq> <how it was learned>
       esac
       [ -n "$rp_l" ] || continue
       pw_call_fields "$rp_l"; rp_c="$PW_CF_C"; rp_f="$PW_CF_F"; rp_d="$PW_CF_D"
-      if [ "$rp_f" = "$PW_E_DIGEST" ] && wr_is_count "$rp_c"; then rp_clock="$rp_c"; rp_cdir="$rp_d"; fi
+      if [ "$rp_f" = "$PW_E_DIGEST" ] && wr_is_count "$rp_c"; then
+        rp_n=$((rp_n + 1)); rp_clock="$rp_c"; rp_cdir="$rp_d"
+        if [ -n "$PW_COMMITTED_DIR" ] && [ "$rp_d" = "$PW_COMMITTED_DIR" ]; then rp_oclock="$rp_c"; rp_odir="$rp_d"; fi
+      fi
     done
   fi
   if [ -z "$rp_clock" ]; then
@@ -8449,6 +8454,21 @@ pw_replay_tail() {   # <seq> <how it was learned>
       pw_tail_owed "$1" "the register's answer (${2}) carried no change set to match a child or a call against, so it cannot be replayed (Y:5317)"
     fi
     pw_tail_owed "$1" "no call line of its pending record sent the entry's change set, so it cannot be replayed (Y:5317)"
+  fi
+  # ONE LINE, OR THIS RUN'S OWN COMMITTED CALL'S (lane openRepoTools-3, #165
+  # 6851422597, NIT-4 (b)). Y:5317 takes "the `call` line whose `<files>` is
+  # the entry's", one line, as a takeover reads it (`pw_took_sent_none`).
+  # Where this run's own commit answered `committed <s>`, the replay takes
+  # that call's own line (Y:5306; `pw_committed`, PW_COMMITTED_DIR).
+  # Otherwise it takes a line only where exactly one matches. Two or more are
+  # resends of one change set whose `preimages/` need not agree, and which of
+  # their calls committed is not known, so there is no replay and the tail is
+  # owed: before `pw_wdir_ok` and the `replayed` token below, so no directory
+  # is read and no token is written.
+  if [ -n "$rp_odir" ]; then
+    rp_clock="$rp_oclock"; rp_cdir="$rp_odir"
+  elif [ "$rp_n" -gt 1 ]; then
+    pw_tail_owed "$1" "${rp_n} call lines of its pending record sent the entry's change set, and the replay takes the one call line whose files are the entry's (Y:5317): which of their calls committed is not known, so it cannot be replayed"
   fi
   # THE CALL'S `seam.out` BECOMES `replayed` before this replay can write
   # `tail=sent` (Y:5298; lane openRepoTools-3, #165 6841366245, T418 (3)). A
@@ -8736,9 +8756,13 @@ pw_keep() {
 # did not run, and the tail is the replay's (Y:5007, Y:5339, Y:5342; lane
 # openRepoTools-3, #165 6767463594, question 4), of the change set this call
 # sent.
+# Its attempt's directory is noted first (PW_COMMITTED_DIR), so that a replay
+# takes this call's own line, whatever other line sent the same change set
+# (Y:5306; lane openRepoTools-3, #165 6851422597).
 pw_committed() {   # <seq>
   pw_abandon_kept
   pw_entry_files "$PW_DIR"
+  PW_COMMITTED_DIR="$PW_DIR"
   pw_tail_child "$1" "$PW_CHILD" "$PW_DIR" || :
   PW_CHILD=""
   pw_replay_tail "$1" "attempt ${PW_K}'s commit answered committed"
