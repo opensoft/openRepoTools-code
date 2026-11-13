@@ -419,6 +419,15 @@
 
 set -euo pipefail
 
+# AN INHERITED `LANES_READ_MIRROR` IS NO ANSWER (feature 007, T403; lane 3's #165
+# 6861148117: ERR-30 widens PER CALL; lane 5's #165 6861222075). This command
+# names the variable on no call of its own, so a value the caller exported would
+# lower its marked reads, `--sweep-checkouts`' `canon-lane` and `last-session`
+# among them, to the mirror where an outage must end them 69. So it is dropped
+# here, before any read and before anything that could pass the environment on,
+# as `lane-handoff` does at its entry.
+unset LANES_READ_MIRROR
+
 prog=lane-end
 
 SELF="${BASH_SOURCE[0]}"
