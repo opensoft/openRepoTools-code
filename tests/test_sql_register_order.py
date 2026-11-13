@@ -2297,12 +2297,13 @@ def test_canon_lane_walk_whose_register_read_fails_off_primary_exits_1_and_print
 
     It fails until lane 4's T411 lands with its `b637ce0d`, which ends the
     walk with a failed register read's own status, the 1 here (#165 6814837872,
-    Question 126). Without T411, as on line R, `canon-lane --walk` is the
-    usage 64, "canon-lane takes one lane" (lane 1, #165 6837462215); with
+    Question 126). Without T411, as on line R before merge44 (round 6d's
+    census), `canon-lane --walk` is the usage 64, "canon-lane takes one
+    lane" (lane 1, #165 6837462215 and 6850698453); with
     only T411's first commit, `2ee320e1`, as at pair-m33a `8ba10b4e`, the
     walk still reads that failure as no row and exits 0 with its three names
     (lane 4's pair-m33a CI, s2 15, read by lane 2's triage, #165 6838261062;
-    T233c, T233d)."""
+    T233c, T233d, T233e)."""
     rows, aliases, typed, names = WALKS["two-hops"]
     box = FilesBox(tmp_path / "box", rows, aliases)
     walk = box.edit("canon-lane", "--walk", typed)
