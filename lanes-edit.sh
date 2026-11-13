@@ -21114,7 +21114,7 @@ EOF
         rgr_n1="$(reg_head_n)"; rgr_g1="$(reg_head_generation)"
         [ "$rgr_n1" != "$rgr_n0" ] || [ "$rgr_g1" != "$rgr_g0" ] || break
         [ "$rgr_run" -lt 3 ] ||
-          die "the register could not be read at one snapshot: its head moved while it was read, in each of 3 runs (the last from n=$rgr_n0 to n=$rgr_n1), so no answer is printed, never a part of one (feature 007, T401 on primary; lane 3's Q2 ruling)" 69
+          die "the register could not be read at one snapshot: its head moved while it was read, in each of 3 runs (the last from n=$rgr_n0, generation $rgr_g0, to n=$rgr_n1, generation $rgr_g1), so no answer is printed, never a part of one (feature 007, T401 on primary; lane 3's Q2 ruling)" 69
       done
       [ "$rgr_hit" = 1 ] || exit 1
       cat -- "$TMPD/grep" || exit 69
