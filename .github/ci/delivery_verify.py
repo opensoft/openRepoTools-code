@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -21,6 +22,11 @@ import shadow_scope as policy
 REPOSITORY = policy.REPOSITORY
 FAST = "openrepotools-pr-fast"
 FAST_WORKFLOW = ".github/workflows/task-set-fast.yml"
+LOCAL_REVIEW = "<!-- openrepotools-local-review:"
+LOCAL_FIELDS = {"schema_version", "repository", "pull_request", "head_sha", "base_sha",
+                "reviewer", "skill", "status", "unresolved_findings", "findings",
+                "resolution", "validation"}
+LOCAL_SKILLS = {"pre-pr-review", "pr-review", "branch-or-pr-review"}
 
 
 def delivery_intended(text):
@@ -47,11 +53,14 @@ def read_threads(number):
     require(type(number) is int and number > 0, "Invalid PR identity")
     query = ('query { repository(owner:"opensoft",name:"openRepoTools-code") { '
              f'pullRequest(number:{number}) {{ reviewThreads(first:100) {{ '
-             'pageInfo { hasNextPage } nodes { isResolved } } } } }')
+             'pageInfo { hasNextPage } nodes { isResolved } } '
+             'comments(first:100) { pageInfo { hasNextPage } '
+             'nodes { databaseId lastEditedAt body } } } } }')
     data = subprocess.run(["gh", "api", "--hostname", "github.com", "graphql",
                            "-f", "query=" + query], check=True, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, timeout=15).stdout
-    return json.loads(data)["data"]["repository"]["pullRequest"]["reviewThreads"]
+    result = json.loads(data)["data"]["repository"]["pullRequest"]
+    return dict(result["reviewThreads"], comments=result["comments"])
 
 
 def read_base_changes(number):
@@ -66,10 +75,100 @@ def read_base_changes(number):
     return json.loads(data)["data"]["repository"]["pullRequest"]["timelineItems"]
 
 
-def clean_review(number, head, request, threads):
-    comments = request(REPOSITORY, f"issues/{number}/comments?per_page=100")
-    require(isinstance(comments, list) and len(comments) < 100,
-            "Incomplete review comments")
+def local_object(pairs):
+    require(len(pairs) == len(dict(pairs)), "Duplicate local review key")
+    return dict(pairs)
+
+
+def local_writer(comment, request, permissions):
+    user = comment["user"]
+    if user["type"] != "User":
+        return None
+    login, identity = user["login"], user["id"]
+    require(isinstance(login, str) and re.fullmatch(
+        r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", login, flags=re.ASCII)
+        and type(identity) is int and identity > 0, "Invalid local review author")
+    if login not in permissions:
+        permissions[login] = request(REPOSITORY, f"collaborators/{login}/permission")
+    permission = permissions[login]
+    current = permission["user"]
+    require(current["login"] == login and type(current["id"]) is int
+            and current["id"] == identity and current["type"] == "User"
+            and permission["permission"] in {"none", "read", "write", "admin"},
+            "Local review author permission identity differs")
+    return permission["permission"] if permission["permission"] in {"write", "admin"} else None
+
+
+def consistent_comments(comments, response):
+    # Reconcile before choosing local OR hosted review: otherwise a newly added
+    # local revocation can be hidden by the hosted-fallback path.
+    edits = response["comments"]
+    nodes = edits["nodes"]
+    require(edits["pageInfo"]["hasNextPage"] is False and isinstance(nodes, list)
+            and len(nodes) == len(comments) < 100
+            and all(type(row["databaseId"]) is int and row["databaseId"] > 0 for row in nodes)
+            and all(type(row["id"]) is int and row["id"] > 0 for row in comments)
+            and len({row["databaseId"] for row in nodes}) == len(nodes)
+            and {row["databaseId"]: row["body"] for row in nodes}
+                == {row["id"]: row["body"] for row in comments},
+            "Incomplete or inconsistent review comment history")
+
+
+def local_review(comments, number, head, base, request, response):
+    candidates = [row for row in comments if LOCAL_REVIEW in row["body"]]
+    require(len(candidates) <= 10, "Local review history exceeds bound")
+    authorized = []
+    identities = set()
+    permissions = {}
+    for comment in candidates:
+        permission = local_writer(comment, request, permissions)
+        if permission is None:
+            continue
+        identity, created = comment["id"], comment["created_at"]
+        require(type(identity) is int and identity > 0 and identity not in identities,
+                "Invalid or duplicate local comment identity")
+        identities.add(identity)
+        datetime.strptime(created, "%Y-%m-%dT%H:%M:%SZ")
+        authorized.append((created, identity, comment, permission))
+    if not authorized:
+        return None
+    policy.sha(head)
+    policy.sha(base)
+    created, identity, comment, permission = max(authorized, key=lambda row: row[:2])
+    nodes = response["comments"]["nodes"]
+    selected = [row for row in nodes if row["databaseId"] == identity]
+    require(len(selected) == 1 and selected[0]["lastEditedAt"] is None,
+            "Local review comment has been edited")
+    text = comment["body"]
+    require(comment["updated_at"] == created
+            and comment["issue_url"] == f"https://api.github.com/repos/{REPOSITORY}/issues/{number}"
+            and comment["html_url"] == f"https://github.com/{REPOSITORY}/pull/{number}#issuecomment-{identity}"
+            and len(text.encode("utf-8")) <= 16384, "Local review comment is edited or misplaced")
+    match = re.fullmatch(r"<!-- openrepotools-local-review:v1 -->\n```json\n(.+)\n```\n?",
+                         text, flags=re.DOTALL)
+    require(match is not None, "Malformed local review envelope")
+    record = json.loads(match[1], object_pairs_hook=local_object,
+                        parse_constant=lambda _value: require(False, "Non-finite local JSON"))
+    require(isinstance(record, dict) and set(record) == LOCAL_FIELDS,
+            "Invalid local review schema")
+    require(type(record["schema_version"]) is int and record["schema_version"] == 1
+            and record["repository"] == REPOSITORY
+            and type(record["pull_request"]) is int and record["pull_request"] == number
+            and record["head_sha"] == head and record["base_sha"] == base
+            and record["reviewer"] == "codex-local" and record["skill"] in LOCAL_SKILLS
+            and record["status"] == "accepted"
+            and type(record["unresolved_findings"]) is int and record["unresolved_findings"] == 0,
+            "Local review is not accepted for this head/base")
+    require(all(isinstance(record[key], str) and record[key].strip() and len(record[key]) <= 4000
+                for key in ("findings", "resolution", "validation")),
+            "Local review report is incomplete")
+    return {"kind": "local-codex-review", "comment_id": identity,
+            "author_id": comment["user"]["id"], "author_login": comment["user"]["login"],
+            "created_at": created, "permission": permission,
+            "body_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()}
+
+
+def hosted_review(comments, head):
     receipts = []
     for comment in comments:
         user = comment["user"]
@@ -86,12 +185,24 @@ def clean_review(number, head, request, threads):
     require(review["commit_sha"] == head and review["status"] == "completed"
             and review["has_any_findings"] is False
             and review["has_unresolved_findings"] is False, "Codex head is not clean")
+    return max(receipts, key=lambda entry: entry[0])
+
+
+def clean_review(number, head, request, threads, *, base=None):
+    comments = request(REPOSITORY, f"issues/{number}/comments?per_page=100")
+    require(isinstance(comments, list) and len(comments) < 100,
+            "Incomplete review comments")
     response = threads(number)
+    consistent_comments(comments, response)
+    receipt = local_review(comments, number, head, base, request, response)
+    if receipt is None:
+        receipt = hosted_review(comments, head)
+    response = {"pageInfo": response["pageInfo"], "nodes": response["nodes"]}
     require(response["pageInfo"]["hasNextPage"] is False
             and isinstance(response["nodes"], list) and len(response["nodes"]) <= 100
             and all(row["isResolved"] is True for row in response["nodes"]),
             "Unresolved or incomplete review threads")
-    return max(receipts, key=lambda entry: entry[0]), response
+    return receipt, response
 
 
 def receipt_pending(value, allow_pending):
@@ -186,7 +297,7 @@ def source_pr(head, main, root, request, threads, base_changes):
     policy.git(root, "merge-base", "--is-ancestor", main, head)
     require(policy.regular_scope(root, main, head), "Member changes unsupported paths or modes")
     evidence = (fast_receipt(pr, head, request, base_changes),
-                clean_review(number, head, request, threads))
+                clean_review(number, head, request, threads, base=base))
     return pr, evidence
 
 
@@ -258,7 +369,8 @@ def verify_candidate(env, event, root, request=policy.github, threads=read_threa
         require(policy.snapshot(pr) == policy.snapshot(
             request(REPOSITORY, f"pulls/{pr['number']}")), "Source changed during verification")
         require(evidence == (fast_receipt(pr, pr["head"]["sha"], request, base_changes),
-                             clean_review(pr["number"], pr["head"]["sha"], request, threads)),
+                             clean_review(pr["number"], pr["head"]["sha"], request, threads,
+                                          base=pr["base"]["sha"])),
                 "Source evidence changed during verification")
         require(policy.snapshot(pr) == policy.snapshot(
             request(REPOSITORY, f"pulls/{pr['number']}")), "Source changed during evidence recheck")
