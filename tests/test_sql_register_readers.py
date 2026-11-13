@@ -22,7 +22,8 @@ WHAT IT HOLDS, by its five sources:
     on a real engine.
   * Lane 5's nine (A5; T504 to T506 and T509), their guessed names kept.
   * Lane 4's two read verbs (R29; GB section 4.3; T401), `register-text` and
-    `register-grep`, with T401's two exit-2 cases each (O21a).
+    `register-grep`, with T401's two exit-2 cases each (O21a), and
+    `register-grep`'s one snapshot on primary (lane 3's Q2, #165 6851977580).
   * Lane 4's `key()` trim (T259; R31; GB section 4.3; T426): the one test that
     asks `retired-identity` about spellings that differ only past the
     sixteenth digit, in files mode and on primary.
@@ -72,7 +73,8 @@ unless `OPENREPOTOOLS_REQUIRE_PG=1`.
 
 WHAT EACH WAITS FOR (the block's Order): L4-A1, L5-A4 and L5-A5; lane 1's
 three for L1v4.5's T113 and T114; lane 5's for T504 to T506 and T509; the
-`--decide` test for T502; the read verbs' for lane 4's T401; the arms for
+`--decide` test for T502; the read verbs' for lane 4's T401, the one-snapshot
+case for its round on lane 3's Q2 (#165 6851977580); the arms for
 lane 4's T402 to T408; `key()`'s trim, on primary only, for lane 4's T426;
 T235's for lane 5's T505, its three door forms included, whose oracles are
 lane 3's batch 7 (#165 6780364102), by batch 5's answers 3 and 4.
@@ -136,8 +138,12 @@ MIRROR_LINE = re.compile(r"^read: mirror at [0-9a-f]{12}, .*$", re.M)
 #: `{"calls": [k, ...]}` or `{"all": true}`, optionally only for some forms
 #: (`"forms": [1, 3]`), with the exit, stdout and stderr given. `"narrow":
 #: "register,aliases"` makes a form-1 prefetch fetch only those members (a
-#: read site with no prefetched file). Every other call is the contract
-#: stub's, in `store/`.
+#: read site with no prefetched file). `"move_each": {"key": k, "times": t,
+#: "path": p, "line": l}` moves the store's head by one seq at each of the
+#: first `t` form-3 reads of `--log-key=<k>`, before the store answers it,
+#: appending `l % <the move's number>` to `p`: a write that lands between a
+#: reader's calls (T401's one snapshot, T217zh). Every other call is the
+#: contract stub's, in `store/`.
 DOOR_WRAPPER = r'''#!/usr/bin/env python3
 # THE DOOR'S WRAPPER (T217): counts and fails register calls, else the stub.
 import fcntl, json, os, sys
@@ -220,6 +226,39 @@ if fail.get("move") and form(args) == 3 and not os.path.exists(MOVED):
         "workstation": "Eagle", "generation": state["generation"], "files": rows}
     with open(state_path, "w", encoding="utf-8") as handle:
         json.dump(state, handle)
+EACH = fail.get("move_each")
+if EACH and form(args) == 3 and "--log-key=" + EACH["key"] in args:
+    # The head moves at each of the first `times` reads of the key, one seq
+    # each, before the store answers the read (T401's one snapshot).
+    import hashlib, shutil
+    done_path = os.path.join(HERE, "lanes-index.moves")
+    try:
+        with open(done_path, encoding="utf-8") as handle:
+            done = int(handle.read().strip() or 0)
+    except FileNotFoundError:
+        done = 0
+    if done < int(EACH["times"]):
+        done += 1
+        with open(done_path, "w", encoding="utf-8") as handle:
+            handle.write("%d\n" % done)
+        state_path = os.path.join(HERE, "store", "lanes-index.state")
+        with open(state_path, encoding="utf-8") as handle:
+            state = json.load(handle)
+        old = os.path.join(HERE, "store", "lanes-index.register", str(state["n"]))
+        new = os.path.join(HERE, "store", "lanes-index.register", str(state["n"] + 1))
+        shutil.copytree(old, new)
+        target = os.path.join(new, EACH["path"])
+        with open(target, "rb") as handle:
+            data = handle.read() + (EACH["line"] % done).encode("utf-8")
+        with open(target, "wb") as handle:
+            handle.write(data)
+        state["n"] += 1
+        state["journal"]["00000000-0000-4000-8000-%012d" % state["n"]] = {
+            "seq": state["n"], "lane": "repoA-2", "verb": "log", "args_sha256": "0" * 64,
+            "workstation": "Eagle", "generation": state["generation"],
+            "files": ["%s\t1\t%s" % (EACH["path"], hashlib.sha256(data).hexdigest())]}
+        with open(state_path, "w", encoding="utf-8") as handle:
+            json.dump(state, handle)
 if fail.get("narrow") and form(args) == 1:
     kept, skip = [], False
     for i, a in enumerate(args):
@@ -3282,6 +3321,146 @@ def test_register_grep_prints_what_git_grep_prints_and_1_with_no_match(estate, p
         assert text.returncode == 0 and STORE_ONLY_ROW in text.stdout, \
             ("the store did not answer: the 69 may be a failed prefetch", text.returncode,
              text.stderr)
+
+
+def seed_logs(estate: Estate, logs: dict) -> None:
+    """Commit and push `logs` (render-set path to text) into the estate's
+    register, so that files mode reads them from `origin/main` and the
+    primary store, built from this checkout's render set afterwards, holds
+    them too."""
+    for path, text in logs.items():
+        target = estate.wip / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(text.encode("utf-8"))
+    estate._git("add", "-A")
+    estate._git("commit", "-q", "-m", "add the logs the case greps")
+    estate._git("push", "-q", "origin", "main")
+
+
+def edit_bytes(primary: Primary, *args, env: dict | None = None) -> subprocess.CompletedProcess:
+    """`primary.edit`, with stdout and stderr kept as bytes, so that a case
+    holds the answer to git's own bytes (`Estate.run` decodes them)."""
+    child = dict(primary.e.env)
+    for key, value in primary.env(env).items():
+        if value is None:
+            child.pop(key, None)
+        else:
+            child[key] = value
+    return subprocess.run(["bash", str(primary.edit_path), *args], capture_output=True,
+                          env=child, timeout=120, cwd=str(primary.e.root),
+                          stdin=subprocess.DEVNULL, check=False)
+
+
+def store_images(door: Door, n: int) -> dict:
+    """The store's render-set images at seq `n`, path to bytes, as the
+    contract stub keeps them (`lanes-index.register/<n>/`)."""
+    root = door.store / "lanes-index.register" / str(n)
+    return {path.relative_to(root).as_posix(): path.read_bytes()
+            for path in sorted(root.rglob("*")) if path.is_file()}
+
+
+def git_grep_at_defaults(where: Path, images: dict, ere: str) -> bytes:
+    """What `git grep -E -e <ERE> origin/main` prints for `lanes/log`'s
+    pathspec pair over a tree holding `images`, under git's defaults: a
+    repository of its own under `where`, with no system, global or XDG
+    configuration and no attributes file (an empty `$HOME` and
+    `XDG_CONFIG_HOME`), under `LC_ALL=C`, as files mode greps. So the bytes a
+    case expects are git's own, its tree order and its quoting of a path
+    (`core.quotePath`, on by default) among them, never the case's guess."""
+    for name in ("home", "xdg", "repo"):
+        (where / name).mkdir(parents=True)
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(where / "home"),
+           "XDG_CONFIG_HOME": str(where / "xdg"), "GIT_CONFIG_NOSYSTEM": "1",
+           "GIT_CONFIG_GLOBAL": os.devnull, "LC_ALL": "C"}
+    repo = where / "repo"
+    for path, data in images.items():
+        target = repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+
+    def git(*argv: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", str(repo), *argv], capture_output=True, env=env,
+                              stdin=subprocess.DEVNULL, check=False)
+
+    for argv in (("init", "-q"), ("add", "-A"),
+                 ("-c", "user.name=readers", "-c", "user.email=readers@example.invalid",
+                  "commit", "-q", "-m", "the store's images"),
+                 ("update-ref", "refs/remotes/origin/main", "HEAD")):
+        done = git(*argv)
+        assert done.returncode == 0, (argv, done.returncode, done.stderr)
+    found = git("grep", "-E", "-e", ere, "origin/main", "--", *LOG_PATHSPEC)
+    assert found.returncode in (0, 1), (found.returncode, found.stderr)
+    return found.stdout
+
+
+#: ONE SNAPSHOT (T401's Q2): a log whose name is outside `check_lane_name`'s
+#: class (`+`), which `--all` never fetches, so every run of `register-grep`
+#: reads it through form 3's `--log-key=` (O18), and which sorts after every
+#: other log, so its read is the run's last image. `git grep` prints its name
+#: as it is (no `"`, `\` or byte from 0x80 up). The write that moves the head
+#: appends a NOTED line to `repoA-2`'s log, which the prefetch cached.
+SNAPSHOT_LANE = "repoX+1"
+SNAPSHOT_LOG = f"lanes/log/{SNAPSHOT_LANE}.md"
+SNAPSHOT_TEXT = (f"STARTED — lane {SNAPSHOT_LANE}, session {UUID_A1}@Eagle, "
+                 f"2026-10-05T00:30:00Z, lane:{SNAPSHOT_LANE} → home opensoft/repoX; "
+                 f"dir /work/repoX\n")
+SNAPSHOT_MOVED = "lanes/log/repoA-2.md"
+SNAPSHOT_LINE = (f"NOTED — lane repoA-2, session {UUID_A2}@Eagle, 2026-10-05T01:00:00Z, "
+                 f"lane:repoA-2 — a write that moved the head under the read, move %d\n")
+
+
+@pytest.mark.parametrize("moves", [1, 3], ids=["one-move", "three-moves"])
+def test_register_grep_on_primary_answers_one_snapshot_and_69_after_three_moved_runs(
+        estate, moves):
+    """ONE SNAPSHOT (T401's Q2: lane 3's ruling, #165 6851977580, taking lane
+    5's detect-and-retry, #165 6851740524; tasks:859 at `94fab177`). On
+    primary `register-grep -E <ERE> -- lanes/log` takes `.head`'s `n=` and
+    `generation=` after `reg_paths`, and again after its last image; where
+    either moved, it drops the answer and runs again from `reg_paths`, three
+    runs at most, and then exits 69 with nothing on stdout.
+    THE STUB MOVES THE HEAD BETWEEN CALLS (the door's `move_each`): at each
+    of the first `moves` reads of `--log-key=repoX+1`, before the store
+    answers it, one write appends a NOTED line to `repoA-2`'s log. Every run
+    makes that read, as its last image, after `repoA-2`'s image came from the
+    prefetch's cache at `n`; the read finds `repoA-2` changed in `(n, n']`, so
+    form 3 rewrites the family at `n'`, and `.head` names `n'` (contract 3.6).
+    `[one-move]`: one move, then a clean run, so the verb answers once, exit
+    0, with what `git grep` prints over the store's tree at `n + 1`, the moved
+    line among it, and nothing of the dropped run; `repoX+1` is read twice,
+    once a run. `[three-moves]`: every run's head moves, so it ends 69 with
+    nothing on stdout; `repoX+1` is read three times, and never a fourth.
+    FAILS UNTIL lane 4's T401 round on lane 3's Q2 ruling, which was not
+    bundled when this case was written. On lane 4's `6318d5e5` (#165
+    6851877746), which reads once, `[one-move]` fails on stdout, its answer
+    straddling `n` and `n + 1`, so `repoA-2`'s moved line is missing, and
+    `[three-moves]` on its exit, 0 with lines, not 69 (T217zh)."""
+    seed_logs(estate, {SNAPSHOT_LOG: SNAPSHOT_TEXT})
+    primary = Primary(estate)
+    first = primary.door.head()[0]
+    primary.door.fail(move_each={"key": SNAPSHOT_LANE, "times": moves, "path": SNAPSHOT_MOVED,
+                                 "line": SNAPSHOT_LINE})
+    ere = "^(STARTED|NOTED) "
+    result = edit_bytes(primary, "register-grep", "-E", ere, "--", "lanes/log")
+    reads = [call for call in primary.door.calls()
+             if call["form"] == 3 and f"--log-key={SNAPSHOT_LANE}" in call["argv"]]
+    head = primary.door.head()[0]
+    where = (moves, "exit", result.returncode, "head", first, "->", head, "reads of",
+             SNAPSHOT_LANE, len(reads), result.stdout.decode("utf-8", "replace"),
+             result.stderr.decode("utf-8", "replace")[-1500:])
+    if moves == 1:
+        expect = git_grep_at_defaults(estate.root / "snapshot-oracle",
+                                      store_images(primary.door, first + 1), ere)
+        moved = (SNAPSHOT_LINE % 1).rstrip("\n").encode("utf-8")
+        assert moved in expect and f"{SNAPSHOT_LOG}:".encode() in expect, \
+            ("the oracle lacks the moved line or the log read by --log-key=", expect)
+        assert (result.returncode, result.stdout) == (0, expect), \
+            where + ("expected, git grep at n + 1:", expect.decode("utf-8", "replace"))
+        assert len(reads) == 2, where
+        assert head == first + 1, where
+    else:
+        assert (result.returncode, result.stdout) == (69, b""), where
+        assert len(reads) == 3, where
+        assert head == first + 3, where
 
 
 # ------------------------------------------------- lane 4's key() trim (T426)
