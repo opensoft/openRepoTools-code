@@ -1444,7 +1444,7 @@ esac
 LS_D8="may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun (off primary), the commit is local and may already be on origin"
 # NO HAND COMMAND OF ITS OWN AFTER A WRITE THAT DID NOT END 0, UNDER A SEQ
 # BASE (lane 3's REV-ACT Q4, #165 6774499606, widened by Q11, #165
-# 6779688808; Y:5587, Y:5601). A command run by hand without this launch's
+# 6779688808; Y:5601). A command run by hand without this launch's
 # `LANES_ACT` and `LANES_EXPECT` would write unchecked; after a 2, with them
 # it would only be refused again. So under a base `<id>@<seq>:<generation>`,
 # after any code but 0 and 3, the writer's words above are kept, this script
