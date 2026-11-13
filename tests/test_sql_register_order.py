@@ -1980,14 +1980,23 @@ def test_a_writer_prints_its_output_once_however_many_attempts_it_made(estates, 
     it made, and its stderr no line twice (only the deciding attempt's). The
     line is a `note`, on stderr (T421; T243h). The row's oracle is each
     committed writer's (Y TP:6852-6854; TP:6925-6927 at `0c3750a5`), so a
-    writer may end 75 with nothing written, as `burst_ends` checks (T248d)."""
+    writer may end 75 with nothing written, as `burst_ends` checks (T248d).
+
+    Its record counts each writer's attempts by its snapshots alone,
+    `burst_calls`' `s` calls, and `reads` its `r` and `m` calls, the detached
+    render's reads among them, as the burst record does (T243q). Read after
+    the burst's own record, it can hold more render reads than that one,
+    never more attempts. UNTIL T248e `attempts` here counted both, so an
+    older figure is `attempts + reads` (lane 2's RV20, finding 9; T248e)."""
     e = estates()
     writers, _ = burst(e, [f"{KEY}#{400 + k}" for k in range(10)], 200, node=request.node)
     for w in burst_ends(e, writers):
         assert len(SEQ_SAID.findall(w.err)) == 1, f"{w.lane} printed its success text not once: {w.err!r}"
         lines = [l for l in w.err.splitlines() if l.strip()]
         assert len(lines) == len(set(lines)), f"{w.lane}'s stderr repeats an attempt's lines: {w.err!r}"
-    record("output-once", attempts={w.lane: len(w.snapshot_calls()) for w in writers})
+    kinds = {w.lane: [call[0] for call in burst_calls(w)[0].split()] for w in writers}
+    record("output-once", attempts={lane: k.count("s") for lane, k in kinds.items()},
+           reads={lane: k.count("r") + k.count("m") for lane, k in kinds.items()})
 
 
 @CLIENT
