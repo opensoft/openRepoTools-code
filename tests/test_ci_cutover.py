@@ -134,13 +134,14 @@ def test_ci_cutover_source_snapshot_diagnostic_has_names_not_values(cutover, bat
     env, event = source_fixture(cutover, batch)
     if field == "merge_commit_sha":
         batch["prs"][7][field] = env["GITHUB_SHA"]
-    event["pull_request"][field] = None
+    event["pull_request"][field] = "f" * 40 if field == "merge_commit_sha" else None
     batch["prs"][7]["body"] += "\nPrivate prose must never be logged."
     assert route_fixture(cutover, batch, env, event) == cutover.FULL
     rows = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
     assert rows == [
         {"delivery_diagnostic": "snapshot-mismatch", "stage": "source", "fields": [field]},
-        {"delivery_diagnostic": "source-metadata", "stage": "source"},
+        {"delivery_diagnostic": "event-merge-hint" if field == "merge_commit_sha" else "source-metadata",
+         "stage": "source"},
     ]
 
 
@@ -485,6 +486,111 @@ def duplicate_fixture(cutover, batch, artifact):
     batch["data"]["actions/runs/501"] = run_row(cutover, 501, pr["head"]["sha"],
                                                   pr["head"]["ref"], cutover.DIRECT, "pull_request")
     return env, event, data
+
+
+@pytest.fixture(params=["source", "candidate"])
+def merge_hint_case(request, cutover, batch):
+    if request.param == "source":
+        env, event = source_fixture(cutover, batch)
+        data = None
+    else:
+        env, event, data = duplicate_fixture(cutover, batch, request.getfixturevalue("artifact"))
+    return env, event, data, batch["data"][f"pulls/{event['number']}"]
+
+
+def hint_route(cutover, batch, case, request=None):
+    env, event, data, _live = case
+    return cutover.route(env, event, batch["root"], request or request_for(batch),
+                         lambda _id: data, lambda number: threads(number, batch), base_changes)
+
+
+@pytest.mark.parametrize("action", ["opened", "synchronize", "reopened"])
+@pytest.mark.parametrize("event_hint,live_hint", [
+    ("missing", "current"), ("null", "current"), ("current", "missing"),
+    ("current", "null"), ("current", "current"), ("null", "null"),
+])
+def test_ci_cutover_generated_merge_hint_transition_preserves_proof(cutover, batch, merge_hint_case,
+                                                                  action, event_hint, live_hint):
+    env, event, _data, live = merge_hint_case
+    expected = hint_route(cutover, batch, merge_hint_case)
+    assert expected["omit_full"] is True
+    event["action"] = action
+    for pr, hint in ((event["pull_request"], event_hint), (live, live_hint)):
+        if hint == "missing":
+            pr.pop("merge_commit_sha", None)
+        else:
+            pr["merge_commit_sha"] = None if hint == "null" else env["GITHUB_SHA"]
+    if expected["mode"] == "source":
+        live["body"] += "\nUnrelated summary."
+    assert hint_route(cutover, batch, merge_hint_case) == expected
+
+
+@pytest.mark.parametrize("side", ["event", "live", "both"])
+@pytest.mark.parametrize("hint", ["f" * 40, "malformed", True, 1, {}, []],
+                         ids=["foreign-sha", "malformed", "boolean", "number", "object", "list"])
+def test_ci_cutover_generated_merge_hint_unknown_retains_full(cutover, batch, merge_hint_case,
+                                                            side, hint):
+    env, event, _data, live = merge_hint_case
+    assert hint_route(cutover, batch, merge_hint_case)["omit_full"] is True
+    event["pull_request"]["merge_commit_sha"] = live["merge_commit_sha"] = env["GITHUB_SHA"]
+    if side in {"event", "both"}:
+        event["pull_request"]["merge_commit_sha"] = hint
+    if side in {"live", "both"}:
+        live["merge_commit_sha"] = hint
+    assert hint_route(cutover, batch, merge_hint_case) == cutover.FULL
+
+
+@pytest.mark.parametrize("commit", ["base", "source-head"])
+def test_ci_cutover_generated_merge_hint_cannot_replace_tested_parents(cutover, batch,
+                                                                     merge_hint_case, commit, capsys):
+    env, event, _data, live = merge_hint_case
+    env["GITHUB_SHA"] = batch["base"] if commit == "base" else batch["heads"][0]
+    event["pull_request"]["merge_commit_sha"] = None
+    live["merge_commit_sha"] = env["GITHUB_SHA"]
+    assert hint_route(cutover, batch, merge_hint_case) == cutover.FULL
+    rows = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
+    assert rows == [{"delivery_diagnostic": "source-test-merge" if event["number"] == 7
+                    else "incomplete-evidence", "stage": "source" if event["number"] == 7 else "candidate"}]
+
+
+def test_ci_cutover_generated_merge_hint_live_reread_stays_strict(cutover, batch, merge_hint_case):
+    env, event, _data, live = merge_hint_case
+    event["pull_request"]["merge_commit_sha"] = None
+    live["merge_commit_sha"] = env["GITHUB_SHA"]
+    reader, reads = request_for(batch), 0
+    def request(repo, endpoint):
+        nonlocal reads
+        if endpoint == f"pulls/{event['number']}":
+            reads += 1
+            if reads == 2:
+                live["merge_commit_sha"] = None
+        return reader(repo, endpoint)
+    assert hint_route(cutover, batch, merge_hint_case, request) == cutover.FULL
+    assert reads == 2
+
+
+def test_ci_cutover_generated_merge_hint_keeps_candidate_body_exact(cutover, batch, artifact):
+    env, event, data = duplicate_fixture(cutover, batch, artifact)
+    live = batch["data"]["pulls/9"]
+    event["pull_request"]["merge_commit_sha"] = None
+    live["merge_commit_sha"] = env["GITHUB_SHA"]
+    live["body"] += "\nChanged candidate body."
+    assert hint_route(cutover, batch, (env, event, data, live)) == cutover.FULL
+
+
+@pytest.mark.parametrize("failure", ["missing", "corrupt"])
+def test_ci_cutover_generated_merge_hint_still_requires_admission(cutover, batch, artifact, failure):
+    env, event, data = duplicate_fixture(cutover, batch, artifact)
+    live = batch["data"]["pulls/9"]
+    event["pull_request"]["merge_commit_sha"] = None
+    live["merge_commit_sha"] = env["GITHUB_SHA"]
+    if failure == "missing":
+        batch["data"]["actions/runs/601/artifacts?per_page=100&page=1"] = {"total_count": 0, "artifacts": []}
+    else:
+        artifact["record"]["proof"]["members"][0]["tree"] = "0" * 40
+        data, _ = install_artifact(cutover, batch, artifact)
+    expected = {**cutover.FULL, "retryable": True} if failure == "missing" else cutover.FULL
+    assert hint_route(cutover, batch, (env, event, data, live)) == expected
 
 
 def test_ci_cutover_candidate_duplicate_requires_real_admission(cutover, batch, artifact):

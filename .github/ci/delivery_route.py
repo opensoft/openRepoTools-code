@@ -33,6 +33,7 @@ REFUSALS = {
     "Source event ref differs": "source-event-ref",
     "Source test-merge identity differs": "source-test-merge",
     "Source moved during verification": "source-reread",
+    "Event merge hint is neither absent nor current": "event-merge-hint",
     "Missing or ambiguous fast check": "fast-check-count",
     "Fast check is not successful exact-head Actions evidence": "fast-check-identity",
     "Fast evidence is not successful or authenticated pending work": "fast-state",
@@ -115,20 +116,33 @@ def current_run(env, request):
     return run
 
 
+def current_merge_hints(env, pr, expected):
+    tested = policy.sha(env["GITHUB_SHA"])
+    return all(hint is None or isinstance(hint, str) and hint == tested
+               for hint in (pr.get("merge_commit_sha"), expected.get("merge_commit_sha")))
+
+
 def source(env, event, root, main, request, base_changes):
     require(event["action"] in {"opened", "synchronize", "reopened"}, "Unsupported PR event")
     number = evidence.positive(event["number"])
     pr = request(REPOSITORY, f"pulls/{number}")
     expected = event["pull_request"]
-    live_snapshot = policy.snapshot(dict(pr, body=expected.get("body")))
+    hints_current = current_merge_hints(env, pr, expected)
+    comparison = dict(pr, body=expected.get("body"))
+    if hints_current:
+        comparison["merge_commit_sha"] = expected.get("merge_commit_sha")
+    live_snapshot = policy.snapshot(comparison)
     event_snapshot = policy.snapshot(expected)
     if live_snapshot != event_snapshot:
         names = ("number", "state", "draft", "merged", "body", "merge_commit_sha",
                  "head", "base", "author")
         diagnostic("source", "snapshot-mismatch", fields=[name for name, live, old
                    in zip(names, live_snapshot, event_snapshot) if live != old])
+    # Generated hints are not tested-commit authority. Keep ordered Git-parent
+    # verification below and strict subsequent rereads of the original live PR.
+    require(hints_current, "Event merge hint is neither absent nor current")
     # Prose may change before routing. Validate both decisions independently;
-    # retain every other snapshot field and the strict subsequent live rereads.
+    # retain all other snapshot fields and strict subsequent live rereads.
     require(verifier.delivery_intended(expected.get("body"))
             and not re.search(r"(?m)^Depends-On:", expected["body"])
             and live_snapshot == event_snapshot
@@ -156,7 +170,10 @@ def duplicate(env, event, root, main, request, fetch, threads, base_changes):
     number = evidence.positive(event["number"])
     pr = request(REPOSITORY, f"pulls/{number}")
     head, branch = policy.side(pr, "head")
-    require(policy.snapshot(pr) == policy.snapshot(event["pull_request"])
+    expected = event["pull_request"]
+    require(current_merge_hints(env, pr, expected), "Event merge hint is neither absent nor current")
+    comparison = dict(pr, merge_commit_sha=expected.get("merge_commit_sha"))
+    require(policy.snapshot(comparison) == policy.snapshot(expected)
             and pr["number"] == number and pr["state"] == "open" and pr["draft"] is True
             and pr["user"]["login"] == "mergify[bot]"
             and policy.side(pr, "base") == (main, "main")
