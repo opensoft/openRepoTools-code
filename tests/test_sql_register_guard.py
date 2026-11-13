@@ -95,6 +95,17 @@ HOOK_TIMEOUT = 5.0
 DOT = chr(0xB7)
 #: The five copies a record holds only on primary (contract section 3; T254).
 COPIES = ("write_id", "generation", "not_after", "write_lane", "args_sha256")
+#: The shim's counters beside it (T203's `PSQL_SHIM`, whose docstring names
+#: the file); `Estate.shim` drops a lost host from it (T254w).
+PSQL_SHIM_STATE = "psql-shim.state"
+#: CASE 10's `[found]` ARMS, and case 19's (T254w): "the shim's `after` mode
+#: on that commit call, which commits, then exit 2 on every later call"
+#: (TP:6094-6095 at a6497d00), as `no-reconnect` as `after` on the bind's
+#: first commit call. So the write's own retry snapshot fails too and cannot
+#: answer `found=` inside the run (lane 5, #165 6842157774; lane 3,
+#: 6842243851), and the guard's prefetch calls, before the commit, are not
+#: failed (T254t). The case's next `est.shim()` brings the host back.
+FOUND_ARMS = ({"mode": "no-reconnect", "match": "commit_write", "call": 1, "as": "after"},)
 
 #: The contract's texts (section 5), as the guard prints them on stderr.
 OFFER = "WARNING: the lane and Claude session names disagree"
@@ -126,6 +137,11 @@ REGISTER_HEADER = ["# LANES.md", "",
 #: `release`, at most that many seconds), `sleep` (that many seconds),
 #: `rc`, `ignore-term`, `tmux` (make one untargeted `tmux` call) and `fork`
 #: (leave a child that ignores TERM, living that many seconds).
+#: `pending-record` (T254z; case 20) makes it write, before it holds, a whole
+#: `start-record` pending record with one `call=` line, as T412's
+#: `wr_record_write` lays one out, from the JSON in that file: `generation`,
+#: `lane`, `session`, `host`, `container`, `database` and `base`. Its
+#: `not_after` is the stand-in's clock, so a lookup may decide at once.
 _STUB_LANE_START = r'''#!@PY@ -I
 import json, os, signal, subprocess, sys, time
 CTL = @CTL@
@@ -164,6 +180,33 @@ if ctl("fork") is not None:
          "time.sleep(%s)" % float(ctl("fork"))],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     entry["fork"] = child.pid
+if ctl("pending-record") is not None:
+    import hashlib, uuid
+    spec = json.loads(ctl("pending-record"))
+    state = os.environ.get("XDG_STATE_HOME") or os.path.join(
+        os.environ.get("HOME") or "/", ".local", "state")
+    pending = os.path.join(state, "openRepoTools", "register-pending")
+    os.makedirs(pending, mode=0o700, exist_ok=True)
+    now, clock = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), int(time.time())
+    digest = hashlib.sha256(("start-record %s %s" % (spec["lane"], spec["session"])
+                             ).encode("utf-8")).hexdigest()
+    with open("/proc/self/stat", encoding="utf-8") as handle:
+        started = handle.read().rsplit(") ", 1)[1].split()[19]
+    lines = ["format=1", "write_id=%s" % uuid.uuid4(), "generation=%s" % spec["generation"],
+             "database=%s" % spec["database"], "lane=%s" % spec["lane"],
+             "session=%s" % spec["session"], "verb=start-record", "args_sha256=%s" % digest,
+             "cmdline=lanes-edit.sh start-record %s" % spec["lane"], "created_utc=%s" % now,
+             "updated_utc=%s" % now, "pid=%d" % os.getpid(), "pid_start=%s" % started,
+             "host=%s" % spec["host"], "container=%s" % spec["container"], "attempts=1",
+             "call=%d %d %d %s %s" % (int(spec["base"]), clock, clock,
+                                     hashlib.sha256(b"").hexdigest(),
+                                     os.path.join(pending, "stand-in-attempt"))]
+    path = os.path.join(pending, digest)
+    with open(path + ".tmp", "w", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+    os.chmod(path + ".tmp", 0o600)
+    os.replace(path + ".tmp", path)
+    entry["pending"] = path
 log(entry)
 if ctl("sleep") is not None:
     time.sleep(float(ctl("sleep")))
@@ -635,8 +678,19 @@ class Estate:
 
     def shim(self, arms=()) -> Path:
         """T203's `PSQL_SHIM` first on `PATH`, handing calls to the cluster's
-        own `psql`, with `arms`; its log is `<bin>/psql-shim.log`."""
+        own `psql`, with `arms`; its log is `<bin>/psql-shim.log`.
+
+        EACH ARMING BRINGS A LOST HOST BACK (T254w): a `no-reconnect` arm
+        fails every later call "until the test removes a second control
+        file" (TP:2277-2278 at a6497d00), and the shim keeps the lost call in
+        its state, `psql-shim.state`, past a new control file. So the state's
+        `lost` is dropped here, and its call counts kept."""
         shim = _script(self.bin / "psql", PSQL_SHIM)
+        state = self.bin / PSQL_SHIM_STATE
+        if state.exists():
+            held = json.loads(state.read_text(encoding="utf-8") or "{}")
+            if held.pop("lost", None) is not None:
+                state.write_text(json.dumps(held), encoding="utf-8")
         (self.bin / PSQL_SHIM_CONTROL).write_text(json.dumps(
             {"psql": self.pg.cluster.tool("psql"), "arms": list(arms)}), encoding="utf-8")
         return shim
@@ -1946,17 +2000,36 @@ def _commits(est: Estate) -> list:
 def test_two_sessions_binding_one_lane_one_start_record_commits(estate):
     """AT-F6 case 8: two sessions answer `2` for one lane on the primary
     fixture: one `start-record` commits, and the other is refused 2 by its
-    `bind:<to>` expectation."""
+    `bind:<to>` expectation.
+
+    THE SCOPE IS READ IN THE ATTEMPT'S `out` FILE (T254y): the writer's
+    `expectation:` line names `bind:<L>` in lower case (Y:5584, Y:5589),
+    and a failed bind keeps that line in its attempt's `out` file, while
+    the record's `why=` stays `lane-start`'s last refusal line, which
+    names no scope (Y:5487; lane 3, #165 6841918192). The `out` file's
+    `expectation:` and `row:` lines are printed, for lane 3's check that
+    `start-record` lists `row:<L>` first (Y:5528)."""
     one, two, ends = _two_binds(estate, mode="primary")
     assert sorted(r["mode"] for r in ends) == ["bind-failed", "bound"], ends
-    failed = [r for r in ends if r["mode"] == "bind-failed"][0]
-    assert failed["rc"] == "2" and f"bind:{TO}" in failed["why"], failed
+    (est, failed), = [(e, r) for e, r in zip((one, two), ends) if r["mode"] == "bind-failed"]
+    assert failed["rc"] == "2", failed
+    out = Path(failed.get("out") or f"{est.offer}.bind.{failed.get('bind', 1)}.out")
+    text = out.read_text(encoding="utf-8", errors="replace") if out.exists() else ""
+    for line in text.splitlines():
+        if "expectation" in line or "row:" in line:
+            print(f"T254 case 8, {out.name}: {line}")
+    assert f"bind:{TO.lower()}" in text, (str(out), failed, text[-2000:])
 
 
 def test_the_bind_is_one_register_write_and_refuses_a_changed_row(estate):
     """AT-F6 case 9: on primary the bind is one journal entry, and with the
     `set-row-state` on the lane left answer 2 journals two; a row change
-    injected after `act-begin` refuses it with 2 and writes nothing."""
+    injected after `act-begin` refuses it with 2 and writes nothing.
+
+    "WRITES NOTHING" IS READ IN THE RIVAL'S JOURNAL (T254zc; lane 2's
+    review RV20, finding 4): from its offer to its end, the rival's
+    database gains one entry, the injected `set-row-state`, and no
+    `start-record`."""
     est = _real_estate(estate, mode="primary")
     est.shim()
     est.make_offer()
@@ -1968,6 +2041,7 @@ def test_the_bind_is_one_register_write_and_refuses_a_changed_row(estate):
     rival.shim()
     rival.set("inject-row", TO)
     rival.make_offer()
+    head = int(rival.pg.psql("SELECT seq FROM lanes_register.register_head;").stdout.split()[-1])
     rival.answer_2()
     record = rival.ended(90)
     # THE RIVAL'S CHANGE LANDED (T254u): its `set-row-state` exited 0, or the
@@ -1976,8 +2050,9 @@ def test_the_bind_is_one_register_write_and_refuses_a_changed_row(estate):
     rc = injected.read_text(encoding="utf-8") if injected.exists() else "never ran"
     assert rc == "0", f"the rival's injected set-row-state exited {rc}: no row changed"
     assert record["mode"] == "bind-failed" and record["rc"] == "2", record
-    starts = [c for c in _commits(rival) if "start-record" in c.get("sent", "")]
-    assert not starts or all("commit_write" in c["sent"] for c in starts), starts
+    grown = rival.pg.psql("SELECT string_agg(verb, ' ' ORDER BY seq) FROM "
+                          f"lanes_register.journal WHERE seq > {head};").stdout.split()
+    assert grown == ["set-row-state"], f"the rival's journal after seq {head}: {grown}"
 
 
 @pytest.mark.parametrize("held", ["found", "absent"])
@@ -1985,19 +2060,31 @@ def test_a_bind_in_doubt_looks_its_write_up_before_a_rerun(estate, held):
     """AT-F6 case 10: an injected `psql` exit 2 gives `rc=3` with the id:
     `[absent]`, exit 2 on every call from the bind's commit call on;
     `[found]`, the shim's `after` mode on that call, which commits, then exit
-    2 on every lookup (`find_write`) after it. At the next `2` the child's
+    2 on every later call. At the next `2` the child's
     lookup runs first: `[absent]` binds anew under a new id; `[found]` writes
     no second `RESUMED`, its done mark says `done`, and the record ends
     `bound`.
 
-    `[found]`'s later failures are armed by the lookup's text (T254t), not
-    `fail-call` from the shim's second call: that counted every call, and
-    calls 1 and 2 are both the guard's own prefetch, so the guard refused
-    before its offer (lane 5, #165 6841545201)."""
+    `[found]`'s later failures are not `fail-call` from the shim's second
+    call: that counted every call, and calls 1 and 2 are both the guard's own
+    prefetch, so the guard refused before its offer (T254t; lane 5, #165
+    6841545201). Nor are they the lookup's alone: the write's own retry
+    snapshot then answered `found=` and the record ended `bound` (lane 5,
+    #165 6842157774). They are `FOUND_ARMS`, every call after the commit
+    call (T254w).
+
+    `[absent]` FAILS THE LOOKUP'S TRIES TOO (T254x): "exit 2 on every
+    call of the bind's write from its commit call on, its deadline's
+    lookup included" (TP:6092-6094 at a6497d00), by `fail-match` on
+    `find_write` (TP:7355). No try then takes the lock, so the run ends 3
+    and keeps the record (Y:5245), not the 75 of a lookup that answers
+    absent (Y:5244; lane 3, #165 6841918192, point 5). The case's
+    `est.shim()` disarms both before the next `2`, so that lookup answers
+    absent and the bind starts again under a new id."""
     est = _real_estate(estate, mode="primary")
-    arms = ([{"mode": "fail-match", "match": "commit_write", "from": 1}] if held == "absent"
-            else [{"mode": "after", "match": "commit_write", "call": 1},
-                  {"mode": "fail-match", "match": "find_write", "from": 1}])
+    arms = ([{"mode": "fail-match", "match": "commit_write", "from": 1},
+             {"mode": "fail-match", "match": "find_write", "from": 1}]
+            if held == "absent" else list(FOUND_ARMS))
     est.shim(arms)
     est.make_offer()
     est.answer_2()
@@ -2062,7 +2149,15 @@ def test_a_bind_killed_mid_commit_waits_for_ended_utc_plus_c_before_its_lookup(
     8 s at `c` = 2, and gets no LR011; `[found]` writes no second
     `RESUMED`, where the shim held the call after the real `psql` had
     returned (`timer`), and `[absent]` binds anew, where it held it before
-    (`hold`)."""
+    (`hold`).
+
+    THE END AND THE WAIT ARE BOTH READ (T254zb; lane 2's review RV20,
+    finding 3): the second bind ends `bound`; `[found]` sends no second
+    `start-record` commit, so no second `RESUMED`, and `[absent]` sends
+    one under a new write id, not the copied one. And the `2` must go out
+    at least 2 s inside `ended_utc` + 8 s, or the lookup's time could not
+    tell a child that waited from a test that was slow: the case then
+    fails as inconclusive."""
     est = _real_estate(estate, mode="primary")
     fifo = tmp_path / f"hold-{held}"
     os.mkfifo(fifo)
@@ -2082,6 +2177,9 @@ def test_a_bind_killed_mid_commit_waits_for_ended_utc_plus_c_before_its_lookup(
     # `2` was that prompt and never reached the bind (lane 5, #165 6841545201).
     est.hook("hello")
     before = len(est.shim_calls())
+    sent_at = time.time()
+    assert sent_at < ended + 6, (f"inconclusive: the 2 went out {sent_at - ended:.1f} s "
+                                 f"after ended_utc, too near C = 8 s to show a wait")
     est.answer_2()
     # THE SHIM LOGS NO TIME, so the lookup's start is read by watching for its
     # entry, at 50 ms: the time seen is at most 50 ms after the start.
@@ -2093,6 +2191,14 @@ def test_a_bind_killed_mid_commit_waits_for_ended_utc_plus_c_before_its_lookup(
     assert seen >= ended + 8, (seen, ended)
     end = est.ended(120)
     assert "LR011" not in end.get("why", ""), end
+    assert end["mode"] == "bound", end
+    starts = [c for c in est.shim_calls()[before:]
+              if "commit_write" in c.get("sent", "") and "start-record" in c.get("sent", "")]
+    if held == "found":
+        assert not starts, [c.get("call") for c in starts]
+    else:
+        assert starts and all(record["write_id"] not in c["sent"] for c in starts), \
+            (record["write_id"], [c.get("call") for c in starts])
 
 
 @pytest.mark.parametrize("case", ["found", "another-write", "generation"])
@@ -2108,10 +2214,9 @@ def test_the_bind_childs_lookup_sends_the_five_copied_values(estate, case):
     `generation` copy changed, `rc=2` with a plain rerun's refusal and the
     copies kept."""
     est = _real_estate(estate, mode="primary")
-    # CASE 10's `[found]` ARMS (T254t): the lookup fails by its text, so the
-    # guard's own prefetch calls, the shim's first two, are not failed.
-    est.shim([{"mode": "after", "match": "commit_write", "call": 1},
-              {"mode": "fail-match", "match": "find_write", "from": 1}])
+    # CASE 10's `[found]` ARMS (T254t, T254w): every call after the commit
+    # call fails, and the guard's own prefetch calls before it do not.
+    est.shim(list(FOUND_ARMS))
     est.make_offer()
     est.answer_2()
     record = est.ended(120)
@@ -2121,13 +2226,20 @@ def test_the_bind_childs_lookup_sends_the_five_copied_values(estate, case):
         key = "args_sha256" if case == "another-write" else "generation"
         lines = [line for line in est.offer.read_text(encoding="utf-8").splitlines()
                  if not line.startswith(f"{key}=")]
-        write_record(est.offer, lines + [f"{key}=0{copies[key][1:]}"])
+        copies[key] = f"0{copies[key][1:]}"
+        write_record(est.offer, lines + [f"{key}={copies[key]}"])
     est.shim()
     est.hook("hello")
     est.answer_2()
     record = est.ended(120)
     sent = " ".join(c.get("sent", "") for c in _lookups(est))
-    for key in ("write_id", "not_after", "write_lane"):
+    # THE FIVE VALUES AS THE LOOKUP SENDS THEM (T254zd): `--not-after <n>`
+    # takes the copy's epoch seconds, and `find_write` gets them in their UTC
+    # form, `'2026-11-13T10:57:06Z'` for 1794567426 (the shim's log, lane 2's
+    # G-20 run k4b); the other four go as copied, a changed one as changed.
+    copies["not_after"] = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                        time.gmtime(int(copies["not_after"])))
+    for key in COPIES:
         assert copies[key] in sent, (key, copies[key])
     if case == "found":
         assert record["mode"] == "bound", record
@@ -2143,13 +2255,29 @@ def test_the_stale_row_copies_a_dead_outers_pending_call_and_the_next_2_looks_it
     line: once no process of the outer's session is left, the stale row
     copies the five values, `not_after` the largest among its `call` lines,
     and the next `2` makes the lookup, in the shim's log, before any
-    `start-record` call."""
+    `start-record` call.
+
+    THE STAND-IN WRITES THAT RECORD (T254z; lane 5, #165 6841545201): a
+    whole `start-record` pending record of this session, with one `call=`
+    line (`pending-record`), at the register's own generation, host and
+    container, so the stale row has something to copy. `LANES_HOST` pins
+    the host the guard compares (`wr_here`), as a workstation outside a
+    container would otherwise read `hostname`."""
     est = estate(mode="primary")
     est.shim()
     est.set("hold", 60)
+    est.extra["LANES_HOST"] = HOST
     est.make_offer()
+    generation = est.pg.psql("SELECT generation FROM lanes_register.register_switch;"
+                             ).stdout.split()[-1]
+    head = est.pg.psql("SELECT seq FROM lanes_register.register_head;").stdout.split()[-1]
+    est.set("pending-record", json.dumps({
+        "generation": generation, "lane": TO, "session": est.sid, "host": HOST,
+        "container": CONTAINER, "database": "register-test", "base": int(head)}))
     est.answer_2()
     record = est.outer()
+    assert _until(lambda: [e for e in est.starts() if e.get("pending")], 30), \
+        "the stand-in wrote no pending record"
     outer = int(record["pid"])
     _kill(outer, signal.SIGKILL)
     est.release()
@@ -2164,27 +2292,54 @@ def test_the_stale_row_copies_a_dead_outers_pending_call_and_the_next_2_looks_it
     est.ended(120)
     calls = est.shim_calls()
     first_lookup = next(i for i, c in enumerate(calls) if "find_write" in c.get("sent", ""))
-    starts = [i for i, c in enumerate(calls) if "start-record" in c.get("sent", "")]
+    # A `start-record` CALL IS ITS COMMIT (T254ze): the lookup's own call
+    # names the verb too, `find_write(<id>, <utc>, <g>, <lane>, 'start-record',
+    # <h>)`, so a filter on the verb alone counted the lookup as a start
+    # (lane 2's G-20 run k12), as case 10 already filters.
+    starts = [i for i, c in enumerate(calls) if "start-record" in c.get("sent", "")
+              and "commit_write" in c.get("sent", "")]
     assert not starts or first_lookup < min(starts), calls
 
 
-def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate):
+def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, request):
     """AT-F6 case 21 (R-P23): on the primary fixture behind T229's delayed
     loopback, 75 ms each way with TLS on, and `connect_timeout=3` with one
     address: `guard-bind` records `bound_s=530`, the bind ends `bound`, its
     `ended_utc` less `started_utc` recorded beside the 530 s, and the
     guard's register read is the hook's last database call in the shim's
     log. Waits for T229's `delayed_loopback`, which this line does not
-    have."""
-    est = _real_estate(estate, mode="primary")
-    relay = pytest.importorskip("pgcluster").__dict__.get("delayed_loopback")
-    assert relay is not None, "tests/pgcluster.py has no delayed_loopback (T229)"
-    est.shim()
-    est.make_offer()
-    hook = est.answer_2()
-    record = est.outer()
-    assert record["bound_s"] == "530", record
-    record = est.ended(530)
+    have.
+
+    THE LINK IS ROUTED (T254za; lane 5, #165 6841545201): the estate
+    reads and writes T229's TLS cluster, which listens on 127.0.0.1 (the
+    session cluster has its socket alone), through the delayed loopback
+    at 0.075 s each way, by that cluster's own configuration
+    (`TLSCluster.configuration`, its two logins and their password files)
+    with each URL's port the relay's and `connect_timeout=3`, one address
+    and no `register_addresses=`. So the prefetch's `.head` says `c=3`,
+    and `guard-bind` sums 530 s (TP:6183-6187 at a6497d00)."""
+    pgcluster = pytest.importorskip("pgcluster")
+    delayed = pgcluster.__dict__.get("delayed_loopback")
+    assert delayed is not None, "tests/pgcluster.py has no delayed_loopback (T229)"
+    cluster = request.getfixturevalue("tls_cluster")
+    db = pgcluster.Database(cluster, cluster.database_name)
+    est = _real_estate(estate, mode="primary", pg=db)
+    with delayed(cluster.port, 0.075) as relay:
+        conf = cluster.configuration(est.root / "tls-conf", mode="primary")
+        text = conf.read_text(encoding="utf-8")
+        direct = f"@127.0.0.1:{cluster.port}/"
+        assert text.count(direct) == 2 and "register_addresses" not in text, text
+        text = text.replace(direct, f"@127.0.0.1:{relay.port}/").replace(
+            "?sslmode=verify-full", "?connect_timeout=3&sslmode=verify-full")
+        assert text.count("connect_timeout=3") == 2, text
+        conf.write_text(text, encoding="utf-8")
+        est.extra["LANES_INDEX_CONFIG"] = str(conf)
+        est.shim()
+        est.make_offer()
+        hook = est.answer_2()
+        record = est.outer()
+        assert record["bound_s"] == "530", record
+        record = est.ended(530)
     assert record["mode"] == "bound", record
     print(f"T254 case 21: ended_utc - started_utc = "
           f"{_epoch(record['ended_utc']) - _epoch(record['started_utc'])} s beside 530 s")
