@@ -169,20 +169,25 @@ elif "/git/trees/" in url:
     print(json.dumps({"tree": [{"type": "commit", "path": "code",
                                "sha": os.environ["DOWNLOAD_COMMIT"]}]}))
 else:
+    print("#!/usr/bin/env bash")
+    print('printf ran > "$DOWNLOAD_EXECUTED"')
     print("fixture refuses implementation download", file=sys.stderr)
     sys.exit(22)
 """)
     (fake / "curl").chmod(0o755)
     requests = tmp_path / "requests"
+    executed = tmp_path / "payload-ran"
     env = {**os.environ, "PATH": f"{fake}:{os.environ['PATH']}",
            "TMPDIR": str(tmp_path), "OPENREPOTOOLS_REPO": "example/assembly",
            "OPENREPOTOOLS_REF": "main", "DOWNLOAD_REQUESTS": str(requests),
-           "DOWNLOAD_PIN": str(pin), "DOWNLOAD_COMMIT": commit}
+           "DOWNLOAD_PIN": str(pin), "DOWNLOAD_COMMIT": commit,
+           "DOWNLOAD_EXECUTED": str(executed)}
     result = subprocess.run(["bash", str(launcher), "--install"], env=env,
                             cwd=standalone, capture_output=True, text=True, timeout=20)
     assert result.returncode == 2, result.stderr
     assert "could not fetch openRepoTools" in result.stderr, result.stderr
     assert "fixture refuses implementation download" in result.stderr
+    assert not executed.exists(), "a partial payload ran after curl failed"
     urls = requests.read_text().splitlines()
     assert len(urls) == 4, urls
     assert urls[0].endswith("/commits/main")
