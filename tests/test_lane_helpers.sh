@@ -2310,7 +2310,7 @@ is   "…as is a lane whose every recorded session has ended" "$rc" 8
 cat > "$SANDBOX/failedit" <<'WRAP'
 #!/usr/bin/env bash
 case "${1-}" in
-  live-holder|lane-objects) printf '%s: simulated failure\n' "$1" >&2; exit 3 ;;
+  live-holder|lane-objects) printf '%s: simulated failure\n' "$1" >&2; exit 6 ;;
 esac
 exec "$REAL_LANES_EDIT" "$@"
 WRAP
@@ -2319,7 +2319,7 @@ chmod +x "$SANDBOX/failedit"
 before_renames="$(grep -c 'rename-window repoB-1' "$FAKE_TMUX_LOG" || :)"
 run env REAL_LANES_EDIT="$E" LANES_EDIT="$SANDBOX/failedit" "$START" repoB 1 --no-launch
 is   "lane-start REFUSES when live-holder fails, rather than taking the name" "$rc" 1
-has  "…naming the helper and its exit code" "$err" "live-holder repoB-1 failed (exit 3)"
+has  "…naming the helper and its exit code" "$err" "live-holder repoB-1 failed (exit 6)"
 has  "…passing the helper's own stderr through instead of swallowing it" "$err" "live-holder: simulated failure"
 hasnt "…and never saying the lane is free" "$err" "this is a resume of a lane whose sessions have all ended"
 is   "…and renaming no window on an answer it did not get" "$(grep -c 'rename-window repoB-1' "$FAKE_TMUX_LOG" || :)" "$before_renames"
@@ -2328,7 +2328,7 @@ run "$E" lane-objects repoP-2
 is   "lane-objects on a lane with no log exits 8 — the same 8 who uses for no record" "$rc" 8
 run env REAL_LANES_EDIT="$E" LANES_EDIT="$SANDBOX/failedit" "$END" repoG-2
 is   "lane-end REFUSES when lane-objects fails, rather than calling the lane pre-cutover" "$rc" 1
-has  "…naming the helper and its exit code" "$err" "lane-objects repoG-2 failed (exit 3)"
+has  "…naming the helper and its exit code" "$err" "lane-objects repoG-2 failed (exit 6)"
 has  "…passing the helper's own stderr through" "$err" "lane-objects: simulated failure"
 hasnt "…and never asserting the lane is pre-cutover" "$err" "pre-cutover"
 hasnt "…while writing no closing line to its row" "$(grep '^| `repoG-2`' "$LANES")" "window closing"
