@@ -251,7 +251,13 @@ if verb == "act-begin" and ctl("inject-row") is not None:
     done = subprocess.run(["bash", REAL] + args)
     env = {k: v for k, v in os.environ.items() if k not in ("LANES_ACT", "LANES_EXPECT")}
     lane = ctl("inject-row")
-    subprocess.run(["bash", REAL, "set-row-state", lane, "LIVE - a rival's change"], env=env)
+    # THE PHRASE IS `<STATE> <middle dot> <one line>` (`row_state_check`): with an ASCII
+    # hyphen it was refused 2 and no rival change happened (T254u; lane 5,
+    # #165 6841545201). The rival's exit is kept for the case to check.
+    rival = subprocess.run(["bash", REAL, "set-row-state", lane,
+                            "LIVE \u00b7 a rival's change"], env=env)
+    with open(os.path.join(CTL, "inject-row.rc"), "w", encoding="utf-8") as handle:
+        handle.write(str(rival.returncode))
     sys.exit(done.returncode)
 if verb == "start-record" and ctl("start-record-rc") is not None:
     sys.stderr.write("lanes-edit.sh start-record: the stand-in's code\n")
@@ -1964,6 +1970,11 @@ def test_the_bind_is_one_register_write_and_refuses_a_changed_row(estate):
     rival.make_offer()
     rival.answer_2()
     record = rival.ended(90)
+    # THE RIVAL'S CHANGE LANDED (T254u): its `set-row-state` exited 0, or the
+    # refusal below would not be the changed row's.
+    injected = rival.ctl / "inject-row.rc"
+    rc = injected.read_text(encoding="utf-8") if injected.exists() else "never ran"
+    assert rc == "0", f"the rival's injected set-row-state exited {rc}: no row changed"
     assert record["mode"] == "bind-failed" and record["rc"] == "2", record
     starts = [c for c in _commits(rival) if "start-record" in c.get("sent", "")]
     assert not starts or all("commit_write" in c["sent"] for c in starts), starts
