@@ -35,6 +35,13 @@ is how a test reads a file from the root that owns it. Two modes:
     assembly pins — REFUSES the session before a test runs, and a test that
     reaches an absent root FAILS. Nothing skips its way into composed
     acceptance (FR-008).
+
+THE REAL ENGINE (opensoft/openRepoTools#165, L2-0a and L2-0b). The tests
+that need a real PostgreSQL 16 take it from `tests/pgcluster.py`, a plugin
+`pytest_configure` registers below. Where no engine is found they SKIP,
+loudly, naming `PG_BIN` and the package; under `OPENREPOTOOLS_REQUIRE_PG=1`,
+as CI sets it, the run is REFUSED before a test runs, as a composed run
+missing a root is.
 """
 
 from __future__ import annotations
@@ -47,6 +54,8 @@ from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Tuple
 
 import pytest
+
+import pgcluster
 
 #: THE TREE THIS SUITE WAS LOADED FROM, which is the code root unless
 #: `OPENREPOTOOLS_CODE_ROOT` names another one.
@@ -511,10 +520,17 @@ def pytest_configure(config):
 
     A `UsageError` is pytest's own refusal (exit 4, `ERROR: <why>`), which is
     what a composed run that cannot be the claim it makes should be: not a
-    session of skips that exits 0."""
+    session of skips that exits 0.
+
+    THEN THE REAL ENGINE'S PLUGIN, `tests/pgcluster.py` (#165, L2-0a): its
+    fixtures, its loud skip, and `OPENREPOTOOLS_REQUIRE_PG`'s refusal, the
+    same `UsageError`. This hook is historic, so the plugin's own
+    `pytest_configure` runs the moment it is registered, before any test."""
     refusal = ROOTS.refusal()
     if refusal:
         raise pytest.UsageError(refusal)
+    if not config.pluginmanager.has_plugin(pgcluster.PLUGIN_NAME):
+        config.pluginmanager.register(pgcluster, pgcluster.PLUGIN_NAME)
 
 
 def pytest_report_header(config):
