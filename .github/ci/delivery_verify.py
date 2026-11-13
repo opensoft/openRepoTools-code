@@ -267,11 +267,13 @@ def fast_receipt(pr, head, request, base_changes, *, allow_pending=False):
             and job["run_attempt"] == run["run_attempt"] and job["name"] == FAST,
             "Fast job does not match the current successful run")
     pending = receipt_pending(job, allow_pending) or pending
+    # Pending observations grant no proof. Re-poll all evidence afresh, allowing
+    # work to finish during these reads without accepting a mixed-state proof.
+    if pending:
+        raise PendingEvidence("Authenticated fast workflow is pending")
     require(run == request(REPOSITORY, f"actions/runs/{run_id}")
             and response == request(REPOSITORY, endpoint),
             "Fast run/check changed during verification")
-    if pending:
-        raise PendingEvidence("Authenticated fast workflow is pending")
     return response, run, job, history
 
 
