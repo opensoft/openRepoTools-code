@@ -6349,12 +6349,12 @@ reg_mode_files() {   # <why>
 # `lanes-index` call, `serve --start` on primary (T513), is no register call
 # either.
 # `lanes --decide` is decide, `reg_open`'s one flag rule (R38).
-# The table has no rows for the five arms its own tree lacks: T401's
+# T504's own tree had no rows for the five arms it lacked: T401's
 # `register-text` and `register-grep`, T410's `act-begin`, T427's
 # `start-record` and T502's `guard-bind`. Whichever of T504 and an arm's task
 # lands second adds that arm's row, and an integration merge that brings an
 # arm and this table together adds it in that merge (lane 3's ruling
-# 6782923063). B14 tasks:731-732 give each arm's class: `register-text` and
+# 6782923063). T504's task text gives each arm's class: `register-text` and
 # `register-grep` decide, `act-begin` none, `start-record` writer,
 # `guard-bind` none. Until its row is here an arm takes the `*)` row, decide.
 reg_class_of() {   # <arm>: sets REG_CLASS, REG_MIRROR_VAR and REG_NO_CALL
