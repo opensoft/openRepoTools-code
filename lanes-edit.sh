@@ -23794,11 +23794,12 @@ fi
 # openRepoTools-3, #165 6774499606, A1): `REG_PW`, set just before `pw_run`.
 # Keyed on the mode, this guard would also stop a process that never entered
 # the loop but comes here with `REG_MODE` already `primary`: an attempt's
-# child (`reg_scratch_take`), `commit`'s publish act (T420), and, once T504's
-# `reg_open` answers a `write-handoff` primary below here, that write run
-# again by S4's replay (`cp_replay`), whose `exec` keeps the pid and so
-# carries the mode in `LANES__MODE`. Not a reader: `reg_open` runs below this
-# guard, and a read is never replayed. After `reg_mode_ask` answers
+# child (`reg_scratch_take`), `commit`'s publish act (T420), `rename-lane`'s
+# handoff act (T422), and, once T504's `reg_open` answers a `write-handoff`
+# primary below here, that write run again by S4's replay (`cp_replay`), whose
+# `exec` keeps the pid and so carries the mode in `LANES__MODE`. Not a reader:
+# `reg_open` runs below this guard, and a read is never replayed. After
+# `reg_mode_ask` answers
 # `primary` nothing between it and the arm can abort, so a 1 here means only
 # that `pw_run` was entered and returned or was abandoned. An attempt's child
 # runs this file afresh, so its `REG_PW` is 0. So does `rename-lane`'s
