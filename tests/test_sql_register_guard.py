@@ -99,6 +99,11 @@ COPIES = ("write_id", "generation", "not_after", "write_lane", "args_sha256")
 #: The shim's counters beside it (T203's `PSQL_SHIM`, whose docstring names
 #: the file); `Estate.shim` drops a lost host from it (T254w).
 PSQL_SHIM_STATE = "psql-shim.state"
+#: The lock the shim takes around each call's read and rewrite of that state
+#: and its read of the control file (`PSQL_SHIM`'s `main`, `LOCK`), which
+#: `Estate.shim` takes too (T254zl), and how long it waits for it.
+PSQL_SHIM_LOCK = "psql-shim.lock"
+SHIM_LOCK_S = 30.0
 #: CASE 10's `[found]` ARMS, and case 19's (T254w): "the shim's `after` mode
 #: on that commit call, which commits, then exit 2 on every later call"
 #: (TP:6094-6095 at a6497d00), as `no-reconnect` as `after` on the bind's
@@ -691,15 +696,41 @@ class Estate:
         fails every later call "until the test removes a second control
         file" (TP:2277-2278 at a6497d00), and the shim keeps the lost call in
         its state, `psql-shim.state`, past a new control file. So the state's
-        `lost` is dropped here, and its call counts kept."""
+        `lost` is dropped here, and its call counts kept.
+
+        UNDER THE SHIM'S OWN LOCK (T254zl; lane 2's review RV22, NIT 4): the
+        shim reads and rewrites its state, and reads the control file, under
+        `psql-shim.lock`. So the drop and the new control file are written
+        under it too, each by a temporary file and a rename, as the shim
+        writes its state. A call still in flight at the re-arming, such as a
+        detached render's, then cannot write `lost` back over the drop, nor
+        read either file half written. The wait for the lock is bounded, as
+        every wait here is: the shim holds it only for its bookkeeping."""
+        import fcntl
         shim = _script(self.bin / "psql", PSQL_SHIM)
         state = self.bin / PSQL_SHIM_STATE
-        if state.exists():
-            held = json.loads(state.read_text(encoding="utf-8") or "{}")
-            if held.pop("lost", None) is not None:
-                state.write_text(json.dumps(held), encoding="utf-8")
-        (self.bin / PSQL_SHIM_CONTROL).write_text(json.dumps(
-            {"psql": self.pg.cluster.tool("psql"), "arms": list(arms)}), encoding="utf-8")
+        control = self.bin / PSQL_SHIM_CONTROL
+
+        def put(path: Path, text: str) -> None:
+            tmp = path.with_name(path.name + ".t254zl")
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, path)
+
+        with open(self.bin / PSQL_SHIM_LOCK, "a", encoding="utf-8") as lock:
+            def take() -> bool:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return False
+                return True
+
+            assert _until(take, SHIM_LOCK_S), \
+                f"the shim's lock {lock.name} was held for {SHIM_LOCK_S} s"
+            if state.exists():
+                held = json.loads(state.read_text(encoding="utf-8") or "{}")
+                if held.pop("lost", None) is not None:
+                    put(state, json.dumps(held))
+            put(control, json.dumps({"psql": self.pg.cluster.tool("psql"), "arms": list(arms)}))
         return shim
 
     def shim_calls(self) -> list:
@@ -2015,7 +2046,13 @@ def test_two_sessions_binding_one_lane_one_start_record_commits(estate):
     the record's `why=` stays `lane-start`'s last refusal line, which
     names no scope (Y:5487; lane 3, #165 6841918192). The `out` file's
     `expectation:` and `row:` lines are printed, for lane 3's check that
-    `start-record` lists `row:<L>` first (Y:5528)."""
+    `start-record` lists `row:<L>` first (Y:5528).
+
+    THE REFUSAL ITSELF NAMES THE SCOPE (T254zn; lane 2's review RV22, NIT
+    6): the line matched is `commit_write`'s LR009, "expectation: <scope>
+    changed at seq <s> by <lane>/<verb>" (`f9e1449c:lanes-index:9981`),
+    with the scope `bind:<L>`, so a later line that only lists the
+    expectations, such as `row:<L> bind:<L>`, cannot pass for it."""
     one, two, ends = _two_binds(estate, mode="primary")
     assert sorted(r["mode"] for r in ends) == ["bind-failed", "bound"], ends
     (est, failed), = [(e, r) for e, r in zip((one, two), ends) if r["mode"] == "bind-failed"]
@@ -2025,7 +2062,8 @@ def test_two_sessions_binding_one_lane_one_start_record_commits(estate):
     for line in text.splitlines():
         if "expectation" in line or "row:" in line:
             print(f"T254 case 8, {out.name}: {line}")
-    assert f"bind:{TO.lower()}" in text, (str(out), failed, text[-2000:])
+    refused = re.compile(rf"expectation: bind:{re.escape(TO.lower())} changed at seq [0-9]+ by ")
+    assert refused.search(text), (str(out), failed, text[-2000:])
 
 
 def test_the_bind_is_one_register_write_and_refuses_a_changed_row(estate):
@@ -2087,7 +2125,19 @@ def test_a_bind_in_doubt_looks_its_write_up_before_a_rerun(estate, held):
     and keeps the record (Y:5245), not the 75 of a lookup that answers
     absent (Y:5244; lane 3, #165 6841918192, point 5). The case's
     `est.shim()` disarms both before the next `2`, so that lookup answers
-    absent and the bind starts again under a new id."""
+    absent and the bind starts again under a new id.
+
+    THE SECOND HALF READS ITS EVIDENCE (T254zm; lane 2's review RV22, NIT
+    5), in the calls after the second `2`, as case 18 reads its own
+    (T254zb): `[absent]` sends a `start-record` commit, under a write id
+    other than the copied one; `[found]` replays, and the shim's log shows
+    `register snapshot --tree <dir> --at <s-1>` (TP:6108 at a6497d00),
+    `s` being the found entry's seq in the journal. The shim logs `psql`'s
+    script, not `lanes-index`'s argv, so the replay is known by the one
+    request only that form sends: under `--tree` and `--at <k>`, the
+    `repos_blob` of the entry at `k + 1`
+    (`f9e1449c:lanes-index:3454`, `:3752`; the replay's call,
+    `f9e1449c:lanes-edit.sh:10725-10728`)."""
     est = _real_estate(estate, mode="primary")
     arms = ([{"mode": "fail-match", "match": "commit_write", "from": 1},
              {"mode": "fail-match", "match": "find_write", "from": 1}]
@@ -2098,6 +2148,7 @@ def test_a_bind_in_doubt_looks_its_write_up_before_a_rerun(estate, held):
     record = est.ended(120)
     assert record["mode"] == "bind-failed" and record["rc"] == "3", record
     assert all(k in record for k in COPIES), record
+    copied = record["write_id"]
     est.shim()
     est.hook("hello")
     before = len(est.shim_calls())
@@ -2111,6 +2162,16 @@ def test_a_bind_in_doubt_looks_its_write_up_before_a_rerun(estate, held):
     assert record["mode"] == "bound", record
     if held == "found":
         assert not start, f"the found write was committed again: {calls}"
+        seq = est.pg.psql("SELECT seq FROM lanes_register.journal "
+                          f"WHERE write_id = '{copied}'::uuid;").stdout.split()
+        assert seq, f"the found write {copied} is not in the journal"
+        at = f"FROM journal j WHERE j.seq = {int(seq[-1]) - 1} + 1"
+        assert [c for c in calls if at in c.get("sent", "")], \
+            (f"no replay at seq {int(seq[-1]) - 1}, the found entry's base, in calls "
+             f"{[c.get('call') for c in calls]}")
+    else:
+        assert start and all(copied not in calls[i].get("sent", "") for i in start), \
+            (copied, [calls[i].get("call") for i in start])
 
 
 def test_a_rerun_after_a_failed_stamp_push_writes_one_stamp(estate):
@@ -2224,9 +2285,20 @@ def test_the_bind_childs_lookup_sends_the_five_copied_values(estate, case):
     `[found]` SENDS NO SECOND COMMIT (T254zh; lane 2's review RV22,
     finding 1): after the second `2`, no `start-record` commit is sent, as
     case 10 checks, so a lookup that missed its write and bound anew fails.
-    NOT SHOWN HERE (RV22, finding 1): the estate does not spell the window
-    otherwise, and its `to`, `repoA-3`, is also the write's lane, so "never
-    derived from `to`" is read only as the copies being sent as copied."""
+
+    "NEVER DERIVED FROM `to`" IS READ THROUGH THE RECORD'S `to` (T254zo;
+    lane 2's reviews RV22, finding 1, and RV23, SHOULD 4). No spelling of
+    the window or the session makes `to` differ from the write's lane: the
+    guard writes `to` as the register's row spells it, its case-insensitive
+    hit (`G_SES_LANE`, `4d96f8c5:lanes-edit.sh:21162`, `:21546`), and
+    `lane-start` takes the row's spelling too (`f9e1449c:lane-start:1386-
+    1394`). So `[found]` respells the record's `to` in lower case after the
+    bind-failed reply, before the second `2`, and the bound record still
+    holds it. The bind's `lane-start` is given that spelling and
+    takes the row's back, while a lookup whose lane came from `to` would
+    send the respelling, which `find_write` compares exactly
+    (`f9e1449c:lanes-index:10442`), and would end `rc=2` with LR007
+    `another-write`, not `bound`; and the lookup must not carry it."""
     est = _real_estate(estate, mode="primary")
     # CASE 10's `[found]` ARMS (T254t, T254w): every call after the commit
     # call fails, and the guard's own prefetch calls before it do not.
@@ -2253,6 +2325,13 @@ def test_the_bind_childs_lookup_sends_the_five_copied_values(estate, case):
         assert est.record().get(key) == copies[key] != old, (key, old, est.record().get(key))
     est.shim()
     est.hook("hello")
+    if case == "found":
+        to = est.to.lower()
+        lines = [f"to={to}" if line.startswith("to=") else line
+                 for line in est.offer.read_text(encoding="utf-8").splitlines()]
+        write_record(est.offer, lines)
+        assert est.record().get("to") == to != copies["write_lane"], (to, est.record())
+        est.to = to
     # THIS ATTEMPT'S LOOKUP ALONE (T254zf; lane 4, #165 6858782368): the
     # shim's log is never reset, and the first attempt's lookups sent the
     # copies as they were, so the check below read them and passed without
@@ -2272,7 +2351,8 @@ def test_the_bind_childs_lookup_sends_the_five_copied_values(estate, case):
     for key in COPIES:
         assert copies[key] in sent, (key, copies[key])
     if case == "found":
-        assert record["mode"] == "bound", record
+        assert f"'{est.to}'" not in sent, f"the lookup sent the record's to, {est.to}"
+        assert record["mode"] == "bound" and record.get("to") == est.to, record
         again = [c.get("call") for c in est.shim_calls()[before:]
                  if "start-record" in c.get("sent", "")
                  and "commit_write" in c.get("sent", "")]
@@ -2403,6 +2483,16 @@ def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, r
     the configuration is pointed at the relay, with `connect_timeout=3`, for
     the `2`, whose read is one call (design.md:4287-4289 at b8e3df74).
 
+    THAT PREMISE IS CHECKED, WITH NO WAIT (T254zk; lane 2's MK-22, on lane
+    3's #165 6860626333, item 2): the guard's read waits for its fetch to
+    the read's cut (`f9e1449c:lanes-index:6862`), and the fetch puts each
+    image in the cache and records its head before it answers
+    (`:7451-7460`), while a read the cut leaves makes no offer. So right
+    after the offer, its prompt made the whole-file fetch, D9's
+    `guard-fetch` row (`statement_timeout=14000`, `:4573`), and the image
+    cache's `head` reads the register's head. Without them, the `2`'s read
+    would fetch through the relay and fail late, at the calls' check.
+
     AND NO SERVICE ANSWERS (T254zg): the estate's state home is one whose
     socket path is over `SOCKET_MAX` (`_state_home_with_no_service`), where
     the client reads directly and starts nothing
@@ -2442,6 +2532,15 @@ def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, r
         est.shim()
         est.make_offer()
         offered = est.shim_calls()
+        fetched = [c for c in offered
+                   if "statement_timeout=14000" in c.get("pg", {}).get("PGOPTIONS", "")]
+        assert fetched, ("the offer's prompt made no whole-file fetch: "
+                         f"{[c.get('pg', {}).get('PGOPTIONS') for c in offered]}")
+        cached = Path(est.extra["XDG_STATE_HOME"]) / "openRepoTools" / "register-images" / "head"
+        n = est.pg.psql("SELECT seq FROM lanes_register.register_head;").stdout.split()[-1]
+        head = cached.read_text(encoding="utf-8").strip() if cached.exists() else None
+        assert head == n, (f"the offer's whole-file fetch left the image cache's head at "
+                           f"{head!r}, not the register's head {n}: {cached}")
         text = text.replace(direct, f"@127.0.0.1:{relay.port}/").replace(
             "?sslmode=verify-full", "?connect_timeout=3&sslmode=verify-full")
         assert text.count("connect_timeout=3") == 2, text
@@ -2456,8 +2555,6 @@ def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, r
         port = str(relay.port)
     seen = [(c.get("call"), c.get("pg", {}).get("PGPORT"), c.get("pg", {}).get("PGCONNECT_TIMEOUT"),
              c.get("pg", {}).get("PGOPTIONS")) for c in calls]
-    fetched = [c for c in offered
-               if "statement_timeout=14000" in c.get("pg", {}).get("PGOPTIONS", "")]
     print(f"T254 case 21: the offer's prompt made {len(offered)} call(s) through the cluster's "
           f"own port, {len(fetched)} of them the whole-file fetch; the 2's prompt exited "
           f"{hook.t_exit - hook.t0:.2f} s after T0, its calls {seen}")
