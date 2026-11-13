@@ -3749,11 +3749,21 @@ def test_the_guard_answer_time_is_recorded_beside_todays_direct_guard(estate):
     the served samples alone, or "none served" where none was. A sample
     with any other exit is counted as `other`, so none is put in a path it
     did not take. The case times the whole hook (`t_exit - t0`), so the
-    served median is a whole-hook figure, beside M5b's, not SC-005's 50 ms."""
+    served median is a whole-hook figure, beside M5b's, not SC-005's 50 ms.
+
+    THE PROMPT GOES THROUGH, AS M5b'S DOES (T237zl): the estate's session is
+    named `TO` in the window `FROM`, so every guard run made the name
+    guard's offer and exited 2, ten refusals and no served answer (lane 2's
+    G-19b capture). The window and the session are both `FROM` here, as
+    M5b's and M10's are (`swap_window`), and the service is warmed first
+    (`_warm`), so the samples read a service that holds its image, not the
+    cache miss of its first request."""
     est = estate(mode="primary")
+    est.swap_window(FROM, FROM)
     svc = _Service(est)
     paths = {"refusal": [], "fallback": [], "served": [], "other": []}
     try:
+        _warm(est)
         for _ in range(MEASURE_RUNS):
             hook = est.hook("hello")
             took = hook.t_exit - hook.t0
