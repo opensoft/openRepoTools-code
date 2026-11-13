@@ -1949,7 +1949,11 @@ def _stamped_utcs(before: dict, after: dict, argv: list) -> list:
     """Each UTC in whole seconds or finer that a write put on a line of the
     render set, (path, line, utc): one not already anywhere in the register
     before it, and not one the caller typed. A UTC in whole minutes is a row's
-    `started` cell, never a write's clock."""
+    `started` cell, never a write's clock; nor is a minute already in the
+    register with `:00` added, which `migrate-state-cells` writes on primary
+    for an entry's minute-only time or its row's `started` cell (design.md:5114
+    at `94fab177`; `f9e1449c:lanes-edit.sh:23463-23476`; lane 3, #165
+    6859073786)."""
     old = set(_UTC_ANY.findall("\n".join(d.decode("utf-8", "replace") for d in before.values())))
     typed = set(_UTC_ANY.findall(" ".join(argv)))
     found = []
@@ -1959,7 +1963,8 @@ def _stamped_utcs(before: dict, after: dict, argv: list) -> list:
             if line in lines_before:
                 continue
             for utc in _UTC_ANY.findall(line):
-                if utc.count(":") == 2 and utc not in old and utc not in typed:
+                if (utc.count(":") == 2 and utc not in old and utc not in typed
+                        and not (utc.endswith(":00Z") and utc[:-4] + "Z" in old)):
                     found.append((path, line, utc))
     return found
 
