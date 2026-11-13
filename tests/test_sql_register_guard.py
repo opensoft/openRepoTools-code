@@ -3177,7 +3177,13 @@ MEASURE_LOG = 90_000
 def _record_figure(title: str, figures: dict) -> None:
     """A measurement's figures, printed for the job's log and appended to
     `$GITHUB_STEP_SUMMARY` where it is set."""
-    line = f"{title}: " + ", ".join(f"{k} {v}" for k, v in figures.items())
+    _record_line(f"{title}: " + ", ".join(f"{k} {v}" for k, v in figures.items()))
+
+
+def _record_line(line: str) -> None:
+    """One line, printed for the job's log and appended to
+    `$GITHUB_STEP_SUMMARY` where it is set: a figure's, or a warning's
+    (T237zs), which a passing test's captured output would otherwise hide."""
     print(line)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
@@ -4337,10 +4343,12 @@ def test_the_guard_answer_time_is_recorded_beside_todays_direct_guard(estate):
     # THE WARNING PAST 50 ms (T237zo; RV20, NIT 11): "the test prints a
     # warning when the median exceeds it, without failing" (TP:7976-7979 at
     # a6497d00). The median here is a whole-hook figure, so the warning says
-    # so; it fails nothing.
+    # so; it fails nothing. It is RECORDED as the figures are (T237zs; lane
+    # 2's review RV23, NIT 2): pytest hides a passing test's own output, so
+    # a bare print reached no job summary.
     if served and _median(served) * 1000 > SVC10_BOUND_MS:
-        print(f"WARNING: SVC-10's served median, {_median(served) * 1000:.1f} ms for the whole "
-              f"hook, is over its {SVC10_BOUND_MS} ms (recorded, not failed)")
+        _record_line(f"WARNING: SVC-10's served median, {_median(served) * 1000:.1f} ms for the "
+                     f"whole hook, is over its {SVC10_BOUND_MS} ms (recorded, not failed)")
     # SERVED, AND NOTHING ELSE UNKNOWN (T237zn; lane 2's review RV20, finding
     # 10): every sample lands in one path, so `any(paths.values())` held
     # whatever the paths were, ten refusals or ten fallbacks among them. The
