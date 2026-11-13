@@ -1028,7 +1028,8 @@
 #   LANES_INDEX=off    no `lanes-index sync` after a write, and `--index` reads
 #                      the sources (Amendment 14). It never turns a read ON:
 #                      only a typed `--index` does. It never skips a writer's
-#                      `lanes-index mode` question (feature 007)
+#                      `lanes-index mode` question, nor, on primary, the
+#                      renderer's fork after a write commits (feature 007)
 #
 # Dependencies: bash, git, coreutils. No sed/awk substitution on the payload —
 # every edit is computed with bash string operations, so `/`, `&`, `\` and `|`
@@ -4950,17 +4951,39 @@ cp_archive_steps() {
 # that did both (a `STARTED` that landed and moved the snapshot) makes both
 # forks; `lanes-index` runs one sync at a time per workstation, and a second
 # that finds the lock held leaves the holder a mark naming its source.
+#
+# ON PRIMARY THE REGISTER'S NUDGE IS SUPPRESSED, AND THE INVENTORY'S STAYS
+# (feature 007, T416; FR-027; Y:2976–2979 and Y:5380, S2's nudge). There the
+# register is the database and its files are the renderer's mirror, so a
+# register `sync` would re-index the mirror into the store it came from: a
+# process whose mode is `primary` (`REG_MODE`, the writers' one answer, which
+# an attempt's child also holds) drops the register's flag here, and makes the
+# inventory's fork as before. On primary the register's nudge is replaced by
+# the renderer's fork at a write's end 0 (`pw_render_fork`), which no
+# `LANES_INDEX=off` skips. Only a push sets the register's flag (`cp_pushed`),
+# and an attempt's child never reaches one (Y:5042), so this is the rule for
+# any push a primary process makes. Any other mode, or none asked, is today's
+# nudge, unchanged.
+#
+# NEITHER FORK CARRIES AN ACT (feature 007, T416; lane openRepoTools-3's ruling
+# on question 122, #165 6814531692, by its G5): each subshell unsets
+# `LANES_ACT` and `LANES_EXPECT` before it starts `lanes-index`, in every
+# mode, since the sync outlives the act whose write it follows. This process
+# keeps both (Y:5599's check 2).
 index_nudge() {
   in_reg="${LANES_INDEX_NUDGE:-0}"; in_inv="${LANES_INDEX_NUDGE_INV:-0}"
   LANES_INDEX_NUDGE=0; LANES_INDEX_NUDGE_INV=0
+  [ "${REG_MODE:-}" != primary ] || in_reg=0
   [ "${LANES_INDEX:-}" = off ] && return 0
   in_bin="$(command -v lanes-index 2>/dev/null || :)"
   [ -n "$in_bin" ] || return 0
   if [ "$in_reg" = 1 ]; then
-    ( "$in_bin" sync </dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- & ) >/dev/null 2>&1
+    ( unset LANES_ACT LANES_EXPECT
+      "$in_bin" sync </dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- & ) >/dev/null 2>&1
   fi
   if [ "$in_inv" = 1 ]; then
-    ( "$in_bin" sync --source inventory </dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- & ) >/dev/null 2>&1
+    ( unset LANES_ACT LANES_EXPECT
+      "$in_bin" sync --source inventory </dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- & ) >/dev/null 2>&1
   fi
   return 0
 }
@@ -7288,7 +7311,9 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
 #       it, where it never reaches `ready` or a kept child's seam cap is 1 s
 #       away (`pw_child_hung_end`, `pw_child_tree`, `pw_pid_start`);
 #   (c) the commit call and the decision on its answer (`pw_commit`,
-#       `pw_decide`);
+#       `pw_decide`), and at every end 0 that learns the write is in the
+#       register (`committed`, a snapshot's `found=`, the commit's `already`),
+#       the renderer's fork, once a run (`pw_render_fork`, T416);
 #   (d) a 69 at the first snapshot (`pw_first_69`);
 #   (e) D7's deadline and the run's end (`pw_run`, `pw_end`).
 #
@@ -7299,12 +7324,12 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
 # still live at D7's deadline (`pw_owner_live_end`), or for a claim that
 # cannot be tested here (`pw_owner_untested_end`).
 #
-# NOT HERE: the renderer's fork after `committed` (T416); `commit` on primary,
+# NOT HERE: `commit` on primary,
 # which keeps T409's 69 until T420; and the tail by match or replay for a
 # write already in the register, the record's `tail` key and the done mark
 # (T418), which replaces `pw_found_end` for the lookup's `found` too.
 PW_LANE=""; PW_C=""; PW_AUTHOR=""; PW_D_S=30; PW_T0=0; PW_RUN=""; PW_RUN_DIR=""
-PW_LOCK=""; PW_REC_OURS=0
+PW_LOCK=""; PW_REC_OURS=0; PW_RENDERED=0
 PW_K=0; PW_DIR=""; PW_CHILD=""; PW_KEPT=""; PW_FIRST_DONE=0; PW_RELAY=""; PW_RC=0
 PW_CAP_S=120; PW_CHILD_T0=0; PW_READY_T=0; PW_SEAM_CAP_S=120; PW_KEPT_END=""; PW_KEPT_K=""
 PW_S_GEN=""; PW_S_WID=""; PW_S_FOUND=""; PW_S_N=""; PW_S_CLOCK=""; PW_S_NOT_AFTER=""
@@ -8721,11 +8746,15 @@ pw_lookup_3() {   # <the end's code>
 
 # A WRITE ALREADY IN THE REGISTER (a snapshot's `found=`, or the commit's
 # `already <s>`): the tail by match or by replay, the `tail` key and the done
-# mark are T418's (Y:5289–5373). Until then this run sends no second commit,
-# names the verb's after-COMMIT steps as owed, removes the record (Y:5194:
-# "after the tail is done or named as owed") and ends with 0.
+# mark are T418's (Y:5289–5373). The write is in the register, so once every
+# kept child has its `abandon` the renderer is forked, once a run
+# (`pw_render_fork`; lane openRepoTools-3's ruling, #165 6769061039, T416's
+# item 1), before the `tail=sent` T418 writes here. Until T418 this run sends
+# no second commit, names the verb's after-COMMIT steps as owed, removes the
+# record (Y:5194: "after the tail is done or named as owed") and ends with 0.
 pw_found_end() {   # <seq> <how it was found>
   pw_abandon_all
+  pw_render_fork
   note "write $WR_ID is in the register at seq $1, committed by an earlier attempt or run ($2); this run sent no second commit of it. Its after-COMMIT steps did not run in this run, and may be owed: those of lanes-edit.sh $WR_VERB. Do by hand any that did not run."
   if wr_record_remove; then pw_call_dirs_remove; else wr_claim_release; fi
   pw_run_dir_done
@@ -8831,10 +8860,59 @@ pw_keep() {
   PW_CHILD=""
 }
 
+# THE RENDERER'S FORK (T416; FR-027; Y:5377; contract §3.7), ONCE A RUN, at
+# every end 0 at which the run learns its write is in the register, before
+# `tail=sent` where the run writes one (lane openRepoTools-3's ruling, #165
+# 6769061039, T416's item 1; renders coalesce, Y:2984–2985, so an extra fork
+# costs one pass): once the commit has answered `committed <s>` and before the
+# child is sent it (`pw_committed`; Y:5009), and at a snapshot's `found=` or
+# the commit's `already <s>` (`pw_found_end`), where T418's ends take it over
+# (whichever of T416 and T418 lands second moves it). PW_RENDERED makes every
+# call after the first a no-op, so a run that learns the write at more than
+# one end forks once. The fork is the one resolver's `lanes-index`
+# (`lanes_index_bin`), `render --checkout <c>`,
+# where `<c>` is the lane's checkout `pw_checkout` took from
+# `lane_checkout_path`, with no S3 (R17). DETACHED AS `index_nudge` FORKS
+# (Amendment 14(d)): from a subshell that exits at once, so this process has no
+# child to wait for and never reads its status; stdin from /dev/null, stdout
+# and stderr on /dev/null, and descriptors 3 to 9 closed, so it holds no
+# descriptor of this run's and keeps no caller's pipe open. `LANES_NO_FETCH` is
+# removed from its environment (D12), so the renderer fetches origin.
+# `LANES_ACT` AND `LANES_EXPECT` ARE REMOVED TOO (lane openRepoTools-3's ruling
+# on question 122, #165 6814531692, by its G5): the fork outlives the act, so
+# it carries neither the act's base nor this write's scopes, as T428's
+# commit `4c46005` has `lane-start` do for 5e's daily-report sweep
+# (`4c46005:lane-start:5468`, on T428's branch and not in this tree). This
+# process keeps both (Y:5599's check 2).
+# NOT BEHIND `LANES_INDEX=off`, which `index_nudge` honours: `lane-worktrees`
+# sets that variable on every call it makes, and it must never skip the fork
+# (Y:5377; FR-027). It stays in this process's group, as `index_nudge`'s fork
+# does, so a TERM or a HUP to the group ends it too, and the next fork renders
+# what it left (lane openRepoTools-4's plan, §11.5; R47). An INT or a QUIT
+# does not: bash starts an `&` child of a non-interactive shell with both
+# ignored, so a Ctrl-C leaves the renderer running, which is harmless, since
+# it renders committed writes, and `index_nudge`'s fork is the same (review
+# REV-W9g, N1). Its answer is never read: a
+# `lanes-index` before T321 has no such form (64), and from T321 phase 2's
+# answers "git half not installed" (69; contract :804). Where no `lanes-index`
+# resolves, which the snapshot or the commit has just run, nothing is forked.
+pw_render_fork() {
+  local rf_bin=""
+  [ "$PW_RENDERED" = 0 ] || return 0
+  PW_RENDERED=1
+  rf_bin="$(lanes_index_bin)"
+  [ -n "$rf_bin" ] || return 0
+  ( unset LANES_NO_FETCH LANES_ACT LANES_EXPECT
+    "$rf_bin" render --checkout "$PW_C" </dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- & ) >/dev/null 2>&1
+  return 0
+}
+
 # `committed <s>` (Y:5009–5012). Every other kept child gets `abandon`: none of
 # their calls committed, since one that had would have made this call's answer
-# LR006 (Y:2563–2575). The renderer's fork (T416) and the record's `tail=sent`
-# (T418) come here, before the message. The child then replays its own buffered
+# LR006 (Y:2563–2575). The renderer's fork (`pw_render_fork`, T416) and the
+# record's `tail=sent` (T418) come here, before the message, so the renderer
+# is forked for the write even where the child then does not take the message.
+# The child then replays its own buffered
 # output and runs the verb's tail once, after COMMIT; the parent reaps it,
 # removes the record (T418 writes the done mark first) and exits the child's
 # code. A child whose `seam.out` is not exactly `tail` (`pw_seam_out_read`) did
@@ -8844,6 +8922,7 @@ pw_keep() {
 # ends with 0, since the write committed.
 pw_committed() {   # <seq>
   pw_abandon_kept
+  pw_render_fork
   pw_send "$PW_DIR" "committed $1" || :
   PW_RC=0
   wait "$PW_CHILD" || PW_RC=$?
