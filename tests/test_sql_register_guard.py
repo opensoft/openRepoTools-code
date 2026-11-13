@@ -72,7 +72,8 @@ import pytest
 
 from conftest import REPO, WINDOWS_SKIP
 from sql_register_helpers import (ARGV_LOG, GUARD_PANE, GUARD_WINDOW, PSQL_SHIM,
-                                  PSQL_SHIM_CONTROL, PSQL_SHIM_LOG, contract_stub,
+                                  PSQL_SHIM_CONTROL, PSQL_SHIM_ENDS, PSQL_SHIM_LOG,
+                                  contract_stub,
                                   guard_session, guard_strip_env)
 
 pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
@@ -2368,7 +2369,17 @@ def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, r
     calls the shim logs between the `2` and the hook's exit are the guard's
     read alone (D9's guard row, `statement_timeout=1500`,
     `lanes-index:4563`), the last of them through the relay at `c` = 3;
-    answer 2 adds none."""
+    answer 2 adds none.
+
+    THE ROW'S OTHER TWO SHIM-LOG ORACLES (T254zi; lane 2's review RV22,
+    on case 21): "no step at its timer" is read as no register call cut
+    by its client timer: the shim writes a call's line to its ends file
+    only once the call returns, so once the bind has ended, every call it
+    logged has one, bounded at `ENDS_LIMIT_S` for a detached render. And
+    "the exit's lag after the read" is the hook's exit less the ends
+    file's mtime as the hook exits, when the guard's read was the last
+    call to end, recorded and asserted as case 1 asserts its exit: 1 s,
+    at twice it."""
     pgcluster = pytest.importorskip("pgcluster")
     delayed = pgcluster.__dict__.get("delayed_loopback")
     assert delayed is not None, "tests/pgcluster.py has no delayed_loopback (T229)"
@@ -2390,6 +2401,8 @@ def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, r
         assert text.count("connect_timeout=3") == 2, text
         conf.write_text(text, encoding="utf-8")
         hook = est.answer_2()
+        read_end = os.stat(est.bin / PSQL_SHIM_ENDS).st_mtime
+        exited = time.time() - (time.monotonic() - hook.t_exit)
         calls = est.shim_calls()[len(offered):]
         record = est.outer()
         assert record["bound_s"] == "530", record
@@ -2405,10 +2418,33 @@ def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, r
     assert calls and all("statement_timeout=1500" in (s[3] or "") for s in seen) \
         and seen[-1][1:3] == (port, "3"), \
         f"the 2's prompt made calls other than the guard's read through the relay {port}: {seen}"
+    lag = exited - read_end
+    print(f"T254 case 21: the hook exited {lag:.3f} s after its read ended "
+          f"(bound 1 s, asserted at 2 s)")
+    assert 0 <= lag < 2.0, f"the hook exited {lag:.2f} s after its read ended"
+    _until(lambda: not _calls_with_no_end(est), ENDS_LIMIT_S, 0.5)
+    unended = _calls_with_no_end(est)
+    assert not unended, f"call(s) {unended} never ended: cut at a timer, or still held"
     assert record["mode"] == "bound", record
     print(f"T254 case 21: ended_utc - started_utc = "
           f"{_epoch(record['ended_utc']) - _epoch(record['started_utc'])} s beside 530 s")
     assert hook.code == 2
+
+
+#: How long case 21 waits, once its bind has ended, for each logged call's end
+#: (T254zi): a detached render may still be on the delayed link.
+ENDS_LIMIT_S = 30.0
+
+
+def _calls_with_no_end(est: Estate) -> list:
+    """The shim's request calls with no line in its ends file (T254zi): a
+    call killed at its client timer, or one still running."""
+    path = est.bin / PSQL_SHIM_ENDS
+    ends = set()
+    if path.exists():
+        ends = {json.loads(line).get("call") for line in
+                path.read_text(encoding="utf-8").splitlines() if line.strip()}
+    return sorted(c.get("call") for c in est.shim_calls() if c.get("call") not in ends)
 
 
 def _state_home_with_no_service(est: Estate) -> Path:
