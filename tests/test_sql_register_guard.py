@@ -95,6 +95,17 @@ HOOK_TIMEOUT = 5.0
 DOT = chr(0xB7)
 #: The five copies a record holds only on primary (contract section 3; T254).
 COPIES = ("write_id", "generation", "not_after", "write_lane", "args_sha256")
+#: The shim's counters beside it (T203's `PSQL_SHIM`, whose docstring names
+#: the file); `Estate.shim` drops a lost host from it (T254w).
+PSQL_SHIM_STATE = "psql-shim.state"
+#: CASE 10's `[found]` ARMS, and case 19's (T254w): "the shim's `after` mode
+#: on that commit call, which commits, then exit 2 on every later call"
+#: (TP:6094-6095 at a6497d00), as `no-reconnect` as `after` on the bind's
+#: first commit call. So the write's own retry snapshot fails too and cannot
+#: answer `found=` inside the run (lane 5, #165 6842157774; lane 3,
+#: 6842243851), and the guard's prefetch calls, before the commit, are not
+#: failed (T254t). The case's next `est.shim()` brings the host back.
+FOUND_ARMS = ({"mode": "no-reconnect", "match": "commit_write", "call": 1, "as": "after"},)
 
 #: The contract's texts (section 5), as the guard prints them on stderr.
 OFFER = "WARNING: the lane and Claude session names disagree"
@@ -635,8 +646,19 @@ class Estate:
 
     def shim(self, arms=()) -> Path:
         """T203's `PSQL_SHIM` first on `PATH`, handing calls to the cluster's
-        own `psql`, with `arms`; its log is `<bin>/psql-shim.log`."""
+        own `psql`, with `arms`; its log is `<bin>/psql-shim.log`.
+
+        EACH ARMING BRINGS A LOST HOST BACK (T254w): a `no-reconnect` arm
+        fails every later call "until the test removes a second control
+        file" (TP:2277-2278 at a6497d00), and the shim keeps the lost call in
+        its state, `psql-shim.state`, past a new control file. So the state's
+        `lost` is dropped here, and its call counts kept."""
         shim = _script(self.bin / "psql", PSQL_SHIM)
+        state = self.bin / PSQL_SHIM_STATE
+        if state.exists():
+            held = json.loads(state.read_text(encoding="utf-8") or "{}")
+            if held.pop("lost", None) is not None:
+                state.write_text(json.dumps(held), encoding="utf-8")
         (self.bin / PSQL_SHIM_CONTROL).write_text(json.dumps(
             {"psql": self.pg.cluster.tool("psql"), "arms": list(arms)}), encoding="utf-8")
         return shim
@@ -1985,19 +2007,21 @@ def test_a_bind_in_doubt_looks_its_write_up_before_a_rerun(estate, held):
     """AT-F6 case 10: an injected `psql` exit 2 gives `rc=3` with the id:
     `[absent]`, exit 2 on every call from the bind's commit call on;
     `[found]`, the shim's `after` mode on that call, which commits, then exit
-    2 on every lookup (`find_write`) after it. At the next `2` the child's
+    2 on every later call. At the next `2` the child's
     lookup runs first: `[absent]` binds anew under a new id; `[found]` writes
     no second `RESUMED`, its done mark says `done`, and the record ends
     `bound`.
 
-    `[found]`'s later failures are armed by the lookup's text (T254t), not
-    `fail-call` from the shim's second call: that counted every call, and
-    calls 1 and 2 are both the guard's own prefetch, so the guard refused
-    before its offer (lane 5, #165 6841545201)."""
+    `[found]`'s later failures are not `fail-call` from the shim's second
+    call: that counted every call, and calls 1 and 2 are both the guard's own
+    prefetch, so the guard refused before its offer (T254t; lane 5, #165
+    6841545201). Nor are they the lookup's alone: the write's own retry
+    snapshot then answered `found=` and the record ended `bound` (lane 5,
+    #165 6842157774). They are `FOUND_ARMS`, every call after the commit
+    call (T254w)."""
     est = _real_estate(estate, mode="primary")
     arms = ([{"mode": "fail-match", "match": "commit_write", "from": 1}] if held == "absent"
-            else [{"mode": "after", "match": "commit_write", "call": 1},
-                  {"mode": "fail-match", "match": "find_write", "from": 1}])
+            else list(FOUND_ARMS))
     est.shim(arms)
     est.make_offer()
     est.answer_2()
@@ -2108,10 +2132,9 @@ def test_the_bind_childs_lookup_sends_the_five_copied_values(estate, case):
     `generation` copy changed, `rc=2` with a plain rerun's refusal and the
     copies kept."""
     est = _real_estate(estate, mode="primary")
-    # CASE 10's `[found]` ARMS (T254t): the lookup fails by its text, so the
-    # guard's own prefetch calls, the shim's first two, are not failed.
-    est.shim([{"mode": "after", "match": "commit_write", "call": 1},
-              {"mode": "fail-match", "match": "find_write", "from": 1}])
+    # CASE 10's `[found]` ARMS (T254t, T254w): every call after the commit
+    # call fails, and the guard's own prefetch calls before it do not.
+    est.shim(list(FOUND_ARMS))
     est.make_offer()
     est.answer_2()
     record = est.ended(120)
