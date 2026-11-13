@@ -32987,12 +32987,18 @@ EOF
       # every read was at one `n`. Where either moved, the answer is dropped and
       # the run starts again from `reg_paths`: three runs at most, then 69 with
       # nothing on stdout.
-      rgr_run=0
+      rgr_run=0; rgr_nl=$'\n'
       while :; do
         rgr_run=$((rgr_run + 1))
         rgr_logs=0; rgr_want=(); rgr_order=(); rgr_quoted=()
         for rgr_p in "$@"; do
           # `lanes/log` is the one path `reg_reader_kind` reads as the set `logs`.
+          # A NAMED PATH HOLDING A NEWLINE IS ABSENT (RC-W30's NIT 1): no register
+          # path holds one, since `.paths` gives one path a line and the door
+          # refuses a path with a control byte. So it matches nothing, as its
+          # literal pathspec matches nothing in files mode, and with nothing
+          # else matched the answer is 1 (tasks:863), never a 69 naming a piece.
+          case "$rgr_p" in *"$rgr_nl"*) continue ;; esac
           if [ "$rgr_p" = lanes/log ]; then rgr_logs=1; else rgr_want+=("$rgr_p"); fi
         done
         if [ "$rgr_logs" = 1 ]; then
@@ -33020,8 +33026,10 @@ EOF
           # escaped by a backslash, `\a`, `\b`, `\t`, `\n`, `\v`, `\f` and `\r` for
           # those seven control bytes, and each other such byte written as a
           # backslash and three octal digits; any other path is printed as it is.
-          # A newline ends a path in this list, so none holds one. `od` gives the
-          # bytes as numbers, so `awk` writes only ASCII.
+          # A newline ends a path in this list, and none holds one: `reg_paths`
+          # gives one path a line, and a named path holding one was skipped
+          # above, as absent. `od` gives the bytes as numbers, so `awk` writes
+          # only ASCII.
           if [ -z "$rgr_h" ]; then
             od -An -v -tu1 < "$TMPD/order" | LC_ALL=C awk '{ for (i = 1; i <= NF; i++) { c = $i + 0
                 if (c == 10) { print (q ? "\"" s "\"" : s); s = ""; q = 0 }
@@ -33063,7 +33071,7 @@ EOF
         rgr_n1="$(reg_head_n)"; rgr_g1="$(reg_head_generation)"
         [ "$rgr_n1" != "$rgr_n0" ] || [ "$rgr_g1" != "$rgr_g0" ] || break
         [ "$rgr_run" -lt 3 ] ||
-          die "the register could not be read at one snapshot: its head moved while it was read, in each of 3 runs (the last from n=$rgr_n0 to n=$rgr_n1), so no answer is printed, never a part of one (feature 007, T401 on primary; lane 3's Q2 ruling)" 69
+          die "the register could not be read at one snapshot: its head moved while it was read, in each of 3 runs (the last from n=$rgr_n0, generation $rgr_g0, to n=$rgr_n1, generation $rgr_g1), so no answer is printed, never a part of one (feature 007, T401 on primary; lane 3's Q2 ruling)" 69
       done
       [ "$rgr_hit" = 1 ] || exit 1
       cat -- "$TMPD/grep" || exit 69
