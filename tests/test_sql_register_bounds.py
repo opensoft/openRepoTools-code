@@ -107,6 +107,21 @@ the command's own process starts on the register's path (its once-per-process
 client timer, or else the request's own call) to the command's exit.
 `[status]`'s 57014 time was already the request's own call, from its start
 to its end, as every row's is.
+
+`[ANSWER-2-F1]` FOLLOWS A HEALTHY CALL (line BD-19b; lane 3's ruling, #165
+6840828270, on TP:3586-3589). The guard's one prefetch is the first read of
+every prompt, an answer to its offer included (T507), and answer 2 adds no
+database call to the hook (Y:5417). So the case (`_answer_2_row`) makes the
+offer on a healthy register first: the bench at `primary` with a second row,
+`repoA-3` PAUSED on another session, and the session named `repoA-3`. Then
+it sends `2` through `ArmedFault`, which arms F1 only once `TIMING_PSQL`'s
+log shows that the hook's register read has ended. The hook must exit 2 with
+"BINDING" under 4.5 s (TP:3595), with that read in the log and no register
+call of its own after it (AT-F6 case 21, TP:6190-6191). The detached bind
+meets F1 after the hook exits, bounded as AT-F6's fixture bounds its binds
+(`LANES_BIND_BOUND_S`). The wrapper names each call's session
+(`os.getsid`), and the bind runs in a session of its own (`setsid`), so the
+hook's calls are told from the bind's.
 """
 
 from __future__ import annotations
@@ -149,6 +164,21 @@ REGISTER = "\n".join([
     f"| `repoA-2` | harness `{SID}` | Eagle / test / brett | 2026-10-01T00:00Z | none "
     f"| handoffs/repoA-2.md | LIVE {DOT} 2026-10-01T02:00:00Z {DOT} working |",
     ""])
+#: `[answer-2-F1]`'s register (line BD-19b): `REGISTER` and a second row,
+#: `OFFER_TO`, PAUSED on another session, as AT-F6's estate writes its `TO`
+#: row. The guard session is named `OFFER_TO` in the window `repoA-2`, whose
+#: row names `SID`, so the guard's first prompt makes the offer.
+OFFER_TO = "repoA-3"
+OFFER_OTHER = "9d4c1b2a-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
+REGISTER_OFFER = REGISTER + (
+    f"| `{OFFER_TO}` | harness `{OFFER_OTHER}` | Eagle / test / brett | 2026-10-01T00:00Z "
+    f"| none | handoffs/{OFFER_TO}.md | PAUSED {DOT} 2026-10-01T02:00:00Z {DOT} working |\n")
+#: The detached bind's bound in `[answer-2-F1]`, in s, as AT-F6's fixture
+#: sets it (`LANES_BIND_BOUND_S` for tests, TP:3595), and the longest the case
+#: waits for the bind's outcome: the body's `timeout -k 10` at `bound_s - 10`,
+#: the outer's sweep, and a margin.
+ANSWER_2_BIND_S = 15
+ANSWER_2_WAIT_S = 45
 SCHEMA = "lanes_register"
 #: `c` and `N_a` when no configuration sets them (D9; CLI4.10 section 2.4).
 C, N_A = 2, 1
@@ -404,13 +434,15 @@ TIMING_PSQL = r'''#!/usr/bin/env python3
 # missed snapshot's second request is told from a new attempt's (T257i).
 # Each send stamp says whether its request is a snapshot, so a case can tell
 # that a writer's SQL path ran even where the snapshot never ended (T257j).
+# Each begin stamp and each logged call names its session, so a hook's own
+# calls are told from those of a bind it detached with `setsid` (line BD-19b).
 import time
 begin = time.monotonic()
 import json, os, subprocess, sys
 here = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(here, "psql-begin.log"), "a", encoding="utf-8") as handle:
     handle.write(json.dumps({"argv": sys.argv[1:], "ppid": os.getppid(),
-                             "begin": begin}) + "\n")
+                             "sid": os.getsid(0), "begin": begin}) + "\n")
 real = os.environ["T220_REAL_PSQL"]
 data = sys.stdin.buffer.read() if sys.argv[1:] != ["--version"] else b""
 KINDS = ("commit_write", "switch_to_files", "record_marker", "find_write")
@@ -427,6 +459,7 @@ end = time.monotonic()
 err = proc.stderr.decode("utf-8", "replace")
 with open(os.path.join(here, "psql-timing.log"), "a", encoding="utf-8") as handle:
     handle.write(json.dumps({"argv": sys.argv[1:], "ppid": os.getppid(),
+                             "sid": os.getsid(0),
                              "start": start, "end": end, "exit": proc.returncode,
                              "first": (err.strip().splitlines() or [""])[0],
                              "snapshot": b"REPEATABLE READ" in data,
@@ -736,11 +769,15 @@ class Bench:
     section 6), a configuration naming the endpoint the fault gives, a login
     of the row's group where it needs one, and the timing wrapper first on
     `PATH`. For the guard's two rows it also makes a live session record and
-    a stand-in `tmux` (`guard_session`, T203c) when the row is run."""
+    a stand-in `tmux` (`guard_session`, T203c) when the row is run.
+    `register` is the text of the register at C (`REGISTER`), and `name` the
+    guard session's name (the window's where None); `[answer-2-F1]` passes
+    both (line BD-19b)."""
 
-    def __init__(self, pg, tmp_path: Path, request):
+    def __init__(self, pg, tmp_path: Path, request, *, register: str = REGISTER,
+                 name: str | None = None):
         from sql_register_helpers import flipped_copy, guard_strip_env
-        self.pg, self.root = pg, tmp_path
+        self.pg, self.root, self.name = pg, tmp_path, name
         self.bin = tmp_path / "bin"
         self.bin.mkdir()
         self.copy = flipped_copy(INDEXER, tmp_path / "tool", True)
@@ -778,7 +815,7 @@ class Bench:
         subprocess.run(["git", "clone", "-q", str(self.origin), str(self.wip)], check=True,
                        env=env, capture_output=True)
         (self.wip / "lanes" / "log").mkdir(parents=True)
-        (self.wip / "lanes" / "LANES.md").write_text(REGISTER, encoding="utf-8")
+        (self.wip / "lanes" / "LANES.md").write_text(register, encoding="utf-8")
         for argv in (["add", "-A"], ["commit", "-q", "-m", "C"], ["push", "-q", "origin", "main"]):
             subprocess.run(["git", *argv], cwd=str(self.wip), check=True, env=env,
                            capture_output=True)
@@ -856,10 +893,12 @@ class Bench:
         for a live pid, and a stand-in `tmux` that answers the guard's window
         queries, written to this bench's `bin`, for the checkout under
         `$HOME/projects`, with `SID`, the id the bench's register row names
-        (T220e). Made once, torn down when the test ends."""
+        (T220e), named `self.name` where the bench was given one. Made once,
+        torn down when the test ends."""
         from sql_register_helpers import guard_session
         if self.session is None:
-            self.session = guard_session(self.root, self.bin, self.wip, session_id=SID)
+            self.session = guard_session(self.root, self.bin, self.wip, session_id=SID,
+                                         name=self.name)
             self.request.addfinalizer(self.session.close)
         return self.session
 
@@ -1132,6 +1171,9 @@ def test_each_database_path_exits_inside_its_bound(pg, tmp_path, request, case):
     if row in PRIMARY_WRITER_ROWS:
         _primary_writer_row(pg, tmp_path, request, row, fault)
         return
+    if row == "answer-2":
+        _answer_2_row(pg, tmp_path, request, fault)
+        return
     bench = Bench(pg, tmp_path, request)
     user = bench.login(spec["group"]) if spec["group"] else "lanes_test"
     if row == "migration":
@@ -1167,8 +1209,6 @@ def test_each_database_path_exits_inside_its_bound(pg, tmp_path, request, case):
         # "nothing on stdout" (TP:3603) is its `mode primary` line alone.
         assert proc.stdout == "mode primary\n", \
             f"a reader's 69 prints its mode line and nothing more: {proc.stdout!r}"
-    if row == "answer-2":
-        assert "BINDING" in proc.stdout + proc.stderr
     if row == "mode-query":
         assert proc.stdout == "index\n" and bench.calls() == [], "the query reads no database"
     if row == "status":
@@ -1183,6 +1223,113 @@ def test_each_database_path_exits_inside_its_bound(pg, tmp_path, request, case):
         assert elapsed < 2 * spec["bound"], f"{case}: {elapsed:.2f} s against {spec['bound']} s"
         _record(case, elapsed, spec["bound"], "timing rule 2" + (
             ", from the register request's start" if row == "status" else ""))
+
+
+def _answer_2_row(pg, tmp_path: Path, request, fault: str) -> None:
+    """`[answer-2-F1]` (line BD-19b; lane 3's ruling, #165 6840828270): the
+    row follows a healthy call (TP:3586-3589), since the guard's one prefetch
+    is the first read of every prompt, an answer to its offer included
+    (T507), and answer 2 adds no database call to the hook (Y:5417).
+
+    1. The offer is made on a healthy register: the bench at `primary`
+       (`Bench.to_primary`) with `REGISTER_OFFER`, its session named
+       `OFFER_TO`, and one guard prompt, which must leave the offer record,
+       `mode=name-drift`, as AT-F6's `make_offer` asserts it.
+    2. `2` is sent through `ArmedFault`, which passes each connection whole
+       until `TIMING_PSQL`'s log shows that the hook's register read has
+       ended, and from then holds each new one (F1).
+    3. The hook exits 2 with "BINDING" under 4.5 s (TP:3595); its read is in
+       the log, ended 0; and it began no register call after it (AT-F6 case
+       21, TP:6190-6191). The hook's calls are those in its own session: the
+       wrapper names each call's, and `guard_answer` detaches the bind with
+       `setsid` into one of its own.
+    4. The detached bind meets F1 after the hook exits, bounded as AT-F6's
+       fixture bounds its binds (`LANES_BIND_BOUND_S`, `ANSWER_2_BIND_S`).
+       The relay stays up until the bind has written its outcome, at most
+       `ANSWER_2_WAIT_S`.
+
+    It fails until T502 (T220's Order)."""
+    spec = ROWS["answer-2"]
+    case = f"answer-2-{fault}"
+    bench = Bench(pg, tmp_path, request, register=REGISTER_OFFER, name=OFFER_TO)
+    bench.to_primary()
+    user = bench.login(spec["group"])
+    bench.env = dict(bench.env, LANES_BIND_BOUND_S=str(ANSWER_2_BIND_S))
+    mine = os.getsid(0)
+    offer = tmp_path / ".claude" / "lanes" / "offers" / SID
+    mark = []
+
+    def read_ended() -> bool:
+        return bool(mark) and any(c.get("sid") == mine for c in bench.calls()[mark[0]:])
+
+    relay = ArmedFault(f"{pg.host}/.s.PGSQL.{pg.port}", fault, read_ended)
+    outcome = {}
+    try:
+        config = bench.config("127.0.0.1", relay.port, user)
+        made, _ = bench.run("guard", config)
+        record = _offer_record(offer)
+        assert made.returncode == 2 and record.get("mode") == "name-drift" \
+            and record.get("to") == OFFER_TO, \
+            f"{case}: the guard made no offer on a healthy register: {made.returncode}: " \
+            f"{record}: {made.stderr}"
+        begun = len(_begin_log(bench))
+        mark.append(len(bench.calls()))
+        proc, elapsed = bench.run("answer-2", config)
+        if "BINDING" in proc.stdout + proc.stderr:
+            outcome = _bind_outcome(offer, ANSWER_2_WAIT_S)
+    finally:
+        relay.close()
+    assert proc.returncode == spec["exit"], f"{case}: {proc.returncode}: {proc.stderr}"
+    assert "BINDING" in proc.stdout + proc.stderr, f"{case}: no BINDING: {proc.stderr}"
+    assert elapsed < spec["bound"], f"{case}: {elapsed:.2f} s, not under {spec['bound']} s"
+    reads = [c for c in bench.calls()[mark[0]:] if c.get("sid") == mine]
+    assert len(reads) == 1 and reads[0]["exit"] == 0, \
+        f"{case}: the hook's register read is not in the log, ended 0: {reads}"
+    own = [b for b in _begin_log(bench)[begun:]
+           if b.get("sid") == mine and b["argv"] != ["--version"]]
+    later = [b for b in own if b["begin"] > reads[0]["end"]]
+    assert len(own) == 1 and not later, \
+        f"{case}: the hook made a register call besides its read (Y:5417): {own}"
+    _record(case, elapsed, spec["bound"], "timing rule 1")
+    print(f"D9 {case}: the detached bind's outcome {outcome.get('mode')} (rc "
+          f"{outcome.get('rc')}); F1 held {relay.silenced} connection(s) after the hook's read")
+    assert outcome, (f"{case}: the detached bind wrote no outcome in {ANSWER_2_WAIT_S} s, "
+                     f"bounded at {ANSWER_2_BIND_S} s: {_offer_record(offer)}")
+
+
+def _offer_record(path: Path) -> dict:
+    """The guard's offer record, its `key=value` lines, the first of each key
+    winning as the guard reads it (AT-F6's `read_record`); {} where there is
+    none."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    record = {}
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            record.setdefault(key, value)
+    return record
+
+
+def _bind_outcome(path: Path, limit: float) -> dict:
+    """The offer record once the detached bind has written its outcome,
+    `bound` or `bind-failed`; {} where it has not within `limit` s."""
+    deadline = time.monotonic() + limit
+    while time.monotonic() < deadline:
+        record = _offer_record(path)
+        if record.get("mode") in ("bound", "bind-failed"):
+            return record
+        time.sleep(0.2)
+    return {}
+
+
+def _begin_log(bench: Bench) -> list:
+    """`TIMING_PSQL`'s begin stamps, every process's, in order."""
+    log = bench.bin / "psql-begin.log"
+    return [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines() if l] \
+        if log.exists() else []
 
 
 def _slow_statement(pg, table: str, group: str, seconds: float) -> None:
