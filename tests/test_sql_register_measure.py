@@ -1202,6 +1202,24 @@ class VerbEstate:
         env.update(LANES_REPO=str(self.estate.checkout), LANES_BRANCH="main", LANES_WORKSTATION=WS,
                    LANES_NO_GITHUB="1", LANES_LANE="repoA-1", LANES_SESSION=SID_A1)
         self.env = env
+        # EACH WRITE LANE'S OWN REGISTER CHECKOUT, `<c>`: on primary a write runs
+        # from `<W>-lanes/<lane>` (`lane_checkout_path`), W being the real path of
+        # `workspace.yaml`'s `path:`, and refuses 2 where it is not there, since a
+        # clone is a fetch (T415's `pw_checkout`, `23bbd25f:lanes-edit.sh:7934-7936`).
+        # The estate makes it itself, because `lane-start` makes it only under
+        # `LANES_ROUTE_WRITES=1` with neither `LANES_REPO` nor `LANES_FILE` set
+        # (lane 3, #165 6841265575; `dfc4ce4c:lane-start:1209-1210`): a clone of
+        # W's origin, as the writes module's `make_lane_checkout` makes one, for
+        # `repoA-1`, every verb's lane, and `BIND_TO`, the bind's. It is made once
+        # per W, since `[m7]` and `[m9]` build their estates on one register.
+        if mode == "primary":
+            real = Path(os.path.realpath(self.estate.checkout))
+            for lane in ("repoA-1", BIND_TO):
+                target = real.parent / f"{real.name}-lanes" / lane
+                if not target.exists():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    git(target.parent, "clone", "-q", str(self.estate.origin), str(target),
+                        env=self.estate.env)
 
     def run(self, argv: list) -> subprocess.CompletedProcess:
         if argv[0].startswith("@"):
