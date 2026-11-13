@@ -63,6 +63,9 @@ def test_shell_hits_require_known_hash_and_exact_baseline_bytes(collector, tmp_p
     hits = out / "shell-hits"
     hits.write_text(manifest["files"][0]["sha256"] + "\t2\n")
     assert collector.shell_lines(out, manifest) == {"command": {2: True}}
+    hits.write_text(manifest["files"][0]["sha256"] + "\t1\n" +
+                    manifest["files"][0]["sha256"] + "\t2\n")
+    assert collector.shell_lines(out, manifest) == {"command": {2: True}}
     hits.write_text("0" * 64 + "\t2\n")
     with pytest.raises(ValueError, match="unknown shell hit"):
         collector.shell_lines(out, manifest)
@@ -176,3 +179,56 @@ def test_startup_still_reports_configuration_errors_from_an_existing_directory(t
     result = subprocess.run([sys.executable, "-c", "pass"], cwd=tmp_path,
                             env=env, capture_output=True, text=True, check=True)
     assert "RuntimeError: invalid-coverage-configuration" in result.stderr
+
+
+def test_python_denominator_is_fixed_and_multiline_hits_are_translated(
+        collector, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    text = b'"""module docs"""\nvalue = (\n    1\n)\nprint(value)\n# trailing comment\n'
+    command = tmp_path / "command"
+    command.write_bytes(text)
+    manifest = {"files": [{"path": "command", "language": "py", "test": False,
+                           "sha256": hashlib.sha256(text).hexdigest(), "lines": 6}]}
+    raw_hits = set()
+
+    class Data:
+        def lines(self, filename):
+            assert filename == str(command)
+            return raw_hits
+
+    class Coverage:
+        def __init__(self, **kwargs):
+            pass
+
+        def combine(self, **kwargs):
+            pass
+
+        def save(self):
+            pass
+
+        def get_data(self):
+            return Data()
+
+    class Parser:
+        statements = {2, 5}
+
+        def __init__(self, **kwargs):
+            pass
+
+        def parse_source(self):
+            pass
+
+        def translate_lines(self, lines):
+            return {2 if line in {2, 3, 4} else line for line in lines}
+
+    monkeypatch.syspath_prepend(str(HERE / ".github/ci"))
+    monkeypatch.setenv("ORT_SONAR_ROOT", str(tmp_path))
+    monkeypatch.setenv("ORT_SONAR_INVENTORY", str(tmp_path / "inventory.json"))
+    monkeypatch.setitem(sys.modules, "coverage", SimpleNamespace(Coverage=Coverage))
+    monkeypatch.setitem(sys.modules, "coverage.parser", SimpleNamespace(PythonParser=Parser))
+    for observed in ({3}, {1, 2, 3, 4, 6}):
+        raw_hits.clear()
+        raw_hits.update(observed)
+        assert collector.python_lines(tmp_path, tmp_path, manifest) == {
+            "command": {2: True, 5: False}}

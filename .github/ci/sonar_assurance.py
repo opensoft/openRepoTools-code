@@ -176,11 +176,18 @@ def combine_evidence(root, out):
     manifest = inventory(root)
     measurements = {item["path"]: {} for item in manifest["files"] if not item["test"]}
     inputs = {}
+    denominator = None
     for label in ("composed", "provider"):
         directory = Path(os.environ["RUNNER_TEMP"]).resolve() / ("sonar-" + label)
         summary = rebind_evidence(root, directory)
         data = (directory / COVERAGE_REPORT).read_bytes()
-        for file in ET.fromstring(data):
+        report = ET.fromstring(data)
+        current = {file.attrib["path"]: {int(line.attrib["lineNumber"]) for line in file}
+                   for file in report}
+        if denominator is not None and current != denominator:
+            raise ValueError("coverage denominators differ between identical source inventories")
+        denominator = current
+        for file in report:
             lines = measurements[file.attrib["path"]]
             for line in file:
                 number = int(line.attrib["lineNumber"])
