@@ -918,12 +918,18 @@ def write_lanes_of(argv: Sequence[str], lane: Optional[str]) -> List[str]:
     for a run that is no write (a read, `act-begin`), and for an
     `append-line` with no `LANES_LANE`, whose lane is in its text (every run
     here sets `LANES_LANE`). `rename-lane` gives both names, the old one
-    first: `canon_lane` reads the old as the new once the rename is known."""
+    first: `canon_lane` reads the old as the new once the rename is known.
+    `start-record <L> ...` names its lane first, as `write-handoff` does
+    (T427's arm, `f9e1449c:lanes-edit.sh:27941-27945`); the arm's own
+    refusals, a `LANES_LANE` that is not `<L>`, a `LANES_SESSION` that is no
+    transcript uuid and an `--add-row` with no row, come before any clone,
+    so a checkout made for them changes nothing (lane 3, #165 6859307928;
+    T243t)."""
     verb, args = (argv[0], [str(a) for a in argv[1:]]) if argv else ("", [])
     first = args[0] if args else ""
     if verb in ("set-row-state", "replace-in-row", "append-session-id", "request-handoff"):
         return [first] if first else []
-    if verb == "write-handoff":
+    if verb in ("write-handoff", "start-record"):
         return [first] if first and not first.startswith("-") else []
     if verb == "rename-lane":
         names, words = [], iter(args)
