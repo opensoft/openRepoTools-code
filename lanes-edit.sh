@@ -7956,7 +7956,8 @@ pw_learned() {   # <seq>
 # `tail=done <s> <rc> <utc>`, the done mark from it, removes the record and
 # exits the child's code. Where it does not, the child never read
 # `committed`: the owner removes `tail` again, and this returns 1 for the
-# replay (Y:5342).
+# replay (Y:5342), or, where the record cannot be rewritten without `tail`
+# before a replay, names the tail as owed.
 pw_tail_child() {   # <seq> <pid> <attempt dir>
   local tc_rc=0 tc_was="$WR_TAIL"
   pw_learned "$1"
@@ -7977,7 +7978,16 @@ pw_tail_child() {   # <seq> <pid> <attempt dir>
   [ "$PW_CHILD" != "$2" ] || PW_CHILD=""
   if ! pw_seam_out_read "$3"; then
     WR_TAIL=""
-    wr_record_write || :
+    # A RECORD THAT CANNOT BE REWRITTEN WITHOUT `tail` before a replay: no
+    # replay, and the tail is owed, since a tail is sent only after `tail=sent`
+    # is written (Y:5293) and this child never read `committed`, so the steps
+    # did not run (Y:5329, Y:5340). The takeover's own case is lane
+    # openRepoTools-3's ruling, #165 6841366245, T418 (2); this is the same
+    # shape for this run's own child (review RC-W18b, its NIT). A replay's own
+    # child that did not take it ends owed in `pw_replay_tail`, as before.
+    if ! wr_record_write && [ "$PW_REPLAYED" != 1 ]; then
+      pw_tail_owed "$1" "its child, in $3, did not take the message at its seam (its seam.out does not read tail), so its tail did not run; but this run could not remove tail=sent from its pending record, $WR_STATE/register-pending/$WR_D (it no longer owns it, or the file cannot be written), and a tail is sent only after tail=sent is written (Y:5293), so it was not replayed"
+    fi
     return 1
   fi
   WR_TAIL="done $1 $tc_rc $(wr_host_utc)"
