@@ -2517,7 +2517,13 @@ SRI
     if [ -z "$LE_TMP" ]; then
       SC_WHY="no temporary file could be made to capture what lane $2's state read said, so whether it was read fresh under its checkout's lock was never established"; return 1
     fi
-    ss_row="$("$LANES_EDIT" lanes --fetch --closed --lane "$2" 2>"$LE_TMP")" || ss_rc=$?
+    # FEATURE 007, T403 (R38; spec:626; Y:3022; lane 3's #165 6852014823,
+    # answer 1): THIS READ DECIDES TOO. The removal acts on what it says, so it
+    # asks `lanes` to decide, as the listing does: without `--decide` the read
+    # is the mirror's, and on primary with the store down the sweep would
+    # decide a removal on mirror rows. In files mode `--decide` is only taken
+    # off the line, as at the listing.
+    ss_row="$("$LANES_EDIT" lanes --decide --fetch --closed --lane "$2" 2>"$LE_TMP")" || ss_rc=$?
     ss_cat=0
     ss_err="$(cat -- "$LE_TMP" 2>/dev/null)" || ss_cat=$?
     rm -f -- "$LE_TMP"; LE_TMP=""
