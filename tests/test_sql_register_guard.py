@@ -1974,13 +1974,19 @@ def test_a_bind_in_doubt_looks_its_write_up_before_a_rerun(estate, held):
     """AT-F6 case 10: an injected `psql` exit 2 gives `rc=3` with the id:
     `[absent]`, exit 2 on every call from the bind's commit call on;
     `[found]`, the shim's `after` mode on that call, which commits, then exit
-    2 on every later call. At the next `2` the child's lookup runs first:
-    `[absent]` binds anew under a new id; `[found]` writes no second
-    `RESUMED`, its done mark says `done`, and the record ends `bound`."""
+    2 on every lookup (`find_write`) after it. At the next `2` the child's
+    lookup runs first: `[absent]` binds anew under a new id; `[found]` writes
+    no second `RESUMED`, its done mark says `done`, and the record ends
+    `bound`.
+
+    `[found]`'s later failures are armed by the lookup's text (T254t), not
+    `fail-call` from the shim's second call: that counted every call, and
+    calls 1 and 2 are both the guard's own prefetch, so the guard refused
+    before its offer (lane 5, #165 6841545201)."""
     est = _real_estate(estate, mode="primary")
     arms = ([{"mode": "fail-match", "match": "commit_write", "from": 1}] if held == "absent"
             else [{"mode": "after", "match": "commit_write", "call": 1},
-                  {"mode": "fail-call", "from": 2}])
+                  {"mode": "fail-match", "match": "find_write", "from": 1}])
     est.shim(arms)
     est.make_offer()
     est.answer_2()
@@ -2087,8 +2093,10 @@ def test_the_bind_childs_lookup_sends_the_five_copied_values(estate, case):
     `generation` copy changed, `rc=2` with a plain rerun's refusal and the
     copies kept."""
     est = _real_estate(estate, mode="primary")
+    # CASE 10's `[found]` ARMS (T254t): the lookup fails by its text, so the
+    # guard's own prefetch calls, the shim's first two, are not failed.
     est.shim([{"mode": "after", "match": "commit_write", "call": 1},
-              {"mode": "fail-call", "from": 2}])
+              {"mode": "fail-match", "match": "find_write", "from": 1}])
     est.make_offer()
     est.answer_2()
     record = est.ended(120)
