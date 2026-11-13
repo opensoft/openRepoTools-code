@@ -52,17 +52,24 @@ WHAT IT HOLDS, by task:
       `managed-projection` answers 1, UNKNOWN, never 8.
   * T256 (L2-W6), the flipped state and the render fork's stub test, each a
     REAL-ENGINE case (the flipped state is RE: its write is a `register
-    snapshot` reply and a commit, which a fake cannot fabricate):
+    snapshot` reply and a commit, which a fake cannot fabricate), and
+    `[replay-keeps-pid]`, which needs no engine:
     - `[flipped]`: on the FLIPPED copy, with `register_url=` on the session
       cluster's socket, on an imported register after the cutover, the same
       `log NOTED` exits 0, the journal gains one entry, the shim's log holds
       one attempt of two calls (the snapshot and the commit, sent as
       `register_url=`'s login with `register_passfile=` and no `PGPASSWORD`),
-      and the files are unchanged, since there is no git half in this build;
+      the files are unchanged, since there is no git half in this build, and
+      the stand-in logs one `mode` call, the primary half of the rule that
+      the ask is made once: the parent asks it, and the attempt's child asks
+      none (Y:5038, Y:5452);
     - `[replay-keeps-pid]` (R-T409-9; lane 3, #165 6747281902, T409's item
-      9): with a configuration, the stand-in logs one `mode` call across a
-      write whose replay keeps its pid, slice 1a's routed `exec` (Y:4858,
-      Y:5121: the ask is made once). Its `[J3]` word is
+      9; lane 3's proposal, 6852014823, which lane 2 confirmed in
+      6858869119): with a configuration, an unrouted write whose first push
+      loses a race runs again by S4's replay, an `exec` that keeps the pid,
+      and the stand-in logs one `mode` call across it (Y:4858, Y:5121: the
+      ask is made once). It runs in `index` mode, with no engine, since no
+      primary writer that asks the mode ever replays. Its `[J3]` word is
       `sql_register_build_flip and replay-keeps-pid`;
     - `test_a_primary_write_forks_render_checkout_on_the_lane_checkout_
       detached[plain|no-fetch-set|index-off-set]`: after a primary write
@@ -124,14 +131,15 @@ NO NETWORK. Every remote is a bare repository under `tmp_path`, `$HOME` is
 temporary, and `db.invalid` is never resolved: in the refusing state nothing
 connects.
 
-THE REAL ENGINE, for T256's cases only. The flipped state takes `pg` from
-`tests/pgcluster.py`, one database cloned from the session's template, and so
-skips with T205's banner where no PostgreSQL 16 is found, unless
-`OPENREPOTOOLS_REQUIRE_PG=1`. The render fork's test asks for `pg` itself, so
-its fixture closure holds `pg_engine` (T200's rule). `[flipped]` and
-`[replay-keeps-pid]` share their function with the refusing state, which needs
-no engine and always runs (AT-14: "The refusing state is FP"), so they take
-`pg` by `request.getfixturevalue` and skip alone. Their register is reached as
+THE REAL ENGINE, for T256's flipped state and render fork only. The flipped
+state takes `pg` from `tests/pgcluster.py`, one database cloned from the
+session's template, and so skips with T205's banner where no PostgreSQL 16 is
+found, unless `OPENREPOTOOLS_REQUIRE_PG=1`. The render fork's test asks for
+`pg` itself, so its fixture closure holds `pg_engine` (T200's rule).
+`[flipped]` shares its function with the refusing state and with
+`[replay-keeps-pid]`, which need no engine and always run (AT-14: "The
+refusing state is FP"), so it takes `pg` by `request.getfixturevalue` and
+skips alone. Its register is reached as
 AT-LR006's fixture reaches one (TP:4610-4615), by the documented functions as
 `lanes_register_writer`: `commit_write` with an `import` entry holding the
 estate's render set, then a `cutover` entry, then `record_marker`, as T221's
@@ -144,13 +152,31 @@ of W's origin, as lane 2's writes module makes one (`make_lane_checkout`): on
 primary a write makes no clone, since a clone is a fetch (D12), so lane 4's
 T415 refuses a write whose lane has none (`pw_checkout`; tasks:1154-1155).
 
+`[replay-keeps-pid]`'S ESTATE (lane 3's proposal, 6852014823; lane 2's build
+notes, 6858869119). No primary writer that asks the mode replays: on primary
+T415's arm runs `pw_run` before 1a's routing (R17), and the attempt's child
+asks nothing and stops at the seam before any push (Y:5038, Y:5040, Y:5042).
+So the case runs in `index` mode, which `lanes-index mode` answers from the
+file alone: a 0600 `mode=index` file named by `LANES_INDEX_CONFIG`, with
+`LANES_INDEX=off`, which skips the index's nudge and never the mode question
+(Y:5718), and the logging stand-in in front of the checkout's `lanes-index`.
+The write is unrouted, through `Estate`'s explicit `LANES_REPO`, so it has no
+`LANES__PID` and its replay keeps the mode only by `LANES__REPLAY_PID`, which is
+R-T409-9's half. Its first push loses a race: `tests/a23_box.py`'s `NET_GIT`
+is `LANES_GIT`, and its `FAKE_NET_HOOK` lands one commit of a peer, a clone of
+the estate's origin, before the first push only, as
+`tests/test_a23_publish_replay.py`'s `Box.race` does. With no race there is no
+`push refused` note, and with no stand-in found there is no `mode` call, so
+the case cannot pass vacuously.
+
 WHAT EACH WAITS FOR (the block's Order): T212's tests fail until L1-A3, L1-A4,
 L1-A11 and L5-A5 land: lane 1's T105 (the constant and `mode`), T113
 (`register read`) and lane 5's T504 (the read door). D3's test passes at once
-on a build that never asks the mode. T256's fail until L4-B1 and L4-B13 land,
-and `[replay-keeps-pid]` until lane 4's T409 follow-up for its item 9; on an
-engine they also need T227's template and lane 1's T107 functions. T277's
-test needs T105's constant, and fails between T321 and T328.
+on a build that never asks the mode. T256's real-engine cases fail until L4-B1
+and L4-B13 land, and on an engine they also need T227's template and lane 1's
+T107 functions. `[replay-keeps-pid]` fails until lane 4's T409 follow-up for
+its item 9, and needs Amendment 23's S4 replay and `NET_GIT`. T277's test
+needs T105's constant, and fails between T321 and T328.
 """
 
 from __future__ import annotations
@@ -160,6 +186,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -346,6 +373,24 @@ WRITING_LANE = "repoA-2"
 
 #: How long a case waits for a detached fork to show in the stand-in's log.
 FORK_SECONDS = 20.0
+
+#: `[replay-keeps-pid]`'S RACE: the body of `FAKE_NET_HOOK` behind
+#: `tests/a23_box.py`'s `NET_GIT`, as `tests/test_a23_publish_replay.py`'s
+#: `Box.race` writes it with `times=1`: before the helper's first push only,
+#: the peer, a clone of the estate's origin, lands one commit of its own on
+#: origin, so that push is refused and the write runs again. `@PEER@` and
+#: `@COUNT@` are filled in, each quoted.
+RACE_HOOK = """#!/usr/bin/env bash
+[ "$1" = push ] || exit 0
+n=$(cat @COUNT@ 2>/dev/null || echo 0)
+[ "$n" -lt 1 ] || exit 0
+echo $((n + 1)) > @COUNT@
+git -C @PEER@ fetch -q origin
+git -C @PEER@ merge -q --ff-only refs/remotes/origin/main
+git -C @PEER@ commit -q --allow-empty -m "a peer's commit lands first ($((n + 1)))"
+git -C @PEER@ push -q origin main
+exit 0
+"""
 
 #: THE RENDER FORK'S THREE (TP:2621-2624): the verb's own environment.
 FORK_CASES = {
@@ -860,22 +905,59 @@ def flipped_case(world: Flipped) -> None:
         assert call.get("passfile") == str(world.passfile), ("not register_passfile=", call)
         assert call.get("pgpassword") is False, ("PGPASSWORD reached psql", call)
     assert world.origin_and_head() == before, "the files moved: this build has no git half"
-
-
-def replay_keeps_pid_case(world: Flipped) -> None:
-    """`[replay-keeps-pid]` (R-T409-9; lane 3, #165 6747281902, T409's item
-    9): with a configuration, a write that routes through its lane's
-    checkout, whose replay is an `exec` that keeps the pid, asks the mode
-    once: one `mode` call in the stand-in's log (Y:4858, Y:5121). The
-    estate makes the lane's checkout `<c>` before the write, so `<c>` is
-    asserted there first, and its being there after the write no longer
-    says the write routed."""
-    assert world.lane_checkout().is_dir(), "the estate made no lane checkout for the write"
-    proc = world.write("test 14 - a replay keeps its pid", **world.routed())
-    assert proc.returncode == 0, shown(proc)
     modes = [c for c in calls(world.bin) if c["argv"] == ["mode"]]
+    assert len(modes) == 1, ("the primary write asked the mode more than once, or never: the "
+                             "parent asks it once, and the attempt's child asks none (Y:5038, "
+                             "Y:5452)", [c["argv"] for c in calls(world.bin)])
+
+
+def replay_keeps_pid_case(state: Refusing) -> None:
+    """`[replay-keeps-pid]` (R-T409-9; lane 3, #165 6747281902, T409's item
+    9; lane 3's proposal, 6852014823, confirmed by lane 2 in 6858869119): with
+    a configuration, an unrouted write whose first push loses a race runs
+    again by S4's replay, an `exec` that keeps the pid, and asks the mode
+    once: one `mode` call in the stand-in's log (Y:4858, Y:5121). In `index`
+    mode, with no engine: a 0600 `mode=index` file named by
+    `LANES_INDEX_CONFIG`, `LANES_INDEX=off`, the write through `Estate`'s
+    explicit `LANES_REPO` with no routing, and `tests/a23_box.py`'s
+    `NET_GIT` as `LANES_GIT` with `RACE_HOOK` behind it. It asserts exit 0,
+    `push refused (attempt 1 of 6)`, `pushed origin/main (attempt 2)`, and
+    one `mode` call."""
+    import a23_box
+    net_git = getattr(a23_box, "NET_GIT", None)
+    assert net_git, ("tests/a23_box.py has no NET_GIT, the LANES_GIT this case races the "
+                     "write's first push through (Amendment 23 S4)")
+    e = state.e
+    conf = state.other_config("index.conf", "mode=index\n")
+    bin_dir = state.root / "replay-bin"
+    edit = beside(bin_dir, helpers.LANES_INDEX)
+    peer = state.root / "peer"
+    for argv in (("clone", "-q", str(e.origin), str(peer)),
+                 ("-C", str(peer), "config", "user.name", "test 14's peer"),
+                 ("-C", str(peer), "config", "user.email", "peer@example.invalid")):
+        proc = e.run("git", *argv)
+        assert proc.returncode == 0, ("the peer, a clone of origin", argv, shown(proc))
+    net = bin_dir / "net-git"
+    net.write_text(net_git, encoding="utf-8")
+    net.chmod(0o755)
+    hook = bin_dir / "net-hook"
+    hook.write_text(RACE_HOOK.replace("@PEER@", shlex.quote(str(peer)))
+                    .replace("@COUNT@", shlex.quote(str(state.root / "race.count"))),
+                    encoding="utf-8")
+    hook.chmod(0o755)
+    proc = state.edit(edit, "log", "NOTED", f"lane:{WRITING_LANE}",
+                      "test 14 - a replay keeps its pid",
+                      LANES_INDEX_CONFIG=str(conf), LANES_INDEX="off", LANES_LANE=WRITING_LANE,
+                      LANES_GIT=str(net), FAKE_NET_LOG=str(state.root / "net.log"),
+                      FAKE_NET_HOOK=str(hook))
+    assert proc.returncode == 0, shown(proc)
+    assert "push refused (attempt 1 of 6)" in proc.stderr, \
+        ("the first push did not lose the race, so the write did not replay", shown(proc))
+    assert "pushed origin/main (attempt 2)" in proc.stderr, \
+        ("the replayed write did not publish", shown(proc))
+    modes = [c for c in calls(bin_dir) if c["argv"] == ["mode"]]
     assert len(modes) == 1, ("the mode ask was made more than once, or never, across the replay",
-                             [c["argv"] for c in calls(world.bin)])
+                             [c["argv"] for c in calls(bin_dir)])
 
 
 STATE_CASES = {
@@ -885,8 +967,8 @@ STATE_CASES = {
     "replay-keeps-pid": replay_keeps_pid_case,
 }
 
-#: The cases that need the real engine, taken by `request.getfixturevalue`.
-FLIPPED_CASES = ("flipped", "replay-keeps-pid")
+#: The case that needs the real engine, taken by `request.getfixturevalue`.
+FLIPPED_CASES = ("flipped",)
 
 
 @pytest.mark.parametrize("case", list(STATE_CASES))
