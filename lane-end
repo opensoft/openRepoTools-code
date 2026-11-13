@@ -2770,7 +2770,7 @@ LE_WALK_NAMES
 #        again from its start once the rerun has settled the row;
 #   any other code, 69 and 75 included, says the row was NOT closed, that
 #        neither W14 nor the fragment ran, and that this command is run again
-#        from its start (Y:5601); no hand command is printed (Y:5587).
+#        from its start (Y:5601); no hand command is printed.
 # Under `@files`, or after `act-begin`'s 2 (no base), the plain call and
 # `set -e` stay, so files mode is exactly what it was (TP:5861-5864).
 if (( dry_run )); then
