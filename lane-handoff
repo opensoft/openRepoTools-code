@@ -160,6 +160,15 @@
 
 set -uo pipefail
 
+# AN INHERITED `LANES_READ_MIRROR` IS NO ANSWER (feature 007, T405; lane 3's #165
+# 6861148117: ERR-30 widens PER CALL). This command puts the variable on the calls
+# that carry it, one by one, and no value the caller exported may lower `--late`'s
+# `lane-last` read or any other call that carries none. So it is dropped here,
+# before any read and before anything that could pass the environment on, as the
+# handoff skill's `act_read` does for its own calls (`env -u LANES_READ_MIRROR`,
+# `skills/handoff/SKILL.md:931-938`).
+unset LANES_READ_MIRROR
+
 prog="${0##*/}"
 SELF="${BASH_SOURCE[0]:-$0}"
 selfdir="$(cd -- "$(dirname -- "$SELF")" && pwd)"
