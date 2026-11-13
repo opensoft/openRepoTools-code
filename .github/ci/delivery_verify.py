@@ -125,7 +125,9 @@ def local_review(comments, number, head, base, request, response):
     require(edits["pageInfo"]["hasNextPage"] is False and isinstance(nodes, list)
             and len(nodes) == len(comments) < 100
             and all(type(row["databaseId"]) is int and row["databaseId"] > 0 for row in nodes)
-            and len({row["databaseId"] for row in nodes}) == len(nodes),
+            and all(type(row["id"]) is int and row["id"] > 0 for row in comments)
+            and len({row["databaseId"] for row in nodes}) == len(nodes)
+            and {row["databaseId"] for row in nodes} == {row["id"] for row in comments},
             "Incomplete local review edit history")
     selected = [row for row in nodes if row["databaseId"] == identity]
     require(len(selected) == 1 and selected[0]["lastEditedAt"] is None,

@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -106,9 +107,20 @@ def run_main(cutover, batch, env, event, tmp_path, monkeypatch, on_sleep=None):
         sleeps.append(value)
         if on_sleep:
             on_sleep(len(sleeps))
-    monkeypatch.setattr(cutover.time, "sleep", sleep)
+    # Replacing the shared time module's sleep also intercepts subprocess's
+    # timeout polling, contaminating retry counts and callbacks under load.
+    monkeypatch.setattr(cutover, "time", SimpleNamespace(sleep=sleep))
     cutover.main()
     return sleeps, attempts, output.read_text()
+
+
+def test_ci_cutover_repair_wait_stub_does_not_patch_subprocess_clock(cutover, batch, tmp_path, monkeypatch):
+    import time
+    original = time.sleep
+    env, event = source_fixture(cutover, batch)
+    batch["prs"][7]["body"] = event["pull_request"]["body"] = ""
+    run_main(cutover, batch, env, event, tmp_path, monkeypatch)
+    assert time.sleep is original
 
 
 @pytest.mark.parametrize("kind", ["no-intent", "reusable", "old-protection", "failed-fast"])

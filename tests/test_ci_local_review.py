@@ -34,6 +34,9 @@ def install_local(batch, number=7, *, hosted=False):
                "html_url": f"https://github.com/{REPO_NAME}/pull/{number}#issuecomment-{1000+number}",
                "body": body(record)}
     endpoint = f"issues/{number}/comments?per_page=100"
+    if hosted:
+        for index, previous in enumerate(batch["data"][endpoint]):
+            previous["id"] = 2000 + number + index
     batch["data"][endpoint] = (batch["data"][endpoint] if hosted else []) + [comment]
     batch["data"][PERMISSION] = {"permission": "write", "role_name": "maintain",
                                  "user": copy.deepcopy(comment["user"])}
@@ -262,6 +265,24 @@ def test_ci_local_review_permission_is_cached_only_within_one_live_read(delivery
     with pytest.raises(ValueError):
         read_review(delivery, batch, request)
     assert reads.count(PERMISSION) == 2
+
+
+def test_ci_local_review_final_read_refuses_same_count_replaced_comment_history(delivery, batch):
+    install_local(batch, hosted=True)
+    reads = 0
+    def read(number):
+        nonlocal reads
+        result = local_threads(batch, number)
+        if number == 7:
+            reads += 1
+            if reads > 1:
+                # An unrelated comment disappears while a newer revocation is
+                # posted between REST and GraphQL. Counts and selected receipt
+                # still match, but the complete histories no longer do.
+                result["comments"]["nodes"][0]["databaseId"] = 9007
+        return result
+    with pytest.raises(ValueError, match="edit history"):
+        verify(delivery, batch, read_threads=read)
 
 
 def test_ci_local_review_read_threads_requests_complete_edit_metadata(delivery, monkeypatch):
