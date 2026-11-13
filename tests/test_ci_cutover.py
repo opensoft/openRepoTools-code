@@ -129,6 +129,57 @@ def test_ci_cutover_verified_source_selects_fast_but_not_merge_authority(cutover
     assert "queue_admission" not in result
 
 
+@pytest.mark.parametrize("field", ["merged", "merge_commit_sha"])
+def test_ci_cutover_source_snapshot_diagnostic_has_names_not_values(cutover, batch, capsys, field):
+    env, event = source_fixture(cutover, batch)
+    if field == "merge_commit_sha":
+        batch["prs"][7][field] = env["GITHUB_SHA"]
+    event["pull_request"][field] = None
+    batch["prs"][7]["body"] += "\nPrivate prose must never be logged."
+    assert route_fixture(cutover, batch, env, event) == cutover.FULL
+    rows = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
+    assert rows == [
+        {"delivery_diagnostic": "snapshot-mismatch", "stage": "source", "fields": [field]},
+        {"delivery_diagnostic": "source-metadata", "stage": "source"},
+    ]
+
+
+@pytest.mark.parametrize("message,reason", [
+    ("Reusable/foreign workflow must remain full", "incomplete-evidence"),
+    ("Private exception / token / body must never be logged.", "incomplete-evidence"),
+])
+def test_ci_cutover_diagnostic_does_not_echo_exception_text(cutover, batch, monkeypatch, capsys,
+                                                          message, reason):
+    env, event = source_fixture(cutover, batch)
+    def fail(*_args):
+        raise ValueError(message)
+    monkeypatch.setattr(cutover, "current_run", fail)
+    assert route_fixture(cutover, batch, env, event) == cutover.FULL
+    assert json.loads(capsys.readouterr().err) == {
+        "delivery_diagnostic": reason, "stage": "workflow-identity"}
+
+
+@pytest.mark.parametrize("message,reason", [
+    ("Missing or ambiguous fast check", "fast-check-count"),
+    ("Fast run/check changed during verification", "fast-reread"),
+])
+def test_ci_cutover_fast_refusal_diagnostic_keeps_full(cutover, batch, monkeypatch, capsys,
+                                                     message, reason):
+    env, event = source_fixture(cutover, batch)
+    def fail(*_args, **_kwargs):
+        raise cutover.verifier.Refused(message)
+    monkeypatch.setattr(cutover.verifier, "fast_receipt", fail)
+    assert route_fixture(cutover, batch, env, event) == cutover.FULL
+    assert json.loads(capsys.readouterr().err) == {
+        "delivery_diagnostic": reason, "stage": "source"}
+
+
+def test_ci_cutover_success_has_no_refusal_diagnostic(cutover, batch, capsys):
+    env, event = source_fixture(cutover, batch)
+    assert route_fixture(cutover, batch, env, event)["mode"] == "source"
+    assert capsys.readouterr().err == ""
+
+
 @pytest.mark.parametrize("side", ["event", "live"])
 @pytest.mark.parametrize("prose", ["prefix", "suffix", "replace"])
 def test_ci_cutover_source_description_prose_preserves_decision(cutover, batch, side, prose):

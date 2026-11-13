@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 import time
 import zipfile
 
@@ -24,6 +25,32 @@ PARENTS = "--format=%P"
 PENDING_ATTEMPTS = 30
 ERRORS = policy.ERRORS + (zipfile.BadZipFile, RuntimeError)
 require = verifier.require
+
+# Only fixed vocabulary reaches logs: never exception text or API/body values.
+REFUSALS = {
+    "Source is not opted-in/current": "source-metadata",
+    "Source is outside fixed scope": "source-scope",
+    "Source event ref differs": "source-event-ref",
+    "Source test-merge identity differs": "source-test-merge",
+    "Source moved during verification": "source-reread",
+    "Missing or ambiguous fast check": "fast-check-count",
+    "Fast check is not successful exact-head Actions evidence": "fast-check-identity",
+    "Fast evidence is not successful or authenticated pending work": "fast-state",
+    "Unrecognized fast workflow identity": "fast-details-url",
+    "Fast job identity differs": "fast-job-id",
+    "Fast run belongs to another workflow/head or is incomplete": "fast-run-identity",
+    "Fast run has no unique source PR": "fast-source-count",
+    "Fast run source association differs": "fast-source-identity",
+    "Incomplete base-change history": "fast-base-history",
+    "Fast run predates a base change": "fast-retarget",
+    "Fast job does not match the current successful run": "fast-job-identity",
+    "Fast run/check changed during verification": "fast-reread",
+}
+
+
+def diagnostic(stage, reason, **details):
+    print(json.dumps({"delivery_diagnostic": reason, "stage": stage, **details},
+                     sort_keys=True), file=sys.stderr)
 
 
 def enabled(root):
@@ -93,11 +120,18 @@ def source(env, event, root, main, request, base_changes):
     number = evidence.positive(event["number"])
     pr = request(REPOSITORY, f"pulls/{number}")
     expected = event["pull_request"]
+    live_snapshot = policy.snapshot(dict(pr, body=expected.get("body")))
+    event_snapshot = policy.snapshot(expected)
+    if live_snapshot != event_snapshot:
+        names = ("number", "state", "draft", "merged", "body", "merge_commit_sha",
+                 "head", "base", "author")
+        diagnostic("source", "snapshot-mismatch", fields=[name for name, live, old
+                   in zip(names, live_snapshot, event_snapshot) if live != old])
     # Prose may change before routing. Validate both decisions independently;
     # retain every other snapshot field and the strict subsequent live rereads.
     require(verifier.delivery_intended(expected.get("body"))
             and not re.search(r"(?m)^Depends-On:", expected["body"])
-            and policy.snapshot(dict(pr, body=expected["body"])) == policy.snapshot(expected)
+            and live_snapshot == event_snapshot
             and pr["state"] == "open" and pr["draft"] is False
             and pr["number"] == number and verifier.delivery_intended(pr["body"])
             and not re.search(r"(?m)^Depends-On:", pr["body"]), "Source is not opted-in/current")
@@ -183,36 +217,45 @@ def route(env, event, root, request=policy.github, fetch=evidence.download,
           threads=verifier.read_threads, base_changes=verifier.read_base_changes):
     if not enabled(root):
         return dict(FULL)
+    stage = "effective-protection"
     try:
         require(effective_gate(request), "Effective protection is not migrated")
+        stage = "workflow-identity"
         run = current_run(env, request)
+        stage = "trusted-main"
         main = policy.sha(policy.git(root, "rev-parse", "HEAD").decode().strip())
         require(request(REPOSITORY, "git/ref/heads/main")["object"]["sha"] == main,
                 "Trusted main changed")
         kind = env["GITHUB_EVENT_NAME"]
         if kind == "pull_request":
+            stage = "event-identity"
             head, branch = policy.side(event["pull_request"], "head")
             require(run["head_sha"] == head and run["head_branch"] == branch, "Run source differs")
             if policy.QUEUE.fullmatch(branch):
+                stage = "candidate"
                 proof = duplicate(env, event, root, main, request, fetch, threads, base_changes)
                 mode = "candidate"
             else:
+                stage = "source"
                 proof = source(env, event, root, main, request, base_changes)
                 mode = "source"
         elif kind == "push" and env["GITHUB_REF"] == "refs/heads/main":
+            stage = "landing"
             require(run["head_sha"] == policy.sha(env["GITHUB_SHA"])
                     and run["head_branch"] == "main", "Run landing differs")
             proof = landed(env, event, root, request, fetch)
             mode = "landing"
         else:
             return dict(FULL)
+        stage = "final-reread"
         require(effective_gate(request)
                 and request(REPOSITORY, "git/ref/heads/main")["object"]["sha"] == main
                 and run == request(REPOSITORY, f"actions/runs/{run['id']}"), "Routing evidence changed")
         return {"mode": mode, "omit_full": True, "proof": evidence.digest(proof)}
     except verifier.PendingEvidence:
         return {**FULL, "retryable": True}
-    except ERRORS:
+    except ERRORS as exc:
+        diagnostic(stage, REFUSALS.get(str(exc), "incomplete-evidence"))
         return dict(FULL)
 
 
