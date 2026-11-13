@@ -28,6 +28,16 @@ THE ESTATE, `Disaster` (the test plan's AT-D22, "Fixture"):
   them on `PATH`: test 5's `git` wrapper, which fails each `fetch`, or the
   push of the commit carrying one `Register-Seq`, when armed, and section
   3.2's `psql` shim, which logs every request.
+- THE OPERATOR LANE'S OWN REGISTER CHECKOUT, `<c>`, `<W>-lanes/repoA-2/`, W
+  being `ro/wip`, the path `workspace.yaml` names: a clone of the origin,
+  made with ws1 before A's first write, as `lane-checkout repoA-2 --create`
+  makes one (the writes module's `make_lane_checkout`, T241e). On primary a
+  write refuses with 2 where it is missing (lane 4's T415; tasks:1154).
+  Every operator command runs "through its checkout" (AT-D22's fixture;
+  design.md S5, "`<W>-lanes/<operator lane>/`"), and the loss is the
+  database's, not the host's: the re-pointing is one edit of the
+  configuration alone (AT-D22's fixture; S5's disaster path, step 5). So the
+  `<c>` made before the loss serves every write on B too.
 - A WRITTEN THROUGH `m`, THEN `k`: the import at C (T115) and the first
   cutover (T116, T327) from ws1, `set-mode primary` (T120), then writes on
   primary from ws1, `log NOTED` (lane 4's T415), each forking its render (lane
@@ -483,7 +493,22 @@ class Host:
             PATH=os.pathsep.join([str(self.fakebin), str(self.bin), str(self.tools),
                                   str(estate.a.bindir), *inherited]))
         self.env = env
+        self.lane_checkout = self.make_lane_checkout(register)
         self.arm()
+
+    def make_lane_checkout(self, register: ImportedRegister) -> Path:
+        """`<c>` (see the module's notes), where `lanes-edit.sh`'s
+        `lane_checkout_path` puts it: `<W>-lanes/<lane>`, W being the real
+        path of `workspace.yaml`'s `path:`. A clone of the origin by the real
+        git, as `lane-checkout <lane> --create` makes one."""
+        real = Path(os.path.realpath(register.ws))
+        target = real.parent / f"{real.name}-lanes" / OPERATOR
+        target.parent.mkdir(parents=True, exist_ok=True)
+        proc = subprocess.run([self.real_git, "clone", "-q", str(register.origin), str(target)],
+                              env=self.env, capture_output=True, text=True, timeout=120,
+                              stdin=subprocess.DEVNULL, check=False)
+        assert proc.returncode == 0, f"[estate] the operator lane's own checkout:\n{_said(proc)}"
+        return target
 
     # ------------------------------------------------------------ the wrapper and the shim
     def arm(self, *, fail=(), fail_push_seq: int | None = None, psql_arms=()) -> None:
