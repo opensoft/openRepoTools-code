@@ -2226,13 +2226,29 @@ def test_the_bind_childs_lookup_sends_the_five_copied_values(estate, case):
         key = "args_sha256" if case == "another-write" else "generation"
         lines = [line for line in est.offer.read_text(encoding="utf-8").splitlines()
                  if not line.startswith(f"{key}=")]
-        copies[key] = f"0{copies[key][1:]}"
+        # THE COPY ALWAYS CHANGES (T254zf; lane 4, #165 6852642520 and
+        # 6858782368): the digest and the generation are both lowercase hex,
+        # a sha256 and a random uuid, so a `0` put first changed nothing
+        # where the value began with `0`, about 1 run in 16. The lookup then
+        # found the bind's own write, and the bind ended `bound` with rc 0
+        # (lane 5's T510 call 1 on line R, #165 6852280934). So the first
+        # digit is swapped for another, and the record is read back.
+        old = copies[key]
+        copies[key] = ("1" if old[0] == "0" else "0") + old[1:]
         write_record(est.offer, lines + [f"{key}={copies[key]}"])
+        assert est.record().get(key) == copies[key] != old, (key, old, est.record().get(key))
     est.shim()
     est.hook("hello")
+    # THIS ATTEMPT'S LOOKUP ALONE (T254zf; lane 4, #165 6858782368): the
+    # shim's log is never reset, and the first attempt's lookups sent the
+    # copies as they were, so the check below read them and passed without
+    # the second `2`'s own lookup. Only the calls after this point count.
+    before = len(est.shim_calls())
     est.answer_2()
     record = est.ended(120)
-    sent = " ".join(c.get("sent", "") for c in _lookups(est))
+    lookups = [c for c in est.shim_calls()[before:] if "find_write" in c.get("sent", "")]
+    assert lookups, f"the second 2 made no lookup: {record}"
+    sent = " ".join(c.get("sent", "") for c in lookups)
     # THE FIVE VALUES AS THE LOOKUP SENDS THEM (T254zd): `--not-after <n>`
     # takes the copy's epoch seconds, and `find_write` gets them in their UTC
     # form, `'2026-11-13T10:57:06Z'` for 1794567426 (the shim's log, lane 2's
