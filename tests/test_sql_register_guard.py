@@ -3705,10 +3705,13 @@ def test_each_service_request_is_one_query(estate, request):
 
 #: THE IDLE CHECK'S DEFAULT, kept for a value the contract ignores (d8
 #: section 10), and the case's two reads of it: no replacement by
-#: `IDLE_CHECK_EARLY_S`, `[interval]`'s wait, and one by `IDLE_CHECK_LIMIT_S`.
+#: `IDLE_CHECK_EARLY_S`, `[interval]`'s old wait, and one by
+#: `IDLE_CHECK_LIMIT_S`. `[interval]` itself, at 1 s, waits for its
+#: replacement to `IDLE_CHECK_INTERVAL_LIMIT_S`, ten checks (T237zm).
 IDLE_CHECK_DEFAULT_S = 60
 IDLE_CHECK_EARLY_S = 2.5
 IDLE_CHECK_LIMIT_S = IDLE_CHECK_DEFAULT_S + 30
+IDLE_CHECK_INTERVAL_LIMIT_S = 10
 
 
 @pytest.mark.parametrize("case", ["interval", "floor", "cap"])
@@ -3765,16 +3768,30 @@ def test_the_services_idle_check_replaces_a_dropped_connection_in_the_background
     # `unavailable`, the cache miss (TP:1982-1987; d8 sections 5.1 and 5.3),
     # so without the warm-up this hook fell back whatever the idle check did
     # (lane 5, #165 6841406701).
+    #
+    # WHAT `[floor]` AND `[cap]` READ, READ HERE TOO (T237zm; lane 2's review
+    # RV20, finding 6): the service's own connection is found, and only it
+    # is dropped; its replacement is seen in `pg_stat_activity`, bounded at
+    # `IDLE_CHECK_INTERVAL_LIMIT_S`, before the hook; and the window and the
+    # session are both `FROM` (`swap_window`, as SVC-10's are), so the hook
+    # answers 0 only after a read that verified the triple. A refusal before
+    # any read, such as the start line's, is a 2, and fails the case.
+    est.swap_window(FROM, FROM)
     svc = _Service(est, LANES_REGISTER_SERVE_IDLE_CHECK_S=value)
     try:
         _warm(est)
-        est.pg.psql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                    "WHERE application_name LIKE 'lanes-index%' AND pid <> pg_backend_pid();")
-        time.sleep(2.5)
+        dropped = _until(lambda: _service_backends(est.pg), 10, 0.1)
+        assert dropped, "the warmed service held no connection to drop"
+        est.pg.psql("SELECT pg_terminate_backend(pid) FROM pg_catalog.pg_stat_activity "
+                    f"WHERE pid IN ({','.join(str(p) for p in dropped)});")
+        replaced = _until(lambda: _service_backends(est.pg) - dropped,
+                          IDLE_CHECK_INTERVAL_LIMIT_S, 0.1)
         hook = est.hook("hello")
     finally:
         svc.stop()
-    assert FALLBACK not in hook.err, hook.err
+    assert replaced, (f"the dropped connection {sorted(dropped)} was not replaced within "
+                      f"{IDLE_CHECK_INTERVAL_LIMIT_S} s at LANES_REGISTER_SERVE_IDLE_CHECK_S=1")
+    assert hook.code == 0 and FALLBACK not in hook.err, repr(hook)
 
 
 @pytest.mark.parametrize("cache", ["empty-cache", "cache-holds-n"])
