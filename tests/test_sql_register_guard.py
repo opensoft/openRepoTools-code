@@ -143,6 +143,8 @@ REGISTER_HEADER = ["# LANES.md", "",
 #: `wr_record_write` lays one out, from the JSON in that file: `generation`,
 #: `lane`, `session`, `host`, `container`, `database` and `base`. Its
 #: `not_after` is the stand-in's clock, so a lookup may decide at once.
+#: With `not_after_offsets` (T254zj), a list of seconds, it writes one `call=`
+#: line per offset, its clock and `not_after` the stand-in's clock plus it.
 _STUB_LANE_START = r'''#!@PY@ -I
 import json, os, signal, subprocess, sys, time
 CTL = @CTL@
@@ -198,10 +200,14 @@ if ctl("pending-record") is not None:
              "session=%s" % spec["session"], "verb=start-record", "args_sha256=%s" % digest,
              "cmdline=lanes-edit.sh start-record %s" % spec["lane"], "created_utc=%s" % now,
              "updated_utc=%s" % now, "pid=%d" % os.getpid(), "pid_start=%s" % started,
-             "host=%s" % spec["host"], "container=%s" % spec["container"], "attempts=1",
-             "call=%d %d %d %s %s" % (int(spec["base"]), clock, clock,
-                                     hashlib.sha256(b"").hexdigest(),
-                                     os.path.join(pending, "stand-in-attempt"))]
+             "host=%s" % spec["host"], "container=%s" % spec["container"]]
+    offsets = spec.get("not_after_offsets") or [0]
+    lines.append("attempts=%d" % len(offsets))
+    for n, offset in enumerate(offsets, 1):
+        lines.append("call=%d %d %d %s %s" % (
+            int(spec["base"]), clock + int(offset), clock + int(offset),
+            hashlib.sha256(b"").hexdigest(),
+            os.path.join(pending, "stand-in-attempt" if n == 1 else "stand-in-attempt-%d" % n)))
     path = os.path.join(pending, digest)
     with open(path + ".tmp", "w", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
@@ -2290,8 +2296,25 @@ def test_the_stale_row_copies_a_dead_outers_pending_call_and_the_next_2_looks_it
     line (`pending-record`), at the register's own generation, host and
     container, so the stale row has something to copy. `LANES_HOST` pins
     the host the guard compares (`wr_here`), as a workstation outside a
-    container would otherwise read `hostname`."""
+    container would otherwise read `hostname`.
+
+    THE COPIES ARE THE RECORD'S, AND THE ORDER IS READ (T254zj; lane 2's
+    review RV22, finding 2): the stand-in writes three `call=` lines
+    (`NOT_AFTER_OFFSETS`), the largest `not_after` neither first nor last,
+    and the stale row's five copies must equal that record's write id,
+    generation, lane and digest and that largest `not_after`. The second
+    bind is a real one, as `_real_estate` makes it: the lane's projects
+    directory, its handoff and each lane's own register checkout before
+    the offer, then the window's renames followed and the `lane-start`
+    beside the flipped guard. The lookup answers absent for the stand-in's
+    id, the bind binds anew, and its `start-record` commit is in the shim's
+    log, so "the lookup before any `start-record` call" is read, not held
+    by an empty list (G-20's run k12 ended `bind-failed` at `lane-start`,
+    with no checkout for repoA)."""
     est = estate(mode="primary")
+    (est.home / "projects" / est.to.rsplit("-", 1)[0]).mkdir(exist_ok=True)
+    _handoff(est)
+    _lane_checkouts(est, [FROM, est.to])
     est.shim()
     est.set("hold", 60)
     est.extra["LANES_HOST"] = HOST
@@ -2301,11 +2324,21 @@ def test_the_stale_row_copies_a_dead_outers_pending_call_and_the_next_2_looks_it
     head = est.pg.psql("SELECT seq FROM lanes_register.register_head;").stdout.split()[-1]
     est.set("pending-record", json.dumps({
         "generation": generation, "lane": TO, "session": est.sid, "host": HOST,
-        "container": CONTAINER, "database": "register-test", "base": int(head)}))
+        "container": CONTAINER, "database": "register-test", "base": int(head),
+        "not_after_offsets": NOT_AFTER_OFFSETS}))
     est.answer_2()
     record = est.outer()
-    assert _until(lambda: [e for e in est.starts() if e.get("pending")], 30), \
-        "the stand-in wrote no pending record"
+    written = _until(lambda: [e for e in est.starts() if e.get("pending")], 30)
+    assert written, "the stand-in wrote no pending record"
+    lines = Path(written[0]["pending"]).read_text(encoding="utf-8").splitlines()
+    pending = read_record(Path(written[0]["pending"]))
+    not_afters = [int(line[len("call="):].split(" ")[2]) for line in lines
+                  if line.startswith("call=")]
+    assert len(not_afters) == len(NOT_AFTER_OFFSETS) \
+        and max(not_afters) not in (not_afters[0], not_afters[-1]), lines
+    want = {"write_id": pending["write_id"], "generation": pending["generation"],
+            "not_after": str(max(not_afters)), "write_lane": pending["lane"],
+            "args_sha256": pending["args_sha256"]}
     outer = int(record["pid"])
     _kill(outer, signal.SIGKILL)
     est.release()
@@ -2313,20 +2346,33 @@ def test_the_stale_row_copies_a_dead_outers_pending_call_and_the_next_2_looks_it
     hook = est.hook("hello")
     assert hook.code == 2 and NO_OUTCOME in hook.err, repr(hook)
     record = est.record()
-    assert all(k in record for k in COPIES), record
-    est.extra["LANES_LANE_START"] = str(REPO / "lane-start")
+    assert {k: record.get(k) for k in COPIES} == want, (record, want)
+    est.extra["LANES_LANE_START"] = str(est.guard.parent / "lane-start")
     est.set("edit-real")
+    _follow_renames(est.session)
+    before = len(est.shim_calls())
     est.answer_2()
-    est.ended(120)
-    calls = est.shim_calls()
-    first_lookup = next(i for i, c in enumerate(calls) if "find_write" in c.get("sent", ""))
+    end = est.ended(120)
+    calls = est.shim_calls()[before:]
+    print(f"T254 case 20: the second bind ended {end.get('mode')} rc {end.get('rc', '-')}; "
+          f"{len(calls)} call(s) after the second 2")
+    first_lookup = next((i for i, c in enumerate(calls) if "find_write" in c.get("sent", "")),
+                        None)
+    assert first_lookup is not None, f"the second 2 made no lookup: {end}"
     # A `start-record` CALL IS ITS COMMIT (T254ze): the lookup's own call
     # names the verb too, `find_write(<id>, <utc>, <g>, <lane>, 'start-record',
     # <h>)`, so a filter on the verb alone counted the lookup as a start
     # (lane 2's G-20 run k12), as case 10 already filters.
     starts = [i for i, c in enumerate(calls) if "start-record" in c.get("sent", "")
               and "commit_write" in c.get("sent", "")]
-    assert not starts or first_lookup < min(starts), calls
+    assert starts and first_lookup < min(starts), \
+        f"the lookup at {first_lookup}, start-record commits at {starts}: {end}"
+
+
+#: CASE 20'S THREE `call=` LINES (T254zj), in seconds from the stand-in's
+#: clock: the largest, 0, is neither first nor last, and none is in the
+#: future, so the lookup decides at once.
+NOT_AFTER_OFFSETS = [-30, 0, -20]
 
 
 def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, request):
