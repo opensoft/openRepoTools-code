@@ -129,6 +129,79 @@ def test_ci_cutover_verified_source_selects_fast_but_not_merge_authority(cutover
     assert "queue_admission" not in result
 
 
+@pytest.mark.parametrize("side", ["event", "live"])
+@pytest.mark.parametrize("prose", ["prefix", "suffix", "replace"])
+def test_ci_cutover_source_description_prose_preserves_decision(cutover, batch, side, prose):
+    env, event = source_fixture(cutover, batch)
+    expected = route_fixture(cutover, batch, env, event)
+    assert expected["mode"] == "source" and expected["omit_full"] is True
+    pr = event["pull_request"] if side == "event" else batch["prs"][7]
+    if prose == "prefix":
+        pr["body"] = "Explanatory prose.\n\n" + pr["body"]
+    elif prose == "suffix":
+        pr["body"] += "\n\n## Summary by Sourcery\n\nHelp summary."
+    else:
+        pr["body"] = "Revised prose.\nCI-Shadow: claude-current\nCI-Delivery: claude-current"
+    assert route_fixture(cutover, batch, env, event) == expected
+
+
+@pytest.mark.parametrize("side", ["event", "live"])
+@pytest.mark.parametrize("change", ["missing-shadow", "duplicate-shadow", "wrong-shadow",
+    "missing-delivery", "duplicate-delivery", "wrong-delivery", "dependency", "non-string"])
+def test_ci_cutover_source_description_decision_drift_is_full(cutover, batch, side, change):
+    env, event = source_fixture(cutover, batch)
+    pr = event["pull_request"] if side == "event" else batch["prs"][7]
+    marker = "CI-Shadow: claude-current" if change.endswith("shadow") else "CI-Delivery: claude-current"
+    if change.startswith("missing"):
+        pr["body"] = pr["body"].replace(marker, "")
+    elif change.startswith("duplicate"):
+        pr["body"] += "\n" + marker
+    elif change.startswith("wrong"):
+        pr["body"] = pr["body"].replace(marker, marker.replace("claude-current", "other"))
+    elif change == "dependency":
+        pr["body"] += "\nDepends-On: #123"
+    else:
+        pr["body"] = None
+    assert route_fixture(cutover, batch, env, event) == cutover.FULL
+
+
+@pytest.mark.parametrize("side", ["event", "live"])
+@pytest.mark.parametrize("field", ["state", "draft", "merged", "author", "head-sha",
+    "head-ref", "base-sha", "base-ref", "merge-sha"])
+def test_ci_cutover_source_prose_does_not_relax_other_metadata(cutover, batch, side, field):
+    env, event = source_fixture(cutover, batch)
+    pr = event["pull_request"] if side == "event" else batch["prs"][7]
+    pr["body"] += "\nUnrelated summary."
+    if field == "state":
+        pr["state"] = "closed"
+    elif field in {"draft", "merged"}:
+        pr[field] = True
+    elif field == "author":
+        pr["user"]["login"] = "other-author"
+    elif field == "merge-sha":
+        pr["merge_commit_sha"] = "f" * 40
+    else:
+        name, part = field.split("-")
+        pr[name][part] = "f" * 40 if part == "sha" else "other-ref"
+    assert route_fixture(cutover, batch, env, event) == cutover.FULL
+
+
+def test_ci_cutover_source_description_live_reread_stays_strict(cutover, batch):
+    env, event = source_fixture(cutover, batch)
+    original = request_for(batch)
+    reads = 0
+    def request(repo, endpoint):
+        nonlocal reads
+        if endpoint == "pulls/7":
+            reads += 1
+            if reads == 2:
+                batch["prs"][7]["body"] += "\nLive summary race."
+        return original(repo, endpoint)
+    assert cutover.route(env, event, batch["root"], request,
+        threads=lambda number: threads(number, batch), base_changes=base_changes) == cutover.FULL
+    assert reads >= 2
+
+
 @pytest.mark.parametrize("failure", ["old-rules", "no-new-rule", "wrong-app", "reusable", "manual",
     "nightly", "release", "foreign-run", "rerun-mismatch", "run-head", "no-opt-in", "duplicate-intent",
     "draft", "base", "event-head", "test-merge", "fast-failed", "retarget", "api-error", "rules-race"])

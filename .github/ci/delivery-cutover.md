@@ -164,6 +164,16 @@ final trees. A singleton, reset, duplicate/full fallback or uncertain result is
 not efficiency acceptance. Other files, dependencies and old full-only queues
 retain their original full checks; this is not an arbitrary-lane fast path.
 
+## Source-event description updates
+
+Unrelated description prose may differ between the triggering source event and
+the live PR, for example when a summary is appended before CI starts. Both
+descriptions must independently contain the unique supported shadow/delivery
+opt-ins and neither may declare a dependency. Every other snapshot field and
+all Git/fast provenance checks remain exact. Later live rereads still compare
+the complete body strictly; this does not ignore changes during verification,
+trust an editing actor, grant queue authority or widen eligible files/actions.
+
 ## Exact-head local review receipts
 
 This is an **alternative review contract**, not activation or merge

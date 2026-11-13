@@ -92,7 +92,12 @@ def source(env, event, root, main, request, base_changes):
     require(event["action"] in {"opened", "synchronize", "reopened"}, "Unsupported PR event")
     number = evidence.positive(event["number"])
     pr = request(REPOSITORY, f"pulls/{number}")
-    require(policy.snapshot(pr) == policy.snapshot(event["pull_request"])
+    expected = event["pull_request"]
+    # Prose may change before routing. Validate both decisions independently;
+    # retain every other snapshot field and the strict subsequent live rereads.
+    require(verifier.delivery_intended(expected.get("body"))
+            and not re.search(r"(?m)^Depends-On:", expected["body"])
+            and policy.snapshot(dict(pr, body=expected["body"])) == policy.snapshot(expected)
             and pr["state"] == "open" and pr["draft"] is False
             and pr["number"] == number and verifier.delivery_intended(pr["body"])
             and not re.search(r"(?m)^Depends-On:", pr["body"]), "Source is not opted-in/current")
