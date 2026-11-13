@@ -848,10 +848,16 @@ class Writer:
         return self.proc.returncode
 
     def _jsonl(self, name: str) -> List[dict]:
+        """`name`'s lines, each a JSON object. A last line with no newline yet
+        is one still being written, as by a detached render's call, which
+        logs under a lock this read does not take: it is left out, never half
+        read (lane 2's RV20, NIT 19; T243s)."""
         path = self.psql_dir / name
         if not path.exists():
             return []
-        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+        data = path.read_bytes()
+        data = data[:data.rfind(b"\n") + 1]
+        return [json.loads(line) for line in data.decode("utf-8").splitlines() if line]
 
     def calls(self) -> List[dict]:
         """The shim's calls that carry a request, in order."""
