@@ -344,10 +344,18 @@ def _commit_call(db, base: int, body: dict) -> int:
     return int(out.splitlines()[-1])
 
 
-def import_to_primary(db, estate: Estate) -> int:
+def import_to_primary(db, estate: Estate, marker_on_origin: bool = False) -> int:
     """AT-LR006's route (TP:4610-4615) over C: an `import` entry of C's render
     set, a `cutover` entry, then `record_marker`, by the documented functions
-    as `lanes_register_writer`. Returns the import's seq."""
+    as `lanes_register_writer`. Returns the import's seq.
+
+    `record_marker` records a made-up sha, `MARKER_COMMIT`, and origin stays
+    at C, for every estate but part G's: only part G's `PrimaryWrites` sets
+    `marker_on_origin` (T270's line, tasks:2477; lane 2, #165 6866688575;
+    lane 3, #165 6866808028). There the cutover's marker commit is put on
+    origin's `main` before `record_marker`, which records it by its sha
+    (`_marker_commit_on_origin`). It cannot come after: `record_marker` runs
+    once a cutover, and refuses LR002 once the marker is `present`."""
     edits, files = _creates(estate.render_set())
     imported = _commit_call(db, head(db), _entry(
         "import", "import", {"git_commit": estate.c, "git_tree": estate.lanes_tree},
@@ -357,13 +365,52 @@ def import_to_primary(db, estate: Estate) -> int:
         f"lanes-tree={estate.lanes_tree}", f"utc={STORE_UTC}")).encode("utf-8")
     edits, files = _creates({STORE_PATH: store})
     cut = _commit_call(db, imported, _entry("cutover", "cutover", edits=edits, files=files))
+    marker_sha = MARKER_COMMIT
+    if marker_on_origin:
+        rendered = rows(db, f"SELECT encode(render_file('{STORE_PATH}'), 'base64') AS b64")
+        assert base64.b64decode(rendered[0]["b64"]) == store, (
+            f"SQL renders {STORE_PATH} otherwise than the cutover entry's bytes")
+        marker_sha = _marker_commit_on_origin(estate, store, cut)
     version = rows(db, "SELECT version FROM schema_version")[0]["version"]
-    marker = sql(db, f"SELECT {SCHEMA}.record_marker({version}, {cut}, '{MARKER_COMMIT}', "
+    marker = sql(db, f"SELECT {SCHEMA}.record_marker({version}, {cut}, '{marker_sha}', "
                      f"'{WS}');", WRITER)
     assert marker.splitlines()[-1] == "present", f"record_marker answered {marker!r}"
     assert rows(db, "SELECT mode, marker_state FROM register_switch") == \
         [{"mode": "primary", "marker_state": "present"}]
+    if marker_on_origin:
+        assert rows(db, "SELECT marker_commit FROM register_switch") == \
+            [{"marker_commit": marker_sha}], "record_marker did not record the marker commit"
     return imported
+
+
+def _marker_commit_on_origin(estate: Estate, store: bytes, cut: int) -> str:
+    """The cutover's marker commit, put on the bare origin's `main` as a
+    cutover's own push puts it (Y:2812-2814), and its sha: C's tree plus
+    `STORE_PATH` holding `store`, the cutover entry's bytes, on parent C, with
+    `Register-Seq: <cut>` alone in its message's last paragraph. It is made in
+    the origin through an index of its own, as RG's `commit_in_origin` makes
+    one (`fdab9267:tests/test_sql_register_renderer_git.py:573-586`), and
+    `main` moves to it from C, so no clone's refs move; the lane checkouts
+    that `PrimaryWrites` clones after this are at it."""
+    git_dir = f"--git-dir={estate.origin}"
+    env = dict(estate.env, GIT_INDEX_FILE=str(estate.root / "marker.index"))
+    blob_file = estate.root / "marker-STORE"
+    blob_file.write_bytes(store)
+    git(estate.root, git_dir, "read-tree", estate.c, env=env)
+    blob = git(estate.root, git_dir, "hash-object", "-w", str(blob_file), env=env).strip()
+    git(estate.root, git_dir, "update-index", "--add", "--cacheinfo",
+        f"100644,{blob},{STORE_PATH}", env=env)
+    tree = git(estate.root, git_dir, "write-tree", env=env).strip()
+    commit = git(estate.root, git_dir, "commit-tree", tree, "-p", estate.c,
+                 "-m", "t270: the cutover, by AT-LR006's route",
+                 "-m", f"Register-Seq: {cut}", env=estate.env).strip()
+    git(estate.root, git_dir, "update-ref", "refs/heads/main", commit, estate.c,
+        env=estate.env)
+    trailer = git(estate.root, git_dir, "log", "-1",
+                  "--format=%(trailers:key=Register-Seq,valueonly)", commit,
+                  env=estate.env).strip()
+    assert trailer == str(cut), f"the marker commit's Register-Seq reads {trailer!r}, not {cut}"
+    return commit
 
 
 # ------------------------------------------------------------------ lanes-index
@@ -1980,9 +2027,14 @@ class PrimaryWrites:
     `mode=primary`, both URLs naming the cluster's socket as this module's
     logins, and a 0600 `register_passfile=`; `<c>` for each of `W_LANES`, a
     clone of origin; and first on `PATH`, T203's `psql` shim, which hands each
-    call to the cluster's `psql` and logs it, and `_logging_git`."""
+    call to the cluster's `psql` and logs it, and `_logging_git`.
+    `marker_on_origin`, which only part G sets, puts the cutover's marker
+    commit on origin's `main` before `record_marker` (`import_to_primary`),
+    so each `<c>` is cloned at it; every other case keeps a made-up marker
+    sha and an origin at C (T270's line, tasks:2477)."""
 
-    def __init__(self, pg, tmp_path: Path, prep: dict = None):
+    def __init__(self, pg, tmp_path: Path, prep: dict = None,
+                 marker_on_origin: bool = False):
         self.pg = pg
         self.fakebin = tmp_path / "fakebin"
         self.fakebin.mkdir(parents=True, exist_ok=True)
@@ -2009,7 +2061,7 @@ class PrimaryWrites:
         self.env.pop("LANES_INDEX", None)
         #: The environment the pure renderer and `status` run in.
         self.index = index_env(tmp_path, self.conf, self.estate.home)
-        self.imported = import_to_primary(pg, self.estate)
+        self.imported = import_to_primary(pg, self.estate, marker_on_origin)
         for lane in W_LANES:
             self.make_lane_checkout(lane)
 
@@ -2640,14 +2692,30 @@ def test_rename_lane_commits_the_transaction_only_where_its_handoffs_path_has_no
 # T320 to T323) has pushed it. The wait is open point 8's first: `lanes-index
 # status`, every 100 ms, 30 s at most, until its lag is 0 (`lag:         0
 # seq(s)`, lane 1's `status_register`). `status` reads `m` from `origin/<b>` as
-# last fetched in the checkout it runs in (`_register_mirror`; it fetches
-# nothing), and the render's push moves that ref in the checkout it commits
-# in, the writing lane's `<c>`, so the poll asks `status` in each lane's `<c>`
-# (`LANES_REPO`), and stops at the first that reads 0. It fails until T320 to
-# T323, T325 and L4-B13 land.
+# last fetched in W's checkout, `workspace-root`'s answer, `workspace.yaml`'s
+# `path:`, whatever `LANES_REPO` names (`7893339348a5:lanes-index:20357`,
+# `:1400-1412`; `7893339348a5:lanes-edit.sh:1411-1416`), and fetches nothing
+# (`_register_mirror`); the render pushes from the writing lane's `<c>`. So
+# each poll comes after the harness's own fetch of W, `git -C <W> fetch -q
+# origin main`, with plain git, never through `_logging_git`: lane 3's ruling
+# (a), #165 6833830078, as RG's `wait_lag_0` (T270e) and the drill's have it.
+# It fails until T320 to T323, T325 and L4-B13 land.
+#
+# ITS ESTATE, AND NO OTHER, PUTS THE CUTOVER'S MARKER COMMIT ON W'S ORIGIN
+# (T270's line, tasks:2477; lane 2, #165 6866688575; lane 3, #165
+# 6866808028): `PrimaryWrites(marker_on_origin=True)`, C plus `lanes/STORE`
+# with the cutover entry's bytes, `Register-Seq: <cut>` in the last paragraph,
+# made before `record_marker` and recorded by it. On a made-up sha and an
+# origin at C the forked render finds no `m`, and renders and pushes nothing
+# (Y:2845-2847), and `status`'s lag is unknown at every poll. With the commit
+# `m` is the cut and the lag 0 before the write, which commits seq cut + 1
+# before the poll starts, so a lag of 0 can then only be the render's push,
+# and a lag that `status` cannot read for want of `m` fails at once.
 
 #: `status`'s lag line when the mirror has caught up (`status_register`).
 STATUS_LAG_ZERO = re.compile(r"^\s*lag:\s+0 seq\(s\)", re.M)
+#: `status`'s lag line when no `Register-Seq` is found (`status_register`).
+STATUS_LAG_NO_M = re.compile(r"^\s*lag:\s+unknown, since the mirror's m cannot be read", re.M)
 
 
 def _checkout_state(checkout: Path, env: dict) -> tuple:
@@ -2658,19 +2726,27 @@ def _checkout_state(checkout: Path, env: dict) -> tuple:
             git(checkout, "status", "--porcelain=v1", "-uall", env=env))
 
 
+def _status_after_fetching_w(ws: PrimaryWrites) -> subprocess.CompletedProcess:
+    """`status` in W's checkout, after the harness's own fetch of W, with plain
+    git (the estate's environment, no `_logging_git` on its `PATH`)."""
+    git(ws.estate.checkout, "fetch", "-q", "origin", "main", env=ws.estate.env)
+    return run_index(ws.copy, ["status"], ws.env, cwd=ws.estate.checkout)
+
+
 def _wait_for_the_render(ws: PrimaryWrites, ceiling: float = 30.0) -> None:
-    """Open point 8's first wait: a bounded poll of `status` until its lag is
-    0, in each lane's `<c>`."""
+    """Open point 8's first wait: a bounded poll of `status`, each after a
+    fetch of W, until its lag is 0. Origin carries `m` from the marker commit
+    on, so a lag unknown for want of `m` fails at once."""
     deadline = time.monotonic() + ceiling
     last = ""
     while True:
-        for lane in W_LANES:
-            checkout = ws.lane_checkout(lane)
-            proc = run_index(ws.copy, ["status"], dict(ws.env, LANES_REPO=str(checkout)),
-                             cwd=checkout)
-            if STATUS_LAG_ZERO.search(proc.stdout):
-                return
-            last = f"{lane}: exit {proc.returncode}: {proc.stdout[-700:]}{proc.stderr[-300:]}"
+        proc = _status_after_fetching_w(ws)
+        if STATUS_LAG_ZERO.search(proc.stdout):
+            return
+        last = f"exit {proc.returncode}: {proc.stdout[-700:]}{proc.stderr[-300:]}"
+        assert not STATUS_LAG_NO_M.search(proc.stdout), (
+            f"status found no Register-Seq on W's origin/main, though origin carries the "
+            f"marker commit; status said {last}")
         assert time.monotonic() < deadline, (
             f"the forked render did not bring the lag to 0 within {ceiling:.0f} s (T320 to "
             f"T323, L4-B13); status said {last}")
@@ -2687,12 +2763,25 @@ def test_the_mirror_on_origin_equals_a_full_render_after_each_write(pg, tmp_path
     --format='%(trailers:key=Register-Seq,valueonly)'` reads it (AT-F11); the
     render set on origin's `main`, read by object, equals the full render from
     SQL, path set and bytes; and W's checkout and each lane's `<c>` keep their
-    HEAD, index and working tree (Q27(a), the private-index form). Fails until
-    T320 to T323, T325 and L4-B13, with L4-B4 and L4-B8."""
+    HEAD, index and working tree (Q27(a), the private-index form). Origin
+    starts at the cutover's marker commit on C, the sha `record_marker`
+    recorded, where `status`, after a fetch of W, reads a lag of 0 before the
+    write, and the render commit's parent is that marker commit
+    (tasks:2477). Fails until T320 to T323, T325 and L4-B13, with L4-B4 and
+    L4-B8."""
     argv, lane = W_VERBS[verb]
-    ws = PrimaryWrites(pg, tmp_path, W_PREPS.get(verb))
+    ws = PrimaryWrites(pg, tmp_path, W_PREPS.get(verb), marker_on_origin=True)
     origin, env = ws.estate.origin, ws.estate.env
     base = git(origin, "rev-parse", "main", env=env).strip()
+    recorded = rows(pg, "SELECT marker_commit FROM register_switch")[0]["marker_commit"]
+    assert base == recorded and git(origin, "rev-parse", f"{base}^", env=env).strip() == \
+        ws.estate.c, (f"origin's main is {base}, not the marker commit {recorded} on C "
+                      f"{ws.estate.c}")
+    status = _status_after_fetching_w(ws)
+    assert STATUS_LAG_ZERO.search(status.stdout), (
+        f"before the write, status after a fetch of W did not read a lag of 0 from the "
+        f"marker commit: exit {status.returncode}: {status.stdout[-700:]}"
+        f"{status.stderr[-300:]}")
     checkouts = {str(c): _checkout_state(c, env) for c in ws.checkouts()}
     before_head = head(pg)
     proc = ws.run(argv, lane)
@@ -2701,6 +2790,8 @@ def test_the_mirror_on_origin_equals_a_full_render_after_each_write(pg, tmp_path
 
     gained = git(origin, "rev-list", f"{base}..main", env=env).split()
     assert len(gained) == 1, f"origin gained {len(gained)} commits, not one: {gained}"
+    assert git(origin, "rev-parse", f"{gained[0]}^", env=env).strip() == base, (
+        "the render commit's parent is not the marker commit")
     trailer = git(origin, "log", "-1", "--format=%(trailers:key=Register-Seq,valueonly)",
                   gained[0], env=env).strip()
     assert trailer == str(entry["seq"]), (
