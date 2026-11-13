@@ -166,6 +166,13 @@ retain their original full checks; this is not an arbitrary-lane fast path.
 
 ## Source-event description updates
 
+Routing refusals emit fixed-vocabulary diagnostic codes to stderr, with the
+verification stage. A source snapshot mismatch reports only mismatched field
+names, never their values. Exception text, PR bodies and raw API payloads are
+not logged. Diagnostics do not change the full-fallback result, retry policy,
+proof schema, skip decision or merge authority. They distinguish early metadata
+refusals from incomplete fast evidence and reread races before a fresh attempt.
+
 Unrelated description prose may differ between the triggering source event and
 the live PR, for example when a summary is appended before CI starts. Both
 descriptions must independently contain the unique supported shadow/delivery
