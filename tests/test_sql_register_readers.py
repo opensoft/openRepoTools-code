@@ -1334,9 +1334,15 @@ def place_transcript(world: ArmWorld, sid: str) -> None:
 #: The skill's `(b)` write (`SKILL.md:738-742` at `2a057a6d`), run by its
 #: text with the variables its step 4 has set. Code v1.2.0 (slice 3, `98e2ec0`)
 #: names the lane on the write, `LANES_LANE="$lane" "$L" append-line …`
-#: (Amendment 23 S2), so the prefix is optional.
-SKILL_738_LINE = re.compile(r'^(?:LANES_LANE="\$lane" )?"\$L" append-line "PAUSED — lane \$lane, .*$',
-                            re.M)
+#: (Amendment 23 S2), and lane 4's T431 (`7c74b907`, line R's merge67) puts
+#: the act and its expectations first, `LANES_ACT="$act_line"
+#: LANES_EXPECT="$act_scopes" LANES_LANE="$lane" "$L" append-line …`
+#: (`f9e1449c:skills/handoff/SKILL.md:1361`), so the line may open with any
+#: number of `NAME="$var" ` prefixes, or none (T217zj; round 6h, TR21's 2d).
+#: Run alone, `$act_line` and `$act_scopes` are empty, and the arms' wrapper
+#: answers `append-line` itself, reading neither variable.
+SKILL_738_LINE = re.compile(
+    r'^(?:[A-Z][A-Z_]*="\$[a-z_]+" )*"\$L" append-line "PAUSED — lane \$lane, .*$', re.M)
 
 
 def rerun_argv(arm: Arm, lane: str) -> str:
