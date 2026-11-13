@@ -1951,11 +1951,12 @@ def test_a_writer_prints_its_output_once_however_many_attempts_it_made(estates, 
     """Test 4's burst of ten: each committed writer's success text, claim's
     `register seq <s>` line, is printed exactly once, however many attempts
     it made, and its stderr no line twice (only the deciding attempt's). The
-    line is a `note`, on stderr (T421; T243h)."""
+    line is a `note`, on stderr (T421; T243h). The row's oracle is each
+    committed writer's (Y TP:6852-6854; TP:6925-6927 at `0c3750a5`), so a
+    writer may end 75 with nothing written, as `burst_ends` checks (T248d)."""
     e = estates()
     writers, _ = burst(e, [f"{KEY}#{400 + k}" for k in range(10)], 200, node=request.node)
-    assert [w.code for w in writers] == [0] * 10, [(w.lane, w.code, w.err[-300:]) for w in writers]
-    for w in writers:
+    for w in burst_ends(e, writers):
         assert len(SEQ_SAID.findall(w.err)) == 1, f"{w.lane} printed its success text not once: {w.err!r}"
         lines = [l for l in w.err.splitlines() if l.strip()]
         assert len(lines) == len(set(lines)), f"{w.lane}'s stderr repeats an attempt's lines: {w.err!r}"
