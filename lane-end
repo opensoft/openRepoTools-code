@@ -761,8 +761,13 @@ usage() { sed -n -e '1,2d' -e '/^#/!q' -e 's/^# \{0,1\}//' -e p "$RESOLVED"; }
 le_read_code() {   # <the verb's exit> <the arm's own exit for any other code>
   case "$1" in 69 | 75 | 3) printf '%s\n' "$1" ;; *) printf '%s\n' "$2" ;; esac
 }
-le_read_refuse() {   # <the read, as run> <its exit> <what it would have told>
-  local lrr_why lrr_retry
+le_read_refuse() {   # <the read, as run> <its exit> <what it would have told> [<the tail>]
+  local lrr_why lrr_retry lrr_tail
+  # THE TAIL SAYS WHAT WAS NOT DONE, and an arm that removes things says it in
+  # its own word (lane 3, #165 6852014823, answer 4): `--sweep-checkouts` passes
+  # "Nothing was removed.", as its other refusals end. Without one it is the
+  # writers' "Nothing was written.", so no other arm's words change.
+  lrr_tail="${4:-Nothing was written.}"
   # 69 TELLS A LANE TO STOP AND TELL BRETT (D10, Y@a6497d00:511; lane 3, #165
   # 6808937880, batch e Q100): a 69 is also a definitive refusal, where a retry
   # changes nothing, so its words carry no retry clause. 75's and 3's stay.
@@ -771,7 +776,7 @@ le_read_refuse() {   # <the read, as run> <its exit> <what it would have told>
     3)  lrr_why="the register's answer is in doubt"; lrr_retry="A retry in seconds is safe." ;;
     *)  lrr_why="the register could not be read"; lrr_retry="Stop and tell Brett." ;;
   esac
-  die "\`$1\` exited $2: ${lrr_why}, so $3 is NOT known, and that is not an answer. This command refuses rather than carry on without it. Nothing was written. ${lrr_retry}" "$2"
+  die "\`$1\` exited $2: ${lrr_why}, so $3 is NOT known, and that is not an answer. This command refuses rather than carry on without it. ${lrr_tail} ${lrr_retry}" "$2"
 }
 
 # ------------------------------------------------------------------ arguments
@@ -1425,7 +1430,7 @@ if [ "$sweep_checkouts" = 1 ]; then
   # T403's other read arms do through `le_read_refuse`. Every other code keeps
   # today's exit, in the `case` below the notes.
   case "$sc_rc" in
-    69 | 75 | 3) le_read_refuse "$LANES_EDIT ${sc_lanes_args[*]}" "$sc_rc" "which lanes are CLOSED or LIVE" ;;
+    69 | 75 | 3) le_read_refuse "$LANES_EDIT ${sc_lanes_args[*]}" "$sc_rc" "which lanes are CLOSED or LIVE" "Nothing was removed." ;;
   esac
   case "$sc_err" in
     *"session records could not be read"*)
