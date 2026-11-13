@@ -94,8 +94,8 @@ import pytest
 
 from pgcluster import SUPERUSER, TEMPLATE, Database
 from sql_register_helpers import _proc_start
-from test_sql_register_order import (BURST, CLIENT, DOT, EM, LA, LB, LC, OBJ, UUID_RE, Barrier, Estate,  # noqa: F401
-                                     Writer, claim, estates, hold_point, kind_line, loggers, run_git,
+from test_sql_register_order import (ARROW, BURST, CLIENT, DOT, EM, LA, LB, LC, OBJ, UUID_RE, Barrier,  # noqa: F401
+                                     Estate, Writer, claim, estates, hold_point, kind_line, loggers, run_git,
                                      session_of, tool_calls)
 
 REGISTER = "lanes_register"
@@ -1475,11 +1475,23 @@ def test_the_after_commit_tail_of_retire_rows_runs_once_when_a_rerun_finds_the_w
 @CLIENT
 def test_the_after_commit_tail_of_start_record_runs_once_when_a_rerun_finds_the_write(estates):
     """`start-record`: `lane_state_follow` runs once after the lock: one
-    move of the lane's sidecar."""
+    move of the lane's sidecar.
+
+    The call is in T427's form, as the arm parses it
+    (`7893339:lanes-edit.sh:29679-29722`, `SR_USE` at `:15521`): the lane,
+    then the log line's verb, `RESUMED`, then `--state` for the row that is
+    there, then `--log` with `lane:<lane>`, the arrow and a payload.
+    `Estate.launch` sets `LANES_LANE` to the lane and `LANES_SESSION` to its
+    transcript uuid, which the arm asks for before any read
+    (`:29736-29743`). T245's `--session` was no word of the arm's: it
+    refused it as the verb, 2 (`:29686`; line N2-23's r1b). The lane's own
+    checkout comes from N2's T243t (`c900063a`, `write_lanes_of`'s
+    `start-record` arm; lane 3, #165 6859307928)."""
     e = estates()
     where, root = loggers(e), sidecars(e)
-    tail_rerun(e, LA, ["start-record", LA, "--session", session_of(LA)], where,
-               {"LANES_LANE_STATE_ROOT": str(root)})
+    argv = ["start-record", LA, "RESUMED", "--state", f"LIVE {DOT} T245 start-record",
+            "--log", f"lane:{LA}", ARROW, "T245 start-record"]
+    tail_rerun(e, LA, argv, where, {"LANES_LANE_STATE_ROOT": str(root)})
     assert generation_of(root, LA) == "2"
 
 
