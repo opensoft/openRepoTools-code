@@ -555,7 +555,15 @@
 #      outcome, whose own code is the record's `rc`, or 1 where it could not
 #      rewrite the record at its start and so ran nothing; its body,
 #      `guard-bind --body`, exits `lane-start`'s own code, which the outer
-#      reads as that `rc`.
+#      reads as that `rc`. Before `lane-start` (T510, phase 2's rerun step,
+#      `guard_bind_rerun`), the body ends with 2 or 3 of its own where the
+#      lookup of a write the attempt before left in doubt says so: 3 where
+#      the lookup settles nothing (LR011, no try within its window, or an
+#      answer it cannot read), or the pending record it found cannot be
+#      settled or rerun; 2 on LR007 `another-write` or `generation`; or the
+#      found rerun's own code. Each is a `return` the arm passes on, with its
+#      `why=` in the facts file, and never a `die`: the outer reads it as the
+#      record's `rc`.
 #      AND FEATURE 007'S ACTS (T410; Y:5595, Y:5597–5601), each with nothing
 #      sent: `act-begin --rebase`'s refusals of a `LANES_ACT` that is missing
 #      or malformed, of a `files` base on primary, and of a register
@@ -5744,7 +5752,9 @@ reg_mode_files() {   # <why>
 #   guard       `guard`, which makes its own read (T507): no door here;
 #   none        the arms that read no register (host-local facts, the filters
 #               that read stdin, the inventory's observation, `act-begin`, Q11,
-#               and `guard-bind`): no door and no call;
+#               and `guard-bind`): no door and no call (`guard-bind`'s body
+#               makes T510's one `journal` lookup of its own before
+#               `lane-start`, through T417's `pw_lookup`, never a door);
 #   writer      the write guard's verbs and `start-record` (R46): no door, since
 #               T409's question at the dispatcher serves them.
 # `REG_MIRROR_VAR=1` marks the arms that `LANES_READ_MIRROR=1` lowers to a
@@ -18486,6 +18496,14 @@ guard_offer_file() {   # <session uuid>
 # four modes are `name-drift` (today's offer, and the offer restored), `binding`,
 # `bound` and `bind-failed`.
 #
+# PHASE 2 (T510; W:5374-5381, W:5446-5468) ADDS TO IT: `act`, written at the
+# offer on primary (`guard_offer_act`), which the body's `set-row-state` on the
+# lane left sends as `LANES_ACT`; and five copies from `start-record`'s pending
+# record, `write_id`, `generation`, `not_after`, `write_lane` and
+# `args_sha256`, which the outer and the stale row take where that record
+# holds a `call=` line (`guard_bind_copies`), and from which the next answer
+# 2's body looks the write up before it binds again (`guard_bind_rerun`).
+#
 # ITS FILES: the record, `<offers>/<uuid>`; each attempt's output,
 # `<uuid>.bind.<n>.out`, which the record's `out=` names; and the body's facts,
 # `<uuid>.bind.<n>.facts`, beside it, which the outer folds into the record and
@@ -18598,9 +18616,13 @@ guard_bind_readable() {
 # lines kept are the record's own, in their order, less every key named in
 # <drop> and every key written; the written keys follow, in the order given.
 # So a key this task does not write — `utc`, T507's `c`, `n_a` and `w_s_ms`,
-# T510's `act` and five copies — goes through every rewrite untouched (points
-# 5 and 12). A written `mode=` goes first, where a person reading the file
-# looks for it. A record that exists and cannot be read is not rewritten.
+# T510's `act` — goes through every rewrite untouched (points 5 and 12).
+# T510's five copies do too, but for the three rewrites that name them in
+# <drop> (`GBC_KEYS`): the outer's outcome and the stale row, which mirror
+# them from `start-record`'s pending record (`guard_bind_copies`), and case
+# 10, which drops them. A written `mode=` goes first, where a person reading
+# the file looks for it. A record that exists and cannot be read is not
+# rewritten.
 #   0 written · 1 not, and the record is as it was
 guard_bind_rewrite() {   # <offer file> <keys to drop, space-separated> [<key>=<value> …]
   gbw_f="${1-}"; gbw_drop=" ${2-} "
@@ -20566,7 +20588,11 @@ guard_answer() {   # <offer file> <the prompt> <pane>
 # bound or a signal stops the body. It is not a register writer — the body's
 # children are — so it is in neither of the dispatcher's writer lists, and its
 # read-door class is `none` (T504): before `lane-start` it reads the offer
-# file and nothing else.
+# file and, in phase 2 (T510), this transcript's `start-record` pending
+# records, read-only, and makes one `journal` lookup where the record names a
+# write the attempt before left in doubt (`guard_bind_rerun`); at its outcome
+# the outer reads those pending records again for the five copies
+# (`guard_bind_copies`). It opens no read door.
 #
 # `timeout -k 10 "$(( bound_s - 10 ))"` SIGNALS THE BODY'S WHOLE PROCESS GROUP,
 # so `lane-start`, `lanes-edit.sh`, `lanes-index` and `psql` stop with it. Where
@@ -21005,7 +21031,12 @@ guard_bind_rerun() {   # <facts file>
 # --bind`, then, after a 0, the `set-row-state` on the lane the window left,
 # then `guard_bound_check`'s read. It writes no key of the record; it hands
 # the outer its `why` and the acts still owed in its facts file. It exits
-# `lane-start`'s own code.
+# `lane-start`'s own code. PHASE 2 (T510) puts two steps in that order:
+# before `lane-start`, the rerun step (`guard_bind_rerun`), which looks up a
+# write of `start-record` the attempt before left in doubt and may end the
+# body with its 2 or 3 instead; and on the `set-row-state`, `LANES_LANE` and,
+# where the record holds the offer's `act`, `LANES_ACT` and `LANES_EXPECT`,
+# on that call only.
 guard_bind_body() {   # <session uuid>
   gbb_u="${1-}"
   if ! guard_bind_uuid_ok "$gbb_u"; then
@@ -28874,7 +28905,8 @@ EOF
   # write the bind's outcome into the record whatever else fails: a bind that
   # wrote none would hold every prompt of the session at BINDING IN PROGRESS
   # until its deadline. The body's own writes go through `lane-start` and
-  # `set-row-state`, which refuse for themselves.
+  # `set-row-state`, which refuse for themselves, and, in phase 2 (T510), the
+  # rerun of `start-record`'s pending record where its lookup found the write.
   guard-bind)
     if [ "${1-}" = --body ]; then
       [ "$#" -eq 2 ] || die "usage: guard-bind --body <session uuid>   (internal: the bind's body, which guard-bind runs under its bound)" 2
