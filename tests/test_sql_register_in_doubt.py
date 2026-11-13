@@ -1569,10 +1569,14 @@ def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_n
     differs path (Y:5330; the same ruling). The case tells its form from
     [rename-lane-differs] by Y:5329's text: "replayed at seq `<s-1>` it now
     stops before its write (exit 5: `<its last line>`), so its after-COMMIT
-    steps did NOT run", with a last line, and no "another change set", the
-    differs form's words. It fails until lane 4's T422, whose stamp check
-    runs before the seam on primary (tasks:1280 at `717ed04d`, "the
-    stamp's checks run before the seam"; lane 3, #165 6841366245).
+    steps did NOT run: `<owed>`". The last line must be the stamp proof's
+    own refusal, "the handoff at `<path>` cannot take Rule 3's stamp"
+    (`f42d2c85:lanes-edit.sh:20908`), since `rename-lane` refuses with 5
+    elsewhere too, and `<owed>` must name steps (TP:3423, "names the steps
+    that did NOT run"; RV20's NIT 13). And there is no "another change
+    set", the differs form's words. It fails until lane 4's T422, whose
+    stamp check runs before the seam on primary (tasks:1280 at `717ed04d`,
+    "the stamp's checks run before the seam"; lane 3, #165 6841366245).
 
     [rename-lane-differs] is told from the stops form the other way, by
     Y:5330's text: "replayed at seq `<s-1>` it now reaches the seam with
@@ -1605,7 +1609,8 @@ def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_n
     if case == "rename-lane-stops":
         stops = (re.escape(f"register write {write_id} is in the register at seq {seq}; replayed at seq {seq - 1} "
                            "it now stops before its write (exit 5: ")
-                 + r"(?!no output\)).+?\), so its after-COMMIT steps did NOT run: ")
+                 + r"[^\n]*?the handoff at [^\n]*? cannot take Rule 3's stamp [^\n]*?\), "
+                 + r"so its after-COMMIT steps did NOT run: \w")
         assert re.search(stops, again.err) and "another change set" not in again.err, (
             f"the replay did not stop before its write: {again.err[-800:]}")
     if case == "rename-lane-differs":
