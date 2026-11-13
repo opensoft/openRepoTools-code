@@ -870,16 +870,16 @@ class Bench:
         _to_primary(self.pg, SimpleNamespace(c=self.c, tree=lambda sha: tree), load_indexer())
 
     def lane_checkout(self) -> Path:
-        """`<c>`, lane `repoA-2`'s own register checkout, made once (T257l;
-        lane 4's triage, #165 6833813092, its group b1): on primary a write
-        runs from it, and where it is not there the write refuses with
-        nothing sent (`lanes-edit.sh`'s `pw_checkout`, T415's R17), since a
-        clone is a fetch (D12). It sits where `lane_checkout_path` puts it
-        (Amendment 23 S1), `<W>-lanes/<lane>`, W being the real path of this
-        bench's W, which `LANES_WORKSPACE_ROOT` names; and it is a clone of
-        W's origin, as `lane-checkout <lane> --create` makes one at a launch
-        and as `test_sql_register_writes.py`'s `make_lane_checkout` makes
-        it. A bench that runs no writer makes none."""
+        """`<c>`, lane `repoA-2`'s own register checkout, made once (T257l; lane 4's triage,
+        #165 6833813092, its group b1): on primary a write runs from it, and where it is not there
+        the write refuses with nothing sent (`lanes-edit.sh`'s `pw_checkout`, T415's R17), since a
+        clone is a fetch (D12). It sits where `lane_checkout_path` puts it (Amendment 23 S1),
+        `<W>-lanes/<lane>`, W being the real path of this bench's W, which `LANES_WORKSPACE_ROOT`
+        names; and it is a clone of W's origin, as `lane-checkout <lane> --create` makes one and
+        as `test_sql_register_writes.py`'s `make_lane_checkout` makes it. The bench makes `<c>`
+        itself, because `lane-start` makes it only under `LANES_ROUTE_WRITES=1` with neither
+        `LANES_REPO` nor `LANES_FILE` set (lane 3, #165 6841265575;
+        `dfc4ce4c:lane-start:1209-1210`). A bench that runs no writer makes none."""
         real = Path(os.path.realpath(self.w))
         target = real.parent / f"{real.name}-lanes" / "repoA-2"
         if not target.exists():
