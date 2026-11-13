@@ -1480,8 +1480,14 @@ fi
 # the default: `lh_exit_trap` holds the EXIT trap in force, set where each is
 # set below, and both of those set INT and TERM to `exit 130` and `exit 143`
 # and leave HUP alone. Every section still runs under the traps it always did.
-sr_err=""; lcb_err=""; sm_err=""; lh_exit_trap=""
-rd_tmp_cleanup() { [ -z "${sr_err:-}" ] || rm -f -- "$sr_err"; [ -z "${lcb_err:-}" ] || rm -f -- "$lcb_err"; [ -z "${sm_err:-}" ] || rm -f -- "$sm_err"; return 0; }
+#
+# TWO MORE, FOR THE TWO READS THAT GATE THE HANDOFF FILE (feature 007, T405;
+# lane openRepoTools-3's #165 6859801732, ERR-30 widened): `read_last_lane_line`
+# (`ll_err`, the closed-lane fence's call only) and the preservation check's
+# `restart-intent` (`lh_ierr`) each send a call's stderr to a file, and each
+# file goes the same way as the five above.
+sr_err=""; lcb_err=""; sm_err=""; ll_err=""; lh_ierr=""; lh_exit_trap=""
+rd_tmp_cleanup() { [ -z "${sr_err:-}" ] || rm -f -- "$sr_err"; [ -z "${lcb_err:-}" ] || rm -f -- "$lcb_err"; [ -z "${sm_err:-}" ] || rm -f -- "$sm_err"; [ -z "${ll_err:-}" ] || rm -f -- "$ll_err"; [ -z "${lh_ierr:-}" ] || rm -f -- "$lh_ierr"; return 0; }
 rd_tmp_arm() {
 	trap 'rd_tmp_cleanup; eval "$lh_exit_trap"' EXIT
 	trap 'exit 130' INT
@@ -2123,9 +2129,28 @@ seam_refuse "$lane" "a handoff"
 # so a lane that a later STARTED or RESUMED reopened is never refused here
 # whatever its snapshot still says, and a closed lane with no snapshot is.
 last_line=""; last_verb=""; last_utc=""; ll_rc=0
-read_last_lane_line() {   # sets last_line, last_verb, last_utc; returns 1 (ll_rc is the status) where the read failed
+read_last_lane_line() {   # [mirror]: sets last_line, last_verb, last_utc; returns 1 (ll_rc is the status) where the read failed
 	last_line=""; last_verb=""; last_utc=""; ll_rc=0
-	last_line="$("$LANES_EDIT" lane-last "$lane" 2>/dev/null)" || ll_rc=$?
+	if [ "${1:-}" = mirror ]; then
+		# THE CLOSED-LANE FENCE'S CALL ALONE (feature 007, T405; lane
+		# openRepoTools-3's #165 6859801732, which widened ERR-30 to it on round
+		# 6h's #56; YS:692, Brett's Q8(b)): with the register's database down the
+		# handoff file is still written (`R-A11-11`), so this read carries
+		# `LANES_READ_MIRROR=1`, and its stderr goes to a file so that the one
+		# `read: mirror at ` line is forwarded (`mirror_label_forward`) and
+		# nothing else of it is shown, as before. A mirror that shows the lane
+		# ENDED or RETIRED still refuses 2 below, and a mirror read that also
+		# fails still returns 1 here. `--late`'s own call passes no word and sets
+		# no variable: it stays at 69.
+		rd_tmp_arm
+		ll_err="$(mktemp "${TMPDIR:-/tmp}/lane-handoff-llast.XXXXXX" 2>/dev/null || printf '')"
+		last_line="$(LANES_READ_MIRROR=1 "$LANES_EDIT" lane-last "$lane" 2>"${ll_err:-/dev/null}")" || ll_rc=$?
+		mirror_label_forward "$ll_err"
+		ll_err=""
+		rd_tmp_disarm
+	else
+		last_line="$("$LANES_EDIT" lane-last "$lane" 2>/dev/null)" || ll_rc=$?
+	fi
 	case "$ll_rc" in
 	0) : ;;
 	8) last_line="" ;;
@@ -2151,7 +2176,7 @@ refuse_a_closed_lane() {   # <the write the act would make after the close> [<mo
 # `R-A11-11` does not carry the swap past it: that rule keeps a swap that is
 # OWED, and a read that failed cannot show that this one is.
 if [ "$do_late" != 1 ]; then
-	read_last_lane_line ||
+	read_last_lane_line mirror ||
 		die "\`$LANES_EDIT lane-last $lane\` failed (exit $ll_rc). That is NOT 'this lane is open', and a handoff on an answer nobody got could reopen a closed lane (Amendment 7(d)). Nothing was renamed and nothing was written." 1
 	refuse_a_closed_lane "a handoff" " Nothing was renamed and nothing was written: no PAUSED, no row, no handoff file, no lifecycle transition (this lane's lifecycle reads CLOSED, and a handoff would take it to SWAPPING), no inventory and no restart. If the lane is to run again, start it first (lane-start), then hand off."
 fi
@@ -2161,7 +2186,23 @@ fi
 # under the helper mutex, together with the prior handoff checksum.
 if [ "$do_restart" != 1 ]; then
   lh_irrc=0
-  lh_intent="$(LANES_NO_FETCH=1 "$LANES_EDIT" restart-intent "$lane")" || lh_irrc=$?
+  # THIS READ GATES THE HANDOFF FILE TOO (feature 007, T405; lane
+  # openRepoTools-3's #165 6859801732, ERR-30 widened; YS:692, Brett's Q8(b)):
+  # with the register's database down it must not stop a handoff that is still
+  # written (`R-A11-11`), so it carries `LANES_READ_MIRROR=1`. Its stderr was
+  # never hidden, so the file it now goes to is replayed WITHOUT the
+  # `read: mirror at ` line, and that line goes through `mirror_label_forward`:
+  # what a run prints is what it printed, plus that one line. Every arm below is
+  # as it was, the refusal 2 included.
+  rd_tmp_arm
+  lh_ierr="$(mktemp "${TMPDIR:-/tmp}/lane-handoff-rintent.XXXXXX" 2>/dev/null || printf '')"
+  lh_intent="$(LANES_READ_MIRROR=1 LANES_NO_FETCH=1 "$LANES_EDIT" restart-intent "$lane" 2>"${lh_ierr:-/dev/null}")" || lh_irrc=$?
+  if [ -n "$lh_ierr" ]; then
+    grep -v -e '^read: mirror at ' -- "$lh_ierr" >&2 || :
+    mirror_label_forward "$lh_ierr"
+  fi
+  lh_ierr=""
+  rd_tmp_disarm
   case "$lh_irrc" in
     0)
       lh_istate="$(printf '%s\n' "$lh_intent" | awk -F'\t' '$1=="state" {print $2; exit}')"
