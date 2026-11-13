@@ -2024,7 +2024,12 @@ def test_two_sessions_binding_one_lane_one_start_record_commits(estate):
 def test_the_bind_is_one_register_write_and_refuses_a_changed_row(estate):
     """AT-F6 case 9: on primary the bind is one journal entry, and with the
     `set-row-state` on the lane left answer 2 journals two; a row change
-    injected after `act-begin` refuses it with 2 and writes nothing."""
+    injected after `act-begin` refuses it with 2 and writes nothing.
+
+    "WRITES NOTHING" IS READ IN THE RIVAL'S JOURNAL (T254zc; lane 2's
+    review RV20, finding 4): from its offer to its end, the rival's
+    database gains one entry, the injected `set-row-state`, and no
+    `start-record`."""
     est = _real_estate(estate, mode="primary")
     est.shim()
     est.make_offer()
@@ -2036,6 +2041,7 @@ def test_the_bind_is_one_register_write_and_refuses_a_changed_row(estate):
     rival.shim()
     rival.set("inject-row", TO)
     rival.make_offer()
+    head = int(rival.pg.psql("SELECT seq FROM lanes_register.register_head;").stdout.split()[-1])
     rival.answer_2()
     record = rival.ended(90)
     # THE RIVAL'S CHANGE LANDED (T254u): its `set-row-state` exited 0, or the
@@ -2044,8 +2050,9 @@ def test_the_bind_is_one_register_write_and_refuses_a_changed_row(estate):
     rc = injected.read_text(encoding="utf-8") if injected.exists() else "never ran"
     assert rc == "0", f"the rival's injected set-row-state exited {rc}: no row changed"
     assert record["mode"] == "bind-failed" and record["rc"] == "2", record
-    starts = [c for c in _commits(rival) if "start-record" in c.get("sent", "")]
-    assert not starts or all("commit_write" in c["sent"] for c in starts), starts
+    grown = rival.pg.psql("SELECT string_agg(verb, ' ' ORDER BY seq) FROM "
+                          f"lanes_register.journal WHERE seq > {head};").stdout.split()
+    assert grown == ["set-row-state"], f"the rival's journal after seq {head}: {grown}"
 
 
 @pytest.mark.parametrize("held", ["found", "absent"])
