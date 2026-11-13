@@ -1252,8 +1252,15 @@ def burst(e: Estate, objects: Sequence[str], window_ms: int, extra: dict = None,
     lane 1's two points (#165 6840891258; T243m), also never asserted: each
     writer's calls in order with their exits, its commits' losses by
     SQLSTATE, and its commits' seconds, as `burst_calls` reads them, and the
-    longest commit of the burst. `attempts` keeps its meaning, every call
-    that is not a commit or a lookup, the render's own calls among them."""
+    longest commit of the burst.
+
+    `attempts` counts the snapshots alone, `burst_calls`' `s` calls, one per
+    attempt, as the row counts them, and `reads` every other call that is
+    not a commit or a lookup, its `r` and `m` calls, the detached render's
+    reads among them, which a slower runner may not have made yet when the
+    logs are read. UNTIL T243q `attempts` counted both, so an older figure,
+    py-bench's 73 a burst (55 + 18) and CI round 6g's, is `attempts +
+    reads` here (lane 2's RV20, finding 9; T243q)."""
     barrier = Barrier(e.root, len(objects))
     arms = [dict(WINDOW, ms=window_ms)]
     writers = [e.launch(lane, claim(obj, "--no-github"), arms=arms, barrier=barrier, extra=extra)
@@ -1265,8 +1272,10 @@ def burst(e: Estate, objects: Sequence[str], window_ms: int, extra: dict = None,
         w.wait()
     drain = max(w.ended for w in writers) - released
     read = {w.lane: burst_calls(w) for w in writers}
+    kinds = {lane: [call[0] for call in r[0].split()] for lane, r in read.items()}
     record("burst", node, drain_s=round(drain, 2), margin_vs_30s=round(D7_S / max(drain, 0.01), 2),
-           attempts={w.lane: len(w.snapshot_calls()) for w in writers},
+           attempts={lane: k.count("s") for lane, k in kinds.items()},
+           reads={lane: k.count("r") + k.count("m") for lane, k in kinds.items()},
            seconds={w.lane: round(w.ended - released, 2) for w in writers},
            calls={lane: r[0] for lane, r in read.items()}, losses={lane: r[1] for lane, r in read.items()},
            commit_s={lane: r[2] for lane, r in read.items()},
