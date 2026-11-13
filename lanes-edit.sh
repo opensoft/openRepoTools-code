@@ -12169,11 +12169,40 @@ archive_local_text() {
 # EACH LINE NUMBER NAMES ITS COPY (the review of #263, NIT 4). Both copies are
 # scanned, and where the published archive and this checkout's differ, one bad
 # line had two numbers and no word on which file either was in.
+#
+# FEATURE 007, T426 — ON PRIMARY, `key()` TRIMS A POSITION'S LEADING ZEROS AS
+# TEXT (Y:6574–6577; R31; R45). Off primary it reads the position as a number,
+# `(p + 0)`, a double, and only a run past 2^53 (9007199254740992) can key to
+# digits the row does not hold: it can lose its last digits
+# (`foo-9007199254740993` keys to `foo-9007199254740992`), and a longer one
+# can print with an exponent (`foo-111111111111111111111` keys to
+# `foo-1.11111e+20`). Every run up to 2^53 keys to its own digits, its leading
+# zeros dropped, however long it is (mawk 1.3.4; Y:1499; review REV-W8d,
+# NIT-2). Y:6575–6577 asks that the read and v2.5's keys agree "on 16 digits
+# or more", so on primary `key()` drops the leading zeros as text and keeps
+# every other digit: `007` is `7`, `0` and `000` are `0`, `10` stays `10`. A
+# cell whose last part is not a number has no key in either mode.
+# THE SWITCH is the awk variable `ztrim` (not `trim`, which names a function
+# in `LOG_AWK`, `RULE6_AWK` and `LANES_REGISTER_INDEX_AWK`; review REV-W8d,
+# NIT-3), which `retired_identity_hits` passes from `RETIRED_KEY_TRIM`: a
+# shell variable, never exported, unset and set empty here, so an inherited
+# value is neither read nor passed on. R45's one
+# line at the dispatcher, below `reg_open`, sets it to 1, beside
+# `rule6_primary_on`, where this process's one mode answer is primary: a
+# reader whose `reg_open` (T504) answered primary, and an attempt's child (its
+# `REG_MODE` is `reg_scratch_take`'s), which runs the verb of a write the
+# write guard's arm sends into `pw_run`. `retired_identity_hits` is this
+# program's one caller, so `add-row`'s check and the `retired-identity` read
+# both take it. Off primary `key()` is `(p + 0)`, byte for byte as before, so
+# files mode, index mode and an unconfigured workstation read as they did
+# (spec:59; review m7).
+unset RETIRED_KEY_TRIM; RETIRED_KEY_TRIM=""
 RETIRED_ROWS_AWK='
   function key(n,   h, p) {
     p = n; sub(/^.*-/, "", p); sub(/[A-Za-z]$/, "", p)
     h = n; sub(/-[^-]*$/, "", h)
     if (h == n || p !~ /^[0-9]+$/) return ""
+    if (ztrim) { sub(/^0+/, "", p); if (p == "") p = "0"; return tolower(h) "-" p }
     return tolower(h) "-" (p + 0)
   }
   BEGIN { wk = key(want) }
@@ -12191,7 +12220,7 @@ retired_identity_hits() { # <lane>; stdout: matching retired spellings · 1 not 
   ri_lane="$1"
   ri_pub="$(archive_text 2>/dev/null)" || { [ "$?" != 69 ] || return 69; return 1; }   # feature 007, T505
   ri_scan=""
-  ri_scan="$(printf '%s\n' "$ri_pub" | awk -v want="$ri_lane" -v sep="$US" "$RETIRED_ROWS_AWK")" || return 1
+  ri_scan="$(printf '%s\n' "$ri_pub" | awk -v want="$ri_lane" -v sep="$US" -v ztrim="$RETIRED_KEY_TRIM" "$RETIRED_ROWS_AWK")" || return 1
   # ON PRIMARY THIS CHECKOUT'S ARCHIVE IS NOT READ (feature 007, T506; lane 3,
   # #165 6778890211, T505 Q6): the local scan is one of the unions T506 skips,
   # since a primary write is in SQL before it returns, and `archive_text` has
@@ -12199,7 +12228,7 @@ retired_identity_hits() { # <lane>; stdout: matching retired spellings · 1 not 
   ri_local=""; ri_scan2=""
   if [ "${REG_STORE:-}" != sql ]; then
     ri_local="$(archive_local_text 2>/dev/null)" || return 1
-    ri_scan2="$(printf '%s\n' "$ri_local" | awk -v want="$ri_lane" -v sep="$US" "$RETIRED_ROWS_AWK")" || return 1
+    ri_scan2="$(printf '%s\n' "$ri_local" | awk -v want="$ri_lane" -v sep="$US" -v ztrim="$RETIRED_KEY_TRIM" "$RETIRED_ROWS_AWK")" || return 1
   fi
   # WHICH COPY `archive_text` ANSWERED WITH: the index's under `--index`, else
   # origin's where the tree publishes one, else this checkout's (its own rungs,
@@ -28794,22 +28823,24 @@ fi
 # outlives the arms' `$( )` reads (lane 5's answer 11, #165 6746507353).
 reg_open "$cmd" ${1+"$@"}
 
-# FEATURE 007, T425 — R45'S ONE LINE (Y:5121; Q-L5-4, answered; lane 4's
-# block, T425 and T426). Here, after the doors and before the arms, the one
+# FEATURE 007, T425 AND T426 — R45'S ONE LINE (Y:5121; Q-L5-4, answered; lane
+# 4's block, T425 and T426). Here, after the doors and before the arms, the one
 # mode answer this process holds sets the awk variables that read the
 # register as primary reads it: `rule6_primary_on`, Rule 6 with `LANDING
-# EXPIRED` (T425), and T426 adds `key()`'s to this same line. A reader takes
-# it from lane 5's `reg_open` (T504), which runs above this line (lane 3,
-# #165 6770688147), and a writing verb from the write guard's answer, where
-# the arm above lets it through. Where that arm runs `pw_run`, which ends the
+# EXPIRED` (T425), and `RETIRED_KEY_TRIM`, `RETIRED_ROWS_AWK`'s `key()`
+# trimming a position's leading zeros as text (T426). A reader takes it from
+# lane 5's `reg_open` (T504), which runs above this line (lane 3, #165
+# 6770688147), and a writing verb from the write guard's answer, where the
+# arm above lets it through. Where that arm runs `pw_run`, which ends the
 # process, the verb runs in an attempt's child, which takes it from
 # `reg_scratch_take`'s `REG_MODE` (`REG_ASK` is 0 there, and `reg_open`
 # leaves `REG_MODE` alone for a writing verb), since it asks no mode and its
 # file at the snapshot's seq is primary's. It cannot be set where `REG_MODE`
-# is: `reg_scratch_take` runs before `RULE6_AWK` is assigned, which would
-# overwrite the append, and inside `who_landing`'s pipeline a variable set is
-# lost. Off primary it sets nothing, and the programs are today's.
-[ "$REG_MODE" != primary ] || rule6_primary_on
+# is: `reg_scratch_take` runs before `RULE6_AWK` and `RETIRED_KEY_TRIM` are
+# assigned, which would overwrite both, and inside `who_landing`'s pipeline a
+# variable set is lost. Off primary it sets nothing, and the programs are
+# today's.
+[ "$REG_MODE" != primary ] || { rule6_primary_on; RETIRED_KEY_TRIM=1; }
 
 case "$cmd" in
   verify-row)
