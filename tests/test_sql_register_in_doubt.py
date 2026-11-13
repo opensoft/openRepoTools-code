@@ -1089,6 +1089,13 @@ def mark_of(e: Estate, write_id: str) -> Path:
     return e.state / DONE / write_id
 
 
+def gh_reads(where: Path) -> List[dict]:
+    """The fake `gh`'s `issue view` calls: `claim`'s Rule 1 reads, which
+    each run of the verb makes at its step 2, before the seam, an attempt's
+    child or a replay's (`gh_reads_live`; Y:5043, Y:5326)."""
+    return [c for c in tool_calls(where, "gh") if c["argv"][:2] == ["issue", "view"]]
+
+
 def comments(where: Path) -> List[dict]:
     """The fake `gh`'s comment calls, `issue comment` or `pr comment`: a
     verb's tail (`gh_comment`, T421). Never Rule 1's reads, `issue view
@@ -1464,7 +1471,18 @@ def test_a_rerun_after_a_3_replays_the_verbs_tail_once(estates):
 def test_a_sent_record_whose_child_never_read_committed_replays_and_an_owed_mark_runs_no_tail(estates, state):
     """[sent-child-never-read]: a record holding `tail=sent` while the dead
     child's `seam.out` says `none`: the owner removes `tail` and replays,
-    one comment, exit 0. [owed-mark]: a mark holding `owed <utc>`; a rerun
+    once, one comment, exit 0 (Y:5342; lane 3's rule, #165 6838365309 and
+    6838735040). The takeover reads the `seam.out` in the directory of the
+    record's `call=` line (Y:5173), so the case writes `none` there: the
+    child, killed while its parent's commit call was held, wrote none
+    (it writes one only at its seam, `8ba10b4e:lanes-edit.sh:5150-5164`,
+    `:5453`). The replay ran once: its child made `claim`'s Rule 1 reads,
+    `gh issue view`, as many times as the killed run's child did, since a
+    replay reads `gh_reads` again (Y:5326) and the takeover's parent runs
+    no verb. `tail` was removed: the done mark holds the replayed tail's
+    `done`, not the `sent` the record held, which a run that keeps the
+    `sent` row writes the mark from (Y:5338-5342). [owed-mark]: a mark
+    holding `owed <utc>`; a rerun
     under `LANES_WRITE_ID`, with its generation (T245d), runs no tail, adds
     no comment, and names the steps as owed again. The mark is written in
     its contract's form, one `key=value` a line, `write_id`, `seq`, `tail`,
@@ -1479,10 +1497,18 @@ def test_a_sent_record_whose_child_never_read_committed_replays_and_an_owed_mark
     if state == "sent-child-never-read":
         with rec["path"].open("a", encoding="utf-8") as f:
             f.write(f"tail=sent {e.journal_after()[-1]['seq']} {e.utc()}\n")
-        for seam in e.state.rglob("seam.out"):
-            seam.write_text("none\n", encoding="utf-8")
+        assert len(rec["calls"]) == 1, rec["calls"]
+        old = Path(rec["calls"][0].split(None, 4)[4].strip())
+        assert old.is_dir(), f"the record's call= directory {old} is not there"
+        (old / "seam.out").write_text("none\n", encoding="utf-8")
+        killed_reads = len(gh_reads(where))
         again = e.run(LA, argv, first=[where])
         assert again.code == 0 and len(comments(where)) == 1, (again.err[-800:], comments(where))
+        assert killed_reads > 0 and len(gh_reads(where)) == 2 * killed_reads, (
+            f"the replay's child made {len(gh_reads(where)) - killed_reads} of claim's Rule 1 reads, "
+            f"the killed run's child {killed_reads}: not one replay")
+        mark = mark_of(e, write_id).read_text(encoding="utf-8")
+        assert pending(e) == [] and re.search(r"(?m)^tail=done ", mark), f"tail was not replayed to done: {mark!r}"
     else:
         mark = mark_of(e, write_id)
         mark.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
