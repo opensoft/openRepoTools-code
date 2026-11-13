@@ -99,6 +99,11 @@ COPIES = ("write_id", "generation", "not_after", "write_lane", "args_sha256")
 #: The shim's counters beside it (T203's `PSQL_SHIM`, whose docstring names
 #: the file); `Estate.shim` drops a lost host from it (T254w).
 PSQL_SHIM_STATE = "psql-shim.state"
+#: The lock the shim takes around each call's read and rewrite of that state
+#: and its read of the control file (`PSQL_SHIM`'s `main`, `LOCK`), which
+#: `Estate.shim` takes too (T254zl), and how long it waits for it.
+PSQL_SHIM_LOCK = "psql-shim.lock"
+SHIM_LOCK_S = 30.0
 #: CASE 10's `[found]` ARMS, and case 19's (T254w): "the shim's `after` mode
 #: on that commit call, which commits, then exit 2 on every later call"
 #: (TP:6094-6095 at a6497d00), as `no-reconnect` as `after` on the bind's
@@ -691,15 +696,41 @@ class Estate:
         fails every later call "until the test removes a second control
         file" (TP:2277-2278 at a6497d00), and the shim keeps the lost call in
         its state, `psql-shim.state`, past a new control file. So the state's
-        `lost` is dropped here, and its call counts kept."""
+        `lost` is dropped here, and its call counts kept.
+
+        UNDER THE SHIM'S OWN LOCK (T254zl; lane 2's review RV22, NIT 4): the
+        shim reads and rewrites its state, and reads the control file, under
+        `psql-shim.lock`. So the drop and the new control file are written
+        under it too, each by a temporary file and a rename, as the shim
+        writes its state. A call still in flight at the re-arming, such as a
+        detached render's, then cannot write `lost` back over the drop, nor
+        read either file half written. The wait for the lock is bounded, as
+        every wait here is: the shim holds it only for its bookkeeping."""
+        import fcntl
         shim = _script(self.bin / "psql", PSQL_SHIM)
         state = self.bin / PSQL_SHIM_STATE
-        if state.exists():
-            held = json.loads(state.read_text(encoding="utf-8") or "{}")
-            if held.pop("lost", None) is not None:
-                state.write_text(json.dumps(held), encoding="utf-8")
-        (self.bin / PSQL_SHIM_CONTROL).write_text(json.dumps(
-            {"psql": self.pg.cluster.tool("psql"), "arms": list(arms)}), encoding="utf-8")
+        control = self.bin / PSQL_SHIM_CONTROL
+
+        def put(path: Path, text: str) -> None:
+            tmp = path.with_name(path.name + ".t254zl")
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, path)
+
+        with open(self.bin / PSQL_SHIM_LOCK, "a", encoding="utf-8") as lock:
+            def take() -> bool:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return False
+                return True
+
+            assert _until(take, SHIM_LOCK_S), \
+                f"the shim's lock {lock.name} was held for {SHIM_LOCK_S} s"
+            if state.exists():
+                held = json.loads(state.read_text(encoding="utf-8") or "{}")
+                if held.pop("lost", None) is not None:
+                    put(state, json.dumps(held))
+            put(control, json.dumps({"psql": self.pg.cluster.tool("psql"), "arms": list(arms)}))
         return shim
 
     def shim_calls(self) -> list:
