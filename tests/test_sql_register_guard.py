@@ -2285,9 +2285,20 @@ def test_the_bind_childs_lookup_sends_the_five_copied_values(estate, case):
     `[found]` SENDS NO SECOND COMMIT (T254zh; lane 2's review RV22,
     finding 1): after the second `2`, no `start-record` commit is sent, as
     case 10 checks, so a lookup that missed its write and bound anew fails.
-    NOT SHOWN HERE (RV22, finding 1): the estate does not spell the window
-    otherwise, and its `to`, `repoA-3`, is also the write's lane, so "never
-    derived from `to`" is read only as the copies being sent as copied."""
+
+    "NEVER DERIVED FROM `to`" IS READ THROUGH THE RECORD'S `to` (T254zo;
+    lane 2's reviews RV22, finding 1, and RV23, SHOULD 4). No spelling of
+    the window or the session makes `to` differ from the write's lane: the
+    guard writes `to` as the register's row spells it, its case-insensitive
+    hit (`G_SES_LANE`, `4d96f8c5:lanes-edit.sh:21162`, `:21546`), and
+    `lane-start` takes the row's spelling too (`f9e1449c:lane-start:1386-
+    1394`). So `[found]` respells the record's `to` in lower case after the
+    bind-failed reply, before the second `2`, and the bound record still
+    holds it. The bind's `lane-start` is given that spelling and
+    takes the row's back, while a lookup whose lane came from `to` would
+    send the respelling, which `find_write` compares exactly
+    (`f9e1449c:lanes-index:10442`), and would end `rc=2` with LR007
+    `another-write`, not `bound`; and the lookup must not carry it."""
     est = _real_estate(estate, mode="primary")
     # CASE 10's `[found]` ARMS (T254t, T254w): every call after the commit
     # call fails, and the guard's own prefetch calls before it do not.
@@ -2314,6 +2325,13 @@ def test_the_bind_childs_lookup_sends_the_five_copied_values(estate, case):
         assert est.record().get(key) == copies[key] != old, (key, old, est.record().get(key))
     est.shim()
     est.hook("hello")
+    if case == "found":
+        to = est.to.lower()
+        lines = [f"to={to}" if line.startswith("to=") else line
+                 for line in est.offer.read_text(encoding="utf-8").splitlines()]
+        write_record(est.offer, lines)
+        assert est.record().get("to") == to != copies["write_lane"], (to, est.record())
+        est.to = to
     # THIS ATTEMPT'S LOOKUP ALONE (T254zf; lane 4, #165 6858782368): the
     # shim's log is never reset, and the first attempt's lookups sent the
     # copies as they were, so the check below read them and passed without
@@ -2333,7 +2351,8 @@ def test_the_bind_childs_lookup_sends_the_five_copied_values(estate, case):
     for key in COPIES:
         assert copies[key] in sent, (key, copies[key])
     if case == "found":
-        assert record["mode"] == "bound", record
+        assert f"'{est.to}'" not in sent, f"the lookup sent the record's to, {est.to}"
+        assert record["mode"] == "bound" and record.get("to") == est.to, record
         again = [c.get("call") for c in est.shim_calls()[before:]
                  if "start-record" in c.get("sent", "")
                  and "commit_write" in c.get("sent", "")]
