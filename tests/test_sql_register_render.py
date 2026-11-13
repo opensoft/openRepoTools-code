@@ -1647,7 +1647,8 @@ def test_the_render_read_with_start_returns_the_images_and_a_bad_start_costs_one
 # every UTC masked in both, in a line or in a path (`migrate-state-cells`'
 # archive is named by its UTC): open point 4 leaves the mask in place until a
 # test can fix the database's clock. The journal entry's message is the twin's
-# commit message.
+# commit message, but `rename-lane`'s, which on primary is the message the
+# design names under Q13(a) (lane 3's ruling (A), #165 6859179515).
 #
 # GB SECTION 4.3'S CASES (R29), each an assertion of a named test: D12, the
 # fake `git`'s log holding no `fetch` on primary that the verb itself makes,
@@ -2138,6 +2139,29 @@ class FilesTwin:
         return _raw_message(self.origin, self.git_env)
 
 
+#: Files mode's `rename-lane` subject, "... the row, <log>, the handoff and
+#: <aliases> in one commit" (`f9e1449c:lanes-edit.sh:30289`).
+_RENAME_FILES_SUBJECT = re.compile(
+    r"^(LANES\(\S+\): RENAMED lane .+ the row, )(\S+), the handoff and (\S+) in one commit$",
+    re.M)
+
+
+def _primary_message(verb: str, message: str) -> str:
+    """The journal message a primary write of `verb` composes, from its
+    files-mode twin's commit `message`: the same, but `rename-lane`'s, whose
+    handoff is not in the entry (Q13(a)), so T422 composes "... the row,
+    <log> and <aliases> in one register write; the handoff's move and stamp
+    follow in the lane's checkout (Q13(a))" (`f9e1449c:lanes-edit.sh:30293-30294`),
+    the message the design names (lane 3's ruling (A), #165 6859179515)."""
+    if verb != "rename-lane":
+        return message
+    named, n = _RENAME_FILES_SUBJECT.subn(
+        r"\1\2 and \3 in one register write; the handoff's move and stamp follow in "
+        r"the lane's checkout (Q13(a))", message, count=1)
+    assert n == 1, f"rename-lane: the twin's message has no files-mode subject: {message!r}"
+    return named
+
+
 def _journal_since(db, seq: int) -> list:
     return rows(db, f"SELECT seq, write_id, kind, verb, lane, message FROM journal "
                     f"WHERE seq > {seq} ORDER BY seq")
@@ -2249,7 +2273,8 @@ def test_each_write_matches_its_files_mode_twin_byte_for_byte(pg, tmp_path, verb
     scratch mirror at the entry's seq equals the render set on the twin's
     origin, path set and bytes, every UTC masked in both (open point 4); and
     the entry's message is the twin's commit message, byte for byte, or but
-    for the one LF git ends a stored message with. GB section 4.3's
+    for the one LF git ends a stored message with; for `rename-lane`, the
+    message the design names under Q13(a), `_primary_message`'s. GB section 4.3's
     `start-record` (lane 4's T427, L4-B9) is `[start-record]`, a resume of
     repoA-2 in both modes, whose twin runs once more, in a second clone at C,
     under `LANES_ROUTE_WRITES=1` with `LANES_REPO` unset, through the lane's
@@ -2275,11 +2300,11 @@ def test_each_write_matches_its_files_mode_twin_byte_for_byte(pg, tmp_path, verb
             f"{label}'s {verb} pushed {len(files_twin.commits())} commits, not one")
         _assert_same_files(_utc_masked(mirror), _utc_masked(files_twin.render_set()),
                            f"{verb}: the mirror and {label}'s files, every UTC masked")
-        message = files_twin.message()
+        message = _primary_message(verb, files_twin.message())
         bare = message[:-1] if message.endswith("\n") else message
         assert entry["message"] in (message, bare), (
             f"{verb}: the journal's message {entry['message']!r} is not {label}'s commit "
-            f"message {message!r}")
+            f"message, as primary composes it, {message!r}")
 
 
 @pytest.mark.parametrize("verb", list(W_VERBS))
