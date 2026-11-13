@@ -2246,7 +2246,7 @@ if [ "$do_restart" != 1 ]; then
 fi
 if [ "$do_restart" = 1 ]; then
   LANES_NO_FETCH=1 "$LANES_EDIT" legacy-restart-check "$lane" ||
-    die "legacy /ctx restart refused at the managed-lane boundary. Nothing was written or respawned." 2
+    die "legacy /ctx restart refuses managed or unknown ownership (the line above says which). Nothing was written or respawned." 2
 fi
 if [ "$do_restart" = 1 ]; then
   ri_gen=0; ri_prc=0
