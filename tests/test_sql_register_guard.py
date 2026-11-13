@@ -2639,6 +2639,10 @@ START_LINE = 3.75
 #: whole-file fetch on its FIFO. The fetch starts before the cut, so it is
 #: held by then; this is a margin, the outer's 10 s (`Estate.outer`).
 HOLD_LIMIT = 10.0
+#: How long case 6 then waits for the released fetch to record the image
+#: cache (T254zr): the `guard-fetch` row's least client timer, `N_a`*`c` +
+#: 15 s at `c` = 2 (`f9e1449c:lanes-index:4573`).
+CACHE_LIMIT_S = 17.0
 #: FORM 4 AS THE SHIM SEES IT (lane 5's F2b, #165 6812547449). The shim logs
 #: `psql`'s own argv, never `lanes-index`'s, so no `--for` is ever in it;
 #: form 4 is known by its SQL instead, which the shim logs as `sent` and
@@ -2895,7 +2899,18 @@ def test_a_whole_file_fetch_the_start_line_cuts_fills_the_image_cache_for_the_ne
     3, #165 6812490130). The case's database holds the estate's register at
     primary (`_Register`; lane 5's F2, #165 6812547449): at `files` the
     first request ends 69, `switch-files`, and no whole-file fetch is ever
-    made."""
+    made.
+
+    THE NEXT PROMPT WAITS FOR THE CACHE, NOT FOR A SECOND (T254zr; lane 2's
+    MK-22, on lane 3's #165 6860626333): once released, the detached child
+    runs its `psql`, puts the image in the cache and records its head
+    before it answers (`f9e1449c:lanes-index:7451-7460`), and nothing waits
+    for it, so the old `time.sleep(1.0)` raced it: a child slower than 1 s
+    left the next prompt to fetch the file again. So the case polls the
+    cache's `head` until it reads the register's head, bounded at
+    `CACHE_LIMIT_S`, the fetch row's own least timer, then reads that the
+    head's manifest names `lanes/LANES.md` (`head` moves only after
+    `seq/<n>` is written, `:2949-2988`)."""
     est = estate(mode="primary", to=FROM, to_row=False)
     _Register(est)
     fifo = tmp_path / "whole-file"
@@ -2912,7 +2927,17 @@ def test_a_whole_file_fetch_the_start_line_cuts_fills_the_image_cache_for_the_ne
     finally:
         _release(fifo, 0)
     before = len(est.shim_calls())
-    time.sleep(1.0)
+    n = est.pg.psql("SELECT seq FROM lanes_register.register_head;").stdout.split()[-1]
+    images = est.state_home / "openRepoTools" / "register-images"
+
+    def filled() -> bool:
+        head = images / "head"
+        return head.exists() and head.read_text(encoding="utf-8").strip() == n
+
+    assert _until(filled, CACHE_LIMIT_S, 0.1), \
+        f"the released fetch did not record the image cache at {n} in {CACHE_LIMIT_S:.0f} s: {images}"
+    manifest = (images / "seq" / n).read_text(encoding="utf-8").splitlines()
+    assert [line for line in manifest if line.split("\t")[0] == "lanes/LANES.md"], manifest
     hook = est.hook("hello")
     assert hook.code in (0, 2) and not hook.killed, repr(hook)
     assert not [c for c in est.shim_calls()[before + 1:]
