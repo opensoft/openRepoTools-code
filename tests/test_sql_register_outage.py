@@ -400,6 +400,23 @@ class Estate:
                                "refs/remotes/origin/main"], check=True, env=self.env,
                               capture_output=True, text=True).stdout.strip()
 
+    def lane_checkout(self, lane: str = WINDOW) -> Path:
+        """`<c>`, lane `lane`'s own register checkout (T219g): a clone of
+        origin where `lanes-edit.sh`'s `lane_checkout_path` puts it
+        (Amendment 23 S1), `<W>-lanes/<lane>`, W being the real path of the
+        W that `LANES_WORKSPACE_ROOT` names, as `lane-checkout <lane>
+        --create` makes one. On primary a write refuses with 2, nothing sent,
+        where `<c>` is not there (T415's `pw_checkout`; tasks:1154), so a case
+        whose write must reach the register makes it first, as the writes
+        module's `make_lane_checkout` does (T241e). Real git, so the git log
+        holds none of it."""
+        real = Path(os.path.realpath(self.w))
+        target = real.parent / f"{real.name}-lanes" / lane
+        target.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run([self.env["T215_REAL_GIT"], "clone", "-q", str(self.origin), str(target)],
+                       check=True, env=self.env, capture_output=True)
+        return target
+
     def config(self, mode: str = "primary", url: str | None = None,
                name: str = "conf") -> Path:
         """A configuration with both URLs on loopback (the fake's host rule),
@@ -1419,10 +1436,14 @@ def test_an_expired_or_foreign_declaration_changes_nothing(tmp_path, case):
 def test_writes_and_deciding_reads_still_refuse_during_a_declared_outage(tmp_path):
     """AT-D20: under a valid declaration, with the database stopped, a write,
     `claim`, and a deciding read, `who`, each still refuse with 69: the
-    declaration opens the guard's read alone."""
+    declaration opens the guard's read alone. The lane's own register
+    checkout `<c>` is made first (T219g), so that the outage, not a missing
+    `<c>`, is what refuses `claim`: T415's `pw_checkout` refuses a write with
+    2 before any register call where `<c>` is not there (tasks:1154)."""
     estate = Estate(tmp_path, [_render(1), _render(2), _render(3)])
     config = estate.config()
     estate.declared(config, mirror_seq=3)
+    estate.lane_checkout()
     env = estate.guard_env(config, TMUX=None, TMUX_PANE=None, LANES_SESSION=estate.session)
     for argv in (["claim", "opensoft/t215#1"], ["who", "opensoft/t215#1"]):
         proc = subprocess.run(["bash", str(tmp_path / "tool" / "lanes-edit.sh"), *argv],
