@@ -1466,7 +1466,15 @@ def _on_pg(pg, root: Path, request, steps: list) -> tuple:
     a writer's and a reader's logins made here until T228's exist, brought
     through `steps` by the real commands: `import --at <C>`, `cutover
     --import <C>` and `rollback`. Returns (the estate, the configuration, the
-    real `psql`'s environment, the reader's login)."""
+    real `psql`'s environment, the reader's login).
+
+    AN IMPORT AFTER A `rollback` IS A RE-IMPORT, at origin's tip as fetched
+    after the rollback, and a later `cutover` names that commit, as
+    the rollback module's `test_a_reimport_after_a_rollback_continues_the_journal`
+    makes them (TP:5470-5472): a cutover follows the import it names, at the
+    head (design.md section 1.3), and lane 1's `cutover` refuses one whose head is
+    past the latest import's seq, "after a rollback, import again before a
+    cutover" (`f9e1449c:lanes-index:21956-21958`)."""
     estate = Estate(root, [_render(1)])
     writer, reader = (f"t215_{uuid.uuid4().hex[:12]}" for _ in range(2))
     pg.psql(f"CREATE ROLE {writer} LOGIN IN ROLE lanes_register_writer;\n"
@@ -1481,11 +1489,17 @@ def _on_pg(pg, root: Path, request, steps: list) -> tuple:
                PATH=os.pathsep.join([str(estate.bin), str(Path(pg.psql_bin).parent),
                                      os.environ.get("PATH", os.defpath)]))
     c = estate.tip()
-    forms = {"import": ["import", "--at", c], "cutover": ["cutover", "--import", c],
-             "rollback": ["rollback"]}
+    done = []
     for step in steps:
+        if step == "import" and "rollback" in done:
+            estate.fetch()
+            c = estate.tip()
+        forms = {"import": ["import", "--at", c], "cutover": ["cutover", "--import", c],
+                 "rollback": ["rollback"]}
         proc, _ = _index(estate, config, *forms[step], env=env, timeout=300)
-        assert proc.returncode == 0, f"`{step}` exited {proc.returncode}: {proc.stderr[-600:]}"
+        assert proc.returncode == 0, (f"`{step}` (after {done}) exited {proc.returncode}: "
+                                      f"{proc.stderr[-600:]}")
+        done.append(step)
     return estate, config, env, reader
 
 
@@ -1577,10 +1591,12 @@ def test_a_rollbacks_declaration_counts_only_where_the_guards_read_finds_the_swi
       from the database, and `status` reports the file;
     - `failed-primary-again` and `failed-partition`: the read fails, the
       switch being `primary` again, or the guard cut off: the guard exits 2
-      with the ordinary refusal, and never reads the mirror."""
+      with the ordinary refusal, and never reads the mirror.
+    The cutover that sets `primary` again follows a re-import, since a
+    cutover after a rollback needs one (`_on_pg`; TP:5470-5472)."""
     steps = ["import", "cutover", "rollback"]
     if case in ("found-primary", "failed-primary-again"):
-        steps.append("cutover")
+        steps += ["import", "cutover"]
     estate, config, env, reader = _on_pg(pg, tmp_path, request, steps)
     path = config.parent / "register-outage"
     assert path.exists(), "`rollback` wrote no declaration (T304)"
