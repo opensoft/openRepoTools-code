@@ -137,6 +137,11 @@ REGISTER_HEADER = ["# LANES.md", "",
 #: `release`, at most that many seconds), `sleep` (that many seconds),
 #: `rc`, `ignore-term`, `tmux` (make one untargeted `tmux` call) and `fork`
 #: (leave a child that ignores TERM, living that many seconds).
+#: `pending-record` (T254z; case 20) makes it write, before it holds, a whole
+#: `start-record` pending record with one `call=` line, as T412's
+#: `wr_record_write` lays one out, from the JSON in that file: `generation`,
+#: `lane`, `session`, `host`, `container`, `database` and `base`. Its
+#: `not_after` is the stand-in's clock, so a lookup may decide at once.
 _STUB_LANE_START = r'''#!@PY@ -I
 import json, os, signal, subprocess, sys, time
 CTL = @CTL@
@@ -175,6 +180,33 @@ if ctl("fork") is not None:
          "time.sleep(%s)" % float(ctl("fork"))],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     entry["fork"] = child.pid
+if ctl("pending-record") is not None:
+    import hashlib, uuid
+    spec = json.loads(ctl("pending-record"))
+    state = os.environ.get("XDG_STATE_HOME") or os.path.join(
+        os.environ.get("HOME") or "/", ".local", "state")
+    pending = os.path.join(state, "openRepoTools", "register-pending")
+    os.makedirs(pending, mode=0o700, exist_ok=True)
+    now, clock = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), int(time.time())
+    digest = hashlib.sha256(("start-record %s %s" % (spec["lane"], spec["session"])
+                             ).encode("utf-8")).hexdigest()
+    with open("/proc/self/stat", encoding="utf-8") as handle:
+        started = handle.read().rsplit(") ", 1)[1].split()[19]
+    lines = ["format=1", "write_id=%s" % uuid.uuid4(), "generation=%s" % spec["generation"],
+             "database=%s" % spec["database"], "lane=%s" % spec["lane"],
+             "session=%s" % spec["session"], "verb=start-record", "args_sha256=%s" % digest,
+             "cmdline=lanes-edit.sh start-record %s" % spec["lane"], "created_utc=%s" % now,
+             "updated_utc=%s" % now, "pid=%d" % os.getpid(), "pid_start=%s" % started,
+             "host=%s" % spec["host"], "container=%s" % spec["container"], "attempts=1",
+             "call=%d %d %d %s %s" % (int(spec["base"]), clock, clock,
+                                     hashlib.sha256(b"").hexdigest(),
+                                     os.path.join(pending, "stand-in-attempt"))]
+    path = os.path.join(pending, digest)
+    with open(path + ".tmp", "w", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+    os.chmod(path + ".tmp", 0o600)
+    os.replace(path + ".tmp", path)
+    entry["pending"] = path
 log(entry)
 if ctl("sleep") is not None:
     time.sleep(float(ctl("sleep")))
@@ -2190,13 +2222,29 @@ def test_the_stale_row_copies_a_dead_outers_pending_call_and_the_next_2_looks_it
     line: once no process of the outer's session is left, the stale row
     copies the five values, `not_after` the largest among its `call` lines,
     and the next `2` makes the lookup, in the shim's log, before any
-    `start-record` call."""
+    `start-record` call.
+
+    THE STAND-IN WRITES THAT RECORD (T254z; lane 5, #165 6841545201): a
+    whole `start-record` pending record of this session, with one `call=`
+    line (`pending-record`), at the register's own generation, host and
+    container, so the stale row has something to copy. `LANES_HOST` pins
+    the host the guard compares (`wr_here`), as a workstation outside a
+    container would otherwise read `hostname`."""
     est = estate(mode="primary")
     est.shim()
     est.set("hold", 60)
+    est.extra["LANES_HOST"] = HOST
     est.make_offer()
+    generation = est.pg.psql("SELECT generation FROM lanes_register.register_switch;"
+                             ).stdout.split()[-1]
+    head = est.pg.psql("SELECT seq FROM lanes_register.register_head;").stdout.split()[-1]
+    est.set("pending-record", json.dumps({
+        "generation": generation, "lane": TO, "session": est.sid, "host": HOST,
+        "container": CONTAINER, "database": "register-test", "base": int(head)}))
     est.answer_2()
     record = est.outer()
+    assert _until(lambda: [e for e in est.starts() if e.get("pending")], 30), \
+        "the stand-in wrote no pending record"
     outer = int(record["pid"])
     _kill(outer, signal.SIGKILL)
     est.release()
