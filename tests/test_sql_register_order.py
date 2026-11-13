@@ -78,7 +78,7 @@ import pytest
 
 from pgcluster import SUPERUSER, Database
 from sql_register_helpers import (LANES_INDEX, PSQL_SHIM, PSQL_SHIM_CONTROL, PSQL_SHIM_ENDS,
-                                  PSQL_SHIM_LOG, REPO, flipped_copy)
+                                  PSQL_SHIM_LOG, REPO, flipped_copy, guard_session)
 from test_lane_start_claude_current import Sandbox, _write
 
 REGISTER = "lanes_register"
@@ -921,6 +921,7 @@ class Estate:
         # before any write. The other lanes keep logs with no lane-kind line.
         self.files = estate_files(lanes, bound)
         self.files["lanes/aliases.tsv"] += aliases
+        self.lanes = list(lanes)
         import_files(c, self.files)
         # `confirmed` False leaves the cutover unconfirmed, the marker `adding` (T233's [switch-at-files]).
         assert c.to_primary(confirmed) == 1, "test 4's cutover is not at seq 1 (AT-4's fixture)"
@@ -990,6 +991,37 @@ class Estate:
                                                encoding="utf-8")
         return where, agents
 
+    def canon(self, lane: str) -> str:
+        """`lane` as `canon_lane` answers it over this estate's rows and alias
+        lines: a row wins at every hop, the last alias line for a name wins,
+        names compare in lower case, a cycle answers the typed name, and a
+        walk that meets no row answers its last hop. The rows are those the
+        estate was made with."""
+        rows = {name.lower() for name in self.lanes}
+        hops: Dict[str, str] = {}
+        for line in self.files["lanes/aliases.tsv"].splitlines():
+            parts = line.split("\t")
+            if line.startswith("#") or len(parts) < 2:
+                continue
+            hops[parts[0].lower()] = parts[1]
+        here, seen = lane, {lane.lower()}
+        while here.lower() not in rows and here.lower() in hops:
+            here = hops[here.lower()]
+            if here.lower() in seen:
+                return lane
+            seen.add(here.lower())
+        return here
+
+    def write_lanes(self, argv: Sequence[str], lane: Optional[str]) -> List[str]:
+        """`write_lanes_of`'s lanes, each followed by its `canon` name: T415's
+        `pw_checkout` runs `canon_lane` first and takes `<W>-lanes/<canon>`,
+        so a write for a name with no row of its own, such as `add-row` for a
+        name on an alias walk, needs its canonical lane's `<c>` (lane 4's
+        triage, #165 6833813092, TRIAGE-W13b o9; T243j). The typed name's
+        `<c>` is kept too."""
+        return list(dict.fromkeys(name for typed in write_lanes_of(argv, lane)
+                                  for name in (typed, self.canon(typed))))
+
     def lane_checkout(self, where: Path, lane: str, origin: Optional[Path] = None) -> Path:
         """`<c>`, lane `lane`'s own register checkout beside the checkout
         `where`, which `workspace.yaml` names as W: `<W>-lanes/<lane>`, W
@@ -1033,7 +1065,7 @@ class Estate:
                first: Sequence[Path] = (), script: Optional[Path] = None) -> Writer:
         name = f"{next(self._n):02d}-{lane}"
         given = (extra or {}).get("LANES_LANE", lane)
-        where, agents = self.checkout(name, origin, write_lanes_of(argv, given))
+        where, agents = self.checkout(name, origin, self.write_lanes(argv, given))
         psql = self.psql_dir(name, arms)
         env = dict(self.env)
         env.update(LANES_LANE=lane, LANES_SESSION=session_of(lane), LANES_REPO=str(where),
@@ -1240,7 +1272,9 @@ def test_the_later_hold_exits_2_and_prints_the_earlier_line(estates):
     later = next(w for w in writers if w is not first)
     assert (first.code, later.code) == (0, 2), [(w.lane, w.code, w.err[-400:]) for w in writers]
     assert texts[first.lane] in later.err, f"the later HOLD's stderr lacks the earlier line: {later.err!r}"
-    assert re.search(rf"\bseq {grew[0]['seq']}\b", later.err), f"no register seq in {later.err!r}"
+    # The relay names the earlier line's seq as `held-by=<seq>`, then the path
+    # and the line, tab-separated (register-cli.md:519; T243i).
+    assert f"held-by={grew[0]['seq']}\t" in later.err, f"no held-by=<seq> in {later.err!r}"
     assert all(not e.has_write(w) for w in later.write_ids())
 
 
@@ -1345,7 +1379,8 @@ def test_a_hold_line_that_names_no_repository_is_refused_with_2(estates, case):
     matching `HOLD ` or `LANDING ` from which no repository can be read exits
     2 and writes nothing, and so does a take whose UTC cannot be read (U3;
     its client half is AT-F13 (b)). A line of another shape is written as free
-    text."""
+    text: [free-text] commits 0, and as a line of no kind it gets no
+    `register_lines` row and takes or frees nothing (T243k)."""
     append_line_case(estates(), case, NO_REPO[case])
 
 
@@ -1375,7 +1410,9 @@ def append_line_case(e: Estate, case: str, row: tuple) -> None:
         assert e.open_slots(LA) == [[("landing" if "LANDING" in before_lines[0] else "hold"), KEY,
                                      PR if "LANDING" in before_lines[0] else None]], e.open_slots(LA)
     head, state = e.c.head(), e.c.state()
-    w = e.run(LA, ["append-line", spell(text)])
+    slots_before = e.rows(f"SELECT * FROM {REGISTER}.main_slots ORDER BY line_id")
+    line = spell(text)
+    w = e.run(LA, ["append-line", line])
     assert w.code == code, f"[{case}] exit {w.code}, not {code}: {w.err[-600:]}"
     if code == 2:
         assert e.c.state() == state, f"[{case}] the refusal changed the register"
@@ -1383,6 +1420,23 @@ def append_line_case(e: Estate, case: str, row: tuple) -> None:
         return
     assert e.c.head() == head + 1
     said = e.rows(f"SELECT kind, slot_role FROM {REGISTER}.register_lines WHERE seq = {head + 1}")
+    if case == "free-text":
+        # A LINE OF NO KIND GETS NO `register_lines` ROW (lane 1, #165
+        # 6834413025, which lanes 3 and 4 agree; ERR-49, B19 tasks:515,
+        # "`register_lines` for kinds only"): `parse_register_line` gives None
+        # for it, and the commit sends no row. So the oracle is the line
+        # written, no row, `main_slots` as it was, and another lane's `HOLD`
+        # still committing (T243k).
+        assert said == [], f"[{case}] a line of no kind got register_lines rows: {said}"
+        sent = e.rows(f"SELECT path, new_text FROM {REGISTER}.journal_edits WHERE seq = {head + 1} "
+                      "AND op = 'append'")
+        assert {"path": LANES_MD, "new_text": line} in sent, f"[{case}] the line was not written: {sent}"
+        after = e.rows(f"SELECT * FROM {REGISTER}.main_slots ORDER BY line_id")
+        assert after == slots_before, f"[{case}] main_slots moved: {slots_before} -> {after}"
+        other = e.run(LB, ["append-line", f"HOLD {EM} lane {LB} ({W_WS}), {e.utc()}: {KEY} main for T243's "
+                                          "free-text case"])
+        assert other.code == 0, f"[{case}] another lane's HOLD exited {other.code}: {other.err[-600:]}"
+        return
     role = "close" if case == "landed-no-repo" else None
     assert len(said) == 1 and said[0]["slot_role"] == role, f"[{case}] {said}, its slot_role not {role}"
     assert e.open_slots(LA) == slots, f"[{case}] main_slots for {LA}: {e.open_slots(LA)}, not {slots}"
@@ -1679,12 +1733,15 @@ _ENV_LOGGER = r'''#!/usr/bin/env python3
 # T248's logging stand-in: its name, argv, whether the flag reached it, and
 # each seam.out it can see; then the real tool, where one is named. For `gh`
 # with `--body-file -` (`gh_comment`), the body it reads from stdin too, and
-# no other call's stdin is read (T248a).
+# no other call's stdin is read (T248a). A `tmux` given answers prints the
+# one its `display-message` format asks for, keyed `t:<format>` where the
+# call names a target with `-t` (T248b).
 import glob, json, os, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 NAME = os.path.basename(sys.argv[0])
 REAL = REAL_TOOL
 STATE = STATE_DIR
+ANSWERS = TMUX_ANSWERS
 ARGV = sys.argv[1:]
 seams = {p: open(p, encoding="utf-8", errors="replace").read()
          for p in glob.glob(os.path.join(STATE, "**", "seam.out"), recursive=True)}
@@ -1694,19 +1751,34 @@ if NAME == "gh" and "--body-file" in ARGV and ARGV[ARGV.index("--body-file") + 1
 with open(os.path.join(HERE, "tools.log"), "a", encoding="utf-8") as log:
     log.write(json.dumps({"tool": NAME, "argv": ARGV, "scratch": os.environ.get(
         "LANES_REGISTER_SCRATCH"), "seams": seams, "body": body}) + "\n")
+if ANSWERS and NAME == "tmux" and ARGV[:1] == ["display-message"]:
+    said = ANSWERS.get(("t:" if "-t" in ARGV else "") + ARGV[-1])
+    if said is not None:
+        print(said)
 if REAL:
     os.execv(REAL, [REAL] + ARGV)
 '''
 
+#: The answers of a `tmux` whose server holds the bound window live (T248b):
+#: any window asked for by `-t` is in session `t243`, `bound_line`'s, and runs
+#: `claude`, so `binding_window_state` reads it `live` and `guard_type` types
+#: into it; the asking pane is `asker:1`, window `@90`, never a bound one.
+TMUX_LIVE = {"t:#{session_name}": "t243", "t:#{pane_current_command}": "claude",
+             "#{session_name}:#{window_index}": "asker:1", "#{window_id}": "@90", "#{pane_id}": "%90"}
 
-def loggers(e: Estate) -> Path:
+
+def loggers(e: Estate, tmux_live: bool = False) -> Path:
     """`git` (a wrapper), `gh` and `tmux` (fakes), each logging to
-    `tools.log` beside them."""
+    `tools.log` beside them. With `tmux_live`, the fake `tmux` answers its
+    `display-message` reads from `TMUX_LIVE` (T248b); otherwise it prints
+    nothing, as before."""
     where = e.root / "loggers"
     where.mkdir(exist_ok=True)
     for tool, real in (("git", shutil.which("git")), ("gh", None), ("tmux", None)):
+        answers = repr(TMUX_LIVE) if tool == "tmux" and tmux_live else "None"
         (where / tool).write_text(_ENV_LOGGER.replace("REAL_TOOL", repr(real))
-                                  .replace("STATE_DIR", repr(str(e.state))), encoding="utf-8")
+                                  .replace("STATE_DIR", repr(str(e.state)))
+                                  .replace("TMUX_ANSWERS", answers), encoding="utf-8")
         (where / tool).chmod(0o755)
     return where
 
@@ -1723,6 +1795,13 @@ def comment_calls(where: Path) -> List[dict]:
     head; T248a)."""
     return [c for c in tool_calls(where, "gh") if c["argv"][:1] in (["issue"], ["pr"])
             and c["argv"][1:2] == ["comment"]]
+
+
+def typed_calls(where: Path) -> List[dict]:
+    """The fake `tmux`'s typing, `send-keys` (`guard_type`): the tail's
+    `tmux`, never its reads before the seam, `display-message` for the
+    asking window and the bound window's session and command (T248b)."""
+    return [c for c in tool_calls(where, "tmux") if c["argv"][:1] == ["send-keys"]]
 
 
 def register_writes(e: Estate) -> Path:
@@ -1754,14 +1833,16 @@ def test_a_writer_prints_its_output_once_however_many_attempts_it_made(estates):
 def test_a_refused_writer_replays_its_output_then_the_refusal(estates):
     """Test 4's case (a): the writer refused at its commit prints its
     buffered output, then the refusal, last, naming the holder, and no
-    success text."""
+    success text. The success text, claim's `register seq <s>` line, is a
+    `note`, on stderr (T421), so stderr is where its absence is read
+    (T248c)."""
     e = estates()
     barrier = Barrier(e.root, 2)
     writers = [e.launch(lane, claim(OBJ, "--no-github"), arms=[WINDOW], barrier=barrier) for lane in (LA, LB)]
     barrier.release()
     assert sorted(w.wait() for w in writers) == [0, 2]
     win, lose = sorted(writers, key=lambda w: w.code)
-    assert not SEQ_SAID.search(lose.out), f"the refused writer printed success text: {lose.out!r}"
+    assert not SEQ_SAID.search(lose.err), f"the refused writer printed success text: {lose.err!r}"
     lines = [l for l in lose.err.splitlines() if l.strip()]
     assert lines and win.lane in lines[-1], f"the refusal naming {win.lane} is not last: {lose.err!r}"
     assert len(lines) == len(set(lines)), f"the refused writer's stderr repeats lines: {lose.err!r}"
@@ -1773,9 +1854,19 @@ def test_a_side_effect_runs_once_after_commit_and_never_for_a_refusal(estates, e
     """[gh]: two claimants on O; the fake `gh` comments once, by the
     committed claim, its body citing its seq, never by the refused one
     (Rule 1's reads, which each claimant makes before the seam, are not
-    counted; T248a). [tmux]: two `request-handoff`s for one lane; the fake
-    `tmux` is called by the committed one only, after its COMMIT (the
-    journal holds it when `tmux` runs), and never by a refused one.
+    counted; T248a). [tmux]: two `request-handoff`s for lane C, which is
+    bound to a window this tmux server holds live; the fake `tmux` types
+    (`send-keys`) once per committed request, naming its requester, after
+    its COMMIT (the journal holds it when `tmux` runs), and never for an
+    attempt refused at its commit, whose child runs no tail.
+
+    [tmux] as the engine does it (T248b; N2-17b's reading 3): a request for a
+    bound or already requested lane is taken, so both requests may commit,
+    and the journal, not the exit, says which did. Each runs `--no-wait`, so
+    its wait ends at once, 2, "THE WAIT ENDED WITH NOTHING", after its
+    commit. The reads `tmux` answers before the seam (`display-message` for
+    the asking window, the bound window's session and its command) are not
+    counted: only `send-keys`, and the fake answers them from `TMUX_LIVE`.
 
     After COMMIT: when the call runs, a `seam.out` reads `tail`, so an
     attempt has taken `committed`, and none reads other than `tail` or
@@ -1783,24 +1874,31 @@ def test_a_side_effect_runs_once_after_commit_and_never_for_a_refusal(estates, e
     `none` by then, and the logger sees every `seam.out` under
     `register-writes/` (T248a)."""
     e = estates()
-    where = loggers(e)
+    where = loggers(e, tmux_live=effect == "tmux")
     barrier = Barrier(e.root, 2)
     if effect == "gh":
         writers = [e.launch(lane, claim(OBJ), arms=[WINDOW], barrier=barrier, first=[where])
                    for lane in (LA, LB)]
     else:
-        writers = [e.launch(lane, ["request-handoff", LC, "--session", session_of(LC)], arms=[WINDOW],
-                            barrier=barrier, first=[where]) for lane in (LA, LB)]
+        writers = [e.launch(lane, ["request-handoff", LC, "--session", session_of(lane), "--no-wait"],
+                            arms=[WINDOW], barrier=barrier, first=[where]) for lane in (LA, LB)]
     barrier.release()
     for w in writers:
         w.wait()
-    committed = [w for w in writers if w.code == 0]
     grew = e.journal_after()
+    if effect == "gh":
+        committed = [w.lane for w in writers if w.code == 0]
+    else:
+        assert {w.code for w in writers} <= {0, 2}, [(w.lane, w.code, w.err[-300:]) for w in writers]
+        committed = [r["lane"] for r in grew if r["verb"] == "request-handoff"]
     assert len(committed) == len(grew) >= 1, ([(w.lane, w.code, w.err[-300:]) for w in writers], grew)
-    calls = comment_calls(where) if effect == "gh" else tool_calls(where, effect)
+    calls = comment_calls(where) if effect == "gh" else typed_calls(where)
     assert len(calls) == len(committed), f"{effect} ran {len(calls)} times for {len(committed)} commits: {calls}"
     if effect == "gh":
         assert all(str(grew[0]["seq"]) in SEQ_SAID.findall(c["body"] or "") for c in calls), calls
+    else:
+        typed = sorted(lane for lane in (LA, LB) for c in calls if session_of(lane) in " ".join(c["argv"]))
+        assert typed == sorted(committed), f"tmux typed for {typed}, the journal's requests are {committed}: {calls}"
     for call in calls:
         said = [text.strip() for text in call["seams"].values()]
         assert "tail" in said and set(said) <= {"tail", "none"}, f"{effect} ran before COMMIT: {call}"
@@ -2040,7 +2138,15 @@ def test_canon_lane_walk_whose_register_read_fails_off_primary_exits_1_and_print
     at `origin/main`, which the checkout wrote itself, is moved aside, so its
     `git show` fails while every other object reads, the alias table among
     them. First, with the register readable, the same walk prints its three
-    names, so the 1 is the failed read's."""
+    names, so the 1 is the failed read's.
+
+    It fails until lane 4's T411 lands with its `b637ce0d`, which ends the
+    walk with a failed register read's own status, the 1 here (#165 6814837872,
+    Question 126). Without T411, as on line R, `canon-lane --walk` is the
+    usage 64, "canon-lane takes one lane"; with only T411's first commit,
+    `2ee320e1`, as at pair-m33a `8ba10b4e`, the walk still reads that failure
+    as no row and exits 0 with its three names (lane 1, #165 6837462215;
+    T233c)."""
     rows, aliases, typed, names = WALKS["two-hops"]
     box = FilesBox(tmp_path / "box", rows, aliases)
     walk = box.edit("canon-lane", "--walk", typed)
@@ -2236,7 +2342,9 @@ def acted(act: str, *scopes: str) -> dict:
 # line's kind, lane or state); the skill's step-4 block, the fenced block of
 # its section 4 that opens with `act-begin`; and the guard's child, run as
 # T502 writes its body, `guard-bind --body <uuid>`, whose record's path T502
-# owns.
+# owns: the world writes that record, `mode=binding`, and gives the window
+# the session it binds, live and named for its lane, as the guard's answer 2
+# leaves them for its child (`ActWorld.offer`, `guard_session`; T252q).
 #
 # `lane-end`'S CLOSE-OUT GATE (T252g): every `lane-end` act runs with
 # `LANE_WORKTREES` set to a stand-in that prints nothing and exits 0, as
@@ -2298,7 +2406,9 @@ _HANDOFF = ("--lane", R_HERE, "T252b's race")
 #: `lane`'s `request-handoff`. The codes: `start-record`'s and W1's 2 die 2
 #: (T428, "any 2 dies"); W8's arm passes the code (T428); `:2817` keeps 2
 #: (T429); W13 under `set -e` and W14's note arm exit with the writer's code
-#: (T430); `lane`'s arm keeps 1 for a 2 (T432).
+#: (T430); `lane`'s arm keeps 1 for a 2 (T432); the handoff skill's step-4
+#: stop ends 2 alone, its writer's code staying in that writer's own stderr
+#: (T431; lane 3's question 4, #165 6835210568; T252n).
 ACT_WRITES = {
     "lane-start-w1-add-row": ActWrite("lane-start", ("repoZ", "1", "--no-launch"), R_NEW,
                                       verb_is("add-row"), rival="row", code=2),
@@ -2316,7 +2426,7 @@ ACT_WRITES = {
     "lane-end-w14-log-ended": ActWrite("lane-end", (R_HERE,), R_HERE, lane_line("ENDED", R_HERE), code=2),
     "lane-end-retire-rows": ActWrite("lane-end", ("--retire-dormant", "repoH", "--yes", "--reason=T252b's race"),
                                      R_DORMANT, verb_is("retire-rows"), env={"LANES_LANE": R_HERE}),
-    "skill-step-4-writes": ActWrite("skill", (), R_HERE, lane_line("PAUSED", R_HERE)),
+    "skill-step-4-writes": ActWrite("skill", (), R_HERE, lane_line("PAUSED", R_HERE), code=2),
     "guard-answer-2-child": ActWrite("guard", ("guard-bind", "--body", R_SID[R_PAUSED]), R_HERE,
                                      verb_is("set-row-state"), env={"LANES_LANE": R_PAUSED}),
     "lane-request-handoff": ActWrite("lane", (R_FAR, "--request-handoff"), R_FAR, verb_is("request-handoff"),
@@ -2381,6 +2491,7 @@ class ActWorld(Sandbox):
                         LANES_HOST="eagle", LANES_OS="linux", LANES_CONTAINER="none", LANES_IN_CONTAINER="0")
         self._n = itertools.count(1)
         self.writers: List[Writer] = []
+        self.sessions: list = []  # the guard's live sessions (T252q), closed by `act_worlds`
 
     def lane_checkout(self, lane: str) -> Path:
         """`<c>`, lane `lane`'s own register checkout beside this world's W,
@@ -2414,17 +2525,66 @@ class ActWorld(Sandbox):
     def act(self, write: ActWrite, arms: Sequence[dict]) -> Writer:
         """The act that makes `write`, run by its own tool."""
         if write.tool == "skill":
-            block = skill_step_4_block()
-            return self.launch("skill", ["bash", "-c", block], write.lane, arms, write.env)
+            # Step 4's block with the skill's prelude and steps 1 and 2's
+            # values, as the flow case runs it, `L` being this world's
+            # `lanes-edit.sh`: alone, the block's `"$L" act-begin` ran an
+            # empty command and exited 127 (T252p).
+            command, extra = skill_step_4_command(self, skill_prelude_block(), skill_step_4_block(),
+                                                  write.lane, "race", self.bin / "lanes-edit.sh")
+            return self.launch("skill", command, write.lane, arms, dict(extra, **write.env))
         if write.tool == "guard":
+            # What the guard's answer 2 leaves its child: the record, which
+            # says `mode=binding`, and this window renamed for the lane it
+            # binds, with the session it binds live in it (`guard_session`,
+            # T203c's: a live process, its record naming `testsess:@1.%1`, and
+            # a stand-in `tmux` that answers for that window). With neither,
+            # `guard-bind --body` refused 2, "does not say mode=binding (it
+            # says nothing)"; with the record alone, `lane-start --bind`
+            # refused 2, "no live session record names this window" (T252q).
+            sid, to = write.argv[-1], dict(self.env, **write.env)["LANES_LANE"]
+            self.offer(sid, write.lane, to)
+            live = guard_session(self.home, self.root / "guard-session", self.lane_dir, window=to,
+                                 session_id=sid)
+            self.sessions.append(live)
+            extra = dict(live.env({"PATH": self.env["PATH"]}), LANES_SESSION=sid, **write.env)
             return self.launch("guard", ["bash", str(self.bin / "lanes-edit.sh"), *write.argv], write.lane,
-                               arms, write.env)
+                               arms, extra)
         utc = self.c.value("SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"');")
         argv = [a.format(lane_dir=self.lane_dir, utc=utc) for a in write.argv]
         extra = dict(write.env)
         if write.tool == "lane-end":
             extra.setdefault("LANE_WORKTREES", str(self.gate_stand_in()))
         return self.launch(write.tool, [str(self.bin / write.tool), *argv], write.lane, arms, extra)
+
+    def offer(self, sid: str, left: str, to: str) -> Path:
+        """The bind's record for session `sid`, as the name guard's answer 2
+        leaves it for its child, `guard-bind --body <sid>` (T502;
+        `contracts/bind-record.md`): `guard_offer`'s lines, the window's lane
+        `left` and the session's lane `to`, rewritten by `guard_answer`'s
+        choice 2 to `mode=binding` with the attempt's first keys, `mode`
+        first. It is `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/lanes/offers/<sid>`
+        (`guard_offer_file`), 0600 in a 0700 `offers/`, beside the attempt's
+        empty `.bind.1.out`, which the outer's fork creates. No prefetch ran,
+        so the record has no `c`, `n_a` or `w_s_ms`, and `bound_s` is
+        `guard_bind_bound_s`'s default, 500. `guard_bind_body` reads `mode`,
+        `from`, `to` and `out`, binds `to` with `lane-start --no-launch
+        --bind`, and then sets `left`'s row (T252q)."""
+        offers = Path(self.env.get("CLAUDE_CONFIG_DIR") or Path(self.env["HOME"]) / ".claude") / "lanes" / "offers"
+        offers.mkdir(parents=True, exist_ok=True)
+        offers.chmod(0o700)
+        record = offers / sid
+        now = int(time.time())
+        utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+        bound_s = 500
+        lines = ["mode=binding", f"from={left}", f"to={to}", f"session={to}", f"uuid={sid}", f"utc={utc}",
+                 "window=", "pane=", "bind=1", f"started_utc={utc}", f"bound_s={bound_s}", "bounded=yes",
+                 f"deadline_epoch={now + bound_s + 5}", f"host={self.env['LANES_WORKSTATION']}",
+                 f"container={self.env['LANES_CONTAINER']}", f"out={record}.bind.1.out", "detach=setsid"]
+        for path, text in ((record, "\n".join(lines) + "\n"), (Path(f"{record}.bind.1.out"), "")):
+            fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(text)
+        return record
 
     def handoff(self, lane: str) -> None:
         """The lane's handoff file, at the path its row names, committed and
@@ -2495,6 +2655,8 @@ def act_worlds(pg_cluster, tmp_path):
         for w in world.writers:
             if w.ended is None and w.proc.poll() is None:
                 os.killpg(w.proc.pid, 9)
+        for live in world.sessions:
+            live.close()
     for name in made:
         pg_cluster.drop_database(name)
 
@@ -2673,9 +2835,9 @@ def test_act_variables_change_nothing_in_files_mode(estates):
 # with `act-begin` and re-runs the identity's register reads before its
 # first write (TP:5876-5877; Y:5724): for a window with a row these are step
 # 1's `register-row` and `canon-lane`. Where step 1's `lane` is not the lane
-# the window now names, it refuses before its first write: none of its three
-# writes (`SKILL.md:735`, `:743`, `:786`) is sent, and the journal is as it
-# was. With the same lane, the three commit, each carrying the act's
+# the window now names, it refuses with 2 before its first write: none of
+# its three writes (`SKILL.md:735`, `:743`, `:786`) is sent, and the journal
+# is as it was. With the same lane, the three commit, each carrying the act's
 # `act_id`. Readings: step 1's lane reaches step 4 as `lane`, the name both
 # steps use, and the case makes it differ by giving the agent's `lane` as
 # another lane with a row while the window still names its own.
@@ -2803,10 +2965,14 @@ def lane_end_gate_holds(world: ActWorld) -> None:
     assert swept[0]["seq"] < mine[0]["seq"], f"the NOTED line did not commit before W13: {entries}"
 
 
-def skill_step_4(world: ActWorld, prelude: str, block: str, lane: str, tag: str) -> Tuple[Writer, List[dict]]:
-    """Step 4's block, run in the window named for the world's live lane,
-    with step 1's `lane` given: the run, and its `$L` calls."""
-    edit = act_logger(world.root / f"skill-{tag}", "lanes-edit.sh", world.bin / "lanes-edit.sh")
+def skill_step_4_command(world: ActWorld, prelude: str, block: str, lane: str, tag: str,
+                         edit: Path) -> Tuple[List[str], dict]:
+    """Step 4's block as the agent runs it, in the window named for the
+    world's live lane: the skill's prelude, then steps 1 and 2's values, with
+    `L` as `edit` and step 1's `lane` given, then the block, in one `bash`,
+    and a `tmux` first on `PATH` naming that window. The command and the
+    environment it adds. The flow case (`skill_step_4`, T252f) and the race's
+    skill act (`ActWorld.act`, T252b) both run it (T252p)."""
     tmux_dir = world.root / f"skill-{tag}-tmux"
     tmux_dir.mkdir()
     (tmux_dir / "tmux").write_text(_SKILL_TMUX.replace("WINDOW_NAME", R_HERE)
@@ -2814,8 +2980,16 @@ def skill_step_4(world: ActWorld, prelude: str, block: str, lane: str, tag: str)
     (tmux_dir / "tmux").chmod(0o755)
     bound = [f"L={shlex.quote(str(edit))}", f"window={R_HERE}", f"lane={lane}", f"ws={W_WS}", "ws_missing=''",
              f"uuid={R_SID[R_HERE]}", "uuid_missing=''", "why='T252f skill case'", "kind=unknown"]
-    run = world.launch(f"skill-{tag}", ["bash", "-c", "\n".join([prelude, *bound, block])], R_HERE,
-                       extra={"PATH": str(tmux_dir) + os.pathsep + world.env["PATH"]})
+    command = ["bash", "-c", "\n".join([prelude, *bound, block])]
+    return command, {"PATH": str(tmux_dir) + os.pathsep + world.env["PATH"]}
+
+
+def skill_step_4(world: ActWorld, prelude: str, block: str, lane: str, tag: str) -> Tuple[Writer, List[dict]]:
+    """Step 4's block, run in the window named for the world's live lane,
+    with step 1's `lane` given: the run, and its `$L` calls."""
+    edit = act_logger(world.root / f"skill-{tag}", "lanes-edit.sh", world.bin / "lanes-edit.sh")
+    command, extra = skill_step_4_command(world, prelude, block, lane, tag, edit)
+    run = world.launch(f"skill-{tag}", command, R_HERE, extra=extra)
     run.wait(240)
     return run, act_calls(edit)
 
@@ -2833,7 +3007,10 @@ def skill_step_4_holds(world: ActWorld, prelude: str, block: str) -> None:
     assert {"register-row", "canon-lane"} <= set(verbs[1:]), (
         f"step 4 did not run the identity's register reads again after act-begin (T431): {verbs}")
     sent = [v for v in verbs if v in SKILL_WRITES]
-    assert run.code != 0 and sent == [] and run.commit_calls() == [], (
+    # The identity refusal is a step-4 stop, and the stop ends 2 (T431; lane
+    # 3's question 4, #165 6835210568: step 5 runs only where the block ended
+    # 0, 3, 69 or 75; T252o).
+    assert run.code == 2 and sent == [] and run.commit_calls() == [], (
         f"with step 1's lane {R_PAUSED} and the window's {R_HERE}, step 4 exited {run.code} and sent {sent} "
         f"(T431): {run.err[-600:]}")
     assert world.c.head() == head, f"the journal grew from {head} though step 1's lane differs"
