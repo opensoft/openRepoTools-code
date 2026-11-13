@@ -138,7 +138,11 @@ estate's render set, then a `cutover` entry, then `record_marker`, as T221's
 module does; the template is T227's, built by `lanes-index bootstrap
 --no-passwords`. Two logins join the writer and the reader groups and connect
 by the cluster's trust. The shim (T203's `PSQL_SHIM`, unarmed) stands in front
-of the cluster's own `psql` and logs every call.
+of the cluster's own `psql` and logs every call. Each flipped estate also has
+the writing lane's own register checkout `<c>`, `<W>-lanes/<lane>/`, a clone
+of W's origin, as lane 2's writes module makes one (`make_lane_checkout`): on
+primary a write makes no clone, since a clone is a fetch (D12), so lane 4's
+T415 refuses a write whose lane has none (`pw_checkout`; tasks:1154-1155).
 
 WHAT EACH WAITS FOR (the block's Order): T212's tests fail until L1-A3, L1-A4,
 L1-A11 and L5-A5 land: lane 1's T105 (the constant and `mode`), T113
@@ -672,18 +676,43 @@ def ensure_logins(db) -> None:
                 f"EXCEPTION WHEN duplicate_object THEN NULL; END $l$;")
 
 
+def lane_checkout(estate: Estate, lane: str = WRITING_LANE) -> Path:
+    """`<c>`, lane `lane`'s own register checkout, where `lanes-edit.sh`'s
+    `lane_checkout_path` puts it (Amendment 23 S1): `<W>-lanes/<lane>`, W
+    being the real path of `workspace.yaml`'s `path:`, `Estate.ws` (lane 2's
+    form, the writes module's `lane_checkout`)."""
+    real = Path(os.path.realpath(estate.ws))
+    return real.parent / f"{real.name}-lanes" / lane
+
+
+def make_lane_checkout(estate: Estate, lane: str = WRITING_LANE) -> Path:
+    """`<c>` for `lane`, a clone of W's origin, as `lane-checkout <lane>
+    --create` makes one (lane 2's `make_lane_checkout`, 5614d15:tests/
+    test_sql_register_writes.py:420-427). On primary a write makes no clone,
+    since a clone is a fetch (D12), so T415's `pw_checkout` refuses a write
+    whose lane has no checkout before anything is sent (tasks:1154-1155)."""
+    target = lane_checkout(estate, lane)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    proc = estate.run("git", "clone", "-q", str(estate.origin), str(target))
+    assert proc.returncode == 0, ("the lane's own register checkout was not made", shown(proc))
+    return target
+
+
 class Flipped:
     """Test 14's flipped state over an `Estate` and one `pg` database: the
     register imported from the estate and brought to `primary` with the
     marker `present`; a 0600 configuration whose `register_url=` and
     `reader_url=` name the session cluster's socket; T203's flipped copy, with
     the checkout's `lanes-edit.sh` beside the logging stand-in in front of it;
-    and the shim in front of the cluster's own `psql`."""
+    the shim in front of the cluster's own `psql`; and the writing lane's own
+    register checkout `<c>`, which T415's `pw_checkout` reads and never makes
+    (`make_lane_checkout`)."""
 
     def __init__(self, estate: Estate, db):
         self.e, self.db = estate, db
         self.root = estate.root / "test14-flipped"
         self.root.mkdir(parents=True, exist_ok=True)
+        self.checkout = make_lane_checkout(estate)
         self.passfile = write_private(self.root / "secrets" / "register.pgpass",
                                       f"*:*:*:{LOGIN_WRITER}:not-a-secret\n")
         self.reader_passfile = write_private(self.root / "secrets" / "reader.pgpass",
@@ -721,13 +750,14 @@ class Flipped:
                           env=self.env(**extra), timeout=timeout)
 
     def routed(self) -> dict:
-        """Slice 1a's routing (Amendment 23 S2): no `LANES_REPO`, and the write
-        goes through, and replays in, the lane's own checkout."""
+        """Slice 1a's routing (Amendment 23 S2): no `LANES_REPO`, and
+        `LANES_ROUTE_WRITES=1`."""
         return {"LANES_REPO": None, "LANES_ROUTE_WRITES": "1"}
 
     def lane_checkout(self) -> Path:
-        """`<W>-lanes/<lane>/`, W being the path `workspace.yaml` names."""
-        return Path(f"{self.e.ws}-lanes") / WRITING_LANE
+        """`<W>-lanes/<lane>/`, W being the real path `workspace.yaml` names:
+        the checkout `make_lane_checkout` made."""
+        return self.checkout
 
     def shim_calls(self) -> list:
         """The calls the shim handed on that carry a request: not `--version`."""
@@ -836,11 +866,13 @@ def replay_keeps_pid_case(world: Flipped) -> None:
     """`[replay-keeps-pid]` (R-T409-9; lane 3, #165 6747281902, T409's item
     9): with a configuration, a write that routes through its lane's
     checkout, whose replay is an `exec` that keeps the pid, asks the mode
-    once: one `mode` call in the stand-in's log (Y:4858, Y:5121)."""
+    once: one `mode` call in the stand-in's log (Y:4858, Y:5121). The
+    estate makes the lane's checkout `<c>` before the write, so `<c>` is
+    asserted there first, and its being there after the write no longer
+    says the write routed."""
+    assert world.lane_checkout().is_dir(), "the estate made no lane checkout for the write"
     proc = world.write("test 14 - a replay keeps its pid", **world.routed())
     assert proc.returncode == 0, shown(proc)
-    assert world.lane_checkout().is_dir(), ("the write did not route, so it did not replay",
-                                            shown(proc))
     modes = [c for c in calls(world.bin) if c["argv"] == ["mode"]]
     assert len(modes) == 1, ("the mode ask was made more than once, or never, across the replay",
                              [c["argv"] for c in calls(world.bin)])
