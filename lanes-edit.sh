@@ -7121,18 +7121,7 @@ reg_log() {   # <key>
 # events; 1 the mirror; 69 a failed read, whose build `state_events` never
 # caches. The events are kept aside until every read is made, so a read that
 # fails part-way prints none of them.
-# AND ITS EVENTS ARE ONE SNAPSHOT (lane 3, #165 6851977580, Q2): an
-# out-of-class log's form 3 read can move the family to `n'`, so the head pair
-# (`reg_head_n`, `reg_head_generation`) is taken after the list read and again
-# after the last read; where either moved, the run's events and notes are
-# dropped and it runs again from the list read. The head only moves forward
-# within a generation, so an unchanged pair is one snapshot. Three runs at
-# most, then the class's failed read through `reg_fail` (69; the mirror class
-# reads the mirror), with nothing printed.
 reg_remote_log_events() {
-  rre_run=0
-  while :; do
-  rre_run=$((rre_run + 1))
   reg_member paths || return
   rre_nl=$'\n'
   rre_list=""
@@ -7154,15 +7143,11 @@ RRE_EOF
     rre_list="$(reg_log_paths)" || { reg_fail "the register could not be read: its cached .paths could not be read" "the cache family could not be read"; return; }
     rre_pairs="$(printf '%s\n' "$rre_list" | awk 'NF { k = tolower($0); c[k]++; p[++n] = $0; f[n] = k } END { for (i = 1; i <= n; i++) if (c[f[i]] > 1) print p[i] }')"
   fi
-  rre_h0="$(reg_head_n) $(reg_head_generation)"
-  rre_t="$SE_CACHE_FILE.rre.${BASHPID:-$$}"; rre_w="$SE_CACHE_FILE.rrw.${BASHPID:-$$}"
-  if ! : > "$rre_t" || ! : > "$rre_w"; then
-    rm -f -- "$rre_t" "$rre_w"
+  rre_t="$SE_CACHE_FILE.rre.${BASHPID:-$$}"
+  if ! : > "$rre_t"; then
     reg_fail "the register could not be read: no file could be made beside the cache to hold its events" "no file for the events"
     return
   fi
-  rre_rc=0
-  {
   while IFS= read -r rre_p; do
     [ -n "$rre_p" ] || continue
     case "${rre_p##*/}" in README.md) continue ;; esac
@@ -7175,7 +7160,8 @@ RRE_EOF
     if reg_in_class "$rre_s"; then
       rre_slot="$rre_s"
     else
-      reg_second_read "" "$rre_s" || { rre_rc=$?; break; }
+      rre_rc=0; reg_second_read "" "$rre_s" || rre_rc=$?
+      if [ "$rre_rc" != 0 ]; then rm -f -- "$rre_t"; return "$rre_rc"; fi
       rre_slot="$(reg_slot "$rre_s")"
     fi
     if [ ! -f "$SE_CACHE_FILE.log.$rre_slot" ]; then
@@ -7186,19 +7172,9 @@ RRE_EOF
   done <<RRE_EOF
 $rre_list
 RRE_EOF
-  } 2>> "$rre_w"
-  if [ "$rre_rc" = 0 ] && [ "$(reg_head_n) $(reg_head_generation)" != "$rre_h0" ]; then
-    rm -f -- "$rre_t" "$rre_w"
-    [ "$rre_run" -lt 3 ] && continue
-    reg_fail "the register could not be read: its head moved during each of three reads of the logs, so no read of them is one snapshot (feature 007, T505; lane 3, #165 6851977580, Q2)" "the register's head kept moving"
-    return
-  fi
-  cat -- "$rre_w" >&2 2>/dev/null || :
-  if [ "$rre_rc" != 0 ]; then rm -f -- "$rre_t" "$rre_w"; return "$rre_rc"; fi
   cat -- "$rre_t"
-  rm -f -- "$rre_t" "$rre_w"
+  rm -f -- "$rre_t"
   return 0
-  done
 }
 
 # FEATURE 007, T505 - `reg_paths` (tasks:761; contract 3.6, C10): `.paths`, the
@@ -27731,7 +27707,7 @@ worktree_rows() {   # [<canonical lane> [register-unread]]
   live_session_ids >/dev/null 2>&1 || wr_live_ok=0
   wr_partial=""
   wr_unlisted="the object logs under origin/$LANES_BRANCH:$LANES_LOG_PREFIX could not be listed"
-  wr_reg_ok=1; wr_evrc=0; wr_lp=""; wr_unread_lanes=" "; wr_binding_unread=0; wr_sql=0; wr_h0=""
+  wr_reg_ok=1; wr_evrc=0; wr_lp=""; wr_unread_lanes=" "; wr_binding_unread=0
   # FEATURE 007, T505 Q3 - ON PRIMARY A FAILED READ IS 69, passed on before
   # the `PARTIAL` line reads any other code: it is no listing at all.
   if [ -z "$wr_one" ]; then
@@ -27772,7 +27748,6 @@ worktree_rows() {   # [<canonical lane> [register-unread]]
       wr_pin=""
       wr_pin="$(reg_log_paths && printf x)" || return 69
       PIN_LOGS_TEXT="${wr_pin%x}"; PIN_LOGS=1
-      wr_h0="$(reg_head_n) $(reg_head_generation)"   # lane 3, #165 6851977580, Q2
     elif have_remote_ref; then
       wr_pin=""
       if wr_pin="$(git -C "$LANES_REPO" ls-tree --name-only "origin/$LANES_BRANCH" -- "$LANES_LOG_PREFIX" 2>/dev/null && printf x)"; then
@@ -27793,40 +27768,12 @@ worktree_rows() {   # [<canonical lane> [register-unread]]
     PIN_LANE_LOG_TEXT="$wr_ev"; PIN_LANE_LOG_RC="$wr_evrc"; PIN_LANE_LOG=1
     [ "$wr_evrc" = 0 ] || wr_lp="$(log_path_ci "$wr_one" 2>/dev/null || log_path_for "$wr_one")"
   fi
-  # ON PRIMARY THE PINNED LIST AND THE LISTING ARE ONE SNAPSHOT (lane 3, #165
-  # 6851977580, Q2): the head pair taken after the list's pin is taken again
-  # after the listing's reads, whose out-of-class form 3 reads can move the
-  # family to `n'`. Where either moved, the listing is dropped and the archive
-  # and the list are pinned again; the head only moves forward within a
-  # generation, so an unchanged pair is one snapshot. Three runs at most, then
-  # 69 with nothing on stdout, the class's failed read (`reg_fail`).
-  wr_run=0
-  while :; do
-  wr_run=$((wr_run + 1))
   wr_lanes=""; wr_lrc=0
   if [ -n "$wr_one" ]; then
     wr_lanes="$(lanes_rows --lane "$wr_one" --closed)" || wr_lrc=$?
   else
     wr_lanes="$(lanes_rows --all --closed)" || wr_lrc=$?
   fi
-  [ "$wr_sql" = 1 ] && [ "$wr_lrc" != 69 ] || break
-  [ "$(reg_head_n) $(reg_head_generation)" != "$wr_h0" ] || break
-  PIN_ARCHIVE=0; PIN_ARCHIVE_TEXT=""; PIN_LOGS=0; PIN_LOGS_TEXT=""; wr_lanes=""
-  if [ "$wr_run" -ge 3 ]; then
-    reg_fail "the register could not be read: its head moved during each of three reads of the worktree listing, so no listing is one snapshot (feature 007, T505; lane 3, #165 6851977580, Q2)" "the register's head kept moving" || :
-    return 69
-  fi
-  wr_pin=""; wr_atc=0
-  wr_pin="$(archive_text 2>/dev/null && printf x)" || wr_atc=$?
-  [ "$wr_atc" != 69 ] || return 69
-  if [ "$wr_atc" = 0 ]; then PIN_ARCHIVE_TEXT="${wr_pin%x}"; PIN_ARCHIVE=1; fi
-  wr_m=0; reg_member paths || wr_m=$?
-  [ "$wr_m" = 0 ] || return 69
-  wr_pin=""
-  wr_pin="$(reg_log_paths && printf x)" || return 69
-  PIN_LOGS_TEXT="${wr_pin%x}"; PIN_LOGS=1
-  wr_h0="$(reg_head_n) $(reg_head_generation)"
-  done
   PIN_ARCHIVE=0; PIN_ARCHIVE_TEXT=""; PIN_LOGS=0; PIN_LOGS_TEXT=""
   PIN_LANE_LOG=0; PIN_LANE_LOG_TEXT=""; PIN_LANE_LOG_RC=0
   # 1 IS ALSO A LISTING THAT READS THAT FAILED LEFT EMPTY (#290), which the
