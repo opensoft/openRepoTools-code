@@ -2137,7 +2137,19 @@ def test_a_bind_in_doubt_looks_its_write_up_before_a_rerun(estate, held):
     request only that form sends: under `--tree` and `--at <k>`, the
     `repos_blob` of the entry at `k + 1`
     (`f9e1449c:lanes-index:3454`, `:3752`; the replay's call,
-    `f9e1449c:lanes-edit.sh:10725-10728`)."""
+    `f9e1449c:lanes-edit.sh:10725-10728`).
+
+    AND `[found]`'s DONE MARK SAYS `done` (T254zp; Y TP:6110-6113 at
+    a6497d00): `<state>/register-done/<write_id>`, under the estate's own
+    state home, holds `tail=done ...`, as the run that removes the record
+    on 0 writes it (`4d96f8c5:lanes-edit.sh:8063-8077`). Two more items of
+    that row are not read, since the case cannot see them: the replay
+    child's `seam.out` `tail`, because a run's own `<run>/` goes at its end
+    and a kept attempt directory keeps only `snapshot`, `files` and
+    `preimages` (`:9722-9724`); and `lane_state_follow`'s one move of the
+    lane's `lane-state.yaml` `generation`, a sidecar written only for a
+    legacy lane on a seam verdict and a pre-image (`:25895-25906`, `:25769`),
+    whose place in this estate is not established."""
     est = _real_estate(estate, mode="primary")
     arms = ([{"mode": "fail-match", "match": "commit_write", "from": 1},
              {"mode": "fail-match", "match": "find_write", "from": 1}]
@@ -2169,6 +2181,10 @@ def test_a_bind_in_doubt_looks_its_write_up_before_a_rerun(estate, held):
         assert [c for c in calls if at in c.get("sent", "")], \
             (f"no replay at seq {int(seq[-1]) - 1}, the found entry's base, in calls "
              f"{[c.get('call') for c in calls]}")
+        done = est.state_home / "openRepoTools" / "register-done" / copied
+        mark = done.read_text(encoding="utf-8").splitlines() if done.exists() else []
+        assert [line for line in mark if line.startswith("tail=done")], \
+            f"the found write's done mark {done} does not say done: {mark}"
     else:
         assert start and all(copied not in calls[i].get("sent", "") for i in start), \
             (copied, [calls[i].get("call") for i in start])
