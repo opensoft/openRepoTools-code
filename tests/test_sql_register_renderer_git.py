@@ -22,7 +22,11 @@ needs only the renderer's side", taken for `primary` too, so no case here
 waits for lane 3's T327 (the cutover's own push). `n`, the head after the
 cutover, is 1. Lane checkouts are clones of that origin, each with its own
 `$HOME`, `workspace.yaml` naming a view of it, and `LANES_REPO` at it (test
-7's `Workspace` form).
+7's `Workspace` form). That view is W. A lane whose writes fork the
+renderer also has its own register checkout `<c>`, `<W>-lanes/<lane>/`,
+made by `lanes-edit.sh lane-checkout <lane> --create`, since on primary
+each write goes through it whatever `LANES_REPO` says, and its fork
+renders there (T270e; `RenderEstate.own_checkout`).
 
 ENTRIES "WRITTEN THROUGH THE WRITE PATH" (TP:1055-1056) come two ways:
 - by `commit_write` as REGISTER-WRITER, the write path's SQL half (T107),
@@ -61,7 +65,8 @@ T253e has it). The case's own `psql` is the shim, in the estate's `bin`.
 
 THE WAITS. A case that starts the renderer itself waits for its exit. A
 render forked by a write is waited for by open point 8's two waits, and no
-other: a poll of `status` every 100 ms until its lag is 0, under 30 s; or,
+other: a poll of `status` every 100 ms until its lag is 0, under 30 s,
+each poll after the harness's own fetch of the W `status` reads; or,
 where the lag must stay above 0, a wait for every renderer pid the wrapper
 logged after the write to exit.
 
@@ -730,11 +735,13 @@ class RenderEstate:
 
     # ------------------------------------------------------------ lane checkouts
     def checkout(self, name: str, lane: str = L1, *, origin: Path | None = None,
-                 repository: str | None = None) -> SimpleNamespace:
+                 repository: str | None = None, own: bool = False) -> SimpleNamespace:
         """A lane's register checkout, a clone of `origin`, in test 7's
         `Workspace` form: its own `$HOME`, W a view of the clone that
         `workspace.yaml` names (with `repository:` `repository`, origin's
-        path by default), and `LANES_REPO` at the clone."""
+        path by default), and `LANES_REPO` at the clone. With `own`, for a
+        lane whose writes fork the renderer, also the lane's own register
+        checkout `<c>` (`own_checkout`), as `.own`."""
         root = self.root / name
         home = root / "home"
         agents = home / ".agents"
@@ -756,9 +763,39 @@ class RenderEstate:
                    TMPDIR=str(root / "tmp"), CLAUDE_CONFIG_DIR=str(home / ".claude"),
                    LANES_REPO=str(clone), LANES_LANE=lane)
         lane_checkout = SimpleNamespace(name=name, lane=lane, root=root, home=home, clone=clone,
-                                        git_dir=clone / ".git", env=env)
+                                        git_dir=clone / ".git", env=env, w=view, own=None)
+        if own:
+            lane_checkout.own = self.own_checkout(lane_checkout)
         self.checkouts[name] = lane_checkout
         return lane_checkout
+
+    def own_checkout(self, lc) -> SimpleNamespace:
+        """THE LANE'S OWN REGISTER CHECKOUT ON PRIMARY, `<c>`,
+        `<W>-lanes/<lane>/` (T270e), made by `lanes-edit.sh lane-checkout
+        <lane> --create` through the flipped copy, as `lane-start` makes it
+        at a launch and as line G's T254s makes it for each primary lane.
+
+        WHY: on primary, T415's `pw_checkout` takes each write's checkout
+        from `lane_checkout_path`, `<W>-lanes/<lane>`, and `LANES_REPO`
+        never enters it (lane 4, #165 6840794493: `a38af255:lanes-edit.sh:6273`,
+        `:20738`, `:1673-1674`). Where it is not there, the write refuses 2
+        and nothing is sent. The write's fork then renders there,
+        `render --checkout "$PW_C"` (`pw_render_fork`). So the render's
+        calls, lock and marks are `<c>`'s. The clone is a fetch, so
+        `LANES_NO_FETCH` is left out. Returns `<c>`'s `clone` and
+        `git_dir`."""
+        proc = subprocess.run(["bash", str(self.copy.parent / "lanes-edit.sh"), "lane-checkout",
+                               lc.lane, "--create"], cwd=str(lc.clone),
+                              env=self.lane_env(lc, None, {"LANES_NO_FETCH": None}),
+                              capture_output=True, text=True, timeout=300,
+                              stdin=subprocess.DEVNULL, check=False)
+        assert proc.returncode == 0, f"lane-checkout {lc.lane} --create:\n{_said(proc)}"
+        c = Path(proc.stdout.strip().splitlines()[-1])
+        expected = Path(os.path.realpath(lc.w) + "-lanes") / lc.lane
+        assert c == expected and c.is_dir(), (
+            f"lane-checkout {lc.lane} --create made {c}, not {expected}:\n{_said(proc)}")
+        git_dir = Path(self.git(c, "rev-parse", "--absolute-git-dir").strip())
+        return SimpleNamespace(clone=c, git_dir=git_dir)
 
     def snapshot(self, lc) -> dict:
         """The checkout's HEAD, index digest and `status --porcelain`, the
@@ -902,14 +939,23 @@ class RenderEstate:
 
     def wait_lag_0(self, lc, what: str) -> None:
         """OPEN POINT 8'S FIRST WAIT: `status` every 100 ms until its lag is
-        0, under 30 s."""
+        0, under 30 s, each poll after the harness's fetch of the W `status`
+        reads (T270e; lane 3's ruling (a), #165 6833830078):
+        `git -C <W> fetch -q origin main`, with plain git, never through the
+        wrapper. `status` reads `m` on W's `origin/main` as last fetched and
+        never fetches, no write on primary fetches (D12), and the
+        render pushes from the lane's `<c>`. The fetch is the harness's own
+        act, not a write's, as the drill's `wait_lag_0` has it (DR's
+        T276f)."""
         deadline = time.monotonic() + CEILING
         while True:
+            self.git(lc.w, "fetch", "-q", "origin", "main")
             if self.lag(lc) == 0:
                 return
             if time.monotonic() > deadline:
                 shown = self.status(lc)
-                pytest.fail(f"{what}: the lag is not 0 within {CEILING:g} s:\n{shown.stdout}"
+                pytest.fail(f"{what}: the lag, each read after a fetch of W, is not 0 within "
+                            f"{CEILING:g} s:\n{shown.stdout}"
                             f"{shown.stderr[-800:]}", pytrace=False)
             time.sleep(POLL)
 
@@ -1626,9 +1672,10 @@ def test_six_lost_races_leave_the_last_write_for_the_next_write_or_reconcile(req
 # =================================================================== writes that fork
 #: THE WRITER- AND FORK-SIDE CASES: each write is `lanes-edit.sh log NOTED`
 #: (or lane-start's stamp) on `primary` from a lane's checkout, through the
-#: flipped copy, and its fork starts the renderer. Each fails until lane 4's
-#: T415 and T416 (L4-B13), with T320 to T323. Every wait for a forked render
-#: is open point 8's.
+#: flipped copy, and its fork starts the renderer in the lane's own register
+#: checkout `<c>` (`own=True`, T270e), whose calls, lock and marks each case
+#: reads. Each fails until lane 4's T415 and T416 (L4-B13), with T320 to
+#: T323. Every wait for a forked render is open point 8's.
 
 
 def test_a_renderer_killed_between_commit_and_push_blocks_nothing(request, tmp_path):
@@ -1642,36 +1689,37 @@ def test_a_renderer_killed_between_commit_and_push_blocks_nothing(request, tmp_p
     a write, then lane-start's stamp (`append-session-id`), which exits 0
     and is rendered. Fails until L4-B13 and T320 to T322."""
     est = _estate(request, tmp_path)
-    one = est.checkout("L1", L1)
+    one = est.checkout("L1", L1, own=True)
     old = est.origin_tip()
-    before = est.snapshot(one)
-    est.arm([{"sub": "push", "do": "kill", "render_only": True, "where": str(one.clone),
+    before = est.snapshot(one.own)
+    est.arm([{"sub": "push", "do": "kill", "render_only": True, "where": str(one.own.clone),
               "times": 1}])
     mark = est.entries()
     _wrote(est.write(one, "a write whose render is killed before its push"), "log NOTED")
     est.wait_renders_exit(mark, "the killed render")
     assert [c for c in est.render_calls(mark) if c["outcome"] == "killed"], (
         "the wrapper killed no render at its push")
-    assert est.snapshot(one) == before, "the killed render moved L1's HEAD, index or status"
-    assert _lock_is_free(one.git_dir / "lanes-render.lock"), "the render lock is still held"
+    assert est.snapshot(one.own) == before, "the killed render moved L1's HEAD, index or status"
+    assert _lock_is_free(one.own.git_dir / "lanes-render.lock"), "the render lock is still held"
     # The next write, then lane-handoff's commit block, with nothing between.
     est.rearm()
     _wrote(est.write(one, "the next write after the kill"), "the next log NOTED")
     est.wait_lag_0(one, "the next write's render")
     _assert_rendered(est, old, list(range(est.n + 1, est.head() + 1)))
     handoff = f"handoffs/{L1}.md"
-    (one.clone / "handoffs").mkdir(exist_ok=True)
-    (one.clone / handoff).write_text("# a handoff, after the killed render\n", encoding="utf-8")
+    (one.own.clone / "handoffs").mkdir(exist_ok=True)
+    (one.own.clone / handoff).write_text("# a handoff, after the killed render\n",
+                                         encoding="utf-8")
     env = dict(est.plain_env, HOME=str(one.home))
     for argv in (["add", "--", handoff],
                  ["commit", "-q", "-m", f"handoff({L1}@{WS}): PAUSED, t270", "-m",
                   f"Lane: {L1}", "--", handoff],
                  ["pull", "--rebase", "-q", "origin", "main"], ["push", "-q", "origin", "main"]):
-        est.git(one.clone, *argv, env=env)
+        est.git(one.own.clone, *argv, env=env)
     assert handoff in est.origin_git("ls-tree", "-r", "--name-only", "refs/heads/main",
                                      "handoffs/").split(), "the handoff commit was not pushed"
     # The second case: a kill, a write, then lane-start's stamp.
-    est.rearm([{"sub": "push", "do": "kill", "render_only": True, "where": str(one.clone),
+    est.rearm([{"sub": "push", "do": "kill", "render_only": True, "where": str(one.own.clone),
                 "times": 1}])
     mark = est.entries()
     _wrote(est.write(one, "a second write whose render is killed"), "log NOTED")
@@ -1692,11 +1740,11 @@ def _held_burst(est: RenderEstate, one) -> SimpleNamespace:
     os.mkfifo(str(fifo), 0o600)
     old = est.origin_tip()
     est.arm([{"sub": "push", "do": "hold", "render_only": True, "fifo": str(fifo),
-              "where": str(one.clone)}])
+              "where": str(one.own.clone)}])
     mark = est.entries()
     _wrote(est.write(one, "the first write of a burst"), "log NOTED")
     fd = _held_fd(fifo, "the first write's render, at its push")
-    rerun = one.git_dir / "lanes-render.rerun"
+    rerun = one.own.git_dir / "lanes-render.rerun"
     try:
         holder = {c["renderer"] for c in est.render_calls(mark) if c["outcome"] == "held"}
         waited = []
@@ -1720,7 +1768,7 @@ def _held_burst(est: RenderEstate, one) -> SimpleNamespace:
         os.close(fd)
     est.wait_lag_0(one, "the burst's last write")
     est.wait_renders_exit(mark, "the burst's renders")
-    assert _lock_is_free(one.git_dir / "lanes-render.lock"), "the render lock is still held"
+    assert _lock_is_free(one.own.git_dir / "lanes-render.lock"), "the render lock is still held"
     pushes = [c for c in est.render_calls(mark) if c["sub"] == "push" and c["outcome"] == "ran"]
     return SimpleNamespace(old=old, holder=holder, marked=marked, forks=forks(),
                            forks_live=forks_live, waited=waited, pushes=pushes,
@@ -1734,7 +1782,7 @@ def test_a_held_renderer_delays_no_writer_beyond_the_fork(request, tmp_path):
     `lanes-render.rerun` in the checkout's git directory and had exited
     while the hold still stood (D14). Fails until L4-B13 and T320 to T322."""
     est = _estate(request, tmp_path)
-    one = est.checkout("L1", L1)
+    one = est.checkout("L1", L1, own=True)
     seen = _held_burst(est, one)
     assert len(seen.holder) == 1, f"not one held render: {seen.holder}"
     assert seen.marked, "no fork that found the lock held left lanes-render.rerun"
@@ -1750,7 +1798,7 @@ def test_a_burst_from_one_lane_gives_at_most_two_renders(request, tmp_path):
     counting their pushes, and origin carries the burst's last seq, each
     seq once, in order. Fails until L4-B13 and T320 to T323."""
     est = _estate(request, tmp_path)
-    one = est.checkout("L1", L1)
+    one = est.checkout("L1", L1, own=True)
     seen = _held_burst(est, one)
     assert 1 <= len(seen.pushes) <= 2, (
         f"{len(seen.pushes)} pushes for a burst that arrived within one pass, not at most two: "
@@ -1764,7 +1812,7 @@ def test_the_last_write_of_a_burst_is_rendered_with_no_later_write(request, tmp_
     exits; origin carries every seq of the burst, its last included, in
     order. Fails until L4-B13 and T320 to T323."""
     est = _estate(request, tmp_path)
-    one = est.checkout("L1", L1)
+    one = est.checkout("L1", L1, own=True)
     old = est.origin_tip()
     est.arm()
     for n in range(1, 6):
@@ -1785,9 +1833,9 @@ def test_a_failed_render_shows_its_lag_and_the_next_render_catches_up(request, t
     Released, the next write's render leaves both seqs on origin in order,
     and a lag of 0. Fails until L4-B13 and T320 to T323."""
     est = _estate(request, tmp_path)
-    one = est.checkout("L1", L1)
+    one = est.checkout("L1", L1, own=True)
     old = est.origin_tip()
-    est.arm([{"sub": fail, "do": "fail", "render_only": True, "where": str(one.clone)}])
+    est.arm([{"sub": fail, "do": "fail", "render_only": True, "where": str(one.own.clone)}])
     mark = est.entries()
     _wrote(est.write(one, f"a write whose render's {fail} fails"), "log NOTED")
     est.wait_renders_exit(mark, f"the render whose {fail} fails")
@@ -1820,12 +1868,12 @@ def test_a_renderer_hands_over_once_after_16_passes(request, tmp_path):
     passes (a pass begins with its fetch), a second process follows once,
     and the last write reaches origin. Fails until L4-B13 and T320 to T323."""
     est = _estate(request, tmp_path)
-    one = est.checkout("L1", L1)
+    one = est.checkout("L1", L1, own=True)
     old = est.origin_tip()
     fifo = est.root / "pass.fifo"
     os.mkfifo(str(fifo), 0o600)
     est.arm([{"sub": "push", "do": "hold", "render_only": True, "fifo": str(fifo),
-              "where": str(one.clone)}])
+              "where": str(one.own.clone)}])
     _wrote(est.write(one, "stream write 1"), "write 1")
     for n in range(2, 18):
         fd = _held_fd(fifo, f"pass {n - 1}'s push")
@@ -1857,7 +1905,7 @@ def test_no_rerun_mark_is_left_and_the_last_write_is_rendered_after_a_burst(requ
     `lanes-render.rerun`, and origin carries the last seq. Fails until
     L4-B13 and T320 to T323."""
     est = _estate(request, tmp_path)
-    one = est.checkout("L1", L1)
+    one = est.checkout("L1", L1, own=True)
     old = est.origin_tip()
     est.arm()
     for burst in (1, 2):
@@ -1866,7 +1914,7 @@ def test_no_rerun_mark_is_left_and_the_last_write_is_rendered_after_a_burst(requ
             _wrote(est.write(one, f"burst {burst}, fork {n}"), f"burst {burst}, write {n}")
         est.wait_lag_0(one, f"burst {burst}")
         est.wait_renders_exit(mark, f"burst {burst}'s renders")
-        assert not (one.git_dir / "lanes-render.rerun").exists(), (
+        assert not (one.own.git_dir / "lanes-render.rerun").exists(), (
             f"burst {burst} left lanes-render.rerun")
         assert est.commits_after(old)[-1][1] == [est.head()], (
             f"origin does not carry burst {burst}'s last seq {est.head()}")
@@ -1885,7 +1933,7 @@ def test_a_write_that_commits_as_the_render_lets_go_is_rendered_with_no_later_wr
     write's seq reaches origin, `status` shows a lag of 0, and no
     `lanes-render.rerun` is left. Fails until L4-B13 and T320 to T323."""
     est = _estate(request, tmp_path)
-    one = est.checkout("L1", L1)
+    one = est.checkout("L1", L1, own=True)
     old = est.origin_tip()
     fifo = est.root / "lets-go.fifo"
     os.mkfifo(str(fifo), 0o600)
@@ -1897,14 +1945,14 @@ def test_a_write_that_commits_as_the_render_lets_go_is_rendered_with_no_later_wr
     try:
         _wrote(est.write(one, "the write that commits as the render lets go", timeout=120),
                "write 2")
-        assert _until(lambda: (one.git_dir / "lanes-render.rerun").exists(), CEILING), (
+        assert _until(lambda: (one.own.git_dir / "lanes-render.rerun").exists(), CEILING), (
             "the second write's fork found the lock held and left no lanes-render.rerun")
     finally:
         os.close(fd)
     est.wait_lag_0(one, "the write that commits as the render lets go")
     est.wait_renders_exit(mark, "the renders")
     _assert_rendered(est, old, [est.n + 1, est.n + 2])
-    assert not (one.git_dir / "lanes-render.rerun").exists(), "lanes-render.rerun is left"
+    assert not (one.own.git_dir / "lanes-render.rerun").exists(), "lanes-render.rerun is left"
 
 
 # =================================================================== AT-C8
@@ -1916,7 +1964,7 @@ def test_a_render_forked_from_a_no_fetch_verb_still_renders(request, tmp_path):
     the variable absent from its environment, and no render's call made
     with it set (D12). Fails until L4-B13 and T320 to T322."""
     est = _estate(request, tmp_path)
-    one = est.checkout("L1", L1)
+    one = est.checkout("L1", L1, own=True)
     old = est.origin_tip()
     est.arm()
     _wrote(est.write(one, "a write under LANES_NO_FETCH=1", env={"LANES_NO_FETCH": "1"}),
