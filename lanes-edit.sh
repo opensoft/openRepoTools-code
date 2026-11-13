@@ -561,7 +561,8 @@
 #      on primary, the read door could not give a path's image or the render
 #      set's paths (lane 5's `reg_image` and `reg_paths`: a missing
 #      `lanes/LANES.md`, two logs that differ only by case, a failed second
-#      read), which is never answered from the files or git instead.
+#      read), or for `register-grep` the head moved in each of three runs,
+#      which is never answered from the files or git instead.
 #      `register-grep` asks first whether its ERE compiles where nothing but
 #      the pattern can fail: a malformed one is the caller's 2, before any of
 #      these (lane 3's (97)). Nothing is printed on stdout, never a
@@ -20946,7 +20947,11 @@ EOF
   #     them, ended by the class where a second read failed (`reg_fail_end`),
   #     never git instead (C3). An absent alias table or log is `reg_image`'s 0
   #     with nothing, so it matches nothing.
-  # `reg_paths`, `reg_image`, `reg_read_lost`, `reg_fail_end` and `REG_STORE`
+  #   - ONE SNAPSHOT: where `.head`'s `n` or generation moved while the run
+  #     read, the answer is dropped and the run made again, three runs at
+  #     most, then 69 with nothing on stdout (lane 3's Q2 ruling, below).
+  # `reg_paths`, `reg_image`, `reg_head_n`, `reg_head_generation`,
+  # `reg_read_lost`, `reg_fail_end` and `REG_STORE`
   # are lane 5's (T504, T505): this branch lands after them (tasks:851; task
   # set S007-35 after S007-34).
   register-grep)
@@ -21001,51 +21006,72 @@ EOF
     [ -n "$rgr_root" ] || die "the register could not be read: $(lanes_workspace_why)" 69
     TMPD="$(mktemp -d)" || die "the register could not be read: no temporary directory could be made under ${TMPDIR:-/tmp} to hold the answer whole" 69
     if [ "${REG_STORE:-}" = sql ]; then   # feature 007, T401's primary branch (above)
-      rgr_logs=0; rgr_want=(); rgr_order=()
-      for rgr_p in "$@"; do
-        # `lanes/log` is the one path `reg_reader_kind` reads as the set `logs`.
-        if [ "$rgr_p" = lanes/log ]; then rgr_logs=1; else rgr_want+=("$rgr_p"); fi
-      done
-      if [ "$rgr_logs" = 1 ]; then
-        if ! reg_paths > "$TMPD/paths"; then
-          if reg_read_lost; then reg_fail_end 69; fi
-          die "the register could not be read: the read door could not list its render set's paths (reg_paths), so lanes/log names no logs, and a read that failed is never answered from git instead (feature 007, T401 on primary; C3)" 69
+      # ONE SNAPSHOT, OR RUN AGAIN (lane 3's ruling on lane 4's Q2, #165
+      # 6851977580, taking lane 5's detect-and-retry, #165 6851740524). A second
+      # read inside the loop, which an out-of-class log's `--log-key=` makes each
+      # time, may move the family to a later `n`, and a lane renamed in between
+      # would then drop out of the answer. So `.head`'s `n` and generation
+      # (lane 5's `reg_head_n` and `reg_head_generation`) are taken once the
+      # paths are known, after `reg_paths` where `lanes/log` is named and
+      # before the first image either way, and again after the last image. The
+      # head only moves forward within a generation, so an unchanged pair proves
+      # every read was at one `n`. Where either moved, the answer is dropped and
+      # the run starts again from `reg_paths`: three runs at most, then 69 with
+      # nothing on stdout.
+      rgr_run=0
+      while :; do
+        rgr_run=$((rgr_run + 1))
+        rgr_logs=0; rgr_want=(); rgr_order=()
+        for rgr_p in "$@"; do
+          # `lanes/log` is the one path `reg_reader_kind` reads as the set `logs`.
+          if [ "$rgr_p" = lanes/log ]; then rgr_logs=1; else rgr_want+=("$rgr_p"); fi
+        done
+        if [ "$rgr_logs" = 1 ]; then
+          if ! reg_paths > "$TMPD/paths"; then
+            if reg_read_lost; then reg_fail_end 69; fi
+            die "the register could not be read: the read door could not list its render set's paths (reg_paths), so lanes/log names no logs, and a read that failed is never answered from git instead (feature 007, T401 on primary; C3)" 69
+          fi
+          # Under `lanes/log/`, every path `reg_reader_kind` takes is a `log`.
+          while IFS= read -r rgr_p || [ -n "$rgr_p" ]; do
+            case "$rgr_p" in
+              lanes/log/*) if reg_reader_kind "$rgr_p" > /dev/null; then rgr_want+=("$rgr_p"); fi ;;
+            esac
+          done < "$TMPD/paths"
         fi
-        # Under `lanes/log/`, every path `reg_reader_kind` takes is a `log`.
-        while IFS= read -r rgr_p || [ -n "$rgr_p" ]; do
-          case "$rgr_p" in
-            lanes/log/*) if reg_reader_kind "$rgr_p" > /dev/null; then rgr_want+=("$rgr_p"); fi ;;
+        rgr_n0="$(reg_head_n)"; rgr_g0="$(reg_head_generation)"
+        if [ "${#rgr_want[@]}" -gt 0 ]; then
+          printf '%s\n' "${rgr_want[@]}" | LC_ALL=C sort -u > "$TMPD/order" ||
+            die "the register could not be read: its paths could not be put in tree order under $TMPD" 69
+          while IFS= read -r rgr_p; do rgr_order+=("$rgr_p"); done < "$TMPD/order"
+        fi
+        : > "$TMPD/grep" || die "the register could not be read: no file could be made under $TMPD to hold the answer whole" 69
+        rgr_hit=0
+        for rgr_p in ${rgr_order[@]+"${rgr_order[@]}"}; do
+          if ! reg_image "$rgr_p" > "$TMPD/image"; then
+            if reg_read_lost; then reg_fail_end 69; fi
+            die "the register could not be read: the read door could not give $rgr_p (a missing lanes/LANES.md, or a cache it could not read), so no part of the answer is printed, and a read that failed is never answered from git instead (feature 007, T401 on primary; C3)" 69
+          fi
+          rgr_rc=0
+          env -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT \
+              -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS -u GIT_NOGLOB_PATHSPECS -u GIT_ICASE_PATHSPECS \
+              GIT_DIR=/dev/null GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 LC_ALL=C \
+              git -C "$TMPD" grep --no-index -h -E -e "$rgr_ere" -- image > "$TMPD/hits" </dev/null || rgr_rc=$?
+          case "$rgr_rc" in
+            0) rgr_hit=1 ;;
+            1) continue ;;
+            *) die "the register could not be read: git grep -E over the register's image of $rgr_p exited $rgr_rc (above)" 69 ;;
           esac
-        done < "$TMPD/paths"
-      fi
-      if [ "${#rgr_want[@]}" -gt 0 ]; then
-        printf '%s\n' "${rgr_want[@]}" | LC_ALL=C sort -u > "$TMPD/order" ||
-          die "the register could not be read: its paths could not be put in tree order under $TMPD" 69
-        while IFS= read -r rgr_p; do rgr_order+=("$rgr_p"); done < "$TMPD/order"
-      fi
-      : > "$TMPD/grep" || die "the register could not be read: no file could be made under $TMPD to hold the answer whole" 69
-      rgr_hit=0
-      for rgr_p in ${rgr_order[@]+"${rgr_order[@]}"}; do
-        if ! reg_image "$rgr_p" > "$TMPD/image"; then
-          if reg_read_lost; then reg_fail_end 69; fi
-          die "the register could not be read: the read door could not give $rgr_p (a missing lanes/LANES.md, or a cache it could not read), so no part of the answer is printed, and a read that failed is never answered from git instead (feature 007, T401 on primary; C3)" 69
-        fi
-        rgr_rc=0
-        env -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT \
-            -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS -u GIT_NOGLOB_PATHSPECS -u GIT_ICASE_PATHSPECS \
-            GIT_DIR=/dev/null GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 LC_ALL=C \
-            git -C "$TMPD" grep --no-index -h -E -e "$rgr_ere" -- image > "$TMPD/hits" </dev/null || rgr_rc=$?
-        case "$rgr_rc" in
-          0) rgr_hit=1 ;;
-          1) continue ;;
-          *) die "the register could not be read: git grep -E over the register's image of $rgr_p exited $rgr_rc (above)" 69 ;;
-        esac
-        if [ -n "$rgr_h" ]; then
-          cat -- "$TMPD/hits" >> "$TMPD/grep" || die "the register could not be read: its answer could not be held whole under $TMPD" 69
-        else
-          RGR_PFX="origin/$LANES_BRANCH:$rgr_p:" LC_ALL=C awk '{ print ENVIRON["RGR_PFX"] $0 }' "$TMPD/hits" >> "$TMPD/grep" ||
-            die "the register could not be read: its answer could not be held whole under $TMPD" 69
-        fi
+          if [ -n "$rgr_h" ]; then
+            cat -- "$TMPD/hits" >> "$TMPD/grep" || die "the register could not be read: its answer could not be held whole under $TMPD" 69
+          else
+            RGR_PFX="origin/$LANES_BRANCH:$rgr_p:" LC_ALL=C awk '{ print ENVIRON["RGR_PFX"] $0 }' "$TMPD/hits" >> "$TMPD/grep" ||
+              die "the register could not be read: its answer could not be held whole under $TMPD" 69
+          fi
+        done
+        rgr_n1="$(reg_head_n)"; rgr_g1="$(reg_head_generation)"
+        [ "$rgr_n1" != "$rgr_n0" ] || [ "$rgr_g1" != "$rgr_g0" ] || break
+        [ "$rgr_run" -lt 3 ] ||
+          die "the register could not be read at one snapshot: its head moved while it was read, in each of 3 runs (the last from n=$rgr_n0 to n=$rgr_n1), so no answer is printed, never a part of one (feature 007, T401 on primary; lane 3's Q2 ruling)" 69
       done
       [ "$rgr_hit" = 1 ] || exit 1
       cat -- "$TMPD/grep" || exit 69
