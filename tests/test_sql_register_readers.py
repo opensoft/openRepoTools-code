@@ -246,7 +246,12 @@ os.execv(STORE, [STORE] + args)
 #: call the REAL verb with every store read it makes failing (the door's
 #: `T217_DOOR_FAIL=all`), for a verb whose failed read has its own answer,
 #: such as `managed-projection`'s 1 (lane 3's ruling, #165 6754439281, item
-#: 6). `ARM_FAKE_VERB`, where set, is one
+#: 6). `ARM_REREAD_FAIL`, where set, makes every LATER call of it, after the
+#: one that fails, the REAL verb with every store read failing the same way,
+#: logged to `ARM_LOG.reread`: the caller's re-read meets the store still
+#: down, as a `69)` arm's re-read under `LANES_READ_MIRROR=1` must, since a
+#: mirror read prints `read: mirror …` only where the read failed (Y:4895;
+#: T217zg, lane 4's triage, #165 6850919392). `ARM_FAKE_VERB`, where set, is one
 #: more verb the wrapper answers itself, 0 with `ARM_FAKE_OUT`: a scenario's
 #: fact a sandbox cannot make, such as a live session in this window, which
 #: `window-session` reads from a live process's record. `ARM_VERB` may name
@@ -280,6 +285,11 @@ if [[ "|${ARM_VERB-}|" == *"|${1-}|"* ]]; then
       fi
       [ -z "${ARM_STDERR-}" ] || printf '%s\n' "$ARM_STDERR" >&2
       exit "$ARM_CODE"
+    fi
+    if [ -n "${ARM_REREAD_FAIL-}" ] && [ "$arm_n" -gt "${ARM_NTH:-0}" ]; then
+      # A later call, the caller's re-read: the REAL verb, the store still down.
+      printf '%s\n' "$*" >> "$ARM_LOG.reread"
+      T217_DOOR_FAIL=all exec bash "$ARM_REAL" "$@"
     fi
   fi
 fi
@@ -993,13 +1003,17 @@ OTHER_ARMS = {
                       (69, 75, 3), "code"),
     "lane-worktrees-508-524": (Arm("lane-worktrees", ("add", "repoA-2", "s1", "--dry-run"),
                                    "canon-lane", "508"), (69, 75, 3), "refuse-own-exit"),
+    # The two `69)` arms' re-reads meet the store still down (`ARM_REREAD_FAIL`, T217zg): a
+    # re-read that reached a readable store answered from it, with no `read: mirror` line.
     "lane-handoff-1463": (Arm("lane-handoff", ("--lane", "repoA-2", "the arms' test"),
-                              "canon-lane", "1463", world="primary"), (69,), "mirror"),
+                              "canon-lane", "1463", world="primary",
+                              env={"ARM_REREAD_FAIL": "1"}), (69,), "mirror"),
     "lane-handoff-2817": (Arm("lane-handoff", ("--late", "--at", "2026-10-01T03:00:00Z", "--lane",
                                                "repoA-2", "the arms' late test"),
                               "log", "2817", match="PAUSED*"), (69, 75, 3), "code"),
     "skill-handoff-112": (Arm("skills/handoff/SKILL.md", ("canon-lane", "repoA-2"), "canon-lane",
-                              "112", world="primary"), (69,), "mirror"),
+                              "112", world="primary", env={"ARM_REREAD_FAIL": "1"}),
+                          (69,), "mirror"),
     "skill-restart-70": (Arm("skills/restart/SKILL.md", ("binding", "repoA-1"), "binding", "70"),
                          (69, 75, 3), "lread"),
     "lane-rename-241": (Arm("lane-rename", ("repoA-2", "repoA-7", "the arms' test", "--no-tmux",
@@ -1181,6 +1195,10 @@ def test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives(
         assert result.returncode == code, (arm_id, code, result.returncode, result.stderr[-3000:])
     elif kind == "mirror":
         assert result.returncode != 1, (arm_id, "the 69 died as a failed read", result.stderr[-3000:])
+        # T217zg: the line is the re-read's own, made with the store still down (Y:4895).
+        reread = Path(f"{world.arm_log}.reread")
+        assert reread.exists() and reread.read_text(encoding="utf-8").strip(), (
+            arm_id, "no re-read after the 69", result.stderr[-3000:])
         assert MIRROR_LINE.search(result.stderr), (arm_id, "no `read: mirror` line",
                                                    result.stderr[-3000:])
     elif kind == "unknown":
