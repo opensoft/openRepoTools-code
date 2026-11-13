@@ -8460,10 +8460,20 @@ pw_replay_tail() {   # <seq> <how it was learned>
   # `snapshot`, `files` and `preimages` while its line stands (Y:5177), so
   # nothing a reader needs goes. Every child of this run has had `abandon` and
   # been reaped above.
-  if pw_wdir_ok "$rp_cdir" attempt; then
-    pw_seam_token "$rp_cdir" ||
-      pw_tail_owed "$1" "its call's seam.out, in $rp_cdir, could not be written as replayed under noclobber and read back as that before its replay (a late none from that call's child, or a file that cannot be removed or read), and a later takeover of this record could read what is there as this replay's child's, so it was not replayed"
-  fi
+  # THE CALL'S DIRECTORY MUST BE THERE AND TRUSTED (lane openRepoTools-3, #165
+  # 6841844102, point 2): Y:5177 keeps it while its line stands, and the replay
+  # takes the committing call's sidecar pre-images from it (Y:5321–5323;
+  # `pw_replay_preimages`). One that is absent, or that is not an attempt
+  # directory of this uid (`pw_wdir_ok`: a link on its path, another uid's,
+  # not 0700, or not `<state>/register-writes/<d>/<run>/<k>`), cannot give a
+  # faithful replay: "not recorded" would write nothing where the first call
+  # may have written. So the tail is owed, here, before the token step, which
+  # is never skipped (tasks:1236, fold 1112n: anything but exactly `replayed`
+  # is owed).
+  pw_wdir_ok "$rp_cdir" attempt ||
+    pw_tail_owed "$1" "its call's directory, $rp_cdir, is not there, or is not an attempt directory of this user's (a link on its path, another user's, not 0700, or not under register-writes/), and its replay takes the committing call's sidecar pre-images from it (Y:5177, Y:5321-5323), so it was not replayed"
+  pw_seam_token "$rp_cdir" ||
+    pw_tail_owed "$1" "its call's seam.out, in $rp_cdir, could not be written as replayed under noclobber and read back as that before its replay (a late none from that call's child, or a file that cannot be removed or read), and a later takeover of this record could read what is there as this replay's child's, so it was not replayed"
   rp_run="$(act_mint_id)" || rp_run=""
   [ -z "$rp_run" ] || PW_RP_RUN_DIR="$WR_STATE/register-writes/$WR_D/$rp_run"
   rp_dir="$WR_STATE/register-writes/$WR_D/$rp_run/1"
@@ -8532,7 +8542,9 @@ pw_replay_snapshot() {   # <replay dir> <the committing call's clock>
 # THE REPLAY'S `preimages/` (step 4): a copy of the committing call's, each
 # lane's answer one file, and the `replay` mark beside it. An answer that call
 # did not record is not there, which the child reads as empty: "write
-# nothing" (Y:5323).
+# nothing" (Y:5323). Its caller has already ended the run owed where the
+# call's directory is absent or fails `pw_wdir_ok` (#165 6841844102, point 2),
+# so it copies only from a trusted, present directory.
 pw_replay_preimages() {   # <the call's attempt dir> <replay dir>
   local rpp_f=""
   wr_dir_0700 "$2/preimages" || return 1
