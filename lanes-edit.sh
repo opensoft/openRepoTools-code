@@ -8045,12 +8045,20 @@ pw_tail_close() {   # <seq> <mark tail value, or empty>
 # did not run, with the table's words. 1 where neither holds a value, and
 # where this run took over a `sent` whose child's `seam.out` says `none` and
 # has removed that `tail` (`pw_took_sent_none`; Y:5342): the run then goes on
-# as for a record with no `tail` (Y:5337), to the replay.
+# as for a record with no `tail` (Y:5337), to the replay. Where that child said
+# `none` and the record could not be rewritten without `tail`, the tail did
+# not run and is not replayed, since a tail is sent only after `tail=sent` is
+# written (Y:5293): it is OWED, as every other replay that cannot go on ends
+# (`pw_tail_owed`; Y:5329, Y:5340), not "may have run" (lane openRepoTools-3,
+# #165 6841366245, T418 (2)).
 pw_tail_found() {   # <seq>
-  local tf_v="" tf_w="" tf_utc="" tf_p="" tf_mark=""
+  local tf_v="" tf_w="" tf_utc="" tf_p="" tf_mark="" tf_sn=0
   case "$WR_TAIL" in
     'sent '*|'done '*)
-      ! pw_took_sent_none || return 1
+      pw_took_sent_none || tf_sn=$?
+      [ "$tf_sn" != 0 ] || return 1
+      [ "$tf_sn" != 2 ] ||
+        pw_tail_owed "$1" "its child's seam.out, in the directory of its call= line, says none, so that child never read committed and its tail did not run; but this run could not remove tail=sent from its pending record, $WR_STATE/register-pending/$WR_D (it no longer owns it, or the file cannot be written), and a tail is sent only after tail=sent is written (Y:5293), so it was not replayed"
       tf_v="$WR_TAIL"; tf_mark="$WR_TAIL"
       pw_tail_writer; tf_p="$PW_O_PID" ;;
     *)
@@ -8093,8 +8101,11 @@ pw_tail_found() {   # <seq>
 # its own after `committed`, and reads such a file as `none` (tasks:1176). So
 # do a record of another host or container; an answer with no `file=` rows;
 # no `call=` line with the entry's `<files>`, or more than one, since Y:5317
-# takes one line and which of their children took `committed` is not known;
-# and a record that cannot be rewritten, which keeps its `sent`.
+# takes one line and which of their children took `committed` is not known
+# (lane openRepoTools-3, #165 6841366245, T418 (1)). Where the child said
+# `none` and the record cannot be rewritten without `tail`, it returns 2 with
+# WR_TOOK_TAIL and WR_TAIL as they were: no replay, and `pw_tail_found` names
+# the tail as owed (T418 (2)).
 pw_took_sent_none() {
   local sn_k="" sn_l="" sn_d="" sn_n=0 sn_was="$WR_TOOK_TAIL"
   case "$sn_was" in 'sent '*) : ;; *) return 1 ;; esac
@@ -8120,7 +8131,7 @@ pw_took_sent_none() {
   WR_TOOK_TAIL=""; WR_TAIL=""
   wr_record_write && return 0
   WR_TOOK_TAIL="$sn_was"; WR_TAIL="$sn_was"
-  return 1
+  return 2
 }
 
 # A TAKEOVER WHOSE RECORD HOLDS `tail` AND WHOSE FIRST SNAPSHOT DOES NOT FIND
