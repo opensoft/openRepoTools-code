@@ -4449,6 +4449,8 @@ fi
 # still the lane's: RESIDUE, and it refuses even where the sweep answered 0.
 #
 # `--inventory-only` IS THE ONE DOOR, and it takes the lane past every answer
+# (never a register it could not read: a `lane-dir` 69, 75 or 3 ends the run
+# with that code, below; lane 3, #165 6808937880, batch e Q99)
 # but leaves every tree where it is and in the lane's #97 inventory; the reason
 # it was let past is written into the row's closing phrase and the ENDED line.
 # `--sweep`, which would retire them in the same run, is not built: the act

@@ -78,7 +78,7 @@ lread() {                      # lread <var> "<what the failure is NOT>" <verb> 
     # lane" — at a rung, a step on to the next one; at the last, a listing printed
     # as though the checkout had none. So it STOPS here, at whichever call it
     # came from, and no rung after it is tried.
-    69)  printf 'REFUSED: `%s %s` exited 69 — the register could not answer it: the store is unreachable, or it refused the read. Whatever the read printed is the lines above. That is NOT %s — a read that could not answer is never an answer (Amendment 7(d)), so this skill will not take the next rung, bind a window, write a stamp or print a resume command on it.\n' \
+    69)  printf 'REFUSED: `%s %s` failed (exit 69) — the register could not answer it: the store is unreachable, or it refused the read. Whatever the read printed is the lines above. That is NOT %s — a read that could not answer is never an answer (Amendment 7(d)), so this skill will not take the next rung, bind a window, write a stamp or print a resume command on it.\n' \
            "$L" "$1" "$ln_not" >&2
          exit 1 ;;
     *)   printf 'REFUSED: `%s %s` failed (exit %s). That is NOT %s — a read that failed is never an answer (Amendment 7(d)), and this skill will not bind a window, write a stamp or print a resume command on one. Run it by hand to see what it says.\n' \
