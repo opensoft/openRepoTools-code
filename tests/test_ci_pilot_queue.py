@@ -126,7 +126,8 @@ def test_manual_mergify_queue_uses_existing_full_ci_on_every_pr_base(reader):
         from test_full_ci_coverage_parity import ROOT_GUARD, AGGREGATE_GUARD
         assert workflow["jobs"][name].get("if") in (ROOT_GUARD, AGGREGATE_GUARD)
     import json
-    assert json.loads((REPO / ".github/ci/delivery-policy.json").read_text())["enabled"] is False
+    # Scoped enablement preserves this full entry; the old docs queue is out of scope.
+    assert json.loads((REPO / ".github/ci/delivery-policy.json").read_text())["enabled"] is True
 
 
 @pytest.mark.parametrize("files", [REFERENCES[:1], REFERENCES[1:], REFERENCES])
