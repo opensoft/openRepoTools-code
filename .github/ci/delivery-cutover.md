@@ -1,11 +1,16 @@
-# Prepared claude-current CI cutover
+# Scoped claude-current CI delivery
 
-Status: **disabled; preparation PR only**. No migration, canary, queue command,
-assembly refresh or release acceptance is performed by this change.
+Status: **owner-approved activation phase; live qualification pending**.
+This revision selects the enabled policy. Omission still requires complete
+effective protection and authenticated proof; the flag alone grants nothing.
+The dated service/qualification record is
+[CI-ACTIVATION-11](../../features/009-manual-two-pr-queue/openspec/activation.md).
+Assembly/session adoption and release acceptance remain separate and excluded.
 
 ## What is prepared
 
-`delivery-policy.json` commits `enabled: false`. `tests.yml` retains its ordinary
+`delivery-policy.json` selects `enabled: true`; explicit false remains rollback.
+`tests.yml` retains its ordinary
 events and parameterless reusable entry. Its original thirteen expanded jobs
 retain their commands, environment, matrices, checkout modes and accounting.
 Two read-only controls add an honest `openrepotools-delivery` check. The old
@@ -24,14 +29,15 @@ or uncertain proof select full. A router failure cannot silently skip full jobs.
 The final gate requires all four actual full results, or independently rechecks
 the same omitted-work proof. It never posts success under an unrun test's name.
 
-Even a future true flag cannot omit work until complete effective branch rules
+Even an enabled flag cannot omit work until complete effective branch rules
 require `openrepotools-delivery` from GitHub Actions (integration15368) and none
 of `guard-launch-mode`, `tests`, `tests-no-submodule`, `package` remains required.
 The ruleset GET and public branch metadata GET cover layered rulesets and classic
 protection, including contexts and checks arrays. Missing, malformed or changing
 classic evidence retains full. Existing Contents:read is sufficient for branch
 metadata; neither endpoint needs administrative access or settings writes.
-No ruleset, branch protection, app, permission grant or bypass is applied here.
+The router never writes rulesets, branch protection, permissions or bypasses.
+The separately approved operator migration is recorded in CI-ACTIVATION-11.
 
 ## Initial supported scope
 
@@ -103,16 +109,16 @@ evidence falls back to full. Lookalike/manual merges, reruns, failures, skipped
 jobs, changed policy or stale refs also fall back. New nested names are a
 conservative contract to confirm in a later authorized canary, not live evidence.
 
-## Future owner-approved migration (NOT executed)
+## Owner-approved migration and qualification
 
-1. Merge this code/spec only after exact-head full/reuse CI and review, reconciling
-   Sonar PR51's wheel-only baseline amendment and coverage collectors first.
-2. Approve the changed source merge floor described below. Confirm the effective
+1. Source preparation and local-review PRs have landed. Preserve current main's
+   newer Sonar work and qualify the exact enablement head with full/reuse CI.
+2. Brett approved the changed source merge floor below on 2026-11-13. Confirm the effective
    checks, queue config/service readiness and a qualified hosted or local review
    receipt path. Hosted Codex quota is not a prerequisite for the local path.
-3. Separately approve/install app-bound `openrepotools-delivery` as the required
-   verification context and remove the four legacy required contexts. Preserve
-   every unrelated rule. No bypass. Keep the flag false during migration.
+3. The approved migration installed app-bound `openrepotools-delivery` and removed
+   the four legacy required contexts on 2026-11-13, with the live flag false.
+   Target/effective readbacks preserved every unrelated rule and added no bypass.
 4. Enable only via a separately reviewed config PR. Require failure/recovery and
    a user-authorized two-member live efficiency canary: fast-only source/candidate
    PR CI, one complete heavy caller, no duplicate full main run, exact prefix and
@@ -120,6 +126,10 @@ conservative contract to confirm in a later authorized canary, not live evidence
    from source tests, labels or queue membership alone.
 5. Reconcile governance and later assembly pins/composed CI/session adoption
    under their own approvals. Preserve running lanes and active plans.
+
+Configuration publication, local fixtures, service recognition and completed
+live qualification are distinct. Consult the dated evidence; do not infer a
+successful canary or wider rollout merely from this enabled source revision.
 
 **Changed source floor:** after activation, delivery success can mean fast
 verification, not heavy integration. The named Mergify queue holds heavy; GitHub's
@@ -131,12 +141,32 @@ does not pretend otherwise or silently request a bypass/new ruleset control.
 
 Rollback: an ordinary reviewed `enabled: false` change resumes every original
 full job. Restoring legacy required contexts is a separate owner-approved setting
-change. Neither rollback nor this preparation changes release eligibility, apps,
+change. Neither rollback nor this phase changes release eligibility, apps,
 installed tools, live sessions or lane ownership.
+
+## Scoped manual operation
+
+For an authorized current-head reviewed source, include both exact opt-in lines
+above, preserve independent main-based topology and verify actual fast/delivery
+success. Accept hosted review or the explicit local receipt below; a generic
+summary or passing CI is not acceptance. Then a repository writer requests:
+
+```bash
+gh pr comment PR_NUMBER --repo opensoft/openRepoTools-code \
+  --body '@mergifyio queue openrepotools-claude-current'
+```
+
+For the authorized two-member canary, request both independently ready members
+close together, verify actual two-member order and leave heads/bases unchanged.
+Do not direct-merge fast-only sources or edit a live queue branch. Record the
+single complete heavy run, source/candidate/main CI and tested/landed prefix and
+final trees. A singleton, reset, duplicate/full fallback or uncertain result is
+not efficiency acceptance. Other files, dependencies and old full-only queues
+retain their original full checks; this is not an arbitrary-lane fast path.
 
 ## Exact-head local review receipts
 
-This is a **prepared alternative review contract**, not activation or merge
+This is an **alternative review contract**, not activation or merge
 authority. Run `pre-pr-review`, `pr-review` or `branch-or-pr-review` locally in
 Codex against the exact current PR head and base; resolve findings and re-review
 before acceptance. Preserve the report's findings, resolution and validation.

@@ -1,16 +1,23 @@
-# Shared Claude/Codex task-set instructions: manual full-CI delivery
+# Shared Claude/Codex task-set instructions: scoped efficiency and full fallback
 
-The [additive fast/candidate preparation](delivery-preparation.md) introduces
-no queue activation or CI skips. Continue requiring all current full checks;
-the prepared candidate entry has no existing queue consumer. The proposed
+The owner-approved initial efficiency path is documented in
+[the cutover runbook](delivery-cutover.md). Check the actual committed policy and
+effective rules: an enabled flag alone never qualifies omission or admission.
+Only the fixed opted-in claude-current scope is eligible. A fast-only source
+MUST use `openrepotools-claude-current`, never direct merge; its delivery success
+is not heavy integration. Live acceptance and assembly/session adoption are
+separate evidence/authority gates. All other work retains full CI.
+
+The earlier [additive fast/candidate preparation](delivery-preparation.md) shipped
+without queue activation or CI skips. Its
 [non-gating shadow caller](delivery-preparation.md#proposed-non-gating-caller-candidate-shadow-08)
-does not exempt CI or grant admission; it requires separate merge authority
-before any queue observation and does not authorize a live canary.
+does not exempt CI or grant admission. The current cutover uses the separate
+qualified path, not observation as a substitute for acceptance.
 
 The separate [trusted shadow observer](shadow-classifier.md) reports only
 conservative event observations. It never enables fast-only CI, grants queue
-admission or replaces current-head review. The original pilot and all full-CI
-gates remain unchanged; candidate/landing qualification is a later stage.
+admission or replaces current-head review. The original full-CI pilot remains
+unchanged; this observer alone supplies no candidate/landing qualification.
 
 Read the assembly's AGENTS.md and AGENTS-shape.md first. This is a code-local
 supplement for both agents, not replacement governance or a second specification
@@ -18,7 +25,8 @@ store. Canonical feature 008 and its OpenSpec change live in openRepoTools-spec.
 
 ## Current authority
 
-Feature 008's classifier is **advisory only**. Full tests.yml checks remain required; the
+Feature 008's classifier is **advisory only**. Complete tests.yml integration
+remains required except for independently proven scoped omission in the cutover runbook; the
 assembly's exact-pin composed run is separate acceptance. A `claude-current`
 shadow result does not authorize fast-only CI, a queue or a merge. No Mergify
 queue was activated by feature 008. Feature 009's separate
@@ -87,14 +95,17 @@ member names its immediate predecessor in both the PR base and `Depends-On`.
 Every member retains the four full CI gates; a green advisory classifier is
 not a substitute. Keep the branches unchanged while the queue is testing them.
 
-## Prepared efficiency path — disabled
+## Owner-approved scoped efficiency path
 
-Read [the cutover runbook](delivery-cutover.md) before interpreting the new
-delivery/heavy checks or claude-current queue. The committed flag is false and
-the current four full checks remain enforced. This preparation authorizes no
-queue command, source merge, flag/settings migration, canary or session refresh.
+Read [the cutover runbook](delivery-cutover.md) before interpreting delivery/heavy
+checks or the claude-current queue. Brett approved its scoped service migration,
+reviewed enablement and two-member canary on 2026-11-13. This source revision
+enables the flag, still requiring effective app-bound delivery protection and
+complete trusted proof. The dated activation record distinguishes actual
+qualification from pending work. No instruction file independently authorizes
+another merge, queue command, wider canary or session refresh.
 
-After separately approved activation, an opted-in fast source must use the named
+Under the approved activation, an opted-in fast source must use the named
 manual queue for complete heavy qualification; NEVER direct-merge it on delivery
 success. That check can mean fast verification, not heavy integration. Queue-only
 usage is operator policy unless separately approved service controls enforce it.

@@ -52,8 +52,16 @@ def test_ci_cutover_effective_gate_is_app_bound_without_old_requirements(cutover
     assert cutover.effective_gate(lambda _repo, path: classic_clear() if path == "branches/main" else rows) is expected
 
 
-def test_ci_cutover_committed_configuration_is_disabled(cutover):
-    assert cutover.enabled(REPO) is False
+def test_ci_cutover_committed_configuration_is_enabled(cutover):
+    assert cutover.enabled(REPO) is True
+
+
+@pytest.mark.parametrize("rows", [[], rules(("openrepotools-delivery", None)),
+    rules(("openrepotools-delivery", 15368), ("tests", None))])
+def test_ci_cutover_enabled_default_retains_full_with_unmigrated_protection(cutover, rows):
+    assert cutover.enabled(REPO) is True
+    request = lambda _repo, path: classic_clear() if path == "branches/main" else rows
+    assert cutover.route({}, {}, REPO, request) == {"mode": "full", "omit_full": False}
 
 
 @pytest.mark.parametrize("config", [None, {}, {"schema_version": 1, "enabled": 1},
@@ -67,10 +75,14 @@ def test_ci_cutover_configuration_uncertainty_is_full(cutover, tmp_path, config)
     assert cutover.enabled(tmp_path) is False
 
 
-def test_ci_cutover_disabled_requires_no_network(cutover):
+def test_ci_cutover_disabled_requires_no_network(cutover, tmp_path):
+    path = tmp_path / ".github/ci/delivery-policy.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"schema_version": 1, "enabled": False}))
     def forbidden(*_args):
         pytest.fail("disabled routing must not query GitHub")
-    assert cutover.route({}, {}, REPO, forbidden) == {"mode": "full", "omit_full": False}
+    assert cutover.enabled(tmp_path) is False
+    assert cutover.route({}, {}, tmp_path, forbidden) == {"mode": "full", "omit_full": False}
 
 
 def enable_fixture(cutover, batch):
