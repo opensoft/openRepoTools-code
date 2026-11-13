@@ -66,3 +66,28 @@ while the explicit disabled case passed. The first broad run found the remaining
 historical local-review phase assertion (483 passed/1 failed); a complete policy
 reference search identified the queue assertion too. Final validation follows
 the corrected phase expectations; no failure is recast as passing qualification.
+
+## Later qualification and R4 refusal — 2026-11-13
+
+The enablement and directly related metadata repairs were checked normally.
+Generated-hint repair PR66 landed at660459f with its reviewed/tested tree; paired
+spec PR44 landed at375666d. Ordinary source CI passed15/15, reusable17/17 and
+actual-main43506231972 passed15/15, first attempts. All complete5342-case
+inventories preserved existing identities/skips and passed the81new regressions.
+
+Fresh source PR67 then passed initial metadata/Git checks but logged fast-reread
+at21:39:54.806Z, in the fast workflow's completion window. Its own full fallback
+was cancelled, not qualified. No receipt, queue or heavy acceptance occurred.
+The pending-observation ordering follow-up grants no proof while waiting; strict
+completed/admission checks and all retry limits remain required.
+The same no-proof boundary covers an authenticated candidate caller still
+missing its admission artifact. The queued-caller transition was reproduced
+locally, not by a live queue. A fresh poll must validate the actual artifact;
+default readers, invalid callers and strict artifact-present proofs are unchanged.
+
+This code-local amendment remains a dated record, not a second live acceptance
+ledger. Complete run/artifact/member/prefix/final-tree evidence and remaining
+adoption boundaries are reconciled in the spec leg's
+`specs/009-manual-two-pr-queue/activation-evidence.md` and issue26 above. Follow
+that canonical dated record for later outcomes; do not reinterpret these failed
+attempts or infer assembly, release, tool or running-lane adoption authority.

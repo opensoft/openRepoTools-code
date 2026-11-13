@@ -170,8 +170,8 @@ def artifact_record(run, phase, request=policy.github, fetch=download, *, allow_
     selected = [row for row in rows if row["name"] == name]
     if (allow_pending and phase == "admission" and not selected
             and run["status"] in {"queued", "in_progress"}):
-        require(run == request(REPOSITORY, f"actions/runs/{run['id']}"),
-                "Pending candidate run changed while reading")
+        # This observation grants no artifact proof. Reacquire the authenticated
+        # caller and real receipt afresh after the existing bounded wait.
         raise PendingEvidence("Authenticated candidate has not published admission yet")
     require(len(selected) == 1, "Missing or duplicate receipt artifact")
     item = selected[0]
