@@ -3483,12 +3483,22 @@ def test_the_services_idle_check_replaces_a_dropped_connection_in_the_background
                           f"the check did not run at the default {IDLE_CHECK_DEFAULT_S} s")
         assert FALLBACK not in hook.err, hook.err
         return
+    # WARMED FIRST, as `[floor]` and `[cap]` are (T237zj): the idle check's
+    # promise is the next request "answered from the new connection, not
+    # `unavailable`" (TP:1977-1981 at a6497d00), which presumes a service
+    # that already holds an image. An unwarmed one answers its first request
+    # `unavailable`, the cache miss (TP:1982-1987; d8 sections 5.1 and 5.3),
+    # so without the warm-up this hook fell back whatever the idle check did
+    # (lane 5, #165 6841406701).
     svc = _Service(est, LANES_REGISTER_SERVE_IDLE_CHECK_S=value)
-    est.pg.psql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                "WHERE application_name LIKE 'lanes-index%' AND pid <> pg_backend_pid();")
-    time.sleep(2.5)
-    hook = est.hook("hello")
-    svc.stop()
+    try:
+        _warm(est)
+        est.pg.psql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE application_name LIKE 'lanes-index%' AND pid <> pg_backend_pid();")
+        time.sleep(2.5)
+        hook = est.hook("hello")
+    finally:
+        svc.stop()
     assert FALLBACK not in hook.err, hook.err
 
 
