@@ -1572,7 +1572,15 @@ def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_n
     steps did NOT run", with a last line, and no "another change set", the
     differs form's words. It fails until lane 4's T422, whose stamp check
     runs before the seam on primary (tasks:1280 at `717ed04d`, "the
-    stamp's checks run before the seam"; lane 3, #165 6841366245)."""
+    stamp's checks run before the seam"; lane 3, #165 6841366245).
+
+    [rename-lane-differs] is told from the stops form the other way, by
+    Y:5330's text: "replayed at seq `<s-1>` it now reaches the seam with
+    another change set, the first path whose digest differs being
+    `<path>`" (`f42d2c85:lanes-edit.sh:8587`), with a path named, not the
+    engine's "unknown" (TP:3424-3427, "the text names the first path whose
+    digest differs"), and no "now stops before its write". Its other
+    checks would pass a replay that stopped as well (RV20's finding 7)."""
     e = estates()
     where, root = loggers(e), sidecars(e)
     extra = {"LANES_LANE_STATE_ROOT": str(root)}
@@ -1600,6 +1608,13 @@ def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_n
                  + r"(?!no output\)).+?\), so its after-COMMIT steps did NOT run: ")
         assert re.search(stops, again.err) and "another change set" not in again.err, (
             f"the replay did not stop before its write: {again.err[-800:]}")
+    if case == "rename-lane-differs":
+        differs = (re.escape(f"register write {write_id} is in the register at seq {seq}; replayed at seq {seq - 1} "
+                             "it now reaches the seam with another change set, the first path whose digest "
+                             "differs being ")
+                   + r"(?!unknown,)\S[^\n]*?, so its after-COMMIT steps did NOT run: ")
+        assert re.search(differs, again.err) and "now stops before its write" not in again.err, (
+            f"the replay did not reach the seam with another change set: {again.err[-800:]}")
     assert pending(e) == []
 
 
