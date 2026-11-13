@@ -22,14 +22,18 @@ WHAT IT HOLDS, by its five sources:
     on a real engine.
   * Lane 5's nine (A5; T504 to T506 and T509), their guessed names kept.
   * Lane 4's two read verbs (R29; GB section 4.3; T401), `register-text` and
-    `register-grep`, with T401's two exit-2 cases each (O21a).
+    `register-grep`, with T401's two exit-2 cases each (O21a), and
+    `register-grep`'s one snapshot and quoted names on primary (lane 3's Q2
+    and Q3, #165 6851977580).
   * Lane 4's `key()` trim (T259; R31; GB section 4.3; T426): the one test that
     asks `retired-identity` about spellings that differ only past the
     sixteenth digit, in files mode and on primary.
   * Lane 2's T235 (F13b's proposed task, for lane 3 to place; lane 5's
     choice (b), #165 6778955065): on primary, T505's three read sites,
     `known_lanes`, `remote_log_events` and `worktree_rows`, read the store and
-    never git, by the fake `git`'s argv log, on a real engine.
+    never git, by the fake `git`'s argv log, on a real engine; and its
+    moved-head ids, T505's two reruns where the head moves under a read, on
+    the stub door (lane 5's proposal, #165 6860943489; lane 3, 6861148117).
 
 THE ARMS' IDS ARE THEIR LINES AT `2a057a6d`, as the test plan names them (the
 block, T217), so they move with slices 1a and 1b and are re-cited at each
@@ -72,10 +76,13 @@ unless `OPENREPOTOOLS_REQUIRE_PG=1`.
 
 WHAT EACH WAITS FOR (the block's Order): L4-A1, L5-A4 and L5-A5; lane 1's
 three for L1v4.5's T113 and T114; lane 5's for T504 to T506 and T509; the
-`--decide` test for T502; the read verbs' for lane 4's T401; the arms for
+`--decide` test for T502; the read verbs' for lane 4's T401, the one-snapshot
+and quoted-name cases for its round on lane 3's Q2 and Q3 (#165 6851977580);
+the arms for
 lane 4's T402 to T408; `key()`'s trim, on primary only, for lane 4's T426;
 T235's for lane 5's T505, its three door forms included, whose oracles are
-lane 3's batch 7 (#165 6780364102), by batch 5's answers 3 and 4.
+lane 3's batch 7 (#165 6780364102), by batch 5's answers 3 and 4; and its
+moved-head notes id for T505 round 2b's B.
 Every case on `RealRegister` (lane 1's three and `managed-projection`'s RE
 case) also fails until lane 2's T227 (`tmpl` built by the bootstrap) and
 T228 (the `lanes_w_fx` and `lanes_r_fx` logins), each by the fixture's own
@@ -136,8 +143,13 @@ MIRROR_LINE = re.compile(r"^read: mirror at [0-9a-f]{12}, .*$", re.M)
 #: `{"calls": [k, ...]}` or `{"all": true}`, optionally only for some forms
 #: (`"forms": [1, 3]`), with the exit, stdout and stderr given. `"narrow":
 #: "register,aliases"` makes a form-1 prefetch fetch only those members (a
-#: read site with no prefetched file). Every other call is the contract
-#: stub's, in `store/`.
+#: read site with no prefetched file). `"move_each": {"key": k, "times": t,
+#: "path": p, "line": l}` moves the store's head by one seq at each of the
+#: first `t` form-3 reads of `--log-key=<k>`, before the store answers it,
+#: appending `l % <the move's number>` to `p`, which the first move makes where
+#: `p` is absent: a write that lands between a reader's calls (T401's one
+#: snapshot, T217zh; T505's two reruns, T235e). Every other call is the
+#: contract stub's, in `store/`.
 DOOR_WRAPPER = r'''#!/usr/bin/env python3
 # THE DOOR'S WRAPPER (T217): counts and fails register calls, else the stub.
 import fcntl, json, os, sys
@@ -220,6 +232,43 @@ if fail.get("move") and form(args) == 3 and not os.path.exists(MOVED):
         "workstation": "Eagle", "generation": state["generation"], "files": rows}
     with open(state_path, "w", encoding="utf-8") as handle:
         json.dump(state, handle)
+EACH = fail.get("move_each")
+if EACH and form(args) == 3 and "--log-key=" + EACH["key"] in args:
+    # The head moves at each of the first `times` reads of the key, one seq
+    # each, before the store answers the read (T401's one snapshot).
+    import hashlib, shutil
+    done_path = os.path.join(HERE, "lanes-index.moves")
+    try:
+        with open(done_path, encoding="utf-8") as handle:
+            done = int(handle.read().strip() or 0)
+    except FileNotFoundError:
+        done = 0
+    if done < int(EACH["times"]):
+        done += 1
+        with open(done_path, "w", encoding="utf-8") as handle:
+            handle.write("%d\n" % done)
+        state_path = os.path.join(HERE, "store", "lanes-index.state")
+        with open(state_path, encoding="utf-8") as handle:
+            state = json.load(handle)
+        old = os.path.join(HERE, "store", "lanes-index.register", str(state["n"]))
+        new = os.path.join(HERE, "store", "lanes-index.register", str(state["n"] + 1))
+        shutil.copytree(old, new)
+        target = os.path.join(new, EACH["path"])
+        data = b""
+        if os.path.exists(target):                    # absent at n: the move makes it
+            with open(target, "rb") as handle:
+                data = handle.read()
+        data += (EACH["line"] % done).encode("utf-8")
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "wb") as handle:
+            handle.write(data)
+        state["n"] += 1
+        state["journal"]["00000000-0000-4000-8000-%012d" % state["n"]] = {
+            "seq": state["n"], "lane": "repoA-2", "verb": "log", "args_sha256": "0" * 64,
+            "workstation": "Eagle", "generation": state["generation"],
+            "files": ["%s\t1\t%s" % (EACH["path"], hashlib.sha256(data).hexdigest())]}
+        with open(state_path, "w", encoding="utf-8") as handle:
+            json.dump(state, handle)
 if fail.get("narrow") and form(args) == 1:
     kept, skip = [], False
     for i, a in enumerate(args):
@@ -1293,9 +1342,15 @@ def place_transcript(world: ArmWorld, sid: str) -> None:
 #: The skill's `(b)` write (`SKILL.md:738-742` at `2a057a6d`), run by its
 #: text with the variables its step 4 has set. Code v1.2.0 (slice 3, `98e2ec0`)
 #: names the lane on the write, `LANES_LANE="$lane" "$L" append-line …`
-#: (Amendment 23 S2), so the prefix is optional.
-SKILL_738_LINE = re.compile(r'^(?:LANES_LANE="\$lane" )?"\$L" append-line "PAUSED — lane \$lane, .*$',
-                            re.M)
+#: (Amendment 23 S2), and lane 4's T431 (`7c74b907`, line R's merge67) puts
+#: the act and its expectations first, `LANES_ACT="$act_line"
+#: LANES_EXPECT="$act_scopes" LANES_LANE="$lane" "$L" append-line …`
+#: (`f9e1449c:skills/handoff/SKILL.md:1361`), so the line may open with any
+#: number of `NAME="$var" ` prefixes, or none (T217zj; round 6h, TR21's 2d).
+#: Run alone, `$act_line` and `$act_scopes` are empty, and the arms' wrapper
+#: answers `append-line` itself, reading neither variable.
+SKILL_738_LINE = re.compile(
+    r'^(?:[A-Z][A-Z_]*="\$[a-z_]+" )*"\$L" append-line "PAUSED — lane \$lane, .*$', re.M)
 
 
 def rerun_argv(arm: Arm, lane: str) -> str:
@@ -2619,25 +2674,34 @@ def test_the_read_mirror_variable_lowers_each_read_that_names_the_lane_on_primar
     lowers each read whose row in the class table sets `REG_MIRROR_VAR=1`,
     `window-lane` and `swapped` among them, to a mirror read on primary: with
     the store unreachable each prints the `read: mirror` line and exits as
-    files mode does. Every other arm ignores the variable, `who` and
-    `lane-last` among them (B14 tasks:737): `lane-last`, a read that names
-    the lane and no row of the table, still refuses 69 (T217m; lane 5's
-    triage, #165 6782743644: `register-row`, the arm here before, is one of
-    the table's)."""
+    files mode does. ERR-30, as lane 3 widened it on round 6h's #56 (#165
+    6859801732), marks `lane-last` and `restart-intent` too, the two reads
+    `lane-handoff` makes before its handoff file. Every other arm ignores the
+    variable, `who` among them (tasks:741 at f4591a08): `who`, a decide read
+    whose row sets no `REG_MIRROR_VAR`, still refuses 69 (T217m; lane 5's
+    triage, #165 6782743644: `register-row`, the arm here before T217m, is
+    one of the table's; and since T504 so is `lane-last`, the arm here
+    before T217zk, lane 5's #165 6860020483).
+
+    Fails until lane 5's T504 `3f838677`, at the marked pair's assert. That
+    assert is the last, so a tree without T504 fails there and only there.
+    T504's verify selects this case (lane 3, #165 6860626333, item 1)."""
     table = CLASS_FUNCTION.search(LANES_EDIT.read_text(encoding="utf-8"))
     assert table, "lanes-edit.sh has no read door class table (reg_class_of)"
     marked = {arm for row in MIRROR_ROW.findall(table.group(1)) for arm in row.split("|")}
     assert {"window-lane", "swapped"} <= marked, marked
-    assert "lane-last" not in marked, marked
+    assert "who" not in marked, marked
     primary.door.unreachable()
     for argv in (("window-lane", "Eagle", "@1"), ("swapped",)):
         files = primary.files_edit(*argv)
         result = primary.edit(*argv, env={"LANES_READ_MIRROR": "1"})
         assert MIRROR_LINE.search(result.stderr), (argv, result.stderr[-1500:])
         assert result.returncode == files.returncode, (argv, result.returncode, files.returncode)
-    other = primary.edit("lane-last", "repoA-1", env={"LANES_READ_MIRROR": "1"})
+    other = primary.edit("who", "opensoft/repoA#7", env={"LANES_READ_MIRROR": "1"})
     assert other.returncode == 69, (other.returncode, other.stderr[-1500:])
     assert not MIRROR_LINE.search(other.stderr), other.stderr[-1500:]
+    # T504's two marks (ERR-30, widened). Fails until lane 5's T504 3f838677.
+    assert {"lane-last", "restart-intent"} <= marked, marked
 
 
 # --------------------------------------------- T502's `lanes --decide` test
@@ -3081,6 +3145,157 @@ def door_second_reads(door: Path) -> list:
     return [c for c in calls if c.get("form") == 3]
 
 
+#: T235'S MOVED HEAD (T505's two reruns; lane 5's proposal, #165 6860943489,
+#: which lane 3 agreed, 6861148117). Each id seeds `[out-of-class]`'s log,
+#: `lanes/log/a,b.md`, outside `check_lane_name`'s class, as T217zh's
+#: one-snapshot case seeds its own: `--all` never fetches it, so every run of
+#: `reg_remote_log_events` reads it by form 3's `--log-key=a,b` (O18), and the
+#: door's `move_each` moves the store's head one seq at each of the first `t`
+#: of those reads, before the store answers. That read is the one both sites
+#: take their head pair around: `reg_remote_log_events` after its
+#: out-of-class reads, and `worktree_rows` after `lanes_rows`, whose events
+#: come from the same reads. `T235_EVERY` is more moves than three runs make:
+#: every read moves the head.
+T235_EVERY = 99
+#: WHAT A MOVE WRITES. Through `remote_log_events`, a NOTED line on
+#: `repoA-2`'s log, which the prefetch cached, so form 3 finds a cached member
+#: changed in `(n, n']` and rewrites the family at `n'`. Through
+#: `worktree_rows`, `repoN-1`'s log, absent at `n`, whose `dir` places a tree,
+#: so only a log list pinned again at `n'` names that lane and its tree.
+T235_MOVED_PATH = "lanes/log/repoA-2.md"
+T235_MOVED_WORDS = "T235: a write that moved the head under the read, move %d"
+T235_MOVED_LINE = (f"NOTED — lane repoA-2, session {UUID_A2}@Eagle, 2026-10-06T01:00:00Z, "
+                   f"lane:repoA-2 — {T235_MOVED_WORDS}\n")
+T235_NEW_LANE = "repoN-1"
+T235_NEW_LOG = f"lanes/log/{T235_NEW_LANE}.md"
+T235_NEW_UUID = "aaaaaaaa-0013-4000-8000-00000000a013"
+#: Each id: the verb's argv, and how many reads move the head. No id holds the
+#: word `worktrees` (lane 4's T404 word, B12b tasks:886, as T235's ids).
+T235_MOVED = {
+    "history-one-move": (("history", "--all"), 1),
+    "history-every-move": (("history", "--all"), T235_EVERY),
+    "decide-every-move": (("lanes", "--decide", "--all"), T235_EVERY),
+    "worktree-rows-one-move": (("worktrees",), 1),
+    "worktree-rows-every-move": (("worktrees",), T235_EVERY),
+    "worktree-rows-notes-once": (("worktrees",), 1),
+}
+
+
+@pytest.mark.parametrize("case", list(T235_MOVED))
+def test_on_primary_remote_log_events_and_worktree_rows_read_again_when_the_head_moves(
+        estate, case):
+    """T235's moved-head ids, T505's two reruns (lane 5's proposal, #165
+    6860943489; lane 3's agreement, 6861148117; T505's verify is tasks:746 at
+    f4591a08). On primary `reg_remote_log_events` takes the head pair after
+    its list read and again after its last read, and `worktree_rows` after its
+    pins and again after `lanes_rows`; where either moved, the run is dropped
+    and made again, three runs at most, then the class's failed read (lane 3,
+    #165 6851977580, Q2; round 2b, 6859073786). The door moves the head at
+    each of the first t reads of `--log-key=a,b` (`move_each`), and each id
+    counts those reads in the door's call log:
+
+      * `[history-one-move]`: `history --all`, a mirror verb, one move: exit
+        0 with the events at n + 1, byte for byte what the same read answers
+        at n + 1 with no move, the moved line once and nothing of the dropped
+        run; `a,b` is read twice, and the head is at n + 1;
+      * `[history-every-move]`: every read moves the head, so the class's
+        failed read, then the mirror: one `read: mirror at …` line on stderr,
+        and files mode's exit and stdout, with nothing of the store's before
+        it; three reads, never a fourth;
+      * `[decide-every-move]`: the same through a decide verb, `lanes
+        --decide --all`: 69 with nothing on stdout and no mirror line; three
+        reads;
+      * `[worktree-rows-one-move]`: `worktrees` on primary (decide), one move,
+        which writes `repoN-1`'s log, absent at n, whose `dir` places a tree:
+        exit 0 with the listing at n + 1, byte for byte the same read's with
+        no move, `repoN-1`'s tree in it, so the log list was pinned again;
+        two reads. No move changes the archive, so its own re-pin is not seen
+        here beyond that byte equality;
+      * `[worktree-rows-every-move]`: 69 with nothing on stdout and no mirror
+        line; three reads;
+      * `[worktree-rows-notes-once]`: `[worktree-rows-one-move]` with T235's
+        case pair in the register, so the listing notes each of its two logs
+        as unreadable and fences them (`lanes_rows`): each note is printed as
+        often as the same read prints it at n + 1 with no move, and never
+        again for the dropped run. Its last assert, the notes', FAILS UNTIL
+        lane 5's T505 round 2b B (`l5-for-l3-007-T505-round2b-B-on-R79-
+        5c416d1d3f0d`), which holds a listing's notes aside and drops them with
+        a dropped run; before it, each run of `lanes_rows` says them again.
+
+    The stub door, not `RealRegister`: `move_each` moves the contract stub's
+    head, so these ids need no engine. Every id but the notes one passes from
+    rounds 2 and 2b's A, in line R since merge89 (T235e)."""
+    argv, moves = T235_MOVED[case]
+    logs = {T235_OUT_LOG: T235_OUT_LINE}
+    if case == "worktree-rows-notes-once":
+        logs[T235_PAIR[0]] = (f"STARTED — lane repoP-1, session {STORE_ONLY_UUID}@Eagle, "
+                              "2026-10-05T00:00:00Z, lane:repoP-1 → home opensoft/repoP\n")
+        logs[T235_PAIR[1]] = "NOTED — the case pair's other half\n"
+    seed_logs(estate, logs)
+    path, line, roots = T235_MOVED_PATH, T235_MOVED_LINE, estate.root / "t235-moved-roots"
+    if argv[0] == "worktrees":
+        sidecar = roots / ".lane-state" / T235_NEW_LANE / "trees" / "t235.yaml"
+        sidecar.parent.mkdir(parents=True)
+        sidecar.write_text(f"schema: {T235_TREE_SCHEMA}\ntree: t235-moved-tree\n"
+                           f"path: {roots / 'tree'}\n", encoding="utf-8")
+        path = T235_NEW_LOG
+        line = (f"STARTED — lane {T235_NEW_LANE}, session {T235_NEW_UUID}@Eagle, "
+                f"2026-10-06T02:0%d:00Z, lane:{T235_NEW_LANE} → home opensoft/repoN; "
+                f"dir {str(roots / T235_NEW_LANE).replace('%', '%%')}\n")
+    primary = Primary(estate)
+    files = primary.files_edit(*argv) if case == "history-every-move" else None
+    first = primary.door.head()[0]
+    primary.door.fail(move_each={"key": T235_OUT_KEY, "times": moves, "path": path,
+                                 "line": line})
+    result = primary.edit(*argv)
+    reads = [call for call in primary.door.calls()
+             if call["form"] == 3 and f"--log-key={T235_OUT_KEY}" in call["argv"]]
+    head = primary.door.head()[0]
+    where = (case, "exit", result.returncode, "head", first, "->", head, "reads of",
+             T235_OUT_KEY, len(reads), result.stdout[-1500:], result.stderr[-1500:])
+    if moves == T235_EVERY:
+        assert (len(reads), head) == (3, first + 3), where
+        if files is not None:
+            assert files.returncode == 0 and T235_OUT_NOTE in files.stdout, (
+                "the control: files mode's history --all lacks the out-of-class event",
+                files.returncode, files.stdout[-1500:], files.stderr[-1500:])
+            assert len(MIRROR_LINE.findall(result.stderr)) == 1, where
+            assert not MIRROR_LINE.search(result.stdout), where
+            assert (result.returncode, result.stdout) == (files.returncode, files.stdout), (
+                where + ("files mode's:", files.stdout[-1500:]))
+        else:
+            assert (result.returncode, result.stdout) == (69, ""), where
+            assert not MIRROR_LINE.search(result.stderr), where
+        return
+    assert (len(reads), head) == (2, first + 1), where
+    primary.door.reachable()                     # no move: the same read at n + 1
+    again = primary.edit(*argv)
+    assert again.returncode == 0 and primary.door.head()[0] == first + 1, (
+        "the oracle: the same read at n + 1", again.returncode, again.stderr[-1500:])
+    assert (result.returncode, result.stdout) == (0, again.stdout), (
+        where + ("at n + 1, with no move:", again.stdout[-1500:]))
+    assert not MIRROR_LINE.search(result.stderr), where
+    if argv[0] == "history":
+        assert result.stdout.count(T235_MOVED_WORDS % 1) == 1, where
+        assert T235_OUT_NOTE in result.stdout, where
+    else:
+        rows = [row.split("\037") for row in result.stdout.splitlines()
+                if row.startswith("TREE\037")]
+        assert any(len(row) > 5 and row[2] == T235_NEW_LANE and row[4] == str(roots / "tree")
+                   and row[5] == f"unknown schema {T235_TREE_SCHEMA}" for row in rows), (
+            where + ("no tree of the lane only the log list at n + 1 names",))
+    if case == "worktree-rows-notes-once":
+        # THE HELD NOTES, PRINTED ONCE (round 2b's B): fails until B's merge.
+        said = {p: unreadable_notes(result.stderr, p) for p in T235_PAIR}
+        said["fence"] = result.stderr.count(T235_FENCE)
+        once = {p: unreadable_notes(again.stderr, p) for p in T235_PAIR}
+        once["fence"] = again.stderr.count(T235_FENCE)
+        assert all(count >= 1 for count in once.values()), (
+            "the control: the read at n + 1 does not note the case pair", once,
+            again.stderr[-1500:])
+        assert said == once, where + ("each note as often as at n + 1:", once, "said:", said)
+
+
 # ------------------------------------------------- lane 4's two read verbs
 #: The set both verbs answer (O21 (a)): the render set without the archive.
 VERB_PATHS = ("lanes/LANES.md", "lanes/aliases.tsv", "lanes/log/repoA-2.md")
@@ -3282,6 +3497,213 @@ def test_register_grep_prints_what_git_grep_prints_and_1_with_no_match(estate, p
         assert text.returncode == 0 and STORE_ONLY_ROW in text.stdout, \
             ("the store did not answer: the 69 may be a failed prefetch", text.returncode,
              text.stderr)
+
+
+def seed_logs(estate: Estate, logs: dict) -> None:
+    """Commit and push `logs` (render-set path to text) into the estate's
+    register, so that files mode reads them from `origin/main` and the
+    primary store, built from this checkout's render set afterwards, holds
+    them too."""
+    for path, text in logs.items():
+        target = estate.wip / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(text.encode("utf-8"))
+    estate._git("add", "-A")
+    estate._git("commit", "-q", "-m", "add the logs the case greps")
+    estate._git("push", "-q", "origin", "main")
+
+
+def edit_bytes(primary: Primary, *args, env: dict | None = None) -> subprocess.CompletedProcess:
+    """`primary.edit`, with stdout and stderr kept as bytes, so that a case
+    holds the answer to git's own bytes (`Estate.run` decodes them)."""
+    child = dict(primary.e.env)
+    for key, value in primary.env(env).items():
+        if value is None:
+            child.pop(key, None)
+        else:
+            child[key] = value
+    return subprocess.run(["bash", str(primary.edit_path), *args], capture_output=True,
+                          env=child, timeout=120, cwd=str(primary.e.root),
+                          stdin=subprocess.DEVNULL, check=False)
+
+
+def store_images(door: Door, n: int) -> dict:
+    """The store's render-set images at seq `n`, path to bytes, as the
+    contract stub keeps them (`lanes-index.register/<n>/`)."""
+    root = door.store / "lanes-index.register" / str(n)
+    return {path.relative_to(root).as_posix(): path.read_bytes()
+            for path in sorted(root.rglob("*")) if path.is_file()}
+
+
+def git_grep_at_defaults(where: Path, images: dict, ere: str) -> bytes:
+    """What `git grep -E -e <ERE> origin/main` prints for `lanes/log`'s
+    pathspec pair over a tree holding `images`, under git's defaults: a
+    repository of its own under `where`, with no system, global or XDG
+    configuration and no attributes file (an empty `$HOME` and
+    `XDG_CONFIG_HOME`), under `LC_ALL=C`, as files mode greps. So the bytes a
+    case expects are git's own, its tree order and its quoting of a path
+    (`core.quotePath`, on by default) among them, never the case's guess."""
+    for name in ("home", "xdg", "repo"):
+        (where / name).mkdir(parents=True)
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(where / "home"),
+           "XDG_CONFIG_HOME": str(where / "xdg"), "GIT_CONFIG_NOSYSTEM": "1",
+           "GIT_CONFIG_GLOBAL": os.devnull, "LC_ALL": "C"}
+    repo = where / "repo"
+    for path, data in images.items():
+        target = repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+
+    def git(*argv: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", str(repo), *argv], capture_output=True, env=env,
+                              stdin=subprocess.DEVNULL, check=False)
+
+    for argv in (("init", "-q"), ("add", "-A"),
+                 ("-c", "user.name=readers", "-c", "user.email=readers@example.invalid",
+                  "commit", "-q", "-m", "the store's images"),
+                 ("update-ref", "refs/remotes/origin/main", "HEAD")):
+        done = git(*argv)
+        assert done.returncode == 0, (argv, done.returncode, done.stderr)
+    found = git("grep", "-E", "-e", ere, "origin/main", "--", *LOG_PATHSPEC)
+    assert found.returncode in (0, 1), (found.returncode, found.stderr)
+    return found.stdout
+
+
+#: ONE SNAPSHOT (T401's Q2): a log whose name is outside `check_lane_name`'s
+#: class (`+`), which `--all` never fetches, so every run of `register-grep`
+#: reads it through form 3's `--log-key=` (O18), and which sorts after every
+#: other log, so its read is the run's last image. `git grep` prints its name
+#: as it is (no `"`, `\` or byte from 0x80 up). The write that moves the head
+#: appends a NOTED line to `repoA-2`'s log, which the prefetch cached.
+SNAPSHOT_LANE = "repoX+1"
+SNAPSHOT_LOG = f"lanes/log/{SNAPSHOT_LANE}.md"
+SNAPSHOT_TEXT = (f"STARTED — lane {SNAPSHOT_LANE}, session {UUID_A1}@Eagle, "
+                 f"2026-10-05T00:30:00Z, lane:{SNAPSHOT_LANE} → home opensoft/repoX; "
+                 f"dir /work/repoX\n")
+SNAPSHOT_MOVED = "lanes/log/repoA-2.md"
+SNAPSHOT_LINE = (f"NOTED — lane repoA-2, session {UUID_A2}@Eagle, 2026-10-05T01:00:00Z, "
+                 f"lane:repoA-2 — a write that moved the head under the read, move %d\n")
+
+
+@pytest.mark.parametrize("moves", [1, 3], ids=["one-move", "three-moves"])
+def test_register_grep_on_primary_answers_one_snapshot_and_69_after_three_moved_runs(
+        estate, moves):
+    """ONE SNAPSHOT (T401's Q2: lane 3's ruling, #165 6851977580, taking lane
+    5's detect-and-retry, #165 6851740524; tasks:859 at `94fab177`). On
+    primary `register-grep -E <ERE> -- lanes/log` takes `.head`'s `n=` and
+    `generation=` after `reg_paths`, and again after its last image; where
+    either moved, it drops the answer and runs again from `reg_paths`, three
+    runs at most, and then exits 69 with nothing on stdout.
+    THE STUB MOVES THE HEAD BETWEEN CALLS (the door's `move_each`): at each
+    of the first `moves` reads of `--log-key=repoX+1`, before the store
+    answers it, one write appends a NOTED line to `repoA-2`'s log. Every run
+    makes that read, as its last image, after `repoA-2`'s image came from the
+    prefetch's cache at `n`; the read finds `repoA-2` changed in `(n, n']`, so
+    form 3 rewrites the family at `n'`, and `.head` names `n'` (contract 3.6).
+    `[one-move]`: one move, then a clean run, so the verb answers once, exit
+    0, with what `git grep` prints over the store's tree at `n + 1`, the moved
+    line among it, and nothing of the dropped run; `repoX+1` is read twice,
+    once a run. `[three-moves]`: every run's head moves, so it ends 69 with
+    nothing on stdout; `repoX+1` is read three times, and never a fourth.
+    FAILS UNTIL lane 4's T401 round on lane 3's Q2 ruling, which was not
+    bundled when this case was written. On lane 4's `6318d5e5` (#165
+    6851877746), which reads once, `[one-move]` fails on stdout, its answer
+    straddling `n` and `n + 1`, so `repoA-2`'s moved line is missing, and
+    `[three-moves]` on its exit, 0 with lines, not 69 (T217zh)."""
+    seed_logs(estate, {SNAPSHOT_LOG: SNAPSHOT_TEXT})
+    primary = Primary(estate)
+    first = primary.door.head()[0]
+    primary.door.fail(move_each={"key": SNAPSHOT_LANE, "times": moves, "path": SNAPSHOT_MOVED,
+                                 "line": SNAPSHOT_LINE})
+    ere = "^(STARTED|NOTED) "
+    result = edit_bytes(primary, "register-grep", "-E", ere, "--", "lanes/log")
+    reads = [call for call in primary.door.calls()
+             if call["form"] == 3 and f"--log-key={SNAPSHOT_LANE}" in call["argv"]]
+    head = primary.door.head()[0]
+    where = (moves, "exit", result.returncode, "head", first, "->", head, "reads of",
+             SNAPSHOT_LANE, len(reads), result.stdout.decode("utf-8", "replace"),
+             result.stderr.decode("utf-8", "replace")[-1500:])
+    if moves == 1:
+        expect = git_grep_at_defaults(estate.root / "snapshot-oracle",
+                                      store_images(primary.door, first + 1), ere)
+        moved = (SNAPSHOT_LINE % 1).rstrip("\n").encode("utf-8")
+        assert moved in expect and f"{SNAPSHOT_LOG}:".encode() in expect, \
+            ("the oracle lacks the moved line or the log read by --log-key=", expect)
+        assert (result.returncode, result.stdout) == (0, expect), \
+            where + ("expected, git grep at n + 1:", expect.decode("utf-8", "replace"))
+        assert len(reads) == 2, where
+        assert head == first + 1, where
+    else:
+        assert (result.returncode, result.stdout) == (69, b""), where
+        assert len(reads) == 3, where
+        assert head == first + 3, where
+
+
+#: QUOTED NAMES (T401's Q3): three logs whose names are outside
+#: `check_lane_name`'s class, so that each is read through form 3's
+#: `--log-key=` (O18), and each holds one kind of byte that `git grep` quotes
+#: under git's defaults: `"`, `\`, and `é`, the two bytes 0xc3 0xa9.
+QUOTED_LOGS = {"lanes/log/say\"hi-1.md": "say\"hi-1",
+               "lanes/log/back\\slash-1.md": "back\\slash-1",
+               "lanes/log/café-1.md": "café-1"}
+#: How `git grep` prints each under git's defaults: the path in double quotes,
+#: `"` and `\` escaped by a backslash, and each byte from 0x80 up as a
+#: backslash and three octal digits, after the unquoted `origin/main:`.
+QUOTED_AS = (b'origin/main:"lanes/log/say\\"hi-1.md":STARTED ',
+             b'origin/main:"lanes/log/back\\\\slash-1.md":STARTED ',
+             b'origin/main:"lanes/log/caf\\303\\251-1.md":STARTED ')
+#: THE WORKSTATION'S OWN GIT CONFIGURATION, which primary's answer does not
+#: follow: `core.quotePath` off, under which `git grep` prints 0xc3 0xa9 as
+#: they are, and an attributes file at git's default place,
+#: `$XDG_CONFIG_HOME/git/attributes`, marking every file binary, under which a
+#: grep without `--text` prints `Binary file image matches` for each image.
+WORKSTATION_GIT = {"git/config": "[core]\n\tquotePath = false\n",
+                   "git/attributes": "* binary\n"}
+
+
+def test_register_grep_on_primary_prints_each_path_as_git_grep_does_under_gits_defaults(estate):
+    """QUOTED NAMES (T401's Q3: lane 3's ruling, #165 6851977580; lane 4's
+    RC-W23 N2, #165 6851877746; tasks:860 at `94fab177`). Without `-h`,
+    primary prints each path as `git grep` prints it under git's defaults,
+    whatever the workstation's git configuration says: a path holding `"`,
+    `\\` or a byte from 0x80 up goes in double quotes, with octal escapes,
+    after the unquoted `origin/$LANES_BRANCH:`; and each image is grepped as
+    text (`--text`), so no attributes file outside the register makes a
+    `Binary file` line of it. So answer 14's "byte for byte what files mode
+    prints" holds (#165 6746507353).
+    The register holds `QUOTED_LOGS` beside the estate's logs and the store's
+    own `repoS-1` log, so the answer is the store's. The expected bytes are
+    `git grep`'s own over the store's tree, under git's defaults
+    (`git_grep_at_defaults`), first held to `QUOTED_AS`, so the case's
+    premise is git's behaviour and never a guess. Then the workstation's git
+    configuration turns `core.quotePath` off and marks every file binary in
+    its default attributes file, and primary's answer must still be those
+    bytes, exit 0.
+    FAILS UNTIL lane 4's T401 round on lane 3's Q3 ruling, which was not
+    bundled when this case was written. On lane 4's `6318d5e5` (#165
+    6851877746) it fails on stdout: each path after the prefix as it is,
+    unquoted, and each image grepped without `--text`, so a `Binary file
+    image matches` line stands for its lines (T217zi)."""
+    seed_logs(estate, {path: (f"STARTED — lane {lane}, session {UUID_A1}@Eagle, "
+                              f"2026-10-05T00:40:00Z, lane:{lane} → home opensoft/repoQ; "
+                              f"dir /work/repoQ\n")
+                       for path, lane in QUOTED_LOGS.items()})
+    primary = Primary(estate)
+    ere = "^(STARTED|NOTED) "
+    expect = git_grep_at_defaults(estate.root / "quoted-oracle",
+                                  store_images(primary.door, primary.door.head()[0]), ere)
+    for quoted in QUOTED_AS:
+        assert quoted in expect, ("git's defaults print this path otherwise", quoted, expect)
+    assert f"lanes/log/{STORE_ONLY_LANE}.md:".encode() in expect, expect
+    for name, text in WORKSTATION_GIT.items():
+        target = estate.config / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    result = edit_bytes(primary, "register-grep", "-E", ere, "--", "lanes/log")
+    assert (result.returncode, result.stdout) == (0, expect), \
+        (result.returncode, result.stdout.decode("utf-8", "replace"),
+         "expected, git grep under git's defaults:", expect.decode("utf-8", "replace"),
+         result.stderr.decode("utf-8", "replace")[-1500:])
 
 
 # ------------------------------------------------- lane 4's key() trim (T426)
