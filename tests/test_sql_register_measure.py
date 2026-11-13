@@ -1426,6 +1426,18 @@ def _path_m5(reg, root: Path):
     is bound (`hook_pid`), as `[m10]`'s is, so T507's cut at `T0 + 3.75 s`
     runs from the read's own start, never from the pytest process's or the
     service's. The cache file's directory is made first, as `[m10]`'s is.
+
+    THE SERVICE IS WARMED FIRST, by one read of the same form, as the guard
+    module's `_both` warms it (`tests/test_sql_register_guard.py`): a cold
+    service answers `unavailable` until its `psql` has connected
+    (d8:502), and one holding no image answers its first request so (the
+    cache miss), so the read the case asserts on is the second, M5's "with
+    the service warm" (TP:7797). The warming read has its own stand-in
+    pid and its own cache file, so the asserted read is the one this case
+    made before, and its end is not asserted: it may fall back to the
+    direct read. The counts this path adds therefore hold the service's
+    connection, the warming read's, its direct read's where it fell back,
+    and the asserted read's (lane 3's round 6h reading, #165 6859307928).
     Fails until L5-S1 (lane 5's T512) and T229."""
     state = Path(tempfile.mkdtemp(prefix=STATE_PREFIX, dir=STATE_PARENT))
     try:
@@ -1442,12 +1454,18 @@ def _path_m5(reg, root: Path):
             while not sock.exists() and time.monotonic() < end and serve.poll() is None:
                 time.sleep(0.05)
             assert sock.exists(), f"lanes-index serve bound no socket at {sock}: {serve.poll()}"
-            with hook_pid() as pid:
-                proc = run_index(reg.copy, ["register", "read", "--for", "guard", "--prefetch",
-                                            "--cache", root / "m5" / "cache", "--pid", pid,
-                                            "--repo", reg.estate.checkout, "--lane=repoA-1"], env)
-            assert proc.returncode == 0, proc.stderr
-            assert "guard: direct (service unavailable)" not in proc.stderr, proc.stderr
+            reads = {}
+            for name in ("warm", "cache"):
+                with hook_pid() as pid:
+                    reads[name] = run_index(reg.copy, ["register", "read", "--for", "guard",
+                                                       "--prefetch", "--cache", root / "m5" / name,
+                                                       "--pid", pid, "--repo", reg.estate.checkout,
+                                                       "--lane=repoA-1"], env)
+            proc, warm = reads["cache"], reads["warm"]
+            assert proc.returncode == 0, (proc.stderr, f"the warming read: {warm.returncode}",
+                                          warm.stderr)
+            assert "guard: direct (service unavailable)" not in proc.stderr, \
+                (proc.stderr, f"the warming read: {warm.returncode}", warm.stderr)
         finally:
             serve.terminate()
             try:
