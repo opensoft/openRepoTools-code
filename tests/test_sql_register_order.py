@@ -1327,10 +1327,16 @@ def burst_ends(e: Estate, writers: Sequence[Writer]) -> List[Writer]:
     by one row per committed writer, its seqs from 2 with no gap and no
     repeat. That is AT-D9c's form for its own burst (Y TP:3755-3759;
     TP:3781-3785 at `0c3750a5`), which lane 3 points the bursts to (#165
-    6840952649). Returns the writers that committed (T243n)."""
+    6840952649). Returns the writers that committed (T243n).
+
+    At least one writer commits: a burst in which every writer ends 75 has
+    lost every writer, against "A burst loses no writer" (Y TP:916-919), and
+    would leave each check over the writers that committed, and (g)'s head
+    order, true of nothing (lane 2's RV20, finding 8; T243p)."""
     others = [(w.lane, w.code, w.err[-300:]) for w in writers if w.code not in (0, 75)]
     assert not others, f"a burst writer ended neither 0 nor 75: {others}"
     committed = [w for w in writers if w.code == 0]
+    assert committed, f"no burst writer committed: all {len(writers)} ended 75 with nothing written"
     for w in writers:
         found = [x for x in set(w.write_ids()) if e.has_write(x)]
         if w.code == 0:
