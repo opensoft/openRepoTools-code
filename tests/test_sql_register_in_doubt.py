@@ -94,8 +94,8 @@ import pytest
 
 from pgcluster import SUPERUSER, TEMPLATE, Database
 from sql_register_helpers import _proc_start
-from test_sql_register_order import (BURST, CLIENT, DOT, EM, LA, LB, LC, OBJ, UUID_RE, Barrier, Estate,  # noqa: F401
-                                     Writer, claim, estates, hold_point, kind_line, loggers, run_git,
+from test_sql_register_order import (ARROW, BURST, CLIENT, DOT, EM, LA, LB, LC, OBJ, UUID_RE, Barrier,  # noqa: F401
+                                     Estate, Writer, claim, estates, hold_point, kind_line, loggers, run_git,
                                      session_of, tool_calls)
 
 REGISTER = "lanes_register"
@@ -1475,11 +1475,23 @@ def test_the_after_commit_tail_of_retire_rows_runs_once_when_a_rerun_finds_the_w
 @CLIENT
 def test_the_after_commit_tail_of_start_record_runs_once_when_a_rerun_finds_the_write(estates):
     """`start-record`: `lane_state_follow` runs once after the lock: one
-    move of the lane's sidecar."""
+    move of the lane's sidecar.
+
+    The call is in T427's form, as the arm parses it
+    (`7893339:lanes-edit.sh:29679-29722`, `SR_USE` at `:15521`): the lane,
+    then the log line's verb, `RESUMED`, then `--state` for the row that is
+    there, then `--log` with `lane:<lane>`, the arrow and a payload.
+    `Estate.launch` sets `LANES_LANE` to the lane and `LANES_SESSION` to its
+    transcript uuid, which the arm asks for before any read
+    (`:29736-29743`). T245's `--session` was no word of the arm's: it
+    refused it as the verb, 2 (`:29686`; line N2-23's r1b). The lane's own
+    checkout comes from N2's T243t (`c900063a`, `write_lanes_of`'s
+    `start-record` arm; lane 3, #165 6859307928)."""
     e = estates()
     where, root = loggers(e), sidecars(e)
-    tail_rerun(e, LA, ["start-record", LA, "--session", session_of(LA)], where,
-               {"LANES_LANE_STATE_ROOT": str(root)})
+    argv = ["start-record", LA, "RESUMED", "--state", f"LIVE {DOT} T245 start-record",
+            "--log", f"lane:{LA}", ARROW, "T245 start-record"]
+    tail_rerun(e, LA, argv, where, {"LANES_LANE_STATE_ROOT": str(root)})
     assert generation_of(root, LA) == "2"
 
 
@@ -1571,8 +1583,9 @@ def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_n
     """The write is committed either way. [rename-lane-stops]: the handoff
     file emptied, so the replay stops before its write; [rename-lane-differs]:
     the handoff removed by hand, so the row's handoff cell is left as it is
-    and the change set differs first at `lanes/LANES.md` (TP:3418-3426;
-    lane 3, #165 6851669848). Each writes
+    and the change set differs first at `lanes/LANES.md` (TP:3447-3450 at
+    `f4591a08`; in Y's frame, TP:3424-3427 said the handoff "is moved to
+    the new path by hand"; lane 3, #165 6851669848). Each writes
     the mark `owed <utc>`, removes the record, prints one WARNING, exits 0
     and runs no tail. [request-handoff-differs]: the fake `tmux` reports the
     holder's window gone; the run exits 2, saying the request is written at
@@ -1627,7 +1640,11 @@ def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_n
     form from the stops form by Y:5330's text: "replayed at seq `<s-1>` it
     now reaches the seam with another change set, the first path whose
     digest differs being lanes/LANES.md" (`f42d2c85:lanes-edit.sh:8587`),
-    and no "now stops before its write" (RV20's finding 7)."""
+    and no "now stops before its write" (RV20's finding 7). Its `<owed>`
+    names a step, as the stops form's does: the pattern ends with a word
+    character after "did NOT run: " (RV22's NIT 8). `pw_tail_owed` puts
+    `<owed>` there (`7893339:lanes-edit.sh:10905`), and `rename-lane`'s
+    row of it begins "lane <new>'s lifecycle directory moved" (`:8360`)."""
     e = estates()
     where, root = loggers(e), sidecars(e)
     extra = {"LANES_LANE_STATE_ROOT": str(root)}
@@ -1657,9 +1674,10 @@ def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_n
         assert re.search(stops, again.err) and "another change set" not in again.err, (
             f"the replay did not stop before its write: {again.err[-800:]}")
     if case == "rename-lane-differs":
-        differs = re.escape(f"register write {write_id} is in the register at seq {seq}; replayed at seq {seq - 1} "
-                            "it now reaches the seam with another change set, the first path whose digest "
-                            f"differs being {LANES_MD}, so its after-COMMIT steps did NOT run: ")
+        differs = (re.escape(f"register write {write_id} is in the register at seq {seq}; replayed at seq {seq - 1} "
+                             "it now reaches the seam with another change set, the first path whose digest "
+                             f"differs being {LANES_MD}, so its after-COMMIT steps did NOT run: ")
+                   + r"\w")
         assert re.search(differs, again.err) and "now stops before its write" not in again.err, (
             f"the replay did not reach the seam with another change set: {again.err[-800:]}")
     assert pending(e) == []
