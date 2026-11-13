@@ -918,12 +918,18 @@ def write_lanes_of(argv: Sequence[str], lane: Optional[str]) -> List[str]:
     for a run that is no write (a read, `act-begin`), and for an
     `append-line` with no `LANES_LANE`, whose lane is in its text (every run
     here sets `LANES_LANE`). `rename-lane` gives both names, the old one
-    first: `canon_lane` reads the old as the new once the rename is known."""
+    first: `canon_lane` reads the old as the new once the rename is known.
+    `start-record <L> ...` names its lane first, as `write-handoff` does
+    (T427's arm, `f9e1449c:lanes-edit.sh:27941-27945`); the arm's own
+    refusals, a `LANES_LANE` that is not `<L>`, a `LANES_SESSION` that is no
+    transcript uuid and an `--add-row` with no row, come before any clone,
+    so a checkout made for them changes nothing (lane 3, #165 6859307928;
+    T243t)."""
     verb, args = (argv[0], [str(a) for a in argv[1:]]) if argv else ("", [])
     first = args[0] if args else ""
     if verb in ("set-row-state", "replace-in-row", "append-session-id", "request-handoff"):
         return [first] if first else []
-    if verb == "write-handoff":
+    if verb in ("write-handoff", "start-record"):
         return [first] if first and not first.startswith("-") else []
     if verb == "rename-lane":
         names, words = [], iter(args)
@@ -2494,10 +2500,29 @@ def acted(act: str, *scopes: str) -> dict:
 # lane 4's own tool, to that write on a workstation at `primary`; the shim
 # holds that write's commit call; a rival from a second session commits; and
 # the hold is let go (TP:5854-5856). The rival writes the lane's own `PAUSED`
-# in its log, as a forced release does (Y:5675): a lane-kind line, `bind:<L>`,
+# in its log, as a forced release does (Y:5673): a lane-kind line, `bind:<L>`,
 # which every write of the tables lists (Y:5640-5680), W1's new lane aside,
 # whose rival is a row line for it, `row:<L>`. The held case's rival writes
-# the same line for another lane, which no write of the act lists.
+# that `PAUSED` (or W1's row line) for another lane, which no write of the act
+# lists, whatever the act's own rival is (`held_rival`).
+#
+# THE RIVAL LEAVES THE VERB'S ANSWER AS IT WAS (lane 3's ruling, option (b),
+# #165 6860075071). It commits after the attempt's snapshot, so the held
+# commit has lost its turn (LR001, Y:2570), and a new attempt runs the verb
+# again, on the register with the rival in it (Y:2546-2552, Y:2602). Where
+# the verb itself decides on a scope the act lists, a rival that changes its
+# answer ends the act before any commit, and LR009 is never met. So:
+# - W8's `request-handoff` reads the lane's binding, and a `PAUSED` makes it
+#   answer 8 (`7893339:lanes-edit.sh:31788-31791`), after which `lane-start`
+#   goes on (Y:5656). Its rival is the holder's `RESUMED` from the holder's
+#   own place, Falcon (`resumed`), which leaves the lane bound elsewhere;
+#   from the act's own window `request-handoff` would refuse first
+#   (`:31808-31810`). `lane`'s `request-handoff` takes the same rival.
+# - `retire-rows` proves again that the row is dormant, and refuses 2 on a
+#   live session here and on any lane-kind line in its log
+#   (`7893339:lanes-edit.sh:24740-24837`). Its rival appends an id that no
+#   session record holds to the row's session cell, a write on `row:<L>`
+#   that leaves the row dormant (`session-id`).
 #
 # THE WORLD is `test_lane_start_claude_current`'s `Sandbox` (fake `tmux`,
 # `claude` and `gh`) holding the register N1's arms run on (lane 2's T217):
@@ -2547,6 +2572,9 @@ R_SID = {R_PAUSED: "aaaaaaaa-0002-4000-8000-00000000a002", R_HERE: "aaaaaaaa-000
 DORMANT_CELL = "parked long ago, before every lane had a log"
 #: For each lane, a lane that none of its acts' writes lists (the held case).
 R_OTHER = {R_PAUSED: R_FAR, R_HERE: R_FAR, R_FAR: R_HERE, R_DORMANT: R_FAR, R_NEW: R_FAR}
+#: The id the `session-id` rival appends to a row's session cell: no session
+#: record holds it, so it is live nowhere.
+RIVAL_SID = "aaaaaaaa-0259-4000-8000-00000000a259"
 
 
 def verb_is(verb: str) -> str:
@@ -2557,17 +2585,28 @@ def lane_line(kind: str, lane: str) -> str:
     return f"{kind} {EM_JSON} lane {lane}"
 
 
+#: Each rival's kind (`ActWorld.rival`): the scope prefix and the verb of its
+#: entry, which the refused write's `expectation:` line names (`commit_write`'s
+#: LR009, `7893339:lanes-index:9981-9983`), and the kind the held case writes
+#: for another lane.
+RIVALS = {"bind": ("bind", "log", "bind"), "row": ("row", "append-line", "row"),
+          "resumed": ("bind", "log", "bind"), "session-id": ("row", "append-session-id", "bind")}
+
+
 class ActWrite:
     """One write of lane 4's tables: the act that makes it (`tool`, `argv`),
     the lane it writes, its commit call (`match`, a text its entry carries,
-    the first commit call that carries it), the rival's line (`bind`, the
-    lane's `PAUSED`; `row`, a row line), and the act's exit where lane 4's
-    arm names one for a refused write (`code`; else only never 0)."""
+    the first commit call that carries it), the rival's kind (`rival`, one
+    of `RIVALS`), its entry's scope prefix and verb (`rival_scope`,
+    `rival_verb`) and the held case's rival (`held_rival`), and the act's
+    exit where lane 4's arm names one for a refused write (`code`; else only
+    never 0)."""
 
     def __init__(self, tool: str, argv: Tuple[str, ...], lane: str, match: str, rival: str = "bind",
                  code: Optional[int] = None, env: Optional[dict] = None) -> None:
         self.tool, self.argv, self.lane, self.match = tool, argv, lane, match
         self.rival, self.code, self.env = rival, code, env or {}
+        self.rival_scope, self.rival_verb, self.held_rival = RIVALS[rival]
 
 
 _HANDOFF = ("--lane", R_HERE, "T252b's race")
@@ -2578,7 +2617,8 @@ _HANDOFF = ("--lane", R_HERE, "T252b's race")
 #: `lane`'s `request-handoff`. The codes: `start-record`'s and W1's 2 die 2
 #: (T428, "any 2 dies"); W8's arm passes the code (T428); `:2817` keeps 2
 #: (T429); W13 under `set -e` and W14's note arm exit with the writer's code
-#: (T430); `lane`'s arm keeps 1 for a 2 (T432); the handoff skill's step-4
+#: (T430); `lane`'s `2)` arm dies 2, as Y:5722 and Y:5740 say (T432; ERR-36;
+#: `7893339:lane:1382-1386`; lane 3, #165 6860075071); the handoff skill's step-4
 #: stop ends 2 alone, its writer's code staying in that writer's own stderr
 #: (T431; lane 3's question 4, #165 6835210568; T252n); and the guard's child
 #: ends 0, its refused `set-row-state` a `note=`, since the bind landed (lane
@@ -2594,7 +2634,7 @@ ACT_WRITES = {
                                       env={"LANE_START_SESSION_ID": "0"}),
     "lane-start-w8-request-handoff": ActWrite("lane-start", ("repoA", "3", "--request-handoff", "--dir",
                                                              "{lane_dir}"), R_FAR,
-                                              verb_is("request-handoff"), code=2),
+                                              verb_is("request-handoff"), rival="resumed", code=2),
     "lane-start-start-record": ActWrite("lane-start", ("repoA", "1"), R_PAUSED, verb_is("start-record"),
                                         code=2),
     "lane-handoff-late-paused": ActWrite("lane-handoff", ("--late", "--at", "{utc}", *_HANDOFF), R_HERE,
@@ -2605,12 +2645,13 @@ ACT_WRITES = {
     "lane-end-w13-set-row-state": ActWrite("lane-end", (R_HERE,), R_HERE, verb_is("set-row-state"), code=2),
     "lane-end-w14-log-ended": ActWrite("lane-end", (R_HERE,), R_HERE, lane_line("ENDED", R_HERE), code=2),
     "lane-end-retire-rows": ActWrite("lane-end", ("--retire-dormant", "repoH", "--yes", "--reason=T252b's race"),
-                                     R_DORMANT, verb_is("retire-rows"), env={"LANES_LANE": R_HERE}),
+                                     R_DORMANT, verb_is("retire-rows"), rival="session-id",
+                                     env={"LANES_LANE": R_HERE}),
     "skill-step-4-writes": ActWrite("skill", (), R_HERE, lane_line("PAUSED", R_HERE), code=2),
     "guard-answer-2-child": ActWrite("guard", ("guard-bind", "--body", R_SID[R_PAUSED]), R_HERE,
                                      verb_is("set-row-state"), env={"LANES_LANE": R_PAUSED}),
     "lane-request-handoff": ActWrite("lane", (R_FAR, "--request-handoff"), R_FAR, verb_is("request-handoff"),
-                                     code=1),
+                                     rival="resumed", code=2),
 }
 
 
@@ -2802,15 +2843,32 @@ class ActWorld(Sandbox):
         return act_logger(self.root / "race-gate", "lane-worktrees")
 
     def rival(self, kind: str, lane: str) -> Writer:
-        """A second session's write: `bind`, the lane's own `PAUSED` in its
-        log (lane-handoff's W9 form); `row`, a row line for the lane."""
+        """A second session's write (`RIVALS`): `bind`, the lane's own
+        `PAUSED` in its log (lane-handoff's W9 form); `row`, a row line for
+        the lane; `resumed`, the lane's `RESUMED`, written by its own session
+        from the holder's place, Falcon (`LANES_WORKSTATION`, `LANES_HOST`),
+        which leaves the lane bound there: `lane_binding_scan` reads a
+        `RESUMED` as `bound` (`7893339:lanes-edit.sh:19808-19815`), at the
+        `host` that `binding_subfields_add` writes into its payload
+        (`:15157-15158`), and that host is not this one; `session-id`, an
+        id that no session record holds, `RIVAL_SID`, appended to the lane's
+        session cell by `append-session-id`, as `[lane-start-reread]`'s
+        holder appends one: a dormant row stays dormant, since `retire-rows`
+        refuses only an id that is live here (`7893339:lanes-edit.sh:24740-24751`)."""
         edit = ["bash", str(self.bin / "lanes-edit.sh")]
+        extra: dict = {}
         if kind == "bind":
             argv = ["log", "PAUSED", f"lane:{lane}", ARROW, "T252b's rival", "the rival's release"]
+        elif kind == "resumed":
+            argv = ["log", "RESUMED", f"lane:{lane}", ARROW, "T252b's rival", "the holder resumes in place"]
+            extra = {"LANES_WORKSTATION": "Falcon", "LANES_HOST": "falcon"}
+        elif kind == "session-id":
+            argv = ["append-session-id", lane, R_SID[lane], f"{ARROW} harness `{RIVAL_SID}`",
+                    "T252b's rival: an id no session holds"]
         else:
             argv = ["append-line", f"| `{lane}` | harness `{R_SID[lane]}` | Eagle / test / brett "
                                    f"| 2026-11-01T00:00Z | none | handoffs/{lane}.md | T252b's rival row |"]
-        w = self.launch("rival", [*edit, *argv], lane)
+        w = self.launch("rival", [*edit, *argv], lane, extra=extra)
         w.wait()
         return w
 
@@ -2855,12 +2913,14 @@ def act_worlds(pg_cluster, tmp_path):
         pg_cluster.drop_database(name)
 
 
-def race(world: ActWorld, write: ActWrite, rival_lane: str) -> Tuple[Writer, Writer, List[str], int]:
-    """The act run to `write`, its commit call held while the rival commits
-    on `rival_lane`; then let go. Returns the act, which may still run (a
-    `lane-start` whose W8 committed waits for the holder), the rival, the
-    held write's id, read from the shim's log, which logs a call before
-    its hold, and the head at the hold, before the rival commits (T252s)."""
+def race(world: ActWorld, write: ActWrite, rival_lane: str,
+         kind: Optional[str] = None) -> Tuple[Writer, Writer, List[str], int]:
+    """The act run to `write`, its commit call held while the rival, of
+    `kind` (by default `write.rival`), commits on `rival_lane`; then let go.
+    Returns the act, which may still run (a `lane-start` whose W8 committed
+    waits for the holder), the rival, the held write's id, read from the
+    shim's log, which logs a call before its hold, and the head at the hold,
+    before the rival commits (T252s)."""
     fifo = world.root / "hold.fifo"
     os.mkfifo(str(fifo))
     act = world.act(write, [{"mode": "hold", "match": write.match, "call": 1, "fifo": str(fifo)}])
@@ -2870,7 +2930,7 @@ def race(world: ActWorld, write: ActWrite, rival_lane: str) -> Tuple[Writer, Wri
     ids = [m.group(1) for m in (re.search(r"commit_write\(\s*-?[0-9]+\s*,\s*'(" + UUID_RE + ")'", s)
                                 for s in calls[:1]) if m]
     assert ids, f"the held commit call carries no write id: {calls[:1]}"
-    rival = world.rival(write.rival, rival_lane)
+    rival = world.rival(kind or write.rival, rival_lane)
     assert rival.code == 0, f"the rival exited {rival.code}: {rival.err[-400:]}"
     held.close()
     return act, rival, ids, base
@@ -2880,11 +2940,12 @@ def race(world: ActWorld, write: ActWrite, rival_lane: str) -> Tuple[Writer, Wri
 @pytest.mark.parametrize("write", list(ACT_WRITES))
 def test_an_act_whose_scope_changed_before_its_commit_writes_nothing(act_worlds, write):
     """TP:5854-5862: the act runs to `write`, held at its commit call; a rival
-    from a second session commits on one of its scopes. On release the act's
-    commit refuses with 2 and `expectation: <scope> changed at seq <k> by
-    <lane>/<verb>`, naming the rival's seq, lane and verb; the held write is
-    not in the journal; and the act exits with the code lane 4's arm gives,
-    never 0.
+    from a second session commits on one of its scopes, leaving the verb's
+    own answer as it was (`RIVALS`; see the section's head). On release the
+    held commit has lost its turn, and the retried one refuses with 2 and
+    `expectation: <scope> changed at seq <k> by <lane>/<verb>`, naming the
+    rival's seq, lane and verb; the held write is not in the journal; and
+    the act exits with the code lane 4's arm gives, never 0.
 
     `[guard-answer-2-child]` alone ends 0 (lane 3's point 4(b), #165
     6841918192; tasks:1438): the bind landed, so the guard's body exits 0;
@@ -2899,9 +2960,7 @@ def test_an_act_whose_scope_changed_before_its_commit_writes_nothing(act_worlds,
     k = max(int(r["seq"]) for r in world.c.json(
         f"SELECT coalesce(jsonb_agg(q), '[]'::jsonb) FROM (SELECT seq FROM {REGISTER}.journal "
         f"WHERE write_id = ANY(ARRAY{rival.write_ids()}::uuid[])) q;"))
-    scope = f"{'bind' if w.rival == 'bind' else 'row'}:{w.lane.lower()}"
-    verb = "log" if w.rival == "bind" else "append-line"
-    said = f"expectation: {scope} changed at seq {k} by {w.lane}/{verb}"
+    said = f"expectation: {w.rival_scope}:{w.lane.lower()} changed at seq {k} by {w.lane}/{w.rival_verb}"
     assert said in act.err + act.out, f"[{write}] {said!r} is not in {act.err[-900:]!r}"
     assert all(world.c.value(f"SELECT count(*) FROM {REGISTER}.journal WHERE write_id = '{x}';") == "0"
                for x in ids), f"[{write}] the held write is in the journal"
@@ -2926,10 +2985,11 @@ def test_an_act_whose_scope_changed_before_its_commit_writes_nothing(act_worlds,
 @pytest.mark.parametrize("write", list(ACT_WRITES))
 def test_an_act_whose_scopes_held_commits(act_worlds, write):
     """TP:5863-5864: with a rival that touches no scope the write lists,
-    another lane's `PAUSED` (or row line), the held write commits."""
+    another lane's `PAUSED` (or row line), the held write commits. The
+    rival is `held_rival`, whatever the act's own rival is (`RIVALS`)."""
     world = act_worlds()
     w = ACT_WRITES[write]
-    act, _, ids, _ = race(world, w, R_OTHER[w.lane])
+    act, _, ids, _ = race(world, w, R_OTHER[w.lane], w.held_rival)
     deadline = time.monotonic() + 60
     while True:
         ended = act.ended is not None
