@@ -1041,6 +1041,27 @@ def _held_fd(fifo: Path, what: str, seconds: float = 120) -> int:
     pytest.fail(f"{what}: nothing was held on {fifo.name} within {seconds:g} s", pytrace=False)
 
 
+def _held_pushes(est: RenderEstate) -> int:
+    """The render pushes the wrapper has held so far, each counted by its
+    own `held` line in the raw `git-wrapper.log`. Not `render_calls()`,
+    which drops a pid's `held` line once its push has run."""
+    return sum(1 for c in _jsonl(est.bin / "git-wrapper.log")
+               if c.get("render") and c["sub"] == "push" and c.get("outcome") == "held")
+
+
+def _kth_held_fd(est: RenderEstate, fifo: Path, k: int, what: str,
+                 seconds: float = 120) -> int:
+    """`_held_fd`, opened only once the raw log holds the `k`-th held
+    render push. A pass starts only after the previous push's wrapper has
+    exited, so the open lands on the `k`-th push, never on one just
+    released whose wrapper has not yet seen EOF (lane 3's #38, #165
+    6859801732)."""
+    if not _until(lambda: _held_pushes(est) >= k, seconds):
+        pytest.fail(f"{what}: the wrapper's log holds {_held_pushes(est)} held render pushes, "
+                    f"not {k}, within {seconds:g} s", pytrace=False)
+    return _held_fd(fifo, what, seconds)
+
+
 def _wrote(proc, what: str) -> None:
     assert proc.returncode == 0, (
         f"{what} on primary did not exit 0 (lane 4's T415 and T416, L4-B13):\n{_said(proc)}")
@@ -1871,9 +1892,11 @@ def test_a_failed_render_shows_its_lag_and_the_next_render_catches_up(request, t
 def test_a_renderer_hands_over_once_after_16_passes(request, tmp_path):
     """PC-3's handover (TP:1046-1049, :1210-1215): a stream of 17 writes
     from `L1`, one per pass, each made while that pass is held at its push
-    (the hold re-arms for each push). No renderer process makes more than 16
-    passes (a pass begins with its fetch), a second process follows once,
-    and the last write reaches origin. Fails until L4-B13 and T320 to T323."""
+    (the hold re-arms for each push). Each write waits for that pass's push
+    in the wrapper's raw log, so no two writes share a pass. No renderer
+    process makes more than 16 passes (a pass begins with its fetch), a
+    second process follows once, and the last write reaches origin. Fails
+    until L4-B13 and T320 to T323."""
     est = _estate(request, tmp_path)
     one = est.checkout("L1", L1, own=True)
     old = est.origin_tip()
@@ -1882,13 +1905,17 @@ def test_a_renderer_hands_over_once_after_16_passes(request, tmp_path):
     est.arm([{"sub": "push", "do": "hold", "render_only": True, "fifo": str(fifo),
               "where": str(one.own.clone)}])
     _wrote(est.write(one, "stream write 1"), "write 1")
+    # Write n waits for pass n-1's push, the (n-1)-th held line in the raw
+    # log (lane 3's #38, #165 6859801732). `_held_fd` alone could reopen the
+    # FIFO onto the push just released, before its wrapper saw EOF: that
+    # push stayed held through write n, and the next pass rendered two seqs.
     for n in range(2, 18):
-        fd = _held_fd(fifo, f"pass {n - 1}'s push")
+        fd = _kth_held_fd(est, fifo, n - 1, f"pass {n - 1}'s push")
         try:
             _wrote(est.write(one, f"stream write {n}", timeout=120), f"write {n}")
         finally:
             os.close(fd)
-    fd = _held_fd(fifo, "the last pass's push")
+    fd = _kth_held_fd(est, fifo, 17, "the last pass's push")
     est.rearm()
     os.close(fd)
     est.wait_lag_0(one, "the stream's last write")
@@ -1899,6 +1926,8 @@ def test_a_renderer_hands_over_once_after_16_passes(request, tmp_path):
     for call in est.render_calls(0):
         if call["sub"] == "push" and call["outcome"] == "ran":
             passes[call["renderer"]] = passes.get(call["renderer"], 0) + 1
+    assert sum(passes.values()) == 17, (
+        f"the 17 writes did not go out in 17 render pushes, one per pass: {passes}")
     assert passes and max(passes.values()) <= 16, f"a renderer made more than 16 passes: {passes}"
     assert len(passes) == 2, (
         f"{len(passes)} renderer processes pushed, not the first and one that follows it: "
