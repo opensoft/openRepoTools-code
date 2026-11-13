@@ -2517,7 +2517,7 @@ def acted(act: str, *scopes: str) -> dict:
 #   goes on (Y:5656). Its rival is the holder's `RESUMED` from the holder's
 #   own place, Falcon (`resumed`), which leaves the lane bound elsewhere;
 #   from the act's own window `request-handoff` would refuse first
-#   (`:31808-31810`).
+#   (`:31808-31810`). `lane`'s `request-handoff` takes the same rival.
 # - `retire-rows` proves again that the row is dormant, and refuses 2 on a
 #   live session here and on any lane-kind line in its log
 #   (`7893339:lanes-edit.sh:24740-24837`). Its rival appends an id that no
@@ -2617,7 +2617,8 @@ _HANDOFF = ("--lane", R_HERE, "T252b's race")
 #: `lane`'s `request-handoff`. The codes: `start-record`'s and W1's 2 die 2
 #: (T428, "any 2 dies"); W8's arm passes the code (T428); `:2817` keeps 2
 #: (T429); W13 under `set -e` and W14's note arm exit with the writer's code
-#: (T430); `lane`'s arm keeps 1 for a 2 (T432); the handoff skill's step-4
+#: (T430); `lane`'s `2)` arm dies 2, as Y:5722 and Y:5740 say (T432; ERR-36;
+#: `7893339:lane:1382-1386`; lane 3, #165 6860075071); the handoff skill's step-4
 #: stop ends 2 alone, its writer's code staying in that writer's own stderr
 #: (T431; lane 3's question 4, #165 6835210568; T252n); and the guard's child
 #: ends 0, its refused `set-row-state` a `note=`, since the bind landed (lane
@@ -2650,7 +2651,7 @@ ACT_WRITES = {
     "guard-answer-2-child": ActWrite("guard", ("guard-bind", "--body", R_SID[R_PAUSED]), R_HERE,
                                      verb_is("set-row-state"), env={"LANES_LANE": R_PAUSED}),
     "lane-request-handoff": ActWrite("lane", (R_FAR, "--request-handoff"), R_FAR, verb_is("request-handoff"),
-                                     code=1),
+                                     rival="resumed", code=2),
 }
 
 
