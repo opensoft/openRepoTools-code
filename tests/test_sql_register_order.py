@@ -1980,14 +1980,23 @@ def test_a_writer_prints_its_output_once_however_many_attempts_it_made(estates, 
     it made, and its stderr no line twice (only the deciding attempt's). The
     line is a `note`, on stderr (T421; T243h). The row's oracle is each
     committed writer's (Y TP:6852-6854; TP:6925-6927 at `0c3750a5`), so a
-    writer may end 75 with nothing written, as `burst_ends` checks (T248d)."""
+    writer may end 75 with nothing written, as `burst_ends` checks (T248d).
+
+    Its record counts each writer's attempts by its snapshots alone,
+    `burst_calls`' `s` calls, and `reads` its `r` and `m` calls, the detached
+    render's reads among them, as the burst record does (T243q). Read after
+    the burst's own record, it can hold more render reads than that one,
+    never more attempts. UNTIL T248e `attempts` here counted both, so an
+    older figure is `attempts + reads` (lane 2's RV20, finding 9; T248e)."""
     e = estates()
     writers, _ = burst(e, [f"{KEY}#{400 + k}" for k in range(10)], 200, node=request.node)
     for w in burst_ends(e, writers):
         assert len(SEQ_SAID.findall(w.err)) == 1, f"{w.lane} printed its success text not once: {w.err!r}"
         lines = [l for l in w.err.splitlines() if l.strip()]
         assert len(lines) == len(set(lines)), f"{w.lane}'s stderr repeats an attempt's lines: {w.err!r}"
-    record("output-once", attempts={w.lane: len(w.snapshot_calls()) for w in writers})
+    kinds = {w.lane: [call[0] for call in burst_calls(w)[0].split()] for w in writers}
+    record("output-once", attempts={lane: k.count("s") for lane, k in kinds.items()},
+           reads={lane: k.count("r") + k.count("m") for lane, k in kinds.items()})
 
 
 @CLIENT
@@ -2573,10 +2582,16 @@ _HANDOFF = ("--lane", R_HERE, "T252b's race")
 #: stop ends 2 alone, its writer's code staying in that writer's own stderr
 #: (T431; lane 3's question 4, #165 6835210568; T252n); and the guard's child
 #: ends 0, its refused `set-row-state` a `note=`, since the bind landed (lane
-#: 3's point 4(b), #165 6841918192; T252s).
+#: 3's point 4(b), #165 6841918192; T252s). W1 runs with `LANE_START_SESSION_ID=0`,
+#: minting off: where a transcript uuid is knowable, T428 carries W1 inside the
+#: one `start-record --add-row` call, and no commit call is `add-row`'s; with
+#: none, W1 stays the separate `add-row` that TP:5848 names
+#: (`f9e1449c:lane-start:4315-4320`, `:4363-4364`, `:4562-4563`, `:4640-4644`;
+#: lane 2's TR21, section 2a, option 1; T252t).
 ACT_WRITES = {
     "lane-start-w1-add-row": ActWrite("lane-start", ("repoZ", "1", "--no-launch"), R_NEW,
-                                      verb_is("add-row"), rival="row", code=2),
+                                      verb_is("add-row"), rival="row", code=2,
+                                      env={"LANE_START_SESSION_ID": "0"}),
     "lane-start-w8-request-handoff": ActWrite("lane-start", ("repoA", "3", "--request-handoff", "--dir",
                                                              "{lane_dir}"), R_FAR,
                                               verb_is("request-handoff"), code=2),
