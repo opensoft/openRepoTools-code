@@ -5292,6 +5292,8 @@ reg_class_of() {   # <arm>: sets REG_CLASS, REG_MIRROR_VAR and REG_NO_CALL
     next-free) REG_CLASS=decide ;;
     lane-objects) REG_CLASS=decide ;;
     register-row-local) REG_CLASS=decide ;;
+    register-text) REG_CLASS=decide ;;
+    register-grep) REG_CLASS=decide ;;
     retired-identity) REG_CLASS=decide ;;
     session-lane) REG_CLASS=decide ;;
     resolve-home) REG_CLASS=decide ;;
