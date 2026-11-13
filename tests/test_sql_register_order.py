@@ -1335,8 +1335,11 @@ def burst_ends(e: Estate, writers: Sequence[Writer]) -> List[Writer]:
     absent from the journal, and none ended any other way; the journal grew
     by one row per committed writer, its seqs from 2 with no gap and no
     repeat. That is AT-D9c's form for its own burst (Y TP:3755-3759;
-    TP:3781-3785 at `0c3750a5`), which lane 3 points the bursts to (#165
-    6840952649). Returns the writers that committed (T243n).
+    TP:3781-3785 at `0c3750a5`). Lane 3 pointed the bursts to it (#165
+    6840952649), then withdrew that (6841239274): each case's own row
+    decides, (g)'s the cache's (Y TP:936-950) and AT-F14's each committed
+    writer's (Y TP:6852-6854), and neither asks every writer to commit
+    (T243r). Returns the writers that committed (T243n).
 
     At least one writer commits: a burst in which every writer ends 75 has
     lost every writer, against "A burst loses no writer" (Y TP:916-919), and
