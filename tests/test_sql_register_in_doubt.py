@@ -1592,12 +1592,17 @@ def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_n
     differs path (Y:5330; the same ruling). The case tells its form from
     [rename-lane-differs] by Y:5329's text: "replayed at seq `<s-1>` it now
     stops before its write (exit 5: `<its last line>`), so its after-COMMIT
-    steps did NOT run: `<owed>`". The last line must be the stamp proof's
-    own refusal, "the handoff at `<path>` cannot take Rule 3's stamp"
-    (`f42d2c85:lanes-edit.sh:20908`), since `rename-lane` refuses with 5
-    elsewhere too, and `<owed>` must name steps (TP:3423, "names the steps
-    that did NOT run"; RV20's NIT 13). And there is no "another change
-    set", the differs form's words. It fails until lane 4's T422, whose
+    steps did NOT run: `<owed>`". The WARNING carries only the child's last
+    line (`pw_last_line`, `f42d2c85:lanes-edit.sh:8581`, `:8629`), and
+    after the stamp proof's refusal, "the handoff at `<path>` cannot take
+    Rule 3's stamp" (`:20908`), the rename's undo prints its note, "the
+    rename was rolled back: ... nothing was committed" (`rename_undo`,
+    `:2188`), as it does after `rename-lane`'s other refusals with 5 in
+    its transaction. So the case cannot tell the stamp proof's 5 from those
+    by the text, as RV20's NIT 13 asked (line ID-21's r02 saw the note): it
+    requires exit 5 with that note as the last line, and `<owed>` naming
+    steps (TP:3423, "names the steps that did NOT run"). And there is no
+    "another change set", the differs form's words. It fails until lane 4's T422, whose
     stamp check runs before the seam on primary (tasks:1280 at `717ed04d`,
     "the stamp's checks run before the seam"; lane 3, #165 6841366245).
 
@@ -1632,7 +1637,7 @@ def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_n
     if case == "rename-lane-stops":
         stops = (re.escape(f"register write {write_id} is in the register at seq {seq}; replayed at seq {seq - 1} "
                            "it now stops before its write (exit 5: ")
-                 + r"[^\n]*?the handoff at [^\n]*? cannot take Rule 3's stamp [^\n]*?\), "
+                 + r"lanes-edit: the rename was rolled back: [^\n]*?nothing was committed\.[^\n]*?\), "
                  + r"so its after-COMMIT steps did NOT run: \w")
         assert re.search(stops, again.err) and "another change set" not in again.err, (
             f"the replay did not stop before its write: {again.err[-800:]}")
