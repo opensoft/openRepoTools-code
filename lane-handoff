@@ -3206,8 +3206,8 @@ act_on_seq_base() {
 	return 0
 }
 # THE ACT STOPS WHERE A SEQ-BASE WRITE WAS REFUSED (feature 007, T429; lane 3,
-# #165 6834271321, which rules lane 4's question 3 as lane 4 read it; TP:5891–
-# 5894: the act "exits with the code lane 4's arms give … never 0"; tasks:1373,
+# #165 6834271321, which rules lane 4's question 3 as lane 4 read it; TP:5861–
+# 5864: the act "exits with the code lane 4's arms give … never 0"; tasks:1373,
 # `:2817`'s rule). Under a seq base, a PAUSED write that ended with any code
 # but 0, 3 and 69 (W9, W11 or W12: a 2, a 75, any other) marks the act
 # unfinished here, and the lines that follow the lifecycle step below stop it:
@@ -3651,7 +3651,7 @@ lifecycle_finish "$lc_unfinished"
 	die "$act_refuse, so this act is refused with 1 (A2): the handoff file is written, none of the PAUSED record's writes was sent, and the note above names how the record is completed. Nothing else was done, and this pane is left as it is. Once the verb named above answers (a base from \`act-begin\`, a name from the walk), running $prog again supersedes this operation, which stays SWAPPING until then." 1
 
 # ------- A SEQ-BASE WRITE THAT WAS REFUSED: the act stops here (T429; lane 3,
-# #165 6834271321, on lane 4's question 3; TP:5891–5894 "never 0"; tasks:1373)
+# #165 6834271321, on lane 4's question 3; TP:5861–5864 "never 0"; tasks:1373)
 # The form is A2's refusal above: the handoff file is written, the lifecycle step
 # has run (the lane stays SWAPPING for each write named, W11's included), and the
 # act ends BEFORE the restart line, so it prints no READY, writes no restart
