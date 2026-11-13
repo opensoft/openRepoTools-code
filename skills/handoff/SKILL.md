@@ -529,7 +529,7 @@ itself exited 69 or was not sent and no write stopped the act** (lane 3, #165 68
 because `--late` writes that line alone and refuses once the lane's last line is a `PAUSED`, and after a stop it would write a
 second one. Where that line landed, or a write stopped the act, the note says to run
 `/handoff` again from step 1 once the register answers (Y:5601), and where it exited 3 the note names that write's printed
-`LANES_WRITE_ID` rerun first and then `/handoff` again (Y:5199, Y:5222) (below). Where `act-begin` exits 2 the helper predates feature 007 and the writes go as
+`LANES_WRITE_ID` rerun first and then `/handoff` again (Y:5199, Y:5222) (below). Where the register's line or the row also exited 3, every one of these notes ends with the stop's own sentence, which names the rerun the writer printed for it and says to run it first (lane 3, #165 6837908956, questions 1 to 3). Where `act-begin` exits 2 the helper predates feature 007 and the writes go as
 they always did, with `LANES_ACT` unset and `LANES_EXPECT` kept, which such a helper reads no more than it reads
 `LANES_ACT`; this skill sets no `SWAPPING`, so the note says the lane stays as it is. Off a SQL register the base
 reads `<id>@files` and both variables are ignored. Set `L`, `sread`, `lane`, `ws` and the rest as steps 1 and 2 have
@@ -558,6 +558,7 @@ them, as for every block here; `sread` is defined in the first block of this fil
 # block ends 1. A container with no workstation writes nothing here, so it takes no base.
 unset LANES_ACT LANES_EXPECT
 act_line=""; act_scopes=""; act_down=""; act_exit=""; act_w69=""; act_w9_rc=""
+act_also3=""; act_p69_also3=""
 # A WRITE THAT WAS SENT AND DID NOT END 0, 3 OR 69 UNDER A SEQ BASE ENDS THE BLOCK, AND THE ACT
 # (feature 007, T431; TP:5891-5894 "never 0"; tasks:1373, `:2817`'s rule; lane 3, #165
 # 6834271321, and 6835210568 on lane 4's question 4: THE SKILL'S STOP USES 2 ALONE).
@@ -600,7 +601,13 @@ act_re='^[0123456789abcdef]{32}@(files|(0|[123456789][0123456789]{0,17}):[012345
 # beside a line that exited 69 or was not sent; the block ends 2 after `THIS ACT STOPS`)
 # `act_69_again_note` says to run the act again from its start, as the stop's own line
 # does (Y:5601), so the two never say different things: a `--late` after a stop writes two
-# `PAUSED` lines (lane 3, #165 6836853700, question 8). Where `act-begin`, an identity
+# `PAUSED` lines (lane 3, #165 6836853700, question 8). WHERE W11'S OR W12'S WRITE ALSO
+# EXITED 3, UNDER A SEQ BASE, each of the four ends with the stop's own sentence
+# (`act_p69_also3`, set where the three writes are known; T429's `p69_also3`; lane 3, #165
+# 6837908956, questions 1 to 3): the rerun the writer printed is what settles that write,
+# and the way the note names is no way to settle it. It is empty everywhere else, `@files`
+# and `act-begin`'s 2 included, so those notes keep their words, and W9's own 3 is named by
+# `act_69_doubt_note` already. Where `act-begin`, an identity
 # read or the walk stopped the writes, none was sent: the note prints at the end of the
 # reads, before anything is built, and the block ends there, and it is always
 # `act_69_note`. `act_down_say` and
@@ -615,16 +622,16 @@ act_hold() {   # act_hold: the REFUSED line above held the writes (A2); the bloc
   echo "NO PAUSED WRITES: the refusal above holds them. None of the three is sent: no PAUSED line, no register line and no state cell is written. The handoff step 2 refreshed stands. This block ends 1 and the act STOPS after the note below: no restart command is printed and step 5 and step 6 are not run. Fix what the refusal names and run /handoff again."
 }
 act_69_note() {
-  echo "THE PAUSED RECORD IS INCOMPLETE, and the lane stays as it is, an interrupted swap. The record is completed later with \`lane-handoff --late --at <UTC> --lane ${lane:-<L>}\`, run from a shell by whoever relaunches the lane, once the register answers and BEFORE the relaunch (step 6 says why); the UTC is the moment this session ended."
+  echo "THE PAUSED RECORD IS INCOMPLETE, and the lane stays as it is, an interrupted swap. The record is completed later with \`lane-handoff --late --at <UTC> --lane ${lane:-<L>}\`, run from a shell by whoever relaunches the lane, once the register answers and BEFORE the relaunch (step 6 says why); the UTC is the moment this session ended.$act_p69_also3"
 }
 act_69_landed_note() {
-  echo "THE PAUSED RECORD IS INCOMPLETE, and the lane stays as it is, an interrupted swap. The object log's PAUSED line is written, so \`lane-handoff --late\` is not the way to complete it: it refuses where the lane's last line is already a PAUSED, and it never writes the register's file-level line or the row. Once the register answers, run /handoff again from step 1 (Y:5601): it takes a new base."
+  echo "THE PAUSED RECORD IS INCOMPLETE, and the lane stays as it is, an interrupted swap. The object log's PAUSED line is written, so \`lane-handoff --late\` is not the way to complete it: it refuses where the lane's last line is already a PAUSED, and it never writes the register's file-level line or the row. Once the register answers, run /handoff again from step 1 (Y:5601): it takes a new base.$act_p69_also3"
 }
 act_69_doubt_note() {
-  echo "THE PAUSED RECORD IS INCOMPLETE, and the lane stays as it is, an interrupted swap. The object log's PAUSED line is in doubt (its write exited 3), so \`lane-handoff --late\` is not the way to complete it: where the rerun the writer printed above lands the line, \`--late\` refuses, and where it has not, a late line and that rerun would write two. Run that \`LANES_WRITE_ID\` rerun first, which writes the line once or finds it (Y:5199, Y:5222), and then, once the register answers, run /handoff again from step 1 (Y:5601): it takes a new base."
+  echo "THE PAUSED RECORD IS INCOMPLETE, and the lane stays as it is, an interrupted swap. The object log's PAUSED line is in doubt (its write exited 3), so \`lane-handoff --late\` is not the way to complete it: where the rerun the writer printed above lands the line, \`--late\` refuses, and where it has not, a late line and that rerun would write two. Run that \`LANES_WRITE_ID\` rerun first, which writes the line once or finds it (Y:5199, Y:5222), and then, once the register answers, run /handoff again from step 1 (Y:5601): it takes a new base.$act_p69_also3"
 }
 act_69_again_note() {
-  echo "THE PAUSED RECORD IS INCOMPLETE, and the lane stays as it is, an interrupted swap. The object log's PAUSED line did not land (it was not written, and this act stops, below), so \`lane-handoff --late\` is not the way to complete it. Once the register answers, run /handoff again from step 1 (Y:5601): it takes a new base."
+  echo "THE PAUSED RECORD IS INCOMPLETE, and the lane stays as it is, an interrupted swap. The object log's PAUSED line did not land (it was not written, and this act stops, below), so \`lane-handoff --late\` is not the way to complete it. Once the register answers, run /handoff again from step 1 (Y:5601): it takes a new base.$act_p69_also3"
 }
 # A WRITE THAT EXITED 3 IS IN DOUBT, NOT REFUSED (Y:5698, F9; lane 3, #165 6770733371,
 # T431's question 2 and its shared ruling 3). The act carries on, as it does after any
@@ -1110,6 +1117,7 @@ act_w9_rc="$wr_rc"
 wr_rc=0
 LANES_ACT="$act_line" LANES_EXPECT="$act_scopes" "$L" append-line "PAUSED — lane $lane, session $uuid@$ws, $(date -u +%Y-%m-%dT%H:%M:%SZ), $why_text; handoff refreshed" || wr_rc=$?
 [[ "$wr_rc" != 3 ]] || act_in_doubt "the register's PAUSED line"
+[[ "$wr_rc" != 3 ]] || act_also3=1
 act_again_say "the register's PAUSED line" "$wr_rc"
 [[ "$wr_rc" != 69 ]] || act_w69=1
 fi
@@ -1161,6 +1169,7 @@ LANES_ACT="$act_line" LANES_EXPECT="$act_scopes" "$L" set-row-state "$lane" "PAU
 if [[ "$wr_rc" != 0 ]]; then
   row_write_refused=1
   [[ "$wr_rc" != 3 ]] || act_in_doubt "the row's state cell"
+  [[ "$wr_rc" != 3 ]] || act_also3=1
   act_again_say "the row's state cell" "$wr_rc"
   [[ "$wr_rc" != 69 ]] || act_w69=1
 fi
@@ -1175,11 +1184,14 @@ fi
 # landed, `act_69_landed_note` says to run the act again, as `lane-handoff`'s own note
 # does; where it exited 3, `act_69_doubt_note` names the writer's printed rerun first and
 # then the act again; where a write stopped the act (`act_stop`), the note says to run the
-# act again, as the stop does. Off a seq base it is `--late`'s.
+# act again, as the stop does. Off a seq base it is `--late`'s. Where the register's line
+# or the row also exited 3 (`act_also3`), whichever note prints ends with the stop's own
+# sentence, which names the rerun the writer printed for it and says to run it first.
 if [[ -n "$act_w69" ]]; then
   case "$act_line" in
     ""|*@files) act_69_note ;;
-    *) case "$act_w9_rc" in
+    *) [[ -z "$act_also3" ]] || act_p69_also3=" A write of this act also exited 3 (the notes above): run the rerun the writer printed for it, which writes it once or finds it, before that."
+       case "$act_w9_rc" in
          0)     act_69_landed_note ;;
          3)     act_69_doubt_note ;;
          ""|69) if [[ -n "$act_stop" ]]; then act_69_again_note; else act_69_note; fi ;;
@@ -1245,7 +1257,8 @@ and may already be on origin). The writers' own stderr is kept, so that rerun is
 adds no hint of its own beside it. Say in the report which of the three exited 3, and relay that rerun. A 3 from the
 row write also sets `row_write_refused`, so that step 5 names the lane in the restart command, and step 5 then says
 the row write may not be written, never that it was refused (Y:5700; lane 3, #165 6774499606, T431's question 1). Where
-the object log's line is the write that exited 3 and a later one exits 69, the 69 note names that rerun first (below).
+any write of the act exited 3 and a later one exits 69, the 69 note names that rerun first (below): the object log's own in
+`act_69_doubt_note`, the register's line's or the row's in the sentence every note then ends with.
 
 **A write that exits 69 prints the note, once** (spec:692: the three writes "SHALL exit 69 and then print a note"). The
 block goes on to the next write, as after any write that did not land, and after the third prints the note of how
@@ -1271,6 +1284,13 @@ cases the block prints `THE PAUSED RECORD IS INCOMPLETE` and names something els
 Say in the report which of the three exited 69 and which of these the note was, and in none of the three send the operator
 to `--late`. Where the first write exited 69, or none was sent (`$uuid_missing`), and no write stopped the act, and where
 `act-begin`, an identity read or the walk stopped the writes, the `--late` note stands. The writers' own stderr, above the note, names the refusal.
+
+**Under a seq base, where the register's line or the row also exited 3, each of the four notes ends with the stop's own
+sentence** (lane 3, #165 6837908956, "the 69 note names another write's 3 rerun first"; T429's `p69_also3`): "A write of this
+act also exited 3 (the notes above): run the rerun the writer printed for it, which writes it once or finds it, before that."
+Run that rerun first, relay it in the report, and only then run `/handoff` again: run before it, `/handoff` again would
+append a second file-level line (Y:5224). The object log's own 3 is named by its own note, and off a seq base the notes keep
+their words.
 
 **A block that ends with a code held the writes** (lane 3, #165 6774499606, A2 and T431's question 2; REV-ACT2 S2).
 Where `act-begin`, an identity read or the walk exited 69, 75 or 3, the block sent none of the three writes, printed
