@@ -557,6 +557,14 @@
 #      another register generation, at any age, until `LANES_WRITE_ID=new`; a
 #      pending record that cannot be read as one; and three cases the design
 #      leaves open, refused rather than guessed (`wr_id_plan`, `wr_id_settle`).
+#      AND FEATURE 007'S INTERNAL FLAG (T413; F22, Y:5078), with nothing
+#      sent, three faults under a flag that is honoured: an attempt directory
+#      whose `snapshot` gives no `clock=` in whole seconds, written with no
+#      leading zero, to date the attempt by, or whose scratch tree has no
+#      `lanes/LANES.md` (both `reg_scratch_fault`), and a pathspec that
+#      differs from HEAD in the attempt's scratch tree before the verb has
+#      edited it, an internal error and never a capture (`reg_scratch_dirty`).
+#      A value that is not honoured is never a 2: it is ignored.
 #  64  usage — a caller's bad arguments to one of the reads Amendment 11 added
 #      (`window-lane`, `lane-dir`, `lane-profile`, `last-session`, `forks`,
 #      `duplicate-holder` (issue #39), `workstation`, `fetch-age`, `lanes`,
@@ -846,6 +854,15 @@
 #                      log at (default 15). The test seam, and only that
 #   LANES_IN_CONTAINER 1|0                  force the container probe (test seam)
 #   LANES_NO_GIT=1     edit only, no commit/push (used by the test harness)
+#   LANES_REGISTER_SCRATCH  INTERNAL — feature 007's attempt directory, set
+#                      only by this file's primary write path on the child it
+#                      runs for one attempt (T413). Copied, then unset, at file
+#                      scope, so nothing this process starts inherits it. It is
+#                      honoured only for a directory under
+#                      <state>/register-writes/ that this uid owns with mode
+#                      0700 and whose `parent.pid` names this process's parent;
+#                      any other value is ignored, and the run goes on as any
+#                      write. Never set it by hand.
 #   THE LOCKS (Amendment 23 S2, design decision 14). <LANES_DIR>/.lanes-edit.lock
 #                      is the CHECKOUT's — that checkout's writers. Under
 #                      LANES_ROUTE_WRITES=1, <W>-lanes/.lane-state.lock is the
@@ -1433,6 +1450,165 @@ if [ -n "${LANES__REPLAY_PID:-}" ] && [ "${LANES__REPLAY_PID:-}" = "$$" ]; then
   CP_CLAIM_READS_FILE="${LANES__CLAIM_READS_FILE:-}"
 fi
 unset LANES__REPLAY_PID LANES__ATTEMPT LANES__CLAIM_FROM LANES__CLAIM_DEAD LANES__CLAIM_READS LANES__CLAIM_URL LANES__CARRY_COPIES LANES__CLAIM_READS_FILE
+# FEATURE 007, T413 — THE INTERNAL FLAG, `LANES_REGISTER_SCRATCH=<attempt dir>`
+# (the design's F22, Y:5032–5044; lane openRepoTools-4's block, T413). The
+# primary write path (T415) runs each attempt's verb as a CHILD of this file:
+# the original command line, on the scratch tree `lanes-index register
+# snapshot --tree` built at the snapshot's seq, with this variable naming the
+# attempt's directory, `<state>/register-writes/<d>/<run>/<k>/` (contract
+# §3.3; `contracts/pending-record.md` §1). It is taken HERE, at file scope and
+# above the resolver below, because it chooses what the resolver resolves.
+#
+# COPIED, THEN UNSET, AT ONCE (Y:5034), so no `git`, `gh` or `tmux` this
+# process starts inherits it, and a stray export finds no live directory.
+# HONOURED ONLY for a directory under `<state>/register-writes/`
+# (`wr_state_dir`, above), owned by this uid, with mode 0700 in its permission
+# bits, whose `parent.pid` names this process's parent, `$PPID`. That file is
+# one line, `<pid>` TAB `<start token>`, the parent's `$$` and its
+# `pid_start_of` token, and field 1 is read (lane openRepoTools-3's ruling,
+# #165 6755005268, item 2).
+#
+# ANY OTHER VALUE IS NOT HONOURED, AND IS IGNORED: it is unset like any other,
+# and the run goes on as any write and asks the mode (Y:5034; YT:6869–6873;
+# the same ruling, item 1). A stray export is then nothing, and never blocks a
+# prompt through `guard`'s 2. Exit 2, nothing sent, is kept for a fault under
+# a flag that IS honoured: a `snapshot` with no whole-seconds `clock=`, or one
+# with a leading zero, here (item 3; REV-W9c N1), a scratch tree with no
+# `lanes/LANES.md`, here too (REV-W9c N2), and a dirty scratch tree
+# (`reg_scratch_dirty`, Y:5078).
+#
+# FIELD 2 IS NOT COMPARED with `pid_start_of "$PPID"`, which the ruling leaves
+# optional. Lane 5's `pid_start_of` (T502) is defined far below this file
+# scope, so here it would always answer 127, which T412's `wr_claim_live`
+# counts as live ("untested"): the comparison could never refuse a reused pid.
+#
+# Under the flag (`REG_SCRATCH`, the directory as `pwd -P` spells it, and
+# empty without the flag):
+#   * the resolver's inputs are the scratch tree's: `LANES_REPO=<dir>/tree`,
+#     with `LANES_DIR` and `LANES_FILE` unset, so the resolver derives both
+#     (Y:5039) and `LOCK` is the scratch tree's (Y:5044);
+#   * `REG_MODE` is `primary` (Y:5121; R45), set by assignment here, so the
+#     writers' question returns on a set answer and starts no `lanes-index`,
+#     and T425's and T426's one line reads it in the child as in the parent;
+#   * ONE CLOCK (D13, Y:528–534): the snapshot's `clock=`, the database's time
+#     in whole epoch seconds, read here once from `<dir>/snapshot`, is what
+#     `now_epoch` and `utc_now` answer, so the lines the verb composes and the
+#     durations it decides by (`older_than_minutes`, `older_than_threshold`)
+#     are on one clock. An honoured directory with no such clock is 2. The host's
+#     clock stays where it decides no register state: `age_of` in a listing,
+#     the listing's partition, `fetch-age`, `request-handoff`'s wait, and the
+#     pending record's own stamps (`wr_host_utc`). Where an age is printed
+#     beside a decision, `claim --force`'s refusal, every line of `who_object`,
+#     which `claim`'s refusal prints in the child, and `who_landing`'s LANDING
+#     line, `age_of` is passed `now_epoch`, so its words agree with the decision
+#     and one printed block reads one clock (ruling item 5; lane
+#     openRepoTools-3's ruling, #165 6767463594, delta question 5);
+#   * a line `migrate-state-cells` writes is dated in whole seconds, as
+#     `log_lines`' primary CHECK reads one (Y:1217–1219): a minute-only time
+#     it copies from the register, an entry's own lead or its row's `started`
+#     cell, gets `:00` at its site below (lane openRepoTools-3's ruling, #165
+#     6834224496, question 2);
+#   * the routing re-exec, S3 (`checkout_sync`) and `log_sync`'s fetch are
+#     skipped, `gh_reads` is cached in the run's directory, and
+#     `sidecar_lock_dir` answers the path the parent wrote into `<dir>/lock`,
+#     each at its own site below.
+REG_SCRATCH=""; REG_SCRATCH_CLOCK=""; REG_SCRATCH_UTC=""; REG_SCRATCH_RUN=""
+# A FAULT UNDER AN HONOURED FLAG. `die` is defined below the resolver, so it is
+# said here in `die`'s own form: one line on stderr, the code under
+# `LANES_DEBUG`, exit 2.
+reg_scratch_fault() {   # <the attempt directory> <what is wrong with it>
+  printf 'lanes-edit: %s\n' "refusing to run as the child of the attempt whose directory is $(printf '%q' "$1"): its ${2}. LANES_REGISTER_SCRATCH named it, and it is this attempt's own directory, so this is an internal error of the write path, never a person's to mend (T413; D13). Nothing was sent." >&2
+  [ -n "${LANES_DEBUG:-}" ] && printf 'lanes-edit: (exit %s)\n' 2 >&2
+  exit 2
+}
+# The low nine permission bits of a directory are 0700: GNU `stat -c %a`, else
+# BSD `stat -f %Lp`. A set-group-id bit, which a directory made under one keeps
+# through `chmod 700`, is not a permission and does not refuse it.
+reg_scratch_mode_700() {   # <dir>
+  local rsm_m
+  rsm_m="$(stat -c %a -- "$1" 2>/dev/null || stat -f %Lp -- "$1" 2>/dev/null || :)"
+  case "$rsm_m" in 700|[0-7]700) return 0 ;; esac
+  return 1
+}
+reg_scratch_take() {
+  local rst_v="" rst_d="" rst_b="" rst_l="" rst_p="" rst_c="" rst_u="" rst_r="" rst_t
+  rst_t=$'\t'
+  rst_v="${LANES_REGISTER_SCRATCH-}"
+  unset LANES_REGISTER_SCRATCH
+  [ -n "$rst_v" ] || return 0
+  # Y:5034's four conditions, and a directory that is there at all. A value
+  # that fails one is not the flag: it is already unset, and nothing is said.
+  rst_d="$(CDPATH='' cd -P -- "$rst_v" 2>/dev/null && pwd -P)" || return 0
+  rst_b="$(CDPATH='' cd -P -- "$(wr_state_dir)/register-writes" 2>/dev/null && pwd -P)" || return 0
+  rst_b="${rst_b%/}"
+  case "$rst_d" in
+    "$rst_b"/?*) : ;;
+    *) return 0 ;;
+  esac
+  [ -O "$rst_d" ] || return 0
+  reg_scratch_mode_700 "$rst_d" || return 0
+  if [ -f "$rst_d/parent.pid" ] && [ -r "$rst_d/parent.pid" ]; then
+    { IFS= read -r rst_l || :; } 2>/dev/null < "$rst_d/parent.pid"
+  fi
+  rst_p="${rst_l%%"$rst_t"*}"
+  if [ -z "$rst_p" ] || [ "$rst_p" != "$PPID" ]; then
+    return 0
+  fi
+  # HONOURED FROM HERE ON. THE CLOCK: the first `clock=` of the snapshot's
+  # stdout, saved verbatim by the parent (contract §3.2: "clock=<epoch s>  the
+  # database clock, in whole seconds"), as this file's UTC stamp. None, or one
+  # that is not whole seconds, is a fault, 2 (ruling item 3). So is one with a
+  # leading zero, though `lanes-index` prints none: `$(( ))` reads `0100` as
+  # octal, 64, where GNU `date -d @0100` writes 100 seconds, so `now_epoch` and
+  # `utc_now` would be two clocks, and a leading-zero clock with an 8 or a 9
+  # in it aborts the arithmetic with "value too great for base" (REV-W9c N1).
+  # A lone `0` is whole seconds, and both read it alike.
+  rst_l=""
+  if [ -f "$rst_d/snapshot" ] && [ -r "$rst_d/snapshot" ]; then
+    while IFS= read -r rst_l || [ -n "$rst_l" ]; do
+      case "$rst_l" in clock=*) rst_c="${rst_l#clock=}"; break ;; esac
+      rst_l=""
+    done 2>/dev/null < "$rst_d/snapshot"
+  fi
+  case "$rst_c" in
+    ''|*[!0123456789]*) reg_scratch_fault "$rst_d" "snapshot gives no clock= in whole seconds (it reads $(printf '%q' "$rst_c")), and that clock is the one this attempt's lines and durations are read on" ;;
+    0?*) reg_scratch_fault "$rst_d" "snapshot's clock=${rst_c} has a leading zero, which this shell's arithmetic reads as octal and GNU date as decimal, so this attempt's lines and durations would not be read on one clock" ;;
+  esac
+  [ "${#rst_c}" -le 18 ] ||
+    reg_scratch_fault "$rst_d" "snapshot's clock=${rst_c} is too long to be a time"
+  rst_u="$(date -u -d "@$rst_c" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null ||
+           date -u -j -r "$rst_c" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || :)"
+  case "$rst_u" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) : ;;
+    *) reg_scratch_fault "$rst_d" "snapshot's clock=${rst_c} is a time this host's date cannot write as a UTC" ;;
+  esac
+  # THE SCRATCH TREE'S REGISTER. `LANES_REPO` is `<dir>/tree` below, so the
+  # resolver's `LANES_FILE` is `<dir>/tree/lanes/LANES.md`, which `register
+  # snapshot --tree` writes from SQL before the parent starts this child
+  # (contract §3.2). Without it the workspace guard would answer 1, "registry
+  # not found", with a person's words ("re-run it … or pull that checkout")
+  # about a `workspace.yaml` that has no part in it. Under a flag that is
+  # honoured that is a fault of the write path, 2, nothing sent (ruling items
+  # 1 and 7; REV-W9c N2).
+  [ -f "$rst_d/tree/lanes/LANES.md" ] ||
+    reg_scratch_fault "$rst_d" "tree has no lanes/LANES.md, the register this verb edits, which lanes-index register snapshot --tree writes there before the child is started"
+  # THE RUN'S DIRECTORY, `<d>/<run>/`, which every attempt of this run shares:
+  # where `gh_reads` is cached, only where it too is under `register-writes/`,
+  # this uid's and 0700. Otherwise nothing is cached there.
+  rst_r="${rst_d%/*}"
+  case "$rst_r" in
+    "$rst_b"/?*)
+      if [ -d "$rst_r" ] && [ ! -L "$rst_r" ] && [ -O "$rst_r" ] && reg_scratch_mode_700 "$rst_r"; then
+        REG_SCRATCH_RUN="$rst_r"
+      fi ;;
+  esac
+  REG_SCRATCH="$rst_d"; REG_SCRATCH_CLOCK="$rst_c"; REG_SCRATCH_UTC="$rst_u"
+  REG_MODE=primary
+  LANES_REPO="$rst_d/tree"
+  unset LANES_DIR LANES_FILE
+  return 0
+}
+reg_scratch_take
 # THE ROUTING IS OPT-IN UNTIL SLICE 1B (the review of opensoft/openRepoTools#282,
 # MUST 2). Before slice 1b a lane checkout was only as fresh as its own last
 # write, and the old push loop rebased only after a rejected push, so a
@@ -1744,7 +1920,22 @@ release_lock() {
 # WITHOUT THE OPT-IN it is the checkout's own lock, `$LOCK`, as it was before
 # Amendment 23: the sidecar verbs keep their `acquire_lock`, and the follow-up
 # takes `$LOCK` where its caller does not hold it already.
+#
+# UNDER FEATURE 007's INTERNAL FLAG (T413; F-B1, R19) `$LOCK` is the scratch
+# tree's, which serialises nothing on this host, so the tail's sidecar acts
+# take the lock the parent names in the attempt directory's `lock` file: the
+# first line, an absolute path, the workstation's sidecar lock as the parent's
+# own `sidecar_lock_dir` answered it. With no such line there is no lock to
+# take, and the answer is 1, as with no W.
 sidecar_lock_dir() {
+  if [ -n "$REG_SCRATCH" ]; then
+    sld_l=""
+    if [ -f "$REG_SCRATCH/lock" ] && [ -r "$REG_SCRATCH/lock" ]; then
+      { IFS= read -r sld_l || :; } 2>/dev/null < "$REG_SCRATCH/lock"
+    fi
+    case "$sld_l" in /?*) printf '%s\n' "$sld_l"; return 0 ;; esac
+    return 1
+  fi
   if [ "$LANES_ROUTE_ON" != 1 ]; then printf '%s\n' "$LOCK"; return 0; fi
   [ -n "$LANES_WS_REAL" ] || return 1
   printf '%s\n' "$LANES_WS_REAL-lanes/.lane-state.lock"
@@ -2715,6 +2906,30 @@ cs_refuse_register() {   # <what> <lane>
     "whoever made it commits it: LANES_LANE=${2:-<lane>} $SELF commit \"<what the edit is>\"" \
     "then re-run this write"
 }
+# FEATURE 007, T413 — UNDER THE INTERNAL FLAG A DIRTY PATHSPEC IS AN INTERNAL
+# ERROR (Y:5078). The attempt's scratch tree is built fresh at the snapshot,
+# one commit holding the register at its seq, so a path that differs from
+# HEAD before the verb has edited it is a fault of the write path, never a
+# person's hand edit: refused with 2, nothing sent, never captured or
+# committed, and no recovery is printed, since there is nothing to recover.
+# THE LIST IS SPLIT BY PARAMETER EXPANSION, at each newline, never through a
+# here-document, as `pw_hand_edit_refuse`'s and the seam's are (review REV-W9a
+# M1's class): bash 3.2 writes a here-document to a temp file in /tmp, and
+# where none can be made, as in a full /tmp, the loop never ran, so this 2
+# named no path and bash printed its own error first. Now a full /tmp changes
+# nothing here: the same paths are named, with the same 2.
+reg_scratch_dirty() {   # <what> <the paths, one a line>
+  rsdy_s="$2"; rsdy_l=""
+  while [ -n "$rsdy_s" ]; do
+    rsdy_p="${rsdy_s%%"$WR_NL"*}"
+    case "$rsdy_s" in
+      *"$WR_NL"*) rsdy_s="${rsdy_s#*"$WR_NL"}" ;;
+      *) rsdy_s="" ;;
+    esac
+    [ -z "$rsdy_p" ] || rsdy_l="$rsdy_l $rsdy_p"
+  done
+  die "refusing to $1 in $LANES_REPO, the attempt's scratch tree under LANES_REGISTER_SCRATCH: an internal error, since these paths differ from its HEAD before the write has edited any:${rsdy_l}. That tree is built fresh from the register at the snapshot, so this is a fault in the write path, never a hand edit to capture or commit (T413; Y:5078). Nothing was sent." 2
+}
 # S3 STEP 4 FOR THE PATHS A WRITE LEARNS ONLY IN ITS SCAN (the sweeps,
 # `rename-lane`), asked again right before the first byte; and for the paths a
 # write knows up front, from `checkout_sync` itself.
@@ -2724,6 +2939,7 @@ cs_own_pending() {   # <what> <lane> <pathspec>…
   [ "$#" -gt 0 ] || return 0
   cop_hits="$(cs_pending_of "$@")"
   [ -n "$cop_hits" ] || return 0
+  [ -z "$REG_SCRATCH" ] || reg_scratch_dirty "$cop_what" "$cop_hits"
   cop_reg=0; cop_other=""
   while IFS= read -r cop_p; do
     [ -n "$cop_p" ] || continue
@@ -2889,6 +3105,18 @@ checkout_sync() {   # <what> <lane> <write|carry|publish> [<pathspec it commits>
   CS_NO_ORIGIN_BRANCH=0; CS_CARRY_DIFF=""; CS_CARRY_BASE=""
   CS_LANE="$cs_lane"
   [ "$NO_GIT" = 1 ] && { cs_marker_refuse "$cs_what" "" ""; return 0; }   # feature 007, T419
+  # FEATURE 007, T413 — S3 IS SKIPPED WHOLE UNDER THE INTERNAL FLAG (Y:5040,
+  # Y:5078; the plan's F-B4 and F-B5). The scratch tree is the register at the
+  # snapshot's seq and has no origin to fetch from, so there is no fetch, no
+  # `cs_recheck` and no step 7, and 0 is answered. One assertion stays: the
+  # register, or a path this write commits, that differs from HEAD before the
+  # edit is an internal error, 2 (`reg_scratch_dirty`).
+  if [ -n "$REG_SCRATCH" ]; then
+    cs_hits="$(cs_pending_of "$LANES_PATH" ${1+"$@"})"
+    [ -z "$cs_hits" ] || reg_scratch_dirty "$cs_what" "$cs_hits"
+    LOG_SYNC_FETCH=yes
+    return 0
+  fi
   cs_c="$LANES_REPO"
   cs_trk="refs/remotes/origin/$LANES_BRANCH"; cs_br="refs/heads/$LANES_BRANCH"
   cs_gd="$(git -C "$cs_c" rev-parse --absolute-git-dir 2>/dev/null)" ||
@@ -5408,7 +5636,19 @@ table_lookup() {   # <fenced table> <lower-cased lane>
   return 0
 }
 
-utc_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+# NOW, AS A UTC STAMP AND AS EPOCH SECONDS: the host's clock, except under
+# feature 007's internal flag, where both answer the attempt's snapshot clock,
+# read once when the flag was taken (`reg_scratch_take`): ONE CLOCK for the
+# lines a verb composes and the durations it decides by (D13, Y:528–534;
+# T413). `older_than_minutes` and `older_than_threshold` read `now_epoch`.
+utc_now() {
+  if [ -n "$REG_SCRATCH" ]; then printf '%s\n' "$REG_SCRATCH_UTC"; return 0; fi
+  date -u +%Y-%m-%dT%H:%M:%SZ
+}
+now_epoch() {
+  if [ -n "$REG_SCRATCH" ]; then printf '%s\n' "$REG_SCRATCH_CLOCK"; return 0; fi
+  date -u +%s
+}
 
 # ----------------------------------- F10: THE WRITE ID AND THE PENDING RECORD
 #
@@ -8304,14 +8544,22 @@ row_field_unescape_into() {   # <field> ; sets ROW_FIELD_OUT
   done
 }
 
+# Durations that DECIDE — Rule 6's minutes and `claim --force`'s staleness — so
+# both read `now_epoch`: the snapshot's clock under feature 007's internal
+# flag, the host's otherwise (D13; T413). `age_of` above keeps the host's clock
+# in a listing; where it prints beside a decision (`claim --force`'s refusal,
+# every line of `who_object`, which `claim`'s refusal prints in the child, and
+# `who_landing`'s LANDING line) it is passed `now_epoch` (lane
+# openRepoTools-3's rulings, #165 6755005268, item 5, and #165 6767463594,
+# delta question 5).
 older_than_minutes() {   # <utc> <minutes>
   om_t="$(epoch_of "$1")"; [ -n "$om_t" ] || return 1
-  [ "$(( $(date -u +%s) - om_t ))" -gt "$(( $2 * 60 ))" ]
+  [ "$(( $(now_epoch) - om_t ))" -gt "$(( $2 * 60 ))" ]
 }
 
 older_than_threshold() {
   st_t="$(epoch_of "$1")"; [ -n "$st_t" ] || return 1
-  [ "$(( $(date -u +%s) - st_t ))" -gt "$((STALE_HOURS * 3600))" ]
+  [ "$(( $(now_epoch) - st_t ))" -gt "$((STALE_HOURS * 3600))" ]
 }
 
 # An object is treated as a PR once some lane has written OPENED on it. That
@@ -10479,6 +10727,11 @@ log_sync() {
   fi
   reg_flush
   LOG_SYNC_FETCH=""
+  # FEATURE 007, T413 — UNDER THE INTERNAL FLAG NOTHING IS FETCHED (Y:5040):
+  # the scratch tree's `origin/<branch>` is the register at the snapshot's seq,
+  # as fresh as a fetch, so no `ls-remote` and no fetch, and `yes`, under which
+  # `retire-rows`, `archive-rows` and every verb that fetches go on.
+  [ -z "$REG_SCRATCH" ] || { LOG_SYNC_FETCH=yes; return 0; }
   [ "$NO_GIT" = 1 ] && { LOG_SYNC_FETCH="LANES_NO_GIT=1 is set, so nothing in this run touches git"; return 0; }
   [ "${LANES_NO_FETCH:-0}" = 1 ] && { LOG_SYNC_FETCH="LANES_NO_FETCH=1 is set in this environment"; note "LANES_NO_FETCH=1 — not fetching; reading origin/$LANES_BRANCH as the ref already stands here"; cs_seen_mark; return 0; }
   git -C "$LANES_REPO" rev-parse --git-dir >/dev/null 2>&1 || { LOG_SYNC_FETCH="$LANES_REPO is not a git checkout"; return 0; }
@@ -10589,18 +10842,24 @@ who_object() {
   fi
   printf 'object   %s\n' "$wo_obj"
   wo_held=0
+  # ONE CLOCK PER PRINTED BLOCK: every age this block prints takes `now_epoch`,
+  # the `super.`, `HOLDS` and `closed` lines as well as the stale lines below.
+  # `claim`'s refusal prints this block in the child under feature 007's
+  # internal flag, where `now_epoch` is the snapshot's clock; with no flag it is
+  # the host's, which `age_of` alone reads, so the bytes are unchanged (lane
+  # openRepoTools-3's ruling, #165 6767463594, delta question 5; T413).
   while IFS="$US" read -r s_utc s_lane s_verb s_uuid s_ws s_o s_ref s_pay s_txt s_file s_line; do
     [ -n "${s_verb:-}" ] || continue
     wo_sup="$(superseded_by "$wo_obj" "$s_lane" "$s_verb")"
     if [ -n "$wo_sup" ]; then
       printf 'super.   lane %-22s %-9s %s (%s ago) — superseded by TAKEOVER (lane:%s) at %s\n' \
-        "$s_lane" "$s_verb" "$s_utc" "$(age_of "$s_utc")" "${wo_sup%@*}" "${wo_sup#*@}"
+        "$s_lane" "$s_verb" "$s_utc" "$(age_of "$s_utc" "$(now_epoch)")" "${wo_sup%@*}" "${wo_sup#*@}"
       printf '         this lane no longer holds it; it closes its own line with: lanes-edit.sh release %s "taken over by %s"\n' "$wo_obj" "${wo_sup%@*}"
     elif is_open_verb "$s_verb"; then
-      printf 'HOLDS    lane %-22s %-9s %s (%s ago)%s\n' "$s_lane" "$s_verb" "$s_utc" "$(age_of "$s_utc")" "${s_pay:+ ${s_ref:-} $s_pay}"
+      printf 'HOLDS    lane %-22s %-9s %s (%s ago)%s\n' "$s_lane" "$s_verb" "$s_utc" "$(age_of "$s_utc" "$(now_epoch)")" "${s_pay:+ ${s_ref:-} $s_pay}"
       wo_held=1
     else
-      printf 'closed   lane %-22s %-9s %s (%s ago)%s\n' "$s_lane" "$s_verb" "$s_utc" "$(age_of "$s_utc")" "${s_pay:+ ${s_ref:-} $s_pay}"
+      printf 'closed   lane %-22s %-9s %s (%s ago)%s\n' "$s_lane" "$s_verb" "$s_utc" "$(age_of "$s_utc" "$(now_epoch)")" "${s_pay:+ ${s_ref:-} $s_pay}"
     fi
     # A line written with --no-github is not yet a Rule 1 claim: the comment a
     # person outside this estate reads does not exist.
@@ -10628,14 +10887,14 @@ EOF
     # abandoned", and Rule 6 governing a PR) leave a claim past the threshold
     # and NOT stale, and neither was named.
     if [ "$s_verb" = CLAIMED ] && claim_is_stale "$s_lane" "$wo_obj" "$s_utc" "$s_file" "$s_line"; then
-      printf '  stale    YES — claimed %s ago with no OPENED naming it, past the %sh threshold; a takeover is allowed (claim --force)\n' "$(age_of "$s_utc")" "$STALE_HOURS"
+      printf '  stale    YES — claimed %s ago with no OPENED naming it, past the %sh threshold; a takeover is allowed (claim --force)\n' "$(age_of "$s_utc" "$(now_epoch)")" "$STALE_HOURS"
     elif [ "$s_verb" = CLAIMED ]; then
       if ! older_than_threshold "$s_utc"; then
-        printf '  stale    no — %s old, threshold %sh\n' "$(age_of "$s_utc")" "$STALE_HOURS"
+        printf '  stale    no — %s old, threshold %sh\n' "$(age_of "$s_utc" "$(now_epoch)")" "$STALE_HOURS"
       elif object_is_pr "$wo_obj"; then
-        printf '  stale    no — %s old, past the %sh threshold, but this object is a PR: Rule 6'"'"'s thirty minutes govern it, not Rule 1'"'"'s hours\n' "$(age_of "$s_utc")" "$STALE_HOURS"
+        printf '  stale    no — %s old, past the %sh threshold, but this object is a PR: Rule 6'"'"'s thirty minutes govern it, not Rule 1'"'"'s hours\n' "$(age_of "$s_utc" "$(now_epoch)")" "$STALE_HOURS"
       else
-        printf '  stale    no — %s old, past the %sh threshold, but lane %s has since written an OPENED naming it (Rule 1: a claim followed by a PR is not abandoned)\n' "$(age_of "$s_utc")" "$STALE_HOURS" "$s_lane"
+        printf '  stale    no — %s old, past the %sh threshold, but lane %s has since written an OPENED naming it (Rule 1: a claim followed by a PR is not abandoned)\n' "$(age_of "$s_utc" "$(now_epoch)")" "$STALE_HOURS" "$s_lane"
       fi
     fi
     print_holder_detail "$s_lane" "$wo_obj"
@@ -10899,7 +11158,7 @@ who_landing() {
     [ "$(lc "$wd_c")" = "$(lc "$wd_repo")" ] || continue
     wd_stale=""
     older_than_minutes "$wd_utc" "$LANDING_MINUTES" && wd_stale="  STALE (Rule 6: >${LANDING_MINUTES} min)"
-    printf 'LANDING  %s#%s  lane %s, %s (%s ago)%s\n' "$wd_repo" "$wd_pr" "$wd_lane" "$wd_utc" "$(age_of "$wd_utc")" "$wd_stale"
+    printf 'LANDING  %s#%s  lane %s, %s (%s ago)%s\n' "$wd_repo" "$wd_pr" "$wd_lane" "$wd_utc" "$(age_of "$wd_utc" "$(now_epoch)")" "$wd_stale"
     wd_n=$((wd_n + 1))
   done <<EOF
 $wd_rows
@@ -17424,7 +17683,40 @@ sibling_filter() {   # <object> [pr|branch]; candidate lines on stdin
     | grep -E -- "(^|[^0-9A-Za-z])$sfl_q([^0-9A-Za-z]|\$)" || :
 }
 
-gh_reads() {
+# FEATURE 007, T413 — UNDER THE INTERNAL FLAG RULE 1'S READS ARE MADE ONCE A
+# RUN (Y:5043): cached in the run's directory, `<d>/<run>/`, which every attempt
+# of the run shares. They decide nothing (R2A §2c), and three GitHub calls an
+# attempt, 55 attempts in a burst of ten, would spend the shared REST quota.
+# Keyed by the object's sha256, written by a temporary file and `mv`, and
+# only where the reads ended 0; a cached answer is printed byte for byte.
+# Where the flag's take found no run directory this file may write in
+# (`REG_SCRATCH_RUN`), and under `--no-github`, the reads are made as they are
+# without the flag (`gh_reads_live`).
+gh_reads() {   # <object>
+  if [ -n "$REG_SCRATCH_RUN" ] && [ "$NO_GITHUB" != 1 ]; then
+    gh_reads_cached "$1"
+    return $?
+  fi
+  gh_reads_live "$1"
+}
+gh_reads_cached() {   # <object>
+  grc_k="$(printf '%s' "$1" | wr_sha256_stdin)" || grc_k=""
+  if [ -z "$grc_k" ]; then gh_reads_live "$1"; return $?; fi
+  grc_f="$REG_SCRATCH_RUN/gh-reads.$grc_k"
+  if [ -f "$grc_f" ] && [ ! -L "$grc_f" ] && [ -O "$grc_f" ]; then
+    cat -- "$grc_f"
+    return 0
+  fi
+  grc_t="$(mktemp "$REG_SCRATCH_RUN/.gh-reads.XXXXXX" 2>/dev/null)" || grc_t=""
+  if [ -z "$grc_t" ]; then gh_reads_live "$1"; return $?; fi
+  grc_rc=0
+  gh_reads_live "$1" > "$grc_t" || grc_rc=$?
+  cat -- "$grc_t"
+  if [ "$grc_rc" = 0 ] && mv -f -- "$grc_t" "$grc_f" 2>/dev/null; then return 0; fi
+  rm -f -- "$grc_t"
+  return "$grc_rc"
+}
+gh_reads_live() {   # <object>
   gr_obj="$1"; gr_repo="$(object_repo "$gr_obj")"; gr_n="$(object_number "$gr_obj")"; gr_slug="$(object_slug "$gr_obj")"
   gr_term="${gr_n:+#$gr_n}"; gr_term="${gr_term:-$gr_slug}"
   if [ "$NO_GITHUB" = 1 ]; then
@@ -18115,6 +18407,22 @@ EOF
         fi
         if mig_is_ruling "$msc_e"; then msc_verb=RULED; msc_ruled=$((msc_ruled + 1))
         else                            msc_verb=NOTED; msc_noted=$((msc_noted + 1)); fi
+        # UNDER FEATURE 007'S FLAG, WHOLE SECONDS (T413; lane
+        # openRepoTools-3's ruling, #165 6834224496, question 2). On primary
+        # `log_lines`' CHECK takes a line's UTC only as `YYYY-MM-DDTHH:MM:SSZ`
+        # (Y:1217–1219), and D13 (Y:528–530) composes a line's time in whole
+        # seconds, so a minute-only time, the entry's own `HH:MMZ` lead or its
+        # row's `started` cell as `T00:00Z` or `HH:MMZ` (`mig_started_utc`),
+        # gets `:00`, which says nothing the minute did not. It is done here,
+        # after the entry's text was cut past its lead, so `mig_lead_utc`'s
+        # answer, which that cut and `mig_strip_lead` compare as text, is
+        # unchanged, and the text keeps every byte. Files mode writes the
+        # minute as it always has.
+        if [ -n "$REG_SCRATCH" ]; then
+          case "$msc_eutc" in
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]Z) msc_eutc="${msc_eutc%Z}:00Z" ;;
+          esac
+        fi
         printf '%s — lane %s, session %s@%s, %s, lane:%s — %s\n' \
           "$msc_verb" "$msc_lane" "$msc_uuid" "$msc_ws" "$msc_eutc" "$msc_lane" "$msc_text" >> "$msc_tmp/block/$msc_n"
         msc_en=$((msc_en + 1)); msc_lines=$((msc_lines + 1))
@@ -22635,6 +22943,19 @@ case "$cmd" in
     ws_why="$(lanes_workstation_why "$WS_SOURCE")"
     [ -z "$ws_why" ] || die "$ws_why" 2 ;;
 esac
+# FEATURE 007, T413 — AN ATTEMPT'S CHILD ASKS NOTHING (Y:5038; review M4).
+# Under the internal flag the verb is files-mode code on the scratch tree, and
+# asking the register's mode would recurse into the primary branch. `REG_ASK`
+# is the switch of lane 4's T409, which lands before this task: the write
+# guard's arm sets it, and the writers' question below runs only where it is 1.
+# Cleared here, between the two, it skips the question and its arm in the
+# child, and `REG_MODE` is already `primary` (`reg_scratch_take`). This is the
+# one test of the flag at the ask: T409 tests no flag itself (lane
+# openRepoTools-3's ruling, #165 6755005268, item 8). Lane 5's `reg_open` tests
+# `REG_SCRATCH` before `REG_MODE`: it asks nothing, prefetches nothing, makes no
+# marker check, and answers the files store though `REG_MODE` is `primary`
+# (T504; Q-L5-1; Y:5041).
+[ -z "$REG_SCRATCH" ] || REG_ASK=0
 
 # `guard` JOINS THAT EXEMPTION AND REFUSES FOR ITSELF (Amendment 12(d)). It is
 # a hook too, and a blocking one: `die … 1` here would print the workspace
@@ -22709,8 +23030,10 @@ fi
 # cloned; and asked once — the process this re-runs as (`LANES_ROUTED`) is
 # already in the checkout. A read goes on in W, which is what every read verb
 # has always read. Without the opt-in nothing here runs (MUST 2 of #282's
-# review): the write goes through `LANES_REPO`, W by default.
-if [ "$LANES_ROUTE_ON" = 1 ] && [ -z "$LANES_ROUTED" ]; then
+# review): the write goes through `LANES_REPO`, W by default. NOR UNDER FEATURE
+# 007's INTERNAL FLAG (T413; Y:5039): an attempt's child writes only
+# its scratch tree, which `LANES_REPO` already names, and is never re-run.
+if [ "$LANES_ROUTE_ON" = 1 ] && [ -z "$LANES_ROUTED" ] && [ -z "$REG_SCRATCH" ]; then
   wlo_rc=0
   wlo_lane="$(write_lane_of "$cmd" ${1+"$@"})" || wlo_rc=$?
   [ "$wlo_rc" = 1 ] || lane_checkout_enter "$wlo_rc" "$wlo_lane"
@@ -24208,7 +24531,7 @@ EOF
           die "--force refused: lane $h_lane's own log ends $HOLDER_TERMINAL_UNKNOWN, and this workstation could not read whether a live session still backs it up. That is NOT 'no live session holds it' — refused for the same reason an unreadable read refuses the dead-lane path (issue #30), never assumed safe. Rule 1: the lane stops and reports; it does not author a successor." 2
         fi
         if ! claim_is_stale "$h_lane" "$obj" "$h_utc" "$h_file" "$h_line"; then
-          die "--force refused: lane $h_lane's claim on $obj is $(age_of "$h_utc") old (threshold ${STALE_HOURS}h), or it is a PR, or that lane has since OPENED a PR naming it. Rule 1 makes a claim takeable only when it is stale, and lane $h_lane's own log does not end on ENDED or RETIRED either (or a live session on this workstation still holds it)." 2
+          die "--force refused: lane $h_lane's claim on $obj is $(age_of "$h_utc" "$(now_epoch)") old (threshold ${STALE_HOURS}h), or it is a PR, or that lane has since OPENED a PR naming it. Rule 1 makes a claim takeable only when it is stale, and lane $h_lane's own log does not end on ENDED or RETIRED either (or a live session on this workstation still holds it)." 2
         fi
         takeover_from="$h_lane"
         takeover_note="stale claim by lane $h_lane, posted $h_utc, no PR after ${STALE_HOURS}h"
