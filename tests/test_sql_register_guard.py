@@ -2536,7 +2536,14 @@ def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, r
     "the exit's lag after the read" is the hook's exit less the ends
     file's mtime as the hook exits, when the guard's read was the last
     call to end, recorded and asserted as case 1 asserts its exit: 1 s,
-    at twice it."""
+    at twice it.
+
+    A CALL THE SERVER'S OWN TIMER CUTS STILL HAS ITS END (T254zt; lane 2's
+    review RV23, NIT 8): a `statement_timeout` or `lock_timeout` ends the
+    call inside `psql`, which returns 1, and the shim writes that call's
+    line all the same. So the `2`'s guard read must also have ended 0. The
+    lag's bound stays at twice TP's 1 s, by section 1.2's timing rule, as
+    every bound here but the hook's 4.5 s is asserted."""
     pgcluster = pytest.importorskip("pgcluster")
     delayed = pgcluster.__dict__.get("delayed_loopback")
     assert delayed is not None, "tests/pgcluster.py has no delayed_loopback (T229)"
@@ -2582,6 +2589,10 @@ def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, r
     assert calls and all("statement_timeout=1500" in (s[3] or "") for s in seen) \
         and seen[-1][1:3] == (port, "3"), \
         f"the 2's prompt made calls other than the guard's read through the relay {port}: {seen}"
+    ends = _ends(est)
+    cut = [(c.get("call"), ends.get(c.get("call"))) for c in calls
+           if (ends.get(c.get("call")) or {}).get("exit") != 0]
+    assert not cut, f"the 2's guard read did not end 0, as a call its server's timer cut: {cut}"
     lag = exited - read_end
     print(f"T254 case 21: the hook exited {lag:.3f} s after its read ended "
           f"(bound 1 s, asserted at 2 s)")
@@ -2600,14 +2611,21 @@ def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, r
 ENDS_LIMIT_S = 30.0
 
 
+def _ends(est: Estate) -> dict:
+    """The shim's ends file, {call: its line}: `exit`, and `psql`'s own code
+    where the real `psql` ran (T254zt)."""
+    path = est.bin / PSQL_SHIM_ENDS
+    if not path.exists():
+        return {}
+    lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+             if line.strip()]
+    return {line.get("call"): line for line in lines}
+
+
 def _calls_with_no_end(est: Estate) -> list:
     """The shim's request calls with no line in its ends file (T254zi): a
     call killed at its client timer, or one still running."""
-    path = est.bin / PSQL_SHIM_ENDS
-    ends = set()
-    if path.exists():
-        ends = {json.loads(line).get("call") for line in
-                path.read_text(encoding="utf-8").splitlines() if line.strip()}
+    ends = _ends(est)
     return sorted(c.get("call") for c in est.shim_calls() if c.get("call") not in ends)
 
 
