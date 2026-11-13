@@ -1101,11 +1101,14 @@
 #   LANES_READ_MIRROR=1  the reads that name a lane before its handoff is
 #                      published (`window-lane`, `swapped`, `register-row`,
 #                      `canon-lane`, `last-session`, `lane-state`,
-#                      `set-lane-state`, `handoff-path`, `write-handoff`, and
-#                      `managed-projection` at the ownership seam) read the
+#                      `set-lane-state`, `handoff-path`, `write-handoff`,
+#                      `managed-projection` at the ownership seam, and
+#                      `lane-last` and `restart-intent`, the two reads
+#                      `lane-handoff` makes before its handoff file) read the
 #                      mirror, labelled `read: mirror at ...`, where the
-#                      register's read fails; every other verb ignores it
-#                      (feature 007, T504)
+#                      register's read fails; every other verb ignores it,
+#                      `who` among them (feature 007, T504; ERR-30, as lane 3
+#                      widened it on round 6h's #56, #165 6859801732)
 #   AGENT_PROTOCOL_ROOT  dir holding workspace.yaml  (default: ~/.agents)
 #   LANES_PATH         pathspec of the register RELATIVE to LANES_REPO
 #                                           (default: `lanes/LANES.md`, derived
@@ -6357,8 +6360,12 @@ reg_mode_files() {   # <why>
 #               T409's question at the dispatcher serves them.
 # `REG_MIRROR_VAR=1` marks the arms that `LANES_READ_MIRROR=1` lowers to a
 # mirror read: lane 3's item 1 (#165 6746035594, as 6747422030 words it), with
-# `managed-projection` at the ownership seam (DEC-27, 6754522885). Every other
-# arm ignores the variable, `who` and `lane-last` among them. `REG_NO_CALL=1`
+# `managed-projection` at the ownership seam (DEC-27, 6754522885), and
+# `lane-last` and `restart-intent`, the two reads `lane-handoff` makes before
+# its handoff file (ERR-30, as lane 3 widened it on round 6h's #56, #165
+# 6859801732). Every other arm ignores the variable, `who` among them; the
+# variable is set per call, so `lane-handoff --late`'s own `lane-last` read and
+# `lane-start`'s, which set none, still end 69. `REG_NO_CALL=1`
 # is `session-start`'s: a mirror arm with no register call (R39), whose read is
 # its block's own, `reg_session_read` (T508), never `reg_open`'s. Its one other
 # `lanes-index` call, `serve --start` on primary (T513), is no register call
@@ -6415,7 +6422,7 @@ reg_class_of() {   # <arm>: sets REG_CLASS, REG_MIRROR_VAR and REG_NO_CALL
     lane-profile) REG_CLASS=decide ;;
     lane-agent) REG_CLASS=decide ;;
     lane-transcript) REG_CLASS=decide ;;
-    lane-last) REG_CLASS=decide ;;
+    lane-last) REG_CLASS=decide; REG_MIRROR_VAR=1 ;;
     forks) REG_CLASS=decide ;;
     duplicate-holder) REG_CLASS=decide ;;
     next-free) REG_CLASS=decide ;;
@@ -6426,7 +6433,7 @@ reg_class_of() {   # <arm>: sets REG_CLASS, REG_MIRROR_VAR and REG_NO_CALL
     retired-identity) REG_CLASS=decide ;;
     session-lane) REG_CLASS=decide ;;
     resolve-home) REG_CLASS=decide ;;
-    restart-intent) REG_CLASS=decide ;;
+    restart-intent) REG_CLASS=decide; REG_MIRROR_VAR=1 ;;
     publish-handoff) REG_CLASS=decide ;;
     legacy-restart-check) REG_CLASS=decide ;;
     set-restart-intent) REG_CLASS=decide ;;
