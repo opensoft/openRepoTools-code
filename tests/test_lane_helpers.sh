@@ -1332,7 +1332,10 @@ hasnt "…so it no longer says 'pending'" "$(grep '^| `repoA-7`' "$LANES")" "pen
 has  "…and it is the very id claude was given" "$(grep '^| `repoA-7`' "$LANES")" "$REPOA7_SID"
 has  "the new row names its workstation" "$(grep '^| `repoA-7`' "$LANES")" "$LANES_WORKSTATION / "
 has  "the new row points at a handoff" "$(grep '^| `repoA-7`' "$LANES")" "handoffs/repoA/session-handoff-"
-has  "the row write is its own commit" "$(git -C "$WIP" log --oneline -1 -- lanes/LANES.md)" "add row"
+# FEATURE 007, T428: the new row and its STARTED line are ONE `start-record`
+# write, one commit under that verb's message (Y:5534-5536; tasks:1349), so
+# the row's commit is that LOG commit, `+ row: added`.
+is   "the row write is one start-record commit, with its STARTED line" "$(git -C "$WIP" log --format=%s -1 -- lanes/LANES.md)" "LOG(repoA-7@$LANES_WORKSTATION): STARTED lane:repoA-7 + row: added"
 is   "the row write was pushed" "$(git -C "$WIP" rev-parse HEAD)" "$(git -C "$WIP" rev-parse origin/main)"
 
 run "$START" --estate xFactory --dir "$HOME/projects/repoB" repoA 8 --no-launch
@@ -1343,7 +1346,9 @@ is    "a free lane resumes THE ROW'S RECORDED SESSION, by id" "$out" "claude --n
 hasnt "…and never by the ambiguous title" "$out" "--resume repoA-1"
 has   "…saying it is the row's own transcript" "$err" "the row's current session is $DEAD_ID and its transcript is here"
 has   "…having taken live-holder's 8 as the ANSWER it is: this lane is parked" "$err" "no live session holds repoA-1"
-has  "a free lane appends a status, not a row" "$(git -C "$WIP" log --oneline -1 -- lanes/LANES.md)" "lane-start on"
+# T428: the state and the RESUMED line are one `start-record` commit, and a
+# resume's says `+ row: <STATE>`, never `added` (Y:5536).
+is   "a free lane appends a status, not a row" "$(git -C "$WIP" log --format=%s -1 -- lanes/LANES.md)" "LOG(repoA-1@$LANES_WORKSTATION): RESUMED lane:repoA-1 + row: LIVE"
 # AMENDMENT 11 CLAUSE (c) — THE ROW STAMP'S TAIL STATES THE DIRECTORY AND THE
 # WINDOW BESIDE WHAT IT DID. Its HEAD is unchanged (Amendment 8(d): the verb,
 # the uuid and the lane), and the tail still says what actually happened, so a
@@ -1442,9 +1447,13 @@ hasnt "…never inside it, which a replace at a bare-uuid anchor would do (F-B1)
 # ITS OWN REGISTER COMMIT, AND THE ONE BEFORE THE STAMP (Copilot round 5 on
 # openRepoTools#82): Amendment 8's rule is THE CELL FIRST, THEN THE STAMP — the
 # stamp names a uuid, so the cell that carries it is written first — and this
-# path used to do the opposite. Both commits are asserted, in that order.
-has  "…in its own register commit" "$(git -C "$WIP" log --format=%s -- lanes/LANES.md | head -n2 | tail -n1)" "session cell: lane-start minted $REPOA14_SID"
-has  "…with the state stamp committed after it, naming the same id" "$(git -C "$WIP" log --format=%s -n1 -- lanes/LANES.md)" "state · LIVE · STARTED by $REPOA14_SID"
+# path used to do the opposite. SINCE T428 (feature 007) THEY ARE ONE COMMIT:
+# the cell, the state and the STARTED line are one `start-record` write, whose
+# arm makes the edits in that order, the cell first (Y:5534-5536; tasks:1349).
+# So both are asserted in that one commit: its subject names the cell's new
+# id, and the row it wrote names the same id in the state.
+is   "…in the one start-record commit, with the state and its STARTED line" "$(git -C "$WIP" log --format=%s -n1 -- lanes/LANES.md)" "LOG(repoA-14@$LANES_WORKSTATION): STARTED lane:repoA-14 + row: LIVE, session cell → $REPOA14_SID"
+has  "…with the state stamp in that same commit, naming the same id" "$(git -C "$WIP" log -n1 -p --format= -- lanes/LANES.md | grep '^+| `repoA-14`' || :)" "STARTED by $REPOA14_SID (lane repoA-14)"
 
 # And the loop closes: run it again, and the id just written is resumed by id.
 printf '{"type":"user"}\n' > "$tdir/$REPOA14_SID.jsonl"
@@ -1526,7 +1535,9 @@ has  "…with the home taken from git remote get-url origin" "$E1_STARTED" "home
 has  "…and the payload sub-fields separated by '; '" "$E1_STARTED" "; estate repoE"
 has  "…written as its own LOG commit" "$(git -C "$WIP" log --oneline -1)" "LOG(repoE-1@$WS_S): STARTED lane:repoE-1"
 is   "…and pushed" "$(git -C "$WIP" rev-parse HEAD)" "$(git -C "$WIP" rev-parse origin/main)"
-is   "…while LANES.md keeps its own last commit" "$(git -C "$WIP" log --oneline -1 -- lanes/LANES.md | grep -c 'LOG(')" 0
+# T428: the new row rides in that same LOG commit, one `start-record` write
+# (Y:5534-5536; tasks:1349), so LANES.md's last commit IS the LOG commit.
+is   "…and LANES.md's last commit is that same LOG commit, with the row" "$(git -C "$WIP" log --format=%s -1 -- lanes/LANES.md)" "LOG(repoE-1@$WS_S): STARTED lane:repoE-1 + row: added"
 
 run "$START" --dir "$HOME/projects/repoB" --estate repoB repoQ-1 --no-launch
 has  "a lane whose checkout has no origin still starts, and says the home is unknown" "$err" "has no 'origin' remote"
@@ -3498,7 +3509,10 @@ has   "…having read the live session out of THIS window" "$err" "this window's
 has   "…and said the published cell does not name it" "$err" "the PUBLISHED session cell does not name it"
 has   "…the cell is EXTENDED with it, after the id it already ended on" \
       "$(grep '^| `repoHU-1`' "$LANES")" "harness \`$HW_OLD\` → harness $HW_NEW (transcript uuid; profile t1)"
-has   "…in its own register commit that says why" "$(git -C "$WIP" log --format=%s -- lanes/LANES.md | head -n2 | tail -n1)" "the harness minted $HW_NEW for this window"
+# T428: the cell's extension, the state and the RESUMED line are one
+# `start-record` commit, whose subject names the id the cell now ends on; the
+# append's why is said as a note, not in a commit (Y:5534-5537; tasks:1349).
+is    "…in the one start-record commit, which names the id the cell now ends on" "$(git -C "$WIP" log --format=%s -n1 -- lanes/LANES.md)" "LOG(repoHU-1@$WS_S): RESUMED lane:repoHU-1 + row: LIVE, session cell → $HW_NEW"
 is    "…and the launch resumes the NEW id, not the one the cell used to end on" "$out" "claude --name repoHU-1 --resume $HW_NEW"
 has   "…while the row's status is Amendment 6(c)'s stamp, naming that uuid" \
       "$(grep '^| `repoHU-1`' "$LANES")" "RESUMED by $HW_NEW (lane repoHU-1) — lane-start on"
@@ -3514,7 +3528,9 @@ has   "…saying step 3 already found that session holding the lane here" "$err"
 has   "…so there is nothing for the window read to add" "$err" "the cell is current"
 is    "…so the cell is not extended twice" "$(grep -o "harness $HW_NEW" "$LANES" | grep -c .)" 1
 is    "…and the only register commit is the stamp" "$(git -C "$WIP" rev-list --count "$hu_before..HEAD" -- lanes/LANES.md)" 1
-has   "…which still names the uuid it resumed" "$(git -C "$WIP" log --format=%s -n1 -- lanes/LANES.md)" "RESUMED by $HW_NEW"
+# T428: that commit is the one `start-record` write, whose subject names no
+# id where no cell is appended (Y:5536), so the id is read in the row it wrote.
+has   "…which still names the uuid it resumed" "$(git -C "$WIP" log -n1 -p --format= -- lanes/LANES.md | grep '^+| `repoHU-1`' || :)" "RESUMED by $HW_NEW"
 unset FAKE_TMUX_WINDOW
 
 # ---- R-A8-4: THE UUID APPEND IS CELL-SCOPED, AND THIS IS WHY -------------
@@ -8041,7 +8057,7 @@ has   "…this session appended to that lane's cell, which is what the next resu
 # Since T502 that read is the bind's body's, so it is said in the bind's output.
 has   "…lane-start having made that one write, on the person's choice 2" "$gd_bind_said" "session cell now ends on $GD_LANE_ID"
 has   "…in a commit of its own that says which act it was" \
-      "$(git -C "$WIP" log -n 12 --format=%s)" "session cell: bound $GD_LANE_ID on the person's choice 2 at the name guard"
+      "$(git -C "$WIP" log -n 12 --format=%s)" "LOG(repoGD-2@$WS_S): RESUMED lane:repoGD-2 + row: LIVE, session cell → $GD_LANE_ID"
 hasnt "…and with no register write of the guard's own" \
       "$(git -C "$WIP" log -n 12 --format=%s)" "the name guard moved this window from repoGD-1"
 has   "…and the lane it LEFT marked PAUSED, so the register says where the work went" \
@@ -8839,8 +8855,10 @@ has   "…naming the rule that settles it" "$err" "Amendment 15(a)"
 is    "…the register still has exactly ONE row for the lane" "$(grep -c '^| `repoCase-1`' "$LANES")" 1
 is    "…and no second row under the typed spelling — the 23:51:56Z defect" \
       "$(grep -c '^| `repocase-1`' "$LANES")" 0
-has   "…it APPENDED a status rather than adding a row" \
-      "$(git -C "$WIP" log --oneline -1 -- lanes/LANES.md)" "lane-start on"
+# T428: the state and the RESUMED line are one `start-record` commit under the
+# row's spelling, `+ row: <STATE>` and never `added` (Y:5536).
+is    "…it APPENDED a status rather than adding a row" \
+      "$(git -C "$WIP" log --format=%s -1 -- lanes/LANES.md)" "LOG(repoCase-1@$WS_S): RESUMED lane:repoCase-1 + row: LIVE"
 has   "…and the stamp it appended carries the canonical spelling" \
       "$(grep '^| `repoCase-1`' "$LANES")" "(lane repoCase-1)"
 has   "…having found the checkout by its real directory name, not the typed one" \
