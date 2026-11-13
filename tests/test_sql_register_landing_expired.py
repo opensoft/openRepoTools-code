@@ -272,11 +272,13 @@ def _masked_path() -> str:
 #: W being the real path of `workspace.yaml`'s `path:`, and refuses with 2,
 #: sending nothing, where that is not there, since a clone there would be
 #: D12's fetch (B15 tasks:1154; T415's `pw_checkout`). So `_workspace` makes
-#: it, as `lane-start` does at a launch, for each lane this module's writes
-#: are made for (`write_lane_of`'s): `WRITER`, the `LANES_LANE` of every form
-#: and take, and `HOLDER`, (a)'s `[writer-is-the-holder]`. Until T415 nothing
-#: reads it: no case sets `LANES_ROUTE_WRITES`, so each write goes through
-#: `LANES_REPO` as before.
+#: it itself, because `lane-start` makes it only under `LANES_ROUTE_WRITES=1`
+#: with neither `LANES_REPO` nor `LANES_FILE` set (lane 3, #165 6841265575;
+#: `dfc4ce4c:lane-start:1209-1210`). It makes it for each lane this module's
+#: writes are made for (`write_lane_of`'s): `WRITER`, the `LANES_LANE` of every
+#: form and take, and `HOLDER`, (a)'s `[writer-is-the-holder]`. Until T415
+#: nothing reads it: no case sets `LANES_ROUTE_WRITES`, so each write goes
+#: through `LANES_REPO` as before.
 WRITE_LANES = (WRITER, HOLDER)
 
 
