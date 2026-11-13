@@ -1556,11 +1556,15 @@ def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_n
     emptied or moved by hand on the origin (`by_hand`), before the rerun.
 
     [rename-lane-stops] empties the handoff, as lane 3 ruled (#165
-    6841366245; TP:3419-3423, "removed from" read as "emptied in"): it is
-    still there, tracked under `handoffs/` with no pending change, so the
-    replay's checks pass and `rl_stamp_build`'s proof refuses it with 5
-    before the seam (`049c0da1:lanes-edit.sh:20870-20874`), Y:5092's "a
-    handoff that cannot be stamped refuses". A handoff removed instead
+    6841366245) and as the test plan says since fold 1112p (`e7b1ed5e`):
+    the handoff file "is committed empty in the lane's checkout", and "the
+    replay's stamp proof (Y:5092) refuses it with 5 before the seam"
+    (TP:3442-3444 at `b8e3df74`; in Y's frame, TP:3419-3421 said "removed
+    from"). The handoff is still there, tracked under `handoffs/` with no
+    pending change, so the replay's checks pass and `rl_stamp_build`'s
+    proof refuses it with 5 before the seam
+    (`049c0da1:lanes-edit.sh:20870-20874`), Y:5092's "a handoff that
+    cannot be stamped refuses". A handoff removed instead
     keeps Amendment 16(d)'s note on primary too, so its replay takes the
     differs path (Y:5330; the same ruling). The case tells its form from
     [rename-lane-differs] by Y:5329's text: "replayed at seq `<s-1>` it now
