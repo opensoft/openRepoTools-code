@@ -2582,10 +2582,16 @@ _HANDOFF = ("--lane", R_HERE, "T252b's race")
 #: stop ends 2 alone, its writer's code staying in that writer's own stderr
 #: (T431; lane 3's question 4, #165 6835210568; T252n); and the guard's child
 #: ends 0, its refused `set-row-state` a `note=`, since the bind landed (lane
-#: 3's point 4(b), #165 6841918192; T252s).
+#: 3's point 4(b), #165 6841918192; T252s). W1 runs with `LANE_START_SESSION_ID=0`,
+#: minting off: where a transcript uuid is knowable, T428 carries W1 inside the
+#: one `start-record --add-row` call, and no commit call is `add-row`'s; with
+#: none, W1 stays the separate `add-row` that TP:5848 names
+#: (`f9e1449c:lane-start:4315-4320`, `:4363-4364`, `:4562-4563`, `:4640-4644`;
+#: lane 2's TR21, section 2a, option 1; T252t).
 ACT_WRITES = {
     "lane-start-w1-add-row": ActWrite("lane-start", ("repoZ", "1", "--no-launch"), R_NEW,
-                                      verb_is("add-row"), rival="row", code=2),
+                                      verb_is("add-row"), rival="row", code=2,
+                                      env={"LANE_START_SESSION_ID": "0"}),
     "lane-start-w8-request-handoff": ActWrite("lane-start", ("repoA", "3", "--request-handoff", "--dir",
                                                              "{lane_dir}"), R_FAR,
                                               verb_is("request-handoff"), code=2),
