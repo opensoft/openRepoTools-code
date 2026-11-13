@@ -683,6 +683,11 @@ class Estate:
         return self.session.env(self.base, **merged)
 
     def hook(self, prompt="hello", timeout=HOOK_TIMEOUT, **extra) -> Hook:
+        """One guard run. On primary, the register is put in the SQL store
+        before the first one (`_seed_primary`, T254r), so a case that reads
+        without making an offer, rows (a) and (b) among them, reads it there."""
+        if getattr(self, "pg", None) is not None:
+            _seed_primary(self)
         return run_hook(["bash", str(self.guard), "guard"],
                         self.session.hook_input(prompt=prompt), self.env(**extra),
                         self.session.cwd, timeout)
@@ -702,9 +707,13 @@ class Estate:
 
     def answer_2(self, **extra) -> Hook:
         """The person's `2`; the case's first assertion is always that the hook
-        printed "BINDING" and exited 2, which today's in-hook bind never does."""
+        printed "BINDING" and exited 2, which today's in-hook bind never does.
+        The line names the lane this estate's offer binds, `self.to` (T214l):
+        `repoA-5` for the bind-failed test's `new` kind, which `BINDING`, on
+        `TO`, never matched (lane 5, #165 6837268276)."""
         hook = self.hook("2", **extra)
-        assert not hook.killed and hook.code == 2 and BINDING in hook.err, \
+        binding = f"BINDING: this window is now named {self.to}"
+        assert not hook.killed and hook.code == 2 and binding in hook.err, \
             f"answer 2 did not exit 2 with BINDING: {hook!r}"
         return hook
 
@@ -1275,7 +1284,8 @@ def _real_estate(estate, register=True, **kwargs) -> Estate:
 
     AND ON PRIMARY, THE REGISTER IN ITS SQL STORE (T254p): `_seed_primary`,
     unless `register` is false, for a caller that seeds it later itself
-    (`_two_binds`)."""
+    (`_two_binds`). AND EACH LANE'S OWN REGISTER CHECKOUT (T254s):
+    `_lane_checkouts`."""
     est = estate(**kwargs)
     est.extra["LANES_LANE_START"] = str(est.guard.parent / "lane-start")
     est.set("edit-real")
@@ -1283,6 +1293,8 @@ def _real_estate(estate, register=True, **kwargs) -> Estate:
     _follow_renames(est.session)
     if kwargs.get("to_row", True):
         _handoff(est)
+    if kwargs.get("mode") == "primary":
+        _lane_checkouts(est, [FROM] + ([est.to] if kwargs.get("to_row", True) else []))
     if register and kwargs.get("mode") == "primary":
         _seed_primary(est)
     return est
@@ -1308,12 +1320,48 @@ def _seed_primary(est: Estate) -> None:
     `_Register` is kept as `est.sql_register`, and `Estate.push_register`
     sends later changes through it (T254q). `Estate.make_offer` calls this
     before the first offer, so every primary estate that makes one reads its
-    register there (T254q)."""
+    register there (T254q).
+
+    AND BEFORE ANY READ (T254r): `Estate.hook` calls it before every guard
+    run, and `_Service` before it starts `serve`, so the cases that read
+    without an offer read a register at `primary` too: rows (a) and (b), the
+    service and read cases, and SVC-10, which measured the refusal path
+    (lane 5, #165 6837268276). A case that seeds its register itself does so
+    before its first read (`_Register`; `_guard_state`), so this finds it at
+    `primary` and sends nothing. The answer is kept on the estate
+    (`est.seeded`), so the switch is asked once per estate."""
+    if getattr(est, "seeded", False):
+        return
     out = est.pg.psql("SELECT mode FROM lanes_register.register_switch;",
                       check=False).stdout.split()
-    if out and out[-1] == "primary":
-        return
-    est.sql_register = _Register(est)
+    if not (out and out[-1] == "primary"):
+        est.sql_register = _Register(est)
+    est.seeded = True
+
+
+def _lane_checkouts(est: Estate, lanes) -> None:
+    """EACH LANE'S OWN REGISTER CHECKOUT ON PRIMARY (T254s), `<W>-lanes/<lane>/`,
+    made by `lanes-edit.sh lane-checkout <lane> --create` (the estate's build),
+    as the real layout has one register checkout per lane.
+
+    WHY: on primary, T415's `pw_checkout` asks every write for its lane's
+    own checkout, even under an explicit `LANES_REPO`
+    (`lanes-edit.sh:8578-8583` at G-18c's `050dc9b4`), while `lane-start`
+    makes it only under `LANES_ROUTE_WRITES=1` and its default resolution
+    (`lane-start:1146-1147`, `:3981-3990`). The estate names `LANES_REPO`,
+    so each of the bind's writes refused with 2, "lane repoA-3's own
+    register checkout, ... is not here, and on primary a write makes no
+    clone"; the session cell never ended on the bound uuid, and T503's rerun
+    rule could not hold (case 11; G-18c's run cL). A slice of its own, so a
+    later one can reverse it if lanes 3 and 4 rule that the tools should
+    agree instead. The clone is a fetch, so `LANES_NO_FETCH` is left out."""
+    env = {k: v for k, v in est.base.items() if k != "LANES_NO_FETCH"}
+    for lane in lanes:
+        done = subprocess.run(["bash", str(est.guard), "lane-checkout", lane, "--create"],
+                              cwd=str(est.wip), env=env, capture_output=True, text=True,
+                              timeout=120)
+        assert done.returncode == 0, \
+            f"lane-checkout {lane} --create exited {done.returncode}: {done.stderr}"
 
 
 #: THE LANE'S HANDOFF (T214k), as a real lane's register holds it: the file
@@ -1384,6 +1432,8 @@ def _two_binds(estate, mode="files") -> tuple:
                                 session_id=two.sid, name=TO)
     _follow_renames(two.session)
     two.sessions.append(two.session)
+    if mode == "primary":
+        _lane_checkouts(two, ["repoA-4"])
     one.make_offer()
     two.hook("hello")
     assert read_record(two.offer).get("mode") == "name-drift", read_record(two.offer)
@@ -2787,10 +2837,41 @@ def _run_dir(est: Estate) -> Path:
     return Path(est.base["XDG_STATE_HOME"]) / "openRepoTools" / "run"
 
 
-def _service_dir(est: Estate):
-    """The run directory, where the service's socket is bound."""
+def _service_dir(est: Estate, stale=None):
+    """The run directory, where the service's socket is bound; with `stale`,
+    a socket's inode, only once the socket there is another one (T237zi)."""
     run = _run_dir(est)
-    return run if (run / "register.sock").exists() else None
+    sock = run / "register.sock"
+    if not sock.exists():
+        return None
+    if stale is not None:
+        try:
+            if os.lstat(sock).st_ino == stale:
+                return None
+        except OSError:
+            return None
+    return run
+
+
+def _stale_socket(est: Estate):
+    """The inode of a socket in the run directory that no process answers on,
+    a dead service's (SVC-4), or None (T237zi): a connect refused, or a file
+    that is not a socket, is stale; one that connects is a live service's."""
+    import socket as _socket
+    path = _run_dir(est) / "register.sock"
+    try:
+        inode = os.lstat(path).st_ino
+    except OSError:
+        return None
+    probe = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    try:
+        probe.settimeout(1.0)
+        probe.connect(str(path))
+    except OSError:
+        return inode
+    finally:
+        probe.close()
+    return None
 
 
 def _failure_stamp(est: Estate, done: subprocess.CompletedProcess) -> list:
@@ -2857,12 +2938,18 @@ class _Service:
 
     def __init__(self, est: Estate, **extra):
         self.est = est
+        if getattr(est, "pg", None) is not None:
+            _seed_primary(est)
+        # A DEAD SERVICE'S SOCKET IS NOT THIS ONE'S (T237zi; lane 5, #165
+        # 6837268276): where one is left, the wait is for the socket that
+        # replaces it, so a case never reads the stale inode as the new one.
+        stale = _stale_socket(est)
         self.proc = subprocess.Popen([sys.executable, str(est.index), "serve"],
                                      stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE, env=est.env(**extra),
                                      cwd=str(est.wip), start_new_session=True)
         est.spare.append(self.proc.pid)
-        self.dir = _until(lambda: _service_dir(est), 10)
+        self.dir = _until(lambda: _service_dir(est, stale), 10)
         if not self.dir:
             # WHAT `serve` SAID, where it has exited: until lane 5's T512
             # (L5-S1), `lanes-index` answers 64, "unknown subcommand 'serve'".
