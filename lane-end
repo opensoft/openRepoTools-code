@@ -351,7 +351,9 @@
 #      register could not be read; 75, register busy; 3, in doubt. Nothing is
 #      written. The reads are the lane's row (`register-text`), `canon-lane`,
 #      `lane-objects`, `register-row`, `--retire-dormant`'s `lanes --decide`
-#      listing, and every other read an arm already dies on: `lane-checkout`,
+#      listing and `--sweep-checkouts`' (`lanes --decide --closed --all`,
+#      tested before the listing's words), and every other read an arm already
+#      dies on: `lane-checkout`,
 #      `resolve-home`, `forks`, `duplicate-holder`, `live-holder`,
 #      `last-session`, `transcript-holders` and the close-out gate's
 #      `lane-dir` (lane 3, #165 6767463594, question 9); each keeps its own
@@ -1395,7 +1397,18 @@ if [ "$sweep_checkouts" = 1 ]; then
   # workstation's session records cannot say which lanes are LIVE, and one
   # that could not read the register cannot say which are CLOSED, and neither
   # is an answer (Amendment 7(d)).
-  sc_lanes_args=(lanes --closed --all)
+  #
+  # FEATURE 007, T403 (R38; spec:633-635; Y:3022; lane 3's #165 6770733371,
+  # question (c); tasks:886 and :888): THIS READ DECIDES. It chooses which
+  # checkouts are removed, so the sweep acts on its answer, and it asks `lanes`
+  # to decide: a database nobody can reach is a 69 with nothing on stdout, never
+  # the mirror's rows, and the 69, 75 and 3 refusals below pass the code. In
+  # files mode `--decide` is only taken off the line, and no read verb emits
+  # any of the three there (Y:5746), so nothing changes. Lane 5's T502 makes
+  # the arm accept `--decide`, which is why this line lands after T502; a
+  # `lanes-edit.sh` older than that refuses it with 64, and that fails closed
+  # below as a read that did not answer.
+  sc_lanes_args=(lanes --decide --closed --all)
   if [ "$sweep_yes" = 1 ]; then sc_lanes_args+=(--fetch); fi
   LE_TMP="$(mktemp "${TMPDIR:-/tmp}/lane-end-sweep.XXXXXX" 2>/dev/null || printf '')"
   [ -n "$LE_TMP" ] ||
@@ -1406,6 +1419,14 @@ if [ "$sweep_checkouts" = 1 ]; then
     die "the capture of the listing's own notes could not be read back, so whether the lanes' state was read was never established. Nothing was removed." 1
   rm -f -- "$LE_TMP"; LE_TMP=""
   if [ -n "$sc_err" ]; then printf '%s\n' "$sc_err" >&2; fi
+  # THE CODE IS TESTED BEFORE THE LISTING'S WORDS ARE READ (tasks:888). A 69,
+  # 75 or 3 is no answer about any lane, so it refuses with the verb's own code
+  # before the notes below are matched and before anything is acted on, as
+  # T403's other read arms do through `le_read_refuse`. Every other code keeps
+  # today's exit, in the `case` below the notes.
+  case "$sc_rc" in
+    69 | 75 | 3) le_read_refuse "$LANES_EDIT ${sc_lanes_args[*]}" "$sc_rc" "which lanes are CLOSED or LIVE" ;;
+  esac
   case "$sc_err" in
     *"session records could not be read"*)
       die "this workstation's session records could not be read (the listing says so above), so which lanes are LIVE was never established, and a LIVE lane's checkout is never swept. Fix the read and re-run. Nothing was removed." 1 ;;
@@ -1456,12 +1477,17 @@ SC_IDX
   # THE RUNNER: the lane `LANES_LANE` names, by its row's own spelling
   # (Amendment 15), whose checkout the NOTED line goes through and so is never
   # swept. A dry run without one sweeps nothing of its own and says so.
+  #
+  # FEATURE 007, T403 (Y:5734; lane 3's #165 6767463594, question 9, and
+  # 6770733371, question (c); tasks:886): this arm keeps its words and passes
+  # the register's 69, 75 and 3, as `le_read_code` has it, before anything is
+  # removed; every other code keeps its 2.
   sc_runner=""
   if [ -n "${LANES_LANE:-}" ]; then
     sc_cl_rc=0
     sc_runner="$(LANES_NO_FETCH=1 "$LANES_EDIT" canon-lane "$LANES_LANE" 2>/dev/null)" || sc_cl_rc=$?
     if [ "$sc_cl_rc" != 0 ] || [ -z "$sc_runner" ]; then
-      die "LANES_LANE=$LANES_LANE could not be resolved to a lane (\`$LANES_EDIT canon-lane $LANES_LANE\` exited $sc_cl_rc), so whose checkout is never swept, and whose log the NOTED line goes into, is not known. Nothing was removed." 2
+      die "LANES_LANE=$LANES_LANE could not be resolved to a lane (\`$LANES_EDIT canon-lane $LANES_LANE\` exited $sc_cl_rc), so whose checkout is never swept, and whose log the NOTED line goes into, is not known. Nothing was removed." "$(le_read_code "$sc_cl_rc" 2)"
     fi
     if [ "$sweep_yes" = 1 ] && ! sc_lookup "$sc_runner"; then
       die "lane $sc_runner, which LANES_LANE names, has no row in the register and no log (\`lanes --all\` does not list it), so the NOTED line this act ends with has no lane to be written for. Name your own lane: LANES_LANE=<your lane> $prog --sweep-checkouts --yes. Nothing was removed." 2
@@ -1478,6 +1504,11 @@ SC_IDX
   # 545): its 1 is a register or a log that could not be read, and that is
   # a read that failed (1), never a lane with no uuid. Its words are kept to
   # name the reason; a capture that cannot be made names the exit alone.
+  #
+  # FEATURE 007, T403 (Y:5734; lane 3's #165 6767463594, question 9, and
+  # 6770733371, question (c); tasks:886): that read's 69, 75 and 3 pass, as
+  # `le_read_code` has it, and every other code keeps its 1. Its 8 is "names
+  # none", as above.
   sc_uuid=""
   if [ "$sweep_yes" = 1 ]; then
     sc_uuid="${LANES_SESSION:-}"
@@ -1492,7 +1523,7 @@ SC_IDX
       case "$sc_ls_rc" in
         0) : ;;
         8) sc_uuid="" ;;
-        *) die "lane $sc_runner's transcript uuid, for the session field of the NOTED line this act ends with (Amendment 7(b)), could not be read: \`lanes-edit.sh last-session $sc_runner\` exited $sc_ls_rc${sc_ls_err:+ ($sc_ls_err)}. That is not a lane that names none: the register or its log could not be read. Fix the read and re-run, or name your session: LANES_SESSION=\"\$CLAUDE_CODE_SESSION_ID\" LANES_LANE=$sc_runner $prog --sweep-checkouts --yes. Nothing was removed." 1 ;;
+        *) die "lane $sc_runner's transcript uuid, for the session field of the NOTED line this act ends with (Amendment 7(b)), could not be read: \`lanes-edit.sh last-session $sc_runner\` exited $sc_ls_rc${sc_ls_err:+ ($sc_ls_err)}. That is not a lane that names none: the register or its log could not be read. Fix the read and re-run, or name your session: LANES_SESSION=\"\$CLAUDE_CODE_SESSION_ID\" LANES_LANE=$sc_runner $prog --sweep-checkouts --yes. Nothing was removed." "$(le_read_code "$sc_ls_rc" 1)" ;;
       esac
     fi
     if ! is_fork_uuid "$sc_uuid"; then
