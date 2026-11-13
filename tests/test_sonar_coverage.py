@@ -134,3 +134,45 @@ def test_measurement_preserves_the_applications_default_sigterm_handler(
         env=env, capture_output=True, text=True, check=True)
     assert result.stdout.strip() == "signal-contract-preserved"
     assert result.stderr == ""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows cannot remove the process working directory")
+def test_deleted_working_directory_remains_deleted_and_receives_no_coverage(tmp_path):
+    # Coverage imports os.getcwd() at module load. Use a stub so this startup
+    # boundary is exercised even in the ordinary pytest-only test environment.
+    stub = tmp_path / "stub"
+    stub.mkdir()
+    marker = tmp_path / "measurement-started"
+    (stub / "coverage.py").write_text(
+        "import os\nfrom pathlib import Path\nos.getcwd()\n"
+        f"Path({str(marker)!r}).write_text('started')\n")
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    env = dict(os.environ,
+               PYTHONPATH=os.pathsep.join((str(HERE / ".github/ci/sonar_coverage"), str(stub))),
+               ORT_SONAR_INVENTORY=str(tmp_path / "inventory.json"),
+               COVERAGE_PROCESS_START=str(tmp_path / "coverage.rc"))
+    command = ("import os\ntry: os.getcwd()\nexcept FileNotFoundError: "
+               "print('deleted-directory-preserved')\nelse: raise AssertionError('cwd changed')")
+    result = subprocess.run(
+        ["sh", "-c", 'cd "$1" && rmdir "$1" && shift && exec "$@"', "sh",
+         str(gone), sys.executable, "-c", command],
+        env=env, capture_output=True, text=True, check=True)
+    assert result.stdout == "deleted-directory-preserved\n"
+    assert result.stderr == ""
+    assert not marker.exists()
+    assert not gone.exists()
+
+
+def test_startup_still_reports_configuration_errors_from_an_existing_directory(tmp_path):
+    stub = tmp_path / "stub"
+    stub.mkdir()
+    (stub / "coverage.py").write_text(
+        "def process_startup():\n    raise RuntimeError('invalid-coverage-configuration')\n")
+    env = dict(os.environ,
+               PYTHONPATH=os.pathsep.join((str(HERE / ".github/ci/sonar_coverage"), str(stub))),
+               ORT_SONAR_INVENTORY=str(tmp_path / "inventory.json"),
+               COVERAGE_PROCESS_START=str(tmp_path / "coverage.rc"))
+    result = subprocess.run([sys.executable, "-c", "pass"], cwd=tmp_path,
+                            env=env, capture_output=True, text=True, check=True)
+    assert "RuntimeError: invalid-coverage-configuration" in result.stderr
