@@ -2046,7 +2046,13 @@ def test_two_sessions_binding_one_lane_one_start_record_commits(estate):
     the record's `why=` stays `lane-start`'s last refusal line, which
     names no scope (Y:5487; lane 3, #165 6841918192). The `out` file's
     `expectation:` and `row:` lines are printed, for lane 3's check that
-    `start-record` lists `row:<L>` first (Y:5528)."""
+    `start-record` lists `row:<L>` first (Y:5528).
+
+    THE REFUSAL ITSELF NAMES THE SCOPE (T254zn; lane 2's review RV22, NIT
+    6): the line matched is `commit_write`'s LR009, "expectation: <scope>
+    changed at seq <s> by <lane>/<verb>" (`f9e1449c:lanes-index:9981`),
+    with the scope `bind:<L>`, so a later line that only lists the
+    expectations, such as `row:<L> bind:<L>`, cannot pass for it."""
     one, two, ends = _two_binds(estate, mode="primary")
     assert sorted(r["mode"] for r in ends) == ["bind-failed", "bound"], ends
     (est, failed), = [(e, r) for e, r in zip((one, two), ends) if r["mode"] == "bind-failed"]
@@ -2056,7 +2062,8 @@ def test_two_sessions_binding_one_lane_one_start_record_commits(estate):
     for line in text.splitlines():
         if "expectation" in line or "row:" in line:
             print(f"T254 case 8, {out.name}: {line}")
-    assert f"bind:{TO.lower()}" in text, (str(out), failed, text[-2000:])
+    refused = re.compile(rf"expectation: bind:{re.escape(TO.lower())} changed at seq [0-9]+ by ")
+    assert refused.search(text), (str(out), failed, text[-2000:])
 
 
 def test_the_bind_is_one_register_write_and_refuses_a_changed_row(estate):
