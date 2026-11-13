@@ -924,7 +924,10 @@ def test_a_request_handoff_that_runs_none_of_its_tail_exits_2_and_writes_nothing
     pending-record.md §5.2, R08; T244d), finds its write id and exits 2,
     not 0; the journal holds one entry for the id (YS:685 as amended: the
     write committed, so the refusal names it), the fake `tmux` logs no
-    `send-keys` from the rerun, and stderr names the tail it did not run."""
+    `send-keys` from the rerun, and stderr names the tail it did not run: the
+    write's "after-COMMIT steps", the words every form of the engine's text
+    names it by (`8ba10b4e:lanes-edit.sh:10168`, `:10169` and `:10319`); it
+    never prints the word "tail" (T244g; PM33A-TRIAGE L1)."""
     e = estates()
     where = loggers(e)
     gate = fifo(e, "commit-1")
@@ -955,7 +958,7 @@ def test_a_request_handoff_that_runs_none_of_its_tail_exits_2_and_writes_nothing
     assert [r["write_id"] for r in e.journal_after()].count(write_id) == 1
     sent = [c for c in tool_calls(where, "tmux")[before:] if "send-keys" in c["argv"]]
     assert not sent, f"the rerun typed into a pane: {sent}"
-    assert "tail" in again.err, f"stderr names no tail: {again.err[-800:]}"
+    assert "after-COMMIT steps" in again.err, f"stderr names no after-COMMIT steps: {again.err[-800:]}"
 
 
 # ------------------------------------------------------------ section 4.3: the rival
@@ -1297,7 +1300,10 @@ def test_a_rerun_that_finds_its_write_committed_runs_the_verbs_after_commit_tail
     extra = {"LANES_LANE_STATE_ROOT": str(root)}
     again, _, _ = tail_rerun(e, LA, ["rename-lane", LA, new, "T245", "--no-github"], where, extra)
     assert (root / new).is_dir() and not (root / LA).exists()
-    handoffs = list(e.root.glob(f"co-*/handoffs/{new}.md"))
+    # The move and stamp are made in the lane's own register checkout, `PW_C`,
+    # `<W>-lanes/<lane>` (`8ba10b4e:lanes-edit.sh:25251-25256`), which the
+    # estate makes at `co-<n>-lanes/<lane>`, never in W (T245l; PM33A-TRIAGE L2).
+    handoffs = list(e.root.glob(f"co-*-lanes/*/handoffs/{new}.md"))
     assert handoffs and all(h.read_text(encoding="utf-8").count(f"RENAMED from {LA}") <= 1 for h in handoffs)
     assert comments(where) == []
 
@@ -1340,9 +1346,13 @@ def test_the_after_commit_tail_of_release_runs_once_when_a_rerun_finds_the_write
 def test_the_after_commit_tail_of_request_handoff_types_once_in_the_kept_child_and_polls(estates):
     """`request-handoff`: the kept child ran the tail, so the fake `tmux`
     logs one `send-keys`, and the poll reads and ends the run; the request is
-    in the register once. Run with `--wait 2` and `LANES_POLL_SECONDS=1`."""
+    in the register once. Run with `--wait 2` and `LANES_POLL_SECONDS=1`.
+    The fake `tmux` answers the bound window as live (T248b's
+    `loggers(e, tmux_live=True)`): the silent one answers no window read, so
+    the window never reads live and nothing is typed (T245m; PM33A-TRIAGE L3;
+    N2-17b's reading 2)."""
     e = estates()
-    where = loggers(e)
+    where = loggers(e, tmux_live=True)
     w = e.run(LA, ["request-handoff", LC, "--session", session_of(LC), "--wait", "2"], arms=[AFTER],
               first=[where], extra={"LANES_POLL_SECONDS": "1"})
     assert w.code in (0, 2), w.err[-800:]
@@ -1461,11 +1471,11 @@ def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_n
     e = estates()
     where, root = loggers(e), sidecars(e)
     extra = {"LANES_LANE_STATE_ROOT": str(root)}
-    argv = (["request-handoff", LC, "--session", session_of(LC)] if case.startswith("request")
+    argv = (["request-handoff", LC, "--session", session_of(LC), "--no-wait"] if case.startswith("request")
             else ["rename-lane", LA, "repoA-9", "T245", "--no-github"])
     _, write_id = killed(e, LA, argv, first=[where], extra=extra)
     seq = e.journal_after()[-1]["seq"]
-    handoffs = list(e.root.glob(f"co-*/handoffs/{LA}.md"))
+    handoffs = list(e.root.glob(f"co-*-lanes/*/handoffs/{LA}.md"))   # the lane's own checkouts (T245l)
     if case == "rename-lane-stops":
         for h in handoffs:
             h.unlink()
@@ -1515,11 +1525,18 @@ def test_a_run_killed_after_its_call_line_or_mid_call_is_taken_over_in_doubt_and
     assert len(rec["calls"]) == 1, "the call line was not written before the send"
     os.killpg(w.proc.pid, signal.SIGKILL)
     w.wait()
+    write_id = rec["fields"]["write_id"].lower()
     if admin is not None:
         e.unlock(admin)
+        # THE KILLED CALL'S BACKEND RUNS ON (T245n; PM33A-TRIAGE L4): its
+        # client is gone, but once the head row is let go it finishes the
+        # request it was sent, COMMIT included, so `landed` is read only once
+        # no backend carries the write's id.
+        until_seen("the killed call's backend ended", lambda: e.c.value(
+            f"SELECT count(*) FROM pg_stat_activity WHERE query LIKE '%{write_id}%' "
+            "AND pid <> pg_backend_pid();") == "0")
     else:
         held.close()
-    write_id = rec["fields"]["write_id"].lower()
     not_after = rec["calls"][0].split()[2]
     landed = e.has_write(write_id)
     rival = e.run(LB, argv)
@@ -1529,7 +1546,13 @@ def test_a_run_killed_after_its_call_line_or_mid_call_is_taken_over_in_doubt_and
     if landed:
         assert (rival.code, again.code) == (2, 0), (rival.err[-300:], again.err[-300:])
     else:
-        assert rival.code == 0 and again.code == 2, again.err[-800:]
+        # ITS LAST ATTEMPT'S CODE (TP:3458-3460 at `a91df2c4`): the verb's 2
+        # where the snapshot passes; where it fails, the snapshot's own 69
+        # (`8ba10b4e:lanes-edit.sh:9083-9087`), after F3's lookup. R26 rules
+        # the wait, on the record's clock, and no code (research.md DEC-12,
+        # ERR-22; T245o; PM33A-TRIAGE L5).
+        code = 69 if snapshot == "snapshot-fails" else 2
+        assert rival.code == 0 and again.code == code, again.err[-800:]
         assert snapshot == "snapshot-fails" or again.commit_calls() == []
         assert db_past(e, not_after), "the takeover exited before the record's not_after"
     assert "LR011" not in again.err
@@ -1928,17 +1951,39 @@ def test_the_texts_for_3_say_may_not_be_written_and_relay_the_writers_rerun(site
     with its backticks, relays the writer's printed rerun verbatim, and never
     prints its own hint, "was NOT added" or "NOT WRITTEN". Read from the
     scripts, with no engine: each must hold D8's text and none of the
-    refused hints, where its exit-3 arm stands."""
+    refused hints, where its exit-3 arm stands. A site may split the text
+    over adjacent string literals on consecutive source lines (T434's
+    `lane-worktrees` does, in one parenthesised Python string), so the
+    search also reads the file with each such seam joined. The refused hints
+    are looked for in what a site can print, so its full-line comments are
+    left out there: one may name a refused hint to forbid it, as T434's
+    `lane-worktrees:192` does at 3a5b303f."""
     from sql_register_helpers import REPO
     path = REPO / TEXTS_FOR_3[site]
     assert path.is_file(), f"{path.name} is not in the code root"
-    text = path.read_text(encoding="utf-8")
+    raw = path.read_text(encoding="utf-8")
+    views = [raw, joined_literals(raw)]
     forms = [D8_TEXT_3, D8_TEXT_3.replace("`", "\\`")]
-    assert any(form in text for form in forms), f"{path.name} does not hold D8's text for 3: {D8_TEXT_3!r}"
+    assert any(form in text for text in views for form in forms), (
+        f"{path.name} does not hold D8's text for 3: {D8_TEXT_3!r}")
     for refused in ("was NOT added", "NOT WRITTEN"):
-        near = [m.start() for form in forms for m in re.finditer(re.escape(form), text)]
-        assert not any(refused in text[max(0, k - 400):k + 400] for k in near), (
-            f"{path.name} prints {refused!r} beside D8's text for 3")
+        for text in map(uncommented, views):
+            near = [m.start() for form in forms for m in re.finditer(re.escape(form), text)]
+            assert not any(refused in text[max(0, k - 400):k + 400] for k in near), (
+                f"{path.name} prints {refused!r} beside D8's text for 3")
+
+
+def joined_literals(text: str) -> str:
+    """`text` with each seam of two adjacent string literals on consecutive
+    source lines joined: a closing quote, the line's end and the next line's
+    indent, and an opening quote of the same kind, are dropped, as Python
+    joins `("a " NEWLINE "b")`."""
+    return re.sub(r"""(["'])[ \t]*\n[ \t]*\1""", "", text)
+
+
+def uncommented(text: str) -> str:
+    """`text` without its full-line `#` comments, which a site never prints."""
+    return re.sub(r"(?m)^[ \t]*#.*\n?", "", text)
 
 
 # ============================================================ PHASE W (and N): AT-F3 (T246)
@@ -2437,6 +2482,23 @@ class Owner:
             self.ended_at = time.time()
 
 
+#: How long the stand-in owner lives once an identical run is launched (T247c).
+OWNER_LIVES_S = 3
+
+
+def owner_lives(w: Writer) -> None:
+    """Let the run meet the live owner's claim for `OWNER_LIVES_S`, then
+    check it is still waiting, having sent nothing (T247c; PM33A-TRIAGE L6).
+    The run takes and waits on its claim before its first snapshot
+    (`pw_run`: `wr_claim_take`, then `pw_owner_live_end`;
+    `8ba10b4e:lanes-edit.sh:10820`), so it makes no shim call while the owner
+    lives: ending the owner on the run's first call waited for a call that
+    never came, and the run ended 3 at its deadline."""
+    time.sleep(OWNER_LIVES_S)
+    assert w.ended is None, f"{w.name} exited {w.code} while the owner lived: {w.err[-400:]}"
+    assert w.calls() == [], f"{w.name} sent a call while the owner lived: {w.calls()[:1]}"
+
+
 def dead_pid() -> int:
     gone = subprocess.Popen([sys.executable, "-I", "-c", "pass"])
     gone.wait()
@@ -2563,7 +2625,7 @@ def test_a_lanes_write_id_run_waits_for_a_live_owner(estates, case):
         w = e.launch(LA, argv, extra=dict(DEADLINE if case == "live-at-deadline" else {},
                                           LANES_WRITE_ID=write_id, LANES_WRITE_GENERATION=generation))
         if case == "ends-in-time":
-            until_seen("the run's first call", lambda: w.calls(), w)
+            owner_lives(w)
             owner.end()
         code = w.wait()
     finally:
@@ -2601,7 +2663,7 @@ def test_a_claim_with_no_record_beside_it_is_waited_for(estates, case):
         write_claim(e, d, 0, owner.pid, owner.start, utc=utc)
         w = e.launch(LA, argv, extra=extra)
         if case == "ends-in-time":
-            until_seen("the run's first call", lambda: w.calls(), w)
+            owner_lives(w)
             owner.end()
         code = w.wait()
     finally:
