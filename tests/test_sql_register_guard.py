@@ -4345,8 +4345,14 @@ def test_the_guard_answer_time_is_recorded_beside_todays_direct_guard(estate):
     # 10): every sample lands in one path, so `any(paths.values())` held
     # whatever the paths were, ten refusals or ten fallbacks among them. The
     # time stays unasserted, as TP:7976-7979 at a6497d00 has it, "without
-    # failing".
-    assert served and not paths["other"], {name: len(times) for name, times in paths.items()}
+    # failing". NOR A REFUSAL (T237zr; lane 2's review RV23, NIT 1): with the
+    # window and the session both `FROM`, the guard has nothing to refuse,
+    # so a refusal is a path the case did not mean, and nine of them beside
+    # one served sample passed. A fallback stays counted and allowed: the
+    # service may answer `unavailable` while it fetches. Whether the service
+    # itself answered a served sample is still read from its exit alone.
+    assert served and not paths["other"] and not paths["refusal"], \
+        {name: len(times) for name, times in paths.items()}
 
 
 def test_status_prints_the_services_lines_and_its_failure_stamp(estate):
