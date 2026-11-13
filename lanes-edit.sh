@@ -7963,7 +7963,8 @@ pw_learned() {   # <seq>
 # `tail=done <s> <rc> <utc>`, the done mark from it, removes the record and
 # exits the child's code. Where it does not, the child never read
 # `committed`: the owner removes `tail` again, and this returns 1 for the
-# replay (Y:5342).
+# replay (Y:5342), or, where the record cannot be rewritten without `tail`
+# before a replay, names the tail as owed.
 pw_tail_child() {   # <seq> <pid> <attempt dir>
   local tc_rc=0 tc_was="$WR_TAIL"
   pw_learned "$1"
@@ -7984,7 +7985,16 @@ pw_tail_child() {   # <seq> <pid> <attempt dir>
   [ "$PW_CHILD" != "$2" ] || PW_CHILD=""
   if ! pw_seam_out_read "$3"; then
     WR_TAIL=""
-    wr_record_write || :
+    # A RECORD THAT CANNOT BE REWRITTEN WITHOUT `tail` before a replay: no
+    # replay, and the tail is owed, since a tail is sent only after `tail=sent`
+    # is written (Y:5293) and this child never read `committed`, so the steps
+    # did not run (Y:5329, Y:5340). The takeover's own case is lane
+    # openRepoTools-3's ruling, #165 6841366245, T418 (2); this is the same
+    # shape for this run's own child (review RC-W18b, its NIT). A replay's own
+    # child that did not take it ends owed in `pw_replay_tail`, as before.
+    if ! wr_record_write && [ "$PW_REPLAYED" != 1 ]; then
+      pw_tail_owed "$1" "its child, in $3, did not take the message at its seam (its seam.out does not read tail), so its tail did not run; but this run could not remove tail=sent from its pending record, $WR_STATE/register-pending/$WR_D (it no longer owns it, or the file cannot be written), and a tail is sent only after tail=sent is written (Y:5293), so it was not replayed"
+    fi
     return 1
   fi
   WR_TAIL="done $1 $tc_rc $(wr_host_utc)"
@@ -8052,12 +8062,20 @@ pw_tail_close() {   # <seq> <mark tail value, or empty>
 # did not run, with the table's words. 1 where neither holds a value, and
 # where this run took over a `sent` whose child's `seam.out` says `none` and
 # has removed that `tail` (`pw_took_sent_none`; Y:5342): the run then goes on
-# as for a record with no `tail` (Y:5337), to the replay.
+# as for a record with no `tail` (Y:5337), to the replay. Where that child said
+# `none` and the record could not be rewritten without `tail`, the tail did
+# not run and is not replayed, since a tail is sent only after `tail=sent` is
+# written (Y:5293): it is OWED, as every other replay that cannot go on ends
+# (`pw_tail_owed`; Y:5329, Y:5340), not "may have run" (lane openRepoTools-3,
+# #165 6841366245, T418 (2)).
 pw_tail_found() {   # <seq>
-  local tf_v="" tf_w="" tf_utc="" tf_p="" tf_mark=""
+  local tf_v="" tf_w="" tf_utc="" tf_p="" tf_mark="" tf_sn=0
   case "$WR_TAIL" in
     'sent '*|'done '*)
-      ! pw_took_sent_none || return 1
+      pw_took_sent_none || tf_sn=$?
+      [ "$tf_sn" != 0 ] || return 1
+      [ "$tf_sn" != 2 ] ||
+        pw_tail_owed "$1" "its child's seam.out, in the directory of its call= line, says none, so that child never read committed and its tail did not run; but this run could not remove tail=sent from its pending record, $WR_STATE/register-pending/$WR_D (it no longer owns it, or the file cannot be written), and a tail is sent only after tail=sent is written (Y:5293), so it was not replayed"
       tf_v="$WR_TAIL"; tf_mark="$WR_TAIL"
       pw_tail_writer; tf_p="$PW_O_PID" ;;
     *)
@@ -8091,17 +8109,20 @@ pw_tail_found() {   # <seq>
 # the record's owner (Y:5179, Y:5190), purges the old runs' directories as
 # before any record write of its own (`pw_runs_purge`), rewrites the record
 # without `tail`, and returns 0. The replay that follows is once per run
-# (`pw_replay_tail`; Y:5310), and removes this `seam.out` before its own
-# `tail=sent`, so a takeover after it finds none to read and does not replay
-# again (Y:5298). Every other case returns 1 with nothing changed,
+# (`pw_replay_tail`; Y:5310), and writes this `seam.out` as `replayed` before
+# its own `tail=sent`, so a takeover after it reads neither `none` nor `tail`
+# and does not replay again (Y:5298). Every other case returns 1 with nothing changed,
 # and the `sent` row stands (Y:5338; lane 3's ruling): a `seam.out` that says
 # `tail`, anything else, or none to read, being absent, unreadable, a link or
 # not a regular file. A takeover cannot see that child, as T415's parent sees
 # its own after `committed`, and reads such a file as `none` (tasks:1176). So
 # do a record of another host or container; an answer with no `file=` rows;
 # no `call=` line with the entry's `<files>`, or more than one, since Y:5317
-# takes one line and which of their children took `committed` is not known;
-# and a record that cannot be rewritten, which keeps its `sent`.
+# takes one line and which of their children took `committed` is not known
+# (lane openRepoTools-3, #165 6841366245, T418 (1)). Where the child said
+# `none` and the record cannot be rewritten without `tail`, it returns 2 with
+# WR_TOOK_TAIL and WR_TAIL as they were: no replay, and `pw_tail_found` names
+# the tail as owed (T418 (2)).
 pw_took_sent_none() {
   local sn_k="" sn_l="" sn_d="" sn_n=0 sn_was="$WR_TOOK_TAIL"
   case "$sn_was" in 'sent '*) : ;; *) return 1 ;; esac
@@ -8127,7 +8148,7 @@ pw_took_sent_none() {
   WR_TOOK_TAIL=""; WR_TAIL=""
   wr_record_write && return 0
   WR_TOOK_TAIL="$sn_was"; WR_TAIL="$sn_was"
-  return 1
+  return 2
 }
 
 # A TAKEOVER WHOSE RECORD HOLDS `tail` AND WHOSE FIRST SNAPSHOT DOES NOT FIND
@@ -8340,8 +8361,8 @@ pw_tail() {   # <seq> <how it was learned> <the answer, in a file>
 # THE REPLAY (Y:5316–5326), where no waiting child matches, once per run:
 #   1. it takes the `call` line of the pending record whose `<files>` is the
 #      entry's change set; where none is, there is no replay (Y:5317), and so
-#      where the answer carried no rows; and it removes that line's
-#      directory's `seam.out`, which a later takeover would read (below);
+#      where the answer carried no rows; and it makes that line's directory's
+#      `seam.out` read `replayed`, so a later takeover reads no `none` (below);
 #   2. it makes a FRESH run segment, `<d>/<nonce>/1/`, never the committing
 #      run's (Y:5156, Y:5326; lane openRepoTools-3, #165 6755005268, T413's
 #      question 4), with `parent.pid`, `seam.fifo` and `lock` as any attempt's;
@@ -8372,7 +8393,7 @@ pw_tail() {   # <seq> <how it was learned> <the answer, in a file>
 PW_REPLAYED=0; PW_RP_RUN_DIR=""
 pw_replay_tail() {   # <seq> <how it was learned>
   local rp_k="" rp_l="" rp_c="" rp_f="" rp_d="" rp_clock="" rp_cdir="" rp_run="" rp_dir="" \
-        rp_bin="" rp_rc=0 rp_at="" rp_h="" rp_last="" rp_p="" rp_t=""
+        rp_bin="" rp_rc=0 rp_at="" rp_h="" rp_last="" rp_p="" rp_t="" rp_so=""
   pw_abandon_all
   if [ "$PW_REPLAYED" = 1 ]; then
     pw_tail_owed "$1" "its replay's child, at seq $(( $1 - 1 )), did not take the message at its seam (its seam.out does not read tail)"
@@ -8399,22 +8420,35 @@ pw_replay_tail() {   # <seq> <how it was learned>
     fi
     pw_tail_owed "$1" "no call line of its pending record sent the entry's change set, so it cannot be replayed (Y:5317)"
   fi
-  # THE CALL'S `seam.out` GOES before this replay can write `tail=sent`
-  # (Y:5298). A run that later takes this record over reads that file through
-  # this `call=` line (`pw_took_sent_none`; Y:5342), and the `sent` it would
-  # find is this replay's, whose child runs in a fresh run segment that no
-  # `call` line names (Y:5326), not that call's child's, whose `none` it would
-  # read: it would replay a tail that this replay's child may have run. With
-  # the file gone it finds none to read, and the `sent` row stands (Y:5338).
-  # A call's directory keeps only `snapshot`, `files` and `preimages` while
-  # its line stands (Y:5177), so nothing a reader needs goes. Every child of
-  # this run has had `abandon` and been reaped above. One that cannot be
-  # removed sends no `committed`: the tail is owed.
+  # THE CALL'S `seam.out` BECOMES `replayed` before this replay can write
+  # `tail=sent` (Y:5298; lane openRepoTools-3, #165 6841366245, T418 (3)). A
+  # run that later takes this record over reads that file through this `call=`
+  # line (`pw_took_sent_none`; Y:5342), and the `sent` it would find is this
+  # replay's, whose child runs in a fresh run segment that no `call` line
+  # names (Y:5326), not that call's child's, whose `none` it would read: it
+  # would replay a tail that this replay's child may have run. So the file is
+  # removed, `replayed` and its newline are written under noclobber, as a
+  # child writes its own (Y:5005), and it is read back from a regular file
+  # that is not a link, 16 bytes at most. A child whose parent was killed
+  # alone may still be at its seam, and writes its `none` within about 2 s
+  # (`cp_seam`, `cp_seam_stop`): after the token, that noclobber write fails
+  # and the child exits 75 (`cp_seam_out`), so a takeover reads neither `none`
+  # nor `tail` and the `sent` row stands (Y:5338); before it, the token's own
+  # write fails. Anything but exactly `replayed` sends no `committed`: the tail
+  # is owed. The token is never `replay`, the mark that sets REG_REPLAY in a
+  # replay's own directory (`reg_scratch_take`). A call's directory keeps only
+  # `snapshot`, `files` and `preimages` while its line stands (Y:5177), so
+  # nothing a reader needs goes. Every child of this run has had `abandon` and
+  # been reaped above.
   if pw_wdir_ok "$rp_cdir" attempt; then
     rm -f -- "$rp_cdir/seam.out" 2>/dev/null
-    if [ -e "$rp_cdir/seam.out" ] || [ -L "$rp_cdir/seam.out" ]; then
-      pw_tail_owed "$1" "its call's seam.out, in $rp_cdir, could not be removed before its replay, and a later takeover of this record would read it as this replay's child's, so it was not replayed"
+    ( set -C; printf '%s\n' replayed > "$rp_cdir/seam.out" ) 2>/dev/null || :
+    rp_so=""
+    if [ -f "$rp_cdir/seam.out" ] && [ ! -L "$rp_cdir/seam.out" ]; then
+      rp_so="$(head -c 16 -- "$rp_cdir/seam.out" 2>/dev/null; printf .)"; rp_so="${rp_so%.}"
     fi
+    [ "$rp_so" = "replayed$WR_NL" ] ||
+      pw_tail_owed "$1" "its call's seam.out, in $rp_cdir, could not be written as replayed under noclobber and read back as that before its replay (a late none from that call's child, or a file that cannot be removed or read), and a later takeover of this record could read what is there as this replay's child's, so it was not replayed"
   fi
   rp_run="$(act_mint_id)" || rp_run=""
   [ -z "$rp_run" ] || PW_RP_RUN_DIR="$WR_STATE/register-writes/$WR_D/$rp_run"
