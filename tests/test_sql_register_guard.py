@@ -2142,7 +2142,15 @@ def test_a_bind_killed_mid_commit_waits_for_ended_utc_plus_c_before_its_lookup(
     8 s at `c` = 2, and gets no LR011; `[found]` writes no second
     `RESUMED`, where the shim held the call after the real `psql` had
     returned (`timer`), and `[absent]` binds anew, where it held it before
-    (`hold`)."""
+    (`hold`).
+
+    THE END AND THE WAIT ARE BOTH READ (T254zb; lane 2's review RV20,
+    finding 3): the second bind ends `bound`; `[found]` sends no second
+    `start-record` commit, so no second `RESUMED`, and `[absent]` sends
+    one under a new write id, not the copied one. And the `2` must go out
+    at least 2 s inside `ended_utc` + 8 s, or the lookup's time could not
+    tell a child that waited from a test that was slow: the case then
+    fails as inconclusive."""
     est = _real_estate(estate, mode="primary")
     fifo = tmp_path / f"hold-{held}"
     os.mkfifo(fifo)
@@ -2162,6 +2170,9 @@ def test_a_bind_killed_mid_commit_waits_for_ended_utc_plus_c_before_its_lookup(
     # `2` was that prompt and never reached the bind (lane 5, #165 6841545201).
     est.hook("hello")
     before = len(est.shim_calls())
+    sent_at = time.time()
+    assert sent_at < ended + 6, (f"inconclusive: the 2 went out {sent_at - ended:.1f} s "
+                                 f"after ended_utc, too near C = 8 s to show a wait")
     est.answer_2()
     # THE SHIM LOGS NO TIME, so the lookup's start is read by watching for its
     # entry, at 50 ms: the time seen is at most 50 ms after the start.
@@ -2173,6 +2184,14 @@ def test_a_bind_killed_mid_commit_waits_for_ended_utc_plus_c_before_its_lookup(
     assert seen >= ended + 8, (seen, ended)
     end = est.ended(120)
     assert "LR011" not in end.get("why", ""), end
+    assert end["mode"] == "bound", end
+    starts = [c for c in est.shim_calls()[before:]
+              if "commit_write" in c.get("sent", "") and "start-record" in c.get("sent", "")]
+    if held == "found":
+        assert not starts, [c.get("call") for c in starts]
+    else:
+        assert starts and all(record["write_id"] not in c["sent"] for c in starts), \
+            (record["write_id"], [c.get("call") for c in starts])
 
 
 @pytest.mark.parametrize("case", ["found", "another-write", "generation"])
