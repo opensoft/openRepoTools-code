@@ -281,7 +281,7 @@
 #   from the log, so it is right whatever W14 did. Under a seq base no hand
 #   command is printed for a W14 that did not end 0: a 3 keeps the writer's
 #   rerun, and any other code keeps the writer's stderr and this command says
-#   to run it again from its start (Y:5587, Y:5601); under `@files` or after
+#   to run it again from its start (Y:5601); under `@files` or after
 #   `act-begin`'s 2, the hand command stands (Y:5596) (lane 3's REV-ACT Q4,
 #   #165 6774499606, and Q11, #165 6779688808).
 #
