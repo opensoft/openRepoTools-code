@@ -2077,6 +2077,10 @@ def test_a_bind_killed_mid_commit_waits_for_ended_utc_plus_c_before_its_lookup(
     assert all(k in record for k in COPIES), record
     ended = _epoch(record["ended_utc"])
     est.shim()
+    # THE FIRST PROMPT AFTER A FAILURE IS SPENT ON THE BIND-FAILED REPLY
+    # (T254v), so `hello` goes first, as case 10's does; without it the next
+    # `2` was that prompt and never reached the bind (lane 5, #165 6841545201).
+    est.hook("hello")
     before = len(est.shim_calls())
     est.answer_2()
     # THE SHIM LOGS NO TIME, so the lookup's start is read by watching for its
