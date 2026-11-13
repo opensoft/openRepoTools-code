@@ -20852,8 +20852,11 @@ EOF
   # T505 gives a read site, `[ "${REG_STORE:-}" = sql ]`: the door sets `sql`
   # only where it opened on primary, and `files` in files and `index` mode and
   # under T413's flag, so neither of those reaches it and their bytes are the
-  # ones above (FR-034). It comes after the usage and set checks, 2 in every
-  # mode, and after the workspace check, 69 in every mode (lane 3's item 10).
+  # ones above (FR-034). It comes after the usage and set checks, 2, and after
+  # the workspace check, 69 (lane 3's item 10). ON PRIMARY ALL OF THEM COME
+  # AFTER THE DOOR'S PREFETCH, which runs in the main shell before the arm, so
+  # a failed prefetch is 69 before any of those 2s (Y:4890; lane 5's answer 12
+  # (a), #165 6746507353; tasks:856 at 94fab177; lane 3's N1, #165 6851977580).
   # The image is held whole before a byte is printed. An absent alias table or
   # log is `reg_image`'s 0 with nothing on stdout; anything else it cannot give
   # (a missing `lanes/LANES.md`, two logs that differ only by case, C11, or a
@@ -20924,9 +20927,13 @@ EOF
   # ON PRIMARY IT GREPS LANE 5'S `reg_image` OF EACH PATH (T505; Q-L5-3), under
   # the read door's `decide` class (T504's table; Q-L5-5), never git. THE
   # BRANCH IS TAKEN at T505's one test at a read site, `[ "${REG_STORE:-}" =
-  # sql ]`, after every check above it, which answer alike in every mode: the
-  # usage and the set (2), the ERE (2), the workspace root (69). Files and
-  # `index` mode, where the door set `REG_STORE` to `files`, never reach it.
+  # sql ]`, after every check above it: the usage and the set (2), the ERE
+  # (2), the workspace root (69). ON PRIMARY EACH OF THOSE COMES ONLY WHERE THE
+  # DOOR'S PREFETCH HAS READ THE STORE: the door runs in the main shell before
+  # the arm, so a failed prefetch is 69 before any of those 2s (Y:4890; lane
+  # 5's answer 12 (a), #165 6746507353; tasks:856 at 94fab177; lane 3's N1,
+  # #165 6851977580). Files and `index` mode, where the door set `REG_STORE`
+  # to `files`, never reach the branch.
   #   - THE PATHS: `lanes/log` is each path lane 5's `reg_paths` lists (`.paths`,
   #     the render set at the door's snapshot; C10) that `reg_reader_kind` reads
   #     as a `log`, so never `lanes/log/README.md` (tasks:851; T505's
