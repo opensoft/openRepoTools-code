@@ -4028,6 +4028,11 @@ def test_the_guards_request_carries_only_file_names(estate):
     assert "postgresql://" not in text and "password" not in text.lower(), text
 
 
+#: SVC-10'S 50 ms (TP:7976-7979 at a6497d00), recorded beside the served median,
+#: and past which the case prints a warning and fails nothing (T237zo).
+SVC10_BOUND_MS = 50
+
+
 def test_the_guard_answer_time_is_recorded_beside_todays_direct_guard(estate):
     """SVC-10: the guard's answer time through the service is recorded beside
     today's direct guard (M5b), with a warning past 50 ms and no failure.
@@ -4073,8 +4078,15 @@ def test_the_guard_answer_time_is_recorded_beside_todays_direct_guard(estate):
     _record_figure("SVC-10, the guard through the service (median ms)",
                    {"served answer (whole hook)":
                         f"{_median(served) * 1000:.1f}" if served else "none served",
-                    "bound": "50"}
+                    "bound": f"{SVC10_BOUND_MS}"}
                    | {f"{name} samples": len(times) for name, times in paths.items()})
+    # THE WARNING PAST 50 ms (T237zo; RV20, NIT 11): "the test prints a
+    # warning when the median exceeds it, without failing" (TP:7976-7979 at
+    # a6497d00). The median here is a whole-hook figure, so the warning says
+    # so; it fails nothing.
+    if served and _median(served) * 1000 > SVC10_BOUND_MS:
+        print(f"WARNING: SVC-10's served median, {_median(served) * 1000:.1f} ms for the whole "
+              f"hook, is over its {SVC10_BOUND_MS} ms (recorded, not failed)")
     # SERVED, AND NOTHING ELSE UNKNOWN (T237zn; lane 2's review RV20, finding
     # 10): every sample lands in one path, so `any(paths.values())` held
     # whatever the paths were, ten refusals or ten fallbacks among them. The
