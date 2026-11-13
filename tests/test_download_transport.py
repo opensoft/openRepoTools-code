@@ -130,3 +130,63 @@ curl() { printf '%s\0' "$@" >"$CAPTURE"; return 22; }
     initial = request(f"http://localhost:{plain_port}/unsafe")
     assert initial.returncode != 0, "download accepted an initial HTTP URL"
     assert len(plain_requests) == before, "initial HTTP reached the server"
+
+
+def test_standalone_assembly_launcher_refuses_failed_payload_fetch(tmp_path):
+    """Run the complete, byte-identical launcher through all curl fallbacks.
+
+    The transport tests above enforce protocol behavior. This public CLI case
+    also gives the collector real canonical-source execution, and proves that
+    a failed implementation fetch cannot run a partial payload.
+    """
+    assembly = ROOTS.root_of("assembly")
+    if assembly is None:
+        ROOTS.need("assembly", "openRepoTools canonical download fallbacks")
+    source = assembly / "openRepoTools"
+    standalone = tmp_path / "standalone"
+    standalone.mkdir()
+    launcher = standalone / "openRepoTools"
+    launcher.write_bytes(source.read_bytes())
+    launcher.chmod(0o755)
+    pin = assembly / "contracts" / "code-pin.yaml"
+    commit = re.search(r"^commit: *['\"]?([0-9a-f]{40})", pin.read_text(),
+                       re.MULTILINE).group(1)
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (fake / "gh").write_text("#!/bin/sh\nexit 1\n")
+    (fake / "gh").chmod(0o755)
+    (fake / "curl").write_text("""#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+url = next(arg for arg in sys.argv[1:] if arg.startswith("https://"))
+with open(os.environ["DOWNLOAD_REQUESTS"], "a") as out:
+    out.write(url + "\\n")
+if "/commits/" in url:
+    print("a" * 40)
+elif url.endswith("/contracts/code-pin.yaml"):
+    sys.stdout.buffer.write(Path(os.environ["DOWNLOAD_PIN"]).read_bytes())
+elif "/git/trees/" in url:
+    print(json.dumps({"tree": [{"type": "commit", "path": "code",
+                               "sha": os.environ["DOWNLOAD_COMMIT"]}]}))
+else:
+    print("fixture refuses implementation download", file=sys.stderr)
+    sys.exit(22)
+""")
+    (fake / "curl").chmod(0o755)
+    requests = tmp_path / "requests"
+    env = {**os.environ, "PATH": f"{fake}:{os.environ['PATH']}",
+           "TMPDIR": str(tmp_path), "OPENREPOTOOLS_REPO": "example/assembly",
+           "OPENREPOTOOLS_REF": "main", "DOWNLOAD_REQUESTS": str(requests),
+           "DOWNLOAD_PIN": str(pin), "DOWNLOAD_COMMIT": commit}
+    result = subprocess.run(["bash", str(launcher), "--install"], env=env,
+                            cwd=standalone, capture_output=True, text=True, timeout=20)
+    assert result.returncode == 2, result.stderr
+    assert "could not fetch openRepoTools" in result.stderr, result.stderr
+    assert "fixture refuses implementation download" in result.stderr
+    urls = requests.read_text().splitlines()
+    assert len(urls) == 4, urls
+    assert urls[0].endswith("/commits/main")
+    assert urls[1].endswith("/contracts/code-pin.yaml")
+    assert "/git/trees/" in urls[2]
+    assert urls[3].endswith("/openRepoTools")
+    assert launcher.read_bytes() == source.read_bytes()
