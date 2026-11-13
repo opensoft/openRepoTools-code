@@ -2627,11 +2627,22 @@ _HANDOFF = ("--lane", R_HERE, "T252b's race")
 #: one `start-record --add-row` call, and no commit call is `add-row`'s; with
 #: none, W1 stays the separate `add-row` that TP:5848 names
 #: (`f9e1449c:lane-start:4315-4320`, `:4363-4364`, `:4562-4563`, `:4640-4644`;
-#: lane 2's TR21, section 2a, option 1; T252t).
+#: lane 2's TR21, section 2a, option 1; T252t). `[lane-start-w1-start-record]`
+#: is W1's twin with minting on, the form every new lane takes where a uuid is
+#: knowable: the act mints one (`:4315-4320`), and W1's row rides in the one
+#: `start-record --add-row` call, with the union of the expectations
+#: (`7893339:lane-start:4589-4612`, `:4626-4630`, `:5094-5097`); its 2 dies 2
+#: (`:5129-5130`; T428; lane 2's RV23, SHOULD 2). Its rival is the lane's
+#: `PAUSED` (`bind:<L>`), not a row: the retried attempt runs the verb again,
+#: and a row for the lane makes `add_row_checks` refuse it 2, "already has a
+#: row", before LR009 (`7893339:lanes-edit.sh:15352-15354`, `:29789`; lane 3's
+#: option (b), #165 6860075071).
 ACT_WRITES = {
     "lane-start-w1-add-row": ActWrite("lane-start", ("repoZ", "1", "--no-launch"), R_NEW,
                                       verb_is("add-row"), rival="row", code=2,
                                       env={"LANE_START_SESSION_ID": "0"}),
+    "lane-start-w1-start-record": ActWrite("lane-start", ("repoZ", "1", "--no-launch"), R_NEW,
+                                           verb_is("start-record"), code=2),
     "lane-start-w8-request-handoff": ActWrite("lane-start", ("repoA", "3", "--request-handoff", "--dir",
                                                              "{lane_dir}"), R_FAR,
                                               verb_is("request-handoff"), rival="resumed", code=2),
