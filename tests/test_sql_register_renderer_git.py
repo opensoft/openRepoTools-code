@@ -1718,12 +1718,19 @@ def test_a_renderer_killed_between_commit_and_push_blocks_nothing(request, tmp_p
         est.git(one.own.clone, *argv, env=env)
     assert handoff in est.origin_git("ls-tree", "-r", "--name-only", "refs/heads/main",
                                      "handoffs/").split(), "the handoff commit was not pushed"
-    # The second case: a kill, a write, then lane-start's stamp.
-    est.rearm([{"sub": "push", "do": "kill", "render_only": True, "where": str(one.own.clone),
-                "times": 1}])
+    # The second case: a kill, a write, then lane-start's stamp. It arms the
+    # kill afresh with `est.arm()`, which starts the wrapper's log and its
+    # counts again: `rearm()` keeps each arm's count of uses, and the first
+    # case's kill used arm 0's one (`times: 1`), so a re-armed kill never
+    # fired and the second case passed with no kill (RV20, finding 2).
+    est.arm([{"sub": "push", "do": "kill", "render_only": True, "where": str(one.own.clone),
+              "times": 1}])
     mark = est.entries()
     _wrote(est.write(one, "a second write whose render is killed"), "log NOTED")
     est.wait_renders_exit(mark, "the second killed render")
+    assert [c for c in est.render_calls(mark) if c["outcome"] == "killed"], (
+        f"the wrapper killed no render at the second case's push: "
+        f"{[(c['sub'], c['outcome']) for c in est.render_calls(mark)]}")
     est.rearm()
     _wrote(est.write(one, "the write after the second kill"), "log NOTED")
     stamp = est.edit(one, "append-session-id", L1, f"harness `{UUID_L1}`", " (t270)")
