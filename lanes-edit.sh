@@ -714,7 +714,8 @@
 #      the write's rerun: by its id and generation where it has one, or the
 #      command as given, saying that nothing was sent, where its first
 #      snapshot minted none (open point 38).
-#   3  PUSHED, NOT CONFIRMED: <sha> (Amendment 23 S4, its one cause). The write
+#   3  PUSHED, NOT CONFIRMED: <sha> (Amendment 23 S4, its one cause in files
+#      mode). The write
 #      committed and pushed — or its push timed out, and a hung push often
 #      lands — and the read-back could not confirm the commit on origin: the
 #      fetch failed or timed out, or origin does not hold it. Never reported
@@ -725,6 +726,34 @@
 #      by content either way: published, there is nothing to do; not, every
 #      write refuses until the publish act sends it or an archive (S6.3)
 #      takes it.
+#      ON PRIMARY (FEATURE 007; D8; FR-028; T417), A REGISTER WRITE IN DOUBT:
+#      may not be written; run the printed `LANES_WRITE_ID` rerun, which writes it once or finds it.
+#      "cannot confirm whether register write <id> committed; nothing else was
+#      written": a commit call of the write may have committed (its pending
+#      record holds a `call` line, this run's or one a record taken over
+#      carried in), and F3's lookup, `lanes-index journal --write-id <id> …`,
+#      could not settle it: no try within its window took the head row's lock,
+#      the lookup was refused as too early (LR011), or its answer settles
+#      nothing (any other code, a crash). The message gives the lookup and the
+#      rerun, `LANES_WRITE_ID=<id> LANES_WRITE_GENERATION=<generation>
+#      LANES_LANE=<lane> LANES_SESSION=<the value the digest took>
+#      lanes-edit.sh <the same arguments>` (ERR-38), and the pending record is
+#      kept, so the rerun settles the write and never writes it twice.
+#      ON PRIMARY, AN IDENTICAL WRITE'S OWNER STILL LIVE AT D7's DEADLINE
+#      (Y:5216–5218; T417): this run sent nothing, that write's outcome is
+#      not known, and its record and claims are left as they are. With a
+#      pending record: "an identical write is still running in pid <p>
+#      (write <id>, started <utc>)", with its lookup where the record holds a
+#      `call` line, and its printed rerun (ERR-38). With none yet (open point
+#      42): "an identical write is being started in pid <p> on
+#      <host>/<container> (claimed <utc>)", with the effect check,
+#      `history <lane> --since <utc>` or `register-row <lane>`.
+#      And where that owner cannot be tested here (DEC-25: the claim names no
+#      pid or cannot be read, its pid lives with no start time, or it is from
+#      another host or container, Y:5220), "an identical write holds the claim
+#      <state>/register-pending/<d>.take.<k>, whose owner cannot be tested
+#      here", with the pid, host and container a claim from another host or
+#      container names, and the UTC after which a run may take it.
 #   4  the mutex could not be taken within 60s — or, Amendment 23 S1, a lane
 #      checkout's creation lock within the clone's budget and a minute
 #   5  an edit moved more than one line and was refused — or, Amendment 15, a
@@ -847,11 +876,8 @@
 #      kept child gets `abandon`, the child and every process under it get
 #      TERM, then KILL 1 s later where TERM did not end them, its output is
 #      not shown, and nothing was sent by that attempt.
-#      And, until T417's lookup and its exit 3, two ends that send nothing
-#      more and keep the pending record, so a rerun settles the write by its
-#      id: an end while the record holds a commit call that may have
-#      committed (in doubt), which prints the lookup and the rerun; and an
-#      identical write's owner still live at the deadline (Y:5218).
+#      Where a commit call of the write may have committed, that 75 comes
+#      only after F3's lookup answered "absent" with the lock held (T417).
 #
 # --no-sweep is accepted and changes nothing. It named the default of the
 #   capture that came in on 2026-09-09 after 0d84d34/a1f2438 swept another
@@ -7264,16 +7290,24 @@ wr_id_settle() {   # <the first snapshot's stdout, in a file>
 #   (d) a 69 at the first snapshot (`pw_first_69`);
 #   (e) D7's deadline and the run's end (`pw_run`, `pw_end`).
 #
+# HERE TOO (T417): F3's lookup, which every end but 0 waits for while the
+# pending record holds a `call` line, its outcomes and its exit 3
+# (`pw_lookup_clock`, `pw_lookup`, `pw_doubt_end` and `pw_lookup_3`, under
+# "THE IN-DOUBT RULE" below); and the exit 3 for an identical write's owner
+# still live at D7's deadline (`pw_owner_live_end`), or for a claim that
+# cannot be tested here (`pw_owner_untested_end`).
+#
 # NOT HERE: the renderer's fork after `committed` (T416); `commit` on primary,
-# which keeps T409's 69 until T420; F3's lookup, which every end but 0 waits for
-# while the pending record holds a `call` line, and its exit 3 (T417); and the
-# tail by match or replay for a write already in the register, the record's
-# `tail` key and the done mark (T418).
+# which keeps T409's 69 until T420; and the tail by match or replay for a
+# write already in the register, the record's `tail` key and the done mark
+# (T418), which replaces `pw_found_end` for the lookup's `found` too.
 PW_LANE=""; PW_C=""; PW_AUTHOR=""; PW_D_S=30; PW_T0=0; PW_RUN=""; PW_RUN_DIR=""
 PW_LOCK=""; PW_REC_OURS=0
 PW_K=0; PW_DIR=""; PW_CHILD=""; PW_KEPT=""; PW_FIRST_DONE=0; PW_RELAY=""; PW_RC=0
 PW_CAP_S=120; PW_CHILD_T0=0; PW_READY_T=0; PW_SEAM_CAP_S=120; PW_KEPT_END=""; PW_KEPT_K=""
 PW_S_GEN=""; PW_S_WID=""; PW_S_FOUND=""; PW_S_N=""; PW_S_CLOCK=""; PW_S_NOT_AFTER=""
+PW_L_CLOCK=""; PW_L_END=""; PW_LK_CLK=(); PW_LK=""; PW_LK_SEQ=""; PW_LK_TOKEN=""; PW_LK_N=""
+PW_LK_WHY=""; PW_LK_OUT=""; PW_LK_ERR=""
 PW_START="-"; PW_KILLED=0; PW_CHILD_START="-"
 
 # D7's deadline in whole seconds: 30, or `LANES_REGISTER_DEADLINE_S` for tests
@@ -7514,6 +7548,12 @@ pw_run_dir() {
   PW_RUN="$(act_mint_id)" || PW_RUN=""
   if [ -z "$PW_RUN" ] || ! wr_dir_0700 "$WR_STATE" || ! wr_dir_0700 "$pr_w" ||
      ! wr_dir_0700 "$pr_w/$WR_D" || ! wr_dir_0700 "$pr_w/$WR_D/$PW_RUN"; then
+    # A RECORD TAKEN OVER WITH `call` LINES is in doubt from this run's start
+    # (Y:5199; T417), so even this end waits for F3's lookup (`pw_end`).
+    if [ -n "$WR_CALLS" ]; then
+      PW_RUN_DIR=""
+      pw_end 1 "this write's attempt directories cannot be kept: $pr_w/$WR_D/${PW_RUN:-<run>} is not a 0700 directory of this user's and cannot be made one, or no run nonce could be read from /dev/urandom. Nothing was sent by this run"
+    fi
     wr_claim_release
     die "this write's attempt directories cannot be kept: $pr_w/$WR_D/${PW_RUN:-<run>} is not a 0700 directory of this user's and cannot be made one, or no run nonce could be read from /dev/urandom. Nothing was sent" 1
   fi
@@ -7523,19 +7563,119 @@ pw_run_dir() {
   return 0
 }
 
-# AN IDENTICAL WRITE'S OWNER STILL LIVE AT D7's DEADLINE (Y:5218; T412's
-# `wr_claim_take` returned 2). Its exit 3 and the texts are T417's, which maps
-# them in `_EXIT_3_CAUSES`. Until then this run ends with 75, the busy code: it
-# sent nothing, and a rerun once that pid has ended takes the record over and
-# settles the write by its id.
+# A `call` LINE'S FIELDS (Y:5172; the record's `<base> <clock> <not_after>
+# <files> <dir>`), into PW_CF_B, PW_CF_C, PW_CF_N, PW_CF_F and PW_CF_D, split
+# as `IFS=' ' read -r` splits them: a run of spaces between two fields, none
+# kept at either end, and the rest of the line in the last. It splits by
+# parameter expansion, never through a here-string: bash 3.2 writes one to a
+# temp file in /tmp, whatever TMPDIR names (bash 5.1 and later still do, past
+# a pipe's size), and where none can be made, as in a full /tmp, the read never
+# ran, every field was empty, and nothing checked it (review REV-W10a, M1).
+# T417's and T418's loops over `call` lines split them at each newline the
+# same way, as T414's seam and T415's `pw_abandon_kept` split theirs.
+PW_CF_B=""; PW_CF_C=""; PW_CF_N=""; PW_CF_F=""; PW_CF_D=""
+pw_call_fields() {   # <one call line, without `call=`>
+  local cf_x="${1-}"
+  cf_x="${cf_x#"${cf_x%%[! ]*}"}"; PW_CF_B="${cf_x%% *}"; cf_x="${cf_x#"$PW_CF_B"}"
+  cf_x="${cf_x#"${cf_x%%[! ]*}"}"; PW_CF_C="${cf_x%% *}"; cf_x="${cf_x#"$PW_CF_C"}"
+  cf_x="${cf_x#"${cf_x%%[! ]*}"}"; PW_CF_N="${cf_x%% *}"; cf_x="${cf_x#"$PW_CF_N"}"
+  cf_x="${cf_x#"${cf_x%%[! ]*}"}"; PW_CF_F="${cf_x%% *}"; cf_x="${cf_x#"$PW_CF_F"}"
+  cf_x="${cf_x#"${cf_x%%[! ]*}"}"; PW_CF_D="${cf_x%"${cf_x##*[! ]}"}"
+}
+
+# AN IDENTICAL WRITE'S OWNER STILL LIVE AT D7's DEADLINE (T417; Y:5216–5218;
+# T412's `wr_claim_take` returned 2, with WR_OWNER_* naming the highest claim).
+# This run sent nothing, and that write's outcome is not known, so it exits 3
+# and leaves the record and the claims as they are. Three forms:
+#   - a claim whose owner cannot be tested here (DEC-25): `no-pid`,
+#     `no-start` or `other-host`, live only for the seam's cap, which D7's
+#     deadline beat: `pw_owner_untested_end`;
+#   - a pending record beside the claim: Y:5218's text, with its write id and
+#     its printed rerun, whose `LANES_SESSION` is the value the digest took
+#     (ERR-38), and its lookup only where the record holds a `call` line
+#     (batch e Q107). A record there that cannot be read names no id,
+#     and the text says so;
+#   - no record beside it (open point 42, taken under R26; the plan's §11.4):
+#     a record being made, so no write id is known. The text names the claim
+#     and gives Y's own effect check (Y:5211–5213): a plain rerun could write
+#     anew where the other run ended 0 (Y:5182), and its done mark rests on a
+#     pid with no start time (Y:5181). A run that was itself under
+#     `LANES_WRITE_ID` prints its own id again with its generation instead of
+#     the plain command.
+# A claim from another host or container (`other-host`, Y:5220) takes the
+# first form, with its pid, host and container, whatever lies beside it: its
+# pid cannot be tested here (lane 3, #165 6769061039, T417 item 2). So every
+# pid the second and third forms print is this host's.
 pw_owner_live_end() {
-  local po_re=""
-  if wr_is_uuid "${LANES_WRITE_ID:-}"; then
-    po_re="$(wr_rerun_text "$LANES_WRITE_ID" "${LANES_WRITE_GENERATION:-<generation>}")"
-  else
-    po_re="$(pw_given_text)"
+  local po_rec="" po_rc=0 po_p="" po_utc="" po_look="" po_re="" po_then="" po_k="" po_l="" po_n="" po_max="" po_last=""
+  case "$WR_OWNER_WHY" in no-pid|no-start|other-host) pw_owner_untested_end ;; esac
+  po_p="${WR_OWNER_PID:-<unknown>}"; po_utc="${WR_OWNER_UTC:-<unknown>}"
+  po_rec="$WR_STATE/register-pending/$WR_D"
+  wr_record_read "$po_rec"; po_rc=$?
+  if [ "$po_rc" = 0 ]; then
+    # By parameter expansion, never a here-string (`pw_call_fields`), so a
+    # full /tmp cannot drop the lookup a `call` line asks for.
+    po_k="$WR_REC_CALLS"
+    while [ -n "$po_k" ]; do
+      po_l="${po_k%%"$WR_NL"*}"
+      case "$po_k" in
+        *"$WR_NL"*) po_k="${po_k#*"$WR_NL"}" ;;
+        *) po_k="" ;;
+      esac
+      [ -n "$po_l" ] || continue
+      pw_call_fields "$po_l"; po_n="$PW_CF_N"
+      if [ -z "$po_max" ] || [ "$po_n" -gt "$po_max" ]; then po_max="$po_n"; fi
+    done
+    po_re="$(wr_rerun_text "$WR_REC_WRITE_ID" "$WR_REC_GENERATION")"
+    # With no `call` line the lookup has no `<n>` for its `--not-after` (§3.4;
+    # LR011), and the live owner may yet write one, so the text names the
+    # rerun alone (lane openRepoTools-3, #165 6808937880, batch e Q107; B15
+    # Y:5264).
+    po_then="run ${po_re}"
+    if [ -n "$po_max" ]; then
+      po_look="lanes-index journal --write-id $WR_REC_WRITE_ID --not-after $po_max --generation $WR_REC_GENERATION --lane $(printf '%q' "$WR_REC_LANE") --verb $(printf '%q' "$WR_REC_VERB") --args-sha256 $WR_REC_ARGS_SHA256"
+      po_then="look it up (${po_look}), or ${po_then}"
+    fi
+    die "an identical write is still running in pid ${po_p} (write ${WR_REC_WRITE_ID}, started ${po_utc}); this run sent nothing, and that write's outcome is not known. Once pid ${po_p} has ended, ${po_then}, which finds it or writes it once." 3
   fi
-  die "an identical write is still running in pid ${WR_OWNER_PID:-<unknown>} (its claim ${WR_OWNER_FILE}, made ${WR_OWNER_UTC:-<unknown>} on ${WR_OWNER_HOST:-<unknown>}/${WR_OWNER_CONTAINER:-<unknown>}), and this run's deadline of ${PW_D_S} s has passed; this run sent nothing, and that write's outcome is not known. Once pid ${WR_OWNER_PID:-<unknown>} has ended, run the same command again: it takes that write's pending record over, if one was left, and settles it by its id. ${po_re}" 75
+  if [ "$po_rc" = 2 ]; then
+    die "an identical write is still running in pid ${po_p} (started ${po_utc}), and its pending record, ${po_rec}, cannot be read as one, so its write id is not known here; this run sent nothing, and that write's outcome is not known. Once pid ${po_p} has ended, lanes-index status lists the pending records." 3
+  fi
+  if wr_is_uuid "${LANES_WRITE_ID:-}"; then
+    po_last="If it is not, run it again by its own write id: $(wr_rerun_text "$LANES_WRITE_ID" "${LANES_WRITE_GENERATION:-<generation>}")"
+  else
+    po_last="If it is not, run the same command again; it takes over that write's record if one was left, or writes anew."
+  fi
+  die "an identical write is being started in pid ${po_p} on ${WR_OWNER_HOST:-<unknown>}/${WR_OWNER_CONTAINER:-<unknown>} (claimed ${po_utc}); its record is not yet written, so its write id is not yet known; this run sent nothing. Once pid ${po_p} has ended, look for its effect in the register: lanes-edit.sh history ${PW_LANE} --since ${po_utc} for a log line, or lanes-edit.sh register-row ${PW_LANE} for a row. If it is there, that write was made: do not run this command again. ${po_last}" 3
+}
+
+# AN UNTESTED CLAIM AT D7's DEADLINE (T417; DEC-25, #165 6750702819): the
+# highest claim names no pid or cannot be read (`no-pid`); its pid lives and
+# it recorded no start time, so a reused pid cannot be told (`no-start`); or
+# it is from another host or container, or from one either side cannot name,
+# so its pid cannot be tested here at all (`other-host`, Y:5220; lane 3, #165
+# 6769061039, T417 item 2), and the text names its pid, host and container.
+# It counts as live for the seam's cap from DEC-25's anchor, and D7's deadline
+# came first. The run exits 3 in a form of its own, naming the claim file and
+# the UTC after which a run may take it (WR_OWNER_TAKE_AFTER, the cap's end),
+# and saying that it sent nothing; the rerun is the one it would print at any
+# other end before its first snapshot.
+pw_owner_untested_end() {
+  local pu_why="" pu_re="" pu_f="$WR_OWNER_FILE"
+  case "$WR_OWNER_WHY" in
+    no-start)
+      pu_why="its pid, ${WR_OWNER_PID:-<unknown>}, lives, and the claim recorded no start time, so a reused pid cannot be told" ;;
+    other-host)
+      pu_why="it was made by pid ${WR_OWNER_PID:-<unknown>} on ${WR_OWNER_HOST:-<unknown>}/${WR_OWNER_CONTAINER:-<unknown>}, and this run is on ${WR_HERE_HOST:-<unknown>}/${WR_HERE_CONTAINER:-<unknown>}: a pid of another host or container, or of one not named, cannot be tested here (Y:5220)" ;;
+    *)
+      pu_why="it names no pid, or cannot be read" ;;
+  esac
+  if wr_is_uuid "${LANES_WRITE_ID:-}"; then
+    pu_re="$(wr_rerun_text "$LANES_WRITE_ID" "${LANES_WRITE_GENERATION:-<generation>}")"
+  else
+    pu_re="$(pw_given_text)"
+  fi
+  die "an identical write holds the claim ${pu_f}, whose owner cannot be tested here: ${pu_why}. It counts as live for the seam's cap (DEC-25), and this run's deadline of ${PW_D_S} s passed first; this run sent nothing. A run may take that claim after ${WR_OWNER_TAKE_AFTER:-<unknown>}: run it again then. ${pu_re}" 3
 }
 
 # THE COMMAND AS IT WAS GIVEN, for a rerun where the run had no write id (open
@@ -7656,7 +7796,7 @@ pw_snap_read() {   # <the snapshot's stdout, in a file>
 # its record (T412's `wr_id_settle`; Y:5192), and a later one must echo this
 # write's id and generation.
 pw_snapshot() {
-  local ps_bin="" ps_rc=0 ps_l="" ps_det="" ps_p=""
+  local ps_bin="" ps_rc=0 ps_l="" ps_det="" ps_end="" ps_p=""
   local -a ps_a
   if [ "$PW_FIRST_DONE" = 0 ]; then
     ps_a=(${WR_SNAP_ARGS[@]+"${WR_SNAP_ARGS[@]}"})
@@ -7668,6 +7808,7 @@ pw_snapshot() {
     pw_snap_end 69 "there is no lanes-index beside $SCRIPT_DIR/lanes-edit.sh or on PATH to read the register with"
   ( "$ps_bin" register snapshot "${ps_a[@]}" --tree "$PW_DIR/tree" --checkout "$PW_C" \
       </dev/null >"$PW_DIR/snapshot" 2>"$PW_DIR/snapshot.err"; exit "$?" ) 2>/dev/null || ps_rc=$?
+  ps_end="$SECONDS"
   if [ "$ps_rc" != 0 ]; then
     [ ! -s "$PW_DIR/snapshot.err" ] || cat -- "$PW_DIR/snapshot.err" >&2
     # The token is LR007's own: the `DETAIL:` line right after the
@@ -7703,6 +7844,11 @@ pw_snapshot() {
     *)
       pw_snap_end 69 "\`lanes-index register snapshot\` exited ${ps_rc} (its own words, where it gave any, are above)" ;;
   esac
+  # THE LAST SNAPSHOT'S CLOCK, for F3's lookup (T417; Y:5236; contract §3.4):
+  # the database clock of the last snapshot whose answer was read, and the
+  # `SECONDS` its call ended at, so that `--clock-age` counts from the call's
+  # end, not its start.
+  PW_L_CLOCK="$PW_S_CLOCK"; PW_L_END="$ps_end"
   if [ "$PW_FIRST_DONE" = 0 ]; then
     [ -n "$PW_S_FOUND" ] || pw_runs_purge
     if ! wr_id_settle "$PW_DIR/snapshot"; then
@@ -8340,7 +8486,9 @@ pw_replay() {   # <attempt dir>
 
 # ---- THE RUN'S END, BUT FOR 0 (Y:5016–5026). Every kept child gets `abandon`
 # first. Where the pending record holds a `call` line, no end but 0 comes
-# before F3's lookup (`pw_doubt_end`). Otherwise the record goes, with this
+# before F3's lookup (`pw_doubt_end`, T417), which returns here only where the
+# lookup answered "absent" with the lock held. Then, or where no `call` line is
+# held, the record goes, with this
 # run's claims (Y:5196), or only this run's claim where the record is not this
 # write's own (a new write before its first snapshot answered, or a record of
 # another write this run did not replace); then the deciding attempt's output
@@ -8357,34 +8505,216 @@ pw_end() {   # <code> <message, or empty> [<attempt dir whose output is replayed
   die "$2" "$1"
 }
 
-# AN END WITH A `call` LINE HELD (Y:5017–5023): F3's lookup decides it, and its
-# exit 3 and texts are T417's, which maps them in `_EXIT_3_CAUSES`. Where the
-# lookup answers "absent", that end, its message and the output of the attempt
-# that decided it, is replayed then, with its code (Y:5024), so none of it is
-# shown before the lookup. Until T417 this run names the end's code, says what
-# it could not settle, and ends with 75, the busy code, with the record KEPT: a
-# rerun within its age takes the record over and settles the write by its id,
-# and never writes it twice (Y:5206).
-#
-# The lookup's `--not-after` is the highest of the `call` lines', split from
-# WR_CALLS by parameter expansion and `wr_call_fields`, as `wr_lookup_text`
-# takes it, never `read` from a here-string: bash 3.2 writes one to a temp
-# file, and where none can be made, as in a full TMPDIR, the loop never ran,
-# and the lookup was printed with an empty `--not-after` (review REV-W10a M1).
-pw_doubt_end() {   # <the end's code> <its message, or empty> [<attempt dir>]
-  local dd_l="" dd_r="" dd_max=""
-  dd_r="$WR_CALLS"
-  while [ -n "$dd_r" ]; do
-    dd_l="${dd_r%%"$WR_NL"*}"
-    case "$dd_r" in
-      *"$WR_NL"*) dd_r="${dd_r#*"$WR_NL"}" ;;
-      *) dd_r="" ;;
+# ---- THE IN-DOUBT RULE (T417; F3, D8; FR-022, FR-028; Y:5226–5287,
+# Y:2648–2748; the contract's §3.4). While the pending record holds a `call`
+# line, this run's or one a record taken over carried in (a run that takes
+# such a record is in doubt from its start, Y:5199), the run ends with no code
+# but 0 until F3's lookup has settled the write. Its non-0 ends (a refusal at
+# the commit, the verb's own code before `ready`, a snapshot that fails or
+# refuses, the deadline's 75, and any other) all reach `pw_end`, which comes
+# here. The tries, their window and their spacing are `journal`'s (lane 1's
+# T114; open point 40, taken under R26), so this file sets no timer around it.
+
+# THE CLOCK THE LOOKUP WAITS ON (Y:5236; the contract's §3.4, "Which clock a
+# run passes"; open point 36, taken under R26), into PW_LK_CLK:
+#   - a run whose snapshot answered: that last snapshot's `clock=`, and the
+#     whole seconds since its call ended, by `SECONDS`;
+#   - a run that took the record over and has no snapshot of its own: the
+#     clock of the record's NEWEST `call=` line, and the whole seconds since
+#     the record's `updated_utc` by this host's clock, never below 0. That
+#     estimate can only lag the database's clock, since the line was written
+#     after its snapshot ended, so `journal` waits and LR011 is not reached.
+#     Only where the record's `host` is this run's own: another host's clock
+#     cannot be aged here;
+#   - neither: no clock, and `journal` calls at once (Y:5236), where LR011
+#     gives 3 with the record kept.
+pw_lookup_clock() {
+  local lc_k="" lc_l="" lc_last="" lc_c="" lc_u="" lc_age=0
+  PW_LK_CLK=()
+  if wr_is_count "$PW_L_CLOCK" && wr_is_count "$PW_L_END"; then
+    PW_LK_CLK=(--clock "$PW_L_CLOCK" --clock-age "$(( SECONDS - PW_L_END ))")
+    return 0
+  fi
+  case "$WR_PLAN" in reuse|env) : ;; *) return 0 ;; esac
+  [ -n "$WR_REC_CALLS" ] && [ "$WR_REC_WRITE_ID" = "$WR_ID" ] || return 0
+  wr_here
+  [ -n "$WR_REC_HOST" ] && [ "$WR_REC_HOST" = "$WR_HERE_HOST" ] || return 0
+  # By parameter expansion, never a here-string (`pw_call_fields`), so a
+  # full /tmp cannot leave the lookup with no clock to wait on.
+  lc_k="$WR_REC_CALLS"
+  while [ -n "$lc_k" ]; do
+    lc_l="${lc_k%%"$WR_NL"*}"
+    case "$lc_k" in
+      *"$WR_NL"*) lc_k="${lc_k#*"$WR_NL"}" ;;
+      *) lc_k="" ;;
     esac
-    wr_call_fields "$dd_l" && wr_is_count "$WR_CF_NOT_AFTER" || continue
-    if [ -z "$dd_max" ] || [ "$WR_CF_NOT_AFTER" -gt "$dd_max" ]; then dd_max="$WR_CF_NOT_AFTER"; fi
+    [ -z "$lc_l" ] || lc_last="$lc_l"
   done
+  pw_call_fields "$lc_last"; lc_c="$PW_CF_C"
+  wr_is_count "$lc_c" || return 0
+  wr_is_utc "$WR_REC_UPDATED_UTC" || return 0
+  lc_u="$(epoch_of "$WR_REC_UPDATED_UTC")"
+  wr_is_count "$lc_u" || return 0
+  lc_age=$(( $(date -u +%s) - lc_u ))
+  [ "$lc_age" -ge 0 ] || lc_age=0
+  PW_LK_CLK=(--clock "$lc_c" --clock-age "$lc_age")
+  return 0
+}
+
+# F3's LOOKUP (Y:5235; the contract's §3.4): `lanes-index journal --write-id
+# <id> --not-after <n> --generation <g> --lane <lane> --verb <verb>
+# --args-sha256 <h>`, with the clock pair where there is one. `<n>` is the
+# largest `not_after` of the record's `call` lines, and the lane, verb and
+# digest are the ones every commit call of the write sent, `--lane` in its
+# space form (the contract's §3.6, L1-D1). One call, in lane 3's one call form,
+# with no timer around it. Its answer goes to `lookup.<pid>.out` and `.err` in
+# the run's directory (or in `register-writes/<d>/` where that was never made),
+# and its reading to PW_LK (the contract's §3.4 exits, §2.6, §2.7):
+#   found     exit 0, `found <seq>` first (PW_LK_SEQ)
+#   absent    exit 0, `absent`: the lock was held, and the id is not this
+#             write's
+#   lr007     exit 2 with stderr's `ERROR:  LR007:` and, on the line right
+#             after it, a `DETAIL:` token `generation` or `another-write`
+#             (PW_LK_TOKEN)
+#   doubt     anything else (PW_LK_WHY): exit 3 (LR011, no try took the lock,
+#             another SQLSTATE, a refused configuration), any other 2 (Q6(c)'s
+#             included, which no primary write can precede), an exit 0 that
+#             cannot be read, a crash or a code outside the contract (CO-2,
+#             CO-3); and a lookup that cannot be made at all
+pw_lookup() {
+  local lk_bin="" lk_dir="" lk_rc=0 lk_k="" lk_l="" lk_n="" lk_7=0 lk_tok="" lk_p=""
+  PW_LK=doubt; PW_LK_SEQ=""; PW_LK_TOKEN=""; PW_LK_N=""; PW_LK_WHY=""; PW_LK_OUT=""; PW_LK_ERR=""
+  # By parameter expansion, never a here-string (`pw_call_fields`), so a
+  # full /tmp cannot leave the lookup with no `<n>` to look it up at.
+  lk_k="$WR_CALLS"
+  while [ -n "$lk_k" ]; do
+    lk_l="${lk_k%%"$WR_NL"*}"
+    case "$lk_k" in
+      *"$WR_NL"*) lk_k="${lk_k#*"$WR_NL"}" ;;
+      *) lk_k="" ;;
+    esac
+    [ -n "$lk_l" ] || continue
+    pw_call_fields "$lk_l"; lk_n="$PW_CF_N"
+    wr_is_count "$lk_n" || continue
+    if [ -z "$PW_LK_N" ] || [ "$lk_n" -gt "$PW_LK_N" ]; then PW_LK_N="$lk_n"; fi
+  done
+  if [ -z "$PW_LK_N" ]; then
+    PW_LK_WHY="the pending record's call lines give no not_after to look it up at"
+    return 0
+  fi
+  lk_bin="$(lanes_index_bin)"
+  if [ -z "$lk_bin" ]; then
+    PW_LK_WHY="there is no lanes-index beside $SCRIPT_DIR/lanes-edit.sh or on PATH to look it up with"
+    return 0
+  fi
+  if [ -n "$PW_RUN_DIR" ] && [ -d "$PW_RUN_DIR" ]; then
+    lk_dir="$PW_RUN_DIR"
+  elif wr_dir_0700 "$WR_STATE/register-writes" && wr_dir_0700 "$WR_STATE/register-writes/$WR_D"; then
+    lk_dir="$WR_STATE/register-writes/$WR_D"
+  else
+    PW_LK_WHY="$WR_STATE/register-writes/$WR_D is not a 0700 directory of this user's and cannot be made one, so the lookup's answer cannot be kept"
+    return 0
+  fi
+  PW_LK_OUT="$lk_dir/lookup.$$.out"; PW_LK_ERR="$lk_dir/lookup.$$.err"
+  ( "$lk_bin" journal --write-id "$WR_ID" --not-after "$PW_LK_N" --generation "$WR_GEN" \
+      --lane "$WR_LANE" --verb "$WR_VERB" --args-sha256 "$WR_D" ${PW_LK_CLK[@]+"${PW_LK_CLK[@]}"} \
+      </dev/null >"$PW_LK_OUT" 2>"$PW_LK_ERR"; exit "$?" ) 2>/dev/null || lk_rc=$?
+  case "$lk_rc" in
+    0)
+      lk_l=""
+      { IFS= read -r lk_l || :; } < "$PW_LK_OUT" 2>/dev/null
+      case "$lk_l" in
+        "found "*)
+          if wr_is_count "${lk_l#found }"; then PW_LK=found; PW_LK_SEQ="${lk_l#found }"; return 0; fi ;;
+        absent) PW_LK=absent; return 0 ;;
+      esac
+      PW_LK_WHY="\`lanes-index journal\` exited 0 with an answer this lanes-edit.sh cannot read, which settles nothing" ;;
+    2)
+      # The token is LR007's own: the `DETAIL:` line right after the
+      # `ERROR:  LR007:` line (register-cli.md [P]'s lines 1 and 2), never
+      # another error's DETAIL elsewhere on stderr (review REV-W9b, N3).
+      while IFS= read -r lk_l || [ -n "$lk_l" ]; do
+        case "$lk_l" in
+          'ERROR:  LR007:'*) lk_7=1 ;;
+          'DETAIL:  '*)
+            case "$lk_p" in
+              'ERROR:  LR007:'*) [ -n "$lk_tok" ] || lk_tok="${lk_l#DETAIL:  }" ;;
+            esac ;;
+        esac
+        lk_p="$lk_l"; lk_l=""
+      done < "$PW_LK_ERR" 2>/dev/null
+      lk_tok="${lk_tok%%[[:space:]]*}"
+      if [ "$lk_7" = 1 ]; then
+        case "$lk_tok" in
+          generation|another-write) PW_LK=lr007; PW_LK_TOKEN="$lk_tok"; return 0 ;;
+        esac
+      fi
+      PW_LK_WHY="\`lanes-index journal\` exited 2 without the register's LR007 and its DETAIL token, generation or another-write, which settles nothing" ;;
+    3)
+      PW_LK_WHY="\`lanes-index journal\` exited 3, above: the lookup was refused as too early (LR011), no try took the head row's lock within its window, or the register refused it in another way" ;;
+    *)
+      PW_LK_WHY="\`lanes-index journal\` exited ${lk_rc}, a code outside its contract (a crash, a signal or an unknown code), which settles nothing" ;;
+  esac
+  return 0
+}
+
+# AN END WITH A `call` LINE HELD (Y:5017–5023): F3's lookup decides it. Its
+# outcomes (Y:5240–5245, Y:2730–2742):
+#   found          0: the write is in the register (`pw_found_end`; its tail by
+#                  match or replay, and the done mark, are T418's)
+#   absent         this returns, and `pw_end` goes on with the end the run
+#                  reached: the record goes, the deciding attempt's output is
+#                  replayed, and the run exits with that attempt's code (Y:5244)
+#   LR007 `generation`
+#                  2, the record KEPT, with a plain rerun's refusal of a record
+#                  of another generation (Y:5242–5243; T412's text)
+#   LR007 `another-write`
+#                  2, the record removed: the id is another write's, so no call
+#                  of this write can commit under it (Y:5241)
+#   anything else  3, the record KEPT (`pw_lookup_3`)
+# On every outcome but the first two, `journal`'s stderr is passed on first.
+pw_doubt_end() {   # <the end's code> <its message, or empty> [<attempt dir>]
+  pw_lookup_clock
+  pw_lookup
+  case "$PW_LK" in
+    found) pw_found_end "$PW_LK_SEQ" "F3's lookup found it, after this run's end with exit $1" ;;
+    absent) return 0 ;;
+  esac
+  [ -z "$PW_LK_ERR" ] || [ ! -s "$PW_LK_ERR" ] || cat -- "$PW_LK_ERR" >&2
+  # The run's end, every child ended and the lookup's answer passed on: its
+  # own `<run>/` goes, the lookup's two files with it, but for the attempt
+  # directories its `call` lines name, which keep `snapshot`, `files` and
+  # `preimages` while the record is kept (T415; Y:5177). The record's remover
+  # removes those too (`pw_record_done`).
   pw_run_dir_done
-  die "write $WR_ID of register generation $WR_GEN may be in the register: its pending record, $WR_STATE/register-pending/$WR_D, holds a commit call that may have committed, so this run's end (exit $1) is not that write's answer until the call is looked up. This lanes-edit.sh makes no such lookup yet: the record is kept, and a rerun settles the write by its id and never writes it twice. Look it up: lanes-index journal --write-id $WR_ID --not-after $dd_max --generation $WR_GEN --lane $(printf '%q' "$WR_LANE") --verb $(printf '%q' "$WR_VERB") --args-sha256 $WR_D. Or run it again: $(wr_rerun_text "$WR_ID" "$WR_GEN")" 75
+  if [ "$PW_LK" = lr007 ] && [ "$PW_LK_TOKEN" = generation ]; then
+    WR_REC_WRITE_ID="$WR_ID"; WR_REC_GENERATION="$WR_GEN"; WR_REC_CREATED_UTC="$WR_CREATED_UTC"
+    WR_REC_VERB="$WR_VERB"; WR_REC_TAIL="$WR_TAIL"
+    note "F3's lookup of write $WR_ID was refused with LR007 generation, above: this register is not the generation the write was made against. This run's end was exit $1."
+    wr_refuse_other_generation
+  fi
+  if [ "$PW_LK" = lr007 ]; then
+    pw_record_done
+    die "F3's lookup of write $WR_ID was refused with LR007 another-write, above: that id is another write's in the register's journal, with another lane, verb or arguments, so no commit call of this write can commit under it, and this write is not in the register under it. Its pending record is removed, and a plain rerun writes it anew under a new id. This run's end was exit $1" 2
+  fi
+  pw_lookup_3 "$1"
+}
+
+# EXIT 3, A WRITE IN DOUBT THAT CANNOT SETTLE (D8; Y:2661–2665; Y:5245): no try
+# within the window took the lock, the lookup was refused as too early
+# (LR011), or its answer settles nothing. The run names the write id, gives
+# the lookup and the printed rerun, whose `LANES_SESSION` is the value the
+# digest took (ERR-38), and KEEPS the record, with its `call` lines and their
+# directories, so that a rerun settles the write and runs its tail (Y:5199).
+# Only this run's own claim goes, since the record stays.
+pw_lookup_3() {   # <the end's code>
+  local l3_look="" l3_re="" l3_rec="" l3_why=""
+  l3_rec="$WR_STATE/register-pending/$WR_D"
+  l3_why="${PW_LK_WHY:-the lookup settled nothing}"
+  l3_look="lanes-index journal --write-id $WR_ID --not-after ${PW_LK_N:-<n>} --generation $WR_GEN --lane $(printf '%q' "$WR_LANE") --verb $(printf '%q' "$WR_VERB") --args-sha256 $WR_D"
+  l3_re="$(wr_rerun_text "$WR_ID" "$WR_GEN")"
+  wr_claim_release || :
+  die "cannot confirm whether register write $WR_ID committed; nothing else was written. A commit call of it may have committed, and F3's lookup could not settle it: ${l3_why}. On primary this write may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Its pending record, ${l3_rec}, is kept. This run's end was exit ${1}, which is not that write's answer while the call is in doubt. Look it up: ${l3_look}. Or run it again: ${l3_re}" 3
 }
 
 # A WRITE ALREADY IN THE REGISTER (a snapshot's `found=`, or the commit's
