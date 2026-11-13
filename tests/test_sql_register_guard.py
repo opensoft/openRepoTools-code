@@ -2403,6 +2403,16 @@ def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, r
     the configuration is pointed at the relay, with `connect_timeout=3`, for
     the `2`, whose read is one call (design.md:4287-4289 at b8e3df74).
 
+    THAT PREMISE IS CHECKED, WITH NO WAIT (T254zk; lane 2's MK-22, on lane
+    3's #165 6860626333, item 2): the guard's read waits for its fetch to
+    the read's cut (`f9e1449c:lanes-index:6862`), and the fetch puts each
+    image in the cache and records its head before it answers
+    (`:7451-7460`), while a read the cut leaves makes no offer. So right
+    after the offer, its prompt made the whole-file fetch, D9's
+    `guard-fetch` row (`statement_timeout=14000`, `:4573`), and the image
+    cache's `head` reads the register's head. Without them, the `2`'s read
+    would fetch through the relay and fail late, at the calls' check.
+
     AND NO SERVICE ANSWERS (T254zg): the estate's state home is one whose
     socket path is over `SOCKET_MAX` (`_state_home_with_no_service`), where
     the client reads directly and starts nothing
@@ -2442,6 +2452,15 @@ def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, r
         est.shim()
         est.make_offer()
         offered = est.shim_calls()
+        fetched = [c for c in offered
+                   if "statement_timeout=14000" in c.get("pg", {}).get("PGOPTIONS", "")]
+        assert fetched, ("the offer's prompt made no whole-file fetch: "
+                         f"{[c.get('pg', {}).get('PGOPTIONS') for c in offered]}")
+        cached = Path(est.extra["XDG_STATE_HOME"]) / "openRepoTools" / "register-images" / "head"
+        n = est.pg.psql("SELECT seq FROM lanes_register.register_head;").stdout.split()[-1]
+        head = cached.read_text(encoding="utf-8").strip() if cached.exists() else None
+        assert head == n, (f"the offer's whole-file fetch left the image cache's head at "
+                           f"{head!r}, not the register's head {n}: {cached}")
         text = text.replace(direct, f"@127.0.0.1:{relay.port}/").replace(
             "?sslmode=verify-full", "?connect_timeout=3&sslmode=verify-full")
         assert text.count("connect_timeout=3") == 2, text
@@ -2456,8 +2475,6 @@ def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, r
         port = str(relay.port)
     seen = [(c.get("call"), c.get("pg", {}).get("PGPORT"), c.get("pg", {}).get("PGCONNECT_TIMEOUT"),
              c.get("pg", {}).get("PGOPTIONS")) for c in calls]
-    fetched = [c for c in offered
-               if "statement_timeout=14000" in c.get("pg", {}).get("PGOPTIONS", "")]
     print(f"T254 case 21: the offer's prompt made {len(offered)} call(s) through the cluster's "
           f"own port, {len(fetched)} of them the whole-file fetch; the 2's prompt exited "
           f"{hook.t_exit - hook.t0:.2f} s after T0, its calls {seen}")
