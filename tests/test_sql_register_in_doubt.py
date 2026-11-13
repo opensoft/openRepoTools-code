@@ -1098,11 +1098,17 @@ def gh_reads(where: Path) -> List[dict]:
 
 def comments(where: Path) -> List[dict]:
     """The fake `gh`'s comment calls, `issue comment` or `pr comment`: a
-    verb's tail (`gh_comment`, T421). Never Rule 1's reads, `issue view
-    --comments` and `pr list`, which `claim` makes at its step 2, before the
-    seam (`gh_reads_live`; Y:5043), and which decide nothing (T245c; lane
-    4's triage, #165 6833813092; T248a's `comment_calls` has the same
-    shape)."""
+    verb's tail. `claim`'s is its step 6, `gh_comment` once `write_event`
+    returns (`91bfa229:lanes-edit.sh:24731-24737`), which under the flag is
+    after the commit, from T414's seam: `commit_publish` returns through
+    `cp_seam` (`:3710-3716`), whose committed step writes `tail`, sets
+    `REGISTER_SEQ` and returns 0 (`:4247-4264`). This module counts those
+    calls and never reads their text; T421 changes that text, and the order
+    module's cases for T243 and T421 assert it (lane 4, #165 6852035770).
+    Never Rule 1's reads, `issue view --comments` and `pr list`, which
+    `claim` makes at its step 2, before the seam (`gh_reads_live`; Y:5043),
+    and which decide nothing (T245c; lane 4's triage, #165 6833813092;
+    T248a's `comment_calls` has the same shape)."""
     return [c for c in tool_calls(where, "gh") if c["argv"][:1] in (["issue"], ["pr"])
             and c["argv"][1:2] == ["comment"]]
 
