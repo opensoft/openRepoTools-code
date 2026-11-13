@@ -176,10 +176,19 @@ refusals from incomplete fast evidence and reread races before a fresh attempt.
 Unrelated description prose may differ between the triggering source event and
 the live PR, for example when a summary is appended before CI starts. Both
 descriptions must independently contain the unique supported shadow/delivery
-opt-ins and neither may declare a dependency. Every other snapshot field and
-all Git/fast provenance checks remain exact. Later live rereads still compare
+opt-ins and neither may declare a dependency. Every other snapshot field except
+the bounded generated hint below, and all Git/fast provenance checks, remain exact. Later live rereads still compare
 the complete body strictly; this does not ignore changes during verification,
 trust an editing actor, grant queue authority or widen eligible files/actions.
+
+At the initial source or genuine candidate PR comparison only, generated
+`merge_commit_sha` hints may be missing/null or equal the trusted workflow
+`GITHUB_SHA`. Both hints must qualify; unknown or malformed non-null hints retain
+full even when both snapshots agree. These hints never identify the tested
+commit: the actual commit and ordered current-main/head parents are still
+independently verified. Candidate bodies remain exact, and genuine admission
+and source proofs remain mandatory. Subsequent live rereads compare the original
+PR strictly, including the full body and generated hint; no race is normalized.
 
 ## Exact-head local review receipts
 
