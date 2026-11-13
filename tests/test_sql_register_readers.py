@@ -23,7 +23,8 @@ WHAT IT HOLDS, by its five sources:
   * Lane 5's nine (A5; T504 to T506 and T509), their guessed names kept.
   * Lane 4's two read verbs (R29; GB section 4.3; T401), `register-text` and
     `register-grep`, with T401's two exit-2 cases each (O21a), and
-    `register-grep`'s one snapshot on primary (lane 3's Q2, #165 6851977580).
+    `register-grep`'s one snapshot and quoted names on primary (lane 3's Q2
+    and Q3, #165 6851977580).
   * Lane 4's `key()` trim (T259; R31; GB section 4.3; T426): the one test that
     asks `retired-identity` about spellings that differ only past the
     sixteenth digit, in files mode and on primary.
@@ -74,7 +75,8 @@ unless `OPENREPOTOOLS_REQUIRE_PG=1`.
 WHAT EACH WAITS FOR (the block's Order): L4-A1, L5-A4 and L5-A5; lane 1's
 three for L1v4.5's T113 and T114; lane 5's for T504 to T506 and T509; the
 `--decide` test for T502; the read verbs' for lane 4's T401, the one-snapshot
-case for its round on lane 3's Q2 (#165 6851977580); the arms for
+and quoted-name cases for its round on lane 3's Q2 and Q3 (#165 6851977580);
+the arms for
 lane 4's T402 to T408; `key()`'s trim, on primary only, for lane 4's T426;
 T235's for lane 5's T505, its three door forms included, whose oracles are
 lane 3's batch 7 (#165 6780364102), by batch 5's answers 3 and 4.
@@ -3461,6 +3463,73 @@ def test_register_grep_on_primary_answers_one_snapshot_and_69_after_three_moved_
         assert (result.returncode, result.stdout) == (69, b""), where
         assert len(reads) == 3, where
         assert head == first + 3, where
+
+
+#: QUOTED NAMES (T401's Q3): three logs whose names are outside
+#: `check_lane_name`'s class, so that each is read through form 3's
+#: `--log-key=` (O18), and each holds one kind of byte that `git grep` quotes
+#: under git's defaults: `"`, `\`, and `é`, the two bytes 0xc3 0xa9.
+QUOTED_LOGS = {"lanes/log/say\"hi-1.md": "say\"hi-1",
+               "lanes/log/back\\slash-1.md": "back\\slash-1",
+               "lanes/log/café-1.md": "café-1"}
+#: How `git grep` prints each under git's defaults: the path in double quotes,
+#: `"` and `\` escaped by a backslash, and each byte from 0x80 up as a
+#: backslash and three octal digits, after the unquoted `origin/main:`.
+QUOTED_AS = (b'origin/main:"lanes/log/say\\"hi-1.md":STARTED ',
+             b'origin/main:"lanes/log/back\\\\slash-1.md":STARTED ',
+             b'origin/main:"lanes/log/caf\\303\\251-1.md":STARTED ')
+#: THE WORKSTATION'S OWN GIT CONFIGURATION, which primary's answer does not
+#: follow: `core.quotePath` off, under which `git grep` prints 0xc3 0xa9 as
+#: they are, and an attributes file at git's default place,
+#: `$XDG_CONFIG_HOME/git/attributes`, marking every file binary, under which a
+#: grep without `--text` prints `Binary file image matches` for each image.
+WORKSTATION_GIT = {"git/config": "[core]\n\tquotePath = false\n",
+                   "git/attributes": "* binary\n"}
+
+
+def test_register_grep_on_primary_prints_each_path_as_git_grep_does_under_gits_defaults(estate):
+    """QUOTED NAMES (T401's Q3: lane 3's ruling, #165 6851977580; lane 4's
+    RC-W23 N2, #165 6851877746; tasks:860 at `94fab177`). Without `-h`,
+    primary prints each path as `git grep` prints it under git's defaults,
+    whatever the workstation's git configuration says: a path holding `"`,
+    `\\` or a byte from 0x80 up goes in double quotes, with octal escapes,
+    after the unquoted `origin/$LANES_BRANCH:`; and each image is grepped as
+    text (`--text`), so no attributes file outside the register makes a
+    `Binary file` line of it. So answer 14's "byte for byte what files mode
+    prints" holds (#165 6746507353).
+    The register holds `QUOTED_LOGS` beside the estate's logs and the store's
+    own `repoS-1` log, so the answer is the store's. The expected bytes are
+    `git grep`'s own over the store's tree, under git's defaults
+    (`git_grep_at_defaults`), first held to `QUOTED_AS`, so the case's
+    premise is git's behaviour and never a guess. Then the workstation's git
+    configuration turns `core.quotePath` off and marks every file binary in
+    its default attributes file, and primary's answer must still be those
+    bytes, exit 0.
+    FAILS UNTIL lane 4's T401 round on lane 3's Q3 ruling, which was not
+    bundled when this case was written. On lane 4's `6318d5e5` (#165
+    6851877746) it fails on stdout: each path after the prefix as it is,
+    unquoted, and each image grepped without `--text`, so a `Binary file
+    image matches` line stands for its lines (T217zi)."""
+    seed_logs(estate, {path: (f"STARTED — lane {lane}, session {UUID_A1}@Eagle, "
+                              f"2026-10-05T00:40:00Z, lane:{lane} → home opensoft/repoQ; "
+                              f"dir /work/repoQ\n")
+                       for path, lane in QUOTED_LOGS.items()})
+    primary = Primary(estate)
+    ere = "^(STARTED|NOTED) "
+    expect = git_grep_at_defaults(estate.root / "quoted-oracle",
+                                  store_images(primary.door, primary.door.head()[0]), ere)
+    for quoted in QUOTED_AS:
+        assert quoted in expect, ("git's defaults print this path otherwise", quoted, expect)
+    assert f"lanes/log/{STORE_ONLY_LANE}.md:".encode() in expect, expect
+    for name, text in WORKSTATION_GIT.items():
+        target = estate.config / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    result = edit_bytes(primary, "register-grep", "-E", ere, "--", "lanes/log")
+    assert (result.returncode, result.stdout) == (0, expect), \
+        (result.returncode, result.stdout.decode("utf-8", "replace"),
+         "expected, git grep under git's defaults:", expect.decode("utf-8", "replace"),
+         result.stderr.decode("utf-8", "replace")[-1500:])
 
 
 # ------------------------------------------------- lane 4's key() trim (T426)
