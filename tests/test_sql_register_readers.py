@@ -2666,25 +2666,34 @@ def test_the_read_mirror_variable_lowers_each_read_that_names_the_lane_on_primar
     lowers each read whose row in the class table sets `REG_MIRROR_VAR=1`,
     `window-lane` and `swapped` among them, to a mirror read on primary: with
     the store unreachable each prints the `read: mirror` line and exits as
-    files mode does. Every other arm ignores the variable, `who` and
-    `lane-last` among them (B14 tasks:737): `lane-last`, a read that names
-    the lane and no row of the table, still refuses 69 (T217m; lane 5's
-    triage, #165 6782743644: `register-row`, the arm here before, is one of
-    the table's)."""
+    files mode does. ERR-30, as lane 3 widened it on round 6h's #56 (#165
+    6859801732), marks `lane-last` and `restart-intent` too, the two reads
+    `lane-handoff` makes before its handoff file. Every other arm ignores the
+    variable, `who` among them (tasks:741 at f4591a08): `who`, a decide read
+    whose row sets no `REG_MIRROR_VAR`, still refuses 69 (T217m; lane 5's
+    triage, #165 6782743644: `register-row`, the arm here before T217m, is
+    one of the table's; and since T504 so is `lane-last`, the arm here
+    before T217zk, lane 5's #165 6860020483).
+
+    Fails until lane 5's T504 `3f838677`, at the marked pair's assert. That
+    assert is the last, so a tree without T504 fails there and only there.
+    T504's verify selects this case (lane 3, #165 6860626333, item 1)."""
     table = CLASS_FUNCTION.search(LANES_EDIT.read_text(encoding="utf-8"))
     assert table, "lanes-edit.sh has no read door class table (reg_class_of)"
     marked = {arm for row in MIRROR_ROW.findall(table.group(1)) for arm in row.split("|")}
     assert {"window-lane", "swapped"} <= marked, marked
-    assert "lane-last" not in marked, marked
+    assert "who" not in marked, marked
     primary.door.unreachable()
     for argv in (("window-lane", "Eagle", "@1"), ("swapped",)):
         files = primary.files_edit(*argv)
         result = primary.edit(*argv, env={"LANES_READ_MIRROR": "1"})
         assert MIRROR_LINE.search(result.stderr), (argv, result.stderr[-1500:])
         assert result.returncode == files.returncode, (argv, result.returncode, files.returncode)
-    other = primary.edit("lane-last", "repoA-1", env={"LANES_READ_MIRROR": "1"})
+    other = primary.edit("who", "opensoft/repoA#7", env={"LANES_READ_MIRROR": "1"})
     assert other.returncode == 69, (other.returncode, other.stderr[-1500:])
     assert not MIRROR_LINE.search(other.stderr), other.stderr[-1500:]
+    # T504's two marks (ERR-30, widened). Fails until lane 5's T504 3f838677.
+    assert {"lane-last", "restart-intent"} <= marked, marked
 
 
 # --------------------------------------------- T502's `lanes --decide` test
