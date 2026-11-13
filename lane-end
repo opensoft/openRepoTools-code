@@ -322,7 +322,8 @@
 #      close-out gate could not be read (no `lane-worktrees`, or an exit that
 #      is none of its three). `--sweep-checkouts`: no W, a read that failed
 #      (the listing of lanes, a `<W>-lanes/` that cannot be entered or
-#      listed, or a fetch `--yes` decides on), a removal
+#      listed, or a fetch `--yes` decides on), a read's 3, which the sweep
+#      never passes (research.md ERR-52; the 69, 75, 3 row below), a removal
 #      that did not finish, or removals whose NOTED line was not written or
 #      not confirmed on origin (the commands to finish it are printed).
 #      And feature 007's refusals before the first
@@ -770,12 +771,7 @@ le_read_code() {   # <the verb's exit> <the arm's own exit for any other code>
   case "$1" in 69 | 75 | 3) printf '%s\n' "$1" ;; *) printf '%s\n' "$2" ;; esac
 }
 le_read_refuse() {   # <the read, as run> <its exit> <what it would have told> [<the tail> [<the exit it ends with>]]
-  local lrr_why lrr_retry lrr_tail
-  # THE TAIL SAYS WHAT WAS NOT DONE, and an arm that removes things says it in
-  # its own word (lane 3, #165 6852014823, answer 4): `--sweep-checkouts` passes
-  # "Nothing was removed.", as its other refusals end. Without one it is the
-  # writers' "Nothing was written.", so no other arm's words change.
-  lrr_tail="${4:-Nothing was written.}"
+  local lrr_why lrr_retry lrr_end
   # THE EXIT IS THE READ'S OWN UNLESS AN ARM SAYS OTHERWISE: `--sweep-checkouts`
   # passes no read's 3 and ends 1, naming it (lane 3, #165 6852014823, answer 3).
   # 69 TELLS A LANE TO STOP AND TELL BRETT (D10, Y@a6497d00:511; lane 3, #165
@@ -786,7 +782,15 @@ le_read_refuse() {   # <the read, as run> <its exit> <what it would have told> [
     3)  lrr_why="the register's answer is in doubt"; lrr_retry="A retry in seconds is safe." ;;
     *)  lrr_why="the register could not be read"; lrr_retry="Stop and tell Brett." ;;
   esac
-  die "\`$1\` exited $2: ${lrr_why}, so $3 is NOT known, and that is not an answer. This command refuses rather than carry on without it. ${lrr_tail} ${lrr_retry}" "${5:-$2}"
+  # THE TAIL ENDS THE MESSAGE, and says what was not done in the word of an arm
+  # that removes things (lane 3, #165 6852014823, answer 4; tasks:888):
+  # `--sweep-checkouts` passes any sentence of its own and then "Nothing was
+  # removed.", as its other refusals end, so the retry sentence comes before
+  # it. Without a tail the words are what they always were, the writers'
+  # "Nothing was written." and then the retry sentence, so no other arm's words
+  # change.
+  if [ -n "${4-}" ]; then lrr_end="${lrr_retry} $4"; else lrr_end="Nothing was written. ${lrr_retry}"; fi
+  die "\`$1\` exited $2: ${lrr_why}, so $3 is NOT known, and that is not an answer. This command refuses rather than carry on without it. ${lrr_end}" "${5:-$2}"
 }
 
 # ------------------------------------------------------------------ arguments
@@ -1426,7 +1430,8 @@ if [ "$sweep_checkouts" = 1 ]; then
   # question (c); tasks:886 and :888): THIS READ DECIDES. It chooses which
   # checkouts are removed, so the sweep acts on its answer, and it asks `lanes`
   # to decide: a database nobody can reach is a 69 with nothing on stdout, never
-  # the mirror's rows, and the 69, 75 and 3 refusals below pass the code. In
+  # the mirror's rows, and the 69 and 75 refusals below pass the code, while a 3
+  # ends 1 (ERR-52, below). In
   # files mode `--decide` is only taken off the line, and no read verb emits
   # any of the three there (Y:5746), so nothing changes. Lane 5's T502 makes
   # the arm accept `--decide`, which is why this line lands after T502; a
@@ -1444,13 +1449,14 @@ if [ "$sweep_checkouts" = 1 ]; then
   rm -f -- "$LE_TMP"; LE_TMP=""
   if [ -n "$sc_err" ]; then printf '%s\n' "$sc_err" >&2; fi
   # THE CODE IS TESTED BEFORE THE LISTING'S WORDS ARE READ (tasks:888). A 69,
-  # 75 or 3 is no answer about any lane, so it refuses with the verb's own code
-  # before the notes below are matched and before anything is acted on, as
-  # T403's other read arms do through `le_read_refuse`. Every other code keeps
-  # today's exit, in the `case` below the notes.
+  # 75 or 3 is no answer about any lane, so it refuses before the notes below
+  # are matched and before anything is acted on, as T403's other read arms do
+  # through `le_read_refuse`: a 69 or 75 with the verb's own code, and a 3 with
+  # 1, since the sweep passes no read's 3 (ERR-52, `sc_read_code`, above).
+  # Every other code keeps today's exit, in the `case` below the notes.
   case "$sc_rc" in
     69 | 75) le_read_refuse "$LANES_EDIT ${sc_lanes_args[*]}" "$sc_rc" "which lanes are CLOSED or LIVE" "Nothing was removed." ;;
-    3) le_read_refuse "$LANES_EDIT ${sc_lanes_args[*]}" 3 "which lanes are CLOSED or LIVE" "Nothing was removed. This sweep passes no read's 3, which its dry run spends on 'something is removable' (ERR-52), so it ends 1." 1 ;;
+    3) le_read_refuse "$LANES_EDIT ${sc_lanes_args[*]}" 3 "which lanes are CLOSED or LIVE" "This sweep passes no read's 3, which its dry run spends on 'something is removable' (ERR-52), so it ends 1. Nothing was removed." 1 ;;
   esac
   case "$sc_err" in
     *"session records could not be read"*)
@@ -2609,11 +2615,16 @@ SRI
       *"could not be read, so its rows are not in this listing"*)
         ss_why="the register could not be read, so whether it is CLOSED is not established" ;;
     esac
+    # ANY OTHER CODE HOLDS TOO, NAMING THE READ AS RUN AND ITS CODE (tasks:888;
+    # lane 3's #165 6852014823, answer 2), whether its notes match a phrase
+    # above or not.
     if [ -n "$ss_why" ]; then
-      SC_WHY="lane $2's state was not read fresh under its checkout's lock: $ss_why"; return 1
+      SC_WHY="lane $2's state was not read fresh under its checkout's lock: $ss_why"
+      if [ "$ss_rc" != 0 ]; then SC_WHY="$SC_WHY (\`lanes --decide --fetch --closed --lane $2\` exited $ss_rc)"; fi
+      return 1
     fi
     if [ "$ss_rc" != 0 ] || [ -z "$ss_row" ]; then
-      SC_WHY="lane $2's state could not be read again under its checkout's lock (lanes exited $ss_rc)"; return 1
+      SC_WHY="lane $2's state could not be read again under its checkout's lock (\`lanes --decide --fetch --closed --lane $2\` exited $ss_rc)"; return 1
     fi
     IFS="$sc_tab" read -r ss_lane ss_state ss_ws ss_pf ss_win ss_sid ss_dir ss_obj ss_age ss_cmd ss_home ss_fk ss_loc ss_class ss_rest <<SS_ROW
 $ss_row
