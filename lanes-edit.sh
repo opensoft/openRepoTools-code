@@ -8217,7 +8217,12 @@ pw_tail_found() {   # <seq>
 # (lane openRepoTools-3, #165 6841366245, T418 (1)). Where the child said
 # `none` and the record cannot be rewritten without `tail`, it returns 2 with
 # WR_TOOK_TAIL and WR_TAIL as they were: no replay, and `pw_tail_found` names
-# the tail as owed (T418 (2)).
+# the tail as owed (T418 (2)). Before that it writes the `replayed` token over
+# that `none` (`pw_seam_token`), so that "owed" is final: a later owner of a
+# record that could not be removed reads neither `none` nor `tail`, and runs
+# no tail that a person may by then have run by hand (Y:5298; lane
+# openRepoTools-3, #165 6841844102, point 1). Where the token cannot be
+# written, the run still ends owed.
 pw_took_sent_none() {
   local sn_k="" sn_l="" sn_d="" sn_n=0 sn_was="$WR_TOOK_TAIL"
   case "$sn_was" in 'sent '*) : ;; *) return 1 ;; esac
@@ -8243,6 +8248,7 @@ pw_took_sent_none() {
   WR_TOOK_TAIL=""; WR_TAIL=""
   wr_record_write && return 0
   WR_TOOK_TAIL="$sn_was"; WR_TAIL="$sn_was"
+  pw_seam_token "$sn_d" || :
   return 2
 }
 
@@ -8486,9 +8492,30 @@ pw_tail() {   # <seq> <how it was learned> <the answer, in a file>
 # a kept `call` line keeps: the record's line, and its directory's
 # `preimages/` (lane openRepoTools-3, #165 6769061039, T415's question 5).
 PW_REPLAYED=0; PW_RP_RUN_DIR=""
+
+# THE `replayed` TOKEN in a call's attempt directory (lane openRepoTools-3,
+# #165 6841366245, T418 (3); #165 6841844102, point 1): its `seam.out`
+# removed, then `replayed` and its newline written under noclobber, as a
+# child writes its own (Y:5005), and read back, 16 bytes at most, from a
+# regular file that is not a link. 0 where it reads exactly `replayed`; 1
+# otherwise: a late `none` from that call's child took the slot first, or the
+# file cannot be removed, written or read. A run that later takes the record
+# over then reads neither `none` nor `tail` there (`pw_took_sent_none`), and
+# the `sent` row stands (Y:5338). Never `replay`, the mark that sets
+# REG_REPLAY in a replay's own directory (`reg_scratch_take`). The caller has
+# checked the directory (`pw_wdir_ok`).
+pw_seam_token() {   # <the call's attempt dir>
+  local st_b=""
+  rm -f -- "$1/seam.out" 2>/dev/null
+  ( set -C; printf '%s\n' replayed > "$1/seam.out" ) 2>/dev/null || :
+  if [ -f "$1/seam.out" ] && [ ! -L "$1/seam.out" ]; then
+    st_b="$(head -c 16 -- "$1/seam.out" 2>/dev/null; printf .)"; st_b="${st_b%.}"
+  fi
+  [ "$st_b" = "replayed$WR_NL" ]
+}
 pw_replay_tail() {   # <seq> <how it was learned>
   local rp_k="" rp_l="" rp_c="" rp_f="" rp_d="" rp_clock="" rp_cdir="" rp_run="" rp_dir="" \
-        rp_bin="" rp_rc=0 rp_at="" rp_h="" rp_last="" rp_p="" rp_t="" rp_so=""
+        rp_bin="" rp_rc=0 rp_at="" rp_h="" rp_last="" rp_p="" rp_t=""
   pw_abandon_all
   if [ "$PW_REPLAYED" = 1 ]; then
     pw_tail_owed "$1" "its replay's child, at seq $(( $1 - 1 )), did not take the message at its seam (its seam.out does not read tail)"
@@ -8535,16 +8562,20 @@ pw_replay_tail() {   # <seq> <how it was learned>
   # `snapshot`, `files` and `preimages` while its line stands (Y:5177), so
   # nothing a reader needs goes. Every child of this run has had `abandon` and
   # been reaped above.
-  if pw_wdir_ok "$rp_cdir" attempt; then
-    rm -f -- "$rp_cdir/seam.out" 2>/dev/null
-    ( set -C; printf '%s\n' replayed > "$rp_cdir/seam.out" ) 2>/dev/null || :
-    rp_so=""
-    if [ -f "$rp_cdir/seam.out" ] && [ ! -L "$rp_cdir/seam.out" ]; then
-      rp_so="$(head -c 16 -- "$rp_cdir/seam.out" 2>/dev/null; printf .)"; rp_so="${rp_so%.}"
-    fi
-    [ "$rp_so" = "replayed$WR_NL" ] ||
-      pw_tail_owed "$1" "its call's seam.out, in $rp_cdir, could not be written as replayed under noclobber and read back as that before its replay (a late none from that call's child, or a file that cannot be removed or read), and a later takeover of this record could read what is there as this replay's child's, so it was not replayed"
-  fi
+  # THE CALL'S DIRECTORY MUST BE THERE AND TRUSTED (lane openRepoTools-3, #165
+  # 6841844102, point 2): Y:5177 keeps it while its line stands, and the replay
+  # takes the committing call's sidecar pre-images from it (Y:5321–5323;
+  # `pw_replay_preimages`). One that is absent, or that is not an attempt
+  # directory of this uid (`pw_wdir_ok`: a link on its path, another uid's,
+  # not 0700, or not `<state>/register-writes/<d>/<run>/<k>`), cannot give a
+  # faithful replay: "not recorded" would write nothing where the first call
+  # may have written. So the tail is owed, here, before the token step, which
+  # is never skipped (tasks:1236, fold 1112n: anything but exactly `replayed`
+  # is owed).
+  pw_wdir_ok "$rp_cdir" attempt ||
+    pw_tail_owed "$1" "its call's directory, $rp_cdir, is not there, or is not an attempt directory of this user's (a link on its path, another user's, not 0700, or not under register-writes/), and its replay takes the committing call's sidecar pre-images from it (Y:5177, Y:5321-5323), so it was not replayed"
+  pw_seam_token "$rp_cdir" ||
+    pw_tail_owed "$1" "its call's seam.out, in $rp_cdir, could not be written as replayed under noclobber and read back as that before its replay (a late none from that call's child, or a file that cannot be removed or read), and a later takeover of this record could read what is there as this replay's child's, so it was not replayed"
   rp_run="$(act_mint_id)" || rp_run=""
   [ -z "$rp_run" ] || PW_RP_RUN_DIR="$WR_STATE/register-writes/$WR_D/$rp_run"
   rp_dir="$WR_STATE/register-writes/$WR_D/$rp_run/1"
@@ -8613,7 +8644,9 @@ pw_replay_snapshot() {   # <replay dir> <the committing call's clock>
 # THE REPLAY'S `preimages/` (step 4): a copy of the committing call's, each
 # lane's answer one file, and the `replay` mark beside it. An answer that call
 # did not record is not there, which the child reads as empty: "write
-# nothing" (Y:5323).
+# nothing" (Y:5323). Its caller has already ended the run owed where the
+# call's directory is absent or fails `pw_wdir_ok` (#165 6841844102, point 2),
+# so it copies only from a trusted, present directory.
 pw_replay_preimages() {   # <the call's attempt dir> <replay dir>
   local rpp_f=""
   wr_dir_0700 "$2/preimages" || return 1
