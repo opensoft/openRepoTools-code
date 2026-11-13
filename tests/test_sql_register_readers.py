@@ -31,7 +31,9 @@ WHAT IT HOLDS, by its five sources:
   * Lane 2's T235 (F13b's proposed task, for lane 3 to place; lane 5's
     choice (b), #165 6778955065): on primary, T505's three read sites,
     `known_lanes`, `remote_log_events` and `worktree_rows`, read the store and
-    never git, by the fake `git`'s argv log, on a real engine.
+    never git, by the fake `git`'s argv log, on a real engine; and its
+    moved-head ids, T505's two reruns where the head moves under a read, on
+    the stub door (lane 5's proposal, #165 6860943489; lane 3, 6861148117).
 
 THE ARMS' IDS ARE THEIR LINES AT `2a057a6d`, as the test plan names them (the
 block, T217), so they move with slices 1a and 1b and are re-cited at each
@@ -79,7 +81,8 @@ and quoted-name cases for its round on lane 3's Q2 and Q3 (#165 6851977580);
 the arms for
 lane 4's T402 to T408; `key()`'s trim, on primary only, for lane 4's T426;
 T235's for lane 5's T505, its three door forms included, whose oracles are
-lane 3's batch 7 (#165 6780364102), by batch 5's answers 3 and 4.
+lane 3's batch 7 (#165 6780364102), by batch 5's answers 3 and 4; and its
+moved-head notes id for T505 round 2b's B.
 Every case on `RealRegister` (lane 1's three and `managed-projection`'s RE
 case) also fails until lane 2's T227 (`tmpl` built by the bootstrap) and
 T228 (the `lanes_w_fx` and `lanes_r_fx` logins), each by the fixture's own
@@ -143,8 +146,9 @@ MIRROR_LINE = re.compile(r"^read: mirror at [0-9a-f]{12}, .*$", re.M)
 #: read site with no prefetched file). `"move_each": {"key": k, "times": t,
 #: "path": p, "line": l}` moves the store's head by one seq at each of the
 #: first `t` form-3 reads of `--log-key=<k>`, before the store answers it,
-#: appending `l % <the move's number>` to `p`: a write that lands between a
-#: reader's calls (T401's one snapshot, T217zh). Every other call is the
+#: appending `l % <the move's number>` to `p`, which the first move makes where
+#: `p` is absent: a write that lands between a reader's calls (T401's one
+#: snapshot, T217zh; T505's two reruns, T235e). Every other call is the
 #: contract stub's, in `store/`.
 DOOR_WRAPPER = r'''#!/usr/bin/env python3
 # THE DOOR'S WRAPPER (T217): counts and fails register calls, else the stub.
@@ -250,8 +254,12 @@ if EACH and form(args) == 3 and "--log-key=" + EACH["key"] in args:
         new = os.path.join(HERE, "store", "lanes-index.register", str(state["n"] + 1))
         shutil.copytree(old, new)
         target = os.path.join(new, EACH["path"])
-        with open(target, "rb") as handle:
-            data = handle.read() + (EACH["line"] % done).encode("utf-8")
+        data = b""
+        if os.path.exists(target):                    # absent at n: the move makes it
+            with open(target, "rb") as handle:
+                data = handle.read()
+        data += (EACH["line"] % done).encode("utf-8")
+        os.makedirs(os.path.dirname(target), exist_ok=True)
         with open(target, "wb") as handle:
             handle.write(data)
         state["n"] += 1
@@ -3135,6 +3143,157 @@ def door_second_reads(door: Path) -> list:
         return []
     calls = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
     return [c for c in calls if c.get("form") == 3]
+
+
+#: T235'S MOVED HEAD (T505's two reruns; lane 5's proposal, #165 6860943489,
+#: which lane 3 agreed, 6861148117). Each id seeds `[out-of-class]`'s log,
+#: `lanes/log/a,b.md`, outside `check_lane_name`'s class, as T217zh's
+#: one-snapshot case seeds its own: `--all` never fetches it, so every run of
+#: `reg_remote_log_events` reads it by form 3's `--log-key=a,b` (O18), and the
+#: door's `move_each` moves the store's head one seq at each of the first `t`
+#: of those reads, before the store answers. That read is the one both sites
+#: take their head pair around: `reg_remote_log_events` after its
+#: out-of-class reads, and `worktree_rows` after `lanes_rows`, whose events
+#: come from the same reads. `T235_EVERY` is more moves than three runs make:
+#: every read moves the head.
+T235_EVERY = 99
+#: WHAT A MOVE WRITES. Through `remote_log_events`, a NOTED line on
+#: `repoA-2`'s log, which the prefetch cached, so form 3 finds a cached member
+#: changed in `(n, n']` and rewrites the family at `n'`. Through
+#: `worktree_rows`, `repoN-1`'s log, absent at `n`, whose `dir` places a tree,
+#: so only a log list pinned again at `n'` names that lane and its tree.
+T235_MOVED_PATH = "lanes/log/repoA-2.md"
+T235_MOVED_WORDS = "T235: a write that moved the head under the read, move %d"
+T235_MOVED_LINE = (f"NOTED — lane repoA-2, session {UUID_A2}@Eagle, 2026-10-06T01:00:00Z, "
+                   f"lane:repoA-2 — {T235_MOVED_WORDS}\n")
+T235_NEW_LANE = "repoN-1"
+T235_NEW_LOG = f"lanes/log/{T235_NEW_LANE}.md"
+T235_NEW_UUID = "aaaaaaaa-0013-4000-8000-00000000a013"
+#: Each id: the verb's argv, and how many reads move the head. No id holds the
+#: word `worktrees` (lane 4's T404 word, B12b tasks:886, as T235's ids).
+T235_MOVED = {
+    "history-one-move": (("history", "--all"), 1),
+    "history-every-move": (("history", "--all"), T235_EVERY),
+    "decide-every-move": (("lanes", "--decide", "--all"), T235_EVERY),
+    "worktree-rows-one-move": (("worktrees",), 1),
+    "worktree-rows-every-move": (("worktrees",), T235_EVERY),
+    "worktree-rows-notes-once": (("worktrees",), 1),
+}
+
+
+@pytest.mark.parametrize("case", list(T235_MOVED))
+def test_on_primary_remote_log_events_and_worktree_rows_read_again_when_the_head_moves(
+        estate, case):
+    """T235's moved-head ids, T505's two reruns (lane 5's proposal, #165
+    6860943489; lane 3's agreement, 6861148117; T505's verify is tasks:746 at
+    f4591a08). On primary `reg_remote_log_events` takes the head pair after
+    its list read and again after its last read, and `worktree_rows` after its
+    pins and again after `lanes_rows`; where either moved, the run is dropped
+    and made again, three runs at most, then the class's failed read (lane 3,
+    #165 6851977580, Q2; round 2b, 6859073786). The door moves the head at
+    each of the first t reads of `--log-key=a,b` (`move_each`), and each id
+    counts those reads in the door's call log:
+
+      * `[history-one-move]`: `history --all`, a mirror verb, one move: exit
+        0 with the events at n + 1, byte for byte what the same read answers
+        at n + 1 with no move, the moved line once and nothing of the dropped
+        run; `a,b` is read twice, and the head is at n + 1;
+      * `[history-every-move]`: every read moves the head, so the class's
+        failed read, then the mirror: one `read: mirror at …` line on stderr,
+        and files mode's exit and stdout, with nothing of the store's before
+        it; three reads, never a fourth;
+      * `[decide-every-move]`: the same through a decide verb, `lanes
+        --decide --all`: 69 with nothing on stdout and no mirror line; three
+        reads;
+      * `[worktree-rows-one-move]`: `worktrees` on primary (decide), one move,
+        which writes `repoN-1`'s log, absent at n, whose `dir` places a tree:
+        exit 0 with the listing at n + 1, byte for byte the same read's with
+        no move, `repoN-1`'s tree in it, so the log list was pinned again;
+        two reads. No move changes the archive, so its own re-pin is not seen
+        here beyond that byte equality;
+      * `[worktree-rows-every-move]`: 69 with nothing on stdout and no mirror
+        line; three reads;
+      * `[worktree-rows-notes-once]`: `[worktree-rows-one-move]` with T235's
+        case pair in the register, so the listing notes each of its two logs
+        as unreadable and fences them (`lanes_rows`): each note is printed as
+        often as the same read prints it at n + 1 with no move, and never
+        again for the dropped run. Its last assert, the notes', FAILS UNTIL
+        lane 5's T505 round 2b B (`l5-for-l3-007-T505-round2b-B-on-R79-
+        5c416d1d3f0d`), which holds a listing's notes aside and drops them with
+        a dropped run; before it, each run of `lanes_rows` says them again.
+
+    The stub door, not `RealRegister`: `move_each` moves the contract stub's
+    head, so these ids need no engine. Every id but the notes one passes from
+    rounds 2 and 2b's A, in line R since merge89 (T235e)."""
+    argv, moves = T235_MOVED[case]
+    logs = {T235_OUT_LOG: T235_OUT_LINE}
+    if case == "worktree-rows-notes-once":
+        logs[T235_PAIR[0]] = (f"STARTED — lane repoP-1, session {STORE_ONLY_UUID}@Eagle, "
+                              "2026-10-05T00:00:00Z, lane:repoP-1 → home opensoft/repoP\n")
+        logs[T235_PAIR[1]] = "NOTED — the case pair's other half\n"
+    seed_logs(estate, logs)
+    path, line, roots = T235_MOVED_PATH, T235_MOVED_LINE, estate.root / "t235-moved-roots"
+    if argv[0] == "worktrees":
+        sidecar = roots / ".lane-state" / T235_NEW_LANE / "trees" / "t235.yaml"
+        sidecar.parent.mkdir(parents=True)
+        sidecar.write_text(f"schema: {T235_TREE_SCHEMA}\ntree: t235-moved-tree\n"
+                           f"path: {roots / 'tree'}\n", encoding="utf-8")
+        path = T235_NEW_LOG
+        line = (f"STARTED — lane {T235_NEW_LANE}, session {T235_NEW_UUID}@Eagle, "
+                f"2026-10-06T02:0%d:00Z, lane:{T235_NEW_LANE} → home opensoft/repoN; "
+                f"dir {str(roots / T235_NEW_LANE).replace('%', '%%')}\n")
+    primary = Primary(estate)
+    files = primary.files_edit(*argv) if case == "history-every-move" else None
+    first = primary.door.head()[0]
+    primary.door.fail(move_each={"key": T235_OUT_KEY, "times": moves, "path": path,
+                                 "line": line})
+    result = primary.edit(*argv)
+    reads = [call for call in primary.door.calls()
+             if call["form"] == 3 and f"--log-key={T235_OUT_KEY}" in call["argv"]]
+    head = primary.door.head()[0]
+    where = (case, "exit", result.returncode, "head", first, "->", head, "reads of",
+             T235_OUT_KEY, len(reads), result.stdout[-1500:], result.stderr[-1500:])
+    if moves == T235_EVERY:
+        assert (len(reads), head) == (3, first + 3), where
+        if files is not None:
+            assert files.returncode == 0 and T235_OUT_NOTE in files.stdout, (
+                "the control: files mode's history --all lacks the out-of-class event",
+                files.returncode, files.stdout[-1500:], files.stderr[-1500:])
+            assert len(MIRROR_LINE.findall(result.stderr)) == 1, where
+            assert not MIRROR_LINE.search(result.stdout), where
+            assert (result.returncode, result.stdout) == (files.returncode, files.stdout), (
+                where + ("files mode's:", files.stdout[-1500:]))
+        else:
+            assert (result.returncode, result.stdout) == (69, ""), where
+            assert not MIRROR_LINE.search(result.stderr), where
+        return
+    assert (len(reads), head) == (2, first + 1), where
+    primary.door.reachable()                     # no move: the same read at n + 1
+    again = primary.edit(*argv)
+    assert again.returncode == 0 and primary.door.head()[0] == first + 1, (
+        "the oracle: the same read at n + 1", again.returncode, again.stderr[-1500:])
+    assert (result.returncode, result.stdout) == (0, again.stdout), (
+        where + ("at n + 1, with no move:", again.stdout[-1500:]))
+    assert not MIRROR_LINE.search(result.stderr), where
+    if argv[0] == "history":
+        assert result.stdout.count(T235_MOVED_WORDS % 1) == 1, where
+        assert T235_OUT_NOTE in result.stdout, where
+    else:
+        rows = [row.split("\037") for row in result.stdout.splitlines()
+                if row.startswith("TREE\037")]
+        assert any(len(row) > 5 and row[2] == T235_NEW_LANE and row[4] == str(roots / "tree")
+                   and row[5] == f"unknown schema {T235_TREE_SCHEMA}" for row in rows), (
+            where + ("no tree of the lane only the log list at n + 1 names",))
+    if case == "worktree-rows-notes-once":
+        # THE HELD NOTES, PRINTED ONCE (round 2b's B): fails until B's merge.
+        said = {p: unreadable_notes(result.stderr, p) for p in T235_PAIR}
+        said["fence"] = result.stderr.count(T235_FENCE)
+        once = {p: unreadable_notes(again.stderr, p) for p in T235_PAIR}
+        once["fence"] = again.stderr.count(T235_FENCE)
+        assert all(count >= 1 for count in once.values()), (
+            "the control: the read at n + 1 does not note the case pair", once,
+            again.stderr[-1500:])
+        assert said == once, where + ("each note as often as at n + 1:", once, "said:", said)
 
 
 # ------------------------------------------------- lane 4's two read verbs
