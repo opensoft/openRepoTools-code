@@ -1316,6 +1316,30 @@ def burst_calls(w: Writer) -> Tuple[str, Dict[str, int], List[float]]:
     return " ".join(letters), losses, seconds
 
 
+def burst_ends(e: Estate, writers: Sequence[Writer]) -> List[Writer]:
+    """The ends a burst may have where its case's own row does not ask every
+    writer to commit (AT-4 (g), AT-F14): each writer committed once, its
+    write in the journal, or exited 75 with nothing written, its write ids
+    absent from the journal, and none ended any other way; the journal grew
+    by one row per committed writer, its seqs from 2 with no gap and no
+    repeat. That is AT-D9c's form for its own burst (Y TP:3755-3759;
+    TP:3781-3785 at `0c3750a5`), which lane 3 points the bursts to (#165
+    6840952649). Returns the writers that committed (T243n)."""
+    others = [(w.lane, w.code, w.err[-300:]) for w in writers if w.code not in (0, 75)]
+    assert not others, f"a burst writer ended neither 0 nor 75: {others}"
+    committed = [w for w in writers if w.code == 0]
+    for w in writers:
+        found = [x for x in set(w.write_ids()) if e.has_write(x)]
+        if w.code == 0:
+            assert len(found) == 1, f"{w.lane} exited 0, and {len(found)} of its write ids are in the journal"
+        else:
+            assert not found, f"{w.lane} exited 75, yet its write {found} is in the journal: {w.err[-300:]}"
+    grew = e.journal_after()
+    assert [r["seq"] for r in grew] == list(range(2, 2 + len(committed))), (
+        f"{len(committed)} writers committed, and the journal grew by {grew}")
+    return committed
+
+
 def record(name: str, node: Optional[pytest.Item] = None, **figures) -> str:
     """A figure recorded beside the result, never asserted (TP:7556-7559),
     and returned. With `node`, the case's item, the line is also the case's
@@ -1388,7 +1412,10 @@ def test_ten_writers_released_together_all_commit_in_order(estates, request):
     75 or 69; seqs 2 to 11, no gap and no repeat; ten distinct write ids; one
     `CLAIMED` per object; the head reads 11. The drain is asserted under 60 s.
     `burst` records it beside D7's 30 s, with each writer's attempts and
-    seconds, before any assertion, and as the case's junit property (T243l)."""
+    seconds, before any assertion, and as the case's junit property (T243l).
+    Its row asks every writer to commit, "All ten exit 0, and none exits 75
+    or 69" (Y TP:7509; TP:7583 at `0c3750a5`), so it keeps that oracle where
+    AT-4 (g) and AT-F14 take `burst_ends` (T243n)."""
     e = estates()
     objects = [f"{KEY}#{100 + k}" for k in range(10)]
     writers, drain = burst(e, objects, 200, node=request.node)
@@ -1663,7 +1690,10 @@ def test_the_image_cache_stays_content_addressed_under_the_burst_and_a_corrupt_o
     finally:
         stop.set()
         sampler.join(5)
-    assert [w.code for w in writers] == [0] * 10
+    # (g)'s own row asks the cache of the state the ten writers shared, not
+    # that every one commits (Y TP:936-950; TP:941-955 at `0c3750a5`): a
+    # writer may end 75 with nothing written, as `burst_ends` checks (T243n).
+    burst_ends(e, writers)
     named = _objects_named(e)
     assert named, f"the burst left no object under {cache}"
     for name, path in named.items():
