@@ -76,7 +76,7 @@ SKILL = REPO / "skills/handoff/SKILL.md"
 HELPER = REPO / "lanes-edit.sh"
 
 #: Each carried by exactly one shell block of the skill: how the blocks are found.
-B1 = 'handoff_file="$("$L" handoff-path "$lane" --create)"'
+B1 = 'handoff_file="$(LANES_READ_MIRROR=1 "$L" handoff-path "$lane" --create)"'
 B2 = '--prepend "$block_file"'
 STEP4 = "# (c) the row: ONE WRITE"
 

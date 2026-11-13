@@ -61,20 +61,23 @@ L="$(command -v lanes-edit.sh || printf '%s' ~/projects/xFactory/lanes-edit.sh)"
 # EVERY READ IN STEP 1 GOES THROUGH THIS ONE FENCE, and Amendment 7(d) is the
 # whole of it: `0` an answer · `8` NO ANSWER · `2` a helper predating the read —
 # both of those fall to the next rung, save the one `2` that is a REFUSAL (the
-# last paragraph below) — and ANYTHING ELSE is a read that FAILED, which is
+# paragraph on `2` below) — and ANYTHING ELSE is a read that FAILED, which is
 # neither of them (#26, the review of `c3ebcfe`, this file's `:28` and `:72`).
+# The one code asked a second time before it is any of these is `69` (the
+# paragraph on `69` below).
 # All three of step 1's reads collapsed every code into the ordinary case, and
 # what is beneath them is not a refusal: it is THE NEXT RUNG, and the last rung
 # is the workstation's NEWEST SWAP — a different lane. A register that could
 # not be read is not "this window is not a lane", and step 4 would then write a
 # PAUSED record, a stamp and a restart command for a lane this window is not.
 #
-# IT IS `/restart`'s `lread` WITH TWO DIFFERENCES, STATED RATHER THAN LEFT TO
+# IT IS `/restart`'s `lread` WITH THREE DIFFERENCES, STATED RATHER THAN LEFT TO
 # BE FOUND. Step 4's `dir` read does NOT come through here, because this fence
 # STOPS and that read may not — `R-A11-11`, *a swap is never left unwritten*.
-# It drops the sub-field and names the read instead, where it stands. And an
-# exit 2 carrying Amendment 15(d)'s words is a REFUSAL here (the last paragraph
-# below), where `lread` still reads every 2 as no answer.
+# It drops the sub-field and names the read instead, where it stands. An exit 2
+# carrying Amendment 15(d)'s words is a REFUSAL here (the paragraph on `2`
+# below), where `lread` still reads every 2 as no answer. And a 69 is asked
+# again from the mirror (the paragraph on `69` below), where `lread` does not.
 #
 # IT SETS A VARIABLE RATHER THAN PRINTING ITS ANSWER, and that is load-bearing:
 # a refusal inside `$( )` kills only the substitution's subshell and the skill
@@ -94,12 +97,68 @@ L="$(command -v lanes-edit.sh || printf '%s' ~/projects/xFactory/lanes-edit.sh)"
 # genuinely old helper left as it was. The words come from asking the same read
 # a second time with only its stderr kept, as `lane-handoff` does: the first
 # answer's stderr is discarded, and asking a read twice changes nothing.
+#
+# AND `69` IS A THIRD ANSWER, which `*)` below used to refuse (design.md, "The
+# callers' default arms", the `sread` row; feature 007, T406): the register's
+# database could not be reached. A handoff must still be written with it down
+# (`R-A11-11`), and the reads that NAME THE LANE before the handoff file is
+# published read the mirror (YS:692), so those run with `LANES_READ_MIRROR=1`
+# — `register-row`, `window-lane`, `swapped` and `canon-lane` through this fence
+# in step 1, and `register-row`, `handoff-path` and `write-handoff` in step 2,
+# where their calls carry it. A 69 from a read through this fence is then
+# re-read ONCE with that variable set, whichever verb it came from, so a door
+# that answers 69 to the first call still has the mirror asked. The
+# re-read is held to the same rule as any read: `0` an answer, `8` no answer,
+# and ANYTHING ELSE — a second 69, which is what a verb answers that the design
+# has `lanes-edit.sh` not read from the mirror — is a read that FAILED and
+# refuses here with the words `*)` uses, naming both codes. A 2 carrying
+# Amendment 15(d)'s words is that refusal and its exit 2, as above.
+#
+# AND THE MIRROR SAYS SO. A read that answers from the mirror prints
+# `read: mirror at <sha12>, …` on stderr, and this fence hides stderr, so it
+# keeps the file the call's stderr went to and forwards the lines that begin
+# `read: mirror at ` and nothing else (the shape `/restart`'s `lread` takes for
+# its own stream), from the first call, or from the re-read where there was
+# one. Where no file can be made the stream is hidden as before.
+#
+# AND IT REMEMBERS THAT IT READ THE MIRROR, in `mirror_read`, which it sets to
+# `1` where it forwarded a label or re-read a 69, with a label printed or not,
+# and never clears. It is the one fact this skill has of having read the mirror
+# (lane 3's rulings on #165, 6754439281 item 5 and 6754607466, which make it the
+# rule `lane-handoff` follows for `kept_block_say`), and step 1 prints it, for
+# block 2's printed call to name `LANES_READ_MIRROR=1` by.
 sread() {                      # sread <var> "<what the failure is NOT>" <verb> [args…]
   sr_var="$1"; sr_not="$2"; shift 2
   sr_out=""; sr_rc=0
-  sr_out="$(LANES_NO_FETCH=1 "$L" "$@" 2>/dev/null)" || sr_rc=$?
+  sr_err="$(mktemp "${TMPDIR:-/tmp}/handoff-sread.XXXXXX" 2>/dev/null || printf '')"
+  sr_out="$(LANES_NO_FETCH=1 "$L" "$@" 2>"${sr_err:-/dev/null}")" || sr_rc=$?
+  if [ -n "$sr_err" ]; then
+    if [ "$sr_rc" -ne 69 ] && grep -e '^read: mirror at ' -- "$sr_err" >&2; then mirror_read=1; fi
+    rm -f -- "$sr_err"
+  fi
   case "$sr_rc" in
     0)   : ;;
+    69)  sr_rc=0; sr_why=""; mirror_read=1
+         sr_err="$(mktemp "${TMPDIR:-/tmp}/handoff-sread.XXXXXX" 2>/dev/null || printf '')"
+         sr_out="$(LANES_READ_MIRROR=1 LANES_NO_FETCH=1 "$L" "$@" 2>"${sr_err:-/dev/null}")" || sr_rc=$?
+         if [ -n "$sr_err" ]; then
+           grep -e '^read: mirror at ' -- "$sr_err" >&2 || :
+           sr_why="$(cat -- "$sr_err" 2>/dev/null || :)"
+           rm -f -- "$sr_err"
+         fi
+         case "$sr_rc" in
+           0) : ;;
+           8) sr_out="" ;;
+           *) case "$sr_rc:$sr_why" in
+                2:*"Amendment 15(d)"*)
+                  printf 'REFUSED: `%s %s` says the register holds two rows for this lane that differ only by case, so no read of it is unambiguous and this skill will not pick one (Amendment 15(d)). It will not bind a lane, rename the window, write a PAUSED record or print a restart command; merge the two rows by hand first. The helper said:\n%s\n' \
+                    "$L" "$1" "$sr_why" >&2
+                  exit 2 ;;
+              esac
+              printf 'REFUSED: `%s %s` failed (exit 69, then exit %s from the mirror). That is NOT %s — a read that failed is never an answer (Amendment 7(d)), and this skill will not bind a lane, write a PAUSED record or print a restart command on one. Run it by hand to see what it says.\n' \
+                "$L" "$1" "$sr_rc" "$sr_not" >&2
+              exit 1 ;;
+         esac ;;
     2)   sr_why="$(LANES_NO_FETCH=1 "$L" "$@" 2>&1 >/dev/null || :)"
          case "$sr_why" in
            *"Amendment 15(d)"*)
@@ -144,7 +203,10 @@ esac
 claude-usage
 window="$(tmux display-message -p '#W')"                     # Amendment 8(b): the window IS the lane
 lane="$window"
-sread row_probe "'this window is not a lane'" register-row "$lane"
+mirror_read=""
+# THIS READ CARRIES `LANES_READ_MIRROR=1` TOO (the paragraph on `69` above `sread`): it
+# names the lane, so with the database down it reads the mirror from its first call.
+LANES_READ_MIRROR=1 sread row_probe "'this window is not a lane'" register-row "$lane"
 [[ -n "$row_probe" ]] || lane=""
 # THE WORKSTATION COMES FROM CONFIGURATION, NEVER FROM `hostname` (Amendment 11,
 # ratified decision 8(d), from Evidence 6): a forked orchestrator wrote a bench
@@ -206,9 +268,15 @@ if [[ -z "$lane" ]]; then
   # for: a window whose name is gone but whose record names it.
   # 0 is a lane, 8 is none, and 2 is a `lanes-edit.sh` predating Amendment 11 —
   # expected and silent, and a fall to the next rung rather than a refusal.
+  #
+  # THIS NAMING READ, AND `swapped` BELOW, CARRY `LANES_READ_MIRROR=1` (the
+  # paragraph on `69` above `sread`), AS DO THE OTHER READS OF THIS STEP: they
+  # name the lane before the handoff file is published, so with the database
+  # down they read the mirror and the handoff is still written (`R-A11-11`). The
+  # variable is set for the one call and nothing after it sees it.
   wl_ref="$(tmux display-message -p '#{window_id}' 2>/dev/null)"
   [[ -n "$wl_ref" ]] || wl_ref="$(tmux display-message -p '#S:#I' 2>/dev/null)"
-  sread candidate "'no lane is bound to this window'" window-lane "$ws" "$wl_ref"
+  LANES_READ_MIRROR=1 sread candidate "'no lane is bound to this window'" window-lane "$ws" "$wl_ref"
   [[ "$candidate" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]] && lane="$candidate"
 fi
 if [[ -z "$lane" ]]; then
@@ -216,7 +284,7 @@ if [[ -z "$lane" ]]; then
   # whether there is an answer at all, and the contract is the tab. A row that
   # printed before a failed read, or one with no tab, is not a record row —
   # `cut -f 1` would hand back the whole line, lane-shaped and wrong.
-  sread rows "'this workstation has no swap record'" swapped "$ws"
+  LANES_READ_MIRROR=1 sread rows "'this workstation has no swap record'" swapped "$ws"
   first="$(printf '%s\n' "$rows" | head -n 1)"
   if [[ -n "$rows" && "$first" == *$'\t'* ]]; then
     candidate="${first%%$'\t'*}"
@@ -237,10 +305,12 @@ fi
 # line then carry. It is NOT a check that the lane has a row: `canon_lane`
 # answers a name no row matches with the name as typed.
 if [[ -n "$lane" ]]; then
-  sread lane_canon "'this lane has no row'" canon-lane "$lane"
+  LANES_READ_MIRROR=1 sread lane_canon "'this lane has no row'" canon-lane "$lane"
   [[ "$lane_canon" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]] && lane="$lane_canon"
 fi
 printf 'lane=%s\n' "${lane:-<none>}"
+# Printed only where `sread` forwarded a mirror label or re-read a 69, for block 2 to be given.
+[[ -z "$mirror_read" ]] || printf 'mirror_read=%s\n' "$mirror_read"
 ```
 
 The window name answers first, the window's own RECORD second and the workstation's newest swap third —
@@ -290,7 +360,9 @@ because this decides state (Amendment 7's read-after-fetch rule governs it; step
 the only no-fetch read this skill makes):
 
 ```sh
-row="$("$L" register-row "$lane" 2>/dev/null | grep '^|' | tail -n 1)"
+# THIS READ CARRIES `LANES_READ_MIRROR=1` (the paragraph on `69` above `sread`), AND IT HAS NO `sread` TO
+# FALL BACK ON: with the database down, a 69 here is no row, and the handoff below is never located.
+row="$(LANES_READ_MIRROR=1 "$L" register-row "$lane" 2>/dev/null | grep '^|' | tail -n 1)"
 # The handoff path is the row's SIXTH column: awk field 7, because $1 is the empty string before the
 # leading pipe — lanes-edit.sh's own row_cell/handoff_of_lane convention. NEVER count back from NF: this
 # lane's own row alone carries 27 fields today, every extra one of them in the state history to the RIGHT
@@ -366,7 +438,9 @@ edit: the handoff is the verb's to write (lane openRepoTools-3's finding 983 on 
 # WHERE THE HANDOFF IS: derived, never spelled. `handoff-path` only reads, and `--create` makes the lane's own
 # checkout first where this is its first use.
 hf_rc=0; handoff_file=""; block_file=""; hf_said=""; hf_record=""
-handoff_file="$("$L" handoff-path "$lane" --create)" || hf_rc=$?
+# THIS CALL CARRIES `LANES_READ_MIRROR=1` (the paragraph on `69` above `sread`): it comes before the handoff is
+# published, so with the database down it reads the mirror and the handoff is still written (`R-A11-11`).
+handoff_file="$(LANES_READ_MIRROR=1 "$L" handoff-path "$lane" --create)" || hf_rc=$?
 # ONLY 8 IS "NO HANDOFF" (Amendment 7(d): a read that failed is no answer). 1 is a register it could not read
 # (its own "R22: never 8"), 2 a name refused, a cell refused (601, 602, 607) or a clone that failed, 4 the lock
 # that makes the checkout, and a `lanes-edit.sh` predating `handoff-path` says 2 from its unknown-subcommand
@@ -534,11 +608,17 @@ hf_subject="$(printf '%s' "$hf_subject" | LC_ALL=C tr '[:cntrl:]' ' ')"
 # block goes into the handoff by this call once the gap is answered, never by a hand edit of the handoff. Each
 # word is single-quoted, a quote in it spelled '\'', so the line runs as printed under bash and zsh alike.
 hf_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
-hf_call="LANES_LANE=$(hf_quote "$lane") $(hf_quote "$L") write-handoff $(hf_quote "$lane") --prepend $(hf_quote "${block_file:-<block file>}") --subject $(hf_quote "$hf_subject")"
+# IT NAMES `LANES_READ_MIRROR=1` ONLY WHERE THIS RUN'S `sread` FORWARDED A MIRROR LABEL OR RE-READ A 69 (`$mirror_read`,
+# step 1's line; lane 3's rulings on #165, 6754439281 item 5 and 6754607466): then the store was down, and the same
+# call by hand is a mirror read too. Anywhere else the skill cannot tell, and the call is printed as it always
+# was, so that a run by hand during an outage refuses 69 and writes nothing, which is the failure that closes
+# (item 2).
+hf_mirror=""; [[ -z "${mirror_read:-}" ]] || hf_mirror="LANES_READ_MIRROR=1 "
+hf_call="${hf_mirror}LANES_LANE=$(hf_quote "$lane") $(hf_quote "$L") write-handoff $(hf_quote "$lane") --prepend $(hf_quote "${block_file:-<block file>}") --subject $(hf_quote "$hf_subject")"
 hf_rc=0; hf_out=""
 # THE ONE CALL: the verb reads the handoff under the lock and puts the block in front of it (`--prepend`).
 if [[ -n "$handoff_file" && -s "${block_file:-}" ]]; then
-  hf_out="$(LANES_LANE="$lane" "$L" write-handoff "$lane" --prepend "$block_file" \
+  hf_out="$(LANES_READ_MIRROR=1 LANES_LANE="$lane" "$L" write-handoff "$lane" --prepend "$block_file" \
     --subject "$hf_subject")" || hf_rc=$?
   # ITS STDOUT IS `<file><TAB><sha256>` ONCE THE FILE IS WRITTEN, whatever the exit; its own words are on stderr.
   hf_path="${hf_out%%$'\t'*}"
@@ -610,7 +690,8 @@ made, or the verb wrote nothing. These are the phrases lane openRepoTools-3's an
 `lane-handoff` take too, through its fit (c), so the two writers of one act record its outcome alike. EVERY BASH CALL IS A NEW SHELL, so nothing one block sets reaches the next
 by itself, and step 3 comes between step 2 and step 4 (lane openRepoTools-3's finding 984 on #311). Before
 block 2, set `L`, `lane`, `ws` and `why` as step 1 has them, and each `name=value` line block 1 printed
-(`handoff_file`, `block_file` and `hf_record`, those it printed), quoted. Before step 4, set `hf_record` from
+(`handoff_file`, `block_file` and `hf_record`, those it printed), quoted. Set `mirror_read=1` too where step 1
+printed it: it is what lets the call block 2 prints name `LANES_READ_MIRROR=1`. Before step 4, set `hf_record` from
 block 2's last line, `hf_record=<what this step did>`, quoted, beside step 4's other values. A step 4 that it
 never reached says `handoff NOT refreshed (step 2 left no outcome)`.
 
