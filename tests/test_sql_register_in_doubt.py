@@ -95,8 +95,8 @@ import pytest
 from pgcluster import SUPERUSER, TEMPLATE, Database
 from sql_register_helpers import _proc_start
 from test_sql_register_order import (BURST, CLIENT, DOT, EM, LA, LB, LC, OBJ, UUID_RE, Barrier, Estate,  # noqa: F401
-                                     Writer, claim, estates, hold_point, kind_line, loggers, session_of,
-                                     tool_calls)
+                                     Writer, claim, estates, hold_point, kind_line, loggers, run_git,
+                                     session_of, tool_calls)
 
 REGISTER = "lanes_register"
 WRITER_LOGIN = "lanes_w_fx"
@@ -1089,6 +1089,13 @@ def mark_of(e: Estate, write_id: str) -> Path:
     return e.state / DONE / write_id
 
 
+def gh_reads(where: Path) -> List[dict]:
+    """The fake `gh`'s `issue view` calls: `claim`'s Rule 1 reads, which
+    each run of the verb makes at its step 2, before the seam, an attempt's
+    child or a replay's (`gh_reads_live`; Y:5043, Y:5326)."""
+    return [c for c in tool_calls(where, "gh") if c["argv"][:2] == ["issue", "view"]]
+
+
 def comments(where: Path) -> List[dict]:
     """The fake `gh`'s comment calls, `issue comment` or `pr comment`: a
     verb's tail (`gh_comment`, T421). Never Rule 1's reads, `issue view
@@ -1292,20 +1299,69 @@ def test_status_lists_and_resolves_pending_records(estates, case):
 def test_a_rerun_that_finds_its_write_committed_runs_the_verbs_after_commit_tail(estates):
     """`rename-lane`'s tail: `lane_state_rename` moves the old control root
     to the new name once; the handoff file at the new path holds one
-    `RENAMED from <old>` line; the fake `gh` logs one comment per held claim
-    (none here)."""
+    `RENAMED from <old>` line, under its header, never two (TP:3384-3389);
+    the fake `gh` logs one comment per held claim (none here). The estate
+    holds the lane's handoff in its checkout (TP:3315): `seed_handoff`."""
     e = estates()
     where, root = loggers(e), sidecars(e)
     new = "repoA-9"
     extra = {"LANES_LANE_STATE_ROOT": str(root)}
+    seed_handoff(e, LA)
     again, _, _ = tail_rerun(e, LA, ["rename-lane", LA, new, "T245", "--no-github"], where, extra)
     assert (root / new).is_dir() and not (root / LA).exists()
     # The move and stamp are made in the lane's own register checkout, `PW_C`,
     # `<W>-lanes/<lane>` (`8ba10b4e:lanes-edit.sh:25251-25256`), which the
-    # estate makes at `co-<n>-lanes/<lane>`, never in W (T245l; PM33A-TRIAGE L2).
-    handoffs = list(e.root.glob(f"co-*-lanes/*/handoffs/{new}.md"))
-    assert handoffs and all(h.read_text(encoding="utf-8").count(f"RENAMED from {LA}") <= 1 for h in handoffs)
+    # estate makes at `co-<n>-lanes/<lane>`, never in W (T245l; PM33A-TRIAGE L2),
+    # and pushed, so each checkout made after it holds the moved file too.
+    moved, stamp = lane_handoff(new), f"RENAMED from {LA} "
+    handoffs = list(e.root.glob(f"co-*-lanes/*/{moved}"))
+    assert handoffs, f"no lane checkout holds {moved}"
+    for h in handoffs:
+        lines = h.read_text(encoding="utf-8").splitlines()
+        assert sum(l.startswith(stamp) for l in lines) == 1 and lines[3:4] and lines[3].startswith(stamp), (
+            f"{h} does not hold one Rule 3 stamp under its header: {lines[:6]}")
     assert comments(where) == []
+
+
+def by_hand(e: Estate, message: str, *change: str) -> None:
+    """A person's commit on the lanes origin, made from the estate's seed
+    clone brought up to the origin first: `git <change>`, then commit and
+    push. Every checkout a later run makes holds it."""
+    run_git(e.seed, "pull", "-q", "--ff-only", "origin", "main", env=e.env)
+    run_git(e.seed, *change, env=e.env)
+    run_git(e.seed, "commit", "-q", "-m", message, env=e.env)
+    run_git(e.seed, "push", "-q", "origin", "main", env=e.env)
+
+
+def lane_handoff(lane: str) -> str:
+    """A handoff named for its lane, `session-handoff-<date>-lane-<lane>.md`:
+    the one shape `rename-lane` moves, to the same date with `-lane-<new>`
+    (Amendment 16(d); `8ba10b4e:lanes-edit.sh:28903-28925`). Test 4's rows
+    name `handoffs/<lane>.md` (`w_row`), which it stamps where it is and
+    never moves (`:29155-29156`)."""
+    return f"handoffs/session-handoff-2026-05-01-lane-{lane}.md"
+
+
+def seed_handoff(e: Estate, lane: str) -> str:
+    """AT-D8's `rename-lane` estate, "the lane's handoff file in its
+    checkout" (TP:3315). A run looks for the handoff its row names in the
+    lane's own register checkout, `<W>-lanes/<lane>`, cloned from the lanes
+    origin, and where that checkout holds none it moves and stamps nothing
+    (`8ba10b4e:lanes-edit.sh:25064-25065`, `:29133-29136`). So the handoff,
+    a header block and the blank line Rule 3's stamp goes under
+    (`rl_stamp_build`, `:25000-25021`), is committed on the lanes origin
+    from the estate's seed clone, before any run, and `lane`'s row is
+    pointed at it by `replace-in-row`, the verb the engine names for that
+    (`:24985`). Returns its path in a checkout."""
+    rel = lane_handoff(lane)
+    (e.seed / rel).parent.mkdir(parents=True, exist_ok=True)
+    (e.seed / rel).write_text(f"# Handoff: lane {lane}\nT245's seed.\n\nNothing is owed.\n", encoding="utf-8")
+    run_git(e.seed, "add", "--", rel, env=e.env)
+    run_git(e.seed, "commit", "-q", "-m", f"handoff({lane}): T245's seed", env=e.env)
+    run_git(e.seed, "push", "-q", "origin", "main", env=e.env)
+    w = e.run(lane, ["replace-in-row", lane, f"handoffs/{lane}.md", rel, "T245: a handoff named for its lane"])
+    assert w.code == 0, f"replace-in-row exited {w.code}: {w.err[-800:]}"
+    return rel
 
 
 @CLIENT
@@ -1425,7 +1481,18 @@ def test_a_rerun_after_a_3_replays_the_verbs_tail_once(estates):
 def test_a_sent_record_whose_child_never_read_committed_replays_and_an_owed_mark_runs_no_tail(estates, state):
     """[sent-child-never-read]: a record holding `tail=sent` while the dead
     child's `seam.out` says `none`: the owner removes `tail` and replays,
-    one comment, exit 0. [owed-mark]: a mark holding `owed <utc>`; a rerun
+    once, one comment, exit 0 (Y:5342; lane 3's rule, #165 6838365309 and
+    6838735040). The takeover reads the `seam.out` in the directory of the
+    record's `call=` line (Y:5173), so the case writes `none` there: the
+    child, killed while its parent's commit call was held, wrote none
+    (it writes one only at its seam, `8ba10b4e:lanes-edit.sh:5150-5164`,
+    `:5453`). The replay ran once: its child made `claim`'s Rule 1 reads,
+    `gh issue view`, as many times as the killed run's child did, since a
+    replay reads `gh_reads` again (Y:5326) and the takeover's parent runs
+    no verb. `tail` was removed: the done mark holds the replayed tail's
+    `done`, not the `sent` the record held, which a run that keeps the
+    `sent` row writes the mark from (Y:5338-5342). [owed-mark]: a mark
+    holding `owed <utc>`; a rerun
     under `LANES_WRITE_ID`, with its generation (T245d), runs no tail, adds
     no comment, and names the steps as owed again. The mark is written in
     its contract's form, one `key=value` a line, `write_id`, `seq`, `tail`,
@@ -1440,10 +1507,18 @@ def test_a_sent_record_whose_child_never_read_committed_replays_and_an_owed_mark
     if state == "sent-child-never-read":
         with rec["path"].open("a", encoding="utf-8") as f:
             f.write(f"tail=sent {e.journal_after()[-1]['seq']} {e.utc()}\n")
-        for seam in e.state.rglob("seam.out"):
-            seam.write_text("none\n", encoding="utf-8")
+        assert len(rec["calls"]) == 1, rec["calls"]
+        old = Path(rec["calls"][0].split(None, 4)[4].strip())
+        assert old.is_dir(), f"the record's call= directory {old} is not there"
+        (old / "seam.out").write_text("none\n", encoding="utf-8")
+        killed_reads = len(gh_reads(where))
         again = e.run(LA, argv, first=[where])
         assert again.code == 0 and len(comments(where)) == 1, (again.err[-800:], comments(where))
+        assert killed_reads > 0 and len(gh_reads(where)) == 2 * killed_reads, (
+            f"the replay's child made {len(gh_reads(where)) - killed_reads} of claim's Rule 1 reads, "
+            f"the killed run's child {killed_reads}: not one replay")
+        mark = mark_of(e, write_id).read_text(encoding="utf-8")
+        assert pending(e) == [] and re.search(r"(?m)^tail=done ", mark), f"tail was not replayed to done: {mark!r}"
     else:
         mark = mark_of(e, write_id)
         mark.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1463,25 +1538,43 @@ def test_a_sent_record_whose_child_never_read_committed_replays_and_an_owed_mark
 def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_none_of_the_tail(estates, case):
     """The write is committed either way. [rename-lane-stops]: the handoff
     file removed, so the replay stops before its write; [rename-lane-differs]:
-    the handoff moved by hand, so the change set differs. Each writes the
-    mark `owed <utc>`, removes the record, prints one WARNING, exits 0 and
-    runs no tail. [request-handoff-differs]: the fake `tmux` reports the
+    the handoff moved by hand to the new path, so the row's handoff cell no
+    longer changes and the change set differs (TP:3418-3426). Each writes
+    the mark `owed <utc>`, removes the record, prints one WARNING, exits 0
+    and runs no tail. [request-handoff-differs]: the fake `tmux` reports the
     holder's window gone; the run exits 2, saying the request is written at
-    seq `<s>` and it did not wait for the release."""
+    seq `<s>` and it did not wait for the release.
+
+    The two `rename-lane` forms need the lane's handoff in its checkout
+    (TP:3315), named for its lane so that the rename changes the row's
+    cell (`seed_handoff`, T245r). Each run clones its own W and lane
+    checkouts from the lanes origin (`Estate.launch`), so the rerun never
+    sees a change made in the killed run's checkouts: the handoff is
+    removed or moved by hand on the origin (`by_hand`), before the rerun.
+
+    [rename-lane-stops] tells its form from [rename-lane-differs] by Y:5329's
+    text, which TP:3419-3423 asks for: "replayed at seq `<s-1>` it now
+    stops before its write (exit `<rc>`: `<its last line>`), so its
+    after-COMMIT steps did NOT run", with a nonzero exit and a last line,
+    and no "another change set", the differs form's words (Y:5330). It
+    fails until lane 4's T422 makes the replay's stamp checks refuse a
+    handoff that is not in `<c>` before the seam (tasks:1280 at `717ed04d`:
+    "the stamp's checks run before the seam"). At `8ba10b4e` the replay
+    only notes the missing handoff and leaves the row's cell as it is
+    (`lanes-edit.sh:29135-29136`), so it reaches the seam with another
+    change set: the differs path."""
     e = estates()
     where, root = loggers(e), sidecars(e)
     extra = {"LANES_LANE_STATE_ROOT": str(root)}
     argv = (["request-handoff", LC, "--session", session_of(LC), "--no-wait"] if case.startswith("request")
             else ["rename-lane", LA, "repoA-9", "T245", "--no-github"])
+    handoff = seed_handoff(e, LA) if case.startswith("rename") else ""
     _, write_id = killed(e, LA, argv, first=[where], extra=extra)
     seq = e.journal_after()[-1]["seq"]
-    handoffs = list(e.root.glob(f"co-*-lanes/*/handoffs/{LA}.md"))   # the lane's own checkouts (T245l)
     if case == "rename-lane-stops":
-        for h in handoffs:
-            h.unlink()
+        by_hand(e, "T245: the handoff removed by hand", "rm", "-q", "--", handoff)
     elif case == "rename-lane-differs":
-        for h in handoffs:
-            h.rename(h.with_name("repoA-9.md"))
+        by_hand(e, "T245: the handoff moved by hand", "mv", "--", handoff, lane_handoff("repoA-9"))
     else:
         (where / "tmux").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     again = e.run(LA, argv, first=[where], extra=extra)
@@ -1491,6 +1584,12 @@ def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_n
         assert again.code == 0 and again.err.count("WARNING") == 1, again.err[-800:]
         assert "owed" in mark_of(e, write_id).read_text(encoding="utf-8")
         assert (root / LA).is_dir(), "the tail ran"
+    if case == "rename-lane-stops":
+        stops = (re.escape(f"register write {write_id} is in the register at seq {seq}; replayed at seq {seq - 1} "
+                           "it now stops before its write (exit ")
+                 + r"[1-9][0-9]*: (?!no output\)).+?\), so its after-COMMIT steps did NOT run: ")
+        assert re.search(stops, again.err) and "another change set" not in again.err, (
+            f"the replay did not stop before its write: {again.err[-800:]}")
     assert pending(e) == []
 
 
