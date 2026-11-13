@@ -57,6 +57,11 @@
 #   lanes-edit.sh [--no-sweep]         append-line        "<text>"            # LANDING/LANDED lines
 #                                        (attribution: $LANES_LANE, else the
 #                                         "lane <name>" the text itself names)
+#   lanes-edit.sh                      append-line        --landing-expired <holder> --pr <n> --repo <owner/repo>
+#                                        --word '<quote>' --word-where '<where>' --word-utc <UTC>
+#                                        (feature 007, F13: on mode=primary only, with LANES_LANE
+#                                         and LANES_SESSION, the release of the holder's LANDING
+#                                         past Rule 6's 30 minutes, on Brett's word; T425)
 #   lanes-edit.sh [--no-sweep]         add-row            "<full | row |>"
 #   lanes-edit.sh [--no-sweep]         start-record       <lane> <STARTED|RESUMED>
 #                                        { --add-row "<full | row |>"
@@ -693,12 +698,26 @@
 #      `LANES_SESSION` that is not a transcript uuid. A cell append whose
 #      anchor does not hold is no refusal: it is left out and said, and the
 #      write goes on.
-#      FEATURE 007, T424: on primary only, `append-line` refuses with 2,
-#      before the lock and with nothing written, a text that the one
-#      classifier, `lanes-index register classify`, reads as one of four: a
-#      hand-typed `LANDING EXPIRED`, a take that names no repository, a take
-#      with no readable UTC, or a `LANDING` whose lane cannot be read. That
-#      classifier's own 2, a refused configuration, is relayed as 2.
+#      AND FEATURE 007'S APPEND-LINE CLASSIFIER (T424): on primary only,
+#      `append-line` refuses with 2, before the lock and with nothing written,
+#      a text that the one classifier, `lanes-index register classify`, reads
+#      as one of four: a hand-typed `LANDING EXPIRED`, a take that names no
+#      repository, a take with no readable UTC, or a `LANDING` whose lane
+#      cannot be read. That classifier's own 2, a refused configuration, is
+#      relayed as 2.
+#      AND FEATURE 007'S RELEASE OF A STALE LANDING (T425; F13; Y:5114,
+#      Y:5140), `append-line --landing-expired`, with nothing written: before
+#      the lock, any mode but primary, a newline in any argument, the form's
+#      usage, Brett's word, its place or its UTC missing, a `--word-utc` that
+#      is not a UTC, and `LANES_LANE` or `LANES_SESSION` unset or malformed;
+#      on each attempt's snapshot, no open LANDING of the holder for that PR
+#      and repository, or one with no readable UTC or 30 minutes old or less,
+#      then managed-owner vocabulary in the line it composes (Y:5115); four
+#      internal errors: Rule 6's primary program not set in a primary
+#      process, the snapshot's register unreadable to awk, an open LANDING
+#      with no repository to copy, and a seam that returns with no register
+#      seq; and the commit's LR005 `expired-none`, `expired-closed` or
+#      `expired-young`, relayed, and told apart by its token alone.
 #  64  usage — a caller's bad arguments to one of the reads Amendment 11 added
 #      (`window-lane`, `lane-dir`, `lane-profile`, `last-session`, `forks`,
 #      `duplicate-holder` (issue #39), `workstation`, `fetch-age`, `lanes`,
@@ -822,15 +841,16 @@
 #      here the request IS written, in the register at the seq it names, and
 #      whether the lane is still bound is not known, so the wait does not end
 #      2's "still bound". Nothing on stdout. Files mode keeps its 2.
-#      FEATURE 007, T424: on primary only, `append-line` also exits 69, before
-#      the lock and with nothing written, where the one classifier,
-#      `lanes-index register classify`, gives no answer this file can read,
-#      so that it cannot say whether the text is one of the four it refuses
-#      (see 2): no `lanes-index` to run or no place to put the question, an
-#      exit other than 0 and 2 (the 64 of a `lanes-index` that has no
-#      `classify`, a crash, a signal, its 2 s timer), or an exit 0 without
-#      exactly one line of five tab-separated fields (contract §2.7, "No
-#      other code"; §2.8). It never writes the text unclassified.
+#      AND FEATURE 007'S APPEND-LINE CLASSIFIER (T424): on primary only,
+#      `append-line` also exits 69, before the lock and with nothing written,
+#      where the one classifier, `lanes-index register classify`, gives no
+#      answer this file can read, so that it cannot say whether the text is
+#      one of the four it refuses (see 2): no `lanes-index` to run or no
+#      place to put the question, an exit other than 0 and 2 (the 64 of a
+#      `lanes-index` that has no `classify`, a crash, a signal, its 2 s
+#      timer), or an exit 0 without exactly one line of five tab-separated
+#      fields (contract §2.7, "No other code"; §2.8). It never writes the text
+#      unclassified.
 #   3  PUSHED, NOT CONFIRMED: <sha> (Amendment 23 S4, its one cause in files
 #      mode). The write
 #      committed and pushed — or its push timed out, and a hung push often
@@ -1746,7 +1766,7 @@ unset LANES__REPLAY_PID LANES__ATTEMPT LANES__CLAIM_FROM LANES__CLAIM_DEAD LANES
 #     (Y:5039) and `LOCK` is the scratch tree's (Y:5044);
 #   * `REG_MODE` is `primary` (Y:5121; R45), set by assignment here, so the
 #     writers' question returns on a set answer and starts no `lanes-index`,
-#     and T425's and T426's one line reads it in the child as in the parent;
+#     and T425's and T426's one line reads it in the child;
 #   * ONE CLOCK (D13, Y:528–534): the snapshot's `clock=`, the database's time
 #     in whole epoch seconds, read here once from `<dir>/snapshot`, is what
 #     `now_epoch` and `utc_now` answer, so the lines the verb composes and the
@@ -3211,6 +3231,287 @@ append_line_primary_refusals() {   # <text>
 # written, never the text unclassified.
 append_line_classify_failed() {   # <why>
   die "on primary, append-line asks lanes-index register classify whether its text is one of the four it refuses, and the classifier $1. Without its answer the text is not written: nothing was written, and the lock was not taken. Install the lanes-index that ships with this lanes-edit.sh, or run the text through lanes-index register classify by hand to see why." 69
+}
+
+# FEATURE 007, T425 — `append-line --landing-expired`, THE RELEASE OF A STALE
+# `LANDING` ON BRETT'S WORD (F13; FR-032; Y:5099–5142; adopted by Brett on
+# 2026-11-08, #165 6721583757):
+#
+#   LANES_LANE=<writer> LANES_SESSION=<uuid> lanes-edit.sh append-line \
+#     --landing-expired <holder> --pr <n> --repo <owner/repo> \
+#     --word '<quote>' --word-where '<where>' --word-utc <UTC>
+#
+# D18 keeps `append-line` the one verb, so this form of it composes the line,
+# and nothing else writes the kind on primary: T424 refuses one typed by hand.
+# The arm hands the form here before anything of its own runs, so the form's
+# line never meets that refusal.
+#
+# WHERE IT RUNS. On primary the parent never reaches an arm: the writers' door
+# runs `pw_run` (T415), and this arm runs in each attempt's child (T413), on
+# the scratch tree at the snapshot's seq, with `REG_MODE` `primary` and the
+# snapshot's clock. Off primary it runs in the main shell and refuses.
+#
+# REFUSED WITH 2 BEFORE THE LOCK, NOTHING WRITTEN (Y:5114, Y:5140), as the
+# newline refusal is, so on primary the child ends before `ready` and nothing
+# is sent: any mode but primary, the mode question's fall to files mode
+# included (F8); a newline or carriage return in any argument; the form's
+# own usage, a `<holder>` that is not a lane name, a `--pr` that is not a
+# number, a `--repo` outside the characters Rule 6 reads in `into <repo>
+# main`, an unknown option, one given twice or with no value; `--word`,
+# `--word-where` or `--word-utc` missing or empty; a `--word-utc` that is not
+# a UTC; `LANES_LANE` unset or not a lane name; and `LANES_SESSION` unset, or
+# not the transcript UUID a session field must be (Amendment 7(b), as
+# `write_event` holds it).
+#
+# REFUSED WITH 2 ON EACH ATTEMPT'S SNAPSHOT, before `ready`, nothing sent
+# (Y:5114): no open LANDING of the holder for that PR and repository, one
+# with no UTC that reads as a time, or one 30 minutes old or less by the
+# snapshot's clock; then managed-owner vocabulary anywhere in the line it
+# composes, as plain `append-line` refuses its whole text (Y:5115; lane 3,
+# #165 6770688147, T425 Q4). A LANDED committed after the snapshot fails the
+# commit's head check (LR001), and the next attempt finds no open LANDING.
+LE_HOLDER=""; LE_PR=""; LE_REPO=""; LE_WORD=""; LE_WHERE=""; LE_WUTC=""
+LE_L=""; LE_P=""; LE_R=""; LE_U=""; LE_M=""
+# THE FIND (Y:5112): `RULE6_AWK` as primary reads it, `RULE6_EXPIRED_AWK`
+# included (R45's one line), run between two pieces of its own. FIRST, a rule
+# that keeps every LANDING line by its number, since the program's own
+# LANDING rule ends in `next`. LAST, an END after the program's own, which
+# prints, tagged `OPEN`, every key still `LANDING` whose PR is `--pr` and
+# whose repository is `--repo`, both as the program keys them (the PR as
+# written, the repository through `canon` and case-blind): its lane, its PR,
+# the newest post's own `into` token, that post's UTC and its line number.
+# The pairing is the program's, so this finds what `who_landing` would list on
+# primary and pairs nothing a second way. Its inputs come through `ENVIRON`,
+# never `-v` (the alias table is many lines; see `who_landing`).
+LE_FIND_PRE='
+/^LANDING — / { LE_RAW[NR] = $0 }
+'
+LE_FIND_END='
+END {
+  tp = ENVIRON["LANES_LE_PR"]; tr = tolower(canon(ENVIRON["LANES_LE_REPO"]))
+  for (k in ST) {
+    if (ST[k] != "LANDING" || P[k] != tp || tolower(R[k]) != tr) continue
+    rr = ""
+    if (match(LE_RAW[O[k]], /into [A-Za-z0-9\/._-]+ main/)) rr = substr(LE_RAW[O[k]], RSTART + 5, RLENGTH - 10)
+    printf "OPEN%c%s%c%s%c%s%c%s%c%d\n", 31, L[k], 31, P[k], 31, rr, 31, U[k], 31, O[k]
+  }
+}'
+append_line_landing_expired_usage() {   # <what is wrong>
+  die "usage: LANES_LANE=<writer> LANES_SESSION=<uuid> $SELF append-line --landing-expired <holder> --pr <n> --repo <owner/repo> --word '<quote>' --word-where '<where>' --word-utc <UTC>: $1. Nothing was written, and the lock was not taken." 2
+}
+append_line_landing_expired() {   # <holder> --pr <n> --repo <r> --word <q> --word-where <w> --word-utc <u>
+  local le_a="" le_o="" le_seen=" " le_rows="" le_rc=0 le_pass="" le_ch="" le_t="" le_a1="" le_a2="" le_a3="" le_a4="" le_a5=""
+  local le_l="" le_p="" le_r="" le_u="" le_n=-1 le_age=0 le_line="" lane_tag="" le_left="" le_row="" le_open=""
+  if [ "$REG_MODE" != primary ]; then
+    die "append-line --landing-expired: the release of a stale LANDING exists only on mode=primary, where the register's own check (F13) judges it when it is committed; this register's mode is ${REG_MODE:-files}; nothing was written. Off primary a LANDING past Rule 6's thirty minutes is listed as STALE, and only its own lane's LANDED closes it." 2
+  fi
+  for le_a in ${1+"$@"}; do
+    if [ "${le_a//[$'\n\r']/}" != "$le_a" ]; then
+      die "append-line --landing-expired composes ONE line, and an argument carries a newline or a carriage return: the line would be several. Nothing was written, and the lock was not taken. Spell the break '; ' and re-run." 2
+    fi
+  done
+  LE_HOLDER="${1-}"
+  case "$LE_HOLDER" in
+    "" | --*) append_line_landing_expired_usage "the holder, the lane whose LANDING is released, comes first" ;;
+    *[!A-Za-z0-9._-]* | .* | -*) append_line_landing_expired_usage "'$LE_HOLDER' is not a lane name (letters, digits, . _ -, not opening with . or -)" ;;
+  esac
+  shift
+  while [ $# -gt 0 ]; do
+    le_o="$1"
+    case "$le_o" in
+      --pr|--repo|--word|--word-where|--word-utc) : ;;
+      *) append_line_landing_expired_usage "'$le_o' is not one of its options" ;;
+    esac
+    case "$le_seen" in *" $le_o "*) append_line_landing_expired_usage "$le_o is given twice" ;; esac
+    le_seen="$le_seen$le_o "
+    [ $# -ge 2 ] || append_line_landing_expired_usage "$le_o has no value"
+    case "$le_o" in
+      --pr) LE_PR="$2" ;;
+      --repo) LE_REPO="$2" ;;
+      --word) LE_WORD="$2" ;;
+      --word-where) LE_WHERE="$2" ;;
+      --word-utc) LE_WUTC="$2" ;;
+    esac
+    shift 2
+  done
+  case "$LE_PR" in
+    "" | *[!0-9]*) append_line_landing_expired_usage "--pr is the LANDING's PR number, digits only, as 'PR #<n>' carries it" ;;
+  esac
+  case "$LE_REPO" in
+    "" | *[!A-Za-z0-9/._-]*) append_line_landing_expired_usage "--repo is the LANDING's repository, as 'into <owner/repo> main' spells it (letters, digits, / . _ -)" ;;
+  esac
+  if [ -z "$LE_WORD" ] || [ -z "$LE_WHERE" ] || [ -z "$LE_WUTC" ]; then
+    die "append-line --landing-expired releases a LANDING only on Brett's word, and the line carries it: --word (his words, quoted), --word-where (where he gave it) and --word-utc (when) are each required and not empty. Nothing was written, and the lock was not taken." 2
+  fi
+  case "$LE_WUTC" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]Z | \
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) le_a="$(epoch_of "$LE_WUTC")" ;;
+    *) le_a="" ;;
+  esac
+  [ -n "$le_a" ] ||
+    die "append-line --landing-expired: --word-utc '$LE_WUTC' is not a UTC, as YYYY-MM-DDTHH:MMZ or YYYY-MM-DDTHH:MM:SSZ: it is the time of Brett's word, which the line records. Nothing was written, and the lock was not taken." 2
+  if [ -z "${LANES_LANE:-}" ]; then
+    die "append-line --landing-expired is written by the lane that runs it, which the line names first: set LANES_LANE=<writer>. Nothing was written, and the lock was not taken." 2
+  fi
+  check_lane_name "$LANES_LANE"
+  if [ -z "${LANES_SESSION:-}" ] || ! valid_uuid "$LANES_SESSION"; then
+    die "append-line --landing-expired names the session that writes it, and a session field is the transcript UUID and only that (Amendment 7(b)): LANES_SESSION is '${LANES_SESSION:-<unset>}'. Set LANES_SESSION=\"\$CLAUDE_CODE_SESSION_ID\". Nothing was written, and the lock was not taken." 2
+  fi
+  lane_tag="$(canon_lane "$LANES_LANE")" || exit 2
+  check_lane_name "$lane_tag"
+  acquire_lock; checkout_sync append-line "$lane_tag" write "$LANES_PATH"   # Amendment 23 S3
+  # ---- AT THE SNAPSHOT (Y:5112–5114), as the verbs' other pre-checks are on
+  # primary, so each attempt's child asks again of its own seq (Y:5080).
+  # COPIED, NOT TYPED: the holder's open LANDING for that PR and repository,
+  # found as primary pairs it, and its newest post's lane, PR, repository
+  # token and UTC copied byte for byte, so the line's `for_lane` and
+  # `repo_key` are the LANDING's and a renamed holder still matches.
+  [ "$RULE6_PRIMARY" = 1 ] ||
+    die "append-line --landing-expired: Rule 6's primary program is not set in this process though its mode is primary, so the LANDING cannot be found as primary pairs it: an internal error. Nothing was written." 2
+  le_rows="$(LANES_RULE6_ALIASES="$(rule6_aliases)" LANES_LE_PR="$LE_PR" LANES_LE_REPO="$LE_REPO" \
+    awk "$LE_FIND_PRE$RULE6_AWK$LE_FIND_END" "$LANES_FILE")" || le_rc=$?
+  [ "$le_rc" = 0 ] ||
+    die "append-line --landing-expired: the register at this attempt's snapshot, $LANES_FILE, could not be read for Rule 6's lines (awk exited $le_rc): an internal error. Nothing was written." 2
+  # THE HOLDER: its own spelling first, byte for byte; then a spelling
+  # `canon_lane` resolves to the same lane (Amendment 16(e)), as for a LANDING
+  # posted under a name the lane had before a rename. Of several, the newest
+  # post, which Rule 6 dates the hold by.
+  # THE ROWS ARE SPLIT BY PARAMETER EXPANSION, at each newline and then at
+  # each US, never read through a here-document, as T415's
+  # `pw_hand_edit_refuse` and T412's `wr_call_fields` split theirs (review
+  # REV-W9a M1, REV-W10a M1). Bash 3.2 writes a here-document to a temp file
+  # in /tmp, and where none can be made, as in a full /tmp, this loop never
+  # ran: an open LANDING the snapshot held was refused as "holds no open
+  # LANDING", closed but with the wrong words (lane 4's MERGES-B2 note). A row
+  # is `OPEN` and five fields more, the last the rest of the row, as `read`
+  # split it; any other row was passed over, and still is.
+  # ONLY THE `OPEN` ROWS ARE SPLIT, KEPT FIRST BY ONE awk OVER A PIPE.
+  # `le_rows` holds Rule 6's own END row for every LANDING key in the whole
+  # register before the few `OPEN` rows, and the split above copies the rest
+  # of the value at each row: on bash 3.2.57, 500 rows took 8.4 s and 2000
+  # took 83.7 s (lane 4's W11-T425 report, gap 1). The filter is linear, and
+  # a command substitution over a pipe needs no temp file, so a full /tmp
+  # changes nothing. A filter that fails refuses with its own words, never as
+  # "holds no open LANDING". It keeps every row that opens `OPEN` and a US,
+  # short ones included, which the split still passes over; empty rows go, as
+  # the split skipped them. IFS and noglob are left as they are, since the
+  # walk calls `canon_lane`.
+  le_rc=0
+  le_open="$(printf '%s\n' "$le_rows" | awk 'BEGIN { o = sprintf("OPEN%c", 31) } index($0, o) == 1')" || le_rc=$?
+  [ "$le_rc" = 0 ] ||
+    die "append-line --landing-expired: the open LANDING rows of the register at this attempt's snapshot could not be kept apart from Rule 6's other rows (awk exited $le_rc): an internal error. Nothing was written." 2
+  for le_pass in exact canon; do
+    if [ "$le_pass" = canon ]; then
+      le_ch="$(canon_lane "$LE_HOLDER" 2>/dev/null)" || le_ch=""
+      [ -n "$le_ch" ] || break
+    fi
+    le_left="$le_open"
+    while [ -n "$le_left" ]; do
+      le_row="${le_left%%"$WR_NL"*}"
+      case "$le_left" in
+        *"$WR_NL"*) le_left="${le_left#*"$WR_NL"}" ;;
+        *) le_left="" ;;
+      esac
+      case "$le_row" in
+        "OPEN$US"*"$US"*"$US"*"$US"*"$US"*) : ;;
+        *) continue ;;
+      esac
+      le_row="${le_row#*"$US"}"
+      le_a1="${le_row%%"$US"*}"; le_row="${le_row#*"$US"}"
+      le_a2="${le_row%%"$US"*}"; le_row="${le_row#*"$US"}"
+      le_a3="${le_row%%"$US"*}"; le_row="${le_row#*"$US"}"
+      le_a4="${le_row%%"$US"*}"; le_a5="${le_row#*"$US"}"
+      if [ "$le_pass" = exact ]; then
+        [ "$le_a1" = "$LE_HOLDER" ] || continue
+      else
+        [ "$(canon_lane "$le_a1" 2>/dev/null)" = "$le_ch" ] || continue
+      fi
+      [ "$le_a5" -gt "$le_n" ] || continue
+      le_l="$le_a1"; le_p="$le_a2"; le_r="$le_a3"; le_u="$le_a4"; le_n="$le_a5"
+    done
+    [ -z "$le_l" ] || break
+  done
+  [ -n "$le_l" ] ||
+    die "append-line --landing-expired: the register at this attempt's snapshot holds no open LANDING of lane $LE_HOLDER for PR #$LE_PR into $LE_REPO main, as Rule 6 pairs it on primary: its LANDED or a LANDING EXPIRED closed it, it was never posted, or it names the lane or the repository another way than these arguments and the alias tables read. There is nothing to release. Nothing was written." 2
+  [ -n "$le_r" ] ||
+    die "append-line --landing-expired: lane ${le_l}'s open LANDING of PR #${le_p} (line $le_n of the register at this attempt's snapshot) gave no repository to copy: an internal error. Nothing was written." 2
+  # ITS AGE: the snapshot's clock, which `utc_now` stamps the line with (D13),
+  # less the LANDING's UTC. Not `older_than_minutes`, and not
+  # `LANES_LANDING_MINUTES`: F13's check fixes the window at 30.
+  case "$le_u" in ?*) le_t="$(epoch_of "$le_u")" ;; *) le_t="" ;; esac
+  [ -n "$le_t" ] ||
+    die "append-line --landing-expired: lane ${le_l}'s LANDING of PR #${le_p} into ${le_r} main carries no UTC that reads as a time${le_u:+ ('$le_u')}, so Rule 6's thirty minutes cannot be counted from it and it cannot be judged stale. Nothing was written." 2
+  le_age=$(( $(now_epoch) - le_t ))
+  if [ "$le_age" -le 1800 ]; then
+    if [ "$le_age" -lt 0 ]; then le_t="dated $(( -le_age / 60 )) min after"; else le_t="$(( le_age / 60 )) min old by"; fi
+    die "append-line --landing-expired: lane ${le_l}'s LANDING of PR #${le_p} into ${le_r} main, posted at ${le_u}, is ${le_t} the register's clock ($(utc_now)), so it is not past Rule 6's 30 minutes and is not released. Nothing was written." 2
+  fi
+  LE_M=$(( (le_age - 1800) / 60 ))
+  LE_L="$le_l"; LE_P="$le_p"; LE_R="$le_r"; LE_U="$le_u"
+  # THE LINE (Y:5104): the writer first, so the classifier, `lane_from_text`
+  # and the commit message all name the writer; `<UTC>`, its first UTC, is
+  # `utc_now`, the snapshot's clock on primary (D13); `for lane <holder>` and
+  # the LANDING's fields as copied; Brett's quote last, so nothing inside it
+  # is ever a reader's first match.
+  le_line="LANDING EXPIRED — lane ${lane_tag}, session ${LANES_SESSION}@${WS}, $(utc_now), for lane ${LE_L}: PR #${LE_P} into ${LE_R} main, its LANDING of ${LE_U}, ${LE_M} min past Rule 6's 30; on Brett's word (${LE_WHERE}, ${LE_WUTC}): \"${LE_WORD}\""
+  # NO MARKER BY THE BACK DOOR, as plain `append-line` tests its whole text
+  # (Y:5115; lane 3, #165 6770688147, T425 Q4; REV425 NIT-1): the composed
+  # line, whole, since the writer's name, the workspace and the fields copied
+  # from the LANDING are in it beside the word and its place. Tested before
+  # the scratch tree is written, so nothing is.
+  if managed_projection_hint "$le_line"; then
+    die "append-line --landing-expired: the line it composed carries managed-owner vocabulary ('managed owner', 'managed binding', 'mode=managed' or 'managed:') in the word, its place, a lane's name, the workspace or a field copied from the LANDING, and only the managed ledger's own writer writes it into the register. Nothing was written." 2
+  fi
+  append_text_line "$le_line"
+  commit_publish "LANES(${lane_tag}@$WS): append line — ${le_line:0:72}"
+  # ---- AFTER THE SEAM (Y:5119): only then is the seq known, as `claim`'s
+  # `register seq <n>` is (Q19(A)), and output here streams live. The seam
+  # returns only on `committed <s>`, which sets `REGISTER_SEQ`; a return
+  # without one sent nothing.
+  [ -n "$REGISTER_SEQ" ] ||
+    die "append-line --landing-expired: the write's seam returned with no register seq, so its line was not sent: an internal error. Nothing was written." 2
+  printf "register seq %s: released lane %s's LANDING of %s (PR #%s into %s main), %s min past Rule 6's 30\n" \
+    "$REGISTER_SEQ" "$LE_L" "$LE_U" "$LE_P" "$LE_R" "$LE_M"
+}
+
+# THE COMMIT'S LR005 FOR THIS FORM, TOLD BY ITS TOKEN ALONE (Y:5119; Y:1464,
+# Y:1559; contract §2.6, "a caller that branches reads the token, never the
+# message"). On primary the register's own check (F13, lane 1's) judges the
+# line at the commit, and refuses it with LR005 and one of three tokens. The
+# parent's end relays the `ERROR:` and `DETAIL:` lines verbatim (T415,
+# `pw_decide`), and this adds which of F13's three conditions the register
+# found. The token is LR005's own: the `DETAIL:  ` line right after the
+# `ERROR:  LR005:` line of the commit's stderr (register-cli.md [P]'s lines 1
+# and 2), cut at its first white space, as `pw_snapshot` reads LR007's. A
+# DETAIL anywhere else, or another error's, gives no token (lane
+# openRepoTools-3, #165 6813027223, batch g (118): "(110) governs LR005's
+# token too"). Since the form copied the LANDING's fields from the file at the
+# snapshot, each is also a finding for D18's agreement tests: the file and the
+# database disagree. It prints nothing for any other run or any other token,
+# and the code stays 2 whatever it prints.
+landing_expired_refusal_text() {   # <the commit's stderr file>
+  local lr_l="" lr_p="" lr_t=""
+  [ "$WR_VERB" = append-line ] && [ "${WR_ARGS[0]-}" = --landing-expired ] || return 0
+  [ -f "$1" ] && [ -r "$1" ] || return 0
+  while IFS= read -r lr_l || [ -n "$lr_l" ]; do
+    case "$lr_l" in
+      'DETAIL:  '*)
+        case "$lr_p" in
+          'ERROR:  LR005:'*) lr_t="${lr_l#DETAIL:  }"; break ;;
+        esac ;;
+    esac
+    lr_p="$lr_l"; lr_l=""
+  done < "$1"
+  lr_t="${lr_t%%[[:space:]]*}"
+  case "$lr_t" in
+    expired-none)
+      printf '%s' ": LR005 expired-none, the register found no open LANDING of that holder for that PR whose repo_key is the line's, though this form found one in the register's file at its snapshot and copied it: the LANDING is keyed another way, each writer by its own repos.tsv, or the file's pairing found a different newest take. That is a finding for D18's agreement tests" ;;
+    expired-closed)
+      printf '%s' ": LR005 expired-closed, the register counts a close of that LANDING, matched as main_slots matches one, that the file's pairing at the snapshot missed, such as a LANDED under an overlapping key. That is a finding for D18's agreement tests" ;;
+    expired-young)
+      printf '%s' ": LR005 expired-young, the register found that LANDING 30 minutes old or less by its clock, or could not read its UTC, though this form found it past Rule 6's 30 at the snapshot: the form and the commit dated different posts. That is a finding for D18's agreement tests" ;;
+  esac
+  return 0
 }
 
 # $2 is the file to append to, defaulting to the register. Amendment 7's
@@ -10574,7 +10875,8 @@ pw_decide() {
       wr_record_drop_call "$PW_DIR" || :
       PW_RELAY="$( { grep -E -e '^(ERROR|DETAIL):' -- "$PW_DIR/commit.err"; grep -E -e '^held-by=' -- "$PW_DIR/commit.out"; } 2>/dev/null || :)"
       if [ "$PW_RC" = 2 ]; then
-        pw_end 2 "the register refused this write at attempt ${PW_K}'s commit (\`lanes-index register commit\` exited 2, above). Nothing was written" "$PW_DIR"
+        # T425: `append-line --landing-expired`'s LR005, by its token alone.
+        pw_end 2 "the register refused this write at attempt ${PW_K}'s commit (\`lanes-index register commit\` exited 2, above)$(landing_expired_refusal_text "$PW_DIR/commit.err"); nothing was written" "$PW_DIR"
       fi
       pw_end 69 "the register refused this write at attempt ${PW_K}'s commit (\`lanes-index register commit\` exited 69, above), a definitive refusal. Nothing was written. $(pw_rerun_line)" "$PW_DIR" ;;
     64)
@@ -15647,6 +15949,56 @@ BEGIN {
   ST[best] = "LANDED"; U[best] = utc; O[best] = NR
 }
 END { for (k in ST) printf "%s%c%s%c%s%c%s%c%s%c\n", ST[k], 31, L[k], 31, P[k], 31, U[k], 31, R[k], 31 }'
+
+# FEATURE 007, T425 — RULE 6 ON PRIMARY: A `LANDING EXPIRED` CLOSES THE LANDING
+# IT NAMES (F13; Y:5120–5138; lane 3's R45). On primary the register releases a
+# LANDING past Rule 6's thirty minutes on Brett's word, by the line
+# `append-line --landing-expired` composes (`append_line_landing_expired`,
+# above), and the database closes that LANDING's slot. Unchanged, this
+# program would go on listing the released LANDING, marked STALE, and a
+# script that gates on `who --landing` would block where `main` is free. One
+# flag fixes that on primary.
+#
+# THE FLAG, `RULE6_PRIMARY`: a shell variable, never exported, set empty here,
+# beside the program, so an inherited value never counts (it is unset first,
+# so a value in the environment is neither read nor passed on). One helper,
+# `rule6_primary_on`, sets it to 1 and appends `RULE6_EXPIRED_AWK` to
+# `RULE6_AWK`, once. R45's one line at the dispatcher calls it, where this
+# process's one mode answer is primary (see there). Off primary `RULE6_AWK` is
+# byte-identical to the program above, so files mode, index mode and an
+# unconfigured workstation read Rule 6 exactly as before, and after a rollback
+# to files `who --landing` lists a released LANDING again, marked STALE.
+#
+# THE BRANCH, `RULE6_EXPIRED_AWK`, is Y:5127–5137 verbatim. It pairs as
+# `LANDED` pairs, by lane and PR, the repository through the same alias table
+# (`canon`); the lane is the `for lane` name, compared exactly. Unlike
+# `LANDED`, it closes only the holder's open LANDING for that PR and that
+# repository: it never falls back to the group's latest LANDING, and prints no
+# `UNPAIRED` row. A line it cannot pair closes nothing, so the reader errs
+# toward blocked. It does not test the window, which F13's check did at the
+# commit. A later LANDING by the holder on that PR and repository opens again,
+# as after `LANDED`, and `who_landing` lists only LANDING rows, so an `EXPIRED`
+# row is never printed. The program above never reads such a line: its rule is
+# `^(LANDING|LANDED) — `, and `LANDING EXPIRED — ` has a word between.
+unset RULE6_PRIMARY; RULE6_PRIMARY=""
+RULE6_EXPIRED_AWK='
+/^LANDING EXPIRED — / {
+  line = $0
+  if (!match(line, /for lane [A-Za-z0-9._-]+/)) next
+  lane = substr(line, RSTART + 9, RLENGTH - 9)
+  pr = ""; repo = ""
+  if (match(line, /PR #[0-9]+/))                      pr   = substr(line, RSTART + 4, RLENGTH - 4)
+  if (match(line, /into [A-Za-z0-9\/._-]+ main/))     repo = canon(substr(line, RSTART + 5, RLENGTH - 10))
+  if (pr == "" || repo == "") next
+  k = lane "\037" pr "\037" tolower(repo)
+  if ((k in ST) && ST[k] == "LANDING") { ST[k] = "EXPIRED"; O[k] = NR }
+  next
+}'
+rule6_primary_on() {
+  [ -z "$RULE6_PRIMARY" ] || return 0
+  RULE6_PRIMARY=1
+  RULE6_AWK="$RULE6_AWK$RULE6_EXPIRED_AWK"
+}
 
 # Rule 6's window, in minutes. A LANDING past it with no LANDED is still a
 # line somebody wrote and is still listed — but it is marked, because reporting
@@ -28442,6 +28794,23 @@ fi
 # outlives the arms' `$( )` reads (lane 5's answer 11, #165 6746507353).
 reg_open "$cmd" ${1+"$@"}
 
+# FEATURE 007, T425 — R45'S ONE LINE (Y:5121; Q-L5-4, answered; lane 4's
+# block, T425 and T426). Here, after the doors and before the arms, the one
+# mode answer this process holds sets the awk variables that read the
+# register as primary reads it: `rule6_primary_on`, Rule 6 with `LANDING
+# EXPIRED` (T425), and T426 adds `key()`'s to this same line. A reader takes
+# it from lane 5's `reg_open` (T504), which runs above this line (lane 3,
+# #165 6770688147), and a writing verb from the write guard's answer, where
+# the arm above lets it through. Where that arm runs `pw_run`, which ends the
+# process, the verb runs in an attempt's child, which takes it from
+# `reg_scratch_take`'s `REG_MODE` (`REG_ASK` is 0 there, and `reg_open`
+# leaves `REG_MODE` alone for a writing verb), since it asks no mode and its
+# file at the snapshot's seq is primary's. It cannot be set where `REG_MODE`
+# is: `reg_scratch_take` runs before `RULE6_AWK` is assigned, which would
+# overwrite the append, and inside `who_landing`'s pipeline a variable set is
+# lost. Off primary it sets nothing, and the programs are today's.
+[ "$REG_MODE" != primary ] || rule6_primary_on
+
 case "$cmd" in
   verify-row)
     lane="${1-}"; [ -n "$lane" ] || die "usage: verify-row <lane>" 2
@@ -28621,6 +28990,11 @@ Nothing was written." 2
     ;;
 
   append-line)
+    # FEATURE 007, T425 — THE FORM `--landing-expired` (F13; Y:5099–5142) IS
+    # HANDED ON FIRST, before anything of this arm's own runs: it composes its
+    # own line, and its refusals, its write and its output are its own
+    # (`append_line_landing_expired`). Plain `append-line` is unchanged.
+    if [ "${1-}" = --landing-expired ]; then shift; append_line_landing_expired ${1+"$@"}; exit 0; fi
     text="${1-}"; [ -n "$text" ] || die "usage: append-line \"<text>\"" 2
     # ONE LINE, REFUSED A NEWLINE BEFORE THE LOCK (opensoft/openRepoTools#85).
     # `append_text_line` refuses it too, and before it writes — but that is
