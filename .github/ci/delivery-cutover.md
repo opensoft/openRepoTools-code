@@ -181,8 +181,11 @@ The whole body is bounded to 16 KiB; its exact JSON keys/types/schema and skill
 must match the contract. Reports must be nonempty and at most 4,000 characters
 each. The PR URL, server comment ID, repository, PR number, current head and base
 must match. Both REST timestamps must agree and complete GraphQL comment metadata
-must show `lastEditedAt: null` (including same-second edits). Never edit a receipt:
-publish a replacement. The newest authorized local comment by creation time,
+must show `lastEditedAt: null` (including same-second edits). All comment IDs and
+bodies must agree across REST and GraphQL before local selection or hosted
+fallback. Same-count replacements and ordinary comments edited into new local
+decisions refuse too. Never edit a receipt: publish a replacement.
+The newest authorized local comment by creation time,
 then numeric ID, controls acceptance; stale/malformed/dirty or revoked latest
 local evidence refuses even if an older local/hosted approval is clean.
 

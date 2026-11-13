@@ -109,6 +109,7 @@ def batch(tmp_path):
         review = {"code_review": {"commit_sha": head, "status": "completed",
                                  "has_any_findings": False, "has_unresolved_findings": False}}
         data[f"issues/{number}/comments?per_page=100"] = [{
+            "id": 1000 + number,
             "user": {"login": "chatgpt-codex-connector[bot]", "type": "Bot"},
             "updated_at": "2026-11-11T00:00:00Z",
             "body": "<!-- codex-pull-request-review-summary -->\n"
@@ -130,8 +131,13 @@ def request_for(batch):
     return request
 
 
-def threads(_number):
-    return {"pageInfo": {"hasNextPage": False}, "nodes": []}
+def threads(number, batch=None):
+    result = {"pageInfo": {"hasNextPage": False}, "nodes": []}
+    if batch is not None:
+        result["comments"] = {"pageInfo": {"hasNextPage": False}, "nodes": [
+            {"databaseId": row["id"], "lastEditedAt": None, "body": row["body"]}
+            for row in batch["data"][f"issues/{number}/comments?per_page=100"]]}
+    return result
 
 
 def base_changes(_number):
@@ -139,6 +145,8 @@ def base_changes(_number):
 
 
 def verify(delivery, batch, request=None, read_threads=threads, read_base_changes=base_changes):
+    if read_threads is threads:
+        read_threads = lambda number: threads(number, batch)
     return delivery.verify_candidate(batch["env"], batch["event"], batch["root"],
                                      request or request_for(batch), read_threads, read_base_changes)
 
@@ -256,7 +264,7 @@ def test_ci_delivery_read_failures_and_live_drift_refuse(delivery, batch, failur
 ])
 def test_ci_delivery_unresolved_or_incomplete_threads_refuse(delivery, batch, response):
     with pytest.raises(ValueError):
-        verify(delivery, batch, read_threads=lambda _number: response)
+        verify(delivery, batch, read_threads=lambda number: dict(threads(number, batch), **response))
 
 
 def test_ci_delivery_wrong_candidate_tree_with_same_parents_refuses(delivery, batch):
@@ -392,9 +400,9 @@ def test_ci_delivery_member_evidence_changes_during_second_member_refuses(delive
                     run_attempt=2, status="in_progress", conclusion=None)
         return answer
     def read_threads(number):
-        return {"pageInfo": {"hasNextPage": False}, "nodes":
-                [{"isResolved": False}] if failure == "thread" and number == 7
-                and state["changed"] else []}
+        return dict(threads(number, batch), nodes=
+                    [{"isResolved": False}] if failure == "thread" and number == 7
+                    and state["changed"] else [])
     def read_history(number):
         return {"pageInfo": {"hasNextPage": False}, "nodes":
                 [{"createdAt": "2026-11-12T00:00:00Z"}] if failure == "history"

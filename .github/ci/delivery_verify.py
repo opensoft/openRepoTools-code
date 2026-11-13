@@ -55,7 +55,7 @@ def read_threads(number):
              f'pullRequest(number:{number}) {{ reviewThreads(first:100) {{ '
              'pageInfo { hasNextPage } nodes { isResolved } } '
              'comments(first:100) { pageInfo { hasNextPage } '
-             'nodes { databaseId lastEditedAt } } } } }')
+             'nodes { databaseId lastEditedAt body } } } } }')
     data = subprocess.run(["gh", "api", "--hostname", "github.com", "graphql",
                            "-f", "query=" + query], check=True, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, timeout=15).stdout
@@ -99,6 +99,21 @@ def local_writer(comment, request, permissions):
     return permission["permission"] if permission["permission"] in {"write", "admin"} else None
 
 
+def consistent_comments(comments, response):
+    # Reconcile before choosing local OR hosted review: otherwise a newly added
+    # local revocation can be hidden by the hosted-fallback path.
+    edits = response["comments"]
+    nodes = edits["nodes"]
+    require(edits["pageInfo"]["hasNextPage"] is False and isinstance(nodes, list)
+            and len(nodes) == len(comments) < 100
+            and all(type(row["databaseId"]) is int and row["databaseId"] > 0 for row in nodes)
+            and all(type(row["id"]) is int and row["id"] > 0 for row in comments)
+            and len({row["databaseId"] for row in nodes}) == len(nodes)
+            and {row["databaseId"]: row["body"] for row in nodes}
+                == {row["id"]: row["body"] for row in comments},
+            "Incomplete or inconsistent review comment history")
+
+
 def local_review(comments, number, head, base, request, response):
     candidates = [row for row in comments if LOCAL_REVIEW in row["body"]]
     require(len(candidates) <= 10, "Local review history exceeds bound")
@@ -120,15 +135,7 @@ def local_review(comments, number, head, base, request, response):
     policy.sha(head)
     policy.sha(base)
     created, identity, comment, permission = max(authorized, key=lambda row: row[:2])
-    edits = response["comments"]
-    nodes = edits["nodes"]
-    require(edits["pageInfo"]["hasNextPage"] is False and isinstance(nodes, list)
-            and len(nodes) == len(comments) < 100
-            and all(type(row["databaseId"]) is int and row["databaseId"] > 0 for row in nodes)
-            and all(type(row["id"]) is int and row["id"] > 0 for row in comments)
-            and len({row["databaseId"] for row in nodes}) == len(nodes)
-            and {row["databaseId"] for row in nodes} == {row["id"] for row in comments},
-            "Incomplete local review edit history")
+    nodes = response["comments"]["nodes"]
     selected = [row for row in nodes if row["databaseId"] == identity]
     require(len(selected) == 1 and selected[0]["lastEditedAt"] is None,
             "Local review comment has been edited")
@@ -186,6 +193,7 @@ def clean_review(number, head, request, threads, *, base=None):
     require(isinstance(comments, list) and len(comments) < 100,
             "Incomplete review comments")
     response = threads(number)
+    consistent_comments(comments, response)
     receipt = local_review(comments, number, head, base, request, response)
     if receipt is None:
         receipt = hosted_review(comments, head)

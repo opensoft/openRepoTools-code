@@ -64,7 +64,8 @@ def test_ci_cutover_repair_clean_control_fetches_merge_without_checkout(cutover,
     fetches = local_transport(cutover, batch, monkeypatch)
     actual_route = cutover.route
     def injected_route(current_env, current_event, root, request):
-        return actual_route(current_env, current_event, root, request, threads=threads, base_changes=base_changes)
+        return actual_route(current_env, current_event, root, request,
+                            threads=lambda number: threads(number, batch), base_changes=base_changes)
     if mode == "route":
         assert injected_route(env, event, checkout, request_for(batch)) == original_proof
     else:
@@ -101,7 +102,7 @@ def run_main(cutover, batch, env, event, tmp_path, monkeypatch, on_sleep=None):
     def injected_route(current_env, current_event, root):
         attempts.append(True)
         return actual_route(current_env, current_event, root, request_for(batch),
-                            threads=threads, base_changes=base_changes)
+                            threads=lambda number: threads(number, batch), base_changes=base_changes)
     monkeypatch.setattr(cutover, "route", injected_route)
     def sleep(value):
         sleeps.append(value)
@@ -146,13 +147,15 @@ def test_ci_cutover_repair_candidate_control_also_fetches_merge(cutover, batch, 
     env, event, data = duplicate_fixture(cutover, batch, artifact)
     git(batch["root"], "branch", artifact["run"]["head_branch"], batch["candidate"])
     request = request_for(batch)
-    original_proof = cutover.route(env, event, batch["root"], request, lambda _id: data, threads, base_changes)
+    original_proof = cutover.route(env, event, batch["root"], request, lambda _id: data,
+                                   lambda number: threads(number, batch), base_changes)
     assert original_proof["omit_full"] is True
     checkout = main_checkout(batch, env, tmp_path, number=9)
     fetches = local_transport(cutover, batch, monkeypatch)
     actual_route = cutover.route
     def injected_route(current_env, current_event, root, reader):
-        return actual_route(current_env, current_event, root, reader, lambda _id: data, threads, base_changes)
+        return actual_route(current_env, current_event, root, reader, lambda _id: data,
+                            lambda number: threads(number, batch), base_changes)
     if mode == "route":
         assert injected_route(env, event, checkout, request) == original_proof
     else:
@@ -173,7 +176,7 @@ def test_ci_cutover_repair_unavailable_merge_retains_full_without_retries(cutove
             raise subprocess.CalledProcessError(1, args)
         return original(root, *args)
     monkeypatch.setattr(cutover.policy, "git", read)
-    assert cutover.route(env, event, checkout, request_for(batch), threads=threads,
+    assert cutover.route(env, event, checkout, request_for(batch), threads=lambda number: threads(number, batch),
                           base_changes=base_changes) == cutover.FULL
     assert git(checkout, "rev-parse", "HEAD") == batch["base"]
 
@@ -224,7 +227,7 @@ def test_ci_cutover_repair_classic_change_during_routing_retains_full(cutover, b
                     enforcement_level="everyone", contexts=["tests"])
         return answer
     assert cutover.route(env, event, batch["root"], raced,
-                          threads=threads, base_changes=base_changes) == cutover.FULL
+                          threads=lambda number: threads(number, batch), base_changes=base_changes) == cutover.FULL
     assert len(reads) == 2
 
 
@@ -237,7 +240,8 @@ def test_ci_cutover_repair_final_gate_rechecks_classic_requirements(cutover, bat
     branch["protection"]["required_status_checks"].update(enforcement_level="everyone", contexts=["tests"])
     actual_route = cutover.route
     def injected_route(current_env, current_event, root, request):
-        return actual_route(current_env, current_event, root, request, threads=threads, base_changes=base_changes)
+        return actual_route(current_env, current_event, root, request,
+                            threads=lambda number: threads(number, batch), base_changes=base_changes)
     monkeypatch.setattr(cutover, "route", injected_route)
     with pytest.raises(ValueError, match="no longer verifies"):
         cutover.gate(dict(env, OMIT_FULL="true", ROUTE_MODE="source", ROUTE_PROOF=selected["proof"]),
@@ -306,7 +310,7 @@ def test_ci_cutover_repair_untrusted_or_failed_pending_is_not_retryable(cutover,
     elif failure == "failed": batch["data"]["actions/jobs/907"].update(status="completed", conclusion="failure")
     history = (lambda _number: {"pageInfo": {"hasNextPage": True}, "nodes": []}) if failure == "history" else base_changes
     assert cutover.route(env, event, batch["root"], request_for(batch),
-                          threads=threads, base_changes=history) == cutover.FULL
+                          threads=lambda number: threads(number, batch), base_changes=history) == cutover.FULL
 
 
 @pytest.mark.parametrize("status", ["in_progress", "completed"])

@@ -105,7 +105,7 @@ def source_fixture(cutover, batch):
 
 def route_fixture(cutover, batch, env, event):
     return cutover.route(env, event, batch["root"], request_for(batch),
-                         threads=threads, base_changes=base_changes)
+                         threads=lambda number: threads(number, batch), base_changes=base_changes)
 
 
 def test_ci_cutover_verified_source_selects_fast_but_not_merge_authority(cutover, batch):
@@ -164,7 +164,7 @@ def test_ci_cutover_source_uncertainty_keeps_full(cutover, batch, failure):
         if failure == "rules-race" and endpoint.startswith("rules/") and calls.count(endpoint) == 2:
             return []
         return request(repo, endpoint)
-    result = cutover.route(env, event, batch["root"], reader, threads=threads,
+    result = cutover.route(env, event, batch["root"], reader, threads=lambda number: threads(number, batch),
         base_changes=(lambda _number: {"pageInfo": {"hasNextPage": False}, "nodes":
                       [{"createdAt": "2026-11-12T00:00:00Z"}]}) if failure == "retarget" else base_changes)
     assert result == cutover.FULL
@@ -354,7 +354,7 @@ def duplicate_fixture(cutover, batch, artifact):
 def test_ci_cutover_candidate_duplicate_requires_real_admission(cutover, batch, artifact):
     env, event, data = duplicate_fixture(cutover, batch, artifact)
     result = cutover.route(env, event, batch["root"], request_for(batch), lambda _id: data,
-                           threads, base_changes)
+                           lambda number: threads(number, batch), base_changes)
     assert result["mode"] == "candidate"
     assert result["omit_full"] is True
 
@@ -394,7 +394,7 @@ def test_ci_cutover_candidate_uncertainty_retains_full(cutover, batch, artifact,
         artifact["record"]["proof"]["members"][0]["delivery"] = False
         data, _ = install_artifact(cutover, batch, artifact)
     result = cutover.route(env, event, batch["root"], request_for(batch), lambda _id: data,
-                           threads, base_changes)
+                           lambda number: threads(number, batch), base_changes)
     assert result == ({**cutover.FULL, "retryable": True} if failure == "no-admission" else cutover.FULL)
 
 
@@ -525,7 +525,7 @@ def qualified_fixture(cutover, batch, artifact, count=2):
 def test_ci_cutover_exact_closed_landing_prefix_uses_completed_proof(cutover, batch, artifact, count):
     env, event, data, _jobs, _row = qualified_fixture(cutover, batch, artifact, count)
     result = cutover.route(env, event, batch["root"], request_for(batch), lambda _id: data,
-                           threads, base_changes)
+                           lambda number: threads(number, batch), base_changes)
     assert result["mode"] == "landing"
     assert result["omit_full"] is True
 
@@ -565,4 +565,4 @@ def test_ci_cutover_lookalike_landing_and_incomplete_heavy_remain_full(cutover, 
         git(batch["root"], "commit", "-qm", "unrelated new main")
         batch["data"]["git/ref/heads/main"]["object"]["sha"] = git(batch["root"], "rev-parse", "HEAD")
     assert cutover.route(env, event, batch["root"], request_for(batch), lambda _id: data,
-                          threads, base_changes) == cutover.FULL
+                          lambda number: threads(number, batch), base_changes) == cutover.FULL

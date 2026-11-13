@@ -45,7 +45,7 @@ def install_local(batch, number=7, *, hosted=False):
 
 def local_threads(batch, number):
     return dict(threads(number), comments={"pageInfo": {"hasNextPage": False}, "nodes": [
-        {"databaseId": row.get("id", 2000 + number), "lastEditedAt": None}
+        {"databaseId": row.get("id", 2000 + number), "lastEditedAt": None, "body": row["body"]}
         for row in batch["data"][f"issues/{number}/comments?per_page=100"]]})
 
 
@@ -173,7 +173,7 @@ def test_ci_local_review_untrusted_lookalike_cannot_authorize_or_replace_hosted(
 def install_hosted_comment(batch):
     review = {"code_review": {"commit_sha": batch["heads"][0], "status": "completed",
                              "has_any_findings": False, "has_unresolved_findings": False}}
-    return {"user": {"login": "chatgpt-codex-connector[bot]", "type": "Bot"},
+    return {"id": 2007, "user": {"login": "chatgpt-codex-connector[bot]", "type": "Bot"},
             "updated_at": "2026-11-11T00:00:00Z",
             "body": "<!-- codex-pull-request-review-summary -->\n"
                     "<!-- codex-review-state:v1 " + json.dumps(review) + " -->"}
@@ -281,7 +281,44 @@ def test_ci_local_review_final_read_refuses_same_count_replaced_comment_history(
                 # still match, but the complete histories no longer do.
                 result["comments"]["nodes"][0]["databaseId"] = 9007
         return result
-    with pytest.raises(ValueError, match="edit history"):
+    with pytest.raises(ValueError, match="comment history"):
+        verify(delivery, batch, read_threads=read)
+
+
+def test_ci_local_review_final_read_refuses_same_id_ordinary_comment_edited_to_receipt(delivery, batch):
+    record, accepted = install_local(batch)
+    ordinary = copy.deepcopy(accepted)
+    ordinary.update(id=1008, body="An ordinary comment, not review acceptance.",
+                    created_at="2026-11-11T00:02:00Z", updated_at="2026-11-11T00:02:00Z")
+    batch["data"]["issues/7/comments?per_page=100"].append(ordinary)
+    record["status"] = "revoked"
+    reads = 0
+    def read(number):
+        nonlocal reads
+        result = local_threads(batch, number)
+        if number == 7:
+            reads += 1
+            if reads > 1:
+                result["comments"]["nodes"][1].update(
+                    body=body(record), lastEditedAt="2026-11-11T00:02:00Z")
+        return result
+    with pytest.raises(ValueError, match="comment history"):
+        verify(delivery, batch, read_threads=read)
+
+
+def test_ci_local_review_hosted_fallback_cannot_hide_new_local_decision(delivery, batch):
+    reads = 0
+    def read(number):
+        nonlocal reads
+        result = local_threads(batch, number)
+        if number == 7:
+            reads += 1
+            if reads > 1:
+                result["comments"]["nodes"].append({
+                    "databaseId": 9007, "lastEditedAt": None,
+                    "body": MARKER + " new revocation arrived after REST"})
+        return result
+    with pytest.raises(ValueError, match="comment history"):
         verify(delivery, batch, read_threads=read)
 
 
