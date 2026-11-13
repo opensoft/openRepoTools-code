@@ -738,10 +738,41 @@ def _path_mirror(real: str, masked: Tuple[str, ...]) -> str:
 
 _STAMP = r'''#!/usr/bin/env python3
 # T243's stamp: each psql call's start time and argv, then T203's shim.
-import json, os, sys, time
+# Where `tee` is in this directory (a burst's writer, T243m), a forked child
+# also passes the call's stderr through, and at its end logs to `tee.log`,
+# keyed by the start time, the SQLSTATE of each `ERROR:` line (the register's
+# VERBOSITY=verbose) and the time the call's stderr closed. The shim is still
+# this process, so its pid and its exit are the call's, as before.
+import json, os, re, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__))
+start = time.time()
 with open(os.path.join(HERE, "stamps.log"), "a", encoding="utf-8") as log:
-    log.write(json.dumps({"t": time.time(), "argv": sys.argv[1:]}) + "\n")
+    log.write(json.dumps({"t": start, "argv": sys.argv[1:]}) + "\n")
+if sys.argv[1:] != ["--version"] and os.path.exists(os.path.join(HERE, "tee")):
+    rd, wr = os.pipe()
+    if os.fork() == 0:
+        os.close(wr)
+        os.close(0)
+        os.close(1)
+        seen, out = b"", True
+        while True:
+            chunk = os.read(rd, 65536)
+            if not chunk:
+                break
+            seen += chunk
+            view = memoryview(chunk)
+            while out and view:
+                try:
+                    view = view[os.write(2, view):]
+                except OSError:
+                    out = False
+        states = re.findall(r"^ERROR:\s+([0-9A-Z]{5}):", seen.decode("utf-8", "replace"), re.M)
+        with open(os.path.join(HERE, "tee.log"), "a", encoding="utf-8") as log:
+            log.write(json.dumps({"t": start, "end": time.time(), "states": states}) + "\n")
+        os._exit(0)
+    os.close(rd)
+    os.dup2(wr, 2)
+    os.close(wr)
 shim = os.path.join(HERE, "shim", "psql")
 os.execv(shim, [shim] + sys.argv[1:])
 '''
@@ -1214,19 +1245,99 @@ def burst(e: Estate, objects: Sequence[str], window_ms: int, extra: dict = None,
     asserts anything, it records the drain and each writer's attempts,
     counted as snapshot calls in the shim's log, and its seconds from the
     release to its exit, never asserted (TP:3783-3787 at `0c3750a5`; lane 3,
-    #165 6838735040; T243l): `record("burst", node, ...)`."""
+    #165 6838735040; T243l): `record("burst", node, ...)`. Beside them, for
+    lane 1's two points (#165 6840891258; T243m), also never asserted: each
+    writer's calls in order with their exits, its commits' losses by
+    SQLSTATE, and its commits' seconds, as `burst_calls` reads them, and the
+    longest commit of the burst. `attempts` keeps its meaning, every call
+    that is not a commit or a lookup, the render's own calls among them."""
     barrier = Barrier(e.root, len(objects))
     arms = [dict(WINDOW, ms=window_ms)]
     writers = [e.launch(lane, claim(obj, "--no-github"), arms=arms, barrier=barrier, extra=extra)
                for lane, obj in zip(BURST, objects)]
+    for w in writers:
+        (w.psql_dir / "tee").write_text("", encoding="utf-8")  # the stamp's tee (T243m)
     released = barrier.release()
     for w in writers:
         w.wait()
     drain = max(w.ended for w in writers) - released
+    read = {w.lane: burst_calls(w) for w in writers}
     record("burst", node, drain_s=round(drain, 2), margin_vs_30s=round(D7_S / max(drain, 0.01), 2),
            attempts={w.lane: len(w.snapshot_calls()) for w in writers},
-           seconds={w.lane: round(w.ended - released, 2) for w in writers})
+           seconds={w.lane: round(w.ended - released, 2) for w in writers},
+           calls={lane: r[0] for lane, r in read.items()}, losses={lane: r[1] for lane, r in read.items()},
+           commit_s={lane: r[2] for lane, r in read.items()},
+           longest_commit_s=max((x for r in read.values() for x in r[2]), default=None))
     return writers, drain
+
+
+def burst_calls(w: Writer) -> Tuple[str, Dict[str, int], List[float]]:
+    """Lane 1's two points (#165 6840891258; T243m), read from `w`'s logs:
+
+    - its calls in order, each `<kind><code>`, the code `psql`'s own exit
+      in the shim's ends (`?` where it has none): `s` the snapshot, the
+      request just before a commit; `c` a commit (`commit_write`); `l` a
+      lookup (`find_write`); `m` the render's `record_mirror_state`; `r`
+      any other request, the render's head read, a snapshot's second
+      request or LR004's re-read among them;
+    - its commits' losses, each failed commit counted under the SQLSTATE of
+      each `ERROR:` line its stderr carried (LR001, 40001, 55P03, 40P01,
+      LR008 or another), as the stamp's tee logs them, or `unread` where
+      the tee logged none;
+    - each commit's seconds, from the stamp's start to its stderr's close,
+      the shim's window included, where the tee logged its end.
+
+    A burst's figures, never asserted."""
+    calls, ends = w.stamps(), w.ends()
+    tees = {x["t"]: x for x in w._jsonl("tee.log")}
+    letters: List[str] = []
+    losses: Dict[str, int] = {}
+    seconds: List[float] = []
+    for k, call in enumerate(calls):
+        text = call.get("stdin") or ""
+        after = (calls[k + 1].get("stdin") or "") if k + 1 < len(calls) else ""
+        if "commit_write" in text:
+            kind = "c"
+        elif "find_write" in text:
+            kind = "l"
+        elif "record_mirror_state" in text:
+            kind = "m"
+        else:
+            kind = "s" if "commit_write" in after else "r"
+        end = ends.get(call["call"], {})
+        code = end.get("psql", end.get("exit", "?"))
+        letters.append(f"{kind}{code}")
+        tee = tees.get(call["t"])
+        if kind == "c" and tee:
+            seconds.append(round(tee["end"] - call["t"], 2))
+        if kind == "c" and code != 0:
+            for state in (tee or {}).get("states") or ["unread"]:
+                losses[state] = losses.get(state, 0) + 1
+    return " ".join(letters), losses, seconds
+
+
+def burst_ends(e: Estate, writers: Sequence[Writer]) -> List[Writer]:
+    """The ends a burst may have where its case's own row does not ask every
+    writer to commit (AT-4 (g), AT-F14): each writer committed once, its
+    write in the journal, or exited 75 with nothing written, its write ids
+    absent from the journal, and none ended any other way; the journal grew
+    by one row per committed writer, its seqs from 2 with no gap and no
+    repeat. That is AT-D9c's form for its own burst (Y TP:3755-3759;
+    TP:3781-3785 at `0c3750a5`), which lane 3 points the bursts to (#165
+    6840952649). Returns the writers that committed (T243n)."""
+    others = [(w.lane, w.code, w.err[-300:]) for w in writers if w.code not in (0, 75)]
+    assert not others, f"a burst writer ended neither 0 nor 75: {others}"
+    committed = [w for w in writers if w.code == 0]
+    for w in writers:
+        found = [x for x in set(w.write_ids()) if e.has_write(x)]
+        if w.code == 0:
+            assert len(found) == 1, f"{w.lane} exited 0, and {len(found)} of its write ids are in the journal"
+        else:
+            assert not found, f"{w.lane} exited 75, yet its write {found} is in the journal: {w.err[-300:]}"
+    grew = e.journal_after()
+    assert [r["seq"] for r in grew] == list(range(2, 2 + len(committed))), (
+        f"{len(committed)} writers committed, and the journal grew by {grew}")
+    return committed
 
 
 def record(name: str, node: Optional[pytest.Item] = None, **figures) -> str:
@@ -1301,7 +1412,10 @@ def test_ten_writers_released_together_all_commit_in_order(estates, request):
     75 or 69; seqs 2 to 11, no gap and no repeat; ten distinct write ids; one
     `CLAIMED` per object; the head reads 11. The drain is asserted under 60 s.
     `burst` records it beside D7's 30 s, with each writer's attempts and
-    seconds, before any assertion, and as the case's junit property (T243l)."""
+    seconds, before any assertion, and as the case's junit property (T243l).
+    Its row asks every writer to commit, "All ten exit 0, and none exits 75
+    or 69" (Y TP:7509; TP:7583 at `0c3750a5`), so it keeps that oracle where
+    AT-4 (g) and AT-F14 take `burst_ends` (T243n)."""
     e = estates()
     objects = [f"{KEY}#{100 + k}" for k in range(10)]
     writers, drain = burst(e, objects, 200, node=request.node)
@@ -1576,7 +1690,10 @@ def test_the_image_cache_stays_content_addressed_under_the_burst_and_a_corrupt_o
     finally:
         stop.set()
         sampler.join(5)
-    assert [w.code for w in writers] == [0] * 10
+    # (g)'s own row asks the cache of the state the ten writers shared, not
+    # that every one commits (Y TP:936-950; TP:941-955 at `0c3750a5`): a
+    # writer may end 75 with nothing written, as `burst_ends` checks (T243n).
+    burst_ends(e, writers)
     named = _objects_named(e)
     assert named, f"the burst left no object under {cache}"
     for name, path in named.items():
@@ -1834,11 +1951,12 @@ def test_a_writer_prints_its_output_once_however_many_attempts_it_made(estates, 
     """Test 4's burst of ten: each committed writer's success text, claim's
     `register seq <s>` line, is printed exactly once, however many attempts
     it made, and its stderr no line twice (only the deciding attempt's). The
-    line is a `note`, on stderr (T421; T243h)."""
+    line is a `note`, on stderr (T421; T243h). The row's oracle is each
+    committed writer's (Y TP:6852-6854; TP:6925-6927 at `0c3750a5`), so a
+    writer may end 75 with nothing written, as `burst_ends` checks (T248d)."""
     e = estates()
     writers, _ = burst(e, [f"{KEY}#{400 + k}" for k in range(10)], 200, node=request.node)
-    assert [w.code for w in writers] == [0] * 10, [(w.lane, w.code, w.err[-300:]) for w in writers]
-    for w in writers:
+    for w in burst_ends(e, writers):
         assert len(SEQ_SAID.findall(w.err)) == 1, f"{w.lane} printed its success text not once: {w.err!r}"
         lines = [l for l in w.err.splitlines() if l.strip()]
         assert len(lines) == len(set(lines)), f"{w.lane}'s stderr repeats an attempt's lines: {w.err!r}"
@@ -2159,10 +2277,11 @@ def test_canon_lane_walk_whose_register_read_fails_off_primary_exits_1_and_print
     It fails until lane 4's T411 lands with its `b637ce0d`, which ends the
     walk with a failed register read's own status, the 1 here (#165 6814837872,
     Question 126). Without T411, as on line R, `canon-lane --walk` is the
-    usage 64, "canon-lane takes one lane"; with only T411's first commit,
-    `2ee320e1`, as at pair-m33a `8ba10b4e`, the walk still reads that failure
-    as no row and exits 0 with its three names (lane 1, #165 6837462215;
-    T233c)."""
+    usage 64, "canon-lane takes one lane" (lane 1, #165 6837462215); with
+    only T411's first commit, `2ee320e1`, as at pair-m33a `8ba10b4e`, the
+    walk still reads that failure as no row and exits 0 with its three names
+    (lane 4's pair-m33a CI, s2 15, read by lane 2's triage, #165 6838261062;
+    T233c, T233d)."""
     rows, aliases, typed, names = WALKS["two-hops"]
     box = FilesBox(tmp_path / "box", rows, aliases)
     walk = box.edit("canon-lane", "--walk", typed)
