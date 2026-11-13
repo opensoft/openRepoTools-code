@@ -1323,6 +1323,16 @@ def test_a_rerun_that_finds_its_write_committed_runs_the_verbs_after_commit_tail
     assert comments(where) == []
 
 
+def by_hand(e: Estate, message: str, *change: str) -> None:
+    """A person's commit on the lanes origin, made from the estate's seed
+    clone brought up to the origin first: `git <change>`, then commit and
+    push. Every checkout a later run makes holds it."""
+    run_git(e.seed, "pull", "-q", "--ff-only", "origin", "main", env=e.env)
+    run_git(e.seed, *change, env=e.env)
+    run_git(e.seed, "commit", "-q", "-m", message, env=e.env)
+    run_git(e.seed, "push", "-q", "origin", "main", env=e.env)
+
+
 def lane_handoff(lane: str) -> str:
     """A handoff named for its lane, `session-handoff-<date>-lane-<lane>.md`:
     the one shape `rename-lane` moves, to the same date with `-lane-<new>`
@@ -1528,25 +1538,31 @@ def test_a_sent_record_whose_child_never_read_committed_replays_and_an_owed_mark
 def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_none_of_the_tail(estates, case):
     """The write is committed either way. [rename-lane-stops]: the handoff
     file removed, so the replay stops before its write; [rename-lane-differs]:
-    the handoff moved by hand, so the change set differs. Each writes the
-    mark `owed <utc>`, removes the record, prints one WARNING, exits 0 and
-    runs no tail. [request-handoff-differs]: the fake `tmux` reports the
+    the handoff moved by hand to the new path, so the row's handoff cell no
+    longer changes and the change set differs (TP:3418-3426). Each writes
+    the mark `owed <utc>`, removes the record, prints one WARNING, exits 0
+    and runs no tail. [request-handoff-differs]: the fake `tmux` reports the
     holder's window gone; the run exits 2, saying the request is written at
-    seq `<s>` and it did not wait for the release."""
+    seq `<s>` and it did not wait for the release.
+
+    The two `rename-lane` forms need the lane's handoff in its checkout
+    (TP:3315), named for its lane so that the rename changes the row's
+    cell (`seed_handoff`, T245r). Each run clones its own W and lane
+    checkouts from the lanes origin (`Estate.launch`), so the rerun never
+    sees a change made in the killed run's checkouts: the handoff is
+    removed or moved by hand on the origin (`by_hand`), before the rerun."""
     e = estates()
     where, root = loggers(e), sidecars(e)
     extra = {"LANES_LANE_STATE_ROOT": str(root)}
     argv = (["request-handoff", LC, "--session", session_of(LC), "--no-wait"] if case.startswith("request")
             else ["rename-lane", LA, "repoA-9", "T245", "--no-github"])
+    handoff = seed_handoff(e, LA) if case.startswith("rename") else ""
     _, write_id = killed(e, LA, argv, first=[where], extra=extra)
     seq = e.journal_after()[-1]["seq"]
-    handoffs = list(e.root.glob(f"co-*-lanes/*/handoffs/{LA}.md"))   # the lane's own checkouts (T245l)
     if case == "rename-lane-stops":
-        for h in handoffs:
-            h.unlink()
+        by_hand(e, "T245: the handoff removed by hand", "rm", "-q", "--", handoff)
     elif case == "rename-lane-differs":
-        for h in handoffs:
-            h.rename(h.with_name("repoA-9.md"))
+        by_hand(e, "T245: the handoff moved by hand", "mv", "--", handoff, lane_handoff("repoA-9"))
     else:
         (where / "tmux").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     again = e.run(LA, argv, first=[where], extra=extra)
