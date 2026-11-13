@@ -2118,7 +2118,19 @@ def test_a_bind_in_doubt_looks_its_write_up_before_a_rerun(estate, held):
     and keeps the record (Y:5245), not the 75 of a lookup that answers
     absent (Y:5244; lane 3, #165 6841918192, point 5). The case's
     `est.shim()` disarms both before the next `2`, so that lookup answers
-    absent and the bind starts again under a new id."""
+    absent and the bind starts again under a new id.
+
+    THE SECOND HALF READS ITS EVIDENCE (T254zm; lane 2's review RV22, NIT
+    5), in the calls after the second `2`, as case 18 reads its own
+    (T254zb): `[absent]` sends a `start-record` commit, under a write id
+    other than the copied one; `[found]` replays, and the shim's log shows
+    `register snapshot --tree <dir> --at <s-1>` (TP:6108 at a6497d00),
+    `s` being the found entry's seq in the journal. The shim logs `psql`'s
+    script, not `lanes-index`'s argv, so the replay is known by the one
+    request only that form sends: under `--tree` and `--at <k>`, the
+    `repos_blob` of the entry at `k + 1`
+    (`f9e1449c:lanes-index:3454`, `:3752`; the replay's call,
+    `f9e1449c:lanes-edit.sh:10725-10728`)."""
     est = _real_estate(estate, mode="primary")
     arms = ([{"mode": "fail-match", "match": "commit_write", "from": 1},
              {"mode": "fail-match", "match": "find_write", "from": 1}]
@@ -2129,6 +2141,7 @@ def test_a_bind_in_doubt_looks_its_write_up_before_a_rerun(estate, held):
     record = est.ended(120)
     assert record["mode"] == "bind-failed" and record["rc"] == "3", record
     assert all(k in record for k in COPIES), record
+    copied = record["write_id"]
     est.shim()
     est.hook("hello")
     before = len(est.shim_calls())
@@ -2142,6 +2155,16 @@ def test_a_bind_in_doubt_looks_its_write_up_before_a_rerun(estate, held):
     assert record["mode"] == "bound", record
     if held == "found":
         assert not start, f"the found write was committed again: {calls}"
+        seq = est.pg.psql("SELECT seq FROM lanes_register.journal "
+                          f"WHERE write_id = '{copied}'::uuid;").stdout.split()
+        assert seq, f"the found write {copied} is not in the journal"
+        at = f"FROM journal j WHERE j.seq = {int(seq[-1]) - 1} + 1"
+        assert [c for c in calls if at in c.get("sent", "")], \
+            (f"no replay at seq {int(seq[-1]) - 1}, the found entry's base, in calls "
+             f"{[c.get('call') for c in calls]}")
+    else:
+        assert start and all(copied not in calls[i].get("sent", "") for i in start), \
+            (copied, [calls[i].get("call") for i in start])
 
 
 def test_a_rerun_after_a_failed_stamp_push_writes_one_stamp(estate):
