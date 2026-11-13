@@ -1207,9 +1207,14 @@ def claim(obj: str, *more: str) -> List[str]:
     return ["claim", obj, "--home", KEY, *more]
 
 
-def burst(e: Estate, objects: Sequence[str], window_ms: int, extra: dict = None) -> Tuple[List[Writer], float]:
+def burst(e: Estate, objects: Sequence[str], window_ms: int, extra: dict = None,
+          node: Optional[pytest.Item] = None) -> Tuple[List[Writer], float]:
     """Writers on `objects`, one lane each, released together; returns them,
-    and the drain from the release to the last exit."""
+    and the drain from the release to the last exit. Before its caller
+    asserts anything, it records the drain and each writer's attempts,
+    counted as snapshot calls in the shim's log, and its seconds from the
+    release to its exit, never asserted (TP:3783-3787 at `0c3750a5`; lane 3,
+    #165 6838735040; T243l): `record("burst", node, ...)`."""
     barrier = Barrier(e.root, len(objects))
     arms = [dict(WINDOW, ms=window_ms)]
     writers = [e.launch(lane, claim(obj, "--no-github"), arms=arms, barrier=barrier, extra=extra)
@@ -1217,12 +1222,23 @@ def burst(e: Estate, objects: Sequence[str], window_ms: int, extra: dict = None)
     released = barrier.release()
     for w in writers:
         w.wait()
-    return writers, max(w.ended for w in writers) - released
+    drain = max(w.ended for w in writers) - released
+    record("burst", node, drain_s=round(drain, 2), margin_vs_30s=round(D7_S / max(drain, 0.01), 2),
+           attempts={w.lane: len(w.snapshot_calls()) for w in writers},
+           seconds={w.lane: round(w.ended - released, 2) for w in writers})
+    return writers, drain
 
 
-def record(name: str, **figures) -> None:
-    """A figure recorded beside the result, never asserted (TP:7556-7559)."""
-    print(f"[T243 {name}] " + ", ".join(f"{k}={v}" for k, v in figures.items()))
+def record(name: str, node: Optional[pytest.Item] = None, **figures) -> str:
+    """A figure recorded beside the result, never asserted (TP:7556-7559),
+    and returned. With `node`, the case's item, the line is also the case's
+    junit property `T243 <name>`, which a failed case's junit carries as a
+    passed one's does, though it leaves out captured output (T243l)."""
+    line = f"[T243 {name}] " + ", ".join(f"{k}={v}" for k, v in figures.items())
+    print(line)
+    if node is not None:
+        node.user_properties.append((f"T243 {name}", line))
+    return line
 
 
 @CLIENT
@@ -1279,15 +1295,16 @@ def test_the_later_hold_exits_2_and_prints_the_earlier_line(estates):
 
 
 @CLIENT
-def test_ten_writers_released_together_all_commit_in_order(estates):
+def test_ten_writers_released_together_all_commit_in_order(estates, request):
     """AT-4 (c), section 4.1's oracle: ten writers on ten free objects, W =
     200 ms, `LANES_REGISTER_DEADLINE_S` unset (D7's 30 s). All exit 0, none
     75 or 69; seqs 2 to 11, no gap and no repeat; ten distinct write ids; one
-    `CLAIMED` per object; the head reads 11. The drain is asserted under 60 s
-    and recorded beside D7's 30 s, with each writer's attempts."""
+    `CLAIMED` per object; the head reads 11. The drain is asserted under 60 s.
+    `burst` records it beside D7's 30 s, with each writer's attempts and
+    seconds, before any assertion, and as the case's junit property (T243l)."""
     e = estates()
     objects = [f"{KEY}#{100 + k}" for k in range(10)]
-    writers, drain = burst(e, objects, 200)
+    writers, drain = burst(e, objects, 200, node=request.node)
     assert [w.code for w in writers] == [0] * 10, [(w.lane, w.code, w.err[-300:]) for w in writers]
     grew = e.journal_after()
     assert [r["seq"] for r in grew] == list(range(2, 12)), grew
@@ -1295,8 +1312,6 @@ def test_ten_writers_released_together_all_commit_in_order(estates):
     assert e.claimed(*objects) == sorted(zip(objects, BURST))
     assert e.c.head() == 11
     assert drain < TWICE_D7_S, f"the burst drained in {drain:.1f} s, past twice D7's {D7_S} s"
-    record("burst", drain_s=round(drain, 2), margin_vs_30s=round(D7_S / max(drain, 0.01), 2),
-           attempts={w.lane: len(w.snapshot_calls()) for w in writers})
 
 
 @CLIENT
@@ -1533,7 +1548,8 @@ def _objects_named(e: Estate) -> Dict[str, Path]:
 
 
 @CLIENT
-def test_the_image_cache_stays_content_addressed_under_the_burst_and_a_corrupt_object_is_refetched(estates):
+def test_the_image_cache_stays_content_addressed_under_the_burst_and_a_corrupt_object_is_refetched(
+        estates, request):
     """AT-4 (g): in the state directory the burst's writers shared, every
     object is named by the sha256 of its bytes and no temporary file is left;
     `head` never decreases in the samples taken during the burst and ends no
@@ -1556,7 +1572,7 @@ def test_the_image_cache_stays_content_addressed_under_the_burst_and_a_corrupt_o
     sampler = threading.Thread(target=sample, daemon=True)
     sampler.start()
     try:
-        writers, _ = burst(e, [f"{KEY}#{200 + k}" for k in range(10)], 200)
+        writers, _ = burst(e, [f"{KEY}#{200 + k}" for k in range(10)], 200, node=request.node)
     finally:
         stop.set()
         sampler.join(5)
@@ -1814,13 +1830,13 @@ def seam_outs(e: Estate) -> Dict[str, str]:
 
 
 @CLIENT
-def test_a_writer_prints_its_output_once_however_many_attempts_it_made(estates):
+def test_a_writer_prints_its_output_once_however_many_attempts_it_made(estates, request):
     """Test 4's burst of ten: each committed writer's success text, claim's
     `register seq <s>` line, is printed exactly once, however many attempts
     it made, and its stderr no line twice (only the deciding attempt's). The
     line is a `note`, on stderr (T421; T243h)."""
     e = estates()
-    writers, _ = burst(e, [f"{KEY}#{400 + k}" for k in range(10)], 200)
+    writers, _ = burst(e, [f"{KEY}#{400 + k}" for k in range(10)], 200, node=request.node)
     assert [w.code for w in writers] == [0] * 10, [(w.lane, w.code, w.err[-300:]) for w in writers]
     for w in writers:
         assert len(SEQ_SAID.findall(w.err)) == 1, f"{w.lane} printed its success text not once: {w.err!r}"
