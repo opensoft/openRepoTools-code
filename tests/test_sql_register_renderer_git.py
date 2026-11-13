@@ -770,20 +770,20 @@ class RenderEstate:
         return lane_checkout
 
     def own_checkout(self, lc) -> SimpleNamespace:
-        """THE LANE'S OWN REGISTER CHECKOUT ON PRIMARY, `<c>`,
-        `<W>-lanes/<lane>/` (T270e), made by `lanes-edit.sh lane-checkout
-        <lane> --create` through the flipped copy, as `lane-start` makes it
-        at a launch and as line G's T254s makes it for each primary lane.
+        """THE LANE'S OWN REGISTER CHECKOUT ON PRIMARY, `<c>`, `<W>-lanes/<lane>/`
+        (T270e), made by `lanes-edit.sh lane-checkout <lane> --create` through the
+        flipped copy, as line G's T254s makes it for each primary lane. The estate makes
+        `<c>` itself, because `lane-start` makes it only under `LANES_ROUTE_WRITES=1`
+        with neither `LANES_REPO` nor `LANES_FILE` set (lane 3, #165 6841265575;
+        `dfc4ce4c:lane-start:1209-1210`).
 
-        WHY: on primary, T415's `pw_checkout` takes each write's checkout
-        from `lane_checkout_path`, `<W>-lanes/<lane>`, and `LANES_REPO`
-        never enters it (lane 4, #165 6840794493: `a38af255:lanes-edit.sh:6273`,
-        `:20738`, `:1673-1674`). Where it is not there, the write refuses 2
-        and nothing is sent. The write's fork then renders there,
-        `render --checkout "$PW_C"` (`pw_render_fork`). So the render's
-        calls, lock and marks are `<c>`'s. The clone is a fetch, so
-        `LANES_NO_FETCH` is left out. Returns `<c>`'s `clone` and
-        `git_dir`."""
+        WHY: on primary, T415's `pw_checkout` takes each write's checkout from
+        `lane_checkout_path`, `<W>-lanes/<lane>`, and `LANES_REPO` never enters it
+        (lane 4, #165 6840794493: `a38af255:lanes-edit.sh:6273`, `:20738`, `:1673-1674`).
+        Where it is not there, the write refuses 2 and nothing is sent. The write's fork
+        then renders there, `render --checkout "$PW_C"` (`pw_render_fork`). So the
+        render's calls, lock and marks are `<c>`'s. The clone is a fetch, so
+        `LANES_NO_FETCH` is left out. Returns `<c>`'s `clone` and `git_dir`."""
         proc = subprocess.run(["bash", str(self.copy.parent / "lanes-edit.sh"), "lane-checkout",
                                lc.lane, "--create"], cwd=str(lc.clone),
                               env=self.lane_env(lc, None, {"LANES_NO_FETCH": None}),
