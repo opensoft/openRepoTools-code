@@ -560,7 +560,7 @@ unset LANES_ACT LANES_EXPECT
 act_line=""; act_scopes=""; act_down=""; act_exit=""; act_w69=""; act_w9_rc=""
 act_also3=""; act_p69_also3=""
 # A WRITE THAT WAS SENT AND DID NOT END 0, 3 OR 69 UNDER A SEQ BASE ENDS THE BLOCK, AND THE ACT
-# (feature 007, T431; TP:5891-5894 "never 0"; tasks:1373, `:2817`'s rule; lane 3, #165
+# (feature 007, T431; TP:5861-5864 "never 0"; tasks:1373, `:2817`'s rule; lane 3, #165
 # 6834271321, and 6835210568 on lane 4's question 4: THE SKILL'S STOP USES 2 ALONE).
 # `act_again_say` records it below, and the end of the block prints the stop and exits 2,
 # whatever code the writer gave: the writer's own 75 stays printed in its own stderr. A 75
@@ -1201,7 +1201,7 @@ if [[ -n "$act_w69" ]]; then
 fi
 # A REFUSED WRITE ENDS THE BLOCK AND THE ACT (feature 007, T431; lane 3, #165 6834271321,
 # on lane 4's question 3, and 6835210568, which rules question 4 for the skill alone:
-# "the skill's stop uses 2 alone"; TP:5891-5894: the act exits with the code lane 4's
+# "the skill's stop uses 2 alone"; TP:5861-5864: the act exits with the code lane 4's
 # arms give, "never 0"; the row `[skill-step-4-writes]`). Under a seq base a write that was
 # sent and exited with any code but 0, 3 and 69 (a 2, a 75, any other) leaves this block at
 # `act_stop`, and the block ends 2, whichever code or mix of codes the writes gave. It is not
