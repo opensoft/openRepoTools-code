@@ -571,7 +571,15 @@
 #      outcome, whose own code is the record's `rc`, or 1 where it could not
 #      rewrite the record at its start and so ran nothing; its body,
 #      `guard-bind --body`, exits `lane-start`'s own code, which the outer
-#      reads as that `rc`.
+#      reads as that `rc`. Before `lane-start` (T510, phase 2's rerun step,
+#      `guard_bind_rerun`), the body ends with 2 or 3 of its own where the
+#      lookup of a write the attempt before left in doubt says so: 3 where
+#      the lookup settles nothing (LR011, no try within its window, or an
+#      answer it cannot read), or the pending record it found cannot be
+#      settled or rerun; 2 on LR007 `another-write` or `generation`; or the
+#      found rerun's own code. Each is a `return` the arm passes on, with its
+#      `why=` in the facts file, and never a `die`: the outer reads it as the
+#      record's `rc`.
 #      AND FEATURE 007'S ACTS (T410; Y:5595, Y:5597–5601), each with nothing
 #      sent: `act-begin --rebase`'s refusals of a `LANES_ACT` that is missing
 #      or malformed, of a `files` base on primary, and of a register
@@ -6337,7 +6345,9 @@ reg_mode_files() {   # <why>
 #   guard       `guard`, which makes its own read (T507): no door here;
 #   none        the arms that read no register (host-local facts, the filters
 #               that read stdin, the inventory's observation, `act-begin`, Q11,
-#               and `guard-bind`): no door and no call;
+#               and `guard-bind`): no door and no call (`guard-bind`'s body
+#               makes T510's one `journal` lookup of its own before
+#               `lane-start`, through T417's `pw_lookup`, never a door);
 #   writer      the write guard's verbs and `start-record` (R46): no door, since
 #               T409's question at the dispatcher serves them.
 # `REG_MIRROR_VAR=1` marks the arms that `LANES_READ_MIRROR=1` lowers to a
@@ -20235,6 +20245,14 @@ guard_offer_file() {   # <session uuid>
 # four modes are `name-drift` (today's offer, and the offer restored), `binding`,
 # `bound` and `bind-failed`.
 #
+# PHASE 2 (T510; W:5374-5381, W:5446-5468) ADDS TO IT: `act`, written at the
+# offer on primary (`guard_offer_act`), which the body's `set-row-state` on the
+# lane left sends as `LANES_ACT`; and five copies from `start-record`'s pending
+# record, `write_id`, `generation`, `not_after`, `write_lane` and
+# `args_sha256`, which the outer and the stale row take where that record
+# holds a `call=` line (`guard_bind_copies`), and from which the next answer
+# 2's body looks the write up before it binds again (`guard_bind_rerun`).
+#
 # ITS FILES: the record, `<offers>/<uuid>`; each attempt's output,
 # `<uuid>.bind.<n>.out`, which the record's `out=` names; and the body's facts,
 # `<uuid>.bind.<n>.facts`, beside it, which the outer folds into the record and
@@ -20269,6 +20287,9 @@ guard_bind_load() {   # <offer file>
   GBR_BIND=""; GBR_STARTED=""; GBR_BOUND=""; GBR_BOUNDED=""; GBR_DEADLINE=""
   GBR_PID=""; GBR_HAS_PID=0; GBR_PIDSTART=""; GBR_HOST=""; GBR_CONTAINER=""
   GBR_OUT=""; GBR_DETACH=""; GBR_RC=""; GBR_WHY=""; GBR_ENDED=""; GBR_NOTES=""
+  # T510's: the offer's `act`, T507's `c` and `n_a`, and the five copies.
+  GBR_ACT=""; GBR_C=""; GBR_N_A=""; GBR_WRITE_ID=""; GBR_GENERATION=""
+  GBR_NOT_AFTER=""; GBR_WRITE_LANE=""; GBR_ARGS_SHA256=""
   [ -r "${1-}" ] && [ -f "${1-}" ] || return 1
   gbl_seen=" "
   while IFS= read -r gbl_line || [ -n "$gbl_line" ]; do
@@ -20303,6 +20324,14 @@ guard_bind_load() {   # <offer file>
       rc)             GBR_RC="$gbl_v" ;;
       why)            GBR_WHY="$gbl_v" ;;
       ended_utc)      GBR_ENDED="$gbl_v" ;;
+      act)            GBR_ACT="$gbl_v" ;;
+      c)              GBR_C="$gbl_v" ;;
+      n_a)            GBR_N_A="$gbl_v" ;;
+      write_id)       GBR_WRITE_ID="$gbl_v" ;;
+      generation)     GBR_GENERATION="$gbl_v" ;;
+      not_after)      GBR_NOT_AFTER="$gbl_v" ;;
+      write_lane)     GBR_WRITE_LANE="$gbl_v" ;;
+      args_sha256)    GBR_ARGS_SHA256="$gbl_v" ;;
     esac
   done < "$1"
   return 0
@@ -20336,9 +20365,13 @@ guard_bind_readable() {
 # lines kept are the record's own, in their order, less every key named in
 # <drop> and every key written; the written keys follow, in the order given.
 # So a key this task does not write — `utc`, T507's `c`, `n_a` and `w_s_ms`,
-# T510's `act` and five copies — goes through every rewrite untouched (points
-# 5 and 12). A written `mode=` goes first, where a person reading the file
-# looks for it. A record that exists and cannot be read is not rewritten.
+# T510's `act` — goes through every rewrite untouched (points 5 and 12).
+# T510's five copies do too, but for the three rewrites that name them in
+# <drop> (`GBC_KEYS`): the outer's outcome and the stale row, which mirror
+# them from `start-record`'s pending record (`guard_bind_copies`), and case
+# 10, which drops them. A written `mode=` goes first, where a person reading
+# the file looks for it. A record that exists and cannot be read is not
+# rewritten.
 #   0 written · 1 not, and the record is as it was
 guard_bind_rewrite() {   # <offer file> <keys to drop, space-separated> [<key>=<value> …]
   gbw_f="${1-}"; gbw_drop=" ${2-} "
@@ -20452,6 +20485,105 @@ guard_bind_head_copy() {   # <offer file>
   [ "${#ghc_kv[@]}" -gt 0 ] || return 0
   guard_bind_rewrite "${1-}" "" "${ghc_kv[@]}"
 }
+
+# FEATURE 007, T510 - THE OFFER'S `act` (W:5378, the bind record's keys;
+# tasks.md T510, "`act`"; T410's grammar): `<act-id>@<n>:<generation>`, a new
+# id from `act_mint_id` on the `n` and `generation` of the prefetch that made
+# this offer, `.head`'s. Only where that read was SQL: `REG_STORE=sql` with no
+# failed second read (`.rfail`). Never off primary: files mode and `mode
+# index` write no `.head`, and the mirror path flushes it and sets
+# `REG_STORE=mirror` (the plan's open point 8, as lane 3 ruled it, #165
+# 6841918192 point 8: no `act` where the offer's read was not SQL; the bind's
+# `set-row-state` then still sends `LANES_LANE` and `LANES_EXPECT`, without
+# `LANES_ACT`, which on primary the client's check 2 refuses with 2 before any
+# database call, and that becomes a `note=`). Printed only where `act_parse`
+# accepts it; nothing otherwise, and never a refusal: the offer is made either
+# way.
+guard_offer_act() {
+  [ "${REG_STORE:-}" = sql ] && [ -n "${SE_CACHE_FILE:-}" ] || return 0
+  [ ! -e "$SE_CACHE_FILE.rfail" ] && [ -f "$SE_CACHE_FILE.head" ] || return 0
+  goa_n="$(sed -n -e 's/^n=//p' "$SE_CACHE_FILE.head" 2>/dev/null | head -n 1)"
+  goa_g="$(reg_head_generation)"
+  goa_id="$(act_mint_id)" || return 0
+  goa_v="$goa_id@$goa_n:$goa_g"
+  ( act_parse plain "$goa_v" ) >/dev/null 2>&1 || return 0
+  printf '%s\n' "$goa_v"
+}
+
+# FEATURE 007, T510 - THE FIVE COPIES FROM `start-record`'s PENDING RECORD
+# (W:5380, the bind record's keys; `contracts/pending-record.md` §3.1-3.2;
+# tasks.md T510, "The five copies"). A READ-ONLY scan of
+# `<state>/register-pending/`, which it never makes, as `wr_pending_dir` would:
+# names of 64 hex digits only, so no claim and no temporary file is read; ONE
+# `awk` pass keeps those with `verb=start-record` and `session=<uuid>`; each of
+# those is then read by T412's `wr_record_read` and taken only where it is
+# whole (0), its `host` and `container` are this run's (`wr_here`: a record
+# from another host or container gets none), and it holds a `call=` line,
+# without which no call of the write can have been sent. Among them, the
+# newest by `updated_utc`. Its `write_id`, `generation`, `lane` (as
+# `write_lane`) and `args_sha256`, and the largest `not_after` among its
+# `call=` lines, go into `GBC_KV` as `key=value` words; its path into
+# `GBC_FILE`, with `WR_REC_*` left as its read. Where none passes, both are
+# empty, and a caller whose drop list names the five keys then drops them, so
+# the record mirrors the pending record (the plan's §3 #4).
+# With <write id>, the record must hold that id instead, and need hold no
+# `call=` line: the body's "a record whose `write_id` no pending record still
+# holds" (tasks.md T510, "The lookup before a rerun").
+#   always 0
+GBC_KV=(); GBC_FILE=""
+guard_bind_copies() {   # <session uuid> [<write id>]
+  GBC_KV=(); GBC_FILE=""
+  gbc_sid="${1-}"; gbc_wid="${2-}"
+  guard_bind_uuid_ok "$gbc_sid" || return 0
+  gbc_dir="$(wr_state_dir)/register-pending"
+  [ -d "$gbc_dir" ] || return 0
+  gbc_names=()
+  for gbc_x in "$gbc_dir"/*; do
+    [ -f "$gbc_x" ] || continue
+    wr_is_hex64 "${gbc_x##*/}" || continue
+    gbc_names+=("$gbc_x")
+  done
+  [ "${#gbc_names[@]}" -gt 0 ] || return 0
+  gbc_list="$(awk -v s="session=$gbc_sid" 'FNR == 1 { v = 0; m = 0 } $0 == "verb=start-record" { v = 1 } $0 == s { m = 1 } v && m && !(FILENAME in p) { p[FILENAME] = 1; print FILENAME }' "${gbc_names[@]}" 2>/dev/null || :)"
+  [ -n "$gbc_list" ] || return 0
+  wr_here
+  [ -n "$WR_HERE_HOST" ] && [ -n "$WR_HERE_CONTAINER" ] || return 0
+  gbc_best=""; gbc_bt=-1; gbc_bna=""
+  while [ -n "$gbc_list" ]; do
+    gbc_x="${gbc_list%%"$WR_NL"*}"
+    case "$gbc_list" in *"$WR_NL"*) gbc_list="${gbc_list#*"$WR_NL"}" ;; *) gbc_list="" ;; esac
+    [ -n "$gbc_x" ] || continue
+    wr_record_read "$gbc_x" || continue
+    [ "$WR_REC_VERB" = start-record ] && [ "$WR_REC_SESSION" = "$gbc_sid" ] || continue
+    [ "$WR_REC_HOST" = "$WR_HERE_HOST" ] && [ "$WR_REC_CONTAINER" = "$WR_HERE_CONTAINER" ] || continue
+    if [ -n "$gbc_wid" ]; then [ "$WR_REC_WRITE_ID" = "$gbc_wid" ] || continue
+    else [ -n "$WR_REC_CALLS" ] || continue
+    fi
+    gbc_t="$(epoch_of "$WR_REC_UPDATED_UTC")"
+    wr_is_count "$gbc_t" || continue
+    [ "$gbc_t" -gt "$gbc_bt" ] || continue
+    # THE LARGEST `not_after` among its `call=` lines (v3f's case 20), split
+    # by parameter expansion as T412's readers split them.
+    gbc_na=""; gbc_r="$WR_REC_CALLS"
+    while [ -n "$gbc_r" ]; do
+      gbc_l="${gbc_r%%"$WR_NL"*}"
+      case "$gbc_r" in *"$WR_NL"*) gbc_r="${gbc_r#*"$WR_NL"}" ;; *) gbc_r="" ;; esac
+      wr_call_fields "$gbc_l" || continue
+      wr_is_count "$WR_CF_NOT_AFTER" || continue
+      if [ -z "$gbc_na" ] || [ "$WR_CF_NOT_AFTER" -gt "$gbc_na" ]; then gbc_na="$WR_CF_NOT_AFTER"; fi
+    done
+    gbc_best="$gbc_x"; gbc_bt="$gbc_t"; gbc_bna="$gbc_na"
+  done
+  [ -n "$gbc_best" ] || return 0
+  wr_record_read "$gbc_best" || return 0
+  GBC_FILE="$gbc_best"
+  GBC_KV=("write_id=$WR_REC_WRITE_ID" "generation=$WR_REC_GENERATION")
+  [ -z "$gbc_bna" ] || GBC_KV+=("not_after=$gbc_bna")
+  GBC_KV+=("write_lane=$WR_REC_LANE" "args_sha256=$WR_REC_ARGS_SHA256")
+  return 0
+}
+# The five keys, as every drop list that mirrors the pending record names them.
+GBC_KEYS="write_id generation not_after write_lane args_sha256"
 
 # `lane-start`, found the way every word in this toolset finds its siblings:
 # beside this file first — `--install` places them in one directory — then on
@@ -21453,6 +21585,8 @@ guard_offer() {   # <offer file> <pane>
   # UNDER `umask 077` (feature 007, lane 3's ruling on the bind record, point
   # 1): the offer is the record answer 2's bind then runs from, so it is 0600
   # and a new `offers/` is 0700. An existing `offers/` is not `chmod`'d.
+  # FEATURE 007, T510: the offer's `act`, on primary only (`guard_offer_act`).
+  go_act="$(guard_offer_act || :)"
   ( umask 077
     mkdir -p -- "${go_f%/*}" 2>/dev/null || :
     { printf 'mode=name-drift\n'
@@ -21463,6 +21597,7 @@ guard_offer() {   # <offer file> <pane>
       printf 'utc=%s\n'  "$(utc_now)"
       printf 'window=%s\n' "$G_WINREF"
       printf 'pane=%s\n'   "$go_pane"
+      [ -z "$go_act" ] || printf 'act=%s\n' "$go_act"
     } > "$go_f" ) 2>/dev/null || :
   guard_triple
   note "WARNING: the lane and Claude session names disagree. This prompt is paused until you choose how to repair or explicitly allow this lane."
@@ -21864,7 +21999,9 @@ EOF
       return 2
     fi
     gbt_back=0
-    guard_bind_rewrite "$gbt_f" "" mode=name-drift rc=unknown "ended_utc=$(utc_now)" || gbt_back=1
+    # CASE 10 IS STALE WITH NO COPIES (W:5458's row; tasks.md T510): the
+    # pending record is that host's, so the five keys are dropped.
+    guard_bind_rewrite "$gbt_f" "$GBC_KEYS" mode=name-drift rc=unknown "ended_utc=$(utc_now)" || gbt_back=1
     guard_triple
     note "THE BIND STARTED AT ${GBR_STARTED:-a time the record does not give} ON $GBR_HOST/$GBR_CONTAINER IS NO LONGER RUNNING AND LEFT NO OUTCOME by 60 s past its deadline, $gbt_dlu, so what it wrote is not known; the next \`2\` finds out first. This window is not renamed: that bind ran on another host or container."
     if [ "$gbt_back" = 1 ]; then
@@ -21916,7 +22053,13 @@ EOF
 
   if [ "$gbt_state" = stale ]; then
     gbt_back=0
-    guard_bind_rewrite "$gbt_f" "" mode=name-drift rc=unknown "ended_utc=$(utc_now)" || gbt_back=1
+    # THE STALE ROW TAKES THE FIVE COPIES (W:5456's row; tasks.md T510, "The
+    # five copies"; v3f's case 20), as the outer would have at its outcome:
+    # from this transcript's newest `start-record` pending record on this host
+    # and container that holds a `call=` line, `not_after` the largest among
+    # them, and none where there is no such record (`guard_bind_copies`).
+    guard_bind_copies "$G_ID"
+    guard_bind_rewrite "$gbt_f" "$GBC_KEYS" mode=name-drift rc=unknown "ended_utc=$(utc_now)" ${GBC_KV[@]+"${GBC_KV[@]}"} || gbt_back=1
     guard_triple
     note "THE BIND STARTED AT ${GBR_STARTED:-a time the record does not give} (attempt $gbt_k) IS NO LONGER RUNNING AND LEFT NO OUTCOME: $gbt_why. What it wrote is not known; the next \`2\` finds out first."
     # CASE 9 RENAMES THE WINDOW BACK TOO (ERR-23); case 10, above, does not.
@@ -22197,7 +22340,11 @@ guard_answer() {   # <offer file> <the prompt> <pane>
 # bound or a signal stops the body. It is not a register writer — the body's
 # children are — so it is in neither of the dispatcher's writer lists, and its
 # read-door class is `none` (T504): before `lane-start` it reads the offer
-# file and nothing else.
+# file and, in phase 2 (T510), this transcript's `start-record` pending
+# records, read-only, and makes one `journal` lookup where the record names a
+# write the attempt before left in doubt (`guard_bind_rerun`); at its outcome
+# the outer reads those pending records again for the five copies
+# (`guard_bind_copies`). It opens no read door.
 #
 # `timeout -k 10 "$(( bound_s - 10 ))"` SIGNALS THE BODY'S WHOLE PROCESS GROUP,
 # so `lane-start`, `lanes-edit.sh`, `lanes-index` and `psql` stop with it. Where
@@ -22433,7 +22580,20 @@ guard_bind_outer() {   # <session uuid>
     [ -z "$gbo_facts" ] || rm -f -- "$gbo_facts"
     return 0
   fi
-  if ! guard_bind_rewrite "$gbo_f" "mode rc why note ended_utc" "${gbo_out[@]}"; then
+  # FEATURE 007, T510 - THE FIVE COPIES MIRROR `start-record`'s PENDING RECORD
+  # (W:5380, the bind record's keys; tasks.md T510, "The five copies"): on
+  # every outcome but 0 they are copied from this transcript's newest
+  # `start-record` pending record on this host and container that holds a
+  # `call=` line (`guard_bind_copies`), and on every outcome they are in the
+  # drop list. So a record kept by a 3 or by LR007 `generation` keeps them; a
+  # record removed, by `absent`, LR007 `another-write`, a 0 or a refusal, takes
+  # them away; and a bound record holds none.
+  gbo_copies=()
+  if [ "${gbo_out[0]}" != mode=bound ]; then
+    guard_bind_copies "$gbo_u"
+    gbo_copies=(${GBC_KV[@]+"${GBC_KV[@]}"})
+  fi
+  if ! guard_bind_rewrite "$gbo_f" "mode rc why note ended_utc $GBC_KEYS" "${gbo_out[@]}" ${gbo_copies[@]+"${gbo_copies[@]}"}; then
     note "guard-bind: the outcome could not be written to $gbo_f: ${gbo_out[*]}"
     return 1
   fi
@@ -22451,12 +22611,184 @@ guard_bind_facts() {   # <facts file> [<line> …]
   return 0
 }
 
+# FEATURE 007, T510 - `start-record`'s PENDING RECORD SETTLED, where the lookup
+# shows its write did not commit under its id: `absent`, and LR007
+# `another-write` (W:5562-5565; `contracts/pending-record.md` §3.4, "Removed
+# ... where it holds one, only after F3's lookup has settled the write"). T412's
+# own steps, called and not edited (the plan's open point 6, its default: yes,
+# from outside a write run): this process's claim (`wr_claim_take`, waiting at
+# most D7's 30 s on a live owner), then the record and the claims up to its own
+# (`wr_record_remove`), then the attempt directories its `call=` lines named
+# (`pw_call_dirs_remove`). In a subshell, so a `die` of theirs ends the settle
+# and never the body. The record is `GBC_FILE`, read into `WR_REC_*`.
+#   0 settled · else not, and the record is kept
+guard_bind_settle() {
+  [ -n "$GBC_FILE" ] || return 1
+  ( WR_STATE="$(wr_state_dir)"; WR_D="${GBC_FILE##*/}"; WR_CALLS="$WR_REC_CALLS"
+    WR_CLAIM=""; WR_CLAIM_K=-1
+    wr_claim_take "$(( $(date -u +%s) + 30 ))" || exit $?
+    wr_record_remove || exit 1
+    pw_call_dirs_remove
+    exit 0 ) >&2
+}
+
+# FEATURE 007, T510 - PHASE 2's RERUN STEP, BEFORE `lane-start` (W:5558-5566,
+# "Reruns" and its table; tasks.md T510, "The lookup before a rerun", "`w₀`"
+# and "The reruns table"; the plan's §3 #6). The record's five copies say
+# which write of `start-record` the attempt before may have left in doubt:
+#   1. NO LOOKUP where the record holds no `write_id`, or where no whole
+#      `start-record` pending record of this transcript on this host and
+#      container still holds it (`guard_bind_copies <uuid> <id>`): 0, and
+#      `lane-start` binds anew; the outer's drop list then drops the copies.
+#   2. `w₀`: the child waits on its own clock until the record's `ended_utc`
+#      plus `C` = `n_a`·`c` + 6 s, from the record's `c` (at least 2, else 2)
+#      and `n_a` (at least 1, else 1) as `guard_bind_bound_s` reads them, and
+#      at most `C` from now; where `ended_utc` cannot be read, `C` from now.
+#      The record's `not_after` is at most `C` + 2 s after the stopped run's
+#      last snapshot, which came before `ended_utc` (W:5558; R05; tasks.md's
+#      `C`, not the design's fixed 8 s).
+#   3. THE LOOKUP, ONE CALL WITH NO CLOCK PAIR (W:5558): `lanes-index journal
+#      --write-id <id> --not-after <not_after> --generation <generation> --lane
+#      <write_lane> --verb start-record --args-sha256 <args_sha256>`, from the
+#      copies, through lane 4's one parser, T417's `pw_lookup` (the plan's open
+#      point 6, its default), with its answer in a fresh directory this step
+#      removes.
+#   4. THE TABLE (W:5560-5566):
+#      found      the pending record's `cmdline` is run, `eval`'d into an array
+#                 as `contracts/pending-record.md` §3.1 allows, under its
+#                 `write_id`, `generation`, `lane` and `session`, through
+#                 `LANES_EDIT` where it is set: it finds the entry and runs the
+#                 tail once (T418), and removes the record. Then 0, and
+#                 `lane-start` runs as usual, whose bind T503 makes write no
+#                 register line again (the plan's open point 9, its default).
+#                 A rerun that ends non-zero ends the bind with its code
+#      absent     the record settled (`guard_bind_settle`), then 0: `lane-start`
+#                 mints a new id. A record that cannot be settled is a 3
+#      doubt      3: LR011, no try within the window, any answer that settles
+#                 nothing. The record is kept, so the copies are
+#      LR007 `another-write`
+#                 the record settled, then 2 with the server's message: the
+#                 copies go with it
+#      LR007 `generation`
+#                 2 with a plain rerun's refusal of a record of another
+#                 generation (T412's text); the record and the copies are kept
+# A 2 or a 3 RETURNS, never `die`s (the exit-3 rule): its `why=` is in the
+# facts file, and the body exits with it.
+#   0 go on to `lane-start` · 2 or 3, or the found rerun's own code
+guard_bind_rerun() {   # <facts file>
+  gbe_facts="${1-}"
+  wr_is_uuid "$GBR_WRITE_ID" || return 0
+  guard_bind_copies "$G_ID" "$GBR_WRITE_ID"
+  [ -n "$GBC_FILE" ] || return 0
+  gbe_rec="$GBC_FILE"
+  if ! wr_is_count "$GBR_NOT_AFTER" || ! wr_is_uuid "$GBR_GENERATION" ||
+     ! wr_is_hex64 "$GBR_ARGS_SHA256" || [ -z "$GBR_WRITE_LANE" ]; then
+    gbe_why="the bind's record names write $GBR_WRITE_ID, which the pending record $gbe_rec still holds, but its copies of not_after, generation, write_lane and args_sha256 cannot make F3's lookup, so whether that write committed is not known. The pending record is kept"
+    note "guard-bind --body: $gbe_why."
+    [ -z "$gbe_facts" ] || guard_bind_facts "$gbe_facts" "why=$(guard_bind_oneline "$gbe_why")" || :
+    return 3
+  fi
+  # 2. `w₀`.
+  gbe_c="$(guard_bind_whole "$GBR_C" 6 || :)"
+  { [ -n "$gbe_c" ] && [ "$gbe_c" -ge 2 ]; } || gbe_c=2
+  gbe_n="$(guard_bind_whole "$GBR_N_A" 6 || :)"
+  { [ -n "$gbe_n" ] && [ "$gbe_n" -ge 1 ]; } || gbe_n=1
+  gbe_cs=$((gbe_n * gbe_c + 6))
+  gbe_now="$(date -u +%s)"
+  gbe_e=""
+  if wr_is_utc "$GBR_ENDED"; then gbe_e="$(epoch_of "$GBR_ENDED")"; fi
+  if wr_is_count "$gbe_e"; then gbe_until=$((gbe_e + gbe_cs)); else gbe_until=$((gbe_now + gbe_cs)); fi
+  [ "$gbe_until" -le "$((gbe_now + gbe_cs))" ] || gbe_until=$((gbe_now + gbe_cs))
+  while [ "$gbe_now" -lt "$gbe_until" ]; do
+    sleep "$((gbe_until - gbe_now))"
+    gbe_now="$(date -u +%s)"
+  done
+  # 3. THE LOOKUP, as T417's `pw_lookup` reads its `WR_*`: one `call` line
+  # carrying the copy's `not_after`, and no clock pair.
+  WR_STATE="$(wr_state_dir)"
+  WR_ID="$GBR_WRITE_ID"; WR_GEN="$GBR_GENERATION"; WR_LANE="$GBR_WRITE_LANE"
+  WR_VERB=start-record; WR_D="$GBR_ARGS_SHA256"
+  WR_CALLS="0 0 $GBR_NOT_AFTER $GBR_ARGS_SHA256 -"
+  PW_LK_CLK=()
+  PW_RUN_DIR="$( umask 077; mktemp -d "${TMPDIR:-/tmp}/guard-bind-lookup.XXXXXX" 2>/dev/null || printf '' )"
+  pw_lookup
+  gbe_msg=""
+  if [ "$PW_LK" != found ] && [ "$PW_LK" != absent ] && [ -n "$PW_LK_ERR" ] && [ -s "$PW_LK_ERR" ]; then
+    cat -- "$PW_LK_ERR" >&2
+    gbe_msg="$(grep -m 1 -e '^ERROR:  LR007:' -- "$PW_LK_ERR" 2>/dev/null || :)"
+  fi
+  [ -z "$PW_RUN_DIR" ] || rm -rf -- "$PW_RUN_DIR" 2>/dev/null || :
+  PW_RUN_DIR=""
+  gbe_look="lanes-index journal --write-id $WR_ID --not-after $GBR_NOT_AFTER --generation $WR_GEN --lane $(printf '%q' "$WR_LANE") --verb start-record --args-sha256 $WR_D"
+  # 4. THE TABLE.
+  gbe_why=""; gbe_rc=0
+  case "$PW_LK" in
+    found)
+      gbe_rr=()
+      eval "gbe_rr=($WR_REC_CMDLINE)" 2>/dev/null || gbe_rr=()
+      if [ "${gbe_rr[0]-}" != lanes-edit.sh ]; then
+        gbe_why="F3's lookup found write $WR_ID in the register at seq $PW_LK_SEQ, but its pending record's cmdline, in $gbe_rec, cannot be read as a lanes-edit.sh command, so its tail was not run. The pending record is kept"
+        gbe_rc=3
+      else
+        gbe_rr[0]="${LANES_EDIT:-$RESOLVED}"
+        note "guard-bind --body: F3's lookup found write $WR_ID at seq $PW_LK_SEQ, so its pending record's command runs once under that id, for its tail."
+        gbe_size=0
+        if [ -n "${GBR_OUT:-}" ] && [ -f "$GBR_OUT" ]; then
+          gbe_size="$(wc -c < "$GBR_OUT" 2>/dev/null | tr -d ' ' || :)"
+          case "$gbe_size" in ''|*[!0-9]*) gbe_size=0 ;; esac
+        fi
+        LANES_WRITE_ID="$WR_REC_WRITE_ID" LANES_WRITE_GENERATION="$WR_REC_GENERATION" \
+          LANES_LANE="$WR_REC_LANE" LANES_SESSION="$WR_REC_SESSION" \
+          "${gbe_rr[@]}" </dev/null >&2 || gbe_rc=$?
+        if [ "$gbe_rc" != 0 ]; then
+          gbe_said=""
+          if [ -n "${GBR_OUT:-}" ] && [ -f "$GBR_OUT" ]; then
+            gbe_said="$(tail -c +"$((gbe_size + 1))" "$GBR_OUT" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 1 || :)"
+          fi
+          gbe_why="F3's lookup found write $WR_ID at seq $PW_LK_SEQ, and the rerun of its pending record for its tail exited $gbe_rc${gbe_said:+: $gbe_said}"
+        fi
+      fi ;;
+    absent)
+      if guard_bind_settle; then
+        note "guard-bind --body: F3's lookup found no write $WR_ID with the head row's lock granted, so its pending record is settled and the bind runs anew under a new id."
+      else
+        gbe_why="F3's lookup found no write $WR_ID, but its pending record, $gbe_rec, could not be settled, so a new bind is not started beside it. The pending record is kept: $gbe_look"
+        gbe_rc=3
+      fi ;;
+    lr007)
+      if [ "$PW_LK_TOKEN" = generation ]; then
+        WR_LANE="$WR_REC_LANE"; WR_SESSION="$WR_REC_SESSION"; WR_CMDLINE="$WR_REC_CMDLINE"
+        WR_ARGS=(); PW_LANE="$GBR_WRITE_LANE"
+        gbe_why="$(wr_text_other_generation)"
+        gbe_rc=2
+      else
+        guard_bind_settle || note "guard-bind --body: the pending record $gbe_rec could not be removed after LR007 another-write; the next \`2\` looks it up again."
+        gbe_why="${gbe_msg:-ERROR:  LR007: another-write} (F3's lookup of write $WR_ID: that id is another write's in the register's journal, so no call of this bind's write can commit under it; its pending record is removed, and the next \`2\` binds anew)"
+        gbe_rc=2
+      fi ;;
+    *)
+      gbe_w3="$PW_LK_WHY"
+      [ -n "$gbe_w3" ] || gbe_w3="the lookup settled nothing"
+      gbe_why="cannot confirm whether the bind's register write $WR_ID committed: $gbe_w3. Its pending record, $gbe_rec, is kept, and so is the write id in this record, so the next \`2\` looks it up again. Look it up: $gbe_look"
+      gbe_rc=3 ;;
+  esac
+  [ "$gbe_rc" != 0 ] || return 0
+  note "guard-bind --body: $gbe_why"
+  [ -z "$gbe_facts" ] || guard_bind_facts "$gbe_facts" "why=$(guard_bind_oneline "$gbe_why")" || :
+  return "$gbe_rc"
+}
+
 # THE BODY, `guard-bind --body <uuid>`, IS WHAT THE GUARD'S CHOICE 2 USED TO DO
 # INSIDE THE HOOK, in the same order (Y:5397–5398): `lane-start --no-launch
 # --bind`, then, after a 0, the `set-row-state` on the lane the window left,
 # then `guard_bound_check`'s read. It writes no key of the record; it hands
 # the outer its `why` and the acts still owed in its facts file. It exits
-# `lane-start`'s own code.
+# `lane-start`'s own code. PHASE 2 (T510) puts two steps in that order:
+# before `lane-start`, the rerun step (`guard_bind_rerun`), which looks up a
+# write of `start-record` the attempt before left in doubt and may end the
+# body with its 2 or 3 instead; and on the `set-row-state`, `LANES_LANE` and
+# `LANES_EXPECT` always, and `LANES_ACT` where the record holds the offer's
+# `act`, on that call only (lane 3's ruling on point 8, #165 6841918192).
 guard_bind_body() {   # <session uuid>
   gbb_u="${1-}"
   if ! guard_bind_uuid_ok "$gbb_u"; then
@@ -22485,12 +22817,18 @@ guard_bind_body() {   # <session uuid>
     [ -z "$gbb_facts" ] || guard_bind_facts "$gbb_facts" "why=the bind's record at $gbb_f could not be read, or no longer said mode=binding, when its body started, so the body ran nothing" || :
     return 2
   fi
-  gbb_from="$GBR_FROM"; gbb_to="$GBR_TO"; gbb_out="$GBR_OUT"
+  gbb_from="$GBR_FROM"; gbb_to="$GBR_TO"; gbb_out="$GBR_OUT"; gbb_act="$GBR_ACT"
   # WHERE THE OUTER HANDED NO PATH, the body finds it beside `out=` itself.
   if [ -z "$gbb_facts" ]; then
     gbb_facts="$(guard_bind_facts_of "$gbb_f" "$gbb_out" || :)"
     [ -z "$gbb_facts" ] || guard_bind_facts "$gbb_facts" || :
   fi
+  # FEATURE 007, T510 - PHASE 2's RERUN STEP: a write of the attempt before,
+  # still in doubt, is looked up before anything binds again
+  # (`guard_bind_rerun`). Its 2 or 3 ends the bind, with its `why=` written.
+  gbb_lrc=0
+  guard_bind_rerun "$gbb_facts" || gbb_lrc=$?
+  [ "$gbb_lrc" = 0 ] || return "$gbb_lrc"
   gbb_start="$(guard_lane_start)"
   [ -n "$gbb_start" ] || gbb_start=lane-start
   # WHERE `lane-start`'s OWN WORDS BEGIN in the attempt's output file, so that
@@ -22547,9 +22885,14 @@ guard_bind_body() {   # <session uuid>
   # read that failed marks nothing, and the act is owed.
   guard_bind_refill
   gbb_rrc=0; gbb_row="$(row_of_lane "$gbb_from" 2>/dev/null)" || gbb_rrc=$?
+  # THE HAND COMMAND, ONE TEXT for the notes on stderr and the record's
+  # `note=` lines alike, with `LANES_LANE=<from>`, without which it is refused
+  # 2 on primary (lane 3's ruling on point 7, #165 6841918192: "The note's
+  # printed command carries it too").
+  gbb_hand="LANES_LANE=$gbb_from lanes-edit.sh set-row-state $gbb_from \"PAUSED · $gbb_line\""
   if [ "$gbb_rrc" = 69 ] || reg_read_lost; then
-    note "…but $gbb_from's row could NOT be read after the bind (${RO_FAILED:-the register read failed}), so it has NOT been marked. Run: lanes-edit.sh set-row-state $gbb_from \"PAUSED · $gbb_line\""
-    gbb_notes+=("note=lane $gbb_from's row was not marked PAUSED: run LANES_LANE=$gbb_from lanes-edit.sh set-row-state $gbb_from \"PAUSED · $gbb_line\"")
+    note "…but $gbb_from's row could NOT be read after the bind (${RO_FAILED:-the register read failed}), so it has NOT been marked. Run: $gbb_hand"
+    gbb_notes+=("note=lane $gbb_from's row was not marked PAUSED: run $gbb_hand")
   elif [ -n "$gbb_row" ]; then
     # AMENDMENT 13(a) — THE STATE IS SET, NOT APPENDED. This window has just
     # moved to another lane, so the lane it LEFT is not running in it any
@@ -22559,11 +22902,53 @@ guard_bind_body() {   # <session uuid>
     # and this.
     # THROUGH `LANES_EDIT` WHERE IT IS SET, else this file (R48): the copy
     # `lane-start`'s own writes already use.
-    if "${LANES_EDIT:-$RESOLVED}" set-row-state "$gbb_from" "PAUSED · $gbb_line" >&2; then
-      note "…and $gbb_from's row now reads PAUSED, naming the move to $gbb_to."
+    #
+    # FEATURE 007, T510 - ITS ENVIRONMENT, ON THIS CALL ONLY (W:5347; tasks.md
+    # T510, "The `set-row-state` on the lane left"): `LANES_LANE=<from>`, the
+    # writer's lane, without which a write on primary is refused 2 before its
+    # claim (T415's `pw_lane_given`; the plan's open point 7, its default, as
+    # the hand command below has always printed it); `LANES_EXPECT="row:<from>
+    # bind:<from>"` ALWAYS, so a change another place made to the lane left's
+    # row or binding after the offer is refused rather than written over; and
+    # `LANES_ACT=<act>` only where the record holds the offer's `act` (on
+    # primary only, `guard_offer_act`). WITH NO `act` THE EXPECTATION STILL
+    # GOES (lane 3's ruling on point 8, #165 6841918192; T432's call does the
+    # same, tasks:1400): on primary the client's check 2 refuses it with 2
+    # before any database call (`expect_parse`; Y:5599), which becomes a
+    # `note=` below, so it is never an unguarded write (Y:5587); files mode
+    # reads neither variable. Every code but 0 becomes a `note=`, and the bind
+    # still ends 0: the bind itself landed (point 4(b), lane 3's same ruling).
+    gbb_ssize=0
+    if [ -n "$gbb_out" ] && [ -f "$gbb_out" ]; then
+      gbb_ssize="$(wc -c < "$gbb_out" 2>/dev/null | tr -d ' ' || :)"
+      case "$gbb_ssize" in ''|*[!0-9]*) gbb_ssize=0 ;; esac
+    fi
+    gbb_src=0
+    if [ -n "$gbb_act" ]; then
+      LANES_LANE="$gbb_from" LANES_ACT="$gbb_act" LANES_EXPECT="row:$gbb_from bind:$gbb_from" \
+        "${LANES_EDIT:-$RESOLVED}" set-row-state "$gbb_from" "PAUSED · $gbb_line" >&2 || gbb_src=$?
     else
-      note "…but $gbb_from's row could NOT be marked (its writer's words are above). Run: lanes-edit.sh set-row-state $gbb_from \"PAUSED · $gbb_line\""
-      gbb_notes+=("note=lane $gbb_from's row was not marked PAUSED: run LANES_LANE=$gbb_from lanes-edit.sh set-row-state $gbb_from \"PAUSED · $gbb_line\"")
+      LANES_LANE="$gbb_from" LANES_EXPECT="row:$gbb_from bind:$gbb_from" \
+        "${LANES_EDIT:-$RESOLVED}" set-row-state "$gbb_from" "PAUSED · $gbb_line" >&2 || gbb_src=$?
+    fi
+    gbb_slast=""
+    if [ "$gbb_src" != 0 ] && [ -n "$gbb_out" ] && [ -f "$gbb_out" ]; then
+      gbb_slast="$(tail -c +"$((gbb_ssize + 1))" "$gbb_out" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 1 || :)"
+    fi
+    if [ "$gbb_src" = 0 ]; then
+      note "…and $gbb_from's row now reads PAUSED, naming the move to $gbb_to."
+    elif [ "$gbb_src" = 2 ] && [ -n "$gbb_act" ]; then
+      note "…but $gbb_from's row was NOT marked: its writer refused with 2 (its words are above), so another place changed lane $gbb_from's row or binding after the offer was made. Read it (lanes-edit.sh register-row $gbb_from) before you mark it: $gbb_hand"
+      gbb_notes+=("note=lane $gbb_from's row was not marked PAUSED: another place changed its row or binding after the offer (exit 2); read it with lanes-edit.sh register-row $gbb_from, then run $gbb_hand")
+    elif [ "$gbb_src" = 3 ]; then
+      gbb_re="$gbb_slast"
+      case "$gbb_re" in *'Or run it again: '*) gbb_re="${gbb_re##*Or run it again: }" ;; esac
+      [ -n "$gbb_re" ] || gbb_re="$gbb_hand"
+      note "…but whether $gbb_from's row was marked PAUSED is NOT known: its writer exited 3 (its words are above). Run its printed rerun, which writes it once or finds it: $gbb_re"
+      gbb_notes+=("note=lane $gbb_from's row may not be marked PAUSED: its write is in doubt (exit 3); run $gbb_re")
+    else
+      note "…but $gbb_from's row could NOT be marked (its writer's words are above). Run: $gbb_hand"
+      gbb_notes+=("note=lane $gbb_from's row was not marked PAUSED: run $gbb_hand")
     fi
   else
     note "…and the register has no row for $gbb_from, so there is nothing to mark MOVED there."
@@ -31119,7 +31504,8 @@ EOF
   # write the bind's outcome into the record whatever else fails: a bind that
   # wrote none would hold every prompt of the session at BINDING IN PROGRESS
   # until its deadline. The body's own writes go through `lane-start` and
-  # `set-row-state`, which refuse for themselves.
+  # `set-row-state`, which refuse for themselves, and, in phase 2 (T510), the
+  # rerun of `start-record`'s pending record where its lookup found the write.
   guard-bind)
     if [ "${1-}" = --body ]; then
       [ "$#" -eq 2 ] || die "usage: guard-bind --body <session uuid>   (internal: the bind's body, which guard-bind runs under its bound)" 2
