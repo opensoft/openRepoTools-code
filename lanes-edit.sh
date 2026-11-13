@@ -8077,7 +8077,17 @@ pw_tail_child() {   # <seq> <pid> <attempt dir>
     # openRepoTools-3's ruling, #165 6841366245, T418 (2); this is the same
     # shape for this run's own child (review RC-W18b, its NIT). A replay's own
     # child that did not take it ends owed in `pw_replay_tail`, as before.
+    # Before that owed end the `replayed` token goes over this child's
+    # `seam.out` (`pw_seam_token`), as on ruling 2's path, so that "owed" is
+    # final: the run's end strips the file from its own kept directories
+    # (`pw_run_dir_done`), but a kill between the done mark and that strip left
+    # its `none` for a later owner of a record that could not be removed, which
+    # would replay steps a person may by then have run by hand (Y:5298; lane
+    # openRepoTools-3, #165 6841844102, point 1, and #165 6842622404). Where
+    # the token cannot be written, or the directory fails `pw_wdir_ok`, the
+    # run still ends owed.
     if ! wr_record_write && [ "$PW_REPLAYED" != 1 ]; then
+      if pw_wdir_ok "$3" attempt; then pw_seam_token "$3" || :; fi
       pw_tail_owed "$1" "its child, in $3, did not take the message at its seam (its seam.out does not read tail), so its tail did not run; but this run could not remove tail=sent from its pending record, $WR_STATE/register-pending/$WR_D (it no longer owns it, or the file cannot be written), and a tail is sent only after tail=sent is written (Y:5293), so it was not replayed"
     fi
     return 1
