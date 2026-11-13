@@ -1034,6 +1034,18 @@ def test_help_and_an_unknown_argument(box):
     assert "unknown argument: --bogus" in result.stderr
 
 
+@pytest.mark.parametrize("flag", ["--help", "-h"])
+@pytest.mark.parametrize("name", ["TIMEOUT", "VERSION_TIMEOUT", "UPDATE_TIMEOUT", "LOCK_WAIT"])
+def test_help_precedes_malformed_bounds_without_running_tools(box, flag, name):
+    result = box.run(flag, **{f"CLAUDE_CURRENT_{name}": "not-a-number"})
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("claude-current [--porcelain] [--offline]\n")
+    assert result.stderr == ""
+    assert box.npm_log.read_text() == ""
+    assert box.node_log.read_text() == ""
+    assert box.claude_log.read_text() == ""
+
+
 @pytest.mark.parametrize("name", ["TIMEOUT", "VERSION_TIMEOUT", "UPDATE_TIMEOUT", "LOCK_WAIT"])
 def test_a_malformed_bound_is_refused_before_anything_runs(box, name):
     """64, the usage status, and not 1: a launcher reports 1 as "no Claude
