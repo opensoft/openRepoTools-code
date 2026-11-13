@@ -1534,9 +1534,13 @@ rd_tmp_disarm() {
 # (`R-A11-11`), and the reads that NAME THE LANE before the handoff file is
 # published read the mirror (YS:692), so those run with `LANES_READ_MIRROR=1`
 # — `window-lane`, `swapped`, `register-row`, `canon-lane` and `last-session`
-# through this fence, and `lane-state`, `set-lane-state`, `handoff-path` and
-# `write-handoff` where they are called below; `window-session` reads only this
-# host and is not one of them. A 69 is then re-read ONCE with that variable set.
+# through this fence, and `lane-state`, `set-lane-state`, `handoff-path`,
+# `write-handoff`, `managed-projection` (the ownership seam), `lane-last` (the
+# closed-lane fence's call, never `--late`'s) and `restart-intent` (the
+# preservation check's) where they are called below; `window-session` reads only
+# this host and is not one of them. The last two are lane 3's #165 6859801732
+# (ERR-30 widened): they carry the variable on their one call, with no re-read.
+# A 69 through this fence is re-read ONCE with that variable set.
 # The re-read is held to the same rule as any read: `0` an answer, `8` no
 # answer, and ANYTHING ELSE — a second 69, which is what a verb answers that the
 # design has `lanes-edit.sh` not read from the mirror — is a read that FAILED and
@@ -1601,18 +1605,26 @@ $sr_why" 2 ;;
 }
 
 # WHETHER THIS RUN READ THE MIRROR, and the label of a read whose stderr is
-# hidden. `mirror_read` is set where `sread` forwards a `read: mirror at ` line
-# or re-reads a 69 from the mirror, and where the helper below forwards one. It
-# is what `kept_block_say` asks before it puts `LANES_READ_MIRROR=1` in the call
-# it prints: nowhere else does that word appear, so files mode prints what it
-# always printed. The helper is `sread`'s own filter for the two lifecycle calls
-# that hide their stderr (`lane-state` and `set-lane-state … SWAPPING`): they
-# send it to a file, and this prints the lines that begin `read: mirror at `
-# and nothing else, then removes the file. No file, nothing to print.
+# kept in a file. `mirror_read` is set where `sread` forwards a `read: mirror at `
+# line or re-reads a 69 from the mirror, and where the helper below forwards
+# one. It is what `kept_block_say` asks before it puts `LANES_READ_MIRROR=1` in
+# the call it prints: nowhere else does that word appear, so files mode prints
+# what it always printed. The helper is `sread`'s own filter for the calls that
+# send their stderr to a file: the two lifecycle calls (`lane-state` and
+# `set-lane-state … SWAPPING`), the seam's `managed-projection` and the
+# closed-lane fence's `lane-last`, which hide it, and the preservation check's
+# `restart-intent`, which never did (lane 3's #165 6859801732). For the first
+# four it prints the lines that begin `read: mirror at ` and nothing else, then
+# removes the file. Given `all` as a second word, as the intent read does, it
+# prints every line, in the order the call wrote them and the label with them,
+# then removes the file. No file, nothing to print.
 mirror_read=""
-mirror_label_forward() {   # <the file a call's stderr went to; empty where none could be made>
+mirror_label_forward() {   # <the file a call's stderr went to; empty where none could be made> [all]
 	[ -n "${1:-}" ] || return 0
-	if grep -e '^read: mirror at ' -- "$1" >&2; then mirror_read=1; fi
+	if [ "${2:-}" = all ]; then
+		cat -- "$1" >&2 || :
+		if grep -q -e '^read: mirror at ' -- "$1"; then mirror_read=1; fi
+	elif grep -e '^read: mirror at ' -- "$1" >&2; then mirror_read=1; fi
 	rm -f -- "$1"
 }
 
@@ -2122,8 +2134,14 @@ seam_refuse "$lane" "a handoff"
 # "Refuse, as --late does (Recommended)".
 #
 # ONE READ AND ONE REFUSAL, `--late`'s own: the `--late` block below calls these
-# two functions as well, so the two modes cannot come to read a closed lane
-# differently. The read is `lane-last`, the published object log. The lifecycle
+# two functions as well, so the two modes read the same `lane-last` line and
+# refuse a closed lane in the same words. They differ in ONE thing, the
+# variable (lane 3's #165 6859801732: ERR-30 widened to the fence on round 6h's
+# #56; YS:692, Brett's Q8(b)). The fence's call passes the word `mirror` to
+# `read_last_lane_line` and runs with `LANES_READ_MIRROR=1`, so that a handoff
+# during an outage still reads the lane's last line and writes its file; the
+# `--late` block's call passes none, reads no mirror and stays at 69.
+# The read is `lane-last`, the published object log. The lifecycle
 # below reads `lane-state` instead, the snapshot `lane_state_follow` made of the
 # same lines. The log is the lane's state and the snapshot is derived from it,
 # so a lane that a later STARTED or RESUMED reopened is never refused here
@@ -2177,7 +2195,7 @@ refuse_a_closed_lane() {   # <the write the act would make after the close> [<mo
 # OWED, and a read that failed cannot show that this one is.
 if [ "$do_late" != 1 ]; then
 	read_last_lane_line mirror ||
-		die "\`$LANES_EDIT lane-last $lane\` failed (exit $ll_rc). That is NOT 'this lane is open', and a handoff on an answer nobody got could reopen a closed lane (Amendment 7(d)). Nothing was renamed and nothing was written." 1
+		die "\`LANES_READ_MIRROR=1 $LANES_EDIT lane-last $lane\` failed (exit $ll_rc). That is NOT 'this lane is open', and a handoff on an answer nobody got could reopen a closed lane (Amendment 7(d)). Nothing was renamed and nothing was written." 1
 	refuse_a_closed_lane "a handoff" " Nothing was renamed and nothing was written: no PAUSED, no row, no handoff file, no lifecycle transition (this lane's lifecycle reads CLOSED, and a handoff would take it to SWAPPING), no inventory and no restart. If the lane is to run again, start it first (lane-start), then hand off."
 fi
 
@@ -2190,16 +2208,19 @@ if [ "$do_restart" != 1 ]; then
   # openRepoTools-3's #165 6859801732, ERR-30 widened; YS:692, Brett's Q8(b)):
   # with the register's database down it must not stop a handoff that is still
   # written (`R-A11-11`), so it carries `LANES_READ_MIRROR=1`. Its stderr was
-  # never hidden, so the file it now goes to is replayed WITHOUT the
-  # `read: mirror at ` line, and that line goes through `mirror_label_forward`:
-  # what a run prints is what it printed, plus that one line. Every arm below is
-  # as it was, the refusal 2 included.
+  # never hidden, so the file it now goes to is passed on whole, in the order
+  # the helper wrote it, by `mirror_label_forward … all`, which also sets
+  # `mirror_read` where one of those lines is the `read: mirror at ` label: what
+  # a run prints is what it printed. Where no file can be made the call runs
+  # with its own stderr, as it always did (a label is then not noticed). Every
+  # arm below is as it was, the refusal 2 included.
   rd_tmp_arm
   lh_ierr="$(mktemp "${TMPDIR:-/tmp}/lane-handoff-rintent.XXXXXX" 2>/dev/null || printf '')"
-  lh_intent="$(LANES_READ_MIRROR=1 LANES_NO_FETCH=1 "$LANES_EDIT" restart-intent "$lane" 2>"${lh_ierr:-/dev/null}")" || lh_irrc=$?
   if [ -n "$lh_ierr" ]; then
-    grep -v -e '^read: mirror at ' -- "$lh_ierr" >&2 || :
-    mirror_label_forward "$lh_ierr"
+    lh_intent="$(LANES_READ_MIRROR=1 LANES_NO_FETCH=1 "$LANES_EDIT" restart-intent "$lane" 2>"$lh_ierr")" || lh_irrc=$?
+    mirror_label_forward "$lh_ierr" all
+  else
+    lh_intent="$(LANES_READ_MIRROR=1 LANES_NO_FETCH=1 "$LANES_EDIT" restart-intent "$lane")" || lh_irrc=$?
   fi
   lh_ierr=""
   rd_tmp_disarm
