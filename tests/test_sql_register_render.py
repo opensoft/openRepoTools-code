@@ -2075,9 +2075,14 @@ class FilesTwin:
     moves nothing the primary case reads, and the environment `workspace`
     sets, with no `lanes-index.conf`: `lanes-edit.sh` beside the flipped copy
     asks its mode, and `files` answers. Made before the primary write, so it
-    is at C whatever a forked render pushes to W's origin."""
+    is at C whatever a forked render pushes to W's origin. A `routed` twin
+    runs under `LANES_ROUTE_WRITES=1` with `LANES_REPO` unset, so each write
+    goes through its lane's own checkout, `<W>-lanes/<lane>`, made on first
+    use: an explicit `LANES_REPO` naming W is refused there (Amendment 23 S2,
+    S5; `f9e1449c:lanes-edit.sh:28132-28160`; lane 3, #165 6859073786). The
+    lane is named by `LANES_LANE`, as `run` sets it."""
 
-    def __init__(self, root: Path, estate: Estate, lanes_edit: Path):
+    def __init__(self, root: Path, estate: Estate, lanes_edit: Path, routed: bool = False):
         self.root = root
         self.home = root / "home"
         self.home.mkdir(parents=True, exist_ok=True)
@@ -2110,6 +2115,9 @@ class FilesTwin:
                         PATH=str(fakebin) + os.pathsep + _masked_path())
         self.env.pop("LANES_INDEX", None)
         self.env.pop("LANES_INDEX_CONFIG", None)
+        if routed:
+            self.env.pop("LANES_REPO")
+            self.env.update(LANES_ROUTE_WRITES="1")
         self.lanes_edit = lanes_edit
 
     def run(self, argv: list, lane: str, **extra) -> subprocess.CompletedProcess:
@@ -2244,23 +2252,23 @@ def test_each_write_matches_its_files_mode_twin_byte_for_byte(pg, tmp_path, verb
     for the one LF git ends a stored message with. GB section 4.3's
     `start-record` (lane 4's T427, L4-B9) is `[start-record]`, a resume of
     repoA-2 in both modes, whose twin runs once more, in a second clone at C,
-    under `LANES_ROUTE_WRITES=1`, with the same render set and message. Fails
+    under `LANES_ROUTE_WRITES=1` with `LANES_REPO` unset, through the lane's
+    own checkout (Amendment 23 S2, S5), with the same render set and message. Fails
     until L4-B4, L4-B8 and L4-B13; `[start-record]` until L4-B9 too."""
     argv, lane, extra = TWIN_VERBS[verb]
     ws = PrimaryWrites(pg, tmp_path, W_PREPS.get(verb))
     twin = FilesTwin(tmp_path / "twin", ws.estate, ws.lanes_edit)
-    routed = (FilesTwin(tmp_path / "twin-routed", ws.estate, ws.lanes_edit)
+    routed = (FilesTwin(tmp_path / "twin-routed", ws.estate, ws.lanes_edit, routed=True)
               if verb == "start-record" else None)
     before_head = head(pg)
     proc = ws.run(argv, lane, **extra)
     entry = _one_entry(pg, before_head, proc, verb)
     mirror = _mirror(ws, entry["seq"], tmp_path / "mirror")
 
-    for label, files_twin, more in (("the twin", twin, {}),
-                                    ("the routed twin", routed, {"LANES_ROUTE_WRITES": "1"})):
+    for label, files_twin in (("the twin", twin), ("the routed twin", routed)):
         if files_twin is None:
             continue
-        done = files_twin.run(argv, lane, **extra, **more)
+        done = files_twin.run(argv, lane, **extra)
         assert done.returncode == 0, (
             f"{label}'s {verb} in files mode exited {done.returncode}: {done.stderr[-800:]}")
         assert len(files_twin.commits()) == 1, (
