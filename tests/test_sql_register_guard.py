@@ -251,7 +251,13 @@ if verb == "act-begin" and ctl("inject-row") is not None:
     done = subprocess.run(["bash", REAL] + args)
     env = {k: v for k, v in os.environ.items() if k not in ("LANES_ACT", "LANES_EXPECT")}
     lane = ctl("inject-row")
-    subprocess.run(["bash", REAL, "set-row-state", lane, "LIVE - a rival's change"], env=env)
+    # THE PHRASE IS `<STATE> <middle dot> <one line>` (`row_state_check`): with an ASCII
+    # hyphen it was refused 2 and no rival change happened (T254u; lane 5,
+    # #165 6841545201). The rival's exit is kept for the case to check.
+    rival = subprocess.run(["bash", REAL, "set-row-state", lane,
+                            "LIVE \u00b7 a rival's change"], env=env)
+    with open(os.path.join(CTL, "inject-row.rc"), "w", encoding="utf-8") as handle:
+        handle.write(str(rival.returncode))
     sys.exit(done.returncode)
 if verb == "start-record" and ctl("start-record-rc") is not None:
     sys.stderr.write("lanes-edit.sh start-record: the stand-in's code\n")
@@ -1964,6 +1970,11 @@ def test_the_bind_is_one_register_write_and_refuses_a_changed_row(estate):
     rival.make_offer()
     rival.answer_2()
     record = rival.ended(90)
+    # THE RIVAL'S CHANGE LANDED (T254u): its `set-row-state` exited 0, or the
+    # refusal below would not be the changed row's.
+    injected = rival.ctl / "inject-row.rc"
+    rc = injected.read_text(encoding="utf-8") if injected.exists() else "never ran"
+    assert rc == "0", f"the rival's injected set-row-state exited {rc}: no row changed"
     assert record["mode"] == "bind-failed" and record["rc"] == "2", record
     starts = [c for c in _commits(rival) if "start-record" in c.get("sent", "")]
     assert not starts or all("commit_write" in c["sent"] for c in starts), starts
@@ -1974,13 +1985,19 @@ def test_a_bind_in_doubt_looks_its_write_up_before_a_rerun(estate, held):
     """AT-F6 case 10: an injected `psql` exit 2 gives `rc=3` with the id:
     `[absent]`, exit 2 on every call from the bind's commit call on;
     `[found]`, the shim's `after` mode on that call, which commits, then exit
-    2 on every later call. At the next `2` the child's lookup runs first:
-    `[absent]` binds anew under a new id; `[found]` writes no second
-    `RESUMED`, its done mark says `done`, and the record ends `bound`."""
+    2 on every lookup (`find_write`) after it. At the next `2` the child's
+    lookup runs first: `[absent]` binds anew under a new id; `[found]` writes
+    no second `RESUMED`, its done mark says `done`, and the record ends
+    `bound`.
+
+    `[found]`'s later failures are armed by the lookup's text (T254t), not
+    `fail-call` from the shim's second call: that counted every call, and
+    calls 1 and 2 are both the guard's own prefetch, so the guard refused
+    before its offer (lane 5, #165 6841545201)."""
     est = _real_estate(estate, mode="primary")
     arms = ([{"mode": "fail-match", "match": "commit_write", "from": 1}] if held == "absent"
             else [{"mode": "after", "match": "commit_write", "call": 1},
-                  {"mode": "fail-call", "from": 2}])
+                  {"mode": "fail-match", "match": "find_write", "from": 1}])
     est.shim(arms)
     est.make_offer()
     est.answer_2()
@@ -2060,6 +2077,10 @@ def test_a_bind_killed_mid_commit_waits_for_ended_utc_plus_c_before_its_lookup(
     assert all(k in record for k in COPIES), record
     ended = _epoch(record["ended_utc"])
     est.shim()
+    # THE FIRST PROMPT AFTER A FAILURE IS SPENT ON THE BIND-FAILED REPLY
+    # (T254v), so `hello` goes first, as case 10's does; without it the next
+    # `2` was that prompt and never reached the bind (lane 5, #165 6841545201).
+    est.hook("hello")
     before = len(est.shim_calls())
     est.answer_2()
     # THE SHIM LOGS NO TIME, so the lookup's start is read by watching for its
@@ -2087,8 +2108,10 @@ def test_the_bind_childs_lookup_sends_the_five_copied_values(estate, case):
     `generation` copy changed, `rc=2` with a plain rerun's refusal and the
     copies kept."""
     est = _real_estate(estate, mode="primary")
+    # CASE 10's `[found]` ARMS (T254t): the lookup fails by its text, so the
+    # guard's own prefetch calls, the shim's first two, are not failed.
     est.shim([{"mode": "after", "match": "commit_write", "call": 1},
-              {"mode": "fail-call", "from": 2}])
+              {"mode": "fail-match", "match": "find_write", "from": 1}])
     est.make_offer()
     est.answer_2()
     record = est.ended(120)
@@ -2296,6 +2319,13 @@ def test_a_database_that_does_not_answer_is_2_inside_4_5_s(estate, case):
             login = urlsplit(est.pg.url()).username
             _db_config(est, f"postgresql://{login}@127.0.0.1:{relay.port}/{est.pg.name}")
         elif case.startswith("3-"):
+            # The register goes to the SQL store BEFORE the lock (T213o):
+            # `est.hook` seeds it first (`_seed_primary`, T254r), and that
+            # seeding reads `register_head`, so seeding after the lock waited
+            # on this case's own lock until psql's 120 s timeout (lane 5,
+            # #165 6841316861). Seeded here, the hook's seeding sends nothing
+            # and the guard's own read is the one that meets the lock.
+            _seed_primary(est)
             holder = est.pg.session()
             closers.append(holder.kill)
             holder.stdin.write("BEGIN; LOCK TABLE lanes_register.register_head IN ACCESS EXCLUSIVE MODE;\n")
@@ -3476,12 +3506,22 @@ def test_the_services_idle_check_replaces_a_dropped_connection_in_the_background
                           f"the check did not run at the default {IDLE_CHECK_DEFAULT_S} s")
         assert FALLBACK not in hook.err, hook.err
         return
+    # WARMED FIRST, as `[floor]` and `[cap]` are (T237zj): the idle check's
+    # promise is the next request "answered from the new connection, not
+    # `unavailable`" (TP:1977-1981 at a6497d00), which presumes a service
+    # that already holds an image. An unwarmed one answers its first request
+    # `unavailable`, the cache miss (TP:1982-1987; d8 sections 5.1 and 5.3),
+    # so without the warm-up this hook fell back whatever the idle check did
+    # (lane 5, #165 6841406701).
     svc = _Service(est, LANES_REGISTER_SERVE_IDLE_CHECK_S=value)
-    est.pg.psql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                "WHERE application_name LIKE 'lanes-index%' AND pid <> pg_backend_pid();")
-    time.sleep(2.5)
-    hook = est.hook("hello")
-    svc.stop()
+    try:
+        _warm(est)
+        est.pg.psql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE application_name LIKE 'lanes-index%' AND pid <> pg_backend_pid();")
+        time.sleep(2.5)
+        hook = est.hook("hello")
+    finally:
+        svc.stop()
     assert FALLBACK not in hook.err, hook.err
 
 
@@ -3721,17 +3761,52 @@ def test_the_guards_request_carries_only_file_names(estate):
 
 def test_the_guard_answer_time_is_recorded_beside_todays_direct_guard(estate):
     """SVC-10: the guard's answer time through the service is recorded beside
-    today's direct guard (M5b), with a warning past 50 ms and no failure."""
+    today's direct guard (M5b), with a warning past 50 ms and no failure.
+
+    EACH SAMPLE'S READ PATH IS RECORDED BESIDE IT (T237zk; lane 5, #165
+    6841316861, and lane 3, 6838735040): SC-005 bounds the service's
+    answer, so a median over refusals and fallbacks says nothing of it.
+    Exit 2 is a refusal; exit 0 with the fallback line (`FALLBACK`, T507's
+    F1, tasks:806) matched whole on a stderr line is a fallback; exit 0
+    without it was served. Each path's count is recorded, and the median of
+    the served samples alone, or "none served" where none was. A sample
+    with any other exit is counted as `other`, so none is put in a path it
+    did not take. The case times the whole hook (`t_exit - t0`), so the
+    served median is a whole-hook figure, beside M5b's, not SC-005's 50 ms.
+
+    THE PROMPT GOES THROUGH, AS M5b'S DOES (T237zl): the estate's session is
+    named `TO` in the window `FROM`, so every guard run made the name
+    guard's offer and exited 2, ten refusals and no served answer (lane 2's
+    G-19b capture). The window and the session are both `FROM` here, as
+    M5b's and M10's are (`swap_window`), and the service is warmed first
+    (`_warm`), so the samples read a service that holds its image, not the
+    cache miss of its first request."""
     est = estate(mode="primary")
+    est.swap_window(FROM, FROM)
     svc = _Service(est)
-    times = []
-    for _ in range(MEASURE_RUNS):
-        hook = est.hook("hello")
-        times.append(hook.t_exit - hook.t0)
-    svc.stop()
+    paths = {"refusal": [], "fallback": [], "served": [], "other": []}
+    try:
+        _warm(est)
+        for _ in range(MEASURE_RUNS):
+            hook = est.hook("hello")
+            took = hook.t_exit - hook.t0
+            if hook.code == 2:
+                paths["refusal"].append(took)
+            elif hook.code == 0 and FALLBACK in hook.err.splitlines():
+                paths["fallback"].append(took)
+            elif hook.code == 0:
+                paths["served"].append(took)
+            else:
+                paths["other"].append(took)
+    finally:
+        svc.stop()
+    served = paths["served"]
     _record_figure("SVC-10, the guard through the service (median ms)",
-                   {"answer": f"{_median(times) * 1000:.1f}", "bound": "50"})
-    assert times
+                   {"served answer (whole hook)":
+                        f"{_median(served) * 1000:.1f}" if served else "none served",
+                    "bound": "50"}
+                   | {f"{name} samples": len(times) for name, times in paths.items()})
+    assert any(paths.values())
 
 
 def test_status_prints_the_services_lines_and_its_failure_stamp(estate):
