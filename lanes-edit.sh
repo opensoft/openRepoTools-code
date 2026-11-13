@@ -20937,10 +20937,15 @@ EOF
   #   - EACH IMAGE is grepped by the read's own `git grep -E -e <ERE>`, under
   #     `LC_ALL=C`, as `--no-index` over the image held in `$TMPD`, with no
   #     repository, no config and none of the pathspec switches, as the probe
-  #     above runs. Without `-h` each line is `origin/$LANES_BRANCH:<path>:` and
-  #     the line, as files mode prints it and the callers split it (lane 5's
-  #     answer 14 (b); `lane-worktrees`' two greps without `-h`); with `-h` the
-  #     line alone.
+  #     above runs, and as text (`--text`), so no git attributes file outside
+  #     the register makes a `Binary file` line of it (lane 3's Q3 ruling).
+  #     Without `-h` each line is `origin/$LANES_BRANCH:`, the path as `git
+  #     grep` prints it under git's defaults whatever the workstation's git
+  #     configuration says (C-quoted where it holds `"`, `\`, a control byte,
+  #     below 0x20 or 0x7f, or a byte from 0x80 up; tasks:860; lane 3's Q3
+  #     ruling), `:` and the line, as files mode prints it and the callers
+  #     split it (lane 5's answer 14 (b); `lane-worktrees`' two greps without
+  #     `-h`); with `-h` the line alone.
   #   - THE ANSWER is held whole: 0 with the lines, 1 with none. Any end of
   #     `reg_paths` or `reg_image` but 0 is 69 with nothing on stdout
   #     (tasks:851), a case pair of logs (C11) and a failed second read among
@@ -21021,7 +21026,7 @@ EOF
       rgr_run=0
       while :; do
         rgr_run=$((rgr_run + 1))
-        rgr_logs=0; rgr_want=(); rgr_order=()
+        rgr_logs=0; rgr_want=(); rgr_order=(); rgr_quoted=()
         for rgr_p in "$@"; do
           # `lanes/log` is the one path `reg_reader_kind` reads as the set `logs`.
           if [ "$rgr_p" = lanes/log ]; then rgr_logs=1; else rgr_want+=("$rgr_p"); fi
@@ -21043,10 +21048,33 @@ EOF
           printf '%s\n' "${rgr_want[@]}" | LC_ALL=C sort -u > "$TMPD/order" ||
             die "the register could not be read: its paths could not be put in tree order under $TMPD" 69
           while IFS= read -r rgr_p; do rgr_order+=("$rgr_p"); done < "$TMPD/order"
+          # EACH PATH AS `git grep` PRINTS IT UNDER GIT'S DEFAULTS, `core.quotePath`
+          # on, whatever the workstation's git configuration says (tasks:860 at
+          # 94fab177; lane 3's Q3 ruling, #165 6851977580, and its S1, #165
+          # 6852996343): a path holding `"`, `\`, a control byte (below 0x20, or
+          # 0x7f) or a byte from 0x80 up is put in double quotes, with `"` and `\`
+          # escaped by a backslash, `\a`, `\b`, `\t`, `\n`, `\v`, `\f` and `\r` for
+          # those seven control bytes, and each other such byte written as a
+          # backslash and three octal digits; any other path is printed as it is.
+          # A newline ends a path in this list, so none holds one. `od` gives the
+          # bytes as numbers, so `awk` writes only ASCII.
+          if [ -z "$rgr_h" ]; then
+            od -An -v -tu1 < "$TMPD/order" | LC_ALL=C awk '{ for (i = 1; i <= NF; i++) { c = $i + 0
+                if (c == 10) { print (q ? "\"" s "\"" : s); s = ""; q = 0 }
+                else if (c == 34 || c == 92) { s = s "\\" sprintf("%c", c); q = 1 }
+                else if (c >= 7 && c <= 13) { s = s "\\" substr("abtnvfr", c - 6, 1); q = 1 }
+                else if (c < 32 || c > 126) { s = s sprintf("\\%03o", c); q = 1 }
+                else s = s sprintf("%c", c) } }' > "$TMPD/quoted" ||
+              die "the register could not be read: its paths could not be quoted under $TMPD" 69
+            while IFS= read -r rgr_p; do rgr_quoted+=("$rgr_p"); done < "$TMPD/quoted"
+            [ "${#rgr_quoted[@]}" = "${#rgr_order[@]}" ] ||
+              die "the register could not be read: ${#rgr_order[@]} paths gave ${#rgr_quoted[@]} quoted names under $TMPD" 69
+          fi
         fi
         : > "$TMPD/grep" || die "the register could not be read: no file could be made under $TMPD to hold the answer whole" 69
-        rgr_hit=0
+        rgr_hit=0; rgr_i=0
         for rgr_p in ${rgr_order[@]+"${rgr_order[@]}"}; do
+          rgr_i=$((rgr_i + 1))
           if ! reg_image "$rgr_p" > "$TMPD/image"; then
             if reg_read_lost; then reg_fail_end 69; fi
             die "the register could not be read: the read door could not give $rgr_p (a missing lanes/LANES.md, or a cache it could not read), so no part of the answer is printed, and a read that failed is never answered from git instead (feature 007, T401 on primary; C3)" 69
@@ -21055,7 +21083,7 @@ EOF
           env -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT \
               -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS -u GIT_NOGLOB_PATHSPECS -u GIT_ICASE_PATHSPECS \
               GIT_DIR=/dev/null GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 LC_ALL=C \
-              git -C "$TMPD" grep --no-index -h -E -e "$rgr_ere" -- image > "$TMPD/hits" </dev/null || rgr_rc=$?
+              git -C "$TMPD" grep --no-index --text -h -E -e "$rgr_ere" -- image > "$TMPD/hits" </dev/null || rgr_rc=$?
           case "$rgr_rc" in
             0) rgr_hit=1 ;;
             1) continue ;;
@@ -21064,7 +21092,7 @@ EOF
           if [ -n "$rgr_h" ]; then
             cat -- "$TMPD/hits" >> "$TMPD/grep" || die "the register could not be read: its answer could not be held whole under $TMPD" 69
           else
-            RGR_PFX="origin/$LANES_BRANCH:$rgr_p:" LC_ALL=C awk '{ print ENVIRON["RGR_PFX"] $0 }' "$TMPD/hits" >> "$TMPD/grep" ||
+            RGR_PFX="origin/$LANES_BRANCH:${rgr_quoted[$((rgr_i - 1))]}:" LC_ALL=C awk '{ print ENVIRON["RGR_PFX"] $0 }' "$TMPD/hits" >> "$TMPD/grep" ||
               die "the register could not be read: its answer could not be held whole under $TMPD" 69
           fi
         done
