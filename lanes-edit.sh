@@ -21328,13 +21328,17 @@ guard_bind_body() {   # <session uuid>
     # T510, "The `set-row-state` on the lane left"): `LANES_LANE=<from>`, the
     # writer's lane, without which a write on primary is refused 2 before its
     # claim (T415's `pw_lane_given`; the plan's open point 7, its default, as
-    # the hand command below has always printed it); and, where the record
-    # holds the offer's `act` (on primary only, `guard_offer_act`; open point
-    # 8), `LANES_ACT=<act>` and `LANES_EXPECT="row:<from> bind:<from>"`, so a
-    # change another place made to the lane left's row or binding after the
-    # offer is refused rather than written over. Its 2 or 3 becomes a `note=`,
-    # and the bind still ends 0: the bind itself landed (the plan's open point
-    # 4(b), its default).
+    # the hand command below has always printed it); `LANES_EXPECT="row:<from>
+    # bind:<from>"` ALWAYS, so a change another place made to the lane left's
+    # row or binding after the offer is refused rather than written over; and
+    # `LANES_ACT=<act>` only where the record holds the offer's `act` (on
+    # primary only, `guard_offer_act`). WITH NO `act` THE EXPECTATION STILL
+    # GOES (lane 3's ruling on point 8, #165 6841918192; T432's call does the
+    # same, tasks:1400): on primary the client's check 2 refuses it with 2
+    # before any database call (`expect_parse`; Y:5599), which becomes a
+    # `note=` below, so it is never an unguarded write (Y:5587); files mode
+    # reads neither variable. Every code but 0 becomes a `note=`, and the bind
+    # still ends 0: the bind itself landed (point 4(b), lane 3's same ruling).
     gbb_ssize=0
     if [ -n "$gbb_out" ] && [ -f "$gbb_out" ]; then
       gbb_ssize="$(wc -c < "$gbb_out" 2>/dev/null | tr -d ' ' || :)"
@@ -21345,7 +21349,8 @@ guard_bind_body() {   # <session uuid>
       LANES_LANE="$gbb_from" LANES_ACT="$gbb_act" LANES_EXPECT="row:$gbb_from bind:$gbb_from" \
         "${LANES_EDIT:-$RESOLVED}" set-row-state "$gbb_from" "PAUSED · $gbb_line" >&2 || gbb_src=$?
     else
-      LANES_LANE="$gbb_from" "${LANES_EDIT:-$RESOLVED}" set-row-state "$gbb_from" "PAUSED · $gbb_line" >&2 || gbb_src=$?
+      LANES_LANE="$gbb_from" LANES_EXPECT="row:$gbb_from bind:$gbb_from" \
+        "${LANES_EDIT:-$RESOLVED}" set-row-state "$gbb_from" "PAUSED · $gbb_line" >&2 || gbb_src=$?
     fi
     gbb_slast=""
     if [ "$gbb_src" != 0 ] && [ -n "$gbb_out" ] && [ -f "$gbb_out" ]; then
