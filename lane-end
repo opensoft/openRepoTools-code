@@ -1597,16 +1597,20 @@ SC_IDX
   # or held, naming the read and its code, and the run goes on, as a failed
   # fetch holds one. But a 69, 75 or 3 there is no answer about that checkout,
   # and a run that ended 0 over it would say the register was read:
-  # `sc_read_note` remembers the first such code, and `sc_end` ends the run
-  # with it where it would otherwise end 0, or 3 in the dry run, after its
-  # summary and its NOTED line, so that `lane-end` ends 69 where the register
-  # cannot be read and nothing is left half done. A 3 ends 1 (`sc_read_code`,
-  # above). The act's own 1s (a removal that did not finish, a NOTED line that
-  # was not written) keep their exit and their words.
-  sc_rstop=""; sc_rstop_read=""; sc_rstop_for=""
+  # `sc_read_note` remembers the highest-ranked such code, a 69 over a 75 and a
+  # 75 over a 3, whatever order they came in (lane 3's #165 6858653912), and
+  # the first read met at that rank, so the closing note names it; `sc_end`
+  # ends the run with it where it would otherwise end 0, or 3 in the dry run,
+  # after its summary and its NOTED line, so that `lane-end` ends 69 where the
+  # register cannot be read and nothing is left half done. A 3 ends 1
+  # (`sc_read_code`, above). The act's own 1s (a removal that did not finish, a
+  # NOTED line that was not written) keep their exit and their words.
+  sc_rstop=""; sc_rstop_rank=0; sc_rstop_read=""; sc_rstop_for=""
   sc_read_note() {   # <the read, as run> <its exit> <the checkout it was asked of>
-    case "$2" in 69 | 75 | 3) : ;; *) return 0 ;; esac
-    if [ -z "$sc_rstop" ]; then sc_rstop="$2"; sc_rstop_read="$1"; sc_rstop_for="$3"; fi
+    case "$2" in 69) sn_rank=3 ;; 75) sn_rank=2 ;; 3) sn_rank=1 ;; *) return 0 ;; esac
+    if [ "$sn_rank" -gt "$sc_rstop_rank" ]; then
+      sc_rstop_rank="$sn_rank"; sc_rstop="$2"; sc_rstop_read="$1"; sc_rstop_for="$3"
+    fi
     return 0
   }
   sc_end() {   # <the exit this run ends with, were no read to have failed>
@@ -2591,7 +2595,8 @@ SRI
     ss_why=""
     # THE CODE BEFORE THE NOTES' WORDS, as at the listing (tasks:888; lane 3's
     # #165 6852014823, answers 2 and 3): a 69, 75 or 3 holds this checkout,
-    # naming the read and its code, and `sc_read_note` has ended the run with it.
+    # naming the read and its code. `sc_read_note` has only recorded the code;
+    # `sc_end` ends the run with it.
     case "$ss_rc" in
       69 | 75 | 3)
         SC_WHY="lane $2's state could not be read again under its checkout's lock (\`lanes --decide --fetch --closed --lane $2\` exited $ss_rc), so nothing is decided on a read that did not answer"; return 1 ;;
