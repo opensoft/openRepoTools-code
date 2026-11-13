@@ -2518,6 +2518,11 @@ def acted(act: str, *scopes: str) -> dict:
 #   own place, Falcon (`resumed`), which leaves the lane bound elsewhere;
 #   from the act's own window `request-handoff` would refuse first
 #   (`:31808-31810`).
+# - `retire-rows` proves again that the row is dormant, and refuses 2 on a
+#   live session here and on any lane-kind line in its log
+#   (`7893339:lanes-edit.sh:24740-24837`). Its rival appends an id that no
+#   session record holds to the row's session cell, a write on `row:<L>`
+#   that leaves the row dormant (`session-id`).
 #
 # THE WORLD is `test_lane_start_claude_current`'s `Sandbox` (fake `tmux`,
 # `claude` and `gh`) holding the register N1's arms run on (lane 2's T217):
@@ -2567,6 +2572,9 @@ R_SID = {R_PAUSED: "aaaaaaaa-0002-4000-8000-00000000a002", R_HERE: "aaaaaaaa-000
 DORMANT_CELL = "parked long ago, before every lane had a log"
 #: For each lane, a lane that none of its acts' writes lists (the held case).
 R_OTHER = {R_PAUSED: R_FAR, R_HERE: R_FAR, R_FAR: R_HERE, R_DORMANT: R_FAR, R_NEW: R_FAR}
+#: The id the `session-id` rival appends to a row's session cell: no session
+#: record holds it, so it is live nowhere.
+RIVAL_SID = "aaaaaaaa-0259-4000-8000-00000000a259"
 
 
 def verb_is(verb: str) -> str:
@@ -2582,7 +2590,7 @@ def lane_line(kind: str, lane: str) -> str:
 #: LR009, `7893339:lanes-index:9981-9983`), and the kind the held case writes
 #: for another lane.
 RIVALS = {"bind": ("bind", "log", "bind"), "row": ("row", "append-line", "row"),
-          "resumed": ("bind", "log", "bind")}
+          "resumed": ("bind", "log", "bind"), "session-id": ("row", "append-session-id", "bind")}
 
 
 class ActWrite:
@@ -2636,7 +2644,8 @@ ACT_WRITES = {
     "lane-end-w13-set-row-state": ActWrite("lane-end", (R_HERE,), R_HERE, verb_is("set-row-state"), code=2),
     "lane-end-w14-log-ended": ActWrite("lane-end", (R_HERE,), R_HERE, lane_line("ENDED", R_HERE), code=2),
     "lane-end-retire-rows": ActWrite("lane-end", ("--retire-dormant", "repoH", "--yes", "--reason=T252b's race"),
-                                     R_DORMANT, verb_is("retire-rows"), env={"LANES_LANE": R_HERE}),
+                                     R_DORMANT, verb_is("retire-rows"), rival="session-id",
+                                     env={"LANES_LANE": R_HERE}),
     "skill-step-4-writes": ActWrite("skill", (), R_HERE, lane_line("PAUSED", R_HERE), code=2),
     "guard-answer-2-child": ActWrite("guard", ("guard-bind", "--body", R_SID[R_PAUSED]), R_HERE,
                                      verb_is("set-row-state"), env={"LANES_LANE": R_PAUSED}),
@@ -2840,7 +2849,11 @@ class ActWorld(Sandbox):
         which leaves the lane bound there: `lane_binding_scan` reads a
         `RESUMED` as `bound` (`7893339:lanes-edit.sh:19808-19815`), at the
         `host` that `binding_subfields_add` writes into its payload
-        (`:15157-15158`), and that host is not this one."""
+        (`:15157-15158`), and that host is not this one; `session-id`, an
+        id that no session record holds, `RIVAL_SID`, appended to the lane's
+        session cell by `append-session-id`, as `[lane-start-reread]`'s
+        holder appends one: a dormant row stays dormant, since `retire-rows`
+        refuses only an id that is live here (`7893339:lanes-edit.sh:24740-24751`)."""
         edit = ["bash", str(self.bin / "lanes-edit.sh")]
         extra: dict = {}
         if kind == "bind":
@@ -2848,6 +2861,9 @@ class ActWorld(Sandbox):
         elif kind == "resumed":
             argv = ["log", "RESUMED", f"lane:{lane}", ARROW, "T252b's rival", "the holder resumes in place"]
             extra = {"LANES_WORKSTATION": "Falcon", "LANES_HOST": "falcon"}
+        elif kind == "session-id":
+            argv = ["append-session-id", lane, R_SID[lane], f"{ARROW} harness `{RIVAL_SID}`",
+                    "T252b's rival: an id no session holds"]
         else:
             argv = ["append-line", f"| `{lane}` | harness `{R_SID[lane]}` | Eagle / test / brett "
                                    f"| 2026-11-01T00:00Z | none | handoffs/{lane}.md | T252b's rival row |"]
