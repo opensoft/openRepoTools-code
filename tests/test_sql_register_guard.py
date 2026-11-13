@@ -2477,8 +2477,9 @@ def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, r
     address: `guard-bind` records `bound_s=530`, the bind ends `bound`, its
     `ended_utc` less `started_utc` recorded beside the 530 s, and the
     guard's register read is the hook's last database call in the shim's
-    log. Waits for T229's `delayed_loopback`, which this line does not
-    have.
+    log. The relay is T229's `delayed_loopback`, which FX's
+    `tests/pgcluster.py` holds (`a048fddb:tests/pgcluster.py:1400`), and
+    which the case asserts is there (T254zq; lane 2's review RV23, NIT 5).
 
     THE LINK IS ROUTED (T254za; lane 5, #165 6841545201): the estate
     reads and writes T229's TLS cluster, which listens on 127.0.0.1 (the
