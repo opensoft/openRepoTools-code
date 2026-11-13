@@ -20841,13 +20841,35 @@ EOF
   #   69  the file could not be read: no workspace, a missing `lanes/LANES.md`,
   #       or a file that is there and cannot be opened, or whose absence is not
   #       clear-cut (below)
-  # On primary it prints lane 5's `reg_image <path>` (T505; Q-L5-3), under the
-  # read door's `decide` class, a row in T504's table (Q-L5-5). Neither exists
-  # yet, so every mode reads the files here.
+  # ON PRIMARY IT PRINTS LANE 5'S `reg_image <path>` (T505; Q-L5-3), the read
+  # door's image of that path at its snapshot, under the door's `decide` class
+  # (T504's table; Q-L5-5), never the files. THE BRANCH IS TAKEN at the one test
+  # T505 gives a read site, `[ "${REG_STORE:-}" = sql ]`: the door sets `sql`
+  # only where it opened on primary, and `files` in files and `index` mode and
+  # under T413's flag, so neither of those reaches it and their bytes are the
+  # ones above (FR-034). It comes after the usage and set checks, 2 in every
+  # mode, and after the workspace check, 69 in every mode (lane 3's item 10).
+  # The image is held whole before a byte is printed. An absent alias table or
+  # log is `reg_image`'s 0 with nothing on stdout; anything else it cannot give
+  # (a missing `lanes/LANES.md`, two logs that differ only by case, C11, or a
+  # failed second read) is 69, ended by the class where a second read failed
+  # (`reg_fail_end`), never the files instead (C3). `reg_image`,
+  # `reg_read_lost`, `reg_fail_end` and `REG_STORE`, which T504 assigns at file
+  # scope and never takes from the environment, are lane 5's (T504, T505): this
+  # branch lands after them (tasks:851; task set S007-35 after S007-34).
   register-text)
     [ "$#" = 1 ] || die "usage: register-text <path>   (lanes/LANES.md, lanes/aliases.tsv or lanes/log/<lane>.md)" 2
     rtx_kind="$(reg_reader_kind "$1")" || die "register-text reads lanes/LANES.md, lanes/aliases.tsv or one lanes/log/<lane>.md, and '$1' is none of them (O21 (a))" 2
     [ -n "$LANES_DIR" ] || die "$1 could not be read: $(lanes_workspace_why)" 69
+    if [ "${REG_STORE:-}" = sql ]; then   # feature 007, T401's primary branch (above)
+      TMPD="$(mktemp -d)" || die "$1 could not be read: no temporary directory could be made under ${TMPDIR:-/tmp} to hold it whole before printing it" 69
+      if ! reg_image "$1" > "$TMPD/text"; then
+        if reg_read_lost; then reg_fail_end 69; fi
+        die "$1 could not be read from the register: the read door could not give its image (a missing lanes/LANES.md, or a cache it could not read), and a read that failed is never answered from the files instead (feature 007, T401 on primary; C3)" 69
+      fi
+      cat -- "$TMPD/text" || exit 69
+      exit 0
+    fi
     case "$rtx_kind" in
       register) rtx_src="$LANES_FILE" ;;
       aliases)  rtx_src="$LANES_ALIASES_TSV" ;;
