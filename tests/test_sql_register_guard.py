@@ -4075,7 +4075,12 @@ def test_the_guard_answer_time_is_recorded_beside_todays_direct_guard(estate):
                         f"{_median(served) * 1000:.1f}" if served else "none served",
                     "bound": "50"}
                    | {f"{name} samples": len(times) for name, times in paths.items()})
-    assert any(paths.values())
+    # SERVED, AND NOTHING ELSE UNKNOWN (T237zn; lane 2's review RV20, finding
+    # 10): every sample lands in one path, so `any(paths.values())` held
+    # whatever the paths were, ten refusals or ten fallbacks among them. The
+    # time stays unasserted, as TP:7976-7979 at a6497d00 has it, "without
+    # failing".
+    assert served and not paths["other"], {name: len(times) for name, times in paths.items()}
 
 
 def test_status_prints_the_services_lines_and_its_failure_stamp(estate):
