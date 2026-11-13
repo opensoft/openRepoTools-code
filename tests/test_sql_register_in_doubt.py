@@ -1506,9 +1506,18 @@ def test_a_sent_record_whose_child_never_read_committed_replays_and_an_owed_mark
     `:5453`). The replay ran once: its child made `claim`'s Rule 1 reads,
     `gh issue view`, as many times as the killed run's child did, since a
     replay reads `gh_reads` again (Y:5326) and the takeover's parent runs
-    no verb. `tail` was removed: the done mark holds the replayed tail's
-    `done`, not the `sent` the record held, which a run that keeps the
-    `sent` row writes the mark from (Y:5338-5342). [owed-mark]: a mark
+    no verb. Y:5043's cache, "in the write's directory across attempts",
+    does not reach the replay: the engine keeps it in the run's directory,
+    `<d>/<run>/`, which every attempt of one run shares (T413;
+    `f42d2c85:lanes-edit.sh:17911-17912`), and a replay makes no commit
+    call, so it is no attempt, and runs in a fresh run segment,
+    `<d>/<new run>/1` (`:8548-8550`; lane 3, #165 6770688147, "The fresh
+    run segment and what the replay reads: confirmed"). Were the cache to
+    reach across a replay, its child would make no reads and this count
+    would fail, not pass (RV20's NIT 14). `tail` was removed: the done
+    mark holds the replayed tail's `done`, not the `sent` the record held,
+    which a run that keeps the `sent` row writes the mark from
+    (Y:5338-5342). [owed-mark]: a mark
     holding `owed <utc>`; a rerun
     under `LANES_WRITE_ID`, with its generation (T245d), runs no tail, adds
     no comment, and names the steps as owed again. The mark is written in
