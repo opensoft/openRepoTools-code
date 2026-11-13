@@ -95,8 +95,8 @@ import pytest
 from pgcluster import SUPERUSER, TEMPLATE, Database
 from sql_register_helpers import _proc_start
 from test_sql_register_order import (BURST, CLIENT, DOT, EM, LA, LB, LC, OBJ, UUID_RE, Barrier, Estate,  # noqa: F401
-                                     Writer, claim, estates, hold_point, kind_line, loggers, session_of,
-                                     tool_calls)
+                                     Writer, claim, estates, hold_point, kind_line, loggers, run_git,
+                                     session_of, tool_calls)
 
 REGISTER = "lanes_register"
 WRITER_LOGIN = "lanes_w_fx"
@@ -1292,20 +1292,59 @@ def test_status_lists_and_resolves_pending_records(estates, case):
 def test_a_rerun_that_finds_its_write_committed_runs_the_verbs_after_commit_tail(estates):
     """`rename-lane`'s tail: `lane_state_rename` moves the old control root
     to the new name once; the handoff file at the new path holds one
-    `RENAMED from <old>` line; the fake `gh` logs one comment per held claim
-    (none here)."""
+    `RENAMED from <old>` line, under its header, never two (TP:3384-3389);
+    the fake `gh` logs one comment per held claim (none here). The estate
+    holds the lane's handoff in its checkout (TP:3315): `seed_handoff`."""
     e = estates()
     where, root = loggers(e), sidecars(e)
     new = "repoA-9"
     extra = {"LANES_LANE_STATE_ROOT": str(root)}
+    seed_handoff(e, LA)
     again, _, _ = tail_rerun(e, LA, ["rename-lane", LA, new, "T245", "--no-github"], where, extra)
     assert (root / new).is_dir() and not (root / LA).exists()
     # The move and stamp are made in the lane's own register checkout, `PW_C`,
     # `<W>-lanes/<lane>` (`8ba10b4e:lanes-edit.sh:25251-25256`), which the
-    # estate makes at `co-<n>-lanes/<lane>`, never in W (T245l; PM33A-TRIAGE L2).
-    handoffs = list(e.root.glob(f"co-*-lanes/*/handoffs/{new}.md"))
-    assert handoffs and all(h.read_text(encoding="utf-8").count(f"RENAMED from {LA}") <= 1 for h in handoffs)
+    # estate makes at `co-<n>-lanes/<lane>`, never in W (T245l; PM33A-TRIAGE L2),
+    # and pushed, so each checkout made after it holds the moved file too.
+    moved, stamp = lane_handoff(new), f"RENAMED from {LA} "
+    handoffs = list(e.root.glob(f"co-*-lanes/*/{moved}"))
+    assert handoffs, f"no lane checkout holds {moved}"
+    for h in handoffs:
+        lines = h.read_text(encoding="utf-8").splitlines()
+        assert sum(l.startswith(stamp) for l in lines) == 1 and lines[3:4] and lines[3].startswith(stamp), (
+            f"{h} does not hold one Rule 3 stamp under its header: {lines[:6]}")
     assert comments(where) == []
+
+
+def lane_handoff(lane: str) -> str:
+    """A handoff named for its lane, `session-handoff-<date>-lane-<lane>.md`:
+    the one shape `rename-lane` moves, to the same date with `-lane-<new>`
+    (Amendment 16(d); `8ba10b4e:lanes-edit.sh:28903-28925`). Test 4's rows
+    name `handoffs/<lane>.md` (`w_row`), which it stamps where it is and
+    never moves (`:29155-29156`)."""
+    return f"handoffs/session-handoff-2026-05-01-lane-{lane}.md"
+
+
+def seed_handoff(e: Estate, lane: str) -> str:
+    """AT-D8's `rename-lane` estate, "the lane's handoff file in its
+    checkout" (TP:3315). A run looks for the handoff its row names in the
+    lane's own register checkout, `<W>-lanes/<lane>`, cloned from the lanes
+    origin, and where that checkout holds none it moves and stamps nothing
+    (`8ba10b4e:lanes-edit.sh:25064-25065`, `:29133-29136`). So the handoff,
+    a header block and the blank line Rule 3's stamp goes under
+    (`rl_stamp_build`, `:25000-25021`), is committed on the lanes origin
+    from the estate's seed clone, before any run, and `lane`'s row is
+    pointed at it by `replace-in-row`, the verb the engine names for that
+    (`:24985`). Returns its path in a checkout."""
+    rel = lane_handoff(lane)
+    (e.seed / rel).parent.mkdir(parents=True, exist_ok=True)
+    (e.seed / rel).write_text(f"# Handoff: lane {lane}\nT245's seed.\n\nNothing is owed.\n", encoding="utf-8")
+    run_git(e.seed, "add", "--", rel, env=e.env)
+    run_git(e.seed, "commit", "-q", "-m", f"handoff({lane}): T245's seed", env=e.env)
+    run_git(e.seed, "push", "-q", "origin", "main", env=e.env)
+    w = e.run(lane, ["replace-in-row", lane, f"handoffs/{lane}.md", rel, "T245: a handoff named for its lane"])
+    assert w.code == 0, f"replace-in-row exited {w.code}: {w.err[-800:]}"
+    return rel
 
 
 @CLIENT
