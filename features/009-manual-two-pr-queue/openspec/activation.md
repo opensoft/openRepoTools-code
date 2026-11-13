@@ -1,7 +1,8 @@
 # CI-ACTIVATION-11: scoped activation phase
 
-Disposition: owner-approved; required-check migration complete; reviewed
-enablement and live qualification pending.
+Disposition at this record's creation: owner-approved; required-check migration
+complete; reviewed enablement and live qualification not yet performed. Later
+qualification is tracked under [reconciliation issue 26](https://github.com/opensoft/openRepoTools-spec/issues/26).
 Governing change: `opensoft/openRepoTools-spec`,
 `openspec/changes/activate-claude-current-ci-cutover/`.
 Working requirements FR-035–FR-038; sole implementation checklist T036–T041 in

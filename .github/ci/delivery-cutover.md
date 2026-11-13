@@ -1,6 +1,6 @@
 # Scoped claude-current CI delivery
 
-Status: **owner-approved activation phase; live qualification pending**.
+Status: **owner-approved activation phase; live acceptance requires dated evidence**.
 This revision selects the enabled policy. Omission still requires complete
 effective protection and authenticated proof; the flag alone grants nothing.
 The dated service/qualification record is
