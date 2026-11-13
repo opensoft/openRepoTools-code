@@ -649,12 +649,27 @@ class Estate:
                               capture_output=True, text=True, timeout=60).stdout
 
     def push_register(self, rows, first=False) -> None:
-        (self.wip / "lanes" / "LANES.md").write_text(register_text(rows), encoding="utf-8")
+        """The register pushed to the bare origin. Once this estate has put its
+        register in the SQL store (`_seed_primary`, T254q), each line that
+        changed goes there too, one `write` entry per line (`_Register.replace`),
+        so a case's stand-in for what a bind leaves reads the same on primary
+        as in files mode (case 4)."""
+        text = register_text(rows)
+        (self.wip / "lanes" / "LANES.md").write_text(text, encoding="utf-8")
         if first:
             (self.wip / "lanes" / "log" / "README.md").write_text("logs.\n", encoding="utf-8")
         self._git(["add", "-A"], self.wip)
         self._git(["commit", "-q", "-m", "register"], self.wip)
         self._git(["push", "-q", "origin", "main"], self.wip)
+        sql = getattr(self, "sql_register", None)
+        if sql is not None:
+            path = "lanes/LANES.md"
+            old, new = sql.files[path].split("\n"), text.split("\n")
+            assert len(old) == len(new), \
+                f"the SQL store's register has {len(old)} lines and the new one {len(new)}"
+            for line_no, (was, now) in enumerate(zip(old, new), 1):
+                if was != now:
+                    sql.replace(path, line_no, now)
 
     def origin_head(self) -> str:
         return self._git(["rev-parse", "main"], self.origin).strip()
@@ -668,12 +683,21 @@ class Estate:
         return self.session.env(self.base, **merged)
 
     def hook(self, prompt="hello", timeout=HOOK_TIMEOUT, **extra) -> Hook:
+        """One guard run. On primary, the register is put in the SQL store
+        before the first one (`_seed_primary`, T254r), so a case that reads
+        without making an offer, rows (a) and (b) among them, reads it there."""
+        if getattr(self, "pg", None) is not None:
+            _seed_primary(self)
         return run_hook(["bash", str(self.guard), "guard"],
                         self.session.hook_input(prompt=prompt), self.env(**extra),
                         self.session.cwd, timeout)
 
     def make_offer(self) -> dict:
-        """The guard's first prompt makes the offer (`guard_offer`)."""
+        """The guard's first prompt makes the offer (`guard_offer`). On
+        primary, the register the estate pushed is put in the SQL store first
+        (`_seed_primary`, T254q), where the case has not put it there itself."""
+        if getattr(self, "pg", None) is not None:
+            _seed_primary(self)
         hook = self.hook("hello")
         record = read_record(self.offer)
         assert hook.code == 2 and OFFER in hook.text and record.get("mode") == "name-drift", \
@@ -683,9 +707,13 @@ class Estate:
 
     def answer_2(self, **extra) -> Hook:
         """The person's `2`; the case's first assertion is always that the hook
-        printed "BINDING" and exited 2, which today's in-hook bind never does."""
+        printed "BINDING" and exited 2, which today's in-hook bind never does.
+        The line names the lane this estate's offer binds, `self.to` (T214l):
+        `repoA-5` for the bind-failed test's `new` kind, which `BINDING`, on
+        `TO`, never matched (lane 5, #165 6837268276)."""
         hook = self.hook("2", **extra)
-        assert not hook.killed and hook.code == 2 and BINDING in hook.err, \
+        binding = f"BINDING: this window is now named {self.to}"
+        assert not hook.killed and hook.code == 2 and binding in hook.err, \
             f"answer 2 did not exit 2 with BINDING: {hook!r}"
         return hook
 
@@ -754,11 +782,25 @@ class Estate:
 def estate(tmp_path, request):
     """The estate of the module's docstring, torn down with every process its
     bind left (the outer, its body, `timeout`, the stand-ins and their
-    children)."""
-    made = []
+    children).
 
-    def make(mode="files", **kwargs) -> Estate:
-        pg = request.getfixturevalue("pg") if mode == "primary" else None
+    ON PRIMARY, A DATABASE PER ESTATE (T254q): the first primary estate of a
+    case takes T205's `pg`; each later one a database of its own, cloned from
+    the same template and dropped at the teardown, as each estate has a bare
+    origin of its own in files mode, so case 9's rival reads its own register
+    and not the one the first bind changed. A caller that means two estates to
+    share one register passes `pg` (`_two_binds`)."""
+    made, own = [], []
+
+    def make(mode="files", pg=None, **kwargs) -> Estate:
+        if mode != "primary":
+            pg = None
+        elif pg is None:
+            pg = request.getfixturevalue("pg")
+            if any(getattr(e, "pg", None) is not None for e in made):
+                name = pg.cluster.new_database()
+                own.append((pg.cluster, name))
+                pg = type(pg)(pg.cluster, name)
         est = Estate(tmp_path / f"e{len(made)}", **kwargs)
         made.append(est)
         if pg is not None:
@@ -766,8 +808,12 @@ def estate(tmp_path, request):
         return est
 
     yield make
-    for est in made:
-        est.close()
+    try:
+        for est in made:
+            est.close()
+    finally:
+        for cluster, name in own:
+            cluster.drop_database(name)
 
 
 def _sleeper() -> subprocess.Popen:
@@ -1211,7 +1257,7 @@ def _follow_renames(session) -> None:
     _script(tmux, _FOLLOW_TMUX, **{k: shlex.quote(str(v)) for k, v in words.items()})
 
 
-def _real_estate(estate, **kwargs) -> Estate:
+def _real_estate(estate, register=True, **kwargs) -> Estate:
     """The estate with the checkout's own `lane-start` in place of the
     stand-in: the bind's real `lane-start --no-launch --bind`, the copy
     beside the guard on primary (`Estate.primary`), so it runs that build.
@@ -1234,7 +1280,12 @@ def _real_estate(estate, **kwargs) -> Estate:
     row, `_handoff` commits the file that row names, so the bind's
     `write-handoff --stamp` writes the stamp as it does on a real lane. A new
     lane (`to_row=False`) has no handoff yet, and its `lane-start` writes no
-    stamp (`lane-start:4352-4356` at `6050581`)."""
+    stamp (`lane-start:4352-4356` at `6050581`).
+
+    AND ON PRIMARY, THE REGISTER IN ITS SQL STORE (T254p): `_seed_primary`,
+    unless `register` is false, for a caller that seeds it later itself
+    (`_two_binds`). AND EACH LANE'S OWN REGISTER CHECKOUT (T254s):
+    `_lane_checkouts`."""
     est = estate(**kwargs)
     est.extra["LANES_LANE_START"] = str(est.guard.parent / "lane-start")
     est.set("edit-real")
@@ -1242,7 +1293,75 @@ def _real_estate(estate, **kwargs) -> Estate:
     _follow_renames(est.session)
     if kwargs.get("to_row", True):
         _handoff(est)
+    if kwargs.get("mode") == "primary":
+        _lane_checkouts(est, [FROM] + ([est.to] if kwargs.get("to_row", True) else []))
+    if register and kwargs.get("mode") == "primary":
+        _seed_primary(est)
     return est
+
+
+def _seed_primary(est: Estate) -> None:
+    """Bring the primary estate's register into its SQL store (T254p), as the
+    service cases do (`_guard_state`): `_Register` imports the `lanes/LANES.md`
+    the estate pushed, cuts over and records the marker, so the switch reads
+    `primary` with the marker `present`.
+
+    WHY: `Estate.primary` leaves `tmpl`'s switch at `files`. From lane 5's T507
+    on (line R's merge25), the guard on `mode=primary` reads the register's
+    SQL store, which refuses that switch: `lanes-index register read --for
+    guard --prefetch` exits 69, "the register's switch is `files`, not
+    `primary`", and the guard refuses the prompt with 2, so no offer is made
+    (G-18's run A, case 17 `[primary]`, on lane 4's `pair-m33a` `afc6c67d`).
+    A write on primary refuses the same switch with 69 at its snapshot's
+    check 4 (line BD17's run e03).
+
+    ONCE PER DATABASE: where the case, or an estate sharing its database,
+    already brought this `pg` to `primary`, nothing is sent. Otherwise the
+    `_Register` is kept as `est.sql_register`, and `Estate.push_register`
+    sends later changes through it (T254q). `Estate.make_offer` calls this
+    before the first offer, so every primary estate that makes one reads its
+    register there (T254q).
+
+    AND BEFORE ANY READ (T254r): `Estate.hook` calls it before every guard
+    run, and `_Service` before it starts `serve`, so the cases that read
+    without an offer read a register at `primary` too: rows (a) and (b), the
+    service and read cases, and SVC-10, which measured the refusal path
+    (lane 5, #165 6837268276). A case that seeds its register itself does so
+    before its first read (`_Register`; `_guard_state`), so this finds it at
+    `primary` and sends nothing. The answer is kept on the estate
+    (`est.seeded`), so the switch is asked once per estate."""
+    if getattr(est, "seeded", False):
+        return
+    out = est.pg.psql("SELECT mode FROM lanes_register.register_switch;",
+                      check=False).stdout.split()
+    if not (out and out[-1] == "primary"):
+        est.sql_register = _Register(est)
+    est.seeded = True
+
+
+def _lane_checkouts(est: Estate, lanes) -> None:
+    """EACH LANE'S OWN REGISTER CHECKOUT ON PRIMARY (T254s), `<W>-lanes/<lane>/`,
+    made by `lanes-edit.sh lane-checkout <lane> --create` (the estate's build),
+    as the real layout has one register checkout per lane.
+
+    WHY: on primary, T415's `pw_checkout` asks every write for its lane's
+    own checkout, even under an explicit `LANES_REPO`
+    (`lanes-edit.sh:8578-8583` at G-18c's `050dc9b4`), while `lane-start`
+    makes it only under `LANES_ROUTE_WRITES=1` and its default resolution
+    (`lane-start:1146-1147`, `:3981-3990`). The estate names `LANES_REPO`,
+    so each of the bind's writes refused with 2, "lane repoA-3's own
+    register checkout, ... is not here, and on primary a write makes no
+    clone"; the session cell never ended on the bound uuid, and T503's rerun
+    rule could not hold (case 11; G-18c's run cL). A slice of its own, so a
+    later one can reverse it if lanes 3 and 4 rule that the tools should
+    agree instead. The clone is a fetch, so `LANES_NO_FETCH` is left out."""
+    env = {k: v for k, v in est.base.items() if k != "LANES_NO_FETCH"}
+    for lane in lanes:
+        done = subprocess.run(["bash", str(est.guard), "lane-checkout", lane, "--create"],
+                              cwd=str(est.wip), env=env, capture_output=True, text=True,
+                              timeout=120)
+        assert done.returncode == 0, \
+            f"lane-checkout {lane} --create exited {done.returncode}: {done.stderr}"
 
 
 #: THE LANE'S HANDOFF (T214k), as a real lane's register holds it: the file
@@ -1291,9 +1410,13 @@ def _handoff(est: Estate) -> Path:
 def _two_binds(estate, mode="files") -> tuple:
     """Two sessions, in windows `FROM` and `repoA-4`, each named `TO`, both
     answering `2` with the real `lane-start`: the two estates and their
-    outcomes."""
-    one = _real_estate(estate, mode=mode)
-    two = _real_estate(estate)
+    outcomes. On primary, the register goes into the SQL store once both
+    windows' rows are pushed (`_seed_primary`), and `two` runs the same
+    flipped build as `one` on `one`'s database (T254q): built in files mode,
+    it ran the checkout's `lanes-edit.sh`, whose `lanes-index` refuses
+    `mode=primary` (`Estate.primary`), so it could make no offer."""
+    one = _real_estate(estate, register=False, mode=mode)
+    two = _real_estate(estate, register=False, mode=mode, pg=getattr(one, "pg", None))
     if mode == "primary":
         two.extra["LANES_INDEX_CONFIG"] = one.extra["LANES_INDEX_CONFIG"]
     two.home, two.wip, two.origin = one.home, one.wip, one.origin
@@ -1301,12 +1424,16 @@ def _two_binds(estate, mode="files") -> tuple:
     two.base.update(HOME=str(one.home), LANES_REPO=str(one.wip))
     two.push_register([_row(FROM, one.sid, "LIVE"), _row("repoA-4", two.sid, "LIVE"),
                        _row(TO, one.other, "PAUSED")])
+    if mode == "primary":
+        _seed_primary(one)
     for session in two.sessions:
         session.close()
     two.session = guard_session(one.home, two.bin, one.wip, window="repoA-4",
                                 session_id=two.sid, name=TO)
     _follow_renames(two.session)
     two.sessions.append(two.session)
+    if mode == "primary":
+        _lane_checkouts(two, ["repoA-4"])
     one.make_offer()
     two.hook("hello")
     assert read_record(two.offer).get("mode") == "name-drift", read_record(two.offer)
@@ -2710,10 +2837,41 @@ def _run_dir(est: Estate) -> Path:
     return Path(est.base["XDG_STATE_HOME"]) / "openRepoTools" / "run"
 
 
-def _service_dir(est: Estate):
-    """The run directory, where the service's socket is bound."""
+def _service_dir(est: Estate, stale=None):
+    """The run directory, where the service's socket is bound; with `stale`,
+    a socket's inode, only once the socket there is another one (T237zi)."""
     run = _run_dir(est)
-    return run if (run / "register.sock").exists() else None
+    sock = run / "register.sock"
+    if not sock.exists():
+        return None
+    if stale is not None:
+        try:
+            if os.lstat(sock).st_ino == stale:
+                return None
+        except OSError:
+            return None
+    return run
+
+
+def _stale_socket(est: Estate):
+    """The inode of a socket in the run directory that no process answers on,
+    a dead service's (SVC-4), or None (T237zi): a connect refused, or a file
+    that is not a socket, is stale; one that connects is a live service's."""
+    import socket as _socket
+    path = _run_dir(est) / "register.sock"
+    try:
+        inode = os.lstat(path).st_ino
+    except OSError:
+        return None
+    probe = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    try:
+        probe.settimeout(1.0)
+        probe.connect(str(path))
+    except OSError:
+        return inode
+    finally:
+        probe.close()
+    return None
 
 
 def _failure_stamp(est: Estate, done: subprocess.CompletedProcess) -> list:
@@ -2780,12 +2938,18 @@ class _Service:
 
     def __init__(self, est: Estate, **extra):
         self.est = est
+        if getattr(est, "pg", None) is not None:
+            _seed_primary(est)
+        # A DEAD SERVICE'S SOCKET IS NOT THIS ONE'S (T237zi; lane 5, #165
+        # 6837268276): where one is left, the wait is for the socket that
+        # replaces it, so a case never reads the stale inode as the new one.
+        stale = _stale_socket(est)
         self.proc = subprocess.Popen([sys.executable, str(est.index), "serve"],
                                      stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE, env=est.env(**extra),
                                      cwd=str(est.wip), start_new_session=True)
         est.spare.append(self.proc.pid)
-        self.dir = _until(lambda: _service_dir(est), 10)
+        self.dir = _until(lambda: _service_dir(est, stale), 10)
         if not self.dir:
             # WHAT `serve` SAID, where it has exited: until lane 5's T512
             # (L5-S1), `lanes-index` answers 64, "unknown subcommand 'serve'".
