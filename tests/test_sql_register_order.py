@@ -329,14 +329,15 @@ def expired(c: Clone, lane: str = L2, for_lane: str = L1, **options) -> Tuple[st
 
 @pytest.fixture()
 def clones(pg_cluster):
-    """Clones of `tmpl_imported`, each the case's own, dropped at the end."""
+    """Clones of `tmpl_imported`, or of the template a case names (the act
+    backstops clone `tmpl`; T252r), each the case's own, dropped at the end."""
     made: List[str] = []
 
-    def clone() -> Clone:
-        found = pg_cluster.psql(f"SELECT datname FROM pg_database WHERE datname = '{IMPORTED}';").stdout.split()
-        assert found == [IMPORTED], f"no {IMPORTED} on the session cluster: lane 2's T227 builds it"
+    def clone(template: str = IMPORTED) -> Clone:
+        found = pg_cluster.psql(f"SELECT datname FROM pg_database WHERE datname = '{template}';").stdout.split()
+        assert found == [template], f"no {template} on the session cluster: lane 2's T227 builds it"
         name = f"t223_{next(_NAMES)}"
-        pg_cluster.psql(f"CREATE DATABASE {name} TEMPLATE {IMPORTED};")
+        pg_cluster.psql(f"CREATE DATABASE {name} TEMPLATE {template};")
         made.append(name)
         pg_cluster.psql(f"REVOKE ALL ON DATABASE {name} FROM PUBLIC;\n"
                         f"GRANT CONNECT ON DATABASE {name} TO {CONNECT_TO};\n")
@@ -847,10 +848,16 @@ class Writer:
         return self.proc.returncode
 
     def _jsonl(self, name: str) -> List[dict]:
+        """`name`'s lines, each a JSON object. A last line with no newline yet
+        is one still being written, as by a detached render's call, which
+        logs under a lock this read does not take: it is left out, never half
+        read (lane 2's RV20, NIT 19; T243s)."""
         path = self.psql_dir / name
         if not path.exists():
             return []
-        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+        data = path.read_bytes()
+        data = data[:data.rfind(b"\n") + 1]
+        return [json.loads(line) for line in data.decode("utf-8").splitlines() if line]
 
     def calls(self) -> List[dict]:
         """The shim's calls that carry a request, in order."""
@@ -1251,8 +1258,15 @@ def burst(e: Estate, objects: Sequence[str], window_ms: int, extra: dict = None,
     lane 1's two points (#165 6840891258; T243m), also never asserted: each
     writer's calls in order with their exits, its commits' losses by
     SQLSTATE, and its commits' seconds, as `burst_calls` reads them, and the
-    longest commit of the burst. `attempts` keeps its meaning, every call
-    that is not a commit or a lookup, the render's own calls among them."""
+    longest commit of the burst.
+
+    `attempts` counts the snapshots alone, `burst_calls`' `s` calls, one per
+    attempt, as the row counts them, and `reads` every other call that is
+    not a commit or a lookup, its `r` and `m` calls, the detached render's
+    reads among them, which a slower runner may not have made yet when the
+    logs are read. UNTIL T243q `attempts` counted both, so an older figure,
+    py-bench's 73 a burst (55 + 18) and CI round 6g's, is `attempts +
+    reads` here (lane 2's RV20, finding 9; T243q)."""
     barrier = Barrier(e.root, len(objects))
     arms = [dict(WINDOW, ms=window_ms)]
     writers = [e.launch(lane, claim(obj, "--no-github"), arms=arms, barrier=barrier, extra=extra)
@@ -1264,8 +1278,10 @@ def burst(e: Estate, objects: Sequence[str], window_ms: int, extra: dict = None,
         w.wait()
     drain = max(w.ended for w in writers) - released
     read = {w.lane: burst_calls(w) for w in writers}
+    kinds = {lane: [call[0] for call in r[0].split()] for lane, r in read.items()}
     record("burst", node, drain_s=round(drain, 2), margin_vs_30s=round(D7_S / max(drain, 0.01), 2),
-           attempts={w.lane: len(w.snapshot_calls()) for w in writers},
+           attempts={lane: k.count("s") for lane, k in kinds.items()},
+           reads={lane: k.count("r") + k.count("m") for lane, k in kinds.items()},
            seconds={w.lane: round(w.ended - released, 2) for w in writers},
            calls={lane: r[0] for lane, r in read.items()}, losses={lane: r[1] for lane, r in read.items()},
            commit_s={lane: r[2] for lane, r in read.items()},
@@ -1325,11 +1341,20 @@ def burst_ends(e: Estate, writers: Sequence[Writer]) -> List[Writer]:
     absent from the journal, and none ended any other way; the journal grew
     by one row per committed writer, its seqs from 2 with no gap and no
     repeat. That is AT-D9c's form for its own burst (Y TP:3755-3759;
-    TP:3781-3785 at `0c3750a5`), which lane 3 points the bursts to (#165
-    6840952649). Returns the writers that committed (T243n)."""
+    TP:3781-3785 at `0c3750a5`). Lane 3 pointed the bursts to it (#165
+    6840952649), then withdrew that (6841239274): each case's own row
+    decides, (g)'s the cache's (Y TP:936-950) and AT-F14's each committed
+    writer's (Y TP:6852-6854), and neither asks every writer to commit
+    (T243r). Returns the writers that committed (T243n).
+
+    At least one writer commits: a burst in which every writer ends 75 has
+    lost every writer, against "A burst loses no writer" (Y TP:916-919), and
+    would leave each check over the writers that committed, and (g)'s head
+    order, true of nothing (lane 2's RV20, finding 8; T243p)."""
     others = [(w.lane, w.code, w.err[-300:]) for w in writers if w.code not in (0, 75)]
     assert not others, f"a burst writer ended neither 0 nor 75: {others}"
     committed = [w for w in writers if w.code == 0]
+    assert committed, f"no burst writer committed: all {len(writers)} ended 75 with nothing written"
     for w in writers:
         found = [x for x in set(w.write_ids()) if e.has_write(x)]
         if w.code == 0:
@@ -2278,12 +2303,13 @@ def test_canon_lane_walk_whose_register_read_fails_off_primary_exits_1_and_print
 
     It fails until lane 4's T411 lands with its `b637ce0d`, which ends the
     walk with a failed register read's own status, the 1 here (#165 6814837872,
-    Question 126). Without T411, as on line R, `canon-lane --walk` is the
-    usage 64, "canon-lane takes one lane" (lane 1, #165 6837462215); with
+    Question 126). Without T411, as on line R before merge44 (round 6d's
+    census), `canon-lane --walk` is the usage 64, "canon-lane takes one
+    lane" (lane 1, #165 6837462215 and 6850698453); with
     only T411's first commit, `2ee320e1`, as at pair-m33a `8ba10b4e`, the
     walk still reads that failure as no row and exits 0 with its three names
     (lane 4's pair-m33a CI, s2 15, read by lane 2's triage, #165 6838261062;
-    T233c, T233d)."""
+    T233c, T233d, T233e)."""
     rows, aliases, typed, names = WALKS["two-hops"]
     box = FilesBox(tmp_path / "box", rows, aliases)
     walk = box.edit("canon-lane", "--walk", typed)
@@ -2545,7 +2571,9 @@ _HANDOFF = ("--lane", R_HERE, "T252b's race")
 #: (T429); W13 under `set -e` and W14's note arm exit with the writer's code
 #: (T430); `lane`'s arm keeps 1 for a 2 (T432); the handoff skill's step-4
 #: stop ends 2 alone, its writer's code staying in that writer's own stderr
-#: (T431; lane 3's question 4, #165 6835210568; T252n).
+#: (T431; lane 3's question 4, #165 6835210568; T252n); and the guard's child
+#: ends 0, its refused `set-row-state` a `note=`, since the bind landed (lane
+#: 3's point 4(b), #165 6841918192; T252s).
 ACT_WRITES = {
     "lane-start-w1-add-row": ActWrite("lane-start", ("repoZ", "1", "--no-launch"), R_NEW,
                                       verb_is("add-row"), rival="row", code=2),
@@ -2629,6 +2657,7 @@ class ActWorld(Sandbox):
         self._n = itertools.count(1)
         self.writers: List[Writer] = []
         self.sessions: list = []  # the guard's live sessions (T252q), closed by `act_worlds`
+        self.record: Optional[Path] = None  # the guard child's bind record (`offer`; T252s)
 
     def lane_checkout(self, lane: str) -> Path:
         """`<c>`, lane `lane`'s own register checkout beside this world's W,
@@ -2679,7 +2708,7 @@ class ActWorld(Sandbox):
             # says nothing)"; with the record alone, `lane-start --bind`
             # refused 2, "no live session record names this window" (T252q).
             sid, to = write.argv[-1], dict(self.env, **write.env)["LANES_LANE"]
-            self.offer(sid, write.lane, to)
+            self.record = self.offer(sid, write.lane, to)
             live = guard_session(self.home, self.root / "guard-session", self.lane_dir, window=to,
                                  session_id=sid)
             self.sessions.append(live)
@@ -2704,8 +2733,21 @@ class ActWorld(Sandbox):
         empty `.bind.1.out`, which the outer's fork creates. No prefetch ran,
         so the record has no `c`, `n_a` or `w_s_ms`, and `bound_s` is
         `guard_bind_bound_s`'s default, 500. `guard_bind_body` reads `mode`,
-        `from`, `to` and `out`, binds `to` with `lane-start --no-launch
-        --bind`, and then sets `left`'s row (T252q)."""
+        `from`, `to`, `out` and `act`, binds `to` with `lane-start --no-launch
+        --bind`, and then sets `left`'s row (T252q).
+
+        ITS `act` is the guard's base at the offer, `<act-id>@<n>:<generation>`
+        (tasks:1426; W:5378), which `guard_offer` writes after `pane`; here it
+        is taken from `act-begin` on primary (Y:5572), before the rival
+        commits. Without it the `set-row-state` on `left` sends `LANES_EXPECT`
+        with no `LANES_ACT`, which the client refuses with 2 before any commit
+        call (T510's part 5), so the race never reaches its hold (lane 3,
+        #165 6841918192, point 4(b); lane 5, #165 6842157774; T252s)."""
+        begun = self.launch("act-begin", ["bash", str(self.bin / "lanes-edit.sh"), "act-begin"], left)
+        begun.wait(60)
+        act = begun.out.strip()
+        assert begun.code == 0 and ACT_RE.match(act), (
+            f"act-begin for the offer's act exited {begun.code}, printed {begun.out!r}: {begun.err[-300:]}")
         offers = Path(self.env.get("CLAUDE_CONFIG_DIR") or Path(self.env["HOME"]) / ".claude") / "lanes" / "offers"
         offers.mkdir(parents=True, exist_ok=True)
         offers.chmod(0o700)
@@ -2714,7 +2756,7 @@ class ActWorld(Sandbox):
         utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
         bound_s = 500
         lines = ["mode=binding", f"from={left}", f"to={to}", f"session={to}", f"uuid={sid}", f"utc={utc}",
-                 "window=", "pane=", "bind=1", f"started_utc={utc}", f"bound_s={bound_s}", "bounded=yes",
+                 "window=", "pane=", f"act={act}", "bind=1", f"started_utc={utc}", f"bound_s={bound_s}", "bounded=yes",
                  f"deadline_epoch={now + bound_s + 5}", f"host={self.env['LANES_WORKSTATION']}",
                  f"container={self.env['LANES_CONTAINER']}", f"out={record}.bind.1.out", "detach=setsid"]
         for path, text in ((record, "\n".join(lines) + "\n"), (Path(f"{record}.bind.1.out"), "")):
@@ -2798,16 +2840,17 @@ def act_worlds(pg_cluster, tmp_path):
         pg_cluster.drop_database(name)
 
 
-def race(world: ActWorld, write: ActWrite, rival_lane: str) -> Tuple[Writer, Writer, List[str]]:
+def race(world: ActWorld, write: ActWrite, rival_lane: str) -> Tuple[Writer, Writer, List[str], int]:
     """The act run to `write`, its commit call held while the rival commits
     on `rival_lane`; then let go. Returns the act, which may still run (a
-    `lane-start` whose W8 committed waits for the holder), the rival, and
-    the held write's id, read from the shim's log, which logs a call before
-    its hold."""
+    `lane-start` whose W8 committed waits for the holder), the rival, the
+    held write's id, read from the shim's log, which logs a call before
+    its hold, and the head at the hold, before the rival commits (T252s)."""
     fifo = world.root / "hold.fifo"
     os.mkfifo(str(fifo))
     act = world.act(write, [{"mode": "hold", "match": write.match, "call": 1, "fifo": str(fifo)}])
     held = hold_point(fifo, act)
+    base = world.c.head()
     calls = [c.get("stdin") or "" for c in act.commit_calls() if write.match in (c.get("stdin") or "")]
     ids = [m.group(1) for m in (re.search(r"commit_write\(\s*-?[0-9]+\s*,\s*'(" + UUID_RE + ")'", s)
                                 for s in calls[:1]) if m]
@@ -2815,7 +2858,7 @@ def race(world: ActWorld, write: ActWrite, rival_lane: str) -> Tuple[Writer, Wri
     rival = world.rival(write.rival, rival_lane)
     assert rival.code == 0, f"the rival exited {rival.code}: {rival.err[-400:]}"
     held.close()
-    return act, rival, ids
+    return act, rival, ids, base
 
 
 @CLIENT
@@ -2826,10 +2869,17 @@ def test_an_act_whose_scope_changed_before_its_commit_writes_nothing(act_worlds,
     commit refuses with 2 and `expectation: <scope> changed at seq <k> by
     <lane>/<verb>`, naming the rival's seq, lane and verb; the held write is
     not in the journal; and the act exits with the code lane 4's arm gives,
-    never 0."""
+    never 0.
+
+    `[guard-answer-2-child]` alone ends 0 (lane 3's point 4(b), #165
+    6841918192; tasks:1438): the bind landed, so the guard's body exits 0;
+    its record holds one `note=`, for the refused write, in the facts file
+    beside `out=` that the outer folds into the record (`guard_bind_facts`);
+    the `set-row-state` itself exited 2, with its `expectation:` line; and
+    the journal grew only by the rival's entry after the hold (T252s)."""
     world = act_worlds()
     w = ACT_WRITES[write]
-    act, rival, ids = race(world, w, w.lane)
+    act, rival, ids, base = race(world, w, w.lane)
     act.wait(240)
     k = max(int(r["seq"]) for r in world.c.json(
         f"SELECT coalesce(jsonb_agg(q), '[]'::jsonb) FROM (SELECT seq FROM {REGISTER}.journal "
@@ -2840,6 +2890,18 @@ def test_an_act_whose_scope_changed_before_its_commit_writes_nothing(act_worlds,
     assert said in act.err + act.out, f"[{write}] {said!r} is not in {act.err[-900:]!r}"
     assert all(world.c.value(f"SELECT count(*) FROM {REGISTER}.journal WHERE write_id = '{x}';") == "0"
                for x in ids), f"[{write}] the held write is in the journal"
+    if w.tool == "guard":
+        assert act.code == 0, f"[{write}] the guard's body exited {act.code}, not 0: {act.err[-600:]}"
+        facts = Path(f"{world.record}.bind.1.facts")
+        assert facts.is_file(), f"[{write}] the body left no facts file at {facts}: {act.err[-600:]}"
+        notes = [n for n in facts.read_text(encoding="utf-8").splitlines() if n.startswith("note=")]
+        assert len(notes) == 1 and "set-row-state" in notes[0] and "exit 2" in notes[0], (
+            f"[{write}] the record's notes are not one for the set-row-state's 2: {notes}")
+        grew = [int(r["seq"]) for r in world.c.json(
+            f"SELECT coalesce(jsonb_agg(q ORDER BY q.seq), '[]'::jsonb) FROM (SELECT seq FROM {REGISTER}.journal "
+            f"WHERE seq > {base}) q;")]
+        assert grew == [k], f"[{write}] after the hold at {base} the journal grew by {grew}, not the rival's {k} alone"
+        return
     if w.code is not None:
         assert act.code == w.code, f"[{write}] the act exited {act.code}, not {w.code}: {act.err[-600:]}"
     assert act.code != 0, f"[{write}] the act exited 0 after its write was refused: {act.err[-600:]}"
@@ -2852,7 +2914,7 @@ def test_an_act_whose_scopes_held_commits(act_worlds, write):
     another lane's `PAUSED` (or row line), the held write commits."""
     world = act_worlds()
     w = ACT_WRITES[write]
-    act, _, ids = race(world, w, R_OTHER[w.lane])
+    act, _, ids, _ = race(world, w, R_OTHER[w.lane])
     deadline = time.monotonic() + 60
     while True:
         ended = act.ended is not None
@@ -3408,8 +3470,20 @@ def test_the_commits_act_backstops_are_lr007_act_generation_and_lr004(clones, ca
     base past the head LR004; nothing is written. `commit_write` checks an
     act's generation and base only where it lists an expectation (step 3b,
     `IF cardinality(v_expect) > 0`), before it compares any scope, so each
-    act lists one: the writer's own row. (The hold line derives no scope.)"""
-    c = primary(clones)
+    act lists one: the writer's own row. (The hold line derives no scope.)
+
+    The register is a clone of `tmpl`, not of `tmpl_imported`, brought to
+    `primary` by AT-LR006's route, as T221's step-6 cases and T253b's case
+    bring theirs and as this module's phase W estates do: `import_files`'
+    `import` entry at seq 0, then `Clone.to_primary`'s `cutover` at seq 1
+    and `record_marker`. So the ids need no T115, whose `import --at` builds
+    `tmpl_imported` after T112: they fail only until T107's step 3b, T227's
+    `tmpl` and T228's `lanes_w_fx` land, and T112's `-k` runs them (lane 3's
+    way 1, #165 6841609469; T252r)."""
+    c = clones(W_TEMPLATE)
+    import_files(c, {LANES_MD: "# LANES.md: the act backstops' register (T252r)\n"})
+    assert c.to_primary() == 1, "the backstops' cutover is not at seq 1 (AT-LR006's route)"
+    c.no_taker()
     entry = c.append(L1, *hold(c, L1))
     head, gen = c.head(), c.switch()["generation"]
     expect = [f"row:{L1.lower()}"]
