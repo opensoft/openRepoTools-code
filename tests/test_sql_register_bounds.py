@@ -1246,7 +1246,9 @@ def _answer_2_row(pg, tmp_path: Path, request, fault: str) -> None:
     4. The detached bind meets F1 after the hook exits, bounded as AT-F6's
        fixture bounds its binds (`LANES_BIND_BOUND_S`, `ANSWER_2_BIND_S`).
        The relay stays up until the bind has written its outcome, at most
-       `ANSWER_2_WAIT_S`.
+       `ANSWER_2_WAIT_S`. F1 held one connection or more, as this module's
+       other F1 cases assert `silenced`, and the outcome is `bind-failed`,
+       never `bound` (lane 2's RV20, NIT 12; T220m).
 
     It fails until T502 (T220's Order)."""
     spec = ROWS["answer-2"]
@@ -1295,6 +1297,9 @@ def _answer_2_row(pg, tmp_path: Path, request, fault: str) -> None:
           f"{outcome.get('rc')}); F1 held {relay.silenced} connection(s) after the hook's read")
     assert outcome, (f"{case}: the detached bind wrote no outcome in {ANSWER_2_WAIT_S} s, "
                      f"bounded at {ANSWER_2_BIND_S} s: {_offer_record(offer)}")
+    assert relay.silenced >= 1 and outcome.get("mode") == "bind-failed", (
+        f"{case}: the detached bind did not meet F1 and fail: F1 held {relay.silenced} connection(s), "
+        f"and the outcome is {outcome}")
 
 
 def _offer_record(path: Path) -> dict:
