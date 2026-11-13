@@ -2552,6 +2552,12 @@ def test_a_database_that_does_not_answer_is_2_inside_4_5_s(estate, case):
             closers.append(holder.kill)
             holder.stdin.write("BEGIN; LOCK TABLE lanes_register.register_head IN ACCESS EXCLUSIVE MODE;\n")
             holder.stdin.flush()
+            # THE LOCK IS HELD BEFORE THE HOOK (T213p; lane 2's review RV20,
+            # finding 5): the LOCK goes to `psql`'s stdin with no answer, so
+            # on a loaded runner the guard could read before it was taken,
+            # and exit 0. It is waited for, granted, in `pg_locks`.
+            assert _until(lambda: _head_locked(est), 10, 0.1), \
+                "the case's ACCESS EXCLUSIVE lock on register_head was never granted"
         else:
             ports = [_silent_listener(h) for h in ("127.0.0.1", "127.0.0.2")]
             closers.extend(c for _, c in ports)
@@ -2559,9 +2565,33 @@ def test_a_database_that_does_not_answer_is_2_inside_4_5_s(estate, case):
                        % (ports[0][0], ports[1][0], est.pg.name))
         hook = est.hook("hello")
         _refuses_inside_the_budget(hook)
+        if case.startswith("3-"):
+            # AND THE REFUSAL IS THE STORE'S (T213p; RV20, finding 5): the
+            # guard's read met the lock, D9's guard row ended it at its
+            # `lock_timeout`, 1 s, which is no cut, so 69, and the guard
+            # refused with S3's text (`reg_guard_s3`), not at its start line,
+            # "too late to verify", before or without a read.
+            assert STORE_REFUSAL in hook.err, hook.err
     finally:
         for close in closers:
             close()
+
+
+#: S3'S REFUSAL, the guard's where its register read ended 69 with no outage
+#: declared (`f9e1449c:lanes-edit.sh:20761`, `reg_guard_s3`).
+STORE_REFUSAL = "the register's SQL store did not answer the guard's read"
+
+
+def _head_locked(est: Estate) -> bool:
+    """Whether a session holds `register_head`'s ACCESS EXCLUSIVE lock in the
+    case's database, granted (T213p)."""
+    sql = ("SELECT count(*) FROM pg_catalog.pg_locks l "
+           "JOIN pg_catalog.pg_class c ON c.oid = l.relation "
+           "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+           "WHERE l.database = (SELECT oid FROM pg_catalog.pg_database "
+           "WHERE datname = current_database()) AND n.nspname = 'lanes_register' "
+           "AND c.relname = 'register_head' AND l.mode = 'AccessExclusiveLock' AND l.granted;")
+    return int(est.pg.psql(sql).stdout.strip() or 0) > 0
 
 
 @pytest.mark.parametrize("case", ["service-down", "service-up"])
