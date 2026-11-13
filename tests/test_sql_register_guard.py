@@ -2018,10 +2018,20 @@ def test_a_bind_in_doubt_looks_its_write_up_before_a_rerun(estate, held):
     6841545201). Nor are they the lookup's alone: the write's own retry
     snapshot then answered `found=` and the record ended `bound` (lane 5,
     #165 6842157774). They are `FOUND_ARMS`, every call after the commit
-    call (T254w)."""
+    call (T254w).
+
+    `[absent]` FAILS THE LOOKUP'S TRIES TOO (T254x): "exit 2 on every
+    call of the bind's write from its commit call on, its deadline's
+    lookup included" (TP:6092-6094 at a6497d00), by `fail-match` on
+    `find_write` (TP:7355). No try then takes the lock, so the run ends 3
+    and keeps the record (Y:5245), not the 75 of a lookup that answers
+    absent (Y:5244; lane 3, #165 6841918192, point 5). The case's
+    `est.shim()` disarms both before the next `2`, so that lookup answers
+    absent and the bind starts again under a new id."""
     est = _real_estate(estate, mode="primary")
-    arms = ([{"mode": "fail-match", "match": "commit_write", "from": 1}] if held == "absent"
-            else list(FOUND_ARMS))
+    arms = ([{"mode": "fail-match", "match": "commit_write", "from": 1},
+             {"mode": "fail-match", "match": "find_write", "from": 1}]
+            if held == "absent" else list(FOUND_ARMS))
     est.shim(arms)
     est.make_offer()
     est.answer_2()
