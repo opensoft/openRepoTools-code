@@ -2365,6 +2365,16 @@ class HalfOpen:
                           arms=[BEFORE, {"mode": "hold", "match": SNAPSHOT_TEXT, "call": 2, "fifo": str(snap)},
                                 *held, *arms])
         call = until_seen("the first commit call", lambda: self.w.commit_calls()[:1], self.w)[0]
+        # The replay waits for that call's end. The shim logs a call at its
+        # start, before the real `psql` runs, so a replay sent then could take
+        # the head row first: the writer's own `commit_write` then waits out
+        # the commit row's 2000 ms `lock_timeout` and ends 55P03, a lost turn,
+        # and with the 1 s deadline past the run ends 75, "register busy",
+        # before any next call (round 6h's `[connect]`; lane 2's TR21, 2c).
+        # The `before` arm's lost call ends 2, its backend gone and its
+        # transaction rolled back, so the head row is free for the replay.
+        ended = until_seen("the first commit call's end", lambda: self.w.ends().get(call["call"]), self.w)
+        assert ended.get("exit") == 2, f"the first commit call ended {ended}, not 2, the `before` arm's lost call"
         script = without_commit(call["stdin"])
         assert "commit_write" in script and script.rstrip().endswith(";") and not script.rstrip().endswith("\\;"), (
             f"the replay does not end in a `;` that psql sends: {script[-80:]!r}")
