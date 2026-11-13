@@ -2296,6 +2296,13 @@ def test_a_database_that_does_not_answer_is_2_inside_4_5_s(estate, case):
             login = urlsplit(est.pg.url()).username
             _db_config(est, f"postgresql://{login}@127.0.0.1:{relay.port}/{est.pg.name}")
         elif case.startswith("3-"):
+            # The register goes to the SQL store BEFORE the lock (T213o):
+            # `est.hook` seeds it first (`_seed_primary`, T254r), and that
+            # seeding reads `register_head`, so seeding after the lock waited
+            # on this case's own lock until psql's 120 s timeout (lane 5,
+            # #165 6841316861). Seeded here, the hook's seeding sends nothing
+            # and the guard's own read is the one that meets the lock.
+            _seed_primary(est)
             holder = est.pg.session()
             closers.append(holder.kill)
             holder.stdin.write("BEGIN; LOCK TABLE lanes_register.register_head IN ACCESS EXCLUSIVE MODE;\n")
