@@ -391,3 +391,42 @@ def test_ci_cutover_repair_admission_wait_requires_authentic_live_caller(cutover
     assert sleeps == ([10] * 30 if status == "in_progress" else [])
     assert len(attempts) == (31 if status == "in_progress" else 1)
     assert "omit_full=false" in output
+
+
+@pytest.mark.parametrize("state", ["in_progress", "completed"])
+@pytest.mark.parametrize("caller", ["valid", "wrong-actor", "wrong-attempt"])
+def test_ci_cutover_repair_pending_admission_transition_during_reads_needs_fresh_poll(cutover, batch, artifact, state, caller):
+    env, event, data = duplicate_fixture(cutover, batch, artifact)
+    endpoint = "actions/runs/601/artifacts?per_page=100&page=1"
+    published = batch["data"][endpoint]
+    batch["data"][endpoint] = {"total_count": 0, "artifacts": []}
+    artifact["run"].update(status="queued", conclusion=None)
+    if caller == "wrong-actor":
+        artifact["run"]["actor"]["login"] = "writer"
+    elif caller == "wrong-attempt":
+        artifact["run"]["run_attempt"] = 2
+    reader = request_for(batch)
+    def request(repo, path):
+        answer = reader(repo, path)
+        if path == endpoint:
+            artifact["run"].update(status=state, conclusion="success" if state == "completed" else None)
+            batch["data"][endpoint] = published
+        return answer
+    first = cutover.route(env, event, batch["root"], request, lambda _id: data,
+                          lambda number: threads(number, batch), base_changes)
+    if caller != "valid":
+        assert first == cutover.FULL
+        return
+    assert first == {**cutover.FULL, "retryable": True}
+    second = cutover.route(env, event, batch["root"], reader, lambda _id: data,
+                           lambda number: threads(number, batch), base_changes)
+    assert second["mode"] == "candidate" and second["omit_full"] is True
+
+
+def test_ci_cutover_repair_default_artifact_reader_never_waits_for_absent_admission(cutover, batch, artifact):
+    _env, _event, data = duplicate_fixture(cutover, batch, artifact)
+    artifact["run"].update(status="queued", conclusion=None)
+    batch["data"]["actions/runs/601/artifacts?per_page=100&page=1"] = {"total_count": 0, "artifacts": []}
+    with pytest.raises(cutover.verifier.Refused) as refused:
+        cutover.evidence.artifact_record(artifact["run"], "admission", request_for(batch), lambda _id: data)
+    assert not isinstance(refused.value, cutover.verifier.PendingEvidence)

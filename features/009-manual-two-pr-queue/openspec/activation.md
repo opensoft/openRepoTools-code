@@ -80,6 +80,10 @@ at21:39:54.806Z, in the fast workflow's completion window. Its own full fallback
 was cancelled, not qualified. No receipt, queue or heavy acceptance occurred.
 The pending-observation ordering follow-up grants no proof while waiting; strict
 completed/admission checks and all retry limits remain required.
+The same no-proof boundary covers an authenticated candidate caller still
+missing its admission artifact. The queued-caller transition was reproduced
+locally, not by a live queue. A fresh poll must validate the actual artifact;
+default readers, invalid callers and strict artifact-present proofs are unchanged.
 
 This code-local amendment remains a dated record, not a second live acceptance
 ledger. Complete run/artifact/member/prefix/final-tree evidence and remaining

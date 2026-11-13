@@ -94,6 +94,10 @@ during those reads cannot qualify a mixed-state proof. A fresh poll revalidates
 everything, including strict raw run/check rereads once all evidence succeeds.
 Completed-proof drift still refuses; admission's default success-only behavior
 and all wait limits remain unchanged. Pending work never grants omission.
+The same no-proof wait applies to a genuine live candidate caller with no
+admission artifact yet, even if it starts/completes during that observation.
+Default readers and unauthenticated callers refuse; a fresh observation must
+verify the actual artifact, whose complete proof and strict rereads are unchanged.
 
 The parameterless candidate entry performs complete full CI and final live
 verification before publishing qualified evidence. A unique **top-level**
