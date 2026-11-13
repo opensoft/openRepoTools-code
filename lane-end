@@ -357,7 +357,12 @@
 #      `resolve-home`, `forks`, `duplicate-holder`, `live-holder`,
 #      `last-session`, `transcript-holders` and the close-out gate's
 #      `lane-dir` (lane 3, #165 6767463594, question 9); each keeps its own
-#      code for any other answer. The default read arms see these codes only
+#      code for any other answer. `--sweep-checkouts`' three per-checkout reads
+#      (a former name's `canon-lane`, and `sc_still`'s `lanes --decide` re-read
+#      and `canon-lane`) hold only their own checkout, and a 69 or 75 at one
+#      ends the run with that code, after its summary and its NOTED line, where
+#      it would end 0, or 3 in the dry run (lane 3, #165 6852014823). The
+#      default read arms see these codes only
 #      from a SQL register; `register-text` spends 69 in every mode where the
 #      register cannot be read, and any code it exits with is passed on, never
 #      read as an empty register. The ownership seam's read,
@@ -1568,6 +1573,37 @@ SC_IDX
   # Each is a CANDIDATE, kept apart with what it is judged as, or a KEEP line
   # that says why it is not one. Nothing below reads a clone's history: that
   # is what holds it, and the holds are asked of candidates alone.
+  # FEATURE 007, T403 (lane 3's #165 6852014823, answer 2; tasks:886; Y:3014):
+  # THE THREE PER-CHECKOUT READS HOLD ONLY THEIR OWN CHECKOUT. A former name's
+  # `canon-lane` (`sc_judge`), and `sc_still`'s `lanes` re-read and `canon-lane`,
+  # are asked of one checkout at a time. Where one fails, that checkout is kept
+  # or held, naming the read and its code, and the run goes on, as a failed
+  # fetch holds one. But a 69 or 75 there is no answer about that checkout, and
+  # a run that ended 0 over it would say the register was read: `sc_read_note`
+  # remembers the first such code, and `sc_end` ends the run with it where it
+  # would otherwise end 0, or 3 in the dry run, after its summary and its NOTED
+  # line, so that `lane-end` ends 69 where the register cannot be read and
+  # nothing is left half done. The act's own 1s (a removal that did not finish,
+  # a NOTED line that was not written) keep their exit and their words.
+  sc_rstop=""; sc_rstop_read=""; sc_rstop_for=""
+  sc_read_note() {   # <the read, as run> <its exit> <the checkout it was asked of>
+    case "$2" in 69 | 75) : ;; *) return 0 ;; esac
+    if [ -z "$sc_rstop" ]; then sc_rstop="$2"; sc_rstop_read="$1"; sc_rstop_for="$3"; fi
+    return 0
+  }
+  sc_end() {   # <the exit this run ends with, were no read to have failed>
+    if [ -z "$sc_rstop" ]; then exit "$1"; fi
+    case "$sc_rstop" in
+      75) se_why="the register is busy"; se_ask="A retry in seconds is safe." ;;
+      *)  se_why="the register could not be read"; se_ask="Stop and tell Brett." ;;
+    esac
+    case "$1" in
+      0 | 3) se_exit="$sc_rstop"; se_end="so this run ends $sc_rstop, where it would have ended $1" ;;
+      *) se_exit="$1"; se_end="and this run ends $1, as it was going to" ;;
+    esac
+    note "the read \`$sc_rstop_read\`, asked of ${sc_rstop_for//[[:cntrl:]]/?}, exited $sc_rstop: $se_why, so that checkout was kept or held and what the read would have said is NOT known; $se_end (lane 3's #165 6852014823). ${se_ask}"
+    exit "$se_exit"
+  }
   sc_cands=(); sc_cand_why=(); sc_cand_lane=(); sc_cand_new=()
   sc_keep_lines=""
   # EACH CONTROL CHARACTER OF A PATH OR A REASON THE REPORT PRINTS IS WRITTEN
@@ -1639,6 +1675,7 @@ SC_IDX
     # NOT A LANE BY ITS OWN NAME: perhaps a FORMER name (Amendment 16(e)).
     sj_rc=0
     sj_c="$(LANES_NO_FETCH=1 "$LANES_EDIT" canon-lane "$sj_n" 2>/dev/null)" || sj_rc=$?
+    sc_read_note "canon-lane $sj_n" "$sj_rc" "$sj_p"
     if [ "$sj_rc" != 0 ] || [ -z "$sj_c" ]; then
       sc_keep "$sj_p" "whether $sj_n is a former lane name could not be read (\`canon-lane $sj_n\` exited $sj_rc)"
       return 0
@@ -2524,6 +2561,7 @@ SRI
     # decide a removal on mirror rows. In files mode `--decide` is only taken
     # off the line, as at the listing.
     ss_row="$("$LANES_EDIT" lanes --decide --fetch --closed --lane "$2" 2>"$LE_TMP")" || ss_rc=$?
+    sc_read_note "lanes --decide --fetch --closed --lane $2" "$ss_rc" "$1"
     ss_cat=0
     ss_err="$(cat -- "$LE_TMP" 2>/dev/null)" || ss_cat=$?
     rm -f -- "$LE_TMP"; LE_TMP=""
@@ -2531,6 +2569,13 @@ SRI
       SC_WHY="what lane $2's state read said was captured, and its capture could not be read back, so whether it was read fresh under its checkout's lock was never established"; return 1
     fi
     ss_why=""
+    # THE CODE BEFORE THE NOTES' WORDS, as at the listing (tasks:888; lane 3's
+    # #165 6852014823, answer 2): a 69 or 75 holds this checkout, naming the
+    # read and its code, and `sc_read_note` has ended the run with it.
+    case "$ss_rc" in
+      69 | 75)
+        SC_WHY="lane $2's state could not be read again under its checkout's lock (\`lanes --decide --fetch --closed --lane $2\` exited $ss_rc), so nothing is decided on a read that did not answer"; return 1 ;;
+    esac
     case "$ss_err" in
       *"reading the logs as they stand locally"*)
         ss_why="W's fetch did not complete, so the logs were read as they stand locally" ;;
@@ -2551,7 +2596,15 @@ SS_ROW
     # A FORMER NAME'S CHECKOUT is asked both: still a former name of the lane
     # beside that lane's own checkout, and the lane still CLOSED (D29).
     if [ -n "$3" ]; then
-      ss_c="$(LANES_NO_FETCH=1 "$LANES_EDIT" canon-lane "${1##*/}" 2>/dev/null)" || ss_c=""
+      # `|| ss_c=""` MADE A READ THAT FAILED LOOK LIKE "NO LONGER A FORMER
+      # NAME" (lane 3's #165 6852014823, answer 2): its code is kept, and the
+      # hold says the read failed.
+      ss_crc=0
+      ss_c="$(LANES_NO_FETCH=1 "$LANES_EDIT" canon-lane "${1##*/}" 2>/dev/null)" || ss_crc=$?
+      sc_read_note "canon-lane ${1##*/}" "$ss_crc" "$1"
+      if [ "$ss_crc" != 0 ]; then
+        SC_WHY="whether it is still a former name of lane $2 could not be read (\`canon-lane ${1##*/}\` exited $ss_crc)"; return 1
+      fi
       if [ "$(sc_lc "$ss_c")" != "$(sc_lc "$2")" ] || [ ! -d "$3" ] || [ -L "$3" ] || [ "$3" -ef "$1" ]; then
         SC_WHY="it is no longer a former name of lane $2 beside that lane's own checkout"; return 1
       fi
@@ -2986,13 +3039,13 @@ SLU
     if [ "$sc_n_removable" -gt 0 ]; then
       printf '\n  DRY RUN — nothing was removed. Make it the act with:\n'
       printf '    LANES_LANE=<your lane> %s --sweep-checkouts --yes\n' "$prog"
-      exit 3
+      sc_end 3
     fi
     printf '\n  DRY RUN — nothing was removed, and there is nothing to remove.\n'
     if [ "${#sc_leftovers[@]}" -gt 0 ]; then
       printf '  (%s leftover aside(s), above, are a person'"'"'s to remove: no sweep removes one)\n' "${#sc_leftovers[@]}"
     fi
-    exit 0
+    sc_end 0
   fi
   printf '\n  %s removed, %s moved aside and not all removed, %s held under %s/; %s removed, %s moved aside and not all removed, %s held of the %s clone(s) beside W.\n' \
     "$((sc_n_removed - sc_nb_removed))" "$((sc_n_partial - sc_nb_partial))" "$sc_n_held" "$sc_home" \
@@ -3084,8 +3137,8 @@ SLU
     printf '  NOTED in lane %s'"'"'s log: %s\n' "$sc_runner" "$sc_text"
   fi
   # A removal that did not finish was said before the write (above).
-  if [ -n "$sc_partial" ]; then exit 1; fi
-  exit 0
+  if [ -n "$sc_partial" ]; then sc_end 1; fi
+  sc_end 0
 fi
 
 # THE SWEEP'S OWN FLAGS BELONG TO THE SWEEP (Copilot round 3 on #93). They are
