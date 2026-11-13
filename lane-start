@@ -1468,7 +1468,7 @@ esac
 LS_D8="may not be written; run the printed \`LANES_WRITE_ID\` rerun, which writes it once or finds it. Where the writer printed no such rerun (off primary), the commit is local and may already be on origin"
 # NO HAND COMMAND OF ITS OWN AFTER A WRITE THAT DID NOT END 0, UNDER A SEQ
 # BASE (lane 3's REV-ACT Q4, #165 6774499606, widened by Q11, #165
-# 6779688808; Y:5587, Y:5601). A command run by hand without this launch's
+# 6779688808; Y:5601). A command run by hand without this launch's
 # `LANES_ACT` and `LANES_EXPECT` would write unchecked; after a 2, with them
 # it would only be refused again. So under a base `<id>@<seq>:<generation>`,
 # after any code but 0 and 3, the writer's words above are kept, this script
@@ -1484,7 +1484,7 @@ ls_q4() {   # <the write's exit>: 0 where no hand command is printed for it
   case "${LANES_ACT:-}" in "" | *@files) return 1 ;; esac
   return 0
 }
-LS_Q4="No command is printed for it here, since one run by hand without this launch's \`LANES_ACT\` and \`LANES_EXPECT\` would write unchecked (Y:5587). Run \`$prog\` again from its start (Y:5601)"
+LS_Q4="No command is printed for it here, since one run by hand without this launch's \`LANES_ACT\` and \`LANES_EXPECT\` would write unchecked. Run \`$prog\` again from its start (Y:5601)"
 # BUT NOT "FROM ITS START" WHERE THE ACT GOES ON TO LAUNCH (lane 3's Q39 and
 # Q41, #165 6780753157, correcting Q11 for this command): a second
 # `lane-start` from its start would start a second launch. So under a seq
@@ -1558,7 +1558,7 @@ ls_q41_line() {
   printf '%s %s' "$prog" "$(quoted "${nl[@]}")"
 }
 ls_q41_note() {   # <what was not written, naming the verb and its code> <the arm's own sentence on the launch>
-  note "$1. No rerun of it is printed here: one run by hand without this launch's \`LANES_ACT\` and \`LANES_EXPECT\` would write unchecked (Y:5587). $2 In the launched session's window, as that session's first act, run this act without its launch (lane 3, #165 6780753157, Q39, Q41):"
+  note "$1. No rerun of it is printed here: one run by hand without this launch's \`LANES_ACT\` and \`LANES_EXPECT\` would write unchecked. $2 In the launched session's window, as that session's first act, run this act without its launch (lane 3, #165 6780753157, Q39, Q41):"
   note "  $(ls_q41_line)"
 }
 
