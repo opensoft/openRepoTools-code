@@ -771,7 +771,8 @@ if [[ -z "$ws_missing" && -z "$act_down" ]]; then
   # `act-begin`, and a 2 from `canon-lane --walk` is `canon-lane`'s own refusal (it
   # spends 2 on two rows that differ only by case, Amendment 15(d), and on a name it
   # will not take), or a helper with no `--walk`. Neither gave the names, a key left
-  # out is a change the write would not see, and an empty walk refuses the same way:
+  # out is a change the write would not see, and a walk that names nobody (an empty one,
+  # or one of white space only) refuses the same way:
   # refusing is the safer arm for the walk.
   act_scope_add "row:$lane"; act_scope_add "bind:$lane"; act_scope_add "alias:$lane"
   case "$act_line" in
@@ -793,11 +794,19 @@ if [[ -z "$ws_missing" && -z "$act_down" ]]; then
             *) [[ -z "$aw_l" ]] || act_walk="$act_walk$aw_l"$'\n' ;;
           esac
         done <<< "$aw_all"
-        if [[ "$aw_rc" != 0 || -z "$act_walk" ]]; then
+        # A WALK OF ONLY SPACES OR TABS NAMES NOBODY EITHER (lane 3, #165 6837908956, question 8,
+        # a NIT: tasks:1391 refuses "a walk that exits 0 and prints no name"). `lane-handoff` and
+        # `lane-end` test the whole walk for a character that is not white space, and so does
+        # this: a walk with none is refused 1 as an empty one is. Below, only an empty line is
+        # skipped, and a line of white space beside a name still goes on to `LANES_EXPECT`,
+        # where the writer refuses it with 2 (question 5).
+        aw_named=""
+        case "$act_walk" in *[![:space:]]*) aw_named=1 ;; esac
+        if [[ "$aw_rc" != 0 || -z "$aw_named" ]]; then
           [[ -z "$aw_err" ]] || printf '%s' "$aw_err" >&2
         fi
         case "$aw_rc" in
-          0)  if [[ -z "$act_walk" ]]; then
+          0)  if [[ -z "$aw_named" ]]; then
                 printf 'REFUSED: `%s canon-lane --walk %s` exited 0 and printed no name, so the names lane %s was found through are NOT known, and the writes below would leave their keys out: a change to one of them would not refuse them (Y:5624). Nothing of step 4 was written.\n' "$L" "$id_typed" "$lane" >&2
                 act_hold
               else
