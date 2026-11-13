@@ -20937,7 +20937,7 @@ guard_bind_rerun() {   # <facts file>
   gbe_msg=""
   if [ "$PW_LK" != found ] && [ "$PW_LK" != absent ] && [ -n "$PW_LK_ERR" ] && [ -s "$PW_LK_ERR" ]; then
     cat -- "$PW_LK_ERR" >&2
-    gbe_msg="$(grep -m 1 '^ERROR:  LR007:' -- "$PW_LK_ERR" 2>/dev/null || :)"
+    gbe_msg="$(grep -m 1 -e '^ERROR:  LR007:' -- "$PW_LK_ERR" 2>/dev/null || :)"
   fi
   [ -z "$PW_RUN_DIR" ] || rm -rf -- "$PW_RUN_DIR" 2>/dev/null || :
   PW_RUN_DIR=""
@@ -21034,7 +21034,7 @@ guard_bind_body() {   # <session uuid>
     [ -z "$gbb_facts" ] || guard_bind_facts "$gbb_facts" "why=the bind's record at $gbb_f could not be read, or no longer said mode=binding, when its body started, so the body ran nothing" || :
     return 2
   fi
-  gbb_from="$GBR_FROM"; gbb_to="$GBR_TO"; gbb_out="$GBR_OUT"
+  gbb_from="$GBR_FROM"; gbb_to="$GBR_TO"; gbb_out="$GBR_OUT"; gbb_act="$GBR_ACT"
   # WHERE THE OUTER HANDED NO PATH, the body finds it beside `out=` itself.
   if [ -z "$gbb_facts" ]; then
     gbb_facts="$(guard_bind_facts_of "$gbb_f" "$gbb_out" || :)"
@@ -21114,11 +21114,49 @@ guard_bind_body() {   # <session uuid>
     # and this.
     # THROUGH `LANES_EDIT` WHERE IT IS SET, else this file (R48): the copy
     # `lane-start`'s own writes already use.
-    if "${LANES_EDIT:-$RESOLVED}" set-row-state "$gbb_from" "PAUSED · $gbb_line" >&2; then
+    #
+    # FEATURE 007, T510 - ITS ENVIRONMENT, ON THIS CALL ONLY (W:5347; tasks.md
+    # T510, "The `set-row-state` on the lane left"): `LANES_LANE=<from>`, the
+    # writer's lane, without which a write on primary is refused 2 before its
+    # claim (T415's `pw_lane_given`; the plan's open point 7, its default, as
+    # the hand command below has always printed it); and, where the record
+    # holds the offer's `act` (on primary only, `guard_offer_act`; open point
+    # 8), `LANES_ACT=<act>` and `LANES_EXPECT="row:<from> bind:<from>"`, so a
+    # change another place made to the lane left's row or binding after the
+    # offer is refused rather than written over. Its 2 or 3 becomes a `note=`,
+    # and the bind still ends 0: the bind itself landed (the plan's open point
+    # 4(b), its default).
+    gbb_ssize=0
+    if [ -n "$gbb_out" ] && [ -f "$gbb_out" ]; then
+      gbb_ssize="$(wc -c < "$gbb_out" 2>/dev/null | tr -d ' ' || :)"
+      case "$gbb_ssize" in ''|*[!0-9]*) gbb_ssize=0 ;; esac
+    fi
+    gbb_src=0
+    if [ -n "$gbb_act" ]; then
+      LANES_LANE="$gbb_from" LANES_ACT="$gbb_act" LANES_EXPECT="row:$gbb_from bind:$gbb_from" \
+        "${LANES_EDIT:-$RESOLVED}" set-row-state "$gbb_from" "PAUSED · $gbb_line" >&2 || gbb_src=$?
+    else
+      LANES_LANE="$gbb_from" "${LANES_EDIT:-$RESOLVED}" set-row-state "$gbb_from" "PAUSED · $gbb_line" >&2 || gbb_src=$?
+    fi
+    gbb_slast=""
+    if [ "$gbb_src" != 0 ] && [ -n "$gbb_out" ] && [ -f "$gbb_out" ]; then
+      gbb_slast="$(tail -c +"$((gbb_ssize + 1))" "$gbb_out" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 1 || :)"
+    fi
+    gbb_hand="LANES_LANE=$gbb_from lanes-edit.sh set-row-state $gbb_from \"PAUSED · $gbb_line\""
+    if [ "$gbb_src" = 0 ]; then
       note "…and $gbb_from's row now reads PAUSED, naming the move to $gbb_to."
+    elif [ "$gbb_src" = 2 ] && [ -n "$gbb_act" ]; then
+      note "…but $gbb_from's row was NOT marked: its writer refused with 2 (its words are above), so another place changed lane $gbb_from's row or binding after the offer was made. Read it (lanes-edit.sh register-row $gbb_from) before you mark it: $gbb_hand"
+      gbb_notes+=("note=lane $gbb_from's row was not marked PAUSED: another place changed its row or binding after the offer (exit 2); read it with lanes-edit.sh register-row $gbb_from, then run $gbb_hand")
+    elif [ "$gbb_src" = 3 ]; then
+      gbb_re="$gbb_slast"
+      case "$gbb_re" in *'Or run it again: '*) gbb_re="${gbb_re##*Or run it again: }" ;; esac
+      [ -n "$gbb_re" ] || gbb_re="$gbb_hand"
+      note "…but whether $gbb_from's row was marked PAUSED is NOT known: its writer exited 3 (its words are above). Run its printed rerun, which writes it once or finds it: $gbb_re"
+      gbb_notes+=("note=lane $gbb_from's row may not be marked PAUSED: its write is in doubt (exit 3); run $gbb_re")
     else
       note "…but $gbb_from's row could NOT be marked (its writer's words are above). Run: lanes-edit.sh set-row-state $gbb_from \"PAUSED · $gbb_line\""
-      gbb_notes+=("note=lane $gbb_from's row was not marked PAUSED: run LANES_LANE=$gbb_from lanes-edit.sh set-row-state $gbb_from \"PAUSED · $gbb_line\"")
+      gbb_notes+=("note=lane $gbb_from's row was not marked PAUSED: run $gbb_hand")
     fi
   else
     note "…and the register has no row for $gbb_from, so there is nothing to mark MOVED there."
