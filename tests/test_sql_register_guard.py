@@ -3738,17 +3738,42 @@ def test_the_guards_request_carries_only_file_names(estate):
 
 def test_the_guard_answer_time_is_recorded_beside_todays_direct_guard(estate):
     """SVC-10: the guard's answer time through the service is recorded beside
-    today's direct guard (M5b), with a warning past 50 ms and no failure."""
+    today's direct guard (M5b), with a warning past 50 ms and no failure.
+
+    EACH SAMPLE'S READ PATH IS RECORDED BESIDE IT (T237zk; lane 5, #165
+    6841316861, and lane 3, 6838735040): SC-005 bounds the service's
+    answer, so a median over refusals and fallbacks says nothing of it.
+    Exit 2 is a refusal; exit 0 with the fallback line (`FALLBACK`, T507's
+    F1, tasks:806) matched whole on a stderr line is a fallback; exit 0
+    without it was served. Each path's count is recorded, and the median of
+    the served samples alone, or "none served" where none was. A sample
+    with any other exit is counted as `other`, so none is put in a path it
+    did not take. The case times the whole hook (`t_exit - t0`), so the
+    served median is a whole-hook figure, beside M5b's, not SC-005's 50 ms."""
     est = estate(mode="primary")
     svc = _Service(est)
-    times = []
-    for _ in range(MEASURE_RUNS):
-        hook = est.hook("hello")
-        times.append(hook.t_exit - hook.t0)
-    svc.stop()
+    paths = {"refusal": [], "fallback": [], "served": [], "other": []}
+    try:
+        for _ in range(MEASURE_RUNS):
+            hook = est.hook("hello")
+            took = hook.t_exit - hook.t0
+            if hook.code == 2:
+                paths["refusal"].append(took)
+            elif hook.code == 0 and FALLBACK in hook.err.splitlines():
+                paths["fallback"].append(took)
+            elif hook.code == 0:
+                paths["served"].append(took)
+            else:
+                paths["other"].append(took)
+    finally:
+        svc.stop()
+    served = paths["served"]
     _record_figure("SVC-10, the guard through the service (median ms)",
-                   {"answer": f"{_median(times) * 1000:.1f}", "bound": "50"})
-    assert times
+                   {"served answer (whole hook)":
+                        f"{_median(served) * 1000:.1f}" if served else "none served",
+                    "bound": "50"}
+                   | {f"{name} samples": len(times) for name, times in paths.items()})
+    assert any(paths.values())
 
 
 def test_status_prints_the_services_lines_and_its_failure_stamp(estate):
