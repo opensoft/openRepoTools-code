@@ -27806,8 +27806,8 @@ worktree_rows() {   # [<canonical lane> [register-unread]]
   fi
   wr_pin=""; wr_atc=0
   wr_pin="$(archive_text 2>/dev/null && printf x)" || wr_atc=$?
-  [ "$wr_atc" != 69 ] || return 69
-  if [ "$wr_atc" = 0 ]; then PIN_ARCHIVE_TEXT="${wr_pin%x}"; PIN_ARCHIVE=1; fi
+  [ "$wr_atc" = 0 ] || return 69                 # any other end, as `.paths`' below (lane 3, #165 6858701980)
+  PIN_ARCHIVE_TEXT="${wr_pin%x}"; PIN_ARCHIVE=1
   wr_m=0; reg_member paths || wr_m=$?
   [ "$wr_m" = 0 ] || return 69
   wr_pin=""
