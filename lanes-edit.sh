@@ -18743,10 +18743,13 @@ guard_bind_head_copy() {   # <offer file>
 # this offer, `.head`'s. Only where that read was SQL: `REG_STORE=sql` with no
 # failed second read (`.rfail`). Never off primary: files mode and `mode
 # index` write no `.head`, and the mirror path flushes it and sets
-# `REG_STORE=mirror` (the plan's open point 8, its default: no `act` where the
-# offer's read was not SQL, and the bind's `set-row-state` then goes without
-# `LANES_ACT` and `LANES_EXPECT`). Printed only where `act_parse` accepts it;
-# nothing otherwise, and never a refusal: the offer is made either way.
+# `REG_STORE=mirror` (the plan's open point 8, as lane 3 ruled it, #165
+# 6841918192 point 8: no `act` where the offer's read was not SQL; the bind's
+# `set-row-state` then still sends `LANES_LANE` and `LANES_EXPECT`, without
+# `LANES_ACT`, which on primary the client's check 2 refuses with 2 before any
+# database call, and that becomes a `note=`). Printed only where `act_parse`
+# accepts it; nothing otherwise, and never a refusal: the offer is made either
+# way.
 guard_offer_act() {
   [ "${REG_STORE:-}" = sql ] && [ -n "${SE_CACHE_FILE:-}" ] || return 0
   [ ! -e "$SE_CACHE_FILE.rfail" ] && [ -f "$SE_CACHE_FILE.head" ] || return 0
@@ -21034,9 +21037,9 @@ guard_bind_rerun() {   # <facts file>
 # `lane-start`'s own code. PHASE 2 (T510) puts two steps in that order:
 # before `lane-start`, the rerun step (`guard_bind_rerun`), which looks up a
 # write of `start-record` the attempt before left in doubt and may end the
-# body with its 2 or 3 instead; and on the `set-row-state`, `LANES_LANE` and,
-# where the record holds the offer's `act`, `LANES_ACT` and `LANES_EXPECT`,
-# on that call only.
+# body with its 2 or 3 instead; and on the `set-row-state`, `LANES_LANE` and
+# `LANES_EXPECT` always, and `LANES_ACT` where the record holds the offer's
+# `act`, on that call only (lane 3's ruling on point 8, #165 6841918192).
 guard_bind_body() {   # <session uuid>
   gbb_u="${1-}"
   if ! guard_bind_uuid_ok "$gbb_u"; then
@@ -21133,9 +21136,14 @@ guard_bind_body() {   # <session uuid>
   # read that failed marks nothing, and the act is owed.
   guard_bind_refill
   gbb_rrc=0; gbb_row="$(row_of_lane "$gbb_from" 2>/dev/null)" || gbb_rrc=$?
+  # THE HAND COMMAND, ONE TEXT for the notes on stderr and the record's
+  # `note=` lines alike, with `LANES_LANE=<from>`, without which it is refused
+  # 2 on primary (lane 3's ruling on point 7, #165 6841918192: "The note's
+  # printed command carries it too").
+  gbb_hand="LANES_LANE=$gbb_from lanes-edit.sh set-row-state $gbb_from \"PAUSED · $gbb_line\""
   if [ "$gbb_rrc" = 69 ] || reg_read_lost; then
-    note "…but $gbb_from's row could NOT be read after the bind (${RO_FAILED:-the register read failed}), so it has NOT been marked. Run: lanes-edit.sh set-row-state $gbb_from \"PAUSED · $gbb_line\""
-    gbb_notes+=("note=lane $gbb_from's row was not marked PAUSED: run LANES_LANE=$gbb_from lanes-edit.sh set-row-state $gbb_from \"PAUSED · $gbb_line\"")
+    note "…but $gbb_from's row could NOT be read after the bind (${RO_FAILED:-the register read failed}), so it has NOT been marked. Run: $gbb_hand"
+    gbb_notes+=("note=lane $gbb_from's row was not marked PAUSED: run $gbb_hand")
   elif [ -n "$gbb_row" ]; then
     # AMENDMENT 13(a) — THE STATE IS SET, NOT APPENDED. This window has just
     # moved to another lane, so the lane it LEFT is not running in it any
@@ -21178,7 +21186,6 @@ guard_bind_body() {   # <session uuid>
     if [ "$gbb_src" != 0 ] && [ -n "$gbb_out" ] && [ -f "$gbb_out" ]; then
       gbb_slast="$(tail -c +"$((gbb_ssize + 1))" "$gbb_out" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 1 || :)"
     fi
-    gbb_hand="LANES_LANE=$gbb_from lanes-edit.sh set-row-state $gbb_from \"PAUSED · $gbb_line\""
     if [ "$gbb_src" = 0 ]; then
       note "…and $gbb_from's row now reads PAUSED, naming the move to $gbb_to."
     elif [ "$gbb_src" = 2 ] && [ -n "$gbb_act" ]; then
@@ -21191,7 +21198,7 @@ guard_bind_body() {   # <session uuid>
       note "…but whether $gbb_from's row was marked PAUSED is NOT known: its writer exited 3 (its words are above). Run its printed rerun, which writes it once or finds it: $gbb_re"
       gbb_notes+=("note=lane $gbb_from's row may not be marked PAUSED: its write is in doubt (exit 3); run $gbb_re")
     else
-      note "…but $gbb_from's row could NOT be marked (its writer's words are above). Run: lanes-edit.sh set-row-state $gbb_from \"PAUSED · $gbb_line\""
+      note "…but $gbb_from's row could NOT be marked (its writer's words are above). Run: $gbb_hand"
       gbb_notes+=("note=lane $gbb_from's row was not marked PAUSED: run $gbb_hand")
     fi
   else
