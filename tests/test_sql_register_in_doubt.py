@@ -1550,7 +1550,19 @@ def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_n
     cell (`seed_handoff`, T245r). Each run clones its own W and lane
     checkouts from the lanes origin (`Estate.launch`), so the rerun never
     sees a change made in the killed run's checkouts: the handoff is
-    removed or moved by hand on the origin (`by_hand`), before the rerun."""
+    removed or moved by hand on the origin (`by_hand`), before the rerun.
+
+    [rename-lane-stops] tells its form from [rename-lane-differs] by Y:5329's
+    text, which TP:3419-3423 asks for: "replayed at seq `<s-1>` it now
+    stops before its write (exit `<rc>`: `<its last line>`), so its
+    after-COMMIT steps did NOT run", with a nonzero exit and a last line,
+    and no "another change set", the differs form's words (Y:5330). It
+    fails until lane 4's T422 makes the replay's stamp checks refuse a
+    handoff that is not in `<c>` before the seam (tasks:1280 at `717ed04d`:
+    "the stamp's checks run before the seam"). At `8ba10b4e` the replay
+    only notes the missing handoff and leaves the row's cell as it is
+    (`lanes-edit.sh:29135-29136`), so it reaches the seam with another
+    change set: the differs path."""
     e = estates()
     where, root = loggers(e), sidecars(e)
     extra = {"LANES_LANE_STATE_ROOT": str(root)}
@@ -1572,6 +1584,12 @@ def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_n
         assert again.code == 0 and again.err.count("WARNING") == 1, again.err[-800:]
         assert "owed" in mark_of(e, write_id).read_text(encoding="utf-8")
         assert (root / LA).is_dir(), "the tail ran"
+    if case == "rename-lane-stops":
+        stops = (re.escape(f"register write {write_id} is in the register at seq {seq}; replayed at seq {seq - 1} "
+                           "it now stops before its write (exit ")
+                 + r"[1-9][0-9]*: (?!no output\)).+?\), so its after-COMMIT steps did NOT run: ")
+        assert re.search(stops, again.err) and "another change set" not in again.err, (
+            f"the replay did not stop before its write: {again.err[-800:]}")
     assert pending(e) == []
 
 
