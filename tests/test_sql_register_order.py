@@ -78,7 +78,7 @@ import pytest
 
 from pgcluster import SUPERUSER, Database
 from sql_register_helpers import (LANES_INDEX, PSQL_SHIM, PSQL_SHIM_CONTROL, PSQL_SHIM_ENDS,
-                                  PSQL_SHIM_LOG, REPO, flipped_copy)
+                                  PSQL_SHIM_LOG, REPO, flipped_copy, guard_session)
 from test_lane_start_claude_current import Sandbox, _write
 
 REGISTER = "lanes_register"
@@ -2138,7 +2138,15 @@ def test_canon_lane_walk_whose_register_read_fails_off_primary_exits_1_and_print
     at `origin/main`, which the checkout wrote itself, is moved aside, so its
     `git show` fails while every other object reads, the alias table among
     them. First, with the register readable, the same walk prints its three
-    names, so the 1 is the failed read's."""
+    names, so the 1 is the failed read's.
+
+    It fails until lane 4's T411 lands with its `b637ce0d`, which ends the
+    walk with a failed register read's own status, the 1 here (#165 6814837872,
+    Question 126). Without T411, as on line R, `canon-lane --walk` is the
+    usage 64, "canon-lane takes one lane"; with only T411's first commit,
+    `2ee320e1`, as at pair-m33a `8ba10b4e`, the walk still reads that failure
+    as no row and exits 0 with its three names (lane 1, #165 6837462215;
+    T233c)."""
     rows, aliases, typed, names = WALKS["two-hops"]
     box = FilesBox(tmp_path / "box", rows, aliases)
     walk = box.edit("canon-lane", "--walk", typed)
@@ -2334,7 +2342,9 @@ def acted(act: str, *scopes: str) -> dict:
 # line's kind, lane or state); the skill's step-4 block, the fenced block of
 # its section 4 that opens with `act-begin`; and the guard's child, run as
 # T502 writes its body, `guard-bind --body <uuid>`, whose record's path T502
-# owns.
+# owns: the world writes that record, `mode=binding`, and gives the window
+# the session it binds, live and named for its lane, as the guard's answer 2
+# leaves them for its child (`ActWorld.offer`, `guard_session`; T252q).
 #
 # `lane-end`'S CLOSE-OUT GATE (T252g): every `lane-end` act runs with
 # `LANE_WORKTREES` set to a stand-in that prints nothing and exits 0, as
@@ -2481,6 +2491,7 @@ class ActWorld(Sandbox):
                         LANES_HOST="eagle", LANES_OS="linux", LANES_CONTAINER="none", LANES_IN_CONTAINER="0")
         self._n = itertools.count(1)
         self.writers: List[Writer] = []
+        self.sessions: list = []  # the guard's live sessions (T252q), closed by `act_worlds`
 
     def lane_checkout(self, lane: str) -> Path:
         """`<c>`, lane `lane`'s own register checkout beside this world's W,
@@ -2522,14 +2533,58 @@ class ActWorld(Sandbox):
                                                   write.lane, "race", self.bin / "lanes-edit.sh")
             return self.launch("skill", command, write.lane, arms, dict(extra, **write.env))
         if write.tool == "guard":
+            # What the guard's answer 2 leaves its child: the record, which
+            # says `mode=binding`, and this window renamed for the lane it
+            # binds, with the session it binds live in it (`guard_session`,
+            # T203c's: a live process, its record naming `testsess:@1.%1`, and
+            # a stand-in `tmux` that answers for that window). With neither,
+            # `guard-bind --body` refused 2, "does not say mode=binding (it
+            # says nothing)"; with the record alone, `lane-start --bind`
+            # refused 2, "no live session record names this window" (T252q).
+            sid, to = write.argv[-1], dict(self.env, **write.env)["LANES_LANE"]
+            self.offer(sid, write.lane, to)
+            live = guard_session(self.home, self.root / "guard-session", self.lane_dir, window=to,
+                                 session_id=sid)
+            self.sessions.append(live)
+            extra = dict(live.env({"PATH": self.env["PATH"]}), LANES_SESSION=sid, **write.env)
             return self.launch("guard", ["bash", str(self.bin / "lanes-edit.sh"), *write.argv], write.lane,
-                               arms, write.env)
+                               arms, extra)
         utc = self.c.value("SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"');")
         argv = [a.format(lane_dir=self.lane_dir, utc=utc) for a in write.argv]
         extra = dict(write.env)
         if write.tool == "lane-end":
             extra.setdefault("LANE_WORKTREES", str(self.gate_stand_in()))
         return self.launch(write.tool, [str(self.bin / write.tool), *argv], write.lane, arms, extra)
+
+    def offer(self, sid: str, left: str, to: str) -> Path:
+        """The bind's record for session `sid`, as the name guard's answer 2
+        leaves it for its child, `guard-bind --body <sid>` (T502;
+        `contracts/bind-record.md`): `guard_offer`'s lines, the window's lane
+        `left` and the session's lane `to`, rewritten by `guard_answer`'s
+        choice 2 to `mode=binding` with the attempt's first keys, `mode`
+        first. It is `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/lanes/offers/<sid>`
+        (`guard_offer_file`), 0600 in a 0700 `offers/`, beside the attempt's
+        empty `.bind.1.out`, which the outer's fork creates. No prefetch ran,
+        so the record has no `c`, `n_a` or `w_s_ms`, and `bound_s` is
+        `guard_bind_bound_s`'s default, 500. `guard_bind_body` reads `mode`,
+        `from`, `to` and `out`, binds `to` with `lane-start --no-launch
+        --bind`, and then sets `left`'s row (T252q)."""
+        offers = Path(self.env.get("CLAUDE_CONFIG_DIR") or Path(self.env["HOME"]) / ".claude") / "lanes" / "offers"
+        offers.mkdir(parents=True, exist_ok=True)
+        offers.chmod(0o700)
+        record = offers / sid
+        now = int(time.time())
+        utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+        bound_s = 500
+        lines = ["mode=binding", f"from={left}", f"to={to}", f"session={to}", f"uuid={sid}", f"utc={utc}",
+                 "window=", "pane=", "bind=1", f"started_utc={utc}", f"bound_s={bound_s}", "bounded=yes",
+                 f"deadline_epoch={now + bound_s + 5}", f"host={self.env['LANES_WORKSTATION']}",
+                 f"container={self.env['LANES_CONTAINER']}", f"out={record}.bind.1.out", "detach=setsid"]
+        for path, text in ((record, "\n".join(lines) + "\n"), (Path(f"{record}.bind.1.out"), "")):
+            fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(text)
+        return record
 
     def handoff(self, lane: str) -> None:
         """The lane's handoff file, at the path its row names, committed and
@@ -2600,6 +2655,8 @@ def act_worlds(pg_cluster, tmp_path):
         for w in world.writers:
             if w.ended is None and w.proc.poll() is None:
                 os.killpg(w.proc.pid, 9)
+        for live in world.sessions:
+            live.close()
     for name in made:
         pg_cluster.drop_database(name)
 
