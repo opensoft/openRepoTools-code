@@ -1299,8 +1299,10 @@ def test_status_lists_and_resolves_pending_records(estates, case):
 def test_a_rerun_that_finds_its_write_committed_runs_the_verbs_after_commit_tail(estates):
     """`rename-lane`'s tail: `lane_state_rename` moves the old control root
     to the new name once; the handoff file at the new path holds one
-    `RENAMED from <old>` line, under its header, never two (TP:3384-3389);
-    the fake `gh` logs one comment per held claim (none here). The estate
+    `RENAMED from <old>` line, under its header, never two (TP:3384-3389),
+    moved there, with nothing left at the old path, in the lane checkouts
+    and on the lanes origin's `main`, where it is pushed; the fake `gh`
+    logs one comment per held claim (none here). The estate
     holds the lane's handoff in its checkout (TP:3315): `seed_handoff`."""
     e = estates()
     where, root = loggers(e), sidecars(e)
@@ -1311,15 +1313,27 @@ def test_a_rerun_that_finds_its_write_committed_runs_the_verbs_after_commit_tail
     assert (root / new).is_dir() and not (root / LA).exists()
     # The move and stamp are made in the lane's own register checkout, `PW_C`,
     # `<W>-lanes/<lane>` (`8ba10b4e:lanes-edit.sh:25251-25256`), which the
-    # estate makes at `co-<n>-lanes/<lane>`, never in W (T245l; PM33A-TRIAGE L2),
-    # and pushed, so each checkout made after it holds the moved file too.
-    moved, stamp = lane_handoff(new), f"RENAMED from {LA} "
+    # estate makes at `co-<n>-lanes/<lane>`, never in W (T245l; PM33A-TRIAGE L2).
+    # It is a move (TP:3386-3387, "The handoff's move and stamp run once"), so
+    # no checkout that holds the moved file still holds the old one; and it is
+    # pushed (Y:5092's S3-S4 commit; `f42d2c85:lanes-edit.sh:21173-21177` warns
+    # where the push is not confirmed), so the lanes origin's `main` holds the
+    # moved file, stamped once, and nothing at the old path (RV20's NIT 15).
+    old, moved, stamp = lane_handoff(LA), lane_handoff(new), f"RENAMED from {LA} "
+
+    def one_stamp(label: str, lines: List[str]) -> None:
+        assert sum(l.startswith(stamp) for l in lines) == 1 and lines[3:4] and lines[3].startswith(stamp), (
+            f"{label} does not hold one Rule 3 stamp under its header: {lines[:6]}")
+
     handoffs = list(e.root.glob(f"co-*-lanes/*/{moved}"))
     assert handoffs, f"no lane checkout holds {moved}"
     for h in handoffs:
-        lines = h.read_text(encoding="utf-8").splitlines()
-        assert sum(l.startswith(stamp) for l in lines) == 1 and lines[3:4] and lines[3].startswith(stamp), (
-            f"{h} does not hold one Rule 3 stamp under its header: {lines[:6]}")
+        co = h.parents[len(Path(moved).parts) - 1]
+        assert not (co / old).exists(), f"{co} holds both {old} and {moved}: a copy, not a move"
+        one_stamp(str(h), h.read_text(encoding="utf-8").splitlines())
+    on_main = run_git(e.origin, "ls-tree", "-r", "--name-only", "main", "--", "handoffs/", env=e.env).split()
+    assert moved in on_main and old not in on_main, f"the lanes origin's main holds {on_main}: the move is not pushed"
+    one_stamp(f"{e.origin} main:{moved}", run_git(e.origin, "show", f"main:{moved}", env=e.env).splitlines())
     assert comments(where) == []
 
 
