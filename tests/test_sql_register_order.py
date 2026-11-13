@@ -896,7 +896,9 @@ class Writer:
 # W being the real path of `workspace.yaml`'s `path:`. Where that is not there
 # the write refuses with 2, or 64 for `request-handoff`, sending nothing, since
 # a clone there would be D12's fetch (B15 tasks:1154; T415's `pw_checkout`).
-# So the estates make it, as `lane-start` does at a launch: beside each
+# So the estates make it themselves, because `lane-start` makes it only under
+# `LANES_ROUTE_WRITES=1` with neither `LANES_REPO` nor `LANES_FILE` set
+# (lane 3, #165 6841265575; `dfc4ce4c:lane-start:1209-1210`): beside each
 # writer's W, a clone of W's own origin, for each lane `write_lanes_of` names.
 # A W kept behind a push (`mirror_at_t0`: AT-C10, AT-D19) keeps `<c>` behind
 # it too, at the same commit, and a W cloned before a push has `<c>` cloned
