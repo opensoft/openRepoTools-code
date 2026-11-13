@@ -2226,13 +2226,20 @@ def test_the_bind_childs_lookup_sends_the_five_copied_values(estate, case):
         key = "args_sha256" if case == "another-write" else "generation"
         lines = [line for line in est.offer.read_text(encoding="utf-8").splitlines()
                  if not line.startswith(f"{key}=")]
-        write_record(est.offer, lines + [f"{key}=0{copies[key][1:]}"])
+        copies[key] = f"0{copies[key][1:]}"
+        write_record(est.offer, lines + [f"{key}={copies[key]}"])
     est.shim()
     est.hook("hello")
     est.answer_2()
     record = est.ended(120)
     sent = " ".join(c.get("sent", "") for c in _lookups(est))
-    for key in ("write_id", "not_after", "write_lane"):
+    # THE FIVE VALUES AS THE LOOKUP SENDS THEM (T254zd): `--not-after <n>`
+    # takes the copy's epoch seconds, and `find_write` gets them in their UTC
+    # form, `'2026-11-13T10:57:06Z'` for 1794567426 (the shim's log, lane 2's
+    # G-20 run k4b); the other four go as copied, a changed one as changed.
+    copies["not_after"] = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                        time.gmtime(int(copies["not_after"])))
+    for key in COPIES:
         assert copies[key] in sent, (key, copies[key])
     if case == "found":
         assert record["mode"] == "bound", record
