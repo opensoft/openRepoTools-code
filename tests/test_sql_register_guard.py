@@ -2263,23 +2263,45 @@ def test_the_stale_row_copies_a_dead_outers_pending_call_and_the_next_2_looks_it
     assert not starts or first_lookup < min(starts), calls
 
 
-def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate):
+def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, request):
     """AT-F6 case 21 (R-P23): on the primary fixture behind T229's delayed
     loopback, 75 ms each way with TLS on, and `connect_timeout=3` with one
     address: `guard-bind` records `bound_s=530`, the bind ends `bound`, its
     `ended_utc` less `started_utc` recorded beside the 530 s, and the
     guard's register read is the hook's last database call in the shim's
     log. Waits for T229's `delayed_loopback`, which this line does not
-    have."""
-    est = _real_estate(estate, mode="primary")
-    relay = pytest.importorskip("pgcluster").__dict__.get("delayed_loopback")
-    assert relay is not None, "tests/pgcluster.py has no delayed_loopback (T229)"
-    est.shim()
-    est.make_offer()
-    hook = est.answer_2()
-    record = est.outer()
-    assert record["bound_s"] == "530", record
-    record = est.ended(530)
+    have.
+
+    THE LINK IS ROUTED (T254za; lane 5, #165 6841545201): the estate
+    reads and writes T229's TLS cluster, which listens on 127.0.0.1 (the
+    session cluster has its socket alone), through the delayed loopback
+    at 0.075 s each way, by that cluster's own configuration
+    (`TLSCluster.configuration`, its two logins and their password files)
+    with each URL's port the relay's and `connect_timeout=3`, one address
+    and no `register_addresses=`. So the prefetch's `.head` says `c=3`,
+    and `guard-bind` sums 530 s (TP:6183-6187 at a6497d00)."""
+    pgcluster = pytest.importorskip("pgcluster")
+    delayed = pgcluster.__dict__.get("delayed_loopback")
+    assert delayed is not None, "tests/pgcluster.py has no delayed_loopback (T229)"
+    cluster = request.getfixturevalue("tls_cluster")
+    db = pgcluster.Database(cluster, cluster.database_name)
+    est = _real_estate(estate, mode="primary", pg=db)
+    with delayed(cluster.port, 0.075) as relay:
+        conf = cluster.configuration(est.root / "tls-conf", mode="primary")
+        text = conf.read_text(encoding="utf-8")
+        direct = f"@127.0.0.1:{cluster.port}/"
+        assert text.count(direct) == 2 and "register_addresses" not in text, text
+        text = text.replace(direct, f"@127.0.0.1:{relay.port}/").replace(
+            "?sslmode=verify-full", "?connect_timeout=3&sslmode=verify-full")
+        assert text.count("connect_timeout=3") == 2, text
+        conf.write_text(text, encoding="utf-8")
+        est.extra["LANES_INDEX_CONFIG"] = str(conf)
+        est.shim()
+        est.make_offer()
+        hook = est.answer_2()
+        record = est.outer()
+        assert record["bound_s"] == "530", record
+        record = est.ended(530)
     assert record["mode"] == "bound", record
     print(f"T254 case 21: ended_utc - started_utc = "
           f"{_epoch(record['ended_utc']) - _epoch(record['started_utc'])} s beside 530 s")
