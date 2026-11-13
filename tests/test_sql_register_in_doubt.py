@@ -1564,8 +1564,9 @@ def test_a_sent_record_whose_child_never_read_committed_replays_and_an_owed_mark
 def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_none_of_the_tail(estates, case):
     """The write is committed either way. [rename-lane-stops]: the handoff
     file emptied, so the replay stops before its write; [rename-lane-differs]:
-    the handoff moved by hand to the new path, so the row's handoff cell no
-    longer changes and the change set differs (TP:3418-3426). Each writes
+    the handoff removed by hand, so the row's handoff cell is left as it is
+    and the change set differs first at `lanes/LANES.md` (TP:3418-3426;
+    lane 3, #165 6851669848). Each writes
     the mark `owed <utc>`, removes the record, prints one WARNING, exits 0
     and runs no tail. [request-handoff-differs]: the fake `tmux` reports the
     holder's window gone; the run exits 2, saying the request is written at
@@ -1576,7 +1577,7 @@ def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_n
     cell (`seed_handoff`, T245r). Each run clones its own W and lane
     checkouts from the lanes origin (`Estate.launch`), so the rerun never
     sees a change made in the killed run's checkouts: the handoff is
-    emptied or moved by hand on the origin (`by_hand`), before the rerun.
+    emptied or removed by hand on the origin (`by_hand`), before the rerun.
 
     [rename-lane-stops] empties the handoff, as lane 3 ruled (#165
     6841366245) and as the test plan says since fold 1112p (`e7b1ed5e`):
@@ -1602,17 +1603,25 @@ def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_n
     by the text, as RV20's NIT 13 asked (line ID-21's r02 saw the note): it
     requires exit 5 with that note as the last line, and `<owed>` naming
     steps (TP:3423, "names the steps that did NOT run"). And there is no
-    "another change set", the differs form's words. It fails until lane 4's T422, whose
-    stamp check runs before the seam on primary (tasks:1280 at `717ed04d`,
-    "the stamp's checks run before the seam"; lane 3, #165 6841366245).
+    "another change set", the differs form's words. It fails until lane 4's
+    T422, whose stamp check runs before the seam on primary (tasks:1280 at
+    `717ed04d`, "the stamp's checks run before the seam"; lane 3, #165
+    6841366245).
 
-    [rename-lane-differs] is told from the stops form the other way, by
-    Y:5330's text: "replayed at seq `<s-1>` it now reaches the seam with
-    another change set, the first path whose digest differs being
-    `<path>`" (`f42d2c85:lanes-edit.sh:8587`), with a path named, not the
-    engine's "unknown" (TP:3424-3427, "the text names the first path whose
-    digest differs"), and no "now stops before its write". Its other
-    checks would pass a replay that stopped as well (RV20's finding 7)."""
+    [rename-lane-differs] removes the handoff by a commit on the lanes
+    origin, as lane 3 ruled (b) (#165 6851669848): a source that is not
+    there passes the checks and takes Amendment 16(d)'s note, which leaves
+    the row's handoff cell as it is (`9a314c09:lanes-edit.sh:24914-24915`,
+    `:24981-24984`), so the change set differs first at `lanes/LANES.md`,
+    since `pw_first_diff` sorts bytewise (`:8718`). A hand move onto the
+    rename's new path, as TP:3424 had it, stops instead: `rename-lane`
+    refuses an occupied target with 2 before it reads the source
+    (`:24781-24782`), so this form's earlier passes, which checked no text,
+    went by the stop path (line ID-21's r01 and r06). The case tells this
+    form from the stops form by Y:5330's text: "replayed at seq `<s-1>` it
+    now reaches the seam with another change set, the first path whose
+    digest differs being lanes/LANES.md" (`f42d2c85:lanes-edit.sh:8587`),
+    and no "now stops before its write" (RV20's finding 7)."""
     e = estates()
     where, root = loggers(e), sidecars(e)
     extra = {"LANES_LANE_STATE_ROOT": str(root)}
@@ -1624,7 +1633,7 @@ def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_n
     if case == "rename-lane-stops":
         by_hand(e, "T245: the handoff emptied by hand", "add", "--", handoff, emptied=handoff)
     elif case == "rename-lane-differs":
-        by_hand(e, "T245: the handoff moved by hand", "mv", "--", handoff, lane_handoff("repoA-9"))
+        by_hand(e, "T245: the handoff removed by hand", "rm", "-q", "--", handoff)
     else:
         (where / "tmux").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     again = e.run(LA, argv, first=[where], extra=extra)
@@ -1642,10 +1651,9 @@ def test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_n
         assert re.search(stops, again.err) and "another change set" not in again.err, (
             f"the replay did not stop before its write: {again.err[-800:]}")
     if case == "rename-lane-differs":
-        differs = (re.escape(f"register write {write_id} is in the register at seq {seq}; replayed at seq {seq - 1} "
-                             "it now reaches the seam with another change set, the first path whose digest "
-                             "differs being ")
-                   + r"(?!unknown,)\S[^\n]*?, so its after-COMMIT steps did NOT run: ")
+        differs = re.escape(f"register write {write_id} is in the register at seq {seq}; replayed at seq {seq - 1} "
+                            "it now reaches the seam with another change set, the first path whose digest "
+                            f"differs being {LANES_MD}, so its after-COMMIT steps did NOT run: ")
         assert re.search(differs, again.err) and "now stops before its write" not in again.err, (
             f"the replay did not reach the seam with another change set: {again.err[-800:]}")
     assert pending(e) == []
