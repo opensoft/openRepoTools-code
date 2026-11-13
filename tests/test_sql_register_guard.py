@@ -2292,7 +2292,12 @@ def test_the_stale_row_copies_a_dead_outers_pending_call_and_the_next_2_looks_it
     est.ended(120)
     calls = est.shim_calls()
     first_lookup = next(i for i, c in enumerate(calls) if "find_write" in c.get("sent", ""))
-    starts = [i for i, c in enumerate(calls) if "start-record" in c.get("sent", "")]
+    # A `start-record` CALL IS ITS COMMIT (T254ze): the lookup's own call
+    # names the verb too, `find_write(<id>, <utc>, <g>, <lane>, 'start-record',
+    # <h>)`, so a filter on the verb alone counted the lookup as a start
+    # (lane 2's G-20 run k12), as case 10 already filters.
+    starts = [i for i, c in enumerate(calls) if "start-record" in c.get("sent", "")
+              and "commit_write" in c.get("sent", "")]
     assert not starts or first_lookup < min(starts), calls
 
 
