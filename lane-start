@@ -428,6 +428,16 @@
 
 set -euo pipefail
 
+# AN INHERITED `LANES_READ_MIRROR` IS NO ANSWER (feature 007, T402; lane 3's #165
+# 6861148117: ERR-30 widens PER CALL; lane 5's #165 6861222075). This command
+# names the variable on no call of its own. Under T504, which marks `lane-last`
+# for every caller, a value the caller exported would lower the RETIRED check's
+# `lane-last` read, which decides, to the mirror where an outage must end it 69,
+# and it lowers every other marked read this command makes. So it is dropped
+# here, before any read and before anything that could pass the environment on,
+# as `lane-handoff` does at its entry.
+unset LANES_READ_MIRROR
+
 prog=lane-start
 
 # FEATURE 007, T428: `LANES_EXPECT` IS NEVER EXPORTED (Y:5581). An act's

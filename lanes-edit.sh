@@ -1101,11 +1101,14 @@
 #   LANES_READ_MIRROR=1  the reads that name a lane before its handoff is
 #                      published (`window-lane`, `swapped`, `register-row`,
 #                      `canon-lane`, `last-session`, `lane-state`,
-#                      `set-lane-state`, `handoff-path`, `write-handoff`, and
-#                      `managed-projection` at the ownership seam) read the
+#                      `set-lane-state`, `handoff-path`, `write-handoff`,
+#                      `managed-projection` at the ownership seam, and
+#                      `lane-last` and `restart-intent`, the two reads
+#                      `lane-handoff` makes before its handoff file) read the
 #                      mirror, labelled `read: mirror at ...`, where the
-#                      register's read fails; every other verb ignores it
-#                      (feature 007, T504)
+#                      register's read fails; every other verb ignores it,
+#                      `who` among them (feature 007, T504; ERR-30, as lane 3
+#                      widened it on round 6h's #56, #165 6859801732)
 #   AGENT_PROTOCOL_ROOT  dir holding workspace.yaml  (default: ~/.agents)
 #   LANES_PATH         pathspec of the register RELATIVE to LANES_REPO
 #                                           (default: `lanes/LANES.md`, derived
@@ -6357,8 +6360,12 @@ reg_mode_files() {   # <why>
 #               T409's question at the dispatcher serves them.
 # `REG_MIRROR_VAR=1` marks the arms that `LANES_READ_MIRROR=1` lowers to a
 # mirror read: lane 3's item 1 (#165 6746035594, as 6747422030 words it), with
-# `managed-projection` at the ownership seam (DEC-27, 6754522885). Every other
-# arm ignores the variable, `who` and `lane-last` among them. `REG_NO_CALL=1`
+# `managed-projection` at the ownership seam (DEC-27, 6754522885), and
+# `lane-last` and `restart-intent`, the two reads `lane-handoff` makes before
+# its handoff file (ERR-30, as lane 3 widened it on round 6h's #56, #165
+# 6859801732). Every other arm ignores the variable, `who` among them; the
+# variable is set per call, so `lane-handoff --late`'s own `lane-last` read and
+# `lane-start`'s, which set none, still end 69. `REG_NO_CALL=1`
 # is `session-start`'s: a mirror arm with no register call (R39), whose read is
 # its block's own, `reg_session_read` (T508), never `reg_open`'s. Its one other
 # `lanes-index` call, `serve --start` on primary (T513), is no register call
@@ -6415,7 +6422,7 @@ reg_class_of() {   # <arm>: sets REG_CLASS, REG_MIRROR_VAR and REG_NO_CALL
     lane-profile) REG_CLASS=decide ;;
     lane-agent) REG_CLASS=decide ;;
     lane-transcript) REG_CLASS=decide ;;
-    lane-last) REG_CLASS=decide ;;
+    lane-last) REG_CLASS=decide; REG_MIRROR_VAR=1 ;;
     forks) REG_CLASS=decide ;;
     duplicate-holder) REG_CLASS=decide ;;
     next-free) REG_CLASS=decide ;;
@@ -6426,7 +6433,7 @@ reg_class_of() {   # <arm>: sets REG_CLASS, REG_MIRROR_VAR and REG_NO_CALL
     retired-identity) REG_CLASS=decide ;;
     session-lane) REG_CLASS=decide ;;
     resolve-home) REG_CLASS=decide ;;
-    restart-intent) REG_CLASS=decide ;;
+    restart-intent) REG_CLASS=decide; REG_MIRROR_VAR=1 ;;
     publish-handoff) REG_CLASS=decide ;;
     legacy-restart-check) REG_CLASS=decide ;;
     set-restart-intent) REG_CLASS=decide ;;
@@ -27738,6 +27745,9 @@ worktree_rows() {   # [<canonical lane> [register-unread]]
     # each read that succeeds here is the text every read of the listing below
     # is handed, as the register's is its cache. `x` keeps the text's last
     # newline through the substitution.
+    # ON PRIMARY THE HEAD PAIR IS TAKEN BEFORE THE PINS, so it brackets them
+    # (lane 3, #165 6851977580, Q2; its NIT, 6858701980).
+    [ "${REG_STORE:-}" != sql ] || wr_h0="$(reg_head_n) $(reg_head_generation)"
     wr_pin=""; wr_atc=0
     wr_pin="$(archive_text 2>/dev/null && printf x)" || wr_atc=$?
     [ "$wr_atc" != 69 ] || return 69
@@ -27765,7 +27775,6 @@ worktree_rows() {   # [<canonical lane> [register-unread]]
       wr_pin=""
       wr_pin="$(reg_log_paths && printf x)" || return 69
       PIN_LOGS_TEXT="${wr_pin%x}"; PIN_LOGS=1
-      wr_h0="$(reg_head_n) $(reg_head_generation)"   # lane 3, #165 6851977580, Q2
     elif have_remote_ref; then
       wr_pin=""
       if wr_pin="$(git -C "$LANES_REPO" ls-tree --name-only "origin/$LANES_BRANCH" -- "$LANES_LOG_PREFIX" 2>/dev/null && printf x)"; then
@@ -27787,17 +27796,31 @@ worktree_rows() {   # [<canonical lane> [register-unread]]
     [ "$wr_evrc" = 0 ] || wr_lp="$(log_path_ci "$wr_one" 2>/dev/null || log_path_for "$wr_one")"
   fi
   # ON PRIMARY THE PINNED LIST AND THE LISTING ARE ONE SNAPSHOT (lane 3, #165
-  # 6851977580, Q2): the head pair taken after the list's pin is taken again
-  # after the listing's reads, whose out-of-class form 3 reads can move the
-  # family to `n'`. Where either moved, the listing is dropped and the archive
-  # and the list are pinned again; the head only moves forward within a
+  # 6851977580, Q2): the head pair taken before the pins is taken again after
+  # the listing's reads, whose out-of-class form 3 reads can move the family
+  # to `n'`. Where either moved, the listing is dropped and the archive and
+  # the list are pinned again; the head only moves forward within a
   # generation, so an unchanged pair is one snapshot. Three runs at most, then
   # 69 with nothing on stdout, the class's failed read (`reg_fail`).
-  wr_run=0
+  # A RERUN REUSES THE EVENTS `state_events` CACHED in the run that moved the
+  # head. That is sound only while the events build is `lanes_rows`' one
+  # source of a form 3: the build that moved the head is then one snapshot
+  # at the head it moved to (`reg_remote_log_events`), and the pins taken
+  # again are taken at that head (lane 3, #165 6858701980).
+  # AND EACH RUN'S NOTES ARE HELD until the run is kept, as
+  # `reg_remote_log_events`' are, so a dropped run's notes are not said twice.
+  wr_run=0; wr_w=""
+  if [ "$wr_sql" = 1 ]; then
+    wr_w="$SE_CACHE_FILE.wrw.${BASHPID:-$$}"
+    : > "$wr_w" 2>/dev/null || wr_w=""
+  fi
   while :; do
   wr_run=$((wr_run + 1))
   wr_lanes=""; wr_lrc=0
-  if [ -n "$wr_one" ]; then
+  if [ -n "$wr_w" ]; then
+    : > "$wr_w" 2>/dev/null || :
+    wr_lanes="$(lanes_rows --all --closed 2>>"$wr_w")" || wr_lrc=$?
+  elif [ -n "$wr_one" ]; then
     wr_lanes="$(lanes_rows --lane "$wr_one" --closed)" || wr_lrc=$?
   else
     wr_lanes="$(lanes_rows --all --closed)" || wr_lrc=$?
@@ -27806,9 +27829,11 @@ worktree_rows() {   # [<canonical lane> [register-unread]]
   [ "$(reg_head_n) $(reg_head_generation)" != "$wr_h0" ] || break
   PIN_ARCHIVE=0; PIN_ARCHIVE_TEXT=""; PIN_LOGS=0; PIN_LOGS_TEXT=""; wr_lanes=""
   if [ "$wr_run" -ge 3 ]; then
+    [ -z "$wr_w" ] || rm -f -- "$wr_w"
     reg_fail "the register could not be read: its head moved during each of three reads of the worktree listing, so no listing is one snapshot (feature 007, T505; lane 3, #165 6851977580, Q2)" "the register's head kept moving" || :
     return 69
   fi
+  wr_h0="$(reg_head_n) $(reg_head_generation)"
   wr_pin=""; wr_atc=0
   wr_pin="$(archive_text 2>/dev/null && printf x)" || wr_atc=$?
   [ "$wr_atc" = 0 ] || return 69                 # any other end, as `.paths`' below (lane 3, #165 6858701980)
@@ -27818,8 +27843,11 @@ worktree_rows() {   # [<canonical lane> [register-unread]]
   wr_pin=""
   wr_pin="$(reg_log_paths && printf x)" || return 69
   PIN_LOGS_TEXT="${wr_pin%x}"; PIN_LOGS=1
-  wr_h0="$(reg_head_n) $(reg_head_generation)"
   done
+  if [ -n "$wr_w" ]; then
+    cat -- "$wr_w" >&2 2>/dev/null || :
+    rm -f -- "$wr_w"
+  fi
   PIN_ARCHIVE=0; PIN_ARCHIVE_TEXT=""; PIN_LOGS=0; PIN_LOGS_TEXT=""
   PIN_LANE_LOG=0; PIN_LANE_LOG_TEXT=""; PIN_LANE_LOG_RC=0
   # 1 IS ALSO A LISTING THAT READS THAT FAILED LEFT EMPTY (#290), which the
@@ -32987,12 +33015,18 @@ EOF
       # every read was at one `n`. Where either moved, the answer is dropped and
       # the run starts again from `reg_paths`: three runs at most, then 69 with
       # nothing on stdout.
-      rgr_run=0
+      rgr_run=0; rgr_nl=$'\n'
       while :; do
         rgr_run=$((rgr_run + 1))
         rgr_logs=0; rgr_want=(); rgr_order=(); rgr_quoted=()
         for rgr_p in "$@"; do
           # `lanes/log` is the one path `reg_reader_kind` reads as the set `logs`.
+          # A NAMED PATH HOLDING A NEWLINE IS ABSENT (RC-W30's NIT 1): no register
+          # path holds one, since `.paths` gives one path a line and the door
+          # refuses a path with a control byte. So it matches nothing, as its
+          # literal pathspec matches nothing in files mode, and with nothing
+          # else matched the answer is 1 (tasks:863), never a 69 naming a piece.
+          case "$rgr_p" in *"$rgr_nl"*) continue ;; esac
           if [ "$rgr_p" = lanes/log ]; then rgr_logs=1; else rgr_want+=("$rgr_p"); fi
         done
         if [ "$rgr_logs" = 1 ]; then
@@ -33020,8 +33054,10 @@ EOF
           # escaped by a backslash, `\a`, `\b`, `\t`, `\n`, `\v`, `\f` and `\r` for
           # those seven control bytes, and each other such byte written as a
           # backslash and three octal digits; any other path is printed as it is.
-          # A newline ends a path in this list, so none holds one. `od` gives the
-          # bytes as numbers, so `awk` writes only ASCII.
+          # A newline ends a path in this list, and none holds one: `reg_paths`
+          # gives one path a line, and a named path holding one was skipped
+          # above, as absent. `od` gives the bytes as numbers, so `awk` writes
+          # only ASCII.
           if [ -z "$rgr_h" ]; then
             od -An -v -tu1 < "$TMPD/order" | LC_ALL=C awk '{ for (i = 1; i <= NF; i++) { c = $i + 0
                 if (c == 10) { print (q ? "\"" s "\"" : s); s = ""; q = 0 }
@@ -33063,7 +33099,7 @@ EOF
         rgr_n1="$(reg_head_n)"; rgr_g1="$(reg_head_generation)"
         [ "$rgr_n1" != "$rgr_n0" ] || [ "$rgr_g1" != "$rgr_g0" ] || break
         [ "$rgr_run" -lt 3 ] ||
-          die "the register could not be read at one snapshot: its head moved while it was read, in each of 3 runs (the last from n=$rgr_n0 to n=$rgr_n1), so no answer is printed, never a part of one (feature 007, T401 on primary; lane 3's Q2 ruling)" 69
+          die "the register could not be read at one snapshot: its head moved while it was read, in each of 3 runs (the last from n=$rgr_n0, generation $rgr_g0, to n=$rgr_n1, generation $rgr_g1), so no answer is printed, never a part of one (feature 007, T401 on primary; lane 3's Q2 ruling)" 69
       done
       [ "$rgr_hit" = 1 ] || exit 1
       cat -- "$TMPD/grep" || exit 69

@@ -6568,6 +6568,18 @@ def main(argv: list) -> int:
     """The exit contract, whatever happens inside: an error no read caught is
     exit 2 on a dry run (nothing was changed), and under `--yes` the archive's
     DISPOSITION.md is written first and the exit is 1 (B2)."""
+    # AN INHERITED `LANES_READ_MIRROR` IS NO ANSWER (feature 007, T404; lane 3's
+    # #165 6866808028, and 6861148117: ERR-30 widens PER CALL). This command
+    # names the variable on no call of its own, and every child it starts takes
+    # this process's environment: `run` with no `env` inherits it, and
+    # `git_env`, `Helper.call`, `gh` and `status --all` each copy it. So a value
+    # the caller exported would lower the helper's marked reads, `canon-lane`
+    # and `managed-projection`, to the mirror, where an outage must end
+    # `canon-lane` 69 and `managed-projection` 1 (UNKNOWN; DEC-27), and would
+    # reach every other child. It is dropped here, at entry, before anything
+    # reads the environment or starts a child, as `lane-handoff` does at its
+    # own.
+    os.environ.pop("LANES_READ_MIRROR", None)
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(errors="surrogateescape")
