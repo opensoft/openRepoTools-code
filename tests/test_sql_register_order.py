@@ -329,14 +329,15 @@ def expired(c: Clone, lane: str = L2, for_lane: str = L1, **options) -> Tuple[st
 
 @pytest.fixture()
 def clones(pg_cluster):
-    """Clones of `tmpl_imported`, each the case's own, dropped at the end."""
+    """Clones of `tmpl_imported`, or of the template a case names (the act
+    backstops clone `tmpl`; T252r), each the case's own, dropped at the end."""
     made: List[str] = []
 
-    def clone() -> Clone:
-        found = pg_cluster.psql(f"SELECT datname FROM pg_database WHERE datname = '{IMPORTED}';").stdout.split()
-        assert found == [IMPORTED], f"no {IMPORTED} on the session cluster: lane 2's T227 builds it"
+    def clone(template: str = IMPORTED) -> Clone:
+        found = pg_cluster.psql(f"SELECT datname FROM pg_database WHERE datname = '{template}';").stdout.split()
+        assert found == [template], f"no {template} on the session cluster: lane 2's T227 builds it"
         name = f"t223_{next(_NAMES)}"
-        pg_cluster.psql(f"CREATE DATABASE {name} TEMPLATE {IMPORTED};")
+        pg_cluster.psql(f"CREATE DATABASE {name} TEMPLATE {template};")
         made.append(name)
         pg_cluster.psql(f"REVOKE ALL ON DATABASE {name} FROM PUBLIC;\n"
                         f"GRANT CONNECT ON DATABASE {name} TO {CONNECT_TO};\n")
@@ -3408,8 +3409,20 @@ def test_the_commits_act_backstops_are_lr007_act_generation_and_lr004(clones, ca
     base past the head LR004; nothing is written. `commit_write` checks an
     act's generation and base only where it lists an expectation (step 3b,
     `IF cardinality(v_expect) > 0`), before it compares any scope, so each
-    act lists one: the writer's own row. (The hold line derives no scope.)"""
-    c = primary(clones)
+    act lists one: the writer's own row. (The hold line derives no scope.)
+
+    The register is a clone of `tmpl`, not of `tmpl_imported`, brought to
+    `primary` by AT-LR006's route, as T221's step-6 cases and T253b's case
+    bring theirs and as this module's phase W estates do: `import_files`'
+    `import` entry at seq 0, then `Clone.to_primary`'s `cutover` at seq 1
+    and `record_marker`. So the ids need no T115, whose `import --at` builds
+    `tmpl_imported` after T112: they fail only until T107's step 3b, T227's
+    `tmpl` and T228's `lanes_w_fx` land, and T112's `-k` runs them (lane 3's
+    way 1, #165 6841609469; T252r)."""
+    c = clones(W_TEMPLATE)
+    import_files(c, {LANES_MD: "# LANES.md: the act backstops' register (T252r)\n"})
+    assert c.to_primary() == 1, "the backstops' cutover is not at seq 1 (AT-LR006's route)"
+    c.no_taker()
     entry = c.append(L1, *hold(c, L1))
     head, gen = c.head(), c.switch()["generation"]
     expect = [f"row:{L1.lower()}"]
