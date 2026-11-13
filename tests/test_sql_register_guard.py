@@ -2333,33 +2333,84 @@ def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, r
     (`TLSCluster.configuration`, its two logins and their password files)
     with each URL's port the relay's and `connect_timeout=3`, one address
     and no `register_addresses=`. So the prefetch's `.head` says `c=3`,
-    and `guard-bind` sums 530 s (TP:6183-6187 at a6497d00)."""
+    and `guard-bind` sums 530 s (TP:6183-6187 at a6497d00).
+
+    THE IMAGE CACHE IS FILLED FIRST (T254zg; lane 5, #165 6852197902): a
+    cold prompt reads form 2 and then fetches the whole files in a second
+    `lanes-index` with a connect of its own (`f9e1449c:lanes-index:6856`,
+    waited for to the cut at `:6862`), which the design prices past the
+    start line at 150 ms of round trip (design.md:4261-4273 at b8e3df74);
+    lane 2's G-20 saw it cut at `T0` + 3.75 s on py-bench. So the offer is
+    made through the cluster's own port, and its fetch fills the cache; then
+    the configuration is pointed at the relay, with `connect_timeout=3`, for
+    the `2`, whose read is one call (design.md:4287-4289 at b8e3df74).
+
+    AND NO SERVICE ANSWERS (T254zg): the estate's state home is one whose
+    socket path is over `SOCKET_MAX` (`_state_home_with_no_service`), where
+    the client reads directly and starts nothing
+    (`f9e1449c:lanes-index:7568`). Otherwise the offer's fallback starts
+    `serve` (`:9324`) on the configuration of the cluster's own port; each
+    prompt's cache family is its own (`f9e1449c:lanes-edit.sh:11792`), so
+    no earlier `.direct` keeps the `2`'s read direct (`lanes-index:9311`),
+    and that `serve` would answer it off the delayed link, with no call of
+    the hook's in the shim's log. So the row's last oracle is read: the
+    calls the shim logs between the `2` and the hook's exit are the guard's
+    read alone (D9's guard row, `statement_timeout=1500`,
+    `lanes-index:4563`), the last of them through the relay at `c` = 3;
+    answer 2 adds none."""
     pgcluster = pytest.importorskip("pgcluster")
     delayed = pgcluster.__dict__.get("delayed_loopback")
     assert delayed is not None, "tests/pgcluster.py has no delayed_loopback (T229)"
     cluster = request.getfixturevalue("tls_cluster")
     db = pgcluster.Database(cluster, cluster.database_name)
     est = _real_estate(estate, mode="primary", pg=db)
+    est.extra["XDG_STATE_HOME"] = str(_state_home_with_no_service(est))
     with delayed(cluster.port, 0.075) as relay:
         conf = cluster.configuration(est.root / "tls-conf", mode="primary")
         text = conf.read_text(encoding="utf-8")
         direct = f"@127.0.0.1:{cluster.port}/"
         assert text.count(direct) == 2 and "register_addresses" not in text, text
+        est.extra["LANES_INDEX_CONFIG"] = str(conf)
+        est.shim()
+        est.make_offer()
+        offered = est.shim_calls()
         text = text.replace(direct, f"@127.0.0.1:{relay.port}/").replace(
             "?sslmode=verify-full", "?connect_timeout=3&sslmode=verify-full")
         assert text.count("connect_timeout=3") == 2, text
         conf.write_text(text, encoding="utf-8")
-        est.extra["LANES_INDEX_CONFIG"] = str(conf)
-        est.shim()
-        est.make_offer()
         hook = est.answer_2()
+        calls = est.shim_calls()[len(offered):]
         record = est.outer()
         assert record["bound_s"] == "530", record
         record = est.ended(530)
+        port = str(relay.port)
+    seen = [(c.get("call"), c.get("pg", {}).get("PGPORT"), c.get("pg", {}).get("PGCONNECT_TIMEOUT"),
+             c.get("pg", {}).get("PGOPTIONS")) for c in calls]
+    fetched = [c for c in offered
+               if "statement_timeout=14000" in c.get("pg", {}).get("PGOPTIONS", "")]
+    print(f"T254 case 21: the offer's prompt made {len(offered)} call(s) through the cluster's "
+          f"own port, {len(fetched)} of them the whole-file fetch; the 2's prompt exited "
+          f"{hook.t_exit - hook.t0:.2f} s after T0, its calls {seen}")
+    assert calls and all("statement_timeout=1500" in (s[3] or "") for s in seen) \
+        and seen[-1][1:3] == (port, "3"), \
+        f"the 2's prompt made calls other than the guard's read through the relay {port}: {seen}"
     assert record["mode"] == "bound", record
     print(f"T254 case 21: ended_utc - started_utc = "
           f"{_epoch(record['ended_utc']) - _epoch(record['started_utc'])} s beside 530 s")
     assert hook.code == 2
+
+
+def _state_home_with_no_service(est: Estate) -> Path:
+    """A STATE HOME WHERE NO SERVICE CAN RUN (T254zg), under the estate's
+    root: its socket path is over `SOCKET_MAX`, so the client reads
+    directly and starts nothing, as on a workstation whose socket path is
+    too long (`f9e1449c:lanes-index:7568`, Y:3777-3781). The image cache
+    and the pending records live there too, as in any state home."""
+    home = est.root / ("state-with-no-service-" + "s" * 90)
+    home.mkdir(mode=0o700)
+    sock = home / "openRepoTools" / "run" / "register.sock"
+    assert len(os.fsencode(str(sock))) > SOCKET_MAX, sock
+    return home
 
 
 # ============================================================ T213: test 10's direct part
