@@ -194,9 +194,10 @@ def apply_shell_hits(out, by_hash, result):
         for item in by_hash[checksum]:
             if not 1 <= number <= item["lines"]:
                 raise ValueError("shell hit outside source: " + item["path"])
-            # Keep actual DEBUG events even when kcov's static parser omitted
-            # a closing construct. No unexecuted line receives a hit.
-            result[item["path"]][number] = True
+            # DEBUG also emits events for closing constructs. Only the fixed
+            # executable baseline is coverable; observations cannot enlarge it.
+            if number in result[item["path"]]:
+                result[item["path"]][number] = True
 
 
 def shell_lines(out, manifest):
@@ -236,8 +237,12 @@ def python_lines(root, out, manifest):
         hits = by_hash[item["sha256"]]
         if any(not 1 <= number <= item["lines"] for number in hits):
             raise ValueError("Python hit outside source: " + item["path"])
+        # Raw tracing includes docstrings and continuation/closing lines.
+        # Use Coverage's canonical statement mapping, retaining every missing
+        # statement without adding observed-only lines to the denominator.
+        executed = parser.translate_lines(hits)
         result[item["path"]] = {
-            number: number in hits for number in parser.statements | hits}
+            number: number in executed for number in parser.statements}
     return result
 
 

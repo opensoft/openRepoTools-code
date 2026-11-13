@@ -232,7 +232,7 @@ def test_evidence_rebind_requires_exact_commits_sources_and_complete_reports(
             out / "scanner.properties").read_text()
 
 
-@pytest.mark.parametrize("failure", [None, "missing-provider", "foreign-provider", "incomplete-provider"])
+@pytest.mark.parametrize("failure", [None, "missing-provider", "foreign-provider", "incomplete-provider", "different-denominator"])
 def test_combination_requires_both_exact_complete_suites_and_unions_real_hits(
         assurance, tmp_path, monkeypatch, failure):
     monkeypatch.syspath_prepend(str(HERE / ".github/ci"))
@@ -259,6 +259,8 @@ def test_combination_requires_both_exact_complete_suites_and_unions_real_hits(
                  for item in manifest["files"]]
         if failure == "incomplete-provider" and label == "provider":
             files.pop()
+        if failure == "different-denominator" and label == "provider":
+            files = [file.replace('lineNumber="2"', 'lineNumber="1"') for file in files]
         (directory / "coverage.xml").write_text('<coverage version="1">' + "".join(files) + '</coverage>')
         (directory / "coverage-summary.json").write_text(json.dumps({
             "files": 2, "languages": {
