@@ -6272,7 +6272,7 @@ pw_checkout() {   # <the verb's arguments>
   check_lane_name "$PW_LANE"
   PW_C="$(lane_checkout_path "$PW_LANE")" || die "$(lanes_workspace_why)" 1
   [ -d "$PW_C" ] ||
-    die "lane ${PW_LANE}'s own register checkout, $PW_C/, is not here, and on primary a write makes no clone to make it, since a clone is a fetch (D12): the verb runs on a scratch tree the register builds, and reads only its author, its pending hand edits and its repos.tsv from that checkout. Make the checkout first, as lane-start does at a launch — $SELF lane-checkout $PW_LANE --create — then run \`$cmd\` again. Nothing was sent." "$(pw_pre_rc)"
+    die "lane ${PW_LANE}'s own register checkout, $PW_C/, is not here, and on primary a write makes no clone to make it, since a clone is a fetch (D12): the verb runs on a scratch tree the register builds, and reads only its author, its pending hand edits and its repos.tsv from that checkout. Make the checkout first — $SELF lane-checkout $PW_LANE --create — then run \`$cmd\` again. Nothing was sent." "$(pw_pre_rc)"
   return 0
 }
 
