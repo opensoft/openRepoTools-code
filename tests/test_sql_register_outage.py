@@ -1439,18 +1439,29 @@ def test_writes_and_deciding_reads_still_refuse_during_a_declared_outage(tmp_pat
     declaration opens the guard's read alone. The lane's own register
     checkout `<c>` is made first (T219g), so that the outage, not a missing
     `<c>`, is what refuses `claim`: T415's `pw_checkout` refuses a write with
-    2 before any register call where `<c>` is not there (tasks:1154)."""
+    2 before any register call where `<c>` is not there (tasks:1154).
+
+    THE 69 IS THE DATABASE'S, not the code alone (lane 2's RV22, NIT 10):
+    each command also makes a register call, the stopped fake `psql`'s start
+    log growing while it runs (`START_PSQL`), and every call that fake takes
+    is refused at the connect (`STOPPED`). A 69 made before any register
+    call, as T409's placeholder 69 once passed this case (T219g), fails
+    here."""
     estate = Estate(tmp_path, [_render(1), _render(2), _render(3)])
     config = estate.config()
     estate.declared(config, mirror_seq=3)
     estate.lane_checkout()
     env = estate.guard_env(config, TMUX=None, TMUX_PANE=None, LANES_SESSION=estate.session)
     for argv in (["claim", "opensoft/t215#1"], ["who", "opensoft/t215#1"]):
+        before = len(estate.psql_starts())
         proc = subprocess.run(["bash", str(tmp_path / "tool" / "lanes-edit.sh"), *argv],
                               capture_output=True, text=True, env=env, cwd=str(estate.wip),
                               timeout=120, stdin=subprocess.DEVNULL)
         assert proc.returncode == 69, (f"`{argv[0]}` exited {proc.returncode}: "
                                        f"{(proc.stdout + proc.stderr)[-400:]}")
+        assert len(estate.psql_starts()) > before, (
+            f"`{argv[0]}` exited 69 with no register call: the stopped fake psql has no call from it, "
+            f"so the 69 is not the database's: {(proc.stdout + proc.stderr)[-400:]}")
 
 
 def _free_port() -> int:
