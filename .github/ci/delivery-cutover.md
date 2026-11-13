@@ -47,9 +47,10 @@ CI-Delivery: claude-current
 
 Intent is not review or merge authority. Source routing requires live identity,
 test-merge parents and exact-head successful fast-workflow/run/job/base-history
-evidence. The complete candidate admission still requires genuine clean managed
-Codex receipts and complete resolved threads. Quota replies and local preparation
-review substitutions cannot manufacture those future receipts.
+evidence. Complete candidate admission requires either the genuine clean managed
+Codex receipt or the explicit [local-review receipt](#exact-head-local-review-receipts)
+below, plus complete resolved threads. Quota replies, generic local summaries and
+labels are not receipts. Local acceptance is never represented as a bot review.
 
 Authenticated current run.path distinguishes ordinary tests.yml from reuse.
 Reusable calls force full even though GitHub retains the caller's original event.
@@ -107,7 +108,8 @@ conservative contract to confirm in a later authorized canary, not live evidence
 1. Merge this code/spec only after exact-head full/reuse CI and review, reconciling
    Sonar PR51's wheel-only baseline amendment and coverage collectors first.
 2. Approve the changed source merge floor described below. Confirm the effective
-   checks, queue config/service readiness and genuine managed review capacity.
+   checks, queue config/service readiness and a qualified hosted or local review
+   receipt path. Hosted Codex quota is not a prerequisite for the local path.
 3. Separately approve/install app-bound `openrepotools-delivery` as the required
    verification context and remove the four legacy required contexts. Preserve
    every unrelated rule. No bypass. Keep the flag false during migration.
@@ -131,6 +133,73 @@ Rollback: an ordinary reviewed `enabled: false` change resumes every original
 full job. Restoring legacy required contexts is a separate owner-approved setting
 change. Neither rollback nor this preparation changes release eligibility, apps,
 installed tools, live sessions or lane ownership.
+
+## Exact-head local review receipts
+
+This is a **prepared alternative review contract**, not activation or merge
+authority. Run `pre-pr-review`, `pr-review` or `branch-or-pr-review` locally in
+Codex against the exact current PR head and base; resolve findings and re-review
+before acceptance. Preserve the report's findings, resolution and validation.
+An existing repository writer then explicitly accepts that report by publishing
+a **new top-level PR comment** containing only this marker and JSON fence:
+
+````text
+<!-- openrepotools-local-review:v1 -->
+```json
+{
+  "schema_version": 1,
+  "repository": "opensoft/openRepoTools-code",
+  "pull_request": 123,
+  "head_sha": "REPLACE_WITH_CURRENT_40_CHARACTER_HEAD_SHA",
+  "base_sha": "REPLACE_WITH_REVIEWED_40_CHARACTER_BASE_SHA",
+  "reviewer": "codex-local",
+  "skill": "pre-pr-review",
+  "status": "accepted",
+  "unresolved_findings": 0,
+  "findings": "Describe the actual findings, or state that none remain.",
+  "resolution": "Describe fixes and the exact-head re-review, or why no fixes were needed.",
+  "validation": "Record actual commands/results and distinguish local from hosted CI."
+}
+```
+````
+
+The example is not a receipt: replace all identities and report text with real
+evidence. A receipt for these configuration PRs cannot qualify a later source
+head. Do not post one automatically from passing CI, a PR body, a profile launch
+or the mere completion of a review agent. Publication is an explicit acceptance
+act by a writer with authority for the task, not permission to merge or enqueue.
+
+GitHub must identify the publishing author as a User; the live collaborator
+permission GET must return that same login/numeric ID and `write` or `admin`
+(`maintain` maps to `write`). No author allowlist, new app grant or workflow write
+permission is introduced. Unknown/unavailable permission evidence refuses.
+This is authenticated operator attestation, **not** cryptographic proof of local
+model execution or independent human approval. All existing GitHub protections
+remain applicable, including any independently required reviewer approval.
+
+The whole body is bounded to 16 KiB; its exact JSON keys/types/schema and skill
+must match the contract. Reports must be nonempty and at most 4,000 characters
+each. The PR URL, server comment ID, repository, PR number, current head and base
+must match. Both REST timestamps must agree and complete GraphQL comment metadata
+must show `lastEditedAt: null` (including same-second edits). Never edit a receipt:
+publish a replacement. The newest authorized local comment by creation time,
+then numeric ID, controls acceptance; stale/malformed/dirty or revoked latest
+local evidence refuses even if an older local/hosted approval is clean.
+
+To revoke, publish a new receipt with `status: revoked`, the relevant identities
+and an honest report explaining the problem. Stop queue operations; a new valid
+local acceptance after re-review is needed to supersede it. Head/base changes
+always require a fresh review and receipt. Bot/non-writer lookalikes confer no
+authority; no authorized local receipt leaves the existing hosted path intact.
+
+Fewer than 100 total comments, at most ten local-marker comments, complete
+resolved review threads and complete unedited comment metadata are required.
+Saturation, ambiguity, API failure or receipt/access drift on the final recheck
+refuses; never truncate history, clear comments or weaken checks to qualify.
+Normal full-CI delivery remains the fallback. Report text is hashed for snapshot
+comparison, never executed, fetched or copied into candidate proof artifacts.
+Admission, final heavy verification and the separate historical landing reader
+retain their existing roles; review acceptance does not replace heavy CI.
 
 ## Primary references
 

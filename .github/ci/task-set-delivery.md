@@ -98,5 +98,13 @@ After separately approved activation, an opted-in fast source must use the named
 manual queue for complete heavy qualification; NEVER direct-merge it on delivery
 success. That check can mean fast verification, not heavy integration. Queue-only
 usage is operator policy unless separately approved service controls enforce it.
-Mixed, dependent, unknown or stale work retains full checks. Managed candidate
-review trust and assembly/release acceptance remain separate and unchanged.
+Mixed, dependent, unknown or stale work retains full checks. Candidate review
+must satisfy the cutover runbook's genuine hosted receipt or its explicit
+[exact-head local skill receipt](delivery-cutover.md#exact-head-local-review-receipts).
+Run the local skill on the current head/base, resolve findings and have an
+authorized repository writer publish a new acceptance comment with the actual
+report. Never fake a hosted-bot summary, edit an old receipt or treat a label,
+generic summary or passing CI as review acceptance. The verifier authenticates
+the writer and rechecks receipt identity/digest, permission and resolved threads.
+Local receipts are operator attestations, not independent human approvals or
+merge authority. Assembly/release acceptance remains separate and unchanged.
