@@ -714,7 +714,8 @@ NAMED_CLASSES = {
 #: THE CLASS TABLE'S FORM (lane 5's answer 12, #165 6746507353): one function
 #: before the dispatcher, `reg_class_of`, with one `case` arm per row, in the
 #: form `register-text) REG_CLASS=decide ;;`. A row may also set
-#: `REG_MIRROR_VAR=1` (item 1's ten arms), and `*)` is decide.
+#: `REG_MIRROR_VAR=1` (item 1's ten arms, and with T504 `lane-last` and
+#: `restart-intent`, twelve; ERR-30, #165 6859801732), and `*)` is decide.
 CLASS_FUNCTION = re.compile(r"^reg_class_of\(\)\s*\{[^\n]*$(.*?)^\}\s*$", re.M | re.S)
 CLASS_ARM = re.compile(r"^\s*([A-Za-z0-9_|*-]+)\)[^\n]*?\bREG_CLASS=['\"]?"
                        r"(decide|mirror|guard|projection|none|writer)\b", re.M)
