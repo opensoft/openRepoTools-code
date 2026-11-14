@@ -3433,9 +3433,14 @@ def _failure_stamp(est: Estate, done: subprocess.CompletedProcess) -> list:
 class _Listener:
     """A socket of the test's own at the contract's fixed path (section
     2.1), in a 0700 directory of this uid (section 2.2): it records what a
-    client sends, and either never answers (`hang`) or closes at once."""
+    client sends, and either never answers (`hang`) or closes at once.
 
-    def __init__(self, est: Estate, hang: bool):
+    WITH `whole` (T237zt), each record is the request read to its `end`
+    line, or to the client's close or a 1 s pause, not one `recv`'s bytes:
+    a request of 64 KiB may come in more than one, and the case that sends
+    one must read every byte of it (`REQUEST_MAX`)."""
+
+    def __init__(self, est: Estate, hang: bool, whole: bool = False):
         import socket
         run = _run_dir(est)
         run.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -3454,10 +3459,17 @@ class _Listener:
                 except OSError:
                     continue
                 conn.settimeout(1.0)
+                data = b""
                 try:
-                    self.got.append(conn.recv(65536))
+                    data = conn.recv(65536)
+                    while whole and data and b"\nend\n" not in data:
+                        chunk = conn.recv(65536)
+                        if not chunk:
+                            break
+                        data += chunk
                 except OSError:
-                    self.got.append(b"")
+                    pass
+                self.got.append(data)
                 if hang:
                     self.held.append(conn)
                 else:
@@ -4286,6 +4298,130 @@ def test_the_guards_request_carries_only_file_names(estate):
                                             and line.split(" ", 1)[1].startswith("lanes/"))
                         for line in body), text
     assert "postgresql://" not in text and "password" not in text.lower(), text
+
+
+#: THE REQUEST'S BOUND (T511's N-3; lane 5's one reading, #165 6868247441):
+#: the whole request, its `end` line included, in bytes (socket API section
+#: 13.3). T512's code takes it at both ends: the service refuses where
+#: `end + 5 > REGISTER_SERVE_REQUEST_MAX`, `end` the offset of `\nend\n`, and
+#: the client sends only where `len(data) <= REGISTER_SERVE_REQUEST_MAX`
+#: (`lanes-index:8112` and `:9060` at line R's merge101 `44f487d1`).
+REQUEST_MAX = 65536
+#: A request's bytes around its one log key, as the client writes form 1 for
+#: one `log:<key>` member (socket API section 13.9): `read 1`, the `file`
+#: line's words before the key, then its `.md` and the `end` line.
+REQUEST_HEAD = b"read 1\nfile lanes/log/"
+REQUEST_TAIL = b".md\nend\n"
+
+
+def _request_key(size: int) -> str:
+    """A log key that makes a form-1 request of one `log:<key>` member exactly
+    `size` bytes: letters alone, so it is in `check_lane_name`'s class and
+    goes as `--files log:<key>`, and no log has it."""
+    return "k" * (size - len(REQUEST_HEAD) - len(REQUEST_TAIL))
+
+
+def _request(size: int) -> bytes:
+    """That request's bytes, as the client writes them (`_request_key`)."""
+    data = REQUEST_HEAD + _request_key(size).encode("ascii") + REQUEST_TAIL
+    assert len(data) == size, (len(data), size)
+    return data
+
+
+def _ask_service(est: Estate, data: bytes, limit: float = 10.0) -> bytes:
+    """`data` sent whole on the service's socket, and its answer read to the
+    end of its stream: the service closes each connection after its one
+    answer (socket API section 3)."""
+    import socket as _socket
+    conn = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    conn.settimeout(limit)
+    try:
+        conn.connect(str(_run_dir(est) / "register.sock"))
+        conn.sendall(data)
+        out = b""
+        while True:
+            chunk = conn.recv(1 << 20)
+            if not chunk:
+                return out
+            out += chunk
+    finally:
+        conn.close()
+
+
+def _bad_requests(est: Estate) -> int:
+    """`register.log`'s `bad request` lines, `<UTC> bad request`: the line the
+    service writes for a request it cannot take, the bound's refusal among
+    them, and for no other `unavailable` (`lanes-index:8713-8719` at
+    merge101), so never for a cold or busy service's."""
+    path = _run_dir(est) / "register.log"
+    if not path.exists():
+        return 0
+    return sum(1 for line in path.read_text(encoding="utf-8").splitlines()
+               if line.endswith(" bad request"))
+
+
+def test_a_65536_byte_request_is_sent_and_taken_and_a_65537_byte_one_is_neither(estate):
+    """T511'S REQUEST BOUND, N-3 (T237zt; lane 5's one reading, #165
+    6868247441, which T512's code takes at both ends): the whole request, its
+    `end` line included, is at most `REQUEST_MAX`, 65,536 bytes (socket API
+    section 13.3). One log key pads each request to its size
+    (`_request_key`); no log has it, so the service's answer needs no image
+    and meets no cache miss.
+
+    - THE CLIENT, against a socket of the case's own (`_Listener`, `whole`):
+      `register read --prefetch --files log:<key>` (form 1) whose request is
+      65,536 bytes sends it whole, those bytes exactly, and on the listener's
+      close falls back, writing `.direct`; one whose request would be 65,537
+      bytes makes no connection and reads directly by its own decision,
+      writing no `.direct` (N5; `lanes-index:9313-9315` at merge101).
+    - THE SERVICE, warmed (`_warm`): those 65,536 bytes are taken, an answer
+      at `n` naming the log `absent`, with no `bad request` line; 65,537
+      bytes, the same request with one more byte of key, are answered
+      `unavailable`, with one `bad request` line in `register.log`, which the
+      bound's refusal writes and a cold or busy service's `unavailable` does
+      not (`_bad_requests`)."""
+    est = estate(mode="primary")
+    listener = _Listener(est, hang=False, whole=True)
+    sent, direct, said = {}, {}, {}
+    try:
+        for size in (REQUEST_MAX, REQUEST_MAX + 1):
+            cache = est.root / "t" / f"request-{size}"
+            before = len(listener.got)
+            done = _index(est, "register", "read", "--prefetch", "--cache", str(cache),
+                          "--files", f"log:{_request_key(size)}")
+            sent[size] = [len(data) for data in listener.got[before:]]
+            direct[size] = os.path.lexists(f"{cache}.direct")
+            said[size] = f"exit {done.returncode}: {done.stderr.strip()[-300:]}"
+            if sent[size] == [size]:
+                assert listener.got[before] == _request(size), \
+                    f"the client's {size}-byte request is not the bytes of `_request`"
+    finally:
+        listener.close()
+    assert sent[REQUEST_MAX] == [REQUEST_MAX] and direct[REQUEST_MAX], \
+        (f"the client did not send its {REQUEST_MAX}-byte request whole and fall back: sent "
+         f"{sent[REQUEST_MAX]} bytes, .direct {direct[REQUEST_MAX]}; {said[REQUEST_MAX]}")
+    assert sent[REQUEST_MAX + 1] == [] and not direct[REQUEST_MAX + 1], \
+        (f"the client sent a request of {REQUEST_MAX + 1} bytes: sent {sent[REQUEST_MAX + 1]} "
+         f"bytes, .direct {direct[REQUEST_MAX + 1]}; {said[REQUEST_MAX + 1]}")
+    svc = _Service(est)
+    try:
+        _warm(est)
+        bad = _bad_requests(est)
+        taken = _ask_service(est, _request(REQUEST_MAX))
+        bad_taken = _bad_requests(est)
+        refused = _ask_service(est, _request(REQUEST_MAX + 1))
+        bad_refused = _bad_requests(est)
+    finally:
+        svc.stop()
+    name = b"lanes/log/" + _request_key(REQUEST_MAX).encode("ascii") + b".md"
+    lines = taken.split(b"\n")
+    assert lines[0].startswith(b"text ") and lines[1:] == [b"absent " + name, b"end", b""] \
+        and bad_taken == bad, \
+        (f"the service did not take a request of {REQUEST_MAX} bytes: {taken[:80]!r}, "
+         f"{len(taken)} bytes in all; bad request lines {bad} then {bad_taken}")
+    assert refused == b"unavailable\n" and bad_refused == bad_taken + 1, \
+        (f"the service did not refuse a request of {REQUEST_MAX + 1} bytes as one it cannot "
+         f"take: {refused[:80]!r}; bad request lines {bad_taken} then {bad_refused}")
 
 
 #: SVC-10'S 50 ms (TP:7976-7979 at a6497d00), recorded beside the served median,
