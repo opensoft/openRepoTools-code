@@ -106,21 +106,23 @@ from test_sql_register_order import (ARROW, BURST, CLIENT, DOT, EM, LA, LB, LC, 
 #: that owns the test (T222, T244, T245, T246, T247 or T251), each L-label read
 #: as the task that covers it, as lane 2's gate tables plan (GP-24, version 2)
 #: gives them, with lane 3's rulings on T245's texts for 3 and T247's
-#: record-less text. No row is `"*"`, since the six tasks' waits share no
-#: task. Each `tasks:<n>` is tasks.md's line at `204145ae`, the reader's
-#: `SPEC_COMMIT`.
+#: record-less text. T247's rows also name T415, whose `pw_run` is the write
+#: path on primary that each of its tests takes, and T417 where an id
+#: asserts its 3, ahead of T247's Order (lane 4's GT-L4, #165 6879601079).
+#: No row is `"*"`, since the six tasks' waits share no task. Each
+#: `tasks:<n>` is tasks.md's line at `204145ae`, the reader's `SPEC_COMMIT`.
 SQL_REGISTER_GATE_TABLE = {
     "test_a_call_in_doubt_that_committed_runs_its_tail_once_from_the_kept_child": ("T412", "T417", "T418"),  # T245; tasks:2363
     "test_a_callers_rerun_after_a_failed_reconnect_reuses_the_write_id": ("T107", "T108", "T114", "T412", "T417"),  # T244; tasks:2350
-    "test_a_claim_from_another_host_or_container_counts_as_live_for_120_s": ("T412",),  # T247; tasks:2377
-    "test_a_claim_with_no_record_beside_it_is_waited_for": ("T412",),  # T247; tasks:2377
+    "test_a_claim_from_another_host_or_container_counts_as_live_for_120_s": ("T412", "T415", "T417"),  # T247; tasks:2377; lane 4, #165 6879601079
+    "test_a_claim_with_no_record_beside_it_is_waited_for": ("T412", "T415"),  # T247; tasks:2377; lane 4, #165 6879601079
     "test_a_commit_lost_before_it_landed_is_retried_cleanly_and_ends_with_one_entry": ("T107", "T108", "T114", "T412", "T417"),  # T244; tasks:2350
     "test_a_commit_past_its_not_after_raises_lr008_and_one_within_it_commits": ("T107", "T108", "T114", "T417"),  # T246; tasks:2371
     "test_a_commit_that_landed_before_the_connection_was_lost_ends_with_one_entry_and_exit_0": ("T107", "T108", "T114", "T412", "T417"),  # T244; tasks:2350
     "test_a_committed_write_leaves_no_pending_record": ("T412", "T417", "T418"),  # T245; tasks:2363
     "test_a_generation_change_after_the_snapshot_read_gives_lr007_generation": ("T107", "T108", "T413", "T414", "T415", "T417"),  # T251; tasks:2390
-    "test_a_lanes_write_id_run_waits_for_a_live_owner": ("T412",),  # T247; tasks:2377
-    "test_a_live_pending_record_is_waited_for_not_shared": ("T412",),  # T247; tasks:2377
+    "test_a_lanes_write_id_run_waits_for_a_live_owner": ("T412", "T415", "T417"),  # T247; tasks:2377; lane 4, #165 6879601079
+    "test_a_live_pending_record_is_waited_for_not_shared": ("T412", "T415", "T417"),  # T247; tasks:2377; lane 4, #165 6879601079
     "test_a_lookup_held_at_the_head_row_ends_55p03_inside_its_statement_timeout": ("T107", "T108", "T114", "T227", "T228"),  # T222; tasks:2135
     "test_a_lookup_made_too_early_exits_3_and_keeps_the_record": ("T107", "T108", "T114", "T417"),  # T246; tasks:2371
     "test_a_lookup_never_mistakes_a_rivals_row_for_the_lost_write": ("T107", "T108", "T114", "T412", "T417"),  # T244; tasks:2350
@@ -129,7 +131,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_lookup_try_without_an_answer_is_made_again_inside_the_window": ("T107", "T108", "T114", "T417"),  # T246; tasks:2371
     "test_a_pending_record_is_owned_through_numbered_claim_files_and_two_reruns_never_both_take_it": ("T412", "T417", "T418"),  # T245; tasks:2363
     "test_a_plain_rerun_reuses_the_pending_write_id_once_and_says_so": ("T412", "T417", "T418"),  # T245; tasks:2363
-    "test_a_record_of_another_generation_is_refused_2_until_lanes_write_id_new": ("T412",),  # T247; tasks:2377
+    "test_a_record_of_another_generation_is_refused_2_until_lanes_write_id_new": ("T412", "T415", "T417"),  # T247; tasks:2377; lane 4, #165 6879601079
     "test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_none_of_the_tail": ("T412", "T417", "T418"),  # T245; tasks:2363
     "test_a_replay_of_request_handoff_types_into_no_pane": ("T412", "T417", "T418"),  # T245; tasks:2363
     "test_a_replay_that_stops_or_differs_runs_no_tail_and_warns": ("T412", "T417", "T418"),  # T245; tasks:2363
@@ -139,7 +141,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_rerun_that_finds_tail_sent_runs_no_tail_and_writes_the_done_mark": ("T412", "T417", "T418"),  # T245; tasks:2363
     "test_a_rerun_with_other_arguments_does_not_take_the_pending_id": ("T412", "T417", "T418"),  # T245; tasks:2363
     "test_a_retry_with_the_old_connection_still_open_writes_no_second_row": ("T107", "T108", "T114", "T412", "T417"),  # T244; tasks:2350
-    "test_a_reused_pid_in_a_pending_record_reads_as_dead": ("T412",),  # T247; tasks:2377
+    "test_a_reused_pid_in_a_pending_record_reads_as_dead": ("T412", "T415", "T417"),  # T247; tasks:2377; lane 4, #165 6879601079
     "test_a_run_killed_after_its_call_line_or_mid_call_is_taken_over_in_doubt_and_waits_past_not_after": ("T412", "T417", "T418"),  # T245; tasks:2363
     "test_a_run_with_no_record_runs_no_tail_and_names_it": ("T412", "T415", "T417", "T418"),  # T245; tasks:2363
     "test_a_same_generation_id_after_a_restore_form_cutover_gets_lr006": ("T107", "T108", "T114", "T227", "T228"),  # T222; tasks:2135
@@ -156,7 +158,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_an_attempt_committed_while_the_commit_waits_gives_40001_then_exit_0": ("T107", "T108", "T413", "T414", "T415", "T417"),  # T251; tasks:2390
     "test_an_attempt_holding_past_lock_timeout_gives_55p03_then_exit_0": ("T107", "T108", "T413", "T414", "T415", "T417"),  # T251; tasks:2390
     "test_an_attempt_that_never_commits_leaves_the_write_to_the_retry": ("T107", "T108", "T413", "T414", "T415", "T417"),  # T251; tasks:2390
-    "test_an_expired_pending_record_is_not_reused": ("T412",),  # T247; tasks:2377
+    "test_an_expired_pending_record_is_not_reused": ("T412", "T415"),  # T247; tasks:2377; lane 4, #165 6879601079
     "test_an_id_in_the_journal_for_another_lane_gets_lr007": ("T107", "T108", "T114", "T227", "T228"),  # T222; tasks:2135
     "test_an_in_doubt_claim_never_leaves_two_claimed_lines_or_a_false_69": ("T107", "T108", "T114", "T412", "T417"),  # T244; tasks:2350
     "test_an_in_doubt_write_whose_next_attempt_is_refused_makes_its_lookup_before_it_exits": ("T107", "T108", "T114", "T412", "T417"),  # T244; tasks:2350
@@ -173,7 +175,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_find_write_waits_on_the_server_clock_holding_no_lock": ("T107", "T108", "T114", "T227", "T228"),  # T222; tasks:2135
     "test_lanes_write_id_of_another_write_is_refused_2_and_the_pending_record_kept": ("T412", "T417", "T418"),  # T245; tasks:2363
     "test_lanes_write_id_of_the_records_own_write_takes_it_over_past_its_age": ("T412", "T417", "T418"),  # T245; tasks:2363
-    "test_liveness_is_the_highest_claims_never_the_records_pid": ("T412",),  # T247; tasks:2377
+    "test_liveness_is_the_highest_claims_never_the_records_pid": ("T412", "T415", "T417"),  # T247; tasks:2377; lane 4, #165 6879601079
     "test_lr006_comes_before_lr001": ("T107", "T108", "T413", "T414", "T415", "T417"),  # T251; tasks:2390
     "test_lr008_alone_never_gives_3_or_69": ("T107", "T108", "T114", "T417"),  # T246; tasks:2371
     "test_lr008_at_the_deadline_leaves_the_exit_to_find_write": ("T107", "T108", "T114", "T417"),  # T246; tasks:2371
@@ -188,14 +190,15 @@ SQL_REGISTER_GATE_TABLE = {
     "test_the_deadlines_lookup_waits_past_the_largest_not_after": ("T107", "T108", "T114", "T417"),  # T246; tasks:2371
     "test_the_no_lookup_control_gives_lr001_where_the_lookup_gives_lr006": ("T107", "T108", "T413", "T414", "T415", "T417"),  # T251; tasks:2390
     "test_the_no_lookup_control_reaches_23505_so_the_oracle_can_fail": ("T107", "T108", "T413", "T414", "T415", "T417"),  # T251; tasks:2390
-    "test_the_pending_digest_covers_the_session_and_equals_args_sha256": ("T412",),  # T247; tasks:2377
+    "test_the_pending_digest_covers_the_session_and_equals_args_sha256": ("T412", "T415"),  # T247; tasks:2377; lane 4, #165 6879601079
     "test_the_pending_records_call_lines_are_written_before_the_send_and_dropped_only_for_a_call_that_did_not_commit": ("T412", "T417", "T418"),  # T245; tasks:2363
     "test_the_switchs_own_generation_at_files_still_gets_lr002": ("T107", "T108", "T114", "T227", "T228"),  # T222; tasks:2135
     "test_the_texts_for_3_say_may_not_be_written_and_relay_the_writers_rerun": ("T412", "T417", "T418", "T433", "T434"),  # T245; tasks:2363
     "test_two_matching_calls_of_one_change_set_leave_the_replays_tail_owed": ("T412", "T417", "T418"),  # T245; tasks:2363
     "test_with_the_kept_child_gone_a_replay_runs_the_tail_once": ("T412", "T417", "T418"),  # T245; tasks:2363
-    "test_a_claim_with_no_record_beside_it_is_waited_for[live-at-deadline]": ("T412", "T417"),  # T247; tasks:2377
-    "test_a_claim_with_no_record_beside_it_is_waited_for[write-id-live-at-deadline]": ("T412", "T417"),  # T247; tasks:2377
+    "test_a_claim_with_no_record_beside_it_is_waited_for[live-at-deadline]": ("T412", "T415", "T417"),  # T247; tasks:2377; lane 4, #165 6879601079
+    "test_a_claim_with_no_record_beside_it_is_waited_for[write-id-live-at-deadline]": ("T412", "T415", "T417"),  # T247; tasks:2377; lane 4, #165 6879601079
+    "test_a_live_pending_record_is_waited_for_not_shared[ends-in-time]": ("T412", "T415"),  # T247; tasks:2377; lane 4, #165 6879601079
     "test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_none_of_the_tail[rename-lane-stops]": ("T412", "T417", "T418", "T422"),  # T245; tasks:2363
     "test_the_pending_records_call_lines_are_written_before_the_send_and_dropped_only_for_a_call_that_did_not_commit[refusal]": ("T412", "T415", "T417", "T418"),  # T245; tasks:2363
 }
