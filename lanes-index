@@ -8267,6 +8267,8 @@ class RegisterService:
         self.install, self.config_stamp = stamps
         self.config_epoch = 0        # moves with each configuration taken (`reload`)
         self.reload_due = False      # a request saw a change; the worker re-reads it (M1)
+        self.asks = 0                # requests that saw a change, counted (NIT-A)
+        self.taken = 0               # of them, those a finished `take_change` has covered
         self.idle_check_s, ignored = register_serve_seconds(REGISTER_SERVE_IDLE_CHECK)
         if ignored:
             register_serve_log(paths, "the idle check's test value is ignored: the default is kept")
@@ -9038,11 +9040,28 @@ class RegisterService:
             # connection thread runs `load_config`'s `git` or waits on a kill.
             # That request is answered `unavailable`, or `unavailable
             # restarting` where the change ends the service.
-            limit = arrival + register_serve_timer_ms(cfg) / 1000 + REGISTER_SERVE_KILL_S + 1.0
+            # NIT-A (lane 1, #165 6883749855): the request is counted, and
+            # the wait also ends once a `take_change` that began after it has
+            # finished (`taken`), so one that finds no difference, a file
+            # changed back, wakes it as a step does. Where the worker is in a
+            # job (`busy`: a request's query, the idle check, or a whole-file
+            # fetch of up to 11 s), it takes no change before that job ends,
+            # so the wait is held to the request's own timer, which ends
+            # inside the client's wait (`register_serve_wait_ms`, the timer
+            # plus 100 ms), and the client hears `unavailable` rather than
+            # giving up. The change stays asked of the worker; no connection
+            # thread re-reads it, runs `git` or waits on a kill (M1).
+            timer = register_serve_timer_ms(cfg) / 1000
             with self.cond:
+                self.asks += 1
+                ticket = self.asks
                 self.reload_due = True
                 self.cond.notify_all()
-                self.cond.wait_for(lambda: self.config_epoch != epoch or self.stopping,
+                limit = arrival + timer
+                if self.state != "busy":
+                    limit += REGISTER_SERVE_KILL_S + 1.0
+                self.cond.wait_for(lambda: (self.config_epoch != epoch or self.taken >= ticket
+                                            or self.stopping),
                                    max(0.0, limit - time.monotonic()))
                 stopping = self.stopping
             return b"unavailable restarting\n" if stopping else b"unavailable\n"
@@ -9052,13 +9071,24 @@ class RegisterService:
         """A CHANGED CONFIGURATION, TAKEN BY THE WORKER ALONE (M1): re-read
         (`reload`) only where its stamp still differs from the one held, so
         requests that saw one change make one step between them; and where
-        the change ends the service, the service stops."""
+        the change ends the service, the service stops.
+
+        It covers each request counted before it began (NIT-A): the stamp it
+        compares is read after them, so whatever change they saw, it sees
+        that or a later state. Once it has finished, with a step, with none
+        where it finds no difference, or with a fault, those requests' waits
+        end (`answer`)."""
         with self.cond:
-            cfg, stamp = self.cfg, self.config_stamp
-        if register_serve_config_stamp(cfg) != stamp:
-            why = self.reload()
-            if why:
-                self.stop(why)
+            cfg, stamp, upto = self.cfg, self.config_stamp, self.asks
+        try:
+            if register_serve_config_stamp(cfg) != stamp:
+                why = self.reload()
+                if why:
+                    self.stop(why)
+        finally:
+            with self.cond:
+                self.taken = max(self.taken, upto)
+                self.cond.notify_all()
 
     def reload(self) -> str:
         """The configuration re-read (Y:3918-3920): why the service must exit,
