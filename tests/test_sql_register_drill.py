@@ -128,6 +128,13 @@ READINGS, NOT FOUND IN A CONTRACT:
   `mode=index` refuses 2 whatever the session, by design (F17,
   `reg_marker_check`'s `guard` arm), so no bound lane's 0 could equal it
   (lane 5, #165 6868723007; lane 2's choice (a), T276g).
+  THE CONTRAST'S CAUSE IS A PIN: it holds the guard's own sentence word for
+  word, from the last `guard_refuse_start` in `lanes-edit.sh`'s `guard_run`,
+  the name table's last arm ("whose row does not name this uuid at all"):
+  `lanes-edit.sh:21565` on line R's merge106 (`bc9ed80b`), `:21515` on
+  merge104 (`142afd90`) and `:21493` on merge101 (`44f487d1`), where T276h
+  took it character for character. A change of that sentence fails step
+  6's contrast, so change the two together (T276i).
 - STEP 6'S REFUSAL names the database as `register_url=` gives it, without
   credentials (lane 3, #165 6809045090 and 6812459759, as the outage module
   holds AT-P3's oracle), and its stderr carries no password.
@@ -1070,9 +1077,10 @@ class Drill:
                 f"{other.lane}, does not answer from the mirror with the declared line (lane 5's "
                 f"T507, SVC-12): {_masked(out)[-600:]}")
             # Its own cause, in the guard's words (`lanes-edit.sh`'s table, the
-            # row that names no such uuid), not only the row's session, which
-            # the triple's `row` line of any refusal after the row's read
-            # carries too, Amendment 18(h)'s duplicate among them (lane 5, #165
+            # row that names no such uuid; a pin, whose place the module's
+            # notes name), not only the row's session, which the triple's
+            # `row` line of any refusal after the row's read carries too,
+            # Amendment 18(h)'s duplicate among them (lane 5, #165
             # 6870260047).
             cause = (f"this window is lane {other.lane}, whose row ends on "
                      f"{SESSIONS[other.lane]} and does not name {SESSIONS[ws.lane]} at all")
