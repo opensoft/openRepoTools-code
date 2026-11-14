@@ -44,6 +44,8 @@ import sys
 import xml.etree.ElementTree as ElementTree
 from pathlib import Path
 
+import pytest
+
 from conftest import REPO
 
 #: The variable, as `tests/pgcluster.py` and `tests.yml` spell it.
