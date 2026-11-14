@@ -2137,7 +2137,19 @@ def test_a_bind_in_doubt_looks_its_write_up_before_a_rerun(estate, held):
     request only that form sends: under `--tree` and `--at <k>`, the
     `repos_blob` of the entry at `k + 1`
     (`f9e1449c:lanes-index:3454`, `:3752`; the replay's call,
-    `f9e1449c:lanes-edit.sh:10725-10728`)."""
+    `f9e1449c:lanes-edit.sh:10725-10728`).
+
+    AND `[found]`'s DONE MARK SAYS `done` (T254zp; Y TP:6110-6113 at
+    a6497d00): `<state>/register-done/<write_id>`, under the estate's own
+    state home, holds `tail=done ...`, as the run that removes the record
+    on 0 writes it (`4d96f8c5:lanes-edit.sh:8063-8077`). Two more items of
+    that row are not read, since the case cannot see them: the replay
+    child's `seam.out` `tail`, because a run's own `<run>/` goes at its end
+    and a kept attempt directory keeps only `snapshot`, `files` and
+    `preimages` (`:9722-9724`); and `lane_state_follow`'s one move of the
+    lane's `lane-state.yaml` `generation`, a sidecar written only for a
+    legacy lane on a seam verdict and a pre-image (`:25895-25906`, `:25769`),
+    whose place in this estate is not established."""
     est = _real_estate(estate, mode="primary")
     arms = ([{"mode": "fail-match", "match": "commit_write", "from": 1},
              {"mode": "fail-match", "match": "find_write", "from": 1}]
@@ -2169,6 +2181,10 @@ def test_a_bind_in_doubt_looks_its_write_up_before_a_rerun(estate, held):
         assert [c for c in calls if at in c.get("sent", "")], \
             (f"no replay at seq {int(seq[-1]) - 1}, the found entry's base, in calls "
              f"{[c.get('call') for c in calls]}")
+        done = est.state_home / "openRepoTools" / "register-done" / copied
+        mark = done.read_text(encoding="utf-8").splitlines() if done.exists() else []
+        assert [line for line in mark if line.startswith("tail=done")], \
+            f"the found write's done mark {done} does not say done: {mark}"
     else:
         assert start and all(copied not in calls[i].get("sent", "") for i in start), \
             (copied, [calls[i].get("call") for i in start])
@@ -2298,7 +2314,11 @@ def test_the_bind_childs_lookup_sends_the_five_copied_values(estate, case):
     takes the row's back, while a lookup whose lane came from `to` would
     send the respelling, which `find_write` compares exactly
     (`f9e1449c:lanes-index:10442`), and would end `rc=2` with LR007
-    `another-write`, not `bound`; and the lookup must not carry it."""
+    `another-write`, not `bound`; and the lookup must not carry it. The
+    guard itself never writes such a record, since it writes `to=` as the
+    row spells it (lane 5, #165 6867385794: `lanes-edit.sh:21606` at
+    merge97), so the respelled record stands for a damaged or hand-edited
+    one (lane 3's ruling, #165 6867533114)."""
     est = _real_estate(estate, mode="primary")
     # CASE 10's `[found]` ARMS (T254t, T254w): every call after the commit
     # call fails, and the guard's own prefetch calls before it do not.
@@ -2461,8 +2481,9 @@ def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, r
     address: `guard-bind` records `bound_s=530`, the bind ends `bound`, its
     `ended_utc` less `started_utc` recorded beside the 530 s, and the
     guard's register read is the hook's last database call in the shim's
-    log. Waits for T229's `delayed_loopback`, which this line does not
-    have.
+    log. The relay is T229's `delayed_loopback`, which FX's
+    `tests/pgcluster.py` holds (`a048fddb:tests/pgcluster.py:1400`), and
+    which the case asserts is there (T254zq; lane 2's review RV23, NIT 5).
 
     THE LINK IS ROUTED (T254za; lane 5, #165 6841545201): the estate
     reads and writes T229's TLS cluster, which listens on 127.0.0.1 (the
@@ -2515,7 +2536,14 @@ def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, r
     "the exit's lag after the read" is the hook's exit less the ends
     file's mtime as the hook exits, when the guard's read was the last
     call to end, recorded and asserted as case 1 asserts its exit: 1 s,
-    at twice it."""
+    at twice it.
+
+    A CALL THE SERVER'S OWN TIMER CUTS STILL HAS ITS END (T254zt; lane 2's
+    review RV23, NIT 8): a `statement_timeout` or `lock_timeout` ends the
+    call inside `psql`, which returns 1, and the shim writes that call's
+    line all the same. So the `2`'s guard read must also have ended 0. The
+    lag's bound stays at twice TP's 1 s, by section 1.2's timing rule, as
+    every bound here but the hook's 4.5 s is asserted."""
     pgcluster = pytest.importorskip("pgcluster")
     delayed = pgcluster.__dict__.get("delayed_loopback")
     assert delayed is not None, "tests/pgcluster.py has no delayed_loopback (T229)"
@@ -2561,6 +2589,10 @@ def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, r
     assert calls and all("statement_timeout=1500" in (s[3] or "") for s in seen) \
         and seen[-1][1:3] == (port, "3"), \
         f"the 2's prompt made calls other than the guard's read through the relay {port}: {seen}"
+    ends = _ends(est)
+    cut = [(c.get("call"), ends.get(c.get("call"))) for c in calls
+           if (ends.get(c.get("call")) or {}).get("exit") != 0]
+    assert not cut, f"the 2's guard read did not end 0, as a call its server's timer cut: {cut}"
     lag = exited - read_end
     print(f"T254 case 21: the hook exited {lag:.3f} s after its read ended "
           f"(bound 1 s, asserted at 2 s)")
@@ -2579,14 +2611,21 @@ def test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s(estate, r
 ENDS_LIMIT_S = 30.0
 
 
+def _ends(est: Estate) -> dict:
+    """The shim's ends file, {call: its line}: `exit`, and `psql`'s own code
+    where the real `psql` ran (T254zt)."""
+    path = est.bin / PSQL_SHIM_ENDS
+    if not path.exists():
+        return {}
+    lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+             if line.strip()]
+    return {line.get("call"): line for line in lines}
+
+
 def _calls_with_no_end(est: Estate) -> list:
     """The shim's request calls with no line in its ends file (T254zi): a
     call killed at its client timer, or one still running."""
-    path = est.bin / PSQL_SHIM_ENDS
-    ends = set()
-    if path.exists():
-        ends = {json.loads(line).get("call") for line in
-                path.read_text(encoding="utf-8").splitlines() if line.strip()}
+    ends = _ends(est)
     return sorted(c.get("call") for c in est.shim_calls() if c.get("call") not in ends)
 
 
@@ -2622,6 +2661,10 @@ START_LINE = 3.75
 #: whole-file fetch on its FIFO. The fetch starts before the cut, so it is
 #: held by then; this is a margin, the outer's 10 s (`Estate.outer`).
 HOLD_LIMIT = 10.0
+#: How long case 6 then waits for the released fetch to record the image
+#: cache (T254zr): the `guard-fetch` row's least client timer, `N_a`*`c` +
+#: 15 s at `c` = 2 (`f9e1449c:lanes-index:4573`).
+CACHE_LIMIT_S = 17.0
 #: FORM 4 AS THE SHIM SEES IT (lane 5's F2b, #165 6812547449). The shim logs
 #: `psql`'s own argv, never `lanes-index`'s, so no `--for` is ever in it;
 #: form 4 is known by its SQL instead, which the shim logs as `sent` and
@@ -2878,7 +2921,18 @@ def test_a_whole_file_fetch_the_start_line_cuts_fills_the_image_cache_for_the_ne
     3, #165 6812490130). The case's database holds the estate's register at
     primary (`_Register`; lane 5's F2, #165 6812547449): at `files` the
     first request ends 69, `switch-files`, and no whole-file fetch is ever
-    made."""
+    made.
+
+    THE NEXT PROMPT WAITS FOR THE CACHE, NOT FOR A SECOND (T254zr; lane 2's
+    MK-22, on lane 3's #165 6860626333): once released, the detached child
+    runs its `psql`, puts the image in the cache and records its head
+    before it answers (`f9e1449c:lanes-index:7451-7460`), and nothing waits
+    for it, so the old `time.sleep(1.0)` raced it: a child slower than 1 s
+    left the next prompt to fetch the file again. So the case polls the
+    cache's `head` until it reads the register's head, bounded at
+    `CACHE_LIMIT_S`, the fetch row's own least timer, then reads that the
+    head's manifest names `lanes/LANES.md` (`head` moves only after
+    `seq/<n>` is written, `:2949-2988`)."""
     est = estate(mode="primary", to=FROM, to_row=False)
     _Register(est)
     fifo = tmp_path / "whole-file"
@@ -2895,7 +2949,17 @@ def test_a_whole_file_fetch_the_start_line_cuts_fills_the_image_cache_for_the_ne
     finally:
         _release(fifo, 0)
     before = len(est.shim_calls())
-    time.sleep(1.0)
+    n = est.pg.psql("SELECT seq FROM lanes_register.register_head;").stdout.split()[-1]
+    images = est.state_home / "openRepoTools" / "register-images"
+
+    def filled() -> bool:
+        head = images / "head"
+        return head.exists() and head.read_text(encoding="utf-8").strip() == n
+
+    assert _until(filled, CACHE_LIMIT_S, 0.1), \
+        f"the released fetch did not record the image cache at {n} in {CACHE_LIMIT_S:.0f} s: {images}"
+    manifest = (images / "seq" / n).read_text(encoding="utf-8").splitlines()
+    assert [line for line in manifest if line.split("\t")[0] == "lanes/LANES.md"], manifest
     hook = est.hook("hello")
     assert hook.code in (0, 2) and not hook.killed, repr(hook)
     assert not [c for c in est.shim_calls()[before + 1:]
@@ -3113,7 +3177,13 @@ MEASURE_LOG = 90_000
 def _record_figure(title: str, figures: dict) -> None:
     """A measurement's figures, printed for the job's log and appended to
     `$GITHUB_STEP_SUMMARY` where it is set."""
-    line = f"{title}: " + ", ".join(f"{k} {v}" for k, v in figures.items())
+    _record_line(f"{title}: " + ", ".join(f"{k} {v}" for k, v in figures.items()))
+
+
+def _record_line(line: str) -> None:
+    """One line, printed for the job's log and appended to
+    `$GITHUB_STEP_SUMMARY` where it is set: a figure's, or a warning's
+    (T237zs), which a passing test's captured output would otherwise hide."""
     print(line)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
@@ -4273,16 +4343,24 @@ def test_the_guard_answer_time_is_recorded_beside_todays_direct_guard(estate):
     # THE WARNING PAST 50 ms (T237zo; RV20, NIT 11): "the test prints a
     # warning when the median exceeds it, without failing" (TP:7976-7979 at
     # a6497d00). The median here is a whole-hook figure, so the warning says
-    # so; it fails nothing.
+    # so; it fails nothing. It is RECORDED as the figures are (T237zs; lane
+    # 2's review RV23, NIT 2): pytest hides a passing test's own output, so
+    # a bare print reached no job summary.
     if served and _median(served) * 1000 > SVC10_BOUND_MS:
-        print(f"WARNING: SVC-10's served median, {_median(served) * 1000:.1f} ms for the whole "
-              f"hook, is over its {SVC10_BOUND_MS} ms (recorded, not failed)")
+        _record_line(f"WARNING: SVC-10's served median, {_median(served) * 1000:.1f} ms for the "
+                     f"whole hook, is over its {SVC10_BOUND_MS} ms (recorded, not failed)")
     # SERVED, AND NOTHING ELSE UNKNOWN (T237zn; lane 2's review RV20, finding
     # 10): every sample lands in one path, so `any(paths.values())` held
     # whatever the paths were, ten refusals or ten fallbacks among them. The
     # time stays unasserted, as TP:7976-7979 at a6497d00 has it, "without
-    # failing".
-    assert served and not paths["other"], {name: len(times) for name, times in paths.items()}
+    # failing". NOR A REFUSAL (T237zr; lane 2's review RV23, NIT 1): with the
+    # window and the session both `FROM`, the guard has nothing to refuse,
+    # so a refusal is a path the case did not mean, and nine of them beside
+    # one served sample passed. A fallback stays counted and allowed: the
+    # service may answer `unavailable` while it fetches. Whether the service
+    # itself answered a served sample is still read from its exit alone.
+    assert served and not paths["other"] and not paths["refusal"], \
+        {name: len(times) for name, times in paths.items()}
 
 
 def test_status_prints_the_services_lines_and_its_failure_stamp(estate):
