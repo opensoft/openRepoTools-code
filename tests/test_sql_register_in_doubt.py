@@ -2391,6 +2391,12 @@ class HalfOpen:
         # before any next call (round 6h's `[connect]`; lane 2's TR21, 2c).
         # The `before` arm's lost call ends 2, its backend gone and its
         # transaction rolled back, so the head row is free for the replay.
+        # THAT RACE IS READ FROM THE CODE, NOT SEEN: no run has caught it, and
+        # the runs since the wait came in (ID-25's four) show only that it
+        # keeps the flow, not that it closed the race. The first commit call
+        # is always the `before` arm's, since this estate puts BEFORE first
+        # among every writer's arms, so the 2 asserted here holds for each
+        # caller (lane 2's RV23 NIT 11).
         ended = until_seen("the first commit call's end", lambda: self.w.ends().get(call["call"]), self.w)
         assert ended.get("exit") == 2, f"the first commit call ended {ended}, not 2, the `before` arm's lost call"
         script = without_commit(call["stdin"])
