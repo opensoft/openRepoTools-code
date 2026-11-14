@@ -614,7 +614,8 @@ BUSY_WORDS = ("register busy", "nothing", "retry")
 D7_S, TWICE_D7_S = 30, 60
 #: AT-4 (c)'s measuring burst (T243u): a deadline none of its writers is
 #: meant to reach, four times D7's and inside `Writer.wait`'s 150 s, so all
-#: ten stay in the load until each commits; and the factor of the runner's
+#: ten stay in the load until each commits, which the case checks by their
+#: exit codes before it takes the p95 (T243w); and the factor of the runner's
 #: own D7, `max(30 s, 10 x the runner's attempt p95)` (Y:5906; tasks:2337 at
 #: `8e8d1b49`).
 MEASURE_DEADLINE_S, D7_PER_P95 = 120, 10
@@ -1285,7 +1286,10 @@ def burst(e: Estate, objects: Sequence[str], window_ms: int, extra: dict = None,
     `name` is the record's, `burst`, but `burst-measure` for AT-4 (c)'s
     measuring burst, so a census tells the two apart; `wait_s` bounds each
     writer's wait, 150 s, or longer where AT-4 (c)'s deadline asks for it,
-    so the case's own drain assertion decides a slow burst (T243u)."""
+    so the case's own drain assertion decides a slow burst (T243u). The
+    record ends with each writer's exit code, `codes`, so it shows how the
+    burst ended, the measuring burst's among them (lane 2's RV26, NIT 7;
+    T243w)."""
     barrier = Barrier(e.root, len(objects))
     arms = [dict(WINDOW, ms=window_ms)]
     writers = [e.launch(lane, claim(obj, "--no-github"), arms=arms, barrier=barrier, extra=extra)
@@ -1304,7 +1308,8 @@ def burst(e: Estate, objects: Sequence[str], window_ms: int, extra: dict = None,
            seconds={w.lane: round(w.ended - released, 2) for w in writers},
            calls={lane: r[0] for lane, r in read.items()}, losses={lane: r[1] for lane, r in read.items()},
            commit_s={lane: r[2] for lane, r in read.items()},
-           longest_commit_s=max((x for r in read.values() for x in r[2]), default=None))
+           longest_commit_s=max((x for r in read.values() for x in r[2]), default=None),
+           codes={w.lane: w.code for w in writers})
     return writers, drain
 
 
@@ -1552,7 +1557,11 @@ def test_ten_writers_released_together_all_commit_in_order(estates, request):
     `MEASURE_DEADLINE_S`, which none is meant to reach, so all ten stay in
     the load until each commits. Every attempt of the ten, as
     `attempt_seconds` reads it, is pooled, and the p95 taken by nearest rank.
-    The measuring burst asserts nothing of how its writers end.
+    Before that, all ten measuring writers must have exited 0: one that
+    ended early lightens the load and lowers the p95, and one that ran out
+    of `MEASURE_DEADLINE_S` exits 75 and cuts the pooled sample short, so
+    either fails the case before its burst runs; `burst-measure` records
+    each one's exit code (lane 2's RV26, NIT 7; T243w).
 
     The burst then holds section 4.1's oracle: all exit 0, none 75 or 69;
     seqs 2 to 11, no gap and no repeat; ten distinct write ids; one
@@ -1576,6 +1585,9 @@ def test_ten_writers_released_together_all_commit_in_order(estates, request):
     measured, measure_drain = burst(measure, [f"{KEY}#{500 + k}" for k in range(10)], 200,
                                     extra={"LANES_REGISTER_DEADLINE_S": str(MEASURE_DEADLINE_S)},
                                     node=request.node, name="burst-measure")
+    assert [w.code for w in measured] == [0] * 10, (
+        f"the measuring burst did not end as meant, all ten committing inside its {MEASURE_DEADLINE_S} s, "
+        f"so its attempts do not measure the burst's load: {[(w.lane, w.code, w.err[-300:]) for w in measured]}")
     seconds = [s for w in measured for s in attempt_seconds(w)]
     assert seconds, f"the measuring burst's logs hold no attempt: {[(w.lane, w.code) for w in measured]}"
     runner_p95 = p95(seconds)
