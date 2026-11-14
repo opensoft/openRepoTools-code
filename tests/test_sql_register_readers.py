@@ -18,7 +18,9 @@ WHAT IT HOLDS, by its five sources:
     `lane-start`'s last write, under a seq base, with its twin under an
     `@files` base, a note, a stamp and a launch (ERR-56; lane 3, #165
     6871338814), and ERR-56's second case, an `@files` base whose re-read
-    answers a seq base, which dies (lane 4, #165 6879449852);
+    answers a seq base, which dies (lane 4, #165 6879449852), and its
+    row-making 2, a new lane's under an `@files` base, which dies too (lane
+    4, #165 6880188792);
     `register-row-local`; `lane-worktrees`' reads; `--index` on
     primary; and `managed-projection`.
   * Lane 1's three (L1v4.5's T113 and T114): `guard_second_read_at`,
@@ -140,6 +142,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_primary_reader_makes_one_prefetch_and_every_read_site_reads_its_cache_at_one_n": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
     "test_a_read_site_with_no_prefetched_file_makes_one_more_register_read_and_never_a_git_read": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
     "test_an_expectation_2_at_lane_starts_last_write_dies": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_an_expectation_2_at_lane_starts_last_write_that_makes_a_row_under_an_at_files_base_dies": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; ERR-56's row-making 2, its twin's row
     "test_an_expectation_2_at_lane_starts_last_write_under_an_at_files_base_notes_stamps_and_launches": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
     "test_an_expectation_2_at_lane_starts_last_write_under_an_at_files_base_whose_reread_answers_a_seq_base_dies": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; ERR-56's second case, its twin's row (T217zu)
     "test_each_mirror_read_prints_its_line_and_keeps_its_exit": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
@@ -1692,6 +1695,80 @@ def test_an_expectation_2_at_lane_starts_last_write_under_an_at_files_base_whose
     published = world.git("--git-dir", str(world.origin), "show", f"main:{EXPECTATION_2_HANDOFF}")
     assert not any(line.startswith(f"RESUMED by {UUID_A1B} ") for line in published.splitlines()), \
         (published,) + where
+    assert not launched(world), where
+
+
+#: ERR-56'S ROW-MAKING 2 (research.md:1757-1758 at lane 3's commit 24 `f9d6069e`, "A
+#: `start-record` that makes the row still dies with 2"; T428's line, tasks:1351, "a new
+#: row's 2 dies in both"): a NEW lane, `repoZ-1`, which has no row, started from the
+#: sandbox's own checkout of `repoZ`, where there is nothing to resume, so `lane-start`
+#: mints the new session's id, and its one `start-record` call carries `--add-row` and the
+#: STARTED line (W1 with W7: `lane-start:4655-4657` and `:5124-5126` at line R's merge106
+#: `bc9ed80b`), under a base `<act-id>@files`.
+EXPECTATION_2_NEW_LANE = "repoZ-1"
+EXPECTATION_2_NEW_ROW = Arm("lane-start", ("repoZ", "1"), "start-record", "5142",
+                            match="*--add-row*", env={"ARM_ACT_BASE": FILES_ACT_BASE})
+
+
+def test_an_expectation_2_at_lane_starts_last_write_that_makes_a_row_under_an_at_files_base_dies(
+        tmp_path):
+    """ERR-56'S ROW-MAKING 2 (research.md:1748-1801 at lane 3's commit 24
+    `f9d6069e`; T428's line, tasks:1351; the path lane 4 found driven by no
+    test, #165 6879449852 and 6880188792): the twin's `start-record` 2 with
+    LR010's words, under a base `<act-id>@files`, on the one call of a NEW
+    lane, which makes its row (`--add-row`, no `--state`). Off primary only
+    a call that makes no row is Amendment 23's refusal; "a `start-record`
+    that makes the row still dies with 2". So `lane-start` takes its `2)`
+    arm (the re-read's guard, `[ -z "$LS_SR_ROW" ]`, keeps this call off
+    ERR-56's refusal path: `lane-start:5173` and `:5209-5210` at line R's
+    merge106 `bc9ed80b`): exit 2, its own refusal naming the call, its 2 and
+    the new row, no command of its own for the write (Y:5601), the writer's
+    words kept, nothing written to the register, and nothing launched. A
+    `lane-start` that took this 2 for Amendment 23's refusal, as it takes a
+    resume's, would note it with the command that writes the record later
+    and launch a lane that has no row; one that read the base again and then
+    died in the `*)` arm's row branch would print that command for a write
+    by hand; each fails here. How many times `act-begin` was asked is not
+    held: ERR-56 asks for its re-read on the way to the refusal, and forbids
+    none before a die (lane 4's note 1, #165 6879449852)."""
+    arm = EXPECTATION_2_NEW_ROW
+    lane = EXPECTATION_2_NEW_LANE
+    world = arm_world(tmp_path, arm)
+    before = world.register_bytes()
+    assert world.store_rows(lane) == 0, (lane, "the sandbox's register already has its row")
+    result = run_arm(world, arm, 2, stderr=EXPECTATION_2_STDERR)
+    lines = result.stderr.splitlines()
+    where = (result.returncode, result.stderr[-4000:])
+    # THE PREMISE: the stub's 2 met the one `start-record` call, a new lane's, which makes its
+    # row with its STARTED line, and the act took its `@files` base.
+    calls = world.reached()
+    assert calls and calls[0].startswith(f"start-record {lane} STARTED ") \
+        and " --add-row " in f" {calls[0]} " and " --state " not in f" {calls[0]} ", \
+        (calls,) + where
+    count = Path(f"{world.arm_log}.count")
+    assert count.exists() and count.read_text(encoding="utf-8").strip() == "1", \
+        ("start-record was called again", count.read_text(encoding="utf-8")
+         if count.exists() else None) + where
+    assert "act-begin" in act_begins(world), (
+        "the act did not take its @files base", act_begins(world)) + where
+    # THE DIE: 2, and `lane-start`'s own refusal, its `2)` arm's, naming the call, its 2 and
+    # the new row that was not written, with nothing launched.
+    assert result.returncode == 2, where
+    assert any(line.startswith(f"lane-start: lane {lane}'s bind was REFUSED: ")
+               and EXPECTATION_2_CALL_2 in line
+               and f"none of lane {lane}'s new row and its STARTED line was written" in line
+               and "nothing has been launched" in line for line in lines), where
+    # NOT AMENDMENT 23'S REFUSAL: no note that the launch is not refused, and no command of
+    # its own for the write (Y:5601), such as the `*)` arm's row branch prints for one by hand.
+    assert not any("The launch is not refused for it" in line for line in lines), where
+    hints = own_hints(result.stderr, "start-record")
+    assert not hints, (hints,) + where
+    # THE WRITER'S WORDS, kept as the writer printed them.
+    assert all(line in lines for line in EXPECTATION_2_STDERR.splitlines()), where
+    # NOTHING WRITTEN: the register on origin as it was, with no row for the new lane; and NO
+    # LAUNCH.
+    assert world.register_bytes() == before, ("the refusal wrote to the register",) + where
+    assert world.store_rows(lane) == 0, where
     assert not launched(world), where
 
 
