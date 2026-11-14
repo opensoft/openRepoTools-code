@@ -100,11 +100,13 @@ pytestmark = [WINDOWS_SKIP]
 #: T218's follow-up (tasks:2056 and :2072 at lane 3's commit 24, f9d6069e):
 #: `[old-git]` fails until lane 1's T119 follow-up 2, which builds check 14 in
 #: `lanes-index` alone and lands with T119, so its row names T119. The "*" row
-#: holds T119 already, so the row adds no wait: it records the clause.
+#: holds T119 already, so the row adds no wait: it records the clause. The
+#: ready environment's count of 14 checks (tasks:2056) waits for it too.
 SQL_REGISTER_GATE_TABLE = {
     "*": ("T104", "T109", "T119", "T120", "T229"),  # every id: the tasks all its rows share
     "test_the_readiness_check_fails_on_each_fault[outage-declared]": ("T121",),  # T218; tasks:2072
     "test_the_readiness_check_fails_on_each_fault[old-git]": ("T119",),  # T119's follow-up 2; tasks:2072
+    "test_the_readiness_check_passes_a_ready_environment": ("T119",),  # its count of 14; tasks:2056
 }
 
 #: The label `register_label=` names, and the one the second database's
@@ -829,7 +831,10 @@ def test_the_readiness_check_passes_a_ready_environment(tmp_path, request):
     proc = env.ready("--expect", "index")
     checks = _checks(proc.stdout)
     assert proc.returncode == 0, f"ready fails a ready environment:\n{_said(proc)}"
-    assert sorted(checks) == list(range(1, 14)), f"not one line per check:\n{_said(proc)}"
+    # Fourteen checks since check 14, git 2.32 or later (T218's follow-up;
+    # register-cli.md section 10): with 13 lines, the count fails until lane
+    # 1's T119 follow-up 2 lands.
+    assert sorted(checks) == list(range(1, 15)), f"not one line per check:\n{_said(proc)}"
     assert all(state == "ok" for state, _ in checks.values()), _said(proc)
 
 
