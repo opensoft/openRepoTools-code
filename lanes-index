@@ -9280,8 +9280,12 @@ def register_serve_ask(data: bytes, deadline: float) -> tuple:
             uid = register_peercred(conn)
         except OSError:
             uid = -1
+        # THE UID CHECK WINS (lane 5's ruling on lane 1's U5 NIT-h, #165
+        # 6881937840; socket API 3 and 13.8, draft 13): a server of another
+        # uid is unavailable, and this client sends nothing and starts none,
+        # whatever the owner file said of the install, as the docstring says.
         if uid is not None and uid != os.getuid():
-            return "unavailable", "its server is another uid's", start
+            return "unavailable", "its server is another uid's", False
         out = bytearray()
         try:
             conn.settimeout(max(0.001, deadline - time.monotonic()))
