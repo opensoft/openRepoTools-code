@@ -59,6 +59,11 @@ WHAT IT CHECKS, by the test plan's entries and lane 2's task T221:
     `write`'s `files` rows are its edited paths, each a render-set path or
     `lanes/STORE`; one more row, outside the render set or for a file the
     write leaves untouched, is LR004 at `commit_write`, by a direct call.
+  * `test_a_stray_revert_with_a_files_row_for_lanes_store_is_refused_lr004_at_commit`,
+    new since spec#17's re-review r5 (its finding 10; lane 3's ruling, commit
+    22's post): an edit-free `stray-revert` whose one `files` row is
+    `lanes/STORE`, which is not rendered, is LR004 at `commit_write`, by a
+    direct call.
 
 REAL ENGINE. Every case but the one-number rule and DEC-23's test asks for
 `pg`, one database cloned from the session's template, so its fixture closure
@@ -129,6 +134,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_second_bootstrap_at_the_same_version_adds_no_migration": ("T107", "T108", "T109", "T110"),  # T221; tasks:2127
     "test_a_second_divergence_report_keeps_the_first": ("T107", "T108", "T109", "T110"),  # T221; tasks:2127
     "test_a_stray_import_or_revert_clears_the_divergence": ("T107", "T108", "T109", "T110"),  # T221; tasks:2127
+    "test_a_stray_revert_with_a_files_row_for_lanes_store_is_refused_lr004_at_commit": ("T107", "T108", "T109", "T110"),  # T231; tasks:2231, spec#17's re-review r5, its finding 10 (lane 3's commit 22, 4d00a20b)
     "test_a_write_is_refused_lr002_while_the_marker_is_adding_or_removing": ("T107", "T108", "T109", "T110"),  # T231; tasks:2231
     "test_a_write_that_deletes_a_line_with_a_bad_key_is_refused_lr010": ("T107", "T108", "T109", "T110"),  # T221; tasks:2127
     "test_a_write_with_a_files_row_for_a_path_it_does_not_edit_is_refused_lr004_at_commit": ("T107", "T108", "T109", "T110"),  # T231; tasks:2231, lane 3's ruling 5 (#165 6878977318)
@@ -3024,3 +3030,42 @@ def test_a_write_with_a_files_row_for_a_path_it_does_not_edit_is_refused_lr004_a
     refused(commit_call(pg, n, body), "LR004", f"a write with a files row for {extra['path']}")
     assert head(pg) == n, f"{case}: the head moved from {n} to {head(pg)}"
     assert state(pg) == before, f"{case}: a refused write changed the register"
+
+
+# =================================================================== a stray-revert's files rows
+#: Spec#17's re-review r5, its finding 10 (lane 3's ruling, commit 22 `4d00a20b`'s
+#: W3; design:1545, :2058 and :2065): a `stray-revert` is edit-free, and its
+#: `files` rows name the paths the renderer restores, never `lanes/STORE`, which
+#: is not a rendered path (F2). The row is `lanes/STORE` as AT-LR4's fixture holds
+#: it after the cutover: present, with its own digest and final newline. Step 8's
+#: proof passes it as it stands, and the CHECK and the render-set check take
+#: `lanes/STORE`, so only the stray-revert's own check refuses it.
+STRAY_REVERT_STORE_ROW = {"path": "lanes/STORE", "present": True,
+                          "sha256": rendered(STORE_LINES), "final_newline": True}
+
+
+def test_a_stray_revert_with_a_files_row_for_lanes_store_is_refused_lr004_at_commit(pg):
+    """A `stray-revert` entry by hand, as AT-MIR's stray-revert case sends one (no
+    edits, and the stray's sha as `git_commit`, which the journal's CHECK asks of
+    a stray kind), with one `files` row, `lanes/STORE`, present with its own
+    digest, is refused at its commit with LR004 naming `lanes/STORE`, and nothing
+    changes: every table of section 1.2 equals its value before (spec#17's
+    re-review r5, its finding 10; AT-LR4 and T231). The premise is checked first:
+    `lanes/STORE` renders to the row's digest, so no proof LR004 can stand in.
+
+    A direct call, as T231f's case: the refusal is T107's `commit_write`, step 8's
+    stray-revert check (design:2065), which fails until lane 1's T107 follow-up
+    adds it; on line R's merge106 the entry commits."""
+    n = bring_to_primary(pg, LR4_FILES, no_newline=LR4_NO_NEWLINE)
+    row = STRAY_REVERT_STORE_ROW
+    renders = sql(pg, f"SELECT encode(sha256({SCHEMA}.render_file('lanes/STORE')), 'hex');",
+                  WRITER)
+    assert renders == row["sha256"], (
+        f"the premise: lanes/STORE renders {renders!r}, not the row's {row['sha256']}")
+    body = entry("stray-revert", "render --revert", journal={"git_commit": SHA_B}, files=[row])
+    before = state(pg)
+    message = refused(commit_call(pg, n, body), "LR004",
+                      "a stray-revert with a files row for lanes/STORE")
+    assert "lanes/STORE" in message, f"LR004, but not for lanes/STORE: {message}"
+    assert head(pg) == n, f"the head moved from {n} to {head(pg)}"
+    assert state(pg) == before, "a refused stray-revert changed the register"
