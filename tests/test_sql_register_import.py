@@ -111,6 +111,35 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("git") is None,
     reason="the lane tooling is bash over git")]
 
+#: THE LANDING GATE'S TABLE (T280, `tests/sql_register_gate.py`; task sets
+#: version 12b's rule 11, opensoft/openRepoTools#165 6877673742), TEMPORARY:
+#: T281 removes it in the last set. Where the gate is active, each id here is
+#: skipped until every task its row names has landed, and the skip names them.
+#: Each row is the fails-until clause of T211's Order (tasks:1961) or T272's
+#: (tasks:2497) in tasks.md at lane 3's commit 17, 204145ae, each L-label as
+#: the task that covers it (L1-A13 T115, L1-A14 T116, L1-A16 T118), as lane
+#: 2's plan GP-24 v1 (sha256 16d738b9) gives it. No "*" row: the rows share
+#: no task.
+SQL_REGISTER_GATE_TABLE = {
+    "test_a_cutover_pushes_one_fast_forward_marker_commit_with_no_credential": ("T116", "T327"),  # T272; tasks:2497
+    "test_a_first_cutover_over_a_hold_with_no_readable_time_is_refused_2_and_sets_nothing": ("T112", "T115", "T116", "T118", "T301"),  # T211; tasks:1961
+    "test_a_handoff_commit_on_the_tip_does_not_abort_the_cutover": ("T116", "T327"),  # T272; tasks:2497
+    "test_a_reimport_replaces_seq_0": ("T115", "T118", "T301"),  # T211; tasks:1961
+    "test_import_answers_every_read_as_the_files_do": ("T115", "T118", "T301"),  # T211; tasks:1961
+    "test_import_at_a_commit_proves_a_byte_identical_render": ("T115", "T118", "T301"),  # T211; tasks:1961
+    "test_import_loads_takes_with_no_readable_utc_and_a_holderless_landing_expired_as_they_stand": ("T115", "T118", "T301"),  # T211; tasks:1961
+    "test_import_reads_origin_only_and_never_a_local_line": ("T115", "T118", "T301"),  # T211; tasks:1961
+    "test_import_refuses_on_a_difference_and_loads_nothing": ("T115", "T118", "T301"),  # T211; tasks:1961
+    "test_line_scopes_agrees_with_build_records_rules_over_every_line_of_the_imported_register": ("T115", "T118", "T301"),  # T211; tasks:1961
+    "test_main_slots_pairing_equals_files_mode_rule_6_on_imported_history": ("T112", "T115", "T118", "T301"),  # T211; tasks:1961
+    "test_register_classify_parity_holds_on_every_line": ("T115", "T118", "T122", "T301"),  # T211; tasks:1961
+    "test_the_cutover_aborts_when_main_moved_under_lanes": ("T116", "T327"),  # T272; tasks:2497
+    "test_the_first_write_after_cutover_is_the_cutovers_seq_plus_1_with_lag_0": ("T116", "T327", "T415", "T416"),  # T272; tasks:2497
+    "test_the_imports_proof_is_timed_and_recorded": ("T115", "T118", "T301"),  # T211; tasks:1961
+    "test_the_log_path_sidecar_names_the_same_log_file_in_unreadable_warnings": ("T113", "T115", "T118", "T301"),  # T211; tasks:1961
+    "test_word_lines_with_milliseconds_import_verbatim_and_flagged": ("T115", "T118", "T301"),  # T211; tasks:1961
+}
+
 LANES_EDIT = REPO / "lanes-edit.sh"
 INDEXER = REPO / "lanes-index"
 
