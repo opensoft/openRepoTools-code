@@ -567,7 +567,9 @@
 #      AND `guard-bind` (feature 007, T502), the internal verb answer 2 starts
 #      detached, refuses with 2 too: its usage, a uuid that is not one, or a
 #      bind record that does not say `mode=binding` or already names its
-#      outer. Its outer otherwise exits 0 once it has written the bind's
+#      outer, or that is gone or no longer says it when the outer comes to
+#      write its start (part 21; nothing is written and nothing runs). Its
+#      outer otherwise exits 0 once it has written the bind's
 #      outcome, whose own code is the record's `rc`, or 1 where it could not
 #      rewrite the record at its start and so ran nothing, or could not write
 #      the outcome, which is then in the attempt's `.out` alone (the bind
@@ -20468,12 +20470,26 @@ guard_bind_readable() {
 # overwritten, and the window left is this read to the `mv` (lane 3's ruling on
 # spec#47's point 21, #165 6879754335; the contract, draft 11, sections 1
 # and 8; lane 3's Codex code review of `12eddddf`, #165 6882203066, finding 8).
+# WITH `--binding`, THE OUTER'S START (lane 3's ruling on open point 26, #165
+# 6885378657, ruling 4(a): `guard_offer`'s write is the record's only creation,
+# so a rewrite never makes one; lane 5's ruling on lane 2's reader's window,
+# #165 6885568373): the rewrite runs only on a record that is there and whose
+# first `mode` line, as `guard_bind_load` takes it, says `binding`. Where the
+# record is gone at the existence test or at the open, or says anything else, it
+# writes nothing and returns 2, so the outer that asked runs nothing. The test
+# is made on the very lines it copies, as `--own`'s is, and has its window.
 #   0 written · 1 not: this rewrite did not change the record, which is as
-#   another writer may have left it · 2 (`--own` only) not the outer's own, or
-#   no record, so not written: this rewrite did not change the record either
-guard_bind_rewrite() {   # [--own] <offer file> <keys to drop, space-separated> [<key>=<value> …]
-  gbw_own=0
-  if [ "${1-}" = --own ]; then gbw_own=1; shift; fi
+#   another writer may have left it · 2 (`--own` or `--binding` only) not the
+#   outer's own, or no record, or not `binding`, so not written: this rewrite did
+#   not change the record either
+guard_bind_rewrite() {   # [--own | --binding] <offer file> <keys to drop, space-separated> [<key>=<value> …]
+  gbw_own=0; gbw_bd=0
+  case "${1-}" in
+    --own) gbw_own=1; shift ;;
+    --binding) gbw_bd=1; shift ;;
+  esac
+  gbw_two=0
+  [ "$gbw_own" = 0 ] && [ "$gbw_bd" = 0 ] || gbw_two=1
   gbw_f="${1-}"; gbw_drop=" ${2-} "
   [ -n "$gbw_f" ] && [ "$#" -ge 2 ] || return 1
   shift 2
@@ -20498,7 +20514,7 @@ guard_bind_rewrite() {   # [--own] <offer file> <keys to drop, space-separated> 
         gbw_seen=" "; gbw_m=""; gbw_p=""; gbw_ps=""; gbw_h=""; gbw_c=""
         {
         while { gbw_st=0; IFS= read -r gbw_l <&8 || gbw_st=$?; [ "$gbw_st" = 0 ] || [ -n "$gbw_l" ]; }; do
-          if [ "$gbw_own" = 1 ]; then
+          if [ "$gbw_two" = 1 ]; then
             case "$gbw_l" in
               mode=*|pid=*|pidstart=*|host=*|container=*)
                 case "$gbw_seen" in
@@ -20524,12 +20540,13 @@ guard_bind_rewrite() {   # [--own] <offer file> <keys to drop, space-separated> 
           # Codex code review of `12eddddf`, #165 6882203066, finding 4): under
           # `--own` it is the 2 it is where it was never there, not the outer's
           # own, and the 1 is for a record that is still there and cannot be
-          # read. Without `--own` it stays a 1.
-          [ "$gbw_own" = 0 ] || [ -e "$gbw_f" ] || exit 2
+          # read. Without `--own` it stays a 1. The same under `--binding`.
+          [ "$gbw_two" = 0 ] || [ -e "$gbw_f" ] || exit 2
           exit 1
         }
         [ "$gbw_own" = 0 ] || guard_bind_own "$gbw_m" "$gbw_p" "$gbw_ps" "$gbw_h" "$gbw_c" || exit 2
-      elif [ "$gbw_own" = 1 ]; then
+        [ "$gbw_bd" = 0 ] || [ "$gbw_m" = binding ] || exit 2
+      elif [ "$gbw_two" = 1 ]; then
         exit 2
       fi
       for gbw_a in "$@"; do
@@ -20538,7 +20555,7 @@ guard_bind_rewrite() {   # [--own] <offer file> <keys to drop, space-separated> 
     } > "$gbw_t" ) 2>/dev/null || gbw_rc=$?
   if [ "$gbw_rc" != 0 ]; then
     rm -f -- "$gbw_t"
-    [ "$gbw_own" = 1 ] && [ "$gbw_rc" = 2 ] && return 2
+    [ "$gbw_two" = 1 ] && [ "$gbw_rc" = 2 ] && return 2
     return 1
   fi
   mv -f -- "$gbw_t" "$gbw_f" 2>/dev/null || { rm -f -- "$gbw_t"; return 1; }
@@ -22551,7 +22568,9 @@ guard_answer() {   # <offer file> <the prompt> <pane>
 # 1 where the record could not be rewritten at the start, and nothing ran, or
 # where the outcome could not be written, which is then in the attempt's
 # `.out` alone (lane 3's rulings, #165 6879754335; the bind record's
-# contract, draft 11, section 7); 2 where it refuses.
+# contract, draft 11, section 7); 2 where it refuses, which includes a record
+# that is gone or no longer `binding` at its start, with nothing written and
+# nothing run (T502's part 21).
 GBO_CPID=""; GBO_BD=yes; GBO_TRAPS=0; GBO_MYPS=""
 
 # THE OUTER'S `TERM` TRAP: a person's `kill <p>`, forwarded — to `timeout`,
@@ -22663,8 +22682,22 @@ guard_bind_outer() {   # <session uuid>
   command -v timeout >/dev/null 2>&1 && GBO_BD=yes
   gbo_now="$(date -u '+%s %Y-%m-%dT%H:%M:%SZ')"
   gbo_ep="${gbo_now%% *}"
-  if ! guard_bind_rewrite "$gbo_f" "pid pidstart" "started_utc=${gbo_now#* }" "bound_s=$gbo_bs" \
-       "bounded=$GBO_BD" "deadline_epoch=$((gbo_ep + gbo_bs + 5))" "${gbo_pid[@]}"; then
+  # THE START REWRITE RUNS ONLY ON A RECORD THAT STILL SAYS `binding` (lane 3's
+  # ruling on open point 26, #165 6885378657, ruling 4(a); lane 5's ruling on
+  # lane 2's reader's window, #165 6885568373): `guard_offer`'s write is the
+  # only one that creates the record, and the record is the bind's authority.
+  # Where it has gone since the load above, or an offer has taken its place,
+  # `--binding` writes nothing and answers 2, and this outer runs nothing and
+  # returns 2, as its load does for no record and for one that is not
+  # `binding`. Where it cannot be rewritten it is as it was: a 1.
+  gbo_src=0
+  guard_bind_rewrite --binding "$gbo_f" "pid pidstart" "started_utc=${gbo_now#* }" "bound_s=$gbo_bs" \
+    "bounded=$GBO_BD" "deadline_epoch=$((gbo_ep + gbo_bs + 5))" "${gbo_pid[@]}" || gbo_src=$?
+  if [ "$gbo_src" = 2 ]; then
+    note "guard-bind: the record at $gbo_f is gone or no longer says mode=binding, so nothing was written to it and the bind was NOT run: only the record an answer 2 wrote is a bind's authority (Y:5396)."
+    return 2
+  fi
+  if [ "$gbo_src" != 0 ]; then
     note "guard-bind: the record at $gbo_f could not be rewritten with this outer's pid, so the bind was NOT run. The guard reads a binding record with no pid as running until its deadline, and then restores the offer."
     return 1
   fi
