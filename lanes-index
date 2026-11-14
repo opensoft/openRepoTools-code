@@ -8322,7 +8322,14 @@ class RegisterService:
 
     def end(self) -> None:
         """The child stopped by a signal, never by closing its stdin, so a
-        stand-in that reads its stdin to the end runs nothing."""
+        stand-in that reads its stdin to the end runs nothing.
+
+        ONLY THE WORKER CLOSES A CHILD'S PIPES (lane 1's U5 gate, #165
+        6881993079, S1): this thread moves the epoch and sends `SIGKILL`,
+        which ends any exchange the worker is in; it closes the pipes only
+        once the worker has ended, so no fd is closed under the worker's
+        `select` or `os.read`, to be handed to an accepted socket."""
+        import signal
         with self.cond:
             child, self.child, self.state = self.child, None, "down"
             self.epoch += 1
@@ -8330,7 +8337,16 @@ class RegisterService:
             self.cond.notify_all()
         for job in queued:
             job.give(b"unavailable\n")
-        self.kill(child)
+        if child is not None:
+            try:
+                child.send_signal(signal.SIGKILL)
+            except OSError:
+                pass
+        worker = getattr(self, "worker", None)
+        if worker is not None:
+            worker.join(2.0)
+        if worker is None or not worker.is_alive():
+            self.kill(child)
 
     # -- the held child (SVC-6; socket API §7)
 
@@ -8384,7 +8400,10 @@ class RegisterService:
         except (OSError, ValueError):
             return "eof", b"", ""
         out, err = bytearray(), bytearray()
-        streams = {child.stdout.fileno(): out, child.stderr.fileno(): err}
+        try:
+            streams = {child.stdout.fileno(): out, child.stderr.fileno(): err}
+        except (OSError, ValueError):   # a closed pipe: `ValueError` on 3.12 (S1)
+            return "eof", b"", ""
         while True:
             at = err.find(mark)
             if at >= 0 and err.find(b"\n", at) >= 0:
