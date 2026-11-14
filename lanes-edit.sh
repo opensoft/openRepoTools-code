@@ -21638,16 +21638,15 @@ EOF
     # transcript, a uuid in no row, an ambiguous register and an unreadable
     # read have all been refused above it, allowance or no allowance.
     if [ "$gr_mode" = allow ] && guard_allow_active "$gr_off"; then
-      guard_triple "THE NAME GUARD ALLOWS THIS PROMPT ON AN EXPLICIT CHOICE (lane-collision-protocol Amendment 12). The three names:"
-      note "WARNING: this lane/session name mismatch was explicitly allowed for this transcript. It will remain allowed only while the lane and session names stay unchanged."
+      guard_allow_pass
       return 0
     fi
     # AN ALLOWANCE THAT NO LONGER FITS IS DROPPED RATHER THAN CARRIED: either
     # name having changed is exactly what invalidates it, and the person is
     # asked again below.
     [ "$gr_mode" = allow ] && guard_offer_drop "$gr_off"
-    guard_offer "$gr_off" "$gr_pane"
-    return 2
+    guard_offer_site "$gr_off" "$gr_pane" "$gr_prompt"
+    return $?
   fi
 
   if [ -n "$gr_ids" ] && printf '%s\n' "$gr_ids" | grep -qx -F -- "$G_ID"; then
@@ -21751,12 +21750,23 @@ guard_refuse_start() {   # <why> <lane> [--no-launch]
   return 2
 }
 
+# THE ALLOWANCE THAT STILL FITS PASSES THE PROMPT, with its warning, from the
+# one place that says so: `guard_run`'s row for the mismatch, and
+# `guard_offer_site` where an allowance is there when the offer is made.
+guard_allow_pass() {
+  guard_triple "THE NAME GUARD ALLOWS THIS PROMPT ON AN EXPLICIT CHOICE (lane-collision-protocol Amendment 12). The three names:"
+  note "WARNING: this lane/session name mismatch was explicitly allowed for this transcript. It will remain allowed only while the lane and session names stay unchanged."
+  return 0
+}
+
 # ------------------------------------------------------------ (h)2: THE OFFER
 #
 # *"if the user does a rename, then we should offer to move to that lane or
 # create a new lane if we do not have one as that name"* (D5, verbatim). The
 # one thing the guard never does silently is decide, with nobody acting, which
 # of two disagreeing LANES a window belongs to.
+#   2 the offer is made and asked · 3 a record is there already, so nothing was
+#   written and nothing was said (`guard_offer_site` answers it)
 guard_offer() {   # <offer file> <pane>
   go_f="${1-}"; go_pane="${2-}"
   # UNDER `umask 077` (feature 007, lane 3's ruling on the bind record, point
@@ -21764,18 +21774,48 @@ guard_offer() {   # <offer file> <pane>
   # and a new `offers/` is 0700. An existing `offers/` is not `chmod`'d.
   # FEATURE 007, T510: the offer's `act`, on primary only (`guard_offer_act`).
   go_act="$(guard_offer_act || :)"
-  ( umask 077
-    mkdir -p -- "${go_f%/*}" 2>/dev/null || :
-    { printf 'mode=name-drift\n'
-      printf 'from=%s\n' "$G_LANE"
-      printf 'to=%s\n'   "$G_SES_LANE"
-      printf 'session=%s\n' "$G_NAME"
-      printf 'uuid=%s\n' "$G_ID"
-      printf 'utc=%s\n'  "$(utc_now)"
-      printf 'window=%s\n' "$G_WINREF"
-      printf 'pane=%s\n'   "$go_pane"
-      [ -z "$go_act" ] || printf 'act=%s\n' "$go_act"
-    } > "$go_f" ) 2>/dev/null || :
+  # THE ONE CREATION OF THE RECORD, AND IT NEVER WRITES OVER ONE (lane 3's
+  # ruling on point 26, reopened, #165 6885771975, after Codex's review of
+  # spec#47's draft 16: another invocation can install `binding`, and its outer
+  # `bound` or `bind-failed`, between `guard_run`'s read of the mode and this
+  # write, and the offer then overwrote that record). The offer is written whole
+  # to a temporary file in `offers/`, every write checked as part 16 checks
+  # them, and made THE RECORD BY `ln`, which is atomic and fails where the name
+  # exists, a bind record, an allowance or an offer alike: so no record is ever
+  # written over, and no reader sees half of one. Where hard links are refused
+  # the fallback is bash's `noclobber`, whose `>` opens with `O_EXCL` and fails
+  # the same way, though it creates the record before its content is whole. The
+  # temporary file is removed after, which is best effort (a name left in
+  # `offers/` holds only this offer). No window is left between the test and the
+  # create: they are one call.
+  go_made=0
+  ( umask 077; mkdir -p -- "${go_f%/*}" 2>/dev/null || : ) 2>/dev/null
+  go_t="$(umask 077; mktemp "${go_f%/*}/.${go_f##*/}.XXXXXX" 2>/dev/null || printf '')"
+  if [ -n "$go_t" ]; then
+    if ( umask 077
+         { printf 'mode=name-drift\n' || exit 1
+           printf 'from=%s\n' "$G_LANE" || exit 1
+           printf 'to=%s\n'   "$G_SES_LANE" || exit 1
+           printf 'session=%s\n' "$G_NAME" || exit 1
+           printf 'uuid=%s\n' "$G_ID" || exit 1
+           printf 'utc=%s\n'  "$(utc_now)" || exit 1
+           printf 'window=%s\n' "$G_WINREF" || exit 1
+           printf 'pane=%s\n'   "$go_pane" || exit 1
+           [ -z "$go_act" ] || printf 'act=%s\n' "$go_act" || exit 1
+         } > "$go_t" ) 2>/dev/null; then
+      if ln -- "$go_t" "$go_f" 2>/dev/null; then
+        go_made=1
+      elif [ -e "$go_f" ] || [ -L "$go_f" ]; then
+        go_made=there
+      elif ( set -C; umask 077; cat -- "$go_t" > "$go_f" ) 2>/dev/null; then
+        go_made=1
+      elif [ -e "$go_f" ] || [ -L "$go_f" ]; then
+        go_made=there
+      fi
+    fi
+    rm -f -- "$go_t" 2>/dev/null || :
+  fi
+  [ "$go_made" != there ] || return 3
   guard_triple
   note "WARNING: the lane and Claude session names disagree. This prompt is paused until you choose how to repair or explicitly allow this lane."
   note "1) explicitly allow this lane for this transcript (future prompts warn but do not block while both names stay unchanged)"
@@ -21801,6 +21841,55 @@ guard_offer() {   # <offer file> <pane>
   fi
   note "Reply \`1\`, \`2\` or \`3\`. The answer is the NEXT prompt, it is consumed here and never reaches the model; anything else asks again."
   [ -f "$go_f" ] || note "(the offer could not be written to $go_f, so the answer will be read as a fresh prompt and this question asked again — which is the safe direction)"
+  return 2
+}
+
+# THE OFFER, MADE ONLY WHERE NO RECORD IS THERE, AND ANSWERED AS THE FIRST READ
+# WOULD HAVE where one is (lane 3's ruling on point 26, reopened, #165
+# 6885771975). `guard_run` read the record's mode before it came here; another
+# invocation may have made a record since, and `guard_offer` writes over none.
+# Where its create fails because a record is there, this reads that record's
+# mode once and answers as `guard_run`'s own first read would for it, returning
+# what `guard_run` returns:
+#   binding, bound, bind-failed   `guard_bind_site`, as at the first read: the
+#                                 bind record is answered, never overwritten
+#   allow                         passed with its warning where it still fits,
+#                                 else dropped, and the offer made once more
+#   name-drift, or no mode        `guard_answer`, with this prompt as its answer,
+#                                 as at the first read; where that drops a stale
+#                                 offer (its 3), the offer is made once more
+# THE ONE RETRY is the whole of the loop: where its create fails too, nothing is
+# written, and the prompt is refused with the question to be asked afresh.
+# Where a drop cannot remove a leftover (a failed `rm`), the leftover is no
+# longer written over, as it was: the prompt is refused here, and the next one
+# meets the same record and the same refusal, until the drop works. Nothing is
+# lost: the record is as it was, and the person's prompt is theirs to send again.
+guard_offer_site() {   # <offer file> <pane> <the prompt>
+  gos_f="${1-}"; gos_pane="${2-}"; gos_prompt="${3-}"
+  gos_rc=0
+  guard_offer "$gos_f" "$gos_pane" || gos_rc=$?
+  [ "$gos_rc" = 3 ] || return 2
+  gos_m=""
+  [ -f "$gos_f" ] && gos_m="$(sed -n -e 's/^mode=//p' "$gos_f" 2>/dev/null | head -n1)"
+  case "$gos_m" in
+    binding|bound|bind-failed)
+      guard_bind_site "$gos_f" "$gos_pane"
+      return 2 ;;
+    allow)
+      if guard_allow_active "$gos_f"; then
+        guard_allow_pass
+        return 0
+      fi
+      guard_offer_drop "$gos_f" ;;
+    *)
+      gos_arc=0
+      guard_answer "$gos_f" "$gos_prompt" "$gos_pane" || gos_arc=$?
+      [ "$gos_arc" = 3 ] || return 2 ;;
+  esac
+  gos_rc=0
+  guard_offer "$gos_f" "$gos_pane" || gos_rc=$?
+  [ "$gos_rc" = 3 ] || return 2
+  guard_refuse "the pending offer could not be recorded: a record of this transcript's is at $gos_f and could not be replaced, so nothing was written to it. Send your prompt again and the question will be asked afresh."
   return 2
 }
 
