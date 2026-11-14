@@ -20053,8 +20053,11 @@ guard_offer_file() {   # <session uuid>
 #
 # ITS FILES: the record, `<offers>/<uuid>`; each attempt's output,
 # `<uuid>.bind.<n>.out`, which the record's `out=` names; and the body's facts,
-# `<uuid>.bind.<n>.facts`, beside it, which the outer folds into the record and
-# removes. `<n>` is the files' index, one above the highest already there, and
+# `<uuid>.bind.<n>.facts`, beside it, whose `why=` and `note=` the outer folds
+# into its outcome only where the body ended on its own (where the bound or a
+# signal stopped it, the file is not read), and which it removes after each of
+# the outcome's rewrite's three results. `<n>` is the files' index, one above the
+# highest already there, and
 # not the attempt, which `bind=` counts 1 to 3 per offer (lane 3's rulings on
 # the contract's point 18, opensoft/openRepoTools#165 6751772589 and
 # 6751818233). Every write is under `umask 077`, so
@@ -22115,9 +22118,11 @@ guard_bind_outer() {   # <session uuid>
   # 1, an I/O failure, exit 1: this rewrite did not change the record, which is as
   # another writer may have left it, and not necessarily still its `binding`
   # (lane 3's ruling on S1 of its Codex delta review of spec#47's draft 13,
-  # #165 6880978929). ON EVERY ONE the facts file goes: its `why=` and `note=`
-  # lines are in the outcome, which is in the record or, where it is not
-  # written, in this attempt's `.out`.
+  # #165 6880978929). ON EVERY ONE the facts file goes. Its `why=` and `note=`
+  # lines are in the outcome only where the body ended on its own, and are not
+  # read where the bound or a signal stopped it; and the outcome is in the record
+  # only on the rewrite's 0, and in this attempt's `.out` alone on a 1 or a 2
+  # (Codex's review of `ae702c74`, on spec#47's draft 16, #165 6885771975).
   gbo_wrc=2
   if guard_bind_load "$gbo_f" &&
      guard_bind_own "$GBR_MODE" "$GBR_PID" "$GBR_PIDSTART" "$GBR_HOST" "$GBR_CONTAINER"; then
@@ -22141,8 +22146,9 @@ guard_bind_outer() {   # <session uuid>
   return 0
 }
 
-# THE BODY'S FACTS, which the outer folds into the record (lane 3's ruling,
-# point 6): `why=` and `note=` lines, written once, at 0600.
+# THE BODY'S FACTS, which the outer folds into its outcome where the body ended
+# on its own (lane 3's ruling, point 6): `why=` and `note=` lines, written once,
+# at 0600.
 guard_bind_facts() {   # <facts file> [<line> …]
   gbf_f="${1-}"; shift || :
   [ -n "$gbf_f" ] || return 1
