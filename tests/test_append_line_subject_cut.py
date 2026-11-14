@@ -14,8 +14,11 @@ a UTF-8 character. The seam writes `msg` as it is given (:5424), and
 `lanes-index register commit` decodes it as UTF-8 and refuses it with 2,
 "msg is not UTF-8" (`lanes-index` :13523-13527, read at :13849), before it
 opens the store. So on primary a line whose text has a multibyte character
-across byte 72 is refused and never written, and files mode commits the same
-line under a subject that is not UTF-8.
+across byte 72 is refused and never written. Files mode commits the same
+line, but not the same subject: git's commit reads the stray bytes of the
+split character as Latin-1, so the subject it stores is valid UTF-8 that ends
+in a wrong character (a stray E2 becomes `â`, U+00E2, bytes C3 A2), not in
+bytes that are not UTF-8.
 
 THE RULE (lane 3, comment 6870386695), which lane 4 builds in T425's next
 round: each subject takes the longest prefix of at most 72 bytes that ends
@@ -38,8 +41,10 @@ its environment (the estate sets `LC_ALL=C`, and GitHub's runners set a UTF-8
     refusal.
   * the same text in files mode, on the same kind of estate with a `mode=files`
     configuration: the commit on the origin must carry the same subject. It
-    FAILS until the fix too: files mode commits the 72-byte cut, which ends
-    with E2.
+    FAILS until the fix too: git's commit reads the 72-byte cut's stray E2 as
+    Latin-1, so files mode commits valid UTF-8 ending `splitsâ` (C3 A2), a
+    wrong character, not bytes that are not UTF-8. After the fix both modes
+    commit the subject that ends `... splits`.
   * `append-line --landing-expired`, a guard that passes before and after:
     the line it composes is `LANDING EXPIRED — lane <writer>, session
     <uuid>@<ws>, ...`: its em dash takes bytes 16 to 18, and from byte 19 to
@@ -272,7 +277,9 @@ def test_append_line_subject_cut_ends_on_a_whole_character(estates):
 def test_append_line_subject_cut_ends_on_a_whole_character_in_files_mode(estates):
     """The same line in files mode: it commits to the origin, and the
     commit's subject is the bytes primary stores, valid UTF-8. Until T425's
-    fix files mode commits the 72-byte cut, which ends with E2."""
+    fix git's commit reads the 72-byte cut's stray E2 as Latin-1, so files
+    mode commits valid UTF-8 ending `splitsâ` (C3 A2): a wrong character, not
+    bytes that are not UTF-8."""
     data = DASH_TEXT.encode("utf-8")
     e = estates()
     unset_locale(e)
