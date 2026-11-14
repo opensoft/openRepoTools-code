@@ -8098,28 +8098,68 @@ def register_serve_owner_text(started: str) -> bytes:
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
+def register_serve_watched(cfg: dict) -> list:
+    """THE FILES A CONFIGURATION CHANGE WATCHES (OP-18 (b), lane 3's ruling
+    #165 6880543448, details settled by lane 5 for draft 14; socket API
+    8.4, draft 13), up to five, computed from `cfg` each time it is read: the
+    configuration; `reader_passfile=`, where it is set; and each of
+    `sslrootcert`, `sslcert` and `sslkey` that `reader_url=` names, by its
+    mapping (`pg_url_env`, as the child gets them), but `sslrootcert=system`,
+    which names no file. Libpq's own defaults, under `~/.postgresql/`, in a
+    `PG*` variable or a service file, are not watched. Each path is as
+    written, with no `~` or variable expanded: an absolute one as it is, and
+    a relative one against this process's working directory, which its
+    `psql` child inherits (`spawn` gives it no other), as libpq resolves it
+    there."""
+    out = [cfg.get("path") or ""]
+    if cfg.get("reader_passfile"):
+        out.append(cfg["reader_passfile"])
+    env = pg_url_env(cfg["reader_url"], "`reader_url=`") if cfg.get("reader_url") else {}
+    for name in ("PGSSLROOTCERT", "PGSSLCERT", "PGSSLKEY"):
+        if env.get(name) and not (name == "PGSSLROOTCERT" and env[name] == "system"):
+            out.append(env[name])
+    return out
+
+
+def register_serve_snapshot(path: str):
+    """ONE WATCHED PATH'S SNAPSHOT (OP-18 (b), rule 4), from one `os.stat`,
+    which follows a symbolic link as libpq's open does: `absent` where it
+    fails with `ENOENT` or `ENOTDIR`, `error <errno name>` where it fails
+    any other way, and otherwise its identity, (`st_dev`, `st_ino`,
+    `st_size`, `st_mtime_ns`, `st_ctime_ns`), so a file replaced by `rename`
+    or written in place with its mtime kept is a change too."""
+    try:
+        st = os.stat(path)
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return "absent"
+        return f"error {errno.errorcode.get(exc.errno, exc.errno)}"
+    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
+
+
 def register_serve_config_stamp(cfg: dict) -> tuple:
-    """The configuration's and its reader password file's mtimes, which the
-    service re-reads when they change (Y:3918-3920)."""
-    out = []
-    for path in (cfg.get("path"), cfg.get("reader_passfile")):
-        try:
-            out.append(os.stat(path).st_mtime_ns if path else None)
-        except OSError:
-            out.append(None)
-    return tuple(out)
+    """THE CONFIGURATION'S STAMP (Y:3918-3920; OP-18 (b), lane 3's ruling
+    #165 6880543448, details settled by lane 5 for draft 14): ((path,
+    snapshot), ...) for each path `register_serve_watched` gives, in its
+    order. Any difference from the stamp last taken is a configuration
+    change (socket API 8.4, draft 13): a file that appears or goes, any
+    change of its identity or its error, and a change in the paths
+    watched."""
+    return tuple((path, register_serve_snapshot(path)) for path in register_serve_watched(cfg))
 
 
 def register_serve_load() -> tuple:
     """THE CONFIGURATION AND ITS STAMP (Y:3918-3920): (`load_config()`'s
-    dict, `register_serve_config_stamp`'s tuple), the file's mtime taken
-    BEFORE the file is read, so that a change made while `serve` starts or
-    re-reads it is a change at the next request, never one stamped as read.
-    The reader password file's is taken after, since `psql` reads it only
-    when it starts. Raises `Refusal` as `load_config` does."""
-    first = register_serve_config_stamp({"path": config_path()[0]})[0]
+    dict, `register_serve_config_stamp`'s tuple), the configuration's
+    snapshot taken BEFORE the file is read, so that a change made while
+    `serve` starts or re-reads it is a change at the next request, never one
+    stamped as read. The other watched files' are taken after, from the
+    configuration read, and before the child that reads them starts (OP-18
+    (b), rule 6). Raises `Refusal` as `load_config` does."""
+    path = config_path()[0]
+    first = register_serve_snapshot(path)
     cfg = load_config()
-    return cfg, (first,) + register_serve_config_stamp(cfg)[1:]
+    return cfg, ((path, first),) + register_serve_config_stamp(cfg)[1:]
 
 
 def register_serve_request(data: bytes) -> list | None:
