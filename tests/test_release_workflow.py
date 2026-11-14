@@ -3,8 +3,9 @@
 (opensoft/openRepoTools#228, User Story 5).
 
 THE RELEASE IS HELD OFFLINE. The workflow builds the wheel, uploads it to
-TestPyPI, checks the install on three legs and uploads it to PyPI, and
-nothing here runs it. What can be held with no network is the file itself,
+TestPyPI, checks the install on three legs, uploads it to PyPI and puts
+check 1's digest list on the GitHub Release (007 T346), and nothing here
+runs it. What can be held with no network is the file itself,
 read with the PINNED standard's `repo_shape.load_yaml` (research R9), and the
 scripts it carries. Most of the scripts whose outcome decides what is built,
 uploaded or installed are RUN here, as GitHub runs a step, under fakes that
@@ -12,9 +13,13 @@ answer as the forge, the index, `curl`, the build and pipx do:
 
 - in the build job, the version check and the repository guard, the ref,
   branch, clean-checkout, environments, gate and digest steps, the stamp
-  writer, the build step's byte-for-byte compare, and the wheel check;
+  writer, the build step's byte-for-byte compare, the wheel check, and
+  step 15's digest list, also against the list `--install` writes in a
+  stamped package;
 - in each upload job, the guard again, the dist step, the approval and tag
   re-checks, and both index checks;
+- in the `asset` job, its list step, and its last step under a fake forge
+  of releases;
 - in the install check, the fetch from TestPyPI, the digest step, pipx's
   install and its one link, `--version`, the offline `--install` and the
   macOS rerun after it (with a `/bin` whose `bash` reads as 3.2), and the
@@ -56,11 +61,14 @@ per part of it (plan.md, "The test layout"):
 - `test_release_guard_build_*` and `test_release_guard_upload_*` (FR-048):
   the repository guard, run under each row of contracts/workflows.md's table,
   and each upload job's own first step;
-- `test_release_upload_*`: the four jobs' permissions and step lists, the
+- `test_release_upload_*`: the five jobs' permissions and step lists, the
   two environments, the two conditions, and each upload job's checks around
   the pinned action, the dist step run over the files a case puts in
   `dist/`, the approval and tag re-checks run under a forge and the index
   checks under a fake index;
+- `test_release_asset_*` (007 T346): the `asset` job's one grant, its
+  condition, the steps it shares with `pypi`, its list step, and its last
+  step run under a fake forge of releases;
 - `test_release_install_check_*`: the three legs and what each runs, its
   fetch, digest, pipx, `--version` and 3.9 steps run;
 - `test_release_reads_*`: no step reads what the code leg will not hold;
@@ -167,16 +175,18 @@ STEP_TIMEOUT = 120
 
 # --- what contracts/workflows.md fixes -----------------------------------------
 
-JOBS = ("build", "testpypi", "install", "pypi")
+JOBS = ("build", "testpypi", "install", "pypi", "asset")
 UPLOADS = {"testpypi": "testpypi", "pypi": "pypi"}
 
 #: Each job's permissions, EXACTLY (contracts/workflows.md; data-model.md's
-#: "A release run").
+#: "A release run"). `asset` is 007's T346: the one grant that makes a draft
+#: release and attaches check 1's digest list to it.
 PERMISSIONS = {
     "build": {"contents": "read", "actions": "read"},
     "testpypi": {"id-token": "write", "actions": "read", "contents": "read"},
     "install": {"contents": "read"},
     "pypi": {"id-token": "write", "actions": "read", "contents": "read"},
+    "asset": {"contents": "write"},
 }
 
 #: The release gate's four job ids (FR-029, FR-046): `tests.yml` keeps them as
@@ -230,6 +240,10 @@ RECORD_STEP = "record the wheel"
 BUILD_STEPS = (REF_STEP, ON_BRANCH_STEP, CLEAN_STEP, ENVIRONMENTS_STEP,
                GATE_STEP, DIGEST_STEP, TOOLS_STEP, EXTRACT_STEP, STAMP_STEP,
                BUILD_STEP, WHEEL_CHECK_STEP, RECORD_STEP)
+#: THE BUILD'S STEP 15, this workflow's own and not the model's (007 T346):
+#: check 1's digest list, written from the wheel's own payload after the
+#: wheel is kept, then kept as an artifact of its own.
+DIGEST_LIST_STEP = "write check 1's digest list from the wheel's own payload"
 
 #: `owner/repository[/path]@<40 hex>`: an action pinned by a full commit, and
 #: a `uses:` line as it is written, with its release tag as a comment (the
@@ -2932,6 +2946,277 @@ def test_release_build_the_wheel_check_and_tests_yml_s_refuse_a_payload_mode_not
                 f"{transcript(done)}")
 
 
+# --- step 15: check 1's digest list (007 T346) -------------------------------------
+
+#: THE LIST CHECK 1 READS (FR-055; section 10 of the SQL register's contract):
+#: `openRepoTools-<release>.sha256`, in `sha256sum`'s own form. Check 1's own
+#: reading of a line (`lanes-index`'s `_READY_DIGEST_LINE_RE`, lane 1's T119),
+#: and the two names a list must carry or fail.
+CHECK_1_LINE = re.compile(r"([0-9a-f]{64}) [ *]([A-Za-z0-9_+-][A-Za-z0-9._+-]*)")
+CHECK_1_NAMES = ("lanes-index", "lanes-edit.sh")
+LIST_VERSION = "1.3.0"
+LISTED = f"openRepoTools-{LIST_VERSION}.sha256"
+
+
+def installables(command: bytes) -> List[str]:
+    """`INSTALLABLES=( … )`, the one-line array, out of an `openRepoTools`."""
+    lines = [line for line in command.decode("utf-8").split("\n")
+             if line.startswith("INSTALLABLES=(")]
+    assert len(lines) == 1 and lines[0].endswith(")"), lines
+    return lines[0][len("INSTALLABLES=("):-1].split()
+
+
+def the_rule(payload: Callable[[str], bytes]) -> str:
+    """THE LIST BY ITS RULE, from `payload(<name>)`'s bytes: one `<sha256>
+    <name>` line, two spaces between, for every name of the payload's own
+    `INSTALLABLES` in its order but `openRepoTools`, whose place in a pipx
+    install is pipx's link to pip's console script."""
+    return "".join(f"{hashlib.sha256(payload(name)).hexdigest()}  {name}\n"
+                   for name in installables(payload("openRepoTools"))
+                   if name != "openRepoTools")
+
+
+def run_digest_list_step(tmp_path: Path,
+                         change: Optional[Callable[[dict, str], None]] = None,
+                         payload: Optional[Callable[[str], bytes]] = None,
+                         run: Optional[dict] = None
+                         ) -> Tuple[subprocess.CompletedProcess, Runner]:
+    """STEP 15, RUN AS GITHUB RUNS IT, on the wheel as built for
+    `LIST_VERSION` from HEAD's blobs, at the path the build leaves it in
+    `$RUNNER_TEMP/dist-a`, with each payload file's bytes `payload`'s where
+    a case names one, and `change` made to it, under the release's values
+    or `run`'s where it names any."""
+    workflow = release()
+    release_ = wheel_release(LIST_VERSION)
+    members, info = wheel_members(release_)
+    if payload is not None:
+        for rel in layout.payload_paths():
+            _, mode = members[layout.PAYLOAD_PREFIX + rel]
+            members[layout.PAYLOAD_PREFIX + rel] = (payload(rel), mode)
+    if change is not None:
+        change(members, info)
+    values = release_values(release_)
+    values.update(run or {})
+    runner = Runner(tmp_path / "run", workflow, "build", values)
+    write_wheel(Path(runner.env["RUNNER_TEMP"]) / "dist-a"
+                / f"openrepotools-{LIST_VERSION}-py3-none-any.whl", members, info)
+    return runner.run(named(workflow, "build", DIGEST_LIST_STEP)), runner
+
+
+def written_lists(runner: Runner) -> List[str]:
+    folder = Path(runner.env["RUNNER_TEMP"]) / "digest-list"
+    return sorted(p.name for p in folder.iterdir()) if folder.is_dir() else []
+
+
+@NEEDS_UPSTREAM
+def test_release_build_keeps_check_1_s_digest_list_after_the_wheel_and_records_it():
+    """STEP 15'S PLACE AND RECORD (007 T346): after the wheel is kept, and
+    followed at once by its own artifact, `digest-list`, from the directory
+    it writes; and the build's outputs `digest-list` and `digest-list-sha256`
+    are that step's own."""
+    workflow = release()
+    steps = steps_of(workflow, "build")
+    step = named(workflow, "build", DIGEST_LIST_STEP)
+    at = where(workflow, "build", step)
+    assert at > where(workflow, "build", named(workflow, "build", RECORD_STEP))
+    kept = steps[at + 1] if at + 1 < len(steps) else {}
+    assert str(kept.get("uses", "")).startswith("actions/upload-artifact@"), (
+        f"step 15's list is not kept as an artifact: {[label(s) for s in steps]}")
+    options = kept.get("with") or {}
+    assert options.get("name") == "digest-list", options
+    assert str(options.get("path", "")).rstrip("/").endswith("/digest-list"), options
+    assert options.get("if-no-files-found") == "error", options
+    outputs = build_outputs(workflow)
+    for name in ("digest-list", "digest-list-sha256"):
+        found = STEP_OUTPUT.fullmatch(str(outputs.get(name, "")).strip())
+        assert found and found.group(1) == step.get("id") and found.group(2) == name, (
+            f"the build's output {name} is {outputs.get(name)!r}, not step 15's own")
+
+
+@NEEDS_UPSTREAM
+@NEEDS_BASH
+@WINDOWS_SKIP
+def test_release_build_the_digest_list_step_writes_check_1_s_list_from_the_wheel(tmp_path):
+    """STEP 15, RUN, ON THE WHEEL AS BUILT (007 T346; FR-055): the list is
+    `openRepoTools-<version>.sha256` and nothing else beside it, HEAD's rule
+    to the byte, every line one check 1 reads, naming `lanes-index` and
+    `lanes-edit.sh` and never `openRepoTools`; the build records its name and
+    its sha256; and nothing asks a network."""
+    done, runner = run_digest_list_step(tmp_path)
+    assert done.returncode == 0, transcript(done)
+    assert written_lists(runner) == [LISTED], written_lists(runner)
+    text = (Path(runner.env["RUNNER_TEMP"]) / "digest-list" / LISTED).read_text(
+        encoding="utf-8")
+    assert text == the_rule(lambda name: head_blob(name)), text
+    found = [CHECK_1_LINE.fullmatch(line) for line in text.splitlines()]
+    assert found and all(found), f"a line check 1 does not read:\n{text}"
+    names = [match.group(2) for match in found]
+    assert "openRepoTools" not in names, names
+    assert set(CHECK_1_NAMES) <= set(names), names
+    assert names == [name for name in installables(head_blob("openRepoTools"))
+                     if name != "openRepoTools"]
+    recorded = runner.recorded()
+    assert ("digest-list", LISTED) in recorded, recorded
+    assert ("digest-list-sha256",
+            hashlib.sha256(text.encode("utf-8")).hexdigest()) in recorded, recorded
+    assert runner.asked() == "", runner.asked()
+
+
+def an_installables_line(make: Callable[[List[str]], str]) -> Callable[[dict, str], None]:
+    """The payload's `openRepoTools` with its one `INSTALLABLES=( … )` line
+    replaced by what `make` makes of its names, every other byte as it was."""
+    def change(members: dict, info: str) -> None:
+        key = layout.PAYLOAD_PREFIX + "openRepoTools"
+        data, mode = members[key]
+        line = "INSTALLABLES=(" + " ".join(installables(data)) + ")"
+        assert data.count(line.encode("utf-8")) == 1, (
+            "the case is wrong: the line is spaced otherwise")
+        made = make(installables(data)).encode("utf-8")
+        members[key] = (data.replace(line.encode("utf-8"), made), mode)
+    return change
+
+
+def installables_without(name: str) -> Callable[[dict, str], None]:
+    """The payload's `openRepoTools` with `name` taken out of its
+    `INSTALLABLES` line, every other byte as it was."""
+    def make(names: List[str]) -> str:
+        assert name in names, f"the case is wrong: INSTALLABLES has no {name}"
+        return "INSTALLABLES=(" + " ".join(n for n in names if n != name) + ")"
+    return an_installables_line(make)
+
+
+#: STEP 15'S REFUSALS: `(what its ::error:: line must say, the change to the
+#: wheel as built, the run's values where they are not the release's)`. One
+#: case for each refusal the step makes before it writes a list, and one for
+#: each count the `INSTALLABLES` refusal words, 1 line and more, but the
+#: count of its own arguments, which the step's own command line fixes.
+DIGEST_LIST_REFUSALS = {
+    "a-version-no-release-carries": (
+        "the version '1.3' is not X.Y.Z or X.Y.ZrcN, so no list is named", None,
+        {"VERSION": "1.3"}),
+    "installables-wrapped-onto-two-lines": (
+        "openrepotools/payload/openRepoTools does not declare INSTALLABLES as one one-line "
+        "array: 1 line opens INSTALLABLES=(",
+        an_installables_line(lambda names: "INSTALLABLES=(" + " ".join(names[:4])
+                             + "\n\t" + " ".join(names[4:]) + ")"), None),
+    "installables-declared-twice": (
+        "openrepotools/payload/openRepoTools does not declare INSTALLABLES as one one-line "
+        "array: 2 lines open INSTALLABLES=(",
+        an_installables_line(lambda names: "INSTALLABLES=(" + " ".join(names) + ")\n"
+                             + "INSTALLABLES=(" + " ".join(names) + ")"), None),
+    "a-name-that-is-not-one-file-name": (
+        "'bin/park' is not one file name, as check 1 reads one",
+        an_installables_line(lambda names: "INSTALLABLES=(" + " ".join(
+            "bin/park" if name == "park" else name for name in names) + ")"), None),
+    "a-name-twice": (
+        "park is named twice",
+        an_installables_line(lambda names: "INSTALLABLES=(" + " ".join(names + ["park"])
+                             + ")"), None),
+    "a-list-without-lanes-edit-sh": (
+        "the list would not name lanes-edit.sh, which check 1 requires",
+        installables_without("lanes-edit.sh"), None),
+    "a-payload-file-missing": (
+        "the wheel holds no openrepotools/payload/lanes-index",
+        a_missing_member(layout.PAYLOAD_PREFIX + "lanes-index"), None),
+}
+
+
+@NEEDS_UPSTREAM
+@NEEDS_BASH
+@WINDOWS_SKIP
+@pytest.mark.parametrize("which", DIGEST_LIST_REFUSALS)
+def test_release_build_the_digest_list_step_refuses_a_list_check_1_could_not_read(
+        tmp_path, which):
+    """A LIST THAT WOULD FAIL CHECK 1 IS NEVER WRITTEN, and nor is one with
+    no release to name: a version no release carries; an `INSTALLABLES` that
+    is not one line, is declared twice, names what is not one file name,
+    names a file twice or would leave out `lanes-edit.sh`; and a wheel that
+    lacks a payload file the array names. Each exits 1 with an `::error::`
+    line naming the cause and no traceback, and writes no list and no
+    record."""
+    said, change, run = DIGEST_LIST_REFUSALS[which]
+    done, runner = run_digest_list_step(tmp_path, change, run=run)
+    assert done.returncode == 1, transcript(done)
+    out = done.stdout + done.stderr
+    assert [line for line in out.splitlines()
+            if line.startswith("::error::") and said in line], transcript(done)
+    assert "Traceback" not in out, transcript(done)
+    assert written_lists(runner) == [], written_lists(runner)
+    assert not [name for name, _ in runner.recorded() if name.startswith("digest-list")]
+
+
+@NEEDS_UPSTREAM
+@WINDOWS_SKIP
+@pytest.mark.skipif(not os.path.exists(os.devnull) or os.devnull != "/dev/null",
+                    reason="the case links the list's name to /dev/null")
+def test_release_build_the_digest_list_step_refuses_a_list_that_reads_back_as_other_bytes(
+        tmp_path):
+    """A LIST THE DISK DID NOT KEEP IS NEVER RECORDED: step 15's heredoc, run
+    on the wheel as built with the list's own name in its directory a link
+    to `/dev/null`, which takes every byte and gives none back, exits 1 with
+    an `::error::` line that the list reads back as other bytes, and no
+    traceback, and records nothing."""
+    release_ = wheel_release(LIST_VERSION)
+    members, info = wheel_members(release_)
+    wheel = write_wheel(tmp_path / "dist" / f"openrepotools-{LIST_VERSION}-py3-none-any.whl",
+                        members, info)
+    folder = tmp_path / "digest-list"
+    folder.mkdir()
+    (folder / LISTED).symlink_to(os.devnull)
+    output = tmp_path / "github-output"
+    output.touch()
+    done = run_heredoc(named(release(), "build", DIGEST_LIST_STEP), tmp_path / "heredoc",
+                       [wheel, folder], {"VERSION": LIST_VERSION, "GITHUB_OUTPUT": str(output),
+                                         "GITHUB_STEP_SUMMARY": str(output)}, cwd=REPO)
+    assert done.returncode == 1, transcript(done)
+    out = done.stdout + done.stderr
+    assert [line for line in out.splitlines() if line.startswith("::error::")
+            and line.endswith("reads back as other bytes than were written")], transcript(done)
+    assert "Traceback" not in out, transcript(done)
+    assert output.read_text(encoding="utf-8") == ""
+
+
+@NEEDS_UPSTREAM
+@NEEDS_BASH
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("jq") is None,
+                    reason="`--install` merges two hook entries with jq")
+def test_release_build_the_digest_list_is_the_one_install_places_in_the_release_s_package(
+        tmp_path):
+    """ONE FILE, BYTE FOR BYTE (007 T346: "exactly as `--install` will place
+    it"). Step 15's list, from a wheel whose payload is this checkout's
+    files, is the list `openRepoTools --install` writes beside `lanes-index`
+    from a stamped package of those same files, run offline: a `gh` and a
+    `curl` that refuse, and a sentinel repository."""
+    def checkout(rel: str) -> bytes:
+        return (REPO / rel).read_bytes()
+
+    done, runner = run_digest_list_step(tmp_path / "build", payload=checkout)
+    assert done.returncode == 0, transcript(done)
+    built = (Path(runner.env["RUNNER_TEMP"]) / "digest-list" / LISTED).read_bytes()
+    assert built.decode("utf-8") == the_rule(checkout)
+    package = layout.package_tree(tmp_path / "venv", "python3.12",
+                                  layout.stamp_text(**wheel_release(LIST_VERSION)))
+    home = tmp_path / "home"
+    home.mkdir()
+    log = tmp_path / "network-was-asked.log"
+    offline = refusing_network(tmp_path / "offline", log)
+    env = command_env(home, {
+        "PATH": f"{offline}{os.pathsep}{os.environ.get('PATH', os.defpath)}",
+        "OPENREPOTOOLS_REPO": "offline.invalid/sentinel"})
+    installed = subprocess.run(["bash", str(package / "openRepoTools"), "--install"],
+                               capture_output=True, text=True, check=False,
+                               stdin=subprocess.DEVNULL, env=env, cwd=str(home),
+                               timeout=STEP_TIMEOUT)
+    assert installed.returncode == 0, transcript(installed)
+    placed = home / ".local" / "bin" / LISTED
+    assert placed.is_file(), transcript(installed)
+    assert placed.read_bytes() == built, (
+        f"--install wrote:\n{placed.read_text(encoding='utf-8')}\nand step 15 wrote:\n"
+        f"{built.decode('utf-8')}")
+    assert not log.exists(), log.read_text(encoding="utf-8")
+
+
 # --- the stamp writer --------------------------------------------------------------
 
 RELEASES = {
@@ -4426,6 +4711,339 @@ def test_release_upload_the_served_check_reads_until_the_verified_wheel_is_serve
             f"prints as `(timed out)`:\n{transcript(done)}")
 
 
+# --- the asset job: check 1's digest list on the GitHub Release (007 T346) -------------
+
+#: The `asset` job's own steps, by their names: the artifact against the
+#: build's record, and the release's copy against it.
+LIST_STEP = "list holds check 1's digest list the build job wrote, and nothing else"
+ASSET_STEP = "the GitHub Release v<version> holds check 1's digest list"
+#: The list the build recorded, as the cases use it: any bytes do, and these
+#: are a list's.
+LIST_TEXT = ("ab" * 32 + "  lanes-index\n" + "cd" * 32 + "  lanes-edit.sh\n")
+LIST_SHA256 = hashlib.sha256(LIST_TEXT.encode("utf-8")).hexdigest()
+
+
+@NEEDS_UPSTREAM
+def test_release_asset_holds_contents_write_alone_and_needs_build_and_pypi():
+    """THE ONE JOB WITH A WRITE GRANT (007 T346): `asset` holds exactly
+    `contents: write`, to make the draft release and attach its one file; it
+    runs in no environment, so it asks for no approval; it needs `build` and
+    `pypi`, so it runs after PyPI serves the version; and it reads the
+    build's two records through its `env:`, never pasted into a script."""
+    workflow = release()
+    asset = job(workflow, "asset")
+    assert asset.get("permissions") == {"contents": "write"}, asset.get("permissions")
+    assert asset.get("environment") is None, asset.get("environment")
+    assert set(as_list(asset.get("needs"))) == {"build", "pypi"}, asset.get("needs")
+    assert asset.get("env") == {
+        "DIGEST_LIST": "${{ needs.build.outputs.digest-list }}",
+        "DIGEST_LIST_SHA256": "${{ needs.build.outputs.digest-list-sha256 }}"}, asset.get("env")
+    assert "continue-on-error" not in asset
+    for step in steps_of(workflow, "asset"):
+        assert "if" not in step and "continue-on-error" not in step, label(step)
+    assert pip_installs(workflow, "asset") == []
+    assert "--clobber" not in json.dumps(asset), "the asset job may replace a release's file"
+
+
+@NEEDS_UPSTREAM
+@pytest.mark.parametrize("which", UPLOAD_SCENARIOS)
+def test_release_asset_runs_exactly_where_pypi_runs(which):
+    """ONLY A FINAL FROM THE CODE LEG, ON ITS TAG, GETS A GITHUB RELEASE: the
+    `asset` job's condition reads `to-pypi`, as `pypi`'s does, so an rc
+    rehearsal and a branch rehearsal skip it, whatever the record says."""
+    ref, outputs, _, pypi = UPLOAD_SCENARIOS[which]
+    assert runs_when(release(), "asset", ref, outputs) is pypi
+
+
+@NEEDS_UPSTREAM
+def test_release_asset_s_guard_and_tag_steps_are_pypi_s_line_for_line():
+    """`pypi`'s FIRST STEP AND ITS TAG STEP, LINE FOR LINE, so the guard's
+    cases (`test_release_guard_upload_pypi_s_first_step`) and the tag's
+    (`test_release_upload_the_tag_recheck_*`) hold them; and the artifact it
+    takes is the build's `digest-list`, into `list`."""
+    workflow = release()
+    mine, theirs = steps_of(workflow, "asset"), steps_of(workflow, "pypi")
+    assert mine[0].get("run") and mine[0].get("run") == theirs[0].get("run")
+    assert (named(workflow, "asset", TAG_AGAIN_STEP).get("run")
+            == named(workflow, "pypi", TAG_AGAIN_STEP).get("run"))
+    downloads = [s for s in mine
+                 if str(s.get("uses", "")).startswith("actions/download-artifact@")]
+    assert len(downloads) == 1 and (downloads[0].get("with") or {}) == {
+        "name": "digest-list", "path": "list"}, downloads
+    for prefix in (TAG_AGAIN_STEP, ASSET_STEP):
+        assert (named(workflow, "asset", prefix).get("env") or {}).get(
+            "GH_TOKEN") == "${{ github.token }}", prefix
+
+
+#: WHAT `list/` HOLDS for the list step: `(its files, whether the step passes)`.
+LIST_CASES = {
+    "the-recorded-list": ({LISTED: LIST_TEXT}, True),
+    "other-bytes-under-its-name": ({LISTED: "ef" * 32 + "  lanes-index\n"}, False),
+    "the-list-and-another-file": ({LISTED: LIST_TEXT, "openRepoTools-1.2.0.sha256":
+                                   LIST_TEXT}, False),
+    "another-name": ({"openRepoTools-1.2.0.sha256": LIST_TEXT}, False),
+    "nothing": ({}, False),
+}
+
+
+@NEEDS_UPSTREAM
+@NEEDS_BASH
+@WINDOWS_SKIP
+@pytest.mark.skipif(shutil.which("sha256sum") is None,
+                    reason="the list step runs GNU's sha256sum")
+@pytest.mark.parametrize("which", LIST_CASES)
+def test_release_asset_the_list_step_passes_the_recorded_list_alone(tmp_path, which):
+    """THE LIST STEP, RUN: `list/` holding the one file the build named, at
+    the sha256 it recorded, passes; other bytes, a second file, another name
+    and nothing each refuse."""
+    files, passes = LIST_CASES[which]
+    workflow = release()
+    runner = Runner(tmp_path / "run", workflow, "asset", {
+        "VERSION": LIST_VERSION, "DIGEST_LIST": LISTED, "DIGEST_LIST_SHA256": LIST_SHA256})
+    folder = runner.work / "list"
+    folder.mkdir()
+    for name, text in files.items():
+        (folder / name).write_text(text, encoding="utf-8")
+    done = runner.run(named(workflow, "asset", LIST_STEP))
+    assert (done.returncode == 0) is passes, transcript(done)
+
+
+#: A `gh` THAT IS THE FORGE'S RELEASES, for the `asset` job's last step. The
+#: state, `FORGE_STATE`, is a JSON object: `releases`, each a `tag_name`, a
+#: `draft`, a `name` and its `assets`, each a `name` and the `path` of its
+#: bytes; `faults`, the calls that fail and the line each says; and `serve`,
+#: bytes a download hands back in place of the asset's. A fault is named by
+#: its call: `list`, `list-page` (a page in place of the API's JSON),
+#: `create`, `upload` or `download`. It answers `api
+#: --paginate repos/<R>/releases?per_page=100 --jq .[]` and `release create`,
+#: `release upload` and `release download` as gh does, drafts among them,
+#: writes every call to `FORGE_LOG`, and answers anything else as an error, so
+#: a step that starts asking something new fails here.
+RELEASE_FORGE = r'''
+import json, os, shutil, sys
+args = sys.argv[1:]
+with open(os.environ["FORGE_LOG"], "a", encoding="utf-8") as log:
+    log.write(json.dumps(args) + "\n")
+state_path = os.environ["FORGE_STATE"]
+with open(state_path, encoding="utf-8") as handle:
+    state = json.load(handle)
+faults = state.get("faults", {})
+store = os.path.join(os.path.dirname(state_path), "forge-assets")
+os.makedirs(store, exist_ok=True)
+repo = os.environ["GITHUB_REPOSITORY"]
+
+
+def refuse(line):
+    sys.stderr.write(line + "\n")
+    sys.exit(1)
+
+
+def save():
+    with open(state_path, "w", encoding="utf-8") as handle:
+        json.dump(state, handle)
+
+
+def keep(path):
+    kept = os.path.join(store, str(len(os.listdir(store))))
+    shutil.copyfile(path, kept)
+    return {"name": os.path.basename(path), "path": kept}
+
+
+def positional(rest, valued):
+    found, at = [], 0
+    while at < len(rest):
+        if rest[at] in valued:
+            at += 2
+        elif rest[at].startswith("-"):
+            at += 1
+        else:
+            found.append(rest[at])
+            at += 1
+    return found
+
+
+if args[:1] == ["api"]:
+    if args != ["api", "--paginate", f"repos/{repo}/releases?per_page=100", "--jq", ".[]"]:
+        refuse("fake forge: it answers no such call")
+    if "list" in faults:
+        refuse(faults["list"])
+    if "list-page" in faults:
+        print("<html><body>a page, not the API</body></html>")
+        sys.exit(0)
+    for release in state["releases"]:
+        print(json.dumps({"tag_name": release["tag_name"], "draft": release["draft"],
+                          "name": release.get("name"),
+                          "assets": [{"name": a["name"]} for a in release["assets"]]}))
+    sys.exit(0)
+if args[:1] != ["release"] or len(args) < 3:
+    refuse("fake forge: it answers no such call")
+verb, tag = args[1], args[2]
+rest = args[3:]
+if "--repo" not in rest or rest[rest.index("--repo") + 1] != repo:
+    refuse(f"fake forge: the call names no --repo {repo}")
+ours = [r for r in state["releases"] if r["tag_name"] == tag]
+valued = {"--repo", "--title", "--notes", "--pattern", "--dir"}
+if verb == "create":
+    if "create" in faults:
+        refuse(faults["create"])
+    if ours:
+        refuse(f"a release with the same tag name already exists: {tag}")
+    title = rest[rest.index("--title") + 1] if "--title" in rest else None
+    state["releases"].append({"tag_name": tag, "draft": "--draft" in rest, "name": title,
+                              "assets": [keep(p) for p in positional(rest, valued)]})
+    save()
+    sys.exit(0)
+if not ours:
+    refuse("release not found")
+if verb == "upload":
+    if "upload" in faults:
+        refuse(faults["upload"])
+    for path in positional(rest, valued):
+        if any(a["name"] == os.path.basename(path) for a in ours[0]["assets"]):
+            refuse("asset under the same name already exists")
+        ours[0]["assets"].append(keep(path))
+    save()
+    sys.exit(0)
+if verb == "download":
+    if "download" in faults:
+        refuse(faults["download"])
+    name, there = rest[rest.index("--pattern") + 1], rest[rest.index("--dir") + 1]
+    held = [a for a in ours[0]["assets"] if a["name"] == name]
+    if not held:
+        refuse("no assets match the file pattern")
+    target = os.path.join(there, name)
+    if "serve" in state:
+        with open(target, "w", encoding="utf-8") as handle:
+            handle.write(state["serve"])
+    else:
+        shutil.copyfile(held[0]["path"], target)
+    sys.exit(0)
+refuse("fake forge: it answers no such call")
+'''
+
+
+#: THE LAST STEP'S CASES: `(the releases there before, each `(tag, draft,
+#: {asset name: its text})`, the forge's faults, the bytes a download serves
+#: in place of the asset's, whether the step passes, what it says, and the
+#: `gh release` verbs it calls, in order)`.
+ASSET_CASES = {
+    "no-release-yet": ([], {}, None, True, "had no release, so a draft is made",
+                       ("create", "download")),
+    "a-release-of-another-tag-alone": ([("v1.2.0", False, {})], {}, None, True,
+                                       "had no release, so a draft is made",
+                                       ("create", "download")),
+    "a-draft-without-the-list": ([("v1.3.0", True, {})], {}, None, True,
+                                 "uploaded to the draft release v1.3.0",
+                                 ("upload", "download")),
+    "a-published-release-with-another-asset": (
+        [("v1.3.0", False, {"notes.txt": "x\n"})], {}, None, True,
+        "uploaded to the published release v1.3.0, beside its 1 other assets",
+        ("upload", "download")),
+    "the-list-already-there": ([("v1.3.0", True, {LISTED: LIST_TEXT})], {}, None, True,
+                               "a re-run, and nothing new is published",
+                               ("download", "download")),
+    "another-file-under-its-name": ([("v1.3.0", False, {LISTED: "other\n"})], {}, None,
+                                    False, "an asset is never replaced", ("download",)),
+    "two-releases-on-the-tag": ([("v1.3.0", True, {}), ("v1.3.0", False, {})], {}, None,
+                                False, "2 releases name the tag v1.3.0", ()),
+    "the-forge-cannot-list-its-releases": (
+        [], {"list": "gh: Server Error (HTTP 500)"}, None, False,
+        "failed, so whether v1.3.0 has a release is not known", ()),
+    "the-forge-answers-a-page": ([], {"list-page": ""}, None, False, "is not its JSON", ()),
+    "the-draft-cannot-be-made": ([], {"create": "HTTP 422: Validation Failed"}, None,
+                                 False, "the draft release v1.3.0 could not be made",
+                                 ("create",)),
+    "the-upload-is-refused": (
+        [("v1.3.0", True, {})], {"upload": "HTTP 422: Validation Failed"}, None, False,
+        f"{LISTED} could not be uploaded to the draft release v1.3.0: "
+        "HTTP 422: Validation Failed", ("upload",)),
+    "an-existing-list-that-cannot-be-read": (
+        [("v1.3.0", False, {LISTED: LIST_TEXT})], {"download": "HTTP 404: Not Found"}, None,
+        False, f"the published release v1.3.0 holds a {LISTED} that cannot be read "
+        "(HTTP 404: Not Found), so whether it is the build's is not known", ("download",)),
+    "the-list-cannot-be-read-back": (
+        [], {"download": "HTTP 502: Bad Gateway"}, None, False,
+        f"serves {LISTED} as nothing that can be read (HTTP 502: Bad Gateway)",
+        ("create", "download")),
+    "the-release-serves-other-bytes": ([], {}, "other\n", False, "and the build wrote",
+                                       ("create", "download")),
+}
+
+
+@NEEDS_UPSTREAM
+@NEEDS_BASH
+@WINDOWS_SKIP
+@pytest.mark.parametrize("which", ASSET_CASES)
+def test_release_asset_the_release_holds_the_list_at_the_recorded_sha256(tmp_path, which):
+    """THE LAST STEP, RUN UNDER A FAKE FORGE (007 T346): with no release on the
+    tag it makes a DRAFT on the tag that exists (`--verify-tag`), titled as
+    v1.2.0's was, holding the list; a release without the list gets it,
+    beside what it has; a release already holding the list at the recorded
+    sha256 gets nothing; and then the release's own copy must be the build's.
+    Another file under its name, two releases on the tag, a forge that
+    cannot list or answers a page, a draft that cannot be made, an upload
+    the forge refuses, a list already there that cannot be read, a copy that
+    cannot be read back and a copy of other bytes each refuse in an
+    `::error::` line, with no traceback, after exactly the `gh release`
+    calls the case names, and nothing is ever replaced."""
+    before, faults, serve, passes, said, expected = ASSET_CASES[which]
+    workflow = release()
+    store = tmp_path / "before"
+    store.mkdir()
+    releases = []
+    for at, (tag, draft, assets) in enumerate(before):
+        held = []
+        for name, text in assets.items():
+            path = store / f"{at}-{name}"
+            path.write_text(text, encoding="utf-8")
+            held.append({"name": name, "path": str(path)})
+        releases.append({"tag_name": tag, "draft": draft, "name": f"openRepoTools {tag}",
+                         "assets": held})
+    state = tmp_path / "forge" / "state.json"
+    state.parent.mkdir()
+    state.write_text(json.dumps({"releases": releases, "faults": faults,
+                                 **({"serve": serve} if serve is not None else {})}),
+                     encoding="utf-8")
+    log = tmp_path / "forge.log"
+    forge = python_tool(tmp_path / "forge-bin", "gh", RELEASE_FORGE)
+    runner = Runner(tmp_path / "run", workflow, "asset", {
+        "VERSION": LIST_VERSION, "GITHUB_REPOSITORY": CODE_LEG, "GITHUB_RUN_ID": RUN_ID,
+        "DIGEST_LIST": LISTED, "DIGEST_LIST_SHA256": LIST_SHA256,
+        "FORGE_STATE": str(state), "FORGE_LOG": str(log)}, forge=forge)
+    (runner.work / "list").mkdir()
+    (runner.work / "list" / LISTED).write_text(LIST_TEXT, encoding="utf-8")
+    done = runner.run(named(workflow, "asset", ASSET_STEP))
+    out = done.stdout + done.stderr
+    assert "Traceback" not in out, transcript(done)
+    assert said in out, transcript(done)
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    verbs = [call[1] for call in calls if call[:1] == ["release"]]
+    assert verbs == list(expected), calls
+    assert "--clobber" not in json.dumps(calls), calls
+    after = json.loads(state.read_text(encoding="utf-8"))["releases"]
+    if not passes:
+        assert done.returncode == 1, transcript(done)
+        assert [line for line in out.splitlines() if line.startswith("::error::")], (
+            transcript(done))
+        for found, (tag, _, assets) in zip(after, before):
+            assert {a["name"]: Path(a["path"]).read_text(encoding="utf-8")
+                    for a in found["assets"]} == assets, f"{tag} was changed: {found}"
+        return
+    assert done.returncode == 0, transcript(done)
+    ours = [r for r in after if r["tag_name"] == f"v{LIST_VERSION}"]
+    assert len(ours) == 1, after
+    lists = [a for a in ours[0]["assets"] if a["name"] == LISTED]
+    assert len(lists) == 1 and Path(lists[0]["path"]).read_text(encoding="utf-8") == LIST_TEXT
+    others = {a["name"] for a in ours[0]["assets"]} - {LISTED}
+    assert others == {name for tag, _, assets in before if tag == f"v{LIST_VERSION}"
+                      for name in assets} - {LISTED}, ours[0]
+    if not [tag for tag, _, _ in before if tag == f"v{LIST_VERSION}"]:
+        [create] = [call for call in calls if call[1:2] == ["create"]]
+        assert "--draft" in create and "--verify-tag" in create, create
+        assert ours[0]["draft"] is True and ours[0]["name"] == f"openRepoTools v{LIST_VERSION}"
+    assert verbs[-1] == "download", f"the release's copy is not read back last: {calls}"
+
+
 # --- the install check ---------------------------------------------------------------
 
 def install_steps(workflow: dict) -> list:
@@ -5495,7 +6113,7 @@ PYTHON_3_9_LEG = "<the Python 3.9 leg's own step: its if: is the 3.9 condition>"
 #: and the wheel check refuses that stamp (`test_release_stamp_writer_*_after_it_*`).
 STEP_ORDER = {
     "build": ["actions/checkout", "actions/setup-python", BUILD_GUARD, *BUILD_STEPS,
-              "actions/upload-artifact"],
+              "actions/upload-artifact", DIGEST_LIST_STEP, "actions/upload-artifact"],
     "testpypi": [UPLOAD_GUARD, "actions/download-artifact",
                  DIST_STEP, APPROVAL_STEP, TAG_AGAIN_STEP, EMPTY_INDEX_STEP,
                  "pypa/gh-action-pypi-publish", SERVED_STEP],
@@ -5507,6 +6125,8 @@ STEP_ORDER = {
     "pypi": [UPLOAD_GUARD, "actions/download-artifact",
              DIST_STEP, APPROVAL_STEP, TAG_AGAIN_STEP, EMPTY_INDEX_STEP,
              "pypa/gh-action-pypi-publish", SERVED_STEP],
+    "asset": [UPLOAD_GUARD, "actions/download-artifact", LIST_STEP, TAG_AGAIN_STEP,
+              ASSET_STEP],
 }
 
 
@@ -5611,8 +6231,14 @@ HEADER_SECTIONS = ("190133d", "Tagged on Brett Heap's word", "#850",
 HEADER_CARRIES = (
     "RELEASING", "openRepoShape v1.1.0", "Decision 10", "openRepoTools-3",
     "Brett Heap", "Lane: <lane>",
-    "gh release create v<version> --repo <repository> --verify-tag "
+    # step 5 publishes the draft the `asset` job made (007 T346), with the
+    # notes, where v1.2.0's `gh release create` made the release itself
+    "gh release edit v<version> --repo <repository> --draft=false --verify-tag "
     "--notes-file <spec>/docs/release-notes/v<version>.md",
+    "The `asset` job has made it a DRAFT",
+    # and a failed `asset` is re-run first, never published past (the review
+    # of 49b107b's decision 3; FR-034 and contracts/workflows.md's step)
+    "If `asset` failed, re-run it before publishing; never publish without the list.",
     "release/vX.Y", "annotated", "cherry-pick -x", "HOLD", "LANDED",
     "l3-rehearsal-v1.1.0", "tests.yml", "opensoft/openRepoTools-code",
     "opensoft/openRepoTools", "pypi.org publisher", "testpypi", "pypi",
