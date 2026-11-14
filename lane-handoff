@@ -210,10 +210,16 @@ restart_fact_ok() {
 # a newline, so the line stays readable as well as runnable, on either bash.
 quoted() {
 	q_sep=""
+	# q_r is a variable, not an inline escape. Inside double quotes bash 3.2, and
+	# bash 4.2 and older or BASH_COMPAT up to 42, keep the backslashes of a
+	# replacement half: `"${q_a//\'/\'\\\'\'}"` printed `\'\\'\'` for a quote and
+	# the line did not read back (lane 4, #165 review). A variable's value is not
+	# read again, so every bash gives `'\''`.
+	q_r="'\\''"
 	for q_a in "$@"; do
 		case "$q_a" in
 		'' | *[!A-Za-z0-9._/:=@%+,-]*)
-			printf "%s'%s'" "$q_sep" "${q_a//\'/\'\\\'\'}" ;;
+			printf "%s'%s'" "$q_sep" "${q_a//\'/$q_r}" ;;
 		*) printf '%s%s' "$q_sep" "$q_a" ;;
 		esac
 		q_sep=' '
