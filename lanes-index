@@ -8220,6 +8220,7 @@ class RegisterService:
         self.live = 0                # connections held, at most REGISTER_SERVE_CONNECTIONS_MAX
         self.install, self.config_stamp = stamps
         self.config_epoch = 0        # moves with each configuration taken (`reload`)
+        self.reload_due = False      # a request saw a change; the worker re-reads it (M1)
         self.idle_check_s, ignored = register_serve_seconds(REGISTER_SERVE_IDLE_CHECK)
         if ignored:
             register_serve_log(paths, "the idle check's test value is ignored: the default is kept")
@@ -8512,13 +8513,19 @@ class RegisterService:
         no `SIGINT` (lane 1's U5 review, S1); between requests, the idle
         check; and where the child is gone, a new connect, in the background,
         once a request has come where the loss was lazy (`lost`), and no
-        sooner than `REGISTER_SERVE_RETRY_S` after the last."""
+        sooner than `REGISTER_SERVE_RETRY_S` after the last. A changed
+        configuration a request has seen comes first (`take_change`): the
+        worker is the one thread that re-reads it, and the one that retires
+        the child it held (M1)."""
         import threading
         while True:
             job = None
             with self.cond:
                 while not self.stopping:
                     now = time.monotonic()
+                    if self.reload_due:
+                        job, self.reload_due = "reload", False
+                        break
                     if self.state == "down" and not self.lazy and now >= self.retry_at:
                         self.state, self.retry_at = "connecting", now + REGISTER_SERVE_RETRY_S
                         threading.Thread(target=self.connect, args=(self.epoch,),
@@ -8538,7 +8545,9 @@ class RegisterService:
                     self.cond.wait(max(0.01, min(waits)))
                 if self.stopping:
                     return
-            if job == "idle":
+            if job == "reload":
+                self.take_change()
+            elif job == "idle":
                 self.idle_check()
             elif job == "fetch":
                 self.fetch()
@@ -8877,11 +8886,34 @@ class RegisterService:
         with self.cond:
             cfg, stamp, epoch = self.cfg, self.config_stamp, self.config_epoch
         if register_serve_config_stamp(cfg) != stamp:
+            # ONE THREAD RE-READS IT, THE WORKER (lane 1's U5 gate, #165
+            # 6881993079, M1; socket API 8.4, draft 13): this connection asks
+            # it, and waits for its one step, or for the service's end, at
+            # most as long as a request's answer may take (section 7), so no
+            # connection thread runs `load_config`'s `git` or waits on a kill.
+            # That request is answered `unavailable`, or `unavailable
+            # restarting` where the change ends the service.
+            limit = arrival + register_serve_timer_ms(cfg) / 1000 + REGISTER_SERVE_KILL_S + 1.0
+            with self.cond:
+                self.reload_due = True
+                self.cond.notify_all()
+                self.cond.wait_for(lambda: self.config_epoch != epoch or self.stopping,
+                                   max(0.0, limit - time.monotonic()))
+                stopping = self.stopping
+            return b"unavailable restarting\n" if stopping else b"unavailable\n"
+        return self.request(items, arrival, epoch)
+
+    def take_change(self) -> None:
+        """A CHANGED CONFIGURATION, TAKEN BY THE WORKER ALONE (M1): re-read
+        (`reload`) only where its stamp still differs from the one held, so
+        requests that saw one change make one step between them; and where
+        the change ends the service, the service stops."""
+        with self.cond:
+            cfg, stamp = self.cfg, self.config_stamp
+        if register_serve_config_stamp(cfg) != stamp:
             why = self.reload()
             if why:
                 self.stop(why)
-                return b"unavailable restarting\n"
-        return self.request(items, arrival, epoch)
 
     def reload(self) -> str:
         """The configuration re-read (Y:3918-3920): why the service must exit,
@@ -8896,7 +8928,10 @@ class RegisterService:
         `REGISTER_SERVE_RETRY_S` wait, the requests queued under the earlier
         epoch are answered `unavailable`, and the configuration epoch moves.
         So no request goes to the old child under the new configuration, and
-        no answer of an earlier epoch is given (`request`, `serve_job`)."""
+        no answer of an earlier epoch is given (`request`, `serve_job`). It
+        runs in the worker (`take_change`; M1), between the worker's jobs, so
+        the old child is killed, and its pipes closed, by the one thread that
+        used them, and no exchange is running on it then."""
         try:
             cfg, stamp = register_serve_load()
             if cfg["mode"] != "primary":
