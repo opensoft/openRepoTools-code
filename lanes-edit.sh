@@ -21992,14 +21992,16 @@ guard_bind_outer() {   # <session uuid>
   # point 21, #165 6879754335; the contract, draft 11, sections 1 and 8): the
   # five copies are gathered above, before this read, and the rewrite makes
   # the same test on the very lines it copies (`guard_bind_rewrite --own`), so
-  # a record changed after this read is still left as it is. What is left is
-  # the rewrite's own read to its `mv`. No lock per record: it would put a new
-  # stuck state on every prompt's path.
+  # a record changed after this read and before the rewrite's own is still left
+  # as it is. What is left is the rewrite's own read to its `mv`, in which a
+  # change can still be overwritten (lane 3's Codex code review of `12eddddf`,
+  # #165 6882203066, finding 8). No lock per record: it would put a new stuck
+  # state on every prompt's path.
   # THE REWRITE'S THREE RESULTS, AND THE OUTER'S EXIT FOR EACH (lane 3's
   # ruling on the Codex re-review of spec#47 at `746e931c`, S1, #165
   # 6880414089: the report's three-way result as written): 0, written, exit
-  # 0; 2, not its own (or no record), exit 0, the record left as it is; 1, an
-  # I/O failure, exit 1: this rewrite did not change the record, which is as
+  # 0; 2, not its own (or no record), exit 0, nothing written by this rewrite;
+  # 1, an I/O failure, exit 1: this rewrite did not change the record, which is as
   # another writer may have left it, and not necessarily still its `binding`
   # (lane 3's ruling on S1 of its Codex delta review of spec#47's draft 13,
   # #165 6880978929). ON EVERY ONE the facts file goes: its `why=` and `note=`
