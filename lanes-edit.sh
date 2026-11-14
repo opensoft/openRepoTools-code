@@ -5158,9 +5158,11 @@ EOF
 #      missing side is git's 40 zeros); `renames.tsv` where the verb renamed
 #      the lane's log (O5): `ensure_log`'s case-only rename, or `rename-lane`'s
 #      move, whose new path is `LOG_RENAMED_TO` (T422); `images/<path>` from
-#      the index for every `A` and `M`; `msg`, `$msg` verbatim; and `files`,
-#      the canonical rows, whose sha256 is the `call` line's `<files>` (§3.2's
-#      one digest rule). Then `ready`, last.
+#      the index for every `A` and `M`; `msg`, `$msg` as files mode's
+#      `git commit -m` stores it, `git stripspace`'s cleanup with no final LF
+#      (lane openRepoTools-3, #165 6859073786); and `files`, the canonical
+#      rows, whose sha256 is the `call` line's `<files>` (§3.2's one digest
+#      rule). Then `ready`, last.
 #   5. The handshake (Y:4999–5007). The parent made `seam.fifo`; it is opened
 #      read-write on fd 5 BEFORE `ready`, so the open cannot block and a line
 #      the parent writes once it sees `ready` is held in the pipe until it is
@@ -5285,7 +5287,7 @@ cp_seam() {
         cs_rto="${LOG_RENAMED_TO:-}" \
         cs_to="" cs_ton=0 cs_fromd=0 cs_tsv="" cs_rows="" cs_img="" cs_h="" cs_d="$REG_SCRATCH" \
         cs_pl="" cs_ptok="" cs_tok="" cs_prc=0 cs_cap="" cs_t0=0 cs_msg="" cs_s="" cs_buf="" \
-        cs_c="" cs_tt=0 cs_r="" cs_rc=0 cs_nb=0 cs_why="" cs_tw=0 cs_sl="" cs_sn=""
+        cs_c="" cs_tt=0 cs_r="" cs_rc=0 cs_nb=0 cs_why="" cs_tw=0 cs_sl="" cs_sn="" cs_cm=""
   local cs_sts cs_ps cs_bs cs_ns cs_f
   cs_sts=(); cs_ps=(); cs_bs=(); cs_ns=(); cs_f=()
   cs_tab="$(printf '\t')"
@@ -5421,7 +5423,27 @@ cp_seam() {
   if [ -n "$cs_ren" ]; then
     printf '%s\t%s\n' "$cs_ren" "$cs_to" > "$cs_d/renames.tsv" || cp_seam_unwritable renames.tsv
   fi
-  printf '%s' "$msg" > "$cs_d/msg" || cp_seam_unwritable msg
+  # `msg` IS THE MESSAGE AS FILES MODE'S COMMIT STORES IT, cleaned once, here
+  # (T414; lane openRepoTools-3, #165 6859073786: "store the message as git's
+  # default cleanup would"; lane openRepoTools-1's evidence, 6869810000).
+  # `commit_publish` commits with `-m` and neither `--cleanup` nor an editor,
+  # so git cleans the message as `whitespace`, which is `git stripspace` with
+  # no option: white space off the end of every line, leading and trailing
+  # blank lines dropped, a run of blank lines made one, `#` lines kept, and
+  # one LF at the end; `cp_own_commit` reads it the same way. Stored raw,
+  # `archive-rows`' names, joined by `tr '\n' ' '`, ended the journal's
+  # message in a space that its files-mode twin's commit does not hold. The
+  # file keeps its convention, no final LF of its own: `$( )` drops
+  # stripspace's one. Only `lanes-index register commit` reads this file:
+  # the `call` line, the record, the lookup and the tail's match go by
+  # `files` and the write's id, and the parent never reads the message. A
+  # message empty once cleaned leaves the file empty, which `register
+  # commit` refuses with 2 before it journals, as files mode's `git commit`
+  # refuses it; no verb hands the seam one, since each opens `LANES(` or
+  # `LOG(`.
+  cs_cm="$(printf '%s\n' "$msg" | git -C "$LANES_REPO" stripspace 2>/dev/null)" ||
+    cp_seam_unwritable "msg (\`git stripspace\` failed)"
+  printf '%s' "$cs_cm" > "$cs_d/msg" || cp_seam_unwritable msg
   # Every path is free of control characters (above), so a whole-row sort is
   # the sort by path, bytewise, that §3.2's canonical rows take.
   printf '%s' "$cs_rows" | LC_ALL=C sort > "$cs_d/files" || cp_seam_unwritable files
@@ -30783,7 +30805,8 @@ EOF
     RL_HEAD_BEFORE="$(git -C "$LANES_REPO" rev-parse HEAD 2>/dev/null || printf '')"
     rl_msg="LANES($rl_new@$WS): RENAMED lane $rl_old → $rl_new (Amendment 16) — the row, $rl_log_new_rel, the handoff and $LANES_ALIASES_PATH in one commit"
     # FEATURE 007, T422 — ON PRIMARY THE ENTRY'S MESSAGE NAMES WHAT IT HOLDS:
-    # the seam hands `$msg` to the journal verbatim (Y:5061), and the handoff
+    # the seam hands `$msg` to the journal as git's default cleanup leaves it
+    # (Y:5061; T414, #165 6859073786), and the handoff
     # is not in this entry but in the git commit that follows it (Q13(a)).
     [ -z "$REG_SCRATCH" ] ||
       rl_msg="LANES($rl_new@$WS): RENAMED lane $rl_old → $rl_new (Amendment 16) — the row, $rl_log_new_rel and $LANES_ALIASES_PATH in one register write; the handoff's move and stamp follow in the lane's checkout (Q13(a))"
