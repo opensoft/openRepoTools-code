@@ -132,6 +132,16 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("git") is None,
     reason="the lane tooling is bash over git")]
 
+#: THE LANDING GATE'S TABLE (T280's reader, `tests/sql_register_gate.py`; T281
+#: removes it in the last set). Every id here waits for T270's own fails-until,
+#: T320 to T323, T325 and L4-B13, which is lane 4's T415 (the author) and T416
+#: (the fork), and for T227, whose T227b makes `pg_imported` and
+#: `pg_cluster.imported_register`, on which every case builds its estate
+#: (`_estate`; lane 3, #165 6877365776, point 2). Lane 2's plan GP-24.
+SQL_REGISTER_GATE_TABLE = {
+    "*": ("T227", "T320", "T321", "T322", "T323", "T325", "T415", "T416"),  # every id: the tasks all its rows share
+}
+
 LANES_EDIT = REPO / "lanes-edit.sh"
 INDEXER = REPO / "lanes-index"
 
