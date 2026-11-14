@@ -34,6 +34,9 @@ REFUSALS = {
     "Source test-merge identity differs": "source-test-merge",
     "Source moved during verification": "source-reread",
     "Event merge hint is neither absent nor current": "event-merge-hint",
+    "Candidate description is not string or null": "candidate-description-type",
+    "Not a current scoped draft candidate": "candidate-metadata",
+    "Candidate evidence moved": "candidate-reread",
     "Missing or ambiguous fast check": "fast-check-count",
     "Fast check is not successful exact-head Actions evidence": "fast-check-identity",
     "Fast evidence is not successful or authenticated pending work": "fast-state",
@@ -172,8 +175,21 @@ def duplicate(env, event, root, main, request, fetch, threads, base_changes):
     head, branch = policy.side(pr, "head")
     expected = event["pull_request"]
     require(current_merge_hints(env, pr, expected), "Event merge hint is neither absent nor current")
-    comparison = dict(pr, merge_commit_sha=expected.get("merge_commit_sha"))
-    require(policy.snapshot(comparison) == policy.snapshot(expected)
+    require(all(body is None or isinstance(body, str)
+                for body in (pr.get("body"), expected.get("body"))),
+            "Candidate description is not string or null")
+    # Candidate prose grants no authority. Align only this initial comparison;
+    # keep the original live PR for independent evidence and strict rereads.
+    comparison = dict(pr, body=expected.get("body"),
+                      merge_commit_sha=expected.get("merge_commit_sha"))
+    live_snapshot = policy.snapshot(comparison)
+    event_snapshot = policy.snapshot(expected)
+    if live_snapshot != event_snapshot:
+        names = ("number", "state", "draft", "merged", "body", "merge_commit_sha",
+                 "head", "base", "author")
+        diagnostic("candidate", "snapshot-mismatch", fields=[name for name, live, old
+                   in zip(names, live_snapshot, event_snapshot) if live != old])
+    require(live_snapshot == event_snapshot
             and pr["number"] == number and pr["state"] == "open" and pr["draft"] is True
             and pr["user"]["login"] == "mergify[bot]"
             and policy.side(pr, "base") == (main, "main")

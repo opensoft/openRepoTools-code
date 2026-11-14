@@ -574,8 +574,15 @@ def test_ci_cutover_generated_merge_hint_keeps_candidate_body_exact(cutover, bat
     live = batch["data"]["pulls/9"]
     event["pull_request"]["merge_commit_sha"] = None
     live["merge_commit_sha"] = env["GITHUB_SHA"]
-    live["body"] += "\nChanged candidate body."
-    assert hint_route(cutover, batch, (env, event, data, live)) == cutover.FULL
+    reader, reads = request_for(batch), []
+    def request(repo, endpoint):
+        if endpoint == "pulls/9":
+            reads.append(True)
+            if len(reads) == 2:
+                live["body"] += "\nChanged candidate body during verification."
+        return reader(repo, endpoint)
+    assert hint_route(cutover, batch, (env, event, data, live), request) == cutover.FULL
+    assert len(reads) == 2
 
 
 @pytest.mark.parametrize("failure", ["missing", "corrupt"])

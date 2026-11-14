@@ -91,3 +91,20 @@ adoption boundaries are reconciled in the spec leg's
 `specs/009-manual-two-pr-queue/activation-evidence.md` and issue26 above. Follow
 that canonical dated record for later outcomes; do not reinterpret these failed
 attempts or infer assembly, release, tool or running-lane adoption authority.
+
+## R5 candidate-description follow-up — 2026-11-14
+
+After pending-observation qualification, fresh source PR71/72 passed fast-only
+and formed a genuine two-member batch. Draft PR73 selected full at00:27:07.974Z;
+edit history records a description edit at00:27:05Z. That chronology exposes an
+initial exact-body incompatibility, not a proven sole historical cause. Both
+sources were dequeued and the duplicate/heavy runs cancelled before landing.
+This remains failed efficiency acceptance, never a completed heavy qualification.
+
+CI-METADATA-15 permits only initial string/null candidate-description differences
+in a temporary comparison copy and adds field-name/fixed-code diagnostics. No
+description supplies admission or review proof. Genuine draft/ref/main/head,
+tested parents, scope, actual admission, independent source reviews and strict
+final raw rereads remain mandatory. Invalid description types retain full.
+The spec leg's canonical ledger/tasks govern qualification and genuinely fresh
+R6 acceptance; this amendment claims neither live success nor assembly adoption.

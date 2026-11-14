@@ -197,9 +197,20 @@ At the initial source or genuine candidate PR comparison only, generated
 `GITHUB_SHA`. Both hints must qualify; unknown or malformed non-null hints retain
 full even when both snapshots agree. These hints never identify the tested
 commit: the actual commit and ordered current-main/head parents are still
-independently verified. Candidate bodies remain exact, and genuine admission
-and source proofs remain mandatory. Subsequent live rereads compare the original
+independently verified. At only the initial candidate comparison, descriptions
+may differ when both are strings or null. Candidate prose grants no member,
+review or admission authority; those proofs remain independently mandatory.
+Invalid description types retain full. Subsequent live rereads compare the original
 PR strictly, including the full body and generated hint; no race is normalized.
+
+The R5 source pair qualified fast-only and formed a genuine two-member batch,
+but its draft candidate selected full fallback. Edit history shows a description
+edit before that decision, not the exact first failing historical predicate.
+The bounded initial-description repair preserves every other identity and all
+real proof checks. Candidate snapshot diagnostics report field names only;
+known metadata/type/reread refusals use fixed codes, never body or hint values.
+The failed specimen stays failed and stopped. A new reviewed/full-CI-qualified
+repair and genuinely fresh source events are required for another canary.
 
 ## Exact-head local review receipts
 
