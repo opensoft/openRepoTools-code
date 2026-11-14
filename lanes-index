@@ -8328,12 +8328,29 @@ class RegisterService:
                 full = self.live >= REGISTER_SERVE_CONNECTIONS_MAX
                 if not full:
                     self.live += 1
+            # THE SLOT, HANDED OFF EXCEPTION-SAFE (lane 3's Codex review of
+            # 88b50886, #165 6882203066, SHOULD 2): one past the cap is
+            # logged however its close ends; a thread that cannot start gives
+            # its slot back, and its connection is closed with no answer.
             if full:
-                conn.close()        # no answer: its client reads directly (SHOULD 5)
+                try:
+                    conn.close()    # no answer: its client reads directly (SHOULD 5)
+                except OSError:
+                    pass
                 register_serve_log(self.paths, "a connection past the cap was closed")
                 continue
-            threading.Thread(target=self.connection, args=(conn, time.monotonic()),
-                             daemon=True).start()
+            try:
+                threading.Thread(target=self.connection, args=(conn, time.monotonic()),
+                                 daemon=True).start()
+            except Exception:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+                finally:
+                    with self.cond:
+                        self.live -= 1
+                register_serve_log(self.paths, "a connection's thread could not start")
         self.end()
         if self.ours():
             try:
@@ -8929,9 +8946,11 @@ class RegisterService:
         except OSError:
             pass
         finally:
-            conn.close()
-            with self.cond:
-                self.live -= 1
+            try:
+                conn.close()
+            finally:
+                with self.cond:     # the slot, given back however the close ends (SHOULD 2)
+                    self.live -= 1
 
     def receive(self, conn, deadline: float) -> bytes | None:
         """The request's bytes up to its `end` line, or None where the client
