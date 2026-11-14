@@ -81,6 +81,97 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
     or not Path("/proc/self/stat").exists(),
     reason="the lane tooling is bash over git, and the bind's liveness test reads /proc")]
 
+#: THE LANDING GATE'S TABLE (T280; task sets version 12b's rule 11,
+#: opensoft/openRepoTools#165 6877673742), TEMPORARY: T281 removes it in the
+#: last set. `tests/sql_register_gate.py` reads it: in a code pull request's
+#: full CI, each id below is skipped until every task its row names has
+#: landed, and the skip names them. The rows are from the Orders of T213
+#: (tasks:1992), T214 (:2013), T226 (:2177), T237 (:2302, with :2297) and T254
+#: (:2419), tasks.md at lane 3's commit 17 `204145ae`, each row's owner and
+#: cite beside it. T214's two cases that pass today,
+#: `test_the_hook_string_and_guard_timeout_are_unchanged` and
+#: `test_an_unreadable_bind_record_is_dropped_with_exit_2` (tasks:2013), have
+#: no row, so they always run. No task is common to every row, so there is
+#: no "*" row.
+SQL_REGISTER_GATE_TABLE = {
+    "test_a_65536_byte_request_is_sent_and_taken_and_a_65537_byte_one_is_neither": ("T512", "T513"),  # T237; tasks:2302
+    "test_a_bind_body_past_its_bound_ends_with_the_bounds_code_and_leaves_no_process": ("T502",),  # T214; tasks:2013
+    "test_a_bind_in_doubt_looks_its_write_up_before_a_rerun": ("T427", "T428", "T502", "T510"),  # T254; tasks:2419
+    "test_a_bind_killed_mid_commit_waits_for_ended_utc_plus_c_before_its_lookup": ("T427", "T428", "T502", "T510"),  # T254; tasks:2419
+    "test_a_bind_over_a_delayed_tls_link_at_c_3_ends_bound_inside_530_s": ("T427", "T428", "T502", "T510"),  # T254; tasks:2419
+    "test_a_bind_with_no_timeout_says_bounded_no_and_kill_stops_its_group_once": ("T502",),  # T214; tasks:2013
+    "test_a_binding_from_another_host_or_container_is_not_judged_by_its_pid_until_the_deadline_plus_60_s": ("T502",),  # T214; tasks:2013
+    "test_a_cache_miss_at_the_service_answers_unavailable_and_fetches_in_the_background": ("T302", "T512", "T513"),  # T237; tasks:2302
+    "test_a_client_of_another_uid_is_closed_by_so_peercred": ("T512", "T513"),  # T237; tasks:2302
+    "test_a_connect_timeout_above_the_direct_reads_share_is_cut_at_the_parse_start_line": ("T103", "T113", "T507"),  # T213; tasks:1992
+    "test_a_database_that_does_not_answer_is_2_inside_4_5_s": ("T103", "T113", "T507"),  # T213; tasks:1992
+    "test_a_dead_bind_outer_answers_in_progress_while_its_session_lives_then_no_outcome": ("T502",),  # T214; tasks:2013
+    "test_a_failed_bind_can_be_answered_again": ("T502",),  # T214; tasks:2013
+    "test_a_failed_bind_renames_back_keeps_the_offer_and_allows_three_attempts": ("T502",),  # T214; tasks:2013
+    "test_a_guard_that_starts_too_late_refuses_2_without_a_read": ("T103", "T113", "T507"),  # T213; tasks:1992
+    "test_a_live_bind_past_its_bound_that_timeout_has_not_ended_answers_2_and_names_the_pid_to_kill": ("T502",),  # T214; tasks:2013
+    "test_a_prompt_mid_bind_is_not_passed_and_leaves_the_record": ("T502",),  # T214; tasks:2013
+    "test_a_rerun_after_a_failed_stamp_push_writes_one_stamp": ("T427", "T428", "T502", "T510"),  # T254; tasks:2419
+    "test_a_reused_bind_pid_gives_no_outcome_with_no_session_test": ("T502",),  # T214; tasks:2013
+    "test_a_second_read_past_the_start_line_is_noted_not_refused": ("T103", "T113", "T507"),  # T213; tasks:1992
+    "test_a_service_that_cannot_start_falls_back_to_the_direct_read": ("T512", "T513"),  # T237; tasks:2302
+    "test_a_service_that_never_answers_falls_back_inside_5_s": ("T512", "T513"),  # T237; tasks:2302
+    "test_a_stale_socket_is_unlinked_under_the_lock_and_rebound": ("T512", "T513"),  # T237; tasks:2302
+    "test_a_whole_file_fetch_the_start_line_cuts_fills_the_image_cache_for_the_next_prompt": ("T103", "T113", "T507"),  # T213; tasks:1992
+    "test_a_write_between_two_requests_is_in_the_next_answer": ("T107", "T227", "T228", "T512", "T513"),  # T237; tasks:2302
+    "test_after_bound_one_moved_then_the_next_prompt_passes": ("T502",),  # T214; tasks:2013
+    "test_an_owner_file_from_another_namespace_or_boot_is_no_service": ("T512", "T513"),  # T237; tasks:2302
+    "test_answer_2_exits_2_binding_before_t0_plus_1_s_and_the_runner_sees_eof": ("T502",),  # T214; tasks:2013
+    "test_answer_2_survives_a_group_sigterm_at_the_hooks_timeout": ("T502",),  # T214; tasks:2013
+    "test_claude_no_lane_still_skips_before_any_input": ("T103", "T113", "T507"),  # T213; tasks:1992
+    "test_each_service_request_is_one_query": ("T229", "T512", "T513"),  # T237; tasks:2302
+    "test_guard_bind_computes_bound_s_from_c_n_a_and_the_service": ("T502", "T507"),  # T214; tasks:2013
+    "test_kill_of_the_bind_outer_ends_the_record_with_the_signals_code": ("T502",),  # T214; tasks:2013
+    "test_no_session_environment_carries_a_database_url_or_password": ("T103", "T113", "T502", "T507"),  # T213; tasks:1992
+    "test_one_instance_holds_register_lock_and_a_second_starter_exits_0": ("T512", "T513"),  # T237; tasks:2302
+    "test_pid_start_of_answers_live_dead_and_unreadable": ("T502",),  # T214; tasks:2013
+    "test_serve_refuses_unless_the_mode_answer_is_primary": ("T512", "T513"),  # T237; tasks:2302
+    "test_status_prints_the_services_lines_and_its_failure_stamp": ("T512", "T513"),  # T237; tasks:2302
+    "test_the_bind_child_environment_is_as_lane_4_lists_it": ("T502",),  # T214; tasks:2013
+    "test_the_bind_child_reaches_tmux_through_tmux_pane": ("T502",),  # T214; tasks:2013
+    "test_the_bind_child_records_bind_failed_with_the_code_and_binds_nothing": ("T427", "T428", "T502"),  # T214; tasks:2013
+    "test_the_bind_child_survives_a_group_kill_and_hangup_and_ends_bound": ("T502",),  # T214; tasks:2013
+    "test_the_bind_childs_lookup_sends_the_five_copied_values": ("T427", "T428", "T502", "T510"),  # T254; tasks:2419
+    "test_the_bind_is_one_register_write_and_refuses_a_changed_row": ("T427", "T428", "T502", "T510"),  # T254; tasks:2419
+    "test_the_bind_resume_path_makes_at_most_n_r_read_calls": ("T502",),  # T214; tasks:2013
+    "test_the_database_unreachable_with_the_service_up_is_2_never_a_cached_ok": ("T512", "T513"),  # T237; tasks:2302
+    "test_the_direct_read_connects_as_its_engineers_reader_login": ("T103", "T113", "T507"),  # T213; tasks:1992
+    "test_the_first_call_starts_the_service_with_no_supervisor": ("T512", "T513"),  # T237; tasks:2302
+    "test_the_guard_answer_time_is_recorded_beside_todays_direct_guard": ("T512", "T513"),  # T237; tasks:2302
+    "test_the_guard_maps_69_75_and_3_to_2": ("T103", "T113", "T507"),  # T213; tasks:1992
+    "test_the_guard_through_the_service_answers_byte_identical_to_the_direct_read": ("T512", "T513"),  # T237; tasks:2302
+    "test_the_guards_last_budget_line_is_below_guard_timeout": ("T103", "T113", "T507"),  # T213; tasks:1992
+    "test_the_guards_register_parse_is_timed_on_a_real_sized_register_beside_todays_six_reads_through_git": ("T111", "T112", "T507"),  # T226; tasks:2177
+    "test_the_guards_request_carries_only_file_names": ("T512", "T513"),  # T237; tasks:2302
+    "test_the_post_bind_refill_is_one_register_read_and_never_git": ("T502", "T507"),  # T214; tasks:2013
+    "test_the_service_reaches_the_database_only_through_psql": ("T512", "T513"),  # T237; tasks:2302
+    "test_the_service_stops_after_its_idle_time_and_unlinks_its_socket": ("T512", "T513"),  # T237; tasks:2302
+    "test_the_services_idle_check_replaces_a_dropped_connection_in_the_background": ("T512", "T513"),  # T237; tasks:2302
+    "test_the_services_request_timer_follows_register_rtt_ms": ("T512", "T513"),  # T237; tasks:2302
+    "test_the_session_start_block_makes_no_register_call_on_primary": ("T103", "T113", "T507"),  # T213; tasks:1992
+    "test_the_session_start_block_reads_the_mirror_and_only_starts_the_service": ("T512", "T513"),  # T237; tasks:2302
+    "test_the_socket_directory_is_a_0700_directory_of_this_uid_and_never_a_symlink": ("T512", "T513"),  # T237; tasks:2302
+    "test_the_stale_row_copies_a_dead_outers_pending_call_and_the_next_2_looks_it_up": ("T427", "T428", "T502", "T510"),  # T254; tasks:2419
+    "test_todays_direct_guard_is_timed_in_its_four_parts": ("T111", "T112", "T507"),  # T226; tasks:2177
+    "test_two_sessions_binding_one_lane_in_files_mode_both_binds_land": ("T502",),  # T214; tasks:2013
+    "test_two_sessions_binding_one_lane_one_start_record_commits": ("T427", "T428", "T502", "T510"),  # T254; tasks:2419
+    "test_with_the_service_down_the_hook_falls_back_and_says_so": ("T507", "T512", "T513"),  # T237; tasks:2302
+    "test_a_connect_timeout_above_the_direct_reads_share_is_cut_at_the_parse_start_line[service-up]": ("T507", "T512", "T513"),  # T237; tasks:2302
+    "test_a_database_that_does_not_answer_is_2_inside_4_5_s[1-service-up]": ("T507", "T512", "T513"),  # T237; tasks:2302
+    "test_a_database_that_does_not_answer_is_2_inside_4_5_s[2-service-down]": ("T103", "T113", "T229", "T507"),  # T213; tasks:1992
+    "test_a_database_that_does_not_answer_is_2_inside_4_5_s[2-service-up]": ("T507", "T512", "T513"),  # T237; tasks:2302
+    "test_a_database_that_does_not_answer_is_2_inside_4_5_s[3-service-up]": ("T507", "T512", "T513"),  # T237; tasks:2302
+    "test_a_database_that_does_not_answer_is_2_inside_4_5_s[4-service-up]": ("T507", "T512", "T513"),  # T237; tasks:2302
+    "test_the_guard_through_the_service_answers_byte_identical_to_the_direct_read[offer]": ("T107", "T108", "T227", "T228", "T507", "T512", "T513"),  # T237; tasks:2297
+    "test_the_guard_through_the_service_answers_byte_identical_to_the_direct_read[ok]": ("T107", "T108", "T227", "T228", "T507", "T512", "T513"),  # T237; tasks:2297
+    "test_the_guard_through_the_service_answers_byte_identical_to_the_direct_read[refuse]": ("T107", "T108", "T227", "T228", "T507", "T512", "T513"),  # T237; tasks:2297
+}
+
 GUARD = REPO / "lanes-edit.sh"
 INSTALLER = REPO / "openRepoTools"
 #: The window's lane and the lane the session is named for: the offer's
