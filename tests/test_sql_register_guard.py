@@ -3630,12 +3630,21 @@ sys.exit(code if code >= 0 else 128 - code)
 class _StreamPsql:
     """`_STREAM_PSQL` first on the estate's `PATH` as `psql` (its `bin`, as
     `Estate.shim` puts PSQL_SHIM), in front of the case's cluster's own
-    `psql`, with no hold until `hold` sets one."""
+    `psql`, with no hold until `hold` sets one.
 
-    def __init__(self, est: Estate):
-        self.dir = est.bin
-        _script(est.bin / "psql", _STREAM_PSQL, PY=sys.executable, HERE=_q(est.bin),
+    IN A DIRECTORY OF ITS OWN, with `where` (T237zu): no `PATH` holds it
+    until a case puts it first on one (`path`), as SVC-10 does on the
+    service's alone, so the guard's own reads run the real `psql`."""
+
+    def __init__(self, est: Estate, where=None):
+        self.dir = est.bin if where is None else Path(where)
+        self.dir.mkdir(parents=True, exist_ok=True)
+        _script(self.dir / "psql", _STREAM_PSQL, PY=sys.executable, HERE=_q(self.dir),
                 REAL=_q(est.pg.cluster.tool("psql")))
+
+    def path(self, est: Estate) -> str:
+        """The estate's `PATH` with this stand-in's directory first."""
+        return os.pathsep.join([str(self.dir), est.env()["PATH"]])
 
     def hold(self, ms: int) -> None:
         """Each chunk handed to the service's held child from now on is held
@@ -4438,11 +4447,24 @@ def test_the_guard_answer_time_is_recorded_beside_todays_direct_guard(estate):
     answer, so a median over refusals and fallbacks says nothing of it.
     Exit 2 is a refusal; exit 0 with the fallback line (`FALLBACK`, T507's
     F1, tasks:806) matched whole on a stderr line is a fallback; exit 0
-    without it was served. Each path's count is recorded, and the median of
-    the served samples alone, or "none served" where none was. A sample
-    with any other exit is counted as `other`, so none is put in a path it
-    did not take. The case times the whole hook (`t_exit - t0`), so the
-    served median is a whole-hook figure, beside M5b's, not SC-005's 50 ms.
+    without it was served, where the service shows it answered (below).
+    Each path's count is recorded, and the median of the served samples
+    alone, or "none served" where none was. A sample with any other end is
+    counted as `other`, so none is put in a path it did not take. The case
+    times the whole hook (`t_exit - t0`), so the served median is a
+    whole-hook figure, beside M5b's, not SC-005's 50 ms.
+
+    SERVED IS THE SERVICE'S OWN WORD, NOT AN EXIT ALONE (T237zu; lane 2's
+    review RV23, NIT 1): exit 0 with no fallback line is also the end of a
+    client that never asked the service, as one that reads directly by its
+    own decision does (N5), with no fallback line. So a sample is served
+    only where the service's held `psql` child read a request while it ran
+    (`_StreamPsql.handed`), since each request the service answers is one
+    Query on that child (`test_each_service_request_is_one_query`); a
+    sample that ended 0 with neither is `other`. The stand-in is on the
+    service's `PATH` alone, with no hold, so the guard's own reads run the
+    real `psql`, and a served sample's time carries only the stand-in's one
+    pipe between the service and its child.
 
     THE PROMPT GOES THROUGH, AS M5b'S DOES (T237zl): the estate's session is
     named `TO` in the window `FROM`, so every guard run made the name
@@ -4453,7 +4475,8 @@ def test_the_guard_answer_time_is_recorded_beside_todays_direct_guard(estate):
     cache miss of its first request."""
     est = estate(mode="primary")
     est.swap_window(FROM, FROM)
-    svc = _Service(est)
+    stream = _StreamPsql(est, est.root / "service-bin")
+    svc = _Service(est, PATH=stream.path(est))
     paths = {"refusal": [], "fallback": [], "served": [], "other": []}
     try:
         _warm(est)
@@ -4464,7 +4487,7 @@ def test_the_guard_answer_time_is_recorded_beside_todays_direct_guard(estate):
                 paths["refusal"].append(took)
             elif hook.code == 0 and FALLBACK in hook.err.splitlines():
                 paths["fallback"].append(took)
-            elif hook.code == 0:
+            elif hook.code == 0 and stream.handed(hook):
                 paths["served"].append(took)
             else:
                 paths["other"].append(took)
@@ -4493,8 +4516,11 @@ def test_the_guard_answer_time_is_recorded_beside_todays_direct_guard(estate):
     # window and the session both `FROM`, the guard has nothing to refuse,
     # so a refusal is a path the case did not mean, and nine of them beside
     # one served sample passed. A fallback stays counted and allowed: the
-    # service may answer `unavailable` while it fetches. Whether the service
-    # itself answered a served sample is still read from its exit alone.
+    # service may answer `unavailable` while it fetches. AND SERVED BY THE
+    # SERVICE ITSELF (T237zu; RV23, NIT 1, the rest): a sample that ended 0
+    # with no request read by the service's held child is `other`, never
+    # served, so a client that read directly with no fallback line fails
+    # here, where its exit alone passed before.
     assert served and not paths["other"] and not paths["refusal"], \
         {name: len(times) for name, times in paths.items()}
 
