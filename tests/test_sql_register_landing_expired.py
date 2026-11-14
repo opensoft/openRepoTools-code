@@ -45,6 +45,12 @@ the checkout, each lane the module writes for has its own register checkout,
 `<W>-lanes/<lane>`, a clone of the same origin (`WRITE_LANES`; lane 3's
 (119), #165 6813027223), as every estate at primary does.
 
+TWO READS OF `who --landing` (lane 4's RC-W49, #165 6871131058): off primary
+it prints each `LANDING`'s age by the host's `date`, not by `CLOCK`, so (f)
+and (l), which compare two of its reads, compare them through `aged_out`:
+each age is masked, once it is shown to be its UTC's age by the host's clock
+during its own read. Every other byte is still compared.
+
 WHAT THEY FAIL UNTIL. At this base `lanes-edit.sh` never asks `lanes-index`
 its mode and writes the files whatever it would say, and its `append-line`
 takes `--landing-expired` as the line's text. So every FP case is red by its
@@ -129,6 +135,15 @@ WHO_LANDING_LINE = ('  wd_rows="$(register_text | LANES_RULE6_ALIASES="$wd_alias
 #: What the files-mode refusal says (AT-F13 (f)), word by word.
 FILES_MODE_WORDS = ("release of a stale", "exists only on", "mode=primary", "nothing was written")
 STALE_MARK = "STALE (Rule 6: >30 min)"
+#: A `who --landing` line's age, `<UTC> (<h>h <mm>m ago)` (`age_of`), the one
+#: part of its output that the host's clock decides and the register does not.
+#: Off primary `now_epoch` is `date -u +%s`, so two reads that straddle a
+#: minute differ there alone (`lanes-edit.sh`'s `now_epoch`, `age_of` and
+#: `who_landing`, `:7443-7446`, `:12769-12775` and `:16233` at line R's
+#: merge104 `142afd90`; lane 4's RC-W49, #165 6871131058: `3976h 04m ago`
+#: against `3976h 05m ago`).
+WHO_AGE_RE = re.compile(r"(?P<utc>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(?::[0-9]{2})?Z)"
+                        r" \((?P<hours>[0-9]+)h (?P<minutes>[0-9]{2})m ago\)")
 
 
 # ------------------------------------------------------------------ the lines
@@ -144,6 +159,28 @@ def ago(minutes: float, clock: int = CLOCK) -> str:
 def _epoch_of(utc: str):
     """`utc` as epoch seconds, or None where the line carries no UTC."""
     return calendar.timegm(time.strptime(utc, "%Y-%m-%dT%H:%M:%SZ")) if utc else None
+
+
+def aged_out(stdout: str, before: int, after: int) -> str:
+    """`who --landing`'s `stdout` with each age masked, `<UTC> (<age> ago)`,
+    once it is shown to be its line's UTC's age by the host's clock at some
+    whole second from `before` to `after`, the clock as `date -u +%s` reads it
+    just before the read began and just after it ended (`age_of`'s whole
+    minutes, 0 for a UTC ahead of the clock). So two reads compared through it
+    still differ at every other byte that changed, the UTC and the STALE mark
+    among them, and an age that is not the host clock's, such as one by the
+    snapshot's `CLOCK`, fails here (RC-W49's SHOULD 1)."""
+    def masked(m) -> str:
+        utc = m["utc"]
+        epoch = calendar.timegm(time.strptime(
+            utc, "%Y-%m-%dT%H:%M:%SZ" if utc.count(":") == 2 else "%Y-%m-%dT%H:%MZ"))
+        shown = int(m["hours"]) * 60 + int(m["minutes"])
+        low, high = max(0, before - epoch) // 60, max(0, after - epoch) // 60
+        assert int(m["minutes"]) < 60 and low <= shown <= high, (
+            f"who --landing's age {m.group(0)!r} is not its UTC's age by the host's "
+            f"clock during the read, {low} to {high} min")
+        return f"{utc} (<age> ago)"
+    return WHO_AGE_RE.sub(masked, stdout)
 
 
 def landing(lane: str = HOLDER, minutes: float = 31, pr: int = PR, repo: str = KEY,
@@ -453,6 +490,14 @@ class Bench:
 
     def who(self, extra: dict = None) -> subprocess.CompletedProcess:
         return self.run(["who", "--landing", KEY], lane=None, extra=extra)
+
+    def who_aged(self, extra: dict = None) -> tuple:
+        """`who()`, with the host's clock read just before and just after it:
+        (the process, its stdout through `aged_out`). Two reads compare by that
+        stdout, so a minute the clock crosses between them is no change."""
+        before = int(time.time())
+        proc = self.who(extra)
+        return proc, aged_out(proc.stdout, before, int(time.time()))
 
     # -------------------------------------------------- what reached the store
     def calls(self, *words: str) -> list:
@@ -862,17 +907,19 @@ def test_in_files_mode_the_landing_expired_form_exits_2_and_changes_nothing(tmp_
     """(f): in files mode, and after the mode query's fall to files mode
     (F8), the form exits 2 saying the release of a stale `LANDING` exists
     only on `mode=primary` and nothing was written; the register file, `git
-    log` and `who --landing`'s output are byte-identical before and after.
+    log` and `who --landing`'s output are byte-identical before and after,
+    each line's age aside, which the host's clock moves and each read must
+    show as its UTC's age by that clock (`aged_out`; RC-W49's SHOULD 1).
     Plain `append-line "LANDING EXPIRED <dash> ..."` is written as today."""
     bench = Bench(tmp_path, [landing()], mode="files" if mode == "files" else "fall")
-    before, listed = bench.git_state(), bench.who().stdout
+    before, (_, listed) = bench.git_state(), bench.who_aged()
     proc = bench.run(form())
     assert proc.returncode == 2, (
         f"[{mode}] the form exited {proc.returncode}, not 2 (L4-B10, T425): {proc.stderr[-600:]}")
     for part in FILES_MODE_WORDS:
         assert part in proc.stderr, f"[{mode}] stderr lacks {part!r}: {proc.stderr!r}"
     assert bench.git_state() == before, f"[{mode}] git changed"
-    assert bench.who().stdout == listed, f"[{mode}] who --landing changed"
+    assert bench.who_aged()[1] == listed, f"[{mode}] who --landing changed"
     typed = _typed(f"LANDING EXPIRED {EM} ")
     plain = bench.run(["append-line", typed])
     assert plain.returncode == 0, f"[{mode}] the plain line was refused: {plain.stderr}"
@@ -959,19 +1006,19 @@ def test_off_primary_rule6_awk_is_the_pin_and_the_flag_cannot_be_inherited(tmp_p
     an unconfigured workstation and after F8's fall to files mode, lists the
     holder's `LANDING`, marked STALE, as today; a caller's environment
     carrying `RULE6_PRIMARY=1`, `RULE6_AWK` or `RULE6_EXPIRED_AWK` changes
-    nothing; and `RULE6_AWK`'s text is the pin's. The mode query was asked
-    where a configuration exists, and not on the unconfigured workstation,
-    which starts no process (D3)."""
+    nothing, each line's age aside, as in (f); and `RULE6_AWK`'s text is the
+    pin's. The mode query was asked where a configuration exists, and not on
+    the unconfigured workstation, which starts no process (D3)."""
     bench = Bench(tmp_path, [landing(minutes=45), expired()],
                   mode="fall" if mode == "fall-to-files" else mode)
-    plain = bench.who()
+    plain, plain_aged = bench.who_aged()
     assert plain.returncode == 0, f"[{mode}] who --landing exited {plain.returncode}"
     rows = [line for line in plain.stdout.splitlines()
             if line.startswith(f"LANDING  {KEY}#{PR}  lane {HOLDER}, {ago(45)}")]
     assert len(rows) == 1 and rows[0].endswith(STALE_MARK), (
         f"[{mode}] the holder's LANDING is not listed STALE as today: {plain.stdout!r}")
-    flagged = bench.who(extra=INHERITED)
-    assert (flagged.returncode, flagged.stdout) == (plain.returncode, plain.stdout), (
+    flagged, flagged_aged = bench.who_aged(extra=INHERITED)
+    assert (flagged.returncode, flagged_aged) == (plain.returncode, plain_aged), (
         f"[{mode}] an inherited RULE6_* changed who --landing: {flagged.stdout!r}")
     text = bench.lanes_edit.read_text(encoding="utf-8")
     assert _rule6_awk_sha(text) == RULE6_AWK_PIN, f"[{mode}] RULE6_AWK is not the pin"
