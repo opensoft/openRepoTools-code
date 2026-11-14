@@ -22336,14 +22336,21 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     # under `umask 077`, and the offer's `.bind.*` files go with the question
     # it stops being (feature 007, lane 3's ruling on the bind record, points
     # 1, 2 and 13).
+    # EVERY WRITE IS CHECKED BEFORE THE `mv`, as `guard_bind_rewrite`'s are (lane
+    # 3's Codex code review of `12eddddf`, #165 6882203066, finding 1, which part
+    # 16 closed there alone; T501's check of draft 15 against parts 16 to 19,
+    # which found this block still a `printf` group whose status is the last
+    # one's): each `printf` is `|| exit 1`, so one that fails ends the subshell
+    # with 1, the `if` takes its refusal below, and no `mv` runs, where before a
+    # later write that worked hid it and the record lost the line.
     ga_t="$(umask 077; mktemp "${ga_f%/*}/.${ga_f##*/}.XXXXXX" 2>/dev/null || printf '')"
     if [ -z "$ga_t" ] || ! ( umask 077
-         { printf 'mode=allow\n'
-           printf 'from=%s\n' "$ga_from"
-           printf 'to=%s\n' "$ga_to"
-           printf 'session=%s\n' "$ga_session"
-           printf 'uuid=%s\n' "$G_ID"
-           printf 'utc=%s\n' "$(utc_now)"
+         { printf 'mode=allow\n' || exit 1
+           printf 'from=%s\n' "$ga_from" || exit 1
+           printf 'to=%s\n' "$ga_to" || exit 1
+           printf 'session=%s\n' "$ga_session" || exit 1
+           printf 'uuid=%s\n' "$G_ID" || exit 1
+           printf 'utc=%s\n' "$(utc_now)" || exit 1
          } > "$ga_t" ) 2>/dev/null || ! mv -f -- "$ga_t" "$ga_f" 2>/dev/null; then
       [ -z "$ga_t" ] || rm -f -- "$ga_t"
       guard_refuse "the explicit allow could not be recorded at $ga_f, so the mismatch remains unapproved. Nothing was renamed or written; answer 1 again after the session state is writable."
