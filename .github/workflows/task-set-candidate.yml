@@ -1,0 +1,78 @@
+name: Prepared task-set candidate integration
+
+# Called only by the candidate push workflow; no dispatch or queue writes.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify queue candidate
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      actions: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          path: policy
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify immutable candidate and live source evidence
+        working-directory: policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/ci/delivery_verify.py candidate
+
+  full-ci:
+    needs: verify
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      actions: read
+    uses: ./.github/workflows/tests.yml
+
+  qualification:
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      actions: read
+    name: Candidate full-suite qualification
+    needs: [verify, full-ci]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Require complete integration success
+        env:
+          VERIFIED: ${{ needs.verify.result }}
+          FULL_CI: ${{ needs.full-ci.result }}
+        run: |
+          set -euo pipefail
+          test "$VERIFIED" = success
+          test "$FULL_CI" = success
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          path: policy
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Recheck live evidence after the full suite
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 policy/.github/ci/delivery_verify.py candidate --proof-kind qualified
+      - name: Preserve completed full-suite proof
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-qualified-${{ github.sha }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/proof.json
+          if-no-files-found: error
+          retention-days: 14

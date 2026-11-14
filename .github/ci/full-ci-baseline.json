@@ -2,9 +2,24 @@
   "source_commit": "d3c55e55aa3516cbaa1d68a77061ddd50191d49a",
   "workflow": ".github/workflows/tests.yml",
   "ordinary_events": {
-    "pull_request": {"types": ["opened", "synchronize", "reopened"]},
-    "push": {"branches": ["main", "release/v*"]},
-    "schedule": [{"cron": "17 4 * * *"}],
+    "pull_request": {
+      "types": [
+        "opened",
+        "synchronize",
+        "reopened"
+      ]
+    },
+    "push": {
+      "branches": [
+        "main",
+        "release/v*"
+      ]
+    },
+    "schedule": [
+      {
+        "cron": "17 4 * * *"
+      }
+    ],
     "workflow_dispatch": null
   },
   "environment": {
@@ -13,11 +28,21 @@
   },
   "job_sha256": {
     "guard-launch-mode": "8373bf9a986071903e92b950aa64103a135d994a21365af98d18014d452316bb",
-    "tests-shard": "3dc19a7c9434b4cee5ed734f8aae6da061c96fb7b8ce838d3d73072fab29e04c",
+    "tests-shard": "dbb0b0124a4116a1fea14d633e42e6a2a7909474cb5eae57c09e9efd58e6be96",
     "tests": "48cc110d79c547b1b0e285bce3f8a67dab8a718e7a86764e75761ad226e48c74",
-    "tests-no-submodule-shard": "b8c27203c94316f43849bc9f0631d3a8891ff1bf2dbe8e4c496db8506efa7316",
+    "tests-no-submodule-shard": "2433d18b2703bf59f1b3590b7ea94d131d5d8e85aba0bd1b293efbeffe8f0438",
     "tests-no-submodule": "b5b11461a6d467c68d8b15d1a764f81f44742914d3fbd256fd7c58523f7baab8",
     "package": "0320f492f8fb36e3a95e0b89511a89ada535170c9bd816fb7be61c9e24afa792"
   },
-  "expanded_jobs": 13
+  "expanded_jobs": 13,
+  "amendments": [
+    {
+      "reason": "010-sonar-assurance: wheels-only pytest installation; no other job/event/environment/test-selection change",
+      "source_commit": "aa93f99fd965269f07254e16cb8960642394dd53",
+      "jobs": [
+        "tests-shard",
+        "tests-no-submodule-shard"
+      ]
+    }
+  ]
 }
