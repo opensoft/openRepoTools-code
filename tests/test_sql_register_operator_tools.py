@@ -87,6 +87,20 @@ from sql_register_helpers import (REGISTER_FAKE_PSQL, RENDER_GIT_HALF_LINE, flip
 
 pytestmark = [WINDOWS_SKIP]
 
+#: THE LANDING GATE'S TABLE (T280, `tests/sql_register_gate.py`; task sets
+#: version 12b's rule 11, opensoft/openRepoTools#165 6877673742), TEMPORARY:
+#: T281 removes it in the last set. Where the gate is active, each id here is
+#: skipped until every task its row names has landed, and the skip names them.
+#: Each row is the fails-until clause of T218's Order (tasks:2072) in tasks.md
+#: at lane 3's commit 17, 204145ae, each L-label as the task that covers it
+#: (L1-A3 T104, L1-A7 T109, L1-A17 T119 and T120, L1-A18 T121), as lane 2's
+#: plan GP-24 v1 (sha256 16d738b9) gives it. Every id waits for the "*" row;
+#: `[outage-declared]`, whose setup runs `outage declare`, also for T121.
+SQL_REGISTER_GATE_TABLE = {
+    "*": ("T104", "T109", "T119", "T120", "T229"),  # every id: the tasks all its rows share
+    "test_the_readiness_check_fails_on_each_fault[outage-declared]": ("T121",),  # T218; tasks:2072
+}
+
 #: The label `register_label=` names, and the one the second database's
 #: switch names.
 LABEL = "register-p8"
