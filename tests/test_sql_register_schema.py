@@ -54,6 +54,11 @@ WHAT IT CHECKS, by the test plan's entries and lane 2's task T221:
     new since B15 (lane 3, #165 6808937880, batch e Q88): T112's refusal of an
     empty change set, 2 from `register commit` before the store opens, through
     the same writer as AT-LR4's cases. T112's word `an_entry_without` selects it.
+  * `test_a_write_with_a_files_row_for_a_path_it_does_not_edit_is_refused_lr004_at_commit`,
+    new since spec#17's re-review r4 (lane 3's ruling 5, #165 6878977318): a
+    `write`'s `files` rows are its edited paths, each a render-set path or
+    `lanes/STORE`; one more row, outside the render set or for a file the
+    write leaves untouched, is LR004 at `commit_write`, by a direct call.
 
 REAL ENGINE. Every case but the one-number rule and DEC-23's test asks for
 `pg`, one database cloned from the session's template, so its fixture closure
@@ -126,6 +131,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_stray_import_or_revert_clears_the_divergence": ("T107", "T108", "T109", "T110"),  # T221; tasks:2127
     "test_a_write_is_refused_lr002_while_the_marker_is_adding_or_removing": ("T107", "T108", "T109", "T110"),  # T231; tasks:2231
     "test_a_write_that_deletes_a_line_with_a_bad_key_is_refused_lr010": ("T107", "T108", "T109", "T110"),  # T221; tasks:2127
+    "test_a_write_with_a_files_row_for_a_path_it_does_not_edit_is_refused_lr004_at_commit": ("T107", "T108", "T109", "T110"),  # T231; tasks:2231, lane 3's ruling 5 (#165 6878977318)
     "test_an_entry_without_a_path_in_changes_tsv_is_refused_2_before_the_store_opens": ("T107", "T108", "T111", "T112"),  # T231; tasks:2231
     "test_an_entry_without_a_valid_not_after_is_refused": ("T107", "T108", "T111", "T112"),  # T231; tasks:2231
     "test_an_import_carries_not_after_of_its_330_s_timer_plus_2_s": ("T115",),  # T231; tasks:2231
@@ -2974,3 +2980,47 @@ def test_an_entry_without_a_path_in_changes_tsv_is_refused_2_before_the_store_op
         f"opened; the refusal comes before it: {ran}")
     assert head(pg) == n, f"the head moved from {n} to {head(pg)}: an empty change set took a seq"
     assert state(pg) == before, "an empty change set changed the register"
+
+
+# =================================================================== a write's files rows
+#: Lane 3's ruling 5 on spec#17's re-review r4, its BLOCKING 3 (#165 6878977318):
+#: `journal_files.path` takes data-model.md's constraint, a render-set path or
+#: `lanes/STORE`, and a `write`'s, an `import`'s and a `stray-import`'s `files`
+#: rows equal the distinct set of their edited paths and `to_path`s. Each case's
+#: one more row: absent, at a path outside the render set that the register has
+#: no file at; or present, at `lanes/aliases.tsv`, which the write does not edit,
+#: with the file's own digest and final newline. Step 8's proof passes each as it
+#: stands (an absent row for no file, a present row that renders to its digest),
+#: so only the ruling's check refuses it.
+FILES_ROW_CASES = {
+    "outside-the-render-set": {"path": "lanes/notes.md", "present": False, "sha256": None,
+                               "final_newline": None},
+    "untouched-file": {"path": "lanes/aliases.tsv", "present": True,
+                       "sha256": rendered(LR4_ALIASES, False), "final_newline": False},
+}
+
+
+@pytest.mark.parametrize("case", list(FILES_ROW_CASES))
+def test_a_write_with_a_files_row_for_a_path_it_does_not_edit_is_refused_lr004_at_commit(pg, case):
+    """A `write` entry by hand (`lr4_body`: it replaces `lanes/LANES.md`'s line 2,
+    with that path's one `files` row), with one more `files` row, is refused at
+    its commit with LR004, and nothing changes: every table of section 1.2 equals
+    its value before (lane 3's ruling 5, #165 6878977318; AT-LR4 and T231):
+
+      * `[outside-the-render-set]`: a row for `lanes/notes.md`, outside the
+        render set (`lanes/LANES.md`, `lanes/aliases.tsv`, `lanes/archive/*.md`
+        and `lanes/log/*.md`) and not `lanes/STORE`;
+      * `[untouched-file]`: a row for `lanes/aliases.tsv`, a render-set file of
+        AT-LR4's fixture that the write does not edit.
+
+    A direct call, as the operator entry's case: the refusal is T107's
+    `commit_write`, which fails until lane 1 adds it; on line R's merge106 the
+    entry commits."""
+    n = bring_to_primary(pg, LR4_FILES, no_newline=LR4_NO_NEWLINE)
+    body = lr4_body()
+    extra = FILES_ROW_CASES[case]
+    body["files"] = [*body["files"], extra]
+    before = state(pg)
+    refused(commit_call(pg, n, body), "LR004", f"a write with a files row for {extra['path']}")
+    assert head(pg) == n, f"{case}: the head moved from {n} to {head(pg)}"
+    assert state(pg) == before, f"{case}: a refused write changed the register"
