@@ -55,6 +55,37 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("git") is None,
     reason="the lane tooling is bash over git")]
 
+#: THE LANDING GATE'S TABLE (T280; task sets version 12b's rule 11,
+#: opensoft/openRepoTools#165 6877673742), TEMPORARY: T281 removes it in the
+#: last set. `tests/sql_register_gate.py` reads it: in a code pull request's
+#: full CI, each id of a function below is skipped until every task its row
+#: names has landed, and the skip names them. The rows are T225's Order
+#: (tasks:2166) and T242's (tasks:2331), tasks.md at lane 3's commit 17
+#: `204145ae`. No task is common to all 13 functions, so there is no "*" row.
+SQL_REGISTER_GATE_TABLE = {
+    # T225: `wip init`'s two cases until T303; AT-3's three reader cases until
+    # T504, whose verify runs them (tasks:713); lane 5's three guesses until
+    # their own tasks, one each: T506 (tasks:769), T508 (tasks:822) and T507
+    # (tasks:780).
+    "test_wip_init_refuses_under_the_marker": ("T303",),
+    "test_wip_init_refuses_where_a_lanes_file_exists_with_no_marker": ("T303",),
+    "test_a_readers_refusal_under_the_marker_names_the_refs_age": ("T504",),
+    "test_a_reader_refuses_when_its_read_ref_carries_the_marker_and_its_tree_does_not": ("T504",),
+    "test_an_unconfigured_workstations_acts_refuse_and_listings_read_the_mirror": ("T504",),
+    "test_the_marker_check_runs_at_the_end_of_log_sync": ("T506",),
+    "test_the_session_start_block_reads_on_under_the_marker_with_its_mirror_line": ("T508",),
+    "test_a_mode_index_guard_refuses_2_under_the_marker": ("T507",),
+    # T242: the writer cases until T419 (L4-B12), the `mode=index` one also
+    # until T409 (L4-B1); the q6c case until T409; and AT-F8's ids until
+    # T409, its `sql` ones also until T419, which the function's row gives
+    # all of them.
+    "test_a_files_mode_writer_refuses_under_the_marker": ("T419",),
+    "test_a_mode_index_writer_refuses_under_the_marker": ("T409", "T419"),
+    "test_a_writer_with_no_fetch_refuses_when_its_tip_carries_the_marker": ("T419",),
+    "test_the_q6c_refusal_has_its_own_code_and_the_writer_exits_69": ("T409",),
+    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning": ("T409", "T419"),
+}
+
 EDIT = REPO / "lanes-edit.sh"
 LANES = REPO / "lanes"
 COMMAND = REPO / "openRepoTools"
