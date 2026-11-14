@@ -9135,7 +9135,8 @@ def register_serve_parse(data: bytes, items: list) -> dict:
     name), ("set", prefix, [(path, digest, bytes)]) and ("list", "", [(path,
     digest)]), the list's lines read by `register_serve_list_entry` alone.
     Every other answer raises `RegisterServeMalformed`, naming Y:4076-4079's
-    words for it."""
+    words for it, an answer whose items disagree among them, as "a mismatch"
+    (`register_serve_agree`; socket API 13.4, draft 12)."""
     pos = 0
 
     def bad(words: str):
@@ -9266,7 +9267,66 @@ def register_serve_parse(data: bytes, items: list) -> dict:
         bad("a file it did not ask for")
     if pos != len(data):
         bad("a malformed answer")
+    if not register_serve_agree(records):
+        bad("a mismatch")
     return {"kind": "text", "n": n, "generation": generation, "records": records}
+
+
+def register_serve_agree(records: list) -> bool:
+    """ONE ANSWER, ONE VIEW OF EACH PATH (socket API 13.4, draft 12; the Codex
+    review, BLOCKING 3): whether a text answer's items agree, as the
+    request's one transaction makes them. Where they do not, the answer is
+    "a mismatch" (Y:4076), and the client discards all of it, writes no
+    cache file and reads directly (13.7's row; 5.3).
+    - One digest a path: every item that names a path, a `file` record, a
+      set's member or a `list` line, names it with the same digest.
+    - The list covers the rest: where the answer holds the list, every path
+      a `file` record or a set's member names is one of its paths, and each
+      set's members are exactly its paths under the set's prefix.
+    - A name's record agrees with the paths: where the answer holds the
+      list, or a set whose prefix the name begins with, an `absent` name
+      matches none of those paths, an `ambiguous` one two or more, and a
+      `file` record's path is the one path among them its name matches:
+      byte for byte, or for a log by T113's one function,
+      `register_log_path_ci`, as the service resolves it."""
+    digests, lists, sets = {}, [], []
+    for rec in records:
+        if rec[0] == "file":
+            named = [rec[2:4]]
+        elif rec[0] == "set":
+            named = [member[:2] for member in rec[2]]
+            sets.append((rec[1], {path for path, _digest in named}))
+        elif rec[0] == "list":
+            named = rec[2]
+            lists.append({path for path, _digest in named})
+        else:
+            continue
+        if any(digests.setdefault(path, digest) != digest for path, digest in named):
+            return False
+    listed = lists[0] if lists else None
+    if any(paths != listed for paths in lists):
+        return False
+    if listed is not None and (
+            any(rec[0] == "file" and rec[2] not in listed for rec in records)
+            or any(paths != {path for path in listed if path.startswith(prefix)}
+                   for prefix, paths in sets)):
+        return False
+    for rec in records:
+        if rec[0] not in ("file", "absent", "ambiguous"):
+            continue
+        name = rec[1]
+        known = [paths for prefix, paths in sets if name.startswith(prefix)]
+        if listed is not None:
+            known.append(listed)
+        if not known:
+            continue
+        known = set().union(*known)
+        found = (register_log_path_ci(known, name[len(LOG_PREFIX):-len(".md")])
+                 if name.startswith(LOG_PREFIX) else [name] if name in known else [])
+        if ((rec[0] == "absent" and found) or (rec[0] == "ambiguous" and len(found) < 2)
+                or (rec[0] == "file" and found != [rec[2]])):
+            return False
+    return True
 
 
 def register_serve_snap(parsed: dict) -> tuple:
@@ -9278,7 +9338,10 @@ def register_serve_snap(parsed: dict) -> tuple:
     `list` gives it at `n'` (draft 11; `register_serve_list_entry`), so that
     every `.head` `file=` row present at `n'` has its digest by path, as
     T113's own listing gives it; its images are the answer's, each checked
-    against its digest already."""
+    against its digest already. The parser has taken only an answer whose
+    items agree (`register_serve_agree`; socket API 13.4, draft 12), so each
+    path has one digest whichever item names it, and neither a later record
+    nor the `list`'s `setdefault` meets another digest for it."""
     listing, held, ambiguous = {}, {}, set()
     for rec in parsed["records"]:
         if rec[0] == "file":
