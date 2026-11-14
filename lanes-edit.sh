@@ -20478,18 +20478,24 @@ guard_bind_readable() {
 # record is gone at the existence test or at the open, or says anything else, it
 # writes nothing and returns 2, so the outer that asked runs nothing. The test
 # is made on the very lines it copies, as `--own`'s is, and has its window.
+# WITH `--exist`, EVERY OTHER REWRITE (lane 3's ruling on lane 5's rule "No
+# rewrite creates a record", #165 6885771975, ruling 5, which takes it from
+# #165 6885751796): the rewrite runs only on a record that is there, whatever
+# its mode, and where it is gone, at the existence test or at the open, it
+# writes nothing and returns 2. `guard_offer`'s write stays the only creation.
 #   0 written · 1 not: this rewrite did not change the record, which is as
-#   another writer may have left it · 2 (`--own` or `--binding` only) not the
-#   outer's own, or no record, or not `binding`, so not written: this rewrite did
-#   not change the record either
-guard_bind_rewrite() {   # [--own | --binding] <offer file> <keys to drop, space-separated> [<key>=<value> …]
-  gbw_own=0; gbw_bd=0
+#   another writer may have left it · 2 (`--own`, `--binding` or `--exist` only)
+#   not the outer's own, or no record, or not `binding`, so not written: this
+#   rewrite did not change the record either
+guard_bind_rewrite() {   # [--own | --binding | --exist] <offer file> <keys to drop, space-separated> [<key>=<value> …]
+  gbw_own=0; gbw_bd=0; gbw_ex=0
   case "${1-}" in
     --own) gbw_own=1; shift ;;
     --binding) gbw_bd=1; shift ;;
+    --exist) gbw_ex=1; shift ;;
   esac
   gbw_two=0
-  [ "$gbw_own" = 0 ] && [ "$gbw_bd" = 0 ] || gbw_two=1
+  [ "$gbw_own" = 0 ] && [ "$gbw_bd" = 0 ] && [ "$gbw_ex" = 0 ] || gbw_two=1
   gbw_f="${1-}"; gbw_drop=" ${2-} "
   [ -n "$gbw_f" ] && [ "$#" -ge 2 ] || return 1
   shift 2
@@ -20634,7 +20640,9 @@ guard_bind_bound_s() {   # <offer file>
 # whole number; a missing `.head` (files mode, `mode index`, the mirror path)
 # writes nothing, and the defaults give 500 s. Through `guard_bind_rewrite`, so
 # every later rewrite keeps them.
-#   0 copied, or nothing to copy · 1 the record could not be rewritten
+#   0 copied, or nothing to copy · 1 the record could not be rewritten · 2 the
+#   record is gone, and nothing was written (`--exist`: lane 3's ruling on lane
+#   5's rule "No rewrite creates a record", #165 6885771975, ruling 5)
 guard_bind_head_copy() {   # <offer file>
   [ -n "${SE_CACHE_FILE:-}" ] && [ -f "$SE_CACHE_FILE.head" ] || return 0
   ghc_kv=()
@@ -20644,7 +20652,7 @@ guard_bind_head_copy() {   # <offer file>
     ghc_kv+=("$ghc_k=$ghc_v")
   done
   [ "${#ghc_kv[@]}" -gt 0 ] || return 0
-  guard_bind_rewrite "${1-}" "" "${ghc_kv[@]}"
+  guard_bind_rewrite --exist "${1-}" "" "${ghc_kv[@]}"
 }
 
 # FEATURE 007, T510 - THE OFFER'S `act` (W:5378, the bind record's keys;
@@ -22136,6 +22144,18 @@ guard_bind_pidstart_ok() {   # <pidstart>
   return 0
 }
 
+# NO REWRITE CREATES A RECORD (lane 3's ruling on lane 5's rule, #165
+# 6885771975, ruling 5, "as lane 5 proposes"): where `guard_bind_site`'s own
+# rewrite of the record finds it gone (`--exist`, 2), nothing is written, and the
+# answer is the one for a record that is not the site's, which it cannot load:
+# the refusal, the prompt not sent, the question asked afresh. Nothing is
+# removed, since there is nothing there, and nothing else is done for a record
+# that is gone: it was dropped by another prompt, which has done its own part.
+guard_bind_gone() {   # <offer file>
+  guard_refuse "the pending offer at ${1-} was gone when it came to be answered, so nothing was written to it. Send your prompt again and the question will be asked afresh."
+  return 2
+}
+
 guard_bind_site() {   # <offer file> <pane>
   gbt_f="${1-}"
   if ! guard_bind_load "$gbt_f" || ! guard_bind_readable; then
@@ -22164,8 +22184,10 @@ EOF
       note "This prompt was NOT sent: it is the one that hears how the bind ended. Send your work again."
       return 2 ;;
     bind-failed)
-      gbt_back=0
-      guard_bind_rewrite "$gbt_f" "" mode=name-drift || gbt_back=1
+      gbt_back=0; gbt_wrc=0
+      guard_bind_rewrite --exist "$gbt_f" "" mode=name-drift || gbt_wrc=$?
+      [ "$gbt_wrc" != 2 ] || { guard_bind_gone "$gbt_f"; return 2; }
+      [ "$gbt_wrc" = 0 ] || gbt_back=1
       guard_triple
       note "THE BIND TO LANE $GBR_TO FAILED (exit $GBR_RC): ${GBR_WHY:-the record gives no reason}${GBR_OUT:+ — its output is kept in $GBR_OUT}."
       # CASES 6 AND 7 RENAME THE WINDOW BACK (Y:5502; ERR-23 for the third).
@@ -22195,7 +22217,10 @@ EOF
     gbt_back=0
     # CASE 10 IS STALE WITH NO COPIES (W:5458's row; tasks.md T510): the
     # pending record is that host's, so the five keys are dropped.
-    guard_bind_rewrite "$gbt_f" "$GBC_KEYS" mode=name-drift rc=unknown "ended_utc=$(utc_now)" || gbt_back=1
+    gbt_wrc=0
+    guard_bind_rewrite --exist "$gbt_f" "$GBC_KEYS" mode=name-drift rc=unknown "ended_utc=$(utc_now)" || gbt_wrc=$?
+    [ "$gbt_wrc" != 2 ] || { guard_bind_gone "$gbt_f"; return 2; }
+    [ "$gbt_wrc" = 0 ] || gbt_back=1
     guard_triple
     note "THE BIND STARTED AT ${GBR_STARTED:-a time the record does not give} ON $GBR_HOST/$GBR_CONTAINER IS NO LONGER RUNNING AND LEFT NO OUTCOME by 60 s past its deadline, $gbt_dlu, so what it wrote is not known; the next \`2\` finds out first. This window is not renamed: that bind ran on another host or container."
     if [ "$gbt_back" = 1 ]; then
@@ -22253,7 +22278,10 @@ EOF
     # and container that holds a `call=` line, `not_after` the largest among
     # them, and none where there is no such record (`guard_bind_copies`).
     guard_bind_copies "$G_ID"
-    guard_bind_rewrite "$gbt_f" "$GBC_KEYS" mode=name-drift rc=unknown "ended_utc=$(utc_now)" ${GBC_KV[@]+"${GBC_KV[@]}"} || gbt_back=1
+    gbt_wrc=0
+    guard_bind_rewrite --exist "$gbt_f" "$GBC_KEYS" mode=name-drift rc=unknown "ended_utc=$(utc_now)" ${GBC_KV[@]+"${GBC_KV[@]}"} || gbt_wrc=$?
+    [ "$gbt_wrc" != 2 ] || { guard_bind_gone "$gbt_f"; return 2; }
+    [ "$gbt_wrc" = 0 ] || gbt_back=1
     guard_triple
     note "THE BIND STARTED AT ${GBR_STARTED:-a time the record does not give} (attempt $gbt_k) IS NO LONGER RUNNING AND LEFT NO OUTCOME: $gbt_why. What it wrote is not known; the next \`2\` finds out first."
     # CASE 9 RENAMES THE WINDOW BACK TOO (ERR-23); case 10, above, does not.
@@ -22446,7 +22474,20 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     ga_out="$ga_f.bind.$(guard_bind_next_index "$ga_f").out"
     # THE PREFETCH'S `c`, `n_a` AND `w_s_ms` FIRST (feature 007, T507;
     # `guard_bind_head_copy`), so this bound and the outer's are summed from them.
-    if ! guard_bind_head_copy "$ga_f"; then
+    # NO REWRITE CREATES A RECORD (lane 3's ruling on lane 5's rule, #165
+    # 6885771975, ruling 5, (A)): where the offer was dropped since this hook read
+    # it, `guard_bind_head_copy` and the rewrite to `binding` below write nothing
+    # (`--exist`, 2), and this answer is K4's, the failed-write path's, with its
+    # own words: exit 2, the window renamed back where this hook renamed it, no
+    # BINDING, and no outer started.
+    ga_hrc=0
+    guard_bind_head_copy "$ga_f" || ga_hrc=$?
+    if [ "$ga_hrc" = 2 ]; then
+      guard_refuse "the offer was dropped before the bind could be recorded, so the bind was NOT started: NOTHING has been written to the register or to $ga_f, and no outer was started. Send your prompt again and the question will be asked afresh."
+      [ "$ga_ren" = 0 ] || guard_window_back "$ga_from" "$ga_to" || :
+      return 2
+    fi
+    if [ "$ga_hrc" != 0 ]; then
       guard_refuse "the bind could not be recorded in $ga_f, so it was NOT started: NOTHING has been written to the register, and the offer is KEPT. Answer \`2\` again once that directory is writable, or choose \`1\` or \`3\`."
       [ "$ga_ren" = 0 ] || guard_window_back "$ga_from" "$ga_to" || :
       return 2
@@ -22467,10 +22508,17 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     fi
     ga_now="$(date -u '+%s %Y-%m-%dT%H:%M:%SZ')"
     ga_ep="${ga_now%% *}"
-    if ! guard_bind_rewrite "$ga_f" "rc why note pid pidstart out started_utc bound_s bounded deadline_epoch" \
-         mode=binding "bind=$ga_k" "started_utc=${ga_now#* }" "bound_s=$ga_bs" "bounded=$ga_bd" \
-         "deadline_epoch=$((ga_ep + ga_bs + 5))" "host=$WS" "container=$LANES_CONTAINER_NAME" \
-         "out=$ga_out" "detach=$ga_dn"; then
+    ga_wrc=0
+    guard_bind_rewrite --exist "$ga_f" "rc why note pid pidstart out started_utc bound_s bounded deadline_epoch" \
+      mode=binding "bind=$ga_k" "started_utc=${ga_now#* }" "bound_s=$ga_bs" "bounded=$ga_bd" \
+      "deadline_epoch=$((ga_ep + ga_bs + 5))" "host=$WS" "container=$LANES_CONTAINER_NAME" \
+      "out=$ga_out" "detach=$ga_dn" || ga_wrc=$?
+    if [ "$ga_wrc" = 2 ]; then
+      guard_refuse "the offer was dropped before the bind could be recorded, so the bind was NOT started: NOTHING has been written to the register or to $ga_f, and no outer was started. Send your prompt again and the question will be asked afresh."
+      [ "$ga_ren" = 0 ] || guard_window_back "$ga_from" "$ga_to" || :
+      return 2
+    fi
+    if [ "$ga_wrc" != 0 ]; then
       guard_refuse "the bind could not be recorded in $ga_f, so it was NOT started: NOTHING has been written to the register, and the offer is KEPT. Answer \`2\` again once that directory is writable, or choose \`1\` or \`3\`."
       [ "$ga_ren" = 0 ] || guard_window_back "$ga_from" "$ga_to" || :
       return 2
@@ -22496,8 +22544,15 @@ guard_answer() {   # <offer file> <the prompt> <pane>
         # NO CHILD, SO NO ATTEMPT: the offer goes back to the question it was.
         ga_back=(mode=name-drift)
         [ "$ga_k" -le 1 ] || ga_back+=("bind=$((ga_k - 1))")
-        guard_bind_rewrite "$ga_f" "bind started_utc bound_s bounded deadline_epoch host container out detach" "${ga_back[@]}" || :
-        guard_refuse "the bind's child could not be started, so this window has NOT moved to $ga_to and NOTHING has been written. The offer is KEPT: answer \`2\` again, or choose \`1\` or \`3\`."
+        # NO REWRITE CREATES A RECORD (#165 6885771975, ruling 5): where the offer
+        # is gone there is nothing to back out, and `--exist` writes nothing.
+        ga_brc=0
+        guard_bind_rewrite --exist "$ga_f" "bind started_utc bound_s bounded deadline_epoch host container out detach" "${ga_back[@]}" || ga_brc=$?
+        if [ "$ga_brc" = 2 ]; then
+          guard_refuse "the bind's child could not be started, so this window has NOT moved to $ga_to and NOTHING has been written; the offer was dropped meanwhile, so there is none to keep. Send your prompt again and the question will be asked afresh."
+        else
+          guard_refuse "the bind's child could not be started, so this window has NOT moved to $ga_to and NOTHING has been written. The offer is KEPT: answer \`2\` again, or choose \`1\` or \`3\`."
+        fi
         [ "$ga_ren" = 0 ] || guard_window_back "$ga_from" "$ga_to" || :
         return 2 ;;
     esac
