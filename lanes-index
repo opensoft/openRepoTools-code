@@ -9169,6 +9169,10 @@ class RegisterService:
 
 _REGISTER_SERVE_TEMP_RE = re.compile(r"s\.[0-9a-f]{4}")
 
+# The waits, in seconds, before each attempt at `register.lock` in
+# `register_serve_run`: five attempts over 100 ms (NIT-B).
+REGISTER_SERVE_LOCK_WAITS = (0.0, 0.025, 0.025, 0.025, 0.025)
+
 
 def register_serve_sweep(run: str) -> None:
     """THE TEMPORARY SOCKETS AN EARLIER START LEFT (lane 1's U5 gate, #165
@@ -9200,8 +9204,9 @@ def register_serve_sweep(run: str) -> None:
 def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
     """THE SERVICE'S START, once `serve`'s four checks have passed (SVC-4;
     Y:3899-3911; socket API §2.4, §2.5, §8.3): `register.lock` by `flock`,
-    taken without waiting and held for the service's life, where a second
-    starter exits 0; under it, the socket tried: one that answers the
+    taken without blocking, tried five times over 100 ms (NIT-B), and held
+    for the service's life, where a second starter exits 0; under it, the
+    socket tried: one that answers the
     connect is a live service, and this starter exits 0; `ECONNREFUSED` is a
     stale socket, which it unlinks; then the temporary sockets an earlier
     start left removed (`register_serve_sweep`; N5), the bind, under
@@ -9221,9 +9226,21 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
     except OSError as exc:
         note(f"serve: {paths['lock']} could not be opened ({exc.strerror or exc})")
         return EXIT_UNAVAILABLE
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+    # THE LOCK, TRIED A FEW TIMES OVER ABOUT 100 MS (lane 5's review of
+    # round 3, NIT 4; lane 1's NIT-B): a failing `serve` takes
+    # `register.lock` for a moment to write its stamp (`register_serve_stamp`),
+    # so one attempt that lands in that moment would take it for a live
+    # service's, and this starter would exit 0 and start nothing. Only a
+    # lock still held after the last attempt is a service's; the exit codes
+    # are as before.
+    for wait in REGISTER_SERVE_LOCK_WAITS:
+        time.sleep(wait)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            continue
+    else:
         os.close(lock)
         return EXIT_OK      # ONE INSTANCE: another service holds the lock
     probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
