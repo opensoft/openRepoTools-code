@@ -4682,3 +4682,35 @@ def test_the_suite_wrapper_takes_one_lock_and_names_it_where_agents_read_it():
     by_hand = [ln for ln in agents.splitlines() if lock in ln and "python3 -m pytest" in ln]
     assert by_hand and all("-p no:cacheprovider" in ln and "PYTHONPYCACHEPREFIX=" in ln
                            for ln in by_hand), by_hand
+
+
+def test_no_workflow_sets_the_landing_gates_switch():
+    """T280'S LANDING GATE DECIDES BY THE RUN, NOT BY A WORKFLOW (Brett's
+    "Temporary landing gate (Recommended)", 2026-11-13; lane 3's ruling on
+    when it is active). `tests/conftest.py` skips each 007 test whose tasks
+    have not all landed, but only in a GitHub Actions run whose workflow is
+    not `verify` and whose ref is not a `verify/` branch. It reads that from
+    `GITHUB_ACTIONS`, `GITHUB_WORKFLOW` and the run's ref.
+    `SQL_REGISTER_GATE=on` or `=off` is a person's override.
+
+    A workflow that set the variable would decide for every run of that
+    workflow, whatever its ref. Set to `off`, a pull request's CI would run
+    007 tests whose code has not landed. Set to `on`, a `verify/` branch, cut
+    from line R with no markers, would pass by the gate's skip. So no
+    workflow file names it, and none changes for the gate. T281 removes this
+    row with the gate, in the last set."""
+    workflows = REPO / ".github" / "workflows"
+    files = sorted(path for path in workflows.iterdir()
+                   if path.suffix in (".yml", ".yaml"))
+    assert files, f"no workflow file under {workflows}: this rule would hold of nothing"
+    found = [f"{path.relative_to(REPO).as_posix()}:{number}"
+             for path in files
+             for number, line in enumerate(
+                 path.read_text(encoding="utf-8").splitlines(), 1)
+             if "SQL_REGISTER_GATE" in line]
+    assert not found, (
+        "a workflow names SQL_REGISTER_GATE, which only a person sets: the "
+        "landing gate is active in an Actions run whose workflow is not verify "
+        "and whose ref is not a verify/ branch, and a workflow that set it "
+        "would gate or ungate every run "
+        "of its own (T280): " + ", ".join(found))
