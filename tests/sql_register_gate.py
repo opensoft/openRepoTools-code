@@ -23,6 +23,14 @@ Each value is a tuple of 007 task ids. An id waits for the union of the
 module's `"*"` row and its own row. An id that no table names runs, and so does
 every id of a module with no table. This module adds no table of its own.
 
+A key other than `"*"` that names no test of its module FAILS THE RUN, gated or
+not, since a misspelled key matches nothing and the test it meant would run
+ungated (Codex's review of E `d58f3b82`, BLOCKING 1). The names are every id
+pytest's collection of the module holds and each id's function, read from the
+module's own collect report before any `-k`, `-m`, `--deselect` or node-id
+selection: `tests/conftest.py` gathers them. A module whose test class was not
+collected (a node id elsewhere in it was named) is not checked in that run.
+
 THE MARKERS. `tests/sql_register_landed/<Txxx>` is one empty file for each
 landed task. Each code PR adds its tasks' markers at its cut, outside every
 task's `files:`, and that one change turns the set's own tests on in its own
@@ -61,7 +69,7 @@ from its `pytest_collection_modifyitems`, after `-k` has deselected.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import AbstractSet, Dict, Iterable, List, Mapping, Optional, Tuple
 
 #: The variable that overrides when the gate is active.
 SWITCH = "SQL_REGISTER_GATE"
@@ -163,8 +171,10 @@ def landed(directory: Path) -> frozenset:
     return frozenset(found)
 
 
-def table_of(module) -> Optional[Dict[str, Tuple[str, ...]]]:
-    """`module`'s table, checked, or None where it has none."""
+def table_of(module, names: Optional[AbstractSet[str]] = None
+             ) -> Optional[Dict[str, Tuple[str, ...]]]:
+    """`module`'s table, checked, or None where it has none. Where `names`, the
+    module's every id and function, is given, a key outside it is refused."""
     raw = getattr(module, TABLE, None)
     if raw is None:
         return None
@@ -192,6 +202,13 @@ def table_of(module) -> Optional[Dict[str, Tuple[str, ...]]]:
     if problems:
         raise GateError(f"{where}: {'; '.join(problems)} (007's task ids are "
                         f"tasks.md's task lines at {SPEC_COMMIT[:8]})")
+    strangers = [key for key in table if key != EVERY and names is not None
+                 and key not in names]
+    if strangers:
+        raise GateError(f"{where}: " + "; ".join(
+            f"{key!r} names no test of its module" for key in strangers) +
+            f" (a key is {EVERY!r}, a test function's name, or one of its ids "
+            f"with its parameters)")
     return table
 
 
@@ -210,15 +227,18 @@ def reason(missing: Iterable[str]) -> str:
 
 
 def gate(items, modules: Iterable[object], environ: Mapping[str, str],
-         directory: Path) -> List[Tuple[object, str]]:
+         directory: Path, names: Optional[Mapping[int, Optional[AbstractSet[str]]]] = None
+         ) -> List[Tuple[object, str]]:
     """Each item to skip, with its reason. Every table of `modules` and every
     marker is checked first, gated or not; nothing is skipped where the gate
-    is not active."""
+    is not active. `names` maps a module's `id()` to its every id and
+    function, against which its table's keys are checked."""
     items = list(items)
+    names = names or {}
     tables: Dict[int, Optional[Dict[str, Tuple[str, ...]]]] = {}
     for module in [*modules, *(getattr(item, "module", None) for item in items)]:
         if module is not None and id(module) not in tables:
-            tables[id(module)] = table_of(module)
+            tables[id(module)] = table_of(module, names.get(id(module)))
     marked = landed(directory)
     if not active(environ):
         return []

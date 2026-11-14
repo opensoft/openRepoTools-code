@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""THE LANDING GATE, T280: ITS TEN CASES (Brett's "Temporary landing gate
+"""THE LANDING GATE, T280: ITS ELEVEN CASES (Brett's "Temporary landing gate
 (Recommended)", 2026-11-13; FR-059). TEMPORARY: T281 removes this module with
 the gate, in the last set.
 
@@ -11,7 +11,8 @@ only in a GitHub Actions run whose workflow is not `verify` and whose ref is
 not a `verify/` branch, unless `SQL_REGISTER_GATE` is `on` or `off` (lane 3's
 rulings, 2026-11-13, and (b), 2026-11-14, opensoft/openRepoTools#165 comments
 6867533114 and 6870017590). Eight cases are T280's; the ninth is (b)'s; the
-tenth, a gated run with no marker directory, is lane 2's review RV26's.
+tenth, a gated run with no marker directory, is lane 2's review RV26's; the
+eleventh, a table key naming no test, is Codex's review of E `d58f3b82`.
 
 EACH CASE RUNS A CHILD PYTEST, since a table or a marker the gate cannot read
 ends the session that reads it. The child runs in a code root of the case's
@@ -152,10 +153,11 @@ class Run(NamedTuple):
     ids: Dict[str, Tuple[str, str]]
 
 
-def child(root: Path, *args: str, **env: str) -> Run:
+def child(root: Path, *args: str, where: str = "tests", **env: str) -> Run:
     """`python -m pytest -q -rs tests` in `root`, with `env` and nothing of the
     outer run's that the gate or the suite's switches read. `args`, such as a
-    `-k` selection, go before `tests`."""
+    `-k` selection, go before `tests`. `where`, in place of `tests`, names one
+    node id to collect alone."""
     environ = {key: value for key, value in os.environ.items()
                if not key.startswith(NOT_INHERITED)}
     environ["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -163,7 +165,7 @@ def child(root: Path, *args: str, **env: str) -> Run:
     junit = root.parent / "junit.xml"
     command = [sys.executable, "-m", "pytest", "-q", "-rs", "-p", "no:cacheprovider",
                f"--basetemp={root.parent / 'basetemp'}", f"--rootdir={root}",
-               f"--junitxml={junit}", *args, "tests"]
+               f"--junitxml={junit}", *args, where]
     proc = subprocess.run(command, cwd=str(root), env=environ, capture_output=True,
                           text=True, timeout=600, check=False)
     ids: Dict[str, Tuple[str, str]] = {}
@@ -250,6 +252,45 @@ def test_a_table_naming_an_id_that_is_no_007_task_fails_the_run(tmp_path):
     assert good_k.code == 0 and good_k.ids == {"test_gate_free_runs": ("passed", "")}, (
         f"-k 'gate_free' must deselect every id of the probe:\n{shown(good_k)}")
     assert "4 deselected" in good_k.output, shown(good_k)
+
+
+def test_a_table_key_naming_no_test_of_its_module_fails_the_run(tmp_path):
+    """A table key that names no test of its module fails the run, exit 4,
+    before any test runs, gated or not: a misspelled function name,
+    `test_gate_probe_wiats`, and an id with parameters its function does not
+    have, `test_gate_probe_param[c]`. Either would otherwise match nothing,
+    and the test it meant would run ungated (Codex's review of E `d58f3b82`,
+    BLOCKING 1). The refusal names the module's table and each key. It holds
+    where `-k` deselects every id of the module. The keys are checked against
+    every id pytest's collection of the module holds, before any selection:
+    with a good table, a run that names one node id, a function or one
+    parametrized id, still accepts the rows of the ids it did not select, and
+    gates the id it did."""
+    bad = dict(TABLE)
+    bad["test_gate_probe_wiats"] = bad.pop("test_gate_probe_waits")
+    bad["test_gate_probe_param[c]"] = ("T416",)
+    run = child(estate(tmp_path / "typo", table=bad))
+    assert run.code == 4, f"a key naming no test must fail the run:\n{shown(run)}"
+    assert "ERROR: the landing gate (T280): SQL_REGISTER_GATE_TABLE in " in run.output, shown(run)
+    assert "test_gate_probe.py" in run.output, shown(run)
+    assert "'test_gate_probe_wiats' names no test of its module" in run.output, shown(run)
+    assert "'test_gate_probe_param[c]' names no test of its module" in run.output, shown(run)
+    assert "passed" not in run.output and not run.ids, f"a test ran:\n{shown(run)}"
+    deselected = child(estate(tmp_path / "typo-k", table=bad), "-k", "gate_free", **{SWITCH: "on"})
+    assert deselected.code == 4, (
+        f"a key naming no test must fail the run where -k deselects its module:\n{shown(deselected)}")
+    assert "'test_gate_probe_wiats' names no test of its module" in deselected.output, shown(deselected)
+    assert "passed" not in deselected.output and not deselected.ids, f"a test ran:\n{shown(deselected)}"
+    good = child(estate(tmp_path / "good"))
+    assert every_id_runs(good), f"the same root with a good table must run:\n{shown(good)}"
+    one = child(estate(tmp_path / "one", markers=("T205",)),
+                where="tests/test_gate_probe.py::test_gate_probe_runs", **{SWITCH: "on"})
+    assert one.code == 0 and one.ids == {"test_gate_probe_runs": ("passed", "")}, (
+        f"one node id must not refuse the rows of the ids it did not select:\n{shown(one)}")
+    param = child(estate(tmp_path / "param", markers=("T205",)),
+                  where="tests/test_gate_probe.py::test_gate_probe_param[a]", **{SWITCH: "on"})
+    assert param.code == 0 and param.ids == {"test_gate_probe_param[a]": waits("T415")}, (
+        f"one parametrized id must not refuse its sibling's row:\n{shown(param)}")
 
 
 def test_a_marker_naming_an_id_that_is_no_007_task_fails_the_run(tmp_path):
