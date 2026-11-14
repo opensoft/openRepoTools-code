@@ -55,7 +55,10 @@
 # act 3, the `UserPromptSubmit` NAME GUARD beside it — both of them only once
 # `~/projects/xFactory/lanes-edit.sh`, the path they call, answers `guard`
 # (opensoft/openRepoTools#237): TWENTY-NINE artifacts always, plus the two hook
-# entries once that path answers, and the count is the invariant.
+# entries once that path answers, and the count is the invariant. A release's
+# stamped package also writes that release's digest list beside `lanes-index`
+# for `lanes-index ready`'s check 1 (007 T346), which is no artifact of the
+# count: search "CHECK 1'S DIGEST LIST".
 #
 # One install line for the whole toolset, so a second engineer gets the estate
 # commands from the README's one line and nothing depends on anyone's dotfiles.
@@ -197,6 +200,13 @@ same header: a digest that still matches is removed, one that has moved — or a
 row it cannot check, for want of a digest tool — is named and left for you. A
 receipt it cannot write is one line on this terminal and never a refused
 install.
+
+In a release's package (`pipx install openrepotools`), `--install` also
+writes that release's digest list, `openRepoTools-<version>.sha256`, beside
+`lanes-index`: one `sha256sum` line for each file it placed there but
+`openRepoTools`, the list `lanes-index ready` checks the installed tools
+against. It is the release asset `release.yml` publishes, byte for byte. A
+checkout or the one-line install names no release, and writes none.
 
 `/restart` is the INSIDE half and has to be a skill: a running session cannot
 `exec` a launcher over itself, so it binds the window, stamps the record
@@ -2062,6 +2072,103 @@ place_by_rename() {   # <staged source> <target> <mode> <what a refusal adds>
 	PLACING=""
 }
 
+# ------------------------------------------ CHECK 1'S DIGEST LIST (007 T346)
+#
+# `lanes-index ready`'s check 1 asks whether the installed tools' digests
+# equal the release's. It reads `openRepoTools-<release>.sha256`, in
+# `sha256sum`'s own form, in the directory of the `lanes-index` that PATH
+# names, and fails a list that does not name `lanes-index` and
+# `lanes-edit.sh` (FR-055; section 10 of the SQL register's contract, in the
+# spec leg's 007). Brett Heap chose who makes it, "Release + installer
+# (Recommended)": `release.yml` publishes it as a release asset, and
+# `--install` places it next to `lanes-index` (as lane openRepoTools-3
+# relays it, opensoft/openRepoTools#165 6773444302).
+#
+# IT IS WRITTEN FROM THE PAYLOAD THIS RUN PLACED, in the one mode whose
+# payload IS a release's: a STAMPED PACKAGE (`pipx install openrepotools`,
+# or the package in any other environment) whose own complete payload was
+# copied. Those bytes are the wheel's, which `release.yml`'s build checked
+# against the tag's commit, and this writes them by the build's own rule:
+# one `<sha256>  <name>` line for each name in `INSTALLABLES`, in its
+# order, but `openRepoTools` — pipx's link holds that name in a pipx
+# install, and check 1 would hash pip's console script there. So the file
+# here and the release's asset are one file, byte for byte, and a
+# package's `--install` still asks no network for anything. The digests are
+# of the STAGED copies, which are what was just placed.
+#
+# NO RELEASE, NO LIST, AND NOT A WORD: a checkout, the one-line install, an
+# assembly's mounted code and an unstamped package (0.0.0, built from a
+# checkout) name no release, so none is written, no line is printed, and a
+# list already there is left as it is: such an install's output is
+# today's, to the line. A release before this one (v1.2.0 and older) has an
+# installer with none of this and published no asset, so check 1 names the
+# missing list there, which is its job. A list of another release is never
+# touched: it names that release, and check 1 asks for one by name.
+#
+# IT IS NOT AN ARTIFACT OF THE COUNT AND IT HAS NO RECEIPT ROW: it is no
+# command, nothing retires it, and the receipt is the evidence a retirement
+# reads. And LIKE THE RECEIPT, A LIST THAT CANNOT BE WRITTEN IS A NOTE AND
+# NEVER A REFUSAL: the commands are what a person asked for, and check 1
+# says that the list is missing. It is data, at 0644, written beside
+# itself and renamed over itself as every command is (#167), and a run that
+# finds the same bytes at that mode changes nothing.
+digest_list_note() {   # <target> <why>
+	say "openRepoTools: release ${STAMP_VERSION}'s digest list NOT written to $1 — $2. Everything above is installed; \`lanes-index ready\`'s check 1 fails until a later \`--install\` writes it."
+}
+
+digest_list_place() {   # <bin directory>
+	local dir="$1" name="" target="" list="" entry="" digest="" verb="" here="" tmp=""
+	[ -n "$PACKAGE_DIR" ] && [ "$STAMP_STATE" = stamped ] || return 0
+	name="openRepoTools-${STAMP_VERSION}.sha256"
+	target="$dir/$name"
+	here="$(CDPATH= cd -P -- "${PAYLOAD_DIR:-.}" 2>/dev/null && pwd -P)" || here=""
+	if [ "$PAYLOAD_MODE" != local ] || [ -z "$PAYLOAD_DIR" ] || [ "$here" != "$PACKAGE_DIR" ]; then
+		digest_list_note "$target" "the payload placed is not this package's own, so it is not release ${STAMP_VERSION}'s"
+		return 0
+	fi
+	list="$WORKDIR/digest-list"
+	if ! : >"$list" 2>/dev/null; then
+		digest_list_note "$target" "this run's work directory took no file"
+		return 0
+	fi
+	for entry in "${INSTALLABLES[@]}"; do
+		[ "$entry" != openRepoTools ] || continue
+		if ! digest="$(sha256_of "$STAGED/$entry")"; then
+			digest_list_note "$target" "the sha256 of ${entry} could not be taken: this machine has neither sha256sum nor shasum, or the copy cannot be read"
+			return 0
+		fi
+		if ! printf '%s  %s\n' "$digest" "$entry" >>"$list" 2>/dev/null; then
+			digest_list_note "$target" "this run's work directory took no line"
+			return 0
+		fi
+	done
+	if [ -L "$target" ] || { [ -e "$target" ] && [ ! -f "$target" ]; }; then
+		digest_list_note "$target" "something that is not a regular file is there, and it is left as it is"
+		return 0
+	fi
+	if [ -f "$target" ] && cmp -s "$list" "$target" && mode_is 644 "$target"; then
+		say "openRepoTools: release ${STAMP_VERSION}'s digest list already at $target (unchanged)"
+		return 0
+	fi
+	if [ -e "$target" ]; then verb=updated; else verb=placed; fi
+	PLACING="$dir/.${name}.openrepotools.$$."
+	if ! tmp="$(mktemp -- "${PLACING}XXXXXX" 2>/dev/null)"; then
+		rm -f -- "$PLACING"*
+		PLACING=""
+		digest_list_note "$target" "no temporary file could be made beside it"
+		return 0
+	fi
+	if cp -- "$list" "$tmp" 2>/dev/null && chmod 644 "$tmp" 2>/dev/null &&
+		mv -f -- "$tmp" "$target" 2>/dev/null; then
+		PLACING=""
+		say "openRepoTools: release ${STAMP_VERSION}'s digest list ${verb} at $target, beside lanes-index, for \`lanes-index ready\`'s check 1"
+		return 0
+	fi
+	rm -f -- "$tmp"
+	PLACING=""
+	digest_list_note "$target" "it could not be written there, and what was there is untouched"
+}
+
 install_commands() {
 	local dir="${OPENREPOTOOLS_BIN_DIR:-$HOME/.local/bin}"
 	local name target source verb placed=0
@@ -2168,6 +2275,11 @@ install_commands() {
 		# FR-019): `install_source` and `pipx_release` say why each is spelt so.
 		say "openRepoTools: $placed of ${#INSTALLABLES[@]} placed in $dir, and 1 left to pipx; the other $placed now come from $(install_source), not from $(pipx_release)"
 	fi
+	# CHECK 1'S DIGEST LIST, beside the `lanes-index` just placed, from the
+	# bytes just placed, and in a stamped package's own run alone (007 T346).
+	# After the count, which stays the commands' own line, and before the
+	# skills: it describes the bin directory, which is now whole.
+	digest_list_place "$dir"
 	# THE RETIREMENT IS THE LAST ACT OF THE INSTALL, AFTER EVERY PLACEMENT
 	# (Copilot round 7 on #45, `openRepoTools:369`). It is the one DESTRUCTIVE
 	# step here, and it ran before `place_skill_and_hook` — so a skill directory
