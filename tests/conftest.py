@@ -46,10 +46,12 @@ missing a root is.
 
 from __future__ import annotations
 
+import atexit
 import os
 import shutil
 import stat
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Tuple
 
@@ -559,6 +561,24 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
 #: writes would start one each. Off for the whole run; `tests/test_lanes_index.py`
 #: builds every environment it runs from scratch and decides for itself.
 os.environ["LANES_INDEX"] = "off"
+
+#: opensoft/openRepoTools#165, batch e Q91 (lane 3, 6808937880) — AND NO WRITER
+#: UNDER TEST ASKS `lanes-index mode` OF THE WORKSTATION'S CONFIGURATION. A
+#: writer asks wherever `LANES_INDEX_CONFIG` is set and non-empty, or a file is
+#: at `${XDG_CONFIG_HOME:-$HOME/.config}/openRepoTools/lanes-index.conf`
+#: (`lanes-edit.sh`'s `reg_config_present`, `lanes-index`'s `config_path`), and
+#: a case that moves `HOME` but copies `os.environ` still carries the person's
+#: `XDG_CONFIG_HOME`. So the run drops the one and points the other at an empty
+#: directory of its own, made here in `TMPDIR` (under `tests/run.sh`, the run
+#: root its trap removes) and removed at exit; an empty value would not do, as
+#: both read it as unset. A case that needs a configuration names its own, by
+#: `LANES_INDEX_CONFIG` or an `XDG_CONFIG_HOME` in its sandbox. The same
+#: variable keeps the workstation's `sweep.conf` from `lane-worktrees`, and its
+#: `git/config` from git.
+os.environ.pop("LANES_INDEX_CONFIG", None)
+EMPTY_CONFIG_HOME = Path(tempfile.mkdtemp(prefix="orpt-config-"))
+atexit.register(shutil.rmtree, str(EMPTY_CONFIG_HOME), True)
+os.environ["XDG_CONFIG_HOME"] = str(EMPTY_CONFIG_HOME)
 
 #: opensoft/openRepoTools#162 — and no `lane-start` a test runs starts the
 #: estate's daily report: it is detached, it reads the whole estate, and the
