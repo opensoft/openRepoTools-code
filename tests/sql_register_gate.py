@@ -181,7 +181,8 @@ def table_of(module) -> Optional[Dict[str, Tuple[str, ...]]]:
         if isinstance(tasks, str) or not isinstance(tasks, (tuple, list)):
             problems.append(f"{key!r} maps to {tasks!r}, not a tuple of task ids")
             continue
-        unknown = [task for task in tasks if task not in TASK_IDS]
+        unknown = [task for task in tasks
+                   if not isinstance(task, str) or task not in TASK_IDS]
         if unknown:
             problems.append(f"{key!r} names {', '.join(map(str, unknown))}, "
                             f"which {'is' if len(unknown) == 1 else 'are'} not "

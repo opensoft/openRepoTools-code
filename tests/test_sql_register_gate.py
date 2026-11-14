@@ -207,8 +207,10 @@ def test_a_table_naming_an_id_that_is_no_007_task_fails_the_run(tmp_path):
     and T252x (a slice's letter, not a task) fails the run: pytest's own
     `UsageError`, exit 4, before any test runs. The refusal names the module's
     table, each row and each id. The run here is not gated (no Actions, no
-    switch), so a bad row fails a local run too. The control is the same code
-    root with a good table, where every id runs."""
+    switch), so a bad row fails a local run too. A row whose task id is a list,
+    which cannot be looked up, is refused the same way, exit 4, and is not
+    pytest's internal error, exit 3 (lane 2's RV26, NIT 3). The control is the
+    same code root with a good table, where every id runs."""
     bad = dict(TABLE)
     bad["test_gate_probe_waits"] = ("T415", "T236")
     bad["test_gate_probe_param[b]"] = ("T252x",)
@@ -219,6 +221,14 @@ def test_a_table_naming_an_id_that_is_no_007_task_fails_the_run(tmp_path):
     assert "'test_gate_probe_waits' names T236, which is not one of 007's task ids" in run.output, shown(run)
     assert "'test_gate_probe_param[b]' names T252x, which is not one of 007's task ids" in run.output, shown(run)
     assert "passed" not in run.output and not run.ids, f"a test ran:\n{shown(run)}"
+    listed = dict(TABLE)
+    listed["*"] = (["T205"],)
+    unhashable = child(estate(tmp_path / "unhashable", table=listed))
+    assert unhashable.code == 4, (
+        f"a task id that is a list must be the gate's own refusal, not pytest's "
+        f"internal error:\n{shown(unhashable)}")
+    assert "'*' names ['T205'], which is not one of 007's task ids" in unhashable.output, shown(unhashable)
+    assert "INTERNALERROR" not in unhashable.output and not unhashable.ids, shown(unhashable)
     good = child(estate(tmp_path / "good"))
     assert every_id_runs(good), f"the same root with a good table must run:\n{shown(good)}"
 
