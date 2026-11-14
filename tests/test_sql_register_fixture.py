@@ -364,7 +364,7 @@ def _relay_clean_close(relay_of):
 
 
 NO_ROOT_CHILD = """
-import json, socket, sys, threading
+import json, os, socket, sys, threading
 sys.path.insert(0, sys.argv[1])
 import pgcluster
 server = socket.create_server(("127.0.0.1", 0))
@@ -377,16 +377,19 @@ with pgcluster.delayed_loopback(server.getsockname()[1], 0.05) as relay:
     with socket.create_connection(("127.0.0.1", relay.port), timeout=10) as client:
         client.sendall(b"no-root")
         said = client.recv(16)
-status = open("/proc/self/status").read()
+# T229e: where there is no /proc, as on macOS, there is no capability set to read
+status = open(sys.argv[2] + "/self/status").read() if os.path.isdir(sys.argv[2]) else ""
 cap = [line.split()[1] for line in status.splitlines() if line.startswith("CapEff:")]
-print(json.dumps({"uid": __import__("os").geteuid(), "cap": cap[0] if cap else None, "said": said.decode()}))
+print(json.dumps({"uid": os.geteuid(), "cap": cap[0] if cap else None, "said": said.decode()}))
 """
 
 
 def _relay_no_root():
     if os.geteuid() == 0:
         pytest.skip("[no-root] shows the relay needs no capability, and this run is root")
-    proc = subprocess.run([sys.executable, "-I", "-B", "-c", NO_ROOT_CHILD, str(SUITE)],
+    import pgcluster
+    proc = subprocess.run([sys.executable, "-I", "-B", "-c", NO_ROOT_CHILD, str(SUITE),
+                           str(pgcluster._PROC)],
                           capture_output=True, text=True, timeout=60, check=False)
     assert proc.returncode == 0, shown(proc)
     said = json.loads(proc.stdout.strip().splitlines()[-1])
@@ -644,3 +647,13 @@ def test_the_stale_sweep_signals_and_removes_only_what_it_proves_is_a_dead_sessi
     assert sent == want_sent, f"[{case}] the sweep signalled {sent}, not {want_sent}"
     assert root.is_dir() == kept, f"[{case}] the sweep {'removed' if kept else 'kept'} {root}"
     assert swept == ([] if kept else [str(root)]), f"[{case}] the sweep reports {swept}"
+
+
+def test_the_delayed_loopback_relay_needs_no_proc_for_its_no_root_case(monkeypatch, tmp_path):
+    """T229e (Codex's BLOCKING 3 on f060619c): T229's `[no-root]` case, run
+    with the module's `/proc` a directory that does not exist, as on macOS,
+    still starts and uses the relay under the job's own uid, and reads no
+    capability set where there is none to read."""
+    import pgcluster
+    monkeypatch.setattr(pgcluster, "_PROC", tmp_path / "no-proc")
+    _relay_no_root()
