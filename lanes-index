@@ -23649,6 +23649,7 @@ USAGE = f"""\
 {PROG} status                                 per source: store, provenance, lag, errors
 {PROG} export    --out <dir> [--source <s> | --worktrees]
                                              the `--index` read flags' reader
+{PROG} render    --checkout <c>              the renderer, one at a time per checkout
 {PROG} mode                                   this workstation's mode: index or primary
 
 THE SQL REGISTER (feature 007, opensoft/openRepoTools#165): its subcommands, in
