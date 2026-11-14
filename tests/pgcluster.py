@@ -294,49 +294,92 @@ def _without_pg(environ=os.environ) -> Dict[str, str]:
 
 
 # ------------------------------------------------------------ the cluster
+#: THE STALE SWEEP'S SEAMS (T205c): where a process's identity is read, and
+#: how a signal is sent. Its test points them at a fake `/proc`, or none, as
+#: on macOS, and at a recorder, so that no real process can be signalled.
+_PROC = Path("/proc")
+_kill = os.kill
+ORPHAN_WAIT = 10.0                        # seconds a stale postmaster gets to end, per signal
+
+
 def _ticks(pid: int) -> str:
     """The process's start time (Linux), so a reused pid is not taken for its owner."""
     try:
-        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+        return (_PROC / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()[19]
     except (OSError, IndexError):
         return "-"
 
 
 def _running(pid: int, ticks: str = "-") -> bool:
     try:
-        os.kill(pid, 0)
+        _kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
     try:
-        if Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] == "Z":
+        if (_PROC / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()[0] == "Z":
             return False                  # a zombie counts as dead
     except (OSError, IndexError):
         pass
     return ticks == "-" or _ticks(pid) == ticks
 
 
-def _stop_orphan(root: Path) -> None:
-    """Stop the postmaster a dead session left in `root`, if it is still that one."""
+def _stop_orphan(root: Path) -> bool:
+    """Stop the postmaster a dead session left in `root`, if it is provably
+    that one (T205c). True when no process of the root's is left: there is no
+    pidfile; its pid names no process, or one this user may not signal, or
+    one whose command line does not hold the root's data directory; or the
+    postmaster, proved by its command line and start time, ended on SIGQUIT
+    or SIGKILL. False, with nothing signalled, where the pidfile does not
+    parse to a positive pid and the root's data directory, or where the
+    process cannot be proved to be that postmaster (no `/proc`, as on
+    macOS); False too where the proved postmaster does not end. A pid is
+    never signalled on the pidfile's word alone."""
     try:
-        pid, datadir = (root / "data" / "postmaster.pid").read_text().splitlines()[:2]
-        pid_n = int(pid)
-        cmd = Path(f"/proc/{pid_n}/cmdline").read_bytes() if Path("/proc").is_dir() else b""
-    except (OSError, ValueError):
-        return
-    if datadir != str(root / "data") or (cmd and os.fsencode(datadir) not in cmd):
-        return
+        lines = (root / "data" / "postmaster.pid").read_text().splitlines()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    try:
+        pid_n, datadir = int(lines[0]), lines[1]
+    except (IndexError, ValueError):
+        return False
+    if pid_n <= 0 or datadir != str(root / "data"):
+        return False                      # 0 is a process group, -1 every process
+    try:
+        _kill(pid_n, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return True                       # another user's process: not this user's postmaster
+    if not _running(pid_n):
+        return True                       # a zombie
+    ticks = _ticks(pid_n)
+    try:
+        argv = (_PROC / str(pid_n) / "cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return False                      # no `/proc`: who holds the pid cannot be proved
+    if ticks == "-" or argv == [b""]:
+        return False
+    if os.fsencode(datadir) not in argv:
+        return True                       # a reused pid: that postmaster is gone
     for sig in (signal.SIGQUIT, signal.SIGKILL):
+        if not _running(pid_n, ticks):
+            return True
         try:
-            os.kill(pid_n, sig)
-        except (ProcessLookupError, PermissionError):
-            return
-        end = time.monotonic() + 10
-        while time.monotonic() < end and _running(pid_n):
+            _kill(pid_n, sig)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
+        end = time.monotonic() + ORPHAN_WAIT
+        while time.monotonic() < end and _running(pid_n, ticks):
             time.sleep(0.02)
-        if not _running(pid_n):
-            return
+        if not _running(pid_n, ticks):
+            return True
+    return False
 
 
 def sweep_stale() -> List[str]:
@@ -354,7 +397,8 @@ def sweep_stale() -> List[str]:
             continue
         if not owner and time.time() - info.st_mtime < 60:
             continue                      # being made this instant: not ours to judge yet
-        _stop_orphan(root)
+        if not _stop_orphan(root):
+            continue                      # its postmaster is unproved or alive: not to be removed
         shutil.rmtree(root, ignore_errors=True)
         swept.append(str(root))
     return swept
