@@ -7593,11 +7593,33 @@ def register_serve_stamp(paths: dict, cause: str) -> None:
     """THE FAILURE STAMP, `register.failed` (Y:3926-3931; socket API §8.6):
     the UTC and the fixed cause, and no other text, for the three causes that
     end `serve` before it listens: `path-too-long`, `config-refused` and
-    `no-psql`. A stamp that cannot be written is passed over."""
+    `no-psql`. A stamp that cannot be written is passed over.
+
+    ONLY UNDER `register.lock` (lane 1's U5 gate, #165 6882025131, N9;
+    socket API 8.6, draft 13): `serve` makes these checks before it takes
+    the lock, so the stamp is written only while this process holds it, and
+    never where another holds it, a live service that answers its clients,
+    beside which a stamp would hold every start back for nothing. Where the
+    lock cannot be opened, or this platform has no `flock`, it is written as
+    before."""
     try:
+        import fcntl
+        lock = os.open(paths["lock"], os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC
+                       | os.O_NOFOLLOW, 0o600)
+    except (ImportError, OSError):
+        lock = None
+    try:
+        if lock is not None:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return              # a service holds it: no stamp
         _register_serve_write(paths["failed"], f"{utc_now()} {cause}\n".encode("ascii"))
     except OSError:
         pass
+    finally:
+        if lock is not None:
+            os.close(lock)
 
 
 def _register_serve_read_regular(path: str, size: int) -> bytes:
