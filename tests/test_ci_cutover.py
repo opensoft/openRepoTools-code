@@ -581,7 +581,9 @@ def test_ci_cutover_generated_merge_hint_keeps_candidate_body_exact(cutover, bat
             if len(reads) == 2:
                 live["body"] += "\nChanged candidate body during verification."
         return reader(repo, endpoint)
-    assert hint_route(cutover, batch, (env, event, data, live), request) == cutover.FULL
+    observed = hint_route(cutover, batch, (env, event, data, live), request)
+    assert observed == {**cutover.FULL, 'retryable': True}
+    assert 'proof' not in observed
     assert len(reads) == 2
 
 

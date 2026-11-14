@@ -212,6 +212,28 @@ known metadata/type/reread refusals use fixed codes, never body or hint values.
 The failed specimen stays failed and stopped. A new reviewed/full-CI-qualified
 repair and genuinely fresh source events are required for another canary.
 
+R6 subsequently proved fast-only sources and real two-member admission, but
+candidate77 logged candidate-reread at its final PR/branch/caller consistency
+check. A Mergify description edit occurred in the same second; the exact first
+differing raw field is unknown. That specimen was cancelled/dequeued before
+landing and remains failed efficiency evidence, not a completed heavy result.
+
+Only after complete candidate authentication, real admission and independent
+live sources qualify may a still-valid changed final PR/caller view return the
+existing no-proof bounded wait. Each observation repeats all verification.
+Accepted proof still requires raw equality; no description, hint or caller data
+is normalized into acceptance. Changed branch heads, invalid/moved identities,
+malformed body/hints, failed/foreign/rerun callers and invalid source/artifact
+proof retain immediate full refusal. Generic API failures do not become retries.
+
+The route keeps its existing thirty ten-second waits and full exhaustion result.
+Candidate omitted-work gate verification can use that same per-invocation bound,
+but must match the original route mode/proof digest; exhaustion or a different
+proof refuses. Source gate behavior is unchanged. Fixed pending diagnostics name
+only pull_request/caller categories, not values. No nested budget, workflow,
+permission, schema or flag changes. Qualification and genuinely fresh R7 events
+remain required; never rerun or requeue failed R6 into clean acceptance.
+
 ## Exact-head local review receipts
 
 This is an **alternative review contract**, not activation or merge
