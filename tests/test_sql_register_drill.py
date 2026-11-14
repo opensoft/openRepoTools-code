@@ -119,8 +119,10 @@ READINGS, NOT FOUND IN A CONTRACT:
   ITS CONTRAST, in the same step: the same session, its id and name, in a
   window named for the other workstation's lane, whose row names another
   session as AT-D20's `refuse` row does, gets the same two lines and exit 2,
-  its refusal naming that row's session. So the mirror's own row decides,
-  and a 0 that only fails open cannot pass. T276 compared the exit with a
+  for that row's own cause alone: it ends on that lane's session and does
+  not name this one at all, with no Amendment 18(h) duplicate (T276h). So
+  the mirror's own row decides, a 0 that only fails open cannot pass, and
+  neither can a 2 for another cause. T276 compared the exit with a
   reference instead, the same guard with a `mode=index` copy of the
   configuration. Once the cutover has put `lanes/STORE` on origin,
   `mode=index` refuses 2 whatever the session, by design (F17,
@@ -707,7 +709,10 @@ class Workstation:
         name, in a window named `window`, another lane's, which the stand-in
         `tmux` answers `#W` with (`guard_session`). The lane's own session
         ends first, so one live process holds the transcript (Amendment
-        18(h)); a later `guard()` would start a new one."""
+        18(h)). The contrast's session then stays live until its finalizer
+        ends it with the test, so a later `guard()` on this workstation
+        would start a second live process on the same transcript, a second
+        holder; none follows the contrast today (lane 5, #165 6870260047)."""
         if self._session is not None:
             self._session.close()
             self._session = None
@@ -1064,10 +1069,18 @@ class Drill:
                 f"[step 6] under the declaration the guard on {ws.name}, in a window named "
                 f"{other.lane}, does not answer from the mirror with the declared line (lane 5's "
                 f"T507, SVC-12): {_masked(out)[-600:]}")
-            assert contrast["exit"] == 2 and SESSIONS[other.lane] in out, (
+            # Its own cause, in the guard's words (`lanes-edit.sh`'s table, the
+            # row that names no such uuid), not only the row's session, which
+            # the triple's `row` line of any refusal after the row's read
+            # carries too, Amendment 18(h)'s duplicate among them (lane 5, #165
+            # 6870260047).
+            cause = (f"this window is lane {other.lane}, whose row ends on "
+                     f"{SESSIONS[other.lane]} and does not name {SESSIONS[ws.lane]} at all")
+            assert (contrast["exit"] == 2 and cause in out
+                    and "ANOTHER LIVE PROCESS" not in out), (
                 f"[step 6] under the declaration the guard on {ws.name}, for its lane's session "
-                f"in a window named {other.lane}, whose row names {SESSIONS[other.lane]}, does not "
-                f"refuse 2 naming that row's session from the mirror: exit {contrast['exit']}: "
+                f"in a window named {other.lane}, does not refuse 2 from the mirror's row for "
+                f"that row's own cause alone, {cause!r}: exit {contrast['exit']}: "
                 f"{_masked(out)[-600:]}")
 
     def step_7_rollback_refused_while_down(self) -> None:
