@@ -1353,6 +1353,22 @@ def burst_calls(w: Writer) -> Tuple[str, Dict[str, int], List[float]]:
     return " ".join(letters), losses, seconds
 
 
+def attempt_starts(w: Writer) -> Tuple[List[dict], List[int]]:
+    """`w`'s requests, each with its start on the stamp's wall clock
+    (`Writer.stamps`), and the index among them of each attempt's start:
+    its snapshot request, `burst_calls`' `s`, the request just before a
+    commit call that is not itself a commit, a lookup or the render's
+    `record_mirror_state`. Read by `attempt_seconds` (T243u) and `room`
+    (T243v)."""
+    calls = w.stamps()
+
+    def asks(k: int, *names: str) -> bool:
+        return any(name in (calls[k].get("stdin") or "") for name in names)
+
+    return calls, [k for k in range(len(calls) - 1) if asks(k + 1, "commit_write")
+                   and not asks(k, "commit_write", "find_write", "record_mirror_state")]
+
+
 def attempt_seconds(w: Writer) -> List[float]:
     """Each attempt of `w`'s run, in seconds, for AT-4 (c)'s runner's own D7
     (T243u). An attempt that lost its turn runs from its snapshot request's
@@ -1366,15 +1382,9 @@ def attempt_seconds(w: Writer) -> List[float]:
     the tee's `tee.log`, never the writer's monotonic `started` and
     `ended`. D7's clock starts at the first attempt's start
     (`lanes-edit.sh:11176`), so the first attempt, a cold image cache's,
-    is one of them."""
-    calls = w.stamps()
+    is one of them. The starts are `attempt_starts`' (T243v)."""
+    calls, starts = attempt_starts(w)
     tees = {x["t"]: x for x in w._jsonl("tee.log")}
-
-    def asks(k: int, *names: str) -> bool:
-        return any(name in (calls[k].get("stdin") or "") for name in names)
-
-    starts = [k for k in range(len(calls) - 1) if asks(k + 1, "commit_write")
-              and not asks(k, "commit_write", "find_write", "record_mirror_state")]
     seconds = [calls[b]["t"] - calls[a]["t"] for a, b in zip(starts, starts[1:])]
     if starts:
         tee = tees.get(calls[starts[-1] + 1]["t"])
@@ -1388,6 +1398,42 @@ def p95(values: Sequence[float]) -> float:
     or above 95% of them (T243u)."""
     ordered = sorted(values)
     return ordered[math.ceil(0.95 * len(ordered)) - 1]
+
+
+def room(writers: Sequence[Writer], deadline: int) -> Tuple[Optional[float], Optional[float]]:
+    """AT-4 (c)'s room under its deadline, `room_s`, and the figure it is
+    taken from, `last_start_s`, in seconds (T243v; lane 2's RV26, SHOULD 3;
+    lane 3, #165 6870898118: "record `room_s` beside the drain").
+
+    D7's loop takes `PW_T0` from `SECONDS` just before a write's first
+    attempt and, at the top of each later attempt, ends the run 75,
+    "register busy", once `SECONDS - PW_T0` has reached D
+    (`142afd90:lanes-edit.sh:11198-11201`). So D bounds, for each writer,
+    the start of its last attempt, counted from the start of its first.
+    `last_start_s` is the latest such start over `writers`, and `room_s` is
+    `deadline - last_start_s`: the room the writer nearest its deadline still
+    had when its last attempt started. A writer whose next attempt would
+    start after that room is spent exits 75, and the case's oracle fails.
+
+    Each start is an attempt's snapshot request, `attempt_starts`', on the
+    stamp's wall clock. It is the attempt's first request (`pw_attempt_dir`
+    makes none, `:11203-11204`), so the same short lead, the attempt's
+    directory and the client up to its request, comes before the first
+    attempt's snapshot as before the last's, and the difference leaves it
+    out. `SECONDS` is whole seconds of the wall clock, so the deadline acts
+    at the D-th whole second after `PW_T0`, between D - 1 and D seconds
+    after it: a `room_s` of 1 s or less may already be past it.
+
+    Recorded, never asserted. Both are None where no writer's logs hold an
+    attempt."""
+    spans = []
+    for w in writers:
+        calls, starts = attempt_starts(w)
+        if starts:
+            spans.append(calls[starts[-1]]["t"] - calls[starts[0]]["t"])
+    if not spans:
+        return None, None
+    return round(deadline - max(spans), 2), round(max(spans), 2)
 
 
 def burst_ends(e: Estate, writers: Sequence[Writer]) -> List[Writer]:
@@ -1517,11 +1563,15 @@ def test_ten_writers_released_together_all_commit_in_order(estates, request):
     the burst's, `burst`, with each writer's attempts and seconds; and
     `burst-deadline`, the p95, the deadline and the drain side by side, with
     the burst's own attempt p95 by the same rule, so a reader sees whether
-    the measure predicted it. Its row asks every writer to commit, "All ten
-    exit 0, and none exits 75 or 69" (Y TP:7509; TP:7583 at `0c3750a5`), so
-    it keeps that oracle where AT-4 (g) and AT-F14 take `burst_ends`
-    (T243n). Case (h) still asserts D7's 30 s default once, with the
-    variable unset."""
+    the measure predicted it, and `room_s`, the room the deadline left
+    above the latest start of a writer's last attempt, with that start,
+    `last_start_s` (`room`; T243v). A 75 under this deadline is a writer
+    that needed more room than it had, so `room_s` shows how near a
+    passing run came to one (lane 3, #165 6870898118). Its row asks every
+    writer to commit, "All ten exit 0, and none exits 75 or 69" (Y
+    TP:7509; TP:7583 at `0c3750a5`), so it keeps that oracle where AT-4 (g)
+    and AT-F14 take `burst_ends` (T243n). Case (h) still asserts D7's 30 s
+    default once, with the variable unset."""
     measure = estates()
     measured, measure_drain = burst(measure, [f"{KEY}#{500 + k}" for k in range(10)], 200,
                                     extra={"LANES_REGISTER_DEADLINE_S": str(MEASURE_DEADLINE_S)},
@@ -1535,9 +1585,11 @@ def test_ten_writers_released_together_all_commit_in_order(estates, request):
     writers, drain = burst(e, objects, 200, extra={"LANES_REGISTER_DEADLINE_S": str(deadline)},
                            node=request.node, wait_s=max(150, 2 * deadline + 30))
     own = [s for w in writers for s in attempt_seconds(w)]
+    room_s, last_start_s = room(writers, deadline)
     record("burst-deadline", request.node, p95_s=round(runner_p95, 3), attempts_measured=len(seconds),
            measure_drain_s=round(measure_drain, 2), deadline_s=deadline, twice_deadline_s=2 * deadline,
            drain_s=round(drain, 2), margin_vs_deadline=round(deadline / max(drain, 0.01), 2),
+           room_s=room_s, last_start_s=last_start_s,
            burst_p95_s=round(p95(own), 3) if own else None, burst_attempts=len(own))
     assert [w.code for w in writers] == [0] * 10, [(w.lane, w.code, w.err[-300:]) for w in writers]
     grew = e.journal_after()
