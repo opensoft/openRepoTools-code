@@ -99,6 +99,32 @@ from sql_register_helpers import (PSQL_SHIM, PSQL_SHIM_CONTROL, PSQL_SHIM_LOG,
 
 pytestmark = [WINDOWS_SKIP]
 
+#: THE LANDING GATE'S TABLE (T280, `tests/sql_register_gate.py`; task sets
+#: version 12b's rule 11, opensoft/openRepoTools#165 6877673742), TEMPORARY:
+#: T281 removes it in the last set. Where the gate is active, each id here is
+#: skipped until every task its row names has landed, and the skip names them.
+#: Each row is the fails-until clause of T218's Order (tasks:2072) or T272's
+#: (tasks:2497) in tasks.md at lane 3's commit 17, 204145ae, each L-label as
+#: the task that covers it (L1-A3 T104, L1-A7 T109, L1-A13 T115, L1-A14 T116,
+#: L1-A17 T119 and T120), as lane 2's plan GP-24 v1 (sha256 16d738b9) gives
+#: it. An id waits for the "*" row and its own, and a `[rollback]` id's row
+#: replaces its function's.
+SQL_REGISTER_GATE_TABLE = {
+    "*": ("T116",),  # every id: the tasks all its rows share
+    "test_a_cutover_abort_deletes_seq_1_only_when_the_marker_is_proved_absent": ("T327",),  # T272; tasks:2497
+    "test_a_first_cutovers_store_names_the_register_label": ("T104", "T109", "T115", "T119", "T120", "T229", "T327"),  # T218; tasks:2072
+    "test_a_marker_only_entry_is_an_operator_entry_the_renderer_skips": ("T327",),  # T272; tasks:2497
+    "test_a_render_stops_before_an_operator_seq_not_yet_on_origin": ("T327",),  # T272; tasks:2497
+    "test_an_unconfirmed_operator_push_exits_3_and_its_rerun_reads_origin_first": ("T327",),  # T272; tasks:2497
+    "test_cutover_at_files_with_a_label_not_the_switchs_is_refused_2_before_it_sends": ("T104", "T109", "T115", "T119", "T120", "T229"),  # T218; tasks:2072
+    "test_cutover_without_register_label_is_refused_2_before_it_connects": ("T104", "T109", "T115", "T119", "T120", "T229"),  # T218; tasks:2072
+    "test_lanes_index_accepts_the_register_label_key": ("T104", "T109", "T115", "T119", "T120", "T229"),  # T218; tasks:2072
+    "test_no_operator_command_holds_a_transaction_across_git": ("T327",),  # T272; tasks:2497
+    "test_the_operator_entry_is_pushed_with_the_renderer_identity_and_read_back": ("T327",),  # T272; tasks:2497
+    "test_a_render_stops_before_an_operator_seq_not_yet_on_origin[rollback]": ("T304", "T326", "T327"),  # T272; tasks:2497
+    "test_an_unconfirmed_operator_push_exits_3_and_its_rerun_reads_origin_first[rollback]": ("T304", "T326", "T327"),  # T272; tasks:2497
+}
+
 LABEL = "register-lrlabel"
 OTHER = "register-lrlabel-other"
 
