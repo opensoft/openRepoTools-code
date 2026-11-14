@@ -300,6 +300,9 @@ def _without_pg(environ=os.environ) -> Dict[str, str]:
 _PROC = Path("/proc")
 _kill = os.kill
 ORPHAN_WAIT = 10.0                        # seconds a stale postmaster gets to end, per signal
+#: `lanes_index_tty`'s bound and launcher, named for its test (T228b).
+TTY_DEADLINE = 300.0
+_tty_popen = subprocess.Popen
 
 
 def _ticks(pid: int) -> str:
@@ -600,7 +603,7 @@ class Cluster:
         import select
         primary, secondary = pty.openpty()
         try:
-            proc = subprocess.Popen([sys.executable, str(LANES_INDEX), *argv], stdin=DEVNULL,
+            proc = _tty_popen([sys.executable, str(LANES_INDEX), *argv], stdin=DEVNULL,
                                     stdout=secondary, stderr=subprocess.PIPE,
                                     env=self.admin_env(), cwd=str(self.root))
         except OSError:
@@ -608,7 +611,7 @@ class Cluster:
             raise
         finally:
             os.close(secondary)
-        out, end = [], time.monotonic() + 300
+        out, end = [], time.monotonic() + TTY_DEADLINE
         try:
             while time.monotonic() < end:
                 ready, _, _ = select.select([primary], [], [], max(0.0, end - time.monotonic()))
@@ -623,9 +626,24 @@ class Cluster:
                 out.append(chunk)
         finally:
             os.close(primary)
-        if proc.poll() is None and time.monotonic() >= end:
-            proc.kill()
-        err = proc.stderr.read().decode("utf-8", "replace")
+        # T228b: the deadline holds past the pty's end. A child that closed
+        # the pty and lives on, or holds stderr open, is read only until the
+        # deadline, then killed: no read or wait outlasts it.
+        errs, fd = [], proc.stderr.fileno()
+        while time.monotonic() < end:
+            ready, _, _ = select.select([fd], [], [], max(0.0, end - time.monotonic()))
+            if not ready:
+                break
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            errs.append(chunk)
+        if proc.poll() is None:
+            try:
+                proc.wait(timeout=max(0.0, end - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        err = b"".join(errs).decode("utf-8", "replace")
         proc.stderr.close()
         code = proc.wait(timeout=DEADLINE)
         return code, b"".join(out).decode("utf-8", "replace").replace("\r\n", "\n"), err
