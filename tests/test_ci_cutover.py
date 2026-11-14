@@ -557,6 +557,7 @@ def test_ci_cutover_generated_merge_hint_live_reread_stays_strict(cutover, batch
     env, event, _data, live = merge_hint_case
     event["pull_request"]["merge_commit_sha"] = None
     live["merge_commit_sha"] = env["GITHUB_SHA"]
+    stable = hint_route(cutover, batch, merge_hint_case)
     reader, reads = request_for(batch), 0
     def request(repo, endpoint):
         nonlocal reads
@@ -565,8 +566,12 @@ def test_ci_cutover_generated_merge_hint_live_reread_stays_strict(cutover, batch
             if reads == 2:
                 live["merge_commit_sha"] = None
         return reader(repo, endpoint)
-    assert hint_route(cutover, batch, merge_hint_case, request) == cutover.FULL
+    observed = hint_route(cutover, batch, merge_hint_case, request)
+    expected = {**cutover.FULL, 'retryable': True} if stable['mode'] == 'candidate' else cutover.FULL
+    assert observed == expected and 'proof' not in observed
     assert reads == 2
+    if stable['mode'] == 'candidate':
+        assert hint_route(cutover, batch, merge_hint_case) == stable
 
 
 def test_ci_cutover_generated_merge_hint_keeps_candidate_body_exact(cutover, batch, artifact):
