@@ -108,3 +108,45 @@ tested parents, scope, actual admission, independent source reviews and strict
 final raw rereads remain mandatory. Invalid description types retain full.
 The spec leg's canonical ledger/tasks govern qualification and genuinely fresh
 R6 acceptance; this amendment claims neither live success nor assembly adoption.
+
+## R6 final consistency reread — CI-METADATA-16
+
+Fresh sources75/76 qualified fast-only and real ordered two-member admission,
+but draft77 logged candidate-reread at02:51:19.803Z after its initial proof checks.
+Mergify edited the description in the same second. The individual original raw
+field was not captured; do not assert a sole historical cause. The owned duplicate
+and heavy runs were cancelled, sources dequeued and draft closed before landing;
+main stayeda15a6b5. This is failed efficiency acceptance, not a test assertion.
+
+The bounded fresh-observation repair never accepts a raced view. Only a still-
+valid authenticated final PR/caller movement can request the existing no-proof
+wait; accepted proof still requires exact raw rereads. Hard identity/ref/body/
+hint/caller/source/artifact failures remain full. Candidate gate uses the same
+per-invocation bound and original mode/digest; exhaustion or changed proof refuses.
+Source gate semantics and all budgets/schemas/workflows remain unchanged. The
+canonical spec ledger records qualification and genuinely fresh R7 acceptance;
+this code-local dated pointer grants no live success or assembly authority.
+
+## R7 source-canary acceptance pointer — 2026-11-14
+
+Fresh independent PR79/80 qualified fast-only and Mergify formed draft81 at
+`f0bc5701b765a4260dd2bfe7150e93393e21b069`. Genuine first-attempt caller
+`43560096407` passed all19 expected jobs, with no skipped job. Both complete
+heavy inventories preserve5,449 baseline cases plus8reviewed passing additions,
+5,457unique each, with zero removed/duplicate/failing cases or skip-identity drift.
+Qualified artifact14101322070 binds the actual ordered members and trees.
+
+Mergify landed79 then80 as `49748d0` / `11964a6`, after heavy completion;
+both actual ordered prefix trees match the qualified record and final tree
+`498cda538b6feefd312915bf36c2b9c4fa23b6a5` matches the independently prepared
+union. Actual native main43563613592/43563618506 each passed two controls and
+skipped all six ordinary full roles. Complete all-head inventories prove one
+heavy caller and no duplicate full source/candidate/main work for this attempt.
+Earlier failed attempts remain failed; no rerun or queue-branch edit was used.
+
+The canonical spec record `specs/009-manual-two-pr-queue/activation-evidence.md`,
+section R7 completed heavy qualification and native landing acceptance, contains
+the actual run/artifact/digest/tree receipts; reconciliation remains issue26.
+This dated pointer changes no runtime, workflow, policy, queue or permission.
+It does not adopt assembly pins, refresh shared checkouts, alter running lanes,
+install tools, generalize efficient scope or authorize archive/release changes.

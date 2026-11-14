@@ -94,7 +94,9 @@ def test_ci_candidate_description_final_reread_remains_strict(cutover, batch, ca
             if len(reads) == 2:
                 live["body"] += "\nChanged during verification."
         return reader(repo, endpoint)
-    assert route(cutover, batch, candidate, request) == cutover.FULL
+    observed = route(cutover, batch, candidate, request)
+    assert observed == {**cutover.FULL, 'retryable': True}
+    assert 'proof' not in observed
     assert len(reads) == 2
 
 
