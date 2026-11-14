@@ -650,11 +650,12 @@ def git(*args: str, cwd: Path, check: bool = True) -> subprocess.CompletedProces
 #: with `tests/sql_register_gate.py`, which says what the gate reads. In a
 #: GitHub Actions run whose workflow is not `verify` and whose ref is not a
 #: `verify/` branch, or wherever `SQL_REGISTER_GATE=on`, each 007 test whose
-#: tasks have not all landed is SKIPPED, and the skip names them. Every run checks the tables and the
-#: markers, so a bad row fails a local run too. Nothing else changes in a run
-#: where the gate is not active, so a local run is otherwise ungated. The skips
-#: are marked after `-k` has deselected (`trylast`), so no fixture of a gated
-#: id runs, and no cluster starts for one.
+#: tasks have not all landed is SKIPPED, and the skip names them. Every run
+#: checks the tables and the markers, so a bad row fails a local run too.
+#: Nothing else changes in a run where the gate is not active, so a local run
+#: is otherwise ungated. The skips are marked after `-k` has deselected
+#: (`trylast`), so no fixture of a gated id runs, and no cluster starts for
+#: one.
 SQL_REGISTER_LANDED = Path(__file__).resolve().parent / sql_register_gate.LANDED
 
 #: Every module the run collected, by `id()`, before `-k` deselects: each one's

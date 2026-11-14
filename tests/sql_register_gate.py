@@ -35,19 +35,18 @@ names anything else FAILS THE RUN, gated or not, so a bad row fails a local run
 too. A task added to tasks.md later is added to `TASK_IDS` by the first code
 PR whose table or marker names it.
 
-WHEN THE GATE IS ACTIVE (lane 3's rulings, 2026-11-13 and 2026-11-14). Only in a
-GitHub Actions run (`GITHUB_ACTIONS=true`) whose workflow is not `verify` and
-whose ref is not a `verify/` branch. The ref is
-`GITHUB_HEAD_REF` on a `pull_request` or `pull_request_target` event, whose
-`GITHUB_REF_NAME` is `<number>/merge`, and `GITHUB_REF_NAME` on any other
-event. That covers each pull request's CI, `main`'s CI and the merge queue's
-runs. Local runs, line R's census, every `verify/` branch and every run of
-`verify.yml` run ungated: those branches are cut from line R, which holds no
-markers, and a dispatched verify run may be on any ref (`GITHUB_WORKFLOW` is
-`verify`), so no verify passes by the gate's skip. `SQL_REGISTER_GATE=on` or
-`=off` overrides that
-either way, and any other value of it is refused. No workflow sets it, as a
-`repo_hygiene` row holds.
+WHEN THE GATE IS ACTIVE (lane 3's rulings, 2026-11-13 and 2026-11-14). Only in
+a GitHub Actions run (`GITHUB_ACTIONS=true`) whose workflow is not `verify` and
+whose ref is not a `verify/` branch. The ref is `GITHUB_HEAD_REF` on a
+`pull_request` or `pull_request_target` event, whose `GITHUB_REF_NAME` is
+`<number>/merge`, and `GITHUB_REF_NAME` on any other event. That covers each
+pull request's CI, `main`'s CI and the merge queue's runs. Local runs, line R's
+census, every `verify/` branch and every run of `verify.yml` run ungated: those
+branches are cut from line R, which holds no markers, and a dispatched verify
+run may be on any ref (`GITHUB_WORKFLOW` is `verify`), so no verify passes by
+the gate's skip. `SQL_REGISTER_GATE=on` or `=off` overrides that either way,
+and any other value of it is refused. No workflow sets it, as a `repo_hygiene`
+row holds.
 
 The gate decides by landing state alone. With `OPENREPOTOOLS_REQUIRE_PG=1`, a
 missing engine still refuses the run in `pgcluster.py`'s `pytest_configure`,
