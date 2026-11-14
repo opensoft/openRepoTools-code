@@ -15,8 +15,10 @@ WHAT IT HOLDS, by its five sources:
     read sequence; `lane-start`'s seven read arms at 75 and 3, and at 69; the
     other callers' arms (lane 4's table, "The callers' default arms (Q9)");
     the writer's printed rerun relayed on a 3; an expectation's 2 at
-    `lane-start`'s last write; `register-row-local`; `lane-worktrees`' reads;
-    `--index` on primary; and `managed-projection`.
+    `lane-start`'s last write, under a seq base, with its twin under an
+    `@files` base, a note, a stamp and a launch (ERR-56; lane 3, #165
+    6871338814); `register-row-local`; `lane-worktrees`' reads; `--index` on
+    primary; and `managed-projection`.
   * Lane 1's three (L1v4.5's T113 and T114): `guard_second_read_at`,
     `log_key_hex_slot` and `journal_last_pickaxe`, each `lanes-index`'s own,
     on a real engine.
@@ -1422,21 +1424,118 @@ def test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3(tmp_path, site):
                                  result.stderr[-2000:])
 
 
+#: AN EXPECTATION'S 2 AT `start-record` (LR010): the writer's own words,
+#: which `lane-start` keeps on stderr whatever it makes of the 2.
+EXPECTATION_2_STDERR = ("ERROR:  LR010: an expectation of this act no longer holds\n"
+                        "DETAIL:  expectation bind:repoA-1")
+#: An act's base off primary, `<act-id>@files` (Y:5577), which the arms'
+#: wrapper answers each `act-begin` with (`ARM_ACT_BASE`), as files mode
+#: does, and logs: the act's own call, and ERR-56's re-read after a 2.
+FILES_ACT_BASE = f"{'a2' * 16}@files"
+#: ERR-56'S TWIN of `lane-start-4181`: the same lane and arguments, resuming
+#: `repoA-1`'s own last transcript by id (`UUID_A1B`, which its last PAUSED
+#: names), so its one `start-record` call carries `--state` and the RESUMED
+#: line and no `--add-row`, under an `@files` base. A RESUMED, because 5c
+#: writes the Rule 3 stamp for a RESUMED alone (`142afd90:lane-start:5351`).
+EXPECTATION_2_RESUME = Arm("lane-start", ("repoA", "1"), "start-record", "5142",
+                           match="*RESUMED*", env={"ARM_ACT_BASE": FILES_ACT_BASE})
+#: The handoff that `repoA-1`'s row names, committed in the register for the
+#: twin, whose resume stamps it under its header block (5c).
+EXPECTATION_2_HANDOFF = "handoffs/repoA-1.md"
+EXPECTATION_2_HANDOFF_TEXT = "# repoA-1, the handoff\n\nThe top block: parked.\n"
+
+
+def act_begins(world: ArmWorld) -> list:
+    """The `act-begin` calls that the arms' wrapper answered with
+    `ARM_ACT_BASE`, in order, each as its arguments."""
+    acts = Path(f"{world.arm_log}.act")
+    return acts.read_text(encoding="utf-8").splitlines() if acts.exists() else []
+
+
 def test_an_expectation_2_at_lane_starts_last_write_dies(tmp_path):
     """Any 2 at `lane-start:4181`, its last write (the STARTED log line),
-    dies with 2, an expectation's included (LR010): it is a second binding,
-    a deciding refusal, never a stamp to carry on past (lane 4's table; the
-    design's outcomes table). The run knows a minted uuid, so at T428 the
-    line rides in `start-record`'s one call, and the stub fails that call
-    ("any 2 dies, LR010's included"; lane 3's (L2-2), #165 6808937880)."""
-    arm = RERUN_SITES["lane-start-4181"]
+    dies with 2 under a seq base, an expectation's included (LR010): on
+    primary it is a second binding, a deciding refusal, never a stamp to
+    carry on past (lane 4's table; the design's outcomes table). The run
+    knows a minted uuid, so at T428 the line rides in `start-record`'s one
+    call, and the stub fails that call ("any 2 dies, LR010's included";
+    lane 3's (L2-2), #165 6808937880).
+    THE SEQ BASE (ERR-56, research.md:1747-1801 at lane 3's commit 14
+    `bc4a66bb`; lane 3, #165 6871338814, on lane 4's 6871294666): that rule
+    holds under a base `<act-id>@<seq>:<generation>`, where LR010 can occur,
+    so the arms' wrapper answers `act-begin` with `NO_LAUNCH_ACT_BASE`, as
+    the `--no-launch` acts take it, and the case asserts that `lane-start`
+    asked it once: under a seq base a 2 is never read again. Under `@files`
+    the same 2 is Amendment 23's refusal, and the launch goes on: the twin
+    below. With the real `act-begin`'s `@files`, this case failed in line
+    R's rounds 6k and 6l, from merge101's T428 join (`47b7d15d`,
+    `12fe0e43`), which follows ERR-56."""
+    rerun = RERUN_SITES["lane-start-4181"]
+    arm = Arm(rerun.script, rerun.argv, rerun.verb, rerun.base, nth=rerun.nth,
+              match=rerun.match, env={"ARM_ACT_BASE": NO_LAUNCH_ACT_BASE})
     world = arm_world(tmp_path, arm)
-    stderr = ("ERROR:  LR010: an expectation of this act no longer holds\n"
-              "DETAIL:  expectation bind:repoA-1")
-    result = run_arm(world, arm, 2, stderr=stderr)
+    result = run_arm(world, arm, 2, stderr=EXPECTATION_2_STDERR)
+    assert act_begins(world) == ["act-begin"], (
+        "the act did not take one seq base", act_begins(world), result.returncode,
+        result.stderr[-3000:])
     assert result.returncode == 2, (result.returncode, result.stderr[-3000:])
     assert "LR010" in result.stderr, result.stderr[-2000:]
     assert not launched(world), "the agent ran after the 2"
+
+
+def test_an_expectation_2_at_lane_starts_last_write_under_an_at_files_base_notes_stamps_and_launches(
+        tmp_path):
+    """ERR-56'S TWIN of the case above (research.md:1747-1801 at lane 3's
+    commit 14 `bc4a66bb`; lane 3, #165 6871338814): the same `start-record`
+    2 with LR010's words, on the one call, which makes no row (`--state`, no
+    `--add-row`), under a base `<act-id>@files`, whose second `act-begin`
+    still answers `@files`. Off primary no write reads `LANES_EXPECT`
+    (Y:5596), so that 2 is no second binding: it is Amendment 23's refusal,
+    and `lane-start` keeps the writer's words, prints the note it prints for
+    a resume's other codes, with the command that writes the record later,
+    writes the Rule 3 stamp and launches, exit 0 (T428's fix round,
+    `47b7d15d` and `12fe0e43`; its arm at `142afd90:lane-start:5172-5199`).
+    The run resumes `repoA-1`'s own last transcript by id, so its line is a
+    RESUMED and 5c owes the stamp, and the row's handoff is in the register
+    (`EXPECTATION_2_RESUME`). The stamp is read on origin, once. Before
+    ERR-56 the 2 died, 2 and no launch, as under a seq base, so this case
+    fails there."""
+    arm = EXPECTATION_2_RESUME
+    world = arm_world(tmp_path, arm)
+    place_transcript(world, UUID_A1B)
+    (world.wip / EXPECTATION_2_HANDOFF).write_text(EXPECTATION_2_HANDOFF_TEXT, encoding="utf-8")
+    world.git("-C", str(world.wip), "add", "--", EXPECTATION_2_HANDOFF)
+    world.git("-C", str(world.wip), "commit", "-q", "-m", "repoA-1's handoff")
+    world.git("-C", str(world.wip), "push", "-q", "origin", "main")
+    world.git("-C", str(world.ws), "pull", "-q", "--ff-only")
+    result = run_arm(world, arm, 2, stderr=EXPECTATION_2_STDERR)
+    lines = result.stderr.splitlines()
+    where = (result.returncode, result.stderr[-4000:])
+    # THE PREMISE: the stub's 2 met the one `start-record` call, a resume's, which makes no
+    # row; and `act-begin` was asked twice, the act's own and ERR-56's re-read, both `@files`.
+    calls = world.reached()
+    assert len(calls) == 1 and " --state " in f" {calls[0]} " and "--add-row" not in calls[0] \
+        and calls[0].startswith("start-record repoA-1 RESUMED "), (calls,) + where
+    assert act_begins(world) == ["act-begin", "act-begin"], (
+        "the act's base was not read again after the 2", act_begins(world)) + where
+    assert result.returncode == 0, where
+    # THE WRITER'S WORDS, kept as the writer printed them.
+    assert all(line in lines for line in EXPECTATION_2_STDERR.splitlines()), where
+    # THE NOTE, naming the call and its 2, with the command that writes the record later.
+    assert any(line.startswith("lane-start: ") and "start-record" in line
+               and re.search(r"\bexited 2\b", line) for line in lines), where
+    hints = own_hints(result.stderr, "start-record")
+    assert any(f"LANES_LANE=repoA-1 LANES_SESSION={UUID_A1B} " in hint
+               and re.search(r"(?:^|\s)start-record repoA-1 RESUMED\s", hint) for hint in hints), \
+        (hints,) + where
+    # THE RULE 3 STAMP, under the handoff's header block, committed and pushed: on origin once.
+    published = world.git("--git-dir", str(world.origin), "show", f"main:{EXPECTATION_2_HANDOFF}")
+    stamps = [line for line in published.splitlines()
+              if line.startswith(f"RESUMED by {UUID_A1B} (lane repoA-1) at ")]
+    assert len(stamps) == 1, (published,) + where
+    # THE LAUNCH, of the transcript it resumed.
+    assert launched(world), where
+    assert f"--resume {UUID_A1B}" in world.claude_runs(), (world.claude_runs(),) + where
 
 
 # ------------------------------- the `--no-launch` act under a seq base (Q41)
