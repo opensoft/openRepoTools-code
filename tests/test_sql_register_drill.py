@@ -204,6 +204,22 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("git") is None,
     reason="the lane tooling is bash over git")]
 
+#: THE LANDING GATE'S TABLE (T280, `tests/sql_register_gate.py`; task sets
+#: version 12b's rule 11, opensoft/openRepoTools#165 6877673742), TEMPORARY:
+#: T281 removes it in the last set. Where the gate is active, each id here is
+#: skipped until every task its row names has landed, and the skip names them.
+#: Each row is the fails-until clause of T276's Order (tasks:2544) in tasks.md
+#: at lane 3's commit 17, 204145ae, L1-A18 as T121, the task that covers it,
+#: as lane 2's plan GP-24 v2 (sha256 9600adda) gives it. Every id waits for
+#: the "*" row; the drill itself also for T415, T416 and T507, and the
+#: uncleared workstation's case for T415 and T416. AT-F4's three wait for
+#: nothing more.
+SQL_REGISTER_GATE_TABLE = {
+    "*": ("T121", "T326", "T327"),  # every id: the tasks all its rows share
+    "test_a_workstation_not_yet_cleared_refuses_after_rollback": ("T415", "T416"),  # T276; tasks:2544
+    "test_the_drill_import_cutover_outage_rollback_and_files_mode_write": ("T415", "T416", "T507"),  # T276; tasks:2544
+}
+
 INDEXER = REPO / "lanes-index"
 
 #: The register's schema, `register_schema=`'s default.
