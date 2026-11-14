@@ -4608,6 +4608,20 @@ def _psql_version_of(text: str) -> tuple:
     return None, re.sub(r"[^\x20-\x7e]", "?", first)[:60]
 
 
+def _git_version_of(text: str) -> tuple:
+    """`git --version`'s answer as ((major, minor) or None, the version as
+    named), for `ready`'s check 14: `git version 2.43.0` is ((2, 43),
+    "2.43.0"), and `git version 2.39.5 (Apple Git-154)` is ((2, 39), "2.39.5").
+    The first line must match `^git version ([0-9]+)\\.([0-9]+)`. Anything else
+    is (None, its first line, printable and at most 60 characters)."""
+    first = (text.strip().splitlines() or [""])[0]
+    match = re.match(r"git version ([0-9]+)\.([0-9]+)([0-9A-Za-z.]*)", first)
+    if match:
+        return ((int(match.group(1)), int(match.group(2))),
+                match.group(1) + "." + match.group(2) + match.group(3))
+    return None, re.sub(r"[^\x20-\x7e]", "?", first)[:60]
+
+
 class PsqlFailed(StoreUnusable):
     """A register call's `psql` that did not answer (FR-012): a
     `StoreUnusable` of kind `unreachable`, as #160 reads one, with what a
@@ -11756,7 +11770,7 @@ def _bootstrap(opts: dict) -> int:
 # `LANES-INDEX READY` (operations.md §2.4, "lanes-index ready", ops:437-461;
 # FR-054, FR-055; T119, L1-A17). The operator lane's readiness check, run in
 # every environment on P19's list before act 4 (act 3's step 6), and with
-# `--expect primary` after the flip and on the disaster path (step 7). Thirteen
+# `--expect primary` after the flip and on the disaster path (step 7). Fourteen
 # checks, each a read that writes nothing, in Y ops' order. Each prints ONE
 # line, `check <n>: ok` or `check <n>: FAIL: <reason>`, in order (lane 1's line
 # form, block v4.11's :384, which lane 3 accepted, #165 6754522885); then one
@@ -11785,6 +11799,14 @@ def _bootstrap(opts: dict) -> int:
 # read: a connection that does not verify, a `pg_stat_ssl` row it cannot read,
 # a host that does not resolve.
 #
+# CHECK 14, git 2.32 or later, is not in Y's list: Y-ops:444-456 give checks 1
+# to 13, in the order above, and Y leaves "whether every environment has git
+# 2.32 or later" as a fact to find (Y:6429). Lane 3's ruling adds it (#165
+# 6877365776), in lane 1's words (#165 6877889644), and the contract's §10
+# states it. The renderer's push and the snapshot's build isolate git with
+# `GIT_CONFIG_GLOBAL`, which git before 2.32 ignores. It runs last, so no other
+# check is renumbered and every check-number cite holds.
+#
 # ITS ONE WRITE is check 5's scratch configuration, `mode=primary` alone, 0600
 # in a private temporary directory, removed before `ready` prints. Nothing is
 # fetched: check 8 reads `origin/<branch>` as the last fetch left it.
@@ -11792,7 +11814,7 @@ def _bootstrap(opts: dict) -> int:
 _READY_USAGE = f"""\
 {PROG} ready --expect index|primary --release <version> --env <name>
 
-The readiness check (operations.md §2.4): thirteen checks, each a read that
+The readiness check (operations.md §2.4): fourteen checks, each a read that
 writes nothing, printed in order as `check <n>: ok` or `check <n>: FAIL:
 <reason>`, then one line naming the environment, the host, the workstation and
 the tools' version. It prints no secret and changes nothing.
@@ -11807,8 +11829,9 @@ the tools' version. It prints no secret and changes nothing.
 Exit: 0 every check passed · 2 a check failed, each failure named on its own
 line (a database it cannot reach is check 4's failure, never 69) · 64 usage."""
 
-#: The number of checks, ops:444-456.
-_READY_CHECKS = 13
+#: The number of checks: ops:444-456's thirteen, then check 14, git 2.32 or
+#: later (the contract's §10).
+_READY_CHECKS = 14
 
 #: CHECK 1'S DIGEST LIST. Y names "the release's" digests (ops:441, ops:444) and
 #: the test plan an installed-tools directory holding "the release's digest
@@ -11836,6 +11859,11 @@ _READY_ENV_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,63}")
 #: one is not older than any register path needs, so it passes too.
 _READY_PSQL_MAJOR = 16
 
+#: CHECK 14: the least git, as (major, minor), that honours `GIT_CONFIG_GLOBAL`,
+#: which isolates the renderer's push and the snapshot's build (Y:6429; the
+#: contract's §10; lane 3's ruling, #165 6877365776).
+_READY_GIT_MIN = (2, 32)
+
 #: D9'S READER ROW (design.md:3526; ops:405): `lock_timeout` and
 #: `statement_timeout` in ms, and the least client timer in s. The timer is
 #: `N_a`·`c` + the statement bound + 1 s, never below that figure.
@@ -11848,7 +11876,8 @@ _READY_ROLES = (("register_writer", "register_url", "the REGISTER-WRITER login",
                 ("register_reader", "reader_url", "the READER login", "r"))
 
 #: The checks' bounded waits, in s, for what is not a database call: `psql
-#: --version`, the installed `lanes-index mode`, and one name lookup.
+#: --version`, the installed `lanes-index mode`, one name lookup, and `git
+#: --version`.
 _READY_LOCAL_TIMEOUT_S = 10
 
 
@@ -12536,8 +12565,44 @@ def _ready_check_addresses(cfg: dict | None) -> tuple[bool, str]:
     return (False, "; ".join(fails)) if fails else (True, "; ".join(oks))
 
 
+def _ready_check_git() -> tuple[bool, str]:
+    """CHECK 14 (not in Y's list; lane 3's ruling, #165 6877365776, in lane
+    1's words, #165 6877889644; the contract's §10): the `git` that PATH names
+    is 2.32 or later, since the renderer's push and the snapshot's build
+    isolate git with `GIT_CONFIG_GLOBAL`, which git before 2.32 ignores
+    (Y:6429). It asks `git --version` with `LC_ALL=C` and none of the
+    variables that move where git finds a repository (`git_location_free_env`),
+    and it fails closed: no git, a non-zero exit, a first line that names no
+    version (`_git_version_of`), a timeout and an `OSError` each fail it, the
+    last two in check 2's forms."""
+    floor = "%d.%d" % _READY_GIT_MIN
+    git = shutil.which("git")
+    if not git:
+        return False, (f"there is no git on PATH: the renderer's push isolates git with "
+                       f"GIT_CONFIG_GLOBAL, which needs git {floor} or later (Y:6429)")
+    env = git_location_free_env()
+    env["LC_ALL"] = "C"
+    try:
+        proc = subprocess.run([git, "--version"], stdin=subprocess.DEVNULL, capture_output=True,
+                              encoding="utf-8", errors="replace", check=False, env=env,
+                              timeout=_READY_LOCAL_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return False, f"{git} --version did not answer within {_READY_LOCAL_TIMEOUT_S} s"
+    except OSError as exc:
+        return False, f"{git} could not be run: {exc.strerror or exc}"
+    found, version = _git_version_of(proc.stdout if proc.returncode == 0 else "")
+    if found is None:
+        return False, f"{git} --version names no version this build can read ({version!r})"
+    if found < _READY_GIT_MIN:
+        return False, (f"{git} is git {version}, older than {floor}: git ignores "
+                       f"GIT_CONFIG_GLOBAL before {floor}, so the renderer's push and the "
+                       f"snapshot's build would read this account's own git configuration "
+                       f"(Y:6429)")
+    return True, ""
+
+
 def _ready(opts: dict) -> tuple[list[str], bool]:
-    """The thirteen checks, in order, and the last line: the lines to print,
+    """The fourteen checks, in order, and the last line: the lines to print,
     and whether any check failed. Each step fails closed: an error it did
     not expect is that check's FAIL, never a pass."""
     expect, release = opts["--expect"], opts["--release"]
@@ -12582,6 +12647,7 @@ def _ready(opts: dict) -> tuple[list[str], bool]:
         guarded(_ready_check_tls, cfg, entries),
         guarded(_ready_check_floors, cfg, entries),
         guarded(_ready_check_addresses, cfg),
+        guarded(_ready_check_git),
     ]
     if len(results) != _READY_CHECKS:
         raise RuntimeError(f"ready has {len(results)} checks, not {_READY_CHECKS}")
