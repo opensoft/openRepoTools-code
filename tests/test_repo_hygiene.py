@@ -4286,6 +4286,52 @@ def test_no_shipped_bash_leaves_a_variable_name_to_bash_3_2s_locale(name):
         + "\n  ".join(bad))
 
 
+#: A `${var/pattern/replacement}` (`//`, `/#` and `/%` too), with the
+#: replacement half captured. A backslash takes the character after it in
+#: either half, so `\/` and `\}` end neither.
+_SUBSTITUTION = re.compile(
+    r"\$\{[A-Za-z_][A-Za-z0-9_]*(?:\[[^]]*\])?/[/#%]?"
+    r"(?:\\.|[^/}\\])*/((?:\\.|[^}\\])*)\}")
+
+
+def _inside_double_quotes(prefix: str) -> bool:
+    """Whether the text after `prefix` is inside a double-quoted string: a
+    backslash takes the next character outside single quotes, `"` toggles
+    outside them, and `'` opens single quotes only outside double ones."""
+    double = single = False
+    i = 0
+    while i < len(prefix):
+        char = prefix[i]
+        if single:
+            single = char != "'"
+        elif char == "\\":
+            i += 1
+        elif char == '"':
+            double = not double
+        elif char == "'" and not double:
+            single = True
+        i += 1
+    return double
+
+
+def _escapes_a_quote_in_a_double_quoted_replacement(line: str) -> bool:
+    r"""A `${var/pat/rep}` INSIDE DOUBLE QUOTES whose replacement half holds a
+    backslash and a single quote. Bash 4.3 and later take the backslash off;
+    bash 3.2 and `BASH_COMPAT` up to 42 keep it. That is how `quoted()` in
+    `lane-start` and `lane-handoff` came to print
+
+        printf "%s'%s'" "$q_sep" "${q_a//\'/\'\\\'\'}" ;;
+
+    as `\'\\'\'` where `'\''` was meant, for any argument with a quote in it
+    (openRepoTools-4's review of #165). That line has no `"` between its
+    braces, which the rule below it needs, so it was never seen. Outside double
+    quotes the backslash is taken off by every bash, so a bare one is no hit.
+    """
+    return any(r"\'" in hit.group(1)
+               and _inside_double_quotes(line[:hit.start()])
+               for hit in _SUBSTITUTION.finditer(line))
+
+
 @pytest.mark.parametrize("name", ALL_BASH)
 def test_no_shipped_bash_quotes_the_replacement_half_of_a_substitution(name):
     """BASH 3.2 KEEPS THOSE QUOTES AS CHARACTERS (A9 Addendum 4, R-A9-11).
@@ -4300,6 +4346,14 @@ def test_no_shipped_bash_quotes_the_replacement_half_of_a_substitution(name):
 
     Take the replacement out of the pattern machinery instead \u2014 `%%` for the
     prefix and `#` for the tail, then concatenate.
+
+    THE SAME RULE HOLDS FOR A BACKSLASH-ESCAPED SINGLE QUOTE in the
+    replacement half of a substitution that sits inside double quotes,
+    with no quote mark of its own between the braces: bash 3.2, and
+    5.2 under `BASH_COMPAT` 31 to 42, keep the backslash. A quote got
+    out of `quoted()` as a line that did not read back, and the check
+    above never saw it, because it wants a `"` inside the braces.
+    Put the replacement in a variable and substitute that.
     """
     text = (REPO / name).read_text(encoding="utf-8")
     bad = [line.strip() for line in text.splitlines()
@@ -4311,6 +4365,46 @@ def test_no_shipped_bash_quotes_the_replacement_half_of_a_substitution(name):
         f"writes those quote marks out as text. Build the string from "
         f"`${{var%%\"$pat\"*}}` and `${{var#*\"$pat\"}}` instead:\n  "
         + "\n  ".join(bad))
+    escaped = [line.strip() for line in text.splitlines()
+               if not line.lstrip().startswith("#")
+               and _escapes_a_quote_in_a_double_quoted_replacement(line)]
+    assert not escaped, (
+        f"{name} escapes a single quote in the replacement half of a "
+        "`${var/pat/rep}` inside double quotes; bash 3.2 and `BASH_COMPAT` "
+        "up to 42 keep the backslash, so the quote comes out as a backslash "
+        "and a quote. Put the replacement in a variable, as `quoted()` does "
+        "(`q_r` holds the quote's own spelling, then `${var//pat/$q_r}`):\n  "
+        + "\n  ".join(escaped))
+
+
+@pytest.mark.parametrize("line,flagged", [
+    # THE LINE `quoted()` HAD, in both lane tools: flagged.
+    (r'''      printf "%s'%s'" "$q_sep" "${q_a//\'/\'\\\'\'}" ;;''', True),
+    # THE LINE IT HAS NOW: the replacement is a variable.
+    (r'''      printf "%s'%s'" "$q_sep" "${q_a//\'/$q_r}" ;;''', False),
+    # The shape `lane-end`'s `sc_find_err_path` had: one escaped quote.
+    (r'''x="${x//\\\'/\'}"''', True),
+    (r'''echo "${v/a/it\'s}"''', True),
+    (r'''echo "[${v/a/\'}] and [${w//b/c}]"''', True),
+    # The pattern half holding the quote is not the replacement.
+    (r'''echo "${v//\'/}"''', False),
+    (r'''echo "${v//\'/ }"''', False),
+    # A backslash that every bash reads the same.
+    (r'''smi_e="${smi_e//\\/\\134}"''', False),
+    # Outside double quotes every bash takes the backslash off.
+    (r'''x=${y//a/\'}''', False),
+    ("echo '${y//a/\\'}'", False),
+    # A quote with no backslash, and no substitution at all.
+    (r'''echo "${v//a/'}"''', False),
+    (r'''echo "it\'s" ${v}''', False),
+], ids=["the-old-quoted-line", "the-new-quoted-line", "lane-end-one-quote",
+        "quote-inside-a-word", "one-of-two-substitutions", "pattern-half-only",
+        "pattern-half-and-a-space", "escaped-backslashes", "bare-assignment",
+        "inside-single-quotes", "bare-quote-in-the-replacement",
+        "no-substitution"])
+def test_the_escaped_quote_rule_flags_the_old_quoted_line_and_not_the_new_one(
+        line, flagged):
+    assert _escapes_a_quote_in_a_double_quoted_replacement(line) is flagged
 
 
 @pytest.mark.parametrize("name", ALL_BASH)
