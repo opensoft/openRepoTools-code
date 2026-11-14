@@ -77,7 +77,8 @@ unless `OPENREPOTOOLS_REQUIRE_PG=1`.
 WHAT EACH WAITS FOR (the block's Order): L4-A1, L5-A4 and L5-A5; lane 1's
 three for L1v4.5's T113 and T114; lane 5's for T504 to T506 and T509; the
 `--decide` test for T502; the read verbs' for lane 4's T401, the one-snapshot
-and quoted-name cases for its round on lane 3's Q2 and Q3 (#165 6851977580);
+and quoted-name cases for its round on lane 3's Q2 and Q3 (#165 6851977580),
+`8d72e579`;
 the arms for
 lane 4's T402 to T408; `key()`'s trim, on primary only, for lane 4's T426;
 T235's for lane 5's T505, its three door forms included, whose oracles are
@@ -3626,11 +3627,12 @@ def test_register_grep_on_primary_answers_one_snapshot_and_69_after_three_moved_
     what `git grep` prints over the store's tree at `n` after the move;
     `repoX+1` is read twice; the head keeps `n` under a new generation (lane
     2's RV23 NIT 3).
-    FAILS UNTIL lane 4's T401 round on lane 3's Q2 ruling, which was not
-    bundled when this case was written. On lane 4's `6318d5e5` (#165
-    6851877746), which reads once, `[one-move]` fails on stdout, its answer
-    straddling `n` and `n + 1`, so `repoA-2`'s moved line is missing, and
-    `[three-moves]` on its exit, 0 with lines, not 69 (T217zh)."""
+    It passes from lane 4's T401 round on lane 3's Q2 ruling, `8d72e579`
+    (line R's merge90 and later), and fails before it. On lane 4's
+    `6318d5e5` (#165 6851877746), which reads once, `[one-move]` fails on
+    stdout, its answer straddling `n` and `n + 1`, so `repoA-2`'s moved line
+    is missing, `[generation-moved]` on stdout as well, and `[three-moves]`
+    on its exit, 0 with lines, not 69 (T217zh)."""
     seed_logs(estate, {SNAPSHOT_LOG: SNAPSHOT_TEXT})
     primary = Primary(estate)
     first, first_generation = primary.door.head()
@@ -3724,11 +3726,11 @@ def test_register_grep_on_primary_prints_each_path_as_git_grep_does_under_gits_d
     configuration turns `core.quotePath` off, numbers and colours `git
     grep`'s lines, and marks every file binary in its default attributes
     file, and primary's answer must still be those bytes, exit 0.
-    FAILS UNTIL lane 4's T401 round on lane 3's Q3 ruling, which was not
-    bundled when this case was written. On lane 4's `6318d5e5` (#165
-    6851877746) it fails on stdout: each path after the prefix as it is,
-    unquoted, and each image grepped without `--text`, so a `Binary file
-    image matches` line stands for its lines (T217zi)."""
+    It passes from lane 4's T401 round on lane 3's Q3 ruling, `8d72e579`
+    (line R's merge90 and later), and fails before it. On lane 4's
+    `6318d5e5` (#165 6851877746) it fails on stdout: each path after the
+    prefix as it is, unquoted, and each image grepped without `--text`, so a
+    `Binary file image matches` line stands for its lines (T217zi)."""
     seed_logs(estate, {path: (f"STARTED — lane {lane}, session {UUID_A1}@Eagle, "
                               f"2026-10-05T00:40:00Z, lane:{lane} → home opensoft/repoQ; "
                               f"dir /work/repoQ\n")
