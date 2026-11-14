@@ -139,6 +139,12 @@ def _code_lines(blocks: list[str]) -> list[str]:
 # --- a stub helper that logs what it is asked, and answers what a case says ---
 
 #: The interpreter that is running pytest, so the stub needs nothing on PATH.
+#: Since feature 007's T431, step 4 opens with its own base and reads the
+#: identity again, so two verbs answer what a lane's own window would get (R-Q23;
+#: lane 2 reviews these stub hunks): `register-row` the lane's row for the
+#: window's name, `$STUB_WINDOW`, and nothing for any other name; and
+#: `canon-lane` the name it was given. `window-lane` and `swapped` keep the
+#: stub's 2, which step 1's ladder falls through where the window's name has a row.
 STUB = f"""#!{sys.executable}
 import json, os, sys
 argv = sys.argv[1:]
@@ -163,9 +169,26 @@ if verb == "write-handoff":
     if os.environ.get("STUB_WH_OUT"):
         print(os.environ["STUB_WH_OUT"])
     sys.exit(int(os.environ.get("STUB_WH_RC", "0")))
+if verb == "register-row":
+    if argv[1:2] == [os.environ.get("STUB_WINDOW", "")]:
+        print("| `" + argv[1] + "` | row |")
+    sys.exit(0)
+if verb == "canon-lane":
+    print(argv[1] if len(argv) > 1 else "")
+    sys.exit(0)
 if verb in ("log", "append-line", "set-row-state"):
     sys.exit(0)
 sys.exit(8 if verb == "lane-dir" else 2)
+"""
+
+#: A `tmux` that answers only the window's name, which is the lane's own, as a
+#: lane window's is (Amendment 8(b)); every other question gets nothing, so the
+#: host's own server is never read.
+TMUX = """#!/bin/sh
+case "$*" in
+  *'#W'*) printf '%s\\n' "$STUB_WINDOW" ;;
+  *) exit 1 ;;
+esac
 """
 
 
@@ -185,8 +208,9 @@ class Estate:
         self.log.write_text("", encoding="utf-8")
         self.helper = self.bin / "lanes-edit.sh"
         self.helper.write_text(STUB, encoding="utf-8")
-        # A `tmux` that answers nothing, so the host's own server is never read.
-        (self.bin / "tmux").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        # A `tmux` that answers the window's name and nothing else, so the host's
+        # own server is never read.
+        (self.bin / "tmux").write_text(TMUX, encoding="utf-8")
         for tool in (self.helper, self.bin / "tmux"):
             tool.chmod(tool.stat().st_mode | stat.S_IXUSR)
         self.handoff = root / "checkout" / "handoffs" / "estate" / f"{LANE}.md"
@@ -196,7 +220,7 @@ class Estate:
     def run(self, shell: str, script: str, **extra: str) -> subprocess.CompletedProcess:
         env = {"HOME": str(self.home), "TMPDIR": str(self.tmp), "STUB_LOG": str(self.log),
                "PATH": os.pathsep.join([str(self.bin), "/usr/bin", "/bin"]),
-               "STUB_HP_OUT": str(self.handoff), **extra}
+               "STUB_HP_OUT": str(self.handoff), "STUB_WINDOW": LANE, **extra}
         argv = ["bash", "-c", script] if shell == "bash" else \
             [shutil.which("zsh") or "zsh", "-f", "-c", script]
         return subprocess.run(argv, env=env, cwd=str(self.home), capture_output=True,
