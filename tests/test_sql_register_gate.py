@@ -203,8 +203,8 @@ def gated_on_t205_alone(run: Run) -> bool:
 
 
 def test_a_table_naming_an_id_that_is_no_007_task_fails_the_run(tmp_path):
-    """A table whose rows name T236 (lane 2's, with no task line in tasks.md)
-    and T252x (a slice's letter, not a task) fails the run: pytest's own
+    """A table whose rows name T999 (a number no task line has) and T252x (a
+    slice's letter, not a task) fails the run: pytest's own
     `UsageError`, exit 4, before any test runs. The refusal names the module's
     table, each row and each id. The run here is not gated (no Actions, no
     switch), so a bad row fails a local run too. A row whose task id is a list,
@@ -212,13 +212,13 @@ def test_a_table_naming_an_id_that_is_no_007_task_fails_the_run(tmp_path):
     pytest's internal error, exit 3 (lane 2's RV26, NIT 3). The control is the
     same code root with a good table, where every id runs."""
     bad = dict(TABLE)
-    bad["test_gate_probe_waits"] = ("T415", "T236")
+    bad["test_gate_probe_waits"] = ("T415", "T999")
     bad["test_gate_probe_param[b]"] = ("T252x",)
     run = child(estate(tmp_path / "bad", table=bad))
     assert run.code == 4, f"a table naming no 007 task must fail the run:\n{shown(run)}"
     assert "ERROR: the landing gate (T280): SQL_REGISTER_GATE_TABLE in " in run.output, shown(run)
     assert "test_gate_probe.py" in run.output, shown(run)
-    assert "'test_gate_probe_waits' names T236, which is not one of 007's task ids" in run.output, shown(run)
+    assert "'test_gate_probe_waits' names T999, which is not one of 007's task ids" in run.output, shown(run)
     assert "'test_gate_probe_param[b]' names T252x, which is not one of 007's task ids" in run.output, shown(run)
     assert "passed" not in run.output and not run.ids, f"a test ran:\n{shown(run)}"
     listed = dict(TABLE)
@@ -234,17 +234,18 @@ def test_a_table_naming_an_id_that_is_no_007_task_fails_the_run(tmp_path):
 
 
 def test_a_marker_naming_an_id_that_is_no_007_task_fails_the_run(tmp_path):
-    """A marker directory holding `T236` (no task line in tasks.md) and a
+    """A marker directory holding `T999` (a number no task line has) and a
     `.gitkeep` (the placeholder git's lack of empty directories invites) fails
     the run, exit 4, naming both and the directory. The run is not gated, so a
     bad marker fails a local run too. The control holds only 007 tasks'
-    markers, and every id runs."""
-    run = child(estate(tmp_path / "bad", markers=("T205", "T236", ".gitkeep")))
+    markers, T236's among them (a task line since lane 3's commit 17,
+    `204145ae`), and every id runs."""
+    run = child(estate(tmp_path / "bad", markers=("T205", "T999", ".gitkeep")))
     assert run.code == 4, f"a marker naming no 007 task must fail the run:\n{shown(run)}"
     assert "ERROR: the landing gate (T280): " in run.output, shown(run)
-    assert f"{sql_register_gate.LANDED} holds .gitkeep, T236: a marker is a file named for one of 007's task ids" in run.output, shown(run)
+    assert f"{sql_register_gate.LANDED} holds .gitkeep, T999: a marker is a file named for one of 007's task ids" in run.output, shown(run)
     assert "passed" not in run.output and not run.ids, f"a test ran:\n{shown(run)}"
-    good = child(estate(tmp_path / "good", markers=("T205", "T415")))
+    good = child(estate(tmp_path / "good", markers=("T205", "T236", "T415")))
     assert every_id_runs(good), f"markers of 007 tasks must not fail the run:\n{shown(good)}"
 
 
