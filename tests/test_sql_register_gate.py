@@ -152,9 +152,10 @@ class Run(NamedTuple):
     ids: Dict[str, Tuple[str, str]]
 
 
-def child(root: Path, **env: str) -> Run:
+def child(root: Path, *args: str, **env: str) -> Run:
     """`python -m pytest -q -rs tests` in `root`, with `env` and nothing of the
-    outer run's that the gate or the suite's switches read."""
+    outer run's that the gate or the suite's switches read. `args`, such as a
+    `-k` selection, go before `tests`."""
     environ = {key: value for key, value in os.environ.items()
                if not key.startswith(NOT_INHERITED)}
     environ["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -162,7 +163,7 @@ def child(root: Path, **env: str) -> Run:
     junit = root.parent / "junit.xml"
     command = [sys.executable, "-m", "pytest", "-q", "-rs", "-p", "no:cacheprovider",
                f"--basetemp={root.parent / 'basetemp'}", f"--rootdir={root}",
-               f"--junitxml={junit}", "tests"]
+               f"--junitxml={junit}", *args, "tests"]
     proc = subprocess.run(command, cwd=str(root), env=environ, capture_output=True,
                           text=True, timeout=600, check=False)
     ids: Dict[str, Tuple[str, str]] = {}
@@ -209,8 +210,13 @@ def test_a_table_naming_an_id_that_is_no_007_task_fails_the_run(tmp_path):
     table, each row and each id. The run here is not gated (no Actions, no
     switch), so a bad row fails a local run too. A row whose task id is a list,
     which cannot be looked up, is refused the same way, exit 4, and is not
-    pytest's internal error, exit 3 (lane 2's RV26, NIT 3). The control is the
-    same code root with a good table, where every id runs."""
+    pytest's internal error, exit 3 (lane 2's RV26, NIT 3). So is a table that
+    is not a dict, a list of pairs here, named by its type. And a bad table
+    fails the run even where `-k` deselects every id of its module, since the
+    hook checks the table of every module the run collected, selected or not
+    (lane 2's RV26, NIT 4). The control is the same code root with a good
+    table, where every id runs, and where the same `-k` runs the module with
+    no table alone."""
     bad = dict(TABLE)
     bad["test_gate_probe_waits"] = ("T415", "T999")
     bad["test_gate_probe_param[b]"] = ("T252x",)
@@ -229,22 +235,46 @@ def test_a_table_naming_an_id_that_is_no_007_task_fails_the_run(tmp_path):
         f"internal error:\n{shown(unhashable)}")
     assert "'*' names ['T205'], which is not one of 007's task ids" in unhashable.output, shown(unhashable)
     assert "INTERNALERROR" not in unhashable.output and not unhashable.ids, shown(unhashable)
+    wrong = child(estate(tmp_path / "wrong", table=[("*", ("T205",))]))
+    assert wrong.code == 4, f"a table that is not a dict must fail the run:\n{shown(wrong)}"
+    assert "test_gate_probe.py is a list, not a dict of test name to the task ids it waits for" in wrong.output, shown(wrong)
+    assert "INTERNALERROR" not in wrong.output and not wrong.ids, shown(wrong)
+    deselected = child(estate(tmp_path / "deselected", table=bad), "-k", "gate_free")
+    assert deselected.code == 4, (
+        f"a bad table must fail the run where -k deselects its module:\n{shown(deselected)}")
+    assert "'test_gate_probe_waits' names T999, which is not one of 007's task ids" in deselected.output, shown(deselected)
+    assert "passed" not in deselected.output and not deselected.ids, f"a test ran:\n{shown(deselected)}"
     good = child(estate(tmp_path / "good"))
     assert every_id_runs(good), f"the same root with a good table must run:\n{shown(good)}"
+    good_k = child(estate(tmp_path / "good-k"), "-k", "gate_free")
+    assert good_k.code == 0 and good_k.ids == {"test_gate_free_runs": ("passed", "")}, (
+        f"-k 'gate_free' must deselect every id of the probe:\n{shown(good_k)}")
+    assert "4 deselected" in good_k.output, shown(good_k)
 
 
 def test_a_marker_naming_an_id_that_is_no_007_task_fails_the_run(tmp_path):
     """A marker directory holding `T999` (a number no task line has) and a
     `.gitkeep` (the placeholder git's lack of empty directories invites) fails
     the run, exit 4, naming both and the directory. The run is not gated, so a
-    bad marker fails a local run too. The control holds only 007 tasks'
-    markers, T236's among them (a task line since lane 3's commit 17,
-    `204145ae`), and every id runs."""
+    bad marker fails a local run too. So does a marker named for a 007 task
+    that is a directory, `T415`, or a symlink, `T416`, here to T205's own
+    marker file: a marker is a file, and not a symlink (lane 2's RV26,
+    NIT 4). The control holds only 007 tasks' markers, T236's among them (a
+    task line since lane 3's commit 17, `204145ae`), and every id runs."""
     run = child(estate(tmp_path / "bad", markers=("T205", "T999", ".gitkeep")))
     assert run.code == 4, f"a marker naming no 007 task must fail the run:\n{shown(run)}"
     assert "ERROR: the landing gate (T280): " in run.output, shown(run)
     assert f"{sql_register_gate.LANDED} holds .gitkeep, T999: a marker is a file named for one of 007's task ids" in run.output, shown(run)
     assert "passed" not in run.output and not run.ids, f"a test ran:\n{shown(run)}"
+    kinds = estate(tmp_path / "kinds", markers=("T205",))
+    landed = kinds / "tests" / sql_register_gate.LANDED
+    (landed / "T415").mkdir()
+    (landed / "T416").symlink_to("T205")
+    assert (landed / "T416").is_symlink() and (landed / "T416").is_file()
+    shapes = child(kinds)
+    assert shapes.code == 4, f"a marker that is a directory or a symlink must fail the run:\n{shown(shapes)}"
+    assert f"{sql_register_gate.LANDED} holds T415, T416: a marker is a file named for one of 007's task ids" in shapes.output, shown(shapes)
+    assert "passed" not in shapes.output and not shapes.ids, f"a test ran:\n{shown(shapes)}"
     good = child(estate(tmp_path / "good", markers=("T205", "T236", "T415")))
     assert every_id_runs(good), f"markers of 007 tasks must not fail the run:\n{shown(good)}"
 
@@ -255,7 +285,11 @@ def test_a_gated_id_is_reported_skipped_naming_the_tasks_it_waits_for(tmp_path):
     and T205, which has landed, is not named. Under `-rs` the line is at the
     probe's own path. `[a]` waits for the function's T415 and `[b]` for its own
     row's T416. The `"*"` row's id and the module with no table run. With T415
-    marked too, the skips name T416 alone."""
+    marked too, the skips name T416 alone. The skips are marked after `-k` has
+    deselected (`tests/conftest.py`'s `trylast`): with `-k 'gate_probe and not
+    skip'`, every probe id is selected and the three gated ones are skipped as
+    before. A hook that marked them before `-k` would let `not skip` deselect
+    them, since `-k` matches an id's marker names (lane 2's RV26, NIT 4)."""
     run = child(estate(tmp_path / "t205", markers=("T205",)), **{SWITCH: "on"})
     assert gated_on_t205_alone(run), f"the gated ids, by the table:\n{shown(run)}"
     assert "SKIPPED [1] tests/test_gate_probe.py:" in run.output, shown(run)
@@ -273,6 +307,15 @@ def test_a_gated_id_is_reported_skipped_naming_the_tasks_it_waits_for(tmp_path):
         "test_gate_probe_param[b]": waits("T416"),
         "test_gate_free_runs": ("passed", ""),
     }, f"with T415 landed, only T416 is waited for:\n{shown(later)}"
+    selected = child(estate(tmp_path / "selected", markers=("T205",)),
+                     "-k", "gate_probe and not skip", **{SWITCH: "on"})
+    assert selected.code == 0 and selected.ids == {
+        "test_gate_probe_waits": waits("T415", "T416"),
+        "test_gate_probe_runs": ("passed", ""),
+        "test_gate_probe_param[a]": waits("T415"),
+        "test_gate_probe_param[b]": waits("T416"),
+    }, f"the skips are marked after -k, so `not skip` keeps every gated id:\n{shown(selected)}"
+    assert "1 deselected" in selected.output, shown(selected)
 
 
 def test_with_the_gate_on_and_no_marker_directory_every_row_is_waited_for(tmp_path):
