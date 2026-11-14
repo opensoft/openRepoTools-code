@@ -1044,7 +1044,15 @@ def test_the_guard_refuses_a_ref_behind_a_rollbacks_head(pg, tmp_path, request):
     smoke-test write, from the lane's own register checkout `<c>`, made after
     the cutover's push (T219g; T415's `pw_checkout`). The guard's checkout is
     built on a fetched register commit at `k - 1`, as the rollback cases'
-    `found-files` builds its own at `k`."""
+    `found-files` builds its own at `k`.
+
+    WHETHER THE WRITE'S FORKED RENDER REACHED ORIGIN (T416) by the end of
+    the 60 s wait is recorded beside the result, never asserted: the line
+    `[T215 forked-render]`, which is also the case's junit property
+    `T215 forked-render`, as the order module's `record` writes its figures
+    (T243l), and the note on `k`'s assertion. Where origin did not carry the
+    write's seq, the rollback renders `k` itself and the case rests on that;
+    the record says which way it went (T215l)."""
     estate = Estate(tmp_path, [_render(1)])
     writer = f"t215_{uuid.uuid4().hex[:12]}"
     reader = f"t215_{uuid.uuid4().hex[:12]}"
@@ -1061,6 +1069,7 @@ def test_the_guard_refuses_a_ref_behind_a_rollbacks_head(pg, tmp_path, request):
                                      os.environ.get("PATH", os.defpath)]))
     c = estate.tip()
     git = estate.env["T215_REAL_GIT"]
+    forked = "no write was made"
     for argv in (["import", "--at", c], ["cutover", "--import", c], "write", ["rollback"]):
         if argv == "write":
             # ONE WRITE ON PRIMARY, from the lane's `<c>`, made after the
@@ -1077,12 +1086,24 @@ def test_the_guard_refuses_a_ref_behind_a_rollbacks_head(pg, tmp_path, request):
                 f"`log NOTED` on primary exited {wrote.returncode} (lane 4's T415): "
                 f"{(wrote.stdout + wrote.stderr)[-600:]}")
             head = pg.psql(f"SELECT seq FROM {SCHEMA}.register_head WHERE id = 1;").stdout.strip()
-            deadline = time.monotonic() + 60
-            while time.monotonic() < deadline and head not in subprocess.run(
+            began = time.monotonic()
+            while True:
+                carried = subprocess.run(
                     [git, "--git-dir", str(estate.origin), "log", "-1",
                      "--format=%(trailers:key=Register-Seq,valueonly)", "main"],
-                    capture_output=True, text=True, env=estate.env).stdout.split():
+                    capture_output=True, text=True, env=estate.env).stdout.split()
+                if head in carried or time.monotonic() - began >= 60:
+                    break
                 time.sleep(0.2)
+            # WHETHER THE FORK'S PUSH REACHED ORIGIN, recorded and never
+            # asserted (T215l): where it did not, the case rests on the
+            # rollback rendering `k` itself, and the record says so.
+            waited = time.monotonic() - began
+            forked = (f"origin's main {'carried' if head in carried else 'did not carry'} the "
+                      f"write's seq {head or '(none read)'} after {waited:.1f} s of the 60 s "
+                      f"wait (its tip's Register-Seq: {' '.join(carried) or 'none'})")
+            print(f"[T215 forked-render] {forked}")
+            request.node.user_properties.append(("T215 forked-render", forked))
             continue
         proc = subprocess.run([sys.executable, str(estate.copy), *argv], capture_output=True,
                               text=True, env=env, cwd=str(estate.wip), timeout=300,
@@ -1096,7 +1117,7 @@ def test_the_guard_refuses_a_ref_behind_a_rollbacks_head(pg, tmp_path, request):
     assert k >= 2, (
         f"the rollback's head k is {k}, not 2 or more, though a write on primary came between "
         f"the cutover and the rollback: a ref one behind it, at {k - 1}, would carry no "
-        f"Register-Seq here")
+        f"Register-Seq here; the write's forked render: {forked}")
     # The guard's checkout: built on a fetched register commit at k - 1, the
     # ref one behind the rollback's head; origin then gains k, unfetched.
     guard_estate = Estate(tmp_path / "guard", [_render(1)])
