@@ -3479,7 +3479,7 @@ append_line_landing_expired() {   # <holder> --pr <n> --repo <r> --word <q> --wo
     die "append-line --landing-expired: the line it composed carries managed-owner vocabulary ('managed owner', 'managed binding', 'mode=managed' or 'managed:') in the word, its place, a lane's name, the workspace or a field copied from the LANDING, and only the managed ledger's own writer writes it into the register. Nothing was written." 2
   fi
   append_text_line "$le_line"
-  commit_publish "LANES(${lane_tag}@$WS): append line — ${le_line:0:72}"
+  commit_publish "LANES(${lane_tag}@$WS): append line — $(LC_ALL=C; t=${le_line:0:72}; for k in 1 2 3; do c=${t: -k:1}; case $c in [$'\x80'-$'\xbf']) continue ;; [$'\xc0'-$'\xdf']) [ "$k" -ge 2 ] || t=${t:0:${#t}-k}; break ;; [$'\xe0'-$'\xef']) [ "$k" -ge 3 ] || t=${t:0:${#t}-k}; break ;; [$'\xf0'-$'\xf7']) t=${t:0:${#t}-k}; break ;; *) break ;; esac; done; printf '%s' "$t")"
   # ---- AFTER THE SEAM (Y:5119): only then is the seq known, as `claim`'s
   # `register seq <n>` is (Q19(A)), and output here streams live. The seam
   # returns only on `committed <s>`, which sets `REGISTER_SEQ`; a return
@@ -29626,7 +29626,7 @@ Nothing was written." 2
     [ -n "$lane_tag" ] || lane_tag="${LANES_ROUTED:-}"
     acquire_lock; checkout_sync append-line "$lane_tag" write "$LANES_PATH"   # Amendment 23 S3
     append_text_line "$text"
-    msg="LANES(${lane_tag:-unknown}@$WS): append line — ${text:0:72}"
+    msg="LANES(${lane_tag:-unknown}@$WS): append line — $(LC_ALL=C; t=${text:0:72}; for k in 1 2 3; do c=${t: -k:1}; case $c in [$'\x80'-$'\xbf']) continue ;; [$'\xc0'-$'\xdf']) [ "$k" -ge 2 ] || t=${t:0:${#t}-k}; break ;; [$'\xe0'-$'\xef']) [ "$k" -ge 3 ] || t=${t:0:${#t}-k}; break ;; [$'\xf0'-$'\xf7']) t=${t:0:${#t}-k}; break ;; *) break ;; esac; done; printf '%s' "$t")"
     commit_publish "$msg"
     ;;
 
