@@ -104,6 +104,69 @@ from pgcluster import Database
 from sql_register_helpers import (LANES_INDEX, PSQL_SHIM, PSQL_SHIM_CONTROL, PSQL_SHIM_LOG,
                                   REGISTER_FAKE_PSQL, RENDER_GIT_HALF_LINE, flipped_copy)
 
+#: THE LANDING GATE'S TABLE (T280's reader, `tests/sql_register_gate.py`), TEMPORARY:
+#: T281 removes it in the last set. Where the gate is active, an id is skipped until
+#: every task its row names has landed: a function's row holds for each of its ids, and
+#: an id's own row, `name[param]`, takes the place of its function's. There is no `"*"`
+#: row, since the waits share no task. Each row is the fails-until clause of its task's
+#: **Order**, T221's (tasks:2127) or T231's (tasks:2231) at lane 3's commit 17,
+#: 204145ae, each lane 1 label read as the tasks it covers; T221's "only until" rows on
+#: `pg` add T110, by that Order's L1-A8 clause. DEC-23's rendering test waits for T104,
+#: T105 and T109, and its two engine ids for T110 as well.
+SQL_REGISTER_GATE_TABLE = {
+    "test_a_claim_records_its_spelling_its_key_and_its_aliases": ("T107", "T108", "T111", "T112"),  # T231; tasks:2231
+    "test_a_client_outside_the_version_window_is_refused_lr003": ("T107", "T108", "T109", "T110", "T111", "T113", "T119", "T120"),  # T221; tasks:2127
+    "test_a_failed_pass_record_leaves_the_divergence_as_it_was": ("T107", "T108", "T109", "T110"),  # T221; tasks:2127
+    "test_a_file_without_a_final_newline_renders_back_byte_identical": ("T107", "T108", "T111", "T112"),  # T231; tasks:2231
+    "test_a_migration_against_an_older_snapshot_ends_69": ("T107", "T108", "T109", "T110", "T111", "T119", "T120"),  # T221; tasks:2127
+    "test_a_migration_out_of_order_is_refused_lr003": ("T107", "T108", "T109", "T110"),  # T221; tasks:2127
+    "test_a_released_claims_spellings_block_nothing": ("T107", "T108", "T111", "T112"),  # T231; tasks:2231
+    "test_a_second_bootstrap_at_the_same_version_adds_no_migration": ("T107", "T108", "T109", "T110"),  # T221; tasks:2127
+    "test_a_second_divergence_report_keeps_the_first": ("T107", "T108", "T109", "T110"),  # T221; tasks:2127
+    "test_a_stray_import_or_revert_clears_the_divergence": ("T107", "T108", "T109", "T110"),  # T221; tasks:2127
+    "test_a_write_is_refused_lr002_while_the_marker_is_adding_or_removing": ("T107", "T108", "T109", "T110"),  # T231; tasks:2231
+    "test_a_write_that_deletes_a_line_with_a_bad_key_is_refused_lr010": ("T107", "T108", "T109", "T110"),  # T221; tasks:2127
+    "test_an_entry_without_a_path_in_changes_tsv_is_refused_2_before_the_store_opens": ("T107", "T108", "T111", "T112"),  # T231; tasks:2231
+    "test_an_entry_without_a_valid_not_after_is_refused": ("T107", "T108", "T111", "T112"),  # T231; tasks:2231
+    "test_an_import_carries_not_after_of_its_330_s_timer_plus_2_s": ("T115",),  # T231; tasks:2231
+    "test_an_import_whose_line_derives_a_bad_key_is_refused_lr010_and_writes_nothing": ("T107", "T108", "T109", "T110", "T115"),  # T221; tasks:2127
+    "test_an_operator_entry_with_a_row_outside_lanes_store_is_refused_lr004_at_commit": ("T107", "T108", "T109", "T110"),  # T231; tasks:2231
+    "test_commit_write_derives_step_6s_deletes_so_the_tables_equal_the_imports_derivation": ("T107", "T110", "T227"),  # T221; tasks:2127
+    "test_doc_line_scopes_adds_objects_from_the_structured_rows": ("T107", "T108", "T109", "T110"),  # T221; tasks:2127
+    "test_entry_new_keys_reads_the_new_side_and_every_holder": ("T107", "T108", "T109", "T110"),  # T221; tasks:2127
+    "test_every_copy_of_register_schema_version_in_a_release_is_one_number": ("T107", "T108", "T109", "T110", "T119", "T120"),  # T221; tasks:2127
+    "test_line_scopes_derives_each_scope_by_its_rule": ("T107", "T108", "T109", "T110"),  # T221; tasks:2127
+    "test_lr004_on_an_edit_or_proof_that_does_not_apply_leaves_everything_unchanged": ("T107", "T108", "T111", "T112"),  # T231; tasks:2231
+    "test_lr004_reloads_once_then_exits_69": ("T107", "T108", "T111", "T112"),  # T231; tasks:2231
+    "test_mirror_state_refuses_a_malformed_sha": ("T107", "T108", "T109", "T110"),  # T221; tasks:2127
+    "test_mirror_state_starts_as_one_empty_row": ("T107", "T108", "T109", "T110", "T119", "T120"),  # T221; tasks:2127
+    "test_no_kind_commits_in_a_state_its_kinds_table_row_refuses": ("T107", "T108", "T109", "T110"),  # T231; tasks:2231
+    "test_only_register_writer_executes_record_mirror_state_and_none_updates_the_table": ("T107", "T108", "T109", "T110"),  # T221; tasks:2127
+    "test_ready_fails_a_client_outside_the_version_window": ("T107", "T108", "T109", "T110", "T119", "T120"),  # T221; tasks:2127
+    "test_record_mirror_state_records_a_divergence_and_a_failed_pass": ("T107", "T108", "T109", "T110"),  # T221; tasks:2127
+    "test_register_snapshot_prints_its_keys_in_the_contracts_order_and_refuses_with_its_codes": ("T107", "T109", "T110", "T111"),  # T221; tasks:2127
+    "test_restore_prior_is_set_by_the_restore_form_and_cleared_by_record_marker": ("T116", "T327"),  # T231; tasks:2231
+    "test_scope_checked_raises_lr010_naming_the_path_the_line_and_the_key": ("T107", "T108", "T109", "T110"),  # T221; tasks:2127
+    "test_scope_fault_shows_each_white_space_character": ("T107", "T108", "T109", "T110"),  # T221; tasks:2127
+    "test_set_seq_after_a_cutover_is_the_cutovers_own_seq": ("T116", "T327"),  # T231; tasks:2231
+    "test_set_seq_is_minus_1_after_the_bootstrap": ("T107", "T108", "T109", "T110"),  # T231; tasks:2231
+    "test_switch_to_files_aborts_only_an_unconfirmed_cutover": ("T107", "T108", "T109", "T110"),  # T231; tasks:2231
+    "test_the_bootstrap_renders_register_schema_both_ways_and_refuses_the_rest": ("T104", "T105", "T109"),  # T221; tasks:2127
+    "test_the_journal_scopes_check_takes_a_no_break_space": ("T107", "T108", "T109", "T110"),  # T221; tasks:2127
+    "test_the_marker_moves_only_through_commit_write_and_record_marker": ("T107", "T108", "T109", "T110"),  # T231; tasks:2231
+    "test_the_operator_flag_rules_refuse_lr004": ("T107", "T108", "T111", "T112"),  # T231; tasks:2231
+    "test_the_reimport_forms_abort_leaves_label_and_generation": ("T116", "T327"),  # T231; tasks:2231
+    "test_the_rollbacks_entry_makes_an_older_writer_snapshot_fail_lr001_or_40001_then_69": ("T107", "T108", "T111", "T112"),  # T231; tasks:2231
+    "test_the_rollbacks_entry_sets_files_removing_and_its_own_seq": ("T107", "T108", "T109", "T110"),  # T231; tasks:2231
+    "test_the_switch_checks_refuse_a_bad_set_seq_and_a_mode_marker_mismatch": ("T107", "T108", "T109", "T110"),  # T231; tasks:2231
+    "test_lr004_on_an_edit_or_proof_that_does_not_apply_leaves_everything_unchanged[operator-no-edit]": ("T107", "T108", "T109", "T110"),  # T231; tasks:2231
+    "test_lr004_on_an_edit_or_proof_that_does_not_apply_leaves_everything_unchanged[root-seq-on-a-non-empty-journal]": ("T107", "T108", "T109", "T110"),  # T231; tasks:2231
+    "test_the_bootstrap_renders_register_schema_both_ways_and_refuses_the_rest[default-unchanged]": ("T104", "T105", "T109", "T110"),  # T221; tasks:2127
+    "test_the_bootstrap_renders_register_schema_both_ways_and_refuses_the_rest[scratch-every-site]": ("T104", "T105", "T109", "T110"),  # T221; tasks:2127
+    "test_the_operator_flag_rules_refuse_lr004[operator-edits-nothing]": ("T107", "T108", "T109", "T110"),  # T231; tasks:2231
+    "test_the_operator_flag_rules_refuse_lr004[operator-edits-other]": ("T107", "T108", "T109", "T110"),  # T231; tasks:2231
+}
+
 SCHEMA = "lanes_register"
 OWNER, WRITER, READER = "lanes_register_owner", "lanes_register_writer", "lanes_register_reader"
 
