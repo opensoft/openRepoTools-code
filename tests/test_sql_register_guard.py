@@ -4453,6 +4453,12 @@ REQUEST_MAX = 65536
 #: line's words before the key, then its `.md` and the `end` line.
 REQUEST_HEAD = b"read 1\nfile lanes/log/"
 REQUEST_TAIL = b".md\nend\n"
+#: How many times the 65,536-byte request is asked of a warmed service (lane
+#: 2's RV26, NIT 6): a busy one can fall short of an answer by its request
+#: timer or its read window (`lanes-index:8027-8039` at merge101), giving
+#: `unavailable` or nothing with no `bad request` line, so only those ends
+#: are asked again, and the assert is on the last answer.
+TAKEN_TRIES = 3
 
 
 def _request_key(size: int) -> str:
@@ -4532,7 +4538,9 @@ def test_a_65536_byte_request_is_sent_and_taken_and_a_65537_byte_one_is_neither(
       refused the request itself fails. In this estate both direct reads
       fail alike, exit 69, since its register's switch is `files`.
     - THE SERVICE, warmed (`_warm`): those 65,536 bytes are taken, an answer
-      at `n` naming the log `absent`, with no `bad request` line; 65,537
+      at `n` naming the log `absent`, with no `bad request` line, asked up to
+      `TAKEN_TRIES` times while a busy service gives `unavailable` or no
+      answer with no new `bad request` line (lane 2's RV26, NIT 6); 65,537
       bytes, the same request with one more byte of key, are answered
       `unavailable`, with one `bad request` line in `register.log`, which the
       bound's refusal writes and a cold or busy service's `unavailable` does
@@ -4570,8 +4578,11 @@ def test_a_65536_byte_request_is_sent_and_taken_and_a_65537_byte_one_is_neither(
     try:
         _warm(est)
         bad = _bad_requests(est)
-        taken = _ask_service(est, _request(REQUEST_MAX))
-        bad_taken = _bad_requests(est)
+        for _ in range(TAKEN_TRIES):
+            taken = _ask_service(est, _request(REQUEST_MAX))
+            bad_taken = _bad_requests(est)
+            if taken not in (b"", b"unavailable\n") or bad_taken != bad:
+                break
         refused = _ask_service(est, _request(REQUEST_MAX + 1))
         bad_refused = _bad_requests(est)
     finally:
