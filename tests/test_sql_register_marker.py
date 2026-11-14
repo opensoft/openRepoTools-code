@@ -77,13 +77,54 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_mode_index_guard_refuses_2_under_the_marker": ("T507",),
     # T242: the writer cases until T419 (L4-B12), the `mode=index` one also
     # until T409 (L4-B1); the q6c case until T409; and AT-F8's ids until
-    # T409, its `sql` ones also until T419, which the function's row gives
-    # all of them.
+    # T409, its `sql` ones also until T419: the function's row holds both,
+    # and each of its 20 `files` ids has its own row, T409 alone (lane 3's
+    # ruling 7, opensoft/openRepoTools#165 6879724890).
     "test_a_files_mode_writer_refuses_under_the_marker": ("T419",),
     "test_a_mode_index_writer_refuses_under_the_marker": ("T409", "T419"),
     "test_a_writer_with_no_fetch_refuses_when_its_tip_carries_the_marker": ("T419",),
     "test_the_q6c_refusal_has_its_own_code_and_the_writer_exits_69": ("T409",),
     "test_any_other_mode_query_failure_runs_files_mode_with_a_warning": ("T409", "T419"),
+    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[refused-2-index-files]":
+        ("T409",),
+    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[refused-2-primary-files]":
+        ("T409",),
+    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[too-old-64-index-files]":
+        ("T409",),
+    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[too-old-64-primary-files]":
+        ("T409",),
+    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[crash-1-index-files]":
+        ("T409",),
+    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[crash-1-primary-files]":
+        ("T409",),
+    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[removed-127-index-files]":
+        ("T409",),
+    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[removed-127-primary-files]":
+        ("T409",),
+    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[signal-index-files]":
+        ("T409",),
+    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[signal-primary-files]":
+        ("T409",),
+    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[not-one-line-index-files]":
+        ("T409",),
+    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[not-one-line-primary-files]":
+        ("T409",),
+    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[exit-69-index-files]":
+        ("T409",),
+    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[exit-69-primary-files]":
+        ("T409",),
+    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[exit-75-index-files]":
+        ("T409",),
+    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[exit-75-primary-files]":
+        ("T409",),
+    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[exit-3-index-files]":
+        ("T409",),
+    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[exit-3-primary-files]":
+        ("T409",),
+    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[hang-index-files]":
+        ("T409",),
+    "test_any_other_mode_query_failure_runs_files_mode_with_a_warning[hang-primary-files]":
+        ("T409",),
 }
 
 EDIT = REPO / "lanes-edit.sh"
