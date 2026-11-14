@@ -7600,13 +7600,34 @@ def register_serve_stamp(paths: dict, cause: str) -> None:
         pass
 
 
+def _register_serve_read_regular(path: str, size: int) -> bytes:
+    """At most `size` bytes of `path`, read only where it is a regular file
+    (lane 1's U5 gate, #165 6881993079, N6): opened with `O_NOFOLLOW` and
+    `O_NONBLOCK`, so a FIFO there cannot block the read and a symbolic link
+    is not followed, then `fstat`. Raises `OSError` where it cannot be
+    opened or is not a regular file."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file", path)
+        data = b""
+        while len(data) < size:
+            chunk = os.read(fd, size - len(data))
+            if not chunk:
+                break
+            data += chunk
+        return data
+    finally:
+        os.close(fd)
+
+
 def register_serve_stamp_read(paths: dict) -> tuple | None:
     """The stamp as (its UTC, its cause, its age in s), or None where there
-    is none or it is out of form. A stamp dated ahead of this clock counts as
-    old, so a clock step never holds back starts for longer than the hold."""
+    is none or it is out of form, or is not a regular file (N6). A stamp
+    dated ahead of this clock counts as old, so a clock step never holds
+    back starts for longer than the hold."""
     try:
-        with open(paths["failed"], "rb") as handle:
-            words = handle.read(200).decode("ascii").split()
+        words = _register_serve_read_regular(paths["failed"], 200).decode("ascii").split()
     except (OSError, UnicodeDecodeError):
         return None
     if len(words) != 2:
@@ -9158,10 +9179,12 @@ def register_serve_owner_read(paths: dict) -> dict | None:
     last byte that is not `\\n`; or with one of the known keys on two lines.
     Lines are split as `str.splitlines()` splits them, a line's key is the
     text before its first `=`, a line with no `=` is passed over, and so is
-    an unknown key, however often it comes."""
+    an unknown key, however often it comes. It is read only as a regular
+    file (`_register_serve_read_regular`, N6), so a FIFO or a symbolic link
+    there is a file it cannot read, and never blocks the client before its
+    uid check."""
     try:
-        with open(paths["owner"], "rb") as handle:
-            data = handle.read(4097)
+        data = _register_serve_read_regular(paths["owner"], 4097)
         text = data.decode("utf-8")
     except (OSError, UnicodeDecodeError):
         return None
