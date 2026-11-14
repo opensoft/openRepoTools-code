@@ -80,6 +80,19 @@ import pytest
 
 from pgcluster import SUPERUSER
 
+#: THE LANDING GATE'S TABLE (T280's `SQL_REGISTER_GATE_TABLE`; task sets
+#: version 12b's rule 11, lane 3, opensoft/openRepoTools#165 6877673742):
+#: the 007 tasks each id waits for. T216's Order (tasks:2028 at `204145ae`)
+#: says "Its tests fail until L1-A6, L1-A7, L1-A8 and T228 land": L1-A6 is
+#: T107 and T108, L1-A7 is T109 and L1-A8 is T110, so every id shares one
+#: row. The table is lane 2's GP-24 plan's (`GP-24-gate-tables-plan.md`,
+#: sha256 `16d738b9`). Only where the gate is active
+#: (`tests/sql_register_gate.py`) does it skip an id until all its tasks
+#: have landed; elsewhere it changes nothing.
+SQL_REGISTER_GATE_TABLE = {
+    "*": ("T107", "T108", "T109", "T110", "T228"),  # every id: the tasks all its rows share
+}
+
 #: The register's schema and #160's, as §1.4 names them.
 REGISTER, INDEX = "lanes_register", "lanes_index"
 
