@@ -8263,6 +8263,10 @@ class RegisterService:
                 self.stop(f"idle for {self.idle_stop_s} s")
             elif not self.ours():
                 self.stop("its socket is gone or another's")
+            elif not self.worker.is_alive():
+                # NO WORKER, NO ANSWER (lane 1's U5 gate, #165 6881993079,
+                # S2 (c)): the service ends, and the next client starts one.
+                self.stop("its worker ended")
             with self.cond:
                 why = self.stopping
             if why:
@@ -8430,19 +8434,21 @@ class RegisterService:
         `\\warn` marker, which `psql` reads only once it has connected, at
         `c` for each of the `N_a` addresses; a child that ends first, or is
         still connecting past `N_a`·`c` + 2 s, failed. The first connect
-        removes any stamp (Y:3936-3938)."""
+        removes any stamp (Y:3936-3938). ANY EXCEPTION IS A FAILED CONNECT
+        (lane 1's U5 gate, #165 6881993079, S2 (a)): `StoreUnusable` from
+        `_env`'s password file among them, so the state never stays
+        `connecting`."""
+        child, status = None, "eof"
         try:
             child = self.spawn()
-        except OSError:
-            child = None
-        status = "eof"
-        if child is not None:
             with self.cond:
                 bound = self.store.addresses * self.store.connect_timeout + 2
             nonce = f"connect-{os.urandom(4).hex()}"
             status, _out, _state = self.exchange(
                 child, f"\\warn '\\036LANES-SERVE {nonce}'\n".encode("ascii"), nonce,
                 time.monotonic() + bound)
+        except Exception:
+            status = "eof"
         with self.cond:
             if status == "ok" and epoch == self.epoch and not self.stopping:
                 self.child, self.state, self.last_used = child, "ready", time.monotonic()
@@ -8564,14 +8570,23 @@ class RegisterService:
                     self.cond.wait(max(0.01, min(waits)))
                 if self.stopping:
                     return
-            if job == "reload":
-                self.take_change()
-            elif job == "idle":
-                self.idle_check()
-            elif job == "fetch":
-                self.fetch()
-            else:
-                self.serve_job(job)
+            # A JOB THAT FAILS (lane 1's U5 gate, #165 6881993079, S2 (b)): a
+            # fixed phrase, the held child replaced at once, the request
+            # answered `unavailable`, and the worker carries on, so its state
+            # never stays `busy`.
+            try:
+                if job == "reload":
+                    self.take_change()
+                elif job == "idle":
+                    self.idle_check()
+                elif job == "fetch":
+                    self.fetch()
+                else:
+                    self.serve_job(job)
+            except Exception:
+                if isinstance(job, _RegisterServeJob):
+                    job.give(b"unavailable\n")
+                self.lost("a job of the worker failed: the held child is replaced", at_once=True)
             with self.cond:
                 self.fetching = False
                 if self.state == "busy":
