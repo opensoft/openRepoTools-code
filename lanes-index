@@ -7989,10 +7989,11 @@ def register_serve_name_ok(path: str) -> bool:
     return all(0x21 <= byte <= 0x7E for byte in os.fsencode(path))
 
 
-def _register_serve_record(path: str, digest: str, data: bytes) -> bytes:
+def _register_serve_record(path: str, digest: str, data: bytes) -> tuple:
     """A FILE PRESENT AT `n` (socket API §13.4): `file <path> <sha256>
-    <size>`, its bytes, then one LF that is not the file's."""
-    return f"file {path} {digest} {len(data)}\n".encode("ascii") + data + b"\n"
+    <size>`, its bytes, then one LF that is not the file's, as three parts,
+    so no body is copied before the answer is joined (SHOULD 4)."""
+    return f"file {path} {digest} {len(data)}\n".encode("ascii"), data, b"\n"
 
 
 class _RegisterServeJob:
@@ -8649,24 +8650,37 @@ class RegisterService:
                 self.cond.notify_all()
             register_serve_log(self.paths, "a cache miss: unavailable, and a fetch in the background")
             return b"unavailable\n"
-        out = [f"text {snap['head']} {snap['generation']}\n".encode("ascii")]
-        for kind, name, value in plan:
-            if kind == "file":
-                out.append(_register_serve_record(value, needed[value], images[value]))
-            elif kind in ("absent", "ambiguous"):
-                out.append(f"{kind} {name}\n".encode("ascii"))
-            elif kind == "set":
-                out.append(f"set {name} {len(value)}\n".encode("ascii"))
-                out += [_register_serve_record(path, needed[path], images[path]) for path in value]
-            else:
-                out.append(f"list {len(value)}\n".encode("ascii"))
-                out += [register_serve_list_line(path, listing[path][0]) for path in value]
-        out.append(b"end\n")
-        answer = b"".join(out)
-        if len(answer) > REGISTER_SERVE_ANSWER_MAX:
-            register_serve_log(self.paths, "an answer over 16 MB: unavailable")
-            return b"unavailable\n"
-        return answer
+
+        def pieces():
+            yield (f"text {snap['head']} {snap['generation']}\n".encode("ascii"),)
+            for kind, name, value in plan:
+                if kind == "file":
+                    yield _register_serve_record(value, needed[value], images[value])
+                elif kind in ("absent", "ambiguous"):
+                    yield (f"{kind} {name}\n".encode("ascii"),)
+                elif kind == "set":
+                    yield (f"set {name} {len(value)}\n".encode("ascii"),)
+                    for path in value:
+                        yield _register_serve_record(path, needed[path], images[path])
+                else:
+                    yield (f"list {len(value)}\n".encode("ascii"),)
+                    for path in value:
+                        yield (register_serve_list_line(path, listing[path][0]),)
+            yield (b"end\n",)
+
+        # COUNTED AS IT IS BUILT (lane 3's ruling, #165 6879724890, point 3;
+        # socket API 6.3 and 13.4, draft 12; the Codex review, SHOULD 4):
+        # `unavailable` at the first record or line that would carry the
+        # answer past 16,777,216 bytes, the client's bound (13.6), so no
+        # record past it is built; and the bodies are joined once, here.
+        out, size = [], 0
+        for parts in pieces():
+            size += sum(len(part) for part in parts)
+            if size > REGISTER_SERVE_ANSWER_MAX:
+                register_serve_log(self.paths, "an answer over 16 MB: unavailable")
+                return b"unavailable\n"
+            out += parts
+        return b"".join(out)
 
     def bring(self, snap: dict, held: dict, needed: dict, replay: list) -> tuple:
         """THE IMAGES AT `n` (Y:4043-4050; socket API §5.1): each held one
