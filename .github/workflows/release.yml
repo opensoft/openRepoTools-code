@@ -2275,14 +2275,32 @@ jobs:
           name: digest-list
           path: list
 
+      # THE ARTIFACT AGAINST THE BUILD'S RECORD: `list` holds the one file the
+      # build named, at the sha256 it recorded. Each refusal is one
+      # `::error::` line that names its cause, and the step prints nothing
+      # else: the names found are put on that one line, and the sha256 is
+      # read here and compared, since `sha256sum -c` reports a mismatch in
+      # two lines of its own and no `::error::`. A file that cannot be read
+      # gives no digest, and no digest is ever the recorded one.
       - name: list holds check 1's digest list the build job wrote, and nothing else
         run: |
           found="$(ls -A list)"
           if [ "$found" != "$DIGEST_LIST" ]; then
+            found=${found//$'\n'/ }
             echo "::error::list holds '$found', and the build job wrote $DIGEST_LIST"
             exit 1
           fi
-          echo "$DIGEST_LIST_SHA256  list/$DIGEST_LIST" | sha256sum --strict -c -
+          digest="$(sha256sum 2>/dev/null < "list/$DIGEST_LIST")" || digest=
+          digest="${digest%% *}"
+          if [ -z "$digest" ]; then
+            echo "::error::list/$DIGEST_LIST cannot be read, so whether it is the list the build job wrote is not known, and nothing is published"
+            exit 1
+          fi
+          if [ "$digest" != "$DIGEST_LIST_SHA256" ]; then
+            echo "::error::list/$DIGEST_LIST is at sha256 $digest, and the build job recorded $DIGEST_LIST_SHA256, so nothing is published"
+            exit 1
+          fi
+          echo "list holds $DIGEST_LIST at sha256 $digest, the build job's"
 
       # THE TAG, AGAIN, as each upload job reads it right before its upload:
       # a release names its tag, and the tag must still name this commit.
