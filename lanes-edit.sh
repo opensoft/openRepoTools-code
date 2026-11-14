@@ -20480,12 +20480,22 @@ guard_bind_rewrite() {   # [--own] <offer file> <keys to drop, space-separated> 
   [ -n "$gbw_t" ] || return 1
   gbw_rc=0
   ( umask 077
+    # EVERY READ AND EVERY WRITE IS CHECKED BEFORE THE `mv` (lane 3's Codex code
+    # review of `12eddddf`, #165 6882203066, finding 1): each `printf` is `||
+    # exit 1`, so one that fails is a 1 and not a record that lost a line while
+    # a later write succeeded; the input is opened by the group's own `8<`, so
+    # a failure to open it is a 1 of its own, and not the status of whatever
+    # the loop ran last; and a `read` is the end of the file only where it says
+    # 1, any other status being a 1 here. (Bash cannot tell a read error from
+    # the end of the file, since `read` answers 1 to both: what it can check,
+    # this checks.)
     { for gbw_a in "$@"; do
-        case "$gbw_a" in mode=*) printf '%s\n' "$gbw_a"; break ;; esac
+        case "$gbw_a" in mode=*) printf '%s\n' "$gbw_a" || exit 1; break ;; esac
       done
       if [ -e "$gbw_f" ]; then
         gbw_seen=" "; gbw_m=""; gbw_p=""; gbw_ps=""; gbw_h=""; gbw_c=""
-        while IFS= read -r gbw_l || [ -n "$gbw_l" ]; do
+        {
+        while { gbw_st=0; IFS= read -r gbw_l <&8 || gbw_st=$?; [ "$gbw_st" = 0 ] || [ -n "$gbw_l" ]; }; do
           if [ "$gbw_own" = 1 ]; then
             case "$gbw_l" in
               mode=*|pid=*|pidstart=*|host=*|container=*)
@@ -20504,14 +20514,16 @@ guard_bind_rewrite() {   # [--own] <offer file> <keys to drop, space-separated> 
             esac
           fi
           case "$gbw_drop" in *" ${gbw_l%%=*} "*) continue ;; esac
-          printf '%s\n' "$gbw_l"
-        done < "$gbw_f" || exit 1
+          printf '%s\n' "$gbw_l" || exit 1
+        done
+        [ "$gbw_st" = 1 ] || exit 1
+        } 8< "$gbw_f" || exit 1
         [ "$gbw_own" = 0 ] || guard_bind_own "$gbw_m" "$gbw_p" "$gbw_ps" "$gbw_h" "$gbw_c" || exit 2
       elif [ "$gbw_own" = 1 ]; then
         exit 2
       fi
       for gbw_a in "$@"; do
-        case "$gbw_a" in mode=*) : ;; *) printf '%s\n' "$gbw_a" ;; esac
+        case "$gbw_a" in mode=*) : ;; *) printf '%s\n' "$gbw_a" || exit 1 ;; esac
       done
     } > "$gbw_t" ) 2>/dev/null || gbw_rc=$?
   if [ "$gbw_rc" != 0 ]; then
