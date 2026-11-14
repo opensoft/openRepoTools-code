@@ -21937,16 +21937,33 @@ guard_bind_child_env() {
 # live outer's `.out` may be — and the fork's `>` never empties one. `bind`
 # stays the attempt, 1 to 3 per offer; the record's `out=` names the attempt's
 # own file, and the facts file sits beside it.
+# EVERY CANONICAL INDEX IS COMPARED, AT ANY LENGTH, AND THERE IS NO MAXIMUM
+# (S4 of lane 3's Codex re-review of spec#47 at `746e931c`, lane 5's choice of
+# its two ways, #165 6880414089): an index past six digits was passed over, so
+# after `.bind.1000000.out` the next name could be one still there. An index
+# is `guard_bind_index_ok`'s, `[1-9][0-9]*`, and is compared as a decimal
+# string, the longer the larger and an equal length digit by digit, so no
+# value overflows the shell's integers; one above it is made the same way. A
+# name whose index is not canonical is never one this makes, so it is passed
+# over.
 guard_bind_next_index() {   # <offer file>
   gbx_f="${1-}"; gbx_n=0
   for gbx_x in "$gbx_f".bind.*; do
     [ -e "$gbx_x" ] || continue
     gbx_i="${gbx_x#"$gbx_f".bind.}"; gbx_i="${gbx_i%%.*}"
-    case "$gbx_i" in ''|*[!0-9]*) continue ;; esac
-    [ "${#gbx_i}" -le 6 ] || continue
-    [ "$((10#$gbx_i))" -le "$gbx_n" ] || gbx_n=$((10#$gbx_i))
+    guard_bind_index_ok "$gbx_i" || continue
+    if [ "${#gbx_i}" -gt "${#gbx_n}" ] ||
+       { [ "${#gbx_i}" = "${#gbx_n}" ] && [ "$gbx_i" \> "$gbx_n" ]; }; then
+      gbx_n="$gbx_i"
+    fi
   done
-  printf '%s\n' "$((gbx_n + 1))"
+  # ONE ABOVE IT: trailing 9s become 0s, and the digit before them goes up
+  # by one, or a 1 leads where every digit was a 9.
+  gbx_z=""
+  while [ -n "$gbx_n" ] && [ "${gbx_n%9}" != "$gbx_n" ]; do gbx_n="${gbx_n%9}"; gbx_z="${gbx_z}0"; done
+  if [ -z "$gbx_n" ]; then printf '1%s\n' "$gbx_z"; return 0; fi
+  gbx_d="${gbx_n#"${gbx_n%?}"}"
+  printf '%s%s%s\n' "${gbx_n%?}" "$((gbx_d + 1))" "$gbx_z"
 }
 
 # THE ATTEMPT'S FACTS FILE, BESIDE THE `out=` THE RECORD NAMES (the same
