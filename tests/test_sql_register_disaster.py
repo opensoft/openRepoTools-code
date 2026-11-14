@@ -161,6 +161,30 @@ from pgcluster import (FX_DUMP, FX_LANE, FX_REPOSITORY, PASSWORD_LINE, ClusterEr
 from sql_register_helpers import (PSQL_SHIM, PSQL_SHIM_CONTROL, PSQL_SHIM_LOG, flipped_copy,
                                   guard_strip_env)
 
+#: THE LANDING GATE'S TABLE (T280's reader, `tests/sql_register_gate.py`), TEMPORARY:
+#: T281 removes it in the last set. Where the gate is active, an id is skipped until
+#: every task its rows name has landed: the `"*"` row holds for every id of the module,
+#: and a function's row adds to it for each of that function's ids. Each row is the
+#: fails-until clause of T274's **Order** (tasks:2521 at lane 3's commit 17, 204145ae),
+#: each lane 1 label read as the tasks it covers. `"*"` is T109, which every case waits
+#: for; the label rules' four ids, by direct calls, add T107 alone; and
+#: `test_bootstrap_roles_only_makes_the_roles_and_no_schema` has no row of its own,
+#: since it waits only for T109.
+SQL_REGISTER_GATE_TABLE = {
+    "*": ("T109",),  # every id: the tasks all its rows share
+    "test_a_backup_newer_than_the_mirror_is_restored_and_rendered": ("T110", "T115", "T117", "T120", "T121", "T327", "T415", "T416"),  # T274; tasks:2521
+    "test_a_pending_record_from_the_lost_database_is_refused_2_at_the_snapshot": ("T110", "T115", "T117", "T120", "T121", "T327", "T412", "T415", "T416", "T417"),  # T274; tasks:2521
+    "test_an_abort_after_a_restore_form_cutover_restores_every_table_byte_for_byte": ("T110", "T115", "T117", "T120", "T121", "T327", "T415", "T416"),  # T274; tasks:2521
+    "test_an_after_loss_cutover_from_a_host_still_on_the_live_database_is_refused_with_2_and_writes_nothing": ("T110", "T115", "T120", "T327"),  # T274; tasks:2521
+    "test_lanes_write_id_new_on_the_replacement_replaces_the_old_record_and_writes_once": ("T110", "T115", "T117", "T120", "T121", "T327", "T412", "T415", "T416", "T417"),  # T274; tasks:2521
+    "test_status_prints_the_mirror_tip_and_the_last_head_that_bound_the_loss": ("T110", "T115", "T117", "T120", "T121", "T327", "T415", "T416"),  # T274; tasks:2521
+    "test_the_after_loss_cutovers_label_rules_in_the_transaction": ("T107",),  # T274; tasks:2521
+    "test_the_disaster_path_reimports_at_the_mirrors_tip_and_continues_the_sequence": ("T110", "T115", "T117", "T120", "T121", "T327", "T415", "T416"),  # T274; tasks:2521
+    "test_the_disaster_path_rewrites_the_marker_by_the_after_loss_cutover": ("T110", "T115", "T117", "T120", "T121", "T304", "T326", "T327", "T412", "T415", "T416", "T417"),  # T274; tasks:2521
+    "test_the_printed_rerun_between_a_reimports_bootstrap_and_its_cutover_exits_2_not_69": ("T110", "T115", "T117", "T120", "T121", "T327", "T412", "T415", "T416", "T417"),  # T274; tasks:2521
+    "test_the_restore_route_commits_under_the_replacements_register_label_and_check_10_fails_until_it_does": ("T110", "T115", "T117", "T119", "T120", "T121", "T327", "T415", "T416"),  # T274; tasks:2521
+}
+
 pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("git") is None,
     reason="the lane tooling is bash over git")]
