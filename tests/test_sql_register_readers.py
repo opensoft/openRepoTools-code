@@ -77,7 +77,8 @@ unless `OPENREPOTOOLS_REQUIRE_PG=1`.
 WHAT EACH WAITS FOR (the block's Order): L4-A1, L5-A4 and L5-A5; lane 1's
 three for L1v4.5's T113 and T114; lane 5's for T504 to T506 and T509; the
 `--decide` test for T502; the read verbs' for lane 4's T401, the one-snapshot
-and quoted-name cases for its round on lane 3's Q2 and Q3 (#165 6851977580);
+and quoted-name cases for its round on lane 3's Q2 and Q3 (#165 6851977580),
+`8d72e579`;
 the arms for
 lane 4's T402 to T408; `key()`'s trim, on primary only, for lane 4's T426;
 T235's for lane 5's T505, its three door forms included, whose oracles are
@@ -148,8 +149,11 @@ MIRROR_LINE = re.compile(r"^read: mirror at [0-9a-f]{12}, .*$", re.M)
 #: first `t` form-3 reads of `--log-key=<k>`, before the store answers it,
 #: appending `l % <the move's number>` to `p`, which the first move makes where
 #: `p` is absent: a write that lands between a reader's calls (T401's one
-#: snapshot, T217zh; T505's two reruns, T235e). Every other call is the
-#: contract stub's, in `store/`.
+#: snapshot, T217zh; T505's two reruns, T235e). With `"generation": true` the
+#: move keeps `n` and gives the store a new generation instead, the append
+#: made in the image at `n`: a new generation whose head lands on the same `n`
+#: (T217zh's `[generation-moved]`). Every other call is the contract stub's,
+#: in `store/`.
 DOOR_WRAPPER = r'''#!/usr/bin/env python3
 # THE DOOR'S WRAPPER (T217): counts and fails register calls, else the stub.
 import fcntl, json, os, sys
@@ -235,8 +239,9 @@ if fail.get("move") and form(args) == 3 and not os.path.exists(MOVED):
 EACH = fail.get("move_each")
 if EACH and form(args) == 3 and "--log-key=" + EACH["key"] in args:
     # The head moves at each of the first `times` reads of the key, one seq
-    # each, before the store answers the read (T401's one snapshot).
-    import hashlib, shutil
+    # each, before the store answers the read (T401's one snapshot); or,
+    # with `generation`, its generation moves and its `n` stays.
+    import hashlib, shutil, uuid
     done_path = os.path.join(HERE, "lanes-index.moves")
     try:
         with open(done_path, encoding="utf-8") as handle:
@@ -251,8 +256,12 @@ if EACH and form(args) == 3 and "--log-key=" + EACH["key"] in args:
         with open(state_path, encoding="utf-8") as handle:
             state = json.load(handle)
         old = os.path.join(HERE, "store", "lanes-index.register", str(state["n"]))
-        new = os.path.join(HERE, "store", "lanes-index.register", str(state["n"] + 1))
-        shutil.copytree(old, new)
+        if EACH.get("generation"):
+            new = old
+            state["generation"] = str(uuid.uuid4())
+        else:
+            new = os.path.join(HERE, "store", "lanes-index.register", str(state["n"] + 1))
+            shutil.copytree(old, new)
         target = os.path.join(new, EACH["path"])
         data = b""
         if os.path.exists(target):                    # absent at n: the move makes it
@@ -262,11 +271,12 @@ if EACH and form(args) == 3 and "--log-key=" + EACH["key"] in args:
         os.makedirs(os.path.dirname(target), exist_ok=True)
         with open(target, "wb") as handle:
             handle.write(data)
-        state["n"] += 1
-        state["journal"]["00000000-0000-4000-8000-%012d" % state["n"]] = {
-            "seq": state["n"], "lane": "repoA-2", "verb": "log", "args_sha256": "0" * 64,
-            "workstation": "Eagle", "generation": state["generation"],
-            "files": ["%s\t1\t%s" % (EACH["path"], hashlib.sha256(data).hexdigest())]}
+        if not EACH.get("generation"):
+            state["n"] += 1
+            state["journal"]["00000000-0000-4000-8000-%012d" % state["n"]] = {
+                "seq": state["n"], "lane": "repoA-2", "verb": "log", "args_sha256": "0" * 64,
+                "workstation": "Eagle", "generation": state["generation"],
+                "files": ["%s\t1\t%s" % (EACH["path"], hashlib.sha256(data).hexdigest())]}
         with open(state_path, "w", encoding="utf-8") as handle:
             json.dump(state, handle)
 if fail.get("narrow") and form(args) == 1:
@@ -3586,9 +3596,10 @@ SNAPSHOT_LINE = (f"NOTED — lane repoA-2, session {UUID_A2}@Eagle, 2026-10-05T0
                  f"lane:repoA-2 — a write that moved the head under the read, move %d\n")
 
 
-@pytest.mark.parametrize("moves", [1, 3], ids=["one-move", "three-moves"])
+@pytest.mark.parametrize("moves, generation", [(1, False), (3, False), (1, True)],
+                         ids=["one-move", "three-moves", "generation-moved"])
 def test_register_grep_on_primary_answers_one_snapshot_and_69_after_three_moved_runs(
-        estate, moves):
+        estate, moves, generation):
     """ONE SNAPSHOT (T401's Q2: lane 3's ruling, #165 6851977580, taking lane
     5's detect-and-retry, #165 6851740524; tasks:859 at `94fab177`). On
     primary `register-grep -E <ERE> -- lanes/log` takes `.head`'s `n=` and
@@ -3606,59 +3617,92 @@ def test_register_grep_on_primary_answers_one_snapshot_and_69_after_three_moved_
     line among it, and nothing of the dropped run; `repoX+1` is read twice,
     once a run. `[three-moves]`: every run's head moves, so it ends 69 with
     nothing on stdout; `repoX+1` is read three times, and never a fourth.
-    FAILS UNTIL lane 4's T401 round on lane 3's Q2 ruling, which was not
-    bundled when this case was written. On lane 4's `6318d5e5` (#165
-    6851877746), which reads once, `[one-move]` fails on stdout, its answer
-    straddling `n` and `n + 1`, so `repoA-2`'s moved line is missing, and
-    `[three-moves]` on its exit, 0 with lines, not 69 (T217zh)."""
+    `[generation-moved]`: the one move gives the store a new generation and
+    keeps `n`, appending the line in the image at `n` (a new generation whose
+    head lands on the same `n`). The read finds `.head`'s generation not the
+    store's, so form 3 rewrites the whole family at `n` under the new one
+    (contract 3.6). Only the generation half of the pair tells the runs
+    apart, so a T401 that compares `n` alone answers the first run, without
+    the moved line, and fails on stdout. The verb answers once, exit 0, with
+    what `git grep` prints over the store's tree at `n` after the move;
+    `repoX+1` is read twice; the head keeps `n` under a new generation (lane
+    2's RV23 NIT 3).
+    It passes from lane 4's T401 round on lane 3's Q2 ruling, `8d72e579`
+    (line R's merge90 and later), and fails before it. On lane 4's
+    `6318d5e5` (#165 6851877746), which reads once, `[one-move]` fails on
+    stdout, its answer straddling `n` and `n + 1`, so `repoA-2`'s moved line
+    is missing, `[generation-moved]` on stdout as well, and `[three-moves]`
+    on its exit, 0 with lines, not 69 (T217zh)."""
     seed_logs(estate, {SNAPSHOT_LOG: SNAPSHOT_TEXT})
     primary = Primary(estate)
-    first = primary.door.head()[0]
+    first, first_generation = primary.door.head()
     primary.door.fail(move_each={"key": SNAPSHOT_LANE, "times": moves, "path": SNAPSHOT_MOVED,
-                                 "line": SNAPSHOT_LINE})
+                                 "line": SNAPSHOT_LINE, "generation": generation})
     ere = "^(STARTED|NOTED) "
     result = edit_bytes(primary, "register-grep", "-E", ere, "--", "lanes/log")
     reads = [call for call in primary.door.calls()
              if call["form"] == 3 and f"--log-key={SNAPSHOT_LANE}" in call["argv"]]
-    head = primary.door.head()[0]
-    where = (moves, "exit", result.returncode, "head", first, "->", head, "reads of",
+    head, head_generation = primary.door.head()
+    where = (moves, generation, "exit", result.returncode, "head", first, first_generation, "->",
+             head, head_generation, "reads of",
              SNAPSHOT_LANE, len(reads), result.stdout.decode("utf-8", "replace"),
              result.stderr.decode("utf-8", "replace")[-1500:])
     if moves == 1:
         expect = git_grep_at_defaults(estate.root / "snapshot-oracle",
-                                      store_images(primary.door, first + 1), ere)
+                                      store_images(primary.door, first if generation else first + 1),
+                                      ere)
         moved = (SNAPSHOT_LINE % 1).rstrip("\n").encode("utf-8")
         assert moved in expect and f"{SNAPSHOT_LOG}:".encode() in expect, \
             ("the oracle lacks the moved line or the log read by --log-key=", expect)
         assert (result.returncode, result.stdout) == (0, expect), \
             where + ("expected, git grep at n + 1:", expect.decode("utf-8", "replace"))
         assert len(reads) == 2, where
-        assert head == first + 1, where
+        if generation:
+            assert head == first and head_generation != first_generation, where
+        else:
+            assert head == first + 1, where
     else:
         assert (result.returncode, result.stdout) == (69, b""), where
         assert len(reads) == 3, where
         assert head == first + 3, where
 
 
-#: QUOTED NAMES (T401's Q3): three logs whose names are outside
+#: QUOTED NAMES (T401's Q3): six logs whose names are outside
 #: `check_lane_name`'s class, so that each is read through form 3's
 #: `--log-key=` (O18), and each holds one kind of byte that `git grep` quotes
-#: under git's defaults: `"`, `\`, and `é`, the two bytes 0xc3 0xa9.
+#: under git's defaults: `"`, `\`, `é` (the two bytes 0xc3 0xa9), and three
+#: control bytes (tasks:860 at `8e8d1b49`): 0x07, one of the seven git writes
+#: as a letter (`\a`), and 0x01 and 0x7f, which it writes in octal. No name
+#: holds a tab, a newline, 0x0b, 0x0c or 0x0d: the contract stub keeps `.head`
+#: and `.paths` as tab-separated lines and reads `.head` by `splitlines()`,
+#: so those bytes would break the stub, not the verb (lane 2's RV23 NIT 4).
 QUOTED_LOGS = {"lanes/log/say\"hi-1.md": "say\"hi-1",
                "lanes/log/back\\slash-1.md": "back\\slash-1",
-               "lanes/log/café-1.md": "café-1"}
+               "lanes/log/café-1.md": "café-1",
+               "lanes/log/bel\x07-1.md": "bel\x07-1",
+               "lanes/log/ctl\x01-1.md": "ctl\x01-1",
+               "lanes/log/del\x7f-1.md": "del\x7f-1"}
 #: How `git grep` prints each under git's defaults: the path in double quotes,
-#: `"` and `\` escaped by a backslash, and each byte from 0x80 up as a
-#: backslash and three octal digits, after the unquoted `origin/main:`.
+#: `"` and `\` escaped by a backslash, 0x07 as `\a`, and every other control
+#: byte and each byte from 0x80 up as a backslash and three octal digits,
+#: after the unquoted `origin/main:`.
 QUOTED_AS = (b'origin/main:"lanes/log/say\\"hi-1.md":STARTED ',
              b'origin/main:"lanes/log/back\\\\slash-1.md":STARTED ',
-             b'origin/main:"lanes/log/caf\\303\\251-1.md":STARTED ')
+             b'origin/main:"lanes/log/caf\\303\\251-1.md":STARTED ',
+             b'origin/main:"lanes/log/bel\\a-1.md":STARTED ',
+             b'origin/main:"lanes/log/ctl\\001-1.md":STARTED ',
+             b'origin/main:"lanes/log/del\\177-1.md":STARTED ')
 #: THE WORKSTATION'S OWN GIT CONFIGURATION, which primary's answer does not
 #: follow: `core.quotePath` off, under which `git grep` prints 0xc3 0xa9 as
-#: they are, and an attributes file at git's default place,
-#: `$XDG_CONFIG_HOME/git/attributes`, marking every file binary, under which a
-#: grep without `--text` prints `Binary file image matches` for each image.
-WORKSTATION_GIT = {"git/config": "[core]\n\tquotePath = false\n",
+#: they are; `grep.lineNumber` on, under which it puts each line's number
+#: before the line; `color.grep = always`, under which it colours its output
+#: even into a file (`color.ui = always` sets the same for `git grep`, and
+#: would colour every other git command of the run too); and an attributes
+#: file at git's default place, `$XDG_CONFIG_HOME/git/attributes`, marking
+#: every file binary, under which a grep without `--text` prints `Binary file
+#: image matches` for each image.
+WORKSTATION_GIT = {"git/config": ("[core]\n\tquotePath = false\n[grep]\n\tlineNumber = true\n"
+                                  "[color]\n\tgrep = always\n"),
                    "git/attributes": "* binary\n"}
 
 
@@ -3667,8 +3711,10 @@ def test_register_grep_on_primary_prints_each_path_as_git_grep_does_under_gits_d
     RC-W23 N2, #165 6851877746; tasks:860 at `94fab177`). Without `-h`,
     primary prints each path as `git grep` prints it under git's defaults,
     whatever the workstation's git configuration says: a path holding `"`,
-    `\\` or a byte from 0x80 up goes in double quotes, with octal escapes,
-    after the unquoted `origin/$LANES_BRANCH:`; and each image is grepped as
+    `\\`, a control byte or a byte from 0x80 up goes in double quotes, with
+    `\\a` and the six other letter escapes for those seven control bytes
+    and octal escapes for the rest, after the unquoted
+    `origin/$LANES_BRANCH:`; and each image is grepped as
     text (`--text`), so no attributes file outside the register makes a
     `Binary file` line of it. So answer 14's "byte for byte what files mode
     prints" holds (#165 6746507353).
@@ -3677,14 +3723,14 @@ def test_register_grep_on_primary_prints_each_path_as_git_grep_does_under_gits_d
     `git grep`'s own over the store's tree, under git's defaults
     (`git_grep_at_defaults`), first held to `QUOTED_AS`, so the case's
     premise is git's behaviour and never a guess. Then the workstation's git
-    configuration turns `core.quotePath` off and marks every file binary in
-    its default attributes file, and primary's answer must still be those
-    bytes, exit 0.
-    FAILS UNTIL lane 4's T401 round on lane 3's Q3 ruling, which was not
-    bundled when this case was written. On lane 4's `6318d5e5` (#165
-    6851877746) it fails on stdout: each path after the prefix as it is,
-    unquoted, and each image grepped without `--text`, so a `Binary file
-    image matches` line stands for its lines (T217zi)."""
+    configuration turns `core.quotePath` off, numbers and colours `git
+    grep`'s lines, and marks every file binary in its default attributes
+    file, and primary's answer must still be those bytes, exit 0.
+    It passes from lane 4's T401 round on lane 3's Q3 ruling, `8d72e579`
+    (line R's merge90 and later), and fails before it. On lane 4's
+    `6318d5e5` (#165 6851877746) it fails on stdout: each path after the
+    prefix as it is, unquoted, and each image grepped without `--text`, so a
+    `Binary file image matches` line stands for its lines (T217zi)."""
     seed_logs(estate, {path: (f"STARTED — lane {lane}, session {UUID_A1}@Eagle, "
                               f"2026-10-05T00:40:00Z, lane:{lane} → home opensoft/repoQ; "
                               f"dir /work/repoQ\n")
