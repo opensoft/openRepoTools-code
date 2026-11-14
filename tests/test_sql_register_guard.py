@@ -4693,11 +4693,29 @@ def test_the_guard_answer_time_is_recorded_beside_todays_direct_guard(estate):
 def test_status_prints_the_services_lines_and_its_failure_stamp(estate):
     """A5 (R44): `lanes-index status` prints the service's lines and its
     failure stamp, as T512 writes them in `cmd_status`; with no service in
-    files mode it still prints the service's line, saying none runs."""
+    files mode it still prints the service's line, saying none runs.
+
+    THE STAMP (lane 5, #165 6879639005): on `mode=primary`, with the
+    service's directory made by a service started and stopped, and a
+    failure stamp written in it, `register.failed`, in its form, `<UTC>
+    <cause>` (`lanes-index:7592-7600` at line R's merge106), `status`
+    prints its `service:` line and `service stamp: <cause> at <UTC> (`
+    (`:8904`), the stamp still holding back starts."""
     est = estate()
     done = _index(est, "status")
     assert [line for line in done.stdout.splitlines() if line.startswith("service")], \
         f"status printed no service line: {done.stdout}{done.stderr}"
+    est = estate(mode="primary")
+    _Service(est).stop()
+    utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    (_run_dir(est) / "register.failed").write_text(f"{utc} no-psql\n", encoding="ascii")
+    done = _index(est, "status")
+    lines = done.stdout.splitlines()
+    assert [line for line in lines if line.startswith("service: ")], \
+        f"status printed no service line on mode=primary: {done.stdout}{done.stderr}"
+    assert [line for line in lines
+            if line.startswith(f"service stamp: no-psql at {utc} (it holds back every start")], \
+        f"status printed no service stamp line for the stamp {utc} no-psql: {done.stdout}{done.stderr}"
 
 
 def test_the_socket_directory_is_a_0700_directory_of_this_uid_and_never_a_symlink(estate):
