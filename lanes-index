@@ -9065,18 +9065,38 @@ def register_serve_state(paths: dict) -> str:
             f"{_register_shown(owner.get('started', '?'), 40)}, at {paths['sock']}")
 
 
+#: THE OWNER FILE'S KNOWN KEYS, each on one line at most (OP-19 (b), rule 3).
+_REGISTER_SERVE_OWNER_KEYS = ("pid", "started", "install", "pidns", "boot")
+
+#: `install=`'s one form (OP-19 (b), rule 4): three runs of ASCII digits, one
+#: space between each, and nothing else.
+_REGISTER_SERVE_INSTALL_RE = re.compile(r"[0-9]+ [0-9]+ [0-9]+")
+
+
 def register_serve_owner_read(paths: dict) -> dict | None:
-    """`register.owner`'s `key=value` lines, or None where it cannot be
-    read."""
+    """`register.owner`'s `key=value` lines (socket API 2.4, draft 13), or
+    None where it cannot be read or used: absent, unreadable, or not UTF-8
+    (OP-17 (b)); and, by OP-19 (b) (lane 3's ruling #165 6880543448, details
+    settled by lane 5 for draft 14), longer than 4,096 bytes, read as at
+    most 4,097, so that what is read is the whole file; empty, or with a
+    last byte that is not `\\n`; or with one of the known keys on two lines.
+    Lines are split as `str.splitlines()` splits them, a line's key is the
+    text before its first `=`, a line with no `=` is passed over, and so is
+    an unknown key, however often it comes."""
     try:
         with open(paths["owner"], "rb") as handle:
-            text = handle.read(4096).decode("utf-8")
+            data = handle.read(4097)
+        text = data.decode("utf-8")
     except (OSError, UnicodeDecodeError):
+        return None
+    if len(data) > 4096 or not data.endswith(b"\n"):
         return None
     out = {}
     for line in text.splitlines():
         key, sep, value = line.partition("=")
         if sep:
+            if key in out and key in _REGISTER_SERVE_OWNER_KEYS:
+                return None
             out[key] = value
     return out
 
@@ -9233,9 +9253,16 @@ def register_serve_ask(data: bytes, deadline: float) -> tuple:
         # owner file that is absent, cannot be read, whose first 4,096 bytes
         # are not UTF-8, or that has no `install=` line, or no `pidns=` or
         # `boot=` line where this client has its own, is unavailable: the
-        # client reads directly and starts none.
+        # client reads directly and starts none. OP-19 (b) (lane 3's ruling
+        # #165 6880543448, details settled by lane 5 for draft 14; socket API
+        # 2.4, draft 13) adds, with the same outcome, a file that
+        # `register_serve_owner_read` refuses, longer than 4,096 bytes, not
+        # ending in `\n`, or with a known key twice; and an `install=` that is
+        # not three runs of ASCII digits with one space between, such as the
+        # empty value a service writes where it cannot `stat` its own file.
         owner = register_serve_owner_read(paths)
-        if owner is None or "install" not in owner:
+        if (owner is None or "install" not in owner
+                or not _REGISTER_SERVE_INSTALL_RE.fullmatch(owner["install"])):
             return "unavailable", "its owner file cannot be read, or names no install", False
         host = register_serve_host()
         for key, what in (("pidns", "pid namespace"), ("boot", "boot")):
