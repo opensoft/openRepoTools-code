@@ -98,6 +98,108 @@ from test_sql_register_order import (ARROW, BURST, CLIENT, DOT, EM, LA, LB, LC, 
                                      Estate, Writer, claim, estates, hold_point, kind_line, loggers, run_git,
                                      session_of, tool_calls)
 
+#: THE LANDING GATE'S TABLE (T280; its reader, `tests/sql_register_gate.py`,
+#: says how a table is read), TEMPORARY: T281 removes it in the last set.
+#: Where the gate is active, each id is skipped until every task its row
+#: names has landed, and the skip names them; an id's own row, `name[param]`,
+#: replaces its function's. Each row holds the fails-until clauses of the task
+#: that owns the test (T222, T244, T245, T246, T247 or T251), each L-label read
+#: as the task that covers it, as lane 2's gate tables plan (GP-24, version 2)
+#: gives them, with lane 3's rulings on T245's texts for 3 and T247's
+#: record-less text. No row is `"*"`, since the six tasks' waits share no
+#: task. Each `tasks:<n>` is tasks.md's line at `204145ae`, the reader's
+#: `SPEC_COMMIT`.
+SQL_REGISTER_GATE_TABLE = {
+    "test_a_call_in_doubt_that_committed_runs_its_tail_once_from_the_kept_child": ("T412", "T417", "T418"),  # T245; tasks:2363
+    "test_a_callers_rerun_after_a_failed_reconnect_reuses_the_write_id": ("T107", "T108", "T114", "T412", "T417"),  # T244; tasks:2350
+    "test_a_claim_from_another_host_or_container_counts_as_live_for_120_s": ("T412",),  # T247; tasks:2377
+    "test_a_claim_with_no_record_beside_it_is_waited_for": ("T412",),  # T247; tasks:2377
+    "test_a_commit_lost_before_it_landed_is_retried_cleanly_and_ends_with_one_entry": ("T107", "T108", "T114", "T412", "T417"),  # T244; tasks:2350
+    "test_a_commit_past_its_not_after_raises_lr008_and_one_within_it_commits": ("T107", "T108", "T114", "T417"),  # T246; tasks:2371
+    "test_a_commit_that_landed_before_the_connection_was_lost_ends_with_one_entry_and_exit_0": ("T107", "T108", "T114", "T412", "T417"),  # T244; tasks:2350
+    "test_a_committed_write_leaves_no_pending_record": ("T412", "T417", "T418"),  # T245; tasks:2363
+    "test_a_generation_change_after_the_snapshot_read_gives_lr007_generation": ("T107", "T108", "T413", "T414", "T415", "T417"),  # T251; tasks:2390
+    "test_a_lanes_write_id_run_waits_for_a_live_owner": ("T412",),  # T247; tasks:2377
+    "test_a_live_pending_record_is_waited_for_not_shared": ("T412",),  # T247; tasks:2377
+    "test_a_lookup_held_at_the_head_row_ends_55p03_inside_its_statement_timeout": ("T107", "T108", "T114", "T227", "T228"),  # T222; tasks:2135
+    "test_a_lookup_made_too_early_exits_3_and_keeps_the_record": ("T107", "T108", "T114", "T417"),  # T246; tasks:2371
+    "test_a_lookup_never_mistakes_a_rivals_row_for_the_lost_write": ("T107", "T108", "T114", "T412", "T417"),  # T244; tasks:2350
+    "test_a_lookup_refused_for_another_generation_exits_2_and_keeps_the_record": ("T107", "T108", "T114", "T417"),  # T246; tasks:2371
+    "test_a_lookup_refused_for_another_write_exits_2_and_removes_the_record": ("T107", "T108", "T114", "T417"),  # T246; tasks:2371
+    "test_a_lookup_try_without_an_answer_is_made_again_inside_the_window": ("T107", "T108", "T114", "T417"),  # T246; tasks:2371
+    "test_a_pending_record_is_owned_through_numbered_claim_files_and_two_reruns_never_both_take_it": ("T412", "T417", "T418"),  # T245; tasks:2363
+    "test_a_plain_rerun_reuses_the_pending_write_id_once_and_says_so": ("T412", "T417", "T418"),  # T245; tasks:2363
+    "test_a_record_of_another_generation_is_refused_2_until_lanes_write_id_new": ("T412",),  # T247; tasks:2377
+    "test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_none_of_the_tail": ("T412", "T417", "T418"),  # T245; tasks:2363
+    "test_a_replay_of_request_handoff_types_into_no_pane": ("T412", "T417", "T418"),  # T245; tasks:2363
+    "test_a_replay_that_stops_or_differs_runs_no_tail_and_warns": ("T412", "T417", "T418"),  # T245; tasks:2363
+    "test_a_request_handoff_that_runs_none_of_its_tail_exits_2_and_writes_nothing": ("T107", "T108", "T114", "T412", "T417"),  # T244; tasks:2350
+    "test_a_rerun_after_a_3_replays_the_verbs_tail_once": ("T412", "T417", "T418"),  # T245; tasks:2363
+    "test_a_rerun_that_finds_its_write_committed_runs_the_verbs_after_commit_tail": ("T412", "T417", "T418"),  # T245; tasks:2363
+    "test_a_rerun_that_finds_tail_sent_runs_no_tail_and_writes_the_done_mark": ("T412", "T417", "T418"),  # T245; tasks:2363
+    "test_a_rerun_with_other_arguments_does_not_take_the_pending_id": ("T412", "T417", "T418"),  # T245; tasks:2363
+    "test_a_retry_with_the_old_connection_still_open_writes_no_second_row": ("T107", "T108", "T114", "T412", "T417"),  # T244; tasks:2350
+    "test_a_reused_pid_in_a_pending_record_reads_as_dead": ("T412",),  # T247; tasks:2377
+    "test_a_run_killed_after_its_call_line_or_mid_call_is_taken_over_in_doubt_and_waits_past_not_after": ("T412", "T417", "T418"),  # T245; tasks:2363
+    "test_a_run_with_no_record_runs_no_tail_and_names_it": ("T412", "T415", "T417", "T418"),  # T245; tasks:2363
+    "test_a_same_generation_id_after_a_restore_form_cutover_gets_lr006": ("T107", "T108", "T114", "T227", "T228"),  # T222; tasks:2135
+    "test_a_sent_record_whose_child_never_read_committed_replays_and_an_owed_mark_runs_no_tail": ("T412", "T417", "T418"),  # T245; tasks:2363
+    "test_a_tail_record_a_takeover_cannot_use_is_refused_2_and_kept": ("T412", "T417", "T418"),  # T245; tasks:2363
+    "test_a_write_id_already_journaled_for_the_same_arguments_exits_0_at_the_snapshot": ("T412", "T415"),  # T247; tasks:2377
+    "test_a_write_id_of_other_arguments_verb_or_generation_is_refused_2_at_the_snapshot": ("T412", "T415"),  # T247; tasks:2377
+    "test_a_write_in_doubt_at_the_deadline_makes_one_lookup": ("T107", "T108", "T114", "T417"),  # T246; tasks:2371
+    "test_a_write_killed_by_an_outer_timer_is_retried_under_its_own_id": ("T412", "T417", "T418"),  # T245; tasks:2363
+    "test_a_write_of_another_generation_at_files_gets_lr007_not_lr002_or_lr001": ("T107", "T108", "T114", "T227", "T228"),  # T222; tasks:2135
+    "test_a_write_whose_every_call_ended_lr008_exits_75_with_no_lookup": ("T107", "T108", "T114", "T417"),  # T246; tasks:2371
+    "test_an_attempt_committed_after_the_commits_snapshot_gives_40001_without_a_wait": ("T107", "T108", "T413", "T414", "T415", "T417"),  # T251; tasks:2390
+    "test_an_attempt_committed_after_the_snapshot_read_gives_lr006": ("T107", "T108", "T413", "T414", "T415", "T417"),  # T251; tasks:2390
+    "test_an_attempt_committed_while_the_commit_waits_gives_40001_then_exit_0": ("T107", "T108", "T413", "T414", "T415", "T417"),  # T251; tasks:2390
+    "test_an_attempt_holding_past_lock_timeout_gives_55p03_then_exit_0": ("T107", "T108", "T413", "T414", "T415", "T417"),  # T251; tasks:2390
+    "test_an_attempt_that_never_commits_leaves_the_write_to_the_retry": ("T107", "T108", "T413", "T414", "T415", "T417"),  # T251; tasks:2390
+    "test_an_expired_pending_record_is_not_reused": ("T412",),  # T247; tasks:2377
+    "test_an_id_in_the_journal_for_another_lane_gets_lr007": ("T107", "T108", "T114", "T227", "T228"),  # T222; tasks:2135
+    "test_an_in_doubt_claim_never_leaves_two_claimed_lines_or_a_false_69": ("T107", "T108", "T114", "T412", "T417"),  # T244; tasks:2350
+    "test_an_in_doubt_write_whose_next_attempt_is_refused_makes_its_lookup_before_it_exits": ("T107", "T108", "T114", "T412", "T417"),  # T244; tasks:2350
+    "test_an_old_generation_id_after_a_restore_form_cutover_gets_lr007_not_lr006": ("T107", "T108", "T114", "T227", "T228"),  # T222; tasks:2135
+    "test_an_orphan_that_takes_the_lock_past_its_not_after_gets_lr008_and_the_lookup_finds_it_absent": ("T107", "T108", "T114", "T227", "T228"),  # T222; tasks:2135
+    "test_an_orphaned_commit_call_released_after_its_not_after_writes_nothing": ("T107", "T108", "T114", "T417"),  # T246; tasks:2371
+    "test_an_outer_timer_expiry_is_in_doubt_like_exit_2": ("T107", "T108", "T114", "T412", "T417"),  # T244; tasks:2350
+    "test_another_writes_entry_committed_after_the_snapshot_read_gives_lr007_another_write": ("T107", "T108", "T413", "T414", "T415", "T417"),  # T251; tasks:2390
+    "test_find_write_gives_lr011_before_lr007": ("T107", "T108", "T114", "T227", "T228"),  # T222; tasks:2135
+    "test_find_write_refuses_another_generation_lr007": ("T107", "T108", "T114", "T227", "T228"),  # T222; tasks:2135
+    "test_find_write_refuses_another_writes_entry_lr007": ("T107", "T108", "T114", "T227", "T228"),  # T222; tasks:2135
+    "test_find_write_refuses_lr011_at_once": ("T107", "T108", "T114", "T417"),  # T246; tasks:2371
+    "test_find_write_returns_this_writes_seq_or_null": ("T107", "T108", "T114", "T227", "T228"),  # T222; tasks:2135
+    "test_find_write_waits_on_the_server_clock_holding_no_lock": ("T107", "T108", "T114", "T227", "T228"),  # T222; tasks:2135
+    "test_lanes_write_id_of_another_write_is_refused_2_and_the_pending_record_kept": ("T412", "T417", "T418"),  # T245; tasks:2363
+    "test_lanes_write_id_of_the_records_own_write_takes_it_over_past_its_age": ("T412", "T417", "T418"),  # T245; tasks:2363
+    "test_liveness_is_the_highest_claims_never_the_records_pid": ("T412",),  # T247; tasks:2377
+    "test_lr006_comes_before_lr001": ("T107", "T108", "T413", "T414", "T415", "T417"),  # T251; tasks:2390
+    "test_lr008_alone_never_gives_3_or_69": ("T107", "T108", "T114", "T417"),  # T246; tasks:2371
+    "test_lr008_at_the_deadline_leaves_the_exit_to_find_write": ("T107", "T108", "T114", "T417"),  # T246; tasks:2371
+    "test_lr008_inside_the_deadline_is_a_lost_turn_and_the_write_exits_0": ("T107", "T108", "T114", "T417"),  # T246; tasks:2371
+    "test_no_interleaving_of_two_attempts_of_one_write_reaches_23505": ("T107", "T108", "T413", "T414", "T415", "T417"),  # T251; tasks:2390
+    "test_status_lists_and_resolves_pending_records": ("T412", "T417", "T418"),  # T245; tasks:2363
+    "test_the_after_commit_tail_of_log_runs_once_when_a_rerun_finds_the_write": ("T412", "T417", "T418"),  # T245; tasks:2363
+    "test_the_after_commit_tail_of_release_runs_once_when_a_rerun_finds_the_write": ("T412", "T415", "T417", "T418"),  # T245; tasks:2363
+    "test_the_after_commit_tail_of_request_handoff_types_once_in_the_kept_child_and_polls": ("T412", "T417", "T418"),  # T245; tasks:2363
+    "test_the_after_commit_tail_of_retire_rows_runs_once_when_a_rerun_finds_the_write": ("T412", "T417", "T418"),  # T245; tasks:2363
+    "test_the_after_commit_tail_of_start_record_runs_once_when_a_rerun_finds_the_write": ("T412", "T417", "T418", "T427"),  # T245; tasks:2363
+    "test_the_deadlines_lookup_waits_past_the_largest_not_after": ("T107", "T108", "T114", "T417"),  # T246; tasks:2371
+    "test_the_no_lookup_control_gives_lr001_where_the_lookup_gives_lr006": ("T107", "T108", "T413", "T414", "T415", "T417"),  # T251; tasks:2390
+    "test_the_no_lookup_control_reaches_23505_so_the_oracle_can_fail": ("T107", "T108", "T413", "T414", "T415", "T417"),  # T251; tasks:2390
+    "test_the_pending_digest_covers_the_session_and_equals_args_sha256": ("T412",),  # T247; tasks:2377
+    "test_the_pending_records_call_lines_are_written_before_the_send_and_dropped_only_for_a_call_that_did_not_commit": ("T412", "T417", "T418"),  # T245; tasks:2363
+    "test_the_switchs_own_generation_at_files_still_gets_lr002": ("T107", "T108", "T114", "T227", "T228"),  # T222; tasks:2135
+    "test_the_texts_for_3_say_may_not_be_written_and_relay_the_writers_rerun": ("T412", "T417", "T418", "T433", "T434"),  # T245; tasks:2363
+    "test_two_matching_calls_of_one_change_set_leave_the_replays_tail_owed": ("T412", "T417", "T418"),  # T245; tasks:2363
+    "test_with_the_kept_child_gone_a_replay_runs_the_tail_once": ("T412", "T417", "T418"),  # T245; tasks:2363
+    "test_a_claim_with_no_record_beside_it_is_waited_for[live-at-deadline]": ("T412", "T417"),  # T247; tasks:2377
+    "test_a_claim_with_no_record_beside_it_is_waited_for[write-id-live-at-deadline]": ("T412", "T417"),  # T247; tasks:2377
+    "test_a_replay_of_rename_lane_or_request_handoff_that_stops_or_differs_runs_none_of_the_tail[rename-lane-stops]": ("T412", "T417", "T418", "T422"),  # T245; tasks:2363
+    "test_the_pending_records_call_lines_are_written_before_the_send_and_dropped_only_for_a_call_that_did_not_commit[refusal]": ("T412", "T415", "T417", "T418"),  # T245; tasks:2363
+}
+
 REGISTER = "lanes_register"
 WRITER_LOGIN = "lanes_w_fx"
 CONNECT_TO = "lanes_register_writer, lanes_register_reader, lanes_indexer"
