@@ -3312,6 +3312,56 @@ END {
     printf "OPEN%c%s%c%s%c%s%c%s%c%d\n", 31, L[k], 31, P[k], 31, rr, 31, U[k], 31, O[k]
   }
 }'
+# A COMMIT SUBJECT'S TEXT, CUT AT 72 BYTES WHERE A UTF-8 CHARACTER ENDS
+# (T425; lane 3, #165 6870386695, on lane 5's #165 6870369209). `append-line`
+# names its text in the subject, and `${text:0:72}` cut it by bytes under a
+# POSIX locale, where the cut could end inside a character and `register
+# commit` then refused the message as not UTF-8, and by characters under a
+# UTF-8 one, so the subject hung on the caller's locale. This prints the
+# longest prefix of at most 72 bytes of its argument that ends where a UTF-8
+# character ends, counted in bytes under `LC_ALL=C`, so any locale and bash 3.2
+# give the same bytes and both modes commit the same subject. Its own cut, not
+# another task's (lane 3: S007-52 gains no edge to S007-37). The body is a
+# subshell, so the caller's locale is untouched once it returns, by
+# construction rather than by how a shell restores a `local LC_ALL`.
+#
+# THE LAST CHARACTER of the first 72 bytes starts at the last byte that is not
+# a continuation byte (10xxxxxx), looked for at most three bytes back. Its lead
+# says how many bytes it takes: 110xxxxx two, 1110xxxx three, 11110xxx four,
+# any other byte one. Cut short, it is dropped whole; whole, it is kept, and
+# continuation bytes after it are dropped. Nothing loops, and at most three
+# bytes beyond the 72 go. TEXT THAT IS NOT UTF-8 is not mended: a stray
+# continuation byte or a truncated lead in the last four bytes goes by the same
+# rule, four continuation bytes in a row are kept as they are, and a fault
+# further in stays, so `register commit` refuses it, as it refuses the line.
+# Both callers refuse a newline first, so `$( … )` takes none from the end.
+utf8_prefix_72() (   # <text> ; prints it cut at 72 bytes where a UTF-8 character ends
+  LC_ALL=C
+  u8p_cut="${1-}"; u8p_cut="${u8p_cut:0:72}"; u8p_t="$u8p_cut"; u8p_k=0
+  while [ "$u8p_k" -lt 3 ]; do
+    case "$u8p_t" in
+      *[$'\200'-$'\277']) u8p_t="${u8p_t%?}"; u8p_k=$((u8p_k + 1)) ;;
+      *) break ;;
+    esac
+  done
+  # `u8p_t` ends with the last character's lead, which has `u8p_k` continuation
+  # bytes after it in the cut; `u8p_n` is how many bytes that lead takes, and
+  # 0 where there is no lead to judge, so the cut is kept as it is.
+  case "$u8p_t" in
+    ''|*[$'\200'-$'\277']) u8p_n=0 ;;
+    *[$'\300'-$'\337']) u8p_n=2 ;;
+    *[$'\340'-$'\357']) u8p_n=3 ;;
+    *[$'\360'-$'\367']) u8p_n=4 ;;
+    *) u8p_n=1 ;;
+  esac
+  if [ "$u8p_n" -eq 0 ]; then
+    printf '%s' "$u8p_cut"
+  elif [ $((u8p_k + 1)) -lt "$u8p_n" ]; then
+    printf '%s' "${u8p_cut:0:$((${#u8p_t} - 1))}"
+  else
+    printf '%s' "${u8p_cut:0:$((${#u8p_t} - 1 + u8p_n))}"
+  fi
+)
 append_line_landing_expired_usage() {   # <what is wrong>
   die "usage: LANES_LANE=<writer> LANES_SESSION=<uuid> $SELF append-line --landing-expired <holder> --pr <n> --repo <owner/repo> --word '<quote>' --word-where '<where>' --word-utc <UTC>: $1. Nothing was written, and the lock was not taken." 2
 }
@@ -3479,7 +3529,7 @@ append_line_landing_expired() {   # <holder> --pr <n> --repo <r> --word <q> --wo
     die "append-line --landing-expired: the line it composed carries managed-owner vocabulary ('managed owner', 'managed binding', 'mode=managed' or 'managed:') in the word, its place, a lane's name, the workspace or a field copied from the LANDING, and only the managed ledger's own writer writes it into the register. Nothing was written." 2
   fi
   append_text_line "$le_line"
-  commit_publish "LANES(${lane_tag}@$WS): append line — ${le_line:0:72}"
+  commit_publish "LANES(${lane_tag}@$WS): append line — $(utf8_prefix_72 "$le_line")"
   # ---- AFTER THE SEAM (Y:5119): only then is the seq known, as `claim`'s
   # `register seq <n>` is (Q19(A)), and output here streams live. The seam
   # returns only on `committed <s>`, which sets `REGISTER_SEQ`; a return
@@ -29648,7 +29698,7 @@ Nothing was written." 2
     [ -n "$lane_tag" ] || lane_tag="${LANES_ROUTED:-}"
     acquire_lock; checkout_sync append-line "$lane_tag" write "$LANES_PATH"   # Amendment 23 S3
     append_text_line "$text"
-    msg="LANES(${lane_tag:-unknown}@$WS): append line — ${text:0:72}"
+    msg="LANES(${lane_tag:-unknown}@$WS): append line — $(utf8_prefix_72 "$text")"
     commit_publish "$msg"
     ;;
 
