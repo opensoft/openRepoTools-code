@@ -2105,7 +2105,7 @@ def receipt_rows(home: Path) -> list[list[str]]:
 
 
 @NEEDS_JQ
-def test_r16_a_release_s_package_places_check_1_s_list_beside_lanes_index_offline(tmp_path):
+def test_r16_a_release_s_package_places_check_1_s_list_beside_the_launcher_offline(tmp_path):
     """A STAMPED PACKAGE'S `--install` WRITES ITS RELEASE'S LIST (007 T346):
     `openRepoTools-1.3.0.sha256`, at 0644, in the directory it placed
     `lanes-index` in, one `sha256sum` line for every command it placed there
