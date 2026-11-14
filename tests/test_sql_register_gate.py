@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""THE LANDING GATE, T280: ITS TEN CASES (Brett's "Temporary landing gate
+"""THE LANDING GATE, T280: ITS ELEVEN CASES (Brett's "Temporary landing gate
 (Recommended)", 2026-11-13; FR-059). TEMPORARY: T281 removes this module with
 the gate, in the last set.
 
@@ -11,7 +11,8 @@ only in a GitHub Actions run whose workflow is not `verify` and whose ref is
 not a `verify/` branch, unless `SQL_REGISTER_GATE` is `on` or `off` (lane 3's
 rulings, 2026-11-13, and (b), 2026-11-14, opensoft/openRepoTools#165 comments
 6867533114 and 6870017590). Eight cases are T280's; the ninth is (b)'s; the
-tenth, a gated run with no marker directory, is lane 2's review RV26's.
+tenth, a gated run with no marker directory, is lane 2's review RV26's; the
+eleventh, a table key naming no test, is Codex's review of E `d58f3b82`.
 
 EACH CASE RUNS A CHILD PYTEST, since a table or a marker the gate cannot read
 ends the session that reads it. The child runs in a code root of the case's
@@ -152,10 +153,11 @@ class Run(NamedTuple):
     ids: Dict[str, Tuple[str, str]]
 
 
-def child(root: Path, *args: str, **env: str) -> Run:
+def child(root: Path, *args: str, where: str = "tests", **env: str) -> Run:
     """`python -m pytest -q -rs tests` in `root`, with `env` and nothing of the
     outer run's that the gate or the suite's switches read. `args`, such as a
-    `-k` selection, go before `tests`."""
+    `-k` selection, go before `tests`. `where`, in place of `tests`, names one
+    node id to collect alone."""
     environ = {key: value for key, value in os.environ.items()
                if not key.startswith(NOT_INHERITED)}
     environ["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -163,7 +165,7 @@ def child(root: Path, *args: str, **env: str) -> Run:
     junit = root.parent / "junit.xml"
     command = [sys.executable, "-m", "pytest", "-q", "-rs", "-p", "no:cacheprovider",
                f"--basetemp={root.parent / 'basetemp'}", f"--rootdir={root}",
-               f"--junitxml={junit}", *args, "tests"]
+               f"--junitxml={junit}", *args, where]
     proc = subprocess.run(command, cwd=str(root), env=environ, capture_output=True,
                           text=True, timeout=600, check=False)
     ids: Dict[str, Tuple[str, str]] = {}
@@ -252,6 +254,45 @@ def test_a_table_naming_an_id_that_is_no_007_task_fails_the_run(tmp_path):
     assert "4 deselected" in good_k.output, shown(good_k)
 
 
+def test_a_table_key_naming_no_test_of_its_module_fails_the_run(tmp_path):
+    """A table key that names no test of its module fails the run, exit 4,
+    before any test runs, gated or not: a misspelled function name,
+    `test_gate_probe_wiats`, and an id with parameters its function does not
+    have, `test_gate_probe_param[c]`. Either would otherwise match nothing,
+    and the test it meant would run ungated (Codex's review of E `d58f3b82`,
+    BLOCKING 1). The refusal names the module's table and each key. It holds
+    where `-k` deselects every id of the module. The keys are checked against
+    every id pytest's collection of the module holds, before any selection:
+    with a good table, a run that names one node id, a function or one
+    parametrized id, still accepts the rows of the ids it did not select, and
+    gates the id it did."""
+    bad = dict(TABLE)
+    bad["test_gate_probe_wiats"] = bad.pop("test_gate_probe_waits")
+    bad["test_gate_probe_param[c]"] = ("T416",)
+    run = child(estate(tmp_path / "typo", table=bad))
+    assert run.code == 4, f"a key naming no test must fail the run:\n{shown(run)}"
+    assert "ERROR: the landing gate (T280): SQL_REGISTER_GATE_TABLE in " in run.output, shown(run)
+    assert "test_gate_probe.py" in run.output, shown(run)
+    assert "'test_gate_probe_wiats' names no test of its module" in run.output, shown(run)
+    assert "'test_gate_probe_param[c]' names no test of its module" in run.output, shown(run)
+    assert "passed" not in run.output and not run.ids, f"a test ran:\n{shown(run)}"
+    deselected = child(estate(tmp_path / "typo-k", table=bad), "-k", "gate_free", **{SWITCH: "on"})
+    assert deselected.code == 4, (
+        f"a key naming no test must fail the run where -k deselects its module:\n{shown(deselected)}")
+    assert "'test_gate_probe_wiats' names no test of its module" in deselected.output, shown(deselected)
+    assert "passed" not in deselected.output and not deselected.ids, f"a test ran:\n{shown(deselected)}"
+    good = child(estate(tmp_path / "good"))
+    assert every_id_runs(good), f"the same root with a good table must run:\n{shown(good)}"
+    one = child(estate(tmp_path / "one", markers=("T205",)),
+                where="tests/test_gate_probe.py::test_gate_probe_runs", **{SWITCH: "on"})
+    assert one.code == 0 and one.ids == {"test_gate_probe_runs": ("passed", "")}, (
+        f"one node id must not refuse the rows of the ids it did not select:\n{shown(one)}")
+    param = child(estate(tmp_path / "param", markers=("T205",)),
+                  where="tests/test_gate_probe.py::test_gate_probe_param[a]", **{SWITCH: "on"})
+    assert param.code == 0 and param.ids == {"test_gate_probe_param[a]": waits("T415")}, (
+        f"one parametrized id must not refuse its sibling's row:\n{shown(param)}")
+
+
 def test_a_marker_naming_an_id_that_is_no_007_task_fails_the_run(tmp_path):
     """A marker directory holding `T999` (a number no task line has) and a
     `.gitkeep` (the placeholder git's lack of empty directories invites) fails
@@ -259,8 +300,12 @@ def test_a_marker_naming_an_id_that_is_no_007_task_fails_the_run(tmp_path):
     bad marker fails a local run too. So does a marker named for a 007 task
     that is a directory, `T415`, or a symlink, `T416`, here to T205's own
     marker file: a marker is a file, and not a symlink (lane 2's RV26,
-    NIT 4). The control holds only 007 tasks' markers, T236's among them (a
-    task line since lane 3's commit 17, `204145ae`), and every id runs."""
+    NIT 4). So does a marker that is not empty, `T415` here, since a marker
+    is one empty file; and a marker directory that is itself a symlink, here
+    to a directory of good markers, since the markers are read in the tree
+    (Codex's review of E `d58f3b82`, SHOULD 7). The control holds only 007
+    tasks' markers, T236's among them (a task line since lane 3's commit 17,
+    `204145ae`), and every id runs."""
     run = child(estate(tmp_path / "bad", markers=("T205", "T999", ".gitkeep")))
     assert run.code == 4, f"a marker naming no 007 task must fail the run:\n{shown(run)}"
     assert "ERROR: the landing gate (T280): " in run.output, shown(run)
@@ -275,6 +320,22 @@ def test_a_marker_naming_an_id_that_is_no_007_task_fails_the_run(tmp_path):
     assert shapes.code == 4, f"a marker that is a directory or a symlink must fail the run:\n{shown(shapes)}"
     assert f"{sql_register_gate.LANDED} holds T415, T416: a marker is a file named for one of 007's task ids" in shapes.output, shown(shapes)
     assert "passed" not in shapes.output and not shapes.ids, f"a test ran:\n{shown(shapes)}"
+    full = estate(tmp_path / "full", markers=("T205",))
+    (full / "tests" / sql_register_gate.LANDED / "T415").write_text("landed\n", encoding="utf-8")
+    nonempty = child(full)
+    assert nonempty.code == 4, f"a marker that is not empty must fail the run:\n{shown(nonempty)}"
+    assert f"{sql_register_gate.LANDED} holds T415: a marker is a file named for one of 007's task ids" in nonempty.output, shown(nonempty)
+    assert "passed" not in nonempty.output and not nonempty.ids, f"a test ran:\n{shown(nonempty)}"
+    linked = estate(tmp_path / "linked")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    for name in ("T205", "T415", "T416"):
+        (elsewhere / name).write_text("", encoding="utf-8")
+    (linked / "tests" / sql_register_gate.LANDED).symlink_to(elsewhere, target_is_directory=True)
+    rooted = child(linked, **{SWITCH: "on"})
+    assert rooted.code == 4, f"a marker directory that is a symlink must fail the run:\n{shown(rooted)}"
+    assert f"{sql_register_gate.LANDED} is a symlink" in rooted.output, shown(rooted)
+    assert "passed" not in rooted.output and not rooted.ids, f"a test ran:\n{shown(rooted)}"
     good = child(estate(tmp_path / "good", markers=("T205", "T236", "T415")))
     assert every_id_runs(good), f"markers of 007 tasks must not fail the run:\n{shown(good)}"
 
