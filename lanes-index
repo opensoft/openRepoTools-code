@@ -8840,29 +8840,25 @@ class RegisterService:
         image missing at its digest answers `unavailable`, and goes to the
         background fetch. The `list` gives each path with its digest at `n`,
         from this request's one transaction (draft 11;
-        `register_serve_list_line`)."""
+        `register_serve_list_line`).
+
+        EACH DISTINCT LINE PLANNED ONCE (lane 1's U5 gate, N8): the plan is
+        made before the answer is counted, and outside the request's timer,
+        so a repeated line, a `list` or `set` line or a log name, reuses the
+        plan its first line made, and a request of many repeated lines costs
+        one sort and one scan of the listing for each distinct line. Each
+        line is still answered, in order, and counted as it is built."""
         listing = snap["listing"]
-        plan, needed = [], {}
-        for kind, name in items:
-            if kind in ("list", "set"):
-                paths = sorted((path for path in listing if kind == "list" or path.startswith(name)),
-                               key=os.fsencode)
-                if not all(register_serve_name_ok(path) for path in paths):
+        plan, needed, planned = [], {}, {}
+        for item in items:
+            key = tuple(item)
+            entry = planned.get(key)
+            if entry is None:
+                entry = planned[key] = self.plan_line(key, listing, needed)
+                if entry is None:
                     register_serve_log(self.paths, "bad name")
                     return b"unavailable\n"
-                if kind == "set":
-                    needed.update({path: listing[path][0] for path in paths})
-                plan.append((kind, name, paths))
-                continue
-            found = ([name] if name in listing else []) if not name.startswith(LOG_PREFIX) else \
-                register_log_path_ci(listing, name[len(LOG_PREFIX):-len(".md")])
-            if len(found) > 1:
-                plan.append(("ambiguous", name, None))
-            elif not found:
-                plan.append(("absent", name, None))
-            else:
-                needed[found[0]] = listing[found[0]][0]
-                plan.append(("file", name, found[0]))
+            plan.append(entry)
         images, missing = self.bring(snap, held, needed, replay)
         if missing:
             with self.cond:
@@ -8901,6 +8897,29 @@ class RegisterService:
                 return b"unavailable\n"
             out += parts
         return b"".join(out)
+
+    @staticmethod
+    def plan_line(item: tuple, listing: dict, needed: dict):
+        """One request line's plan for `text`: (kind, name, value), with the
+        images it needs added to `needed`; or None where a `list` or `set`
+        line holds a path the lines cannot carry (`bad name`)."""
+        kind, name = item
+        if kind in ("list", "set"):
+            paths = sorted((path for path in listing if kind == "list" or path.startswith(name)),
+                           key=os.fsencode)
+            if not all(register_serve_name_ok(path) for path in paths):
+                return None
+            if kind == "set":
+                needed.update({path: listing[path][0] for path in paths})
+            return (kind, name, paths)
+        found = ([name] if name in listing else []) if not name.startswith(LOG_PREFIX) else \
+            register_log_path_ci(listing, name[len(LOG_PREFIX):-len(".md")])
+        if len(found) > 1:
+            return ("ambiguous", name, None)
+        if not found:
+            return ("absent", name, None)
+        needed[found[0]] = listing[found[0]][0]
+        return ("file", name, found[0])
 
     def bring(self, snap: dict, held: dict, needed: dict, replay: list) -> tuple:
         """THE IMAGES AT `n` (Y:4043-4050; socket API §5.1): each held one
