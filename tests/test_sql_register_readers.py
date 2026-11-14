@@ -3665,25 +3665,42 @@ def test_register_grep_on_primary_answers_one_snapshot_and_69_after_three_moved_
         assert head == first + 3, where
 
 
-#: QUOTED NAMES (T401's Q3): three logs whose names are outside
+#: QUOTED NAMES (T401's Q3): six logs whose names are outside
 #: `check_lane_name`'s class, so that each is read through form 3's
 #: `--log-key=` (O18), and each holds one kind of byte that `git grep` quotes
-#: under git's defaults: `"`, `\`, and `é`, the two bytes 0xc3 0xa9.
+#: under git's defaults: `"`, `\`, `é` (the two bytes 0xc3 0xa9), and three
+#: control bytes (tasks:860 at `8e8d1b49`): 0x07, one of the seven git writes
+#: as a letter (`\a`), and 0x01 and 0x7f, which it writes in octal. No name
+#: holds a tab, a newline, 0x0b, 0x0c or 0x0d: the contract stub keeps `.head`
+#: and `.paths` as tab-separated lines and reads `.head` by `splitlines()`,
+#: so those bytes would break the stub, not the verb (lane 2's RV23 NIT 4).
 QUOTED_LOGS = {"lanes/log/say\"hi-1.md": "say\"hi-1",
                "lanes/log/back\\slash-1.md": "back\\slash-1",
-               "lanes/log/café-1.md": "café-1"}
+               "lanes/log/café-1.md": "café-1",
+               "lanes/log/bel\x07-1.md": "bel\x07-1",
+               "lanes/log/ctl\x01-1.md": "ctl\x01-1",
+               "lanes/log/del\x7f-1.md": "del\x7f-1"}
 #: How `git grep` prints each under git's defaults: the path in double quotes,
-#: `"` and `\` escaped by a backslash, and each byte from 0x80 up as a
-#: backslash and three octal digits, after the unquoted `origin/main:`.
+#: `"` and `\` escaped by a backslash, 0x07 as `\a`, and every other control
+#: byte and each byte from 0x80 up as a backslash and three octal digits,
+#: after the unquoted `origin/main:`.
 QUOTED_AS = (b'origin/main:"lanes/log/say\\"hi-1.md":STARTED ',
              b'origin/main:"lanes/log/back\\\\slash-1.md":STARTED ',
-             b'origin/main:"lanes/log/caf\\303\\251-1.md":STARTED ')
+             b'origin/main:"lanes/log/caf\\303\\251-1.md":STARTED ',
+             b'origin/main:"lanes/log/bel\\a-1.md":STARTED ',
+             b'origin/main:"lanes/log/ctl\\001-1.md":STARTED ',
+             b'origin/main:"lanes/log/del\\177-1.md":STARTED ')
 #: THE WORKSTATION'S OWN GIT CONFIGURATION, which primary's answer does not
 #: follow: `core.quotePath` off, under which `git grep` prints 0xc3 0xa9 as
-#: they are, and an attributes file at git's default place,
-#: `$XDG_CONFIG_HOME/git/attributes`, marking every file binary, under which a
-#: grep without `--text` prints `Binary file image matches` for each image.
-WORKSTATION_GIT = {"git/config": "[core]\n\tquotePath = false\n",
+#: they are; `grep.lineNumber` on, under which it puts each line's number
+#: before the line; `color.grep = always`, under which it colours its output
+#: even into a file (`color.ui = always` sets the same for `git grep`, and
+#: would colour every other git command of the run too); and an attributes
+#: file at git's default place, `$XDG_CONFIG_HOME/git/attributes`, marking
+#: every file binary, under which a grep without `--text` prints `Binary file
+#: image matches` for each image.
+WORKSTATION_GIT = {"git/config": ("[core]\n\tquotePath = false\n[grep]\n\tlineNumber = true\n"
+                                  "[color]\n\tgrep = always\n"),
                    "git/attributes": "* binary\n"}
 
 
@@ -3692,8 +3709,10 @@ def test_register_grep_on_primary_prints_each_path_as_git_grep_does_under_gits_d
     RC-W23 N2, #165 6851877746; tasks:860 at `94fab177`). Without `-h`,
     primary prints each path as `git grep` prints it under git's defaults,
     whatever the workstation's git configuration says: a path holding `"`,
-    `\\` or a byte from 0x80 up goes in double quotes, with octal escapes,
-    after the unquoted `origin/$LANES_BRANCH:`; and each image is grepped as
+    `\\`, a control byte or a byte from 0x80 up goes in double quotes, with
+    `\\a` and the six other letter escapes for those seven control bytes
+    and octal escapes for the rest, after the unquoted
+    `origin/$LANES_BRANCH:`; and each image is grepped as
     text (`--text`), so no attributes file outside the register makes a
     `Binary file` line of it. So answer 14's "byte for byte what files mode
     prints" holds (#165 6746507353).
@@ -3702,9 +3721,9 @@ def test_register_grep_on_primary_prints_each_path_as_git_grep_does_under_gits_d
     `git grep`'s own over the store's tree, under git's defaults
     (`git_grep_at_defaults`), first held to `QUOTED_AS`, so the case's
     premise is git's behaviour and never a guess. Then the workstation's git
-    configuration turns `core.quotePath` off and marks every file binary in
-    its default attributes file, and primary's answer must still be those
-    bytes, exit 0.
+    configuration turns `core.quotePath` off, numbers and colours `git
+    grep`'s lines, and marks every file binary in its default attributes
+    file, and primary's answer must still be those bytes, exit 0.
     FAILS UNTIL lane 4's T401 round on lane 3's Q3 ruling, which was not
     bundled when this case was written. On lane 4's `6318d5e5` (#165
     6851877746) it fails on stdout: each path after the prefix as it is,
