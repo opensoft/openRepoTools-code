@@ -94,6 +94,31 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("git") is None,
     reason="the lane tooling is bash over git")]
 
+#: THE LANDING GATE'S TABLE (T280; `tests/sql_register_gate.py` reads it, and
+#: T281 removes it in the last set): the tasks each id of this module waits
+#: for, by T253's and T279's Orders (tasks.md at 204145ae), keyed by function.
+#: Lane 2's plan GP-24 wrote it (task sets 12b's rule 11); C1's fourth text and
+#: (b, U3) also wait for T415 and T504, as tasks:2408 names them.
+SQL_REGISTER_GATE_TABLE = {
+    "test_a_landed_between_the_forms_snapshot_and_commit_leaves_the_retry_nothing_to_release": ("T107", "T108", "T111", "T112", "T115", "T118", "T227", "T228", "T415", "T424", "T425"),  # T253; tasks:2408
+    "test_a_landing_expired_on_primary_frees_main_and_who_landing_until_a_rollback_to_files": ("T121", "T304", "T326", "T424", "T425"),  # T279; tasks:2564
+    "test_in_files_mode_the_landing_expired_form_exits_2_and_changes_nothing": ("T107", "T108", "T118", "T415", "T424", "T425", "T504"),  # T253; tasks:2408
+    "test_off_primary_rule6_awk_is_the_pin_and_the_flag_cannot_be_inherited": ("T107", "T108", "T118", "T415", "T424", "T425", "T504"),  # T253; tasks:2408
+    "test_on_primary_a_landing_take_whose_lane_cannot_be_read_is_refused_before_the_lock_and_written_off_primary": ("T107", "T108", "T118", "T415", "T424", "T425", "T504"),  # T253; tasks:2408
+    "test_on_primary_a_take_with_no_readable_utc_is_refused_before_the_lock_and_written_off_primary": ("T107", "T108", "T118", "T415", "T424", "T425", "T504"),  # T253; tasks:2408
+    "test_on_primary_the_landing_expired_kind_typed_by_hand_is_refused_naming_the_form": ("T107", "T108", "T118", "T415", "T424", "T425", "T504"),  # T253; tasks:2408
+    "test_parse_register_line_reads_the_landing_expired_fields_before_the_word_clause": ("T107", "T108", "T118", "T424", "T425"),  # T253; tasks:2408
+    "test_register_commit_expires_an_imported_stale_landing_by_the_shipped_then_per_wip_repo_key": ("T105", "T107", "T111", "T112", "T227", "T228"),  # T253; tasks:2408
+    "test_rule6_primary_on_is_called_only_where_lane_4_places_it_and_who_landing_stays_pinned": ("T107", "T108", "T118", "T415", "T424", "T425", "T504"),  # T253; tasks:2408
+    "test_rule6_with_the_expired_branch_agrees_with_main_slots_on_imported_history": ("T107", "T108", "T111", "T112", "T118", "T227", "T228", "T424", "T425"),  # T253; tasks:2408
+    "test_the_landing_expired_form_composes_its_line_from_the_open_landing": ("T107", "T108", "T118", "T415", "T424", "T425", "T504"),  # T253; tasks:2408
+    "test_the_landing_expired_form_prints_its_seq_once_and_an_lr005_with_its_detail_token": ("T107", "T108", "T118", "T415", "T424", "T425", "T504"),  # T253; tasks:2408
+    "test_the_landing_expired_form_refuses_with_2_before_the_lock_without_the_word": ("T107", "T108", "T118", "T415", "T424", "T425", "T504"),  # T253; tasks:2408
+    "test_the_landing_expired_form_sends_nothing_where_no_landing_is_stale_at_the_snapshot": ("T107", "T108", "T118", "T415", "T424", "T425", "T504"),  # T253; tasks:2408
+    "test_the_writer_reads_lr005s_reason_from_its_detail_token_never_its_message": ("T107", "T108", "T118", "T415", "T424", "T425", "T504"),  # T253; tasks:2408
+    "test_who_landing_on_primary_drops_only_the_released_landing": ("T107", "T108", "T118", "T415", "T424", "T425", "T504"),  # T253; tasks:2408
+}
+
 LANES_EDIT = REPO / "lanes-edit.sh"
 
 #: The register's punctuation, by code point, so no raw character enters this
