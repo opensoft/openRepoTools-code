@@ -35,6 +35,14 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("git") is None,
     reason="the lane tooling is bash over git")]
 
+#: THE LANDING GATE'S TABLE (T280; `tests/sql_register_gate.py` reads it, and
+#: T281 removes it in the last set): every id of this module waits for the
+#: tasks T241's Order names, L4-B3's, L4-B4's and L4-B11's (tasks.md at
+#: 204145ae). Lane 2's plan GP-24 wrote it (task sets 12b's rule 11).
+SQL_REGISTER_GATE_TABLE = {
+    "*": ("T413", "T414", "T415", "T420"),  # every id: the tasks all its rows share
+}
+
 #: What a writer that fell back to the files, or offered to, would say: the
 #: register's file paths as a target, or the files mode by name. None may
 #: appear in a refusal on primary (P213-215: "nothing ever written to the
