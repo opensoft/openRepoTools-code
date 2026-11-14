@@ -4489,6 +4489,17 @@ def _ask_service(est: Estate, data: bytes, limit: float = 10.0) -> bytes:
         conn.close()
 
 
+def _read_end(stderr: str, *masks: str) -> str:
+    """A read's last stderr line, each of `masks` (its cache path, its key)
+    put as `<m>` and its bracketed detail as `(...)`, which names a temp file
+    by pid: so two reads that end alike give the same text."""
+    lines = [line for line in stderr.splitlines() if line.strip()]
+    end = lines[-1] if lines else ""
+    for mask in masks:
+        end = end.replace(mask, "<m>")
+    return re.sub(r"\(.*\)", "(...)", end)
+
+
 def _bad_requests(est: Estate) -> int:
     """`register.log`'s `bad request` lines, `<UTC> bad request`: the line the
     service writes for a request it cannot take, the bound's refusal among
@@ -4514,7 +4525,12 @@ def test_a_65536_byte_request_is_sent_and_taken_and_a_65537_byte_one_is_neither(
       65,536 bytes sends it whole, those bytes exactly, and on the listener's
       close falls back, writing `.direct`; one whose request would be 65,537
       bytes makes no connection and reads directly by its own decision,
-      writing no `.direct` (N5; `lanes-index:9313-9315` at merge101).
+      writing no `.direct` (N5; `lanes-index:9313-9315` at merge101). That
+      it read directly is shown by its end: the same exit and last line as
+      the 65,536-byte fallback's direct read, cache, key and bracketed
+      detail masked (`_read_end`; lane 2's RV26, NIT 5), so a client that
+      refused the request itself fails. In this estate both direct reads
+      fail alike, exit 69, since its register's switch is `files`.
     - THE SERVICE, warmed (`_warm`): those 65,536 bytes are taken, an answer
       at `n` naming the log `absent`, with no `bad request` line; 65,537
       bytes, the same request with one more byte of key, are answered
@@ -4523,7 +4539,7 @@ def test_a_65536_byte_request_is_sent_and_taken_and_a_65537_byte_one_is_neither(
       not (`_bad_requests`)."""
     est = estate(mode="primary")
     listener = _Listener(est, hang=False, whole=True)
-    sent, direct, said = {}, {}, {}
+    sent, direct, said, ended = {}, {}, {}, {}
     try:
         for size in (REQUEST_MAX, REQUEST_MAX + 1):
             cache = est.root / "t" / f"request-{size}"
@@ -4533,6 +4549,8 @@ def test_a_65536_byte_request_is_sent_and_taken_and_a_65537_byte_one_is_neither(
             sent[size] = [len(data) for data in listener.got[before:]]
             direct[size] = os.path.lexists(f"{cache}.direct")
             said[size] = f"exit {done.returncode}: {done.stderr.strip()[-300:]}"
+            ended[size] = (done.returncode, _read_end(done.stderr, str(cache),
+                                                      _request_key(size)))
             if sent[size] == [size]:
                 assert listener.got[before] == _request(size), \
                     f"the client's {size}-byte request is not the bytes of `_request`"
@@ -4544,6 +4562,10 @@ def test_a_65536_byte_request_is_sent_and_taken_and_a_65537_byte_one_is_neither(
     assert sent[REQUEST_MAX + 1] == [] and not direct[REQUEST_MAX + 1], \
         (f"the client sent a request of {REQUEST_MAX + 1} bytes: sent {sent[REQUEST_MAX + 1]} "
          f"bytes, .direct {direct[REQUEST_MAX + 1]}; {said[REQUEST_MAX + 1]}")
+    assert ended[REQUEST_MAX + 1] == ended[REQUEST_MAX], \
+        (f"the client's {REQUEST_MAX + 1}-byte read did not end as the direct read its "
+         f"{REQUEST_MAX}-byte fallback made: exit and last line {ended[REQUEST_MAX + 1]} "
+         f"against {ended[REQUEST_MAX]}; {said[REQUEST_MAX + 1]}")
     svc = _Service(est)
     try:
         _warm(est)
