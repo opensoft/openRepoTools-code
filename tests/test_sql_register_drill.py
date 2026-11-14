@@ -109,12 +109,23 @@ READINGS, NOT FOUND IN A CONTRACT:
 - "THE LAST `PAUSED` WRITE" is the drain's row write, `set-row-state <lane>
   "PAUSED ..."` (lane-handoff's W9), for `repoD-1`, a LIVE row of the fixture
   register that no other step writes, run in files mode from ws2.
-- STEP 6'S "THE GUARD ANSWERS FROM THE MIRROR" is the outage module's oracle
-  (T215; AT-D20): the `read: mirror at <sha12>` line, the declared line in
-  place of the cause, and the exit the same guard gives on the same checkout
-  in files mode. The guard runs in the lane's window with a live session
-  record (T203c's `guard_session`), the lane's row's session id as its own,
-  so it reaches its direct read (lane 3's T507 ruling (1)).
+- STEP 6'S "THE GUARD ANSWERS FROM THE MIRROR" is AT-D20's oracle for a
+  bound lane (T215; TP:3931 in Y's frame, "the guard exits 0 for `ok` and 2
+  for `refuse`, printing the declared line"): the `read: mirror at <sha12>`
+  line, the declared line in place of the cause, and exit 0. The guard runs
+  in the lane's window with a live session record (T203c's
+  `guard_session`), the lane's row's session id as its own, so it reaches
+  its direct read (lane 3's T507 ruling (1)), and the mirror's row binds it.
+  ITS CONTRAST, in the same step: the same session, its id and name, in a
+  window named for the other workstation's lane, whose row names another
+  session as AT-D20's `refuse` row does, gets the same two lines and exit 2,
+  its refusal naming that row's session. So the mirror's own row decides,
+  and a 0 that only fails open cannot pass. T276 compared the exit with a
+  reference instead, the same guard with a `mode=index` copy of the
+  configuration. Once the cutover has put `lanes/STORE` on origin,
+  `mode=index` refuses 2 whatever the session, by design (F17,
+  `reg_marker_check`'s `guard` arm), so no bound lane's 0 could equal it
+  (lane 5, #165 6868723007; lane 2's choice (a), T276g).
 - STEP 6'S REFUSAL names the database as `register_url=` gives it, without
   credentials (lane 3, #165 6809045090 and 6812459759, as the outage module
   holds AT-P3's oracle), and its stderr carries no password.
@@ -143,9 +154,9 @@ HELPERS COPIED, NEVER SHARED (a module's own): `_rows`, `_renders`,
 (T211's and T272's, in this base); `CHECK_LINE` and `_checks` from
 `test_sql_register_operator_tools.py` (T218); the hook's path rule and its
 `changed` from T271's `GATE_HOOK` (`test_sql_register_divergence.py`, line
-DV's `92fbaf27`); the guard's run, `_label` and the files-mode reference from
-T215's outage module (line W4a); `MIRROR_LINE` from the readers module (line
-N1); the holders' rule from T273b's `_claim_holders` (line RB); `_masked` from
+DV's `92fbaf27`); the guard's run and `_label` from T215's outage module
+(line W4a); `MIRROR_LINE` from the readers module (line N1); the holders'
+rule from T273b's `_claim_holders` (line RB); `_masked` from
 `tests/pgcluster.py`. From the fixture and H's helpers, which each real-engine
 module imports: `tls_cluster`, `ImportedRegister`, `PASSWORD_LINE`,
 `ClusterError`, `flipped_copy`, `guard_session` and `guard_strip_env`.
@@ -668,12 +679,14 @@ class Workstation:
             self.drill.request.addfinalizer(self._session.close)
         return self._session
 
-    def guard(self, conf: Path | None = None, **extra) -> dict:
-        """The hook, `lanes-edit.sh guard`, in the lane's window, under its
-        5 s kill timer, in a process group of its own."""
-        session = self.guard_session()
-        base = self._env({"LANES_INDEX_CONFIG": str(conf or self.conf), "LANES_LANE": self.lane})
-        env = session.env(base, **extra)
+    def guard(self, session=None) -> dict:
+        """The hook, `lanes-edit.sh guard`, in the window of `session` (the
+        lane's own, `guard_session`, where None), under its 5 s kill timer,
+        in a process group of its own."""
+        if session is None:
+            session = self.guard_session()
+        base = self._env({"LANES_INDEX_CONFIG": str(self.conf), "LANES_LANE": self.lane})
+        env = session.env(base)
         proc = subprocess.Popen(["bash", str(self.tools / "lanes-edit.sh"), "guard"],
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, cwd=str(self.checkout),
@@ -688,12 +701,20 @@ class Workstation:
         return {"exit": None if killed else proc.returncode, "killed": killed,
                 "out": out + err, "err": err}
 
-    def guard_in_files_mode(self) -> dict:
-        """The same guard on the same checkout with a `mode=index` copy of the
-        configuration and no fetch: the mirror's own answer (T215's
-        reference)."""
-        conf = _private(self.root / "conf-index" / "lanes-index.conf", self.conf_text("index"))
-        return self.guard(conf, LANES_NO_FETCH="1")
+    def guard_in_another_window(self, window: str) -> dict:
+        """STEP 6'S CONTRAST (the module's notes): the same guard, on the same
+        checkout and configuration, for the lane's own session, its id and
+        name, in a window named `window`, another lane's, which the stand-in
+        `tmux` answers `#W` with (`guard_session`). The lane's own session
+        ends first, so one live process holds the transcript (Amendment
+        18(h)); a later `guard()` would start a new one."""
+        if self._session is not None:
+            self._session.close()
+            self._session = None
+        session = guard_session(self.home, self.root / f"guard-bin-{window}", self.checkout,
+                                window=window, session_id=SESSIONS[self.lane], name=self.lane)
+        self.drill.request.addfinalizer(session.close)
+        return self.guard(session)
 
 
 # ------------------------------------------------------------------ the drill
@@ -962,7 +983,10 @@ class Drill:
     def step_6_outage(self) -> None:
         """The cluster stopped: writes 69, the guard's refusal, the mirror
         line, `status` inside twice its bound, then the declaration, after
-        which the guard answers from the mirror."""
+        which the guard answers from the mirror: 0 for the lane's bound
+        session (AT-D20), and 2 for the same session in a window named for
+        the other workstation's lane, whose row names another session (the
+        contrast; the module's notes)."""
         self.stopped = (self.count(), self.origin_tip())
         for ws in self.both:
             ws.git("fetch", "-q", "origin")
@@ -1009,7 +1033,7 @@ class Drill:
                                                 self.db.name in status.stdout + status.stderr), (
                 f"[step 6] `status` on {ws.name} does not answer 69 naming the store (lane 1's "
                 f"T117):\n{_said(status)}")
-        for ws in self.both:
+        for ws, other in zip(self.both, self.both[::-1]):
             declared = ws.index("outage", "declare", "--until", UNTIL, "--why", WHY)
             path = ws.outage_file()
             assert declared.returncode == 0 and path.exists(), (
@@ -1018,17 +1042,33 @@ class Drill:
             fields = _fields(path)
             assert (fields.get("kind"), fields.get("database"), fields.get("host")) == (
                 "word", LABEL, ws.workstation), f"[step 6] {ws.name}'s declaration: {fields}"
-            reference = ws.guard_in_files_mode()
-            assert not reference["killed"], f"[step 6] the files-mode guard on {ws.name} was killed"
+            mirror = f"read: mirror at {ws.tip()[:12]}"
             answered = ws.guard()
             out = answered["out"]
             assert not answered["killed"], f"[step 6] the declared guard on {ws.name} was killed"
-            assert f"read: mirror at {ws.tip()[:12]}" in out and _label(fields) in out, (
+            assert mirror in out and _label(fields) in out, (
                 f"[step 6] under the declaration the guard on {ws.name} does not answer from the "
                 f"mirror with the declared line (lane 5's T507, SVC-12): {_masked(out)[-600:]}")
-            assert answered["exit"] == reference["exit"], (
-                f"[step 6] the declared guard on {ws.name} exits {answered['exit']}, the mirror's "
-                f"answer in files mode is {reference['exit']}")
+            assert answered["exit"] == 0, (
+                f"[step 6] under the declaration the guard on {ws.name}, its lane's bound session "
+                f"in its lane's window, exits {answered['exit']}, not AT-D20's 0 for a bound lane "
+                f"(lane 5's T507, SVC-12): {_masked(out)[-600:]}")
+            # THE CONTRAST: the same session in a window named for the other
+            # workstation's lane, whose row on the mirror names that lane's
+            # session, not this one, so the mirror's row refuses it.
+            contrast = ws.guard_in_another_window(other.lane)
+            out = contrast["out"]
+            assert not contrast["killed"], (
+                f"[step 6] the declared guard on {ws.name} in {other.lane}'s window was killed")
+            assert mirror in out and _label(fields) in out, (
+                f"[step 6] under the declaration the guard on {ws.name}, in a window named "
+                f"{other.lane}, does not answer from the mirror with the declared line (lane 5's "
+                f"T507, SVC-12): {_masked(out)[-600:]}")
+            assert contrast["exit"] == 2 and SESSIONS[other.lane] in out, (
+                f"[step 6] under the declaration the guard on {ws.name}, for its lane's session "
+                f"in a window named {other.lane}, whose row names {SESSIONS[other.lane]}, does not "
+                f"refuse 2 naming that row's session from the mirror: exit {contrast['exit']}: "
+                f"{_masked(out)[-600:]}")
 
     def step_7_rollback_refused_while_down(self) -> None:
         """A rollback with the cluster stopped is refused and changes nothing;
