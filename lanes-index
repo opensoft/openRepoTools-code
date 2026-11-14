@@ -8157,11 +8157,13 @@ def register_serve_watched(cfg: dict) -> list:
     `PG*` variable before a child starts, and the URL can carry no
     `service=`, so no `PG*` variable and no service file reaches the child:
     only libpq's defaults under `~/.postgresql/` are found by it on its own,
-    and those are not watched. Each path is as written, with no `~` or
-    variable expanded: an absolute one as it is, and
-    a relative one against this process's working directory, which its
-    `psql` child inherits (`spawn` gives it no other), as libpq resolves it
-    there."""
+    and those are not watched. The URL's TLS paths are as written, with no
+    `~` or variable expanded, as libpq takes them; `reader_passfile=`'s
+    leading `~/` is expanded by `load_config`, so the password file watched
+    is that expanded path, which is also the child's `PGPASSFILE`. Each
+    path then resolves as libpq resolves it in the child: an absolute one
+    as it is, and a relative one against this process's working directory,
+    which its `psql` child inherits (`spawn` gives it no other)."""
     out = [cfg.get("path") or ""]
     if cfg.get("reader_passfile"):
         out.append(cfg["reader_passfile"])
