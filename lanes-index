@@ -7876,6 +7876,26 @@ REGISTER_SERVE_FETCH_BOUNDS = (1000, 10000, 11.0)
 #: that wait.
 REGISTER_SERVE_RETRY_S = 1.0
 
+#: THE CONNECTIONS ONE SERVICE HOLDS AT ONCE (lane 3's ruling, #165
+#: 6879724890, point 4; the Codex review, SHOULD 5, on socket API section
+#: 7, draft 12). One accepted past it is closed at once with no answer, so
+#: its client meets the end of the stream, reads directly and starts none.
+#: 16, for three reasons:
+#: - memory: each connection holds at most one answer, which the service
+#:   counts as it builds it and never lets past 16 MiB (SHOULD 4), and a
+#:   request of at most 64 KiB, so 16 hold at most 256 MiB at the worst;
+#:   today's register answers in about 8 MB at most (`--all`: `LANES.md`'s
+#:   2,590,927 bytes and 39 logs' 5,182,523), about 128 MB for 16;
+#: - clients: one uid's environment runs its five lanes, each asking at
+#:   most a guard's prefetch and a reader's read or two at once, about 15;
+#:   and the one `psql` child takes one query at a time within each
+#:   request's 200 ms, so a burst far past that is answered `unavailable
+#:   slow` anyway, and closing it at once spares each client its wait;
+#: - the backlog: 64, four times this, so the kernel queues a burst the
+#:   service then takes or closes at once, and never refuses a connect
+#:   that it would take.
+REGISTER_SERVE_CONNECTIONS_MAX = 16
+
 #: The marker that ends each exchange with the child, on its stderr by
 #: `\warn` with the exchange's `:SQLSTATE`, and the one that opens a
 #: request's own COPY rows on its stdout; `_query_many`'s separator,
@@ -8149,6 +8169,7 @@ class RegisterService:
         self.cond = threading.Condition()
         self.stopping = ""
         self.last_request = time.monotonic()
+        self.live = 0                # connections held, at most REGISTER_SERVE_CONNECTIONS_MAX
         self.install, self.config_stamp = stamps
         self.idle_check_s, ignored = register_serve_seconds(REGISTER_SERVE_IDLE_CHECK)
         if ignored:
@@ -8174,9 +8195,11 @@ class RegisterService:
             return False
 
     def serve(self) -> int:
-        """THE ACCEPT LOOP: each connection to its own thread; between
-        accepts, the idle stop (Y:3912-3914), and an end where the socket is
-        no longer this service's, since nothing can reach it then."""
+        """THE ACCEPT LOOP: each connection to its own thread, at most
+        `REGISTER_SERVE_CONNECTIONS_MAX` at once, and one past them closed
+        with no answer; between accepts, the idle stop (Y:3912-3914), and an
+        end where the socket is no longer this service's, since nothing can
+        reach it then."""
         import select
         import signal
         import threading
@@ -8203,6 +8226,14 @@ class RegisterService:
             try:
                 conn, _ = self.server.accept()
             except OSError:
+                continue
+            with self.cond:
+                full = self.live >= REGISTER_SERVE_CONNECTIONS_MAX
+                if not full:
+                    self.live += 1
+            if full:
+                conn.close()        # no answer: its client reads directly (SHOULD 5)
+                register_serve_log(self.paths, "a connection past the cap was closed")
                 continue
             threading.Thread(target=self.connection, args=(conn, time.monotonic()),
                              daemon=True).start()
@@ -8757,6 +8788,8 @@ class RegisterService:
             pass
         finally:
             conn.close()
+            with self.cond:
+                self.live -= 1
 
     def receive(self, conn, deadline: float) -> bytes | None:
         """The request's bytes up to its `end` line, or None where the client
