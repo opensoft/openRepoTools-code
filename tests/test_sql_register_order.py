@@ -2590,10 +2590,10 @@ def acted(act: str, *scopes: str) -> dict:
 # holds that write's commit call; a rival from a second session commits; and
 # the hold is let go (TP:5854-5856). The rival writes the lane's own `PAUSED`
 # in its log, as a forced release does (Y:5673): a lane-kind line, `bind:<L>`,
-# which every write of the tables lists (Y:5640-5680), W1's new lane aside,
-# whose rival is a row line for it, `row:<L>`. The held case's rival writes
-# that `PAUSED` (or W1's row line) for another lane, which no write of the act
-# lists, whatever the act's own rival is (`held_rival`).
+# which every write of the tables lists (Y:5640-5680), W1's new lane among
+# them (`new-lane`, below). The held case's rival writes that `PAUSED` (or,
+# for W1, a row line) for another lane, which no write of the act lists,
+# whatever the act's own rival is (`held_rival`).
 #
 # THE RIVAL LEAVES THE VERB'S ANSWER AS IT WAS (lane 3's ruling, option (b),
 # #165 6860075071). It commits after the attempt's snapshot, so the held
@@ -2612,6 +2612,17 @@ def acted(act: str, *scopes: str) -> dict:
 #   (`7893339:lanes-edit.sh:24740-24837`). Its rival appends an id that no
 #   session record holds to the row's session cell, a write on `row:<L>`
 #   that leaves the row dormant (`session-id`).
+# - W1's `add-row` refuses 2 where its lane has a row, "already has a row
+#   ... (Amendment 15(a))" (`add_row_checks`,
+#   `44f487d1:lanes-edit.sh:15341-15361`), and reads no lane-kind line. So
+#   its rival is the new lane's own `PAUSED` in its log (`new-lane`), a
+#   `bind:<L>` line that W1's `LANES_EXPECT` lists (`ls_expect_for`,
+#   `44f487d1:lane-start:4621`, called at `:4672`) and that leaves the lane
+#   without a row, so the retried `add-row` passes its checks and its
+#   commit meets LR009 (lane 3, #165 6869860086, taking 6860075071's rule;
+#   T252y). UNTIL T252y its rival was a row line for it, `row:<L>`, and the
+#   retried `add-row` refused 2 before any commit call, so this id never
+#   reached LR009 (lane 4's R6J-A, #165 6869806372).
 #
 # THE WORLD is `test_lane_start_claude_current`'s `Sandbox` (fake `tmux`,
 # `claude` and `gh`) holding the register N1's arms run on (lane 2's T217):
@@ -2678,8 +2689,11 @@ def lane_line(kind: str, lane: str) -> str:
 #: entry, which the refused write's `expectation:` line names (`commit_write`'s
 #: LR009, `7893339:lanes-index:9981-9983`), and the kind the held case writes
 #: for another lane.
+#: `new-lane` is W1's (T252y): the `bind` rival's `PAUSED`, for a lane with no
+#: row, whose held case keeps W1's row line for another lane, as before.
 RIVALS = {"bind": ("bind", "log", "bind"), "row": ("row", "append-line", "row"),
-          "resumed": ("bind", "log", "bind"), "session-id": ("row", "append-session-id", "bind")}
+          "resumed": ("bind", "log", "bind"), "session-id": ("row", "append-session-id", "bind"),
+          "new-lane": ("bind", "log", "row")}
 
 
 class ActWrite:
@@ -2728,7 +2742,7 @@ _HANDOFF = ("--lane", R_HERE, "T252b's race")
 #: option (b), #165 6860075071).
 ACT_WRITES = {
     "lane-start-w1-add-row": ActWrite("lane-start", ("repoZ", "1", "--no-launch"), R_NEW,
-                                      verb_is("add-row"), rival="row", code=2,
+                                      verb_is("add-row"), rival="new-lane", code=2,
                                       env={"LANE_START_SESSION_ID": "0"}),
     "lane-start-w1-start-record": ActWrite("lane-start", ("repoZ", "1", "--no-launch"), R_NEW,
                                            verb_is("start-record"), code=2),
@@ -2944,8 +2958,10 @@ class ActWorld(Sandbox):
 
     def rival(self, kind: str, lane: str) -> Writer:
         """A second session's write (`RIVALS`): `bind`, the lane's own
-        `PAUSED` in its log (lane-handoff's W9 form); `row`, a row line for
-        the lane; `resumed`, the lane's `RESUMED`, written by its own session
+        `PAUSED` in its log (lane-handoff's W9 form); `new-lane`, the same
+        `PAUSED`, W1's, for a lane with no row, which it leaves without one
+        (T252y); `row`, a row line for the lane; `resumed`, the lane's
+        `RESUMED`, written by its own session
         from the holder's place, Falcon (`LANES_WORKSTATION`, `LANES_HOST`),
         which leaves the lane bound there: `lane_binding_scan` reads a
         `RESUMED` as `bound` (`7893339:lanes-edit.sh:19808-19815`), at the
@@ -2957,7 +2973,7 @@ class ActWorld(Sandbox):
         refuses only an id that is live here (`7893339:lanes-edit.sh:24740-24751`)."""
         edit = ["bash", str(self.bin / "lanes-edit.sh")]
         extra: dict = {}
-        if kind == "bind":
+        if kind in ("bind", "new-lane"):
             argv = ["log", "PAUSED", f"lane:{lane}", ARROW, "T252b's rival", "the rival's release"]
         elif kind == "resumed":
             argv = ["log", "RESUMED", f"lane:{lane}", ARROW, "T252b's rival", "the holder resumes in place"]
