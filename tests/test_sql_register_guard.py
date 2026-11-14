@@ -1890,6 +1890,13 @@ def _record_with(est: Estate, keys) -> None:
 #: `register_rtt_ms` + 200 where it is over 100, with the service's socket;
 #: 0 without), and the `bound_s` each gives (Y:5459, Y:5462; contract
 #: section 4).
+#:
+#: THE 540 s BAND (T214m; the follow-up's commit 24, Z3, from Codex's
+#: re-review of spec#47 at `746e931c`, its SHOULD 8; tasks:2008, TP:6409,
+#: map row 442): with one address and `c` = 3, `w_s_ms` 473 gives 530 s and
+#: 474 gives 540 s, (437000 + 84000 + 19 * w_s_ms + 9999) // 10000 * 10, so
+#: a bound clamped to 530 fails `[c3-w474]` (`bind-record.md` section 4 at
+#: draft 13 `cd578400`). The two ids are lane 3's names from that fold.
 BOUND_CASES = {
     "c2": ({"c": 2, "n_a": 1, "w_s_ms": 0}, 500),
     "c3": ({"c": 3, "n_a": 1, "w_s_ms": 0}, 530),
@@ -1901,6 +1908,8 @@ BOUND_CASES = {
     "a2-c3-socket": ({"c": 3, "n_a": 2, "w_s_ms": 300}, 620),
     "c2-rtt120": ({"c": 2, "n_a": 1, "w_s_ms": 320}, 500),
     "c3-rtt270": ({"c": 3, "n_a": 1, "w_s_ms": 470}, 530),
+    "c3-w473": ({"c": 3, "n_a": 1, "w_s_ms": 473}, 530),
+    "c3-w474": ({"c": 3, "n_a": 1, "w_s_ms": 474}, 540),
 }
 
 #: Case 22's `[answer-2]`: the contract stub's constants line as T207 writes
