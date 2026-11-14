@@ -582,3 +582,65 @@ def test_the_silent_after_startup_relay_forwards_the_startup_then_nothing_and_ho
         _silent_holds_both_sockets(relay_of)
     else:
         _silent_psql_on_the_socket(relay_of, request)
+
+
+#: THE STALE SWEEP'S CASES (T205c). Every pid is fake, above any system's pid
+#: limit, and every signal goes to a recorder through the module's seam.
+SWEEP_CASES = ["no-proc", "pid-not-positive", "malformed", "does-not-stop", "reused-pid", "orphan"]
+FAKE_PID = 2 ** 30 + 7
+
+
+@pytest.mark.parametrize("case", SWEEP_CASES)
+def test_the_stale_sweep_signals_and_removes_only_what_it_proves_is_a_dead_sessions_postmaster(
+        monkeypatch, tmp_path, case):
+    """T205c (Codex's BLOCKING 2 on f060619c): `sweep_stale` signals a stale
+    root's postmaster only where its command line and start time prove it
+    is that postmaster, never on the pidfile's word alone, and removes the
+    root only where no such process is left. `[no-proc]`, no `/proc`, as on
+    macOS, and the pidfile's pid alive: nothing signalled, the root kept;
+    `[pid-not-positive]`, a pidfile naming -1 (every process) with no
+    `/proc`: nothing signalled, kept; `[malformed]`, a pidfile whose pid does
+    not parse: kept; `[does-not-stop]`, the proved postmaster outlives
+    SIGQUIT and SIGKILL: kept; `[reused-pid]`, the pid held by another
+    command line: nothing signalled, removed; `[orphan]`, the proved
+    postmaster, ended by SIGQUIT: removed. No real process is signalled."""
+    import signal
+
+    import pgcluster
+    parent = tmp_path / "parent"
+    root = parent / f"{pgcluster.PREFIX}stale"
+    (root / "data").mkdir(parents=True)
+    (root / "owner").write_text(f"{FAKE_PID + 1} 1\n")          # the session that left it is gone
+    datadir = str(root / "data")
+    pid = {"pid-not-positive": "-1", "malformed": "7x"}.get(case, str(FAKE_PID))
+    (root / "data" / "postmaster.pid").write_text(
+        f"{pid}\n{datadir}\n0\n5432\n{root}\n\n0 0\nready\n")
+    proc = tmp_path / "proc"
+    if case not in ("no-proc", "pid-not-positive"):
+        argv = (["/usr/bin/sleep", "600"] if case == "reused-pid"
+                else ["/pg/bin/postgres", "-D", datadir, "-p", "5432"])
+        (proc / str(FAKE_PID)).mkdir(parents=True)
+        (proc / str(FAKE_PID) / "cmdline").write_bytes(b"".join(os.fsencode(a) + b"\0" for a in argv))
+        fields = ["S"] + ["0"] * 18 + ["4242"]                    # the state, then the start time
+        (proc / str(FAKE_PID) / "stat").write_text(f"{FAKE_PID} (postgres) {' '.join(fields)}\n")
+    alive, sent = {FAKE_PID}, []
+
+    def kill(target, sig):
+        if sig:
+            sent.append((target, signal.Signals(sig).name))
+        if target not in alive:
+            raise ProcessLookupError(target)
+        if sig and case != "does-not-stop":
+            alive.discard(target)
+
+    monkeypatch.setattr(pgcluster, "SOCKET_PARENT", str(parent))
+    monkeypatch.setattr(pgcluster, "_PROC", proc)
+    monkeypatch.setattr(pgcluster, "_kill", kill)
+    monkeypatch.setattr(pgcluster, "ORPHAN_WAIT", 0.05)
+    swept = pgcluster.sweep_stale()
+    want_sent, kept = {"does-not-stop": ([(FAKE_PID, "SIGQUIT"), (FAKE_PID, "SIGKILL")], True),
+                       "reused-pid": ([], False),
+                       "orphan": ([(FAKE_PID, "SIGQUIT")], False)}.get(case, ([], True))
+    assert sent == want_sent, f"[{case}] the sweep signalled {sent}, not {want_sent}"
+    assert root.is_dir() == kept, f"[{case}] the sweep {'removed' if kept else 'kept'} {root}"
+    assert swept == ([] if kept else [str(root)]), f"[{case}] the sweep reports {swept}"
