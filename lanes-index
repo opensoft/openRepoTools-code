@@ -7870,9 +7870,9 @@ REGISTER_SERVE_FETCH_BOUNDS = (1000, 10000, 11.0)
 #: request's time (Y:4014-4016, svc:124): lazily, by the next request, after
 #: a failure met while serving or a connect that failed, and at once after a
 #: failed idle check (lane 3's rulings, #165 6833590985 and 6834196887). A
-#: changed configuration (`reconnect`) starts one at once too. The worker
+#: changed configuration (`reload`) starts one at once too. The worker
 #: starts none sooner than this after the last one it started, so a database
-#: that stays down costs at most one `psql` a second; only `reconnect` clears
+#: that stays down costs at most one `psql` a second; only `reload` clears
 #: that wait.
 REGISTER_SERVE_RETRY_S = 1.0
 
@@ -8017,12 +8017,13 @@ def _register_serve_record(path: str, digest: str, data: bytes) -> tuple:
 
 
 class _RegisterServeJob:
-    """One request waiting for the held child: its items, its arrival, and
-    the answer the worker gives it, once."""
+    """One request waiting for the held child: its items, its arrival, the
+    configuration epoch it was checked against (socket API 8.4, draft 13),
+    and the answer the worker gives it, once."""
 
-    def __init__(self, items: list, arrival: float):
+    def __init__(self, items: list, arrival: float, epoch: int):
         import threading
-        self.items, self.arrival = items, arrival
+        self.items, self.arrival, self.epoch = items, arrival, epoch
         self.answer = None
         self.done = threading.Event()
         self.lock = threading.Lock()
@@ -8171,6 +8172,7 @@ class RegisterService:
         self.last_request = time.monotonic()
         self.live = 0                # connections held, at most REGISTER_SERVE_CONNECTIONS_MAX
         self.install, self.config_stamp = stamps
+        self.config_epoch = 0        # moves with each configuration taken (`reload`)
         self.idle_check_s, ignored = register_serve_seconds(REGISTER_SERVE_IDLE_CHECK)
         if ignored:
             register_serve_log(paths, "the idle check's test value is ignored: the default is kept")
@@ -8391,22 +8393,22 @@ class RegisterService:
         (Y:4014-4016): by the next request, which is answered `unavailable`
         until it connects, as after any failure met while serving; or, with
         `at_once`, at once, for a failed idle check (Y:3995-4000; lane 3's
-        ruling, #165 6834196887) or a changed configuration (`reconnect`,
-        which first clears the worker's `REGISTER_SERVE_RETRY_S` wait)."""
+        ruling, #165 6834196887). A changed configuration retires it at once
+        by `retire` too, in `reload`'s one step, which also clears the
+        worker's `REGISTER_SERVE_RETRY_S` wait."""
         with self.cond:
-            child, self.child, self.state = self.child, None, "down"
-            self.lazy = not at_once
-            self.epoch += 1
-            self.cond.notify_all()
+            child = self.retire(at_once)
         register_serve_log(self.paths, why)
         self.kill(child)
 
-    def reconnect(self) -> None:
-        """A changed configuration's connection: the held child replaced, at
-        once, in the background."""
-        with self.cond:
-            self.retry_at = 0.0
-        self.lost("the configuration changed: reconnecting", at_once=True)
+    def retire(self, at_once: bool):
+        """The held child taken from the worker, by a caller that holds
+        `cond`, and returned for `kill` once the lock is let go."""
+        child, self.child, self.state = self.child, None, "down"
+        self.lazy = not at_once
+        self.epoch += 1
+        self.cond.notify_all()
+        return child
 
     def run(self, text: bytes, nonce: str, deadline: float, *, timer: bool = True,
             at_once: bool = False, expired=None) -> tuple:
@@ -8580,13 +8582,20 @@ class RegisterService:
     def serve_job(self, job) -> None:
         """ONE REQUEST ON THE HELD CHILD: answered `unavailable slow`, with no
         `SIGINT`, where its timer expired while it waited (S1); else its one
-        Query, under the timer from its arrival (socket API §13.3)."""
+        Query, under the timer from its arrival (socket API §13.3), whose
+        answer is given only where the configuration epoch the request was
+        checked against still holds, under `cond`, so a request running
+        under an earlier epoch is answered `unavailable`, whatever the old
+        child returned (socket API 8.4, draft 13)."""
         timer = register_serve_timer_ms(self.cfg) / 1000
         if time.monotonic() >= job.arrival + timer:
             job.give(b"unavailable slow\n")
             return
         try:
-            job.give(self.query(job, job.arrival + timer))
+            answer = self.query(job, job.arrival + timer)
+            with self.cond:
+                if job.epoch == self.config_epoch:
+                    job.give(answer)
         finally:
             job.give(b"unavailable\n")
             with self.cond:
@@ -8818,17 +8827,29 @@ class RegisterService:
         if register_serve_install() != self.install:
             self.stop("its install changed")
             return b"unavailable restarting\n"
-        if register_serve_config_stamp(self.cfg) != self.config_stamp:
+        with self.cond:
+            cfg, stamp, epoch = self.cfg, self.config_stamp, self.config_epoch
+        if register_serve_config_stamp(cfg) != stamp:
             why = self.reload()
             if why:
                 self.stop(why)
                 return b"unavailable restarting\n"
-        return self.request(items, arrival)
+        return self.request(items, arrival, epoch)
 
     def reload(self) -> str:
         """The configuration re-read (Y:3918-3920): why the service must exit,
         a refused configuration or a mode other than `primary`, or "" where
-        it runs on with it."""
+        it runs on with it.
+
+        IN ONE STEP, UNDER ONE EPOCH (socket API 8.4, draft 13; the Codex
+        re-review, B2, which lane 3's ruling, #165 6880543448, confirms as a
+        requirement): under `cond`, the lock the worker takes each request
+        by, the configuration as re-read is published, the held child is
+        retired, to be replaced at once in the background with no
+        `REGISTER_SERVE_RETRY_S` wait, the requests queued under the earlier
+        epoch are answered `unavailable`, and the configuration epoch moves.
+        So no request goes to the old child under the new configuration, and
+        no answer of an earlier epoch is given (`request`, `serve_job`)."""
         try:
             cfg, stamp = register_serve_load()
             if cfg["mode"] != "primary":
@@ -8838,23 +8859,33 @@ class RegisterService:
             return "its configuration is now refused"
         with self.cond:
             self.cfg, self.store, self.config_stamp = cfg, store, stamp
-        self.reconnect()
+            self.retry_at = 0.0
+            child = self.retire(at_once=True)
+            queued, self.queue = self.queue, []
+            self.config_epoch += 1
+        for job in queued:
+            job.give(b"unavailable\n")
+        register_serve_log(self.paths, "the configuration changed: reconnecting")
+        self.kill(child)
         return ""
 
-    def request(self, items: list, arrival: float) -> bytes:
-        """A REQUEST THE SERVICE CAN TAKE, queued for the held child. It is
-        answered `unavailable` at once where there is no held connection, at
-        the start or after a restart (Y:4014-4016; draft 9, at d8:173), where
-        a child lost while serving waits for a request to start its successor
-        (draft 11, section 7), or where a background whole-file fetch holds
-        it (OP-15)."""
+    def request(self, items: list, arrival: float, epoch: int) -> bytes:
+        """A REQUEST THE SERVICE CAN TAKE, queued for the held child under the
+        configuration epoch it was checked against (socket API 8.4, draft
+        13). It is answered `unavailable` at once where that epoch no longer
+        holds, the request that saw the change among them; where there is no
+        held connection, at the start or after a restart (Y:4014-4016; draft
+        9, at d8:173), where a child lost while serving waits for a request
+        to start its successor (draft 11, section 7); or where a background
+        whole-file fetch holds it (OP-15)."""
         with self.cond:
-            if self.fetching or self.state in ("down", "connecting"):
+            if (epoch != self.config_epoch or self.fetching
+                    or self.state in ("down", "connecting")):
                 if self.state == "down" and self.lazy:
                     self.lazy = False   # this request starts a new child, in the background
                 self.cond.notify_all()
                 return b"unavailable\n"
-            job = _RegisterServeJob(items, arrival)
+            job = _RegisterServeJob(items, arrival, epoch)
             self.queue.append(job)
             self.cond.notify_all()
         timer = register_serve_timer_ms(self.cfg) / 1000
