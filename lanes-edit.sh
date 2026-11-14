@@ -20216,6 +20216,7 @@ guard_bind_rewrite() {   # <offer file> <keys to drop, space-separated> [<key>=<
         }
         [ "$gbw_own" = 0 ] || guard_bind_own "$gbw_m" "$gbw_p" "$gbw_ps" "$gbw_h" "$gbw_c" || exit 2
         [ "$gbw_bd" = 0 ] || [ "$gbw_m" = binding ] || exit 2
+        [ "$gbw_of" = 0 ] || [ "$gbw_m" = name-drift ] || exit 2
       elif [ "$gbw_two" = 1 ]; then
         exit 2
       fi
@@ -21560,6 +21561,46 @@ EOF
   return 2
 }
 
+# THE OFFER THE PERSON ANSWERED IS NOT THE OFFER ANY MORE (lane 3's ruling on lane
+# 5's rule "No rewrite creates a record", #165 6885771975, ruling 5, (A); lane 5's
+# rule for the hook's own writes, which lane 3 confirmed, #165 6886113842): one of the
+# hook's writes on it, the head copy, the rewrite to `binding` or choice 1's
+# allow, found it gone or no longer `mode=name-drift`, and wrote nothing. The
+# record's mode is read ONCE, here, and answered for as the guard's first read
+# answers it, and no step is repeated:
+#   binding, bound, bind-failed  `guard_bind_site`'s answer (2), as `guard_run`
+#                                gives for a bind mode: nothing is written, and
+#                                the window is left as that answer leaves it
+#   allow                        3, the answer that does not consume the prompt:
+#                                `guard_run` judges it afresh, and its offer site
+#                                (`guard_offer_site`) passes an allowance that
+#                                still fits, with its warning, or drops one that
+#                                does not and asks once; a window this answer
+#                                renamed is renamed back first
+#   gone, or any other mode      (A), K4's path: the refusal, a window this
+#                                answer renamed renamed back, and 2
+guard_answer_moved() {   # <offer file> <pane> <bind | allow> <from> <to> <1 where this answer renamed the window>
+  gam_f="${1-}"; gam_pane="${2-}"; gam_what="${3-}"; gam_from="${4-}"; gam_to="${5-}"; gam_ren="${6-0}"
+  gam_m=""
+  [ -f "$gam_f" ] && gam_m="$(sed -n -e 's/^mode=//p' "$gam_f" 2>/dev/null | head -n1)"
+  case "$gam_m" in
+    binding|bound|bind-failed)
+      guard_bind_site "$gam_f" "$gam_pane"
+      return 2 ;;
+    allow)
+      [ "$gam_ren" = 0 ] || guard_window_back "$gam_from" "$gam_to" || :
+      return 3 ;;
+  esac
+  if [ -f "$gam_f" ]; then
+    gam_why="the offer at $gam_f was changed before the $gam_what could be recorded (it says mode=${gam_m:-none} now)"
+  else
+    gam_why="the offer was dropped before the $gam_what could be recorded"
+  fi
+  guard_refuse "$gam_why, so the bind was NOT started: this window has NOT moved to $gam_to (a rename this answer made is undone just below), NOTHING has been written to the register or to $gam_f, and no outer was started. Send your prompt again and the question will be asked afresh."
+  [ "$gam_ren" = 0 ] || guard_window_back "$gam_from" "$gam_to" || :
+  return 2
+}
+
 # The answer, and it is the whole of clause (h) rule 2's second half.
 guard_answer() {   # <offer file> <the prompt> <pane>
   ga_f="${1-}"; ga_p="${2-}"; ga_pane="${3-}"
@@ -21725,14 +21766,13 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     ga_now="$(date -u '+%s %Y-%m-%dT%H:%M:%SZ')"
     ga_ep="${ga_now%% *}"
     ga_wrc=0
-    guard_bind_rewrite --exist "$ga_f" "rc why note pid pidstart out started_utc bound_s bounded deadline_epoch" \
+    guard_bind_rewrite --offer "$ga_f" "rc why note pid pidstart out started_utc bound_s bounded deadline_epoch" \
       mode=binding "bind=$ga_k" "started_utc=${ga_now#* }" "bound_s=$ga_bs" "bounded=$ga_bd" \
       "deadline_epoch=$((ga_ep + ga_bs + 5))" "host=$WS" "container=$LANES_CONTAINER_NAME" \
       "out=$ga_out" "detach=$ga_dn" || ga_wrc=$?
     if [ "$ga_wrc" = 2 ]; then
-      guard_refuse "the offer was dropped before the bind could be recorded, so the bind was NOT started: NOTHING has been written to the register or to $ga_f, and no outer was started. Send your prompt again and the question will be asked afresh."
-      [ "$ga_ren" = 0 ] || guard_window_back "$ga_from" "$ga_to" || :
-      return 2
+      guard_answer_moved "$ga_f" "$ga_pane" bind "$ga_from" "$ga_to" "$ga_ren"
+      return $?
     fi
     if [ "$ga_wrc" != 0 ]; then
       guard_refuse "the bind could not be recorded in $ga_f, so it was NOT started: NOTHING has been written to the register, and the offer is KEPT. Answer \`2\` again once that directory is writable, or choose \`1\` or \`3\`."
@@ -21760,12 +21800,15 @@ guard_answer() {   # <offer file> <the prompt> <pane>
         # NO CHILD, SO NO ATTEMPT: the offer goes back to the question it was.
         ga_back=(mode=name-drift)
         [ "$ga_k" -le 1 ] || ga_back+=("bind=$((ga_k - 1))")
-        # NO REWRITE CREATES A RECORD (#165 6885771975, ruling 5): where the offer
-        # is gone there is nothing to back out, and `--exist` writes nothing.
+        # NO REWRITE CREATES A RECORD (#165 6885771975, ruling 5): the back-out
+        # undoes this answer's own `binding`, so it runs only on a record that
+        # still says `binding` (part 21's `--binding`); where it is gone, or
+        # another invocation has changed it, there is nothing of this answer's to
+        # back out, and nothing is written.
         ga_brc=0
-        guard_bind_rewrite --exist "$ga_f" "bind started_utc bound_s bounded deadline_epoch host container out detach" "${ga_back[@]}" || ga_brc=$?
+        guard_bind_rewrite --binding "$ga_f" "bind started_utc bound_s bounded deadline_epoch host container out detach" "${ga_back[@]}" || ga_brc=$?
         if [ "$ga_brc" = 2 ]; then
-          guard_refuse "the bind's child could not be started, so this window has NOT moved to $ga_to and NOTHING has been written; the offer was dropped meanwhile, so there is none to keep. Send your prompt again and the question will be asked afresh."
+          guard_refuse "the bind's child could not be started, so this window has NOT moved to $ga_to and NOTHING has been written; the offer was dropped or changed meanwhile, so there is none of this answer's to keep. Send your prompt again and the question will be asked afresh."
         else
           guard_refuse "the bind's child could not be started, so this window has NOT moved to $ga_to and NOTHING has been written. The offer is KEPT: answer \`2\` again, or choose \`1\` or \`3\`."
         fi
