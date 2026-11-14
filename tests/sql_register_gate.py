@@ -32,7 +32,8 @@ selection: `tests/conftest.py` gathers them. A module whose test class was not
 collected (a node id elsewhere in it was named) is not checked in that run.
 
 THE MARKERS. `tests/sql_register_landed/<Txxx>` is one empty file for each
-landed task. Each code PR adds its tasks' markers at its cut, outside every
+landed task: a marker that is not an empty regular file, or a marker
+directory that is a symlink, fails the run. Each code PR adds its tasks' markers at its cut, outside every
 task's `files:`, and that one change turns the set's own tests on in its own
 full CI. Git keeps no empty directory, so before the first set's cut there is
 no directory, and a missing directory is read as "no task has landed".
@@ -68,6 +69,7 @@ from its `pytest_collection_modifyitems`, after `-k` has deselected.
 
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 from typing import AbstractSet, Dict, Iterable, List, Mapping, Optional, Tuple
 
@@ -151,16 +153,30 @@ def active(environ: Mapping[str, str]) -> bool:
 
 def landed(directory: Path) -> frozenset:
     """The tasks with a marker in `directory`. A missing directory is no task
-    landed; anything in it but a file named for one of 007's task ids fails
-    the run."""
-    if not directory.exists() and not directory.is_symlink():
+    landed; anything in it but an empty regular file named for one of 007's
+    task ids fails the run, and so does a `directory` that is a symlink or
+    cannot be read (Codex's review of E `d58f3b82`, SHOULD 7)."""
+    if directory.is_symlink():
+        raise GateError(f"{directory} is a symlink: the landing gate (T280) "
+                        f"reads its markers in a directory of the tree")
+    if not directory.exists():
         return frozenset()
     if not directory.is_dir():
         raise GateError(f"{directory} is not a directory: the landing gate "
                         f"(T280) reads its markers there")
     found, refused = [], []
-    for entry in sorted(directory.iterdir()):
-        if entry.name in TASK_IDS and entry.is_file() and not entry.is_symlink():
+    try:
+        entries = sorted(directory.iterdir())
+    except OSError as exc:
+        raise GateError(f"{directory} cannot be read ({exc.strerror or exc}): "
+                        f"the landing gate (T280) reads its markers there") from None
+    for entry in entries:
+        try:
+            mode = entry.lstat()
+        except OSError:
+            mode = None
+        if (entry.name in TASK_IDS and mode is not None
+                and stat.S_ISREG(mode.st_mode) and mode.st_size == 0):
             found.append(entry.name)
         else:
             refused.append(entry.name)

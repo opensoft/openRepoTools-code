@@ -300,8 +300,12 @@ def test_a_marker_naming_an_id_that_is_no_007_task_fails_the_run(tmp_path):
     bad marker fails a local run too. So does a marker named for a 007 task
     that is a directory, `T415`, or a symlink, `T416`, here to T205's own
     marker file: a marker is a file, and not a symlink (lane 2's RV26,
-    NIT 4). The control holds only 007 tasks' markers, T236's among them (a
-    task line since lane 3's commit 17, `204145ae`), and every id runs."""
+    NIT 4). So does a marker that is not empty, `T415` here, since a marker
+    is one empty file; and a marker directory that is itself a symlink, here
+    to a directory of good markers, since the markers are read in the tree
+    (Codex's review of E `d58f3b82`, SHOULD 7). The control holds only 007
+    tasks' markers, T236's among them (a task line since lane 3's commit 17,
+    `204145ae`), and every id runs."""
     run = child(estate(tmp_path / "bad", markers=("T205", "T999", ".gitkeep")))
     assert run.code == 4, f"a marker naming no 007 task must fail the run:\n{shown(run)}"
     assert "ERROR: the landing gate (T280): " in run.output, shown(run)
@@ -316,6 +320,22 @@ def test_a_marker_naming_an_id_that_is_no_007_task_fails_the_run(tmp_path):
     assert shapes.code == 4, f"a marker that is a directory or a symlink must fail the run:\n{shown(shapes)}"
     assert f"{sql_register_gate.LANDED} holds T415, T416: a marker is a file named for one of 007's task ids" in shapes.output, shown(shapes)
     assert "passed" not in shapes.output and not shapes.ids, f"a test ran:\n{shown(shapes)}"
+    full = estate(tmp_path / "full", markers=("T205",))
+    (full / "tests" / sql_register_gate.LANDED / "T415").write_text("landed\n", encoding="utf-8")
+    nonempty = child(full)
+    assert nonempty.code == 4, f"a marker that is not empty must fail the run:\n{shown(nonempty)}"
+    assert f"{sql_register_gate.LANDED} holds T415: a marker is a file named for one of 007's task ids" in nonempty.output, shown(nonempty)
+    assert "passed" not in nonempty.output and not nonempty.ids, f"a test ran:\n{shown(nonempty)}"
+    linked = estate(tmp_path / "linked")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    for name in ("T205", "T415", "T416"):
+        (elsewhere / name).write_text("", encoding="utf-8")
+    (linked / "tests" / sql_register_gate.LANDED).symlink_to(elsewhere, target_is_directory=True)
+    rooted = child(linked, **{SWITCH: "on"})
+    assert rooted.code == 4, f"a marker directory that is a symlink must fail the run:\n{shown(rooted)}"
+    assert f"{sql_register_gate.LANDED} is a symlink" in rooted.output, shown(rooted)
+    assert "passed" not in rooted.output and not rooted.ids, f"a test ran:\n{shown(rooted)}"
     good = child(estate(tmp_path / "good", markers=("T205", "T236", "T415")))
     assert every_id_runs(good), f"markers of 007 tasks must not fail the run:\n{shown(good)}"
 
