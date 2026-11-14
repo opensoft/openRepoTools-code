@@ -3722,10 +3722,16 @@ def test_register_grep_on_primary_answers_one_snapshot_and_69_after_three_moved_
     store's, so form 3 rewrites the whole family at `n` under the new one
     (contract 3.6). Only the generation half of the pair tells the runs
     apart, so a T401 that compares `n` alone answers the first run, without
-    the moved line, and fails on stdout. The verb answers once, exit 0, with
-    what `git grep` prints over the store's tree at `n` after the move;
-    `repoX+1` is read twice; the head keeps `n` under a new generation (lane
-    2's RV23 NIT 3).
+    the moved line, and fails on stdout. That first run is stale because of
+    the read order: the verb reads its logs in tree order (`LC_ALL=C sort`
+    of their paths), so `repoA-2`'s image comes from the prefetch's cache at
+    `n` before `repoX+1`'s form-3 read moves the store. A new `SNAPSHOT_LANE`
+    or `SNAPSHOT_MOVED` must keep `SNAPSHOT_MOVED` sorting first, or the
+    first run reads the moved log after the move, and the stdout check no
+    longer tells an `n`-only T401 apart (lane 2's RV26 NIT 11). The verb
+    answers once, exit 0, with what `git grep` prints over the store's tree
+    at `n` after the move; `repoX+1` is read twice; the head keeps `n` under
+    a new generation (lane 2's RV23 NIT 3).
     It passes from lane 4's T401 round on lane 3's Q2 ruling, `8d72e579`
     (line R's merge90 and later), and fails before it. On lane 4's
     `6318d5e5` (#165 6851877746), which reads once, `[one-move]` fails on
