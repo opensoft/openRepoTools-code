@@ -2012,7 +2012,13 @@ def test_two_matching_calls_of_one_change_set_leave_the_replays_tail_owed(estate
     assert len(the_record(e)["calls"]) == 2
     killed_reads = len(gh_reads(where))
     again = e.run(LA, argv, first=[where])
-    assert again.code == 0 and again.err.count("WARNING") == 1, again.err[-800:]
+    # The one WARNING must be the owed tail's own, so this assert alone tells
+    # the build before NIT-4, whose replay printed the comment's WARNING
+    # instead, from T418's (lane 2's RV23 NIT 12).
+    warned = [line for line in again.err.splitlines() if "WARNING" in line]
+    assert (again.code == 0 and again.err.count("WARNING") == 1
+            and "2 call lines of its pending record" in warned[0]), (
+        f"not one WARNING, the owed tail's: {again.err[-800:]}")
     owed = (re.escape(f"register write {write_id} is in the register at seq {seq}; 2 call lines of its pending "
                       "record sent the entry's change set")
             + r"[^\n]*?" + re.escape("so it cannot be replayed, so its after-COMMIT steps did NOT run: ") + r"\w")
@@ -2391,6 +2397,12 @@ class HalfOpen:
         # before any next call (round 6h's `[connect]`; lane 2's TR21, 2c).
         # The `before` arm's lost call ends 2, its backend gone and its
         # transaction rolled back, so the head row is free for the replay.
+        # THAT RACE IS READ FROM THE CODE, NOT SEEN: no run has caught it, and
+        # the runs since the wait came in (ID-25's four) show only that it
+        # keeps the flow, not that it closed the race. The first commit call
+        # is always the `before` arm's, since this estate puts BEFORE first
+        # among every writer's arms, so the 2 asserted here holds for each
+        # caller (lane 2's RV23 NIT 11).
         ended = until_seen("the first commit call's end", lambda: self.w.ends().get(call["call"]), self.w)
         assert ended.get("exit") == 2, f"the first commit call ended {ended}, not 2, the `before` arm's lost call"
         script = without_commit(call["stdin"])
