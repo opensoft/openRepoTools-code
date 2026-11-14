@@ -9390,7 +9390,23 @@ def register_serve_agree(records: list) -> bool:
       matches none of those paths, an `ambiguous` one two or more, and a
       `file` record's path is the one path among them its name matches:
       byte for byte, or for a log by T113's one function,
-      `register_log_path_ci`, as the service resolves it."""
+      `register_log_path_ci`, as the service resolves it.
+    - Named records among themselves, with a list or a set or without one
+      (socket API 13.4 and 13.7's row, draft 13; the Codex re-review, B4,
+      which lane 3's ruling, #165 6880543448, confirms as a requirement):
+      two `file`, `absent` or `ambiguous` records whose names match the same
+      paths, one name byte for byte, or two log names equal once A-Z is
+      folded as T113's one function folds them (`_register_fold`), are the
+      same kind, and two `file` records among them name one path with one
+      digest. So `file lanes/log/Foo.md ...` for `lanes/log/foo.md` and
+      `absent lanes/log/FOO.md` in one answer are a mismatch."""
+    views = {}
+    for rec in records:
+        if rec[0] in ("file", "absent", "ambiguous"):
+            name = rec[1]
+            key = _register_fold(name) if name.startswith(LOG_PREFIX) else name
+            if views.setdefault(key, rec[:1] + rec[2:4]) != rec[:1] + rec[2:4]:
+                return False
     digests, lists, sets = {}, [], []
     for rec in records:
         if rec[0] == "file":
