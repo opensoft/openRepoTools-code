@@ -21950,6 +21950,13 @@ guard_bind_outer() {   # <session uuid>
   # a record changed after this read is still left as it is. What is left is
   # the rewrite's own read to its `mv`. No lock per record: it would put a new
   # stuck state on every prompt's path.
+  # THE REWRITE'S THREE RESULTS, AND THE OUTER'S EXIT FOR EACH (lane 3's
+  # ruling on the Codex re-review of spec#47 at `746e931c`, S1, #165
+  # 6880414089: the report's three-way result as written): 0, written, exit
+  # 0; 2, not its own (or no record), exit 0, the record left as it is; 1, an
+  # I/O failure, exit 1, the record still its `binding`. ON EVERY ONE the facts
+  # file goes: its `why=` and `note=` lines are in the outcome, which is in the
+  # record or, where it is not written, in this attempt's `.out`.
   gbo_wrc=2
   if guard_bind_load "$gbo_f" &&
      guard_bind_own "$GBR_MODE" "$GBR_PID" "$GBR_PIDSTART" "$GBR_HOST" "$GBR_CONTAINER"; then
@@ -21965,6 +21972,7 @@ guard_bind_outer() {   # <session uuid>
   fi
   if ! guard_bind_rewrite "$gbo_f" "mode rc why note ended_utc" "${gbo_out[@]}"; then
     note "guard-bind: the outcome could not be written to $gbo_f: ${gbo_out[*]}"
+    [ -z "$gbo_facts" ] || rm -f -- "$gbo_facts"
     return 1
   fi
   [ -z "$gbo_facts" ] || rm -f -- "$gbo_facts"
