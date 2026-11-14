@@ -1788,10 +1788,16 @@ W_BINDING = "home opensoft/repoA; dir /work/repoA2"
 #: S1's writes but `commit`, `log` once per verb of its grammar: {id: (its
 #: arguments, the lane it writes as)}. The forms are `lanes-edit.sh`'s usage
 #: lines at a2073eae; `log`'s are its arm's, at line R's V-round4.
+#: THE LANE IT WRITES AS is the lane the write is for, D12's writing lane,
+#: whose checkout `<c>` T415's `pw_checkout` takes through `write_lane_of`
+#: (lane 3, #165 6869860086; lane 4, #165 6869806372): for `add-row` the new
+#: row's, repoA-3, and for `request-handoff` its target's, repoA-1, as
+#: `lane-start` and `lane` set `LANES_LANE` for those two verbs. For every
+#: other verb the two lanes are one already.
 W_VERBS = {
     "add-row": (["add-row", f"| `repoA-3` | harness `aaaaaaaa-0004-4000-8000-00000000a004` | "
                  f"Eagle / test / brett | 2026-11-10T00:00Z | none | handoffs/repoA-3.md | "
-                 f"LIVE {DOT} 2026-11-10T00:00:00Z {DOT} test 1 |"], "repoA-2"),
+                 f"LIVE {DOT} 2026-11-10T00:00:00Z {DOT} test 1 |"], "repoA-3"),
     "append-line": (["append-line", f"HOLD {EM} lane repoA-2 ({WS}), window w, "
                      f"2026-11-10T00:00:00Z: opensoft/repoB main {TIP} for test 1"], "repoA-2"),
     "append-session-id": (["append-session-id", "repoA-2", f"harness `{SID_A2}`",
@@ -1816,7 +1822,7 @@ W_VERBS = {
     "rename-lane": (["rename-lane", "repoA-2", "repoA-3", "test 1", "--no-github"], "repoA-2"),
     "replace-in-row": (["replace-in-row", "repoA-2", "parked", "parked for test 1"], "repoA-2"),
     "request-handoff": (["request-handoff", "repoA-1", "--force", "test 1", "--session",
-                         W_SID_REQUESTER], "repoA-2"),
+                         W_SID_REQUESTER], "repoA-1"),
     "retire-rows": (["retire-rows", "repoA-4", "--reason", "test 1"], "repoA-2"),
     "set-row-state": (["set-row-state", "repoA-2", f"PAUSED {DOT} test 1"], "repoA-2"),
 }
