@@ -1,6 +1,6 @@
 name: Prepared task-set candidate integration
 
-# Deliberately uninvoked: activation/queue trigger requires separate approval.
+# Called only by the candidate push workflow; no dispatch or queue writes.
 on:
   workflow_call:
 
@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   verify:
+    name: Verify queue candidate
     permissions:
       contents: read
       pull-requests: read
@@ -31,6 +32,11 @@ jobs:
 
   full-ci:
     needs: verify
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      actions: read
     uses: ./.github/workflows/tests.yml
 
   qualification:
@@ -39,7 +45,7 @@ jobs:
       pull-requests: read
       checks: read
       actions: read
-    name: openrepotools-batch-heavy
+    name: Candidate full-suite qualification
     needs: [verify, full-ci]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
@@ -62,4 +68,11 @@ jobs:
       - name: Recheck live evidence after the full suite
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 policy/.github/ci/delivery_verify.py candidate
+        run: python3 policy/.github/ci/delivery_verify.py candidate --proof-kind qualified
+      - name: Preserve completed full-suite proof
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-qualified-${{ github.sha }}-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/proof.json
+          if-no-files-found: error
+          retention-days: 14
