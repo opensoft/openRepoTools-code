@@ -90,9 +90,11 @@ from test_lane_start_claude_current import Sandbox, _write
 #: clause it rests on. A key is a test's name, or one id, `name[param]`,
 #: whose row takes the place of its function's; the module has no `"*"`
 #: row, since its waits share no task. The table is lane 2's GP-24 plan's
-#: (`GP-24-gate-tables-plan.md`, sha256 `16d738b9`). Only where the gate is
-#: active (`tests/sql_register_gate.py`) does it skip an id until all its
-#: tasks have landed; elsewhere it changes nothing.
+#: (`GP-24-gate-tables-plan.md`, sha256 `16d738b9`), with T415 added to two
+#: T233 rows ahead of T233's Order, since each writes on primary through
+#: T415's `pw_run` (lane 4, opensoft/openRepoTools#165 6879601079; T223c).
+#: Only where the gate is active (`tests/sql_register_gate.py`) does it skip
+#: an id until all its tasks have landed; elsewhere it changes nothing.
 SQL_REGISTER_GATE_TABLE = {
     "test_a_child_at_the_seam_stops_with_none_and_runs_no_tail": ("T413", "T414", "T415", "T423"),  # T248; tasks:2384
     "test_a_handoff_request_never_refuses_the_holders_own_handoff": ("T107", "T108", "T111", "T112", "T410", "T415"),  # T252; tasks:2397
@@ -114,7 +116,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_writer_prints_its_output_once_however_many_attempts_it_made": ("T413", "T414", "T415", "T421"),  # T248; tasks:2384
     "test_act_begin_on_primary_prints_id_seq_and_generation": ("T111", "T410", "T411"),  # T233; tasks:2247
     "test_act_begin_prints_its_base_and_touches_no_database_off_primary": ("T111", "T410", "T411"),  # T233; tasks:2247
-    "test_act_begin_rebase_keeps_the_id_and_takes_the_new_base": ("T111", "T410", "T411"),  # T233; tasks:2247
+    "test_act_begin_rebase_keeps_the_id_and_takes_the_new_base": ("T111", "T410", "T411", "T415"),  # T233; tasks:2247, and T415 ahead of its Order (lane 4, opensoft/openRepoTools#165 6879601079)
     "test_act_begin_rebase_refuses_with_2": ("T111", "T410", "T411"),  # T233; tasks:2247
     "test_act_id_is_the_acts_id_on_a_write_and_null_on_every_other_entry": ("T107", "T108", "T227", "T228", "T304"),  # T232; tasks:2239
     "test_act_variables_change_nothing_in_files_mode": ("T107", "T108", "T111", "T112", "T410", "T415"),  # T252; tasks:2397
@@ -148,7 +150,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_the_act_id_checks_refuse_an_act_id_on_another_kind_and_a_malformed_one": ("T107", "T108", "T227", "T228"),  # T232; tasks:2239
     "test_the_burst_window_is_effective_a_short_deadline_sends_writers_busy": ("T107", "T108", "T227", "T228", "T302", "T413", "T414", "T415", "T421", "T422"),  # T243; tasks:2341
     "test_the_claim_behind_the_alias_is_refused_by_lr005_on_its_spellings": ("T107", "T108", "T227", "T228", "T302", "T413", "T414", "T415", "T421", "T422"),  # T243; tasks:2341
-    "test_the_client_refuses_a_bad_act_with_2_before_any_call": ("T111", "T410", "T411"),  # T233; tasks:2247
+    "test_the_client_refuses_a_bad_act_with_2_before_any_call": ("T111", "T410", "T411", "T415"),  # T233; tasks:2247, and T415 ahead of its Order (lane 4, opensoft/openRepoTools#165 6879601079)
     "test_the_client_refuses_an_acts_stale_base_with_2_at_the_snapshot": ("T107", "T108", "T111", "T112", "T410", "T415"),  # T252; tasks:2397
     "test_the_commits_act_backstops_are_lr007_act_generation_and_lr004": ("T107", "T227", "T228"),  # T252; tasks:2397
     "test_the_default_deadline_is_30_s_for_a_write_that_never_gets_its_turn": ("T107", "T108", "T227", "T228", "T302", "T413", "T414", "T415", "T421", "T422"),  # T243; tasks:2341
