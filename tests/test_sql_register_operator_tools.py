@@ -72,6 +72,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import stat
@@ -96,9 +97,16 @@ pytestmark = [WINDOWS_SKIP]
 #: (L1-A3 T104, L1-A7 T109, L1-A17 T119 and T120, L1-A18 T121), as lane 2's
 #: plan GP-24 v1 (sha256 16d738b9) gives it. Every id waits for the "*" row;
 #: `[outage-declared]`, whose setup runs `outage declare`, also for T121.
+#: T218's follow-up (tasks:2056 and :2072 at lane 3's commit 24, f9d6069e):
+#: `[old-git]` fails until lane 1's T119 follow-up 2, which builds check 14 in
+#: `lanes-index` alone and lands with T119, so its row names T119. The "*" row
+#: holds T119 already, so the row adds no wait: it records the clause. The
+#: ready environment's count of 14 checks (tasks:2056) waits for it too.
 SQL_REGISTER_GATE_TABLE = {
     "*": ("T104", "T109", "T119", "T120", "T229"),  # every id: the tasks all its rows share
     "test_the_readiness_check_fails_on_each_fault[outage-declared]": ("T121",),  # T218; tasks:2072
+    "test_the_readiness_check_fails_on_each_fault[old-git]": ("T119",),  # T119's follow-up 2; tasks:2072
+    "test_the_readiness_check_passes_a_ready_environment": ("T119",),  # its count of 14; tasks:2056
 }
 
 #: The label `register_label=` names, and the one the second database's
@@ -526,6 +534,16 @@ def test_set_mode_primary_or_index_on_an_unwritable_file_that_already_says_it_ex
 # READ, NOT FOUND IN A CONTRACT: check 13's "the fake `psql`'s log is empty"
 # is read as "check 13's line does not depend on the fake's answers", since
 # the run's other checks still connect.
+#
+# CHECK 14, GIT 2.32 OR LATER (T218's follow-up, tasks:2056 and :2072 at lane
+# 3's commit 24, f9d6069e; register-cli.md section 10, from draft 4.29's K10;
+# lane 1's T119 follow-up 2, #165 6877889644): it runs last, so no other check
+# is renumbered. `[old-git]` puts a `git` shim first on the call's `PATH` that
+# answers `--version` with `git version 2.31.1` and hands every other call to
+# the real git, so check 14 fails, naming 2.31.1 as older than 2.32 (AT-P8's
+# oracle). Its control is the same bench with the real git, whose check 14 is
+# `ok`. It fails until that follow-up lands: before it, `ready` prints no
+# check 14 line, and the control says so.
 
 #: One check's line (T119's line form).
 CHECK_LINE = re.compile(r"^check (\d+): (ok|FAIL)\b:?[ \t]*(.*)$", re.M)
@@ -667,7 +685,18 @@ FAULTS = {
     "expect-primary-switch-files": (8, "RE"),
     "expect-primary-origin-another": (8, "RE"),
     "version-window": (9, "RE"),
+    "old-git": (14, "FP"),
 }
+
+#: Words a fault's own `FAIL` line must hold, where AT-P8's oracle names them:
+#: `[old-git]`'s line names the shim's git 2.31.1 as older than 2.32
+#: (register-cli.md section 10's words).
+REASONS = {
+    "old-git": ("git 2.31.1", "older than 2.32"),
+}
+
+#: `[old-git]`'s answer to `git --version`: one minor below check 14's floor.
+OLD_GIT = "git version 2.31.1"
 
 
 def _fp_fault(bench: ReadyBench, fault: str) -> subprocess.CompletedProcess:
@@ -687,6 +716,24 @@ def _fp_fault(bench: ReadyBench, fault: str) -> subprocess.CompletedProcess:
         refusing = bench.install(bench.root / "refusing", refusing=True)
         return bench.ready(config, "--expect", "index", copy=refusing,
                            path=bench.path_with(refusing.parent))
+    if fault == "old-git":
+        # The shim answers `--version` alone and hands every other call to the
+        # real git, so the bench's other uses of git are as in the control.
+        real = shutil.which("git", path=bench.env["PATH"])
+        assert real, "[old-git] there is no git on the bench's PATH for the shim to hand calls to"
+        shim = _script(bench.root / "old-git" / "git",
+                       "#!/bin/sh\n"
+                       "# T218's [old-git]: git 2.31.1 to `--version`, the real git to the rest.\n"
+                       f'if [ "$1" = --version ]; then echo {shlex.quote(OLD_GIT)}; exit 0; fi\n'
+                       f'exec {shlex.quote(real)} "$@"\n')
+        path = os.pathsep.join([str(shim.parent), bench.env["PATH"]])
+        assert shutil.which("git", path=path) == str(shim), (
+            "[old-git] the shim is not the first git on the call's PATH")
+        said = subprocess.run([str(shim), "--version"], capture_output=True, text=True,
+                              timeout=60, stdin=subprocess.DEVNULL)
+        assert said.returncode == 0 and said.stdout == f"{OLD_GIT}\n", (
+            f"[old-git] the shim does not answer {OLD_GIT!r}:\n{_said(said)}")
+        return bench.ready(config, "--expect", "index", path=path)
     raise AssertionError(f"no FP fault {fault}")
 
 
@@ -759,9 +806,11 @@ def test_the_readiness_check_fails_on_each_fault(tmp_path, request, fault):
         bench = ReadyBench(tmp_path)
         # THE CONTROL: the bench with the fault taken away passes this check.
         control = bench.ready(bench.config("index"), "--expect", "index")
-        assert _checks(control.stdout).get(number, ("", ""))[0] == "ok", (
+        state = _checks(control.stdout).get(number, ("", ""))[0]
+        missing = "" if state else f": ready prints no check {number} line"
+        assert state == "ok", (
             f"[{fault}] the control, with the fault taken away, does not pass check "
-            f"{number}:\n{_said(control)}")
+            f"{number}{missing}:\n{_said(control)}")
         proc = _fp_fault(bench, fault)
     else:
         proc = _re_fault(ReadyEnvironment(request, tmp_path), fault)
@@ -769,6 +818,9 @@ def test_the_readiness_check_fails_on_each_fault(tmp_path, request, fault):
     assert proc.returncode == 2, f"[{fault}] ready does not exit 2:\n{_said(proc)}"
     assert checks.get(number, ("", ""))[0] == "FAIL", (
         f"[{fault}] check {number} is not a FAIL line of its own:\n{_said(proc)}")
+    for words in REASONS.get(fault, ()):
+        assert words in checks[number][1], (
+            f"[{fault}] check {number}'s FAIL line does not say {words!r}:\n{_said(proc)}")
     if kind == "RE":
         others = sorted(n for n, (state, _) in checks.items() if state == "FAIL" and n != number)
         assert others == [], f"[{fault}] other checks fail too: {others}\n{_said(proc)}"
@@ -779,7 +831,10 @@ def test_the_readiness_check_passes_a_ready_environment(tmp_path, request):
     proc = env.ready("--expect", "index")
     checks = _checks(proc.stdout)
     assert proc.returncode == 0, f"ready fails a ready environment:\n{_said(proc)}"
-    assert sorted(checks) == list(range(1, 14)), f"not one line per check:\n{_said(proc)}"
+    # Fourteen checks since check 14, git 2.32 or later (T218's follow-up;
+    # register-cli.md section 10): with 13 lines, the count fails until lane
+    # 1's T119 follow-up 2 lands.
+    assert sorted(checks) == list(range(1, 15)), f"not one line per check:\n{_said(proc)}"
     assert all(state == "ok" for state, _ in checks.values()), _said(proc)
 
 
