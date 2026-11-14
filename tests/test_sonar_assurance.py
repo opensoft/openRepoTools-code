@@ -277,3 +277,178 @@ def test_combination_requires_both_exact_complete_suites_and_unions_real_hits(
         inputs = json.loads((out / "evidence-inputs.json").read_text())
         assert set(inputs) == {"composed", "provider"}
         assert all(item["commits"] == manifest["commits"] for item in inputs.values())
+
+
+def pin_pr_context(tmp_path, monkeypatch, change="code"):
+    """Real Git objects for the root PR merge, without network or real legs."""
+    root = repo(tmp_path / "checkout", {
+        "contracts/code-pin.yaml": b"code old\n",
+        "contracts/spec-pin.yaml": b"spec old\n",
+        "command": b"#!/usr/bin/env bash\necho before\n",
+        "README.md": b"before\n"})
+
+    def run(*args):
+        return subprocess.check_output([
+            "git", "-C", str(root), "-c", "user.name=Test",
+            "-c", "user.email=test@invalid", *args]).decode().strip()
+
+    for leg, oid in (("code", "a" * 40), ("spec", "c" * 40)):
+        run("update-index", "--add", "--cacheinfo", "160000," + oid + "," + leg)
+    if change == "create":
+        run("rm", "contracts/code-pin.yaml")
+    run("commit", "-qm", "base pins")
+    base = run("rev-parse", "HEAD")
+    legs = ("spec",) if change == "spec" else ("code", "spec") if change == "both" else ("code",)
+    for leg in legs:
+        if change != "pin-without-link" and change != "empty":
+            run("update-index", "--cacheinfo", "160000," + "b" * 40 + "," + leg)
+        if change != "link-without-pin" and change != "empty":
+            (root / "contracts" / (leg + "-pin.yaml")).write_text(leg + " new\n")
+            run("add", "--", "contracts/" + leg + "-pin.yaml")
+    if change in ("source", "docs"):
+        path = "command" if change == "source" else "README.md"
+        (root / path).write_text("#!/usr/bin/env bash\necho after\n")
+        run("add", "--", path)
+    if change == "mode":
+        run("update-index", "--chmod=+x", "contracts/code-pin.yaml")
+    if change == "rename":
+        run("mv", "contracts/code-pin.yaml", "contracts/other-pin.yaml")
+    if change == "delete":
+        (root / "contracts/code-pin.yaml").unlink()
+        run("add", "--update", "--", "contracts/code-pin.yaml")
+    if change == "symlink":
+        (root / "contracts/code-pin.yaml").unlink()
+        (root / "contracts/code-pin.yaml").symlink_to("elsewhere")
+        run("add", "--", "contracts/code-pin.yaml")
+    run("commit", "--allow-empty", "-qm", "head")
+    head = run("rev-parse", "HEAD")
+    merge = run("commit-tree", "HEAD^{tree}", "-p", base, "-p", head, "-m", "PR test merge")
+    run("checkout", "--detach", "-q", merge)
+    event = {"number": 363, "pull_request": {
+        "number": 363, "base": {"sha": base, "ref": "main", "repo": {"full_name": "opensoft/openRepoTools"}},
+        "head": {"sha": head, "repo": {"full_name": "opensoft/openRepoTools"}}}}
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps(event))
+    for name, value in {
+        "GITHUB_EVENT_NAME": "pull_request", "GITHUB_EVENT_PATH": str(event_path),
+        "GITHUB_SHA": merge, "GITHUB_REPOSITORY": "opensoft/openRepoTools",
+        "GITHUB_REF": "refs/pull/363/merge",
+    }.items():
+        monkeypatch.setenv(name, value)
+    return {"root": root, "run": run, "event": event, "event_path": event_path,
+            "manifest": {"commits": {".": merge}}, "base": base, "head": head, "merge": merge}
+
+
+@pytest.mark.parametrize("change", ["code", "spec", "both"])
+def test_pin_only_proof_binds_exact_ci_merge_and_paired_paths(assurance, tmp_path, monkeypatch, change):
+    context = pin_pr_context(tmp_path, monkeypatch, change)
+    proof = assurance.pin_only_pr_proof(context["root"], context["manifest"], "363")
+    assert proof["base"] == context["base"]
+    assert proof["head"] == context["head"]
+    assert proof["merge"] == context["merge"]
+    assert set(proof["paths"]) == ({"code", "contracts/code-pin.yaml", "spec", "contracts/spec-pin.yaml"}
+                                  if change == "both" else {change, "contracts/" + change + "-pin.yaml"})
+
+
+@pytest.mark.parametrize("change", [
+    "source", "docs", "mode", "rename", "delete", "create", "symlink", "pin-without-link", "link-without-pin", "empty",
+])
+def test_pin_only_proof_refuses_nonpaired_or_uncertain_changes(assurance, tmp_path, monkeypatch, change):
+    context = pin_pr_context(tmp_path, monkeypatch, change)
+    assert assurance.pin_only_pr_proof(context["root"], context["manifest"], "363") is None
+
+
+@pytest.mark.parametrize("failure", [
+    "event-name", "repository", "ref", "ci-sha", "inventory-sha", "number", "base-ref",
+    "head-repo", "base-repo", "parents", "nonmerge", "missing-event", "malformed-event", "missing-base", "dirty",
+])
+def test_pin_only_proof_refuses_unbound_event_or_git_identity(assurance, tmp_path, monkeypatch, failure):
+    context = pin_pr_context(tmp_path, monkeypatch)
+    event = context["event"]
+    env = {"event-name": ("GITHUB_EVENT_NAME", "push"),
+           "repository": ("GITHUB_REPOSITORY", "other/repo"),
+           "ref": ("GITHUB_REF", "refs/heads/main"), "ci-sha": ("GITHUB_SHA", context["head"])}
+    if failure in env:
+        monkeypatch.setenv(*env[failure])
+    elif failure == "inventory-sha":
+        context["manifest"]["commits"]["."] = context["head"]
+    elif failure == "number":
+        event["number"] = 364
+    elif failure == "base-ref":
+        event["pull_request"]["base"]["ref"] = "other"
+    elif failure in ("head-repo", "base-repo"):
+        event["pull_request"][failure.split("-")[0]]["repo"]["full_name"] = "other/repo"
+    elif failure == "parents":
+        event["pull_request"]["base"]["sha"], event["pull_request"]["head"]["sha"] = context["head"], context["base"]
+    elif failure == "nonmerge":
+        context["run"]("checkout", "--detach", "-q", context["head"])
+        context["manifest"]["commits"]["."] = context["head"]
+        monkeypatch.setenv("GITHUB_SHA", context["head"])
+    elif failure == "missing-base":
+        event["pull_request"]["base"]["sha"] = "f" * 40
+    elif failure == "dirty":
+        (context["root"] / "command").write_text("#!/usr/bin/env bash\necho changed\n")
+    context["event_path"].write_text(json.dumps(event))
+    if failure == "missing-event":
+        context["event_path"].unlink()
+    elif failure == "malformed-event":
+        context["event_path"].write_text("not json")
+    assert assurance.pin_only_pr_proof(context["root"], context["manifest"], "363") is None
+
+
+@pytest.mark.parametrize("failure", [
+    None, "changed-component", "new-metric", "new-lines", "new-uncovered", "boolean-total",
+    "real-source", "missing-event", "main",
+])
+def test_absent_pr_metric_requires_positive_pin_only_proof_in_analysis(
+        assurance, tmp_path, monkeypatch, failure):
+    context = pin_pr_context(tmp_path, monkeypatch, "source" if failure == "real-source" else "code")
+    manifest = context["manifest"]
+    manifest["files"] = [{"path": "code/lane", "language": "shell"}]
+    out = tmp_path / "evidence"
+    out.mkdir()
+    (out / "inventory.json").write_text(json.dumps(manifest))
+    task = tmp_path / "report-task.txt"
+    task.write_text("projectKey=" + assurance.PROJECT + "\nceTaskId=task-123\n")
+    if failure == "missing-event":
+        context["event_path"].unlink()
+
+    def api(endpoint, parameters):
+        if endpoint == "ce/task":
+            return {"task": {"status": "SUCCESS", "analysisId": "analysis-123"}}
+        if endpoint == "qualitygates/project_status":
+            return {"projectStatus": {"status": "OK", "conditions": [{"metricKey": "new_reliability_rating"}]}}
+        if endpoint == "qualitygates/get_by_project":
+            return {"qualityGate": {"id": 9}}
+        if endpoint == "qualitygates/show":
+            return {"conditions": [{"metric": key, "op": op, "error": value}
+                                   for key, (op, value) in assurance.GATE.items()]}
+        if endpoint == "components/tree":
+            files = [{"path": "code/lane", "language": "shell"}] if failure == "changed-component" else []
+            return {"paging": {"total": False if failure == "boolean-total" else len(files)}, "components": files}
+        if endpoint == "measures/component":
+            # Matches PR363's real omitted-eligibility response. These overall
+            # metrics are diagnostic only: never credit complete main coverage.
+            measures = [] if failure == "main" else [{"metric": "coverage", "value": "86.1"},
+                                                       {"metric": "lines_to_cover", "value": "56163"}]
+            if failure == "new-metric":
+                measures.append({"metric": "new_coverage", "value": "90"})
+            if failure in ("new-lines", "new-uncovered"):
+                measures.append({"metric": "new_lines" if failure == "new-lines" else "new_uncovered_lines", "value": "1"})
+            return {"component": {"measures": measures}}
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(assurance, "sonar_api", api)
+    pull_request = None if failure == "main" else "363"
+    if failure:
+        with pytest.raises(ValueError):
+            assurance.verify_analysis(out, task, pull_request, root=context["root"])
+        assert not (out / "acceptance.json").exists()
+    else:
+        receipt = assurance.verify_analysis(out, task, pull_request, root=context["root"])
+        assert receipt["pin_only_pr"]["merge"] == context["merge"]
+        assert receipt["coverage_condition_evaluated"] is False
+        assert receipt["full_index_verified"] is False
+        assert receipt["coverage_import_verified"] is False
+        assert receipt["server_revision"] is None
+        assert all(row["metric"] != "new_lines_to_cover" for row in receipt["measures"])
