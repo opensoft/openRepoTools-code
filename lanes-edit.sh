@@ -21870,14 +21870,21 @@ guard_bind_outer() {   # <session uuid>
   # 18, question 2, #165 6751772589): just before the write the record is read
   # again, and the outcome goes in only where it is still this outer's own
   # `binding`, with its own `pid` and its own `pidstart` (none, where it wrote
-  # `pid` alone). One that is not has been answered by the guard since (its
-  # stale row), dropped (case 11) or replaced by a new offer's attempt, and an
-  # outcome written over it would contradict what the person was told; it is
-  # left as it is, and the outcome stays in this attempt's `.out`, where these
-  # words go. The write itself is still a temporary file and `mv -f`.
+  # `pid` alone), AND ITS OWN `host` AND `container`, compared without regard
+  # to case, as the guard's own test of them is: a pid and its start time name
+  # a process only inside one pid namespace, so a record from another host or
+  # container whose outer had the same pid, and also wrote `pid` alone, is not
+  # this one's. `out` is not matched (lane 3's ruling on spec#47's point 20,
+  # (a), #165 6879754335; the contract, draft 11, section 1). One that is not
+  # has been answered by the guard since (its stale row), dropped (case 11) or
+  # replaced by a new offer's attempt, and an outcome written over it would
+  # contradict what the person was told; it is left as it is, and the outcome
+  # stays in this attempt's `.out`, where these words go. The write itself is
+  # still a temporary file and `mv -f`.
   if ! guard_bind_load "$gbo_f" || [ "$GBR_MODE" != binding ] || [ "$GBR_PID" != "$$" ] ||
-     [ "$GBR_PIDSTART" != "$gbo_myps" ]; then
-    note "guard-bind: the record at $gbo_f is no longer this bind's own (mode=${GBR_MODE:-none}, pid ${GBR_PID:-none}, pidstart ${GBR_PIDSTART:-none}), so it is left as it is and the outcome is not written over it: ${gbo_out[*]}"
+     [ "$GBR_PIDSTART" != "$gbo_myps" ] || [ "$(lc "$GBR_HOST")" != "$(lc "$WS")" ] ||
+     [ "$(lc "$GBR_CONTAINER")" != "$(lc "$LANES_CONTAINER_NAME")" ]; then
+    note "guard-bind: the record at $gbo_f is no longer this bind's own (mode=${GBR_MODE:-none}, pid ${GBR_PID:-none}, pidstart ${GBR_PIDSTART:-none}, host ${GBR_HOST:-none}, container ${GBR_CONTAINER:-none}), so it is left as it is and the outcome is not written over it: ${gbo_out[*]}"
     [ -z "$gbo_facts" ] || rm -f -- "$gbo_facts"
     return 0
   fi
