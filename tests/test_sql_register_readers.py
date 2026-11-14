@@ -116,6 +116,86 @@ __all__ = ["estate"]  # the fixture, imported so that pytest finds it here
 pytestmark = [pytest.mark.skipif(shutil.which("bash") is None or shutil.which("git") is None,
                                  reason="the lane tooling is bash over git")]
 
+#: THE LANDING GATE'S TABLE (T280; task sets version 12b's rule 11, #165
+#: 6877673742), TEMPORARY: T281 removes it. The gate in `tests/conftest.py`
+#: skips each id until every task its row names has landed (the reader is
+#: `tests/sql_register_gate.py`). Written from T217's Order (tasks:2055 at
+#: lane 3's commit 17, `204145ae`), T235's (:2267) and T259's (:2469), as
+#: lane 2's plan GP-24 v2 gives it, with lane 3's ruling on T217's lane 5
+#: clause (#165 6877365776): each id of the 19 functions a lane 5 verify
+#: selects waits for the tasks that lane 2's per-id verdict rows give it
+#: (AN11a's and AN13a's), and for T504, T505, T506 and T509 where it has
+#: none. T504 to T506 are in the Order's own list too (L5-A5), so those rows
+#: drop T509 where they do not name it, and add T502 to the listing callers'
+#: two ids and T507 to the reader table's `[guard]`.
+SQL_REGISTER_GATE_TABLE = {
+    "test_69_refuses_at_canon_lane_and_session_lane_and_stays_a_note_at_the_other_four_arms": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_75_and_3_refuse_the_launch_at_each_lane_start_arm": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_a_caller_that_acts_on_a_listings_answer_refuses_69_where_the_store_is_unreachable": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T502", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_a_carry_on_act_names_lane_start_no_launch_on_a_69_or_75_under_a_seq_base": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_a_none_class_arm_makes_no_register_call_with_the_store_unreachable": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_a_primary_reader_makes_one_prefetch_and_every_read_site_reads_its_cache_at_one_n": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_a_read_site_with_no_prefetched_file_makes_one_more_register_read_and_never_a_git_read": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_an_expectation_2_at_lane_starts_last_write_dies": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_an_expectation_2_at_lane_starts_last_write_under_an_at_files_base_notes_stamps_and_launches": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_each_mirror_read_prints_its_line_and_keeps_its_exit": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
+    "test_each_reader_follows_the_table_when_the_store_is_unreachable": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
+    "test_every_dispatcher_arm_is_classified_for_the_read_door": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_guard_second_read_at_its_head_writes_one_log_and_fails_open": ("T113", "T114", "T227", "T228", "T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_index_flag_on_primary_changes_nothing_and_prints_no_index_line": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
+    "test_journal_last_pickaxe_finds_the_newest_entry_that_changes_the_keys_count": ("T113", "T114", "T227", "T228", "T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_lane_worktrees_register_reads_go_through_a_verb_and_refuse_69": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_lanes_accepts_decide_and_reads_as_without_it": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T502", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_lanes_fetch_on_primary_prints_no_no_fetch_note": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
+    "test_log_key_hex_slot_holds_a_key_outside_the_class_and_is_never_cached": ("T113", "T114", "T227", "T228", "T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_log_sync_on_primary_makes_no_fetch_and_no_flush": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_managed_projection_answers_0_1_8_from_sql_as_files_mode_does": ("T227", "T228", "T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
+    "test_managed_projection_with_the_database_unreachable_exits_1_never_legacy": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_on_primary_known_lanes_remote_log_events_and_worktree_rows_read_the_store_and_never_git": ("T227", "T228", "T505"),  # T235; tasks:2267
+    "test_on_primary_remote_log_events_and_worktree_rows_read_again_when_the_head_moves": ("T505",),  # T235; tasks:2267
+    "test_one_failed_call_anywhere_in_a_callers_read_sequence_never_fails_open": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
+    "test_register_grep_on_primary_answers_one_snapshot_and_69_after_three_moved_runs": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_register_grep_on_primary_prints_each_path_as_git_grep_does_under_gits_defaults": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_register_grep_prints_what_git_grep_prints_and_1_with_no_match": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_register_row_local_reads_the_database_on_primary_and_is_69_never_8": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_register_text_answers_the_bytes_the_scripts_read_today_and_69_on_a_failed_read": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_retired_rows_key_trims_leading_zeros_as_text_on_primary": ("T426",),  # T259; tasks:2469
+    "test_swapped_ranks_through_journal_last_on_primary": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_the_flush_helper_drops_the_whole_read_family": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_the_lanes_footer_on_primary_names_the_register_and_claims_no_local_read": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
+    "test_the_local_file_unions_are_skipped_on_primary": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_read_mirror_variable_lowers_each_read_that_names_the_lane_on_primary": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-end-2490]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T430", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-handoff-2878]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T429", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-handoff-2890]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T429", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-handoff-2913]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T429", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-start-3851]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-start-3872]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-start-3909]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-start-3989]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-start-4022]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-start-4181]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_each_reader_follows_the_table_when_the_store_is_unreachable[guard]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T507", "T508", "T509"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_one_failed_call_anywhere_in_a_callers_read_sequence_never_fails_open[lane-rename]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T415", "T422", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-1144-3]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T432", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-1144-69]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T432", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-1144-75]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T432", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-end-2490-3]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T430", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-end-2490-69]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T430", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-end-2490-75]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T430", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-handoff-2817-3]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T429", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-handoff-2817-69]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T429", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-handoff-2817-75]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T429", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-rename-241-3]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T433", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-rename-241-69]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T433", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-rename-241-75]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T433", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-start-2511-2512-3]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-start-2511-2512-69]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-start-2511-2512-75]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+}
+
 LANES_EDIT = REPO / "lanes-edit.sh"
 
 #: THE STORE'S OWN ROW: a lane the store's `lanes/LANES.md` holds and the git
