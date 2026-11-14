@@ -9090,7 +9090,8 @@ def register_serve_ask(data: bytes, deadline: float) -> tuple:
     `ECONNREFUSED`, whatever the owner file says, and on an owner file from
     another install, whose service still gets the request (Y:3881-3883); never
     on an owner file from another pid namespace or boot, a failed check, or a
-    server of another uid (OP-8, ERR-27)."""
+    server of another uid (OP-8, ERR-27), nor on an owner file it cannot use
+    (OP-17 (b), below)."""
     import socket
     if not register_serve_possible():
         return "unavailable", "this platform has no Unix socket", False
@@ -9109,14 +9110,20 @@ def register_serve_ask(data: bytes, deadline: float) -> tuple:
             return "unavailable", "no service answers its socket", True
         except OSError as exc:
             return "unavailable", f"its socket could not be reached ({exc.strerror or exc})", False
-        start = False
+        # OP-17 (b), FAIL-SAFE (lane 3's ruling, #165 6879724890, point 1;
+        # socket API 2.4 and OP-17, draft 12): on a socket that answers, an
+        # owner file that is absent, cannot be read, whose first 4,096 bytes
+        # are not UTF-8, or that has no `install=` line, or no `pidns=` or
+        # `boot=` line where this client has its own, is unavailable: the
+        # client reads directly and starts none.
         owner = register_serve_owner_read(paths)
-        if owner is not None:
-            host = register_serve_host()
-            for key, what in (("pidns", "pid namespace"), ("boot", "boot")):
-                if key in owner and key in host and owner[key] != host[key]:
-                    return "unavailable", f"its owner file is from another {what}", False
-            start = owner.get("install") != " ".join(str(part) for part in register_serve_install())
+        if owner is None or "install" not in owner:
+            return "unavailable", "its owner file cannot be read, or names no install", False
+        host = register_serve_host()
+        for key, what in (("pidns", "pid namespace"), ("boot", "boot")):
+            if key in host and owner.get(key) != host[key]:
+                return "unavailable", f"its owner file names no {what}, or another", False
+        start = owner["install"] != " ".join(str(part) for part in register_serve_install())
         try:
             uid = register_peercred(conn)
         except OSError:
