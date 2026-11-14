@@ -267,12 +267,14 @@ def pin_only_pr_proof(root, manifest, pull_request):
                     any(char not in "0123456789abcdef" for char in sha)
                     for sha in (base, head, merge))):
             return None
-        if git(root, "rev-list", "--parents", "-n", "1", "HEAD").decode().split() != [merge, base, head]:
+        objects = git(root, "rev-list", "--parents", "-n", "1", "HEAD").decode().split()
+        if objects != [merge, base, head]:
             return None
-        if git(root, "diff", "--name-only", "--ignore-submodules=none", merge, "--", ".").strip():
+        # Compare matched local object IDs, never file-derived command arguments.
+        if git(root, "diff", "--name-only", "--ignore-submodules=none", objects[0], "--", ".").strip():
             return None
         raw = git(root, "diff", "--raw", "--no-abbrev", "--no-renames", "--no-ext-diff",
-                  "--ignore-submodules=none", "-z", base, merge, "--")
+                  "--ignore-submodules=none", "-z", objects[1], objects[0], "--")
         fields = raw.split(b"\0")
         if fields[-1] or len(fields) % 2 != 1:
             return None

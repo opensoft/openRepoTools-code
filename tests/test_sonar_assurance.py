@@ -369,6 +369,7 @@ def test_pin_only_proof_refuses_nonpaired_or_uncertain_changes(assurance, tmp_pa
 @pytest.mark.parametrize("failure", [
     "event-name", "repository", "ref", "ci-sha", "inventory-sha", "number", "base-ref",
     "head-repo", "base-repo", "parents", "nonmerge", "missing-event", "malformed-event", "missing-base", "dirty",
+    "option-base", "range-base", "nonhex-base",
 ])
 def test_pin_only_proof_refuses_unbound_event_or_git_identity(assurance, tmp_path, monkeypatch, failure):
     context = pin_pr_context(tmp_path, monkeypatch)
@@ -396,6 +397,10 @@ def test_pin_only_proof_refuses_unbound_event_or_git_identity(assurance, tmp_pat
         event["pull_request"]["base"]["sha"] = "f" * 40
     elif failure == "dirty":
         (context["root"] / "command").write_text("#!/usr/bin/env bash\necho changed\n")
+    elif failure in ("option-base", "range-base", "nonhex-base"):
+        event["pull_request"]["base"]["sha"] = {
+            "option-base": "--output=/tmp/not-a-revision", "range-base": context["base"] + "..HEAD",
+            "nonhex-base": "z" * 40}[failure]
     context["event_path"].write_text(json.dumps(event))
     if failure == "missing-event":
         context["event_path"].unlink()
