@@ -379,7 +379,7 @@ def _refuse_special(path: str, mode: int) -> None:
     for test, what in ((stat.S_ISFIFO, "a FIFO"), (stat.S_ISSOCK, "a socket"),
                        (stat.S_ISCHR, "a character device"), (stat.S_ISBLK, "a block device")):
         if test(mode):
-            why = f"{what}, not a regular file: skipped, never opened"
+            why = f"{what}, not a regular file: skipped, never read"
             SKIPPED.setdefault(path, why)
             raise NotRegular(why)
 
@@ -396,7 +396,8 @@ def _opener(path: str, flags: int) -> int:
 
 
 def open_regular(path: str, mode: str = "r", **kwargs):
-    """`open(path, mode, ...)` that never opens a FIFO, a socket or a device.
+    """`open(path, mode, ...)` that never reads, writes or waits on a FIFO, a
+    socket or a device.
 
     A FIFO BLOCKS open() UNTIL ITS OTHER END OPENS, AND NOTHING TIMES THAT OUT
     (lane 3, 2026-11-12): two daily reports, started from two lanes' starts four
@@ -404,9 +405,11 @@ def open_regular(path: str, mode: str = "r", **kwargs):
     of an estate path, with no child to time out and no answer to give. So
     what `stat` says is not a regular file is refused before any open, and
     what is opened is opened O_NONBLOCK and asked again by `fstat`, so one
-    swapped in between cannot hold the read either. A directory, and a path
-    `stat` cannot answer, go to `open()` itself, which refuses them at once,
-    exactly as before."""
+    swapped in between cannot hold the read either. THAT ONE IS OPENED - for
+    the `fstat` alone, and closed unread - so a skip says "never read", not
+    "never opened" (the review of opensoft/openRepoTools-code#70, NIT). A
+    directory, and a path `stat` cannot answer, go to `open()` itself, which
+    refuses them at once, exactly as before."""
     try:
         st = os.stat(path)
     except OSError:
@@ -557,6 +560,7 @@ class Helper:
     def __init__(self):
         self.path = lanes_edit_path()
         self._fetched = False
+        self._wroot = None
 
     def call(self, *args: str, env_extra: dict | None = None, fetch: bool = False,
              write: bool = False, timeout: int = 300):
@@ -700,8 +704,24 @@ class Helper:
             facts.managed = "unknown"
 
     def workspace_root(self) -> str:
-        proc = self.call("workspace-root")
-        return proc.stdout.strip() if proc.returncode == 0 else ""
+        """`lanes-edit.sh workspace-root`: ASKED ONCE, AND NEVER A PATH HOLDING A
+        NUL BYTE (the review of opensoft/openRepoTools-code#70, BLOCKING). Its
+        answer went straight to `real()` and `git -C`, where the OS refuses a
+        NUL with a ValueError no reader caught, so one such answer ended the
+        estate report "INTERNAL ERROR", exit 2. It is checked here, before any
+        caller makes a path of it: its raw value is dropped, the root is '' -
+        the workspace not found, which every caller already reads - and the
+        answer is a record that could not be read (`_nul_record`), a row the
+        report names. One answer per helper, so every section of one report
+        reads the same root."""
+        if self._wroot is None:
+            proc = self.call("workspace-root")
+            root = proc.stdout.strip() if proc.returncode == 0 else ""
+            if "\0" in root:
+                _nul_record("lanes-edit.sh workspace-root")
+                root = ""
+            self._wroot = root
+        return self._wroot
 
     def fetch_register(self) -> str:
         """`--yes` ACTS ON A REGISTER READ NOW, or not at all (#170 A1): '' once
@@ -2116,6 +2136,12 @@ def project_legs(helper, checkout: str) -> tuple:
     if proc.returncode != 0:
         return [], (f"`lanes-edit.sh project-legs {checkout}` exited {proc.returncode}: "
                     + _first_line(proc.stderr))
+    if "\0" in proc.stdout:
+        # A NUL BYTE IN THE ANSWER (the review of opensoft/openRepoTools-code#70):
+        # `Leg` takes `real()` of each path it names, where the OS refuses one
+        # with a ValueError no reader caught - the estate report's INTERNAL
+        # ERROR. A leg named so is no path: the manifest is one not read.
+        return [], f"`lanes-edit.sh project-legs {checkout}` " + NUL_WHY
     rows = []
     for line in proc.stdout.splitlines():
         cols = line.split("\t")
@@ -5254,6 +5280,10 @@ def archive_ledger(adir: str):
                 digest, sep, rel = line.rstrip("\n").partition("  ")
                 if not sep or not re.match(r"^[0-9a-f]{64}$", digest):
                     return None, "its MANIFEST.sha256 is malformed"
+                if "\0" in rel:
+                    # A NUL BYTE NAMES NO FILE (`_nul_record`): `isfile` answers False,
+                    # and the name went into the report's row with its raw NUL.
+                    return None, "its MANIFEST.sha256 " + NUL_WHY
                 listed[rel] = digest
     except OSError:
         return None, "it has no readable MANIFEST.sha256 (the sweep that made it did not finish)"
@@ -5433,7 +5463,13 @@ class Report:
             dirs, why = register_lane_dirs(self.helper)
             if why:
                 self._unread("the register's lane logs", why)
-            for d in dirs.values():
+            for lane, d in dirs.items():
+                if "\0" in d:
+                    # A NUL BYTE IN A RECORDED `dir` (`_nul_record`; git prints a
+                    # log's lines past its first 8000 bytes as text): `isdir`
+                    # answers False, and that lane's records went unread in silence.
+                    self._unread(f"lane {lane}'s recorded dir in the register", NUL_WHY)
+                    continue
                 out.append(os.path.dirname(d.rstrip(os.sep)))
         return [p for i, p in enumerate(out) if p and p not in out[:i]]
 
@@ -5628,6 +5664,7 @@ class Report:
         # review of opensoft/openRepoTools#282, SHOULD 5). `<W>-lanes/<lane>/` is
         # a clone of the register's origin beside W, made on purpose and holding
         # that lane's writes; listing it here told a person to dispose of it.
+        # The root is asked once and holds no NUL byte (`Helper.workspace_root`).
         wroot = self.helper.workspace_root() if self.helper.path else ""
         lanes_home = real(wroot) + "-lanes" if wroot else ""
         # AND A W THAT IS ITSELF A LANE CHECKOUT (the re-review of #282, SHOULD
@@ -5704,6 +5741,15 @@ class Report:
                              f"git grep exited {proc.returncode}: " + _first_line(proc.stderr))
             last: dict = {}
             for line in proc.stdout.splitlines():
+                if line.startswith("Binary file ") and line.endswith(" matches"):
+                    # A LANE LOG HOLDING A NUL BYTE in its first 8000 bytes (the
+                    # review of opensoft/openRepoTools-code#70): git grep prints
+                    # none of its lines, so its ENDED line was missed in silence.
+                    self._unread(line[len("Binary file "):-len(" matches")],
+                                 "a lane log git grep reads as binary (a NUL byte in it, or a "
+                                 "binary attribute), so none of its lines is read: whether its "
+                                 "lane ended is unknown")
+                    continue
                 _ref, _, rest = line.partition(":")
                 fname, _, text = rest.partition(":")
                 last[os.path.basename(fname)[:-3]] = text.split(" ", 1)[0]
