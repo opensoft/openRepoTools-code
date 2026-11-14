@@ -9555,7 +9555,7 @@ CREATE TABLE journal_edits (                   -- Rule 9(d): a known, finite set
 
 CREATE TABLE journal_files (                   -- S2: each touched file's bytes after the write
   seq     bigint  NOT NULL REFERENCES journal (seq),
-  path    text    COLLATE "C" NOT NULL,
+  path    text    COLLATE "C" NOT NULL CHECK (path ~ '^lanes/(LANES\.md|STORE|aliases\.tsv|archive/[^/]+\.md|log/[^/]+\.md)$' AND path <> 'lanes/log/README.md'),  -- Q18 (A), as journal_edits.path: the render set and lanes/STORE (data-model.md:48–50; spec#17's re-review r4)
   present boolean NOT NULL,                    -- false: removed or renamed away
   sha256  text    CHECK (sha256 ~ '^[0-9a-f]{64}$'),
   final_newline boolean,                       -- files.final_newline after the write
@@ -10275,14 +10275,14 @@ SELECT v_seq, nullif(v_head, -1), p_write_id, e.*, p_entry -> 'act' ->> 'id'  --
     END LOOP;
   END IF;
 
-  -- 8. The proof: every touched path is in the entry's files, and renders to its digest.
+  -- 8. The proof: every files row names the render set or lanes/STORE (LR004 before journal_files' CHECK); every touched path is in the entry's files; for a write, an import or a stray import, every files row is a touched path, while a stray revert, edit-free, names untouched ones, but never `lanes/STORE`, which is not rendered (spec#17's re-review r4 and r5); and each renders to its digest.
   IF EXISTS (SELECT 1 FROM journal_edits j, LATERAL (VALUES (j.path), (j.to_path)) t(p)
              WHERE j.seq = v_seq AND t.p IS NOT NULL
                AND NOT coalesce(p_entry -> 'files', '[]') @> jsonb_build_array(
                          jsonb_build_object('path', t.p))) THEN
     RAISE EXCEPTION 'an edited path has no files row in the entry' USING ERRCODE = 'LR004';
   END IF;
-  FOR r IN SELECT * FROM jsonb_to_recordset(coalesce(p_entry -> 'files', '[]'))
+  IF EXISTS (SELECT 1 FROM jsonb_to_recordset(coalesce(p_entry -> 'files', '[]')) AS x(path text) WHERE x.path IS NULL OR x.path !~ '^lanes/(LANES\.md|STORE|aliases\.tsv|archive/[^/]+\.md|log/[^/]+\.md)$' OR x.path = 'lanes/log/README.md') THEN RAISE EXCEPTION 'a files row names a path outside the render set and lanes/STORE' USING ERRCODE = 'LR004'; END IF; IF v_kind IN ('write', 'import', 'stray-import') AND EXISTS (SELECT 1 FROM jsonb_to_recordset(coalesce(p_entry -> 'files', '[]')) AS x(path text) WHERE NOT EXISTS (SELECT 1 FROM journal_edits j WHERE j.seq = v_seq AND x.path IN (j.path, j.to_path))) THEN RAISE EXCEPTION 'a files row names a path the entry does not edit' USING ERRCODE = 'LR004'; END IF; IF v_kind = 'stray-revert' AND EXISTS (SELECT 1 FROM jsonb_to_recordset(coalesce(p_entry -> 'files', '[]')) AS x(path text) WHERE x.path = 'lanes/STORE') THEN RAISE EXCEPTION 'a stray-revert files row names lanes/STORE, which is not rendered' USING ERRCODE = 'LR004'; END IF; FOR r IN SELECT * FROM jsonb_to_recordset(coalesce(p_entry -> 'files', '[]'))
              AS x(path text, present boolean, sha256 text, final_newline boolean) LOOP
     INSERT INTO journal_files (seq, path, present, sha256, final_newline)
     VALUES (v_seq, r.path, r.present, r.sha256, r.final_newline);
