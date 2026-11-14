@@ -210,9 +210,30 @@ def duplicate(env, event, root, main, request, fetch, threads, base_changes):
         source_pr, _receipt = verifier.source_pr(member["head"], main, root, request, threads, base_changes)
         require(source_pr["number"] == member["number"]
                 and verifier.delivery_intended(source_pr["body"]), "Admission source differs")
-    require(pr == request(REPOSITORY, f"pulls/{number}")
-            and request(REPOSITORY, "git/ref/heads/" + branch)["object"]["sha"] == head
-            and run == request(REPOSITORY, f"actions/runs/{run['id']}"), "Candidate evidence moved")
+    current_pr = request(REPOSITORY, f"pulls/{number}")
+    require(evidence.positive(current_pr["number"]) == number
+            and current_pr["state"] == "open" and current_pr["draft"] is True
+            and type(current_pr.get("merged")) is type(pr.get("merged"))
+            and current_pr.get("merged") == pr.get("merged")
+            and policy.side(current_pr, "head") == (head, branch)
+            and policy.side(current_pr, "base") == (main, "main")
+            and current_pr["user"]["login"] == "mergify[bot]", "Candidate evidence moved")
+    require(current_pr.get("body") is None or isinstance(current_pr.get("body"), str),
+            "Candidate description is not string or null")
+    require(current_merge_hints(env, pr, current_pr), "Event merge hint is neither absent nor current")
+    require(request(REPOSITORY, "git/ref/heads/" + branch)["object"]["sha"] == head,
+            "Candidate evidence moved")
+    current_run = evidence.run_identity(request(REPOSITORY, f"actions/runs/{run['id']}"), head, branch)
+    require(current_run["id"] == run["id"]
+            and (current_run["status"] == "completed" or current_run["conclusion"] is None),
+            "Candidate evidence moved")
+    moved = [name for name, old, current in
+             (("pull_request", pr, current_pr), ("caller", run, current_run)) if old != current]
+    if moved:
+        # No raced view supplies proof. Reauthenticate the complete decision on
+        # a fresh bounded observation; accepted views retain raw equality.
+        diagnostic("candidate", "candidate-reread-pending", fields=moved)
+        raise verifier.PendingEvidence("Authenticated candidate evidence moved")
     return {"candidate": head, "record": evidence.digest(record)}
 
 
@@ -292,9 +313,21 @@ def route(env, event, root, request=policy.github, fetch=evidence.download,
         return dict(FULL)
 
 
+def bounded_observation(observe):
+    """Only authenticated pending decisions retry; waiting never supplies proof."""
+    result = observe()
+    for _ in range(PENDING_ATTEMPTS):
+        if not result.get("retryable", False):
+            break
+        time.sleep(10)
+        result = observe()
+    return result
+
+
 def gate(env, event, root, request=policy.github):
     if env.get("OMIT_FULL") == "true":
-        result = route(env, event, root, request)
+        observe = lambda: route(env, event, root, request)
+        result = bounded_observation(observe) if env["ROUTE_MODE"] == "candidate" else observe()
         require(result["omit_full"] is True and result["mode"] == env["ROUTE_MODE"]
                 and result["proof"] == env["ROUTE_PROOF"], "Omitted-work proof no longer verifies")
     else:
@@ -313,14 +346,9 @@ def main():
         if args.mode == "gate":
             gate(os.environ, event, root)
             return
-        # Only authenticated pending receipts merit startup waits. Definite
+        # Only authenticated pending observations merit bounded waits. Definite
         # full-only, malformed, failed or unknown outcomes return immediately.
-        result = route(os.environ, event, root)
-        for _ in range(PENDING_ATTEMPTS):
-            if not result.get("retryable", False):
-                break
-            time.sleep(10)
-            result = route(os.environ, event, root)
+        result = bounded_observation(lambda: route(os.environ, event, root))
         result.pop("retryable", None)
     except ERRORS:
         if args.mode == "gate":
