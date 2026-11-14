@@ -3562,6 +3562,42 @@ def _failure_stamp(est: Estate, done: subprocess.CompletedProcess) -> list:
     return path.read_text(encoding="utf-8").split()
 
 
+def _owner_lines(index: Path) -> list:
+    """`register.owner`'s lines as the service writes them (T237zz; socket
+    API section 2.4, "Its bytes", at draft 13 `fa613b9d`; T512's
+    `register_serve_owner_text`, `register_serve_install` and
+    `register_serve_host`, `88b50886:lanes-index:8064-8097`), for a socket
+    of the case's own (`_Listener`), in the contract's order:
+
+    - `pid=` and `started=` name this process, the listener's, where the
+      contract names the service's, its start UTC in whole seconds;
+    - `install=` is the size, mtime in nanoseconds and inode of `index`,
+      the `lanes-index` the case's client runs (`Estate.index`: the guard
+      runs the one beside its `lanes-edit.sh`, which is it), so the client
+      finds its own install and starts no service (section 8.1);
+    - `boot=` and `pidns=`, each where it can be read, are this host's, as
+      the client reads its own, so the client finds its own boot and pid
+      namespace.
+
+    Each key once, each line ending in `\\n`, and `install=` three decimals:
+    so the file is one a client can use under lane 3's OP-19 (b) too
+    (opensoft/openRepoTools#165 6880543448), not only under T512's reader."""
+    st = os.stat(index)
+    lines = [f"pid={os.getpid()}", f"started={_utc(time.time())}",
+             f"install={st.st_size} {st.st_mtime_ns} {st.st_ino}"]
+    host = {}
+    try:
+        host["pidns"] = os.readlink("/proc/self/ns/pid")
+    except OSError:
+        pass
+    try:
+        with open("/proc/sys/kernel/random/boot_id", "rb") as handle:
+            host["boot"] = handle.read(100).decode("ascii").strip()
+    except (OSError, UnicodeDecodeError):
+        pass
+    return lines + [f"{key}={value}" for key, value in sorted(host.items())]
+
+
 class _Listener:
     """A socket of the test's own at the contract's fixed path (section
     2.1), in a 0700 directory of this uid (section 2.2): it records what a
@@ -3570,7 +3606,19 @@ class _Listener:
     WITH `whole` (T237zt), each record is the request read to its `end`
     line, or to the client's close or a 1 s pause, not one `recv`'s bytes:
     a request of 64 KiB may come in more than one, and the case that sends
-    one must read every byte of it (`REQUEST_MAX`)."""
+    one must read every byte of it (`REQUEST_MAX`).
+
+    ITS OWNER FILE (T237zz; lane 5, opensoft/openRepoTools#165 6880500257):
+    T512's client, since its OP-17 (b) (`690c2cc3`, in `88b50886`), reads
+    `register.owner` after its connect and before it sends a byte, and a
+    file that is absent, or names no install, is unavailable: it closes the
+    socket and sends nothing (`88b50886:lanes-index:9160-9173`; socket API
+    section 13.8 at `fa613b9d`). So the listener writes the owner file the
+    service would (`_owner_lines`), whole, at 0600, by a temporary file and
+    a rename (`write_record`), after its bind and before its listen, as the
+    service writes its own before its socket can be reached (section 2.4,
+    "How it is written"). Nothing removes it, as nothing removes the
+    service's: the next service replaces it."""
 
     def __init__(self, est: Estate, hang: bool, whole: bool = False):
         import socket
@@ -3580,6 +3628,7 @@ class _Listener:
         self.path = run / "register.sock"
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.server.bind(str(self.path))
+        write_record(run / "register.owner", _owner_lines(est.index))
         self.server.listen(8)
         self.got, self.held, self.stop_ = [], [], threading.Event()
 
