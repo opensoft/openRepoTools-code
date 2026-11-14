@@ -7926,7 +7926,8 @@ REGISTER_SERVE_RETRY_S = 1.0
 #: 16, for three reasons:
 #: - memory: each connection holds at most one answer, which the service
 #:   counts as it builds it and never lets past 16 MiB (SHOULD 4), and a
-#:   request of at most 64 KiB, so 16 hold at most 256 MiB at the worst;
+#:   request of at most 64 KiB, so 16 hold at most 16 x (16 MiB + 64 KiB),
+#:   257 MiB of payload, at the worst, before Python's own overhead;
 #:   today's register answers in about 8 MB at most (`--all`: `LANES.md`'s
 #:   2,590,927 bytes and 39 logs' 5,182,523), about 128 MB for 16;
 #: - clients: one uid's environment runs its five lanes, each asking at
@@ -8509,16 +8510,22 @@ class RegisterService:
                 time.monotonic() + bound)
         except Exception:
             status = "eof"
+        # THE STATE UNDER THE LOCK, THE FILES AFTER IT (lane 3's Codex review
+        # of 88b50886, #165 6882203066, NIT 11): the stamp's removal and the
+        # log line wait for no one who needs `cond`.
+        outcome = ""
         with self.cond:
             if status == "ok" and epoch == self.epoch and not self.stopping:
                 self.child, self.state, self.last_used = child, "ready", time.monotonic()
-                child = None
-                register_serve_unstamp(self.paths)
-                register_serve_log(self.paths, "connected")
+                child, outcome = None, "connected"
             elif epoch == self.epoch:
                 self.state, self.lazy = "down", True
-                register_serve_log(self.paths, "connect failed")
+                outcome = "connect failed"
             self.cond.notify_all()
+        if outcome == "connected":
+            register_serve_unstamp(self.paths)
+        if outcome:
+            register_serve_log(self.paths, outcome)
         self.kill(child)
 
     def lost(self, why: str, at_once: bool = False) -> None:
@@ -8613,8 +8620,8 @@ class RegisterService:
                         break
                     if self.state == "down" and not self.lazy and now >= self.retry_at:
                         self.state, self.retry_at = "connecting", now + REGISTER_SERVE_RETRY_S
-                        threading.Thread(target=self.connect, args=(self.epoch,),
-                                         daemon=True).start()
+                        job = ("connect", self.epoch)
+                        break
                     if self.state == "ready" and self.queue:
                         job, self.state = self.queue.pop(0), "busy"
                         break
@@ -8630,6 +8637,17 @@ class RegisterService:
                     self.cond.wait(max(0.01, min(waits)))
                 if self.stopping:
                     return
+            if isinstance(job, tuple):
+                # THE CONNECT'S THREAD, STARTED OUTSIDE `cond` (NIT 11); one
+                # that cannot start is a failed connect (S2 (a)).
+                try:
+                    threading.Thread(target=self.connect, args=(job[1],), daemon=True).start()
+                except Exception:
+                    with self.cond:
+                        if job[1] == self.epoch and self.state == "connecting":
+                            self.state, self.lazy = "down", True
+                    register_serve_log(self.paths, "connect failed")
+                continue
             # A JOB THAT FAILS (lane 1's U5 gate, #165 6881993079, S2 (b)): a
             # fixed phrase, the held child replaced at once, the request
             # answered `unavailable`, and the worker carries on, so its state
