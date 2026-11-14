@@ -8377,14 +8377,17 @@ class RegisterService:
         self.lost("the configuration changed: reconnecting", at_once=True)
 
     def run(self, text: bytes, nonce: str, deadline: float, *, timer: bool = True,
-            at_once: bool = False) -> tuple:
+            at_once: bool = False, expired=None) -> tuple:
         """ONE EXCHANGE ON THE HELD CHILD, by the worker alone. At `deadline`,
-        the timer: `SIGINT`, which cancels the query, then the kill where the
-        marker has not come within 100 ms more (Y:4012-4016). A failed
-        statement leaves its transaction open, so a `ROLLBACK` follows it, on
-        the same rule. Returns (`ok`, `failed`, `slow` or `lost`; stdout;
-        SQLSTATE). A child it loses is started again as `lost` says, at once
-        where `at_once`."""
+        the timer (socket API 6.2, draft 12; Y:4012-4016): `SIGINT`, which
+        cancels the query, and `expired()`, where given, which answers the
+        request `unavailable slow` then; the child is killed only where the
+        request's marker has not come within 100 ms more. A child whose
+        marker comes is kept, and its cancelled transaction rolled back as a
+        failed statement's is. A failed statement leaves its transaction
+        open, so a `ROLLBACK` follows it, on the same rule. Returns (`ok`,
+        `failed`, `slow` or `lost`; stdout; SQLSTATE). A child it loses is
+        started again as `lost` says, at once where `at_once`."""
         import signal
         with self.cond:
             child = self.child
@@ -8393,22 +8396,33 @@ class RegisterService:
         status, out, state = self.exchange(child, text, nonce, deadline)
         if status == "timeout":
             child.send_signal(signal.SIGINT)
-            status, out, state = self.exchange(child, b"", nonce,
-                                               time.monotonic() + REGISTER_SERVE_KILL_S)
-            self.lost("a request's timer expired: psql was stopped", at_once)
+            if expired is not None:
+                expired()
+            status, _out, state = self.exchange(child, b"", nonce,
+                                                time.monotonic() + REGISTER_SERVE_KILL_S)
+            if status != "ok":
+                self.lost("a request's timer expired: psql was stopped", at_once)
+            elif state != "00000":
+                self.rollback(child, at_once)
             return ("slow" if timer else "lost"), b"", ""
         if status != "ok":
             self.lost("the held connection was lost", at_once)
             return "lost", b"", ""
         if state != "00000":
-            nonce2 = f"rollback-{os.urandom(4).hex()}"
-            again, _out, cleared = self.exchange(
-                child, f"ROLLBACK;\n\\warn '\\036LANES-SERVE {nonce2}' :SQLSTATE\n".encode(),
-                nonce2, time.monotonic() + register_serve_timer_ms(self.cfg) / 1000)
-            if again != "ok" or cleared != "00000":
-                self.lost("the held connection could not roll back", at_once)
+            self.rollback(child, at_once)
             return "failed", out, state
         return "ok", out, state
+
+    def rollback(self, child, at_once: bool) -> None:
+        """A failed or cancelled statement's open transaction rolled back on
+        the held child, under the request's timer; a child that cannot is
+        lost, as `run` says."""
+        nonce = f"rollback-{os.urandom(4).hex()}"
+        again, _out, cleared = self.exchange(
+            child, f"ROLLBACK;\n\\warn '\\036LANES-SERVE {nonce}' :SQLSTATE\n".encode(),
+            nonce, time.monotonic() + register_serve_timer_ms(self.cfg) / 1000)
+        if again != "ok" or cleared != "00000":
+            self.lost("the held connection could not roll back", at_once)
 
     def work(self) -> None:
         """THE WORKER, the held child's one user: one query at a time
@@ -8566,8 +8580,11 @@ class RegisterService:
         if base is not None:
             queries = queries + register_serve_replay_queries(base, held)
         nonce = f"q-{os.urandom(6).hex()}"
+        # `unavailable slow` AT THE EXPIRY (socket API 6.2, draft 12), not
+        # after the 100 ms the child has for its marker: `give` keeps the
+        # first answer.
         status, out, state = self.run(register_serve_query_text(schema, queries, nonce), nonce,
-                                      deadline)
+                                      deadline, expired=lambda: job.give(b"unavailable slow\n"))
         if status == "slow":
             return b"unavailable slow\n"
         if status == "failed":
