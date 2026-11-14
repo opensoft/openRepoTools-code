@@ -21209,7 +21209,7 @@ guard_bind_next_index() {   # <offer file>
 # all take: no 0, and no leading 0 (S3 of lane 3's Codex re-review of
 # spec#47 at `746e931c`, #165 6880414089).
 guard_bind_index_ok() {   # <index>
-  case "${1-}" in ''|0*|*[!0-9]*) return 1 ;; esac
+  case "${1-}" in ''|0*|*[!0123456789]*) return 1 ;; esac
   return 0
 }
 guard_bind_facts_of() {   # <offer file> <the record's out>
