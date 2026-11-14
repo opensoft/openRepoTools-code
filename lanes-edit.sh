@@ -22876,7 +22876,11 @@ guard_bind_settle() {
 #                 nothing. The record is kept, so the copies are
 #      LR007 `another-write`
 #                 the record settled, then 2 with the server's message: the
-#                 copies go with it
+#                 copies go with it. A record that cannot be settled is kept,
+#                 and so are the copies; the 2 is the same, and its message
+#                 says the record could not be settled (lane 3's ruling on S3
+#                 of its Codex delta review of spec#47's draft 13, #165
+#                 6880978929)
 #      LR007 `generation`
 #                 2 with a plain rerun's refusal of a record of another
 #                 generation (T412's text); the record and the copies are kept
@@ -22973,8 +22977,22 @@ guard_bind_rerun() {   # <facts file> <out, of the record's own form, or empty>
         gbe_why="$(wr_text_other_generation)"
         gbe_rc=2
       else
-        guard_bind_settle || note "guard-bind --body: the pending record $gbe_rec could not be removed after LR007 another-write; the next \`2\` looks it up again."
-        gbe_why="${gbe_msg:-ERROR:  LR007: another-write} (F3's lookup of write $WR_ID: that id is another write's in the register's journal, so no call of this bind's write can commit under it; its pending record is removed, and the next \`2\` binds anew)"
+        # THE WORDS SAY WHAT THE SETTLE DID (lane 3's ruling on S3 of its Codex
+        # delta review of spec#47's draft 13, #165 6880978929; the contract,
+        # section 3): the pending record and its copies go only where
+        # `guard_bind_settle` succeeds, and stay where it fails (the outer
+        # gathers them again, so they stay in the outcome too). The 2 is the
+        # same on both, and so is the behaviour: only the diagnostic was wrong.
+        # THE PATH COMES LAST, after the words that matter: `guard_bind_oneline`
+        # cuts the `why=` at 400 characters, and a long state path must not
+        # take "kept" with it.
+        if guard_bind_settle; then
+          gbe_end="its pending record is removed, and the next \`2\` binds anew"
+        else
+          note "guard-bind --body: the pending record $gbe_rec could not be removed after LR007 another-write; the next \`2\` looks it up again."
+          gbe_end="its pending record could not be settled, so it and its copies are kept, and the next \`2\` looks it up again; the record is $gbe_rec"
+        fi
+        gbe_why="${gbe_msg:-ERROR:  LR007: another-write} (F3's lookup of write $WR_ID: that id is another write's in the register's journal, so no call of this bind's write can commit under it; $gbe_end)"
         gbe_rc=2
       fi ;;
     *)
