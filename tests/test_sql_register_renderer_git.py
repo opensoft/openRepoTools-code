@@ -126,7 +126,6 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import REPO, WINDOWS_SKIP
-from pgcluster import TEST7_OPERATOR
 from sql_register_helpers import PSQL_SHIM, PSQL_SHIM_CONTROL, PSQL_SHIM_LOG, flipped_copy
 
 pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
@@ -141,8 +140,13 @@ SCHEMA = "lanes_register"
 WRITER_ROLE = "lanes_register_writer"
 
 #: Test 7's operator lane, and the two lanes whose checkouts race: `repoW-1`
-#: and `repoD-1` are LIVE rows of test 7's register.
-OPERATOR = TEST7_OPERATOR
+#: and `repoD-1` are LIVE rows of test 7's register. `OPERATOR` is T227b's
+#: `TEST7_OPERATOR` in `tests/pgcluster.py`, written out here: a name imported
+#: from there at module level fails this module's collection wherever T227 has
+#: not landed, and no landing gate skips a collection error (lane 3, #165
+#: 6877365776, point 2). Each case checks that the two agree
+#: (`_operator_is_test7s`).
+OPERATOR = "repoA-2"
 L1, L2 = "repoW-1", "repoD-1"
 WS = "Eagle"
 AUTHOR = "T270 writer <t270@example.invalid>"
@@ -1071,8 +1075,29 @@ def _wrote(proc, what: str) -> None:
 UUID_L1 = "eeeeeeee-0002-4000-8000-00000000e002"
 
 
+def _operator_is_test7s() -> None:
+    """THE OPERATOR'S ONE VALUE: `OPERATOR` equals T227b's `TEST7_OPERATOR`.
+    The name is imported here, when a case runs, and never at module level,
+    so the module collects where T227 has not landed. Every case here waits
+    for T227 anyway, since its estate is built on `pg_imported` and
+    `pg_cluster.imported_register`, both T227's. So on a tree without the
+    name each case fails here, naming T227, and on a tree whose value
+    differs each case fails here, before it asks for the engine."""
+    try:
+        from pgcluster import TEST7_OPERATOR
+    except ImportError as exc:
+        pytest.fail(f"tests/pgcluster.py has no TEST7_OPERATOR ({exc}): every case "
+                    f"here waits for T227, whose T227b adds it with `pg_imported`",
+                    pytrace=False)
+    assert OPERATOR == TEST7_OPERATOR, (
+        f"this module's OPERATOR {OPERATOR!r} is not pgcluster's TEST7_OPERATOR "
+        f"{TEST7_OPERATOR!r} (T227b): change the copy here to match")
+
+
 def _estate(request, tmp_path: Path, **kw) -> RenderEstate:
-    """A `RenderEstate` on `pg_imported`, or `pg` where `stage` is `empty`."""
+    """A `RenderEstate` on `pg_imported`, or `pg` where `stage` is `empty`,
+    once `OPERATOR` is checked against T227b's (`_operator_is_test7s`)."""
+    _operator_is_test7s()
     stage = kw.get("stage", "primary")
     db = request.getfixturevalue("pg" if stage == "empty" else "pg_imported")
     cluster = request.getfixturevalue("pg_cluster")
