@@ -3,7 +3,9 @@
 AT-F1; AT-8; T273; FR-051, FR-052, FR-059; also US6) (opensoft/openRepoTools#165).
 
 T273 writes this module: 21 tests, 20 from AT-8 (11), AT-F1 (7) and section
-4.2 (2), and T304's own (R-F10-34). T304's own test,
+4.2 (2), and T304's own (R-F10-34), and T273d a 22nd: AT-F2's rollback rerun
+after a 3 with a files-mode write between (lane 3's #165 6814260122), not yet
+in B15's T273 text. T304's own test,
 `test_rollback_steps_0_and_1_run_only_against_a_scratch_schema` (NOTES
 question 6; B10 tasks:1011-1024; `PLACEMENT.md` section 4), is phase 1's,
 and lane 3's T304 selects it with its word `sql_register_rollback and
@@ -68,7 +70,9 @@ READINGS, NOT FOUND IN A CONTRACT:
   read by the test, shows the switch, the marker and the head unchanged.
 - THE CONSTANT: the shipped `lanes-index` must carry `RENDER_GIT_HALF =
   False`. Each id says so where it does not (lane 3's T328 sets it True), since
-  the scratch-schema rule holds only while it is unset.
+  the scratch-schema rule holds only while it is unset. Once T328 has set it,
+  with one `RENDER_GIT_HALF = True` line, each id skips before its setup,
+  saying why (`CONSTANT_SET`; tasks:2511). Anything else fails.
 """
 
 from __future__ import annotations
@@ -96,6 +100,35 @@ from sql_register_helpers import (LANES_INDEX, PSQL_SHIM, PSQL_SHIM_CONTROL, PSQ
                                   guard_strip_env)
 
 pytestmark = [WINDOWS_SKIP]
+
+#: THE LANDING GATE'S TABLE (T280; `tests/sql_register_gate.py` reads it): the
+#: tasks each id waits for, from T273's Order (tasks:2512 at 204145ae). In a
+#: gated run an id is skipped while any of its tasks has no marker in
+#: `tests/sql_register_landed/`. T281 removes it with the gate.
+SQL_REGISTER_GATE_TABLE = {
+    "test_a_cutover_and_a_rollback_leave_exactly_two_operator_entries": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_a_files_mode_claim_after_rollback_leaves_one_holder": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_a_missed_primary_writer_is_refused_after_rollback": ("T111", "T121", "T304", "T326", "T327", "T415", "T416", "T420"),  # T273; tasks:2512
+    "test_a_missed_writer_is_refused_once_the_partitioned_rollback_completes": ("T111", "T121", "T304", "T326", "T327", "T415", "T416", "T420"),  # T273; tasks:2512
+    "test_a_reimport_after_a_rollback_continues_the_journal": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_a_rerun_after_an_unconfirmed_removal_and_a_files_mode_write_ends_0_with_the_marker_absent": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_a_rollback_entry_over_a_recorded_divergence_is_lr012": ("T107", "T109"),  # T273; tasks:2512
+    "test_a_rollback_finds_a_stray_not_yet_recorded_records_it_and_exits_2": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_a_rollback_goes_back_to_its_check_on_each_lost_turn_code": ("T326",),  # T273; tasks:2512
+    "test_a_rollback_goes_back_to_its_check_past_a_last_error_and_refuses_a_divergence_recorded_meanwhile": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_a_rollback_rerun_resumes_after_its_own_entry": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_a_rollback_retries_a_lost_turn_on_a_fresh_k_through_its_check": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_a_write_that_committed_before_the_rollback_is_found_by_its_rerun_after_it": ("T121", "T304", "T326", "T327", "T415", "T416", "T417"),  # T273; tasks:2512
+    "test_rollback_exits_2_on_lr012_naming_the_divergence_and_both_ways_out": ("T107", "T109", "T121", "T304"),  # T273; tasks:2512
+    "test_rollback_from_a_partitioned_clone_is_refused_and_removes_no_marker": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_rollback_leaves_files_byte_identical_marker_gone_and_sql_writes_refused": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_rollback_refuses_to_start_while_the_mirror_is_diverged": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_rollback_steps_0_and_1_run_only_against_a_scratch_schema": ("T107", "T109", "T121", "T304"),  # T273; tasks:2512
+    "test_rollback_with_the_database_stopped_is_refused_and_changes_neither_switch_nor_marker": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_the_marker_removal_entry_is_written_with_the_switch_in_step_1": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_the_rollback_oracle_fails_on_a_last_fetched_tip_writer": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_the_rollback_oracle_fails_on_a_switch_reset_when_the_database_returns": ("T121", "T304", "T326"),  # T273; tasks:2512
+}
 
 #: The scratch schema the cases bootstrap: any `register_schema=` but the
 #: default (Y:2323; lane 2's reading, NOTES question 6).
@@ -161,10 +194,32 @@ def _said(proc) -> str:
             f"\n--- stderr ---\n{(proc.stderr or '')[-3000:]}")
 
 
+def _render_git_half() -> list:
+    """The shipped `lanes-index`'s `RENDER_GIT_HALF = ` values, each line's
+    `True` or `False`; none where it cannot be read."""
+    try:
+        return RENDER_GIT_HALF_LINE.findall(LANES_INDEX.read_bytes())
+    except OSError:
+        return []
+
+
+#: T328'S CONSTANT SET (tasks:2511; lane 2, #165 6859084292; lane 3's sweep,
+#: #165 6851829112). T304's own test reads the shipped `lanes-index`'s
+#: `RENDER_GIT_HALF = ` line at collection, before its setup. With one True
+#: line, T328's, each of its six ids skips with this reason, which never holds
+#: `tests/pgcluster.py`'s `SKIP_TAG`, so no run counts it as a real-engine
+#: skip. With one False line they run. Anything else fails at
+#: `_constant_unset()`.
+CONSTANT_SET = (
+    "RENDER_GIT_HALF = True in the shipped lanes-index (lane 3's T328): the scratch-schema "
+    "rule this test checks ends with T328, and test 8's and AT-F1's cases carry steps 0 and 1 "
+    "on lanes_register")
+
+
 def _constant_unset() -> None:
     """The shipped `lanes-index` carries Q6(c)'s constant unset: the
     scratch-schema rule this test checks holds only while it does."""
-    found = RENDER_GIT_HALF_LINE.findall(LANES_INDEX.read_bytes())
+    found = _render_git_half()
     assert found == [b"False"], (
         f"{LANES_INDEX} carries {found!r} for `RENDER_GIT_HALF = `, not one False line: T304's "
         f"own test runs the shipped lanes-index with the constant unset (B10 tasks:1015), and "
@@ -578,6 +633,7 @@ T304_CASES = {
 }
 
 
+@pytest.mark.skipif(_render_git_half() == [b"True"], reason=CONSTANT_SET)
 @pytest.mark.parametrize("case", list(T304_CASES))
 def test_rollback_steps_0_and_1_run_only_against_a_scratch_schema(rb_register, case):
     """T304's own test (R-F10-34): steps 0 and 1 of the shipped `lanes-index
@@ -605,10 +661,14 @@ def test_rollback_steps_0_and_1_run_only_against_a_scratch_schema(rb_register, c
 #: WHAT EACH WAITS FOR. Every estate case fails until lane 3's T327 (the
 #: cutover's push and read-back, so the marker reads `present`), lane 4's
 #: T415 and T416 (a write on primary, and its render's fork), lane 3's T321 to
-#: T323 (the render), and T326 (step 0's fetch and steps 2 to 4). The missed
-#: writer's refusals also wait for lane 4's T420 (D10's refusals on primary)
-#: and T421 (`claim` on primary), and case (i) for T417 (exit 3 and its
-#: rerun). `test_a_rollback_entry_over_a_recorded_divergence_is_lr012` (direct
+#: T323 (the render), and T326 (step 0's fetch and steps 2 to 4). Of the
+#: missed writer's ids, the eight `commit-*` also wait for lane 4's T420
+#: (D10's refusals on primary), and the other 40 for lane 1's T111 (AT-3's
+#: line in check 4's 69); case (i) also waits for T417 (exit 3 and its
+#: rerun). No id waits for lane 4's T421 or lane 5's T507: none runs the
+#: guard, and with T421's merge reverted the `claim` ids fail as they do with
+#: it (T273's Order, tasks:2512 at 204145ae; lane 2's RB15; lane 4, #165
+#: 6826679959). `test_a_rollback_entry_over_a_recorded_divergence_is_lr012` (direct
 #: calls, lane 1's T107) and `test_rollback_exits_2_on_lr012_naming_the_
 #: divergence_and_both_ways_out` (a False copy on the scratch schema, T304)
 #: need neither, and can pass on line R now. The four FP lost-turn ids need
@@ -633,6 +693,12 @@ def test_rollback_steps_0_and_1_run_only_against_a_scratch_schema(rb_register, c
 #: - AT-F1's removal entry and rerun cases run on the clean estate, not after
 #:   a single-write import: what they check is step 1 and the rerun, which the
 #:   import does not change.
+#: - (h)'s FP register is a clean estate at `Register-Seq: 1`: the import at
+#:   0, whose images are the workspace's render set, and the cutover at 1, the
+#:   head, with no divergence. The fake answers from it every read a try makes
+#:   before step 1, T326's git half's two included (`HEAD_READ_MARK` and
+#:   `IMAGE_READ_MARK`), so each try's check passes and reaches step 1's lost
+#:   turn (lane 3's #165 6813528630).
 
 EM, DOT = chr(0x2014), chr(0xB7)
 #: AT-3's line, which the missed writer's refusal carries (TP:1651-1652).
@@ -652,11 +718,21 @@ REGISTER_SEQ = re.compile(r"^Register-Seq: ([0-9]+)$", re.M)
 #: The rollback's read, and its step-1 call, as the shim and the fake see them.
 READ_MARK, STEP_1_MARK = "diverged_sha", "commit_write("
 EXIT_BUSY = 75
+#: A push it cannot confirm (exit-codes.md's 3; ops:340).
+EXIT_IN_DOUBT = 3
 
 
 def _imp():
     """`test_sql_register_import`: test 7's fixture register and cutover host."""
     import test_sql_register_import as module
+    return module
+
+
+def _cut():
+    """`test_sql_register_cutover`: AT-F2's fixture, `F2Register`, test 7's
+    cutover host with test 5's `git` wrapper, whose arms leave a push
+    unconfirmed, and `_first_reach`."""
+    import test_sql_register_cutover as module
     return module
 
 
@@ -745,6 +821,25 @@ def _real_git() -> str:
     return found
 
 
+def _lane_checkout(origin: Path, checkout: Path, lane: str, env: dict) -> Path:
+    """`<c>`, THE WRITE LANE'S OWN CHECKOUT (lane 3's batch g Q119, #165
+    6813027223): beside the checkout `workspace.yaml` names as W, at
+    `<W>-lanes/<lane>`, W being its real path, as `lane_checkout_path` puts
+    it (Amendment 23 S1). On primary a write reads its author, its pending
+    hand edits and its `repos.tsv` from there, and refuses 2 where it is not
+    there, "Nothing was sent" (B15 tasks:1154). A clone of W's own origin, as
+    `lane-checkout <lane> --create` makes one, made after the case's last
+    push from W, as LX's T253f and N2's T243f make theirs. One that is
+    already there is kept, so a register that makes its own keeps it."""
+    real = Path(os.path.realpath(checkout))
+    target = real.parent / f"{real.name}-lanes" / lane
+    if not target.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "clone", "-q", str(origin), str(target)], check=True, env=env,
+                       capture_output=True, stdin=subprocess.DEVNULL)
+    return target
+
+
 class MissedWorkstation:
     """ws2, THE MISSED WORKSTATION (TP:1600-1604): a clone of origin of its
     own, its own `$HOME` and `workspace.yaml`, a `mode=primary`
@@ -760,6 +855,9 @@ class MissedWorkstation:
         self.clone = self.home / "projects" / "wip"
         subprocess.run(["git", "clone", "-q", str(reg.origin), str(self.clone)], check=True,
                        env=reg.env, capture_output=True, stdin=subprocess.DEVNULL)
+        # `MISSED_LANE`'s `<c>`, cloned with W: a ws2 kept behind the
+        # rollback's push keeps it behind too (Q119), and `fetch` moves both.
+        self.c = _lane_checkout(reg.origin, self.clone, MISSED_LANE, reg.env)
         (agents / "workspace.yaml").write_text(f"repository: {reg.origin}\npath: {self.clone}\n",
                                                encoding="utf-8")
         self.conf = _private(self.root / "conf" / "lanes-index.conf",
@@ -796,6 +894,8 @@ class MissedWorkstation:
 
     def fetch(self) -> None:
         self.git("fetch", "-q", "origin")
+        subprocess.run(["git", "-C", str(self.c), "fetch", "-q", "origin"], check=True,
+                       env=self.env, capture_output=True, stdin=subprocess.DEVNULL)
 
     def edit(self, *args: str, env: dict | None = None) -> subprocess.CompletedProcess:
         child = dict(self.env)
@@ -919,7 +1019,8 @@ class RollbackEstate:
     # ------------------------------------------------------------ the commands
     def prepare(self) -> None:
         """The cutover, then `writes` writes on primary from ws1, each
-        rendered: `k` is the head."""
+        rendered: `k` is the head. The operator lane's `<c>` is made after
+        the cutover's push from W, before the first write."""
         proc = self.reg.cutover()
         assert proc.returncode == 0, f"the cutover (T116) failed:\n{_said(proc)}"
         switch = self.switch()
@@ -927,6 +1028,7 @@ class RollbackEstate:
             f"after the cutover the switch reads {switch['mode']} with the marker "
             f"{switch['marker_state']}: the marker's push, read-back and record_marker are lane "
             f"3's T327, so test 8's estate fails until it lands")
+        self.c = _lane_checkout(self.reg.origin, self.reg.ws, self.imp.OPERATOR, self.reg.env)
         for n in range(1, self.writes + 1):
             proc = self.reg.write(f"test 8: write {n}")
             assert proc.returncode == 0, (
@@ -1474,21 +1576,106 @@ def _canned_read(version: int) -> str:
     return "".join(f"{row}\n{NEXT}\n" for row in rows)
 
 
+#: STEP 0'S GIT HALF AS THE FAKE ANSWERS IT (FP; lane 3's #165 6813528630, a
+#: SHOULD from T326's builder). Right before step 1, T326 fetches `origin
+#: main` and checks it as T322 recognises a divergence (B15 tasks:1546, "Step
+#: 0's git half"). That makes two reads the rollback's own does not, each
+#: answered by its own rule, placed before `READ_MARK`'s:
+#: - T322's head read, after the fetch (`_render_read_head`,
+#:   `4353eb08:lanes-index:15025`): four SELECTs, the window, the head with
+#:   the switch, the resolved strays, and `mirror_state mir`'s `diverged_sha`
+#:   and `last_error`. That last SELECT holds `READ_MARK` too, so without a
+#:   rule of its own the fake gave it the rollback read's six answers, and
+#:   the head read failed: 69. Since T326's `01cd35c` the second SELECT also
+#:   reads the switch's `marker_state`, and any answer but those three fields
+#:   is refused (`ed8e7d2:lanes-index:14995`, `:15020-15023`; lane 3's #165
+#:   6814531692, a SHOULD from T326's fixer);
+#: - T301's image read at `m` (`register_render_queries`, `:2265`): five
+#:   SELECTs, which T322's image half replays and compares with the render
+#:   set at the commit carrying `m` (`render_pass`, `:15377-15398`). No rule
+#:   matched it, so the fake answered nothing: 69.
+#: Each mark is a text of that request alone among the case's requests.
+HEAD_READ_MARK, IMAGE_READ_MARK = "FROM mirror_state mir", "FROM journal_files f"
+
+
+def _copy_field(value) -> str:
+    """One field as `COPY ... TO STDOUT` writes it in TEXT format, which
+    `_pg_unescape` reads back: `\\N` for NULL, `t` or `f` for a boolean, and
+    a backslash, a tab, an LF or a CR escaped."""
+    if value is None:
+        return "\\N"
+    if isinstance(value, bool):
+        return "t" if value else "f"
+    return (str(value).replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
+            .replace("\r", "\\r"))
+
+
+def _copy_answer(selects: list) -> str:
+    """The fake's stdout for one request of SELECTs, as `_query_many` reads
+    it: each SELECT's rows, one line each, then the marker line."""
+    return "".join("".join("\t".join(_copy_field(field) for field in row) + "\n"
+                           for row in rows) + f"{NEXT}\n" for rows in selects)
+
+
+def _canned_head_read(version: int) -> str:
+    """T322's head read as the fake answers it, from the same canned register
+    as `_canned_read`: the window, the head 1 with the switch at `primary`
+    and the marker `present` (T326's three fields), no resolved stray, and
+    neither a divergence nor a `last_error`."""
+    return _copy_answer([[(version, version, version)], [(1, "primary", "present")], [],
+                         [(None, None)]])
+
+
+def _image_lines(data: bytes) -> tuple:
+    """A file's lines, and whether it ends with an LF, as T301's
+    `register_image_bytes` joins them back into `data`."""
+    text = data.decode("utf-8")
+    if not text:
+        return [], True
+    final = text.endswith("\n")
+    return (text[:-1] if final else text).split("\n"), final
+
+
+def _canned_images(version: int, rendered: dict, store: bytes) -> str:
+    """T301's image read at seq 1 as the fake answers it: the import at 0,
+    whose `create` and `append` edits rebuild `rendered`, the render set at
+    the commit carrying `Register-Seq: 1` (`{path: bytes}`), each path proved
+    by its `journal_files` row; then the cutover's entry at 1, which adds
+    `lanes/STORE`, outside the render set. So the images at `m` are the
+    render set there, and T322's image half finds no divergence."""
+    edits, files = [], []
+    for seq, paths in ((0, rendered), (1, {"lanes/STORE": store})):
+        ordinal = 0
+        for path in sorted(paths):
+            lines, final = _image_lines(paths[path])
+            ordinal += 1
+            edits.append((seq, ordinal, "create", path, None, None, None, None))
+            for number, line in enumerate(lines, 1):
+                ordinal += 1
+                edits.append((seq, ordinal, "append", path, number, None, line, None))
+            files.append((seq, path, True, hashlib.sha256(paths[path]).hexdigest(), final))
+    return _copy_answer([[(version, version, version)], [(1, 0)],
+                         [(0, "import"), (1, "cutover")], edits, files])
+
+
 @pytest.mark.parametrize("code", ["40001", "40P01", "55P03", "LR001"])
 def test_a_rollback_goes_back_to_its_check_on_each_lost_turn_code(tmp_path, code):
     """Test 8 (h), FP (TP:1700-1706): the register's fake `psql` answers the
-    rollback's reads from a canned register and every step-1 call with exit
-    3 and `ERROR:  <code>: <message>`, and `LANES_REGISTER_DEADLINE_S=6`
-    ends the tries: the fake's log shows two step-1 calls or more, each after
-    the first preceded by a head read, and the wrapper's a fetch of `origin
-    main` between each two; the exit is 75 (AT-D9's row holds its bound).
-    Runs by T203's flipped copy, on a files workspace whose origin carries
-    the cutover's `lanes/STORE` at `Register-Seq: 1`, the canned head. Needs
-    no engine; fails until T326, at its own assertion."""
+    rollback's reads, and step 0's git half's two, T322's head read and
+    T301's image read (`HEAD_READ_MARK`, `IMAGE_READ_MARK`), from a canned
+    register whose images at seq 1 are the workspace's render set there, and
+    every step-1 call with exit 3 and `ERROR:  <code>: <message>`, and
+    `LANES_REGISTER_DEADLINE_S=6` ends the tries: the fake's log shows two
+    step-1 calls or more, each after the first preceded by a head read, and
+    the wrapper's a fetch of `origin main` between each two; the exit is 75
+    (AT-D9's row holds its bound). Runs by T203's flipped copy, on a files
+    workspace whose origin carries the cutover's `lanes/STORE` at
+    `Register-Seq: 1`, the canned head. Needs no engine; fails until T326,
+    at its own assertion."""
     imp = _imp()
     ws = imp.Workspace(tmp_path / "w", imp.SEED)
-    ws.commit({"lanes/STORE": "store=primary\ndatabase=register-test\n"},
-              "LANES(repoA-2@Eagle): cutover\n\nRegister-Seq: 1")
+    cutover = ws.commit({"lanes/STORE": "store=primary\ndatabase=register-test\n"},
+                        "LANES(repoA-2@Eagle): cutover\n\nRegister-Seq: 1")
     copy = imp.flipped_indexer(tmp_path / "flip")
     version = int(re.search(r"^REGISTER_SCHEMA_VERSION = ([0-9]+)$",
                             copy.read_text(encoding="utf-8"), re.M).group(1))
@@ -1497,6 +1684,9 @@ def test_a_rollback_goes_back_to_its_check_on_each_lost_turn_code(tmp_path, code
     _script(bin_ / "git", GIT_WRAPPER)
     log, answers = tmp_path / "psql.log", tmp_path / "answers.json"
     answers.write_text(json.dumps([
+        {"match": HEAD_READ_MARK, "stdout": _canned_head_read(version)},
+        {"match": IMAGE_READ_MARK, "stdout": _canned_images(
+            version, ws.rendered(cutover), ws.blob(cutover, "lanes/STORE"))},
         {"match": READ_MARK, "stdout": _canned_read(version)},
         {"match": "commit_write", "exit": 3,
          "stderr": f"ERROR:  {code}: the test's lost turn ({code})\n"}]), encoding="utf-8")
@@ -1684,6 +1874,68 @@ def test_a_rollback_rerun_resumes_after_its_own_entry(request, tmp_path):
     _assert_rolled_back(estate, again)
     assert estate.journal()[-1][0] == k + 1, "the rerun wrote an entry of its own"
     assert estate.outage_file().exists(), "the rerun did not declare first"
+
+
+def test_a_rerun_after_an_unconfirmed_removal_and_a_files_mode_write_ends_0_with_the_marker_absent(
+        pg, tmp_path):
+    """AT-F2, "Unconfirmed", the rollback's removal push (B15 TP:5563-5566), with
+    ops:338's files-mode write between the 3 and the rerun (lane 3's #165
+    6814260122: T326's review, MUST-1, and its probe). On AT-F2's fixture,
+    after a clean cutover and `rollback --hold-marker`, the removal is pushed
+    and the read-back's fetch fails: `rollback` exits 3, the marker stays
+    `removing`, and origin's tip is the removal, with `lanes/STORE` gone and
+    `Register-Seq: k+1`. With the marker gone from origin, a files-mode write
+    lands on it (ops:338, "after it, a files-mode write lands"), a commit of
+    `lanes/LANES.md` from another clone, as the probe makes it. The rerun
+    reads origin back first (ops:340; B15 tasks:1549), finds its removal, and
+    ends 0: the switch reads `files` with the marker `absent`, it pushes
+    nothing, the write stays origin's tip, and no divergence is recorded.
+    Fails until T326's fix round, and T327 for the cutover's marker."""
+    cut = _cut()
+    f2 = cut.F2Register(tmp_path / "e", pg)
+    reg, imp = f2.reg, f2.imp
+    cutover = reg.cutover(conf=f2.conf)
+    assert cutover.returncode == 0, f"[cutover] `cutover --import <C>` (T116):\n{_said(cutover)}"
+    switch = imp._switch(pg)
+    assert switch["marker_state"] == "present", (
+        f"[cutover] the marker reads {switch['marker_state']}: the cutover's push, its read-back "
+        f"and record_marker are lane 3's T327")
+    k = imp._head(pg)
+    held = reg.index("rollback", "--hold-marker", conf=f2.conf)
+    assert held.returncode == 0, f"[hold-marker] `rollback --hold-marker` (T326):\n{_said(held)}"
+    f2.arm({"call": "fetch", "mode": "fail", "after_push": True})
+    proc = reg.index("rollback", conf=f2.conf)
+    assert proc.returncode == EXIT_IN_DOUBT, (
+        f"[3] the removal pushed, its read-back's fetch failed: not in doubt (T326):\n"
+        f"{_said(proc)}")
+    switch = imp._switch(pg)
+    assert (switch["mode"], switch["marker_state"]) == ("files", "removing"), f"[3] {switch}"
+    removal = reg.origin_tip()
+    assert REGISTER_SEQ.findall(reg.origin_git("log", "-1", "--format=%B", removal)) == [
+        str(k + 1)], f"[3] origin's tip {removal} does not carry Register-Seq: {k + 1}"
+    assert "lanes/STORE" not in reg.origin_git("ls-tree", "-r", "--name-only", removal,
+                                               "lanes/"), "[3] the removal is not on origin"
+    f2.arm()
+    clone = reg.other_clone("files-mode")
+    path, line = "lanes/LANES.md", "a files-mode line, after the removal (ops:338)"
+    text = (clone / path).read_text(encoding="utf-8") + line + "\n"
+    wrote = reg.push_from(clone, path, text, "LANES(repoA-2@Raven): a files-mode write")
+    assert wrote != removal, "[files-mode write] it did not land on origin"
+    f2.arm()
+    rerun = reg.index("rollback", conf=f2.conf)
+    assert rerun.returncode == 0, (
+        f"[rerun] after the 3 and a files-mode write, the rerun did not end 0: it reads origin "
+        f"back first and finds its removal (T326's fix round, MUST-1):\n{_said(rerun)}")
+    calls = f2.calls()
+    assert cut._first_reach(calls) == "fetch", f"[rerun] it reached origin first by: {calls}"
+    assert not any(c["sub"] == "push" for c in calls), "[rerun] the rerun pushed again"
+    switch = imp._switch(pg)
+    assert (switch["mode"], switch["marker_state"]) == ("files", "absent"), f"[rerun] {switch}"
+    assert reg.origin_tip() == wrote, "[rerun] the files-mode write is no longer origin's tip"
+    assert line in reg.origin_git("show", f"{wrote}:{path}"), "[rerun] the write's line is gone"
+    mirror = imp._rows(pg, "SELECT diverged_sha FROM mirror_state")[0]
+    assert mirror["diverged_sha"] is None, (
+        f"[rerun] the files-mode write was recorded as a divergence: {mirror}")
 
 
 def test_a_reimport_after_a_rollback_continues_the_journal(request, tmp_path):
