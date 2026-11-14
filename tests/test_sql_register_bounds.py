@@ -151,6 +151,67 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("git") is None,
     reason="the lane tooling is bash over git")]
 
+#: THE LANDING GATE'S TABLE (T280's reader, `tests/sql_register_gate.py`; T281
+#: removes it in the last set). No `"*"` row: the module's waits share no task.
+#: Each function or id waits for its owner's fails-until: T220's Order, T257's
+#: (its As built line governs the ids it names; lane 3, #165 6877453897),
+#: T278's, and T237's service ids. Lane 2's plan GP-24, v2.
+SQL_REGISTER_GATE_TABLE = {
+    "test_a_burst_of_ten_over_a_delayed_tls_link_commits_each_once_or_exits_75_with_nothing_written": ("T103", "T104", "T106", "T111", "T112", "T113", "T114", "T413", "T414", "T415", "T417"),  # T257; tasks:2451, :2455
+    "test_a_connect_timeout_under_2_is_refused_at_load_config": ("T103", "T104", "T106", "T413", "T414", "T415", "T417"),  # T257; tasks:2455
+    "test_a_cutover_whose_call_expires_leaves_the_switch_unknown_and_its_rerun_reads_it_first": ("T116", "T304", "T324", "T326", "T327"),  # T278; tasks:2558
+    "test_a_record_marker_that_expires_leaves_the_marker_adding_and_writes_refusing": ("T116", "T304", "T324", "T326", "T327", "T412", "T415"),  # T278; tasks:2558
+    "test_a_register_path_drops_each_inherited_pg_variable_before_psql": ("T106",),  # T257; tasks:2455
+    "test_a_rollback_that_keeps_losing_its_turn_exits_75_at_the_deadline_with_nothing_written": ("T116", "T304", "T324", "T326", "T327"),  # T278; tasks:2558
+    "test_a_rollback_whose_first_call_expires_rereads_the_switch": ("T116", "T304", "T324", "T326", "T327"),  # T278; tasks:2558
+    "test_a_slow_statement_meets_57014_before_the_client_timer": ("T103", "T115", "T117", "T121", "T507"),  # T220; tasks:2103
+    "test_a_stray_ways_out_commit_call_is_in_doubt_like_a_writers": ("T116", "T304", "T324", "T326", "T327"),  # T278; tasks:2558
+    "test_a_waiting_migration_gives_up_at_its_own_lock_timeout": ("T103", "T115", "T117", "T121", "T507"),  # T220; tasks:2103
+    "test_an_orphaned_writer_transaction_is_ended_by_the_idle_bound": ("T103", "T104", "T106", "T112", "T413", "T414", "T415", "T417"),  # T257; tasks:2451, :2455
+    "test_connect_timeout_and_register_addresses_set_each_calls_timer": ("T106",),  # T257; tasks:2451, :2455
+    "test_each_database_path_exits_inside_its_bound": ("T103", "T115", "T117", "T121", "T507"),  # T220; tasks:2103
+    "test_each_register_call_is_one_request": ("T103", "T104", "T106", "T413", "T414", "T415", "T417"),  # T257; tasks:2455
+    "test_import_and_reconcile_set_their_bounds_at_connect": ("T103", "T115", "T117", "T121", "T507"),  # T220; tasks:2103
+    "test_over_a_delayed_tls_link_no_healthy_call_meets_its_timer": ("T103", "T104", "T106", "T111", "T112", "T113", "T114", "T413", "T414", "T415", "T417"),  # T257; tasks:2451, :2455
+    "test_postgres_store_register_roles_connect_by_their_own_url_with_one_joined_request": ("T106",),  # T220; tasks:2103
+    "test_the_aborts_call_that_expires_is_run_again_or_found_done_by_its_rerun": ("T116", "T304", "T324", "T326", "T327"),  # T278; tasks:2558
+    "test_the_joined_snapshot_logs_one_statement_and_reads_byte_identical_to_the_one_by_one_form": ("T103", "T104", "T106", "T112", "T114", "T413", "T414", "T415", "T417"),  # T257; tasks:2451, :2455
+    "test_the_lookups_tries_start_inside_the_window_and_end_in_3": ("T114", "T227", "T228"),  # T257; tasks:2451, :2455
+    "test_the_lookups_wait_counts_from_the_snapshot_calls_end_and_gets_no_lr011": ("T103", "T104", "T106", "T111", "T112", "T113", "T114", "T413", "T414", "T415", "T417"),  # T257; tasks:2451, :2455
+    "test_the_outage_declare_probe_ends_inside_its_bound_and_the_declaration_follows_the_rule": ("T103", "T115", "T117", "T121", "T507"),  # T220; tasks:2103
+    "test_a_cutover_whose_call_expires_leaves_the_switch_unknown_and_its_rerun_reads_it_first[F3]": ("T116", "T304", "T324", "T326"),  # T278; tasks:2558
+    "test_a_slow_statement_meets_57014_before_the_client_timer[cutover]": ("T116", "T304", "T324", "T326", "T327"),  # T278; tasks:2558
+    "test_a_slow_statement_meets_57014_before_the_client_timer[lookup]": ("T103", "T104", "T106", "T412", "T413", "T414", "T415", "T417"),  # T257; tasks:2455
+    "test_a_slow_statement_meets_57014_before_the_client_timer[record-marker]": ("T116", "T304", "T324", "T326", "T327"),  # T278; tasks:2558
+    "test_a_slow_statement_meets_57014_before_the_client_timer[rollback]": ("T116", "T304", "T324", "T326", "T327"),  # T278; tasks:2558
+    "test_a_slow_statement_meets_57014_before_the_client_timer[service]": ("T507", "T512", "T513"),  # T237; tasks:2297
+    "test_a_slow_statement_meets_57014_before_the_client_timer[stray-calls]": ("T116", "T304", "T324", "T326", "T327"),  # T278; tasks:2558
+    "test_a_slow_statement_meets_57014_before_the_client_timer[stray-commit]": ("T116", "T304", "T324", "T326", "T327"),  # T278; tasks:2558
+    "test_a_slow_statement_meets_57014_before_the_client_timer[switch-to-files]": ("T116", "T304", "T324", "T326", "T327"),  # T278; tasks:2558
+    "test_a_slow_statement_meets_57014_before_the_client_timer[writer-commit-f2]": ("T103", "T104", "T106", "T412", "T413", "T414", "T415", "T417"),  # T257; tasks:2455
+    "test_a_slow_statement_meets_57014_before_the_client_timer[writer-snapshot]": ("T103", "T104", "T106", "T412", "T413", "T414", "T415", "T417"),  # T257; tasks:2455
+    "test_each_database_path_exits_inside_its_bound[answer-2-F1]": ("T103", "T115", "T117", "T121", "T502", "T507"),  # T220; tasks:2103
+    "test_each_database_path_exits_inside_its_bound[cutover-F1]": ("T116", "T304", "T324", "T326", "T327"),  # T278; tasks:2558
+    "test_each_database_path_exits_inside_its_bound[lookup-F1]": ("T103", "T104", "T106", "T412", "T413", "T414", "T415", "T417"),  # T257; tasks:2455
+    "test_each_database_path_exits_inside_its_bound[record-marker-F1]": ("T116", "T304", "T324", "T326", "T327"),  # T278; tasks:2558
+    "test_each_database_path_exits_inside_its_bound[rollback-F1]": ("T116", "T304", "T324", "T326", "T327"),  # T278; tasks:2558
+    "test_each_database_path_exits_inside_its_bound[service-F1]": ("T507", "T512", "T513"),  # T237; tasks:2297
+    "test_each_database_path_exits_inside_its_bound[service-F2]": ("T507", "T512", "T513"),  # T237; tasks:2297
+    "test_each_database_path_exits_inside_its_bound[service-F3]": ("T507", "T512", "T513"),  # T237; tasks:2297
+    "test_each_database_path_exits_inside_its_bound[snapshot-miss-F2]": ("T103", "T104", "T106", "T111", "T413", "T414", "T415", "T417"),  # T257; tasks:2455
+    "test_each_database_path_exits_inside_its_bound[stray-calls-F1]": ("T116", "T304", "T324", "T326", "T327"),  # T278; tasks:2558
+    "test_each_database_path_exits_inside_its_bound[stray-commit-F1]": ("T116", "T304", "T324", "T326", "T327"),  # T278; tasks:2558
+    "test_each_database_path_exits_inside_its_bound[switch-to-files-F1]": ("T116", "T304", "T324", "T326", "T327"),  # T278; tasks:2558
+    "test_each_database_path_exits_inside_its_bound[whole-write-F3]": ("T103", "T104", "T106", "T412", "T413", "T414", "T415", "T417"),  # T257; tasks:2455
+    "test_each_database_path_exits_inside_its_bound[writer-commit-f2-F2]": ("T103", "T104", "T106", "T412", "T413", "T414", "T415", "T417"),  # T257; tasks:2455
+    "test_each_database_path_exits_inside_its_bound[writer-commit-f3-F3]": ("T103", "T104", "T106", "T412", "T413", "T414", "T415", "T417"),  # T257; tasks:2455
+    "test_each_database_path_exits_inside_its_bound[writer-snapshot-F1]": ("T103", "T104", "T106", "T412", "T413", "T414", "T415", "T417"),  # T257; tasks:2455
+    "test_each_register_call_is_one_request[commit]": ("T112",),  # T257; tasks:2451
+    "test_each_register_call_is_one_request[lookup]": ("T114",),  # T257; tasks:2451
+    "test_each_register_call_is_one_request[snapshot-psql-14]": ("T111",),  # T257; tasks:2451
+    "test_each_register_call_is_one_request[snapshot]": ("T111",),  # T257; tasks:2451
+}
+
 INDEXER = REPO / "lanes-index"
 LANES_EDIT = REPO / "lanes-edit.sh"
 #: The guard session's id, and the one register row that names it (T220e).
