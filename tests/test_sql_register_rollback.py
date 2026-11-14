@@ -70,7 +70,9 @@ READINGS, NOT FOUND IN A CONTRACT:
   read by the test, shows the switch, the marker and the head unchanged.
 - THE CONSTANT: the shipped `lanes-index` must carry `RENDER_GIT_HALF =
   False`. Each id says so where it does not (lane 3's T328 sets it True), since
-  the scratch-schema rule holds only while it is unset.
+  the scratch-schema rule holds only while it is unset. Once T328 has set it,
+  with one `RENDER_GIT_HALF = True` line, each id skips before its setup,
+  saying why (`CONSTANT_SET`; tasks:2511). Anything else fails.
 """
 
 from __future__ import annotations
@@ -192,10 +194,32 @@ def _said(proc) -> str:
             f"\n--- stderr ---\n{(proc.stderr or '')[-3000:]}")
 
 
+def _render_git_half() -> list:
+    """The shipped `lanes-index`'s `RENDER_GIT_HALF = ` values, each line's
+    `True` or `False`; none where it cannot be read."""
+    try:
+        return RENDER_GIT_HALF_LINE.findall(LANES_INDEX.read_bytes())
+    except OSError:
+        return []
+
+
+#: T328'S CONSTANT SET (tasks:2511; lane 2, #165 6859084292; lane 3's sweep,
+#: #165 6851829112). T304's own test reads the shipped `lanes-index`'s
+#: `RENDER_GIT_HALF = ` line at collection, before its setup. With one True
+#: line, T328's, each of its six ids skips with this reason, which never holds
+#: `tests/pgcluster.py`'s `SKIP_TAG`, so no run counts it as a real-engine
+#: skip. With one False line they run. Anything else fails at
+#: `_constant_unset()`.
+CONSTANT_SET = (
+    "RENDER_GIT_HALF = True in the shipped lanes-index (lane 3's T328): the scratch-schema "
+    "rule this test checks ends with T328, and test 8's and AT-F1's cases carry steps 0 and 1 "
+    "on lanes_register")
+
+
 def _constant_unset() -> None:
     """The shipped `lanes-index` carries Q6(c)'s constant unset: the
     scratch-schema rule this test checks holds only while it does."""
-    found = RENDER_GIT_HALF_LINE.findall(LANES_INDEX.read_bytes())
+    found = _render_git_half()
     assert found == [b"False"], (
         f"{LANES_INDEX} carries {found!r} for `RENDER_GIT_HALF = `, not one False line: T304's "
         f"own test runs the shipped lanes-index with the constant unset (B10 tasks:1015), and "
@@ -609,6 +633,7 @@ T304_CASES = {
 }
 
 
+@pytest.mark.skipif(_render_git_half() == [b"True"], reason=CONSTANT_SET)
 @pytest.mark.parametrize("case", list(T304_CASES))
 def test_rollback_steps_0_and_1_run_only_against_a_scratch_schema(rb_register, case):
     """T304's own test (R-F10-34): steps 0 and 1 of the shipped `lanes-index
