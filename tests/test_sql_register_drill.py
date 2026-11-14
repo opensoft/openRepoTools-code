@@ -1028,7 +1028,7 @@ class Drill:
                 f"mirror with the declared line (lane 5's T507, SVC-12): {_masked(out)[-600:]}")
             assert answered["exit"] == reference["exit"], (
                 f"[step 6] the declared guard on {ws.name} exits {answered['exit']}, the mirror's "
-                f"answer in files mode is {reference['exit']}")
+                f"answer in files mode is {reference['exit']}\nREFERENCE OUT:\n{_masked(reference['out'])[-1500:]}\nDECLARED OUT:\n{_masked(out)[-800:]}")
 
     def step_7_rollback_refused_while_down(self) -> None:
         """A rollback with the cluster stopped is refused and changes nothing;
