@@ -7593,20 +7593,63 @@ def register_serve_stamp(paths: dict, cause: str) -> None:
     """THE FAILURE STAMP, `register.failed` (Y:3926-3931; socket API §8.6):
     the UTC and the fixed cause, and no other text, for the three causes that
     end `serve` before it listens: `path-too-long`, `config-refused` and
-    `no-psql`. A stamp that cannot be written is passed over."""
+    `no-psql`. A stamp that cannot be written is passed over.
+
+    ONLY UNDER `register.lock` (lane 1's U5 gate, #165 6882025131, N9;
+    socket API 8.6, draft 13): `serve` makes these checks before it takes
+    the lock, so the stamp is written only while this process holds it, and
+    never where another holds it, a live service that answers its clients,
+    beside which a stamp would hold every start back for nothing. Where the
+    lock cannot be opened, or this platform has no `flock`, it is written as
+    before."""
     try:
+        import fcntl
+        lock = os.open(paths["lock"], os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC
+                       | os.O_NOFOLLOW, 0o600)
+    except (ImportError, OSError):
+        lock = None
+    try:
+        if lock is not None:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return              # a service holds it: no stamp
         _register_serve_write(paths["failed"], f"{utc_now()} {cause}\n".encode("ascii"))
     except OSError:
         pass
+    finally:
+        if lock is not None:
+            os.close(lock)
+
+
+def _register_serve_read_regular(path: str, size: int) -> bytes:
+    """At most `size` bytes of `path`, read only where it is a regular file
+    (lane 1's U5 gate, #165 6881993079, N6): opened with `O_NOFOLLOW` and
+    `O_NONBLOCK`, so a FIFO there cannot block the read and a symbolic link
+    is not followed, then `fstat`. Raises `OSError` where it cannot be
+    opened or is not a regular file."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file", path)
+        data = b""
+        while len(data) < size:
+            chunk = os.read(fd, size - len(data))
+            if not chunk:
+                break
+            data += chunk
+        return data
+    finally:
+        os.close(fd)
 
 
 def register_serve_stamp_read(paths: dict) -> tuple | None:
     """The stamp as (its UTC, its cause, its age in s), or None where there
-    is none or it is out of form. A stamp dated ahead of this clock counts as
-    old, so a clock step never holds back starts for longer than the hold."""
+    is none or it is out of form, or is not a regular file (N6). A stamp
+    dated ahead of this clock counts as old, so a clock step never holds
+    back starts for longer than the hold."""
     try:
-        with open(paths["failed"], "rb") as handle:
-            words = handle.read(200).decode("ascii").split()
+        words = _register_serve_read_regular(paths["failed"], 200).decode("ascii").split()
     except (OSError, UnicodeDecodeError):
         return None
     if len(words) != 2:
@@ -7869,11 +7912,33 @@ REGISTER_SERVE_FETCH_BOUNDS = (1000, 10000, 11.0)
 #: A CHILD THAT FAILED IS STARTED AGAIN IN THE BACKGROUND, never on a
 #: request's time (Y:4014-4016, svc:124): lazily, by the next request, after
 #: a failure met while serving or a connect that failed, and at once after a
-#: failed idle check or a changed configuration (socket API §7, draft 11;
-#: lane 3's rulings, #165 6833590985 and 6834196887); and never sooner than
-#: this after the last start, so a database that stays down costs at most
-#: one `psql` a second.
+#: failed idle check (lane 3's rulings, #165 6833590985 and 6834196887). A
+#: changed configuration (`reload`) starts one at once too. The worker
+#: starts none sooner than this after the last one it started, so a database
+#: that stays down costs at most one `psql` a second; only `reload` clears
+#: that wait.
 REGISTER_SERVE_RETRY_S = 1.0
+
+#: THE CONNECTIONS ONE SERVICE HOLDS AT ONCE (lane 3's ruling, #165
+#: 6879724890, point 4; the Codex review, SHOULD 5, on socket API section
+#: 7, draft 12). One accepted past it is closed at once with no answer, so
+#: its client meets the end of the stream, reads directly and starts none.
+#: 16, for three reasons:
+#: - memory: each connection holds at most one answer, which the service
+#:   counts as it builds it and never lets past 16 MiB (SHOULD 4), and a
+#:   request of at most 64 KiB, so 16 hold at most 16 x (16 MiB + 64 KiB),
+#:   257 MiB of payload, at the worst, before Python's own overhead;
+#:   today's register answers in about 8 MB at most (`--all`: `LANES.md`'s
+#:   2,590,927 bytes and 39 logs' 5,182,523), about 128 MB for 16;
+#: - clients: one uid's environment runs its five lanes, each asking at
+#:   most a guard's prefetch and a reader's read or two at once, about 15;
+#:   and the one `psql` child takes one query at a time within each
+#:   request's 200 ms, so a burst far past that is answered `unavailable
+#:   slow` anyway, and closing it at once spares each client its wait;
+#: - the backlog: 64, four times this, so the kernel queues a burst the
+#:   service then takes or closes at once, and never refuses a connect
+#:   that it would take.
+REGISTER_SERVE_CONNECTIONS_MAX = 16
 
 #: The marker that ends each exchange with the child, on its stderr by
 #: `\warn` with the exchange's `:SQLSTATE`, and the one that opens a
@@ -7988,19 +8053,21 @@ def register_serve_name_ok(path: str) -> bool:
     return all(0x21 <= byte <= 0x7E for byte in os.fsencode(path))
 
 
-def _register_serve_record(path: str, digest: str, data: bytes) -> bytes:
+def _register_serve_record(path: str, digest: str, data: bytes) -> tuple:
     """A FILE PRESENT AT `n` (socket API §13.4): `file <path> <sha256>
-    <size>`, its bytes, then one LF that is not the file's."""
-    return f"file {path} {digest} {len(data)}\n".encode("ascii") + data + b"\n"
+    <size>`, its bytes, then one LF that is not the file's, as three parts,
+    so no body is copied before the answer is joined (SHOULD 4)."""
+    return f"file {path} {digest} {len(data)}\n".encode("ascii"), data, b"\n"
 
 
 class _RegisterServeJob:
-    """One request waiting for the held child: its items, its arrival, and
-    the answer the worker gives it, once."""
+    """One request waiting for the held child: its items, its arrival, the
+    configuration epoch it was checked against (socket API 8.4, draft 13),
+    and the answer the worker gives it, once."""
 
-    def __init__(self, items: list, arrival: float):
+    def __init__(self, items: list, arrival: float, epoch: int):
         import threading
-        self.items, self.arrival = items, arrival
+        self.items, self.arrival, self.epoch = items, arrival, epoch
         self.answer = None
         self.done = threading.Event()
         self.lock = threading.Lock()
@@ -8075,28 +8142,75 @@ def register_serve_owner_text(started: str) -> bytes:
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
+def register_serve_watched(cfg: dict) -> list:
+    """THE FILES A CONFIGURATION CHANGE WATCHES (OP-18 (b), lane 3's ruling
+    #165 6880543448, details settled by lane 5 for draft 14; socket API
+    8.4, draft 13), up to five, computed from `cfg` each time it is read: the
+    configuration; the file `reader_passfile=` names, where it is set; and
+    each of `sslrootcert`, `sslcert` and `sslkey` that `reader_url=` names,
+    by its mapping (`pg_url_env`, as the child gets them), but
+    `sslrootcert=system`, which names no file. With no `reader_passfile=`,
+    the child's `PGPASSFILE` is the service's own empty file
+    (`_no_password_file`), so there is no password file to watch; that file
+    is opened with `O_TRUNC` at each child's start, so its contents never
+    change but its times do. `PostgresStore._env` drops every inherited
+    `PG*` variable before a child starts, and the URL can carry no
+    `service=`, so no `PG*` variable and no service file reaches the child:
+    only libpq's defaults under `~/.postgresql/` are found by it on its own,
+    and those are not watched. Each path is as written, with no `~` or
+    variable expanded: an absolute one as it is, and
+    a relative one against this process's working directory, which its
+    `psql` child inherits (`spawn` gives it no other), as libpq resolves it
+    there."""
+    out = [cfg.get("path") or ""]
+    if cfg.get("reader_passfile"):
+        out.append(cfg["reader_passfile"])
+    env = pg_url_env(cfg["reader_url"], "`reader_url=`") if cfg.get("reader_url") else {}
+    for name in ("PGSSLROOTCERT", "PGSSLCERT", "PGSSLKEY"):
+        if env.get(name) and not (name == "PGSSLROOTCERT" and env[name] == "system"):
+            out.append(env[name])
+    return out
+
+
+def register_serve_snapshot(path: str):
+    """ONE WATCHED PATH'S SNAPSHOT (OP-18 (b), rule 4), from one `os.stat`,
+    which follows a symbolic link as libpq's open does: `absent` where it
+    fails with `ENOENT` or `ENOTDIR`, `error <errno name>` where it fails
+    any other way, and otherwise its identity, (`st_dev`, `st_ino`,
+    `st_size`, `st_mtime_ns`, `st_ctime_ns`), so a file replaced by `rename`
+    or written in place with its mtime kept is a change too."""
+    try:
+        st = os.stat(path)
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return "absent"
+        return f"error {errno.errorcode.get(exc.errno, exc.errno)}"
+    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
+
+
 def register_serve_config_stamp(cfg: dict) -> tuple:
-    """The configuration's and its reader password file's mtimes, which the
-    service re-reads when they change (Y:3918-3920)."""
-    out = []
-    for path in (cfg.get("path"), cfg.get("reader_passfile")):
-        try:
-            out.append(os.stat(path).st_mtime_ns if path else None)
-        except OSError:
-            out.append(None)
-    return tuple(out)
+    """THE CONFIGURATION'S STAMP (Y:3918-3920; OP-18 (b), lane 3's ruling
+    #165 6880543448, details settled by lane 5 for draft 14): ((path,
+    snapshot), ...) for each path `register_serve_watched` gives, in its
+    order. Any difference from the stamp last taken is a configuration
+    change (socket API 8.4, draft 13): a file that appears or goes, any
+    change of its identity or its error, and a change in the paths
+    watched."""
+    return tuple((path, register_serve_snapshot(path)) for path in register_serve_watched(cfg))
 
 
 def register_serve_load() -> tuple:
     """THE CONFIGURATION AND ITS STAMP (Y:3918-3920): (`load_config()`'s
-    dict, `register_serve_config_stamp`'s tuple), the file's mtime taken
-    BEFORE the file is read, so that a change made while `serve` starts or
-    re-reads it is a change at the next request, never one stamped as read.
-    The reader password file's is taken after, since `psql` reads it only
-    when it starts. Raises `Refusal` as `load_config` does."""
-    first = register_serve_config_stamp({"path": config_path()[0]})[0]
+    dict, `register_serve_config_stamp`'s tuple), the configuration's
+    snapshot taken BEFORE the file is read, so that a change made while
+    `serve` starts or re-reads it is a change at the next request, never one
+    stamped as read. The other watched files' are taken after, from the
+    configuration read, and before the child that reads them starts (OP-18
+    (b), rule 6). Raises `Refusal` as `load_config` does."""
+    path = config_path()[0]
+    first = register_serve_snapshot(path)
     cfg = load_config()
-    return cfg, (first,) + register_serve_config_stamp(cfg)[1:]
+    return cfg, ((path, first),) + register_serve_config_stamp(cfg)[1:]
 
 
 def register_serve_request(data: bytes) -> list | None:
@@ -8105,9 +8219,10 @@ def register_serve_request(data: bytes) -> list | None:
     `end`. Returns its items, `("file", <path>)`, `("set", <prefix>)` and
     `("list", "")`, in order, or None where it cannot be taken: another first
     line, a line of none of the three forms, a name outside the three shapes,
-    an empty key included, a prefix other than the two, no item, or more than
-    `REGISTER_SERVE_REQUEST_MAX` bytes before `end`. Names are ASCII, each
-    byte 0x21 to 0x7E, compared as bytes and never as file-system paths."""
+    an empty key included, a prefix other than the two, no item, or a request
+    of more than `REGISTER_SERVE_REQUEST_MAX` bytes: the whole request, its
+    `end` line included, is at most 65,536 bytes. Names are ASCII, each byte
+    0x21 to 0x7E, compared as bytes and never as file-system paths."""
     end = data.find(b"\nend\n")
     if end < 0 or end + 5 > REGISTER_SERVE_REQUEST_MAX:
         return None
@@ -8146,7 +8261,10 @@ class RegisterService:
         self.cond = threading.Condition()
         self.stopping = ""
         self.last_request = time.monotonic()
+        self.live = 0                # connections held, at most REGISTER_SERVE_CONNECTIONS_MAX
         self.install, self.config_stamp = stamps
+        self.config_epoch = 0        # moves with each configuration taken (`reload`)
+        self.reload_due = False      # a request saw a change; the worker re-reads it (M1)
         self.idle_check_s, ignored = register_serve_seconds(REGISTER_SERVE_IDLE_CHECK)
         if ignored:
             register_serve_log(paths, "the idle check's test value is ignored: the default is kept")
@@ -8171,9 +8289,11 @@ class RegisterService:
             return False
 
     def serve(self) -> int:
-        """THE ACCEPT LOOP: each connection to its own thread; between
-        accepts, the idle stop (Y:3912-3914), and an end where the socket is
-        no longer this service's, since nothing can reach it then."""
+        """THE ACCEPT LOOP: each connection to its own thread, at most
+        `REGISTER_SERVE_CONNECTIONS_MAX` at once, and one past them closed
+        with no answer; between accepts, the idle stop (Y:3912-3914), and an
+        end where the socket is no longer this service's, since nothing can
+        reach it then."""
         import select
         import signal
         import threading
@@ -8187,6 +8307,10 @@ class RegisterService:
                 self.stop(f"idle for {self.idle_stop_s} s")
             elif not self.ours():
                 self.stop("its socket is gone or another's")
+            elif not self.worker.is_alive():
+                # NO WORKER, NO ANSWER (lane 1's U5 gate, #165 6881993079,
+                # S2 (c)): the service ends, and the next client starts one.
+                self.stop("its worker ended")
             with self.cond:
                 why = self.stopping
             if why:
@@ -8201,8 +8325,33 @@ class RegisterService:
                 conn, _ = self.server.accept()
             except OSError:
                 continue
-            threading.Thread(target=self.connection, args=(conn, time.monotonic()),
-                             daemon=True).start()
+            with self.cond:
+                full = self.live >= REGISTER_SERVE_CONNECTIONS_MAX
+                if not full:
+                    self.live += 1
+            # THE SLOT, HANDED OFF EXCEPTION-SAFE (lane 3's Codex review of
+            # 88b50886, #165 6882203066, SHOULD 2): one past the cap is
+            # logged however its close ends; a thread that cannot start gives
+            # its slot back, and its connection is closed with no answer.
+            if full:
+                try:
+                    conn.close()    # no answer: its client reads directly (SHOULD 5)
+                except OSError:
+                    pass
+                register_serve_log(self.paths, "a connection past the cap was closed")
+                continue
+            try:
+                threading.Thread(target=self.connection, args=(conn, time.monotonic()),
+                                 daemon=True).start()
+            except Exception:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+                finally:
+                    with self.cond:
+                        self.live -= 1
+                register_serve_log(self.paths, "a connection's thread could not start")
         self.end()
         if self.ours():
             try:
@@ -8238,7 +8387,14 @@ class RegisterService:
 
     def end(self) -> None:
         """The child stopped by a signal, never by closing its stdin, so a
-        stand-in that reads its stdin to the end runs nothing."""
+        stand-in that reads its stdin to the end runs nothing.
+
+        ONLY THE WORKER CLOSES A CHILD'S PIPES (lane 1's U5 gate, #165
+        6881993079, S1): this thread moves the epoch and sends `SIGKILL`,
+        which ends any exchange the worker is in; it closes the pipes only
+        once the worker has ended, so no fd is closed under the worker's
+        `select` or `os.read`, to be handed to an accepted socket."""
+        import signal
         with self.cond:
             child, self.child, self.state = self.child, None, "down"
             self.epoch += 1
@@ -8246,7 +8402,16 @@ class RegisterService:
             self.cond.notify_all()
         for job in queued:
             job.give(b"unavailable\n")
-        self.kill(child)
+        if child is not None:
+            try:
+                child.send_signal(signal.SIGKILL)
+            except OSError:
+                pass
+        worker = getattr(self, "worker", None)
+        if worker is not None:
+            worker.join(2.0)
+        if worker is None or not worker.is_alive():
+            self.kill(child)
 
     # -- the held child (SVC-6; socket API §7)
 
@@ -8300,7 +8465,10 @@ class RegisterService:
         except (OSError, ValueError):
             return "eof", b"", ""
         out, err = bytearray(), bytearray()
-        streams = {child.stdout.fileno(): out, child.stderr.fileno(): err}
+        try:
+            streams = {child.stdout.fileno(): out, child.stderr.fileno(): err}
+        except (OSError, ValueError):   # a closed pipe: `ValueError` on 3.12 (S1)
+            return "eof", b"", ""
         while True:
             at = err.find(mark)
             if at >= 0 and err.find(b"\n", at) >= 0:
@@ -8327,62 +8495,73 @@ class RegisterService:
         `\\warn` marker, which `psql` reads only once it has connected, at
         `c` for each of the `N_a` addresses; a child that ends first, or is
         still connecting past `N_a`·`c` + 2 s, failed. The first connect
-        removes any stamp (Y:3936-3938)."""
+        removes any stamp (Y:3936-3938). ANY EXCEPTION IS A FAILED CONNECT
+        (lane 1's U5 gate, #165 6881993079, S2 (a)): `StoreUnusable` from
+        `_env`'s password file among them, so the state never stays
+        `connecting`."""
+        child, status = None, "eof"
         try:
             child = self.spawn()
-        except OSError:
-            child = None
-        status = "eof"
-        if child is not None:
             with self.cond:
                 bound = self.store.addresses * self.store.connect_timeout + 2
             nonce = f"connect-{os.urandom(4).hex()}"
             status, _out, _state = self.exchange(
                 child, f"\\warn '\\036LANES-SERVE {nonce}'\n".encode("ascii"), nonce,
                 time.monotonic() + bound)
+        except Exception:
+            status = "eof"
+        # THE STATE UNDER THE LOCK, THE FILES AFTER IT (lane 3's Codex review
+        # of 88b50886, #165 6882203066, NIT 11): the stamp's removal and the
+        # log line wait for no one who needs `cond`.
+        outcome = ""
         with self.cond:
             if status == "ok" and epoch == self.epoch and not self.stopping:
                 self.child, self.state, self.last_used = child, "ready", time.monotonic()
-                child = None
-                register_serve_unstamp(self.paths)
-                register_serve_log(self.paths, "connected")
+                child, outcome = None, "connected"
             elif epoch == self.epoch:
                 self.state, self.lazy = "down", True
-                register_serve_log(self.paths, "connect failed")
+                outcome = "connect failed"
             self.cond.notify_all()
+        if outcome == "connected":
+            register_serve_unstamp(self.paths)
+        if outcome:
+            register_serve_log(self.paths, outcome)
         self.kill(child)
 
     def lost(self, why: str, at_once: bool = False) -> None:
         """The held child gone: killed, and started again in the background
         (Y:4014-4016): by the next request, which is answered `unavailable`
         until it connects, as after any failure met while serving; or, with
-        `at_once`, for a failed idle check (Y:3995-4000; lane 3's ruling, #165
-        6834196887) or a changed configuration, at once (socket API §7,
-        draft 11)."""
+        `at_once`, at once, for a failed idle check (Y:3995-4000; lane 3's
+        ruling, #165 6834196887). A changed configuration retires it at once
+        by `retire` too, in `reload`'s one step, which also clears the
+        worker's `REGISTER_SERVE_RETRY_S` wait."""
         with self.cond:
-            child, self.child, self.state = self.child, None, "down"
-            self.lazy = not at_once
-            self.epoch += 1
-            self.cond.notify_all()
+            child = self.retire(at_once)
         register_serve_log(self.paths, why)
         self.kill(child)
 
-    def reconnect(self) -> None:
-        """A changed configuration's connection: the held child replaced, at
-        once, in the background."""
-        with self.cond:
-            self.retry_at = 0.0
-        self.lost("the configuration changed: reconnecting", at_once=True)
+    def retire(self, at_once: bool):
+        """The held child taken from the worker, by a caller that holds
+        `cond`, and returned for `kill` once the lock is let go."""
+        child, self.child, self.state = self.child, None, "down"
+        self.lazy = not at_once
+        self.epoch += 1
+        self.cond.notify_all()
+        return child
 
     def run(self, text: bytes, nonce: str, deadline: float, *, timer: bool = True,
-            at_once: bool = False) -> tuple:
+            at_once: bool = False, expired=None) -> tuple:
         """ONE EXCHANGE ON THE HELD CHILD, by the worker alone. At `deadline`,
-        the timer: `SIGINT`, which cancels the query, then the kill where the
-        marker has not come within 100 ms more (Y:4012-4016). A failed
-        statement leaves its transaction open, so a `ROLLBACK` follows it, on
-        the same rule. Returns (`ok`, `failed`, `slow` or `lost`; stdout;
-        SQLSTATE). A child it loses is started again as `lost` says, at once
-        where `at_once`."""
+        the timer (socket API 6.2, draft 12; Y:4012-4016): `SIGINT`, which
+        cancels the query, and `expired()`, where given, which answers the
+        request `unavailable slow` then; the child is killed only where the
+        request's marker has not come within 100 ms more. A child whose
+        marker comes is kept, and its cancelled transaction rolled back as a
+        failed statement's is. A failed statement leaves its transaction
+        open, so a `ROLLBACK` follows it, on the same rule. Returns (`ok`,
+        `failed`, `slow` or `lost`; stdout; SQLSTATE). A child it loses is
+        started again as `lost` says, at once where `at_once`."""
         import signal
         with self.cond:
             child = self.child
@@ -8391,22 +8570,33 @@ class RegisterService:
         status, out, state = self.exchange(child, text, nonce, deadline)
         if status == "timeout":
             child.send_signal(signal.SIGINT)
-            status, out, state = self.exchange(child, b"", nonce,
-                                               time.monotonic() + REGISTER_SERVE_KILL_S)
-            self.lost("a request's timer expired: psql was stopped", at_once)
+            if expired is not None:
+                expired()
+            status, _out, state = self.exchange(child, b"", nonce,
+                                                time.monotonic() + REGISTER_SERVE_KILL_S)
+            if status != "ok":
+                self.lost("a request's timer expired: psql was stopped", at_once)
+            elif state != "00000":
+                self.rollback(child, at_once)
             return ("slow" if timer else "lost"), b"", ""
         if status != "ok":
             self.lost("the held connection was lost", at_once)
             return "lost", b"", ""
         if state != "00000":
-            nonce2 = f"rollback-{os.urandom(4).hex()}"
-            again, _out, cleared = self.exchange(
-                child, f"ROLLBACK;\n\\warn '\\036LANES-SERVE {nonce2}' :SQLSTATE\n".encode(),
-                nonce2, time.monotonic() + register_serve_timer_ms(self.cfg) / 1000)
-            if again != "ok" or cleared != "00000":
-                self.lost("the held connection could not roll back", at_once)
+            self.rollback(child, at_once)
             return "failed", out, state
         return "ok", out, state
+
+    def rollback(self, child, at_once: bool) -> None:
+        """A failed or cancelled statement's open transaction rolled back on
+        the held child, under the request's timer; a child that cannot is
+        lost, as `run` says."""
+        nonce = f"rollback-{os.urandom(4).hex()}"
+        again, _out, cleared = self.exchange(
+            child, f"ROLLBACK;\n\\warn '\\036LANES-SERVE {nonce}' :SQLSTATE\n".encode(),
+            nonce, time.monotonic() + register_serve_timer_ms(self.cfg) / 1000)
+        if again != "ok" or cleared != "00000":
+            self.lost("the held connection could not roll back", at_once)
 
     def work(self) -> None:
         """THE WORKER, the held child's one user: one query at a time
@@ -8415,17 +8605,23 @@ class RegisterService:
         no `SIGINT` (lane 1's U5 review, S1); between requests, the idle
         check; and where the child is gone, a new connect, in the background,
         once a request has come where the loss was lazy (`lost`), and no
-        sooner than `REGISTER_SERVE_RETRY_S` after the last."""
+        sooner than `REGISTER_SERVE_RETRY_S` after the last. A changed
+        configuration a request has seen comes first (`take_change`): the
+        worker is the one thread that re-reads it, and the one that retires
+        the child it held (M1)."""
         import threading
         while True:
             job = None
             with self.cond:
                 while not self.stopping:
                     now = time.monotonic()
+                    if self.reload_due:
+                        job, self.reload_due = "reload", False
+                        break
                     if self.state == "down" and not self.lazy and now >= self.retry_at:
                         self.state, self.retry_at = "connecting", now + REGISTER_SERVE_RETRY_S
-                        threading.Thread(target=self.connect, args=(self.epoch,),
-                                         daemon=True).start()
+                        job = ("connect", self.epoch)
+                        break
                     if self.state == "ready" and self.queue:
                         job, self.state = self.queue.pop(0), "busy"
                         break
@@ -8441,12 +8637,34 @@ class RegisterService:
                     self.cond.wait(max(0.01, min(waits)))
                 if self.stopping:
                     return
-            if job == "idle":
-                self.idle_check()
-            elif job == "fetch":
-                self.fetch()
-            else:
-                self.serve_job(job)
+            if isinstance(job, tuple):
+                # THE CONNECT'S THREAD, STARTED OUTSIDE `cond` (NIT 11); one
+                # that cannot start is a failed connect (S2 (a)).
+                try:
+                    threading.Thread(target=self.connect, args=(job[1],), daemon=True).start()
+                except Exception:
+                    with self.cond:
+                        if job[1] == self.epoch and self.state == "connecting":
+                            self.state, self.lazy = "down", True
+                    register_serve_log(self.paths, "connect failed")
+                continue
+            # A JOB THAT FAILS (lane 1's U5 gate, #165 6881993079, S2 (b)): a
+            # fixed phrase, the held child replaced at once, the request
+            # answered `unavailable`, and the worker carries on, so its state
+            # never stays `busy`.
+            try:
+                if job == "reload":
+                    self.take_change()
+                elif job == "idle":
+                    self.idle_check()
+                elif job == "fetch":
+                    self.fetch()
+                else:
+                    self.serve_job(job)
+            except Exception:
+                if isinstance(job, _RegisterServeJob):
+                    job.give(b"unavailable\n")
+                self.lost("a job of the worker failed: the held child is replaced", at_once=True)
             with self.cond:
                 self.fetching = False
                 if self.state == "busy":
@@ -8532,13 +8750,20 @@ class RegisterService:
     def serve_job(self, job) -> None:
         """ONE REQUEST ON THE HELD CHILD: answered `unavailable slow`, with no
         `SIGINT`, where its timer expired while it waited (S1); else its one
-        Query, under the timer from its arrival (socket API §13.3)."""
+        Query, under the timer from its arrival (socket API §13.3), whose
+        answer is given only where the configuration epoch the request was
+        checked against still holds, under `cond`, so a request running
+        under an earlier epoch is answered `unavailable`, whatever the old
+        child returned (socket API 8.4, draft 13)."""
         timer = register_serve_timer_ms(self.cfg) / 1000
         if time.monotonic() >= job.arrival + timer:
             job.give(b"unavailable slow\n")
             return
         try:
-            job.give(self.query(job, job.arrival + timer))
+            answer = self.query(job, job.arrival + timer)
+            with self.cond:
+                if job.epoch == self.config_epoch:
+                    job.give(answer)
         finally:
             job.give(b"unavailable\n")
             with self.cond:
@@ -8564,8 +8789,11 @@ class RegisterService:
         if base is not None:
             queries = queries + register_serve_replay_queries(base, held)
         nonce = f"q-{os.urandom(6).hex()}"
+        # `unavailable slow` AT THE EXPIRY (socket API 6.2, draft 12), not
+        # after the 100 ms the child has for its marker: `give` keeps the
+        # first answer.
         status, out, state = self.run(register_serve_query_text(schema, queries, nonce), nonce,
-                                      deadline)
+                                      deadline, expired=lambda: job.give(b"unavailable slow\n"))
         if status == "slow":
             return b"unavailable slow\n"
         if status == "failed":
@@ -8630,24 +8858,37 @@ class RegisterService:
                 self.cond.notify_all()
             register_serve_log(self.paths, "a cache miss: unavailable, and a fetch in the background")
             return b"unavailable\n"
-        out = [f"text {snap['head']} {snap['generation']}\n".encode("ascii")]
-        for kind, name, value in plan:
-            if kind == "file":
-                out.append(_register_serve_record(value, needed[value], images[value]))
-            elif kind in ("absent", "ambiguous"):
-                out.append(f"{kind} {name}\n".encode("ascii"))
-            elif kind == "set":
-                out.append(f"set {name} {len(value)}\n".encode("ascii"))
-                out += [_register_serve_record(path, needed[path], images[path]) for path in value]
-            else:
-                out.append(f"list {len(value)}\n".encode("ascii"))
-                out += [register_serve_list_line(path, listing[path][0]) for path in value]
-        out.append(b"end\n")
-        answer = b"".join(out)
-        if len(answer) > REGISTER_SERVE_ANSWER_MAX:
-            register_serve_log(self.paths, "an answer over 16 MB: unavailable")
-            return b"unavailable\n"
-        return answer
+
+        def pieces():
+            yield (f"text {snap['head']} {snap['generation']}\n".encode("ascii"),)
+            for kind, name, value in plan:
+                if kind == "file":
+                    yield _register_serve_record(value, needed[value], images[value])
+                elif kind in ("absent", "ambiguous"):
+                    yield (f"{kind} {name}\n".encode("ascii"),)
+                elif kind == "set":
+                    yield (f"set {name} {len(value)}\n".encode("ascii"),)
+                    for path in value:
+                        yield _register_serve_record(path, needed[path], images[path])
+                else:
+                    yield (f"list {len(value)}\n".encode("ascii"),)
+                    for path in value:
+                        yield (register_serve_list_line(path, listing[path][0]),)
+            yield (b"end\n",)
+
+        # COUNTED AS IT IS BUILT (lane 3's ruling, #165 6879724890, point 3;
+        # socket API 6.3 and 13.4, draft 12; the Codex review, SHOULD 4):
+        # `unavailable` at the first record or line that would carry the
+        # answer past 16,777,216 bytes, the client's bound (13.6), so no
+        # record past it is built; and the bodies are joined once, here.
+        out, size = [], 0
+        for parts in pieces():
+            size += sum(len(part) for part in parts)
+            if size > REGISTER_SERVE_ANSWER_MAX:
+                register_serve_log(self.paths, "an answer over 16 MB: unavailable")
+                return b"unavailable\n"
+            out += parts
+        return b"".join(out)
 
     def bring(self, snap: dict, held: dict, needed: dict, replay: list) -> tuple:
         """THE IMAGES AT `n` (Y:4043-4050; socket API §5.1): each held one
@@ -8723,7 +8964,11 @@ class RegisterService:
         except OSError:
             pass
         finally:
-            conn.close()
+            try:
+                conn.close()
+            finally:
+                with self.cond:     # the slot, given back however the close ends (SHOULD 2)
+                    self.live -= 1
 
     def receive(self, conn, deadline: float) -> bytes | None:
         """The request's bytes up to its `end` line, or None where the client
@@ -8752,17 +8997,55 @@ class RegisterService:
         if register_serve_install() != self.install:
             self.stop("its install changed")
             return b"unavailable restarting\n"
-        if register_serve_config_stamp(self.cfg) != self.config_stamp:
+        with self.cond:
+            cfg, stamp, epoch = self.cfg, self.config_stamp, self.config_epoch
+        if register_serve_config_stamp(cfg) != stamp:
+            # ONE THREAD RE-READS IT, THE WORKER (lane 1's U5 gate, #165
+            # 6881993079, M1; socket API 8.4, draft 13): this connection asks
+            # it, and waits for its one step, or for the service's end, at
+            # most as long as a request's answer may take (section 7), so no
+            # connection thread runs `load_config`'s `git` or waits on a kill.
+            # That request is answered `unavailable`, or `unavailable
+            # restarting` where the change ends the service.
+            limit = arrival + register_serve_timer_ms(cfg) / 1000 + REGISTER_SERVE_KILL_S + 1.0
+            with self.cond:
+                self.reload_due = True
+                self.cond.notify_all()
+                self.cond.wait_for(lambda: self.config_epoch != epoch or self.stopping,
+                                   max(0.0, limit - time.monotonic()))
+                stopping = self.stopping
+            return b"unavailable restarting\n" if stopping else b"unavailable\n"
+        return self.request(items, arrival, epoch)
+
+    def take_change(self) -> None:
+        """A CHANGED CONFIGURATION, TAKEN BY THE WORKER ALONE (M1): re-read
+        (`reload`) only where its stamp still differs from the one held, so
+        requests that saw one change make one step between them; and where
+        the change ends the service, the service stops."""
+        with self.cond:
+            cfg, stamp = self.cfg, self.config_stamp
+        if register_serve_config_stamp(cfg) != stamp:
             why = self.reload()
             if why:
                 self.stop(why)
-                return b"unavailable restarting\n"
-        return self.request(items, arrival)
 
     def reload(self) -> str:
         """The configuration re-read (Y:3918-3920): why the service must exit,
         a refused configuration or a mode other than `primary`, or "" where
-        it runs on with it."""
+        it runs on with it.
+
+        IN ONE STEP, UNDER ONE EPOCH (socket API 8.4, draft 13; the Codex
+        re-review, B2, which lane 3's ruling, #165 6880543448, confirms as a
+        requirement): under `cond`, the lock the worker takes each request
+        by, the configuration as re-read is published, the held child is
+        retired, to be replaced at once in the background with no
+        `REGISTER_SERVE_RETRY_S` wait, the requests queued under the earlier
+        epoch are answered `unavailable`, and the configuration epoch moves.
+        So no request goes to the old child under the new configuration, and
+        no answer of an earlier epoch is given (`request`, `serve_job`). It
+        runs in the worker (`take_change`; M1), between the worker's jobs, so
+        the old child is killed, and its pipes closed, by the one thread that
+        used them, and no exchange is running on it then."""
         try:
             cfg, stamp = register_serve_load()
             if cfg["mode"] != "primary":
@@ -8772,23 +9055,33 @@ class RegisterService:
             return "its configuration is now refused"
         with self.cond:
             self.cfg, self.store, self.config_stamp = cfg, store, stamp
-        self.reconnect()
+            self.retry_at = 0.0
+            child = self.retire(at_once=True)
+            queued, self.queue = self.queue, []
+            self.config_epoch += 1
+        for job in queued:
+            job.give(b"unavailable\n")
+        register_serve_log(self.paths, "the configuration changed: reconnecting")
+        self.kill(child)
         return ""
 
-    def request(self, items: list, arrival: float) -> bytes:
-        """A REQUEST THE SERVICE CAN TAKE, queued for the held child. It is
-        answered `unavailable` at once where there is no held connection, at
-        the start or after a restart (Y:4014-4016; draft 9, at d8:173), where
-        a child lost while serving waits for a request to start its successor
-        (draft 11, section 7), or where a background whole-file fetch holds
-        it (OP-15)."""
+    def request(self, items: list, arrival: float, epoch: int) -> bytes:
+        """A REQUEST THE SERVICE CAN TAKE, queued for the held child under the
+        configuration epoch it was checked against (socket API 8.4, draft
+        13). It is answered `unavailable` at once where that epoch no longer
+        holds, the request that saw the change among them; where there is no
+        held connection, at the start or after a restart (Y:4014-4016; draft
+        9, at d8:173), where a child lost while serving waits for a request
+        to start its successor (draft 11, section 7); or where a background
+        whole-file fetch holds it (OP-15)."""
         with self.cond:
-            if self.fetching or self.state in ("down", "connecting"):
+            if (epoch != self.config_epoch or self.fetching
+                    or self.state in ("down", "connecting")):
                 if self.state == "down" and self.lazy:
                     self.lazy = False   # this request starts a new child, in the background
                 self.cond.notify_all()
                 return b"unavailable\n"
-            job = _RegisterServeJob(items, arrival)
+            job = _RegisterServeJob(items, arrival, epoch)
             self.queue.append(job)
             self.cond.notify_all()
         timer = register_serve_timer_ms(self.cfg) / 1000
@@ -8928,18 +9221,40 @@ def register_serve_state(paths: dict) -> str:
             f"{_register_shown(owner.get('started', '?'), 40)}, at {paths['sock']}")
 
 
+#: THE OWNER FILE'S KNOWN KEYS, each on one line at most (OP-19 (b), rule 3).
+_REGISTER_SERVE_OWNER_KEYS = ("pid", "started", "install", "pidns", "boot")
+
+#: `install=`'s one form (OP-19 (b), rule 4): three runs of ASCII digits, one
+#: space between each, and nothing else.
+_REGISTER_SERVE_INSTALL_RE = re.compile(r"[0-9]+ [0-9]+ [0-9]+")
+
+
 def register_serve_owner_read(paths: dict) -> dict | None:
-    """`register.owner`'s `key=value` lines, or None where it cannot be
-    read."""
+    """`register.owner`'s `key=value` lines (socket API 2.4, draft 13), or
+    None where it cannot be read or used: absent, unreadable, or not UTF-8
+    (OP-17 (b)); and, by OP-19 (b) (lane 3's ruling #165 6880543448, details
+    settled by lane 5 for draft 14), longer than 4,096 bytes, read as at
+    most 4,097, so that what is read is the whole file; empty, or with a
+    last byte that is not `\\n`; or with one of the known keys on two lines.
+    Lines are split as `str.splitlines()` splits them, a line's key is the
+    text before its first `=`, a line with no `=` is passed over, and so is
+    an unknown key, however often it comes. It is read only as a regular
+    file (`_register_serve_read_regular`, N6), so a FIFO or a symbolic link
+    there is a file it cannot read, and never blocks the client before its
+    uid check."""
     try:
-        with open(paths["owner"], "rb") as handle:
-            text = handle.read(4096).decode("utf-8")
+        data = _register_serve_read_regular(paths["owner"], 4097)
+        text = data.decode("utf-8")
     except (OSError, UnicodeDecodeError):
+        return None
+    if len(data) > 4096 or not data.endswith(b"\n"):
         return None
     out = {}
     for line in text.splitlines():
         key, sep, value = line.partition("=")
         if sep:
+            if key in out and key in _REGISTER_SERVE_OWNER_KEYS:
+                return None
             out[key] = value
     return out
 
@@ -9071,7 +9386,8 @@ def register_serve_ask(data: bytes, deadline: float) -> tuple:
     `ECONNREFUSED`, whatever the owner file says, and on an owner file from
     another install, whose service still gets the request (Y:3881-3883); never
     on an owner file from another pid namespace or boot, a failed check, or a
-    server of another uid (OP-8, ERR-27)."""
+    server of another uid (OP-8, ERR-27), nor on an owner file it cannot use
+    (OP-17 (b), below)."""
     import socket
     if not register_serve_possible():
         return "unavailable", "this platform has no Unix socket", False
@@ -9090,20 +9406,37 @@ def register_serve_ask(data: bytes, deadline: float) -> tuple:
             return "unavailable", "no service answers its socket", True
         except OSError as exc:
             return "unavailable", f"its socket could not be reached ({exc.strerror or exc})", False
-        start = False
+        # OP-17 (b), FAIL-SAFE (lane 3's ruling, #165 6879724890, point 1;
+        # socket API 2.4 and OP-17, draft 12): on a socket that answers, an
+        # owner file that is absent, cannot be read, whose first 4,096 bytes
+        # are not UTF-8, or that has no `install=` line, or no `pidns=` or
+        # `boot=` line where this client has its own, is unavailable: the
+        # client reads directly and starts none. OP-19 (b) (lane 3's ruling
+        # #165 6880543448, details settled by lane 5 for draft 14; socket API
+        # 2.4, draft 13) adds, with the same outcome, a file that
+        # `register_serve_owner_read` refuses, longer than 4,096 bytes, not
+        # ending in `\n`, or with a known key twice; and an `install=` that is
+        # not three runs of ASCII digits with one space between, such as the
+        # empty value a service writes where it cannot `stat` its own file.
         owner = register_serve_owner_read(paths)
-        if owner is not None:
-            host = register_serve_host()
-            for key, what in (("pidns", "pid namespace"), ("boot", "boot")):
-                if key in owner and key in host and owner[key] != host[key]:
-                    return "unavailable", f"its owner file is from another {what}", False
-            start = owner.get("install") != " ".join(str(part) for part in register_serve_install())
+        if (owner is None or "install" not in owner
+                or not _REGISTER_SERVE_INSTALL_RE.fullmatch(owner["install"])):
+            return "unavailable", "its owner file cannot be read, or names no install", False
+        host = register_serve_host()
+        for key, what in (("pidns", "pid namespace"), ("boot", "boot")):
+            if key in host and owner.get(key) != host[key]:
+                return "unavailable", f"its owner file names no {what}, or another", False
+        start = owner["install"] != " ".join(str(part) for part in register_serve_install())
         try:
             uid = register_peercred(conn)
         except OSError:
             uid = -1
+        # THE UID CHECK WINS (lane 5's ruling on lane 1's U5 NIT-h, #165
+        # 6881937840; socket API 3 and 13.8, draft 13): a server of another
+        # uid is unavailable, and this client sends nothing and starts none,
+        # whatever the owner file said of the install, as the docstring says.
         if uid is not None and uid != os.getuid():
-            return "unavailable", "its server is another uid's", start
+            return "unavailable", "its server is another uid's", False
         out = bytearray()
         try:
             conn.settimeout(max(0.001, deadline - time.monotonic()))
@@ -9133,7 +9466,8 @@ def register_serve_parse(data: bytes, items: list) -> dict:
     name), ("set", prefix, [(path, digest, bytes)]) and ("list", "", [(path,
     digest)]), the list's lines read by `register_serve_list_entry` alone.
     Every other answer raises `RegisterServeMalformed`, naming Y:4076-4079's
-    words for it."""
+    words for it, an answer whose items disagree among them, as "a mismatch"
+    (`register_serve_agree`; socket API 13.4, draft 12)."""
     pos = 0
 
     def bad(words: str):
@@ -9264,7 +9598,93 @@ def register_serve_parse(data: bytes, items: list) -> dict:
         bad("a file it did not ask for")
     if pos != len(data):
         bad("a malformed answer")
+    if not register_serve_agree(records):
+        bad("a mismatch")
     return {"kind": "text", "n": n, "generation": generation, "records": records}
+
+
+def register_serve_agree(records: list) -> bool:
+    """ONE ANSWER, ONE VIEW OF EACH PATH (socket API 13.4, draft 12; the Codex
+    review, BLOCKING 3): whether a text answer's items agree, as the
+    request's one transaction makes them. Where they do not, the answer is
+    "a mismatch" (Y:4076), and the client discards all of it, writes no
+    cache file and reads directly (13.7's row; 5.3).
+    - One digest a path: every item that names a path, a `file` record, a
+      set's member or a `list` line, names it with the same digest.
+    - The list covers the rest: where the answer holds the list, every path
+      a `file` record or a set's member names is one of its paths, and each
+      set's members are exactly its paths under the set's prefix.
+    - A name's record agrees with the paths: with the list, where the answer
+      holds it, and with each set whose prefix the name begins with, each on
+      its own, an `absent` name matches none of its paths, an `ambiguous`
+      one two or more, and a `file` record's path is the one path among
+      them its name matches:
+      byte for byte, or for a log by T113's one function,
+      `register_log_path_ci`, as the service resolves it.
+    - Named records among themselves, with a list or a set or without one
+      (socket API 13.4 and 13.7's row, draft 13; the Codex re-review, B4,
+      which lane 3's ruling, #165 6880543448, confirms as a requirement):
+      two `file`, `absent` or `ambiguous` records whose names match the same
+      paths, one name byte for byte, or two log names equal once A-Z is
+      folded as T113's one function folds them (`_register_fold`), are the
+      same kind, and two `file` records among them name one path with one
+      digest. So `file lanes/log/Foo.md ...` for `lanes/log/foo.md` and
+      `absent lanes/log/FOO.md` in one answer are a mismatch."""
+    views = {}
+    for rec in records:
+        if rec[0] in ("file", "absent", "ambiguous"):
+            name = rec[1]
+            key = _register_fold(name) if name.startswith(LOG_PREFIX) else name
+            if views.setdefault(key, rec[:1] + rec[2:4]) != rec[:1] + rec[2:4]:
+                return False
+    digests, lists, sets = {}, [], []
+    for rec in records:
+        if rec[0] == "file":
+            named = [rec[2:4]]
+        elif rec[0] == "set":
+            named = [member[:2] for member in rec[2]]
+            sets.append((rec[1], {path for path, _digest in named}))
+        elif rec[0] == "list":
+            named = rec[2]
+            lists.append({path for path, _digest in named})
+        else:
+            continue
+        if any(digests.setdefault(path, digest) != digest for path, digest in named):
+            return False
+    listed = lists[0] if lists else None
+    if any(paths != listed for paths in lists):
+        return False
+    if listed is not None and (
+            any(rec[0] == "file" and rec[2] not in listed for rec in records)
+            or any(paths != {path for path in listed if path.startswith(prefix)}
+                   for prefix, paths in sets)):
+        return False
+    # EACH COVERING VIEW ON ITS OWN, EACH FOLDED ONCE (lane 3's Codex review
+    # of 88b50886, #165 6882203066, SHOULDs 3 and 6): a name's record agrees
+    # with the list and with each set that covers it, one by one, never with
+    # their union, so one set cannot mask another that contradicts it; and
+    # each view's logs are folded once (`register_log_index`), so the check
+    # is near-linear in the answer's paths and records.
+    covers = ([("", listed)] if listed is not None else []) + sets
+    folded = {}
+    for rec in records:
+        if rec[0] not in ("file", "absent", "ambiguous"):
+            continue
+        name = rec[1]
+        for at, (prefix, paths) in enumerate(covers):
+            if not name.startswith(prefix):
+                continue
+            if name.startswith(LOG_PREFIX):
+                if at not in folded:
+                    folded[at] = register_log_index(paths)
+                found = register_log_path_ci(paths, name[len(LOG_PREFIX):-len(".md")],
+                                             index=folded[at])
+            else:
+                found = [name] if name in paths else []
+            if ((rec[0] == "absent" and found) or (rec[0] == "ambiguous" and len(found) < 2)
+                    or (rec[0] == "file" and found != [rec[2]])):
+                return False
+    return True
 
 
 def register_serve_snap(parsed: dict) -> tuple:
@@ -9276,7 +9696,10 @@ def register_serve_snap(parsed: dict) -> tuple:
     `list` gives it at `n'` (draft 11; `register_serve_list_entry`), so that
     every `.head` `file=` row present at `n'` has its digest by path, as
     T113's own listing gives it; its images are the answer's, each checked
-    against its digest already."""
+    against its digest already. The parser has taken only an answer whose
+    items agree (`register_serve_agree`; socket API 13.4, draft 12), so each
+    path has one digest whichever item names it, and neither a later record
+    nor the `list`'s `setdefault` meets another digest for it."""
     listing, held, ambiguous = {}, {}, set()
     for rec in parsed["records"]:
         if rec[0] == "file":
