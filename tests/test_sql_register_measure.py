@@ -1745,8 +1745,9 @@ def test_the_bind_and_the_guards_set_row_state_are_timed_in_both_modes(pg_engine
     is one `start-record` write and `set-row-state` one more, so the journal
     grows by exactly two and their write ids are distinct (AT-F6: one
     journal entry for the bind, two for answer 2); in files mode the
-    origin's `main` grows by at least those two commits. Fails until lane
-    4's L4-B9 and lane 5's L5-A1 and L5-B1 land."""
+    origin's `main` grows by at least those two commits. `[files]` passes
+    today, and `[primary]` fails until lane 4's L4-B9 and lane 5's L5-A1 and
+    L5-B1 land (tasks:2412; lane 3, #165 6808937880, batch e L2-5)."""
     binds, rows_set = [], []
     for k in range(1 + N_WARM):
         if mode == "primary":
