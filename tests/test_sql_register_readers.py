@@ -1603,19 +1603,30 @@ def test_an_expectation_2_at_lane_starts_last_write_under_an_at_files_base_notes
     result = run_arm(world, arm, 2, stderr=EXPECTATION_2_STDERR)
     lines = result.stderr.splitlines()
     where = (result.returncode, result.stderr[-4000:])
-    # THE PREMISE: the stub's 2 met the one `start-record` call, a resume's, which makes no
-    # row; and `act-begin` was asked twice, the act's own and ERR-56's re-read, both `@files`.
+    # THE PREMISE: the stub's 2 met the `start-record` call, a resume's, which makes no row,
+    # and `lane-start` made that call once (the wrapper's count of matching calls; its log
+    # holds the first alone, so its length proves nothing, lane 4's #165 6879449852, note 3);
+    # and `act-begin` was asked twice, the act's own and ERR-56's re-read, both `@files`.
     calls = world.reached()
-    assert len(calls) == 1 and " --state " in f" {calls[0]} " and "--add-row" not in calls[0] \
+    assert calls and " --state " in f" {calls[0]} " and "--add-row" not in calls[0] \
         and calls[0].startswith("start-record repoA-1 RESUMED "), (calls,) + where
+    count = Path(f"{world.arm_log}.count")
+    assert count.exists() and count.read_text(encoding="utf-8").strip() == "1", \
+        ("start-record was called again", count.read_text(encoding="utf-8")
+         if count.exists() else None) + where
     assert act_begins(world) == ["act-begin", "act-begin"], (
         "the act's base was not read again after the 2", act_begins(world)) + where
+    # WHAT TELLS ERR-56'S REFUSAL FROM THE `2)` ARM'S DIE, which also names `start-record`
+    # and "exited 2" (note 3): exit 0, no "bind was REFUSED", the note that the launch is not
+    # refused, its hint, and the launch below.
     assert result.returncode == 0, where
+    assert not any(line.startswith(EXPECTATION_2_REFUSED) for line in lines), where
     # THE WRITER'S WORDS, kept as the writer printed them.
     assert all(line in lines for line in EXPECTATION_2_STDERR.splitlines()), where
-    # THE NOTE, naming the call and its 2, with the command that writes the record later.
-    assert any(line.startswith("lane-start: ") and "start-record" in line
-               and re.search(r"\bexited 2\b", line) for line in lines), where
+    # THE NOTE, naming the call and its 2, the launch not refused for it, with the command
+    # that writes the record later.
+    assert any(line.startswith("lane-start: ") and "start-record` exited 2, and its words" in line
+               and "The launch is not refused for it" in line for line in lines), where
     hints = own_hints(result.stderr, "start-record")
     assert any(f"LANES_LANE=repoA-1 LANES_SESSION={UUID_A1B} " in hint
                and re.search(r"(?:^|\s)start-record repoA-1 RESUMED\s", hint) for hint in hints), \
