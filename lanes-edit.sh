@@ -20517,7 +20517,15 @@ guard_bind_rewrite() {   # [--own] <offer file> <keys to drop, space-separated> 
           printf '%s\n' "$gbw_l" || exit 1
         done
         [ "$gbw_st" = 1 ] || exit 1
-        } 8< "$gbw_f" || exit 1
+        } 8< "$gbw_f" || {
+          # A RECORD THAT WENT BETWEEN THE `-e` ABOVE AND THIS OPEN (lane 3's
+          # Codex code review of `12eddddf`, #165 6882203066, finding 4): under
+          # `--own` it is the 2 it is where it was never there, not the outer's
+          # own, and the 1 is for a record that is still there and cannot be
+          # read. Without `--own` it stays a 1.
+          [ "$gbw_own" = 0 ] || [ -e "$gbw_f" ] || exit 2
+          exit 1
+        }
         [ "$gbw_own" = 0 ] || guard_bind_own "$gbw_m" "$gbw_p" "$gbw_ps" "$gbw_h" "$gbw_c" || exit 2
       elif [ "$gbw_own" = 1 ]; then
         exit 2
