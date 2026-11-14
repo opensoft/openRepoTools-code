@@ -9102,14 +9102,46 @@ class RegisterService:
         return job.answer
 
 
+_REGISTER_SERVE_TEMP_RE = re.compile(r"s\.[0-9a-f]{4}")
+
+
+def register_serve_sweep(run: str) -> None:
+    """THE TEMPORARY SOCKETS AN EARLIER START LEFT (lane 1's U5 gate, #165
+    6881993079, N5): a starter killed between its bind and its rename leaves
+    its socket at its short name, `s.` and four hex digits, and a later
+    starter that draws that name could not bind it. Each socket of that form
+    in `run`, by `lstat`, and this uid's, is removed, by the starter that
+    holds `register.lock` and has found no live service at the socket, just
+    before its own bind. Under the lock no other starter is between its bind
+    and its rename, since only the lock's holder binds, so each such socket
+    is a leftover. A name of another form, or a file of that form that is
+    not a socket or not this uid's, is left as it is."""
+    try:
+        names = os.listdir(run)
+    except OSError:
+        return
+    for name in names:
+        if not _REGISTER_SERVE_TEMP_RE.fullmatch(name):
+            continue
+        path = os.path.join(run, name)
+        try:
+            st = os.lstat(path)
+            if stat.S_ISSOCK(st.st_mode) and st.st_uid == os.getuid():
+                os.unlink(path)
+        except OSError:
+            pass
+
+
 def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
     """THE SERVICE'S START, once `serve`'s four checks have passed (SVC-4;
     Y:3899-3911; socket API §2.4, §2.5, §8.3): `register.lock` by `flock`,
     taken without waiting and held for the service's life, where a second
     starter exits 0; under it, the socket tried: one that answers the
     connect is a live service, and this starter exits 0; `ECONNREFUSED` is a
-    stale socket, which it unlinks; then the bind, under `umask 077`, the
-    owner file, the listen, and the stamp removed (Y:3936-3938). `stamps`
+    stale socket, which it unlinks; then the temporary sockets an earlier
+    start left removed (`register_serve_sweep`; N5), the bind, under
+    `umask 077`, the owner file, the listen, and the stamp removed
+    (Y:3936-3938). `stamps`
     are the install's and the configuration's, as `serve` took them before
     it read the configuration (`register_serve_load`)."""
     import socket
@@ -9145,6 +9177,7 @@ def register_serve_run(cfg: dict, store, paths: dict, stamps: tuple) -> int:
     # after an unlink.
     # The owner file is written, and the socket listens, before the rename,
     # so a client never connects to it unanswered or finds no owner file.
+    register_serve_sweep(paths["run"])
     temp = os.path.join(paths["run"], f"s.{os.urandom(2).hex()}")
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     old = os.umask(0o077)
