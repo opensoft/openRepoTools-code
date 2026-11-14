@@ -124,7 +124,7 @@ def ref(environ: Mapping[str, str]) -> str:
 
 def active(environ: Mapping[str, str]) -> bool:
     """Whether this run skips the ids whose tasks have not all landed."""
-    value = environ.get(SWITCH, "")
+    value = environ.get(SWITCH, "on")
     if value == "on":
         return True
     if value == "off":
