@@ -7869,10 +7869,11 @@ REGISTER_SERVE_FETCH_BOUNDS = (1000, 10000, 11.0)
 #: A CHILD THAT FAILED IS STARTED AGAIN IN THE BACKGROUND, never on a
 #: request's time (Y:4014-4016, svc:124): lazily, by the next request, after
 #: a failure met while serving or a connect that failed, and at once after a
-#: failed idle check or a changed configuration (socket API §7, draft 11;
-#: lane 3's rulings, #165 6833590985 and 6834196887); and never sooner than
-#: this after the last start, so a database that stays down costs at most
-#: one `psql` a second.
+#: failed idle check (lane 3's rulings, #165 6833590985 and 6834196887). A
+#: changed configuration (`reconnect`) starts one at once too. The worker
+#: starts none sooner than this after the last one it started, so a database
+#: that stays down costs at most one `psql` a second; only `reconnect` clears
+#: that wait.
 REGISTER_SERVE_RETRY_S = 1.0
 
 #: The marker that ends each exchange with the child, on its stderr by
@@ -8105,9 +8106,10 @@ def register_serve_request(data: bytes) -> list | None:
     `end`. Returns its items, `("file", <path>)`, `("set", <prefix>)` and
     `("list", "")`, in order, or None where it cannot be taken: another first
     line, a line of none of the three forms, a name outside the three shapes,
-    an empty key included, a prefix other than the two, no item, or more than
-    `REGISTER_SERVE_REQUEST_MAX` bytes before `end`. Names are ASCII, each
-    byte 0x21 to 0x7E, compared as bytes and never as file-system paths."""
+    an empty key included, a prefix other than the two, no item, or a request
+    of more than `REGISTER_SERVE_REQUEST_MAX` bytes: the whole request, its
+    `end` line included, is at most 65,536 bytes. Names are ASCII, each byte
+    0x21 to 0x7E, compared as bytes and never as file-system paths."""
     end = data.find(b"\nend\n")
     if end < 0 or end + 5 > REGISTER_SERVE_REQUEST_MAX:
         return None
@@ -8356,9 +8358,9 @@ class RegisterService:
         """The held child gone: killed, and started again in the background
         (Y:4014-4016): by the next request, which is answered `unavailable`
         until it connects, as after any failure met while serving; or, with
-        `at_once`, for a failed idle check (Y:3995-4000; lane 3's ruling, #165
-        6834196887) or a changed configuration, at once (socket API §7,
-        draft 11)."""
+        `at_once`, at once, for a failed idle check (Y:3995-4000; lane 3's
+        ruling, #165 6834196887) or a changed configuration (`reconnect`,
+        which first clears the worker's `REGISTER_SERVE_RETRY_S` wait)."""
         with self.cond:
             child, self.child, self.state = self.child, None, "down"
             self.lazy = not at_once
