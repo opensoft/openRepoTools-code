@@ -17,7 +17,9 @@ WHAT IT HOLDS, by its five sources:
     the writer's printed rerun relayed on a 3; an expectation's 2 at
     `lane-start`'s last write, under a seq base, with its twin under an
     `@files` base, a note, a stamp and a launch (ERR-56; lane 3, #165
-    6871338814); `register-row-local`; `lane-worktrees`' reads; `--index` on
+    6871338814), and ERR-56's second case, an `@files` base whose re-read
+    answers a seq base, which dies (lane 4, #165 6879449852);
+    `register-row-local`; `lane-worktrees`' reads; `--index` on
     primary; and `managed-projection`.
   * Lane 1's three (L1v4.5's T113 and T114): `guard_second_read_at`,
     `log_key_hex_slot` and `journal_last_pickaxe`, each `lanes-index`'s own,
@@ -139,6 +141,7 @@ SQL_REGISTER_GATE_TABLE = {
     "test_a_read_site_with_no_prefetched_file_makes_one_more_register_read_and_never_a_git_read": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
     "test_an_expectation_2_at_lane_starts_last_write_dies": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
     "test_an_expectation_2_at_lane_starts_last_write_under_an_at_files_base_notes_stamps_and_launches": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_an_expectation_2_at_lane_starts_last_write_under_an_at_files_base_whose_reread_answers_a_seq_base_dies": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; ERR-56's second case, its twin's row (T217zu)
     "test_each_mirror_read_prints_its_line_and_keeps_its_exit": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
     "test_each_reader_follows_the_table_when_the_store_is_unreachable": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
     "test_every_dispatcher_arm_is_classified_for_the_read_door": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
@@ -401,6 +404,8 @@ os.execv(STORE, [STORE] + args)
 #: `start-record`'s one call, lane 4's T428). `ARM_ACT_BASE`, where set, is
 #: the base the wrapper answers `act-begin` with, 0, logging each such call
 #: to `ARM_LOG.act`: an act's seq base, which only primary prints.
+#: `ARM_ACT_BASE_AGAIN`, where set, answers every `act-begin` after the first
+#: in its place: ERR-56's re-read after an `@files` 2 finding a seq base.
 ARM_EDIT = r'''#!/usr/bin/env bash
 # THE ARMS' WRAPPER (T217; the test plan's AT-C5 fixture).
 if [ -n "${ARM_FAKE_VERB-}" ] && [ "${1-}" = "$ARM_FAKE_VERB" ]; then
@@ -409,7 +414,11 @@ if [ -n "${ARM_FAKE_VERB-}" ] && [ "${1-}" = "$ARM_FAKE_VERB" ]; then
 fi
 if [ -n "${ARM_ACT_BASE-}" ] && [ "${1-}" = act-begin ]; then
   printf '%s\n' "$*" >> "$ARM_LOG.act"
-  printf '%s\n' "$ARM_ACT_BASE"
+  if [ -n "${ARM_ACT_BASE_AGAIN-}" ] && (( $(wc -l < "$ARM_LOG.act") > 1 )); then
+    printf '%s\n' "$ARM_ACT_BASE_AGAIN"
+  else
+    printf '%s\n' "$ARM_ACT_BASE"
+  fi
   exit 0
 fi
 if [[ "|${ARM_VERB-}|" == *"|${1-}|"* ]]; then
@@ -1639,6 +1648,51 @@ def test_an_expectation_2_at_lane_starts_last_write_under_an_at_files_base_notes
     # THE LAUNCH, of the transcript it resumed.
     assert launched(world), where
     assert f"--resume {UUID_A1B}" in world.claude_runs(), (world.claude_runs(),) + where
+
+
+def test_an_expectation_2_at_lane_starts_last_write_under_an_at_files_base_whose_reread_answers_a_seq_base_dies(
+        tmp_path):
+    """ERR-56'S SECOND CASE (research.md:1747-1801 at lane 3's commit 14
+    `bc4a66bb`; the path lane 4 found untested, #165 6879449852): the twin's
+    `start-record` 2 with LR010's words, on the one call, which makes no row,
+    under a base `<act-id>@files`; but ERR-56's re-read after the 2 answers
+    a seq base (`ARM_ACT_BASE_AGAIN`), as when the register was switched to
+    primary after the launch began. Under a seq base a 2 stops the launch,
+    so `lane-start` dies 2 (`lane-start:5196` at line R's merge106
+    `bc9ed80b`): its refusal names the seq base it read, and it writes no
+    stamp and launches nothing. A `lane-start` that took any answer of the
+    re-read as Amendment 23's refusal would note, stamp and launch, as the
+    twin does, and fail here."""
+    twin = EXPECTATION_2_RESUME
+    arm = Arm(twin.script, twin.argv, twin.verb, twin.base, match=twin.match,
+              env={"ARM_ACT_BASE": FILES_ACT_BASE, "ARM_ACT_BASE_AGAIN": NO_LAUNCH_ACT_BASE})
+    world = arm_world(tmp_path, arm)
+    place_transcript(world, UUID_A1B)
+    (world.wip / EXPECTATION_2_HANDOFF).write_text(EXPECTATION_2_HANDOFF_TEXT, encoding="utf-8")
+    world.git("-C", str(world.wip), "add", "--", EXPECTATION_2_HANDOFF)
+    world.git("-C", str(world.wip), "commit", "-q", "-m", "repoA-1's handoff")
+    world.git("-C", str(world.wip), "push", "-q", "origin", "main")
+    world.git("-C", str(world.ws), "pull", "-q", "--ff-only")
+    result = run_arm(world, arm, 2, stderr=EXPECTATION_2_STDERR)
+    lines = result.stderr.splitlines()
+    where = (result.returncode, result.stderr[-4000:])
+    # THE PREMISE: the twin's call and 2, and the re-read, which answered the seq base.
+    calls = world.reached()
+    assert calls and " --state " in f" {calls[0]} " and "--add-row" not in calls[0] \
+        and calls[0].startswith("start-record repoA-1 RESUMED "), (calls,) + where
+    assert act_begins(world) == ["act-begin", "act-begin"], (
+        "the act's base was not read again after the 2", act_begins(world)) + where
+    # THE DIE: 2, `lane-start`'s own refusal naming the seq base it read, the writer's words.
+    assert result.returncode == 2, where
+    assert any(line.startswith(EXPECTATION_2_REFUSED) and EXPECTATION_2_CALL_2 in line
+               and f"now answers a seq base, `{NO_LAUNCH_ACT_BASE}`" in line
+               and "nothing has been launched" in line for line in lines), where
+    assert all(line in lines for line in EXPECTATION_2_STDERR.splitlines()), where
+    # NO STAMP on origin, and NO LAUNCH.
+    published = world.git("--git-dir", str(world.origin), "show", f"main:{EXPECTATION_2_HANDOFF}")
+    assert not any(line.startswith(f"RESUMED by {UUID_A1B} ") for line in published.splitlines()), \
+        (published,) + where
+    assert not launched(world), where
 
 
 # ------------------------------- the `--no-launch` act under a seq base (Q41)
