@@ -15,8 +15,12 @@ WHAT IT HOLDS, by its five sources:
     read sequence; `lane-start`'s seven read arms at 75 and 3, and at 69; the
     other callers' arms (lane 4's table, "The callers' default arms (Q9)");
     the writer's printed rerun relayed on a 3; an expectation's 2 at
-    `lane-start`'s last write; `register-row-local`; `lane-worktrees`' reads;
-    `--index` on primary; and `managed-projection`.
+    `lane-start`'s last write, under a seq base, with its twin under an
+    `@files` base, a note, a stamp and a launch (ERR-56; lane 3, #165
+    6871338814), and ERR-56's second case, an `@files` base whose re-read
+    answers a seq base, which dies (lane 4, #165 6879449852);
+    `register-row-local`; `lane-worktrees`' reads; `--index` on
+    primary; and `managed-projection`.
   * Lane 1's three (L1v4.5's T113 and T114): `guard_second_read_at`,
     `log_key_hex_slot` and `journal_last_pickaxe`, each `lanes-index`'s own,
     on a real engine.
@@ -113,6 +117,87 @@ __all__ = ["estate"]  # the fixture, imported so that pytest finds it here
 
 pytestmark = [pytest.mark.skipif(shutil.which("bash") is None or shutil.which("git") is None,
                                  reason="the lane tooling is bash over git")]
+
+#: THE LANDING GATE'S TABLE (T280; task sets version 12b's rule 11, #165
+#: 6877673742), TEMPORARY: T281 removes it. The gate in `tests/conftest.py`
+#: skips each id until every task its row names has landed (the reader is
+#: `tests/sql_register_gate.py`). Written from T217's Order (tasks:2055 at
+#: lane 3's commit 17, `204145ae`), T235's (:2267) and T259's (:2469), as
+#: lane 2's plan GP-24 v2 gives it, with lane 3's ruling on T217's lane 5
+#: clause (#165 6877365776): each id of the 19 functions a lane 5 verify
+#: selects waits for the tasks that lane 2's per-id verdict rows give it
+#: (AN11a's and AN13a's), and for T504, T505, T506 and T509 where it has
+#: none. T504 to T506 are in the Order's own list too (L5-A5), so those rows
+#: drop T509 where they do not name it, and add T502 to the listing callers'
+#: two ids and T507 to the reader table's `[guard]`.
+SQL_REGISTER_GATE_TABLE = {
+    "test_69_refuses_at_canon_lane_and_session_lane_and_stays_a_note_at_the_other_four_arms": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_75_and_3_refuse_the_launch_at_each_lane_start_arm": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_a_caller_that_acts_on_a_listings_answer_refuses_69_where_the_store_is_unreachable": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T502", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_a_carry_on_act_names_lane_start_no_launch_on_a_69_or_75_under_a_seq_base": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_a_none_class_arm_makes_no_register_call_with_the_store_unreachable": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_a_primary_reader_makes_one_prefetch_and_every_read_site_reads_its_cache_at_one_n": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_a_read_site_with_no_prefetched_file_makes_one_more_register_read_and_never_a_git_read": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_an_expectation_2_at_lane_starts_last_write_dies": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_an_expectation_2_at_lane_starts_last_write_under_an_at_files_base_notes_stamps_and_launches": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_an_expectation_2_at_lane_starts_last_write_under_an_at_files_base_whose_reread_answers_a_seq_base_dies": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; ERR-56's second case, its twin's row (T217zu)
+    "test_each_mirror_read_prints_its_line_and_keeps_its_exit": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
+    "test_each_reader_follows_the_table_when_the_store_is_unreachable": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
+    "test_every_dispatcher_arm_is_classified_for_the_read_door": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_guard_second_read_at_its_head_writes_one_log_and_fails_open": ("T113", "T114", "T227", "T228", "T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_index_flag_on_primary_changes_nothing_and_prints_no_index_line": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
+    "test_journal_last_pickaxe_finds_the_newest_entry_that_changes_the_keys_count": ("T113", "T114", "T227", "T228", "T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_lane_worktrees_register_reads_go_through_a_verb_and_refuse_69": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_lanes_accepts_decide_and_reads_as_without_it": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T502", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_lanes_fetch_on_primary_prints_no_no_fetch_note": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
+    "test_log_key_hex_slot_holds_a_key_outside_the_class_and_is_never_cached": ("T113", "T114", "T227", "T228", "T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_log_sync_on_primary_makes_no_fetch_and_no_flush": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_managed_projection_answers_0_1_8_from_sql_as_files_mode_does": ("T227", "T228", "T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
+    "test_managed_projection_with_the_database_unreachable_exits_1_never_legacy": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_on_primary_known_lanes_remote_log_events_and_worktree_rows_read_the_store_and_never_git": ("T227", "T228", "T505"),  # T235; tasks:2267
+    "test_on_primary_remote_log_events_and_worktree_rows_read_again_when_the_head_moves": ("T505",),  # T235; tasks:2267
+    "test_one_failed_call_anywhere_in_a_callers_read_sequence_never_fails_open": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
+    "test_register_grep_on_primary_answers_one_snapshot_and_69_after_three_moved_runs": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_register_grep_on_primary_prints_each_path_as_git_grep_does_under_gits_defaults": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_register_grep_prints_what_git_grep_prints_and_1_with_no_match": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_register_row_local_reads_the_database_on_primary_and_is_69_never_8": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_register_text_answers_the_bytes_the_scripts_read_today_and_69_on_a_failed_read": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_retired_rows_key_trims_leading_zeros_as_text_on_primary": ("T426",),  # T259; tasks:2469
+    "test_swapped_ranks_through_journal_last_on_primary": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_the_flush_helper_drops_the_whole_read_family": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_the_lanes_footer_on_primary_names_the_register_and_claims_no_local_read": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
+    "test_the_local_file_unions_are_skipped_on_primary": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_read_mirror_variable_lowers_each_read_that_names_the_lane_on_primary": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T508"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-end-2490]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T430", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-handoff-2878]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T429", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-handoff-2890]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T429", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-handoff-2913]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T429", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-start-3851]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-start-3872]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-start-3909]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-start-3989]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-start-4022]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3[lane-start-4181]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_each_reader_follows_the_table_when_the_store_is_unreachable[guard]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506", "T507", "T508", "T509"),  # T217; tasks:2055; lane 2's per-id rows (AN11a, AN13a), lane 3's 6877365776
+    "test_one_failed_call_anywhere_in_a_callers_read_sequence_never_fails_open[lane-rename]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T415", "T422", "T504", "T505", "T506", "T508", "T509"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-1144-3]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T432", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-1144-69]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T432", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-1144-75]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T432", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-end-2490-3]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T430", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-end-2490-69]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T430", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-end-2490-75]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T430", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-handoff-2817-3]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T429", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-handoff-2817-69]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T429", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-handoff-2817-75]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T429", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-rename-241-3]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T433", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-rename-241-69]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T433", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-rename-241-75]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T433", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-start-2511-2512-3]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-start-2511-2512-69]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+    "test_the_other_callers_arms_pass_the_code_or_refuse_as_lane_4s_table_gives[lane-start-2511-2512-75]": ("T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T428", "T504", "T505", "T506", "T508"),  # T217; tasks:2055
+}
 
 LANES_EDIT = REPO / "lanes-edit.sh"
 
@@ -319,6 +404,8 @@ os.execv(STORE, [STORE] + args)
 #: `start-record`'s one call, lane 4's T428). `ARM_ACT_BASE`, where set, is
 #: the base the wrapper answers `act-begin` with, 0, logging each such call
 #: to `ARM_LOG.act`: an act's seq base, which only primary prints.
+#: `ARM_ACT_BASE_AGAIN`, where set, answers every `act-begin` after the first
+#: in its place: ERR-56's re-read after an `@files` 2 finding a seq base.
 ARM_EDIT = r'''#!/usr/bin/env bash
 # THE ARMS' WRAPPER (T217; the test plan's AT-C5 fixture).
 if [ -n "${ARM_FAKE_VERB-}" ] && [ "${1-}" = "$ARM_FAKE_VERB" ]; then
@@ -327,7 +414,11 @@ if [ -n "${ARM_FAKE_VERB-}" ] && [ "${1-}" = "$ARM_FAKE_VERB" ]; then
 fi
 if [ -n "${ARM_ACT_BASE-}" ] && [ "${1-}" = act-begin ]; then
   printf '%s\n' "$*" >> "$ARM_LOG.act"
-  printf '%s\n' "$ARM_ACT_BASE"
+  if [ -n "${ARM_ACT_BASE_AGAIN-}" ] && (( $(wc -l < "$ARM_LOG.act") > 1 )); then
+    printf '%s\n' "$ARM_ACT_BASE_AGAIN"
+  else
+    printf '%s\n' "$ARM_ACT_BASE"
+  fi
   exit 0
 fi
 if [[ "|${ARM_VERB-}|" == *"|${1-}|"* ]]; then
@@ -1422,21 +1513,186 @@ def test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3(tmp_path, site):
                                  result.stderr[-2000:])
 
 
+#: AN EXPECTATION'S 2 AT `start-record` (LR010): the writer's own words,
+#: which `lane-start` keeps on stderr whatever it makes of the 2.
+EXPECTATION_2_STDERR = ("ERROR:  LR010: an expectation of this act no longer holds\n"
+                        "DETAIL:  expectation bind:repoA-1")
+#: `lane-start`'s OWN REFUSAL of a 2 at `start-record`, under a seq base or
+#: where ERR-56's re-read answers one (its `2)` arm and the die after the
+#: re-read open alike): its first words, and the call with its 2.
+EXPECTATION_2_REFUSED = "lane-start: lane repoA-1's bind was REFUSED: "
+EXPECTATION_2_CALL_2 = "start-record` exited 2 (its words are above)"
+#: An act's base off primary, `<act-id>@files` (Y:5577), which the arms'
+#: wrapper answers each `act-begin` with (`ARM_ACT_BASE`), as files mode
+#: does, and logs: the act's own call, and ERR-56's re-read after a 2.
+FILES_ACT_BASE = f"{'a2' * 16}@files"
+#: ERR-56'S TWIN of `lane-start-4181`: the same lane and arguments, resuming
+#: `repoA-1`'s own last transcript by id (`UUID_A1B`, which its last PAUSED
+#: names), so its one `start-record` call carries `--state` and the RESUMED
+#: line and no `--add-row`, under an `@files` base. A RESUMED, because 5c
+#: writes the Rule 3 stamp for a RESUMED alone (`142afd90:lane-start:5351`).
+EXPECTATION_2_RESUME = Arm("lane-start", ("repoA", "1"), "start-record", "5142",
+                           match="*RESUMED*", env={"ARM_ACT_BASE": FILES_ACT_BASE})
+#: The handoff that `repoA-1`'s row names, committed in the register for the
+#: twin, whose resume stamps it under its header block (5c).
+EXPECTATION_2_HANDOFF = "handoffs/repoA-1.md"
+EXPECTATION_2_HANDOFF_TEXT = "# repoA-1, the handoff\n\nThe top block: parked.\n"
+
+
+def act_begins(world: ArmWorld) -> list:
+    """The `act-begin` calls that the arms' wrapper answered with
+    `ARM_ACT_BASE`, in order, each as its arguments."""
+    acts = Path(f"{world.arm_log}.act")
+    return acts.read_text(encoding="utf-8").splitlines() if acts.exists() else []
+
+
 def test_an_expectation_2_at_lane_starts_last_write_dies(tmp_path):
     """Any 2 at `lane-start:4181`, its last write (the STARTED log line),
-    dies with 2, an expectation's included (LR010): it is a second binding,
-    a deciding refusal, never a stamp to carry on past (lane 4's table; the
-    design's outcomes table). The run knows a minted uuid, so at T428 the
-    line rides in `start-record`'s one call, and the stub fails that call
-    ("any 2 dies, LR010's included"; lane 3's (L2-2), #165 6808937880)."""
-    arm = RERUN_SITES["lane-start-4181"]
+    dies with 2 under a seq base, an expectation's included (LR010): on
+    primary it is a second binding, a deciding refusal, never a stamp to
+    carry on past (lane 4's table; the design's outcomes table). The run
+    knows a minted uuid, so at T428 the line rides in `start-record`'s one
+    call, and the stub fails that call ("any 2 dies, LR010's included";
+    lane 3's (L2-2), #165 6808937880).
+    THE SEQ BASE (ERR-56, research.md:1747-1801 at lane 3's commit 14
+    `bc4a66bb`; lane 3, #165 6871338814, on lane 4's 6871294666): that rule
+    holds under a base `<act-id>@<seq>:<generation>`, where LR010 can occur,
+    so the arms' wrapper answers `act-begin` with `NO_LAUNCH_ACT_BASE`, as
+    the `--no-launch` acts take it, and the case asserts that `lane-start`
+    asked it: ERR-56 asks for a re-read only after an `@files` 2, and forbids
+    none under a seq base, so the count is not held (lane 4, #165
+    6879449852, note 1). The refusal it asserts is `lane-start`'s own,
+    "bind was REFUSED", which names the call and its 2 and says nothing was
+    launched: the stub prints LR010's words, and `lane-start` only passes
+    them through, so they prove nothing of its path (note 2). Under `@files`
+    the same 2 is Amendment 23's refusal, and the launch goes on: the twin
+    below. With the real `act-begin`'s `@files`, this case failed in line
+    R's rounds 6k and 6l, from merge101's T428 join (`47b7d15d`,
+    `12fe0e43`), which follows ERR-56."""
+    rerun = RERUN_SITES["lane-start-4181"]
+    arm = Arm(rerun.script, rerun.argv, rerun.verb, rerun.base, nth=rerun.nth,
+              match=rerun.match, env={"ARM_ACT_BASE": NO_LAUNCH_ACT_BASE})
     world = arm_world(tmp_path, arm)
-    stderr = ("ERROR:  LR010: an expectation of this act no longer holds\n"
-              "DETAIL:  expectation bind:repoA-1")
-    result = run_arm(world, arm, 2, stderr=stderr)
+    result = run_arm(world, arm, 2, stderr=EXPECTATION_2_STDERR)
+    assert "act-begin" in act_begins(world), (
+        "the act did not take its seq base", act_begins(world), result.returncode,
+        result.stderr[-3000:])
     assert result.returncode == 2, (result.returncode, result.stderr[-3000:])
-    assert "LR010" in result.stderr, result.stderr[-2000:]
+    assert any(line.startswith(EXPECTATION_2_REFUSED) and EXPECTATION_2_CALL_2 in line
+               and "nothing has been launched" in line
+               for line in result.stderr.splitlines()), result.stderr[-3000:]
     assert not launched(world), "the agent ran after the 2"
+
+
+def test_an_expectation_2_at_lane_starts_last_write_under_an_at_files_base_notes_stamps_and_launches(
+        tmp_path):
+    """ERR-56'S TWIN of the case above (research.md:1747-1801 at lane 3's
+    commit 14 `bc4a66bb`; lane 3, #165 6871338814): the same `start-record`
+    2 with LR010's words, on the one call, which makes no row (`--state`, no
+    `--add-row`), under a base `<act-id>@files`, whose second `act-begin`
+    still answers `@files`. Off primary no write reads `LANES_EXPECT`
+    (Y:5596), so that 2 is no second binding: it is Amendment 23's refusal,
+    and `lane-start` keeps the writer's words, prints the note it prints for
+    a resume's other codes, with the command that writes the record later,
+    writes the Rule 3 stamp and launches, exit 0 (T428's fix round,
+    `47b7d15d` and `12fe0e43`; its arm at `142afd90:lane-start:5172-5199`).
+    The run resumes `repoA-1`'s own last transcript by id, so its line is a
+    RESUMED and 5c owes the stamp, and the row's handoff is in the register
+    (`EXPECTATION_2_RESUME`). The stamp is read on origin, once. Before
+    ERR-56 the 2 died, 2 and no launch, as under a seq base, so this case
+    fails there."""
+    arm = EXPECTATION_2_RESUME
+    world = arm_world(tmp_path, arm)
+    place_transcript(world, UUID_A1B)
+    (world.wip / EXPECTATION_2_HANDOFF).write_text(EXPECTATION_2_HANDOFF_TEXT, encoding="utf-8")
+    world.git("-C", str(world.wip), "add", "--", EXPECTATION_2_HANDOFF)
+    world.git("-C", str(world.wip), "commit", "-q", "-m", "repoA-1's handoff")
+    world.git("-C", str(world.wip), "push", "-q", "origin", "main")
+    world.git("-C", str(world.ws), "pull", "-q", "--ff-only")
+    result = run_arm(world, arm, 2, stderr=EXPECTATION_2_STDERR)
+    lines = result.stderr.splitlines()
+    where = (result.returncode, result.stderr[-4000:])
+    # THE PREMISE: the stub's 2 met the `start-record` call, a resume's, which makes no row,
+    # and `lane-start` made that call once (the wrapper's count of matching calls; its log
+    # holds the first alone, so its length proves nothing, lane 4's #165 6879449852, note 3);
+    # and `act-begin` was asked twice, the act's own and ERR-56's re-read, both `@files`.
+    calls = world.reached()
+    assert calls and " --state " in f" {calls[0]} " and "--add-row" not in calls[0] \
+        and calls[0].startswith("start-record repoA-1 RESUMED "), (calls,) + where
+    count = Path(f"{world.arm_log}.count")
+    assert count.exists() and count.read_text(encoding="utf-8").strip() == "1", \
+        ("start-record was called again", count.read_text(encoding="utf-8")
+         if count.exists() else None) + where
+    assert act_begins(world) == ["act-begin", "act-begin"], (
+        "the act's base was not read again after the 2", act_begins(world)) + where
+    # WHAT TELLS ERR-56'S REFUSAL FROM THE `2)` ARM'S DIE, which also names `start-record`
+    # and "exited 2" (note 3): exit 0, no "bind was REFUSED", the note that the launch is not
+    # refused, its hint, and the launch below.
+    assert result.returncode == 0, where
+    assert not any(line.startswith(EXPECTATION_2_REFUSED) for line in lines), where
+    # THE WRITER'S WORDS, kept as the writer printed them.
+    assert all(line in lines for line in EXPECTATION_2_STDERR.splitlines()), where
+    # THE NOTE, naming the call and its 2, the launch not refused for it, with the command
+    # that writes the record later.
+    assert any(line.startswith("lane-start: ") and "start-record` exited 2, and its words" in line
+               and "The launch is not refused for it" in line for line in lines), where
+    hints = own_hints(result.stderr, "start-record")
+    assert any(f"LANES_LANE=repoA-1 LANES_SESSION={UUID_A1B} " in hint
+               and re.search(r"(?:^|\s)start-record repoA-1 RESUMED\s", hint) for hint in hints), \
+        (hints,) + where
+    # THE RULE 3 STAMP, under the handoff's header block, committed and pushed: on origin once.
+    published = world.git("--git-dir", str(world.origin), "show", f"main:{EXPECTATION_2_HANDOFF}")
+    stamps = [line for line in published.splitlines()
+              if line.startswith(f"RESUMED by {UUID_A1B} (lane repoA-1) at ")]
+    assert len(stamps) == 1, (published,) + where
+    # THE LAUNCH, of the transcript it resumed.
+    assert launched(world), where
+    assert f"--resume {UUID_A1B}" in world.claude_runs(), (world.claude_runs(),) + where
+
+
+def test_an_expectation_2_at_lane_starts_last_write_under_an_at_files_base_whose_reread_answers_a_seq_base_dies(
+        tmp_path):
+    """ERR-56'S SECOND CASE (research.md:1747-1801 at lane 3's commit 14
+    `bc4a66bb`; the path lane 4 found untested, #165 6879449852): the twin's
+    `start-record` 2 with LR010's words, on the one call, which makes no row,
+    under a base `<act-id>@files`; but ERR-56's re-read after the 2 answers
+    a seq base (`ARM_ACT_BASE_AGAIN`), as when the register was switched to
+    primary after the launch began. Under a seq base a 2 stops the launch,
+    so `lane-start` dies 2 (`lane-start:5196` at line R's merge106
+    `bc9ed80b`): its refusal names the seq base it read, and it writes no
+    stamp and launches nothing. A `lane-start` that took any answer of the
+    re-read as Amendment 23's refusal would note, stamp and launch, as the
+    twin does, and fail here."""
+    twin = EXPECTATION_2_RESUME
+    arm = Arm(twin.script, twin.argv, twin.verb, twin.base, match=twin.match,
+              env={"ARM_ACT_BASE": FILES_ACT_BASE, "ARM_ACT_BASE_AGAIN": NO_LAUNCH_ACT_BASE})
+    world = arm_world(tmp_path, arm)
+    place_transcript(world, UUID_A1B)
+    (world.wip / EXPECTATION_2_HANDOFF).write_text(EXPECTATION_2_HANDOFF_TEXT, encoding="utf-8")
+    world.git("-C", str(world.wip), "add", "--", EXPECTATION_2_HANDOFF)
+    world.git("-C", str(world.wip), "commit", "-q", "-m", "repoA-1's handoff")
+    world.git("-C", str(world.wip), "push", "-q", "origin", "main")
+    world.git("-C", str(world.ws), "pull", "-q", "--ff-only")
+    result = run_arm(world, arm, 2, stderr=EXPECTATION_2_STDERR)
+    lines = result.stderr.splitlines()
+    where = (result.returncode, result.stderr[-4000:])
+    # THE PREMISE: the twin's call and 2, and the re-read, which answered the seq base.
+    calls = world.reached()
+    assert calls and " --state " in f" {calls[0]} " and "--add-row" not in calls[0] \
+        and calls[0].startswith("start-record repoA-1 RESUMED "), (calls,) + where
+    assert act_begins(world) == ["act-begin", "act-begin"], (
+        "the act's base was not read again after the 2", act_begins(world)) + where
+    # THE DIE: 2, `lane-start`'s own refusal naming the seq base it read, the writer's words.
+    assert result.returncode == 2, where
+    assert any(line.startswith(EXPECTATION_2_REFUSED) and EXPECTATION_2_CALL_2 in line
+               and f"now answers a seq base, `{NO_LAUNCH_ACT_BASE}`" in line
+               and "nothing has been launched" in line for line in lines), where
+    assert all(line in lines for line in EXPECTATION_2_STDERR.splitlines()), where
+    # NO STAMP on origin, and NO LAUNCH.
+    published = world.git("--git-dir", str(world.origin), "show", f"main:{EXPECTATION_2_HANDOFF}")
+    assert not any(line.startswith(f"RESUMED by {UUID_A1B} ") for line in published.splitlines()), \
+        (published,) + where
+    assert not launched(world), where
 
 
 # ------------------------------- the `--no-launch` act under a seq base (Q41)
@@ -3623,10 +3879,16 @@ def test_register_grep_on_primary_answers_one_snapshot_and_69_after_three_moved_
     store's, so form 3 rewrites the whole family at `n` under the new one
     (contract 3.6). Only the generation half of the pair tells the runs
     apart, so a T401 that compares `n` alone answers the first run, without
-    the moved line, and fails on stdout. The verb answers once, exit 0, with
-    what `git grep` prints over the store's tree at `n` after the move;
-    `repoX+1` is read twice; the head keeps `n` under a new generation (lane
-    2's RV23 NIT 3).
+    the moved line, and fails on stdout. That first run is stale because of
+    the read order: the verb reads its logs in tree order (`LC_ALL=C sort`
+    of their paths), so `repoA-2`'s image comes from the prefetch's cache at
+    `n` before `repoX+1`'s form-3 read moves the store. A new `SNAPSHOT_LANE`
+    or `SNAPSHOT_MOVED` must keep `SNAPSHOT_MOVED` sorting first, or the
+    first run reads the moved log after the move, and the stdout check no
+    longer tells an `n`-only T401 apart (lane 2's RV26 NIT 11). The verb
+    answers once, exit 0, with what `git grep` prints over the store's tree
+    at `n` after the move; `repoX+1` is read twice; the head keeps `n` under
+    a new generation (lane 2's RV23 NIT 3).
     It passes from lane 4's T401 round on lane 3's Q2 ruling, `8d72e579`
     (line R's merge90 and later), and fails before it. On lane 4's
     `6318d5e5` (#165 6851877746), which reads once, `[one-move]` fails on
