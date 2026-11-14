@@ -280,7 +280,9 @@
 #      with its words kept (#165 6779688808, Q23; REV-ACT2 N3); or a failed
 #      `canon-lane --walk`: any code but 0, 69, 75 and 3 (its 64, a helper
 #      with no `--walk`; its 66, an alias table it could not read), or an
-#      exit 0 that prints no name. Each
+#      exit 0 that prints no name; or `act-begin` run again after a resume's
+#      `start-record` 2 under an `@files` base (ERR-56), the same, after
+#      which this window's rename is undone. Each
 #      names the verb and its code. Nothing is renamed or written, save the
 #      `request-handoff` line a `--rebase` follows, which stands.
 #   2  refusal — an ARGUMENT ERROR, and one further case this amendment adds: a
@@ -324,12 +326,17 @@
 #      codes too (research.md ERR-46).
 #      AND THE ACT'S WRITES (feature 007, T428; spec:317-318): `act-begin`'s
 #      or `canon-lane --walk`'s 69, 75 or 3 where this launch could take no
-#      base or know no walk (every other code is 1, above); `start-record`'s 2,
-#      which on primary is a second binding, in every case; its code where it
-#      makes a new lane's row, or binds under `--bind`; and `request-handoff`'s
-#      69, 75 and 3. A resume's refused `start-record` is a note, and the
-#      launch goes on; so is a refused W2 to W6, which run as their own
-#      verbs where no transcript uuid is known. Under a seq base that note,
+#      base or know no walk, or could not read its base again after an
+#      `@files` 2 (every other code is 1, above); `start-record`'s 2 under a
+#      seq base, which on primary is a second binding, in every case, and
+#      under `@files` where it makes a new lane's row, binds under `--bind`,
+#      or `act-begin`, run again, answers a seq base (ERR-56; lane 3, #165
+#      6867981064); its code where it makes a new lane's row, or binds under
+#      `--bind`; and `request-handoff`'s 69, 75 and 3. A resume's refused
+#      `start-record` is a note, and the launch goes on, its 2 included under
+#      `@files` (Amendment 23 S3); so is a refused W2 to W6, which run as
+#      their own verbs where no transcript uuid is known. Under a seq base
+#      that note,
 #      after any code but 3, prints no rerun of its own and names `lane-start
 #      --no-launch`, run in the launched session's window as its first act
 #      (lane 3's Q39 and Q41, #165 6780753157). With a uuid known, that act
@@ -3397,8 +3404,8 @@ fi
 if (( dry_run )); then
   plan "tmux rename-window $LANE   (also turns automatic-rename off for this window)"
 else
-  # Read for every rename now, not a new lane's alone: 007's two refusals
-  # after this rename give it back as #138 item 3's does (T402).
+  # Read for every rename now, not a new lane's alone: 007's refusals after
+  # this rename give it back as #138 item 3's does (T402; T428's ERR-56).
   win_auto_was="$(tmux show-options -w -v automatic-rename 2>/dev/null || :)"
   tmux rename-window "$LANE"
   step "window renamed to $LANE (automatic-rename is now off for it)"
@@ -3415,8 +3422,9 @@ fi
 # fail-closed answer. A list that fails is not a name that is free. A refusal
 # gives THIS window back its name and its automatic-rename, so nothing of this
 # run is left behind it.
-# THE GIVING BACK IS ONE FUNCTION, shared with 007's two refusals after the
-# rename (T402; lane 3's ruling 6747281902, T402 item 5). It sets `rb_undo`.
+# THE GIVING BACK IS ONE FUNCTION, shared with 007's refusals after the rename
+# (T402; lane 3's ruling 6747281902, T402 item 5; T428's ERR-56 re-read of the
+# base). It sets `rb_undo`.
 ls_window_name_back() {
   # NO NAME TO GO BACK TO IS NO UNDO: where tmux answered `#W` with nothing,
   # nothing here can name this window back, and the refusal says so rather
@@ -4536,17 +4544,28 @@ fi
 # AMENDMENT 23 S1 (slice 2b) — THE LANE'S OWN CHECKOUT IS MADE HERE, before the
 # row, under the opt-in and the default resolution: the first write needs it,
 # and every write below goes through it. A dry run plans it and makes nothing.
-# A checkout that could not be made, or whose creation lock is held, is SAID
-# and the launch goes on (Amendment 8(d)): each write below makes it again, or
-# says for itself that it did not go through.
+# A checkout that could not be made, or whose creation lock is held, is SAID.
+# Under a base `<act-id>@files` the launch goes on (Amendment 8(d)): each write
+# below makes it again, or says for itself that it did not go through, and a
+# resume's refused `start-record` is a note (S3; ERR-56). UNDER A SEQ BASE THE
+# NOTE DOES NOT SAY THAT THE LAUNCH GOES ON (ERR-56; lane 3, #165 6867981064):
+# on primary a write makes no clone (D12), so each write below refuses without
+# the checkout, with nothing sent (R17, `pw_checkout`), and there any 2 of
+# `start-record`'s stops the launch.
 if [ "$LS_ROUTED" = 1 ]; then
   if (( dry_run )); then
     plan "$LANES_EDIT lane-checkout $LANE --create"
   else
     lsc_rc=0
     "$LANES_EDIT" lane-checkout "$LANE" --create >/dev/null || lsc_rc=$?
-    [ "$lsc_rc" = 0 ] ||
-      note "lane $LANE's own register checkout could not be made (\`$LANES_EDIT lane-checkout $LANE --create\` exited $lsc_rc, above). The launch goes on: each write below makes it again, or says for itself that it did not go through (Amendment 23 S1, 8(d))."
+    if [ "$lsc_rc" != 0 ]; then
+      case "$LANES_ACT" in
+        *@files)
+          note "lane $LANE's own register checkout could not be made (\`$LANES_EDIT lane-checkout $LANE --create\` exited $lsc_rc, above). The launch goes on: each write below makes it again, or says for itself that it did not go through (Amendment 23 S1, 8(d))." ;;
+        *)
+          note "lane $LANE's own register checkout could not be made (\`$LANES_EDIT lane-checkout $LANE --create\` exited $lsc_rc, above). Under this launch's seq base a write makes no clone (D12), so each write below refuses without the checkout, with nothing sent, and says so in its own words (R17; ERR-56)." ;;
+      esac
+    fi
   fi
 fi
 
@@ -5121,13 +5140,64 @@ else
   else
     ls_sr_rc=0
     LANES_LANE="$LANE" LANES_SESSION="$lane_sid" LANES_EXPECT="$LS_EXPECT" "$LANES_EDIT" "${ls_sr[@]}" || ls_sr_rc=$?
-    # THE ARMS (Y:5539-5544; spec:317-318; the task's "The arms"). Any 2
-    # stops the launch, LR010's included: on primary an expectation's 2 is
-    # a second binding. A write that must exist, a new row, stops with its
-    # code; so does the guard's detached bind on any code, with no stamp, its
-    # record ending failed with that code. A resume's write only prints a
-    # note: the stamp is written and the launch goes on (2A).
-    case "$ls_sr_rc" in
+    # THE ARMS (Y:5539-5544; spec:317-318; the task's "The arms"). Under a
+    # seq base any 2 stops the launch, LR010's included: on primary an
+    # expectation's 2 is a second binding. A write that must exist, a new
+    # row, stops with its code; so does the guard's detached bind on any
+    # code, with no stamp, its record ending failed with that code. A
+    # resume's write only prints a note: the stamp is written and the launch
+    # goes on (2A).
+    # UNDER A BASE `<act-id>@files` A RESUME'S 2 IS AMENDMENT 23's REFUSAL
+    # (ERR-56; lane 3's ruling on lane 4's cause B, #165 6867981064). Off
+    # primary no write reads LANES_EXPECT (Y:5596), so no 2 there is the
+    # second binding Y:5542 dies for: it is S1's clone that failed, or S3's
+    # refusal or the router's, each with nothing written, and S3 has this
+    # script print a note with the command that writes the record later, and
+    # "the launch is not refused" (Amendment 23 S3; 8(d)). So the call that
+    # makes no row, a resume's, which carries `--state` and no `--add-row`
+    # (`LS_SR_ROW` empty, above), takes the `*)` arm's note for a resume's
+    # other codes, then the stamp and the launch. A new row's 2 dies in both
+    # modes, and so does the guard's bind (`--bind`), whose record still
+    # ends `bind-failed`, `rc=2`.
+    # THE STRADDLE: a host switched to primary after this act took its base
+    # refuses the write with 2, "LANES_ACT was taken off primary ... and this
+    # write runs on primary" (`lanes-edit.sh`'s `act_parse --primary`), which
+    # is no refusal of S3's. So after an `@files` 2 the base is read again
+    # with `act-begin`, as this act's start reads it, and a seq base now dies
+    # 2, as the `2)` arm does. A re-read that fails refuses as the act's
+    # start does (lane 3's A2, #165 6774499606): 69, 75 and 3 with the code,
+    # any other code, and an exit 0 with no line or a malformed one, with 1.
+    # Both give this window its name back, as a read refused after step 4
+    # does (lane 3's ruling 6747281902, T402 item 5).
+    ls_sr_arm="$ls_sr_rc"
+    if [ "$ls_sr_rc" = 2 ] && [ -z "$LS_SR_ROW" ] && [ -z "$bind_sid" ]; then
+      case "$LANES_ACT" in
+        *@files)
+          : > "$LS_TMP"
+          ls_sr_base=""; ls_sr_base_rc=0
+          ls_sr_base="$("$LANES_EDIT" act-begin 2>"$LS_TMP")" || ls_sr_base_rc=$?
+          if [ "$ls_sr_base_rc" != 0 ] || ! ls_act_form "$ls_sr_base"; then
+            [ -s "$LS_TMP" ] && cat -- "$LS_TMP" >&2
+            ls_sr_ask="whether the register is still off primary, after \`$LANES_EDIT start-record\` exited 2 under this launch's base \`$LANES_ACT\` (ERR-56)"
+            case "$ls_sr_base_rc" in
+              69 | 75 | 3) ls_late_refuse "$LANES_EDIT act-begin" "$ls_sr_base_rc" "$ls_sr_ask" ;;
+            esac
+            ls_window_name_back
+            ls_sr_why="exited $ls_sr_base_rc (its words are above)"
+            [ "$ls_sr_base_rc" != 0 ] ||
+              ls_sr_why="exited 0 and printed no single line of base, \`<act-id>@files\` or \`<act-id>@<seq>:<generation>\` (Y:5577-5578)"
+            ls_sr_hs=""
+            [ -z "$ls_rh_wrote" ] ||
+              ls_sr_hs=" One line of the handoff stands: ${ls_rh_wrote}, written whole to the append-only log (R-A11-11)."
+            die "\`$LANES_EDIT act-begin\`, run again, ${ls_sr_why}, so ${ls_sr_ask} is NOT known, and that is not a base: under a seq base that 2 stops the launch. ${rb_undo}. This launch has written no row, no STARTED or RESUMED line and no stamp, and launched nothing.${ls_sr_hs}" 1
+          fi
+          case "$ls_sr_base" in
+            *@files) ls_sr_arm=a23-refusal ;;
+            *) die "lane ${LANE}'s bind was REFUSED: \`$LANES_EDIT start-record\` exited 2 (its words are above), and none of ${ls_sr_what} was written. This launch took its base off primary, \`$LANES_ACT\`, and \`$LANES_EDIT act-begin\`, run again, now answers a seq base, \`$ls_sr_base\`: the register was switched to primary after this launch began, where a write under a base taken off primary is refused with 2, and under a seq base a 2 stops the launch (ERR-56; Y:5542). This window has been renamed to $LANE, and nothing has been launched. No command is printed for the write: run \`$prog\` again from its start, which takes its base on primary (Y:5601)." 2 ;;
+          esac ;;
+      esac
+    fi
+    case "$ls_sr_arm" in
       0)
         if [ -n "$LS_SR_ROW" ]; then
           step "row added"
