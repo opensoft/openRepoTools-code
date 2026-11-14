@@ -21953,12 +21953,20 @@ guard_bind_next_index() {   # <offer file>
 # rulings): found there, never recomputed from `bind`. An `out` that is not this
 # offer's own `<offer file>.bind.<n>.out` names no facts file, so nothing is
 # read from, written to or removed at a path the record could point anywhere.
+# `<n>` IS CANONICAL, `[1-9][0-9]*`, by the one predicate below, which the
+# facts file's derivation, the body's three read-backs and the files' index
+# all take: no 0, and no leading 0 (S3 of lane 3's Codex re-review of
+# spec#47 at `746e931c`, #165 6880414089).
+guard_bind_index_ok() {   # <index>
+  case "${1-}" in ''|0*|*[!0-9]*) return 1 ;; esac
+  return 0
+}
 guard_bind_facts_of() {   # <offer file> <the record's out>
   gbfo_f="${1-}"; gbfo_o="${2-}"
   [ -n "$gbfo_f" ] || return 1
   case "$gbfo_o" in "$gbfo_f".bind.*.out) : ;; *) return 1 ;; esac
   gbfo_i="${gbfo_o#"$gbfo_f".bind.}"; gbfo_i="${gbfo_i%.out}"
-  case "$gbfo_i" in ''|*[!0-9]*) return 1 ;; esac
+  guard_bind_index_ok "$gbfo_i" || return 1
   printf '%s\n' "${gbfo_o%.out}.facts"
 }
 
