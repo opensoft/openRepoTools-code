@@ -1508,6 +1508,11 @@ def test_a_carry_on_act_relays_the_writers_printed_rerun_on_a_3(tmp_path, site):
 #: which `lane-start` keeps on stderr whatever it makes of the 2.
 EXPECTATION_2_STDERR = ("ERROR:  LR010: an expectation of this act no longer holds\n"
                         "DETAIL:  expectation bind:repoA-1")
+#: `lane-start`'s OWN REFUSAL of a 2 at `start-record`, under a seq base or
+#: where ERR-56's re-read answers one (its `2)` arm and the die after the
+#: re-read open alike): its first words, and the call with its 2.
+EXPECTATION_2_REFUSED = "lane-start: lane repoA-1's bind was REFUSED: "
+EXPECTATION_2_CALL_2 = "start-record` exited 2 (its words are above)"
 #: An act's base off primary, `<act-id>@files` (Y:5577), which the arms'
 #: wrapper answers each `act-begin` with (`ARM_ACT_BASE`), as files mode
 #: does, and logs: the act's own call, and ERR-56's re-read after a 2.
@@ -1545,7 +1550,12 @@ def test_an_expectation_2_at_lane_starts_last_write_dies(tmp_path):
     holds under a base `<act-id>@<seq>:<generation>`, where LR010 can occur,
     so the arms' wrapper answers `act-begin` with `NO_LAUNCH_ACT_BASE`, as
     the `--no-launch` acts take it, and the case asserts that `lane-start`
-    asked it once: under a seq base a 2 is never read again. Under `@files`
+    asked it: ERR-56 asks for a re-read only after an `@files` 2, and forbids
+    none under a seq base, so the count is not held (lane 4, #165
+    6879449852, note 1). The refusal it asserts is `lane-start`'s own,
+    "bind was REFUSED", which names the call and its 2 and says nothing was
+    launched: the stub prints LR010's words, and `lane-start` only passes
+    them through, so they prove nothing of its path (note 2). Under `@files`
     the same 2 is Amendment 23's refusal, and the launch goes on: the twin
     below. With the real `act-begin`'s `@files`, this case failed in line
     R's rounds 6k and 6l, from merge101's T428 join (`47b7d15d`,
@@ -1555,11 +1565,13 @@ def test_an_expectation_2_at_lane_starts_last_write_dies(tmp_path):
               match=rerun.match, env={"ARM_ACT_BASE": NO_LAUNCH_ACT_BASE})
     world = arm_world(tmp_path, arm)
     result = run_arm(world, arm, 2, stderr=EXPECTATION_2_STDERR)
-    assert act_begins(world) == ["act-begin"], (
-        "the act did not take one seq base", act_begins(world), result.returncode,
+    assert "act-begin" in act_begins(world), (
+        "the act did not take its seq base", act_begins(world), result.returncode,
         result.stderr[-3000:])
     assert result.returncode == 2, (result.returncode, result.stderr[-3000:])
-    assert "LR010" in result.stderr, result.stderr[-2000:]
+    assert any(line.startswith(EXPECTATION_2_REFUSED) and EXPECTATION_2_CALL_2 in line
+               and "nothing has been launched" in line
+               for line in result.stderr.splitlines()), result.stderr[-3000:]
     assert not launched(world), "the agent ran after the 2"
 
 
