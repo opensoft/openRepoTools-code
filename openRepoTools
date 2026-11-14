@@ -281,7 +281,7 @@ fetch_from_repo() {
 		return 0
 	fi
 	if command -v curl >/dev/null 2>&1 &&
-		curl -fsSL "https://raw.githubusercontent.com/${PAYLOAD_REPO:-$REPO}/${PAYLOAD_REV:-$REF}/$path" \
+		curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 "https://raw.githubusercontent.com/${PAYLOAD_REPO:-$REPO}/${PAYLOAD_REV:-$REF}/$path" \
 			>"$dest" 2>/dev/null && [ -s "$dest" ]; then
 		return 0
 	fi
@@ -794,7 +794,7 @@ api_sha() {   # <ref, URL-escaped>
 		why="gh: not installed"
 	fi
 	if command -v curl >/dev/null 2>&1; then
-		if curl -fsSL -H 'Accept: application/vnd.github.sha' \
+		if curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 -H 'Accept: application/vnd.github.sha' \
 			"https://api.github.com/repos/${PAYLOAD_REPO:-$REPO}/commits/$1" >"$out" 2>"$out.err"; then
 			sha=""
 			IFS= read -r sha <"$out" || :
@@ -836,7 +836,7 @@ api_tree() {   # <commit or tree sha> <dest>
 		why="$why; curl: not installed"
 	elif ! command -v jq >/dev/null 2>&1; then
 		why="$why; curl: not asked, because reading api.github.com's JSON needs \`jq\` and there is none"
-	elif ! curl -fsSL "https://api.github.com/repos/${PAYLOAD_REPO:-$REPO}/git/trees/$1" >"$out.json" 2>"$out.err"; then
+	elif ! curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 "https://api.github.com/repos/${PAYLOAD_REPO:-$REPO}/git/trees/$1" >"$out.json" 2>"$out.err"; then
 		why="$why; $(api_said curl "$out.err")"
 	elif jq -r "$ORT_TREE_JQ" "$out.json" >"$out" 2>/dev/null && tree_listing_ok "$out"; then
 		return 0
@@ -889,7 +889,7 @@ probe_path() {   # <path> <dest>
 		why="gh: not installed"
 	fi
 	if command -v curl >/dev/null 2>&1; then
-		if status="$(curl -sSL -o "$dest" -w '%{http_code}' "https://raw.githubusercontent.com/${PAYLOAD_REPO:-$REPO}/${PAYLOAD_REV:-$REF}/$path" 2>"$dest.err")"; then
+		if status="$(curl -sSL --proto '=https' --proto-redir '=https' --tlsv1.2 -o "$dest" -w '%{http_code}' "https://raw.githubusercontent.com/${PAYLOAD_REPO:-$REPO}/${PAYLOAD_REV:-$REF}/$path" 2>"$dest.err")"; then
 			case "$status" in
 			200) return 0 ;;
 			404) PROBE_WHY="$why; curl: HTTP 404"; return 3 ;;
@@ -4074,7 +4074,7 @@ wip_fetch_template_file() {
 		return 0
 	fi
 	if command -v curl >/dev/null 2>&1 &&
-		curl -fsSL "https://raw.githubusercontent.com/$SHAPE_REPOSITORY/$ref/$path" \
+		curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 "https://raw.githubusercontent.com/$SHAPE_REPOSITORY/$ref/$path" \
 			>"$dest" 2>/dev/null && [ -s "$dest" ]; then
 		return 0
 	fi

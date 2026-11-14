@@ -1,5 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
-"""`.github/workflows/tests.yml`: its triggers, its four jobs and the `package` job (#228).
+"""`.github/workflows/tests.yml`: its triggers, its four jobs, their shards and the `package` job (#228).
+
+THE SHARDS. `tests` and `tests-no-submodule` are gates over a matrix of shard
+jobs (`tests-shard`, `tests-no-submodule-shard`): the four gate names stay, so
+the release gate and the leg's rulesets read what they always read, and what
+runs in which shard is `.github/ci/ci_shards.py`'s plan. What is held here is
+that the gates wait on their shards and fail closed, that each matrix is the
+plan's shard list, that the shard jobs keep today's runner, checkout, Python
+and setup steps, and that each has a 60-minute timeout. The count the shards
+add up to is `ci_shards.py verify`'s, held by `tests/test_ci_shards.py`.
 
 OFFLINE, LIKE THE REST OF THIS SUITE. What these tests hold is
 contracts/workflows.md's "Held by `tests/test_tests_workflow.py`" list, with
@@ -12,7 +21,7 @@ Two tests read the file as text instead, and need no submodule: the header
 comment, because a comment is not data, and the digest rule, because a
 digest is wrong wherever in the file it stands.
 
-THREE OF THE `package` JOB'S STEPS ARE RUN, NOT ONLY READ. Each runs under
+FOUR OF THE `package` JOB'S STEPS ARE RUN, NOT ONLY READ. Each runs under
 bash at the repository's root, as the runner runs it, with `$RUNNER_TEMP`,
 `$HOME` and every `$GITHUB_*` file under the test's own directory, and with
 pip pointed at no index, so nothing can be fetched:
@@ -20,10 +29,14 @@ pip pointed at no index, so nothing can be fetched:
 - step 4, under a fake `pip` that records each call and installs nothing:
   the file it installs `tomli` from, by hash, must be the build lock's whole
   `tomli` entry, every hash of it;
-- step 6, the wheel check, over four wheels made here with `zipfile` from
-  HEAD's own blobs and modes, laid out as hatchling 1.27.0 lays one out, and
-  put where step 5 leaves its two builds, `$RUNNER_TEMP/a/` and
-  `$RUNNER_TEMP/b/`;
+- step 6, the wheel check, over the wheels `WHEEL_CASES` names, made here
+  with `zipfile` from HEAD's own blobs and modes, laid out as hatchling
+  1.27.0 lays one out, and put where step 5 leaves its two builds,
+  `$RUNNER_TEMP/a/` and `$RUNNER_TEMP/b/`;
+- step 10, whole, with a stand-in for pipx's link that prints the lines and
+  writes the receipt a case gives it: the step must pass the skip line, the
+  count line and the 28 receipt rows, and refuse a run that lacks one of them
+  (#275);
 - step 11's report step, over JUnit reports written here.
 
 WHAT THESE TESTS NEED OF THE `package` JOB, beyond the contract's own
@@ -41,6 +54,10 @@ words, written down here so that the task adding the job (T016) knows:
 - step 6's YAML step holds that one heredoc, and its script, up to the
   heredoc's closing `PY`, checks the wheel in `$RUNNER_TEMP/a/` against
   `HEAD`, printing each problem, and exits 0 or 1;
+- step 10 runs `$PIPX_BIN_DIR/openRepoTools --install` with its `HOME` at
+  `$RUNNER_TEMP/install-home`, reads the receipt at
+  `.local/share/openRepoTools/installed.tsv` under it, and exits 0, or 1
+  after one `::error::` line;
 - a step that is run reads what an earlier step left only through
   `$GITHUB_ENV`, `$GITHUB_PATH`, `$RUNNER_TEMP` or the job's `env:`, and the
   only expressions it holds are `${{ runner.temp }}`,
@@ -60,6 +77,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import warnings
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -70,6 +88,7 @@ from conftest import NEEDS_UPSTREAM, REPO, UPSTREAM, WINDOWS_SKIP
 
 WORKFLOW = REPO / ".github" / "workflows" / "tests.yml"
 BUILD_LOCK = REPO / ".github" / "release-build-requirements.txt"
+PIPX_LOCK = REPO / ".github" / "release-pipx-requirements.txt"
 PINNED_READER = UPSTREAM / "scripts" / "repo_shape.py"
 
 #: THE RELEASE GATE'S FOUR JOB IDS (FR-046), in the file's order. The gate
@@ -77,17 +96,38 @@ PINNED_READER = UPSTREAM / "scripts" / "repo_shape.py"
 #: a gate that finds nothing.
 JOB_IDS = ("guard-launch-mode", "tests", "tests-no-submodule", "package")
 
+#: THE SHARD JOB BEHIND EACH GATE THAT HAS ONE, and the commands the workflow
+#: runs. A shard job's name in a run is `<id> (<matrix value>)`, which is none
+#: of the four gate names, so the release gate never reads a shard.
+SHARD_JOBS = {"tests": "tests-shard",
+              "tests-no-submodule": "tests-no-submodule-shard"}
+ALWAYS = "${{ always() }}"
+FULL_ROOT = "${{ !cancelled() && !(needs.delivery-route.result == 'success' && needs.delivery-route.outputs.omit_full == 'true') }}"
+FULL_AGGREGATE = "${{ always() && !(needs.delivery-route.result == 'success' && needs.delivery-route.outputs.omit_full == 'true') }}"
+#: A shard job's `timeout-minutes`. Shards take 10 to 26 minutes; without it a
+#: hung pytest holds a required check for GitHub's 360-minute default.
+SHARD_TIMEOUT_MINUTES = 60
+SHARD_RUN = {gate: ("python3 .github/ci/ci_shards.py run --variant " + gate +
+                    ' --shard "$SHARD" --out "$RUNNER_TEMP/shard"')
+             for gate in SHARD_JOBS}
+VERIFY_RUN = {gate: ("python3 .github/ci/ci_shards.py verify --variant " + gate +
+                     ' --results "$RUNNER_TEMP/shards" --needs-result "$SHARDS_RESULT"')
+              for gate in SHARD_JOBS}
+HELPER = REPO / ".github" / "ci" / "ci_shards.py"
+
 #: The two commits every job pins (contracts/workflows.md).
 CHECKOUT = "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
 SETUP_PYTHON = "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065"
 
-#: THE TRIGGERS. Only `push.branches` moves, from `[main]`.
-PULL_REQUEST = {"types": ["opened", "synchronize", "reopened", "labeled"]}
+#: Full CI follows PR creation/code updates, not label-only metadata changes.
+PULL_REQUEST = {"types": ["opened", "synchronize", "reopened"]}
 PUSH = {"branches": ["main", "release/v*"]}
 SCHEDULE = [{"cron": "17 4 * * *"}]
 
-#: THE THREE EXISTING JOBS AS TODAY'S FILE HOLDS THEM, written out here and
-#: never read from history: CI checks out one commit at `fetch-depth: 1`.
+#: THE JOBS THAT RUN THE SUITE AS TODAY'S FILE HOLDS THEM, written out here and
+#: never read from history: CI checks out one commit at `fetch-depth: 1`. The
+#: two shard jobs carry what `tests` and `tests-no-submodule` carried, with the
+#: pytest command replaced by the shard's.
 #: Each is its runner, its checkout's options, its Python and its `run:`
 #: commands in order. The pull request's diff review answers for the rest
 #: of "byte for byte".
@@ -101,31 +141,31 @@ EXISTING_JOBS = {
             "bash tests/run.sh -k 'guard_launch_mode or repo_hygiene'",
         ],
     },
-    "tests": {
+    "tests-shard": {
         "checkout": {"submodules": True, "fetch-depth": 1},
         "python": "3.x",
         "runs": [
-            "python3 -m pip install --disable-pip-version-check pytest==8.3.4",
+            "python3 -m pip install --disable-pip-version-check --only-binary=:all: pytest==8.3.4",
             "{\n"
             '  echo "GIT_AUTHOR_NAME=openRepoTools CI"\n'
             '  echo "GIT_AUTHOR_EMAIL=ci@openrepotools.invalid"\n'
             '  echo "GIT_COMMITTER_NAME=openRepoTools CI"\n'
             '  echo "GIT_COMMITTER_EMAIL=ci@openrepotools.invalid"\n'
             '} >> "$GITHUB_ENV"\n',
-            "python3 -m pytest tests -q",
+            SHARD_RUN["tests"],
         ],
     },
-    "tests-no-submodule": {
+    "tests-no-submodule-shard": {
         "checkout": {"submodules": False, "fetch-depth": 1},
         "python": "3.x",
         "runs": [
-            "python3 -m pip install --disable-pip-version-check pytest==8.3.4",
+            "python3 -m pip install --disable-pip-version-check --only-binary=:all: pytest==8.3.4",
             "set -euo pipefail\n"
             "if [ -f upstream/openRepoShape/scripts/repo_shape.py ]; then\n"
             '  echo "the submodule IS checked out; this job proves nothing" >&2\n'
             "  exit 1\n"
             "fi\n",
-            "python3 -m pytest tests -q -rs",
+            SHARD_RUN["tests-no-submodule"],
         ],
     },
 }
@@ -207,17 +247,31 @@ WRITTEN_MODE = 0o644
 WHEEL_FILE = (b"Wheel-Version: 1.0\nGenerator: hatchling 1.27.0\n"
               b"Root-Is-Purelib: true\nTag: py3-none-any\n")
 
-#: THE WHEEL CHECK'S FOUR WHEELS (contracts/workflows.md, step 6). Each case
-#: is the exit the check must give and the name its output must add to the
-#: output the wheel as built gives: the file that is wrong.
+#: THE WHEEL CHECK'S WHEELS (contracts/workflows.md, step 6): the contract's
+#: four, then one for each check they never reach (#275): a module, the
+#: stamp, "nothing else" and the check that no member is there twice. Each
+#: case is the exit the check must give and the name an `::error::` line of
+#: its output must add to the output the wheel as built gives: the file that
+#: is wrong.
 BYTE_TARGET = "skills/handoff/SKILL.md"
 MODE_TARGET = "lanes-index"
+MODULE_TARGET = PACKAGE + "cli.py"
+STAMP_TARGET = PACKAGE + "_release.py"
+EXTRA_TARGET = PACKAGE + "extra.py"
 WHEEL_CASES = {
     "as-built": (0, None),
     "no-license": (1, "LICENSE"),
     "payload-byte": (1, BYTE_TARGET),
     "payload-mode": (1, MODE_TARGET),
+    "module-byte": (1, MODULE_TARGET),
+    "stamp-line": (1, STAMP_TARGET),
+    "extra-member": (1, EXTRA_TARGET),
+    "member-twice": (1, MODULE_TARGET),
 }
+
+#: The members a case's wheel holds a second time, as a build that lists a
+#: file twice leaves it. A dict of members cannot say it, so `write_wheel` does.
+WHEEL_TWICE = {"member-twice": (MODULE_TARGET,)}
 
 #: Every expression a run step may hold, and what the runner gives it.
 EXPRESSION = re.compile(r"\$\{\{\s*([A-Za-z_][\w.-]*)\s*\}\}")
@@ -227,6 +281,20 @@ OFFLINE_INDEX = "https://offline.invalid/simple"
 
 NEEDS_BASH = pytest.mark.skipif(shutil.which("bash") is None,
                                 reason="the package job's steps are bash")
+
+
+def has_gnu_stat() -> bool:
+    """Step 10 reads its link with `stat -c %i` and `sha256sum`: GNU's, and
+    not what macOS's userland has under those names."""
+    if shutil.which("stat") is None or shutil.which("sha256sum") is None:
+        return False
+    return subprocess.run(["stat", "-c", "%i", os.curdir], capture_output=True,
+                          check=False).returncode == 0
+
+
+NEEDS_GNU_STAT = pytest.mark.skipif(
+    not has_gnu_stat(),
+    reason="step 10 reads its link with GNU's `stat -c` and `sha256sum`")
 
 
 # --- reading the workflow -----------------------------------------------------
@@ -731,8 +799,16 @@ def built_members(head: Head) -> dict:
     return members
 
 
+def one_byte_changed(data: bytes) -> bytes:
+    """`data` with one bit of its middle byte flipped."""
+    changed = bytearray(data)
+    changed[len(changed) // 2] ^= 0x01
+    return bytes(changed)
+
+
 def case_members(head: Head, case: str) -> dict:
-    """The wheel as built, with what `case` changes."""
+    """The wheel as built, with what `case` changes. `member-twice` changes
+    nothing here: `WHEEL_TWICE` names what `write_wheel` writes again."""
     members = built_members(head)
     info = head.dist_info
     if case == "no-license":
@@ -743,22 +819,38 @@ def case_members(head: Head, case: str) -> dict:
         assert PAYLOAD + BYTE_TARGET in members, (
             f"{BYTE_TARGET} is no longer a payload file: pick another")
         data, mode = members[PAYLOAD + BYTE_TARGET]
-        changed = bytearray(data)
-        changed[len(changed) // 2] ^= 0x01
-        members[PAYLOAD + BYTE_TARGET] = (bytes(changed), mode)
+        members[PAYLOAD + BYTE_TARGET] = (one_byte_changed(data), mode)
     elif case == "payload-mode":
         assert members.get(PAYLOAD + MODE_TARGET, (b"", 0))[1] == 0o100755, (
             f"{MODE_TARGET} is no longer an executable payload file: pick "
             "another")
         members[PAYLOAD + MODE_TARGET] = (members[PAYLOAD + MODE_TARGET][0],
                                           0o100644)
+    elif case == "module-byte":
+        assert MODULE_TARGET in members, (
+            f"{MODULE_TARGET} is no longer a module: pick another")
+        data, mode = members[MODULE_TARGET]
+        members[MODULE_TARGET] = (one_byte_changed(data), mode)
+    elif case == "stamp-line":
+        data, mode = members[STAMP_TARGET]
+        members[STAMP_TARGET] = (
+            data + b"# a line the committed stamp does not have\n", mode)
+    elif case == "extra-member":
+        assert EXTRA_TARGET not in members, (
+            f"{EXTRA_TARGET} is HEAD's now: pick another")
+        members[EXTRA_TARGET] = (b"import os\n", 0o100644)
+    elif case in WHEEL_TWICE:
+        assert all(name in members for name in WHEEL_TWICE[case]), (
+            f"{WHEEL_TWICE[case]} are no longer wheel members: pick another")
     else:
         assert case == "as-built", case
     return members
 
 
-def write_wheel(path: Path, head: Head, members: dict) -> None:
-    """`members`, and the RECORD of them, as one zip at the commit's time."""
+def write_wheel(path: Path, head: Head, members: dict,
+                again: tuple = ()) -> None:
+    """`members`, and the RECORD of them, as one zip at the commit's time,
+    and then each member `again` names a second time."""
     when = datetime.fromtimestamp(max(head.epoch, 315532800), timezone.utc)
     record = []
     for name, (data, _) in members.items():
@@ -769,12 +861,16 @@ def write_wheel(path: Path, head: Head, members: dict) -> None:
     entries = dict(members)
     entries[head.dist_info + "RECORD"] = (
         ("\n".join(record) + "\n").encode("utf-8"), WRITTEN_MODE)
-    with zipfile.ZipFile(path, "w") as wheel:
-        for name, (data, mode) in entries.items():
-            info = zipfile.ZipInfo(name, when.timetuple()[:6])
-            info.external_attr = mode << 16
-            info.compress_type = zipfile.ZIP_DEFLATED
-            wheel.writestr(info, data)
+    written = list(entries.items()) + [(name, entries[name]) for name in again]
+    with warnings.catch_warnings():
+        # `zipfile` warns of a name it writes twice, and writes it.
+        warnings.simplefilter("ignore", UserWarning)
+        with zipfile.ZipFile(path, "w") as wheel:
+            for name, (data, mode) in written:
+                info = zipfile.ZipInfo(name, when.timetuple()[:6])
+                info.external_attr = mode << 16
+                info.compress_type = zipfile.ZIP_DEFLATED
+                wheel.writestr(info, data)
 
 
 def wheel_check_script(step: dict) -> tuple:
@@ -793,16 +889,18 @@ def wheel_check_script(step: dict) -> tuple:
             "\n".join(lines[start + 1:end]) + "\n")
 
 
-def run_wheel_check(workflow: dict, head: Head, root: Path, members: dict):
-    """Step 6, over the wheel `members` make, placed where step 5 leaves its
-    two builds: the finished process and its runner."""
+def run_wheel_check(workflow: dict, head: Head, root: Path, members: dict,
+                    again: tuple = ()):
+    """Step 6, over the wheel `members` make, with each member `again` names
+    written twice, placed where step 5 leaves its two builds: the finished
+    process and its runner."""
     job = package_job(workflow)
     step = job["steps"][locate(job)[6]]
     script, _ = wheel_check_script(step)
     runner = Runner(workflow, job, root)
     first = runner.temp / "a" / head.wheel_name
     first.parent.mkdir()
-    write_wheel(first, head, members)
+    write_wheel(first, head, members, again)
     (runner.temp / "b").mkdir()
     shutil.copyfile(first, runner.temp / "b" / head.wheel_name)
     return runner.run(step, script=script), runner
@@ -819,38 +917,74 @@ def test_tests_yml_push_runs_on_main_and_every_release_branch(workflow):
 
 
 @NEEDS_UPSTREAM
-def test_tests_yml_its_other_triggers_are_unchanged(workflow):
-    """`pull_request` with `labeled` beside GitHub's three defaults, the
-    nightly cron at 04:17 UTC and `workflow_dispatch`, and no trigger
-    besides those and `push`."""
+def test_tests_yml_triggers_keep_full_ci_except_label_only_events(workflow):
+    """GitHub's three PR defaults, the nightly cron at 04:17 UTC and
+    `workflow_dispatch`, plus parameterless reuse of the same full jobs."""
     on = workflow.get("on")
     assert isinstance(on, dict), "tests.yml has no `on:` mapping"
     assert sorted(on) == sorted(["pull_request", "push", "schedule",
-                                 "workflow_dispatch"]), sorted(on)
+                                 "workflow_dispatch", "workflow_call"]), sorted(on)
     assert on["pull_request"] == PULL_REQUEST, on["pull_request"]
     assert on["schedule"] == SCHEDULE, on["schedule"]
     assert on["workflow_dispatch"] is None, on["workflow_dispatch"]
+    assert on["workflow_call"] is None, on["workflow_call"]
 
 
 @NEEDS_UPSTREAM
-def test_tests_yml_has_exactly_the_four_gate_jobs(workflow):
-    """The release gate's four ids (FR-046) and no fifth. None has a
-    `name:`, so each check run is named by its id, and none has an `if:`,
-    so every trigger runs all four."""
+def test_tests_yml_label_events_do_not_start_or_replace_full_checks(workflow):
+    """Mergify's `queued` label must not start another full run or publish
+    skipped replacement gates. All labels use the same `labeled` event."""
+    types = workflow["on"]["pull_request"]["types"]
+    assert {"labeled", "unlabeled"}.isdisjoint(types), types
+
+
+@NEEDS_UPSTREAM
+@pytest.mark.parametrize("action", ["opened", "synchronize", "reopened"])
+def test_tests_yml_pr_changes_and_candidates_keep_unfiltered_full_ci(workflow, action):
+    """No path/base filter, draft/candidate exception or queued-label job
+    condition may turn code updates into a reduced or skipped full run."""
+    trigger = workflow["on"]["pull_request"]
+    assert set(trigger) == {"types"}, trigger
+    assert action in trigger["types"], trigger
+    for job_id, job in jobs_of(workflow).items():
+        if job_id in {"delivery-route", "delivery-gate"}:
+            continue
+        if job_id in SHARD_JOBS:
+            assert job.get("if") == FULL_AGGREGATE, job
+        else:
+            assert job.get("if") == FULL_ROOT, job
+
+
+@NEEDS_UPSTREAM
+def test_tests_yml_has_the_four_gate_jobs_and_the_two_shard_jobs_and_no_other(workflow):
+    """The release gate's four ids (FR-046), the two shard jobs behind
+    `tests` and `tests-no-submodule`, and no other. None of the four has a
+    `name:`, so each check run is named by its id; none of the six but the two
+    gates over shards has an `if:`, and each of those two has `always()` and
+    nothing else, so every trigger runs all four and a failed shard is a red
+    gate, not a skipped one."""
     jobs = jobs_of(workflow)
-    assert sorted(jobs) == sorted(JOB_IDS), (
-        f"the jobs are {list(jobs)}, not {list(JOB_IDS)}")
-    for job_id in JOB_IDS:
+    original = JOB_IDS + tuple(SHARD_JOBS.values())
+    want = sorted(original + ("delivery-route", "delivery-gate"))
+    assert sorted(jobs) == want, f"the jobs are {list(jobs)}, not {want}"
+    for job_id in JOB_IDS + tuple(SHARD_JOBS.values()):
         assert "name" not in jobs[job_id], f"`{job_id}` has a `name:`"
-        assert "if" not in jobs[job_id], f"`{job_id}` has an `if:`"
+    for job_id in original:
+        if job_id in SHARD_JOBS:
+            assert jobs[job_id].get("if") == FULL_AGGREGATE, jobs[job_id].get("if")
+        else:
+            assert jobs[job_id].get("if") == FULL_ROOT
+            assert jobs[job_id].get("needs") == ["delivery-route"]
 
 
 @NEEDS_UPSTREAM
 @pytest.mark.parametrize("job_id", sorted(EXISTING_JOBS))
 def test_tests_yml_existing_job_keeps_todays_runner_checkout_python_and_runs(
         workflow, job_id):
-    """The three jobs the contract leaves byte for byte keep today's
-    runner, checkout options, Python and `run:` commands."""
+    """The job the contract leaves byte for byte, and the two shard jobs
+    that carry what `tests` and `tests-no-submodule` carried, keep today's
+    runner, checkout options, Python and `run:` commands, the shards' pytest
+    command being the shard's."""
     job = jobs_of(workflow).get(job_id)
     assert isinstance(job, dict), f"tests.yml has no `{job_id}` job"
     want = EXISTING_JOBS[job_id]
@@ -864,6 +998,67 @@ def test_tests_yml_existing_job_keeps_todays_runner_checkout_python_and_runs(
         steps[1].get("with")
     runs = [step["run"] for step in steps if "run" in step]
     assert runs == want["runs"], f"`{job_id}`'s `run:` commands moved: {runs}"
+
+
+@NEEDS_UPSTREAM
+@pytest.mark.parametrize("gate", sorted(SHARD_JOBS))
+def test_tests_yml_the_gate_waits_on_its_shards_and_fails_closed(workflow, gate):
+    """`tests` and `tests-no-submodule` keep the release gate's names and are
+    gates over their shard jobs: `needs:` them, `if: always()` so they RUN
+    when a shard fails or is cancelled (a skipped job passes a required check),
+    and one last step, the count check, that always runs, reads the shards'
+    combined result and is not allowed to continue past its own failure."""
+    job = jobs_of(workflow)[gate]
+    assert job.get("needs") == [SHARD_JOBS[gate], "delivery-route"], job.get("needs")
+    assert job.get("if") == FULL_AGGREGATE, job.get("if")
+    assert "strategy" not in job and "continue-on-error" not in job
+    last = job["steps"][-1]
+    assert last.get("if") == ALWAYS and "continue-on-error" not in last, last
+    assert as_text(last.get("run")) == VERIFY_RUN[gate], last.get("run")
+    assert (last.get("env") or {}).get("SHARDS_RESULT") == (
+        "${{ needs." + SHARD_JOBS[gate] + ".result }}"), last.get("env")
+    verifying = [step for step in job["steps"]
+                 if "ci_shards.py verify" in as_text(step.get("run"))]
+    assert verifying == [last], "the count check is not the gate's one last step"
+
+
+@NEEDS_UPSTREAM
+@pytest.mark.parametrize("gate", sorted(SHARD_JOBS))
+def test_tests_yml_the_matrix_is_the_plans_shards_and_their_reports_are_kept(
+        workflow, gate):
+    """Each shard job's matrix is the shard list `ci_shards.py` plans for its
+    gate, in the plan's order, so a shard added to one and not the other is
+    red here and not a silent gap; no shard cancels the others; and each
+    keeps its report whether it passed or not."""
+    spec = importlib.util.spec_from_file_location("_ci_shards_workflow_test",
+                                                  str(HELPER))
+    helper = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = helper
+    spec.loader.exec_module(helper)
+    job = jobs_of(workflow)[SHARD_JOBS[gate]]
+    strategy = job.get("strategy") or {}
+    assert strategy.get("fail-fast") is False, strategy
+    assert list(strategy.get("matrix") or {}) == ["shard"], strategy
+    assert strategy["matrix"]["shard"] == helper.shard_ids(gate), (
+        f"{SHARD_JOBS[gate]}'s matrix is {strategy['matrix']['shard']}, and "
+        f"the plan's shards are {helper.shard_ids(gate)}")
+    uploads = [step for step in job["steps"]
+               if str(step.get("uses", "")).startswith("actions/upload-artifact@")]
+    assert len(uploads) == 1 and uploads[0].get("if") == ALWAYS, uploads
+    assert uploads[0]["with"]["name"].endswith(
+        "-${{ matrix.shard }}-a${{ github.run_attempt }}"), uploads[0]["with"]
+
+
+@NEEDS_UPSTREAM
+@pytest.mark.parametrize("gate", sorted(SHARD_JOBS))
+def test_tests_yml_each_shard_job_times_out_at_60_minutes(workflow, gate):
+    """A shard takes 10 to 26 minutes. Without a `timeout-minutes:` a hung
+    pytest holds a required check (the gate waits on its shards) for GitHub's
+    360-minute default, so each of the two shard jobs carries one, 60."""
+    job = jobs_of(workflow)[SHARD_JOBS[gate]]
+    assert job.get("timeout-minutes") == SHARD_TIMEOUT_MINUTES, (
+        f"`{SHARD_JOBS[gate]}` has timeout-minutes {job.get('timeout-minutes')!r}, "
+        f"not {SHARD_TIMEOUT_MINUTES}")
 
 
 def test_tests_yml_header_comment_names_both_push_branches_and_four_jobs():
@@ -898,6 +1093,26 @@ def test_tests_yml_holds_no_digest_of_its_own():
     digests = re.findall(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{64}(?![0-9A-Fa-f])",
                          text)
     assert not digests, f"tests.yml holds a digest of its own: {digests}"
+
+
+def test_tests_yml_pipx_lock_carries_the_build_locks_own_tomli_entry():
+    """THE TWO LOCKS' `tomli` ENTRIES ARE ONE ENTRY (research R12, and both
+    locks' headers). Step 4 installs the build lock's `tomli`, and step 7
+    installs the whole pipx lock, which has an entry of its own for it below
+    Python 3.11, so the package's tests run on the pipx lock's. The pipx
+    lock's entry is the build lock's: its requirement line, which holds the
+    version and the marker, and every one of its digests. A resolution that
+    moves one lock's `tomli` and not the other's fails here."""
+    requirement, digests = build_lock_tomli()
+    entries = lock_entries(PIPX_LOCK.read_text(encoding="utf-8"))
+    tomli = [name for name in entries if name.startswith("tomli==")]
+    assert tomli == [requirement], (
+        f"{PIPX_LOCK.name} holds {tomli} and {BUILD_LOCK.name} holds "
+        f"{[requirement]}: the two entries move together")
+    assert sorted(entries[requirement]) == sorted(digests), (
+        f"{PIPX_LOCK.name}'s {requirement} carries "
+        f"{len(entries[requirement])} digests, and {BUILD_LOCK.name}'s "
+        f"{len(digests)}: the same ones, and only those")
 
 
 # --- the package job, read ------------------------------------------------------
@@ -1014,9 +1229,12 @@ STEP_CHECKS = {
         ("a PATH first holding a gh and a curl that exit 1", "step",
          lambda text: all(re.search(p, text) for p in (
              r"\bgh\b", r"\bcurl\b", r"exit 1(?![0-9])", r"\bPATH="))),
-        ("the skip line, exactly", "step", has_all(*SKIP_LINE_PARTS)),
-        ("the count line, exactly", "step", has_all(*COUNT_LINE_PARTS)),
-        ("28 receipt rows", "step", has(r"\b28\b")),
+        # THESE THREE READ THE STEP'S WORDS, NOT WHAT IT ASSERTS: an `echo`
+        # or a `count=` assignment holds them whether or not a command looks
+        # for the line or compares the rows (#275). The run below holds that.
+        ("the skip line's words", "step", has_all(*SKIP_LINE_PARTS)),
+        ("the count line's words", "step", has_all(*COUNT_LINE_PARTS)),
+        ("the number 28", "step", has(r"\b28\b")),
     ),
     11: (
         (f"runs `{PYTEST_COMMAND}`", "step", runs_the_pytest_command),
@@ -1031,7 +1249,8 @@ STEP_CHECKS = {
                          ids=[f"step-{n}" for n in sorted(STEP_CHECKS)])
 def test_tests_yml_package_step_says_what_the_contract_says(workflow, number):
     """What contracts/workflows.md writes for each of steps 4 to 11, read
-    from the step itself. Steps 4, 6 and 11's report are also run, below."""
+    from the step itself. Steps 4, 6, 10 and 11's report are also run,
+    below, and step 10's lines and rows are held by that run alone."""
     job = package_job(workflow)
     found = locate(job)
     missing = [what for what, scope, check in STEP_CHECKS[number]
@@ -1143,20 +1362,27 @@ def test_tests_yml_package_wheel_check_refuses_a_wheel_that_is_not_the_commits(
         workflow, head, tmp_path, case):
     """Step 6 over the wheel as built with one thing wrong: no
     `licenses/LICENSE`, a payload file with one byte changed, or a payload
-    file that lost its execute bit. It exits 1, and what it prints beyond
-    what the wheel as built gives names the file that is wrong."""
+    file that lost its execute bit; and then what those three never reach
+    (#275): a module with a byte changed, a line added to the stamp, a
+    member nothing lists, and a member twice. It exits 1, and an `::error::`
+    line among what it prints beyond what the wheel as built gives names the
+    file that is wrong. It does not crash: a traceback names a file too."""
     built, built_runner = run_wheel_check(workflow, head, tmp_path / "built",
                                           built_members(head))
     assert built.returncode == 0, ("the wheel as built does not pass, so "
                                    "this case proves nothing:\n" + shown(built))
     proc, runner = run_wheel_check(workflow, head, tmp_path / "case",
-                                   case_members(head, case))
+                                   case_members(head, case),
+                                   WHEEL_TWICE.get(case, ()))
     code, name = WHEEL_CASES[case]
     assert proc.returncode == code, shown(proc)
+    assert "Traceback (most recent call last)" not in proc.stdout + proc.stderr, (
+        "the check crashed rather than name the problem:\n" + shown(proc))
     before = set(built_runner.lines(built))
     new = [line for line in runner.lines(proc) if line not in before]
-    assert any(name in line for line in new), (
-        f"the check refused, and named no {name}:\n" + shown(proc))
+    assert any(line.startswith("::error::") and name in line for line in new), (
+        f"the check refused, and no `::error::` line names {name}:\n"
+        + shown(proc))
 
 
 def junit_report(tests: int, skipped: int = 0, failures: int = 0,
@@ -1205,10 +1431,117 @@ def test_tests_yml_package_report_step_fails_on_any_skip_or_none_run(
     assert (proc.returncode == 0) is passes, shown(proc)
 
 
-def test_tests_yml_synthetic_wheels_are_wheel_md_s_members(head):
+#: THE TWO LINES `--install` PRINTS BESIDE PIPX'S LINK, as
+#: contracts/cli-output.md spells them: `{link}` is pipx's link and `{dir}`
+#: the directory it is in. Written out whole here, and not from
+#: `SKIP_LINE_PARTS` and `COUNT_LINE_PARTS`, which are only what a script's
+#: text must carry.
+INSTALL_SKIP_LINE = ("openRepoTools: left to pipx at {link} (a link into "
+                     "pipx's openrepotools environment); update it with "
+                     "`pipx upgrade openrepotools`, then run "
+                     "`openRepoTools --install` again")
+INSTALL_COUNT_LINE = "openRepoTools: 16 of 17 placed in {dir}, and 1 left to pipx"
+
+#: STEP 10's CASES (#275): each is the number of skip lines the run prints,
+#: of count lines, the receipt's rows and the lines in it that are no row, and
+#: the `::error::` text the step must print, or None where it must pass. A
+#: full install's 29 rows less pipx's link are 28, and a row is `name`,
+#: `destination`, `sha256` and `utc`, four fields by tabs. `{skip}` and
+#: `{count}` stand for the two lines as this run prints them.
+INSTALL_CASES = {
+    "as-printed": (1, 1, 28, 0, None),
+    "no-skip-line": (0, 1, 28, 0,
+                     "--install printed this line 0 times, not once: {skip}"),
+    "no-count-line": (1, 0, 28, 0,
+                      "--install printed this line 0 times, not once: {count}"),
+    "count-line-twice": (1, 2, 28, 0,
+                         "--install printed this line 2 times, not once: "
+                         "{count}"),
+    "27-rows": (1, 1, 27, 0,
+                "the receipt has 27 lines and 27 rows, not 28"),
+    "29-rows": (1, 1, 29, 0,
+                "the receipt has 29 lines and 29 rows, not 28"),
+    "28-rows-and-a-line-that-is-no-row": (
+        1, 1, 28, 1, "the receipt has 29 lines and 28 rows, not 28"),
+    "27-rows-and-a-line-that-is-no-row": (
+        1, 1, 27, 1, "the receipt has 28 lines and 27 rows, not 28"),
+}
+
+
+def stand_in_for_pipx_link(directory: Path, output: str, receipt: str) -> Path:
+    """A `/bin/sh` script that does what `--install`, run through pipx's
+    link, did: it prints `output`, and writes `receipt` under the `HOME` it
+    runs with, where `--install` keeps its own. Step 10 reaches it through a
+    link, as it reaches pipx's."""
+    directory.mkdir(parents=True)
+    printed, rows = directory / "output.txt", directory / "receipt.tsv"
+    printed.write_text(output, encoding="utf-8")
+    rows.write_text(receipt, encoding="utf-8")
+    script = directory / "openrepotools-stand-in"
+    script.write_text(
+        "#!/bin/sh\n"
+        f"cat {shlex.quote(str(printed))}\n"
+        'mkdir -p "$HOME/.local/share/openRepoTools"\n'
+        f"cp {shlex.quote(str(rows))} "
+        '"$HOME/.local/share/openRepoTools/installed.tsv"\n',
+        encoding="utf-8")
+    script.chmod(0o755)
+    return script
+
+
+@NEEDS_UPSTREAM
+@WINDOWS_SKIP
+@NEEDS_BASH
+@NEEDS_GNU_STAT
+@pytest.mark.parametrize("case", list(INSTALL_CASES))
+def test_tests_yml_package_offline_install_step_holds_its_two_lines_and_28_rows(
+        workflow, tmp_path, case):
+    """Step 10 run whole, offline, with a stand-in for pipx's link that
+    prints the lines a case gives it and writes the receipt it gives it
+    (#275). The step passes the skip line and the count line once each with
+    28 receipt rows, and refuses a run with no skip line, with no count line
+    or with it twice, and with a receipt of 27 rows, of 29, or of 28 or 27
+    rows and a line that is no row. A refusal is exit 1 and an `::error::`
+    line that names what is wrong."""
+    skips, counts, rows, strays, error = INSTALL_CASES[case]
+    job = package_job(workflow)
+    step = job["steps"][locate(job)[10]]
+    runner = Runner(workflow, job, tmp_path / "run")
+    bin_dir = runner.temp / "pipx" / "bin"
+    link = bin_dir / "openRepoTools"
+    skip = INSTALL_SKIP_LINE.format(link=link)
+    count = INSTALL_COUNT_LINE.format(dir=bin_dir)
+    printed = (["openRepoTools: the run's other output"] + [skip] * skips
+               + [count] * counts)
+    receipt = ["\t".join((f"file-{n}", f"{bin_dir}/file-{n}",
+                          hashlib.sha256(f"file-{n}".encode()).hexdigest(),
+                          "2026-10-21T00:00:00Z"))
+               for n in range(rows)]
+    receipt += [f"a line that is no row, number {n}" for n in range(strays)]
+    stand_in = stand_in_for_pipx_link(
+        tmp_path / "stand-in", "".join(f"{line}\n" for line in printed),
+        "".join(f"{line}\n" for line in receipt))
+    bin_dir.mkdir(parents=True)
+    link.symlink_to(stand_in)
+    runner.env["PIPX_BIN_DIR"] = str(bin_dir)
+    proc = runner.run(step)
+    errors = [line for line in proc.stdout.splitlines()
+              if line.startswith("::error::")]
+    if error is None:
+        assert proc.returncode == 0 and not errors, shown(proc)
+        return
+    want = "::error::" + error.format(skip=skip, count=count)
+    assert proc.returncode == 1, shown(proc)
+    assert any(line.startswith(want) for line in errors), (
+        f"no `::error::` line says {want!r}:\n" + shown(proc))
+
+
+def test_tests_yml_synthetic_wheels_are_wheel_md_s_members(head, tmp_path):
     """The wheels above are the one contracts/wheel.md lists: HEAD's
     modules, the 24 payload files and the five `.dist-info` names, each
-    case differing from the wheel as built in its one member alone."""
+    case differing from the wheel as built in its one member alone, and the
+    one that writes a member twice in nothing but that member's second
+    entry."""
     built = built_members(head)
     info = head.dist_info
     assert len(head.payload) == 24, head.payload
@@ -1218,12 +1551,24 @@ def test_tests_yml_synthetic_wheels_are_wheel_md_s_members(head):
                    "licenses/LICENSE"]), "RECORD is added when written"
     changed = {"no-license": {info + "licenses/LICENSE", info + "METADATA"},
                "payload-byte": {PAYLOAD + BYTE_TARGET},
-               "payload-mode": {PAYLOAD + MODE_TARGET}}
+               "payload-mode": {PAYLOAD + MODE_TARGET},
+               "module-byte": {MODULE_TARGET},
+               "stamp-line": {STAMP_TARGET},
+               "extra-member": {EXTRA_TARGET},
+               "member-twice": set()}
+    assert sorted(changed) == sorted(set(WHEEL_CASES) - {"as-built"}), (
+        "a case of WHEEL_CASES has no entry here, or this has one it lacks")
     for case, names in changed.items():
         members = case_members(head, case)
         differ = {name for name in set(built) | set(members)
                   if built.get(name) != members.get(name)}
         assert differ == names, (case, differ)
+    for case, again in WHEEL_TWICE.items():
+        path = tmp_path / f"{case}.whl"
+        write_wheel(path, head, case_members(head, case), again)
+        with zipfile.ZipFile(path) as wheel:
+            listed = wheel.namelist()
+        assert all(listed.count(name) == 2 for name in again), (case, listed)
 
 
 # --- the real engine (#165, L2-0b) ---------------------------------------------

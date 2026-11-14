@@ -1,0 +1,72 @@
+name: Full CI coverage parity
+
+# Qualification only. No queue trigger, dispatch, admission or fast-only mode.
+# Ordinary tests.yml still runs independently on every existing event.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/tests.yml
+      - .github/workflows/full-ci-parity.yml
+      - .github/ci/full-ci-baseline.json
+      - .github/ci/ci_shards.py
+      - .github/ci/weights.json
+      - .github/ci/delivery-policy.json
+      - .github/ci/delivery_route.py
+      - .github/ci/delivery_evidence.py
+      - .github/ci/delivery_verify.py
+      - .github/workflows/task-set-candidate.yml
+      - .github/workflows/task-set-candidate-shadow.yml
+      - .mergify.yml
+      - tests/test_ci_cutover.py
+      - tests/test_ci_cutover_repair.py
+      - tests/test_tests_workflow.py
+      - tests/test_ci_shards.py
+      - tests/test_full_ci_coverage_parity.py
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.x'
+      - name: Install the existing test-runner pin
+        run: 'python3 -m pip install --disable-pip-version-check --only-binary=:all: pytest==8.3.4'
+      - name: Require the reviewed full-coverage contract
+        run: bash tests/run.sh -k full_ci_coverage_parity
+
+  full-ci:
+    needs: parity
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      actions: read
+    # Local reuse selects this caller's exact commit, not a mutable branch.
+    # All original 13 integration jobs plus controls, with no selector input.
+    uses: ./.github/workflows/tests.yml
+
+  qualification:
+    needs: [parity, full-ci]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require successful parity and the entire full call
+        env:
+          PARITY_RESULT: ${{ needs.parity.result }}
+          FULL_CI_RESULT: ${{ needs.full-ci.result }}
+        run: |
+          set -euo pipefail
+          test "$PARITY_RESULT" = success
+          test "$FULL_CI_RESULT" = success
+          printf '%s\n' 'Coverage reuse qualified; not queue or release acceptance.'

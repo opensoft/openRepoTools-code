@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The register sweeps and their reads fail closed: opensoft/openRepoTools#138
-(the `lanes-edit.sh` items) and #157 item 4b.
+(the `lanes-edit.sh` items) and #157 item 4b, and `next-free` counts the alias
+table's keys (lane 3's batch 8 Q47 on #165).
 
 Each case builds a throwaway register — a bare repository and a clone of it in
 a temporary directory, with a temporary `$HOME` — and runs the real
@@ -185,19 +186,20 @@ def test_a_refusal_in_the_scan_commits_no_peer_edit(reg, act):
     assert reg.dirty().strip() == "M lanes/LANES.md"
 
 
-def test_a_sweep_that_writes_still_captures_the_peer_edit_as_its_own_commit(reg):
-    """The capture moved; it did not go: the peer's edit still lands in its own
-    `LANES(pre-existing@…)` commit and never inside the sweep's."""
-    peer_edit(reg)
+def test_a_sweep_over_a_peer_register_edit_refuses_and_captures_nothing(reg):
+    """The capture moved in #157 4b; Amendment 23 S3 step 4 withdraws it
+    (ratified choice 9, #198 slice 1b). A sweep that would write refuses (2)
+    over a peer's pending register edit, commits nothing, and leaves the edit
+    as it was, for `commit` to commit as its own act. It never lands inside
+    the sweep's commit, which is what the capture was for."""
+    edited = peer_edit(reg)
     before = reg.head()
     result = reg.sweep("repoX-2")
-    assert result.returncode == 0, (result.stdout, result.stderr)
-    subjects = reg.git("log", "--format=%s", f"{before}..HEAD").splitlines()
-    assert len(subjects) == 2, subjects
-    assert subjects[1].startswith("LANES(pre-existing@Eagle)")
-    assert "retire-dormant" in subjects[0]
-    swept = reg.git("show", "--format=", "-U0", "HEAD", "--", "lanes/LANES.md")
-    assert "a peer's half-written cell" not in swept
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert "never swept into another write" in result.stderr
+    assert "captured pre-existing edit" not in result.stderr
+    assert reg.head() == before
+    assert reg.read("lanes/LANES.md") == edited
 
 
 # ------------------------------------------------- #138: retire_rows' scan
@@ -259,12 +261,15 @@ def test_item_12_a_symlinked_log_path_refuses_and_writes_nothing_through_it(reg)
 def test_item_8_the_retired_line_carries_the_writers_unpushed_newest_transcript(reg):
     """#138 item 8: the writer's uuid came from the PUBLISHED row alone, so a
     sweeping lane whose newest transcript is stamped in this checkout and not
-    yet pushed signed its append-only RETIRED lines with the older one."""
+    yet pushed signed its append-only RETIRED lines with the older one. Under
+    Amendment 23 S3 (#198 slice 1b) a write refuses over an unpushed commit, so
+    the stamp is published first; the RETIRED line must still carry the NEWEST
+    id of the row, never its first."""
     newest = "dddd0138-0004-4000-8000-000000000004"
     text = reg.read("lanes/LANES.md").replace(
         f"| harness `{WRITER_ID}` |", f"| harness `{WRITER_ID}` `{newest}` |")
     reg.write("lanes/LANES.md", text)
-    reg.commit("repoX-1 resumed in a new transcript, not yet pushed")
+    reg.publish("repoX-1 resumed in a new transcript")
     result = reg.sweep("repoX-2")
     assert result.returncode == 0, (result.stdout, result.stderr)
     retired = [line for line in reg.read("lanes/log/repoX-2.md").splitlines()
@@ -371,6 +376,82 @@ def test_item_5_a_register_path_that_renders_empty_offers_no_position(reg, kind)
     result = next_free(reg)
     assert result.returncode == 1, (result.stdout, result.stderr)
     assert result.stdout == ""
+
+
+# ------------- lane 3's batch 8 Q47 (#165): a former name's position is taken
+
+#: Two rows of `repoA` on stdin, so its next free position is 3 until a former
+#: name holds that position too.
+REPO_A_ROWS = "repoA-1\trow\nrepoA-2\trow\n"
+
+
+def aliases(reg: Register, *keys: str) -> Path:
+    """`lanes/aliases.tsv` holding one rename away from each key, published."""
+    path = reg.write("lanes/aliases.tsv", "".join(
+        f"{key}\trepoA-9\t2026-11-10T00:00:00Z\n" for key in keys))
+    reg.publish("rename lanes away from " + ", ".join(keys))
+    return path
+
+
+def next_free_a(reg: Register) -> subprocess.CompletedProcess:
+    return subprocess.run(["bash", str(REPO / "lanes-edit.sh"), "next-free", "repoA"],
+                          input=REPO_A_ROWS, cwd=str(reg.wip), env=dict(reg.env), text=True,
+                          capture_output=True, timeout=60, check=False)
+
+
+@pytest.mark.parametrize("key", ["repoA-3", "REPOA-3", "repoA-3b"],
+                         ids=["the same case", "another case", "a trailing letter"])
+def test_batch8_q47_an_alias_key_is_a_taken_position(reg, key):
+    """Batch 8 Q47: `lane_next_free` counted rows alone, so after `repoA-3 →
+    repoA-9` it offered 3 again, and a row there would end the former name's
+    resolution (Amendment 16(e)). A key is counted by the rows' own rule:
+    without regard to case, and with a trailing letter dropped."""
+    aliases(reg, key)
+    result = next_free_a(reg)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert result.stdout == "4\n"
+
+
+def test_batch8_q47_a_key_of_another_repository_is_not_counted(reg):
+    """The rows' rule for the repository, not a prefix: `repoA-foo-3` is a
+    former name of a `repoA-foo` lane, so `repoA`'s 3 is still free."""
+    aliases(reg, "repoA-foo-3")
+    result = next_free_a(reg)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert result.stdout == "3\n"
+
+
+def test_batch8_q47_an_absent_alias_table_changes_nothing(reg):
+    """An estate that never renamed a lane has no table, and the answer is the
+    rows' alone."""
+    assert not (reg.wip / "lanes/aliases.tsv").exists()
+    result = next_free_a(reg)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert result.stdout == "3\n"
+
+
+@pytest.mark.parametrize("mode", [
+    pytest.param("an unreadable local table", marks=UNPRIVILEGED_ONLY),
+    "git cannot show the published table",
+])
+def test_batch8_q47_an_alias_table_that_cannot_be_read_offers_no_position(reg, mode):
+    """A table that exists and cannot be read is `lane_next_free`'s 1, as a
+    register or an archive that cannot be read is (Amendment 7(d)): the note
+    names the table and the reason, and no number is printed."""
+    if mode == "an unreadable local table":
+        path = reg.write("lanes/aliases.tsv", "repoA-3\trepoA-9\t2026-11-10T00:00:00Z\n")
+        path.chmod(0)
+        reason = "aliases.tsv is there and could not be read"
+    else:
+        aliases(reg, "repoA-3")
+        reg.refuse_git("show origin/main:lanes/aliases.tsv")
+        reason = "git show origin/main:lanes/aliases.tsv failed"
+    result = next_free_a(reg)
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout == ""
+    assert "lanes/aliases.tsv could not be read (" in result.stderr
+    assert reason in result.stderr
+    assert "the FORMER names this position must avoid are not all known" in result.stderr
 
 
 # ------------------------------------------- #138: the listing's DORMANT class
@@ -599,12 +680,13 @@ def test_item_1_an_unreadable_published_register_refuses_the_sweep(reg):
     from #97) reads the published register and this checkout's row with their
     status and refuses UNKNOWN (1) on either failing. Pinned here, because
     the fence for a live session whose id is only in the published row rests
-    on that refusal: here this checkout's uncommitted edit dropped the id."""
+    on that refusal. (It used to be reached with this checkout's uncommitted
+    edit dropping the id; Amendment 23 S3 now refuses that edit first, choice
+    9, so the published read's failure is pinned on its own.)"""
     live = "cccc0138-0003-4000-8000-000000000003"
     text = reg.read("lanes/LANES.md").replace(f"| `repoX-2` | harness `{OLD_ID}`", f"| `repoX-2` | harness `{live}`")
     reg.write("lanes/LANES.md", text)
     reg.publish("repoX-2 is live in a session here")
-    reg.write("lanes/LANES.md", text.replace(live, OLD_ID))
     reg.live(live)
     reg.refuse_git("show origin/main:lanes/LANES.md")
     before = reg.head()
@@ -618,7 +700,8 @@ def test_item_1_an_unreadable_published_register_refuses_the_sweep(reg):
 # ------------------------------------- Amendment 23's routing, by default resolution
 
 def test_a_routed_sweep_over_a_peer_edit_in_W_warns_and_captures_nothing(reg):
-    """SHOULD 4, the default-resolution case of the capture above. Under
+    """SHOULD 4, the default-resolution case of the refusal above (which was
+    the capture until slice 1b). Under
     `LANES_ROUTE_WRITES=1` with W resolved from its root and no `LANES_REPO`,
     the sweep goes through the sweeping lane's own checkout, so nothing
     captures the peer's edit in W. Since the re-review's N2 only `commit`

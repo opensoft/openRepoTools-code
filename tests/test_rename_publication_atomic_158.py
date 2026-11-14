@@ -100,7 +100,8 @@ class RenameBox:
     def __init__(self, root: Path, shape: str) -> None:
         self.box = box = Sandbox(root)
         box.env["LANES_LANE_STATE_ROOT"] = str(root / "state")
-        box.env["LANES_NO_FETCH"] = "1"
+        # No `LANES_NO_FETCH=1`: for a writer it is a failed fetch, and
+        # Amendment 23 S3 refuses the write (ratified choice 2, #198 slice 1b).
         box.resolver()
         started = box.start("--no-launch")
         assert started.returncode == 0, (started.stdout, started.stderr)
@@ -225,6 +226,53 @@ def test_rename_in_place_handoff_in_a_read_only_directory_refuses_and_rolls_back
     assert rbox.tree() == before
     assert rbox.head() == head
     assert sorted(p.name for p in rbox.handoff.parent.iterdir()) == [rbox.handoff.name]
+
+
+def test_rename_in_place_handoff_prints_its_note_and_the_rename_still_commits(tmp_path):
+    """opensoft/openRepoTools#123, pinned as the decision it is. A handoff the
+    row names that is not called `…-lane-<old>.md` has no lane in its name to
+    rename, so `rename-lane` does NOT refuse: it says so, stamps the handoff
+    where it is, and commits the row, the log and the alias. The row's handoff
+    column still names that file, because it is where the column says. The
+    manual's clause (d) row says the same, and a refusal at preflight would be
+    a different contract (the amendment's refusal list)."""
+    rbox = RenameBox(tmp_path, "in-place")
+    cell = rbox.handoff.relative_to(rbox.box.wip).as_posix()
+    head = rbox.head()
+    result = rbox.rename()
+    assert result.returncode == 0, (result.stdout, result.stderr)
+
+    # The note, in its own words: the cell the row names, and the amendment.
+    note = (f"lanes-edit: the handoff {cell} is not named `…-lane-{LANE}.md`, so it has "
+            "no lane in its name to rename; it is stamped where it is (Amendment 16(d))")
+    assert result.stderr.splitlines().count(note) == 1, result.stderr
+    stamped = (f"lanes-edit: handoff stamped at line {STAMP_AT + 1} of {cell}: "
+               f"RENAMED from {LANE} by {RENAMER} (lane {NEW}) at ")
+    assert sum(line.startswith(stamped) for line in result.stderr.splitlines()) == 1, result.stderr
+
+    # The handoff is where it was, nothing named for the new lane beside it, and
+    # the Rule 3 stamp is the one line under its header block.
+    assert rbox.published == rbox.handoff
+    assert rbox.handoffs() == [rbox.handoff]
+    lines = rbox.handoff.read_bytes().splitlines(keepends=True)
+    assert re.fullmatch(rf"RENAMED from {LANE} by {RENAMER} \(lane {NEW}\) at \S+\n",
+                        lines[STAMP_AT].decode("utf-8")), lines
+    assert b"".join(lines[:STAMP_AT] + lines[STAMP_AT + 1:]) == HANDOFF
+
+    # One new commit, and the row, the log and the alias are in it with the
+    # handoff. `--no-renames`, so the log's move reads as the same two lines
+    # whatever its similarity.
+    assert rbox.head() != head
+    changed = rbox.box.git("-C", str(rbox.box.wip), "diff-tree", "--no-commit-id", "--no-renames",
+                           "--name-status", "-r", "HEAD").splitlines()
+    assert sorted(changed) == sorted([f"M\t{cell}", "M\tlanes/LANES.md", "A\tlanes/aliases.tsv",
+                                      f"D\tlanes/log/{LANE}.md", f"A\tlanes/log/{NEW}.md"]), changed
+    register = rbox.box.git("-C", str(rbox.box.wip), "show", "HEAD:lanes/LANES.md").splitlines()
+    row = next(line for line in register if line.startswith(f"| `{NEW}`"))
+    assert not any(line.startswith(f"| `{LANE}`") for line in register), register
+    assert row.split("|")[6].strip() == cell, row
+    aliases = rbox.box.git("-C", str(rbox.box.wip), "show", "HEAD:lanes/aliases.tsv").splitlines()
+    assert re.fullmatch(rf"{LANE}\t{NEW}\t\S+", aliases[-1]), aliases
 
 
 #: EVERY NAME THE EXIT AND SIGNAL TRAPS REMOVE A PATH THROUGH — `cleanup`
