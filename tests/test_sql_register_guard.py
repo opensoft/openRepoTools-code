@@ -417,6 +417,25 @@ def _release(fifo: Path, limit: float) -> bool:
     return bool(_until(once, limit))
 
 
+def _held(fifo: Path, limit: float):
+    """`fifo` open for writing once a call is held on it, inside `limit`
+    seconds, else None: the open `_release` makes, `O_NONBLOCK`, which fails
+    with ENXIO while no reader holds the FIFO, kept open where `_release`
+    closes it at once, as `hold_point` keeps it (T243's, in
+    `tests/test_sql_register_order.py`). The shim's `block` holds the FIFO
+    open for reading, before the real `psql` under a `hold` arm and once
+    `psql` has returned under a `timer` arm, so the open succeeds only then;
+    and the call stays held until the handle is closed (T254zu)."""
+    def once():
+        try:
+            return os.fdopen(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK), "wb")
+        except OSError as exc:
+            if exc.errno == errno.ENXIO:
+                return None
+            raise
+    return _until(once, limit)
+
+
 def _utc(epoch: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
 
@@ -2225,7 +2244,7 @@ def test_a_rerun_after_a_failed_stamp_push_writes_one_stamp(estate):
 
 @pytest.mark.parametrize("held", ["found", "absent"])
 def test_a_bind_killed_mid_commit_waits_for_ended_utc_plus_c_before_its_lookup(
-        estate, tmp_path, held):
+        estate, tmp_path, request, held):
     """AT-F6 case 18: a bind stopped by `kill <p>` while the shim holds
     `start-record`'s commit call on a FIFO, and answered `2` at once: the
     outer copies the five values; the child's lookup starts, in the shim's
@@ -2241,7 +2260,19 @@ def test_a_bind_killed_mid_commit_waits_for_ended_utc_plus_c_before_its_lookup(
     one under a new write id, not the copied one. And the `2` must go out
     at least 2 s inside `ended_utc` + 8 s, or the lookup's time could not
     tell a child that waited from a test that was slow: the case then
-    fails as inconclusive."""
+    fails as inconclusive.
+
+    THE KILL LANDS WHILE THE CALL IS HELD (T254zu; lane 5, #165
+    6871773273): the shim logs a call before it runs the real `psql`, and
+    a `timer` arm blocks on its FIFO only once `psql` has returned, so a
+    kill sent as soon as the commit call was logged could land before
+    `psql` had sent the commit; nothing then landed, the lookup found it
+    absent, and `[found]` bound anew (round 6l, `assert not starts`,
+    `[46]`). So the kill waits until the shim holds the call on the FIFO
+    (`_held`), in both ids, and the FIFO's writer stays open to the case's
+    end, so that only the kill ends the held call. The premise is then
+    read in the journal: `[found]`'s copied write id has landed, and
+    `[absent]`'s has not."""
     est = _real_estate(estate, mode="primary")
     fifo = tmp_path / f"hold-{held}"
     os.mkfifo(fifo)
@@ -2251,9 +2282,19 @@ def test_a_bind_killed_mid_commit_waits_for_ended_utc_plus_c_before_its_lookup(
     est.answer_2()
     record = est.outer()
     assert _until(lambda: _commits(est), 60), "start-record's commit call never came"
+    writer = _held(fifo, 60)
+    assert writer, (f"start-record's commit call was never held on {fifo.name} "
+                    f"({mode}): {[c.get('arms') for c in _commits(est)]}")
+    request.addfinalizer(writer.close)
     _kill(int(record["pid"]), signal.SIGTERM)
     record = est.ended(60)
     assert all(k in record for k in COPIES), record
+    landed = est.pg.psql("SELECT seq FROM lanes_register.journal "
+                         f"WHERE write_id = '{record['write_id']}'::uuid;").stdout.split()
+    assert bool(landed) == (held == "found"), \
+        (f"[{held}]: the held commit's write {record['write_id']} is "
+         f"{'' if landed else 'not '}in the journal {landed}, so the kill did not land "
+         f"{'after' if held == 'found' else 'before'} the real psql")
     ended = _epoch(record["ended_utc"])
     est.shim()
     # THE FIRST PROMPT AFTER A FAILURE IS SPENT ON THE BIND-FAILED REPLY
