@@ -22843,10 +22843,13 @@ guard_bind_settle() {
 #                 2 with a plain rerun's refusal of a record of another
 #                 generation (T412's text); the record and the copies are kept
 # A 2 or a 3 RETURNS, never `die`s (the exit-3 rule): its `why=` is in the
-# facts file, and the body exits with it.
+# facts file, and the body exits with it. The found rerun's own words are read
+# back only from <out>, which the body passes only where the record's `out` has
+# the record's own form, and empty otherwise (lane 3's ruling on spec#47's
+# point 25, #165 6879754335; the contract, draft 11, section 3).
 #   0 go on to `lane-start` · 2 or 3, or the found rerun's own code
-guard_bind_rerun() {   # <facts file>
-  gbe_facts="${1-}"
+guard_bind_rerun() {   # <facts file> <out, of the record's own form, or empty>
+  gbe_facts="${1-}"; gbe_out="${2-}"
   wr_is_uuid "$GBR_WRITE_ID" || return 0
   guard_bind_copies "$G_ID" "$GBR_WRITE_ID"
   [ -n "$GBC_FILE" ] || return 0
@@ -22903,8 +22906,8 @@ guard_bind_rerun() {   # <facts file>
         gbe_rr[0]="${LANES_EDIT:-$RESOLVED}"
         note "guard-bind --body: F3's lookup found write $WR_ID at seq $PW_LK_SEQ, so its pending record's command runs once under that id, for its tail."
         gbe_size=0
-        if [ -n "${GBR_OUT:-}" ] && [ -f "$GBR_OUT" ]; then
-          gbe_size="$(wc -c < "$GBR_OUT" 2>/dev/null | tr -d ' ' || :)"
+        if [ -n "$gbe_out" ] && [ -f "$gbe_out" ]; then
+          gbe_size="$(wc -c < "$gbe_out" 2>/dev/null | tr -d ' ' || :)"
           case "$gbe_size" in ''|*[!0-9]*) gbe_size=0 ;; esac
         fi
         LANES_WRITE_ID="$WR_REC_WRITE_ID" LANES_WRITE_GENERATION="$WR_REC_GENERATION" \
@@ -22912,8 +22915,8 @@ guard_bind_rerun() {   # <facts file>
           "${gbe_rr[@]}" </dev/null >&2 || gbe_rc=$?
         if [ "$gbe_rc" != 0 ]; then
           gbe_said=""
-          if [ -n "${GBR_OUT:-}" ] && [ -f "$GBR_OUT" ]; then
-            gbe_said="$(tail -c +"$((gbe_size + 1))" "$GBR_OUT" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 1 || :)"
+          if [ -n "$gbe_out" ] && [ -f "$gbe_out" ]; then
+            gbe_said="$(tail -c +"$((gbe_size + 1))" "$gbe_out" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 1 || :)"
           fi
           gbe_why="F3's lookup found write $WR_ID at seq $PW_LK_SEQ, and the rerun of its pending record for its tail exited $gbe_rc${gbe_said:+: $gbe_said}"
         fi
@@ -22988,6 +22991,13 @@ guard_bind_body() {   # <session uuid>
     return 2
   fi
   gbb_from="$GBR_FROM"; gbb_to="$GBR_TO"; gbb_out="$GBR_OUT"; gbb_act="$GBR_ACT"
+  # ITS OWN WORDS ARE READ BACK ONLY FROM AN `out` OF THE RECORD'S OWN FORM,
+  # `<record>.bind.<n>.out`, as its facts file is found (lane 3's ruling on
+  # spec#47's point 25, #165 6879754335; the contract, draft 11, section 3):
+  # any other `out` names no file the body reads, around `lane-start`, the lane
+  # left's `set-row-state` or the found rerun, so one rule holds for every
+  # path the record names.
+  guard_bind_facts_of "$gbb_f" "$gbb_out" >/dev/null || gbb_out=""
   # WHERE THE OUTER HANDED NO PATH, the body finds it beside `out=` itself.
   if [ -z "$gbb_facts" ]; then
     gbb_facts="$(guard_bind_facts_of "$gbb_f" "$gbb_out" || :)"
@@ -22997,7 +23007,7 @@ guard_bind_body() {   # <session uuid>
   # still in doubt, is looked up before anything binds again
   # (`guard_bind_rerun`). Its 2 or 3 ends the bind, with its `why=` written.
   gbb_lrc=0
-  guard_bind_rerun "$gbb_facts" || gbb_lrc=$?
+  guard_bind_rerun "$gbb_facts" "$gbb_out" || gbb_lrc=$?
   [ "$gbb_lrc" = 0 ] || return "$gbb_lrc"
   gbb_start="$(guard_lane_start)"
   [ -n "$gbb_start" ] || gbb_start=lane-start
