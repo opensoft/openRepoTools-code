@@ -21689,8 +21689,10 @@ guard_answer() {   # <offer file> <the prompt> <pane>
 # detached `lanes-index sync` among them.
 #
 # Exits: 0 once the outcome is written (its own code is the record's `rc`);
-# 1 where the record could not be rewritten at the start, and nothing ran; 2
-# where it refuses.
+# 1 where the record could not be rewritten at the start, and nothing ran, or
+# where the outcome could not be written, which is then in the attempt's
+# `.out` alone (lane 3's rulings, #165 6879754335; the bind record's
+# contract, draft 11, section 7); 2 where it refuses.
 GBO_CPID=""; GBO_BD=yes; GBO_TRAPS=0; GBO_MYPS=""
 
 # THE OUTER'S `TERM` TRAP: a person's `kill <p>`, forwarded — to `timeout`,
