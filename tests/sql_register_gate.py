@@ -45,8 +45,8 @@ census, every `verify/` branch and every run of `verify.yml` run ungated: those
 branches are cut from line R, which holds no markers, and a dispatched verify
 run may be on any ref (`GITHUB_WORKFLOW` is `verify`), so no verify passes by
 the gate's skip. `SQL_REGISTER_GATE=on` or `=off` overrides that either way,
-and any other value of it is refused. No workflow sets it, as a `repo_hygiene`
-row holds.
+and any other value of it is refused. Nothing under `.github/` sets it, nor
+does `tests/run.sh`, as a `repo_hygiene` row holds.
 
 The gate decides by landing state alone. With `OPENREPOTOOLS_REQUIRE_PG=1`, a
 missing engine still refuses the run in `pgcluster.py`'s `pytest_configure`,
