@@ -111,6 +111,48 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("git") is None,
     reason="the lane tooling is bash over git")]
 
+#: THE LANDING GATE'S TABLE (T280; its reader, `tests/sql_register_gate.py`,
+#: says how a table is read), TEMPORARY: T281 removes it in the last set.
+#: Where the gate is active, each id is skipped until every task its row
+#: names, with the `"*"` row's, has landed, and the skip names them; an id's
+#: own row, `name[param]`, replaces its function's. Each row holds the
+#: fails-until clauses of the task that owns the test (T215, T219 or T279),
+#: each L-label read as the task that covers it, as lane 2's gate tables plan
+#: (GP-24, version 2) gives them. `"*"` is T121, which every row shares. Each
+#: `tasks:<n>` is tasks.md's line at `204145ae`, the reader's `SPEC_COMMIT`.
+SQL_REGISTER_GATE_TABLE = {
+    "*": ("T121",),  # every id: the tasks all its rows share
+    "test_a_declared_outage_lets_the_guard_answer_from_the_mirror": ("T117", "T304", "T409", "T507"),  # T219; tasks:2082
+    "test_a_declared_outage_lets_the_guard_read_the_mirror_with_service_and_database_down": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
+    "test_a_rollback_rerun_declares_before_it_goes_on": ("T304", "T326", "T424", "T425"),  # T279; tasks:2564
+    "test_a_rollbacks_declaration_counts_only_where_the_guards_read_finds_the_switch_at_files": ("T117", "T304", "T326", "T327", "T409", "T507"),  # T219; tasks:2082
+    "test_a_rollbacks_start_declares_the_outage": ("T304", "T326", "T424", "T425"),  # T279; tasks:2564
+    "test_an_expired_or_foreign_declaration_changes_nothing": ("T117", "T304", "T409", "T507"),  # T219; tasks:2082
+    "test_claude_no_lane_lets_a_session_through_before_any_input": ("T117", "T304", "T409", "T507"),  # T219; tasks:2082
+    "test_outage_declare_is_refused_where_the_probe_reads_primary": ("T117", "T304", "T409", "T507"),  # T219; tasks:2082
+    "test_outage_declare_on_a_persons_word_during_a_rollback_is_refused_and_prints_the_rollback_form": ("T304",),  # T219; tasks:2082
+    "test_outage_declare_refuses_while_the_database_answers_or_without_until": ("T117", "T304", "T409", "T507"),  # T219; tasks:2082
+    "test_outage_declare_rollback_is_refused_for_a_wrong_k_a_missing_mirror_seq_or_a_switch_it_cannot_read": ("T117", "T304", "T409", "T507"),  # T219; tasks:2082
+    "test_outage_declare_takes_mirror_seq_from_a_fetch_or_the_flag_and_refuses_with_neither": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
+    "test_outage_declare_writes_its_fields_and_clear_removes_it": ("T117", "T304", "T409", "T507"),  # T219; tasks:2082
+    "test_status_and_rollback_run_with_no_lane_session_and_no_guard": ("T117", "T304", "T409", "T507"),  # T219; tasks:2082
+    "test_status_reports_a_declaration_left_in_place": ("T117", "T304", "T409", "T507"),  # T219; tasks:2082
+    "test_the_declaration_is_read_once_at_the_prefetch": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
+    "test_the_guard_refuses_2_when_no_commit_within_the_bound_carries_register_seq": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
+    "test_the_guard_refuses_a_mirror_older_than_the_declared_seq": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
+    "test_the_guard_refuses_a_ref_behind_a_rollbacks_head": ("T304", "T326", "T327", "T504", "T505", "T506", "T507"),  # T215; tasks:2022
+    "test_the_guards_outage_refusal_names_the_store_the_cause_and_both_ways_out": ("T117", "T304", "T409", "T507"),  # T219; tasks:2082
+    "test_the_register_seq_lookup_finds_the_trailer_at_depths_0_and_199": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
+    "test_the_register_seq_lookup_is_timed_bounded_beside_the_unbounded_and_grep_forms": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
+    "test_under_a_declaration_a_direct_read_left_under_0_5_s_does_not_start": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
+    "test_under_a_declaration_a_silent_database_is_capped_and_the_mirror_answers_inside_the_budget": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
+    "test_with_no_declaration_the_guard_exits_2_with_service_and_database_down": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
+    "test_without_a_declaration_the_same_age_still_starts_the_direct_read": ("T504", "T505", "T506", "T507"),  # T215; tasks:2022
+    "test_writes_and_deciding_reads_still_refuse_during_a_declared_outage": ("T117", "T304", "T409", "T415", "T507"),  # T219; tasks:2082
+    "test_outage_declare_rollback_is_refused_for_a_wrong_k_a_missing_mirror_seq_or_a_switch_it_cannot_read[not-a-rollback-entry]": ("T304",),  # T219; tasks:2082
+    "test_outage_declare_rollback_is_refused_for_a_wrong_k_a_missing_mirror_seq_or_a_switch_it_cannot_read[wrong-k]": ("T304",),  # T219; tasks:2082
+}
+
 INDEXER = REPO / "lanes-index"
 #: The lane, and the tmux window it runs in.
 WINDOW = "repoA-2"
