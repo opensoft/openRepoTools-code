@@ -4545,7 +4545,7 @@ fi
 # row, under the opt-in and the default resolution: the first write needs it,
 # and every write below goes through it. A dry run plans it and makes nothing.
 # A checkout that could not be made, or whose creation lock is held, is SAID.
-# Under a base `<act-id>@files` the launch goes on (Amendment 8(d)): each write
+# Under a base `<act-id>@files` this alone does not refuse the launch (Amendment 8(d)): each write
 # below makes it again, or says for itself that it did not go through, and a
 # resume's refused `start-record` is a note (S3; ERR-56). UNDER A SEQ BASE THE
 # NOTE DOES NOT SAY THAT THE LAUNCH GOES ON (ERR-56; lane 3, #165 6867981064):
@@ -4561,7 +4561,7 @@ if [ "$LS_ROUTED" = 1 ]; then
     if [ "$lsc_rc" != 0 ]; then
       case "$LANES_ACT" in
         *@files)
-          note "lane $LANE's own register checkout could not be made (\`$LANES_EDIT lane-checkout $LANE --create\` exited $lsc_rc, above). The launch goes on: each write below makes it again, or says for itself that it did not go through (Amendment 23 S1, 8(d))." ;;
+          note "lane $LANE's own register checkout could not be made (\`$LANES_EDIT lane-checkout $LANE --create\` exited $lsc_rc, above). This alone does not refuse the launch: each write below makes it again, or says for itself that it did not go through (Amendment 23 S1, 8(d))." ;;
         *)
           note "lane $LANE's own register checkout could not be made (\`$LANES_EDIT lane-checkout $LANE --create\` exited $lsc_rc, above). Under this launch's seq base a write makes no clone (D12), so each write below refuses without the checkout, with nothing sent, and says so in its own words (R17; ERR-56)." ;;
       esac
