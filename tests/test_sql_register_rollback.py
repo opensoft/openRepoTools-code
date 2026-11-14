@@ -99,6 +99,35 @@ from sql_register_helpers import (LANES_INDEX, PSQL_SHIM, PSQL_SHIM_CONTROL, PSQ
 
 pytestmark = [WINDOWS_SKIP]
 
+#: THE LANDING GATE'S TABLE (T280; `tests/sql_register_gate.py` reads it): the
+#: tasks each id waits for, from T273's Order (tasks:2512 at 204145ae). In a
+#: gated run an id is skipped while any of its tasks has no marker in
+#: `tests/sql_register_landed/`. T281 removes it with the gate.
+SQL_REGISTER_GATE_TABLE = {
+    "test_a_cutover_and_a_rollback_leave_exactly_two_operator_entries": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_a_files_mode_claim_after_rollback_leaves_one_holder": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_a_missed_primary_writer_is_refused_after_rollback": ("T111", "T121", "T304", "T326", "T327", "T415", "T416", "T420"),  # T273; tasks:2512
+    "test_a_missed_writer_is_refused_once_the_partitioned_rollback_completes": ("T111", "T121", "T304", "T326", "T327", "T415", "T416", "T420"),  # T273; tasks:2512
+    "test_a_reimport_after_a_rollback_continues_the_journal": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_a_rerun_after_an_unconfirmed_removal_and_a_files_mode_write_ends_0_with_the_marker_absent": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_a_rollback_entry_over_a_recorded_divergence_is_lr012": ("T107", "T109"),  # T273; tasks:2512
+    "test_a_rollback_finds_a_stray_not_yet_recorded_records_it_and_exits_2": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_a_rollback_goes_back_to_its_check_on_each_lost_turn_code": ("T326",),  # T273; tasks:2512
+    "test_a_rollback_goes_back_to_its_check_past_a_last_error_and_refuses_a_divergence_recorded_meanwhile": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_a_rollback_rerun_resumes_after_its_own_entry": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_a_rollback_retries_a_lost_turn_on_a_fresh_k_through_its_check": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_a_write_that_committed_before_the_rollback_is_found_by_its_rerun_after_it": ("T121", "T304", "T326", "T327", "T415", "T416", "T417"),  # T273; tasks:2512
+    "test_rollback_exits_2_on_lr012_naming_the_divergence_and_both_ways_out": ("T107", "T109", "T121", "T304"),  # T273; tasks:2512
+    "test_rollback_from_a_partitioned_clone_is_refused_and_removes_no_marker": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_rollback_leaves_files_byte_identical_marker_gone_and_sql_writes_refused": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_rollback_refuses_to_start_while_the_mirror_is_diverged": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_rollback_steps_0_and_1_run_only_against_a_scratch_schema": ("T107", "T109", "T121", "T304"),  # T273; tasks:2512
+    "test_rollback_with_the_database_stopped_is_refused_and_changes_neither_switch_nor_marker": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_the_marker_removal_entry_is_written_with_the_switch_in_step_1": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_the_rollback_oracle_fails_on_a_last_fetched_tip_writer": ("T121", "T304", "T326"),  # T273; tasks:2512
+    "test_the_rollback_oracle_fails_on_a_switch_reset_when_the_database_returns": ("T121", "T304", "T326"),  # T273; tasks:2512
+}
+
 #: The scratch schema the cases bootstrap: any `register_schema=` but the
 #: default (Y:2323; lane 2's reading, NOTES question 6).
 SCRATCH = "t273_scratch"
