@@ -212,6 +212,28 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("git") is None,
     reason="the lane tooling is bash over git")]
 
+# ------------------------------------------------------------------ the landing gate
+#: THE LANDING GATE'S TABLE (T280; task sets version 12b's rule 11,
+#: opensoft/openRepoTools#165 6877673742), read by `tests/sql_register_gate.py`.
+#: Where the gate is active, an id whose tasks have not all landed is skipped,
+#: and the skip names them; an id waits for the `"*"` row and its own. T281
+#: removes this block in the last set. It is T271's Order (tasks:2489 at lane
+#: 3's commit 17, 204145ae), as lane 2's plan GP-24 keys it (sha256 16d738b9):
+#:
+#: - `"*"`: the module's tests fail until L1-A6 (T107, T108), L1-A15 (T117),
+#:   T322, T324 and T326. The gate model's seven ids need none of them (their
+#:   docstrings: "waits for nothing"), but the Order names the module's tests
+#:   whole, so `"*"` holds them too;
+#: - the status case also fails until T325 (lane 3's L2-6): its own row;
+#: - `[stray-no-longer-applies]`'s T324, and `[stray-revives-a-pair]`'s T324
+#:   and T107, are in `"*"` already. The two other strays' T115 (L1-A13) has
+#:   no row: it lands in an earlier set than T326, so a row would hold no id
+#:   longer.
+SQL_REGISTER_GATE_TABLE = {
+    "*": ("T107", "T108", "T117", "T322", "T324", "T326"),
+    "test_status_prints_diverged_at_the_stray_sha_and_reconcile_imports_nothing": ("T325",),
+}
+
 LANES_EDIT = REPO / "lanes-edit.sh"
 INDEXER = REPO / "lanes-index"
 
