@@ -3622,7 +3622,7 @@ class _Listener:
 class _Service:
     """`lanes-index serve` started by the test, stopped at teardown."""
 
-    def __init__(self, est: Estate, **extra):
+    def __init__(self, est: Estate, program=None, **extra):
         self.est = est
         if getattr(est, "pg", None) is not None:
             _seed_primary(est)
@@ -3630,7 +3630,7 @@ class _Service:
         # 6837268276): where one is left, the wait is for the socket that
         # replaces it, so a case never reads the stale inode as the new one.
         stale = _stale_socket(est)
-        self.proc = subprocess.Popen([sys.executable, str(est.index), "serve"],
+        self.proc = subprocess.Popen([sys.executable, str(program or est.index), "serve"],
                                      stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE, env=est.env(**extra),
                                      cwd=str(est.wip), start_new_session=True)
@@ -4720,19 +4720,58 @@ def test_the_socket_directory_is_a_0700_directory_of_this_uid_and_never_a_symlin
     assert sorted(p.name for p in run.iterdir()) == before, "serve wrote in a refused directory"
 
 
+#: A STAND-IN FOR `lanes-index serve` WHOSE PEER IS ANOTHER UID (lane 5, #165
+#: 6879639005): it loads `lanes-index` and replaces its one peer-credential
+#: read, `register_peercred` (`lanes-index:7652` at line R's merge106), with
+#: one that answers `os.getuid() + 1`, then runs `serve` as `main` does.
+_OTHER_UID_SERVE = r'''import importlib.machinery, importlib.util, os, sys
+sys.dont_write_bytecode = True
+loader = importlib.machinery.SourceFileLoader("lanes_index_other_uid", @INDEX@)
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+sys.modules[loader.name] = module
+loader.exec_module(module)
+if not callable(getattr(module, "register_peercred", None)):
+    sys.exit("lanes-index reads no peer credential through register_peercred (T512)")
+module.register_peercred = lambda conn: os.getuid() + 1
+sys.exit(module.main(sys.argv[1:]))
+'''
+
+
+def _closed_for_another_uid(est: Estate) -> int:
+    """`register.log`'s lines for a client the service closed as another
+    uid's (`lanes-index:8704-8708` at line R's merge106)."""
+    path = _run_dir(est) / "register.log"
+    if not path.exists():
+        return 0
+    return sum(1 for line in path.read_text(encoding="utf-8").splitlines()
+               if line.endswith(" closed a client of another uid"))
+
+
 def test_a_client_of_another_uid_is_closed_by_so_peercred(estate):
-    """SVC-2: a client of another uid is closed. CI has no second uid, so the
-    test loads `lanes-index` in process and replaces its peer-credential read
-    with one that answers another uid (T512 reads `SO_PEERCRED` through one
-    function)."""
-    import importlib.machinery
-    import importlib.util
-    loader = importlib.machinery.SourceFileLoader("lanes_index_t237", str(INDEX))
-    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
-    loader.exec_module(module)
-    reader = [name for name in dir(module) if "peercred" in name.lower()]
-    assert reader, "lanes-index reads no peer credential through one function (T512)"
-    estate(mode="primary")
+    """SVC-2: a client of another uid is closed, with no answer, and the
+    service logs "closed a client of another uid". CI has no second uid, so
+    the service runs through a stand-in that loads `lanes-index` and replaces
+    its one peer-credential read, `register_peercred`, with one that answers
+    another uid (`_OTHER_UID_SERVE`; lane 5, #165 6879639005): this test's
+    own connection is then another uid's, and its request gets no answer."""
+    est = estate(mode="primary")
+    stand_in = est.root / "t" / "serve-other-uid.py"
+    stand_in.parent.mkdir(parents=True, exist_ok=True)
+    stand_in.write_text(_OTHER_UID_SERVE.replace("@INDEX@", repr(str(est.index))),
+                        encoding="utf-8")
+    svc = _Service(est, program=stand_in)
+    try:
+        before = _closed_for_another_uid(est)
+        try:
+            answer = _ask_service(est, b"read 1\nlist\nend\n")
+        except (BrokenPipeError, ConnectionResetError):
+            answer = b""
+        after = _closed_for_another_uid(est)
+    finally:
+        svc.stop()
+    assert answer == b"" and after == before + 1, \
+        (f"the service did not close a client of another uid with no answer: answered "
+         f"{answer[:80]!r}; 'closed a client of another uid' lines {before} then {after}")
 
 
 @pytest.mark.parametrize("case", ["namespace", "boot"])
