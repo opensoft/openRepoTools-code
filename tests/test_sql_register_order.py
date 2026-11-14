@@ -61,6 +61,7 @@ import errno
 import hashlib
 import itertools
 import json
+import math
 import os
 import re
 import shlex
@@ -611,6 +612,12 @@ REPOS_T1 = REPOS_T0 + f"{ALIAS_REPO}\t{KEY}\n"
 #: The busy text's words (D7; P231-233) and the default's (AT-4 (h)).
 BUSY_WORDS = ("register busy", "nothing", "retry")
 D7_S, TWICE_D7_S = 30, 60
+#: AT-4 (c)'s measuring burst (T243u): a deadline none of its writers is
+#: meant to reach, four times D7's and inside `Writer.wait`'s 150 s, so all
+#: ten stay in the load until each commits; and the factor of the runner's
+#: own D7, `max(30 s, 10 x the runner's attempt p95)` (Y:5906; tasks:2337 at
+#: `8e8d1b49`).
+MEASURE_DEADLINE_S, D7_PER_P95 = 120, 10
 UUID_RE = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 SEQ_SAID = re.compile(r"register seq ([0-9]+)")
 
@@ -1254,13 +1261,14 @@ def claim(obj: str, *more: str) -> List[str]:
 
 
 def burst(e: Estate, objects: Sequence[str], window_ms: int, extra: dict = None,
-          node: Optional[pytest.Item] = None) -> Tuple[List[Writer], float]:
+          node: Optional[pytest.Item] = None, name: str = "burst",
+          wait_s: float = 150) -> Tuple[List[Writer], float]:
     """Writers on `objects`, one lane each, released together; returns them,
     and the drain from the release to the last exit. Before its caller
     asserts anything, it records the drain and each writer's attempts,
     counted as snapshot calls in the shim's log, and its seconds from the
     release to its exit, never asserted (TP:3783-3787 at `0c3750a5`; lane 3,
-    #165 6838735040; T243l): `record("burst", node, ...)`. Beside them, for
+    #165 6838735040; T243l): `record(name, node, ...)`. Beside them, for
     lane 1's two points (#165 6840891258; T243m), also never asserted: each
     writer's calls in order with their exits, its commits' losses by
     SQLSTATE, and its commits' seconds, as `burst_calls` reads them, and the
@@ -1272,7 +1280,12 @@ def burst(e: Estate, objects: Sequence[str], window_ms: int, extra: dict = None,
     reads among them, which a slower runner may not have made yet when the
     logs are read. UNTIL T243q `attempts` counted both, so an older figure,
     py-bench's 73 a burst (55 + 18) and CI round 6g's, is `attempts +
-    reads` here (lane 2's RV20, finding 9; T243q)."""
+    reads` here (lane 2's RV20, finding 9; T243q).
+
+    `name` is the record's, `burst`, but `burst-measure` for AT-4 (c)'s
+    measuring burst, so a census tells the two apart; `wait_s` bounds each
+    writer's wait, 150 s, or longer where AT-4 (c)'s deadline asks for it,
+    so the case's own drain assertion decides a slow burst (T243u)."""
     barrier = Barrier(e.root, len(objects))
     arms = [dict(WINDOW, ms=window_ms)]
     writers = [e.launch(lane, claim(obj, "--no-github"), arms=arms, barrier=barrier, extra=extra)
@@ -1281,11 +1294,11 @@ def burst(e: Estate, objects: Sequence[str], window_ms: int, extra: dict = None,
         (w.psql_dir / "tee").write_text("", encoding="utf-8")  # the stamp's tee (T243m)
     released = barrier.release()
     for w in writers:
-        w.wait()
+        w.wait(wait_s)
     drain = max(w.ended for w in writers) - released
     read = {w.lane: burst_calls(w) for w in writers}
     kinds = {lane: [call[0] for call in r[0].split()] for lane, r in read.items()}
-    record("burst", node, drain_s=round(drain, 2), margin_vs_30s=round(D7_S / max(drain, 0.01), 2),
+    record(name, node, drain_s=round(drain, 2), margin_vs_30s=round(D7_S / max(drain, 0.01), 2),
            attempts={lane: k.count("s") for lane, k in kinds.items()},
            reads={lane: k.count("r") + k.count("m") for lane, k in kinds.items()},
            seconds={w.lane: round(w.ended - released, 2) for w in writers},
@@ -1338,6 +1351,43 @@ def burst_calls(w: Writer) -> Tuple[str, Dict[str, int], List[float]]:
             for state in (tee or {}).get("states") or ["unread"]:
                 losses[state] = losses.get(state, 0) + 1
     return " ".join(letters), losses, seconds
+
+
+def attempt_seconds(w: Writer) -> List[float]:
+    """Each attempt of `w`'s run, in seconds, for AT-4 (c)'s runner's own D7
+    (T243u). An attempt that lost its turn runs from its snapshot request's
+    start, `burst_calls`' `s`, the request just before a commit call, to the
+    next attempt's: one turn of D7's loop, its decision and the next
+    attempt's directory included (`44f487d1:lanes-edit.sh:11176-11190`). The
+    last attempt runs from its snapshot request's start to the end of its
+    commit call, since what follows a commit (the tail, the replay, the
+    render's fork) is not D7's loop; where the tee has not logged that end,
+    it is left out. Every time is the stamp's wall clock, `stamps.log` and
+    the tee's `tee.log`, never the writer's monotonic `started` and
+    `ended`. D7's clock starts at the first attempt's start
+    (`lanes-edit.sh:11176`), so the first attempt, a cold image cache's,
+    is one of them."""
+    calls = w.stamps()
+    tees = {x["t"]: x for x in w._jsonl("tee.log")}
+
+    def asks(k: int, *names: str) -> bool:
+        return any(name in (calls[k].get("stdin") or "") for name in names)
+
+    starts = [k for k in range(len(calls) - 1) if asks(k + 1, "commit_write")
+              and not asks(k, "commit_write", "find_write", "record_mirror_state")]
+    seconds = [calls[b]["t"] - calls[a]["t"] for a, b in zip(starts, starts[1:])]
+    if starts:
+        tee = tees.get(calls[starts[-1] + 1]["t"])
+        if tee:
+            seconds.append(tee["end"] - calls[starts[-1]]["t"])
+    return seconds
+
+
+def p95(values: Sequence[float]) -> float:
+    """The 95th percentile of `values` by nearest rank: the smallest value at
+    or above 95% of them (T243u)."""
+    ordered = sorted(values)
+    return ordered[math.ceil(0.95 * len(ordered)) - 1]
 
 
 def burst_ends(e: Estate, writers: Sequence[Writer]) -> List[Writer]:
@@ -1441,24 +1491,63 @@ def test_the_later_hold_exits_2_and_prints_the_earlier_line(estates):
 @CLIENT
 def test_ten_writers_released_together_all_commit_in_order(estates, request):
     """AT-4 (c), section 4.1's oracle: ten writers on ten free objects, W =
-    200 ms, `LANES_REGISTER_DEADLINE_S` unset (D7's 30 s). All exit 0, none
-    75 or 69; seqs 2 to 11, no gap and no repeat; ten distinct write ids; one
-    `CLAIMED` per object; the head reads 11. The drain is asserted under 60 s.
-    `burst` records it beside D7's 30 s, with each writer's attempts and
-    seconds, before any assertion, and as the case's junit property (T243l).
-    Its row asks every writer to commit, "All ten exit 0, and none exits 75
-    or 69" (Y TP:7509; TP:7583 at `0c3750a5`), so it keeps that oracle where
-    AT-4 (g) and AT-F14 take `burst_ends` (T243n)."""
+    200 ms, under the runner's own D7 (T243u; tasks:2337 at `8e8d1b49`; Brett's
+    "(d) Both (a) and (c) (Recommended)", 2026-11-13): the per-workstation
+    formula of the design's "D7 stays 30 s" (Y:5906), `max(30 s, 10 x the
+    runner's attempt p95)`, set as `LANES_REGISTER_DEADLINE_S` in whole
+    seconds rounded up. The writer honours whole seconds only, and ignores
+    any other value, keeping 30 (`pw_deadline_s`,
+    `44f487d1:lanes-edit.sh:8645-8658`), so the case rounds up itself.
+
+    Each writer reads its deadline once, before its first attempt
+    (`:11157`), so the p95 comes from a measuring burst of the same shape,
+    run just before in an estate of its own: ten writers on `#500` to `#509`
+    released together, W = 200 ms, a cold image cache, and
+    `MEASURE_DEADLINE_S`, which none is meant to reach, so all ten stay in
+    the load until each commits. Every attempt of the ten, as
+    `attempt_seconds` reads it, is pooled, and the p95 taken by nearest rank.
+    The measuring burst asserts nothing of how its writers end.
+
+    The burst then holds section 4.1's oracle: all exit 0, none 75 or 69;
+    seqs 2 to 11, no gap and no repeat; ten distinct write ids; one
+    `CLAIMED` per object; the head reads 11. Its drain is asserted under
+    twice its deadline (timing rule 2), 60 s at the default. Before any
+    assertion it records, never asserted and each as the case's junit
+    property (T243l): the measuring burst's own record, `burst-measure`;
+    the burst's, `burst`, with each writer's attempts and seconds; and
+    `burst-deadline`, the p95, the deadline and the drain side by side, with
+    the burst's own attempt p95 by the same rule, so a reader sees whether
+    the measure predicted it. Its row asks every writer to commit, "All ten
+    exit 0, and none exits 75 or 69" (Y TP:7509; TP:7583 at `0c3750a5`), so
+    it keeps that oracle where AT-4 (g) and AT-F14 take `burst_ends`
+    (T243n). Case (h) still asserts D7's 30 s default once, with the
+    variable unset."""
+    measure = estates()
+    measured, measure_drain = burst(measure, [f"{KEY}#{500 + k}" for k in range(10)], 200,
+                                    extra={"LANES_REGISTER_DEADLINE_S": str(MEASURE_DEADLINE_S)},
+                                    node=request.node, name="burst-measure")
+    seconds = [s for w in measured for s in attempt_seconds(w)]
+    assert seconds, f"the measuring burst's logs hold no attempt: {[(w.lane, w.code) for w in measured]}"
+    runner_p95 = p95(seconds)
+    deadline = max(D7_S, math.ceil(D7_PER_P95 * runner_p95))
     e = estates()
     objects = [f"{KEY}#{100 + k}" for k in range(10)]
-    writers, drain = burst(e, objects, 200, node=request.node)
+    writers, drain = burst(e, objects, 200, extra={"LANES_REGISTER_DEADLINE_S": str(deadline)},
+                           node=request.node, wait_s=max(150, 2 * deadline + 30))
+    own = [s for w in writers for s in attempt_seconds(w)]
+    record("burst-deadline", request.node, p95_s=round(runner_p95, 3), attempts_measured=len(seconds),
+           measure_drain_s=round(measure_drain, 2), deadline_s=deadline, twice_deadline_s=2 * deadline,
+           drain_s=round(drain, 2), margin_vs_deadline=round(deadline / max(drain, 0.01), 2),
+           burst_p95_s=round(p95(own), 3) if own else None, burst_attempts=len(own))
     assert [w.code for w in writers] == [0] * 10, [(w.lane, w.code, w.err[-300:]) for w in writers]
     grew = e.journal_after()
     assert [r["seq"] for r in grew] == list(range(2, 12)), grew
     assert len({r["write_id"] for r in grew}) == 10
     assert e.claimed(*objects) == sorted(zip(objects, BURST))
     assert e.c.head() == 11
-    assert drain < TWICE_D7_S, f"the burst drained in {drain:.1f} s, past twice D7's {D7_S} s"
+    assert drain < 2 * deadline, (
+        f"the burst drained in {drain:.1f} s, past twice its deadline of {deadline} s, "
+        f"10 x the measured attempt p95 of {runner_p95:.2f} s, or D7's {D7_S} s")
 
 
 @CLIENT
@@ -2501,10 +2590,10 @@ def acted(act: str, *scopes: str) -> dict:
 # holds that write's commit call; a rival from a second session commits; and
 # the hold is let go (TP:5854-5856). The rival writes the lane's own `PAUSED`
 # in its log, as a forced release does (Y:5673): a lane-kind line, `bind:<L>`,
-# which every write of the tables lists (Y:5640-5680), W1's new lane aside,
-# whose rival is a row line for it, `row:<L>`. The held case's rival writes
-# that `PAUSED` (or W1's row line) for another lane, which no write of the act
-# lists, whatever the act's own rival is (`held_rival`).
+# which every write of the tables lists (Y:5640-5680), W1's new lane among
+# them (`new-lane`, below). The held case's rival writes that `PAUSED` (or,
+# for W1, a row line) for another lane, which no write of the act lists,
+# whatever the act's own rival is (`held_rival`).
 #
 # THE RIVAL LEAVES THE VERB'S ANSWER AS IT WAS (lane 3's ruling, option (b),
 # #165 6860075071). It commits after the attempt's snapshot, so the held
@@ -2523,6 +2612,17 @@ def acted(act: str, *scopes: str) -> dict:
 #   (`7893339:lanes-edit.sh:24740-24837`). Its rival appends an id that no
 #   session record holds to the row's session cell, a write on `row:<L>`
 #   that leaves the row dormant (`session-id`).
+# - W1's `add-row` refuses 2 where its lane has a row, "already has a row
+#   ... (Amendment 15(a))" (`add_row_checks`,
+#   `44f487d1:lanes-edit.sh:15341-15361`), and reads no lane-kind line. So
+#   its rival is the new lane's own `PAUSED` in its log (`new-lane`), a
+#   `bind:<L>` line that W1's `LANES_EXPECT` lists (`ls_expect_for`,
+#   `44f487d1:lane-start:4621`, called at `:4672`) and that leaves the lane
+#   without a row, so the retried `add-row` passes its checks and its
+#   commit meets LR009 (lane 3, #165 6869860086, taking 6860075071's rule;
+#   T252y). UNTIL T252y its rival was a row line for it, `row:<L>`, and the
+#   retried `add-row` refused 2 before any commit call, so this id never
+#   reached LR009 (lane 4's R6J-A, #165 6869806372).
 #
 # THE WORLD is `test_lane_start_claude_current`'s `Sandbox` (fake `tmux`,
 # `claude` and `gh`) holding the register N1's arms run on (lane 2's T217):
@@ -2589,8 +2689,11 @@ def lane_line(kind: str, lane: str) -> str:
 #: entry, which the refused write's `expectation:` line names (`commit_write`'s
 #: LR009, `7893339:lanes-index:9981-9983`), and the kind the held case writes
 #: for another lane.
+#: `new-lane` is W1's (T252y): the `bind` rival's `PAUSED`, for a lane with no
+#: row, whose held case keeps W1's row line for another lane, as before.
 RIVALS = {"bind": ("bind", "log", "bind"), "row": ("row", "append-line", "row"),
-          "resumed": ("bind", "log", "bind"), "session-id": ("row", "append-session-id", "bind")}
+          "resumed": ("bind", "log", "bind"), "session-id": ("row", "append-session-id", "bind"),
+          "new-lane": ("bind", "log", "row")}
 
 
 class ActWrite:
@@ -2639,7 +2742,7 @@ _HANDOFF = ("--lane", R_HERE, "T252b's race")
 #: option (b), #165 6860075071).
 ACT_WRITES = {
     "lane-start-w1-add-row": ActWrite("lane-start", ("repoZ", "1", "--no-launch"), R_NEW,
-                                      verb_is("add-row"), rival="row", code=2,
+                                      verb_is("add-row"), rival="new-lane", code=2,
                                       env={"LANE_START_SESSION_ID": "0"}),
     "lane-start-w1-start-record": ActWrite("lane-start", ("repoZ", "1", "--no-launch"), R_NEW,
                                            verb_is("start-record"), code=2),
@@ -2855,8 +2958,10 @@ class ActWorld(Sandbox):
 
     def rival(self, kind: str, lane: str) -> Writer:
         """A second session's write (`RIVALS`): `bind`, the lane's own
-        `PAUSED` in its log (lane-handoff's W9 form); `row`, a row line for
-        the lane; `resumed`, the lane's `RESUMED`, written by its own session
+        `PAUSED` in its log (lane-handoff's W9 form); `new-lane`, the same
+        `PAUSED`, W1's, for a lane with no row, which it leaves without one
+        (T252y); `row`, a row line for the lane; `resumed`, the lane's
+        `RESUMED`, written by its own session
         from the holder's place, Falcon (`LANES_WORKSTATION`, `LANES_HOST`),
         which leaves the lane bound there: `lane_binding_scan` reads a
         `RESUMED` as `bound` (`7893339:lanes-edit.sh:19808-19815`), at the
@@ -2868,7 +2973,7 @@ class ActWorld(Sandbox):
         refuses only an id that is live here (`7893339:lanes-edit.sh:24740-24751`)."""
         edit = ["bash", str(self.bin / "lanes-edit.sh")]
         extra: dict = {}
-        if kind == "bind":
+        if kind in ("bind", "new-lane"):
             argv = ["log", "PAUSED", f"lane:{lane}", ARROW, "T252b's rival", "the rival's release"]
         elif kind == "resumed":
             argv = ["log", "RESUMED", f"lane:{lane}", ARROW, "T252b's rival", "the holder resumes in place"]
