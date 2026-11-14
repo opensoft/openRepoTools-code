@@ -114,6 +114,28 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("git") is None,
     reason="the lane tooling is bash over git")]
 
+#: THE LANDING GATE'S TABLE (T280; `tests/sql_register_gate.py` reads it): the
+#: tasks each id waits for, from the Orders of T226, T237, T254 and T255
+#: (tasks:2177, :2302, :2412, :2419 and :2428 at 204145ae). In a gated run an
+#: id is skipped while any of its tasks has no marker in
+#: `tests/sql_register_landed/`; M9's `[files]` waits for none. T281 removes
+#: it with the gate.
+SQL_REGISTER_GATE_TABLE = {
+    "test_a_tls_and_scram_connect_on_loopback_is_timed_and_verified": ("T111", "T112", "T229"),  # T226; tasks:2177
+    "test_each_paths_connections_and_queries_are_counted": ("T302", "T413", "T414", "T415", "T421", "T422"),  # T255; tasks:2428
+    "test_each_shape_on_a_delayed_relay_is_recorded": ("T302", "T413", "T414", "T415", "T421", "T422"),  # T255; tasks:2428
+    "test_each_verb_is_timed_end_to_end_in_both_modes": ("T302", "T413", "T414", "T415", "T421", "T422"),  # T255; tasks:2428
+    "test_journal_last_is_explained_per_statement_and_timed_against_t_r": ("T111", "T112", "T114"),  # T226; tasks:2177
+    "test_one_write_cost_is_recorded_and_every_write_commits": ("T105", "T107", "T227"),  # T226; tasks:2177
+    "test_swapped_with_several_candidates_is_timed_beside_its_journal_last_calls": ("T111", "T112", "T114", "T401", "T402", "T403", "T404", "T405", "T406", "T407", "T408", "T504", "T505", "T506"),  # T226; tasks:2177
+    "test_the_bind_and_the_guards_set_row_state_are_timed_in_both_modes": ("T427", "T428", "T502", "T510"),  # T254; tasks:2419
+    "test_the_image_cache_check_and_a_miss_are_timed_per_attempt": ("T302", "T413", "T414", "T415", "T421", "T422"),  # T255; tasks:2428
+    "test_each_paths_connections_and_queries_are_counted[m5]": ("T229", "T512", "T513"),  # T237; tasks:2302
+    "test_the_bind_and_the_guards_set_row_state_are_timed_in_both_modes[files]": (),  # T254; tasks:2412
+    "test_one_write_cost_is_recorded_and_every_write_commits[design-durable]": ("T105", "T107", "T111", "T112", "T227"),  # T226; tasks:2177
+    "test_one_write_cost_is_recorded_and_every_write_commits[design-fixture]": ("T105", "T107", "T111", "T112", "T227"),  # T226; tasks:2177
+}
+
 LANES_EDIT = REPO / "lanes-edit.sh"
 
 #: The register's schema, `register_schema=`'s default (contract section 2.5).
