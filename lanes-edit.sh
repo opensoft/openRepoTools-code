@@ -20732,7 +20732,7 @@ guard_refuse() {
 # A refusal is printed here, by `guard_refuse`, and returns 2 for `guard_run`
 # to pass on; every other end is 0, and `REG_MODE` says which way to read on.
 reg_guard_prefetch() {
-  REG_STORE=files; RG_SAID=""
+  REG_STORE=files; RG_WHY=""; RG_SAID=""
   if ! reg_config_present; then REG_MODE=files; return 0; fi
   rgp_bin="$(lanes_index_bin)"
   if [ -z "$rgp_bin" ]; then
@@ -20748,19 +20748,10 @@ reg_guard_prefetch() {
   rgp_rc=0
   ( "$rgp_bin" "${rgp_argv[@]}" </dev/null >"$SE_CACHE_FILE.door-out" 2>"$SE_CACHE_FILE.door-err"; exit "$?" ) 2>/dev/null || rgp_rc=$?
   rgp_out="$(cat -v -- "$SE_CACHE_FILE.door-out" 2>/dev/null; printf .)"; rgp_out="${rgp_out%.}"
-  # WHAT IT SAID: all of it as one line for a refusal or a warning, the cause
-  # first (contract 3.6: under `--for guard` a 69's first stderr line is the
-  # cause the guard quotes). Its first 1000 bytes, newline, CR and tab made
-  # spaces and every other C0 byte dropped, as `reg_prefetch` keeps them, and
-  # then CUT ON A CHARACTER BOUNDARY (lane 3's ruling on item 31, (a), #165
-  # 6826938656; lane 1's 4.23, register-cli.md:768). Where the 1000th byte
-  # falls inside a UTF-8 character, `rgp_cut` leaves that character out whole:
-  # a lead byte at the end with fewer continuation bytes after it than its
-  # character takes (C0 to DF starts two bytes, E0 to EF three, F0 and up
-  # four). So the quote is the longest prefix of at most 1000 bytes that ends
-  # where a character ends, and ASCII is quoted as before. `tr` and `sed` run
-  # under `LC_ALL=C`, on bytes: under a UTF-8 locale the `tr` of macOS refuses
-  # a split character ("Illegal byte sequence").
+  # WHAT IT SAID: its first line, the cause (contract 3.6: under `--for guard`
+  # a 69's first stderr line is the cause the guard quotes), and all of it as
+  # one line for a refusal or a warning, control characters dropped, at most
+  # 1000 bytes, as `reg_prefetch` keeps them.
   # THE FALLBACK LINE (svc:104: with the service unavailable the hook "SHALL
   # print `guard: direct (service unavailable)` on stderr, with the same exit
   # code"; contract 5.4 and 11.2; AT-10). Form 2 prints it once, on a line of
@@ -20771,12 +20762,13 @@ reg_guard_prefetch() {
   # warning carries it a second time. Where form 2 printed none, the service
   # having answered or not been asked, the guard prints nothing more.
   rgp_fb='guard: direct (service unavailable)'; rgp_fell=0
-  rgp_cut=$'s/([\xc0-\xff]|[\xe0-\xff][\x80-\xbf]|[\xf0-\xff][\x80-\xbf][\x80-\xbf])$//'
   if LC_ALL=C grep -a -q -x -F -- "$rgp_fb" "$SE_CACHE_FILE.door-err" 2>/dev/null; then rgp_fell=1; fi
   if [ "$rgp_fell" = 1 ]; then
-    RG_SAID="$(LC_ALL=C grep -a -v -x -F -- "$rgp_fb" "$SE_CACHE_FILE.door-err" 2>/dev/null | head -c 1000 | LC_ALL=C tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037' | LC_ALL=C sed -E -e "$rgp_cut" || :)"
+    RG_WHY="$(LC_ALL=C grep -a -v -x -F -- "$rgp_fb" "$SE_CACHE_FILE.door-err" 2>/dev/null | head -n 1 | head -c 300 | tr -d '\000-\037' || :)"
+    RG_SAID="$(LC_ALL=C grep -a -v -x -F -- "$rgp_fb" "$SE_CACHE_FILE.door-err" 2>/dev/null | head -c 1000 | tr '\n\r\t' '   ' | tr -d '\000-\037' || :)"
   else
-    RG_SAID="$(head -c 1000 -- "$SE_CACHE_FILE.door-err" 2>/dev/null | LC_ALL=C tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037' | LC_ALL=C sed -E -e "$rgp_cut" || :)"
+    RG_WHY="$(head -n 1 -- "$SE_CACHE_FILE.door-err" 2>/dev/null | head -c 300 | tr -d '\000-\037' || :)"
+    RG_SAID="$(head -c 1000 -- "$SE_CACHE_FILE.door-err" 2>/dev/null | tr '\n\r\t' '   ' | tr -d '\000-\037' || :)"
   fi
   while [ "${RG_SAID% }" != "$RG_SAID" ]; do RG_SAID="${RG_SAID% }"; done
   rm -f -- "$SE_CACHE_FILE.door-out" "$SE_CACHE_FILE.door-err"
