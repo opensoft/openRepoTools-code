@@ -8102,12 +8102,19 @@ def register_serve_watched(cfg: dict) -> list:
     """THE FILES A CONFIGURATION CHANGE WATCHES (OP-18 (b), lane 3's ruling
     #165 6880543448, details settled by lane 5 for draft 14; socket API
     8.4, draft 13), up to five, computed from `cfg` each time it is read: the
-    configuration; `reader_passfile=`, where it is set; and each of
-    `sslrootcert`, `sslcert` and `sslkey` that `reader_url=` names, by its
-    mapping (`pg_url_env`, as the child gets them), but `sslrootcert=system`,
-    which names no file. Libpq's own defaults, under `~/.postgresql/`, in a
-    `PG*` variable or a service file, are not watched. Each path is as
-    written, with no `~` or variable expanded: an absolute one as it is, and
+    configuration; the file `reader_passfile=` names, where it is set; and
+    each of `sslrootcert`, `sslcert` and `sslkey` that `reader_url=` names,
+    by its mapping (`pg_url_env`, as the child gets them), but
+    `sslrootcert=system`, which names no file. With no `reader_passfile=`,
+    the child's `PGPASSFILE` is the service's own empty file
+    (`_no_password_file`), so there is no password file to watch; that file
+    is opened with `O_TRUNC` at each child's start, so its contents never
+    change but its times do. `PostgresStore._env` drops every inherited
+    `PG*` variable before a child starts, and the URL can carry no
+    `service=`, so no `PG*` variable and no service file reaches the child:
+    only libpq's defaults under `~/.postgresql/` are found by it on its own,
+    and those are not watched. Each path is as written, with no `~` or
+    variable expanded: an absolute one as it is, and
     a relative one against this process's working directory, which its
     `psql` child inherits (`spawn` gives it no other), as libpq resolves it
     there."""
