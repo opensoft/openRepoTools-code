@@ -1569,3 +1569,57 @@ def test_tests_yml_synthetic_wheels_are_wheel_md_s_members(head, tmp_path):
         with zipfile.ZipFile(path) as wheel:
             listed = wheel.namelist()
         assert all(listed.count(name) == 2 for name in again), (case, listed)
+
+
+# --- the real engine (#165, L2-0b) ---------------------------------------------
+
+#: THE REAL-ENGINE SWITCH, `tests/pgcluster.py`'s. At `1` a run that finds no
+#: PostgreSQL 16 is refused, pytest's exit 4, where unset or `0` it would
+#: skip every real-engine test and exit 0.
+REQUIRE_PG = "OPENREPOTOOLS_REQUIRE_PG"
+
+#: A `run:` that runs the suite or a module of it: pytest, or the wrapper.
+RUNS_PYTEST = re.compile(r"-m[ \t]+pytest\b|\btests/run\.sh\b")
+
+
+@NEEDS_UPSTREAM
+def test_tests_yml_requires_the_real_engine_in_every_job_that_runs_it(workflow):
+    """FR-059 and FR-060 (#165, L2-0b; the test plan's section 3.3): every
+    step that runs pytest, in whichever job, runs it with
+    `OPENREPOTOOLS_REQUIRE_PG` at `1`, so a runner without the engine turns
+    the job red, `package` and `guard-launch-mode` among them, instead of
+    letting the real-engine tests skip.
+
+    Each step's effective `env:` is resolved as the runner resolves it: the
+    workflow's `env:`, then the job's, then the step's, a later level winning.
+    The jobs are read as they are, not named, so the rule holds whatever jobs
+    the file has. And no `run:` may name the variable: a script that exports,
+    unsets or appends it to `$GITHUB_ENV` would change it behind the `env:`
+    this test reads."""
+    top = workflow.get("env") or {}
+    assert isinstance(top, dict), "tests.yml's workflow-level `env:` is not a mapping"
+    runs_pytest, problems = [], []
+    for job_id, job in jobs_of(workflow).items():
+        assert isinstance(job, dict), f"`{job_id}` is not a mapping"
+        for number, step in enumerate(job.get("steps") or [], 1):
+            run = as_text(step.get("run"))
+            if REQUIRE_PG in run:
+                problems.append(f"`{job_id}` step {number}'s `run:` names "
+                                f"{REQUIRE_PG}; set it only in an `env:`")
+            if not RUNS_PYTEST.search(run):
+                continue
+            runs_pytest.append(f"{job_id} step {number}")
+            effective = {}
+            for level in (top, job.get("env") or {}, step.get("env") or {}):
+                effective.update(level)
+            value = effective.get(REQUIRE_PG)
+            if value is None or as_text(value) != "1":
+                said = "unset" if value is None else f"{as_text(value)!r}"
+                problems.append(f"`{job_id}` step {number} runs pytest with "
+                                f"{REQUIRE_PG} {said}, not '1'")
+    assert runs_pytest, "no step of tests.yml runs pytest or tests/run.sh"
+    assert not problems, (
+        f"a job that runs the suite without {REQUIRE_PG}: '1' lets a missing "
+        f"engine skip instead of failing. The workflow-level `env:` is "
+        f"{top!r}; the steps that run pytest are {runs_pytest}:\n    "
+        + "\n    ".join(problems))
