@@ -115,6 +115,31 @@ pytestmark = [WINDOWS_SKIP, pytest.mark.skipif(
     shutil.which("bash") is None or shutil.which("git") is None,
     reason="the lane tooling is bash over git")]
 
+#: THE LANDING GATE'S TABLE (T280; `tests/sql_register_gate.py` reads it, and
+#: T281 removes it in the last set): the tasks each id of this module waits
+#: for, by T210's, T240's and T270's Orders (tasks.md at 204145ae), keyed by
+#: function. Lane 2's plan GP-24 wrote it (task sets 12b's rule 11).
+SQL_REGISTER_GATE_TABLE = {
+    "test_a_caller_composed_utc_and_log_paused_utc_stay_as_written": ("T414", "T415", "T416", "T421", "T422"),  # T240; tasks:2313
+    "test_a_storage_layer_entry_renders_byte_identical_to_a_full_render": ("T105", "T107", "T108", "T111", "T112", "T227", "T301"),  # T210; tasks:1951
+    "test_each_write_leaves_the_mirror_byte_identical_to_a_full_render": ("T414", "T415", "T416", "T421", "T422"),  # T240; tasks:2313
+    "test_each_write_matches_its_files_mode_twin_byte_for_byte": ("T414", "T415", "T416", "T421", "T422"),  # T240; tasks:2313
+    "test_each_write_reads_back_primary_as_the_mode_that_wrote_it_last": ("T414", "T415", "T416", "T421", "T422"),  # T240; tasks:2313
+    "test_on_primary_a_write_does_not_nudge_a_register_sync": ("T414", "T415", "T416", "T421", "T422"),  # T240; tasks:2313
+    "test_rename_lane_commits_the_transaction_only_where_its_handoffs_path_has_no_cache_part_on_primary": ("T414", "T415", "T416", "T421", "T422"),  # T240; tasks:2313
+    "test_rename_lane_commits_the_transaction_then_a_rerun_makes_only_the_move": ("T414", "T415", "T416", "T421", "T422"),  # T240; tasks:2313
+    "test_rename_lane_commits_the_transaction_then_its_move_on_primary_takes_no_bytecode_to_to": ("T414", "T415", "T416", "T421", "T422"),  # T240; tasks:2313
+    "test_sync_source_register_does_nothing_on_primary_and_says_so": ("T105", "T107", "T108", "T111", "T112", "T227", "T301"),  # T210; tasks:1951
+    "test_the_image_cache_collects_all_but_the_last_three_manifests_past_the_floor": ("T302",),  # T210; tasks:1951
+    "test_the_image_cache_follows_no_symlink_at_its_lock_or_its_head": ("T302",),  # T210; tasks:1951
+    "test_the_image_cache_puts_and_gets_an_object_only_by_its_digest": ("T302",),  # T210; tasks:1951
+    "test_the_image_cache_records_manifests_and_a_head_that_moves_only_forward": ("T302",),  # T210; tasks:1951
+    "test_the_image_cache_skips_a_busy_or_odd_lock_and_never_waits": ("T302",),  # T210; tasks:1951
+    "test_the_mirror_on_origin_equals_a_full_render_after_each_write": ("T320", "T321", "T322", "T323", "T325", "T415", "T416"),  # T270; tasks:2479
+    "test_the_render_of_one_entry_and_of_a_full_render_is_timed_and_recorded": ("T105", "T107", "T108", "T111", "T112", "T227", "T301"),  # T210; tasks:1951
+    "test_the_render_read_with_start_returns_the_images_and_a_bad_start_costs_one_full_read": ("T301",),  # T210; tasks:1951
+}
+
 LANES_EDIT = REPO / "lanes-edit.sh"
 
 #: The register's schema, `register_schema=`'s default (contract section 2.5).
