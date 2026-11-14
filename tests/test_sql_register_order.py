@@ -3132,7 +3132,14 @@ def test_an_act_whose_scope_changed_before_its_commit_writes_nothing(act_worlds,
     its record holds one `note=`, for the refused write, in the facts file
     beside `out=` that the outer folds into the record (`guard_bind_facts`);
     the `set-row-state` itself exited 2, with its `expectation:` line; and
-    the journal grew only by the rival's entry after the hold (T252s)."""
+    the journal grew only by the rival's entry after the hold (T252s).
+
+    A `new-lane` rival (`[lane-start-w1-add-row]`) holds its premise too:
+    it leaves the lane without a row, so the retried `add-row` is never
+    refused for one, and its output holds no "already has a row"
+    (`add_row_checks`, `bc9ed80b:lanes-edit.sh:15420`, `:15433`), the
+    refusal T252y's rival was chosen to remove (lane 2's RV26, NIT 10;
+    T252z)."""
     world = act_worlds()
     w = ACT_WRITES[write]
     act, rival, ids, base = race(world, w, w.lane)
@@ -3140,6 +3147,9 @@ def test_an_act_whose_scope_changed_before_its_commit_writes_nothing(act_worlds,
     k = max(int(r["seq"]) for r in world.c.json(
         f"SELECT coalesce(jsonb_agg(q), '[]'::jsonb) FROM (SELECT seq FROM {REGISTER}.journal "
         f"WHERE write_id = ANY(ARRAY{rival.write_ids()}::uuid[])) q;"))
+    if w.rival == "new-lane":
+        assert "already has a row" not in act.err + act.out, (
+            f"[{write}] the retried add-row was refused for a row, against its rival's premise: {act.err[-900:]!r}")
     said = f"expectation: {w.rival_scope}:{w.lane.lower()} changed at seq {k} by {w.lane}/{w.rival_verb}"
     assert said in act.err + act.out, f"[{write}] {said!r} is not in {act.err[-900:]!r}"
     assert all(world.c.value(f"SELECT count(*) FROM {REGISTER}.journal WHERE write_id = '{x}';") == "0"
