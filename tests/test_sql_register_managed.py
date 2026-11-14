@@ -86,6 +86,68 @@ from sql_register_helpers import (LANES_INDEX, PSQL_SHIM, PSQL_SHIM_CONTROL, PSQ
 
 pytestmark = [WINDOWS_SKIP]
 
+#: THE LANDING GATE'S TABLE (T280; task sets version 12b's rule 11,
+#: opensoft/openRepoTools#165 6877673742), TEMPORARY: T281 removes it in the
+#: last set. `tests/sql_register_gate.py` reads it: in a code pull request's
+#: full CI, each id of a function below is skipped until every task its row
+#: names has landed, and the skip names them. The rows are T224's Order
+#: (tasks:2156), T230's (tasks:2220, with its As built at :2219) and T258's
+#: (tasks:2464), tasks.md at lane 3's commit 17 `204145ae`. No task is common
+#: to all 21 functions, so there is no "*" row.
+SQL_REGISTER_GATE_TABLE = {
+    # T224: until L1-A7 (T109), L1-A8 (T110), L1-A17 (T119, T120) and T229.
+    # Lane 1's two cases' T109 and T110, and `[in-recovery]`'s T229, are in
+    # that list. T230's three check-11 ids keep check 11's row, which holds
+    # their T119 (L1-A17).
+    "test_bootstrap_without_a_superuser_runs_twice_with_one_catalog":
+        ("T109", "T110", "T119", "T120", "T229"),
+    "test_bootstrap_refuses_a_database_its_admin_does_not_own":
+        ("T109", "T110", "T119", "T120", "T229"),
+    "test_login_add_makes_an_engineers_two_logins_with_their_floors_and_prints_their_lines_once":
+        ("T109", "T110", "T119", "T120", "T229"),
+    "test_login_add_run_again_puts_back_a_lost_membership_and_changes_nothing_else":
+        ("T109", "T110", "T119", "T120", "T229"),
+    "test_a_member_made_without_the_login_step_carries_no_floor_and_fails_ready_check_12":
+        ("T109", "T110", "T119", "T120", "T229"),
+    "test_ready_check_12_passes_the_logins_the_step_made":
+        ("T109", "T110", "T119", "T120", "T229"),
+    "test_login_rotate_keeps_an_open_session_and_refuses_the_old_password":
+        ("T109", "T110", "T119", "T120", "T229"),
+    "test_login_refuses_a_bad_name_a_connection_string_and_a_pipe":
+        ("T109", "T110", "T119", "T120", "T229"),
+    "test_an_open_session_gets_42501_between_the_revokes_steps_then_57p01":
+        ("T109", "T110", "T119", "T120", "T229"),
+    "test_the_reader_login_dumps_both_schemas_and_still_cannot_write":
+        ("T109", "T110", "T119", "T120", "T229"),
+    "test_a_restore_from_the_dump_equals_its_source_with_new_passwords":
+        ("T109", "T110", "T119", "T120", "T229"),
+    "test_a_restore_from_the_providers_copy_keeps_the_roles_and_takes_new_passwords":
+        ("T109", "T110", "T119", "T120", "T229"),
+    "test_ready_check_11_needs_tls_and_the_primary":
+        ("T109", "T110", "T119", "T120", "T229"),
+    "test_dump_restore_privileges_hold_after_roles_only_the_restore_and_bootstrap":
+        ("T109", "T110", "T119", "T120", "T229"),
+    "test_rotate_dump_job_changes_only_the_dump_logins_password":
+        ("T109", "T110", "T119", "T120", "T229"),
+    # T230: `tls_at_load` until L1-A3 (T104); its `[for-guard]` also until
+    # T113, which builds the `register read` it needs (tasks:2219).
+    "test_tls_at_load_refuses_a_url_off_loopback_without_verify_full_and_a_root_file":
+        ("T104",),
+    "test_tls_at_load_refuses_a_url_off_loopback_without_verify_full_and_a_root_file[for-guard]":
+        ("T104", "T113"),
+    # T258: until L1-A8 (T110), L4-B3 (T413, T414, T415) and L4-B5 (T417).
+    "test_two_writer_logins_write_alike_and_the_log_names_each":
+        ("T110", "T413", "T414", "T415", "T417"),
+    "test_a_revoked_login_is_refused_69_and_writes_nothing":
+        ("T110", "T413", "T414", "T415", "T417"),
+    "test_a_write_cut_by_a_revoke_mid_commit_is_in_doubt_and_ends_3_with_nothing_written":
+        ("T110", "T413", "T414", "T415", "T417"),
+    "test_reader_url_takes_target_session_attrs_primary_not_read_write":
+        ("T110", "T413", "T414", "T415", "T417"),
+    "test_after_login_rotate_the_old_password_files_write_exits_69_and_the_new_lines_commit_once":
+        ("T110", "T413", "T414", "T415", "T417"),
+}
+
 #: The admin, as CNPG's `initdb` makes the database's owner (lane 1's T109
 #: name, opsXfactory-6's; `[X: hosting]`).
 ADMIN = "lanes_register_admin"
