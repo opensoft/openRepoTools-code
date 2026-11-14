@@ -9577,10 +9577,11 @@ def register_serve_agree(records: list) -> bool:
     - The list covers the rest: where the answer holds the list, every path
       a `file` record or a set's member names is one of its paths, and each
       set's members are exactly its paths under the set's prefix.
-    - A name's record agrees with the paths: where the answer holds the
-      list, or a set whose prefix the name begins with, an `absent` name
-      matches none of those paths, an `ambiguous` one two or more, and a
-      `file` record's path is the one path among them its name matches:
+    - A name's record agrees with the paths: with the list, where the answer
+      holds it, and with each set whose prefix the name begins with, each on
+      its own, an `absent` name matches none of its paths, an `ambiguous`
+      one two or more, and a `file` record's path is the one path among
+      them its name matches:
       byte for byte, or for a log by T113's one function,
       `register_log_path_ci`, as the service resolves it.
     - Named records among themselves, with a list or a set or without one
@@ -9621,21 +9622,31 @@ def register_serve_agree(records: list) -> bool:
             or any(paths != {path for path in listed if path.startswith(prefix)}
                    for prefix, paths in sets)):
         return False
+    # EACH COVERING VIEW ON ITS OWN, EACH FOLDED ONCE (lane 3's Codex review
+    # of 88b50886, #165 6882203066, SHOULDs 3 and 6): a name's record agrees
+    # with the list and with each set that covers it, one by one, never with
+    # their union, so one set cannot mask another that contradicts it; and
+    # each view's logs are folded once (`register_log_index`), so the check
+    # is near-linear in the answer's paths and records.
+    covers = ([("", listed)] if listed is not None else []) + sets
+    folded = {}
     for rec in records:
         if rec[0] not in ("file", "absent", "ambiguous"):
             continue
         name = rec[1]
-        known = [paths for prefix, paths in sets if name.startswith(prefix)]
-        if listed is not None:
-            known.append(listed)
-        if not known:
-            continue
-        known = set().union(*known)
-        found = (register_log_path_ci(known, name[len(LOG_PREFIX):-len(".md")])
-                 if name.startswith(LOG_PREFIX) else [name] if name in known else [])
-        if ((rec[0] == "absent" and found) or (rec[0] == "ambiguous" and len(found) < 2)
-                or (rec[0] == "file" and found != [rec[2]])):
-            return False
+        for at, (prefix, paths) in enumerate(covers):
+            if not name.startswith(prefix):
+                continue
+            if name.startswith(LOG_PREFIX):
+                if at not in folded:
+                    folded[at] = register_log_index(paths)
+                found = register_log_path_ci(paths, name[len(LOG_PREFIX):-len(".md")],
+                                             index=folded[at])
+            else:
+                found = [name] if name in paths else []
+            if ((rec[0] == "absent" and found) or (rec[0] == "ambiguous" and len(found) < 2)
+                    or (rec[0] == "file" and found != [rec[2]])):
+                return False
     return True
 
 
