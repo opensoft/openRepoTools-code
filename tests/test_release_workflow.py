@@ -4775,14 +4775,30 @@ def test_release_asset_s_guard_and_tag_steps_are_pypi_s_line_for_line():
             "GH_TOKEN") == "${{ github.token }}", prefix
 
 
-#: WHAT `list/` HOLDS for the list step: `(its files, whether the step passes)`.
+#: Other bytes under the list's name, and their sha256, which the list step names.
+OTHER_LIST_TEXT = "ef" * 32 + "  lanes-index\n"
+OTHER_LIST_SHA256 = hashlib.sha256(OTHER_LIST_TEXT.encode("utf-8")).hexdigest()
+#: WHAT `list/` HOLDS for the list step: `(its files, each a text or None for
+#: a folder, and the one `::error::` line its refusal is, or None where the
+#: step passes)`.
 LIST_CASES = {
-    "the-recorded-list": ({LISTED: LIST_TEXT}, True),
-    "other-bytes-under-its-name": ({LISTED: "ef" * 32 + "  lanes-index\n"}, False),
-    "the-list-and-another-file": ({LISTED: LIST_TEXT, "openRepoTools-1.2.0.sha256":
-                                   LIST_TEXT}, False),
-    "another-name": ({"openRepoTools-1.2.0.sha256": LIST_TEXT}, False),
-    "nothing": ({}, False),
+    "the-recorded-list": ({LISTED: LIST_TEXT}, None),
+    "other-bytes-under-its-name": (
+        {LISTED: OTHER_LIST_TEXT},
+        f"::error::list/{LISTED} is at sha256 {OTHER_LIST_SHA256}, and the build job "
+        f"recorded {LIST_SHA256}, so nothing is published"),
+    "a-folder-under-its-name": (
+        {LISTED: None},
+        f"::error::list/{LISTED} cannot be read, so whether it is the list the build job "
+        "wrote is not known, and nothing is published"),
+    "the-list-and-another-file": (
+        {LISTED: LIST_TEXT, "openRepoTools-1.2.0.sha256": LIST_TEXT},
+        f"::error::list holds 'openRepoTools-1.2.0.sha256 {LISTED}', and the build job "
+        f"wrote {LISTED}"),
+    "another-name": (
+        {"openRepoTools-1.2.0.sha256": LIST_TEXT},
+        f"::error::list holds 'openRepoTools-1.2.0.sha256', and the build job wrote {LISTED}"),
+    "nothing": ({}, f"::error::list holds '', and the build job wrote {LISTED}"),
 }
 
 
@@ -4794,18 +4810,32 @@ LIST_CASES = {
 @pytest.mark.parametrize("which", LIST_CASES)
 def test_release_asset_the_list_step_passes_the_recorded_list_alone(tmp_path, which):
     """THE LIST STEP, RUN: `list/` holding the one file the build named, at
-    the sha256 it recorded, passes; other bytes, a second file, another name
-    and nothing each refuse."""
-    files, passes = LIST_CASES[which]
+    the sha256 it recorded, passes, and says so in one line; other bytes, a
+    folder under its name, a second file, another name and nothing each
+    refuse. A refusal exits 1, and all it prints is its one `::error::` line,
+    which names its cause (contracts/workflows.md's `asset` section): never
+    `sha256sum`'s own report, which names no cause in an `::error::` line,
+    and never a name list that runs onto a second line."""
+    files, refusal = LIST_CASES[which]
     workflow = release()
     runner = Runner(tmp_path / "run", workflow, "asset", {
         "VERSION": LIST_VERSION, "DIGEST_LIST": LISTED, "DIGEST_LIST_SHA256": LIST_SHA256})
     folder = runner.work / "list"
     folder.mkdir()
     for name, text in files.items():
-        (folder / name).write_text(text, encoding="utf-8")
+        if text is None:
+            (folder / name).mkdir()
+        else:
+            (folder / name).write_text(text, encoding="utf-8")
     done = runner.run(named(workflow, "asset", LIST_STEP))
-    assert (done.returncode == 0) is passes, transcript(done)
+    out = done.stdout + done.stderr
+    if refusal is None:
+        assert done.returncode == 0, transcript(done)
+        assert out.splitlines() == [
+            f"list holds {LISTED} at sha256 {LIST_SHA256}, the build job's"], transcript(done)
+    else:
+        assert done.returncode == 1, transcript(done)
+        assert out.splitlines() == [refusal], transcript(done)
 
 
 #: A `gh` THAT IS THE FORGE'S RELEASES, for the `asset` job's last step. The
