@@ -22463,9 +22463,20 @@ guard_answer_moved() {   # <offer file> <pane> <bind | allow> <from> <to> <1 whe
   else
     gam_why="the offer was dropped before the $gam_what could be recorded"
   fi
-  guard_refuse "$gam_why, so the bind was NOT started: this window has NOT moved to $gam_to (a rename this answer made is undone just below), NOTHING has been written to the register or to $gam_f, and no outer was started. Send your prompt again and the question will be asked afresh."
-  [ "$gam_ren" = 0 ] || guard_window_back "$gam_from" "$gam_to" || :
+  if [ "$gam_what" = bind ]; then
+    guard_refuse "$gam_why, so the bind was NOT started: this window has NOT moved to $gam_to (a rename this answer made is undone just below), NOTHING has been written to the register or to $gam_f, and no outer was started. Send your prompt again and the question will be asked afresh."
+    [ "$gam_ren" = 0 ] || guard_window_back "$gam_from" "$gam_to" || :
+  else
+    guard_refuse "$gam_why, so the mismatch remains unapproved. Nothing was renamed or written; send your prompt again and the question will be asked afresh."
+  fi
   return 2
+}
+
+# THE OFFER IS STILL THERE AND STILL SAYS `name-drift` (the first `mode` line,
+# as `guard_bind_load` takes it): choice 1's test, made just before its `mv`.
+guard_offer_still() {   # <offer file>
+  [ -f "${1-}" ] || return 1
+  [ "$(sed -n -e 's/^mode=//p' "${1-}" 2>/dev/null | head -n1)" = name-drift ]
 }
 
 # The answer, and it is the whole of clause (h) rule 2's second half.
@@ -22532,7 +22543,19 @@ guard_answer() {   # <offer file> <the prompt> <pane>
     # one's): each `printf` is `|| exit 1`, so one that fails ends the subshell
     # with 1, the `if` takes its refusal below, and no `mv` runs, where before a
     # later write that worked hid it and the record lost the line.
+    # NO REWRITE CREATES A RECORD (lane 3's ruling on lane 5's rule, #165
+    # 6885771975, ruling 5; lane 5's rule for the hook's own writes, which lane 3
+    # confirmed, #165 6886113842): this is a rewrite of the offer the person answered,
+    # so just before its `mv` it requires that offer to be there and to say
+    # `name-drift` still (`guard_offer_still`), and where it is not it writes
+    # nothing, removes its temporary file, and answers for what is there, once
+    # (`guard_answer_moved`): the refusal where it is gone, `guard_bind_site`'s
+    # answer for a bind mode, 3 for an allowance. THE WINDOW LEFT is the test to
+    # the `mv`: bash has no rename that replaces only an existing file, so a
+    # record made or changed in between is still replaced, as it is in
+    # `guard_bind_rewrite`'s.
     ga_t="$(umask 077; mktemp "${ga_f%/*}/.${ga_f##*/}.XXXXXX" 2>/dev/null || printf '')"
+    ga_wrc=0
     if [ -z "$ga_t" ] || ! ( umask 077
          { printf 'mode=allow\n' || exit 1
            printf 'from=%s\n' "$ga_from" || exit 1
@@ -22540,8 +22563,19 @@ guard_answer() {   # <offer file> <the prompt> <pane>
            printf 'session=%s\n' "$ga_session" || exit 1
            printf 'uuid=%s\n' "$G_ID" || exit 1
            printf 'utc=%s\n' "$(utc_now)" || exit 1
-         } > "$ga_t" ) 2>/dev/null || ! mv -f -- "$ga_t" "$ga_f" 2>/dev/null; then
+         } > "$ga_t" ) 2>/dev/null; then
+      ga_wrc=1
+    elif ! guard_offer_still "$ga_f"; then
+      ga_wrc=2
+    elif ! mv -f -- "$ga_t" "$ga_f" 2>/dev/null; then
+      ga_wrc=1
+    fi
+    if [ "$ga_wrc" != 0 ]; then
       [ -z "$ga_t" ] || rm -f -- "$ga_t"
+      if [ "$ga_wrc" = 2 ]; then
+        guard_answer_moved "$ga_f" "$ga_pane" allow "$ga_from" "$ga_to" 0
+        return $?
+      fi
       guard_refuse "the explicit allow could not be recorded at $ga_f, so the mismatch remains unapproved. Nothing was renamed or written; answer 1 again after the session state is writable."
       return 2
     fi
